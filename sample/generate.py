@@ -3,8 +3,13 @@
 Generate a large batch of image samples from a model and save them as a large
 numpy array. This can be used to produce samples for FID evaluation.
 """
-from utils.fixseed import fixseed
 import os
+import sys
+
+# Ensure parent directory is in path for local imports when running as a script.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from utils.fixseed import fixseed
 import numpy as np
 import torch
 from utils.parser_util import generate_args
@@ -113,6 +118,11 @@ def encode_joints_names(joints_names, t5_conditioner): # joints names should be 
 def create_condition(object_types, cond_dict, n_frames, temporal_window, t5_conditioner, max_joints, feature_len):
     batches = list()
     for object_type in object_types:
+        if object_type not in cond_dict:
+            available = ', '.join(sorted(cond_dict.keys()))
+            raise KeyError(
+                f"Unknown object_type '{object_type}'. Available object types in cond file: {available}"
+            )
         batch=list()
          # motion, m_length, parents, joints_perm, inv_joints_perm, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names
         parents = cond_dict[object_type]['parents']

@@ -5,6 +5,10 @@ Train a diffusion model on motions.
 import sys
 import os
 import json
+
+# Ensure parent directory is in path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from utils.fixseed import fixseed
 from utils.parser_util import train_args
 from utils import dist_util
@@ -18,7 +22,7 @@ def main():
     fixseed(args.seed)
     save_dir = args.save_dir
     if save_dir is None:
-        save_root = os.path.join(os.getcwd(), 'logs')
+        save_root = os.path.join(os.getcwd(), 'save')
         os.makedirs(save_root, exist_ok=True)
         prefix = "AnyTop"
         if args.model_prefix is not None:
@@ -47,7 +51,15 @@ def main():
     dist_util.setup_dist(args.device)
 
     print("creating data loader...")
-    data = get_dataset_loader(batch_size=args.batch_size, num_frames=args.num_frames, temporal_window=args.temporal_window, t5_name='t5-base', balanced=args.balanced, objects_subset=args.objects_subset)
+    data = get_dataset_loader(
+        batch_size=args.batch_size,
+        num_frames=args.num_frames,
+        temporal_window=args.temporal_window,
+        t5_name='t5-base',
+        balanced=args.balanced,
+        objects_subset=args.objects_subset,
+        num_workers=args.num_workers,
+    )
 
     print("creating model and diffusion...")
     model, diffusion = create_model_and_diffusion_general_skeleton(args)
