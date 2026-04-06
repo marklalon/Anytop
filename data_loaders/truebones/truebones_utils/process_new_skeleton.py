@@ -1,4 +1,4 @@
-from data_loaders.truebones.truebones_utils.motion_process import process_new_object
+from data_loaders.truebones.truebones_utils.motion_process import process_skeleton
 from utils.parser_util import process_new_skeleton_args
 
 """ 
@@ -36,7 +36,7 @@ which is given as input to AnyTop during infecrence. Please follow sampling inst
 """
 def main():
     args = process_new_skeleton_args()
-    process_new_object(args.object_name, args.bvh_dir, args.face_joints_names, args.save_dir, args.tpos_bvh)
+    process_skeleton(args.object_name, args.bvh_dir, args.face_joints_names, args.save_dir, args.tpos_bvh)
     
 if __name__ == '__main__':
         main()

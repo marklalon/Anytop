@@ -6,6 +6,8 @@ import os
 from os.path import join as pjoin
 from Quaternions import Quaternions
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import redirect_stdout, redirect_stderr
 from data_loaders.truebones.truebones_utils.plot_script import plot_general_skeleton_3d_motion
 import random
 import math
@@ -13,7 +15,7 @@ import statistics
 import torch
 import bisect
 import re 
-from data_loaders.truebones.truebones_utils.param_utils import HML_AVG_BONELEN, FOOT_CONTACT_HEIGHT_THRESH, FACE_JOINTS, DATASET_DIR, MAX_PATH_LEN, ANIMATIONS_DIR, MOTION_DIR, NO_BVHS, FOOT_CONTACT_VEL_THRESH, RAW_DATA_DIR, BVHS_DIR
+from data_loaders.truebones.truebones_utils.param_utils import HML_AVG_BONELEN, FOOT_CONTACT_HEIGHT_THRESH, FACE_JOINTS, DATASET_DIR, MAX_PATH_LEN, ANIMATIONS_DIR, MOTION_DIR, NO_BVHS, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir
 from utils.rotation_conversions import rotation_6d_to_matrix_np
 
 ################## Data Generation #####################
@@ -115,7 +117,8 @@ def get_common_features_from_T_pose(t_pose_bvh, object_type, face_joints=None):
             face_joints = [t_pos_names.index(name) for name in face_joints]
     # first recover global positions, and then create a brand new non-damaged animation, with position consistent to the offsets 
     t_pose_positions = positions_global(t_pose_anim)
-    t_pose_anim, _1, _2 = animation_from_positions(positions=t_pose_positions, parents=t_pose_anim.parents, offsets=t_pose_anim.offsets, iterations=150)
+    with open(os.devnull, 'w') as devnull, redirect_stdout(devnull), redirect_stderr(devnull):
+        t_pose_anim, _1, _2 = animation_from_positions(positions=t_pose_positions, parents=t_pose_anim.parents, offsets=t_pose_anim.offsets, iterations=150, silent=True)
     ground_height=None
     if object_type == "Dragon":
         ground_height=0
@@ -213,15 +216,17 @@ def get_bvh_cont6d_params(anim, object_type, face_joints=None):
     return cont_6d_params_reordered, r_velocity, velocity, r_rot, positions
 
 """ processes animation, and returns a new animation that aligns with humanML3D in terms of orientation and scale"""
-def get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, scale_factor, ground_height, tpos_rots, offsets, squared_positions_error, face_joints=None, slice_inds=None):
+def get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, scale_factor, ground_height, tpos_rots, offsets, squared_positions_error, face_joints=None, slice_inds=None, preloaded=None):
     if not isinstance(bvh_path, Animation):
-        raw_anim, names, frame_time = BVH.load(bvh_path)
+        if preloaded is not None:
+            raw_anim, names = preloaded
+        else:
+            raw_anim, names, frame_time = BVH.load(bvh_path)
         if slice_inds:
             raw_anim = raw_anim[slice_inds[0]:slice_inds[1]]
-        print('frame time', frame_time )
+        #print('frame time', frame_time )
         frames_num, joints_num = raw_anim.positions.shape[:2]
         squared_positions_error[bvh_path] = 0 #np.sum((global_pos - new_global_pos) ** 2)/(anim.positions.shape[0]*anim.positions.shape[1])
-        print("positions mismatch error for file: " + bvh_path + " is " + str(squared_positions_error[bvh_path]))
 
         ## process animation: rotate to correct orientation, center, put on ground and scale
         processed_anim, _xz, _gh, _sf = process_anim(raw_anim, object_type, root_pose_init_xz, scale_factor, ground_height, face_joints=face_joints)
@@ -241,9 +246,9 @@ def get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, scale_factor,
     return new_anim, names  
     
 """ get motion feature representation"""
-def get_motion(bvh_path, foot_contact_vel_thresh, object_type, max_joints,root_pose_init_xz, scale_factor, ground_height, offsets, foot_indices, tpos_rots, squared_positions_error, face_joints=None, slice_inds=None):
+def get_motion(bvh_path, foot_contact_vel_thresh, object_type, max_joints,root_pose_init_xz, scale_factor, ground_height, offsets, foot_indices, tpos_rots, squared_positions_error, face_joints=None, slice_inds=None, preloaded=None):
     try:
-        new_anim, names = get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, scale_factor, ground_height, tpos_rots, offsets, squared_positions_error, face_joints, slice_inds)
+        new_anim, names = get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, scale_factor, ground_height, tpos_rots, offsets, squared_positions_error, face_joints, slice_inds, preloaded=preloaded)
         ## extract features
         # cont_6d_params, r_velocity, velocity, r_rot, global_positions = get_bvh_cont6d_params(new_anim, object_type)
         cont_6d_params, r_velocity, velocity, r_rot, global_positions = get_bvh_cont6d_params(new_anim, object_type, face_joints=face_joints)
@@ -338,16 +343,75 @@ def find_tpos_path(bvh_files):
     if t_pos_path is None:
         t_pos_path = bvh_files[0]
     return t_pos_path
+
+
+def _process_bvh_file(file_path, object_type, max_joints, root_pose_init_xz, scale_factor,
+                      ground_height, offsets, foot_indices, tpos_rots, face_joints):
+    local_errors = dict()
+    # Load the BVH file once; pass it as `preloaded` to every get_motion call so that
+    # get_hml_aligned_anim does not re-read the file for each slice (BUG3 fix).
+    raw_anim, names, frame_time = BVH.load(file_path)
+    anim_len = len(raw_anim)
+    begin = 0
+    file_max_joints = max_joints
+    file_results = []
+
+    while begin < anim_len:
+        if anim_len - begin > 240:
+            slice_ind = begin + 200
+        else:
+            slice_ind = anim_len
+
+        motion, parents, file_max_joints, new_anim = get_motion(
+            file_path,
+            FOOT_CONTACT_VEL_THRESH,
+            object_type,
+            file_max_joints,
+            root_pose_init_xz,
+            scale_factor,
+            ground_height,
+            offsets,
+            foot_indices,
+            tpos_rots,
+            local_errors,
+            slice_inds=[begin, slice_ind],
+            face_joints=face_joints,
+            preloaded=(raw_anim, names),
+        )
+        current_begin = begin
+        begin = slice_ind
+
+        if motion is None:
+            print(f'failed to process file: {file_path}, slice {current_begin}:{slice_ind}')
+            continue
+
+        _, file_name = os.path.split(file_path)
+        file_results.append({
+            'action': file_name.split('.')[0],
+            'motion': motion,
+            'parents': parents,
+            'new_anim': new_anim,
+            'names': names,
+        })
+
+    return {
+        'errors': local_errors,
+        'max_joints': file_max_joints,
+        'results': file_results,
+    }
      
-""" creates processed tensors for all the files of a given object. Returens statistics and the object condition,
-which includes tpos, relation/distances matrices, offsets, parents, joints names, kinematic chains, mean and std"""    
-def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DATASET_DIR, face_joints=None, bvhs_dir=None, t_pos_path=None):
+"""Prepare processed tensors for all the files of a given object without writing them to disk yet."""
+def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=None, t_pos_path=None, max_files=None, num_workers=1):
     object_cond = dict()
     if bvhs_dir is None:
-        bvhs_dir = pjoin(RAW_DATA_DIR, object_type)
+        bvhs_dir = pjoin(get_raw_data_dir(), object_type)
+    if not os.path.isdir(bvhs_dir):
+        print(f'skipping {object_type}: raw BVH directory not found at {bvhs_dir}')
+        return None
     bvh_files = [pjoin(bvhs_dir, f) for f in os.listdir(bvhs_dir) if f.lower().endswith('.bvh')]     
     if len(bvh_files) == 0:
-        return files_counter, frames_counter, max_joints
+        print(f'skipping {object_type}: no BVH files found in {bvhs_dir}')
+        return None
     ## get t-pos bvh
     if t_pos_path is None or t_pos_path == '':
         t_pos_path = find_tpos_path(bvh_files)
@@ -355,7 +419,10 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
         # removes tpos bvh fron bvh_files, as it represents a static motion and should be used only for
         # extracting common characteristics. If this is not the case, disable this part
         bvh_files.remove(t_pos_path)
-        
+    if max_files is not None:
+        bvh_files = bvh_files[:max_files]
+
+    squared_positions_error = dict()
     root_pose_init_xz, scale_factor, ground_height, offsets, foot_indices, tpos_rots, names, tpos_anim, face_joints = get_common_features_from_T_pose(t_pos_path, object_type, face_joints=face_joints)
     t_pos_motion, parents, max_joints, new_anim = get_motion(tpos_anim, FOOT_CONTACT_VEL_THRESH, object_type, max_joints, root_pose_init_xz, scale_factor, ground_height, offsets, foot_indices, tpos_rots, squared_positions_error, face_joints=face_joints)
     object_cond['tpos_first_frame'] = t_pos_motion[0]
@@ -370,70 +437,165 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
     kinematic_chains = parents2kinchains(parents, object_policy(object_type))
     object_cond['kinematic_chains'] = kinematic_chains
     all_tensors = list()
-    
-    for f in bvh_files:
-        print("processing file: " + f)
-        raw_anim, names, frame_time = BVH.load(f)
-        anim_len = len(raw_anim)
-        begin = 0
-        slice_ind = anim_len
-        while begin < anim_len:
-            if anim_len - begin > 240:
-                slice_ind = begin + 200
-            else:
-                slice_ind = anim_len
-            motion, parents, max_joints, new_anim = get_motion(f, FOOT_CONTACT_VEL_THRESH, object_type, max_joints, root_pose_init_xz, scale_factor, ground_height, offsets, foot_indices, tpos_rots, squared_positions_error, slice_inds=[begin, slice_ind], face_joints=face_joints)
-            begin = slice_ind
-            if motion is not None:
-                _, file_name = os.path.split(f)
-                action = file_name.split('.')[0]
-                all_tensors.append(motion)
-                files_counter += 1
-                frames_counter += motion.shape[0]
-                name = object_type + "_" + action + "_" + str(files_counter)
-                np.save(pjoin(save_dir, MOTION_DIR, name + '.npy'), motion)
-                BVH.save(pjoin(save_dir, BVHS_DIR, name+".bvh"), new_anim, names)
-                # create mp4 from rotations (sanity check)
-                positions = recover_from_bvh_ric_np(motion)
-                fc = [[j for j in range(len(parents)) if motion[f, j , 12] != 0] for f in range(motion.shape[0])]
-                plot_general_skeleton_3d_motion(pjoin(save_dir, ANIMATIONS_DIR, name+"_from_ric.mp4"), parents, positions, dataset="truebones", title="", fps=20, face_joints=face_joints if face_joints is not None else FACE_JOINTS[object_type], fc = fc)
-        
-            else:
-                print(f'failed to process file: {f}, slice {begin}:{slice_ind}')
+
+    num_workers = min(len(bvh_files), max(1, int(num_workers)))
+    if num_workers > 1:
+        print(f'processing {len(bvh_files)} BVH files for {object_type} with {num_workers} worker threads', flush=True)
+
+    def process_file(file_path):
+        print("processing file: " + file_path, flush=True)
+        return _process_bvh_file(
+            file_path,
+            object_type,
+            max_joints,
+            root_pose_init_xz,
+            scale_factor,
+            ground_height,
+            offsets,
+            foot_indices,
+            tpos_rots,
+            face_joints,
+        )
+
+    if num_workers == 1:
+        file_outputs = [process_file(file_path) for file_path in bvh_files]
+    else:
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            file_outputs = list(executor.map(process_file, bvh_files))
+
+    files_counter = 0
+    frames_counter = 0
+    prepared_results = []
+    for file_output in file_outputs:
+        squared_positions_error.update(file_output['errors'])
+        max_joints = max(max_joints, file_output['max_joints'])
+        for result in file_output['results']:
+            motion = result['motion']
+            all_tensors.append(motion)
+            files_counter += 1
+            frames_counter += motion.shape[0]
+            prepared_results.append(result)
+
+    if len(all_tensors) == 0:
+        print(f'skipping {object_type}: no valid motion tensors were produced')
+        return None
     all_tensors = np.concatenate(all_tensors, axis=0)
     mean, std = get_mean_std(all_tensors)
     object_cond["mean"] = mean
     object_cond["std"] = std
 
-    return files_counter, frames_counter, max_joints, object_cond
+    return {
+        'object_type': object_type,
+        'object_cond': object_cond,
+        'errors': squared_positions_error,
+        'max_joints': max_joints,
+        'results': prepared_results,
+        'files_counter': files_counter,
+        'frames_counter': frames_counter,
+        'face_joints': face_joints,
+    }
+
+"""Write a prepared object payload to disk with stable sequential clip naming."""
+def _write_object_outputs(save_dir, object_payload, files_counter, save_animations=False):
+    object_type = object_payload['object_type']
+    face_joints = object_payload['face_joints']
+    frames_counter = 0
+
+    for result in object_payload['results']:
+        motion = result['motion']
+        parents = result['parents']
+        files_counter += 1
+        frames_counter += motion.shape[0]
+        name = object_type + "_" + result['action'] + "_" + str(files_counter)
+        np.save(pjoin(save_dir, MOTION_DIR, name + '.npy'), motion)
+        BVH.save(pjoin(save_dir, BVHS_DIR, name+".bvh"), result['new_anim'], result['names'])
+        if save_animations:
+            positions = recover_from_bvh_ric_np(motion)
+            fc = [[j for j in range(len(parents)) if motion[frame_index, j , 12] != 0] for frame_index in range(motion.shape[0])]
+            plot_general_skeleton_3d_motion(pjoin(save_dir, ANIMATIONS_DIR, name+"_from_ric.mp4"), parents, positions, dataset="truebones", title="", fps=20, face_joints=face_joints if face_joints is not None else FACE_JOINTS[object_type], fc = fc)
+
+    return files_counter, frames_counter
+
+def _resolve_preprocessing_workers(objects, num_workers=None, object_workers=None, file_workers=None):
+    available_workers = os.cpu_count() or 1
+    total_workers = max(1, int(num_workers if num_workers is not None else available_workers))
+    object_count = max(1, len(objects))
+
+    if object_workers is None and file_workers is None:
+        # This preprocessing path is thread-based, so allocating every worker to object-level
+        # concurrency tends to stall on CPython's GIL. Bias the auto split toward file-level work.
+        object_workers = min(object_count, max(1, min(8, math.isqrt(total_workers))))
+        file_workers = max(1, total_workers // object_workers)
+    elif object_workers is None:
+        file_workers = max(1, int(file_workers))
+        object_workers = min(object_count, max(1, total_workers // file_workers))
+    elif file_workers is None:
+        object_workers = min(object_count, max(1, int(object_workers)))
+        file_workers = max(1, total_workers // object_workers)
+    else:
+        object_workers = min(object_count, max(1, int(object_workers)))
+        file_workers = max(1, int(file_workers))
+
+    return total_workers, object_workers, file_workers
+
+""" creates processed tensors for all the files of a given object. Returens statistics and the object condition,
+which includes tpos, relation/distances matrices, offsets, parents, joints names, kinematic chains, mean and std"""    
+def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DATASET_DIR, face_joints=None, bvhs_dir=None, t_pos_path=None, max_files=None, save_animations=False, num_workers=1):
+    object_payload = _prepare_object_outputs(
+        object_type,
+        max_joints,
+        face_joints=face_joints,
+        bvhs_dir=bvhs_dir,
+        t_pos_path=t_pos_path,
+        max_files=max_files,
+        num_workers=num_workers,
+    )
+    if object_payload is None:
+        return files_counter, frames_counter, max_joints, None
+
+    squared_positions_error.update(object_payload['errors'])
+    max_joints = max(max_joints, object_payload['max_joints'])
+    files_counter, object_frames_counter = _write_object_outputs(
+        save_dir,
+        object_payload,
+        files_counter,
+        save_animations=save_animations,
+    )
+    frames_counter += object_frames_counter
+
+    return files_counter, frames_counter, max_joints, object_payload['object_cond']
 
 """ create dataset """
-def create_data_samples():
+def create_data_samples(objects=None, max_files_per_object=None, save_animations=False, dataset_dir=None, num_workers=1):
     ## prepare
-    os.makedirs(pjoin(DATASET_DIR, MOTION_DIR), exist_ok=True)
-    os.makedirs(pjoin(DATASET_DIR, ANIMATIONS_DIR), exist_ok=True)
-    os.makedirs(pjoin(DATASET_DIR, BVHS_DIR), exist_ok=True)
+    target_dataset_dir = dataset_dir or DATASET_DIR
+    os.makedirs(pjoin(target_dataset_dir, MOTION_DIR), exist_ok=True)
+    os.makedirs(pjoin(target_dataset_dir, ANIMATIONS_DIR), exist_ok=True)
+    os.makedirs(pjoin(target_dataset_dir, BVHS_DIR), exist_ok=True)
     
     ## process
-    objects = [obj for obj in FACE_JOINTS.keys() if FACE_JOINTS[obj] != []]
+    if objects is None:
+        objects = [obj for obj in FACE_JOINTS.keys() if FACE_JOINTS[obj] != []]
     files_counter = 0
     frames_counter = 0
     max_joints = 23
     objects_counter = dict()
     squared_positions_error = dict()
     cond = dict()
-    
+
     for object_type in objects:
         if object_type in NO_BVHS:
             continue
         cur_counter = files_counter
-        files_counter, frames_counter, max_joints, object_cond = process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error)
+        files_counter, frames_counter, max_joints, object_cond = process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir=target_dataset_dir, max_files=max_files_per_object, save_animations=save_animations, num_workers=num_workers)
+        if object_cond is None:
+            continue
         cond[object_type] = object_cond
-        objects_counter[object_type] = files_counter - cur_counter 
+        objects_counter[object_type] = files_counter - cur_counter
 
     print('Total clips: %d, Frames: %d, Duration: %fm' %(files_counter, frames_counter, frames_counter / 12.5 / 60))
     print('max joints: %d' %(max_joints))
-    text_file = open(pjoin(DATASET_DIR, 'metadata.txt'), "w")
+    text_file = open(pjoin(target_dataset_dir, 'metadata.txt'), "w")
     n = text_file.write('max joints: %d\n' %(max_joints))
     n = text_file.write('total frames: %d\n' %(frames_counter))
     n = text_file.write('duration: %d\n' %(frames_counter / 12.5 / 60))
@@ -442,13 +604,13 @@ def create_data_samples():
         text_file.write('%s: %d\n' %(obj, objects_counter[obj]))
     text_file.close()
 
-    error_file = open(pjoin(DATASET_DIR, 'positions_error_rate.txt'), "w")
+    error_file = open(pjoin(target_dataset_dir, 'positions_error_rate.txt'), "w")
     n = error_file.write('Position squared error per bvh file:')
     for f in squared_positions_error.keys():
         error_file.write('%s: %f\n' %(f, squared_positions_error[f]))
     error_file.close()
     
-    np.save(pjoin(DATASET_DIR, "cond.npy"), cond)
+    np.save(pjoin(target_dataset_dir, "cond.npy"), cond)
 ##################################################################
 
 ############ Recover animation from motion features ##############
@@ -731,6 +893,13 @@ def process_skeleton(object_name, bvh_dir, face_joints, save_dir, tpos_bvh=None)
     cond = dict()
     cur_counter = files_counter
     files_counter, frames_counter, max_joints, object_cond = process_object(object_name, files_counter, frames_counter, max_joints, squared_positions_error, save_dir=save_dir, bvhs_dir=bvh_dir, face_joints=face_joints, t_pos_path=tpos_bvh)
+    # BUG4 (intentional): save_animations=True is deliberately omitted here to skip MP4
+    # generation during process_skeleton. Generating video previews is expensive and not
+    # required for inference — the docstring in process_new_skeleton.py mentions animations
+    # as an optional sanity check. Pass save_animations=True explicitly if previews are needed.
+    if object_cond is None:
+        print(f"No valid BVH data found for '{object_name}', aborting.")
+        return
     cond[object_name] = object_cond
     objects_counter[object_name] = files_counter - cur_counter 
 

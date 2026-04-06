@@ -1,9 +1,22 @@
+import os
 import statistics 
 import numpy as np
 
 
-RAW_DATA_DIR = "dataset/truebones/zoo/Truebone_Z-OO"
-DATASET_DIR = "dataset/truebones/zoo/truebones_processed"
+DEFAULT_RAW_DATA_DIR = "dataset/truebones/zoo/Truebone_Z-OO"
+DEFAULT_DATASET_DIR = "dataset/truebones/zoo/truebones_processed"
+
+
+def get_raw_data_dir():
+        return os.environ.get("ANYTOP_RAW_DATA_DIR", DEFAULT_RAW_DATA_DIR)
+
+
+def get_dataset_dir():
+        return os.environ.get("ANYTOP_DATASET_DIR", DEFAULT_DATASET_DIR)
+
+
+RAW_DATA_DIR = get_raw_data_dir()
+DATASET_DIR = get_dataset_dir()
 MOTION_DIR = "motions"
 ANIMATIONS_DIR = "animations"
 BVHS_DIR = "bvhs"

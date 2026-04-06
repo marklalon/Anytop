@@ -7,9 +7,18 @@ import mpl_toolkits.mplot3d.axes3d as p3
 import os 
 from textwrap import wrap
 from moviepy.editor import VideoClip
-from moviepy.video.io.bindings import mplfig_to_npimage
+from moviepy.video.io.bindings import mplfig_to_npimage as moviepy_mplfig_to_npimage
 from moviepy.editor import clips_array
 from pathlib import Path
+
+
+def mplfig_to_npimage(fig):
+    try:
+        return moviepy_mplfig_to_npimage(fig)
+    except AttributeError:
+        canvas = fig.canvas
+        canvas.draw()
+        return np.asarray(canvas.buffer_rgba())[..., :3].copy()
 
 
 def list_cut_average(ll, intervals):

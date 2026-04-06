@@ -1,0 +1,122 @@
+# AnyTop Preprocessing + Validation Workflow
+
+## Overview
+A unified command-line interface that chains AnyTop dataset preprocessing directly with validation. This ensures both steps run in sequence and provides immediate feedback on data quality.
+
+## Quick Start
+
+### Python (All Platforms)
+```bash
+# Run full workflow (preprocess + validate)
+python preprocess_and_validate.py
+
+# Use more CPU across object types and BVH files
+python preprocess_and_validate.py --objects-subset quadropeds --num-workers 24
+
+# Explicitly split concurrency between object-level and file-level work
+python preprocess_and_validate.py --objects-subset quadropeds --object-workers 4 --file-workers 6
+
+# Validate only (skip preprocessing)
+python preprocess_and_validate.py --validate-only
+
+# Skip validation (faster, for CI/testing)
+python preprocess_and_validate.py --skip-validate
+```
+
+## What It Does
+
+### Step 1: Preprocessing
+- Runs `utils/create_dataset.py`
+- Creates motion `.npy` tensors from input BVH files
+- Generates `cond.npy` (conditioning file with skeleton metadata)
+- Outputs summary to `metadata.txt` and error rates to `positions_error_rate.txt`
+
+### Step 2: Validation
+- Runs `tests/check_anytop_dataset.py`
+- Verifies required artifacts exist
+- Validates data types, shapes, and finite values
+- Performs a smoke test by loading a batch through the dataloader
+- Catches configuration issues before training
+
+## Options
+
+| Option | Effect |
+|--------|--------|
+| `--validate-only` | Skip preprocessing, run validation on existing dataset |
+| `--skip-validate` | Skip validation (useful for quick checks or CI) |
+| `--objects-subset` | Expected object type subset (`all`, `hound`, `chicken`, etc.) |
+| `--num-workers` | Total preprocessing worker budget; auto-splits across objects and BVH files |
+| `--object-workers` | Number of object types to preprocess concurrently |
+| `--file-workers` | Number of worker threads used within each object type |
+
+## Exit Codes
+- `0` - Success (both preprocessing and validation passed)
+- `1` - Failure (preprocessing or validation failed)
+
+## Output Location
+By default, preprocessed data is saved to the directory specified by:
+- `ANYTOP_DATASET_DIR` environment variable, or
+- `data/` (if environment variable not set)
+
+## Troubleshooting
+
+### `ModuleNotFoundError` during validation
+The validation step requires the same Python environment used for preprocessing. Make sure to:
+```bash
+# Activate the project's virtual environment
+.venv\Scripts\activate  # Windows
+source .venv/bin/activate  # Linux/Mac
+
+# Then run the workflow from Anytop directory
+cd Anytop
+python preprocess_and_validate.py
+```
+
+Or use `--skip-validate` to validate without importing the dataloader:
+```bash
+python preprocess_and_validate.py --skip-validate
+```
+
+### Preprocessing succeeds but validation fails
+Common causes:
+1. **Shape mismatches** - Motion tensors don't match skeleton definitions
+2. **NaN/Inf values** - Invalid floating-point data in tensors
+3. **File counts** - Unequal number of `.npy` and `.bvh` files
+
+Run with `--skip-validate` for detailed file-by-file diagnostics:
+```bash
+python preprocess_and_validate.py --validate-only --skip-validate
+```
+
+## Files Involved
+
+### New Files
+- `preprocess_and_validate.py` - Main orchestration script (Python)
+- `tests/check_anytop.py` - Environment compatibility check
+- `tests/check_anytop_dataset.py` - Dataset validation script
+
+### Existing Referenced Files
+- `utils/create_dataset.py` - Dataset creation entry point
+- `data_loaders/truebones/truebones_utils/motion_process.py` - Actual preprocessing logic
+- `data_loaders/get_data.py` - Dataloader instantiation
+
+## Advanced Usage
+
+### Integration with CI/CD
+For automated pipelines, use `--skip-validate` to avoid GPU/dependency issues:
+```bash
+python preprocess_and_validate.py --skip-validate
+```
+
+### Validate Specific Subset
+If you only preprocessed a subset of animals:
+```bash
+python preprocess_and_validate.py --objects-subset chicken
+```
+
+### Selective Validation
+Validate without preprocessing:
+```bash
+python preprocess_and_validate.py --validate-only
+```
+This is useful after manual preprocessing or when revalidating previous runs.

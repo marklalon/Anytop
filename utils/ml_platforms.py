@@ -4,8 +4,8 @@ import glob
 
 class MLPlatform:
     def __init__(self, *args, **kwargs):
-        save_dir = kwargs.get('save_dir', 'unnamed_path/unnamed_experiment')
-        self.path, file = os.path.split(save_dir)
+        self.save_dir = kwargs.get('save_dir', 'unnamed_path/unnamed_experiment')
+        self.path, file = os.path.split(self.save_dir)
         self.name = kwargs.get('name', file)
         pass
     
@@ -29,7 +29,7 @@ class ClearmlPlatform(MLPlatform):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         from clearml import Task
-        path, name = os.path.split(save_dir)
+        path, name = os.path.split(self.save_dir)
         self.task = Task.init(project_name='some_project',
                               task_name=name)
         self.logger = self.task.get_logger()
@@ -51,7 +51,7 @@ class TensorboardPlatform(MLPlatform):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         from torch.utils.tensorboard import SummaryWriter
-        self.writer = SummaryWriter(log_dir=save_dir)
+        self.writer = SummaryWriter(log_dir=self.save_dir)
 
     def report_scalar(self, name, value, iteration, group_name=None):
         self.writer.add_scalar(f'{group_name}/{name}', value, iteration)

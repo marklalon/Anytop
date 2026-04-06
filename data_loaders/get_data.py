@@ -1,3 +1,4 @@
+import os
 from torch.utils.data import DataLoader
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import Truebones
@@ -10,7 +11,9 @@ def get_dataset(num_frames, split='train', temporal_window=31, t5_name='t5-base'
     return dataset
 
 
-def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=True, objects_subset="all"):
+def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=True, objects_subset="all", num_workers=None):
+    if num_workers is None:
+        num_workers = os.cpu_count() or 8
     dataset = get_dataset(num_frames=num_frames, split=split, temporal_window=temporal_window, t5_name=t5_name, balanced=balanced, objects_subset=objects_subset)
     collate = truebones_batch_collate
     sampler = None
@@ -19,6 +22,6 @@ def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31
         sampler = TruebonesSampler(dataset)
     loader = DataLoader(
         dataset, batch_size=batch_size, sampler=sampler, shuffle=True if sampler is None else False,
-        num_workers=8, drop_last=True, collate_fn=collate
+        num_workers=num_workers, drop_last=True, collate_fn=collate
     )
     return loader

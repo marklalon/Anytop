@@ -288,15 +288,23 @@ class TrainLoop:
 
                 logger.log(f"saving model...")
                 filename = self.ckpt_file_name()
-                with bf.BlobFile(bf.join(self.save_dir, filename), "wb") as f:
+                checkpoint_path = pjoin(self.save_dir, filename)
+                if '://' in self.save_dir:
+                    file_ctx = bf.BlobFile(bf.join(self.save_dir, filename), "wb")
+                else:
+                    file_ctx = open(checkpoint_path, "wb")
+                with file_ctx as f:
                     torch.save(state_dict, f)
 
             save_checkpoint()
 
-            with bf.BlobFile(
-                bf.join(self.save_dir, f"opt{(self.total_step()):09d}.pt"),
-                "wb",
-            ) as f:
+            opt_filename = f"opt{(self.total_step()):09d}.pt"
+            opt_path = pjoin(self.save_dir, opt_filename)
+            if '://' in self.save_dir:
+                opt_ctx = bf.BlobFile(bf.join(self.save_dir, opt_filename), "wb")
+            else:
+                opt_ctx = open(opt_path, "wb")
+            with opt_ctx as f:
                 opt_state = self.opt.state_dict()
                 if self.use_fp16:
                     # with fp16 we also save the state dict

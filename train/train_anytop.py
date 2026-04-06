@@ -18,14 +18,16 @@ def main():
     fixseed(args.seed)
     save_dir = args.save_dir
     if save_dir is None:
+        save_root = os.path.join(os.getcwd(), 'logs')
+        os.makedirs(save_root, exist_ok=True)
         prefix = "AnyTop"
         if args.model_prefix is not None:
             prefix = args.model_prefix
         model_name = f'{prefix}_dataset_truebones_bs_{args.batch_size}_latentdim_{args.latent_dim}'
-        mod_list = [m for m in os.listdir(os.path.join(os.getcwd(), 'save')) if m.startswith(model_name)]
+        mod_list = [m for m in os.listdir(save_root) if m.startswith(model_name)]
         if len(mod_list) > 0 and not args.overwrite:
             model_name = f'{model_name}_{len(mod_list)}'
-        save_dir = os.path.join(os.getcwd(), 'save' ,model_name)
+        save_dir = os.path.join(save_root, model_name)
         args.save_dir = save_dir
         
     ml_platform_type = eval(args.ml_platform_type)
