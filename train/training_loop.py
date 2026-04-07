@@ -9,6 +9,7 @@ from torch.optim import AdamW
 from diffusion import logger
 from utils import dist_util
 from diffusion.fp16_util import MixedPrecisionTrainer
+from diffusion.nn import update_ema
 from diffusion.resample import LossAwareSampler
 from tqdm import tqdm
 from diffusion.resample import create_named_schedule_sampler
@@ -25,6 +26,7 @@ class TrainLoop:
         self.args = args
         self.train_platform = train_platform
         self.model = model
+        self.model_avg = copy.deepcopy(model) if args.use_ema else None
         self.diffusion = diffusion
         self.cond_mode = model.cond_mode
         self.data = data
@@ -94,17 +96,18 @@ class TrainLoop:
                 state_dict, state_dict_avg = state_dict['model'], state_dict[
                     'model_avg']
                 load_model(self.model, state_dict)
-                load_model(self.model_avg, state_dict_avg)
+                if self.model_avg is not None:
+                    load_model(self.model_avg, state_dict_avg)
             else:
                 load_model(self.model, state_dict)
-                if self.args.use_ema:
+                if self.model_avg is not None:
                     # in case we load from a legacy checkpoint, just copy the model
                     print('loading model_avg from model')
                     self.model_avg.load_state_dict(self.model.state_dict())
 
     def _load_optimizer_state(self):
         opt_checkpoint = self.find_resume_opt_checkpoint()
-        if bf.exists(opt_checkpoint):
+        if os.path.exists(opt_checkpoint):
             logger.log(f"loading optimizer state from checkpoint: {opt_checkpoint}")
             state_dict = dist_util.load_state_dict(
                 opt_checkpoint, map_location=dist_util.dev()
@@ -205,7 +208,9 @@ class TrainLoop:
     def run_step(self, batch, cond, epoch=-1):
         self.forward_backward(batch, cond, epoch)
         #clip_grad_value_(self.model.parameters(), clip_value=1.5)
-        self.mp_trainer.optimize(self.opt, self.lr_scheduler)
+        took_step = self.mp_trainer.optimize(self.opt, self.lr_scheduler)
+        if took_step and self.model_avg is not None:
+            update_ema(self.model_avg.parameters(), self.model.parameters())
         self._anneal_lr()
         self.log_step()
 
@@ -280,7 +285,7 @@ class TrainLoop:
                         self.mp_trainer.master_params)
                 del_clip(state_dict)
 
-                if self.args.use_ema:
+                if self.args.use_ema and self.model_avg is not None:
                     # save both the model and the average model
                     state_dict_avg = self.model_avg.state_dict()
                     del_clip(state_dict_avg)
