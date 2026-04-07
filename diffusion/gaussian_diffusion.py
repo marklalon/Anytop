@@ -671,6 +671,7 @@ class GaussianDiffusion:
         denoised_fn=None,
         cond_fn=None,
         model_kwargs=None,
+        const_noise=False,
     ):
         """
         Sample x_{t-1} from the model at the given timestep.
@@ -700,6 +701,8 @@ class GaussianDiffusion:
                 model_kwargs=model_kwargs,
             )
             noise = th.randn_like(x)
+            if const_noise:
+                noise = noise[[0]].repeat(x.shape[0], 1, 1, 1)
             nonzero_mask = (
                 (t != 0).float().view(-1, *([1] * (len(x.shape) - 1)))
             )  # no noise when t == 0
