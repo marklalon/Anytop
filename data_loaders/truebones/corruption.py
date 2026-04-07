@@ -99,8 +99,11 @@ def _extract_chain_joints(kinematic_chains: Any, rng: np.random.Generator, n_joi
     if isinstance(kinematic_chains, np.ndarray):
         kinematic_chains = kinematic_chains.tolist()
     if not isinstance(kinematic_chains, list) or not kinematic_chains:
-        joint_count = min(max(2, n_joints // 5), max(2, n_joints - 1))
-        return np.sort(rng.choice(np.arange(1, n_joints), size=joint_count, replace=False))
+        candidate_joints = np.arange(1, n_joints, dtype=np.int64)
+        if candidate_joints.size == 0:
+            return np.empty(0, dtype=np.int64)
+        joint_count = min(max(2, n_joints // 5), candidate_joints.size)
+        return np.sort(rng.choice(candidate_joints, size=joint_count, replace=False))
     chain_index = int(rng.integers(0, len(kinematic_chains)))
     chain = kinematic_chains[chain_index]
     chain = np.asarray(chain, dtype=np.int64)
@@ -136,6 +139,37 @@ def _build_parent_lookup(kinematic_chains: Any, n_joints: int) -> np.ndarray:
             if parent_lookup[child_index] < 0:
                 parent_lookup[child_index] = parent_index
     return parent_lookup
+
+
+def _order_joints_for_freeze(joints: np.ndarray, parent_lookup: np.ndarray | None) -> np.ndarray:
+    ordered_unique = np.asarray(list(dict.fromkeys(np.asarray(joints, dtype=np.int64).tolist())), dtype=np.int64)
+    if ordered_unique.size <= 1 or parent_lookup is None:
+        return ordered_unique
+
+    joint_set = {int(joint) for joint in ordered_unique}
+    depth_cache: dict[int, int] = {}
+
+    def depth(joint: int, active: set[int] | None = None) -> int:
+        cached = depth_cache.get(joint)
+        if cached is not None:
+            return cached
+
+        if active is None:
+            active = set()
+        if joint in active:
+            return 0
+
+        active.add(joint)
+        parent_joint = int(parent_lookup[joint])
+        if parent_joint < 0 or parent_joint not in joint_set:
+            joint_depth = 0
+        else:
+            joint_depth = depth(parent_joint, active) + 1
+        active.remove(joint)
+        depth_cache[joint] = joint_depth
+        return joint_depth
+
+    return np.asarray(sorted(ordered_unique.tolist(), key=lambda joint: (depth(int(joint)), int(joint))), dtype=np.int64)
 
 
 def _select_terminal_chain_segments(
@@ -196,7 +230,8 @@ def _freeze_joint_window(
         return
     anchor_frame = int(np.clip(anchor_frame, 0, source_motion.shape[0] - 1))
     frozen_pose = source_motion[anchor_frame].copy()
-    for joint in np.asarray(joints, dtype=np.int64):
+    ordered_joints = _order_joints_for_freeze(joints, parent_lookup)
+    for joint in ordered_joints:
         parent_joint = -1 if parent_lookup is None else int(parent_lookup[joint])
         if parent_joint >= 0:
             local_offset = frozen_pose[joint, POS_CHANNELS] - frozen_pose[parent_joint, POS_CHANNELS]
@@ -473,8 +508,12 @@ class MotionCorruptor:
             else:
                 jitter_std = _sample_uniform(self.rng, preset.jitter_std) * 0.6
                 noise = self.rng.normal(0.0, jitter_std, size=(segment_length, joints.size, 3)).astype(np.float32)
+                velocity_noise = np.diff(
+                    np.concatenate([np.zeros_like(noise[:1]), noise], axis=0),
+                    axis=0,
+                )
                 reference[start:start + segment_length, joints, POS_CHANNELS] += noise
-                reference[start:start + segment_length, joints, VEL_CHANNELS] += noise * 0.25
+                reference[start:start + segment_length, joints, VEL_CHANNELS] += velocity_noise
                 confidence_value = _sample_uniform(self.rng, (0.50, 0.80))
                 _reduce_confidence(confidence, start, start + segment_length, joints, confidence_value)
             applied.append("local_limb_corruption")
