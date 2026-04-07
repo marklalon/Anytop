@@ -51,6 +51,11 @@ def main(args = None, cond_dict = None):
 
     print(f"Loading checkpoints from [{args.model_path}]...")
     state_dict = torch.load(args.model_path, map_location='cpu')
+    if 'model_avg' in state_dict:
+        print("EMA checkpoint detected, loading model_avg weights.")
+        state_dict = state_dict['model_avg']
+    elif 'model' in state_dict:
+        state_dict = state_dict['model']
     load_model(model, state_dict)
     
     print("Loading T5 model")
