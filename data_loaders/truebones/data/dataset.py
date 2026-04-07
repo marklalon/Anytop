@@ -8,6 +8,7 @@ import random
 from torch.utils.data._utils.collate import default_collate
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_process import remove_joints_augmentation, add_joint_augmentation
+from data_loaders.truebones.corruption import MotionCorruptor
 from model.conditioners import T5Conditioner
 
 
@@ -36,7 +37,7 @@ def create_temporal_mask_for_window(window, max_len):
 
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, temporal_window, t5_name, balanced):
+    def __init__(self, opt, cond_dict, temporal_window, t5_name, balanced, curriculum_stage=1, enable_topology_augmentation=False):
         print("in MotionDataset constructor")
         self.opt = opt
         self.max_length = 20
@@ -44,6 +45,10 @@ class MotionDataset(data.Dataset):
         self.max_motion_length = opt.max_motion_length
         self.cond_dict = cond_dict
         self.balanced = balanced
+        self.enable_topology_augmentation = enable_topology_augmentation
+        self.reference_corruptor = MotionCorruptor(
+            curriculum_stage=curriculum_stage,
+        )
         data_dict = {}
         all_object_types = self.cond_dict.keys()
         new_name_list = []
@@ -107,6 +112,10 @@ class MotionDataset(data.Dataset):
     
     def augment(self, data):
         object_type = data['object_type']
+        if not self.enable_topology_augmentation:
+            mean = self.cond_dict[object_type]['mean']
+            std = self.cond_dict[object_type]['std']
+            return data['motion'], data['length'], data['object_type'], data['parents'], data['joints_graph_dist'], data['joints_relations'], data['tpos_first_frame'], data['offsets'], data['joints_names_embs'], data['kinematic_chains'], mean, std
         if object_type != "Dragon":
             aug_type = random.choice([0, 1, 2])
         else: 
@@ -133,23 +142,39 @@ class MotionDataset(data.Dataset):
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std = self.augment(data)
         "Z Normalization"
         # Normalize all coords but rotations 
-        std += 1e-6 # for stability
+        std = std + 1e-6 # for stability
         motion = (motion - mean[None, :]) / std[None, :]
         motion = np.nan_to_num(motion)
         ind = 0
         tpos_first_frame =  (tpos_first_frame - mean) / std
         tpos_first_frame = np.nan_to_num(tpos_first_frame)
-        if m_length < self.max_motion_length:
-            motion = np.concatenate([motion,
-                                     np.zeros((self.max_motion_length - m_length, motion.shape[1], motion.shape[2]))
-                                     ], axis=0)
-        elif m_length > self.max_motion_length:
+        if m_length > self.max_motion_length:
             ind = random.randint(0, m_length - self.max_motion_length)
             motion = motion[ind: ind + self.max_motion_length]
             m_length = self.max_motion_length
-            
 
-        return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints
+        reference_motion, soft_confidence_mask, corruption_metadata = self.reference_corruptor.corrupt(
+            motion,
+            length=m_length,
+            kinematic_chains=kinematic_chains,
+        )
+
+        if m_length < self.max_motion_length:
+            pad_frames = self.max_motion_length - m_length
+            motion = np.concatenate([
+                                     motion,
+                                     np.zeros((pad_frames, motion.shape[1], motion.shape[2]), dtype=motion.dtype)
+                                     ], axis=0)
+            reference_motion = np.concatenate([
+                                               reference_motion,
+                                               np.zeros((pad_frames, reference_motion.shape[1], reference_motion.shape[2]), dtype=reference_motion.dtype)
+                                               ], axis=0)
+            soft_confidence_mask = np.concatenate([
+                                                   soft_confidence_mask,
+                                                   np.zeros((pad_frames, soft_confidence_mask.shape[1], soft_confidence_mask.shape[2]), dtype=soft_confidence_mask.dtype)
+                                                   ], axis=0)
+
+        return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, reference_motion, soft_confidence_mask, corruption_metadata
 
 class TruebonesSampler(WeightedRandomSampler):
     def __init__(self, data_source):
@@ -178,6 +203,8 @@ class Truebones(data.Dataset):
         self.opt = opt
         self.balanced = kwargs['balanced']
         self.objects_subset = kwargs['objects_subset']
+        self.curriculum_stage = kwargs.get('curriculum_stage', 1)
+        self.enable_topology_augmentation = kwargs.get('enable_topology_augmentation', False)
         print('Loading Truebones dataset')
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
         subset = opt.subsets_dict[self.objects_subset] 
@@ -185,7 +212,15 @@ class Truebones(data.Dataset):
         print(f'Dataset subset {self.objects_subset} consists of {len(cond_dict.keys())} characters')
             
         self.split_file = pjoin(opt.data_root, f'{split}.txt')
-        self.motion_dataset = MotionDataset(self.opt, cond_dict, temporal_window, t5_name, self.balanced)
+        self.motion_dataset = MotionDataset(
+            self.opt,
+            cond_dict,
+            temporal_window,
+            t5_name,
+            self.balanced,
+            curriculum_stage=self.curriculum_stage,
+            enable_topology_augmentation=self.enable_topology_augmentation,
+        )
         assert len(self.motion_dataset) > 1, 'You loaded an empty dataset, ' \
                                           'it is probably because your data dir has only texts and no motions.\n' \
                                           'To train and evaluate MDM you should get the FULL data as described ' \

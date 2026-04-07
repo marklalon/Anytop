@@ -17,6 +17,7 @@ from sample.generate import main as generate
 import copy
 from utils.model_util import load_model
 import random
+from data_loaders.get_data import get_dataset_loader
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 torch.autograd.set_detect_anomaly(True)
@@ -46,6 +47,8 @@ class TrainLoop:
         self.global_batch = self.batch_size # * dist.get_world_size()
         self.num_steps = args.num_steps
         self.num_epochs = self.num_steps // len(self.data) + 1
+        self.curriculum_stage = getattr(args, 'curriculum_stage', 1)
+        self.curriculum_switch_step = getattr(args, 'curriculum_switch_step', 0)
 
         self.sync_cuda = torch.cuda.is_available()
         self.save_dir = args.save_dir
@@ -135,6 +138,9 @@ class TrainLoop:
          while self.total_step() < self.num_steps:
             print(f'Starting a new epoch at step {self.total_step()}')
             for motion, cond in tqdm(self.data):
+                if self.curriculum_stage == 1 and self.curriculum_switch_step > 0 and self.total_step() >= self.curriculum_switch_step:
+                    self._rebuild_data_loader(curriculum_stage=2)
+                    break
                 if not (not self.lr_anneal_steps or self.total_step() < self.lr_anneal_steps):
                     break
 
@@ -171,6 +177,24 @@ class TrainLoop:
 
             if not (not self.lr_anneal_steps or self.total_step() < self.lr_anneal_steps):
                 break
+
+    def _rebuild_data_loader(self, curriculum_stage):
+        if curriculum_stage == self.curriculum_stage:
+            return
+        print(f'Switching restoration curriculum from stage {self.curriculum_stage} to stage {curriculum_stage}')
+        self.curriculum_stage = curriculum_stage
+        self.data = get_dataset_loader(
+            batch_size=self.args.batch_size,
+            num_frames=self.args.num_frames,
+            temporal_window=self.args.temporal_window,
+            t5_name='t5-base',
+            balanced=self.args.balanced,
+            objects_subset=self.args.objects_subset,
+            num_workers=self.args.num_workers,
+            curriculum_stage=curriculum_stage,
+            enable_topology_augmentation=self.args.enable_topology_augmentation,
+            prefetch_factor=self.args.prefetch_factor,
+        )
 
     def generate_during_training(self):
         if not self.args.gen_during_training:

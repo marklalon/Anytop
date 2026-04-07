@@ -7,16 +7,34 @@ from data_loaders.truebones.data.dataset import Truebones
 def get_dataset_class(name):
     return Truebones
 
-def get_dataset(num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=False, objects_subset="all"):
-    dataset = Truebones(split=split, num_frames=num_frames, temporal_window=temporal_window, t5_name=t5_name, balanced=balanced, objects_subset=objects_subset)
+def get_dataset(num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=False, objects_subset="all", curriculum_stage=1, enable_topology_augmentation=False):
+    dataset = Truebones(
+        split=split,
+        num_frames=num_frames,
+        temporal_window=temporal_window,
+        t5_name=t5_name,
+        balanced=balanced,
+        objects_subset=objects_subset,
+        curriculum_stage=curriculum_stage,
+        enable_topology_augmentation=enable_topology_augmentation,
+    )
     return dataset
 
 
-def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=True, objects_subset="all", num_workers=None):
+def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=True, objects_subset="all", num_workers=None, curriculum_stage=1, enable_topology_augmentation=False, prefetch_factor=2):
     if num_workers is None:
         cpu_count = os.cpu_count() or 1
         num_workers = min(4, cpu_count)
-    dataset = get_dataset(num_frames=num_frames, split=split, temporal_window=temporal_window, t5_name=t5_name, balanced=balanced, objects_subset=objects_subset)
+    dataset = get_dataset(
+        num_frames=num_frames,
+        split=split,
+        temporal_window=temporal_window,
+        t5_name=t5_name,
+        balanced=balanced,
+        objects_subset=objects_subset,
+        curriculum_stage=curriculum_stage,
+        enable_topology_augmentation=enable_topology_augmentation,
+    )
     collate = truebones_batch_collate
     sampler = None
     if balanced: #create batch sampler
@@ -35,5 +53,6 @@ def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31
         loader_kwargs['pin_memory'] = True
     if num_workers > 0:
         loader_kwargs['persistent_workers'] = True
+        loader_kwargs['prefetch_factor'] = max(1, int(prefetch_factor))
     loader = DataLoader(**loader_kwargs)
     return loader

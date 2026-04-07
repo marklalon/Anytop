@@ -87,6 +87,14 @@ def add_model_options(parser):
                             " For classifier-free guidance learning.")
     group.add_argument("--lambda_fs", default=0.0, type=float, help="Foot contact loss.")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Foot contact loss.")
+    group.add_argument("--lambda_confidence_recon", default=0.5, type=float, help="Confidence-weighted reconstruction loss on reliable observed regions.")
+    group.add_argument("--lambda_repair_recon", default=1.0, type=float, help="Reconstruction loss focused on low-confidence and missing regions.")
+    group.add_argument("--lambda_root", default=0.5, type=float, help="Root trajectory consistency loss.")
+    group.add_argument("--lambda_velocity", default=0.25, type=float, help="Velocity consistency loss.")
+    group.add_argument("--disable_reference_branch", action='store_true',
+                       help="Disable the restoration reference branch and train only the AnyTop prior.")
+    group.add_argument("--reference_dropout_threshold", default=0.05, type=float,
+                       help="Reference confidence values below this threshold are treated as unusable during attention.")
     group.add_argument("--t5_name", default='t5-base', choices=["t5-small", "t5-base", "t5-large", "t5-3b", "t5-11b",
               "google/flan-t5-small", "google/flan-t5-base", "google/flan-t5-large",
               "google/flan-t5-xl", "google/flan-t5-xxl"], type=str,
@@ -140,8 +148,16 @@ def add_training_options(parser):
                        help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
     group.add_argument("--num_workers", default=0, type=int,
                        help="Number of DataLoader worker processes. Use 0 to load on the main process and reduce CPU RAM pressure.")
+    group.add_argument("--prefetch_factor", default=2, type=int,
+                       help="Per-worker prefetch factor for the restoration dataset loader.")
     group.add_argument("--resume_checkpoint", default="", type=str,
                        help="If not empty, will start from the specified checkpoint (path to model###.pt file).")
+    group.add_argument("--curriculum_stage", default=1, choices=[1, 2], type=int,
+                       help="Initial corruption curriculum stage.")
+    group.add_argument("--curriculum_switch_step", default=20000, type=int,
+                       help="Step at which to rebuild the loader with the stage-2 corruption preset.")
+    group.add_argument("--enable_topology_augmentation", action='store_true',
+                       help="Keep the legacy joint add/remove augmentation path. Disabled by default for same-skeleton restoration.")
     group.add_argument("--gen_during_training", action='store_true',
                        help="If True, will generate motions during training, on each save interval.")
     group.add_argument("--gen_num_samples", default=3, type=int,

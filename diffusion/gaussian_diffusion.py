@@ -125,7 +125,11 @@ class GaussianDiffusion:
         loss_type,
         rescale_timesteps=False,
         lambda_fs=0.,
-        lambda_geo=0.
+        lambda_geo=0.,
+        lambda_confidence_recon=0.,
+        lambda_repair_recon=0.,
+        lambda_root=0.,
+        lambda_velocity=0.
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
@@ -133,6 +137,10 @@ class GaussianDiffusion:
         self.rescale_timesteps = rescale_timesteps
         self.lambda_fs = lambda_fs
         self.lambda_geo = lambda_geo
+        self.lambda_confidence_recon = lambda_confidence_recon
+        self.lambda_repair_recon = lambda_repair_recon
+        self.lambda_root = lambda_root
+        self.lambda_velocity = lambda_velocity
 
         # Use float64 for accuracy.
         betas = np.array(betas, dtype=np.float64)
@@ -198,6 +206,22 @@ class GaussianDiffusion:
         non_zero_elements = lengths * n_joints * a.size(2) 
         mse_loss_val = loss / non_zero_elements
         return mse_loss_val
+
+    def weighted_temporal_spatial_l2(self, a, b, temp_mask, spat_mask, weights):
+        if weights.dim() == 3:
+            weights = weights.unsqueeze(2)
+        combined_mask = temp_mask.float() * spat_mask.float().transpose(1, 3) * weights.float()
+        loss = sum_flat(self.l2_loss(a, b) * combined_mask)
+        denom = sum_flat(combined_mask) * a.size(2)
+        return loss / (denom + 1e-8)
+
+    def weighted_feature_l2(self, a, b, weights):
+        if weights.dim() == 3:
+            weights = weights.unsqueeze(2)
+        weighted_loss = self.l2_loss(a, b) * weights.float()
+        loss = sum_flat(weighted_loss)
+        denom = sum_flat(weights.float()) * a.size(2)
+        return loss / (denom + 1e-8)
 
     def quat_to_mat(self, qs):
         r = qs[..., 0]
@@ -1507,6 +1531,10 @@ class GaussianDiffusion:
         joints_mask = model_kwargs['y']['joints_mask'][:, :, :, 1, 1:]
         mean = model_kwargs['y']['mean'][..., None]
         std = model_kwargs['y']['std'][..., None]
+        confidence = model_kwargs['y'].get('soft_confidence_mask')
+        if confidence is None:
+            confidence = torch.ones_like(x_start[:, :, :1, :])
+        confidence = confidence.clamp(0.0, 1.0)
         
         if model_kwargs is None:
             model_kwargs = {}
@@ -1564,10 +1592,35 @@ class GaussianDiffusion:
             terms["l_simple"] = self.temporal_spatial_masked_l2(target, model_output, mask, joints_mask, lengths, actual_joints)
             terms["loss"] = torch.zeros_like(terms["l_simple"])
             terms["loss"] = terms["loss"] + terms["l_simple"]
+            if self.lambda_confidence_recon > 0.:
+                reliable_weights = confidence.clamp(min=0.0, max=1.0)
+                terms["confidence_recon_loss"] = self.weighted_temporal_spatial_l2(target, model_output, mask, joints_mask, reliable_weights)
+                terms["loss"] = terms["loss"] + self.lambda_confidence_recon * terms["confidence_recon_loss"]
+            if self.lambda_repair_recon > 0.:
+                repair_weights = (1.0 - confidence).clamp(min=0.05, max=1.0)
+                terms["repair_recon_loss"] = self.weighted_temporal_spatial_l2(target, model_output, mask, joints_mask, repair_weights)
+                terms["loss"] = terms["loss"] + self.lambda_repair_recon * terms["repair_recon_loss"]
         
             # denormalize before applying loss terms 
             target = (target * std) + mean 
             model_output = (model_output * std) + mean 
+
+            if self.lambda_root > 0.:
+                root_weights = mask[:, :1, :, :] * (1.0 + (1.0 - confidence[:, :1]))
+                root_target = torch.cat([target[:, :1, :3, :], target[:, :1, 9:12, :]], dim=2)
+                root_output = torch.cat([model_output[:, :1, :3, :], model_output[:, :1, 9:12, :]], dim=2)
+                terms["root_consistency_loss"] = self.weighted_feature_l2(root_target, root_output, root_weights)
+                terms["loss"] = terms["loss"] + self.lambda_root * terms["root_consistency_loss"]
+            if self.lambda_velocity > 0.:
+                velocity_weights = 1.0 + (1.0 - confidence)
+                terms["velocity_consistency_loss"] = self.weighted_temporal_spatial_l2(
+                    target[:, :, 9:12, :],
+                    model_output[:, :, 9:12, :],
+                    mask,
+                    joints_mask,
+                    velocity_weights,
+                )
+                terms["loss"] = terms["loss"] + self.lambda_velocity * terms["velocity_consistency_loss"]
             
             # # calc all loss terms 
             if self.lambda_geo > 0.:    

@@ -53,6 +53,10 @@ def truebones_collate(batch):
         temporalmasksbatch = [b['temporal_mask'] for b in notnone_batches]
     if 'crop_start_ind' in notnone_batches[0]:
         cropstartindbatch = [b['crop_start_ind'] for b in notnone_batches]
+    if 'reference_motion' in notnone_batches[0]:
+        referencebatch = [b['reference_motion'] for b in notnone_batches]
+    if 'soft_confidence_mask' in notnone_batches[0]:
+        confidencebatch = [b['soft_confidence_mask'] for b in notnone_batches]
         
     
     
@@ -71,6 +75,11 @@ def truebones_collate(batch):
 
     motion = databatchTensor
     cond = {'y': {'mask': maskbatchTensor, 'lengths': lenbatchTensor, 'lengths_mask': lengthsmaskbatchTensor, 'tpos_first_frame': tposfirstframebatchTensor, 'crop_start_ind': cropstartindTensor, 'mean': meanbatchTensor, 'std':stdbatchTensor}}
+
+    if 'reference_motion' in notnone_batches[0]:
+        cond['y'].update({'reference_motion': collate_tensors(referencebatch)})
+    if 'soft_confidence_mask' in notnone_batches[0]:
+        cond['y'].update({'soft_confidence_mask': collate_tensors(confidencebatch)})
     
     if 'object_type' in notnone_batches[0]:
         objecttypebatch = [b['object_type'] for b in notnone_batches]
@@ -96,13 +105,16 @@ def truebones_collate(batch):
     cond['y'].update({'joints_relations': torch.stack(jointsrelationsbatch)})
     cond['y'].update({'graph_dist': torch.stack(graphdistbatch)})
 
+    if 'corruption_metadata' in notnone_batches[0]:
+        cond['y'].update({'corruption_metadata': [b['corruption_metadata'] for b in notnone_batches]})
+
     return motion, cond
 
 """ recieves list of tuples of the form: 
  motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, max_joints
 """
 def truebones_batch_collate(batch):
-    max_joints = batch[0][-1]
+    max_joints = batch[0][13]
     adapted_batch = []
     for b in batch:  
         max_len, n_joints, n_feats = b[0].shape
@@ -118,10 +130,19 @@ def truebones_batch_collate(batch):
         std = torch.ones((max_joints, n_feats))
         std[:n_joints] = torch.tensor(b[12])
         n_joints = b[0].shape[1]
-        temporal_mask = b[5][:max_len + 1, :max_len + 1].clone()
+        temporal_mask = torch.as_tensor(b[5][:max_len + 1, :max_len + 1]).clone()
         padded_joints_relations =  create_padded_relation(b[7], max_joints, n_joints)
         padded_graph_dist =  create_padded_relation(b[6], max_joints, n_joints)
         object_type = b[8]
+        reference_motion = None
+        soft_confidence_mask = None
+        corruption_metadata = None
+        if len(b) > 14:
+            reference_motion = torch.zeros((max_len, max_joints, n_feats))
+            reference_motion[:, :b[14].shape[1], :] = torch.tensor(b[14])
+            soft_confidence_mask = torch.zeros((max_len, max_joints, 1))
+            soft_confidence_mask[:, :b[15].shape[1], :] = torch.tensor(b[15])
+            corruption_metadata = b[16]
 
         item = {
             'inp': motion.permute(1, 2, 0).float(), # [seqlen , J, 13] -> [J, 13,  seqlen]
@@ -138,6 +159,12 @@ def truebones_batch_collate(batch):
             'mean': mean,
             'std': std
         } 
+        if reference_motion is not None:
+            item['reference_motion'] = reference_motion.permute(1, 2, 0).float()
+        if soft_confidence_mask is not None:
+            item['soft_confidence_mask'] = soft_confidence_mask.permute(1, 2, 0).float()
+        if corruption_metadata is not None:
+            item['corruption_metadata'] = corruption_metadata
         adapted_batch.append(item)
 
     return truebones_collate(adapted_batch)

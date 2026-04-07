@@ -149,7 +149,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         
     def forward(self, tgt: Tensor, timesteps_embs: Tensor, memory: Tensor, spatial_mask:  Optional[Tensor] = None,
                 temporal_mask: Optional[Tensor] = None, tgt_key_padding_mask: Optional[Tensor] = None,
-                memory_key_padding_mask: Optional[Tensor] = None, y=None, get_layer_activation=-1) -> Union[Tensor , Tuple[Tensor, dict]]:
+            memory_key_padding_mask: Optional[Tensor] = None, y=None, get_layer_activation=-1, reference_memory: Optional[Tensor] = None,
+            reference_key_padding_mask: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
         topology_rel = y['graph_dist'].long().to(tgt.device)
         edge_rel = y['joints_relations'].long().to(tgt.device)
         output = tgt
@@ -162,8 +163,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                 edge_value_emb = self.edge_value_emb
                 topology_value_emb = self.topology_value_emb
             output = mod(
-                    output, timesteps_embs, topology_rel, edge_rel, self.edge_key_emb, self.edge_query_emb, edge_value_emb, self.topology_key_emb, self.topology_query_emb, topology_value_emb, spatial_mask, temporal_mask, 
-                    tgt_key_padding_mask, memory_key_padding_mask, y)
+                    output, timesteps_embs, topology_rel, edge_rel, self.edge_key_emb, self.edge_query_emb, edge_value_emb, self.topology_key_emb, self.topology_query_emb, topology_value_emb, spatial_mask, temporal_mask,
+                    tgt_key_padding_mask, memory_key_padding_mask, y, reference_memory, reference_key_padding_mask)
             if layer_ind == get_layer_activation:
                 activations[layer_ind] = output.clone()
         if self.norm is not None:
@@ -180,7 +181,10 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         self.heads = nhead
         self.spatial_attn = GraphMultiHeadAttention(d_model = d_model, nheads = nhead, dropout=dropout)
         self.temporal_attn = MultiheadAttention(self.d_model, nhead, dropout=dropout) 
+        self.reference_attn = MultiheadAttention(self.d_model, nhead, dropout=dropout)
         self.embed_timesteps = nn.Linear(d_model, d_model)
+        self.norm_ref = nn.LayerNorm(d_model)
+        self.dropout_ref = nn.Dropout(dropout)
 
     # spatial attention block
     def _spatial_mha_block(self, x: Tensor, topology_rel: Optional[Tensor], edge_rel: Optional[Tensor], edge_key_emb, edge_query_emb, edge_value_emb,
@@ -212,6 +216,20 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
     def _ff_block(self, x: Tensor) -> Tensor:
         x = self.linear2(self.dropout(self.activation(self.linear1(x))))
         return self.dropout3(x)
+
+    def _reference_mha_block(self, x: Tensor, reference_memory: Tensor, key_padding_mask: Optional[Tensor]) -> Tensor:
+        frames, bs, njoints, feats = x.size()
+        queries = x.reshape(frames, bs * njoints, feats)
+        memory = reference_memory.reshape(reference_memory.shape[0], bs * njoints, feats)
+        attn_output, _ = self.reference_attn(
+            queries,
+            memory,
+            memory,
+            key_padding_mask=key_padding_mask,
+            need_weights=False,
+        )
+        attn_output = attn_output.reshape(frames, bs, njoints, feats)
+        return self.dropout_ref(attn_output)
     
     def forward(self,
         tgt: Tensor,
@@ -228,7 +246,9 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         temporal_mask: Optional[Tensor] = None,
         tgt_key_padding_mask: Optional[Tensor] = None,
         memory_key_padding_mask: Optional[Tensor] = None, #for future use
-        y = None) -> Tensor:
+        y = None,
+        reference_memory: Optional[Tensor] = None,
+        reference_key_padding_mask: Optional[Tensor] = None) -> Tensor:
         x = tgt #(frames, bs, njoints, feature_len)
         bs = x.shape[1]
         x = x + self.embed_timesteps(timesteps_emb).view(1, bs, 1, self.d_model)
@@ -236,5 +256,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         topo_key_emb, topo_query_emb, topo_value_emb, spatial_mask, tgt_key_padding_mask, y)
         x = self.norm1(x + spatial_attn_output)
         x = self.norm2(x + self._temporal_mha_block_sin_joint(x, temporal_mask, tgt_key_padding_mask))
+        if reference_memory is not None:
+            x = self.norm_ref(x + self._reference_mha_block(x, reference_memory, reference_key_padding_mask))
         x = self.norm3(x + self._ff_block(x))
         return x

@@ -46,7 +46,17 @@ class AnyTop(nn.Module):
         self.cond_mask_prob = kargs.get('cond_mask_prob', 0.)
         self.skip_t5=kargs.get('skip_t5', False)
         self.value_emb=kargs.get('value_emb', False)
+        self.use_reference_branch = not kargs.get('disable_reference_branch', False)
+        self.reference_dropout_threshold = kargs.get('reference_dropout_threshold', 0.05)
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, skip_t5=self.skip_t5)
+        self.reference_encoder = ReferenceEncoder(
+            self.input_feats,
+            self.root_input_feats,
+            self.latent_dim,
+            t5_out_dim,
+            skip_t5=self.skip_t5,
+            confidence_dropout_threshold=self.reference_dropout_threshold,
+        ) if self.use_reference_branch else None
 
         print("Graph transformer init")
         seqTransDecoderLayer = GraphMotionDecoderLayer(d_model=self.latent_dim,
@@ -69,17 +79,36 @@ class AnyTop(nn.Module):
         joints_mask = y['joints_mask'].to(x.device)
         temp_mask = y['mask'].to(x.device)
         tpos_first_frame = y['tpos_first_frame'].to(x.device).unsqueeze(0)
+        reference_memory = None
+        reference_key_padding_mask = None
         
         bs, njoints, nfeats, nframes = x.shape
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
         x = self.input_process(x, tpos_first_frame, y['joints_names_embs'], y['crop_start_ind']) # applies linear layer on each frame to convert it to latent dim
+        if self.reference_encoder is not None and y is not None and 'reference_motion' in y and 'soft_confidence_mask' in y:
+            reference_memory, reference_key_padding_mask = self.reference_encoder(
+                y['reference_motion'].to(x.device),
+                y['soft_confidence_mask'].to(x.device),
+                y['joints_names_embs'],
+                y['crop_start_ind'],
+            )
         spatial_mask = 1.0 - joints_mask[:, 0, 0, 1:, 1:]
         spatial_mask = spatial_mask.unsqueeze(1).unsqueeze(1).repeat(1, nframes + 1, self.num_heads, 1, 1).reshape(-1,self.num_heads, njoints, njoints)
         temporal_mask = 1.0 - temp_mask.repeat(1, njoints, self.num_heads, 1, 1).reshape(-1, nframes + 1, nframes + 1).float()
         spatial_mask[spatial_mask == 1.0] = -1e9
         temporal_mask[temporal_mask == 1.0] = -1e9
         
-        output = self.seqTransDecoder(tgt=x, timesteps_embs=timesteps_emb, memory=None, spatial_mask=spatial_mask, temporal_mask = temporal_mask, y=y, get_layer_activation=get_layer_activation)
+        output = self.seqTransDecoder(
+            tgt=x,
+            timesteps_embs=timesteps_emb,
+            memory=None,
+            spatial_mask=spatial_mask,
+            temporal_mask=temporal_mask,
+            y=y,
+            get_layer_activation=get_layer_activation,
+            reference_memory=reference_memory,
+            reference_key_padding_mask=reference_key_padding_mask,
+        )
         if get_layer_activation > -1 and get_layer_activation < self.num_layers:
             activations = output[1]
             output=output[0]
@@ -147,3 +176,38 @@ class OutputProcess(nn.Module):
         output = torch.cat([root_data.unsqueeze(2), all_joints], dim=-2)
         output = output.permute(1, 2, 3, 0)[..., 1:]  # [bs, njoints, nfeats, nframes]
         return output
+
+
+class ReferenceEncoder(nn.Module):
+    def __init__(self, input_feats, root_input_feats, latent_dim, t5_output_dim, skip_t5=False, confidence_dropout_threshold=0.05):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.skip_t5 = skip_t5
+        self.confidence_dropout_threshold = confidence_dropout_threshold
+        self.root_embedding = nn.Linear(root_input_feats + 1, latent_dim)
+        self.joint_embedding = nn.Linear(input_feats + 1, latent_dim)
+        if not skip_t5:
+            self.joints_names_dropout = nn.Dropout(p=0.1)
+            self.text_embedding = nn.Linear(t5_output_dim, latent_dim)
+
+    def forward(self, reference_motion, confidence_mask, joints_embedded_names, crop_start_ind):
+        gated_reference = reference_motion * confidence_mask.clamp(0.0, 1.0)
+        reference_input = torch.cat([gated_reference, confidence_mask], dim=2)
+        reference_input = reference_input.permute(3, 0, 1, 2)
+        root_data = self.root_embedding(reference_input[:, :, 0:1])
+        all_joints = self.joint_embedding(reference_input[:, :, 1:])
+        encoded = torch.cat([root_data, all_joints], dim=2)
+        if not self.skip_t5:
+            joints_embedded_names = self.text_embedding(self.joints_names_dropout(joints_embedded_names.to(encoded.device)))
+            encoded = encoded + joints_embedded_names[None, ...]
+        positions = torch.arange(encoded.shape[0], device=encoded.device).view(1, -1, 1).repeat(encoded.shape[1], 1, 1)
+        positions = positions + crop_start_ind.to(encoded.device).view(-1, 1, 1)
+        pos_emb = create_sin_embedding(positions, self.latent_dim)[0]
+        encoded = encoded + pos_emb.unsqueeze(1).unsqueeze(1)
+
+        joint_time_valid = confidence_mask.squeeze(2).permute(0, 1, 2) > self.confidence_dropout_threshold
+        row_valid = joint_time_valid.reshape(joint_time_valid.shape[0] * joint_time_valid.shape[1], joint_time_valid.shape[2])
+        fallback_rows = ~row_valid.any(dim=1)
+        if fallback_rows.any():
+            row_valid[fallback_rows, 0] = True
+        return encoded, ~row_valid

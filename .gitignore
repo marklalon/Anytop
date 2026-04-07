@@ -43,6 +43,7 @@ htmlcov/
 dataset/
 save/
 logs/
+outputs/
 
 # Models (optional - you may want to track these)
 # model_store/
