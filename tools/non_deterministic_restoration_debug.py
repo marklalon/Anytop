@@ -2,11 +2,8 @@
 Non-Deterministic Restoration Tool
 
 Description:
-    Runs stochastic restoration training with optional low-to-mid noise bootstrap,
-    staged timestep ranges, or full-schedule sampler-based training.
-
-    - Training can stay in staged timestep windows or switch to a schedule sampler.
-    - Evaluation restores motions through the standard sampler (p / ddim / plms).
+    Runs one-shot full-schedule stochastic restoration training and evaluates it
+    with the standard sampler (p / ddim / plms).
 """
 
 import argparse
@@ -53,14 +50,8 @@ DEFAULT_NUM_WORKERS = 0
 DEFAULT_NUM_FRAMES = 120
 DEFAULT_SAMPLE_LIMIT = 32
 DEFAULT_EVAL_SAMPLES = 32
-DEFAULT_BOOTSTRAP_TIMESTEP_RANGES = "8:12,5:25"
-DEFAULT_BOOTSTRAP_END_FRACTIONS = "0.5,1.0"
-DEFAULT_STAGE_TIMESTEP_RANGES = "8:12,5:25,0:99"
-DEFAULT_STAGE_END_FRACTIONS = "0.3,0.7,1.0"
-
-
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Non-deterministic restoration with optional bootstrap, staged timestep training, or sampler-based full-schedule training, plus stochastic sampling evaluation.")
+    parser = argparse.ArgumentParser(description="Non-deterministic one-shot full-schedule restoration with stochastic sampling evaluation.")
     parser.add_argument("--output-dir", required=True, help="Directory to write checkpoints, reports, and exports into.")
     parser.add_argument("--model-path", default="", help="Optional checkpoint to initialize from; args.json next to it supplies model config.")
     parser.add_argument("--device", default=0, type=int, help="CUDA device id. Use -1 for CPU.")
@@ -76,12 +67,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-interval", default=200, type=int, help="How often to save checkpoints.")
     parser.add_argument("--lr", default=1e-4, type=float, help="Learning rate.")
     parser.add_argument("--weight-decay", default=DEFAULT_WEIGHT_DECAY, type=float, help="AdamW weight decay.")
-    parser.add_argument("--train-timestep-mode", default="staged", choices=["staged", "sampler"], help="Use staged timestep ranges or full-schedule sampler after any bootstrap phase.")
-    parser.add_argument("--bootstrap-steps", default=0, type=int, help="How many initial optimization steps should use staged low-to-mid noise bootstrap sampling before switching to the full schedule.")
-    parser.add_argument("--bootstrap-timestep-ranges", default=DEFAULT_BOOTSTRAP_TIMESTEP_RANGES, help="Comma-separated inclusive timestep ranges used during the bootstrap phase, e.g. 8:12,5:25.")
-    parser.add_argument("--bootstrap-end-fractions", default=DEFAULT_BOOTSTRAP_END_FRACTIONS, help="Comma-separated cumulative fractions for the bootstrap timestep ranges, e.g. 0.5,1.0.")
-    parser.add_argument("--stage-timestep-ranges", default=DEFAULT_STAGE_TIMESTEP_RANGES, help="Comma-separated inclusive timestep ranges used by staged training after bootstrap, e.g. 8:12,5:25,0:99.")
-    parser.add_argument("--stage-end-fractions", default=DEFAULT_STAGE_END_FRACTIONS, help="Comma-separated cumulative fractions for staged timestep ranges, e.g. 0.3,0.7,1.0.")
     parser.add_argument("--schedule-sampler", default="uniform", help="Schedule sampler used for full-schedule timestep sampling during training.")
     parser.add_argument("--disable-train-shuffle", action="store_true", help="Disable shuffling for the training loader.")
     parser.add_argument("--skip-video-export", action="store_true", help="Skip MP4 export and only write arrays plus metrics.")
@@ -110,87 +95,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--render-workers", default=4, type=int, help="MP4 render parallelism. 0 renders inline.")
     parser.add_argument("--video-fps", default=20, type=int, help="Output FPS for exported MP4 previews.")
     return parser.parse_args()
-
-
-def parse_timestep_ranges(range_text: str, diffusion_steps: int) -> list[tuple[int, int]]:
-    ranges: list[tuple[int, int]] = []
-    for chunk in range_text.split(","):
-        piece = chunk.strip()
-        if not piece:
-            continue
-        if ":" not in piece:
-            raise ValueError(f"Invalid timestep range '{piece}'. Expected start:end.")
-        start_text, end_text = piece.split(":", 1)
-        start = int(start_text)
-        end = int(end_text)
-        if start < 0 or end < 0 or start >= diffusion_steps or end >= diffusion_steps:
-            raise ValueError(f"Timestep range '{piece}' must stay within [0, {diffusion_steps - 1}].")
-        if start > end:
-            raise ValueError(f"Timestep range '{piece}' must use start <= end.")
-        ranges.append((start, end))
-    if not ranges:
-        raise ValueError("At least one timestep range is required.")
-    return ranges
-
-
-def parse_end_fractions(fraction_text: str, expected_count: int) -> list[float]:
-    fractions = [float(piece.strip()) for piece in fraction_text.split(",") if piece.strip()]
-    if len(fractions) != expected_count:
-        raise ValueError(
-            f"Expected {expected_count} end fractions, got {len(fractions)} from '{fraction_text}'."
-        )
-    previous = 0.0
-    for fraction in fractions:
-        if fraction <= previous or fraction > 1.0:
-            raise ValueError("End fractions must be strictly increasing and <= 1.0.")
-        previous = fraction
-    if abs(fractions[-1] - 1.0) > 1e-6:
-        raise ValueError("The final end fraction must be 1.0.")
-    return fractions
-
-
-def build_stage_plan(range_text: str, fraction_text: str, total_steps: int, diffusion_steps: int) -> list[dict[str, float]]:
-    ranges = parse_timestep_ranges(range_text, diffusion_steps)
-    end_fractions = parse_end_fractions(fraction_text, len(ranges))
-    plan = []
-    previous_end_step = -1
-    for stage_index, ((t_min, t_max), end_fraction) in enumerate(zip(ranges, end_fractions)):
-        inclusive_end_step = max(0, int(np.ceil(total_steps * end_fraction)) - 1)
-        inclusive_end_step = min(total_steps - 1, inclusive_end_step)
-        if inclusive_end_step <= previous_end_step:
-            inclusive_end_step = min(total_steps - 1, previous_end_step + 1)
-        plan.append(
-            {
-                "stage_index": stage_index,
-                "t_min": t_min,
-                "t_max": t_max,
-                "end_fraction": end_fraction,
-                "end_step": inclusive_end_step,
-            }
-        )
-        previous_end_step = inclusive_end_step
-    if plan:
-        plan[-1]["end_step"] = total_steps - 1
-    return plan
-
-
-def resolve_stage(stage_plan: list[dict[str, float]], step: int) -> dict[str, float]:
-    for stage in stage_plan:
-        if step <= stage["end_step"]:
-            return stage
-    return stage_plan[-1]
-
-
-def sample_staged_timesteps(batch_size: int, device: torch.device, stage: dict[str, float]) -> tuple[torch.Tensor, torch.Tensor]:
-    timesteps = torch.randint(
-        low=int(stage["t_min"]),
-        high=int(stage["t_max"]) + 1,
-        size=(batch_size,),
-        device=device,
-        dtype=torch.long,
-    )
-    weights = torch.ones(batch_size, device=device, dtype=torch.float32)
-    return timesteps, weights
 
 
 def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
@@ -720,24 +624,6 @@ def train_stochastic_debug(
     model.train()
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
-    bootstrap_steps = max(0, int(args.bootstrap_steps))
-    bootstrap_plan = None
-    if bootstrap_steps > 0:
-        bootstrap_plan = build_stage_plan(
-            args.bootstrap_timestep_ranges,
-            args.bootstrap_end_fractions,
-            bootstrap_steps,
-            int(getattr(model_args, "diffusion_steps", DEFAULT_DIFFUSION_STEPS)),
-        )
-    staged_plan = None
-    staged_steps = max(0, int(args.num_steps) - bootstrap_steps)
-    if args.train_timestep_mode == "staged":
-        staged_plan = build_stage_plan(
-            args.stage_timestep_ranges,
-            args.stage_end_fractions,
-            staged_steps,
-            int(getattr(model_args, "diffusion_steps", DEFAULT_DIFFUSION_STEPS)),
-        )
     history: list[dict[str, float]] = []
     checkpoints_dir = output_dir / "checkpoints"
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
@@ -754,19 +640,8 @@ def train_stochastic_debug(
 
         motion = motion.to(device, non_blocking=device.type == "cuda")
         cond = move_cond_to_device(cond, device)
-        active_bootstrap_stage = None
-        active_stage = None
-        if bootstrap_plan is not None and step < bootstrap_steps:
-            active_bootstrap_stage = resolve_stage(bootstrap_plan, step)
-            timesteps, weights = sample_staged_timesteps(motion.shape[0], device, active_bootstrap_stage)
-            timestep_mode = "bootstrap"
-        elif staged_plan is not None:
-            active_stage = resolve_stage(staged_plan, step - bootstrap_steps)
-            timesteps, weights = sample_staged_timesteps(motion.shape[0], device, active_stage)
-            timestep_mode = "staged"
-        else:
-            timesteps, weights = schedule_sampler.sample(motion.shape[0], device)
-            timestep_mode = "full-schedule"
+        timesteps, weights = schedule_sampler.sample(motion.shape[0], device)
+        timestep_mode = "full-schedule"
 
         optimizer.zero_grad(set_to_none=True)
         losses = diffusion.training_losses(model, motion, timesteps, model_kwargs=cond)
@@ -786,14 +661,6 @@ def train_stochastic_debug(
         record["t_min"] = float(timesteps.min().item())
         record["t_max"] = float(timesteps.max().item())
         record["timestep_mode"] = timestep_mode
-        if active_bootstrap_stage is not None:
-            record["bootstrap_stage_index"] = float(active_bootstrap_stage["stage_index"])
-            record["bootstrap_stage_t_min"] = float(active_bootstrap_stage["t_min"])
-            record["bootstrap_stage_t_max"] = float(active_bootstrap_stage["t_max"])
-        if active_stage is not None:
-            record["stage_index"] = float(active_stage["stage_index"])
-            record["stage_t_min"] = float(active_stage["t_min"])
-            record["stage_t_max"] = float(active_stage["t_max"])
         history.append(record)
 
         if step % args.log_interval == 0 or step == args.num_steps - 1:
@@ -814,8 +681,6 @@ def train_stochastic_debug(
             )
 
         should_save = (step + 1) % args.save_interval == 0 or step == args.num_steps - 1
-        if bootstrap_steps > 0 and step + 1 == bootstrap_steps:
-            should_save = True
         if should_save:
             torch.save(maybe_wrap_checkpoint_state(model), checkpoints_dir / f"stochastic_step_{step + 1:05d}.pt")
 
@@ -1022,10 +887,6 @@ def stochastic_eval(
 
 def main() -> int:
     args = parse_args()
-    if args.bootstrap_steps < 0:
-        raise ValueError("--bootstrap-steps must be >= 0")
-    if args.bootstrap_steps > args.num_steps:
-        raise ValueError("--bootstrap-steps cannot exceed --num-steps")
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1075,12 +936,6 @@ def main() -> int:
         "model_path": str(Path(args.model_path).resolve()) if args.model_path else "",
         "output_dir": str(output_dir),
         "num_steps": args.num_steps,
-        "train_timestep_mode": args.train_timestep_mode,
-        "bootstrap_steps": int(args.bootstrap_steps),
-        "bootstrap_timestep_ranges": args.bootstrap_timestep_ranges,
-        "bootstrap_end_fractions": args.bootstrap_end_fractions,
-        "stage_timestep_ranges": args.stage_timestep_ranges,
-        "stage_end_fractions": args.stage_end_fractions,
         "batch_size": args.batch_size,
         "num_frames": model_args.num_frames,
         "sample_limit": model_args.sample_limit,
