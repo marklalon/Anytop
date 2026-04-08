@@ -20,7 +20,6 @@ Usage:
         --model-path ./checkpoints/model_00500000.pt \\
         --objects-subset quadropeds_clean \\
         --num-steps 800 \\
-        --batch-size 1 \\
         --device 0 \\
         --num-frames 60
 
@@ -41,6 +40,7 @@ Key Optional Arguments:
     --num-frames: Maximum frames per motion (default: 60)
     --fixed-timestep: Diffusion timestep to use (default: 10)
     --lr: Learning rate for optimization (default: 1e-4)
+    --skip-video-export: Skip MP4 export and only save arrays plus metrics
 """
 
 import argparse
@@ -70,6 +70,17 @@ from utils.model_util import create_model_and_diffusion_general_skeleton, load_m
 RELIABLE_POSITION_TOLERANCE = 0.002
 RELIABLE_POSITION_RATIO_TOLERANCE = 1.15
 POSITION_IMPROVEMENT_EPS = 1e-6
+DETERMINISTIC_BATCH_SIZE = 1
+DETERMINISTIC_NUM_WORKERS = 0
+DETERMINISTIC_WEIGHT_DECAY = 0.0
+DEFAULT_TEMPORAL_WINDOW = 31
+DEFAULT_T5_NAME = "t5-base"
+DEFAULT_LATENT_DIM = 64
+DEFAULT_LAYERS = 3
+DEFAULT_COND_MASK_PROB = 0.1
+DEFAULT_NOISE_SCHEDULE = "cosine"
+DEFAULT_SIGMA_SMALL = True
+DEFAULT_DIFFUSION_STEPS = 100
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,29 +92,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--objects-subset", default="quadropeds_clean", help="Object subset to load from preprocessed dataset.")
     parser.add_argument("--sample-limit", default=0, type=int, help="Maximum number of motions to load from the dataset subset. 0 means all available.")
     parser.add_argument("--num-frames", default=60, type=int, help="Maximum frames per motion.")
-    parser.add_argument("--batch-size", default=1, type=int, help="Batch size. Keep 1 for deterministic debugging.")
-    parser.add_argument("--num-workers", default=0, type=int, help="DataLoader workers.")
     parser.add_argument("--num-steps", default=800, type=int, help="Number of deterministic optimization steps.")
     parser.add_argument("--log-interval", default=50, type=int, help="How often to print training metrics.")
     parser.add_argument("--save-interval", default=200, type=int, help="How often to save debug checkpoints.")
     parser.add_argument("--lr", default=1e-4, type=float, help="Learning rate.")
-    parser.add_argument("--weight-decay", default=0.0, type=float, help="Optimizer weight decay.")
+    parser.add_argument("--skip-video-export", action="store_true", help="Skip MP4 export and only write .npy outputs plus metrics.")
     parser.add_argument("--fixed-timestep", default=10, type=int, help="Deterministic diffusion timestep used for every sample.")
     parser.add_argument("--noise-mode", default="zero", choices=["zero", "fixed-random"], help="Use zero noise or one fixed random noise tensor per sample.")
-    parser.add_argument("--latent-dim", default=32, type=int, help="Model width if no checkpoint is provided.")
-    parser.add_argument("--layers", default=2, type=int, help="Model depth if no checkpoint is provided.")
     parser.add_argument("--lambda-confidence-recon", default=None, type=float, help="Reliable-region preservation weight. Overrides checkpoint args when set.")
     parser.add_argument("--lambda-repair-recon", default=None, type=float, help="Low-confidence repair reconstruction weight. Overrides checkpoint args when set.")
     parser.add_argument("--lambda-root", default=None, type=float, help="Root consistency weight. Overrides checkpoint args when set.")
     parser.add_argument("--lambda-velocity", default=None, type=float, help="Velocity consistency weight. Overrides checkpoint args when set.")
-    parser.add_argument("--t5-name", default="t5-base", help="T5 model name when no checkpoint args are available.")
-    parser.add_argument("--temporal-window", default=31, type=int, help="Temporal window size when no checkpoint args are available.")
-    parser.add_argument("--skip-t5", action="store_true", help="Disable joint-name text conditioning when no checkpoint is provided.")
-    parser.add_argument("--value-emb", action="store_true", help="Enable value embeddings when no checkpoint is provided.")
-    parser.add_argument("--cond-mask-prob", default=0.1, type=float, help="Condition mask probability when no checkpoint is provided.")
-    parser.add_argument("--noise-schedule", default="cosine", choices=["linear", "cosine"], help="Diffusion noise schedule.")
-    parser.add_argument("--sigma-small", default=True, type=bool, help="Use smaller diffusion sigma values.")
-    parser.add_argument("--diffusion-steps", default=100, type=int, help="Diffusion step count kept for config parity.")
     return parser.parse_args()
 
 
@@ -111,55 +110,59 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
     if args.model_path:
         model_path = Path(args.model_path).resolve()
         args_path = model_path.parent / "args.json"
-        if not args_path.exists():
-            raise FileNotFoundError(f"Arguments json file was not found next to checkpoint: {args_path}")
-        with open(args_path, "r", encoding="utf-8") as handle:
-            model_args = SimpleNamespace(**json.load(handle))
-        model_args.model_path = str(model_path)
+        if args_path.exists():
+            with open(args_path, "r", encoding="utf-8") as handle:
+                model_args = SimpleNamespace(**json.load(handle))
+            model_args.model_path = str(model_path)
+        else:
+            model_args = SimpleNamespace(model_path=str(model_path))
     else:
         model_args = SimpleNamespace(
             device=args.device,
-            batch_size=args.batch_size,
+            batch_size=DETERMINISTIC_BATCH_SIZE,
             num_frames=args.num_frames,
-            temporal_window=args.temporal_window,
-            t5_name=args.t5_name,
+            temporal_window=DEFAULT_TEMPORAL_WINDOW,
+            t5_name=DEFAULT_T5_NAME,
             objects_subset=args.objects_subset,
-            num_workers=args.num_workers,
+            num_workers=DETERMINISTIC_NUM_WORKERS,
             prefetch_factor=2,
             sample_limit=args.sample_limit,
-            latent_dim=args.latent_dim,
-            layers=args.layers,
+            latent_dim=DEFAULT_LATENT_DIM,
+            layers=DEFAULT_LAYERS,
             lambda_confidence_recon=2.0 if args.lambda_confidence_recon is None else args.lambda_confidence_recon,
             lambda_repair_recon=1.0 if args.lambda_repair_recon is None else args.lambda_repair_recon,
             lambda_root=0.25 if args.lambda_root is None else args.lambda_root,
             lambda_velocity=0.1 if args.lambda_velocity is None else args.lambda_velocity,
             lambda_fs=0.0,
             lambda_geo=0.0,
-            noise_schedule=args.noise_schedule,
-            sigma_small=args.sigma_small,
-            cond_mask_prob=args.cond_mask_prob,
-            skip_t5=args.skip_t5,
-            value_emb=args.value_emb,
+            noise_schedule=DEFAULT_NOISE_SCHEDULE,
+            sigma_small=DEFAULT_SIGMA_SMALL,
+            cond_mask_prob=DEFAULT_COND_MASK_PROB,
+            skip_t5=False,
+            value_emb=False,
+            diffusion_steps=DEFAULT_DIFFUSION_STEPS,
             disable_reference_branch=False,
             reference_dropout_threshold=0.05,
         )
     model_args.device = args.device
-    model_args.batch_size = args.batch_size
+    model_args.batch_size = DETERMINISTIC_BATCH_SIZE
     model_args.num_frames = args.num_frames if not hasattr(model_args, "num_frames") else model_args.num_frames
-    model_args.temporal_window = getattr(model_args, "temporal_window", args.temporal_window)
-    model_args.t5_name = getattr(model_args, "t5_name", args.t5_name)
+    model_args.temporal_window = getattr(model_args, "temporal_window", DEFAULT_TEMPORAL_WINDOW)
+    model_args.t5_name = getattr(model_args, "t5_name", DEFAULT_T5_NAME)
     model_args.objects_subset = args.objects_subset
     model_args.sample_limit = args.sample_limit
-    model_args.num_workers = args.num_workers
+    model_args.num_workers = DETERMINISTIC_NUM_WORKERS
     model_args.prefetch_factor = getattr(model_args, "prefetch_factor", 2)
-    model_args.noise_schedule = getattr(model_args, "noise_schedule", args.noise_schedule)
-    model_args.sigma_small = getattr(model_args, "sigma_small", args.sigma_small)
+    model_args.noise_schedule = getattr(model_args, "noise_schedule", DEFAULT_NOISE_SCHEDULE)
+    model_args.sigma_small = getattr(model_args, "sigma_small", DEFAULT_SIGMA_SMALL)
     model_args.lambda_fs = getattr(model_args, "lambda_fs", 0.0)
     model_args.lambda_geo = getattr(model_args, "lambda_geo", 0.0)
     model_args.lambda_confidence_recon = getattr(model_args, "lambda_confidence_recon", 2.0)
     model_args.lambda_repair_recon = getattr(model_args, "lambda_repair_recon", 1.0)
     model_args.lambda_root = getattr(model_args, "lambda_root", 0.25)
     model_args.lambda_velocity = getattr(model_args, "lambda_velocity", 0.1)
+    model_args.noise_schedule = getattr(model_args, "noise_schedule", DEFAULT_NOISE_SCHEDULE)
+    model_args.sigma_small = getattr(model_args, "sigma_small", DEFAULT_SIGMA_SMALL)
     if args.lambda_confidence_recon is not None:
         model_args.lambda_confidence_recon = args.lambda_confidence_recon
     if args.lambda_repair_recon is not None:
@@ -168,11 +171,12 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
         model_args.lambda_root = args.lambda_root
     if args.lambda_velocity is not None:
         model_args.lambda_velocity = args.lambda_velocity
-    model_args.latent_dim = getattr(model_args, "latent_dim", args.latent_dim)
-    model_args.layers = getattr(model_args, "layers", args.layers)
-    model_args.cond_mask_prob = getattr(model_args, "cond_mask_prob", args.cond_mask_prob)
-    model_args.skip_t5 = getattr(model_args, "skip_t5", args.skip_t5)
-    model_args.value_emb = getattr(model_args, "value_emb", args.value_emb)
+    model_args.latent_dim = getattr(model_args, "latent_dim", DEFAULT_LATENT_DIM)
+    model_args.layers = getattr(model_args, "layers", DEFAULT_LAYERS)
+    model_args.cond_mask_prob = getattr(model_args, "cond_mask_prob", DEFAULT_COND_MASK_PROB)
+    model_args.skip_t5 = getattr(model_args, "skip_t5", False)
+    model_args.value_emb = getattr(model_args, "value_emb", False)
+    model_args.diffusion_steps = getattr(model_args, "diffusion_steps", DEFAULT_DIFFUSION_STEPS)
     model_args.disable_reference_branch = getattr(model_args, "disable_reference_branch", False)
     model_args.reference_dropout_threshold = getattr(model_args, "reference_dropout_threshold", 0.05)
     return model_args
@@ -272,8 +276,10 @@ def classify_restoration(position_metrics: dict[str, float]) -> dict[str, object
     }
 
 
-def export_motion(sample_dir: Path, name: str, motion: np.ndarray, parents: list[int]) -> None:
+def export_motion(sample_dir: Path, name: str, motion: np.ndarray, parents: list[int], skip_video_export: bool) -> None:
     np.save(sample_dir / f"{name}.npy", motion)
+    if skip_video_export:
+        return
     positions = recover_from_bvh_ric_np(motion)
     plot_general_skeleton_3d_motion(str(sample_dir / f"{name}.mp4"), parents, positions, title=name, fps=20)
 
@@ -288,14 +294,14 @@ def build_fixed_noise(sample_index: int, shape: torch.Size, device: torch.device
 
 def collect_samples(args: argparse.Namespace, model_args: SimpleNamespace) -> tuple[list[dict[str, object]], dict[str, dict[str, np.ndarray]]]:
     data = get_dataset_loader(
-        batch_size=1,
+        batch_size=DETERMINISTIC_BATCH_SIZE,
         num_frames=model_args.num_frames,
         split="train",
         temporal_window=model_args.temporal_window,
         t5_name=model_args.t5_name,
         balanced=False,
         objects_subset=model_args.objects_subset,
-        num_workers=args.num_workers,
+        num_workers=DETERMINISTIC_NUM_WORKERS,
         prefetch_factor=model_args.prefetch_factor,
         sample_limit=args.sample_limit,
         shuffle=False,
@@ -342,6 +348,7 @@ def deterministic_eval(
     noise_mode: str,
     seed: int,
     output_dir: Path,
+    skip_video_export: bool,
 ) -> dict[str, object]:
     model.eval()
     summary: list[dict[str, object]] = []
@@ -401,6 +408,7 @@ def deterministic_eval(
 
             target_denorm = target_norm.permute(2, 0, 1).numpy() * std[None, :n_joints, :] + mean[None, :n_joints, :]
             reference_denorm = reference_norm.permute(2, 0, 1).numpy() * std[None, :n_joints, :] + mean[None, :n_joints, :]
+            raw_pred_denorm = pred_norm.permute(2, 0, 1).numpy() * std[None, :n_joints, :] + mean[None, :n_joints, :]
             pred_denorm = fused_pred_norm.permute(2, 0, 1).numpy() * std[None, :n_joints, :] + mean[None, :n_joints, :]
             confidence_np = confidence.permute(2, 0, 1).numpy().astype(np.float32)[..., 0]
             position_metrics = compute_position_metrics(
@@ -427,7 +435,8 @@ def deterministic_eval(
 
             sample_eval_dir = eval_dir / f"sample_{sample_index:02d}_{sample['object_type']}"
             sample_eval_dir.mkdir(parents=True, exist_ok=True)
-            export_motion(sample_eval_dir, "pred_xstart_restored", pred_denorm.astype(np.float32), parents)
+            export_motion(sample_eval_dir, "pred_xstart_raw", raw_pred_denorm.astype(np.float32), parents, skip_video_export)
+            export_motion(sample_eval_dir, "pred_xstart_restored", pred_denorm.astype(np.float32), parents, skip_video_export)
 
             metrics = {
                 "sample_index": sample_index,
@@ -466,6 +475,7 @@ def deterministic_eval(
         "aggregate": aggregate,
         "reliable_position_tolerance": RELIABLE_POSITION_TOLERANCE,
         "reliable_position_ratio_tolerance": RELIABLE_POSITION_RATIO_TOLERANCE,
+        "skip_video_export": bool(skip_video_export),
         "samples": summary,
     }
     with open(eval_dir / "summary.json", "w", encoding="utf-8") as handle:
@@ -484,6 +494,9 @@ def main() -> int:
     model_args = load_model_args(args)
     samples, _ = collect_samples(args, model_args)
 
+    with open(output_dir / "args.json", "w", encoding="utf-8") as handle:
+        json.dump(vars(model_args), handle, indent=2)
+
     model, diffusion = create_model_and_diffusion_general_skeleton(model_args)
     if args.model_path:
         state_dict = torch.load(Path(args.model_path).resolve(), map_location="cpu")
@@ -495,7 +508,7 @@ def main() -> int:
     model.to(device)
     model.train()
 
-    optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=DETERMINISTIC_WEIGHT_DECAY)
     history: list[dict[str, float]] = []
     checkpoints_dir = output_dir / "checkpoints"
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
@@ -546,6 +559,7 @@ def main() -> int:
         noise_mode=args.noise_mode,
         seed=args.seed,
         output_dir=output_dir,
+        skip_video_export=args.skip_video_export,
     )
     final_report = {
         "model_path": str(Path(args.model_path).resolve()) if args.model_path else "",
@@ -555,6 +569,15 @@ def main() -> int:
         "fixed_timestep": args.fixed_timestep,
         "noise_mode": args.noise_mode,
         "final_training_loss": history[-1].get("loss") if history else None,
+        "lambda_confidence_recon": model_args.lambda_confidence_recon,
+        "lambda_repair_recon": model_args.lambda_repair_recon,
+        "lambda_root": model_args.lambda_root,
+        "lambda_velocity": model_args.lambda_velocity,
+        "preservation_confidence_threshold": diffusion.preservation_confidence_threshold,
+        "preservation_confidence_power": diffusion.preservation_confidence_power,
+        "reference_fusion_threshold": diffusion.reference_fusion_threshold,
+        "reference_fusion_power": diffusion.reference_fusion_power,
+        "skip_video_export": bool(args.skip_video_export),
         "deterministic_eval": eval_report,
     }
     with open(output_dir / "report.json", "w", encoding="utf-8") as handle:

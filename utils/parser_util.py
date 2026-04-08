@@ -95,10 +95,6 @@ def add_model_options(parser):
                        help="Disable the restoration reference branch and train only the AnyTop prior.")
     group.add_argument("--reference_dropout_threshold", default=0.2, type=float,
                        help="Reference confidence values below this threshold are treated as unusable during attention.")
-    group.add_argument("--reference_fusion_threshold", default=0.8, type=float,
-                       help="Only confidence values above this threshold are fused back from the corrupted reference during restoration.")
-    group.add_argument("--reference_fusion_power", default=2.0, type=float,
-                       help="Exponent applied after thresholding confidence for reference fusion. Values above 1 make fusion more conservative.")
     group.add_argument("--t5_name", default='t5-base', choices=["t5-small", "t5-base", "t5-large", "t5-3b", "t5-11b",
               "google/flan-t5-small", "google/flan-t5-base", "google/flan-t5-large",
               "google/flan-t5-xl", "google/flan-t5-xxl"], type=str,

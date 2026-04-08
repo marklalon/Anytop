@@ -79,6 +79,10 @@ def create_gaussian_diffusion(args):
         lambda_repair_recon=args.lambda_repair_recon,
         lambda_root=args.lambda_root,
         lambda_velocity=args.lambda_velocity,
-        reference_fusion_threshold=getattr(args, 'reference_fusion_threshold', 0.8),
-        reference_fusion_power=getattr(args, 'reference_fusion_power', 2.0),
+        reference_fusion_min_scale=getattr(args, 'reference_fusion_min_scale', gd.REFERENCE_FUSION_MIN_SCALE),
+        reference_fusion_warmup_fraction=getattr(args, 'reference_fusion_warmup_fraction', gd.REFERENCE_FUSION_WARMUP_FRACTION),
+        reference_fusion_ramp_power=getattr(args, 'reference_fusion_ramp_power', gd.REFERENCE_FUSION_RAMP_POWER),
+        reference_conditioning_min_scale=getattr(args, 'reference_conditioning_min_scale', gd.REFERENCE_CONDITIONING_MIN_SCALE),
+        reference_conditioning_warmup_fraction=getattr(args, 'reference_conditioning_warmup_fraction', gd.REFERENCE_CONDITIONING_WARMUP_FRACTION),
+        reference_conditioning_ramp_power=getattr(args, 'reference_conditioning_ramp_power', gd.REFERENCE_CONDITIONING_RAMP_POWER),
     )
