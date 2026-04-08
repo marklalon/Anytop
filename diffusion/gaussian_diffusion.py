@@ -223,6 +223,21 @@ class GaussianDiffusion:
         denom = sum_flat(weights.float()) * a.size(2)
         return loss / (denom + 1e-8)
 
+    def apply_reference_fusion(self, prediction, reference_motion, confidence):
+        if reference_motion is None or confidence is None:
+            return prediction
+        reference_motion = reference_motion.to(prediction.device, dtype=prediction.dtype)
+        confidence = confidence.to(prediction.device, dtype=prediction.dtype).clamp(0.0, 1.0)
+        return torch.lerp(prediction, reference_motion, confidence)
+
+    def get_reference_fusion_inputs(self, model_kwargs):
+        if not model_kwargs:
+            return None, None
+        conditioning = model_kwargs.get('y')
+        if conditioning is None:
+            return None, None
+        return conditioning.get('reference_motion'), conditioning.get('soft_confidence_mask')
+
     def quat_to_mat(self, qs):
         r = qs[..., 0]
         i = qs[..., 1]
@@ -374,15 +389,20 @@ class GaussianDiffusion:
             model_output, activations = model(x, self._scale_timesteps(t), get_layer_activation=get_layer_activation, **model_kwargs)
         else:
             model_output = model(x, self._scale_timesteps(t), **model_kwargs)
-            
-        if 'inpainting_mask' in model_kwargs['y'].keys() and 'inpainted_motion' in model_kwargs['y'].keys():
-            inpainting_mask, inpainted_motion = model_kwargs['y']['inpainting_mask'], model_kwargs['y']['inpainted_motion']
+
+        conditioning = model_kwargs.get('y') if model_kwargs is not None else None
+        if conditioning is not None and 'inpainting_mask' in conditioning.keys() and 'inpainted_motion' in conditioning.keys():
+            inpainting_mask, inpainted_motion = conditioning['inpainting_mask'], conditioning['inpainted_motion']
             assert self.model_mean_type == ModelMeanType.START_X, 'This feature supports only X_start pred for mow!'
             assert model_output.shape == inpainting_mask.shape == inpainted_motion.shape
             model_output = (model_output * ~inpainting_mask) + (inpainted_motion * inpainting_mask)
             # print('model_output', model_output.shape, model_output)
             # print('inpainting_mask', inpainting_mask.shape, inpainting_mask[0,0,0,:])
             # print('inpainted_motion', inpainted_motion.shape, inpainted_motion)
+
+        reference_motion, confidence = self.get_reference_fusion_inputs(model_kwargs)
+        if self.model_mean_type == ModelMeanType.START_X:
+            model_output = self.apply_reference_fusion(model_output, reference_motion, confidence)
 
         if self.model_var_type in [ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE]:
             assert model_output.shape == (B, C * 2, *x.shape[2:])
@@ -1532,9 +1552,14 @@ class GaussianDiffusion:
         mean = model_kwargs['y']['mean'][..., None]
         std = model_kwargs['y']['std'][..., None]
         confidence = model_kwargs['y'].get('soft_confidence_mask')
+        reference_motion = model_kwargs['y'].get('reference_motion')
         if confidence is None:
             confidence = torch.ones_like(x_start[:, :, :1, :])
         confidence = confidence.clamp(0.0, 1.0)
+        if reference_motion is None:
+            reference_motion = x_start
+        else:
+            reference_motion = reference_motion.to(x_start.device, dtype=x_start.dtype)
         
         if model_kwargs is None:
             model_kwargs = {}
@@ -1587,23 +1612,25 @@ class GaussianDiffusion:
                 ModelMeanType.START_X: x_start,
                 ModelMeanType.EPSILON: noise,
             }[self.model_mean_type]
+            reconstruction_target = torch.lerp(target, reference_motion, confidence)
+            restored_output = self.apply_reference_fusion(model_output, reference_motion, confidence)
             assert model_output.shape == target.shape == x_start.shape  # [bs, njoints, nfeats, nframes]
-            # get ric positions befor denorm to care equally for all topologies
-            terms["l_simple"] = self.temporal_spatial_masked_l2(target, model_output, mask, joints_mask, lengths, actual_joints)
+            # Preserve reliable observations and only pull missing regions toward the clean target.
+            terms["l_simple"] = self.temporal_spatial_masked_l2(reconstruction_target, restored_output, mask, joints_mask, lengths, actual_joints)
             terms["loss"] = torch.zeros_like(terms["l_simple"])
             terms["loss"] = terms["loss"] + terms["l_simple"]
             if self.lambda_confidence_recon > 0.:
                 reliable_weights = confidence.clamp(min=0.0, max=1.0)
-                terms["confidence_recon_loss"] = self.weighted_temporal_spatial_l2(target, model_output, mask, joints_mask, reliable_weights)
+                terms["confidence_recon_loss"] = self.weighted_temporal_spatial_l2(reference_motion, model_output, mask, joints_mask, reliable_weights)
                 terms["loss"] = terms["loss"] + self.lambda_confidence_recon * terms["confidence_recon_loss"]
             if self.lambda_repair_recon > 0.:
-                repair_weights = (1.0 - confidence).clamp(min=0.05, max=1.0)
-                terms["repair_recon_loss"] = self.weighted_temporal_spatial_l2(target, model_output, mask, joints_mask, repair_weights)
+                repair_weights = (1.0 - confidence).clamp(min=0.0, max=1.0)
+                terms["repair_recon_loss"] = self.weighted_temporal_spatial_l2(target, restored_output, mask, joints_mask, repair_weights)
                 terms["loss"] = terms["loss"] + self.lambda_repair_recon * terms["repair_recon_loss"]
         
             # denormalize before applying loss terms 
-            target = (target * std) + mean 
-            model_output = (model_output * std) + mean 
+            target = (reconstruction_target * std) + mean 
+            model_output = (restored_output * std) + mean 
 
             if self.lambda_root > 0.:
                 root_weights = mask[:, :1, :, :] * (1.0 + (1.0 - confidence[:, :1]))

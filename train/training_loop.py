@@ -49,6 +49,8 @@ class TrainLoop:
         self.num_epochs = self.num_steps // len(self.data) + 1
         self.curriculum_stage = getattr(args, 'curriculum_stage', 1)
         self.curriculum_switch_step = getattr(args, 'curriculum_switch_step', 0)
+        self.offline_reference_samples = getattr(args, 'offline_reference_samples', False)
+        self.offline_reference_seed = getattr(args, 'offline_reference_seed', 10)
 
         self.sync_cuda = torch.cuda.is_available()
         self.save_dir = args.save_dir
@@ -194,6 +196,9 @@ class TrainLoop:
             curriculum_stage=curriculum_stage,
             enable_topology_augmentation=self.args.enable_topology_augmentation,
             prefetch_factor=self.args.prefetch_factor,
+            sample_limit=self.args.sample_limit,
+            offline_reference_samples=self.offline_reference_samples,
+            offline_reference_seed=self.offline_reference_seed,
         )
 
     def generate_during_training(self):

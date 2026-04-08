@@ -87,10 +87,10 @@ def add_model_options(parser):
                             " For classifier-free guidance learning.")
     group.add_argument("--lambda_fs", default=0.0, type=float, help="Foot contact loss.")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Foot contact loss.")
-    group.add_argument("--lambda_confidence_recon", default=0.5, type=float, help="Confidence-weighted reconstruction loss on reliable observed regions.")
+    group.add_argument("--lambda_confidence_recon", default=2.0, type=float, help="Reference-preservation loss on reliable observed regions.")
     group.add_argument("--lambda_repair_recon", default=1.0, type=float, help="Reconstruction loss focused on low-confidence and missing regions.")
-    group.add_argument("--lambda_root", default=0.5, type=float, help="Root trajectory consistency loss.")
-    group.add_argument("--lambda_velocity", default=0.25, type=float, help="Velocity consistency loss.")
+    group.add_argument("--lambda_root", default=0.25, type=float, help="Root trajectory consistency loss.")
+    group.add_argument("--lambda_velocity", default=0.1, type=float, help="Velocity consistency loss.")
     group.add_argument("--disable_reference_branch", action='store_true',
                        help="Disable the restoration reference branch and train only the AnyTop prior.")
     group.add_argument("--reference_dropout_threshold", default=0.05, type=float,
@@ -148,8 +148,14 @@ def add_training_options(parser):
                        help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
     group.add_argument("--num_workers", default=0, type=int,
                        help="Number of DataLoader worker processes. Use 0 to load on the main process and reduce CPU RAM pressure.")
+    group.add_argument("--sample_limit", default=0, type=int,
+                       help="Limit the number of motion clips loaded for tiny overfit/debug runs. 0 keeps the full dataset.")
     group.add_argument("--prefetch_factor", default=2, type=int,
                        help="Per-worker prefetch factor for the restoration dataset loader.")
+    group.add_argument("--offline_reference_samples", default=True, type=bool,
+                       help="Precompute fixed corrupted-reference samples once when building the training dataset and reuse them for every epoch.")
+    group.add_argument("--offline_reference_seed", default=10, type=int,
+                       help="Seed used when precomputing offline corrupted-reference samples.")
     group.add_argument("--resume_checkpoint", default="", type=str,
                        help="If not empty, will start from the specified checkpoint (path to model###.pt file).")
     group.add_argument("--curriculum_stage", default=1, choices=[1, 2], type=int,

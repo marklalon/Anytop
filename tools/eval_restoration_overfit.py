@@ -1,0 +1,325 @@
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+import torch
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from data_loaders.get_data import get_dataset_loader
+from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np
+from data_loaders.truebones.truebones_utils.plot_script import plot_general_skeleton_3d_motion
+from utils.fixseed import fixseed
+from utils import dist_util
+from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
+
+
+RELIABLE_POSITION_TOLERANCE = 0.01
+POSITION_IMPROVEMENT_EPS = 1e-6
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Evaluate restoration quality for a tiny-overfit checkpoint.")
+    parser.add_argument("--model-path", required=True, help="Path to model####.pt checkpoint.")
+    parser.add_argument("--output-dir", required=True, help="Directory to write restoration outputs into.")
+    parser.add_argument("--num-eval-samples", default=4, type=int, help="How many samples to restore and export.")
+    parser.add_argument("--batch-size", default=1, type=int, help="Batch size for evaluation. Use 1 for easier inspection.")
+    parser.add_argument("--device", default=0, type=int, help="CUDA device id. Use -1 for CPU.")
+    parser.add_argument("--seed", default=10, type=int, help="Random seed.")
+    parser.add_argument("--split", default="train", choices=["train", "val", "test"], help="Dataset split to sample from.")
+    parser.add_argument("--sample-limit", default=-1, type=int, help="Override dataset sample limit. -1 keeps checkpoint args.")
+    parser.add_argument("--curriculum-stage", default=-1, type=int, choices=[-1, 1, 2], help="Override corruption curriculum stage. -1 keeps checkpoint args.")
+    parser.add_argument("--num-workers", default=0, type=int, help="DataLoader workers for evaluation.")
+    return parser.parse_args()
+
+
+def load_model_args(model_path: Path) -> SimpleNamespace:
+    args_path = model_path.parent / "args.json"
+    if not args_path.exists():
+        raise FileNotFoundError(f"Arguments json file was not found next to checkpoint: {args_path}")
+    with open(args_path, "r", encoding="utf-8") as handle:
+        return SimpleNamespace(**json.load(handle))
+
+
+def move_cond_to_device(cond: dict, device: torch.device) -> dict:
+    moved = {"y": {}}
+    for key, value in cond["y"].items():
+        moved["y"][key] = value.to(device) if torch.is_tensor(value) else value
+    return moved
+
+
+def weighted_mse(pred: torch.Tensor, target: torch.Tensor, weights: torch.Tensor) -> float:
+    weights = weights.expand_as(pred)
+    denom = float(weights.sum().item())
+    if denom <= 0.0:
+        return 0.0
+    return float((((pred - target) ** 2) * weights).sum().item() / denom)
+
+
+def weighted_position_error(pred_positions: np.ndarray, target_positions: np.ndarray, weights: np.ndarray) -> float:
+    denom = float(np.sum(weights))
+    if denom <= 0.0:
+        return 0.0
+    joint_error = np.linalg.norm(pred_positions - target_positions, axis=-1)
+    return float(np.sum(joint_error * weights) / denom)
+
+
+def compute_position_metrics(
+    reference_motion: np.ndarray,
+    restored_motion: np.ndarray,
+    target_motion: np.ndarray,
+    confidence: np.ndarray,
+) -> dict[str, float]:
+    target_positions = recover_from_bvh_ric_np(target_motion)
+    reference_positions = recover_from_bvh_ric_np(reference_motion)
+    restored_positions = recover_from_bvh_ric_np(restored_motion)
+
+    reference_error = np.linalg.norm(reference_positions - target_positions, axis=-1)
+    restored_error = np.linalg.norm(restored_positions - target_positions, axis=-1)
+    low_conf_weights = np.clip(1.0 - confidence, 0.0, 1.0)
+    reliable_weights = np.clip(confidence, 0.0, 1.0)
+
+    reference_frame_error = reference_error.mean(axis=1)
+    restored_frame_error = restored_error.mean(axis=1)
+    return {
+        "baseline_mpjpe": float(reference_error.mean()),
+        "restored_mpjpe": float(restored_error.mean()),
+        "baseline_low_conf_mpjpe": weighted_position_error(reference_positions, target_positions, low_conf_weights),
+        "restored_low_conf_mpjpe": weighted_position_error(restored_positions, target_positions, low_conf_weights),
+        "baseline_reliable_mpjpe": weighted_position_error(reference_positions, target_positions, reliable_weights),
+        "restored_reliable_mpjpe": weighted_position_error(restored_positions, target_positions, reliable_weights),
+        "baseline_p95_joint_error": float(np.percentile(reference_error, 95)),
+        "restored_p95_joint_error": float(np.percentile(restored_error, 95)),
+        "baseline_max_joint_error": float(reference_error.max()),
+        "restored_max_joint_error": float(restored_error.max()),
+        "baseline_better_frame_count": int(np.sum(reference_frame_error < restored_frame_error)),
+        "restored_better_frame_count": int(np.sum(restored_frame_error < reference_frame_error)),
+    }
+
+
+def classify_restoration(position_metrics: dict[str, float]) -> dict[str, object]:
+    low_conf_improved = position_metrics["restored_low_conf_mpjpe"] + POSITION_IMPROVEMENT_EPS < position_metrics["baseline_low_conf_mpjpe"]
+    reliable_preserved = position_metrics["restored_reliable_mpjpe"] <= position_metrics["baseline_reliable_mpjpe"] + RELIABLE_POSITION_TOLERANCE
+    overall_improved = position_metrics["restored_mpjpe"] + POSITION_IMPROVEMENT_EPS < position_metrics["baseline_mpjpe"]
+    success = bool(low_conf_improved and reliable_preserved and overall_improved)
+    if success:
+        verdict = "successful_repair"
+    elif not low_conf_improved:
+        verdict = "failed_low_conf_repair"
+    elif not reliable_preserved:
+        verdict = "failed_reliable_preservation"
+    else:
+        verdict = "failed_overall_position_error"
+    return {
+        "low_conf_improved": low_conf_improved,
+        "reliable_preserved": reliable_preserved,
+        "overall_position_improved": overall_improved,
+        "restoration_success": success,
+        "restoration_verdict": verdict,
+    }
+
+
+def export_motion_triplet(sample_dir: Path, name: str, motion: np.ndarray, parents: list[int]) -> None:
+    np.save(sample_dir / f"{name}.npy", motion)
+    positions = recover_from_bvh_ric_np(motion)
+    plot_general_skeleton_3d_motion(str(sample_dir / f"{name}.mp4"), parents, positions, title=name, fps=20)
+
+
+def main() -> int:
+    args = parse_args()
+    model_path = Path(args.model_path).resolve()
+    output_dir = Path(args.output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    model_args = load_model_args(model_path)
+    fixseed(args.seed)
+    dist_util.setup_dist(args.device)
+
+    if args.sample_limit >= 0:
+        model_args.sample_limit = args.sample_limit
+    if args.curriculum_stage >= 0:
+        model_args.curriculum_stage = args.curriculum_stage
+    model_args.device = args.device
+    model_args.batch_size = args.batch_size
+
+    data = get_dataset_loader(
+        batch_size=args.batch_size,
+        num_frames=model_args.num_frames,
+        split=args.split,
+        temporal_window=model_args.temporal_window,
+        t5_name=model_args.t5_name,
+        balanced=False,
+        objects_subset=model_args.objects_subset,
+        num_workers=args.num_workers,
+        curriculum_stage=model_args.curriculum_stage,
+        enable_topology_augmentation=False,
+        prefetch_factor=getattr(model_args, "prefetch_factor", 2),
+        sample_limit=model_args.sample_limit,
+    )
+    cond_dict = data.dataset.motion_dataset.cond_dict
+
+    model, diffusion = create_model_and_diffusion_general_skeleton(model_args)
+    state_dict = torch.load(model_path, map_location="cpu")
+    if "model_avg" in state_dict:
+        state_dict = state_dict["model_avg"]
+    elif "model" in state_dict:
+        state_dict = state_dict["model"]
+    load_model(model, state_dict)
+    model.to(dist_util.dev())
+    model.eval()
+
+    summary: list[dict[str, object]] = []
+    totals = {
+        "baseline_mpjpe": [],
+        "restored_mpjpe": [],
+        "baseline_low_conf_mpjpe": [],
+        "restored_low_conf_mpjpe": [],
+        "baseline_reliable_mpjpe": [],
+        "restored_reliable_mpjpe": [],
+        "feature_baseline_mse": [],
+        "feature_restored_mse": [],
+        "feature_baseline_low_conf_mse": [],
+        "feature_restored_low_conf_mse": [],
+        "feature_baseline_reliable_mse": [],
+        "feature_restored_reliable_mse": [],
+        "restoration_success": [],
+    }
+
+    exported = 0
+    for batch_index, (motion, cond) in enumerate(data):
+        motion = motion.to(dist_util.dev())
+        cond = move_cond_to_device(cond, dist_util.dev())
+        with torch.no_grad():
+            restored = diffusion.p_sample_loop(
+                model,
+                motion.shape,
+                clip_denoised=False,
+                model_kwargs=cond,
+                progress=False,
+            )
+
+        batch_size = motion.shape[0]
+        for item_index in range(batch_size):
+            n_joints = int(cond["y"]["n_joints"][item_index].item())
+            length = int(cond["y"]["lengths"][item_index].item())
+            object_type = cond["y"]["object_type"][item_index]
+            parents = [int(parent) for parent in cond_dict[object_type]["parents"]]
+
+            target_norm = motion[item_index, :n_joints, :, :length].detach().cpu()
+            reference_norm = cond["y"]["reference_motion"][item_index, :n_joints, :, :length].detach().cpu()
+            restored_norm = restored[item_index, :n_joints, :, :length].detach().cpu()
+            confidence = cond["y"]["soft_confidence_mask"][item_index, :n_joints, :, :length].detach().cpu().clamp(0.0, 1.0)
+            low_conf_weights = (1.0 - confidence).clamp(min=0.0, max=1.0)
+            reliable_weights = confidence
+
+            feature_baseline_mse = float(torch.mean((reference_norm - target_norm) ** 2).item())
+            feature_restored_mse = float(torch.mean((restored_norm - target_norm) ** 2).item())
+            feature_baseline_low_conf_mse = weighted_mse(reference_norm, target_norm, low_conf_weights)
+            feature_restored_low_conf_mse = weighted_mse(restored_norm, target_norm, low_conf_weights)
+            feature_baseline_reliable_mse = weighted_mse(reference_norm, target_norm, reliable_weights)
+            feature_restored_reliable_mse = weighted_mse(restored_norm, target_norm, reliable_weights)
+
+            mean = cond_dict[object_type]["mean"].astype(np.float32)
+            std = (cond_dict[object_type]["std"].astype(np.float32) + 1e-6)
+
+            target_denorm = target_norm.permute(2, 0, 1).numpy() * std[None, :n_joints, :] + mean[None, :n_joints, :]
+            reference_denorm = reference_norm.permute(2, 0, 1).numpy() * std[None, :n_joints, :] + mean[None, :n_joints, :]
+            restored_denorm = restored_norm.permute(2, 0, 1).numpy() * std[None, :n_joints, :] + mean[None, :n_joints, :]
+            confidence_np = confidence.permute(2, 0, 1).numpy().astype(np.float32)[..., 0]
+            position_metrics = compute_position_metrics(
+                reference_motion=reference_denorm.astype(np.float32),
+                restored_motion=restored_denorm.astype(np.float32),
+                target_motion=target_denorm.astype(np.float32),
+                confidence=confidence_np,
+            )
+            restoration_flags = classify_restoration(position_metrics)
+
+            totals["baseline_mpjpe"].append(position_metrics["baseline_mpjpe"])
+            totals["restored_mpjpe"].append(position_metrics["restored_mpjpe"])
+            totals["baseline_low_conf_mpjpe"].append(position_metrics["baseline_low_conf_mpjpe"])
+            totals["restored_low_conf_mpjpe"].append(position_metrics["restored_low_conf_mpjpe"])
+            totals["baseline_reliable_mpjpe"].append(position_metrics["baseline_reliable_mpjpe"])
+            totals["restored_reliable_mpjpe"].append(position_metrics["restored_reliable_mpjpe"])
+            totals["feature_baseline_mse"].append(feature_baseline_mse)
+            totals["feature_restored_mse"].append(feature_restored_mse)
+            totals["feature_baseline_low_conf_mse"].append(feature_baseline_low_conf_mse)
+            totals["feature_restored_low_conf_mse"].append(feature_restored_low_conf_mse)
+            totals["feature_baseline_reliable_mse"].append(feature_baseline_reliable_mse)
+            totals["feature_restored_reliable_mse"].append(feature_restored_reliable_mse)
+            totals["restoration_success"].append(float(restoration_flags["restoration_success"]))
+
+            sample_dir = output_dir / f"sample_{exported:02d}_{object_type}"
+            sample_dir.mkdir(parents=True, exist_ok=True)
+            export_motion_triplet(sample_dir, "clean_target", target_denorm.astype(np.float32), parents)
+            export_motion_triplet(sample_dir, "corrupted_reference", reference_denorm.astype(np.float32), parents)
+            export_motion_triplet(sample_dir, "restored_prediction", restored_denorm.astype(np.float32), parents)
+            np.save(sample_dir / "soft_confidence_mask.npy", confidence.permute(2, 0, 1).numpy().astype(np.float32))
+
+            metrics = {
+                "object_type": object_type,
+                "sample_index": exported,
+                "source_batch_index": batch_index,
+                "length": length,
+                "n_joints": n_joints,
+                **position_metrics,
+                **restoration_flags,
+                "overall_position_improvement": position_metrics["baseline_mpjpe"] - position_metrics["restored_mpjpe"],
+                "low_conf_position_improvement": position_metrics["baseline_low_conf_mpjpe"] - position_metrics["restored_low_conf_mpjpe"],
+                "reliable_position_change": position_metrics["baseline_reliable_mpjpe"] - position_metrics["restored_reliable_mpjpe"],
+                "feature_baseline_mse": feature_baseline_mse,
+                "feature_restored_mse": feature_restored_mse,
+                "feature_baseline_low_conf_mse": feature_baseline_low_conf_mse,
+                "feature_restored_low_conf_mse": feature_restored_low_conf_mse,
+                "feature_baseline_reliable_mse": feature_baseline_reliable_mse,
+                "feature_restored_reliable_mse": feature_restored_reliable_mse,
+                "feature_overall_improvement": feature_baseline_mse - feature_restored_mse,
+                "feature_low_conf_improvement": feature_baseline_low_conf_mse - feature_restored_low_conf_mse,
+                "feature_reliable_region_change": feature_baseline_reliable_mse - feature_restored_reliable_mse,
+            }
+            with open(sample_dir / "metrics.json", "w", encoding="utf-8") as handle:
+                json.dump(metrics, handle, indent=2)
+            summary.append(metrics)
+            exported += 1
+
+            if exported >= args.num_eval_samples:
+                break
+        if exported >= args.num_eval_samples:
+            break
+
+    if not summary:
+        raise RuntimeError("No evaluation samples were exported.")
+
+    aggregate = {key: float(np.mean(values)) for key, values in totals.items() if values}
+    aggregate["avg_overall_position_improvement"] = aggregate["baseline_mpjpe"] - aggregate["restored_mpjpe"]
+    aggregate["avg_low_conf_position_improvement"] = aggregate["baseline_low_conf_mpjpe"] - aggregate["restored_low_conf_mpjpe"]
+    aggregate["avg_feature_overall_improvement"] = aggregate["feature_baseline_mse"] - aggregate["feature_restored_mse"]
+    aggregate["avg_feature_low_conf_improvement"] = aggregate["feature_baseline_low_conf_mse"] - aggregate["feature_restored_low_conf_mse"]
+    aggregate["successful_repairs"] = int(sum(int(sample["restoration_success"]) for sample in summary))
+    aggregate["evaluated_samples"] = exported
+
+    report = {
+        "model_path": str(model_path),
+        "output_dir": str(output_dir),
+        "split": args.split,
+        "curriculum_stage": int(model_args.curriculum_stage),
+        "sample_limit": int(model_args.sample_limit),
+        "reliable_position_tolerance": RELIABLE_POSITION_TOLERANCE,
+        "aggregate": aggregate,
+        "samples": summary,
+    }
+    with open(output_dir / "summary.json", "w", encoding="utf-8") as handle:
+        json.dump(report, handle, indent=2)
+
+    print(json.dumps(report, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -62,6 +62,9 @@ def main():
         curriculum_stage=args.curriculum_stage,
         enable_topology_augmentation=args.enable_topology_augmentation,
         prefetch_factor=args.prefetch_factor,
+        sample_limit=args.sample_limit,
+        offline_reference_samples=args.offline_reference_samples,
+        offline_reference_seed=args.offline_reference_seed,
     )
 
     print("creating model and diffusion...")

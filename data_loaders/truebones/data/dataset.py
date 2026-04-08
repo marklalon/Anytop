@@ -5,6 +5,7 @@ import numpy as np
 import os
 from os.path import join as pjoin
 import random
+import copy
 from torch.utils.data._utils.collate import default_collate
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_process import remove_joints_augmentation, add_joint_augmentation
@@ -37,7 +38,7 @@ def create_temporal_mask_for_window(window, max_len):
 
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, temporal_window, t5_name, balanced, curriculum_stage=1, enable_topology_augmentation=False):
+    def __init__(self, opt, cond_dict, temporal_window, t5_name, balanced, curriculum_stage=1, enable_topology_augmentation=False, sample_limit=0, offline_reference_samples=False, offline_reference_seed=10):
         print("in MotionDataset constructor")
         self.opt = opt
         self.max_length = 20
@@ -46,8 +47,12 @@ class MotionDataset(data.Dataset):
         self.cond_dict = cond_dict
         self.balanced = balanced
         self.enable_topology_augmentation = enable_topology_augmentation
+        self.sample_limit = max(0, int(sample_limit))
+        self.offline_reference_samples = bool(offline_reference_samples)
+        self.offline_reference_seed = int(offline_reference_seed)
         self.reference_corruptor = MotionCorruptor(
             curriculum_stage=curriculum_stage,
+            seed=self.offline_reference_seed if self.offline_reference_samples else None,
         )
         data_dict = {}
         all_object_types = self.cond_dict.keys()
@@ -88,10 +93,17 @@ class MotionDataset(data.Dataset):
                     pass
                 
         name_list, length_list = zip(*sorted(zip(new_name_list, length_list), key=lambda x: x[1]))
+        if self.sample_limit > 0:
+            name_list = name_list[:self.sample_limit]
+            length_list = length_list[:self.sample_limit]
+            data_dict = {name: data_dict[name] for name in name_list}
         self.length_arr = np.array(length_list)
         self.data_dict = data_dict
         self.name_list = name_list
         self.temporal_mask_template = create_temporal_mask_for_window(temporal_window, self.max_motion_length)
+        self.offline_samples = None
+        if self.offline_reference_samples:
+            self.offline_samples = self._build_offline_reference_cache()
         self.reset_max_len(self.max_length)
 
     def reset_max_len(self, length):
@@ -109,6 +121,66 @@ class MotionDataset(data.Dataset):
         mean = self.cond_dict[y['object_type']]['mean']
         std = self.cond_dict[y['object_type']]['std']
         return x * std + mean
+
+    def _build_offline_reference_cache(self):
+        cached_samples = {}
+        random_state = random.getstate()
+        random.seed(self.offline_reference_seed)
+        try:
+            for name in self.name_list:
+                cached_samples[name] = self._prepare_sample(self.data_dict[name])
+        finally:
+            random.setstate(random_state)
+        return cached_samples
+
+    def _clone_cached_sample(self, sample):
+        cloned = []
+        for value in sample:
+            if isinstance(value, np.ndarray):
+                cloned.append(value.copy())
+            elif isinstance(value, list):
+                cloned.append(value.copy())
+            elif isinstance(value, dict):
+                cloned.append(copy.deepcopy(value))
+            else:
+                cloned.append(value)
+        return tuple(cloned)
+
+    def _prepare_sample(self, data):
+        motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std = self.augment(data)
+        std = std + 1e-6
+        motion = (motion - mean[None, :]) / std[None, :]
+        motion = np.nan_to_num(motion)
+        ind = 0
+        tpos_first_frame = (tpos_first_frame - mean) / std
+        tpos_first_frame = np.nan_to_num(tpos_first_frame)
+        if m_length > self.max_motion_length:
+            ind = random.randint(0, m_length - self.max_motion_length)
+            motion = motion[ind: ind + self.max_motion_length]
+            m_length = self.max_motion_length
+
+        reference_motion, soft_confidence_mask, corruption_metadata = self.reference_corruptor.corrupt(
+            motion,
+            length=m_length,
+            kinematic_chains=kinematic_chains,
+        )
+
+        if m_length < self.max_motion_length:
+            pad_frames = self.max_motion_length - m_length
+            motion = np.concatenate([
+                                     motion,
+                                     np.zeros((pad_frames, motion.shape[1], motion.shape[2]), dtype=motion.dtype)
+                                     ], axis=0)
+            reference_motion = np.concatenate([
+                                               reference_motion,
+                                               np.zeros((pad_frames, reference_motion.shape[1], reference_motion.shape[2]), dtype=reference_motion.dtype)
+                                               ], axis=0)
+            soft_confidence_mask = np.concatenate([
+                                                   soft_confidence_mask,
+                                                   np.zeros((pad_frames, soft_confidence_mask.shape[1], soft_confidence_mask.shape[2]), dtype=soft_confidence_mask.dtype)
+                                                   ], axis=0)
+
+        return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, reference_motion, soft_confidence_mask, corruption_metadata
     
     def augment(self, data):
         object_type = data['object_type']
@@ -138,43 +210,10 @@ class MotionDataset(data.Dataset):
             idx = item #self.pointer + item (handled in weighted sampler)
         else:
             idx = self.pointer + item
-        data = self.data_dict[self.name_list[idx]]
-        motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std = self.augment(data)
-        "Z Normalization"
-        # Normalize all coords but rotations 
-        std = std + 1e-6 # for stability
-        motion = (motion - mean[None, :]) / std[None, :]
-        motion = np.nan_to_num(motion)
-        ind = 0
-        tpos_first_frame =  (tpos_first_frame - mean) / std
-        tpos_first_frame = np.nan_to_num(tpos_first_frame)
-        if m_length > self.max_motion_length:
-            ind = random.randint(0, m_length - self.max_motion_length)
-            motion = motion[ind: ind + self.max_motion_length]
-            m_length = self.max_motion_length
-
-        reference_motion, soft_confidence_mask, corruption_metadata = self.reference_corruptor.corrupt(
-            motion,
-            length=m_length,
-            kinematic_chains=kinematic_chains,
-        )
-
-        if m_length < self.max_motion_length:
-            pad_frames = self.max_motion_length - m_length
-            motion = np.concatenate([
-                                     motion,
-                                     np.zeros((pad_frames, motion.shape[1], motion.shape[2]), dtype=motion.dtype)
-                                     ], axis=0)
-            reference_motion = np.concatenate([
-                                               reference_motion,
-                                               np.zeros((pad_frames, reference_motion.shape[1], reference_motion.shape[2]), dtype=reference_motion.dtype)
-                                               ], axis=0)
-            soft_confidence_mask = np.concatenate([
-                                                   soft_confidence_mask,
-                                                   np.zeros((pad_frames, soft_confidence_mask.shape[1], soft_confidence_mask.shape[2]), dtype=soft_confidence_mask.dtype)
-                                                   ], axis=0)
-
-        return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, reference_motion, soft_confidence_mask, corruption_metadata
+        name = self.name_list[idx]
+        if self.offline_reference_samples:
+            return self._clone_cached_sample(self.offline_samples[name])
+        return self._prepare_sample(self.data_dict[name])
 
 class TruebonesSampler(WeightedRandomSampler):
     def __init__(self, data_source):
@@ -205,6 +244,9 @@ class Truebones(data.Dataset):
         self.objects_subset = kwargs['objects_subset']
         self.curriculum_stage = kwargs.get('curriculum_stage', 1)
         self.enable_topology_augmentation = kwargs.get('enable_topology_augmentation', False)
+        self.sample_limit = kwargs.get('sample_limit', 0)
+        self.offline_reference_samples = kwargs.get('offline_reference_samples', False)
+        self.offline_reference_seed = kwargs.get('offline_reference_seed', 10)
         print('Loading Truebones dataset')
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
         subset = opt.subsets_dict[self.objects_subset] 
@@ -220,6 +262,9 @@ class Truebones(data.Dataset):
             self.balanced,
             curriculum_stage=self.curriculum_stage,
             enable_topology_augmentation=self.enable_topology_augmentation,
+            sample_limit=self.sample_limit,
+            offline_reference_samples=self.offline_reference_samples,
+            offline_reference_seed=self.offline_reference_seed,
         )
         assert len(self.motion_dataset) > 1, 'You loaded an empty dataset, ' \
                                           'it is probably because your data dir has only texts and no motions.\n' \
