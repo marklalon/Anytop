@@ -33,12 +33,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split", default="train", choices=["train", "val", "test"], help="Dataset split to sample from.")
     parser.add_argument("--objects-subset", default="", help="Override object subset. Defaults to checkpoint args.")
     parser.add_argument("--num-workers", default=0, type=int, help="DataLoader workers for loading stored corrupted references.")
-    parser.add_argument("--reference-fusion-min-scale", default=None, type=float, help="Minimum early-step scale applied to reference fusion weights. 1.0 keeps the old always-on fusion.")
-    parser.add_argument("--reference-fusion-warmup-fraction", default=None, type=float, help="Fraction of the reverse trajectory over which reference fusion ramps from min-scale to full strength. 0 disables the schedule.")
-    parser.add_argument("--reference-fusion-ramp-power", default=None, type=float, help="Exponent applied to the reference-fusion warmup curve.")
-    parser.add_argument("--reference-conditioning-min-scale", default=None, type=float, help="Minimum early-step scale applied to the sampling-time confidence mask before reference encoding. 1.0 keeps the old conditioning strength.")
-    parser.add_argument("--reference-conditioning-warmup-fraction", default=None, type=float, help="Fraction of the reverse trajectory over which sampling-time confidence conditioning ramps from min-scale to full strength. 0 disables the schedule.")
-    parser.add_argument("--reference-conditioning-ramp-power", default=None, type=float, help="Exponent applied to the sampling-time confidence conditioning warmup curve.")
     return parser.parse_args()
 
 
@@ -70,18 +64,6 @@ def main() -> int:
     model_args.batch_size = args.batch_size
     if args.objects_subset:
         model_args.objects_subset = args.objects_subset
-    if args.reference_fusion_min_scale is not None:
-        model_args.reference_fusion_min_scale = args.reference_fusion_min_scale
-    if args.reference_fusion_warmup_fraction is not None:
-        model_args.reference_fusion_warmup_fraction = args.reference_fusion_warmup_fraction
-    if args.reference_fusion_ramp_power is not None:
-        model_args.reference_fusion_ramp_power = args.reference_fusion_ramp_power
-    if args.reference_conditioning_min_scale is not None:
-        model_args.reference_conditioning_min_scale = args.reference_conditioning_min_scale
-    if args.reference_conditioning_warmup_fraction is not None:
-        model_args.reference_conditioning_warmup_fraction = args.reference_conditioning_warmup_fraction
-    if args.reference_conditioning_ramp_power is not None:
-        model_args.reference_conditioning_ramp_power = args.reference_conditioning_ramp_power
 
     dist_util.setup_dist(args.device)
     opt = get_opt(args.device)

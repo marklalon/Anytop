@@ -19,14 +19,6 @@ from utils.rotation_conversions import rotation_6d_to_matrix_safe
 
 PRESERVATION_CONFIDENCE_THRESHOLD = 0.0
 PRESERVATION_CONFIDENCE_POWER = 1.0
-REFERENCE_FUSION_THRESHOLD = 0.0
-REFERENCE_FUSION_POWER = 1.0
-REFERENCE_FUSION_MIN_SCALE = 1.0
-REFERENCE_FUSION_WARMUP_FRACTION = 0.0
-REFERENCE_FUSION_RAMP_POWER = 1.0
-REFERENCE_CONDITIONING_MIN_SCALE = 1.0
-REFERENCE_CONDITIONING_WARMUP_FRACTION = 0.0
-REFERENCE_CONDITIONING_RAMP_POWER = 1.0
 
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, scale_betas=1.):
     """
@@ -142,12 +134,6 @@ class GaussianDiffusion:
         lambda_repair_recon=0.,
         lambda_root=0.,
         lambda_velocity=0.,
-        reference_fusion_min_scale=REFERENCE_FUSION_MIN_SCALE,
-        reference_fusion_warmup_fraction=REFERENCE_FUSION_WARMUP_FRACTION,
-        reference_fusion_ramp_power=REFERENCE_FUSION_RAMP_POWER,
-        reference_conditioning_min_scale=REFERENCE_CONDITIONING_MIN_SCALE,
-        reference_conditioning_warmup_fraction=REFERENCE_CONDITIONING_WARMUP_FRACTION,
-        reference_conditioning_ramp_power=REFERENCE_CONDITIONING_RAMP_POWER,
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
@@ -161,14 +147,6 @@ class GaussianDiffusion:
         self.lambda_velocity = lambda_velocity
         self.preservation_confidence_threshold = PRESERVATION_CONFIDENCE_THRESHOLD
         self.preservation_confidence_power = PRESERVATION_CONFIDENCE_POWER
-        self.reference_fusion_threshold = REFERENCE_FUSION_THRESHOLD
-        self.reference_fusion_power = REFERENCE_FUSION_POWER
-        self.reference_fusion_min_scale = float(reference_fusion_min_scale)
-        self.reference_fusion_warmup_fraction = float(reference_fusion_warmup_fraction)
-        self.reference_fusion_ramp_power = float(reference_fusion_ramp_power)
-        self.reference_conditioning_min_scale = float(reference_conditioning_min_scale)
-        self.reference_conditioning_warmup_fraction = float(reference_conditioning_warmup_fraction)
-        self.reference_conditioning_ramp_power = float(reference_conditioning_ramp_power)
 
         # Use float64 for accuracy.
         betas = np.array(betas, dtype=np.float64)
@@ -256,64 +234,12 @@ class GaussianDiffusion:
             return None
         return confidence.clamp(0.0, 1.0)
 
-    def timestep_schedule_scale(self, t, prediction, min_scale, warmup_fraction, ramp_power):
-        batch_size = prediction.shape[0]
-        view_shape = (batch_size,) + (1,) * (prediction.dim() - 1)
-        if warmup_fraction <= 0.0 or min_scale >= 1.0:
-            return torch.ones(view_shape, device=prediction.device, dtype=prediction.dtype)
-        if self.num_timesteps <= 1:
-            return torch.ones(view_shape, device=prediction.device, dtype=prediction.dtype)
-
-        reverse_progress = 1.0 - (t.float() / float(self.num_timesteps - 1))
-        scaled_progress = (reverse_progress / max(warmup_fraction, 1e-8)).clamp(0.0, 1.0)
-        schedule_scale = min_scale + (1.0 - min_scale) * (
-            scaled_progress ** ramp_power
-        )
-        return schedule_scale.to(device=prediction.device, dtype=prediction.dtype).view(view_shape)
-
-    def reference_fusion_scale(self, t, prediction):
-        return self.timestep_schedule_scale(
-            t,
-            prediction,
-            self.reference_fusion_min_scale,
-            self.reference_fusion_warmup_fraction,
-            self.reference_fusion_ramp_power,
-        )
-
-    def reference_conditioning_scale(self, t, reference_motion):
-        return self.timestep_schedule_scale(
-            t,
-            reference_motion,
-            self.reference_conditioning_min_scale,
-            self.reference_conditioning_warmup_fraction,
-            self.reference_conditioning_ramp_power,
-        )
-
-    def prepare_model_kwargs_for_sampling(self, model_kwargs, t):
-        if not model_kwargs:
-            return model_kwargs
-        conditioning = model_kwargs.get('y')
-        if conditioning is None or 'soft_confidence_mask' not in conditioning:
-            return model_kwargs
-        if self.reference_conditioning_warmup_fraction <= 0.0 or self.reference_conditioning_min_scale >= 1.0:
-            return model_kwargs
-
-        scaled_model_kwargs = dict(model_kwargs)
-        scaled_conditioning = dict(conditioning)
-        confidence = conditioning['soft_confidence_mask']
-        scale = self.reference_conditioning_scale(t, confidence)
-        scaled_conditioning['soft_confidence_mask'] = confidence * scale.to(device=confidence.device, dtype=confidence.dtype)
-        scaled_model_kwargs['y'] = scaled_conditioning
-        return scaled_model_kwargs
-
-    def apply_reference_fusion(self, prediction, reference_motion, confidence, t=None):
+    def apply_reference_fusion(self, prediction, reference_motion, confidence):
         if reference_motion is None or confidence is None:
             return prediction
         reference_motion = reference_motion.to(prediction.device, dtype=prediction.dtype)
         confidence = confidence.to(prediction.device, dtype=prediction.dtype)
         reliability = self.confidence_weights(confidence)
-        if t is not None:
-            reliability = reliability * self.reference_fusion_scale(t, prediction)
         return torch.lerp(prediction, reference_motion, reliability)
 
     def get_reference_fusion_inputs(self, model_kwargs):
@@ -468,7 +394,6 @@ class GaussianDiffusion:
         """
         if model_kwargs is None:
             model_kwargs = {}
-        model_kwargs = self.prepare_model_kwargs_for_sampling(model_kwargs, t)
 
         B, C = x.shape[:2]
         assert t.shape == (B,)
@@ -489,7 +414,7 @@ class GaussianDiffusion:
 
         reference_motion, confidence = self.get_reference_fusion_inputs(model_kwargs)
         if self.model_mean_type == ModelMeanType.START_X:
-            model_output = self.apply_reference_fusion(model_output, reference_motion, confidence, t=t)
+            model_output = self.apply_reference_fusion(model_output, reference_motion, confidence)
 
         if self.model_var_type in [ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE]:
             assert model_output.shape == (B, C * 2, *x.shape[2:])

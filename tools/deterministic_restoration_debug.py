@@ -575,8 +575,6 @@ def main() -> int:
         "lambda_velocity": model_args.lambda_velocity,
         "preservation_confidence_threshold": diffusion.preservation_confidence_threshold,
         "preservation_confidence_power": diffusion.preservation_confidence_power,
-        "reference_fusion_threshold": diffusion.reference_fusion_threshold,
-        "reference_fusion_power": diffusion.reference_fusion_power,
         "skip_video_export": bool(args.skip_video_export),
         "deterministic_eval": eval_report,
     }

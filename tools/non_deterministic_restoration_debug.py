@@ -39,7 +39,7 @@ POSITION_IMPROVEMENT_EPS = 1e-6
 DEFAULT_TEMPORAL_WINDOW = 31
 DEFAULT_T5_NAME = "t5-base"
 DEFAULT_LATENT_DIM = 64
-DEFAULT_LAYERS = 3
+DEFAULT_LAYERS = 4
 DEFAULT_COND_MASK_PROB = 0.1
 DEFAULT_NOISE_SCHEDULE = "cosine"
 DEFAULT_SIGMA_SMALL = True
@@ -50,6 +50,7 @@ DEFAULT_NUM_WORKERS = 0
 DEFAULT_NUM_FRAMES = 120
 DEFAULT_SAMPLE_LIMIT = 32
 DEFAULT_EVAL_SAMPLES = 32
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Non-deterministic one-shot full-schedule restoration with stochastic sampling evaluation.")
     parser.add_argument("--output-dir", required=True, help="Directory to write checkpoints, reports, and exports into.")
@@ -74,12 +75,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lambda-repair-recon", default=None, type=float, help="Low-confidence repair reconstruction weight. Overrides checkpoint args when set.")
     parser.add_argument("--lambda-root", default=None, type=float, help="Root consistency weight. Overrides checkpoint args when set.")
     parser.add_argument("--lambda-velocity", default=None, type=float, help="Velocity consistency weight. Overrides checkpoint args when set.")
-    parser.add_argument("--reference-fusion-min-scale", default=None, type=float, help="Minimum early-step scale applied to reference fusion weights. 1.0 keeps the old always-on fusion.")
-    parser.add_argument("--reference-fusion-warmup-fraction", default=None, type=float, help="Fraction of the reverse trajectory over which reference fusion ramps from min-scale to full strength. 0 disables the schedule.")
-    parser.add_argument("--reference-fusion-ramp-power", default=None, type=float, help="Exponent applied to the reference-fusion warmup curve.")
-    parser.add_argument("--reference-conditioning-min-scale", default=None, type=float, help="Minimum early-step scale applied to the sampling-time confidence mask before reference encoding. 1.0 keeps the old conditioning strength.")
-    parser.add_argument("--reference-conditioning-warmup-fraction", default=None, type=float, help="Fraction of the reverse trajectory over which sampling-time confidence conditioning ramps from min-scale to full strength. 0 disables the schedule.")
-    parser.add_argument("--reference-conditioning-ramp-power", default=None, type=float, help="Exponent applied to the sampling-time confidence conditioning warmup curve.")
     parser.add_argument("--eval-split", default="train", choices=["train", "val", "test"], help="Dataset split used for post-training stochastic evaluation.")
     parser.add_argument("--num-eval-samples", default=DEFAULT_EVAL_SAMPLES, type=int, help="Number of unique samples to evaluate across all trials.")
     parser.add_argument("--eval-batch-size", default=8, type=int, help="Batch size for stochastic restoration evaluation.")
@@ -154,12 +149,6 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
     model_args.lambda_repair_recon = getattr(model_args, "lambda_repair_recon", 1.0)
     model_args.lambda_root = getattr(model_args, "lambda_root", 0.25)
     model_args.lambda_velocity = getattr(model_args, "lambda_velocity", 0.1)
-    model_args.reference_fusion_min_scale = getattr(model_args, "reference_fusion_min_scale", 1.0)
-    model_args.reference_fusion_warmup_fraction = getattr(model_args, "reference_fusion_warmup_fraction", 0.0)
-    model_args.reference_fusion_ramp_power = getattr(model_args, "reference_fusion_ramp_power", 1.0)
-    model_args.reference_conditioning_min_scale = getattr(model_args, "reference_conditioning_min_scale", 1.0)
-    model_args.reference_conditioning_warmup_fraction = getattr(model_args, "reference_conditioning_warmup_fraction", 0.0)
-    model_args.reference_conditioning_ramp_power = getattr(model_args, "reference_conditioning_ramp_power", 1.0)
     if args.lambda_confidence_recon is not None:
         model_args.lambda_confidence_recon = args.lambda_confidence_recon
     if args.lambda_repair_recon is not None:
@@ -168,18 +157,6 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
         model_args.lambda_root = args.lambda_root
     if args.lambda_velocity is not None:
         model_args.lambda_velocity = args.lambda_velocity
-    if args.reference_fusion_min_scale is not None:
-        model_args.reference_fusion_min_scale = args.reference_fusion_min_scale
-    if args.reference_fusion_warmup_fraction is not None:
-        model_args.reference_fusion_warmup_fraction = args.reference_fusion_warmup_fraction
-    if args.reference_fusion_ramp_power is not None:
-        model_args.reference_fusion_ramp_power = args.reference_fusion_ramp_power
-    if args.reference_conditioning_min_scale is not None:
-        model_args.reference_conditioning_min_scale = args.reference_conditioning_min_scale
-    if args.reference_conditioning_warmup_fraction is not None:
-        model_args.reference_conditioning_warmup_fraction = args.reference_conditioning_warmup_fraction
-    if args.reference_conditioning_ramp_power is not None:
-        model_args.reference_conditioning_ramp_power = args.reference_conditioning_ramp_power
     model_args.latent_dim = getattr(model_args, "latent_dim", DEFAULT_LATENT_DIM)
     model_args.layers = getattr(model_args, "layers", DEFAULT_LAYERS)
     model_args.cond_mask_prob = getattr(model_args, "cond_mask_prob", DEFAULT_COND_MASK_PROB)
@@ -948,14 +925,6 @@ def main() -> int:
         "lambda_velocity": model_args.lambda_velocity,
         "preservation_confidence_threshold": diffusion.preservation_confidence_threshold,
         "preservation_confidence_power": diffusion.preservation_confidence_power,
-        "reference_fusion_threshold": diffusion.reference_fusion_threshold,
-        "reference_fusion_power": diffusion.reference_fusion_power,
-        "reference_fusion_min_scale": diffusion.reference_fusion_min_scale,
-        "reference_fusion_warmup_fraction": diffusion.reference_fusion_warmup_fraction,
-        "reference_fusion_ramp_power": diffusion.reference_fusion_ramp_power,
-        "reference_conditioning_min_scale": diffusion.reference_conditioning_min_scale,
-        "reference_conditioning_warmup_fraction": diffusion.reference_conditioning_warmup_fraction,
-        "reference_conditioning_ramp_power": diffusion.reference_conditioning_ramp_power,
         "skip_video_export": bool(args.skip_video_export),
         "stochastic_eval": sampling_report,
     }
