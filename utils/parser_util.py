@@ -95,6 +95,10 @@ def add_model_options(parser):
                        help="Disable the restoration reference branch and train only the AnyTop prior.")
     group.add_argument("--reference_dropout_threshold", default=0.05, type=float,
                        help="Reference confidence values below this threshold are treated as unusable during attention.")
+    group.add_argument("--reference_fusion_threshold", default=0.8, type=float,
+                       help="Only confidence values above this threshold are fused back from the corrupted reference during restoration.")
+    group.add_argument("--reference_fusion_power", default=2.0, type=float,
+                       help="Exponent applied after thresholding confidence for reference fusion. Values above 1 make fusion more conservative.")
     group.add_argument("--t5_name", default='t5-base', choices=["t5-small", "t5-base", "t5-large", "t5-3b", "t5-11b",
               "google/flan-t5-small", "google/flan-t5-base", "google/flan-t5-large",
               "google/flan-t5-xl", "google/flan-t5-xxl"], type=str,
@@ -136,7 +140,7 @@ def add_training_options(parser):
                        help="If True, will run evaluation during training.")
     group.add_argument("--eval_interval", default=1_000, type=int,
                        help="Run validation loss every N training steps when eval_during_training is enabled.")
-    group.add_argument("--eval_num_samples", default=10, type=int,
+    group.add_argument("--eval_num_samples", default=32, type=int,
                        help="If -1, will use all samples in the specified split.")
     group.add_argument("--log_interval", default=50, type=int,
                        help="Log losses each N steps")
@@ -147,11 +151,13 @@ def add_training_options(parser):
     group.add_argument("--num_frames", default=120, type=int,
                        help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
     group.add_argument("--num_workers", default=0, type=int,
-                       help="Number of DataLoader worker processes. Use 0 to load on the main process and reduce CPU RAM pressure.")
+                       help="Number of DataLoader worker processes. Use 0 to load on the main process, or -1 to pick a conservative automatic worker count.")
     group.add_argument("--sample_limit", default=0, type=int,
                        help="Limit the number of motion clips loaded for tiny overfit/debug runs. 0 keeps the full dataset.")
     group.add_argument("--prefetch_factor", default=2, type=int,
                        help="Per-worker prefetch factor for the restoration dataset loader.")
+    group.add_argument("--detect_anomaly", action='store_true',
+                       help="Enable PyTorch autograd anomaly detection. Useful for debugging, but significantly slows training.")
     group.add_argument("--resume_checkpoint", default="", type=str,
                        help="If not empty, will start from the specified checkpoint (path to model###.pt file).")
     group.add_argument("--gen_during_training", action='store_true',

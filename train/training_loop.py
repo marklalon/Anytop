@@ -1,6 +1,7 @@
 import functools
 import os
 import re
+import time
 from os.path import join as pjoin
 from typing import Optional
 import blobfile as bf
@@ -20,7 +21,6 @@ import random
 from data_loaders.get_data import get_dataset_loader
 
 INITIAL_LOG_LOSS_SCALE = 20.0
-torch.autograd.set_detect_anomaly(True)
 
 class TrainLoop:
     def __init__(self, args, train_platform, model, diffusion, data):
@@ -75,6 +75,8 @@ class TrainLoop:
         self.device = torch.device("cpu")
         if torch.cuda.is_available() and dist_util.dev() != 'cpu':
             self.device = torch.device(dist_util.dev())
+        self.non_blocking = self.device.type == 'cuda'
+        self.detect_anomaly = bool(getattr(self.args, 'detect_anomaly', False))
 
         self.schedule_sampler_type = 'uniform'
         self.schedule_sampler = create_named_schedule_sampler(self.schedule_sampler_type, diffusion)
@@ -151,11 +153,17 @@ class TrainLoop:
          print('train steps:', self.num_steps)
          while self.total_step() < self.num_steps:
             print(f'Starting a new epoch at step {self.total_step()}')
-            for motion, cond in tqdm(self.data):
+            data_iter = iter(tqdm(self.data))
+            while True:
+                try:
+                    motion, cond = next(data_iter)
+                except StopIteration:
+                    break
+
                 if not (not self.lr_anneal_steps or self.total_step() < self.lr_anneal_steps):
                     break
 
-                motion = motion.to(self.device)
+                motion = self._move_batch_to_device(motion)
                 cond = self._move_cond_to_device(cond)
 
                 self.run_step(motion, cond)
@@ -163,6 +171,7 @@ class TrainLoop:
                 current_step = self.total_step()
 
                 if current_step % self.log_interval == 0:
+                    print()
                     print(cond['y']['object_type'])
                     for k,v in logger.get_current().dumpkvs().items():
                         if k == 'loss':
@@ -179,14 +188,15 @@ class TrainLoop:
 
                 if self._should_save(current_step):
                     self.save()
+
                     self.model.eval()
                     self.generate_during_training()
                     self.model.train()
 
-
                     # Run for a finite amount of time in integration tests.
                     if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
                         return
+
                 self.step += 1
 
                 if self.total_step() == self.num_steps:
@@ -195,10 +205,15 @@ class TrainLoop:
             if not (not self.lr_anneal_steps or self.total_step() < self.lr_anneal_steps):
                 break
 
+    def _move_batch_to_device(self, batch):
+        return batch.to(self.device, non_blocking=self.non_blocking)
+
+
+
     def _move_cond_to_device(self, cond):
         return {
             'y': {
-                key: val.to(self.device) if torch.is_tensor(val) else val
+                key: val.to(self.device, non_blocking=self.non_blocking) if torch.is_tensor(val) else val
                 for key, val in cond['y'].items()
             }
         }
@@ -262,9 +277,17 @@ class TrainLoop:
         seen_samples = 0
         max_eval_samples = int(self.args.eval_num_samples)
 
-        for motion, cond in self.eval_data:
-            motion = motion.to(self.device)
+        eval_iter = iter(self.eval_data)
+
+        while True:
+            try:
+                motion, cond = next(eval_iter)
+            except StopIteration:
+                break
+
+            motion = self._move_batch_to_device(motion)
             cond = self._move_cond_to_device(cond)
+
             batch_losses = self._compute_eval_losses(motion, cond)
             batch_size = motion.shape[0]
 
@@ -287,8 +310,14 @@ class TrainLoop:
             self.train_platform.report_scalar(name=key, value=value, iteration=current_step, group_name='Val')
 
 
+
+
     def run_step(self, batch, cond, epoch=-1):
-        self.forward_backward(batch, cond, epoch)
+        if self.detect_anomaly:
+            with torch.autograd.detect_anomaly():
+                self.forward_backward(batch, cond, epoch)
+        else:
+            self.forward_backward(batch, cond, epoch)
         #clip_grad_value_(self.model.parameters(), clip_value=1.5)
         took_step = self.mp_trainer.optimize(self.opt, self.lr_scheduler)
         if took_step and self.model_avg is not None:

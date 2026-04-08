@@ -488,16 +488,20 @@ def plot_general_skeleton_pca(parents, pca_results, joints, title, dataset, figs
     plt.close()
     return ani 
 
-def save_multiple_samples(out_path, file_name,  animations, fps, max_frames):
+def save_multiple_samples(out_path, file_name,  animations, fps, max_frames, threads=None):
     sample_save_path = os.path.join(out_path, file_name)
-    print(f'saving {file_name}')
+    print(f'saving {sample_save_path}')
 
     clips = clips_array(animations)
     clips.duration = max_frames/fps
+    if threads is None:
+        threads = 4
+    else:
+        threads = max(1, int(threads))
     
     # import time
     # start = time.time()
-    clips.write_videofile(sample_save_path, fps=fps, threads=4, logger=None)
+    clips.write_videofile(sample_save_path, fps=fps, threads=threads, logger=None)
     # print(f'duration = {time.time()-start}')
     
     for clip in clips.clips: 
@@ -505,18 +509,22 @@ def save_multiple_samples(out_path, file_name,  animations, fps, max_frames):
         clip.close()
     clips.close()  # important
     
-def save_sample(out_path, file_name, animation, fps, max_frames):
+def save_sample(out_path, file_name, animation, fps, max_frames, threads=None):
     sample_save_path = os.path.join(out_path, file_name)
-    print(f'saving {file_name}')
+    print(f'saving {sample_save_path}')
     animation.duration = max_frames/fps
-    animation.write_videofile(sample_save_path, fps=fps, threads=4, logger=None)
+    if threads is None:
+        threads = 4
+    else:
+        threads = max(1, int(threads))
+    animation.write_videofile(sample_save_path, fps=fps, threads=threads, logger=None)
     animation.close()
     if hasattr(animation, '_plot_fig'):
         plt.close(animation._plot_fig)
 
-def plot_general_skeleton_3d_motion(save_path, parents, joints, title, dataset="truebones", figsize=(7, 7), fps=120, radius=5, face_joints = [], fc = None):
+def plot_general_skeleton_3d_motion(save_path, parents, joints, title, dataset="truebones", figsize=(7, 7), fps=120, radius=5, face_joints = [], fc = None, video_threads=None):
     ani = get_general_skeleton_3d_motion(parents, joints, title, dataset, figsize, fps, radius, face_joints, fc)
     path = Path(save_path)
     out_dir = path.parent
     fname = path.name
-    save_sample(out_dir, fname, ani, fps, len(joints))
+    save_sample(out_dir, fname, ani, fps, len(joints), threads=video_threads)

@@ -39,6 +39,7 @@ Key Optional Arguments:
 """
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor
 import json
 import os
 import sys
@@ -61,7 +62,8 @@ from utils import dist_util
 from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
 
 
-RELIABLE_POSITION_TOLERANCE = 0.01
+RELIABLE_POSITION_TOLERANCE = 0.002
+RELIABLE_POSITION_RATIO_TOLERANCE = 1.15
 POSITION_IMPROVEMENT_EPS = 1e-6
 
 
@@ -73,9 +75,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", default=1, type=int, help="Batch size for evaluation. Use 1 for easier inspection.")
     parser.add_argument("--device", default=0, type=int, help="CUDA device id. Use -1 for CPU.")
     parser.add_argument("--seed", default=10, type=int, help="Random seed.")
-    parser.add_argument("--split", default="val", choices=["train", "val", "test"], help="Dataset split to sample from.")
+    parser.add_argument("--split", default="train", choices=["train", "val", "test"], help="Dataset split to sample from.")
     parser.add_argument("--sample-limit", default=-1, type=int, help="Override dataset sample limit. -1 keeps checkpoint args.")
     parser.add_argument("--num-workers", default=0, type=int, help="DataLoader workers for evaluation.")
+    parser.add_argument("--sampling-method", default="p", choices=["p", "ddim", "plms"], help="Diffusion sampler to use. DDIM and PLMS can be substantially faster when paired with fewer sampling steps.")
+    parser.add_argument("--sampling-steps", default=0, type=int, help="Respaced diffusion steps. 0 keeps the checkpoint step count.")
+    parser.add_argument("--ddim-eta", default=0.0, type=float, help="DDIM eta parameter. Ignored for other samplers.")
+    parser.add_argument("--render-workers", default=8, type=int, help="MP4 render parallelism. 0 renders inline and blocks sampling. Values > 1 use that many worker processes and automatically reduce each ffmpeg encode to a single thread.")
+    parser.add_argument("--video-fps", default=20, type=int, help="Output FPS for exported MP4 previews.")
+    parser.add_argument("--skip-video-export", action="store_true", help="Skip MP4 export and only write .npy outputs plus metrics.")
     return parser.parse_args()
 
 
@@ -90,7 +98,7 @@ def load_model_args(model_path: Path) -> SimpleNamespace:
 def move_cond_to_device(cond: dict, device: torch.device) -> dict:
     moved = {"y": {}}
     for key, value in cond["y"].items():
-        moved["y"][key] = value.to(device) if torch.is_tensor(value) else value
+        moved["y"][key] = value.to(device, non_blocking=True) if torch.is_tensor(value) else value
     return moved
 
 
@@ -111,15 +119,11 @@ def weighted_position_error(pred_positions: np.ndarray, target_positions: np.nda
 
 
 def compute_position_metrics(
-    reference_motion: np.ndarray,
-    restored_motion: np.ndarray,
-    target_motion: np.ndarray,
+    reference_positions: np.ndarray,
+    restored_positions: np.ndarray,
+    target_positions: np.ndarray,
     confidence: np.ndarray,
 ) -> dict[str, float]:
-    target_positions = recover_from_bvh_ric_np(target_motion)
-    reference_positions = recover_from_bvh_ric_np(reference_motion)
-    restored_positions = recover_from_bvh_ric_np(restored_motion)
-
     reference_error = np.linalg.norm(reference_positions - target_positions, axis=-1)
     restored_error = np.linalg.norm(restored_positions - target_positions, axis=-1)
     low_conf_weights = np.clip(1.0 - confidence, 0.0, 1.0)
@@ -145,7 +149,11 @@ def compute_position_metrics(
 
 def classify_restoration(position_metrics: dict[str, float]) -> dict[str, object]:
     low_conf_improved = position_metrics["restored_low_conf_mpjpe"] + POSITION_IMPROVEMENT_EPS < position_metrics["baseline_low_conf_mpjpe"]
-    reliable_preserved = position_metrics["restored_reliable_mpjpe"] <= position_metrics["baseline_reliable_mpjpe"] + RELIABLE_POSITION_TOLERANCE
+    reliable_limit = max(
+        position_metrics["baseline_reliable_mpjpe"] + RELIABLE_POSITION_TOLERANCE,
+        position_metrics["baseline_reliable_mpjpe"] * RELIABLE_POSITION_RATIO_TOLERANCE,
+    )
+    reliable_preserved = position_metrics["restored_reliable_mpjpe"] <= reliable_limit
     overall_improved = position_metrics["restored_mpjpe"] + POSITION_IMPROVEMENT_EPS < position_metrics["baseline_mpjpe"]
     success = bool(low_conf_improved and reliable_preserved and overall_improved)
     if success:
@@ -165,10 +173,80 @@ def classify_restoration(position_metrics: dict[str, float]) -> dict[str, object
     }
 
 
-def export_motion_triplet(sample_dir: Path, name: str, motion: np.ndarray, parents: list[int]) -> None:
+def export_motion_array(sample_dir: Path, name: str, motion: np.ndarray) -> None:
     np.save(sample_dir / f"{name}.npy", motion)
-    positions = recover_from_bvh_ric_np(motion)
-    plot_general_skeleton_3d_motion(str(sample_dir / f"{name}.mp4"), parents, positions, title=name, fps=20)
+
+
+def resolve_video_threads(render_workers: int) -> int:
+    return 1 if render_workers > 1 else 4
+
+
+def configure_sampling(model_args: SimpleNamespace, args: argparse.Namespace) -> None:
+    diffusion_steps = int(getattr(model_args, "diffusion_steps", 100))
+    sampling_steps = int(args.sampling_steps)
+    if sampling_steps < 0:
+        raise ValueError("--sampling-steps must be >= 0")
+    if sampling_steps > diffusion_steps:
+        raise ValueError(f"--sampling-steps ({sampling_steps}) cannot exceed diffusion_steps ({diffusion_steps})")
+    if sampling_steps == 0:
+        model_args.timestep_respacing = ""
+    elif args.sampling_method == "ddim":
+        model_args.timestep_respacing = f"ddim{sampling_steps}"
+    else:
+        model_args.timestep_respacing = str(sampling_steps)
+
+
+def sample_motion_batch(
+    diffusion,
+    model,
+    motion_shape: torch.Size,
+    cond: dict,
+    sampling_method: str,
+    ddim_eta: float,
+) -> torch.Tensor:
+    if sampling_method == "ddim":
+        return diffusion.ddim_sample_loop(
+            model,
+            motion_shape,
+            clip_denoised=False,
+            model_kwargs=cond,
+            progress=False,
+            eta=ddim_eta,
+        )
+    if sampling_method == "plms":
+        return diffusion.plms_sample_loop(
+            model,
+            motion_shape,
+            clip_denoised=False,
+            model_kwargs=cond,
+            progress=False,
+        )
+    return diffusion.p_sample_loop(
+        model,
+        motion_shape,
+        clip_denoised=False,
+        model_kwargs=cond,
+        progress=False,
+    )
+
+
+def render_motion_triplet_videos(
+    sample_dir: str,
+    parents: list[int],
+    videos: list[tuple[str, np.ndarray]],
+    fps: int,
+    video_threads: int,
+) -> None:
+    sample_dir_path = Path(sample_dir)
+    for name, positions in videos:
+        plot_general_skeleton_3d_motion(
+            str(sample_dir_path / f"{name}.mp4"),
+            parents,
+            positions,
+            title=name,
+            fps=fps,
+            video_threads=video_threads,
+        )
 
 
 def main() -> int:
@@ -178,6 +256,7 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     model_args = load_model_args(model_path)
+    configure_sampling(model_args, args)
     fixseed(args.seed)
     dist_util.setup_dist(args.device)
 
@@ -185,6 +264,14 @@ def main() -> int:
         model_args.sample_limit = args.sample_limit
     model_args.device = args.device
     model_args.batch_size = args.batch_size
+
+    render_workers = max(0, int(args.render_workers))
+    video_threads = resolve_video_threads(render_workers)
+    render_executor = None
+    render_futures = []
+    if not args.skip_video_export and render_workers > 0:
+        max_render_workers = min(render_workers, max(1, os.cpu_count() or 1))
+        render_executor = ProcessPoolExecutor(max_workers=max_render_workers)
 
     data = get_dataset_loader(
         batch_size=args.batch_size,
@@ -231,15 +318,16 @@ def main() -> int:
 
     exported = 0
     for batch_index, (motion, cond) in enumerate(data):
-        motion = motion.to(dist_util.dev())
+        motion = motion.to(dist_util.dev(), non_blocking=True)
         cond = move_cond_to_device(cond, dist_util.dev())
-        with torch.no_grad():
-            restored = diffusion.p_sample_loop(
+        with torch.inference_mode():
+            restored = sample_motion_batch(
+                diffusion,
                 model,
                 motion.shape,
-                clip_denoised=False,
-                model_kwargs=cond,
-                progress=False,
+                cond,
+                args.sampling_method,
+                args.ddim_eta,
             )
 
         batch_size = motion.shape[0]
@@ -270,10 +358,14 @@ def main() -> int:
             reference_denorm = reference_norm.permute(2, 0, 1).numpy() * std[None, :n_joints, :] + mean[None, :n_joints, :]
             restored_denorm = restored_norm.permute(2, 0, 1).numpy() * std[None, :n_joints, :] + mean[None, :n_joints, :]
             confidence_np = confidence.permute(2, 0, 1).numpy().astype(np.float32)[..., 0]
+
+            target_positions = recover_from_bvh_ric_np(target_denorm.astype(np.float32))
+            reference_positions = recover_from_bvh_ric_np(reference_denorm.astype(np.float32))
+            restored_positions = recover_from_bvh_ric_np(restored_denorm.astype(np.float32))
             position_metrics = compute_position_metrics(
-                reference_motion=reference_denorm.astype(np.float32),
-                restored_motion=restored_denorm.astype(np.float32),
-                target_motion=target_denorm.astype(np.float32),
+                reference_positions=reference_positions,
+                restored_positions=restored_positions,
+                target_positions=target_positions,
                 confidence=confidence_np,
             )
             restoration_flags = classify_restoration(position_metrics)
@@ -294,10 +386,36 @@ def main() -> int:
 
             sample_dir = output_dir / f"sample_{exported:02d}_{object_type}"
             sample_dir.mkdir(parents=True, exist_ok=True)
-            export_motion_triplet(sample_dir, "clean_target", target_denorm.astype(np.float32), parents)
-            export_motion_triplet(sample_dir, "corrupted_reference", reference_denorm.astype(np.float32), parents)
-            export_motion_triplet(sample_dir, "restored_prediction", restored_denorm.astype(np.float32), parents)
+            export_motion_array(sample_dir, "clean_target", target_denorm.astype(np.float32))
+            export_motion_array(sample_dir, "corrupted_reference", reference_denorm.astype(np.float32))
+            export_motion_array(sample_dir, "restored_prediction", restored_denorm.astype(np.float32))
             np.save(sample_dir / "soft_confidence_mask.npy", confidence.permute(2, 0, 1).numpy().astype(np.float32))
+
+            if not args.skip_video_export:
+                render_payload = [
+                    ("clean_target", target_positions.astype(np.float32)),
+                    ("corrupted_reference", reference_positions.astype(np.float32)),
+                    ("restored_prediction", restored_positions.astype(np.float32)),
+                ]
+                if render_executor is None:
+                    render_motion_triplet_videos(
+                        sample_dir=str(sample_dir),
+                        parents=parents,
+                        videos=render_payload,
+                        fps=args.video_fps,
+                        video_threads=video_threads,
+                    )
+                else:
+                    render_futures.append(
+                        render_executor.submit(
+                            render_motion_triplet_videos,
+                            sample_dir=str(sample_dir),
+                            parents=parents,
+                            videos=render_payload,
+                            fps=args.video_fps,
+                            video_threads=video_threads,
+                        )
+                    )
 
             metrics = {
                 "object_type": object_type,
@@ -346,10 +464,22 @@ def main() -> int:
         "output_dir": str(output_dir),
         "split": args.split,
         "sample_limit": int(model_args.sample_limit),
+        "sampling_method": args.sampling_method,
+        "sampling_steps": int(args.sampling_steps) if args.sampling_steps > 0 else int(getattr(model_args, "diffusion_steps", 100)),
+        "skip_video_export": bool(args.skip_video_export),
         "reliable_position_tolerance": RELIABLE_POSITION_TOLERANCE,
+        "reliable_position_ratio_tolerance": RELIABLE_POSITION_RATIO_TOLERANCE,
         "aggregate": aggregate,
         "samples": summary,
     }
+
+    if render_executor is not None:
+        try:
+            for future in render_futures:
+                future.result()
+        finally:
+            render_executor.shutdown(wait=True)
+
     with open(output_dir / "summary.json", "w", encoding="utf-8") as handle:
         json.dump(report, handle, indent=2)
 

@@ -3,6 +3,7 @@ from torch.utils import data
 from torch.utils.data.sampler import WeightedRandomSampler
 import numpy as np
 import os
+import re
 from collections import defaultdict
 from os.path import join as pjoin
 from pathlib import Path
@@ -125,10 +126,90 @@ def load_motion_names_for_split(split: str, data_root: str, motion_dir: str) -> 
         raise RuntimeError(f"Split '{split}' is empty: {split_path}")
     return motion_names
 
+
+def _sanitize_cache_component(value: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
+    return sanitized.strip("._") or "default"
+
+
+def _joint_name_embedding_cache_path(data_root: str, t5_name: str) -> Path:
+    cache_dir = Path(data_root) / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / f"joint_name_t5_{_sanitize_cache_component(t5_name)}.npy"
+
+
+def _load_cached_joint_name_embeddings(cache_path: Path, cond_file: str, expected_object_types: set[str]) -> Optional[dict[str, np.ndarray]]:
+    if not cache_path.exists():
+        return None
+
+    try:
+        payload = np.load(cache_path, allow_pickle=True).item()
+    except Exception:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    metadata = payload.get("_meta", {})
+    embeddings = payload.get("embeddings")
+    if not isinstance(metadata, dict) or not isinstance(embeddings, dict):
+        return None
+
+    cond_mtime_ns = Path(cond_file).stat().st_mtime_ns
+    if metadata.get("cond_mtime_ns") != cond_mtime_ns:
+        return None
+
+    missing_objects = [object_type for object_type in expected_object_types if object_type not in embeddings]
+    if missing_objects:
+        return None
+
+    return {object_type: np.asarray(embeddings[object_type], dtype=np.float32) for object_type in expected_object_types}
+
+
+def _build_joint_name_embeddings(cond_dict: dict, t5_name: str) -> dict[str, np.ndarray]:
+    print(f"Building cached joint-name embeddings with {t5_name} on CPU")
+    t5_conditioner = T5Conditioner(
+        name=t5_name,
+        finetune=False,
+        word_dropout=0.0,
+        normalize_text=False,
+        device='cpu',
+    )
+
+    embeddings = {}
+    with torch.no_grad():
+        for object_type in sorted(cond_dict):
+            joints_names = cond_dict[object_type]['joints_names']
+            names_tokens = t5_conditioner.tokenize(joints_names)
+            embs = t5_conditioner(names_tokens)
+            embeddings[object_type] = embs.detach().cpu().numpy().astype(np.float32, copy=False)
+    return embeddings
+
+
+def attach_joint_name_embeddings(cond_dict: dict, cond_file: str, data_root: str, t5_name: str) -> dict:
+    object_types = set(cond_dict.keys())
+    cache_path = _joint_name_embedding_cache_path(data_root, t5_name)
+    cached_embeddings = _load_cached_joint_name_embeddings(cache_path, cond_file, object_types)
+
+    if cached_embeddings is None:
+        cached_embeddings = _build_joint_name_embeddings(cond_dict, t5_name)
+        payload = {
+            "_meta": {
+                "t5_name": t5_name,
+                "cond_mtime_ns": Path(cond_file).stat().st_mtime_ns,
+            },
+            "embeddings": cached_embeddings,
+        }
+        np.save(cache_path, payload, allow_pickle=True)
+        print(f"Saved joint-name embedding cache to {cache_path}")
+
+    for object_type in object_types:
+        cond_dict[object_type]['joints_names_embs'] = cached_embeddings[object_type]
+    return cond_dict
+
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
     def __init__(self, opt, cond_dict, temporal_window, t5_name, balanced, sample_limit=0, allowed_motion_names: Optional[set[str]] = None):
-        print("in MotionDataset constructor")
         self.opt = opt
         self.max_length = 20
         self.pointer = 0
@@ -140,40 +221,25 @@ class MotionDataset(data.Dataset):
         all_object_types = self.cond_dict.keys()
         new_name_list = []
         length_list = []
-        self.t5_conditioner = T5Conditioner(name=t5_name, finetune=False, word_dropout=0.0, normalize_text=False, device='cuda')
 
         for object_type in all_object_types:
-            parents = self.cond_dict[object_type]['parents']
-            tpos_first_frame = self.cond_dict[object_type]['tpos_first_frame']
-            joint_relations = self.cond_dict[object_type]['joint_relations']
-            joints_graph_dist = self.cond_dict[object_type]['joints_graph_dist']
-            offsets = self.cond_dict[object_type]['offsets']
-            joints_names = self.cond_dict[object_type]['joints_names']
-            joints_names_embs = self.encode_joints_names(joints_names).detach().cpu().numpy()
-            kinematic_chains = self.cond_dict[object_type]['kinematic_chains']
             object_motions = [f for f in os.listdir(opt.motion_dir) if f.startswith(f'{object_type}_')]
             if allowed_motion_names is not None:
                 object_motions = [name for name in object_motions if name in allowed_motion_names]
             
             for name in object_motions:
                 try:
-                    motion = np.load(pjoin(opt.motion_dir, name))
+                    motion_path = pjoin(opt.motion_dir, name)
+                    motion = np.load(motion_path, mmap_mode='r')
                     data_dict[name] = {
-                                        'motion': motion,
+                                        'motion_path': motion_path,
                                         'length': len(motion),
                                         'object_type': object_type,
-                                        'parents': parents,
-                                        'joints_graph_dist': joints_graph_dist,
-                                        'joints_relations': joint_relations,
-                                        'tpos_first_frame': tpos_first_frame,
-                                        'offsets': offsets,
-                                        'joints_names_embs': joints_names_embs,
-                                        'kinematic_chains': kinematic_chains
                                        }
                                        
                     new_name_list.append(name)
                     length_list.append(len(motion))
-                except:
+                except Exception:
                     pass
                 
         name_list, length_list = zip(*sorted(zip(new_name_list, length_list), key=lambda x: x[1]))
@@ -190,13 +256,7 @@ class MotionDataset(data.Dataset):
     def reset_max_len(self, length):
         assert length <= self.max_motion_length
         self.pointer = np.searchsorted(self.length_arr, length)
-        print("Pointer Pointing at %d"%self.pointer)
         self.max_length = length
-
-    def encode_joints_names(self, joints_names): # joints names should be padded with None to be of max_len 
-        names_tokens = self.t5_conditioner.tokenize(joints_names)
-        embs = self.t5_conditioner(names_tokens)
-        return embs
     
     def inv_transform(self, x, y):
         mean = self.cond_dict[y['object_type']]['mean']
@@ -245,12 +305,14 @@ class MotionDataset(data.Dataset):
     
     def augment(self, data):
         object_type = data['object_type']
+        cond = self.cond_dict[object_type]
+        motion = np.load(data['motion_path'])
         mean = self.cond_dict[object_type]['mean']
         std = self.cond_dict[object_type]['std']
-        return data['motion'], data['length'], data['object_type'], data['parents'], data['joints_graph_dist'], data['joints_relations'], data['tpos_first_frame'], data['offsets'], data['joints_names_embs'], data['kinematic_chains'], mean, std
+        return motion, data['length'], object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], cond['tpos_first_frame'], cond['offsets'], cond['joints_names_embs'], cond['kinematic_chains'], mean, std
         
     def __len__(self):
-        return len(self.data_dict) - self.pointer
+        return len(self.name_list) - self.pointer
 
     def __getitem__(self, item):
         if self.balanced:
@@ -277,7 +339,6 @@ class TruebonesSampler(WeightedRandomSampler):
     
 class Truebones(data.Dataset):
     def __init__(self, split="train", temporal_window=31, t5_name='t5-base', **kwargs):
-        print("in TruebonesMixedJoints constructor")
         if split not in SUPPORTED_SPLITS:
             raise ValueError(f"Unsupported split '{split}'. Expected one of {SUPPORTED_SPLITS}.")
         abs_base_path = f'.'
@@ -290,11 +351,10 @@ class Truebones(data.Dataset):
         self.balanced = kwargs['balanced']
         self.objects_subset = kwargs['objects_subset']
         self.sample_limit = kwargs.get('sample_limit', 0)
-        print('Loading Truebones dataset')
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
         subset = opt.subsets_dict[self.objects_subset] 
         cond_dict = {k:cond_dict[k] for k in subset if k in cond_dict}
-        print(f'Dataset subset {self.objects_subset} consists of {len(cond_dict.keys())} characters')
+        cond_dict = attach_joint_name_embeddings(cond_dict, opt.cond_file, opt.data_root, t5_name)
             
         self.split_file = pjoin(opt.data_root, f'{split}.txt')
         allowed_motion_names = load_motion_names_for_split(split, opt.data_root, opt.motion_dir)

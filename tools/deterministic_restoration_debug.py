@@ -67,7 +67,8 @@ from utils import dist_util
 from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
 
 
-RELIABLE_POSITION_TOLERANCE = 0.01
+RELIABLE_POSITION_TOLERANCE = 0.002
+RELIABLE_POSITION_RATIO_TOLERANCE = 1.15
 POSITION_IMPROVEMENT_EPS = 1e-6
 
 
@@ -247,7 +248,11 @@ def compute_position_metrics(
 
 def classify_restoration(position_metrics: dict[str, float]) -> dict[str, object]:
     low_conf_improved = position_metrics["pred_xstart_low_conf_mpjpe"] + POSITION_IMPROVEMENT_EPS < position_metrics["baseline_low_conf_mpjpe"]
-    reliable_preserved = position_metrics["pred_xstart_reliable_mpjpe"] <= position_metrics["baseline_reliable_mpjpe"] + RELIABLE_POSITION_TOLERANCE
+    reliable_limit = max(
+        position_metrics["baseline_reliable_mpjpe"] + RELIABLE_POSITION_TOLERANCE,
+        position_metrics["baseline_reliable_mpjpe"] * RELIABLE_POSITION_RATIO_TOLERANCE,
+    )
+    reliable_preserved = position_metrics["pred_xstart_reliable_mpjpe"] <= reliable_limit
     overall_improved = position_metrics["pred_xstart_mpjpe"] + POSITION_IMPROVEMENT_EPS < position_metrics["baseline_mpjpe"]
     success = bool(low_conf_improved and reliable_preserved and overall_improved)
     if success:
@@ -460,6 +465,7 @@ def deterministic_eval(
         "noise_mode": noise_mode,
         "aggregate": aggregate,
         "reliable_position_tolerance": RELIABLE_POSITION_TOLERANCE,
+        "reliable_position_ratio_tolerance": RELIABLE_POSITION_RATIO_TOLERANCE,
         "samples": summary,
     }
     with open(eval_dir / "summary.json", "w", encoding="utf-8") as handle:

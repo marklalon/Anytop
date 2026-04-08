@@ -44,9 +44,9 @@ def get_gmdm_args(args):
 def create_gaussian_diffusion(args):
     # default params
     predict_xstart = True  # we always predict x_start (a.k.a. x0), that's our deal!
-    steps = 100
+    steps = int(getattr(args, 'diffusion_steps', 100))
     scale_beta = 1.  # no scaling
-    timestep_respacing = ''  # can be used for ddim sampling, we don't use it.
+    timestep_respacing = getattr(args, 'timestep_respacing', '')
     learn_sigma = False
     rescale_timesteps = False
 
@@ -79,4 +79,6 @@ def create_gaussian_diffusion(args):
         lambda_repair_recon=args.lambda_repair_recon,
         lambda_root=args.lambda_root,
         lambda_velocity=args.lambda_velocity,
+        reference_fusion_threshold=getattr(args, 'reference_fusion_threshold', 0.8),
+        reference_fusion_power=getattr(args, 'reference_fusion_power', 2.0),
     )

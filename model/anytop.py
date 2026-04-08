@@ -58,7 +58,6 @@ class AnyTop(nn.Module):
             confidence_dropout_threshold=self.reference_dropout_threshold,
         ) if self.use_reference_branch else None
 
-        print("Graph transformer init")
         seqTransDecoderLayer = GraphMotionDecoderLayer(d_model=self.latent_dim,
                                                             nhead=self.num_heads,
                                                             dim_feedforward=self.ff_size,

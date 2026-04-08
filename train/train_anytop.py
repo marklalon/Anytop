@@ -50,7 +50,6 @@ def main():
 
     dist_util.setup_dist(args.device)
 
-    print("creating data loader...")
     data = get_dataset_loader(
         batch_size=args.batch_size,
         num_frames=args.num_frames,
@@ -63,7 +62,6 @@ def main():
         sample_limit=args.sample_limit,
     )
 
-    print("creating model and diffusion...")
     model, diffusion = create_model_and_diffusion_general_skeleton(args)
     model.to(dist_util.dev())
     ml_platform.watch_model(model)

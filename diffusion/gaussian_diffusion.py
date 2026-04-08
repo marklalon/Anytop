@@ -129,7 +129,9 @@ class GaussianDiffusion:
         lambda_confidence_recon=0.,
         lambda_repair_recon=0.,
         lambda_root=0.,
-        lambda_velocity=0.
+        lambda_velocity=0.,
+        reference_fusion_threshold=0.8,
+        reference_fusion_power=2.0,
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
@@ -141,6 +143,8 @@ class GaussianDiffusion:
         self.lambda_repair_recon = lambda_repair_recon
         self.lambda_root = lambda_root
         self.lambda_velocity = lambda_velocity
+        self.reference_fusion_threshold = float(reference_fusion_threshold)
+        self.reference_fusion_power = float(reference_fusion_power)
 
         # Use float64 for accuracy.
         betas = np.array(betas, dtype=np.float64)
@@ -223,12 +227,25 @@ class GaussianDiffusion:
         denom = sum_flat(weights.float()) * a.size(2)
         return loss / (denom + 1e-8)
 
+    def reference_reliability_weights(self, confidence):
+        if confidence is None:
+            return None
+        confidence = confidence.clamp(0.0, 1.0)
+        threshold = min(max(self.reference_fusion_threshold, 0.0), 0.999)
+        if threshold > 0.0:
+            confidence = ((confidence - threshold) / (1.0 - threshold)).clamp(0.0, 1.0)
+        power = max(self.reference_fusion_power, 1e-6)
+        if abs(power - 1.0) > 1e-6:
+            confidence = confidence.pow(power)
+        return confidence
+
     def apply_reference_fusion(self, prediction, reference_motion, confidence):
         if reference_motion is None or confidence is None:
             return prediction
         reference_motion = reference_motion.to(prediction.device, dtype=prediction.dtype)
-        confidence = confidence.to(prediction.device, dtype=prediction.dtype).clamp(0.0, 1.0)
-        return torch.lerp(prediction, reference_motion, confidence)
+        confidence = confidence.to(prediction.device, dtype=prediction.dtype)
+        reliability = self.reference_reliability_weights(confidence)
+        return torch.lerp(prediction, reference_motion, reliability)
 
     def get_reference_fusion_inputs(self, model_kwargs):
         if not model_kwargs:
@@ -1556,6 +1573,7 @@ class GaussianDiffusion:
         if confidence is None:
             confidence = torch.ones_like(x_start[:, :, :1, :])
         confidence = confidence.clamp(0.0, 1.0)
+        reference_reliability = self.reference_reliability_weights(confidence)
         if reference_motion is None:
             reference_motion = x_start
         else:
@@ -1612,34 +1630,31 @@ class GaussianDiffusion:
                 ModelMeanType.START_X: x_start,
                 ModelMeanType.EPSILON: noise,
             }[self.model_mean_type]
-            reconstruction_target = torch.lerp(target, reference_motion, confidence)
-            restored_output = self.apply_reference_fusion(model_output, reference_motion, confidence)
             assert model_output.shape == target.shape == x_start.shape  # [bs, njoints, nfeats, nframes]
-            # Preserve reliable observations and only pull missing regions toward the clean target.
-            terms["l_simple"] = self.temporal_spatial_masked_l2(reconstruction_target, restored_output, mask, joints_mask, lengths, actual_joints)
+            terms["l_simple"] = self.temporal_spatial_masked_l2(target, model_output, mask, joints_mask, lengths, actual_joints)
             terms["loss"] = torch.zeros_like(terms["l_simple"])
             terms["loss"] = terms["loss"] + terms["l_simple"]
             if self.lambda_confidence_recon > 0.:
-                reliable_weights = confidence.clamp(min=0.0, max=1.0)
+                reliable_weights = reference_reliability.clamp(min=0.0, max=1.0)
                 terms["confidence_recon_loss"] = self.weighted_temporal_spatial_l2(reference_motion, model_output, mask, joints_mask, reliable_weights)
                 terms["loss"] = terms["loss"] + self.lambda_confidence_recon * terms["confidence_recon_loss"]
             if self.lambda_repair_recon > 0.:
-                repair_weights = (1.0 - confidence).clamp(min=0.0, max=1.0)
-                terms["repair_recon_loss"] = self.weighted_temporal_spatial_l2(target, restored_output, mask, joints_mask, repair_weights)
+                repair_weights = (1.0 - reference_reliability).clamp(min=0.0, max=1.0)
+                terms["repair_recon_loss"] = self.weighted_temporal_spatial_l2(target, model_output, mask, joints_mask, repair_weights)
                 terms["loss"] = terms["loss"] + self.lambda_repair_recon * terms["repair_recon_loss"]
         
             # denormalize before applying loss terms 
-            target = (reconstruction_target * std) + mean 
-            model_output = (restored_output * std) + mean 
+            target = (target * std) + mean 
+            model_output = (model_output * std) + mean 
 
             if self.lambda_root > 0.:
-                root_weights = mask[:, :1, :, :] * (1.0 + (1.0 - confidence[:, :1]))
+                root_weights = mask[:, :1, :, :] * (1.0 + (1.0 - reference_reliability[:, :1]))
                 root_target = torch.cat([target[:, :1, :3, :], target[:, :1, 9:12, :]], dim=2)
                 root_output = torch.cat([model_output[:, :1, :3, :], model_output[:, :1, 9:12, :]], dim=2)
                 terms["root_consistency_loss"] = self.weighted_feature_l2(root_target, root_output, root_weights)
                 terms["loss"] = terms["loss"] + self.lambda_root * terms["root_consistency_loss"]
             if self.lambda_velocity > 0.:
-                velocity_weights = 1.0 + (1.0 - confidence)
+                velocity_weights = 1.0 + (1.0 - reference_reliability)
                 terms["velocity_consistency_loss"] = self.weighted_temporal_spatial_l2(
                     target[:, :, 9:12, :],
                     model_output[:, :, 9:12, :],
