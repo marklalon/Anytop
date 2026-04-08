@@ -29,36 +29,20 @@ class CorruptionPreset:
     root_noise_std: tuple[float, float]
 
 
-CURRICULUM_PRESETS = {
-    1: CorruptionPreset(
-        name="stage1",
-        joint_dropout_segments=(0, 2),
-        joint_dropout_length=(2, 10),
-        per_frame_dropout_prob=(0.00, 0.04),
-        jitter_std=(0.005, 0.02),
-        drift_scale=(0.005, 0.02),
-        flicker_segments=(0, 2),
-        flicker_length=(1, 5),
-        limb_corruption_segments=(0, 2),
-        terminal_freeze_segments=(2, 3),
-        terminal_freeze_depth=(2, 3),
-        root_noise_std=(0.01, 0.03),
-    ),
-    2: CorruptionPreset(
-        name="stage2",
-        joint_dropout_segments=(0, 2),
-        joint_dropout_length=(2, 10),
-        per_frame_dropout_prob=(0.01, 0.05),
-        jitter_std=(0.008, 0.025),
-        drift_scale=(0.008, 0.025),
-        flicker_segments=(0, 2),
-        flicker_length=(1, 5),
-        limb_corruption_segments=(0, 2),
-        terminal_freeze_segments=(4, 6),
-        terminal_freeze_depth=(3, 4),
-        root_noise_std=(0.015, 0.04),
-    ),
-}
+DEFAULT_CORRUPTION_PRESET = CorruptionPreset(
+    name="default",
+    joint_dropout_segments=(0, 2),
+    joint_dropout_length=(2, 10),
+    per_frame_dropout_prob=(0.01, 0.05),
+    jitter_std=(0.008, 0.025),
+    drift_scale=(0.008, 0.025),
+    flicker_segments=(0, 2),
+    flicker_length=(1, 5),
+    limb_corruption_segments=(0, 2),
+    terminal_freeze_segments=(4, 6),
+    terminal_freeze_depth=(3, 4),
+    root_noise_std=(0.015, 0.04),
+)
 
 
 def _sample_uniform(rng: np.random.Generator, bounds: tuple[float, float]) -> float:
@@ -310,18 +294,13 @@ def _freeze_chain_segment_motion(
 class MotionCorruptor:
     def __init__(
         self,
-        curriculum_stage: int = 1,
         seed: int | None = None,
     ) -> None:
-        self.curriculum_stage = int(curriculum_stage)
         self.rng = np.random.default_rng(seed)
 
     @property
     def preset(self) -> CorruptionPreset:
-        return CURRICULUM_PRESETS.get(self.curriculum_stage, CURRICULUM_PRESETS[2])
-
-    def set_stage(self, curriculum_stage: int) -> None:
-        self.curriculum_stage = int(curriculum_stage)
+        return DEFAULT_CORRUPTION_PRESET
 
     def corrupt(
         self,

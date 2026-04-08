@@ -59,12 +59,8 @@ def main():
         balanced=args.balanced,
         objects_subset=args.objects_subset,
         num_workers=args.num_workers,
-        curriculum_stage=args.curriculum_stage,
-        enable_topology_augmentation=args.enable_topology_augmentation,
         prefetch_factor=args.prefetch_factor,
         sample_limit=args.sample_limit,
-        offline_reference_samples=args.offline_reference_samples,
-        offline_reference_seed=args.offline_reference_seed,
     )
 
     print("creating model and diffusion...")

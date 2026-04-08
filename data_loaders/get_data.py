@@ -7,7 +7,7 @@ from data_loaders.truebones.data.dataset import Truebones
 def get_dataset_class(name):
     return Truebones
 
-def get_dataset(num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=False, objects_subset="all", curriculum_stage=1, enable_topology_augmentation=False, sample_limit=0, offline_reference_samples=False, offline_reference_seed=10):
+def get_dataset(num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=False, objects_subset="all", sample_limit=0):
     dataset = Truebones(
         split=split,
         num_frames=num_frames,
@@ -15,19 +15,15 @@ def get_dataset(num_frames, split='train', temporal_window=31, t5_name='t5-base'
         t5_name=t5_name,
         balanced=balanced,
         objects_subset=objects_subset,
-        curriculum_stage=curriculum_stage,
-        enable_topology_augmentation=enable_topology_augmentation,
         sample_limit=sample_limit,
-        offline_reference_samples=offline_reference_samples,
-        offline_reference_seed=offline_reference_seed,
     )
     return dataset
-def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=True, objects_subset="all", num_workers=None, curriculum_stage=1, enable_topology_augmentation=False, prefetch_factor=2, sample_limit=0, offline_reference_samples=False, offline_reference_seed=10):
+
+
+def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=True, objects_subset="all", num_workers=None, prefetch_factor=2, sample_limit=0, shuffle=True, drop_last=True):
     if num_workers is None:
         cpu_count = os.cpu_count() or 1
         num_workers = min(4, cpu_count)
-    if offline_reference_samples:
-        num_workers = 0
     dataset = get_dataset(
         num_frames=num_frames,
         split=split,
@@ -35,11 +31,7 @@ def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31
         t5_name=t5_name,
         balanced=balanced,
         objects_subset=objects_subset,
-        curriculum_stage=curriculum_stage,
-        enable_topology_augmentation=enable_topology_augmentation,
         sample_limit=sample_limit,
-        offline_reference_samples=offline_reference_samples,
-        offline_reference_seed=offline_reference_seed,
     )
     collate = truebones_batch_collate
     sampler = None
@@ -50,9 +42,9 @@ def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31
         'dataset': dataset,
         'batch_size': batch_size,
         'sampler': sampler,
-        'shuffle': True if sampler is None else False,
+        'shuffle': shuffle if sampler is None else False,
         'num_workers': num_workers,
-        'drop_last': True,
+        'drop_last': drop_last,
         'collate_fn': collate,
     }
     if torch.cuda.is_available():

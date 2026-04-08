@@ -3,14 +3,21 @@ from torch.utils import data
 from torch.utils.data.sampler import WeightedRandomSampler
 import numpy as np
 import os
+from collections import defaultdict
 from os.path import join as pjoin
+from pathlib import Path
 import random
-import copy
+from typing import Optional
 from torch.utils.data._utils.collate import default_collate
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_process import remove_joints_augmentation, add_joint_augmentation
-from data_loaders.truebones.corruption import MotionCorruptor
+from data_loaders.truebones.offline_reference_dataset import load_corrupted_reference_sample
 from model.conditioners import T5Conditioner
+
+
+DEFAULT_SPLIT_RATIOS = {"train": 0.9, "val": 0.05, "test": 0.05}
+DEFAULT_SPLIT_SEED = 3407
+SUPPORTED_SPLITS = tuple(DEFAULT_SPLIT_RATIOS.keys())
 
 
 def collate_fn(batch):
@@ -36,9 +43,91 @@ def create_temporal_mask_for_window(window, max_len):
         mask[i, max(0, i - margin):min(max_len + 1, i + margin + 2)] = 1
     return mask
 
+
+def _list_motion_files(motion_dir: str) -> list[str]:
+    return sorted(path.name for path in Path(motion_dir).glob("*.npy"))
+
+
+def _infer_object_type_from_motion_name(name: str) -> str:
+    return name.split("_", 1)[0]
+
+
+def _compute_split_counts(num_items: int) -> dict[str, int]:
+    if num_items <= 0:
+        return {split: 0 for split in SUPPORTED_SPLITS}
+    if num_items == 1:
+        return {"train": 1, "val": 0, "test": 0}
+    if num_items == 2:
+        return {"train": 1, "val": 1, "test": 0}
+    if num_items == 3:
+        return {"train": 1, "val": 1, "test": 1}
+
+    raw_counts = {split: DEFAULT_SPLIT_RATIOS[split] * num_items for split in SUPPORTED_SPLITS}
+    counts = {split: int(np.floor(raw_counts[split])) for split in SUPPORTED_SPLITS}
+    minimums = {"train": 1, "val": 1, "test": 1}
+
+    for split, minimum in minimums.items():
+        counts[split] = max(counts[split], minimum)
+
+    while sum(counts.values()) > num_items:
+        removable = [
+            split for split in SUPPORTED_SPLITS
+            if counts[split] > minimums[split]
+        ]
+        if not removable:
+            break
+        split_to_reduce = max(removable, key=lambda split: counts[split] - raw_counts[split])
+        counts[split_to_reduce] -= 1
+
+    while sum(counts.values()) < num_items:
+        split_to_increase = max(SUPPORTED_SPLITS, key=lambda split: raw_counts[split] - counts[split])
+        counts[split_to_increase] += 1
+
+    return counts
+
+
+def ensure_split_manifests(data_root: str, motion_dir: str) -> dict[str, Path]:
+    data_root_path = Path(data_root)
+    split_paths = {split: data_root_path / f"{split}.txt" for split in SUPPORTED_SPLITS}
+    if all(path.exists() for path in split_paths.values()):
+        return split_paths
+
+    grouped_motion_names: dict[str, list[str]] = defaultdict(list)
+    for motion_name in _list_motion_files(motion_dir):
+        grouped_motion_names[_infer_object_type_from_motion_name(motion_name)].append(motion_name)
+
+    manifests = {split: [] for split in SUPPORTED_SPLITS}
+    rng = random.Random(DEFAULT_SPLIT_SEED)
+    for object_type in sorted(grouped_motion_names):
+        motion_names = sorted(grouped_motion_names[object_type])
+        rng.shuffle(motion_names)
+        split_counts = _compute_split_counts(len(motion_names))
+        start_index = 0
+        for split in SUPPORTED_SPLITS:
+            end_index = start_index + split_counts[split]
+            manifests[split].extend(motion_names[start_index:end_index])
+            start_index = end_index
+
+    for split, split_path in split_paths.items():
+        split_path.write_text("\n".join(sorted(manifests[split])) + "\n", encoding="utf-8")
+
+    print(f"Generated dataset split manifests under {data_root_path}")
+    return split_paths
+
+
+def load_motion_names_for_split(split: str, data_root: str, motion_dir: str) -> set[str]:
+    split_paths = ensure_split_manifests(data_root, motion_dir)
+    split_path = split_paths[split]
+    motion_names = {
+        line.strip() for line in split_path.read_text(encoding="utf-8").splitlines() if line.strip()
+    }
+    if not motion_names:
+        raise RuntimeError(f"Split '{split}' is empty: {split_path}")
+    return motion_names
+
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, temporal_window, t5_name, balanced, curriculum_stage=1, enable_topology_augmentation=False, sample_limit=0, offline_reference_samples=False, offline_reference_seed=10):
+    def __init__(self, opt, cond_dict, temporal_window, t5_name, balanced, sample_limit=0, allowed_motion_names: Optional[set[str]] = None):
         print("in MotionDataset constructor")
         self.opt = opt
         self.max_length = 20
@@ -46,14 +135,7 @@ class MotionDataset(data.Dataset):
         self.max_motion_length = opt.max_motion_length
         self.cond_dict = cond_dict
         self.balanced = balanced
-        self.enable_topology_augmentation = enable_topology_augmentation
         self.sample_limit = max(0, int(sample_limit))
-        self.offline_reference_samples = bool(offline_reference_samples)
-        self.offline_reference_seed = int(offline_reference_seed)
-        self.reference_corruptor = MotionCorruptor(
-            curriculum_stage=curriculum_stage,
-            seed=self.offline_reference_seed if self.offline_reference_samples else None,
-        )
         data_dict = {}
         all_object_types = self.cond_dict.keys()
         new_name_list = []
@@ -70,6 +152,8 @@ class MotionDataset(data.Dataset):
             joints_names_embs = self.encode_joints_names(joints_names).detach().cpu().numpy()
             kinematic_chains = self.cond_dict[object_type]['kinematic_chains']
             object_motions = [f for f in os.listdir(opt.motion_dir) if f.startswith(f'{object_type}_')]
+            if allowed_motion_names is not None:
+                object_motions = [name for name in object_motions if name in allowed_motion_names]
             
             for name in object_motions:
                 try:
@@ -101,9 +185,6 @@ class MotionDataset(data.Dataset):
         self.data_dict = data_dict
         self.name_list = name_list
         self.temporal_mask_template = create_temporal_mask_for_window(temporal_window, self.max_motion_length)
-        self.offline_samples = None
-        if self.offline_reference_samples:
-            self.offline_samples = self._build_offline_reference_cache()
         self.reset_max_len(self.max_length)
 
     def reset_max_len(self, length):
@@ -122,31 +203,7 @@ class MotionDataset(data.Dataset):
         std = self.cond_dict[y['object_type']]['std']
         return x * std + mean
 
-    def _build_offline_reference_cache(self):
-        cached_samples = {}
-        random_state = random.getstate()
-        random.seed(self.offline_reference_seed)
-        try:
-            for name in self.name_list:
-                cached_samples[name] = self._prepare_sample(self.data_dict[name])
-        finally:
-            random.setstate(random_state)
-        return cached_samples
-
-    def _clone_cached_sample(self, sample):
-        cloned = []
-        for value in sample:
-            if isinstance(value, np.ndarray):
-                cloned.append(value.copy())
-            elif isinstance(value, list):
-                cloned.append(value.copy())
-            elif isinstance(value, dict):
-                cloned.append(copy.deepcopy(value))
-            else:
-                cloned.append(value)
-        return tuple(cloned)
-
-    def _prepare_sample(self, data):
+    def _prepare_sample(self, name, data):
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std = self.augment(data)
         std = std + 1e-6
         motion = (motion - mean[None, :]) / std[None, :]
@@ -159,11 +216,15 @@ class MotionDataset(data.Dataset):
             motion = motion[ind: ind + self.max_motion_length]
             m_length = self.max_motion_length
 
-        reference_motion, soft_confidence_mask, corruption_metadata = self.reference_corruptor.corrupt(
-            motion,
-            length=m_length,
-            kinematic_chains=kinematic_chains,
-        )
+        stored_sample = load_corrupted_reference_sample(name, dataset_dir=self.opt.data_root)
+        reference_motion = np.nan_to_num((stored_sample['reference_motion'] - mean[None, :]) / std[None, :]).astype(np.float32)
+        soft_confidence_mask = stored_sample['soft_confidence_mask'].astype(np.float32)
+        corruption_metadata = stored_sample['metadata'].get('corruption_metadata')
+
+        if reference_motion.shape[0] > m_length:
+            reference_motion = reference_motion[ind: ind + m_length]
+        if soft_confidence_mask.shape[0] > m_length:
+            soft_confidence_mask = soft_confidence_mask[ind: ind + m_length]
 
         if m_length < self.max_motion_length:
             pad_frames = self.max_motion_length - m_length
@@ -180,27 +241,13 @@ class MotionDataset(data.Dataset):
                                                    np.zeros((pad_frames, soft_confidence_mask.shape[1], soft_confidence_mask.shape[2]), dtype=soft_confidence_mask.dtype)
                                                    ], axis=0)
 
-        return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, reference_motion, soft_confidence_mask, corruption_metadata
+        return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, reference_motion, soft_confidence_mask, corruption_metadata, name
     
     def augment(self, data):
         object_type = data['object_type']
-        if not self.enable_topology_augmentation:
-            mean = self.cond_dict[object_type]['mean']
-            std = self.cond_dict[object_type]['std']
-            return data['motion'], data['length'], data['object_type'], data['parents'], data['joints_graph_dist'], data['joints_relations'], data['tpos_first_frame'], data['offsets'], data['joints_names_embs'], data['kinematic_chains'], mean, std
-        if object_type != "Dragon":
-            aug_type = random.choice([0, 1, 2])
-        else: 
-            aug_type = random.choice([0, 1])
         mean = self.cond_dict[object_type]['mean']
         std = self.cond_dict[object_type]['std']
-        if aug_type == 0: #no augmentation
-            return data['motion'], data['length'], data['object_type'], data['parents'], data['joints_graph_dist'], data['joints_relations'], data['tpos_first_frame'], data['offsets'], data['joints_names_embs'], data['kinematic_chains'], mean, std
-        elif aug_type == 1: # remove_joints
-            removal_rate = random.choice([0.1, 0.2, 0.3])
-            return  remove_joints_augmentation(data, removal_rate, mean, std) 
-        else: #add joint
-            return add_joint_augmentation(data, mean, std)
+        return data['motion'], data['length'], data['object_type'], data['parents'], data['joints_graph_dist'], data['joints_relations'], data['tpos_first_frame'], data['offsets'], data['joints_names_embs'], data['kinematic_chains'], mean, std
         
     def __len__(self):
         return len(self.data_dict) - self.pointer
@@ -211,9 +258,7 @@ class MotionDataset(data.Dataset):
         else:
             idx = self.pointer + item
         name = self.name_list[idx]
-        if self.offline_reference_samples:
-            return self._clone_cached_sample(self.offline_samples[name])
-        return self._prepare_sample(self.data_dict[name])
+        return self._prepare_sample(name, self.data_dict[name])
 
 class TruebonesSampler(WeightedRandomSampler):
     def __init__(self, data_source):
@@ -233,6 +278,8 @@ class TruebonesSampler(WeightedRandomSampler):
 class Truebones(data.Dataset):
     def __init__(self, split="train", temporal_window=31, t5_name='t5-base', **kwargs):
         print("in TruebonesMixedJoints constructor")
+        if split not in SUPPORTED_SPLITS:
+            raise ValueError(f"Unsupported split '{split}'. Expected one of {SUPPORTED_SPLITS}.")
         abs_base_path = f'.'
         device = None  # torch.device('cuda:4') # This param is not in use in this context
         opt = get_opt(device)
@@ -242,11 +289,7 @@ class Truebones(data.Dataset):
         self.opt = opt
         self.balanced = kwargs['balanced']
         self.objects_subset = kwargs['objects_subset']
-        self.curriculum_stage = kwargs.get('curriculum_stage', 1)
-        self.enable_topology_augmentation = kwargs.get('enable_topology_augmentation', False)
         self.sample_limit = kwargs.get('sample_limit', 0)
-        self.offline_reference_samples = kwargs.get('offline_reference_samples', False)
-        self.offline_reference_seed = kwargs.get('offline_reference_seed', 10)
         print('Loading Truebones dataset')
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
         subset = opt.subsets_dict[self.objects_subset] 
@@ -254,19 +297,17 @@ class Truebones(data.Dataset):
         print(f'Dataset subset {self.objects_subset} consists of {len(cond_dict.keys())} characters')
             
         self.split_file = pjoin(opt.data_root, f'{split}.txt')
+        allowed_motion_names = load_motion_names_for_split(split, opt.data_root, opt.motion_dir)
         self.motion_dataset = MotionDataset(
             self.opt,
             cond_dict,
             temporal_window,
             t5_name,
             self.balanced,
-            curriculum_stage=self.curriculum_stage,
-            enable_topology_augmentation=self.enable_topology_augmentation,
             sample_limit=self.sample_limit,
-            offline_reference_samples=self.offline_reference_samples,
-            offline_reference_seed=self.offline_reference_seed,
+            allowed_motion_names=allowed_motion_names,
         )
-        assert len(self.motion_dataset) > 1, 'You loaded an empty dataset, ' \
+        assert len(self.motion_dataset) > 0, 'You loaded an empty dataset, ' \
                                           'it is probably because your data dir has only texts and no motions.\n' \
                                           'To train and evaluate MDM you should get the FULL data as described ' \
                                           'in the README file.'

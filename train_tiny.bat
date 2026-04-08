@@ -1,0 +1,1 @@
+python train/train_anytop.py --save_dir save/tiny_val_5000 --overwrite --batch_size 16 --sample_limit 100 --num_steps 5000 --eval_during_training --eval_interval 500 --eval_split val --eval_num_samples 3 --log_interval 100 --num_workers 4 --layers 3 --latent_dim 64

@@ -1,3 +1,43 @@
+"""
+Restoration Quality Evaluation Tool
+
+Description:
+    Evaluates the restoration quality of a trained diffusion model on corrupted motion sequences.
+    This tool is specifically designed for assessing tiny-overfit checkpoints and validating
+    the model's ability to reconstruct high-quality motions from corrupted inputs.
+
+Features:
+    - Loads trained model from checkpoint (with automatic args.json loading)
+    - Evaluates on multiple motion samples with controllable batch processing
+    - Exports restored motions alongside original and corrupted versions
+    - Computes position improvement metrics for reliable and repair regions
+    - Supports flexible dataset split selection (train/val/test)
+
+Usage:
+    python eval_restoration_overfit.py \\
+        --model-path ./checkpoints/model_00050000.pt \\
+        --output-dir ./eval_results \\
+        --num-eval-samples 10 \\
+        --batch-size 1 \\
+        --device 0 \\
+        --split val
+
+    # Minimal example:
+    python eval_restoration_overfit.py \\
+        --model-path ./checkpoints/model_00050000.pt \\
+        --output-dir ./eval_results
+
+Required Arguments:
+    --model-path: Path to model checkpoint (args.json must be in same directory)
+    --output-dir: Directory to save restoration outputs and evaluation results
+
+Key Optional Arguments:
+    --num-eval-samples: Number of samples to restore (default: 4)
+    --split: Dataset split to evaluate on - 'train', 'val', or 'test' (default: 'train')
+    --batch-size: Batch size for evaluation (default: 1)
+    --device: CUDA device ID or -1 for CPU (default: 0)
+"""
+
 import argparse
 import json
 import os
@@ -33,9 +73,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", default=1, type=int, help="Batch size for evaluation. Use 1 for easier inspection.")
     parser.add_argument("--device", default=0, type=int, help="CUDA device id. Use -1 for CPU.")
     parser.add_argument("--seed", default=10, type=int, help="Random seed.")
-    parser.add_argument("--split", default="train", choices=["train", "val", "test"], help="Dataset split to sample from.")
+    parser.add_argument("--split", default="val", choices=["train", "val", "test"], help="Dataset split to sample from.")
     parser.add_argument("--sample-limit", default=-1, type=int, help="Override dataset sample limit. -1 keeps checkpoint args.")
-    parser.add_argument("--curriculum-stage", default=-1, type=int, choices=[-1, 1, 2], help="Override corruption curriculum stage. -1 keeps checkpoint args.")
     parser.add_argument("--num-workers", default=0, type=int, help="DataLoader workers for evaluation.")
     return parser.parse_args()
 
@@ -144,8 +183,6 @@ def main() -> int:
 
     if args.sample_limit >= 0:
         model_args.sample_limit = args.sample_limit
-    if args.curriculum_stage >= 0:
-        model_args.curriculum_stage = args.curriculum_stage
     model_args.device = args.device
     model_args.batch_size = args.batch_size
 
@@ -158,10 +195,10 @@ def main() -> int:
         balanced=False,
         objects_subset=model_args.objects_subset,
         num_workers=args.num_workers,
-        curriculum_stage=model_args.curriculum_stage,
-        enable_topology_augmentation=False,
         prefetch_factor=getattr(model_args, "prefetch_factor", 2),
         sample_limit=model_args.sample_limit,
+        shuffle=False,
+        drop_last=False,
     )
     cond_dict = data.dataset.motion_dataset.cond_dict
 
@@ -308,7 +345,6 @@ def main() -> int:
         "model_path": str(model_path),
         "output_dir": str(output_dir),
         "split": args.split,
-        "curriculum_stage": int(model_args.curriculum_stage),
         "sample_limit": int(model_args.sample_limit),
         "reliable_position_tolerance": RELIABLE_POSITION_TOLERANCE,
         "aggregate": aggregate,

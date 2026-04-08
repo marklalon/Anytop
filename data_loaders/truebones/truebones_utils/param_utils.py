@@ -18,6 +18,7 @@ def get_dataset_dir():
 RAW_DATA_DIR = get_raw_data_dir()
 DATASET_DIR = get_dataset_dir()
 MOTION_DIR = "motions"
+CORRUPTED_REFERENCE_DIR = "corrupted_references"
 ANIMATIONS_DIR = "animations"
 BVHS_DIR = "bvhs"
 FOOT_CONTACT_HEIGHT_THRESH = 0.3

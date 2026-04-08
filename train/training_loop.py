@@ -36,6 +36,7 @@ class TrainLoop:
         self.lr = args.lr
         self.log_interval = args.log_interval
         self.save_interval = args.save_interval
+        self.eval_interval = getattr(args, 'eval_interval', 0)
         self.resume_checkpoint = args.resume_checkpoint
         self.use_fp16 = False  # deprecating this option
         self.fp16_scale_growth = 1e-3  # deprecating this option
@@ -47,10 +48,6 @@ class TrainLoop:
         self.global_batch = self.batch_size # * dist.get_world_size()
         self.num_steps = args.num_steps
         self.num_epochs = self.num_steps // len(self.data) + 1
-        self.curriculum_stage = getattr(args, 'curriculum_stage', 1)
-        self.curriculum_switch_step = getattr(args, 'curriculum_switch_step', 0)
-        self.offline_reference_samples = getattr(args, 'offline_reference_samples', False)
-        self.offline_reference_seed = getattr(args, 'offline_reference_seed', 10)
 
         self.sync_cuda = torch.cuda.is_available()
         self.save_dir = args.save_dir
@@ -83,6 +80,21 @@ class TrainLoop:
         self.schedule_sampler = create_named_schedule_sampler(self.schedule_sampler_type, diffusion)
         
         self.eval_wrapper, self.eval_data, self.eval_gt_data = None, None, None
+        if self.args.eval_during_training:
+            self.eval_data = get_dataset_loader(
+                batch_size=self.args.eval_batch_size,
+                num_frames=self.args.num_frames,
+                split=self.args.eval_split,
+                temporal_window=self.args.temporal_window,
+                t5_name=self.args.t5_name,
+                balanced=False,
+                objects_subset=self.args.objects_subset,
+                num_workers=self.args.num_workers,
+                prefetch_factor=self.args.prefetch_factor,
+                sample_limit=self.args.sample_limit,
+                shuffle=False,
+                drop_last=False,
+            )
         self.use_ddp = False
         self.ddp_model = self.model
 
@@ -140,31 +152,34 @@ class TrainLoop:
          while self.total_step() < self.num_steps:
             print(f'Starting a new epoch at step {self.total_step()}')
             for motion, cond in tqdm(self.data):
-                if self.curriculum_stage == 1 and self.curriculum_switch_step > 0 and self.total_step() >= self.curriculum_switch_step:
-                    self._rebuild_data_loader(curriculum_stage=2)
-                    break
                 if not (not self.lr_anneal_steps or self.total_step() < self.lr_anneal_steps):
                     break
 
                 motion = motion.to(self.device)
-                cond['y'] = {key: val.to(self.device) if torch.is_tensor(val) else val for key, val in cond['y'].items()}
+                cond = self._move_cond_to_device(cond)
 
                 self.run_step(motion, cond)
 
-                if self.total_step() % self.log_interval == 0:
+                current_step = self.total_step()
+
+                if current_step % self.log_interval == 0:
                     print(cond['y']['object_type'])
                     for k,v in logger.get_current().dumpkvs().items():
                         if k == 'loss':
-                            print('step[{}]: loss[{:0.5f}]'.format(self.total_step(), v))
+                            print('step[{}]: loss[{:0.5f}]'.format(current_step, v))
                         if k in ['step', 'samples'] or '_q' in k:
                             continue
                         else:
-                            self.train_platform.report_scalar(name=k, value=v, iteration=self.total_step(), group_name='Loss')
+                            self.train_platform.report_scalar(name=k, value=v, iteration=current_step, group_name='Loss')
 
-                if self.total_step() % self.save_interval == 0 and self.total_step() != 0 or self.total_step() == self.num_steps - 1:
-                    self.save()
+                if self._should_validate(current_step):
                     self.model.eval()
                     self.evaluate()
+                    self.model.train()
+
+                if self._should_save(current_step):
+                    self.save()
+                    self.model.eval()
                     self.generate_during_training()
                     self.model.train()
 
@@ -180,26 +195,38 @@ class TrainLoop:
             if not (not self.lr_anneal_steps or self.total_step() < self.lr_anneal_steps):
                 break
 
-    def _rebuild_data_loader(self, curriculum_stage):
-        if curriculum_stage == self.curriculum_stage:
-            return
-        print(f'Switching restoration curriculum from stage {self.curriculum_stage} to stage {curriculum_stage}')
-        self.curriculum_stage = curriculum_stage
-        self.data = get_dataset_loader(
-            batch_size=self.args.batch_size,
-            num_frames=self.args.num_frames,
-            temporal_window=self.args.temporal_window,
-            t5_name='t5-base',
-            balanced=self.args.balanced,
-            objects_subset=self.args.objects_subset,
-            num_workers=self.args.num_workers,
-            curriculum_stage=curriculum_stage,
-            enable_topology_augmentation=self.args.enable_topology_augmentation,
-            prefetch_factor=self.args.prefetch_factor,
-            sample_limit=self.args.sample_limit,
-            offline_reference_samples=self.offline_reference_samples,
-            offline_reference_seed=self.offline_reference_seed,
-        )
+    def _move_cond_to_device(self, cond):
+        return {
+            'y': {
+                key: val.to(self.device) if torch.is_tensor(val) else val
+                for key, val in cond['y'].items()
+            }
+        }
+
+    def _should_save(self, current_step):
+        return (current_step % self.save_interval == 0 and current_step != 0) or current_step == self.num_steps - 1
+
+    def _should_validate(self, current_step):
+        if not self.args.eval_during_training or self.eval_data is None or self.eval_interval <= 0:
+            return False
+        return (current_step % self.eval_interval == 0 and current_step != 0) or current_step == self.num_steps - 1
+
+    def _compute_eval_losses(self, batch, cond):
+        t, weights = self.schedule_sampler.sample(batch.shape[0], dist_util.dev())
+        with torch.no_grad():
+            losses = self.diffusion.training_losses(
+                self.model,
+                batch,
+                t,
+                model_kwargs=cond,
+            )
+
+        reduced = {}
+        for key, value in losses.items():
+            if not torch.is_tensor(value):
+                continue
+            reduced[key] = float((value.detach() * weights).mean().item())
+        return reduced
 
     def generate_during_training(self):
         if not self.args.gen_during_training:
@@ -229,9 +256,35 @@ class TrainLoop:
         return total_step
 
     def evaluate(self):
-        if not self.args.eval_during_training:
+        if not self.args.eval_during_training or self.eval_data is None:
             return
-        print(f'Evaluation during training no implemented')
+        totals = {}
+        seen_samples = 0
+        max_eval_samples = int(self.args.eval_num_samples)
+
+        for motion, cond in self.eval_data:
+            motion = motion.to(self.device)
+            cond = self._move_cond_to_device(cond)
+            batch_losses = self._compute_eval_losses(motion, cond)
+            batch_size = motion.shape[0]
+
+            for key, value in batch_losses.items():
+                totals[key] = totals.get(key, 0.0) + (value * batch_size)
+
+            seen_samples += batch_size
+            if max_eval_samples > 0 and seen_samples >= max_eval_samples:
+                break
+
+        if seen_samples == 0:
+            print('Validation skipped because the evaluation split is empty.')
+            return
+
+        averaged = {key: value / seen_samples for key, value in totals.items()}
+        current_step = self.total_step()
+        if 'loss' in averaged:
+            print('val_step[{}]: val_loss[{:0.5f}]'.format(current_step, averaged['loss']))
+        for key, value in averaged.items():
+            self.train_platform.report_scalar(name=key, value=value, iteration=current_step, group_name='Val')
 
 
     def run_step(self, batch, cond, epoch=-1):

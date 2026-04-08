@@ -1,3 +1,48 @@
+"""
+Deterministic Restoration Sanity Check Tool
+
+Description:
+    Performs deterministic restoration on fixed offline corrupted motions using a trained diffusion model.
+    This tool is designed for debugging and validating the restoration pipeline by applying
+    deterministic optimization steps to restore motion quality from corrupted inputs.
+
+Features:
+    - Loads preprocessed offline corrupted motion data from dataset subsets
+    - Applies deterministic diffusion sampling at fixed timesteps
+    - Tracks position improvement metrics in reliable vs low-confidence regions
+    - Saves checkpoints and restoration results during optimization
+    - Supports single-batch processing for deterministic debugging
+    - Note: Offline samples are pre-generated during preprocessing; this script loads and uses them
+
+Usage:
+    python deterministic_restoration_debug.py \\
+        --output-dir ./debug_output \\
+        --model-path ./checkpoints/model_00500000.pt \\
+        --objects-subset quadropeds_clean \\
+        --num-steps 800 \\
+        --batch-size 1 \\
+        --device 0 \\
+        --num-frames 60
+
+    # Minimal example with default values:
+    python deterministic_restoration_debug.py \\
+        --output-dir ./debug_output
+
+Required Arguments:
+    --output-dir: Directory for debug outputs, checkpoints, and restoration reports
+    
+Note: Offline corrupted samples must be preprocessed and available in the dataset.
+      Use export_corrupted_truebones_samples.py to generate them if needed.
+
+Key Optional Arguments:
+    --model-path: Path to model checkpoint (auto-loads args.json from same directory)
+    --objects-subset: Object types to load from preprocessed dataset (default: 'quadropeds_clean')
+    --num-steps: Number of optimization steps (default: 800)
+    --num-frames: Maximum frames per motion (default: 60)
+    --fixed-timestep: Diffusion timestep to use (default: 10)
+    --lr: Learning rate for optimization (default: 1e-4)
+"""
+
 import argparse
 import copy
 import json
@@ -28,17 +73,15 @@ POSITION_IMPROVEMENT_EPS = 1e-6
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Deterministic restoration sanity check on fixed offline corrupted motions.")
-    parser.add_argument("--output-dir", required=True, help="Directory to write offline samples, checkpoints, and reports into.")
+    parser.add_argument("--output-dir", required=True, help="Directory to write checkpoints and reports into.")
     parser.add_argument("--model-path", default="", help="Optional checkpoint to initialize from; args.json next to it supplies model config.")
     parser.add_argument("--device", default=0, type=int, help="CUDA device id. Use -1 for CPU.")
     parser.add_argument("--seed", default=10, type=int, help="Global seed.")
-    parser.add_argument("--objects-subset", default="quadropeds_clean", help="Object subset used to collect offline samples.")
-    parser.add_argument("--sample-limit", default=4, type=int, help="How many motions to load from the dataset subset.")
-    parser.add_argument("--num-offline-samples", default=3, type=int, help="How many fixed offline corrupted samples to use.")
+    parser.add_argument("--objects-subset", default="quadropeds_clean", help="Object subset to load from preprocessed dataset.")
+    parser.add_argument("--sample-limit", default=0, type=int, help="Maximum number of motions to load from the dataset subset. 0 means all available.")
     parser.add_argument("--num-frames", default=60, type=int, help="Maximum frames per motion.")
     parser.add_argument("--batch-size", default=1, type=int, help="Batch size. Keep 1 for deterministic debugging.")
     parser.add_argument("--num-workers", default=0, type=int, help="DataLoader workers.")
-    parser.add_argument("--curriculum-stage", default=1, choices=[1, 2], type=int, help="Corruption stage for offline export.")
     parser.add_argument("--num-steps", default=800, type=int, help="Number of deterministic optimization steps.")
     parser.add_argument("--log-interval", default=50, type=int, help="How often to print training metrics.")
     parser.add_argument("--save-interval", default=200, type=int, help="How often to save debug checkpoints.")
@@ -81,7 +124,6 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
             t5_name=args.t5_name,
             objects_subset=args.objects_subset,
             num_workers=args.num_workers,
-            curriculum_stage=args.curriculum_stage,
             prefetch_factor=2,
             sample_limit=args.sample_limit,
             latent_dim=args.latent_dim,
@@ -107,7 +149,6 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
     model_args.t5_name = getattr(model_args, "t5_name", args.t5_name)
     model_args.objects_subset = args.objects_subset
     model_args.sample_limit = args.sample_limit
-    model_args.curriculum_stage = args.curriculum_stage
     model_args.num_workers = args.num_workers
     model_args.prefetch_factor = getattr(model_args, "prefetch_factor", 2)
     model_args.noise_schedule = getattr(model_args, "noise_schedule", args.noise_schedule)
@@ -240,7 +281,7 @@ def build_fixed_noise(sample_index: int, shape: torch.Size, device: torch.device
     return torch.randn(shape, generator=generator, device=device, dtype=torch.float32)
 
 
-def collect_offline_samples(args: argparse.Namespace, model_args: SimpleNamespace, output_dir: Path) -> tuple[list[dict[str, object]], dict[str, dict[str, np.ndarray]]]:
+def collect_samples(args: argparse.Namespace, model_args: SimpleNamespace) -> tuple[list[dict[str, object]], dict[str, dict[str, np.ndarray]]]:
     data = get_dataset_loader(
         batch_size=1,
         num_frames=model_args.num_frames,
@@ -250,74 +291,47 @@ def collect_offline_samples(args: argparse.Namespace, model_args: SimpleNamespac
         balanced=False,
         objects_subset=model_args.objects_subset,
         num_workers=args.num_workers,
-        curriculum_stage=args.curriculum_stage,
-        enable_topology_augmentation=False,
         prefetch_factor=model_args.prefetch_factor,
         sample_limit=args.sample_limit,
+        shuffle=False,
+        drop_last=False,
     )
     cond_dict = data.dataset.motion_dataset.cond_dict
-    offline_samples: list[dict[str, object]] = []
-    offline_dir = output_dir / "offline_samples"
-    offline_dir.mkdir(parents=True, exist_ok=True)
+    samples: list[dict[str, object]] = []
 
     for sample_index, (motion, cond) in enumerate(data):
-        if sample_index >= args.num_offline_samples:
-            break
         cond_cpu = clone_batch_cond(cond)
         motion_cpu = motion.detach().clone().float()
+        motion_name = cond_cpu["y"]["motion_name"][0]
         object_type = cond_cpu["y"]["object_type"][0]
         n_joints = int(cond_cpu["y"]["n_joints"][0].item())
         length = int(cond_cpu["y"]["lengths"][0].item())
-        parents = [int(parent) for parent in cond_dict[object_type]["parents"]]
         mean = cond_dict[object_type]["mean"].astype(np.float32)
         std = (cond_dict[object_type]["std"].astype(np.float32) + 1e-6)
 
-        target_norm = motion_cpu[0, :n_joints, :, :length]
-        reference_norm = cond_cpu["y"]["reference_motion"][0, :n_joints, :, :length]
-        confidence = cond_cpu["y"]["soft_confidence_mask"][0, :n_joints, :, :length]
-
-        target_denorm = target_norm.permute(2, 0, 1).numpy() * std[None, :n_joints, :] + mean[None, :n_joints, :]
-        reference_denorm = reference_norm.permute(2, 0, 1).numpy() * std[None, :n_joints, :] + mean[None, :n_joints, :]
-
-        sample_dir = offline_dir / f"sample_{sample_index:02d}_{object_type}"
-        sample_dir.mkdir(parents=True, exist_ok=True)
-        export_motion(sample_dir, "clean_target", target_denorm.astype(np.float32), parents)
-        export_motion(sample_dir, "corrupted_reference", reference_denorm.astype(np.float32), parents)
-        np.save(sample_dir / "soft_confidence_mask.npy", confidence.permute(2, 0, 1).numpy().astype(np.float32))
-
-        metadata = {
-            "sample_index": sample_index,
-            "object_type": object_type,
-            "length": length,
-            "n_joints": n_joints,
-            "corruption_metadata": cond_cpu["y"].get("corruption_metadata", [None])[0],
-        }
-        with open(sample_dir / "metadata.json", "w", encoding="utf-8") as handle:
-            json.dump(metadata, handle, indent=2)
-
-        offline_samples.append(
+        samples.append(
             {
                 "motion": motion_cpu,
                 "cond": cond_cpu,
+                "motion_name": motion_name,
                 "object_type": object_type,
                 "length": length,
                 "n_joints": n_joints,
-                "parents": parents,
+                "parents": [int(parent) for parent in cond_dict[object_type]["parents"]],
                 "mean": mean,
                 "std": std,
-                "sample_dir": sample_dir,
             }
         )
 
-    if not offline_samples:
-        raise RuntimeError("No offline samples were collected.")
-    return offline_samples, cond_dict
+    if not samples:
+        raise RuntimeError("No samples were collected.")
+    return samples, cond_dict
 
 
 def deterministic_eval(
     model: torch.nn.Module,
     diffusion,
-    offline_samples: list[dict[str, object]],
+    samples: list[dict[str, object]],
     device: torch.device,
     fixed_timestep: int,
     noise_mode: str,
@@ -345,7 +359,7 @@ def deterministic_eval(
     eval_dir.mkdir(parents=True, exist_ok=True)
 
     with torch.no_grad():
-        for sample_index, sample in enumerate(offline_samples):
+        for sample_index, sample in enumerate(samples):
             motion = sample["motion"].to(device)
             cond = move_cond_to_device(sample["cond"], device)
             fixed_t = torch.full((motion.shape[0],), fixed_timestep, device=device, dtype=torch.long)
@@ -462,7 +476,7 @@ def main() -> int:
     device = dist_util.dev()
 
     model_args = load_model_args(args)
-    offline_samples, _ = collect_offline_samples(args, model_args, output_dir)
+    samples, _ = collect_samples(args, model_args)
 
     model, diffusion = create_model_and_diffusion_general_skeleton(model_args)
     if args.model_path:
@@ -481,8 +495,8 @@ def main() -> int:
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
     for step in range(args.num_steps):
-        sample_index = step % len(offline_samples)
-        sample = offline_samples[sample_index]
+        sample_index = step % len(samples)
+        sample = samples[sample_index]
         motion = sample["motion"].to(device)
         cond = move_cond_to_device(sample["cond"], device)
         fixed_t = torch.full((motion.shape[0],), args.fixed_timestep, device=device, dtype=torch.long)
@@ -520,7 +534,7 @@ def main() -> int:
     eval_report = deterministic_eval(
         model=model,
         diffusion=diffusion,
-        offline_samples=offline_samples,
+        samples=samples,
         device=device,
         fixed_timestep=args.fixed_timestep,
         noise_mode=args.noise_mode,
@@ -530,7 +544,7 @@ def main() -> int:
     final_report = {
         "model_path": str(Path(args.model_path).resolve()) if args.model_path else "",
         "output_dir": str(output_dir),
-        "num_offline_samples": len(offline_samples),
+        "num_samples_used": len(samples),
         "num_steps": args.num_steps,
         "fixed_timestep": args.fixed_timestep,
         "noise_mode": args.noise_mode,

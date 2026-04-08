@@ -130,13 +130,13 @@ def add_training_options(parser):
     group.add_argument("--eval_batch_size", default=32, type=int,
                        help="Batch size during evaluation loop. Do not change this unless you know what you are doing. "
                             "T2m precision calculation is based on fixed batch size 32.")
-    group.add_argument("--eval_split", default='test', choices=['val', 'test'], type=str,
-                       help="Which split to evaluate on during training.")
+    group.add_argument("--eval_split", default='val', choices=['val', 'test'], type=str,
+                       help="Which held-out split to evaluate on during training.")
     group.add_argument("--eval_during_training", action='store_true',
                        help="If True, will run evaluation during training.")
-    group.add_argument("--eval_rep_times", default=3, type=int,
-                       help="Number of repetitions for evaluation loop during training.")
-    group.add_argument("--eval_num_samples", default=1_000, type=int,
+    group.add_argument("--eval_interval", default=1_000, type=int,
+                       help="Run validation loss every N training steps when eval_during_training is enabled.")
+    group.add_argument("--eval_num_samples", default=10, type=int,
                        help="If -1, will use all samples in the specified split.")
     group.add_argument("--log_interval", default=50, type=int,
                        help="Log losses each N steps")
@@ -152,18 +152,8 @@ def add_training_options(parser):
                        help="Limit the number of motion clips loaded for tiny overfit/debug runs. 0 keeps the full dataset.")
     group.add_argument("--prefetch_factor", default=2, type=int,
                        help="Per-worker prefetch factor for the restoration dataset loader.")
-    group.add_argument("--offline_reference_samples", default=True, type=bool,
-                       help="Precompute fixed corrupted-reference samples once when building the training dataset and reuse them for every epoch.")
-    group.add_argument("--offline_reference_seed", default=10, type=int,
-                       help="Seed used when precomputing offline corrupted-reference samples.")
     group.add_argument("--resume_checkpoint", default="", type=str,
                        help="If not empty, will start from the specified checkpoint (path to model###.pt file).")
-    group.add_argument("--curriculum_stage", default=1, choices=[1, 2], type=int,
-                       help="Initial corruption curriculum stage.")
-    group.add_argument("--curriculum_switch_step", default=20000, type=int,
-                       help="Step at which to rebuild the loader with the stage-2 corruption preset.")
-    group.add_argument("--enable_topology_augmentation", action='store_true',
-                       help="Keep the legacy joint add/remove augmentation path. Disabled by default for same-skeleton restoration.")
     group.add_argument("--gen_during_training", action='store_true',
                        help="If True, will generate motions during training, on each save interval.")
     group.add_argument("--gen_num_samples", default=3, type=int,

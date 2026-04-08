@@ -84,6 +84,10 @@ def truebones_collate(batch):
     if 'object_type' in notnone_batches[0]:
         objecttypebatch = [b['object_type'] for b in notnone_batches]
         cond['y'].update({'object_type': objecttypebatch})
+
+    if 'motion_name' in notnone_batches[0]:
+        motionnamebatch = [b['motion_name'] for b in notnone_batches]
+        cond['y'].update({'motion_name': motionnamebatch})
     
     if 'parents' in notnone_batches[0]:
         parentsbatch = [b['parents'] for b in notnone_batches]
@@ -165,6 +169,8 @@ def truebones_batch_collate(batch):
             item['soft_confidence_mask'] = soft_confidence_mask.permute(1, 2, 0).float()
         if corruption_metadata is not None:
             item['corruption_metadata'] = corruption_metadata
+        if len(b) > 17:
+            item['motion_name'] = b[17]
         adapted_batch.append(item)
 
     return truebones_collate(adapted_batch)
