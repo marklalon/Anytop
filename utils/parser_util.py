@@ -87,13 +87,13 @@ def add_model_options(parser):
                             " For classifier-free guidance learning.")
     group.add_argument("--lambda_fs", default=0.0, type=float, help="Foot contact loss.")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Foot contact loss.")
-    group.add_argument("--lambda_confidence_recon", default=2.0, type=float, help="Reference-preservation loss on reliable observed regions.")
+    group.add_argument("--lambda_confidence_recon", default=5.0, type=float, help="Reference-preservation loss on reliable observed regions.")
     group.add_argument("--lambda_repair_recon", default=1.0, type=float, help="Reconstruction loss focused on low-confidence and missing regions.")
     group.add_argument("--lambda_root", default=0.25, type=float, help="Root trajectory consistency loss.")
     group.add_argument("--lambda_velocity", default=0.1, type=float, help="Velocity consistency loss.")
     group.add_argument("--disable_reference_branch", action='store_true',
                        help="Disable the restoration reference branch and train only the AnyTop prior.")
-    group.add_argument("--reference_dropout_threshold", default=0.05, type=float,
+    group.add_argument("--reference_dropout_threshold", default=0.2, type=float,
                        help="Reference confidence values below this threshold are treated as unusable during attention.")
     group.add_argument("--reference_fusion_threshold", default=0.8, type=float,
                        help="Only confidence values above this threshold are fused back from the corrupted reference during restoration.")
@@ -142,7 +142,7 @@ def add_training_options(parser):
                        help="Run validation loss every N training steps when eval_during_training is enabled.")
     group.add_argument("--eval_num_samples", default=32, type=int,
                        help="If -1, will use all samples in the specified split.")
-    group.add_argument("--log_interval", default=50, type=int,
+    group.add_argument("--log_interval", default=100, type=int,
                        help="Log losses each N steps")
     group.add_argument("--save_interval", default=10_000, type=int,
                        help="Save checkpoints and run evaluation each N steps")

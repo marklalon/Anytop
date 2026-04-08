@@ -331,10 +331,24 @@ class TruebonesSampler(WeightedRandomSampler):
         weights = np.zeros(total_samples)
         object_share = 1.0/len(object_types)
         pointer = data_source.motion_dataset.pointer
+        
+        # Collect all object types that have samples
+        non_empty_types = []
         for object_type in object_types:
-            object_indices = [i for i in range(num_samples) if i>=pointer and name_list[i].startswith(f'{object_type}_')]
+            object_indices = [i for i in range(pointer, len(name_list)) if name_list[i].startswith(f'{object_type}_')]
+            if len(object_indices) > 0:
+                non_empty_types.append((object_type, object_indices))
+        
+        # Re-balance weights among only the non-empty object types
+        if len(non_empty_types) == 0:
+            raise RuntimeError(f"No samples found for any object type in split with pointer={pointer}. "
+                             f"Available samples: {[name_list[i] for i in range(pointer, min(pointer+5, len(name_list)))]}")
+        
+        object_share = 1.0 / len(non_empty_types)
+        for object_type, object_indices in non_empty_types:
             object_prob = object_share / len(object_indices)
             weights[object_indices] = object_prob
+        
         super().__init__(num_samples=num_samples, weights=weights)
     
 class Truebones(data.Dataset):
