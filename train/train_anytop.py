@@ -17,9 +17,7 @@ from data_loaders.get_data import get_dataset_loader
 from utils.model_util import create_model_and_diffusion_general_skeleton
 from utils.ml_platforms import ClearmlPlatform, TensorboardPlatform, NoPlatform, WandBPlatform #required
 
-def main():
-    args = train_args()
-    fixseed(args.seed)
+def prepare_save_dir(args):
     save_dir = args.save_dir
     if save_dir is None:
         save_root = os.path.join(os.getcwd(), 'save')
@@ -33,34 +31,46 @@ def main():
             model_name = f'{model_name}_{len(mod_list)}'
         save_dir = os.path.join(save_root, model_name)
         args.save_dir = save_dir
-        
+
+    if save_dir is None:
+        raise FileNotFoundError('save_dir was not specified.')
+    if os.path.exists(save_dir) and not args.overwrite:
+        raise FileExistsError('save_dir [{}] already exists.'.format(save_dir))
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    return save_dir
+
+def create_training_data_loader(args):
+    return get_dataset_loader(
+        batch_size=args.batch_size,
+        num_frames=args.num_frames,
+        split=getattr(args, 'train_split', 'train'),
+        temporal_window=args.temporal_window,
+        t5_name=args.t5_name,
+        balanced=args.balanced,
+        objects_subset=args.objects_subset,
+        num_workers=args.num_workers,
+        prefetch_factor=args.prefetch_factor,
+        sample_limit=args.sample_limit,
+        use_reference_conditioning=getattr(args, 'use_reference_conditioning', True),
+    )
+
+def run_training(args):
+    fixseed(args.seed)
+    save_dir = prepare_save_dir(args)
+    args.checkpoint_step_numbering = 'completed_steps'
+
     ml_platform_type = eval(args.ml_platform_type)
     ml_platform = ml_platform_type(save_dir=args.save_dir)
     ml_platform.report_args(args, name='Args')
 
-    if save_dir is None:
-        raise FileNotFoundError('save_dir was not specified.')
-    elif os.path.exists(save_dir) and not args.overwrite:
-        raise FileExistsError('save_dir [{}] already exists.'.format(save_dir))
-    elif not os.path.exists(save_dir):
-        os.makedirs(save_dir)
     args_path = os.path.join(save_dir, 'args.json')
     with open(args_path, 'w') as fw:
         json.dump(vars(args), fw, indent=4, sort_keys=True)
 
     dist_util.setup_dist(args.device)
 
-    data = get_dataset_loader(
-        batch_size=args.batch_size,
-        num_frames=args.num_frames,
-        temporal_window=args.temporal_window,
-        t5_name='t5-base',
-        balanced=args.balanced,
-        objects_subset=args.objects_subset,
-        num_workers=args.num_workers,
-        prefetch_factor=args.prefetch_factor,
-        sample_limit=args.sample_limit,
-    )
+    data = create_training_data_loader(args)
 
     model, diffusion = create_model_and_diffusion_general_skeleton(args)
     model.to(dist_util.dev())
@@ -68,6 +78,10 @@ def main():
     print("Training...")
     TrainLoop(args, ml_platform, model, diffusion, data).run_loop()
     ml_platform.close()
+
+def main():
+    args = train_args()
+    run_training(args)
 
 if __name__ == "__main__":
     main()

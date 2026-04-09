@@ -2,6 +2,7 @@ import functools
 import os
 import re
 import time
+import json
 from os.path import join as pjoin
 from typing import Optional
 import blobfile as bf
@@ -67,7 +68,7 @@ class TrainLoop:
                                                 step_size = 10000, 
                                                 gamma = 0.99)
         
-        if self.resume_step:
+        if self.resume_step and bool(getattr(self.args, 'load_optimizer_state', True)):
             self._load_optimizer_state()
             # Model was resumed, either due to a restart or a checkpoint
             # being specified at the command line.
@@ -77,6 +78,7 @@ class TrainLoop:
             self.device = torch.device(dist_util.dev())
         self.non_blocking = self.device.type == 'cuda'
         self.detect_anomaly = bool(getattr(self.args, 'detect_anomaly', False))
+        self.load_optimizer_state = bool(getattr(self.args, 'load_optimizer_state', True))
 
         self.schedule_sampler_type = 'uniform'
         self.schedule_sampler = create_named_schedule_sampler(self.schedule_sampler_type, diffusion)
@@ -96,6 +98,7 @@ class TrainLoop:
                 sample_limit=self.args.sample_limit,
                 shuffle=False,
                 drop_last=False,
+                use_reference_conditioning=getattr(self.args, 'use_reference_conditioning', True),
             )
         self.use_ddp = False
         self.ddp_model = self.model
@@ -104,7 +107,12 @@ class TrainLoop:
         self.resume_checkpoint = self.find_resume_checkpoint() or self.resume_checkpoint
 
         if self.resume_checkpoint:
-            self.resume_step = parse_resume_step_from_filename(self.resume_checkpoint)
+            checkpoint_number = parse_checkpoint_number_from_filename(self.resume_checkpoint)
+            numbering_mode = self._get_checkpoint_step_numbering(self.resume_checkpoint)
+            if numbering_mode == 'completed_steps':
+                self.resume_step = max(checkpoint_number - 1, 0)
+            else:
+                self.resume_step = checkpoint_number
             logger.log(f"loading model from checkpoint: {self.resume_checkpoint}...")
 
             state_dict = dist_util.load_state_dict(
@@ -126,28 +134,30 @@ class TrainLoop:
 
     def _load_optimizer_state(self):
         opt_checkpoint = self.find_resume_opt_checkpoint()
-        if os.path.exists(opt_checkpoint):
-            logger.log(f"loading optimizer state from checkpoint: {opt_checkpoint}")
-            state_dict = dist_util.load_state_dict(
-                opt_checkpoint, map_location=dist_util.dev()
-            )
-            if self.use_fp16:
-                if 'scaler' not in state_dict:
-                    print("scaler state not found ... not loading it.")
-                else:
-                    # load grad scaler state
-                    self.scaler.load_state_dict(state_dict['scaler'])
-                    # for the rest
-                    state_dict = state_dict['opt']
+        if not opt_checkpoint or not os.path.exists(opt_checkpoint):
+            logger.log("optimizer checkpoint not found; skipping optimizer state restore")
+            return
+        logger.log(f"loading optimizer state from checkpoint: {opt_checkpoint}")
+        state_dict = dist_util.load_state_dict(
+            opt_checkpoint, map_location=dist_util.dev()
+        )
+        if self.use_fp16:
+            if 'scaler' not in state_dict:
+                print("scaler state not found ... not loading it.")
+            else:
+                # load grad scaler state
+                self.scaler.load_state_dict(state_dict['scaler'])
+                # for the rest
+                state_dict = state_dict['opt']
 
-            tgt_wd = self.opt.param_groups[0]['weight_decay']
-            print('target weight decay:', tgt_wd)
-            self.opt.load_state_dict(state_dict)
-            print('loaded weight decay (will be replaced):',
-                  self.opt.param_groups[0]['weight_decay'])
-            # preserve the weight decay parameter
-            for group in self.opt.param_groups:
-                group['weight_decay'] = tgt_wd
+        tgt_wd = self.opt.param_groups[0]['weight_decay']
+        print('target weight decay:', tgt_wd)
+        self.opt.load_state_dict(state_dict)
+        print('loaded weight decay (will be replaced):',
+              self.opt.param_groups[0]['weight_decay'])
+        # preserve the weight decay parameter
+        for group in self.opt.param_groups:
+            group['weight_decay'] = tgt_wd
 
     def run_loop(self):
          print('train steps:', self.num_steps)
@@ -168,29 +178,29 @@ class TrainLoop:
 
                 self.run_step(motion, cond)
 
-                current_step = self.total_step()
+                completed_step = self.total_step() + 1
 
-                if current_step % self.log_interval == 0:
+                if completed_step % self.log_interval == 0:
                     print()
                     print(cond['y']['object_type'])
                     for k,v in logger.get_current().dumpkvs().items():
                         if k == 'loss':
-                            print('step[{}]: loss[{:0.5f}]'.format(current_step, v))
+                            print('step[{}]: loss[{:0.5f}]'.format(completed_step, v))
                         if k in ['step', 'samples'] or '_q' in k:
                             continue
                         else:
-                            self.train_platform.report_scalar(name=k, value=v, iteration=current_step, group_name='Loss')
+                            self.train_platform.report_scalar(name=k, value=v, iteration=completed_step, group_name='Loss')
 
-                if self._should_validate(current_step):
+                if self._should_validate(completed_step):
                     self.model.eval()
                     self.evaluate()
                     self.model.train()
 
-                if self._should_save(current_step):
-                    self.save()
+                if self._should_save(completed_step):
+                    self.save(completed_step)
 
                     self.model.eval()
-                    self.generate_during_training()
+                    self.generate_during_training(completed_step)
                     self.model.train()
 
                     # Run for a finite amount of time in integration tests.
@@ -199,7 +209,7 @@ class TrainLoop:
 
                 self.step += 1
 
-                if self.total_step() == self.num_steps:
+                if completed_step == self.num_steps:
                     break
 
             if not (not self.lr_anneal_steps or self.total_step() < self.lr_anneal_steps):
@@ -218,13 +228,13 @@ class TrainLoop:
             }
         }
 
-    def _should_save(self, current_step):
-        return (current_step % self.save_interval == 0 and current_step != 0) or current_step == self.num_steps - 1
+    def _should_save(self, completed_step):
+        return completed_step % self.save_interval == 0 or completed_step == self.num_steps
 
-    def _should_validate(self, current_step):
+    def _should_validate(self, completed_step):
         if not self.args.eval_during_training or self.eval_data is None or self.eval_interval <= 0:
             return False
-        return (current_step % self.eval_interval == 0 and current_step != 0) or current_step == self.num_steps - 1
+        return completed_step % self.eval_interval == 0 or completed_step == self.num_steps
 
     def _compute_eval_losses(self, batch, cond):
         t, weights = self.schedule_sampler.sample(batch.shape[0], dist_util.dev())
@@ -243,12 +253,13 @@ class TrainLoop:
             reduced[key] = float((value.detach() * weights).mean().item())
         return reduced
 
-    def generate_during_training(self):
+    def generate_during_training(self, completed_step):
         if not self.args.gen_during_training:
             return
         gen_args = copy.deepcopy(self.args)
-        gen_args.model_path = os.path.join(self.save_dir, self.ckpt_file_name())
-        gen_args.output_dir = os.path.join(self.save_dir, f'{self.ckpt_file_name()}.samples')
+        checkpoint_name = self.ckpt_file_name(completed_step)
+        gen_args.model_path = os.path.join(self.save_dir, checkpoint_name)
+        gen_args.output_dir = os.path.join(self.save_dir, f'{checkpoint_name}.samples')
         gen_args.num_samples = self.args.gen_num_samples
         gen_args.num_repetitions = self.args.gen_num_repetitions
         gen_args.motion_length = 6.0 #None  # length is taken from the dataset
@@ -258,7 +269,7 @@ class TrainLoop:
         gen_args.object_type = random.sample(all_objects, gen_args.num_samples)
         random.seed(self.args.seed)
         all_sample_save_path = generate(gen_args, self.data.dataset.motion_dataset.cond_dict)
-        self.train_platform.report_media(title='Motion', series='Predicted Motion', iteration=self.total_step(),
+        self.train_platform.report_media(title='Motion', series='Predicted Motion', iteration=completed_step,
                                          local_path=all_sample_save_path)
         
     
@@ -304,10 +315,11 @@ class TrainLoop:
 
         averaged = {key: value / seen_samples for key, value in totals.items()}
         current_step = self.total_step()
+        completed_step = current_step + 1
         if 'loss' in averaged:
-            print('val_step[{}]: val_loss[{:0.5f}]'.format(current_step, averaged['loss']))
+            print('val_step[{}]: val_loss[{:0.5f}]'.format(completed_step, averaged['loss']))
         for key, value in averaged.items():
-            self.train_platform.report_scalar(name=key, value=value, iteration=current_step, group_name='Val')
+            self.train_platform.report_scalar(name=key, value=value, iteration=completed_step, group_name='Val')
 
 
 
@@ -375,11 +387,11 @@ class TrainLoop:
         logger.logkv("samples", (self.step + self.resume_step + 1) * self.global_batch)
 
 
-    def ckpt_file_name(self):
-        return f"model{(self.step+self.resume_step):09d}.pt"
+    def ckpt_file_name(self, completed_step):
+        return f"model{completed_step:09d}.pt"
 
 
-    def save(self):
+    def save(self, completed_step):
             def save_checkpoint():
                 def del_clip(state_dict):
                     # Do not save CLIP weights
@@ -403,7 +415,7 @@ class TrainLoop:
                     state_dict = {'model': state_dict, 'model_avg': state_dict_avg}
 
                 logger.log(f"saving model...")
-                filename = self.ckpt_file_name()
+                filename = self.ckpt_file_name(completed_step)
                 checkpoint_path = pjoin(self.save_dir, filename)
                 if '://' in self.save_dir:
                     file_ctx = bf.BlobFile(bf.join(self.save_dir, filename), "wb")
@@ -414,7 +426,7 @@ class TrainLoop:
 
             save_checkpoint()
 
-            opt_filename = f"opt{(self.total_step()):09d}.pt"
+            opt_filename = f"opt{completed_step:09d}.pt"
             opt_path = pjoin(self.save_dir, opt_filename)
             if '://' in self.save_dir:
                 opt_ctx = bf.BlobFile(bf.join(self.save_dir, opt_filename), "wb")
@@ -454,6 +466,17 @@ class TrainLoop:
         TODO: This means ignoring the flag of resume_checkpoint in case some other ckpts exists in that dir!
         '''
 
+        if self.resume_checkpoint:
+            checkpoint_number = parse_checkpoint_number_from_filename(self.resume_checkpoint)
+            resume_dir = os.path.dirname(self.resume_checkpoint)
+            candidate = pjoin(resume_dir, f'opt{checkpoint_number:09d}.pt')
+            if os.path.exists(candidate):
+                return candidate
+
+            legacy_candidate = pjoin(resume_dir, f'opt{max(checkpoint_number - 1, 0):09d}.pt')
+            if os.path.exists(legacy_candidate):
+                return legacy_candidate
+
         matches = {file: re.match(r'opt(\d+).pt$', file) for file in os.listdir(self.args.save_dir)}
         models = {int(match.group(1)): file for file, match in matches.items() if match}
 
@@ -462,7 +485,19 @@ class TrainLoop:
 
 
 
-def parse_resume_step_from_filename(filename):
+    def _get_checkpoint_step_numbering(self, checkpoint_path: str) -> str:
+        args_path = pjoin(os.path.dirname(checkpoint_path), 'args.json')
+        if not os.path.exists(args_path):
+            return 'zero_based'
+        try:
+            with open(args_path, 'r', encoding='utf-8') as handle:
+                saved_args = json.load(handle)
+        except Exception:
+            return 'zero_based'
+        return saved_args.get('checkpoint_step_numbering', 'zero_based')
+
+
+def parse_checkpoint_number_from_filename(filename):
     """
     Parse filenames of the form path/to/modelNNNNNN.pt, where NNNNNN is the
     checkpoint's number of steps.

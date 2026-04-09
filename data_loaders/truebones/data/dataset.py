@@ -19,6 +19,7 @@ from model.conditioners import T5Conditioner
 DEFAULT_SPLIT_RATIOS = {"train": 0.9, "val": 0.05, "test": 0.05}
 DEFAULT_SPLIT_SEED = 3407
 SUPPORTED_SPLITS = tuple(DEFAULT_SPLIT_RATIOS.keys())
+ALL_SPLIT_NAME = "all"
 
 
 def collate_fn(batch):
@@ -117,6 +118,11 @@ def ensure_split_manifests(data_root: str, motion_dir: str) -> dict[str, Path]:
 
 
 def load_motion_names_for_split(split: str, data_root: str, motion_dir: str) -> set[str]:
+    if split == ALL_SPLIT_NAME:
+        motion_names = set(_list_motion_files(motion_dir))
+        if not motion_names:
+            raise RuntimeError(f"Split '{split}' is empty: {motion_dir}")
+        return motion_names
     split_paths = ensure_split_manifests(data_root, motion_dir)
     split_path = split_paths[split]
     motion_names = {
@@ -209,13 +215,14 @@ def attach_joint_name_embeddings(cond_dict: dict, cond_file: str, data_root: str
 
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, temporal_window, t5_name, balanced, sample_limit=0, allowed_motion_names: Optional[set[str]] = None):
+    def __init__(self, opt, cond_dict, temporal_window, t5_name, balanced, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, use_reference_conditioning: bool = True):
         self.opt = opt
         self.max_length = 20
         self.pointer = 0
         self.max_motion_length = opt.max_motion_length
         self.cond_dict = cond_dict
         self.balanced = balanced
+        self.use_reference_conditioning = bool(use_reference_conditioning)
         self.sample_limit = max(0, int(sample_limit))
         data_dict = {}
         all_object_types = self.cond_dict.keys()
@@ -276,15 +283,19 @@ class MotionDataset(data.Dataset):
             motion = motion[ind: ind + self.max_motion_length]
             m_length = self.max_motion_length
 
-        stored_sample = load_corrupted_reference_sample(name, dataset_dir=self.opt.data_root)
-        reference_motion = np.nan_to_num((stored_sample['reference_motion'] - mean[None, :]) / std[None, :]).astype(np.float32)
-        soft_confidence_mask = stored_sample['soft_confidence_mask'].astype(np.float32)
-        corruption_metadata = stored_sample['metadata'].get('corruption_metadata')
+        reference_motion = None
+        soft_confidence_mask = None
+        corruption_metadata = None
+        if self.use_reference_conditioning:
+            stored_sample = load_corrupted_reference_sample(name, dataset_dir=self.opt.data_root)
+            reference_motion = np.nan_to_num((stored_sample['reference_motion'] - mean[None, :]) / std[None, :]).astype(np.float32)
+            soft_confidence_mask = stored_sample['soft_confidence_mask'].astype(np.float32)
+            corruption_metadata = stored_sample['metadata'].get('corruption_metadata')
 
-        if reference_motion.shape[0] > m_length:
-            reference_motion = reference_motion[ind: ind + m_length]
-        if soft_confidence_mask.shape[0] > m_length:
-            soft_confidence_mask = soft_confidence_mask[ind: ind + m_length]
+            if reference_motion.shape[0] > m_length:
+                reference_motion = reference_motion[ind: ind + m_length]
+            if soft_confidence_mask.shape[0] > m_length:
+                soft_confidence_mask = soft_confidence_mask[ind: ind + m_length]
 
         if m_length < self.max_motion_length:
             pad_frames = self.max_motion_length - m_length
@@ -292,16 +303,20 @@ class MotionDataset(data.Dataset):
                                      motion,
                                      np.zeros((pad_frames, motion.shape[1], motion.shape[2]), dtype=motion.dtype)
                                      ], axis=0)
-            reference_motion = np.concatenate([
-                                               reference_motion,
-                                               np.zeros((pad_frames, reference_motion.shape[1], reference_motion.shape[2]), dtype=reference_motion.dtype)
-                                               ], axis=0)
-            soft_confidence_mask = np.concatenate([
-                                                   soft_confidence_mask,
-                                                   np.zeros((pad_frames, soft_confidence_mask.shape[1], soft_confidence_mask.shape[2]), dtype=soft_confidence_mask.dtype)
+            if reference_motion is not None:
+                reference_motion = np.concatenate([
+                                                   reference_motion,
+                                                   np.zeros((pad_frames, reference_motion.shape[1], reference_motion.shape[2]), dtype=reference_motion.dtype)
                                                    ], axis=0)
+            if soft_confidence_mask is not None:
+                soft_confidence_mask = np.concatenate([
+                                                       soft_confidence_mask,
+                                                       np.zeros((pad_frames, soft_confidence_mask.shape[1], soft_confidence_mask.shape[2]), dtype=soft_confidence_mask.dtype)
+                                                       ], axis=0)
 
-        return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, reference_motion, soft_confidence_mask, corruption_metadata, name
+        if self.use_reference_conditioning:
+            return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, reference_motion, soft_confidence_mask, corruption_metadata, name
+        return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints
     
     def augment(self, data):
         object_type = data['object_type']
@@ -353,8 +368,8 @@ class TruebonesSampler(WeightedRandomSampler):
     
 class Truebones(data.Dataset):
     def __init__(self, split="train", temporal_window=31, t5_name='t5-base', **kwargs):
-        if split not in SUPPORTED_SPLITS:
-            raise ValueError(f"Unsupported split '{split}'. Expected one of {SUPPORTED_SPLITS}.")
+        if split not in SUPPORTED_SPLITS and split != ALL_SPLIT_NAME:
+            raise ValueError(f"Unsupported split '{split}'. Expected one of {SUPPORTED_SPLITS + (ALL_SPLIT_NAME,)}.")
         abs_base_path = f'.'
         device = None  # torch.device('cuda:4') # This param is not in use in this context
         opt = get_opt(device)
@@ -365,12 +380,13 @@ class Truebones(data.Dataset):
         self.balanced = kwargs['balanced']
         self.objects_subset = kwargs['objects_subset']
         self.sample_limit = kwargs.get('sample_limit', 0)
+        self.use_reference_conditioning = kwargs.get('use_reference_conditioning', True)
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
         subset = opt.subsets_dict[self.objects_subset] 
         cond_dict = {k:cond_dict[k] for k in subset if k in cond_dict}
         cond_dict = attach_joint_name_embeddings(cond_dict, opt.cond_file, opt.data_root, t5_name)
             
-        self.split_file = pjoin(opt.data_root, f'{split}.txt')
+        self.split_file = pjoin(opt.data_root, f'{split}.txt') if split != ALL_SPLIT_NAME else ''
         allowed_motion_names = load_motion_names_for_split(split, opt.data_root, opt.motion_dir)
         self.motion_dataset = MotionDataset(
             self.opt,
@@ -380,6 +396,7 @@ class Truebones(data.Dataset):
             self.balanced,
             sample_limit=self.sample_limit,
             allowed_motion_names=allowed_motion_names,
+            use_reference_conditioning=self.use_reference_conditioning,
         )
         assert len(self.motion_dataset) > 0, 'You loaded an empty dataset, ' \
                                           'it is probably because your data dir has only texts and no motions.\n' \

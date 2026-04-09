@@ -49,7 +49,7 @@ class ThreadPrefetchLoader:
 def get_dataset_class(name):
     return Truebones
 
-def get_dataset(num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=False, objects_subset="all", sample_limit=0):
+def get_dataset(num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=False, objects_subset="all", sample_limit=0, use_reference_conditioning=True):
     dataset = Truebones(
         split=split,
         num_frames=num_frames,
@@ -58,11 +58,12 @@ def get_dataset(num_frames, split='train', temporal_window=31, t5_name='t5-base'
         balanced=balanced,
         objects_subset=objects_subset,
         sample_limit=sample_limit,
+        use_reference_conditioning=use_reference_conditioning,
     )
     return dataset
 
 
-def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=True, objects_subset="all", num_workers=None, prefetch_factor=2, sample_limit=0, shuffle=True, drop_last=True):
+def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=True, objects_subset="all", num_workers=None, prefetch_factor=2, sample_limit=0, shuffle=True, drop_last=True, use_reference_conditioning=True):
     if num_workers is None or int(num_workers) < 0:
         cpu_count = os.cpu_count() or 1
         num_workers = min(4, cpu_count)
@@ -77,6 +78,7 @@ def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31
         balanced=balanced,
         objects_subset=objects_subset,
         sample_limit=sample_limit,
+        use_reference_conditioning=use_reference_conditioning,
     )
     collate = truebones_batch_collate
     sampler = None
