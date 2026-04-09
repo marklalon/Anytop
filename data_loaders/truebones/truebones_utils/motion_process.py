@@ -48,11 +48,37 @@ _FACE_JOINT_UPPER_PRIORITIES = (
     ('arm', 'hiji', 'elbow', 'forearm'),
     ('te', 'hand'),
 )
+_FORWARD_REFERENCE_PRIORITIES = (
+    ('nose', 'snout', 'muzzle', 'beak'),
+    ('head',),
+    ('neck',),
+)
+_SNAKE_FORWARD_CHAINS = {
+    'Anaconda': (13, 20, 21),
+    'KingCobra': (3, 4, 8),
+}
 
 
 def _normalize_joint_name(name):
     split_name = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', name)
     return re.sub(r'[^a-z0-9]+', ' ', split_name.lower()).strip()
+
+
+def _normalize_vectors(vectors):
+    norms = np.linalg.norm(vectors, axis=-1, keepdims=True)
+    norms = np.where(norms < 1e-8, 1.0, norms)
+    return vectors / norms
+
+
+def _get_snake_forward(joints, object_type):
+    chain = _SNAKE_FORWARD_CHAINS.get(object_type)
+    if chain is None:
+        return None
+
+    body_base, neck, head = chain
+    forward = (joints[:, head] - joints[:, neck]) + (joints[:, neck] - joints[:, body_base])
+    forward = forward * np.array([[1.0, 0.0, 1.0]])
+    return _normalize_vectors(forward)
 
 
 def _joint_depths(parents):
@@ -147,6 +173,59 @@ def _find_semantic_joint_pair(joint_names, parents, priorities, *, exclude_near_
     return right_index, left_index
 
 
+def _find_forward_reference_joint(joint_names, parents):
+    depths = _joint_depths(parents)
+    candidates = []
+
+    for joint_index, joint_name in enumerate(joint_names):
+        normalized = _normalize_joint_name(joint_name)
+        priority_index = None
+        for current_priority, keyword_group in enumerate(_FORWARD_REFERENCE_PRIORITIES):
+            if any(keyword in normalized for keyword in keyword_group):
+                priority_index = current_priority
+                break
+        if priority_index is None:
+            continue
+        candidates.append((priority_index, -depths[joint_index], joint_index))
+
+    if not candidates:
+        return None
+
+    return min(candidates)[2]
+
+
+def _find_neck_reference_joint(joint_names, parents):
+    depths = _joint_depths(parents)
+    candidates = []
+
+    for joint_index, joint_name in enumerate(joint_names):
+        normalized = _normalize_joint_name(joint_name)
+        if 'neck' not in normalized:
+            continue
+        candidates.append((-depths[joint_index], joint_index))
+
+    if not candidates:
+        return None
+
+    return min(candidates)[1]
+
+
+def _get_head_forward(joints, face_joint_indx, forward_joint_index, forward_base_joint_index=None):
+    if forward_joint_index is None or face_joint_indx is None:
+        return None
+
+    if forward_base_joint_index is not None:
+        forward = joints[:, forward_joint_index] - joints[:, forward_base_joint_index]
+    else:
+        r_hip, l_hip, sdr_r, sdr_l = face_joint_indx
+        hip_center = 0.5 * (joints[:, r_hip] + joints[:, l_hip])
+        shoulder_center = 0.5 * (joints[:, sdr_r] + joints[:, sdr_l])
+        torso_center = 0.5 * (hip_center + shoulder_center)
+        forward = joints[:, forward_joint_index] - torso_center
+    forward = forward * np.array([[1.0, 0.0, 1.0]])
+    return _normalize_vectors(forward)
+
+
 def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints=None):
     if face_joints:
         if joint_names is not None and isinstance(face_joints[0], str):
@@ -170,20 +249,23 @@ def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints
 """ Computes orientation based on object type face joints (hips and shoulder) and reeturns root quaternion 
 rotatation to ensure it faces z+. face_joint_indx is optional for object_types that are not included
 in FACE_JOINTS dict"""
-def get_root_quat(joints, object_type, face_joint_indx=None):
+def get_root_quat(joints, object_type, face_joint_indx=None, forward_joint_index=None, forward_base_joint_index=None):
     if face_joint_indx is None:
         face_joint_indx = FACE_JOINTS[object_type]
-    r_hip, l_hip, sdr_r, sdr_l = face_joint_indx
-    across1 = joints[:, r_hip] - joints[:, l_hip]
-    across2 = joints[:, sdr_r] - joints[:, sdr_l]
-    across = across1 + across2
-    across = across / np.sqrt((across**2).sum(axis=-1))[:, np.newaxis]
-    forward = np.cross(np.array([[0, 1, 0]]), across, axis=-1)
-    forward = forward / np.sqrt((forward**2).sum(axis=-1))[..., np.newaxis]
+    if object_type in _SNAKE_FORWARD_CHAINS:
+        forward = _get_snake_forward(joints, object_type)
+    else:
+        forward = _get_head_forward(joints, face_joint_indx, forward_joint_index, forward_base_joint_index=forward_base_joint_index)
+        if forward is None:
+            r_hip, l_hip, sdr_r, sdr_l = face_joint_indx
+            across1 = joints[:, r_hip] - joints[:, l_hip]
+            across2 = joints[:, sdr_r] - joints[:, sdr_l]
+            across = across1 + across2
+            across = _normalize_vectors(across)
+            forward = np.cross(np.array([[0, 1, 0]]), across, axis=-1)
+            forward = _normalize_vectors(forward)
     target = np.array([[0,0,1]]).repeat(len(forward), axis=0)
     root_quat = Quaternions.between(forward, target)
-    if object_type == "Anaconda":
-        root_quat = Quaternions.from_euler(np.array([0, -np.pi/2, 0]), "xyz") * root_quat
     return root_quat
           
 """ put skeleton on ground (xz plane) """
@@ -211,9 +293,12 @@ def move_xz_to_origin(anim, root_pose_init_xz=None):
     return new_anim, root_pose_init_xz
 
 """" rotate the motion to initially face z+, ground at xz axis (negative y is below ground)"""
-def rotate_to_hml_orientation(anim, object_type, face_joints=None):
-    global_pos = positions_global(anim)
-    qs_rot = get_root_quat(global_pos, object_type, face_joint_indx=face_joints)[0]
+def rotate_to_hml_orientation(anim, object_type, face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None):
+    if orientation_quat is None:
+        global_pos = positions_global(anim)
+        qs_rot = get_root_quat(global_pos, object_type, face_joint_indx=face_joints, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)[0]
+    else:
+        qs_rot = orientation_quat
     new_rots = anim.rotations.copy()
     new_rots[:, 0] = qs_rot.repeat(new_rots.shape[0], axis=0) * new_rots[:, 0]
     new_pos = anim.positions.copy()
@@ -250,8 +335,8 @@ def get_6d_rep(qs):
     return qs_.rotation_matrix(cont6d=True)
 
 """" process anim object """
-def process_anim(anim, object_type, root_pose_init_xz=None, scale_factor=None, ground_height=None, face_joints=None):
-    rotated = rotate_to_hml_orientation(anim, object_type, face_joints) 
+def process_anim(anim, object_type, root_pose_init_xz=None, scale_factor=None, ground_height=None, face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None):
+    rotated = rotate_to_hml_orientation(anim, object_type, face_joints, orientation_quat=orientation_quat, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)
     centered, root_pose_init_xz_ = move_xz_to_origin(rotated, root_pose_init_xz)
     scaled, scale_factor_ = scale(centered, scale_factor)
     grounded, ground_height_ = put_on_ground(scaled, ground_height)
@@ -261,14 +346,25 @@ def process_anim(anim, object_type, root_pose_init_xz=None, scale_factor=None, g
 def get_common_features_from_T_pose(t_pose_bvh, object_type, face_joints=None):
     t_pose_anim, t_pos_names, t_pose_frame_time = BVH.load(t_pose_bvh)
     face_joints = resolve_face_joints(object_type, t_pos_names, t_pose_anim.parents, face_joints=face_joints)
+    forward_joint_index = _find_forward_reference_joint(t_pos_names, t_pose_anim.parents)
+    forward_base_joint_index = _find_neck_reference_joint(t_pos_names, t_pose_anim.parents)
     # first recover global positions, and then create a brand new non-damaged animation, with position consistent to the offsets 
     t_pose_positions = positions_global(t_pose_anim)
     with open(os.devnull, 'w') as devnull, redirect_stdout(devnull), redirect_stderr(devnull):
         t_pose_anim, _1, _2 = animation_from_positions(positions=t_pose_positions, parents=t_pose_anim.parents, offsets=t_pose_anim.offsets, iterations=150, silent=True)
+    t_pose_orientation_quat = get_root_quat(positions_global(t_pose_anim), object_type, face_joint_indx=face_joints, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)[0]
     ground_height=None
     if object_type == "Dragon":
         ground_height=0
-    scaled, root_pose_init_xz, ground_height, scale_factor = process_anim(t_pose_anim, object_type, ground_height=ground_height, face_joints=face_joints)
+    scaled, root_pose_init_xz, ground_height, scale_factor = process_anim(
+        t_pose_anim,
+        object_type,
+        ground_height=ground_height,
+        face_joints=face_joints,
+        orientation_quat=t_pose_orientation_quat,
+        forward_joint_index=forward_joint_index,
+        forward_base_joint_index=forward_base_joint_index,
+    )
     offsets = offsets_from_positions(positions_global(scaled), scaled.parents)[0]
     if object_type in ["Anaconda", "KingCobra"]: # special handel for snakes 
         suspected_foot_indices = [i for i in range(len(t_pos_names))]
@@ -283,7 +379,7 @@ def get_common_features_from_T_pose(t_pose_bvh, object_type, face_joints=None):
                 for c in children:
                     if c not in suspected_foot_indices:
                         suspected_foot_indices.append(c)
-    return root_pose_init_xz, scale_factor, ground_height, offsets, suspected_foot_indices, scaled.rotations, t_pos_names, scaled, face_joints
+    return root_pose_init_xz, scale_factor, ground_height, offsets, suspected_foot_indices, scaled.rotations, t_pos_names, scaled, face_joints, t_pose_orientation_quat, forward_joint_index, forward_base_joint_index
 
 def get_motion_features(ric_positions, rotations, foot_contact, velocity, max_joints):
     # F = Frames# , J = joints# 
@@ -338,12 +434,12 @@ def object_policy(obj):
 """ returns cont6d params, including joints rotations, root rotation and rotational velocity, 
 linear velocity and positions. Unlike BVH (and accordingly, Animation object) in which the parent holds the rotagtion of the child joint, 
 in our data structure each joints holds it's own rotation (similar to humanML3D data structure and FK model)"""
-def get_bvh_cont6d_params(anim, object_type, face_joints=None):
+def get_bvh_cont6d_params(anim, object_type, face_joints=None, forward_joint_index=None, forward_base_joint_index=None):
     positions = positions_global(anim)
     if face_joints is None:
         face_joints = FACE_JOINTS[object_type]
     quat_params = anim.rotations
-    r_rot = get_root_quat(positions, object_type, face_joints)
+    r_rot = get_root_quat(positions, object_type, face_joints, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)
     '''Quaternion to continuous 6D'''
     cont_6d_params = get_6d_rep(quat_params)
     cont_6d_params_reordered = np.zeros_like(cont_6d_params)
@@ -362,7 +458,7 @@ def get_bvh_cont6d_params(anim, object_type, face_joints=None):
     return cont_6d_params_reordered, r_velocity, velocity, r_rot, positions
 
 """ processes animation, and returns a new animation that aligns with humanML3D in terms of orientation and scale"""
-def get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, scale_factor, ground_height, tpos_rots, offsets, squared_positions_error, face_joints=None, slice_inds=None, preloaded=None):
+def get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, scale_factor, ground_height, tpos_rots, offsets, squared_positions_error, face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None, slice_inds=None, preloaded=None):
     if not isinstance(bvh_path, Animation):
         if preloaded is not None:
             raw_anim, names = preloaded
@@ -375,7 +471,17 @@ def get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, scale_factor,
         squared_positions_error[bvh_path] = 0 #np.sum((global_pos - new_global_pos) ** 2)/(anim.positions.shape[0]*anim.positions.shape[1])
 
         ## process animation: rotate to correct orientation, center, put on ground and scale
-        processed_anim, _xz, _gh, _sf = process_anim(raw_anim, object_type, root_pose_init_xz, scale_factor, ground_height, face_joints=face_joints)
+        processed_anim, _xz, _gh, _sf = process_anim(
+            raw_anim,
+            object_type,
+            root_pose_init_xz,
+            scale_factor,
+            ground_height,
+            face_joints=face_joints,
+            orientation_quat=orientation_quat,
+            forward_joint_index=forward_joint_index,
+            forward_base_joint_index=forward_base_joint_index,
+        )
     else:
         names = list()
         processed_anim = bvh_path
@@ -392,12 +498,27 @@ def get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, scale_factor,
     return new_anim, names  
     
 """ get motion feature representation"""
-def get_motion(bvh_path, foot_contact_vel_thresh, object_type, max_joints,root_pose_init_xz, scale_factor, ground_height, offsets, foot_indices, tpos_rots, squared_positions_error, face_joints=None, slice_inds=None, preloaded=None):
+def get_motion(bvh_path, foot_contact_vel_thresh, object_type, max_joints,root_pose_init_xz, scale_factor, ground_height, offsets, foot_indices, tpos_rots, squared_positions_error, face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None, slice_inds=None, preloaded=None):
     try:
-        new_anim, names = get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, scale_factor, ground_height, tpos_rots, offsets, squared_positions_error, face_joints, slice_inds, preloaded=preloaded)
+        new_anim, names = get_hml_aligned_anim(
+            bvh_path,
+            object_type,
+            root_pose_init_xz,
+            scale_factor,
+            ground_height,
+            tpos_rots,
+            offsets,
+            squared_positions_error,
+            face_joints,
+            orientation_quat,
+            forward_joint_index,
+            forward_base_joint_index,
+            slice_inds,
+            preloaded=preloaded,
+        )
         ## extract features
         # cont_6d_params, r_velocity, velocity, r_rot, global_positions = get_bvh_cont6d_params(new_anim, object_type)
-        cont_6d_params, r_velocity, velocity, r_rot, global_positions = get_bvh_cont6d_params(new_anim, object_type, face_joints=face_joints)
+        cont_6d_params, r_velocity, velocity, r_rot, global_positions = get_bvh_cont6d_params(new_anim, object_type, face_joints=face_joints, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)
         foot_contact = get_foot_contact(global_positions, foot_indices, foot_contact_vel_thresh) 
         '''Get Joint Rotation Invariant Position Represention'''
         # local velocity wrt root coords system as described in get_rifke definition 
@@ -492,7 +613,7 @@ def find_tpos_path(bvh_files):
 
 
 def _process_bvh_file(file_path, object_type, max_joints, root_pose_init_xz, scale_factor,
-                      ground_height, offsets, foot_indices, tpos_rots, face_joints):
+                      ground_height, offsets, foot_indices, tpos_rots, face_joints, orientation_quat, forward_joint_index, forward_base_joint_index):
     local_errors = dict()
     # Load the BVH file once; pass it as `preloaded` to every get_motion call so that
     # get_hml_aligned_anim does not re-read the file for each slice (BUG3 fix).
@@ -520,8 +641,11 @@ def _process_bvh_file(file_path, object_type, max_joints, root_pose_init_xz, sca
             foot_indices,
             tpos_rots,
             local_errors,
-            slice_inds=[begin, slice_ind],
             face_joints=face_joints,
+            orientation_quat=orientation_quat,
+            forward_joint_index=forward_joint_index,
+            forward_base_joint_index=forward_base_joint_index,
+            slice_inds=[begin, slice_ind],
             preloaded=(raw_anim, names),
         )
         current_begin = begin
@@ -569,8 +693,8 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=
         bvh_files = bvh_files[:max_files]
 
     squared_positions_error = dict()
-    root_pose_init_xz, scale_factor, ground_height, offsets, foot_indices, tpos_rots, names, tpos_anim, face_joints = get_common_features_from_T_pose(t_pos_path, object_type, face_joints=face_joints)
-    t_pos_motion, parents, max_joints, new_anim = get_motion(tpos_anim, FOOT_CONTACT_VEL_THRESH, object_type, max_joints, root_pose_init_xz, scale_factor, ground_height, offsets, foot_indices, tpos_rots, squared_positions_error, face_joints=face_joints)
+    root_pose_init_xz, scale_factor, ground_height, offsets, foot_indices, tpos_rots, names, tpos_anim, face_joints, orientation_quat, forward_joint_index, forward_base_joint_index = get_common_features_from_T_pose(t_pos_path, object_type, face_joints=face_joints)
+    t_pos_motion, parents, max_joints, new_anim = get_motion(tpos_anim, FOOT_CONTACT_VEL_THRESH, object_type, max_joints, root_pose_init_xz, scale_factor, ground_height, offsets, foot_indices, tpos_rots, squared_positions_error, face_joints=face_joints, orientation_quat=orientation_quat, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)
     object_cond['tpos_first_frame'] = t_pos_motion[0]
     # create topology conditions
     joint_relations, joints_graph_dist = create_topology_edge_relations(tpos_anim.parents, max_path_len = MAX_PATH_LEN)
@@ -603,6 +727,9 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=
             foot_indices,
             tpos_rots,
             face_joints,
+            orientation_quat,
+            forward_joint_index,
+            forward_base_joint_index,
         )
 
     if num_workers == 1:
