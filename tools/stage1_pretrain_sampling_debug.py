@@ -32,23 +32,16 @@ from utils.fixseed import fixseed
 from utils import dist_util
 from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
 
-
-DEFAULT_TEMPORAL_WINDOW = 31
-DEFAULT_T5_NAME = "t5-base"
-DEFAULT_LATENT_DIM = 64
-DEFAULT_LAYERS = 4
-DEFAULT_COND_MASK_PROB = 0.1
-DEFAULT_NOISE_SCHEDULE = "cosine"
-DEFAULT_SIGMA_SMALL = True
-DEFAULT_DIFFUSION_STEPS = 100
-DEFAULT_NUM_FRAMES = 120
-DEFAULT_EVAL_SAMPLES = 16
 QUALITY_FLOORS = {
     "mean_joint_speed": 0.01,
     "max_joint_speed": 0.05,
     "root_height_mean": 0.1,
     "root_path_length": 0.05,
     "bbox_diag": 0.5,
+    "joint_acceleration_mean": 0.01,
+    "joint_jerk_mean": 0.01,
+    "root_jerk_mean": 0.01,
+    "direction_flip_rate": 0.01,
 }
 CORE_STAT_KEYS = (
     "root_path_length",
@@ -56,15 +49,45 @@ CORE_STAT_KEYS = (
     "max_joint_speed",
     "root_height_mean",
     "bbox_diag",
+    "joint_acceleration_mean",
+    "joint_jerk_mean",
+    "root_jerk_mean",
+    "direction_flip_rate",
 )
 STABILITY_KEYS = (
     "generated_mean_joint_speed",
     "generated_root_path_length",
     "generated_bbox_diag",
+    "generated_joint_acceleration_mean",
+    "generated_joint_jerk_mean",
+    "generated_root_jerk_mean",
+    "generated_direction_flip_rate",
     "delta_mean_joint_speed",
     "delta_root_path_length",
     "delta_bbox_diag",
+    "delta_joint_acceleration_mean",
+    "delta_joint_jerk_mean",
+    "delta_root_jerk_mean",
+    "delta_direction_flip_rate",
 )
+
+
+def validate_stage1_checkpoint_args(model_args: SimpleNamespace) -> None:
+    violations = []
+    if not bool(getattr(model_args, "disable_reference_branch", False)):
+        violations.append("disable_reference_branch must be true")
+    if bool(getattr(model_args, "use_reference_conditioning", False)):
+        violations.append("use_reference_conditioning must be false")
+    if float(getattr(model_args, "lambda_confidence_recon", 0.0)) != 0.0:
+        violations.append("lambda_confidence_recon must be 0")
+    if float(getattr(model_args, "lambda_repair_recon", 0.0)) != 0.0:
+        violations.append("lambda_repair_recon must be 0")
+    if violations:
+        details = "; ".join(violations)
+        raise ValueError(
+            "stage1_pretrain_sampling_debug.py only supports clean-prior stage1 checkpoints. "
+            f"Loaded checkpoint args are restoration-oriented: {details}."
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -74,13 +97,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default=0, type=int, help="CUDA device id. Use -1 for CPU.")
     parser.add_argument("--seed", default=10, type=int, help="Global seed for deterministic setup.")
     parser.add_argument("--objects-subset", default="", help="Override the checkpoint objects_subset when set.")
+    parser.add_argument("--motion-name-keywords", default="", help="Override the checkpoint motion_name_keywords when set, e.g. 'walk,run'.")
     parser.add_argument("--num-frames", default=-1, type=int, help="Override num_frames when > 0.")
-    parser.add_argument("--sample-limit", default=-1, type=int, help="Override dataset sample_limit when >= 0.")
     parser.add_argument("--eval-split", default="val", choices=["train", "val", "test", "all"], help="Dataset split used to choose the fixed subset.")
-    parser.add_argument("--num-eval-samples", default=DEFAULT_EVAL_SAMPLES, type=int, help="Number of unique samples to evaluate across all trials.")
+    parser.add_argument("--num-eval-samples", default=16, type=int, help="Number of unique samples to evaluate across all trials.")
     parser.add_argument("--eval-batch-size", default=8, type=int, help="Batch size for sampling evaluation.")
     parser.add_argument("--eval-num-workers", default=0, type=int, help="Evaluation DataLoader workers.")
-    parser.add_argument("--eval-shuffle", action="store_true", help="Shuffle the evaluation split before selecting the fixed subset.")
     parser.add_argument("--selection-seed", default=1234, type=int, help="Seed used to select the fixed evaluation subset.")
     parser.add_argument("--num-trials", default=4, type=int, help="How many stochastic trials to run on the same selected subset.")
     parser.add_argument("--base-seed", default=10, type=int, help="Base seed for stochastic trials. Trial k uses base-seed + k.")
@@ -91,6 +113,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-video-export", action="store_true", help="Skip MP4 preview export and only write arrays plus metrics.")
     parser.add_argument("--render-workers", default=4, type=int, help="MP4 render parallelism. 0 renders inline.")
     parser.add_argument("--video-fps", default=20, type=int, help="Output FPS for exported MP4 previews.")
+    parser.add_argument("--no-ema", action="store_true", help="Disable EMA model averaging and use raw model weights instead.")
     return parser.parse_args()
 
 
@@ -111,34 +134,25 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
     model_args.model_path = str(model_path)
     model_args.device = args.device
     model_args.batch_size = args.eval_batch_size
-    model_args.temporal_window = getattr(model_args, "temporal_window", DEFAULT_TEMPORAL_WINDOW)
-    model_args.t5_name = getattr(model_args, "t5_name", DEFAULT_T5_NAME)
-    model_args.latent_dim = getattr(model_args, "latent_dim", DEFAULT_LATENT_DIM)
-    model_args.layers = getattr(model_args, "layers", DEFAULT_LAYERS)
-    model_args.cond_mask_prob = getattr(model_args, "cond_mask_prob", DEFAULT_COND_MASK_PROB)
-    model_args.noise_schedule = getattr(model_args, "noise_schedule", DEFAULT_NOISE_SCHEDULE)
-    model_args.sigma_small = getattr(model_args, "sigma_small", DEFAULT_SIGMA_SMALL)
-    model_args.diffusion_steps = getattr(model_args, "diffusion_steps", DEFAULT_DIFFUSION_STEPS)
-    model_args.disable_reference_branch = getattr(model_args, "disable_reference_branch", False)
-    model_args.use_reference_conditioning = False
-    model_args.timestep_respacing = getattr(model_args, "timestep_respacing", "")
+    model_args.cond_mask_prob = 0.0
+    model_args.disable_reference_branch = bool(model_args.disable_reference_branch)
+    model_args.use_reference_conditioning = bool(model_args.use_reference_conditioning)
+    model_args.lambda_confidence_recon = float(model_args.lambda_confidence_recon)
+    model_args.lambda_repair_recon = float(model_args.lambda_repair_recon)
     if args.objects_subset:
         model_args.objects_subset = args.objects_subset
+    if args.motion_name_keywords:
+        model_args.motion_name_keywords = args.motion_name_keywords
     if args.num_frames > 0:
         model_args.num_frames = args.num_frames
-    else:
-        model_args.num_frames = getattr(model_args, "num_frames", DEFAULT_NUM_FRAMES)
-    if args.sample_limit >= 0:
-        model_args.sample_limit = args.sample_limit
-    else:
-        model_args.sample_limit = getattr(model_args, "sample_limit", 0)
+    model_args.sample_limit = 0
     model_args.num_workers = args.eval_num_workers
-    model_args.prefetch_factor = getattr(model_args, "prefetch_factor", 2)
+    validate_stage1_checkpoint_args(model_args)
     return model_args
 
 
 def configure_sampling(model_args: SimpleNamespace, args: argparse.Namespace) -> None:
-    diffusion_steps = int(getattr(model_args, "diffusion_steps", DEFAULT_DIFFUSION_STEPS))
+    diffusion_steps = int(model_args.diffusion_steps)
     sampling_steps = int(args.sampling_steps)
     if sampling_steps < 0:
         raise ValueError("--sampling-steps must be >= 0")
@@ -225,6 +239,30 @@ def denormalize_motion(motion_norm: torch.Tensor, n_joints: int, mean: np.ndarra
     return motion_norm.permute(2, 0, 1).numpy() * std[None, :n_joints, :] + mean[None, :n_joints, :]
 
 
+def _mean_vector_norm(values: np.ndarray) -> float:
+    if values.size == 0:
+        return 0.0
+    return float(np.linalg.norm(values, axis=-1).mean())
+
+
+def _direction_flip_rate(velocities: np.ndarray, epsilon: float = 1e-6) -> float:
+    if velocities.shape[0] < 2:
+        return 0.0
+    previous_velocity = velocities[:-1]
+    next_velocity = velocities[1:]
+    previous_norm = np.linalg.norm(previous_velocity, axis=-1)
+    next_norm = np.linalg.norm(next_velocity, axis=-1)
+    valid = np.logical_and(previous_norm > epsilon, next_norm > epsilon)
+    if not np.any(valid):
+        return 0.0
+    cosine = np.zeros_like(previous_norm, dtype=np.float32)
+    cosine[valid] = (
+        np.sum(previous_velocity[valid] * next_velocity[valid], axis=-1)
+        / (previous_norm[valid] * next_norm[valid])
+    )
+    return float((cosine[valid] < 0.0).mean())
+
+
 def compute_motion_statistics(motion_denorm: np.ndarray, positions: np.ndarray) -> dict[str, float]:
     finite_mask = np.isfinite(motion_denorm)
     is_finite = bool(np.all(finite_mask))
@@ -237,6 +275,18 @@ def compute_motion_statistics(motion_denorm: np.ndarray, positions: np.ndarray) 
         root_steps = np.zeros((0,), dtype=np.float32)
         joint_steps = np.zeros((0, positions.shape[1]), dtype=np.float32)
 
+    if len(positions) > 2:
+        joint_accelerations = np.diff(positions, n=2, axis=0)
+    else:
+        joint_accelerations = np.zeros((0, positions.shape[1], positions.shape[2]), dtype=np.float32)
+
+    if len(positions) > 3:
+        joint_jerks = np.diff(positions, n=3, axis=0)
+    else:
+        joint_jerks = np.zeros((0, positions.shape[1], positions.shape[2]), dtype=np.float32)
+
+    root_jerks = joint_jerks[:, 0] if joint_jerks.shape[0] > 0 else np.zeros((0, positions.shape[2]), dtype=np.float32)
+
     pos_min = positions.min(axis=(0, 1))
     pos_max = positions.max(axis=(0, 1))
     pos_extent = pos_max - pos_min
@@ -248,6 +298,10 @@ def compute_motion_statistics(motion_denorm: np.ndarray, positions: np.ndarray) 
         "max_joint_speed": float(joint_steps.max()) if joint_steps.size > 0 else 0.0,
         "root_height_mean": float(root_positions[:, 1].mean()) if len(root_positions) > 0 else 0.0,
         "bbox_diag": float(np.linalg.norm(pos_extent)),
+        "joint_acceleration_mean": _mean_vector_norm(joint_accelerations),
+        "joint_jerk_mean": _mean_vector_norm(joint_jerks),
+        "root_jerk_mean": _mean_vector_norm(root_jerks),
+        "direction_flip_rate": _direction_flip_rate(np.diff(positions, axis=0)) if len(positions) > 1 else 0.0,
     }
 
 
@@ -392,6 +446,26 @@ def build_core_report(
             aggregate_mean["target_bbox_diag"],
             QUALITY_FLOORS["bbox_diag"],
         ),
+        "joint_acceleration_mean": _safe_ratio(
+            aggregate_mean["delta_joint_acceleration_mean"],
+            aggregate_mean["target_joint_acceleration_mean"],
+            QUALITY_FLOORS["joint_acceleration_mean"],
+        ),
+        "joint_jerk_mean": _safe_ratio(
+            aggregate_mean["delta_joint_jerk_mean"],
+            aggregate_mean["target_joint_jerk_mean"],
+            QUALITY_FLOORS["joint_jerk_mean"],
+        ),
+        "root_jerk_mean": _safe_ratio(
+            aggregate_mean["delta_root_jerk_mean"],
+            aggregate_mean["target_root_jerk_mean"],
+            QUALITY_FLOORS["root_jerk_mean"],
+        ),
+        "direction_flip_rate": _safe_ratio(
+            aggregate_mean["delta_direction_flip_rate"],
+            aggregate_mean["target_direction_flip_rate"],
+            QUALITY_FLOORS["direction_flip_rate"],
+        ),
     }
 
     stability_ratios = {
@@ -410,6 +484,16 @@ def build_core_report(
             aggregate_mean["generated_bbox_diag"],
             QUALITY_FLOORS["bbox_diag"],
         ),
+        "joint_jerk_mean": _safe_ratio(
+            aggregate_std["generated_joint_jerk_mean"],
+            aggregate_mean["generated_joint_jerk_mean"],
+            QUALITY_FLOORS["joint_jerk_mean"],
+        ),
+        "direction_flip_rate": _safe_ratio(
+            aggregate_std["generated_direction_flip_rate"],
+            aggregate_mean["generated_direction_flip_rate"],
+            QUALITY_FLOORS["direction_flip_rate"],
+        ),
     }
 
     component_scores = {
@@ -423,19 +507,27 @@ def build_core_report(
             _ratio_to_score(core_ratios["root_path_length"]),
         ])),
         "motion_range": 100.0 * _ratio_to_score(core_ratios["bbox_diag"]),
+        "temporal_smoothness": 100.0 * float(np.mean([
+            _ratio_to_score(core_ratios["joint_acceleration_mean"]),
+            _ratio_to_score(core_ratios["joint_jerk_mean"]),
+            _ratio_to_score(core_ratios["root_jerk_mean"]),
+            _ratio_to_score(core_ratios["direction_flip_rate"]),
+        ])),
         "sampling_stability": 100.0 * float(np.mean([
             _ratio_to_score(stability_ratios["mean_joint_speed"]),
             _ratio_to_score(stability_ratios["root_path_length"]),
             _ratio_to_score(stability_ratios["bbox_diag"]),
+            _ratio_to_score(stability_ratios["joint_jerk_mean"]),
+            _ratio_to_score(stability_ratios["direction_flip_rate"]),
         ])),
     }
 
-    weighted_score = (
-        0.15 * component_scores["validity"]
-        + 0.35 * component_scores["motion_dynamics"]
-        + 0.25 * component_scores["root_consistency"]
+    weighted_score = (        
+        + 0.25 * component_scores["motion_dynamics"]
+        + 0.20 * component_scores["root_consistency"]
         + 0.10 * component_scores["motion_range"]
-        + 0.15 * component_scores["sampling_stability"]
+        + 0.25 * component_scores["temporal_smoothness"]
+        + 0.20 * component_scores["sampling_stability"]
     )
 
     worst_samples = []
@@ -456,17 +548,47 @@ def build_core_report(
                 aggregate_mean["target_bbox_diag"],
                 QUALITY_FLOORS["bbox_diag"],
             ),
+            "joint_acceleration_mean": _safe_ratio(
+                sample["mean_delta_joint_acceleration_mean"],
+                aggregate_mean["target_joint_acceleration_mean"],
+                QUALITY_FLOORS["joint_acceleration_mean"],
+            ),
+            "joint_jerk_mean": _safe_ratio(
+                sample["mean_delta_joint_jerk_mean"],
+                aggregate_mean["target_joint_jerk_mean"],
+                QUALITY_FLOORS["joint_jerk_mean"],
+            ),
+            "root_jerk_mean": _safe_ratio(
+                sample["mean_delta_root_jerk_mean"],
+                aggregate_mean["target_root_jerk_mean"],
+                QUALITY_FLOORS["root_jerk_mean"],
+            ),
+            "direction_flip_rate": _safe_ratio(
+                sample["mean_delta_direction_flip_rate"],
+                aggregate_mean["target_direction_flip_rate"],
+                QUALITY_FLOORS["direction_flip_rate"],
+            ),
             "stability_mean_joint_speed": _safe_ratio(
                 sample["std_generated_mean_joint_speed"],
                 sample["mean_generated_mean_joint_speed"],
                 QUALITY_FLOORS["mean_joint_speed"],
+            ),
+            "stability_direction_flip_rate": _safe_ratio(
+                sample["std_generated_direction_flip_rate"],
+                sample["mean_generated_direction_flip_rate"],
+                QUALITY_FLOORS["direction_flip_rate"],
             ),
         }
         sample_score = 100.0 * float(np.mean([
             _ratio_to_score(sample_ratios["mean_joint_speed"]),
             _ratio_to_score(sample_ratios["root_path_length"]),
             _ratio_to_score(sample_ratios["bbox_diag"]),
+            _ratio_to_score(sample_ratios["joint_acceleration_mean"]),
+            _ratio_to_score(sample_ratios["joint_jerk_mean"]),
+            _ratio_to_score(sample_ratios["root_jerk_mean"]),
+            _ratio_to_score(sample_ratios["direction_flip_rate"]),
             _ratio_to_score(sample_ratios["stability_mean_joint_speed"]),
+            _ratio_to_score(sample_ratios["stability_direction_flip_rate"]),
         ]))
         worst_samples.append(
             {
@@ -476,6 +598,9 @@ def build_core_report(
                 "mean_delta_mean_joint_speed": sample["mean_delta_mean_joint_speed"],
                 "mean_delta_root_path_length": sample["mean_delta_root_path_length"],
                 "mean_delta_bbox_diag": sample["mean_delta_bbox_diag"],
+                "mean_delta_joint_jerk_mean": sample["mean_delta_joint_jerk_mean"],
+                "mean_delta_root_jerk_mean": sample["mean_delta_root_jerk_mean"],
+                "mean_delta_direction_flip_rate": sample["mean_delta_direction_flip_rate"],
                 "std_generated_mean_joint_speed": sample["std_generated_mean_joint_speed"],
             }
         )
@@ -493,9 +618,15 @@ def build_core_report(
             "delta_root_height_mean": aggregate_mean["delta_root_height_mean"],
             "delta_root_path_length": aggregate_mean["delta_root_path_length"],
             "delta_bbox_diag": aggregate_mean["delta_bbox_diag"],
+            "delta_joint_acceleration_mean": aggregate_mean["delta_joint_acceleration_mean"],
+            "delta_joint_jerk_mean": aggregate_mean["delta_joint_jerk_mean"],
+            "delta_root_jerk_mean": aggregate_mean["delta_root_jerk_mean"],
+            "delta_direction_flip_rate": aggregate_mean["delta_direction_flip_rate"],
             "stability_generated_mean_joint_speed": aggregate_std["generated_mean_joint_speed"],
             "stability_generated_root_path_length": aggregate_std["generated_root_path_length"],
             "stability_generated_bbox_diag": aggregate_std["generated_bbox_diag"],
+            "stability_generated_joint_jerk_mean": aggregate_std["generated_joint_jerk_mean"],
+            "stability_generated_direction_flip_rate": aggregate_std["generated_direction_flip_rate"],
         },
         "relative_error_ratios": core_ratios,
         "stability_ratios": stability_ratios,
@@ -546,6 +677,7 @@ def build_eval_report(
         "objects_subset": model_args.objects_subset,
         "selected_sample_count": len(selected_samples),
         "selected_motion_names": [str(sample["motion_name"]) for sample in selected_samples],
+        "selected_lengths": [int(sample["length"]) for sample in selected_samples],
         "num_trials": num_trials,
         "sampling_method": sampling_method,
         "sampling_steps": sampling_steps,
@@ -583,7 +715,7 @@ def build_clean_motion_baseline(
         sample_trials[sample_index].append(metrics)
 
     trial_aggregate = summarize_sample_metrics(baseline_metrics)
-    sampling_steps = int(args.sampling_steps) if args.sampling_steps > 0 else int(getattr(model_args, "diffusion_steps", DEFAULT_DIFFUSION_STEPS))
+    sampling_steps = int(args.sampling_steps) if args.sampling_steps > 0 else int(model_args.diffusion_steps)
     baseline_report = build_eval_report(
         args=args,
         model_args=model_args,
@@ -687,15 +819,33 @@ def collect_eval_samples(args: argparse.Namespace, model_args: SimpleNamespace) 
         objects_subset=model_args.objects_subset,
         num_workers=args.eval_num_workers,
         sample_limit=model_args.sample_limit,
-        shuffle=args.eval_shuffle,
         drop_last=False,
         use_reference_conditioning=False,
+        motion_name_keywords=getattr(model_args, "motion_name_keywords", ""),
     )
     if args.eval_num_workers > 0:
         loader_kwargs["prefetch_factor"] = model_args.prefetch_factor
     data = get_dataset_loader(**loader_kwargs)
-    cond_dict = data.dataset.motion_dataset.cond_dict
-    dataset_name_list = list(getattr(data.dataset.motion_dataset, "name_list", []))
+    motion_dataset = data.dataset.motion_dataset
+    dataset_frame_cap = int(getattr(motion_dataset, "max_motion_length", model_args.num_frames))
+    selected_frame_cap = int(getattr(motion_dataset, "max_available_length", dataset_frame_cap))
+    effective_num_frames = min(int(model_args.num_frames), dataset_frame_cap, selected_frame_cap)
+    model_args.dataset_max_motion_length = dataset_frame_cap
+    model_args.selected_subset_max_motion_length = selected_frame_cap
+    model_args.effective_num_frames = effective_num_frames
+    if int(model_args.num_frames) > dataset_frame_cap:
+        print(
+            f"Warning: requested num_frames={int(model_args.num_frames)} exceeds dataset max_motion_length={dataset_frame_cap}. "
+            f"Evaluation will use {effective_num_frames} frames."
+        )
+    if selected_frame_cap < effective_num_frames:
+        print(
+            f"Warning: selected evaluation subset only provides up to {selected_frame_cap} frames. "
+            f"Evaluation will use {selected_frame_cap} frames."
+        )
+    motion_dataset.reset_max_len(max(20, effective_num_frames))
+    cond_dict = motion_dataset.cond_dict
+    dataset_name_list = list(getattr(motion_dataset, "name_list", []))[int(getattr(motion_dataset, "pointer", 0)) :]
 
     samples = []
     for sample_index, (motion, cond) in enumerate(data):
@@ -834,7 +984,7 @@ def stage1_sampling_eval(
         finally:
             render_executor.shutdown(wait=True)
 
-    sampling_steps = int(args.sampling_steps) if args.sampling_steps > 0 else int(getattr(model_args, "diffusion_steps", DEFAULT_DIFFUSION_STEPS))
+    sampling_steps = int(args.sampling_steps) if args.sampling_steps > 0 else int(model_args.diffusion_steps)
     return build_eval_report(
         args=args,
         model_args=model_args,
@@ -857,16 +1007,13 @@ def main() -> int:
     device = dist_util.dev()
 
     model_args = load_model_args(args)
-    if not bool(getattr(model_args, "disable_reference_branch", False)):
-        raise ValueError("This tool expects a stage1 checkpoint with disable_reference_branch=True.")
-
     with open(output_dir / "args.json", "w", encoding="utf-8") as handle:
         json.dump(vars(model_args), handle, indent=2)
 
     configure_sampling(model_args, args)
     model, diffusion = create_model_and_diffusion_general_skeleton(model_args)
     state_dict = torch.load(Path(args.model_path).resolve(), map_location="cpu")
-    if "model_avg" in state_dict:
+    if not args.no_ema and "model_avg" in state_dict:
         state_dict = state_dict["model_avg"]
     elif "model" in state_dict:
         state_dict = state_dict["model"]
@@ -883,7 +1030,7 @@ def main() -> int:
         selected_samples=selected_samples,
         device=device,
         output_dir=output_dir,
-        skip_video_export=args.skip_video_export,
+        skip_video_export=args.skip_video_export or args.export_samples == 0,
     )
     clean_motion_report = build_clean_motion_baseline(args, model_args, selected_samples)
     baseline_comparison = build_baseline_comparison(sampling_report, clean_motion_report)
@@ -893,9 +1040,18 @@ def main() -> int:
         "output_dir": str(output_dir),
         "objects_subset": model_args.objects_subset,
         "num_frames": model_args.num_frames,
-        "sample_limit": model_args.sample_limit,
+        "dataset_max_motion_length": int(getattr(model_args, "dataset_max_motion_length", model_args.num_frames)),
+        "selected_subset_max_motion_length": int(getattr(model_args, "selected_subset_max_motion_length", model_args.num_frames)),
+        "effective_num_frames": int(getattr(model_args, "effective_num_frames", model_args.num_frames)),
         "disable_reference_branch": bool(model_args.disable_reference_branch),
-        "skip_video_export": bool(args.skip_video_export),
+        "stage1_checkpoint_validated": True,
+        "stage1_semantics": {
+            "use_reference_conditioning": bool(model_args.use_reference_conditioning),
+            "lambda_confidence_recon": float(model_args.lambda_confidence_recon),
+            "lambda_repair_recon": float(model_args.lambda_repair_recon),
+            "cond_mask_prob": float(getattr(model_args, "cond_mask_prob", 0.0)),
+        },
+        "skip_video_export": bool(args.skip_video_export or args.export_samples == 0),
         "stage1_sampling_eval": sampling_report,
         "clean_motion_baseline": clean_motion_report,
         "baseline_comparison": baseline_comparison,

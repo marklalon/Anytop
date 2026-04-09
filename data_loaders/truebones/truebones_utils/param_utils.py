@@ -37,9 +37,23 @@ BIPEDS = ["Ostrich", "Flamingo", "Raptor", "Raptor2", "Raptor3", "Trex", "Chicke
 QUADROPEDS = ["Horse", "Hippopotamus", "Comodoa", "Camel", "Bear", "Buffalo", "Cat", "BrownBear", "Coyote", "Crocodile", "Elephant", "Deer", "Fox", "Gazelle", 
            "Goat", "Jaguar","Lynx", "Tricera", "Stego" , "SandMouse", "Raindeer", "Puppy", "PolarBear", "Monkey", "Mammoth", "Alligator", "Hamster", 
            "Hound", "Leapord", "Lion", "PolarBearB", "Rat", "Rhino", "SabreToothTiger", "Skunk", "Turtle"]
+BEARS = ["Bear", "BrownBear", "PolarBear", "PolarBearB"]
+ACTIVE_BEAR_EXCLUDE_KEYWORDS = (
+        "Idle",
+        "Stand",
+        "Sit",
+        "Sleepy",
+        "ScratchEar",
+        "Ready",
+        "LayDown",
+        "Feast",
+        "EatFish",
+)
 
 OBJECT_SUBSETS_DICT = {"all" : QUADROPEDS + BIPEDS + MILLIPEDS + SNAKES + FISH + FLYING, 
                        "quadropeds": QUADROPEDS, 
+                       "bears": BEARS,
+                                           "active_bears": BEARS,
                        "flying": FLYING, 
                        "bipeds": BIPEDS, 
                        "millipeds": MILLIPEDS,
@@ -50,6 +64,39 @@ OBJECT_SUBSETS_DICT = {"all" : QUADROPEDS + BIPEDS + MILLIPEDS + SNAKES + FISH +
                        "flying_clean": [fly for fly in FLYING if fly not in CONNECTED_TO_GROUND], 
                        "all_clean": [obj for obj in  QUADROPEDS + BIPEDS + MILLIPEDS + SNAKES + FISH + FLYING if obj not in CONNECTED_TO_GROUND] 
                        }
+
+
+def filter_motion_names_for_subset(objects_subset, motion_names):
+        if objects_subset != "active_bears":
+                return motion_names
+
+        filtered = {
+                name for name in motion_names
+                if not any(keyword in name for keyword in ACTIVE_BEAR_EXCLUDE_KEYWORDS)
+        }
+        return filtered
+
+
+def parse_motion_name_keywords(raw_keywords):
+        if raw_keywords is None:
+                return tuple()
+        if isinstance(raw_keywords, str):
+                tokens = raw_keywords.replace(';', ',').split(',')
+        else:
+                tokens = raw_keywords
+        return tuple(token.strip().lower() for token in tokens if str(token).strip())
+
+
+def filter_motion_names_by_keywords(motion_names, raw_keywords):
+        keywords = parse_motion_name_keywords(raw_keywords)
+        if not keywords:
+                return motion_names
+
+        filtered = {
+                name for name in motion_names
+                if any(keyword in name.lower() for keyword in keywords)
+        }
+        return filtered
 
 FACE_JOINTS = {"Alligator": [8, 11, 17, 20] , "Crow": [18, 21, 7, 11], "Anaconda": [13, 26, 13, 26], "Ant": [9, 15, 23, 30], "Bat": [6, 15, 26, 34], 
                "Bear": [8, 2, 36, 56], "Bird": [15, 35, 6, 11], "BrownBear": [2, 7, 15, 23], "Buffalo": [6, 12, 20, 26], "Buzzard": [7, 23, 41, 47], "Camel": [9, 15, 32, 26], "Cat": [6, 12, 21, 27], 

@@ -8,7 +8,7 @@ if not exist "%PYTHON%" set "PYTHON=python"
 	--output-dir .\outputs\one_shot_sampler_scratch100 ^
 	--objects-subset quadropeds_clean ^
 	--sample-limit 100 ^
-	--num-frames 120 ^
+	--num-frames 60 ^
 	--batch-size 8 ^
 	--num-workers 4 ^
 	--num-eval-samples 32 ^

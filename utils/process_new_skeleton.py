@@ -11,9 +11,9 @@ files from Mixamo and other sources to ensure its generalizability.
 Input Arguments:
 object_name - A character's indicative name (e.g., "Dog").
 bvh_dir - Directory containing BVH files of the skeleton. More files improve statistical accuracy for motion denormalization.
-face_joints_names - Four joints defining skeleton orientation ([right hip, left hip, right shoulder, left shoulder] or equivalent). 
-            Used to align the skeleton to Z+ and XZ plane. Accepts joints names rather than indices since joints indices 
-            might change at loading. 
+face_joints_names - Optional manual override for four joints defining skeleton orientation ([right hip, left hip, right shoulder, left shoulder] or equivalent). 
+            When omitted, preprocessing tries to infer them from semantic joint names in the BVH. If inference is ambiguous,
+            pass the four joint names explicitly. 
 save_dir - Output directory.
 tpos_bvh - A BVH file of the character's natural rest pose for meaningful rotation learning. 
         If missing, the code selects a pose from the provided BVH files. 

@@ -18,6 +18,154 @@ import re
 from data_loaders.truebones.truebones_utils.param_utils import HML_AVG_BONELEN, FOOT_CONTACT_HEIGHT_THRESH, FACE_JOINTS, DATASET_DIR, MAX_PATH_LEN, ANIMATIONS_DIR, MOTION_DIR, NO_BVHS, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir
 from utils.rotation_conversions import rotation_6d_to_matrix_np
 
+
+_FACE_JOINT_EXCLUDE_TOKENS = (
+    'jiggle',
+    'toe',
+    'foot',
+    'ankle',
+    'ball',
+    'nub',
+    'finger',
+    'thumb',
+    'jaw',
+    'lip',
+    'nose',
+    'eye',
+    'ear',
+)
+_FACE_JOINT_NEAR_ROOT_EXCLUDE_TOKENS = (
+    'head',
+    'neck',
+    'spine',
+)
+_FACE_JOINT_HIP_PRIORITIES = (
+    ('thigh', 'leg1', 'upperleg', 'upleg', 'momo'),
+    ('leg',),
+)
+_FACE_JOINT_UPPER_PRIORITIES = (
+    ('collarbone', 'clavicle', 'shoulder', 'upperarm', 'arm1', 'kata', 'wing'),
+    ('arm', 'hiji', 'elbow', 'forearm'),
+    ('te', 'hand'),
+)
+
+
+def _normalize_joint_name(name):
+    split_name = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', name)
+    return re.sub(r'[^a-z0-9]+', ' ', split_name.lower()).strip()
+
+
+def _joint_depths(parents):
+    depths = [0] * len(parents)
+    for joint_index in range(1, len(parents)):
+        parent_index = parents[joint_index]
+        if parent_index >= 0:
+            depths[joint_index] = depths[parent_index] + 1
+    return depths
+
+
+def _detect_joint_side(name):
+    normalized = _normalize_joint_name(name)
+    compact = normalized.replace(' ', '')
+    right_markers = (
+        ' right ',
+        ' npc r',
+        ' bip01 r',
+        ' bn r',
+        ' r ',
+        ' r_',
+        ' rleg',
+        ' rarm',
+        ' rthigh',
+        ' rclavicle',
+        ' rupperarm',
+        ' r momo',
+        ' r kata',
+        ' r hiji',
+    )
+    left_markers = (
+        ' left ',
+        ' npc l',
+        ' bip01 l',
+        ' bn l',
+        ' l ',
+        ' l_',
+        ' lleg',
+        ' larm',
+        ' lthigh',
+        ' lclavicle',
+        ' lupperarm',
+        ' l momo',
+        ' l kata',
+        ' l hiji',
+    )
+    padded = f' {normalized} '
+    if any(marker in padded for marker in right_markers) or compact.startswith(('r_', 'rleg', 'rarm', 'rthigh', 'rmomo', 'rkata', 'rhiji')):
+        return 'right'
+    if any(marker in padded for marker in left_markers) or compact.startswith(('l_', 'lleg', 'larm', 'lthigh', 'lmomo', 'lkata', 'lhiji')):
+        return 'left'
+    return None
+
+
+def _face_joint_name_allowed(name):
+    normalized = _normalize_joint_name(name)
+    if any(token in normalized for token in _FACE_JOINT_EXCLUDE_TOKENS):
+        return False
+    return True
+
+
+def _find_semantic_joint_pair(joint_names, parents, priorities, *, exclude_near_root=True):
+    depths = _joint_depths(parents)
+    candidates = {'right': [], 'left': []}
+
+    for joint_index, joint_name in enumerate(joint_names):
+        if not _face_joint_name_allowed(joint_name):
+            continue
+        normalized = _normalize_joint_name(joint_name)
+        if exclude_near_root and any(token in normalized for token in _FACE_JOINT_NEAR_ROOT_EXCLUDE_TOKENS):
+            continue
+
+        side = _detect_joint_side(joint_name)
+        if side is None:
+            continue
+
+        priority_index = None
+        for current_priority, keyword_group in enumerate(priorities):
+            if any(keyword in normalized for keyword in keyword_group):
+                priority_index = current_priority
+                break
+        if priority_index is None:
+            continue
+
+        candidates[side].append((priority_index, depths[joint_index], joint_index))
+
+    if not candidates['right'] or not candidates['left']:
+        return None
+
+    right_index = min(candidates['right'])[2]
+    left_index = min(candidates['left'])[2]
+    return right_index, left_index
+
+
+def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints=None):
+    if face_joints:
+        if joint_names is not None and isinstance(face_joints[0], str):
+            return [joint_names.index(name) for name in face_joints]
+        return list(face_joints)
+
+    if joint_names is not None and parents is not None:
+        hip_pair = _find_semantic_joint_pair(joint_names, parents, _FACE_JOINT_HIP_PRIORITIES)
+        upper_pair = _find_semantic_joint_pair(joint_names, parents, _FACE_JOINT_UPPER_PRIORITIES)
+        if hip_pair is not None and upper_pair is not None:
+            return [hip_pair[0], hip_pair[1], upper_pair[0], upper_pair[1]]
+
+    if object_type in FACE_JOINTS:
+        return list(FACE_JOINTS[object_type])
+
+    raise ValueError(
+        f"Could not resolve face joints for '{object_type}'. Provide --face_joints_names explicitly or add naming rules."
+    )
+
 ################## Data Generation #####################
 """ Computes orientation based on object type face joints (hips and shoulder) and reeturns root quaternion 
 rotatation to ensure it faces z+. face_joint_indx is optional for object_types that are not included
@@ -112,9 +260,7 @@ def process_anim(anim, object_type, root_pose_init_xz=None, scale_factor=None, g
 """ get object_type common characteristics, extracted from Tsode bvh"""
 def get_common_features_from_T_pose(t_pose_bvh, object_type, face_joints=None):
     t_pose_anim, t_pos_names, t_pose_frame_time = BVH.load(t_pose_bvh)
-    if face_joints:
-        if isinstance(face_joints[0], str):
-            face_joints = [t_pos_names.index(name) for name in face_joints]
+    face_joints = resolve_face_joints(object_type, t_pos_names, t_pose_anim.parents, face_joints=face_joints)
     # first recover global positions, and then create a brand new non-damaged animation, with position consistent to the offsets 
     t_pose_positions = positions_global(t_pose_anim)
     with open(os.devnull, 'w') as devnull, redirect_stdout(devnull), redirect_stderr(devnull):
@@ -434,6 +580,8 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=
     object_cond['parents'] = parents
     object_cond['offsets'] = offsets
     object_cond['joints_names'] = names
+    object_cond['face_joints'] = list(face_joints)
+    object_cond['face_joint_names'] = [names[index] for index in face_joints]
     kinematic_chains = parents2kinchains(parents, object_policy(object_type))
     object_cond['kinematic_chains'] = kinematic_chains
     all_tensors = list()
@@ -575,7 +723,11 @@ def create_data_samples(objects=None, max_files_per_object=None, save_animations
     
     ## process
     if objects is None:
-        objects = [obj for obj in FACE_JOINTS.keys() if FACE_JOINTS[obj] != []]
+        raw_data_dir = get_raw_data_dir()
+        objects = sorted(
+            obj for obj in os.listdir(raw_data_dir)
+            if os.path.isdir(pjoin(raw_data_dir, obj))
+        )
     files_counter = 0
     frames_counter = 0
     max_joints = 23

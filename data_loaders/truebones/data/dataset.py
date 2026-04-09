@@ -11,6 +11,7 @@ import random
 from typing import Optional
 from torch.utils.data._utils.collate import default_collate
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
+from data_loaders.truebones.truebones_utils.param_utils import filter_motion_names_for_subset, filter_motion_names_by_keywords
 from data_loaders.truebones.truebones_utils.motion_process import remove_joints_augmentation, add_joint_augmentation
 from data_loaders.truebones.offline_reference_dataset import load_corrupted_reference_sample
 from model.conditioners import T5Conditioner
@@ -249,18 +250,41 @@ class MotionDataset(data.Dataset):
                 except Exception:
                     pass
                 
-        name_list, length_list = zip(*sorted(zip(new_name_list, length_list), key=lambda x: x[1]))
+        sorted_pairs = sorted(zip(new_name_list, length_list), key=lambda x: x[1])
+        if not sorted_pairs:
+            raise RuntimeError("No motion clips were found for the requested dataset subset.")
+
+        minimum_valid_index = np.searchsorted([pair[1] for pair in sorted_pairs], self.max_length)
         if self.sample_limit > 0:
-            name_list = name_list[:self.sample_limit]
-            length_list = length_list[:self.sample_limit]
+            preferred_valid_index = np.searchsorted([pair[1] for pair in sorted_pairs], self.max_motion_length)
+            candidate_pairs = sorted_pairs[preferred_valid_index:]
+            if len(candidate_pairs) < self.sample_limit:
+                candidate_pairs = sorted_pairs[minimum_valid_index:]
+
+            if len(candidate_pairs) > self.sample_limit:
+                candidate_pairs = random.sample(candidate_pairs, self.sample_limit)
+
+            sorted_pairs = sorted(candidate_pairs, key=lambda x: x[1])
+
+        name_list, length_list = zip(*sorted_pairs)
+        name_list = list(name_list)
+        length_list = list(length_list)
+        if self.sample_limit <= 0:
+            name_list = name_list[minimum_valid_index:]
+            length_list = length_list[minimum_valid_index:]
+            data_dict = {name: data_dict[name] for name in name_list}
+        else:
             data_dict = {name: data_dict[name] for name in name_list}
         self.length_arr = np.array(length_list)
+        self.max_available_length = int(self.length_arr.max()) if len(self.length_arr) > 0 else 0
         self.data_dict = data_dict
         self.name_list = name_list
         self.temporal_mask_template = create_temporal_mask_for_window(temporal_window, self.max_motion_length)
         self.reset_max_len(self.max_length)
 
     def reset_max_len(self, length):
+        if self.max_available_length > 0:
+            length = min(length, self.max_available_length)
         assert length <= self.max_motion_length
         self.pointer = np.searchsorted(self.length_arr, length)
         self.max_length = length
@@ -379,6 +403,7 @@ class Truebones(data.Dataset):
         self.opt = opt
         self.balanced = kwargs['balanced']
         self.objects_subset = kwargs['objects_subset']
+        self.motion_name_keywords = kwargs.get('motion_name_keywords', '')
         self.sample_limit = kwargs.get('sample_limit', 0)
         self.use_reference_conditioning = kwargs.get('use_reference_conditioning', True)
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
@@ -388,6 +413,8 @@ class Truebones(data.Dataset):
             
         self.split_file = pjoin(opt.data_root, f'{split}.txt') if split != ALL_SPLIT_NAME else ''
         allowed_motion_names = load_motion_names_for_split(split, opt.data_root, opt.motion_dir)
+        allowed_motion_names = filter_motion_names_for_subset(self.objects_subset, allowed_motion_names)
+        allowed_motion_names = filter_motion_names_by_keywords(allowed_motion_names, self.motion_name_keywords)
         self.motion_dataset = MotionDataset(
             self.opt,
             cond_dict,

@@ -83,8 +83,8 @@ def add_model_options(parser):
     group.add_argument("--latent_dim", default=128, type=int,
                        help="Transformer/GRU width.")
     group.add_argument("--cond_mask_prob", default=.1, type=float,
-                       help="The probability of masking the condition during training."
-                            " For classifier-free guidance learning.")
+                       help="Reserved classifier-free condition masking probability."
+                           " The current AnyTop training path stores this value in args but does not apply masking automatically.")
     group.add_argument("--lambda_fs", default=0.0, type=float, help="Foot contact loss.")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Foot contact loss.")
     group.add_argument("--lambda_confidence_recon", default=5.0, type=float, help="Reference-preservation loss on reliable observed regions.")
@@ -110,8 +110,10 @@ def add_data_options(parser):
     group = parser.add_argument_group('dataset')
     group.add_argument("--data_dir", default="", type=str,
                        help="If empty, will use defaults according to the specified dataset.")
-    group.add_argument("--objects_subset", default='all', choices=['all', 'quadropeds' , 'flying', 'bipeds', 'millipeds', 'millipeds_snakes', 'quadropeds_clean', 'millipeds_clean', 'flying_clean', 'bipeds_clean', 'all_clean'], type=str,
+    group.add_argument("--objects_subset", default='all', choices=['all', 'quadropeds', 'bears', 'active_bears', 'flying', 'bipeds', 'millipeds', 'millipeds_snakes', 'quadropeds_clean', 'millipeds_clean', 'flying_clean', 'bipeds_clean', 'all_clean'], type=str,
                        help="Object subset.")
+    group.add_argument("--motion_name_keywords", default='', type=str,
+                       help="Comma-separated motion-name keywords used to keep only matching actions, e.g. 'walk,run'.")
     group.add_argument("--use_reference_conditioning", action=argparse.BooleanOptionalAction, default=True,
                        help="If False, skip loading offline corrupted reference motions and confidence masks.")
 
@@ -324,9 +326,9 @@ def process_new_skeleton_args():
                            motion denormalization.")
     group.add_argument("--save_dir", required=True, type=str,
                        help="Output directory.")
-    group.add_argument("--face_joints_names", default=["RLeg1", "LLeg1", "RArm1", "LArm1"], type=str, nargs=4,
-                       help="Four joints defining skeleton orientation ([right hip, left hip, right shoulder, left shoulder] or equivalent). \
-                           Used to align the skeleton to Z+ and XZ plane.")
+    group.add_argument("--face_joints_names", default=None, type=str, nargs=4,
+                       help="Optional manual override for the four orientation joints ([right hip, left hip, right shoulder, left shoulder] or equivalent). \
+                           When omitted, preprocessing tries to infer them from semantic joint names.")
     group.add_argument("--tpos_bvh", default='', type=str,
                        help="A BVH file of the character's natural rest pose for meaningful rotation learning. \
                             If missing, the code selects a pose from the provided BVH files.")

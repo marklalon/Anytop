@@ -58,6 +58,7 @@ def _build_stage_args(base_args, stage_name, save_dir):
         stage_args.train_split = 'all'
         stage_args.disable_reference_branch = True
         stage_args.use_reference_conditioning = False
+        stage_args.cond_mask_prob = 0.0
         stage_args.lambda_confidence_recon = 0.0
         stage_args.lambda_repair_recon = 0.0
         if base_args.stage1_resume_checkpoint:

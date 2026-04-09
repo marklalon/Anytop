@@ -30,7 +30,7 @@ def get_opt(device):
     opt.data_root = DATASET_DIR
     opt.cond_file = pjoin(opt.data_root, 'cond.npy') 
     opt.motion_dir = pjoin(opt.data_root, 'motions')
-    opt.max_motion_length = 40
+    opt.max_motion_length = 60
     opt.max_joints = MAX_JOINTS
     opt.feature_len = FEATS_LEN
     opt.is_continue = False

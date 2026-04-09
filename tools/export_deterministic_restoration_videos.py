@@ -181,7 +181,7 @@ def main() -> int:
             num_workers=0,
             objects_subset=args.objects_subset,
             sample_limit=args.sample_limit,
-            num_frames=120,
+            num_frames=60,
             split="train",
             shuffle=False,
             drop_last=False,

@@ -53,6 +53,7 @@ def create_training_data_loader(args):
         prefetch_factor=args.prefetch_factor,
         sample_limit=args.sample_limit,
         use_reference_conditioning=getattr(args, 'use_reference_conditioning', True),
+        motion_name_keywords=getattr(args, 'motion_name_keywords', ''),
     )
 
 def run_training(args):
