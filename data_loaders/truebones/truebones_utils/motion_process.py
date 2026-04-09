@@ -55,8 +55,8 @@ _FORWARD_REFERENCE_PRIORITIES = (
     ('neck',),
 )
 _SNAKE_FORWARD_CHAINS = {
-    'Anaconda': (13, 20, 21),
-    'KingCobra': (3, 4, 8),
+    'Anaconda': (20, 21),
+    'KingCobra': (4, 8),
 }
 
 
@@ -76,8 +76,12 @@ def _get_snake_forward(joints, object_type):
     if chain is None:
         return None
 
-    body_base, neck, head = chain
-    forward = (joints[:, head] - joints[:, neck]) + (joints[:, neck] - joints[:, body_base])
+    if len(chain) == 2:
+        neck, head = chain
+        forward = joints[:, head] - joints[:, neck]
+    else:
+        body_base, neck, head = chain
+        forward = (joints[:, head] - joints[:, neck]) + (joints[:, neck] - joints[:, body_base])
     forward = forward * np.array([[1.0, 0.0, 1.0]])
     return _normalize_vectors(forward)
 
