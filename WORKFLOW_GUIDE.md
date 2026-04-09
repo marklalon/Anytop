@@ -11,7 +11,7 @@ A unified command-line interface that chains AnyTop dataset preprocessing direct
 python preprocess_and_validate.py
 
 # Use more CPU across object types and BVH files
-python preprocess_and_validate.py --objects-subset quadropeds --num-workers 24
+python preprocess_and_validate.py --objects-subset quadropeds --object-workers 8 --file-workers 8
 
 # Regenerate stored corrupted references only
 python tools/export_corrupted_truebones_samples.py --objects-subset quadropeds_clean
@@ -55,7 +55,8 @@ python preprocess_and_validate.py --skip-validate
 | `--skip-validate` | Skip validation (useful for quick checks or CI) |
 | `--skip-corrupted-export` | Skip generating stored corrupted references after preprocessing |
 | `--objects-subset` | Expected object type subset (`all`, `hound`, `chicken`, etc.) |
-| `--num-workers` | Total preprocessing worker budget; auto-splits across objects and BVH files |
+| `--object-workers` | Concurrent characters to preprocess |
+| `--file-workers` | Worker threads per character for BVH file processing |
 | `--corrupted-seed` | Random seed used for stored corrupted references |
 | `--corrupted-sample-limit` | Limit number of motions that get corrupted references |
 

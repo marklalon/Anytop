@@ -6,12 +6,13 @@ import os
 from os.path import join as pjoin
 from Quaternions import Quaternions
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from contextlib import redirect_stdout, redirect_stderr
 from data_loaders.truebones.truebones_utils.plot_script import plot_general_skeleton_3d_motion
 import random
 import math
 import statistics
+import traceback
 import torch
 import bisect
 import re 
@@ -791,27 +792,21 @@ def _write_object_outputs(save_dir, object_payload, files_counter, save_animatio
 
     return files_counter, frames_counter
 
-def _resolve_preprocessing_workers(objects, num_workers=None, object_workers=None, file_workers=None):
-    available_workers = os.cpu_count() or 1
-    total_workers = max(1, int(num_workers if num_workers is not None else available_workers))
+def _resolve_preprocessing_workers(objects, object_workers=8, file_workers=8):
     object_count = max(1, len(objects))
-
-    if object_workers is None and file_workers is None:
-        # This preprocessing path is thread-based, so allocating every worker to object-level
-        # concurrency tends to stall on CPython's GIL. Bias the auto split toward file-level work.
-        object_workers = min(object_count, max(1, min(8, math.isqrt(total_workers))))
-        file_workers = max(1, total_workers // object_workers)
-    elif object_workers is None:
-        file_workers = max(1, int(file_workers))
-        object_workers = min(object_count, max(1, total_workers // file_workers))
-    elif file_workers is None:
-        object_workers = min(object_count, max(1, int(object_workers)))
-        file_workers = max(1, total_workers // object_workers)
-    else:
-        object_workers = min(object_count, max(1, int(object_workers)))
-        file_workers = max(1, int(file_workers))
-
+    object_workers = min(object_count, max(1, int(object_workers)))
+    file_workers = max(1, int(file_workers))
+    total_workers = object_workers * file_workers
     return total_workers, object_workers, file_workers
+
+
+def _prepare_object_outputs_worker(object_type, max_files, file_workers):
+    return _prepare_object_outputs(
+        object_type,
+        max_joints=23,
+        max_files=max_files,
+        num_workers=file_workers,
+    )
 
 """ creates processed tensors for all the files of a given object. Returens statistics and the object condition,
 which includes tpos, relation/distances matrices, offsets, parents, joints names, kinematic chains, mean and std"""    
@@ -841,7 +836,7 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
     return files_counter, frames_counter, max_joints, object_payload['object_cond']
 
 """ create dataset """
-def create_data_samples(objects=None, max_files_per_object=None, save_animations=False, dataset_dir=None, num_workers=1):
+def create_data_samples(objects=None, max_files_per_object=None, save_animations=False, dataset_dir=None, object_workers=8, file_workers=8):
     ## prepare
     target_dataset_dir = dataset_dir or DATASET_DIR
     os.makedirs(pjoin(target_dataset_dir, MOTION_DIR), exist_ok=True)
@@ -855,6 +850,46 @@ def create_data_samples(objects=None, max_files_per_object=None, save_animations
             obj for obj in os.listdir(raw_data_dir)
             if os.path.isdir(pjoin(raw_data_dir, obj))
         )
+
+    valid_objects = [obj for obj in objects if obj not in NO_BVHS]
+    total_workers, obj_workers, fw = _resolve_preprocessing_workers(
+        valid_objects,
+        object_workers=object_workers,
+        file_workers=file_workers,
+    )
+    print(f'Preprocessing {len(valid_objects)} characters: '
+          f'{obj_workers} object workers x {fw} file workers '
+          f'(up to {total_workers} concurrent preprocess workers)')
+
+    payloads = [None] * len(valid_objects)
+    if obj_workers <= 1:
+        for idx, object_type in enumerate(valid_objects):
+            payloads[idx] = _prepare_object_outputs(
+                object_type,
+                max_joints=23,
+                max_files=max_files_per_object,
+                num_workers=fw,
+            )
+    else:
+        with ProcessPoolExecutor(max_workers=obj_workers) as executor:
+            future_to_idx = {
+                executor.submit(
+                    _prepare_object_outputs_worker,
+                    object_type,
+                    max_files_per_object,
+                    fw,
+                ): idx
+                for idx, object_type in enumerate(valid_objects)
+            }
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    payloads[idx] = future.result()
+                except Exception as e:
+                    print(f'ERROR preparing {valid_objects[idx]}: {e}')
+                    traceback.print_exc()
+                    payloads[idx] = None
+
     files_counter = 0
     frames_counter = 0
     max_joints = 23
@@ -862,14 +897,21 @@ def create_data_samples(objects=None, max_files_per_object=None, save_animations
     squared_positions_error = dict()
     cond = dict()
 
-    for object_type in objects:
-        if object_type in NO_BVHS:
+    for idx, object_type in enumerate(valid_objects):
+        payload = payloads[idx]
+        if payload is None:
             continue
+        squared_positions_error.update(payload['errors'])
+        max_joints = max(max_joints, payload['max_joints'])
         cur_counter = files_counter
-        files_counter, frames_counter, max_joints, object_cond = process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir=target_dataset_dir, max_files=max_files_per_object, save_animations=save_animations, num_workers=num_workers)
-        if object_cond is None:
-            continue
-        cond[object_type] = object_cond
+        files_counter, object_frames = _write_object_outputs(
+            target_dataset_dir,
+            payload,
+            files_counter,
+            save_animations=save_animations,
+        )
+        frames_counter += object_frames
+        cond[object_type] = payload['object_cond']
         objects_counter[object_type] = files_counter - cur_counter
 
     print('Total clips: %d, Frames: %d, Duration: %fm' %(files_counter, frames_counter, frames_counter / 12.5 / 60))

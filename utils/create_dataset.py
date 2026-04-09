@@ -18,8 +18,10 @@ def main():
                         help="Limit the number of BVH files processed per object for smoke tests.")
     parser.add_argument("--save-animations", action="store_true",
                         help="Generate MP4 previews during preprocessing. Disabled by default for speed.")
-    parser.add_argument("--num-workers", default=os.cpu_count(), type=int,
-                        help="Number of worker threads used to process BVH files per object.")
+    parser.add_argument("--object-workers", default=8, type=int,
+                        help="Concurrent characters to preprocess. Defaults to 8.")
+    parser.add_argument("--file-workers", default=8, type=int,
+                        help="Worker threads per character for BVH file processing. Defaults to 8.")
     args = parser.parse_args()
 
     if args.raw_data_dir:
@@ -37,7 +39,8 @@ def main():
         objects=objects,
         max_files_per_object=args.max_files_per_object,
         save_animations=args.save_animations,
-        num_workers=args.num_workers,
+        object_workers=args.object_workers,
+        file_workers=args.file_workers,
         dataset_dir=args.dataset_dir or None,
     )
 

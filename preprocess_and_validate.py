@@ -15,7 +15,8 @@ Options:
     --skip-validate                      Skip validation step (faster for CI)
     --skip-corrupted-export              Skip corrupted-reference export
     --objects-subset SUBSET              Object subset to process (default: all)
-    --num-workers N                      Number of worker threads for BVH processing
+    --object-workers N                   Concurrent characters to preprocess (default: 8)
+    --file-workers N                     Worker threads per character for BVH processing (default: 8)
     --corrupted-seed SEED                Random seed for corrupted-reference export (default: 1234)
     --corrupted-sample-limit N           Limit corrupted-reference samples (0=all, default: 0)
 
@@ -33,7 +34,7 @@ Examples:
     python preprocess_and_validate.py --skip-corrupted-export
 
     # Preprocess specific object subset with custom settings
-    python preprocess_and_validate.py --objects-subset "Hound" --num-workers 4
+    python preprocess_and_validate.py --objects-subset "Hound" --object-workers 4 --file-workers 8
 
     # Corrupted export with custom seed and sample limit
     python preprocess_and_validate.py --corrupted-seed 42 --corrupted-sample-limit 100
@@ -54,7 +55,7 @@ from pathlib import Path
 ANYTOP_DIR = Path(__file__).resolve().parent
 
 
-def run_preprocessing(objects_subset: str, num_workers: int | None) -> int:
+def run_preprocessing(objects_subset: str, object_workers: int, file_workers: int) -> int:
     """Run the AnyTop dataset preprocessing."""
     print("\n" + "=" * 70)
     print("STEP 1: PREPROCESSING - Creating AnyTop dataset")
@@ -67,9 +68,9 @@ def run_preprocessing(objects_subset: str, num_workers: int | None) -> int:
     cmd = [
         sys.executable, "-m", "utils.create_dataset",
         "--objects-subset", objects_subset,
+        "--object-workers", str(object_workers),
+        "--file-workers", str(file_workers),
     ]
-    if num_workers is not None:
-        cmd.extend(["--num-workers", str(num_workers)])
     
     result = subprocess.run(cmd, cwd=str(ANYTOP_DIR), capture_output=False)
     return result.returncode
@@ -132,10 +133,16 @@ def parse_args() -> argparse.Namespace:
         help="Expected object subset for validation (default: all).",
     )
     parser.add_argument(
-        "--num-workers",
-        default=None,
+        "--object-workers",
+        default=6,
         type=int,
-        help="Number of worker threads used to process BVH files within each object. Defaults to min(8, cpu_count).",
+        help="Concurrent characters to preprocess. Defaults to 8.",
+    )
+    parser.add_argument(
+        "--file-workers",
+        default=8,
+        type=int,
+        help="Worker threads per character for BVH file processing. Defaults to 8.",
     )
     parser.add_argument(
         "--skip-corrupted-export",
@@ -164,7 +171,11 @@ def main() -> int:
     
     # Preprocess if not validate-only
     if not args.validate_only:
-        ret = run_preprocessing(args.objects_subset, args.num_workers)
+        ret = run_preprocessing(
+            args.objects_subset,
+            args.object_workers,
+            args.file_workers,
+        )
         if ret != 0:
             print("\n[FAIL] Preprocessing failed. Aborting workflow.")
             return ret
