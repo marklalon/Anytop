@@ -13,12 +13,14 @@ def get_raw_data_dir(raw_data_dir=None):
         return DEFAULT_RAW_DATA_DIR
 
 
-def get_dataset_dir():
-        return os.environ.get("ANYTOP_DATASET_DIR", DEFAULT_DATASET_DIR)
+def get_dataset_dir(dataset_dir=None):
+        if dataset_dir is not None:
+                return dataset_dir
+        return DEFAULT_DATASET_DIR
 
 
 RAW_DATA_DIR = DEFAULT_RAW_DATA_DIR
-DATASET_DIR = get_dataset_dir()
+DATASET_DIR = DEFAULT_DATASET_DIR
 MOTION_DIR = "motions"
 CORRUPTED_REFERENCE_DIR = "corrupted_references"
 ANIMATIONS_DIR = "animations"

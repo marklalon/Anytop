@@ -50,7 +50,7 @@ from data_loaders.truebones.offline_reference_dataset import export_corrupted_re
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate stored corrupted-reference motions alongside the processed AnyTop dataset.")
-    parser.add_argument("--dataset-dir", default="", help="Processed dataset root. Defaults to ANYTOP_DATASET_DIR / built-in dataset path.")
+    parser.add_argument("--dataset-dir", default="", help="Processed dataset root. If not specified, uses default path.")
     parser.add_argument("--objects-subset", default="all", help="Object subset to export corrupted references for.")
     parser.add_argument("--sample-limit", default=0, type=int, help="Limit number of motions to export. 0 exports all matching motions.")
     parser.add_argument("--seed", default=1234, type=int, help="Random seed for deterministic exports.")

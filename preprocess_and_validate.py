@@ -156,7 +156,7 @@ def run_validation(
         return 1
 
 
-def check_and_clean_old_data() -> bool:
+def check_and_clean_old_data(dataset_dir: str = "") -> bool:
     """
     Check if old preprocessed data exists in the target dataset directory.
     If found, ask user whether to delete it.
@@ -169,10 +169,10 @@ def check_and_clean_old_data() -> bool:
     sys.path.insert(0, str(ANYTOP_DIR / "data_loaders" / "truebones" / "truebones_utils"))
     from param_utils import get_dataset_dir
     
-    dataset_dir = Path(get_dataset_dir())
-    motions_dir = dataset_dir / "motions"
-    bvhs_dir = dataset_dir / "bvhs"
-    corrupted_ref_dir = dataset_dir / "corrupted_references"
+    dataset_dir_path = Path(get_dataset_dir(dataset_dir if dataset_dir else None))
+    motions_dir = dataset_dir_path / "motions"
+    bvhs_dir = dataset_dir_path / "bvhs"
+    corrupted_ref_dir = dataset_dir_path / "corrupted_references"
     
     # Check if any old data exists
     old_data_exists = (motions_dir.exists() and any(motions_dir.iterdir())) or \
@@ -186,7 +186,7 @@ def check_and_clean_old_data() -> bool:
     print("\n" + "=" * 70)
     print("⚠ WARNING: Old preprocessed data detected")
     print("=" * 70)
-    print(f"Dataset directory: {dataset_dir}")
+    print(f"Dataset directory: {dataset_dir_path}")
     if motions_dir.exists() and any(motions_dir.iterdir()):
         print(f"  - {motions_dir} contains existing data")
     if bvhs_dir.exists() and any(bvhs_dir.iterdir()):
@@ -308,7 +308,7 @@ def main() -> int:
     
     # Check and clean old data before preprocessing
     if not args.validate_only:
-        if not check_and_clean_old_data():
+        if not check_and_clean_old_data(args.dataset_dir):
             print("\n" + "=" * 70)
             print("Preprocessing skipped due to user abort")
             print("=" * 70)

@@ -9,7 +9,7 @@ def main():
     parser.add_argument("--raw-data-dir", default="", type=str,
                         help="Path to raw Truebones BVH folders. If not specified, uses default path.")
     parser.add_argument("--dataset-dir", default="", type=str,
-                        help="Output directory for processed dataset. Can also be set via ANYTOP_DATASET_DIR.")
+                        help="Output directory for processed dataset. If not specified, uses default path.")
     parser.add_argument("--objects-subset", default="all", choices=sorted(OBJECT_SUBSETS_DICT.keys()), type=str,
                         help="Preprocess only a named object subset.")
     parser.add_argument("--object-types", nargs='+', default=None,
@@ -22,9 +22,6 @@ def main():
     parser.add_argument("--file-workers", default=8, type=int,
                         help="Worker threads per character for BVH file processing. Defaults to 8.")
     args = parser.parse_args()
-
-    if args.dataset_dir:
-        os.environ["ANYTOP_DATASET_DIR"] = args.dataset_dir
 
     objects = args.object_types
     if objects is None:

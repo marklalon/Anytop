@@ -50,7 +50,7 @@ def _resolve_dataset_dir(raw_value: str | None) -> Path:
     if raw_value:
         path = Path(raw_value)
     else:
-        path = Path(get_dataset_dir())
+        path = Path(get_dataset_dir(None))
     if not path.is_absolute():
         path = REPO_ROOT / path
     return path.resolve()
