@@ -110,7 +110,7 @@ def add_data_options(parser):
     group = parser.add_argument_group('dataset')
     group.add_argument("--data_dir", default="", type=str,
                        help="If empty, will use defaults according to the specified dataset.")
-    group.add_argument("--objects_subset", default='all', choices=['all', 'quadropeds', 'bears', 'active_bears', 'flying', 'bipeds', 'millipeds', 'millipeds_snakes', 'quadropeds_clean', 'millipeds_clean', 'flying_clean', 'bipeds_clean', 'all_clean'], type=str,
+    group.add_argument("--objects_subset", default='all', choices=['all', 'quadropeds', 'flying', 'bipeds', 'millipeds', 'millipeds_snakes', 'quadropeds_clean', 'millipeds_clean', 'flying_clean', 'bipeds_clean', 'all_clean'], type=str,
                        help="Object subset.")
     group.add_argument("--motion_name_keywords", default='', type=str,
                        help="Comma-separated motion-name keywords used to keep only matching actions, e.g. 'walk,run'.")

@@ -11,7 +11,7 @@ import random
 from typing import Optional
 from torch.utils.data._utils.collate import default_collate
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
-from data_loaders.truebones.truebones_utils.param_utils import filter_motion_names_for_subset, filter_motion_names_by_keywords
+from data_loaders.truebones.truebones_utils.param_utils import filter_motion_names_by_keywords
 from data_loaders.truebones.truebones_utils.motion_process import remove_joints_augmentation, add_joint_augmentation
 from data_loaders.truebones.offline_reference_dataset import load_corrupted_reference_sample
 from model.conditioners import T5Conditioner
@@ -414,7 +414,6 @@ class Truebones(data.Dataset):
             
         self.split_file = pjoin(opt.data_root, f'{split}.txt') if split != ALL_SPLIT_NAME else ''
         allowed_motion_names = load_motion_names_for_split(split, opt.data_root, opt.motion_dir)
-        allowed_motion_names = filter_motion_names_for_subset(self.objects_subset, allowed_motion_names)
         allowed_motion_names = filter_motion_names_by_keywords(allowed_motion_names, self.motion_name_keywords)
         self.motion_dataset = MotionDataset(
             self.opt,

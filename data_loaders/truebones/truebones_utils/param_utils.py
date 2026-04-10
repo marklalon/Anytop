@@ -30,6 +30,12 @@ NO_BVHS =["Jaws", "Crow", "Dog", "Dog-2"]
 IGNORE_OBJECTS = NO_BVHS
 MILLIPEDS = ["Cricket", "SpiderG" , "Scorpion", "Isopetra", "FireAnt", "Crab", "Centipede", "Roach", "Ant", "HermitCrab", "Scorpion-2", "Spider"]
 SNAKES = ["Anaconda", "KingCobra"]
+# Joint index pairs (neck, head) used to compute forward direction for limbless animals.
+# Each entry maps object_type -> (neck_joint_index, head_joint_index).
+SNAKE_FORWARD_CHAINS = {
+    'Anaconda': (20, 21),
+    'KingCobra': (4, 8),
+}
 FLYING = ["Bat", "Dragon", "Bird", "Buzzard", "Eagle", "Giantbee", "Parrot", "Parrot2", "Pigeon", "Pteranodon", "Tukan"]
 CONNECTED_TO_GROUND = ["Bear", "Camel", "Hippopotamus", "Horse", "Pirrana", "Pteranodon", "Raptor3", "Rat", "SabreToothTiger", "Scorpion-2", "Spider", "Trex", "Tukan", "Pirrana"]
 FISH = ["Pirrana"]
@@ -37,24 +43,9 @@ BIPEDS = ["Ostrich", "Flamingo", "Raptor", "Raptor2", "Raptor3", "Trex", "Chicke
 QUADROPEDS = ["Horse", "Hippopotamus", "Comodoa", "Camel", "Bear", "Buffalo", "Cat", "BrownBear", "Coyote", "Crocodile", "Elephant", "Deer", "Fox", "Gazelle", 
            "Goat", "Jaguar","Lynx", "Tricera", "Stego" , "SandMouse", "Raindeer", "Puppy", "PolarBear", "Monkey", "Mammoth", "Alligator", "Hamster", 
            "Hound", "Leapord", "Lion", "PolarBearB", "Rat", "Rhino", "SabreToothTiger", "Skunk", "Turtle"]
-BEARS = ["Bear", "BrownBear", "PolarBear", "PolarBearB"]
-ACTIVE_BEAR_EXCLUDE_KEYWORDS = (
-        "Idle",
-        "Stand",
-        "Sit",
-        "Sleepy",
-        "ScratchEar",
-        "Ready",
-        "LayDown",
-        "Feast",
-        "EatFish",
-)
-
-OBJECT_SUBSETS_DICT = {"all" : QUADROPEDS + BIPEDS + MILLIPEDS + SNAKES + FISH + FLYING, 
-                       "quadropeds": QUADROPEDS, 
-                       "bears": BEARS,
-                                           "active_bears": BEARS,
-                       "flying": FLYING, 
+OBJECT_SUBSETS_DICT = {"all" : QUADROPEDS + BIPEDS + MILLIPEDS + SNAKES + FISH + FLYING,
+                       "quadropeds": QUADROPEDS,
+                       "flying": FLYING,
                        "bipeds": BIPEDS, 
                        "millipeds": MILLIPEDS,
                        "millipeds_snakes": MILLIPEDS + SNAKES, 
@@ -64,17 +55,6 @@ OBJECT_SUBSETS_DICT = {"all" : QUADROPEDS + BIPEDS + MILLIPEDS + SNAKES + FISH +
                        "flying_clean": [fly for fly in FLYING if fly not in CONNECTED_TO_GROUND], 
                        "all_clean": [obj for obj in  QUADROPEDS + BIPEDS + MILLIPEDS + SNAKES + FISH + FLYING if obj not in CONNECTED_TO_GROUND] 
                        }
-
-
-def filter_motion_names_for_subset(objects_subset, motion_names):
-        if objects_subset != "active_bears":
-                return motion_names
-
-        filtered = {
-                name for name in motion_names
-                if not any(keyword in name for keyword in ACTIVE_BEAR_EXCLUDE_KEYWORDS)
-        }
-        return filtered
 
 
 def parse_motion_name_keywords(raw_keywords):

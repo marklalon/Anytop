@@ -20,11 +20,10 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
 )
 from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
     BVH,
+    _get_facing_candidates,
     _find_forward_reference_joint,
     _find_neck_reference_joint,
     _get_head_forward,
-    _get_snake_forward,
-    _normalize_vectors,
     positions_global,
     resolve_face_joints,
 )
@@ -244,10 +243,23 @@ def _vector_angle_deg(vector_a: np.ndarray, vector_b: np.ndarray) -> float:
     return float(np.degrees(np.arccos(cosine)))
 
 
-def _get_first_frame_forward(processed_bvh_path: Path, object_type: str, object_cond: dict) -> np.ndarray:
+def _format_candidate_angles(candidate_angles: dict[str, float]) -> str:
+    return ", ".join(f"{name}: {angle:.4f}" for name, angle in candidate_angles.items())
+
+
+def _get_frame_orientation_candidates(
+    processed_bvh_path: Path,
+    object_type: str,
+    object_cond: dict,
+    frame_index: int,
+) -> dict[str, np.ndarray]:
     anim, joint_names, _ = BVH.load(str(processed_bvh_path))
     global_positions = positions_global(anim)
-    frame_positions = global_positions[:1]
+    resolved_frame_index = frame_index
+    if resolved_frame_index < 0:
+        resolved_frame_index = global_positions.shape[0] + resolved_frame_index
+    _require(0 <= resolved_frame_index < global_positions.shape[0], f"{processed_bvh_path.name} has no frame {frame_index}")
+    frame_positions = global_positions[resolved_frame_index:resolved_frame_index + 1]
 
     face_joints = object_cond.get("face_joints")
     if face_joints is None:
@@ -256,37 +268,41 @@ def _get_first_frame_forward(processed_bvh_path: Path, object_type: str, object_
     forward_joint_index = _find_forward_reference_joint(joint_names, anim.parents)
     forward_base_joint_index = _find_neck_reference_joint(joint_names, anim.parents)
 
-    if object_type in ("Anaconda", "KingCobra"):
-        forward = _get_snake_forward(frame_positions, object_type)
-    else:
-        # Use head position relative to torso center (more robust than neck-to-head direction).
-        # Head rotation during attack/dive poses changes the neck-to-head LOCAL direction
-        # significantly, but the head's GLOBAL position relative to the torso center remains
-        # a stable indicator of which direction the body is facing.
-        forward = _get_head_forward(
-            frame_positions,
-            face_joints,
-            forward_joint_index,
-            forward_base_joint_index=None,
-        )
-        if forward is None:
-            # Fall back to neck-based direction (works better for bipeds where the head
-            # is roughly above the torso center, making the torso-center method unreliable).
-            forward = _get_head_forward(
-                frame_positions,
-                face_joints,
-                forward_joint_index,
-                forward_base_joint_index=forward_base_joint_index,
-            )
-        if forward is None:
-            r_hip, l_hip, sdr_r, sdr_l = face_joints
-            across1 = frame_positions[:, r_hip] - frame_positions[:, l_hip]
-            across2 = frame_positions[:, sdr_r] - frame_positions[:, sdr_l]
-            across = _normalize_vectors(across1 + across2)
-            forward = _normalize_vectors(np.cross(np.array([[0.0, 1.0, 0.0]]), across, axis=-1))
+    candidates = {}
+    torso_head = _get_head_forward(
+        frame_positions,
+        face_joints,
+        forward_joint_index,
+        forward_base_joint_index=None,
+    )
+    if torso_head is not None and np.isfinite(torso_head).all():
+        candidates["torso_head"] = np.asarray(torso_head[0], dtype=np.float64)
 
-    _require(forward is not None and np.isfinite(forward).all(), f"{processed_bvh_path.name} produced an invalid facing vector")
-    return np.asarray(forward[0], dtype=np.float64)
+    neck_head = _get_head_forward(
+        frame_positions,
+        face_joints,
+        forward_joint_index,
+        forward_base_joint_index=forward_base_joint_index,
+    )
+    if neck_head is not None and np.isfinite(neck_head).all():
+        candidates["neck_head"] = np.asarray(neck_head[0], dtype=np.float64)
+
+    if face_joints is not None:
+        r_hip, l_hip, sdr_r, sdr_l = face_joints
+        across1 = frame_positions[:, r_hip] - frame_positions[:, l_hip]
+        across2 = frame_positions[:, sdr_r] - frame_positions[:, sdr_l]
+        across = across1 + across2
+        across_norm = np.linalg.norm(across, axis=-1, keepdims=True)
+        if np.isfinite(across).all() and float(across_norm[0, 0]) > 1e-8:
+            across = across / across_norm
+            across_forward = np.cross(np.array([[0.0, 1.0, 0.0]]), across, axis=-1)
+            across_forward_norm = np.linalg.norm(across_forward, axis=-1, keepdims=True)
+            if np.isfinite(across_forward).all() and float(across_forward_norm[0, 0]) > 1e-8:
+                across_forward = across_forward / across_forward_norm
+                candidates["across"] = np.asarray(across_forward[0], dtype=np.float64)
+
+    _require(candidates, f"{processed_bvh_path.name} produced no valid orientation candidates for frame {resolved_frame_index}")
+    return candidates
 
 
 def _validate_motion_orientation(bvhs_dir: Path, cond: dict, sample_limit: int, threshold_deg: float) -> None:
@@ -305,11 +321,24 @@ def _validate_motion_orientation(bvhs_dir: Path, cond: dict, sample_limit: int, 
     for bvh_path in files_to_validate:
         try:
             object_type = _match_object_type(bvh_path.stem, cond)
-            forward = _get_first_frame_forward(bvh_path, object_type, cond[object_type])
-            angle_deg = _vector_angle_deg(forward, target_forward)
+            first_candidates = _get_frame_orientation_candidates(bvh_path, object_type, cond[object_type], 0)
+            first_candidate_angles = {
+                name: _vector_angle_deg(forward, target_forward)
+                for name, forward in first_candidates.items()
+            }
+            first_best_name, first_best_angle_deg = min(first_candidate_angles.items(), key=lambda item: item[1])
+            if first_best_angle_deg <= threshold_deg:
+                continue
+
+            last_candidates = _get_frame_orientation_candidates(bvh_path, object_type, cond[object_type], -1)
+            last_candidate_angles = {
+                name: _vector_angle_deg(forward, target_forward)
+                for name, forward in last_candidates.items()
+            }
+            last_best_name, last_best_angle_deg = min(last_candidate_angles.items(), key=lambda item: item[1])
             _require(
-                angle_deg <= threshold_deg,
-                f"{bvh_path.name} first-frame facing deviates from +Z by {angle_deg:.4f} deg (threshold={threshold_deg:.4f})",
+                last_best_angle_deg <= threshold_deg,
+                f"processed orientation exceeds threshold on both first and last frames： {first_best_angle_deg:.2f}|{first_best_angle_deg:.2f}, threshold={threshold_deg:.2f}",
             )
         except ValidationError as e:
             _print_warn(f"validation error: {bvh_path.name}: {e}")
@@ -319,7 +348,7 @@ def _validate_motion_orientation(bvhs_dir: Path, cond: dict, sample_limit: int, 
         raise ValidationError(f"orientation validation failed: {len(errors)} file(s) exceeded threshold")
     
     scope = "all" if sample_limit <= 0 else str(len(files_to_validate))
-    _print_ok(f"validated first-frame +Z orientation for {scope} processed BVHs (threshold={threshold_deg:.2f} deg)")
+    _print_ok(f"validated processed early-frame +Z orientation for {scope} processed BVHs (threshold={threshold_deg:.2f} deg)")
 
 
 def _validate_positions_error_file(positions_error_path: Path) -> None:

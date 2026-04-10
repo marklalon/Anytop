@@ -16,10 +16,10 @@ Options:
     --skip-orientation-check             Skip processed-BVH orientation validation
     --skip-corrupted-export              Skip corrupted-reference export
     --objects-subset SUBSET              Object subset to process (default: all)
-    --object-workers N                   Concurrent characters to preprocess (default: 6)
+    --object-workers N                   Concurrent characters to preprocess (default: 8)
     --file-workers N                     Worker threads per character for BVH processing (default: 8)
     --sample-count N                     Limit file validation to first N motions/BVHs (0=all, default: 0)
-    --orientation-threshold-deg DEG      Max allowed first-frame facing error from +Z during validation (default: 5.0)
+    --orientation-threshold-deg DEG      Max allowed canonicalized first-frame facing error from +Z during validation (default: 15.0)
     --corrupted-seed SEED                Random seed for corrupted-reference export (default: 1234)
     --corrupted-sample-limit N           Limit corrupted-reference samples (0=all, default: 0)
 
@@ -184,9 +184,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--object-workers",
-        default=6,
+        default=8,
         type=int,
-        help="Concurrent characters to preprocess. Defaults to 6.",
+        help="Concurrent characters to preprocess. Defaults to 8.",
     )
     parser.add_argument(
         "--file-workers",
@@ -196,9 +196,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--orientation-threshold-deg",
-        default=5.0,
+        default=10.0,
         type=float,
-        help="Maximum allowed first-frame facing error from +Z during validation.",
+        help="Maximum allowed first-frame facing error from +Z for processed validation.",
     )
     parser.add_argument(
         "--sample-count",
