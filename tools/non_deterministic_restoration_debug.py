@@ -8,7 +8,6 @@ Description:
 
 import argparse
 import copy
-from concurrent.futures import ProcessPoolExecutor
 import json
 import os
 import sys
@@ -25,8 +24,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from data_loaders.get_data import get_dataset_loader
+import BVH
+from InverseKinematics import animation_from_positions
 from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np
-from data_loaders.truebones.truebones_utils.plot_script import plot_general_skeleton_3d_motion
 from diffusion.resample import LossAwareSampler, create_named_schedule_sampler
 from utils.fixseed import fixseed
 from utils import dist_util
@@ -70,7 +70,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", default=DEFAULT_WEIGHT_DECAY, type=float, help="AdamW weight decay.")
     parser.add_argument("--schedule-sampler", default="uniform", help="Schedule sampler used for full-schedule timestep sampling during training.")
     parser.add_argument("--disable-train-shuffle", action="store_true", help="Disable shuffling for the training loader.")
-    parser.add_argument("--skip-video-export", action="store_true", help="Skip MP4 export and only write arrays plus metrics.")
     parser.add_argument("--lambda-confidence-recon", default=None, type=float, help="Reliable-region preservation weight. Overrides checkpoint args when set.")
     parser.add_argument("--lambda-repair-recon", default=None, type=float, help="Low-confidence repair reconstruction weight. Overrides checkpoint args when set.")
     parser.add_argument("--lambda-root", default=None, type=float, help="Root consistency weight. Overrides checkpoint args when set.")
@@ -87,8 +86,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sampling-steps", default=0, type=int, help="Respaced diffusion steps for evaluation. 0 keeps the training diffusion step count.")
     parser.add_argument("--ddim-eta", default=0.0, type=float, help="DDIM eta parameter. Ignored for other samplers.")
     parser.add_argument("--export-samples", default=0, type=int, help="How many selected samples to export per trial. 0 disables exports.")
-    parser.add_argument("--render-workers", default=4, type=int, help="MP4 render parallelism. 0 renders inline.")
-    parser.add_argument("--video-fps", default=20, type=int, help="Output FPS for exported MP4 previews.")
     return parser.parse_args()
 
 
@@ -326,69 +323,25 @@ def sample_motion_batch(
     )
 
 
-def resolve_video_threads(render_workers: int) -> int:
-    return 1 if render_workers > 1 else 4
-
-
-def render_motion_triplet_videos(
-    sample_dir: str,
-    parents: list[int],
-    videos: list[tuple[str, np.ndarray]],
-    fps: int,
-    video_threads: int,
-) -> None:
-    sample_dir_path = Path(sample_dir)
-    for name, positions in videos:
-        plot_general_skeleton_3d_motion(
-            str(sample_dir_path / f"{name}.mp4"),
-            parents,
-            positions,
-            title=name,
-            fps=fps,
-            video_threads=video_threads,
-        )
-
-
 def export_trial_sample(
     sample_dir: Path,
     parents: list[int],
+    offsets: np.ndarray,
+    joints_names: list[str],
     target_motion: np.ndarray,
     reference_motion: np.ndarray,
     restored_motion: np.ndarray,
     confidence: np.ndarray,
-    skip_video_export: bool,
-    fps: int,
-    video_threads: int,
-    render_executor,
-    render_futures: list,
 ) -> None:
     np.save(sample_dir / "clean_target.npy", target_motion.astype(np.float32))
     np.save(sample_dir / "corrupted_reference.npy", reference_motion.astype(np.float32))
     np.save(sample_dir / "restored_prediction.npy", restored_motion.astype(np.float32))
     np.save(sample_dir / "soft_confidence_mask.npy", confidence.astype(np.float32))
-    if skip_video_export:
-        return
-    target_positions = recover_from_bvh_ric_np(target_motion.astype(np.float32))
-    reference_positions = recover_from_bvh_ric_np(reference_motion.astype(np.float32))
-    restored_positions = recover_from_bvh_ric_np(restored_motion.astype(np.float32))
-    payload = [
-        ("clean_target", target_positions.astype(np.float32)),
-        ("corrupted_reference", reference_positions.astype(np.float32)),
-        ("restored_prediction", restored_positions.astype(np.float32)),
-    ]
-    if render_executor is None:
-        render_motion_triplet_videos(str(sample_dir), parents, payload, fps, video_threads)
-    else:
-        render_futures.append(
-            render_executor.submit(
-                render_motion_triplet_videos,
-                str(sample_dir),
-                parents,
-                payload,
-                fps,
-                video_threads,
-            )
-        )
+    for name, motion in [("clean_target", target_motion), ("corrupted_reference", reference_motion), ("restored_prediction", restored_motion)]:
+        positions = recover_from_bvh_ric_np(motion.astype(np.float32))
+        out_anim, _, _ = animation_from_positions(positions=positions, parents=parents, offsets=offsets, iterations=150)
+        if out_anim is not None:
+            BVH.save(str(sample_dir / f"{name}.bvh"), out_anim, joints_names)
 
 
 def compute_feature_metrics(
@@ -574,6 +527,8 @@ def collect_eval_samples(args: argparse.Namespace, model_args: SimpleNamespace) 
                 "n_joints": int(cond_cpu["y"]["n_joints"][0].item()),
                 "length": int(cond_cpu["y"]["lengths"][0].item()),
                 "parents": [int(parent) for parent in cond_dict[object_type]["parents"]],
+                "offsets": cond_dict[object_type]["offsets"],
+                "joints_names": cond_dict[object_type]["joints_names"],
                 "mean": cond_dict[object_type]["mean"].astype(np.float32),
                 "std": cond_dict[object_type]["std"].astype(np.float32) + 1e-6,
             }
@@ -692,18 +647,9 @@ def stochastic_eval(
     selected_samples: list[dict[str, object]],
     device: torch.device,
     output_dir: Path,
-    skip_video_export: bool,
 ) -> dict[str, object]:
     eval_model, eval_diffusion = build_eval_model_and_diffusion(train_model, model_args, args, device)
     effective_diffusion = diffusion if eval_diffusion is None else eval_diffusion
-
-    render_workers = max(0, int(args.render_workers))
-    video_threads = resolve_video_threads(render_workers)
-    render_executor = None
-    render_futures = []
-    if not skip_video_export and args.export_samples > 0 and render_workers > 0:
-        max_render_workers = min(render_workers, max(1, os.cpu_count() or 1))
-        render_executor = ProcessPoolExecutor(max_workers=max_render_workers)
 
     trial_reports = []
     sample_trials: dict[int, list[dict[str, object]]] = {sample_index: [] for sample_index in range(len(selected_samples))}
@@ -761,15 +707,12 @@ def stochastic_eval(
                     export_trial_sample(
                         sample_dir=sample_dir,
                         parents=sample["parents"],
+                        offsets=sample["offsets"],
+                        joints_names=sample["joints_names"],
                         target_motion=evaluation["target_denorm"].astype(np.float32),
                         reference_motion=evaluation["reference_denorm"].astype(np.float32),
                         restored_motion=evaluation["restored_denorm"].astype(np.float32),
                         confidence=confidence.permute(2, 0, 1).numpy().astype(np.float32),
-                        skip_video_export=skip_video_export,
-                        fps=args.video_fps,
-                        video_threads=video_threads,
-                        render_executor=render_executor,
-                        render_futures=render_futures,
                     )
                     with open(sample_dir / "metrics.json", "w", encoding="utf-8") as handle:
                         json.dump(metrics, handle, indent=2)
@@ -786,13 +729,6 @@ def stochastic_eval(
         trial_dir.mkdir(parents=True, exist_ok=True)
         with open(trial_dir / "summary.json", "w", encoding="utf-8") as handle:
             json.dump(trial_report, handle, indent=2)
-
-    if render_executor is not None:
-        try:
-            for future in render_futures:
-                future.result()
-        finally:
-            render_executor.shutdown(wait=True)
 
     aggregate_mean, aggregate_std = summarize_metric_dicts([trial["aggregate"] for trial in trial_reports])
     sample_stability = []
@@ -842,7 +778,6 @@ def stochastic_eval(
         "shuffle": bool(args.eval_shuffle),
         "sampling_method": args.sampling_method,
         "sampling_steps": int(args.sampling_steps) if args.sampling_steps > 0 else int(getattr(model_args, "diffusion_steps", DEFAULT_DIFFUSION_STEPS)),
-        "skip_video_export": bool(skip_video_export),
         "export_samples": args.export_samples,
         "reliable_position_tolerance": RELIABLE_POSITION_TOLERANCE,
         "reliable_position_ratio_tolerance": RELIABLE_POSITION_RATIO_TOLERANCE,
@@ -906,7 +841,6 @@ def main() -> int:
         selected_samples=selected_samples,
         device=device,
         output_dir=output_dir,
-        skip_video_export=args.skip_video_export,
     )
 
     final_report = {
@@ -925,7 +859,6 @@ def main() -> int:
         "lambda_velocity": model_args.lambda_velocity,
         "preservation_confidence_threshold": diffusion.preservation_confidence_threshold,
         "preservation_confidence_power": diffusion.preservation_confidence_power,
-        "skip_video_export": bool(args.skip_video_export),
         "stochastic_eval": sampling_report,
     }
     with open(output_dir / "report.json", "w", encoding="utf-8") as handle:

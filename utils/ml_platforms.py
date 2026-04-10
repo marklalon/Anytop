@@ -93,10 +93,6 @@ class WandBPlatform(MLPlatform):
     def report_scalar(self, name, value, iteration, group_name=None):
         self.wandb.log({name: value}, step=iteration)
 
-    def report_media(self, title, series, iteration, local_path):
-        files = glob.glob(f'{local_path}/*.mp4')
-        self.wandb.log({series: [self.wandb.Video(file, format='mp4', fps=20) for file in files]}, step=iteration)
-
     def report_args(self, args, name):
         self.wandb.config.update(args)  # , allow_val_change=True) # use allow_val_change ONLY if you want to change existing args (e.g., overwrite)
 

@@ -16,8 +16,7 @@ def main():
                         help="Preprocess only the specified object types.")
     parser.add_argument("--max-files-per-object", default=None, type=int,
                         help="Limit the number of BVH files processed per object for smoke tests.")
-    parser.add_argument("--save-animations", action="store_true",
-                        help="Generate MP4 previews during preprocessing. Disabled by default for speed.")
+    # MP4 export removed - no --save-animations argument needed
     parser.add_argument("--object-workers", default=8, type=int,
                         help="Concurrent characters to preprocess. Defaults to 8.")
     parser.add_argument("--file-workers", default=8, type=int,
@@ -38,7 +37,6 @@ def main():
     create_data_samples(
         objects=objects,
         max_files_per_object=args.max_files_per_object,
-        save_animations=args.save_animations,
         object_workers=args.object_workers,
         file_workers=args.file_workers,
         dataset_dir=args.dataset_dir or None,

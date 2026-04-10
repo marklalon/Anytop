@@ -22,16 +22,12 @@ Output:
 The code will create the following under save_dir:
 save_dir/
         |_motions
-        |_animations
         |_bvhs
         cond.npy
 1. In motions directory, you will find npy files, which are the processed motion features of each bvh file. 
 This is useful in case you would like to use this data for training. 
-2. In animation directory, you will find mp4 files corresponding to each of the processed bvhs. 
-This is a good sanity check that everything worked as expected. 
-Note that face_joints are marked in blue and feet joints are marked in green.
-3.In bvhs dir you can find the processed bvhs
-4. cond.npy contains the skeletons representation, including joints names ambeddings and graph conditions,
+2. In bvhs dir you can find the processed bvhs
+3. cond.npy contains the skeletons representation, including joints names ambeddings and graph conditions,
 which is given as input to AnyTop during infecrence. Please follow sampling instructions in README. 
 """
 def main():

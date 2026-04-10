@@ -14,8 +14,9 @@ if str(REPO_ROOT) not in sys.path:
 
 from data_loaders.get_data import get_dataset_loader
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
+import BVH
+from InverseKinematics import animation_from_positions
 from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np
-from data_loaders.truebones.truebones_utils.plot_script import plot_general_skeleton_3d_motion
 from utils import dist_util
 from utils.fixseed import fixseed
 from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
@@ -127,18 +128,15 @@ def main() -> int:
 
                 restored_norm = restored[item_index, :n_joints, :, :length].detach().cpu().permute(2, 0, 1).numpy()
                 restored_motion = restored_norm * std[None, :n_joints, :] + mean[None, :n_joints, :]
-                restored_positions = recover_from_bvh_ric_np(restored_motion)
-
                 sample_output_dir = output_dir / Path(motion_name).stem
                 sample_output_dir.mkdir(parents=True, exist_ok=True)
                 np.save(sample_output_dir / f"restored_rep{rep_index}.npy", restored_motion.astype(np.float32))
-                plot_general_skeleton_3d_motion(
-                    str(sample_output_dir / f"restored_rep{rep_index}.mp4"),
-                    parents,
-                    restored_positions,
-                    title=f"restored_rep{rep_index}",
-                    fps=opt.fps,
-                )
+                offsets = cond_dict[object_type]["offsets"]
+                joints_names = cond_dict[object_type]["joints_names"]
+                restored_positions = recover_from_bvh_ric_np(restored_motion)
+                out_anim, _, _ = animation_from_positions(positions=restored_positions, parents=parents, offsets=offsets, iterations=150)
+                if out_anim is not None:
+                    BVH.save(str(sample_output_dir / f"restored_rep{rep_index}.bvh"), out_anim, joints_names)
 
                 manifest.append({
                     "motion_file": motion_name,

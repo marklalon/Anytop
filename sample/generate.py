@@ -15,7 +15,6 @@ import torch
 from utils.parser_util import generate_args
 from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
 from utils import dist_util
-from data_loaders.truebones.truebones_utils.plot_script import plot_general_skeleton_3d_motion
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np, recover_from_bvh_rot_np
 from data_loaders.truebones.data.dataset import create_temporal_mask_for_window
@@ -105,11 +104,8 @@ def main(args = None, cond_dict = None):
             out_anim, _1, _2 = animation_from_positions(positions=global_positions, parents=parents, offsets=offsets, iterations=150)
             name_pref = '%s_rep_%d'%(object_type, rep_i)
             existing_npy_files = [filename for filename in os.listdir(out_path) if filename.startswith(name_pref) and filename.endswith('.npy')]
-            existing_mp4_files = [filename for filename in os.listdir(out_path) if filename.startswith(name_pref) and filename.endswith('.mp4')]
-            npy_name = name_pref+'_#%d.npy'%(len(existing_npy_files))
-            mp4_name = name_pref+'_#%d.mp4'%(len(existing_mp4_files))
-            bvh_name = name_pref+'_#%d.bvh'%(len(existing_mp4_files))
-            plot_general_skeleton_3d_motion(pjoin(out_path, mp4_name), parents, global_positions, title=name_pref, fps=fps)
+npy_name = name_pref+'_#%d.npy'%(len(existing_npy_files))
+            bvh_name = name_pref+'_#%d.bvh'%(len(existing_npy_files))
             np.save(pjoin(out_path, npy_name), motion)
             if out_anim is not None:
                 BVH.save(pjoin(out_path, bvh_name), out_anim, cond_dict[object_type]['joints_names'])

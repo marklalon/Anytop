@@ -8,7 +8,6 @@ from Quaternions import Quaternions
 import re
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from contextlib import redirect_stdout, redirect_stderr
-from data_loaders.truebones.truebones_utils.plot_script import plot_general_skeleton_3d_motion
 import random
 import math
 import statistics
@@ -786,7 +785,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=
     }
 
 """Write a prepared object payload to disk with stable sequential clip naming."""
-def _write_object_outputs(save_dir, object_payload, files_counter, save_animations=False):
+def _write_object_outputs(save_dir, object_payload, files_counter):
     object_type = object_payload['object_type']
     face_joints = object_payload['face_joints']
     frames_counter = 0
@@ -799,10 +798,6 @@ def _write_object_outputs(save_dir, object_payload, files_counter, save_animatio
         name = object_type + "_" + result['action'] + "_" + str(files_counter)
         np.save(pjoin(save_dir, MOTION_DIR, name + '.npy'), motion)
         BVH.save(pjoin(save_dir, BVHS_DIR, name+".bvh"), result['new_anim'], result['names'])
-        if save_animations:
-            positions = recover_from_bvh_ric_np(motion)
-            fc = [[j for j in range(len(parents)) if motion[frame_index, j , 12] != 0] for frame_index in range(motion.shape[0])]
-            plot_general_skeleton_3d_motion(pjoin(save_dir, ANIMATIONS_DIR, name+"_from_ric.mp4"), parents, positions, dataset="truebones", title="", fps=20, face_joints=face_joints if face_joints is not None else FACE_JOINTS[object_type], fc = fc)
 
     return files_counter, frames_counter
 
@@ -824,7 +819,7 @@ def _prepare_object_outputs_worker(object_type, max_files, file_workers):
 
 """ creates processed tensors for all the files of a given object. Returens statistics and the object condition,
 which includes tpos, relation/distances matrices, offsets, parents, joints names, kinematic chains, mean and std"""    
-def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DATASET_DIR, face_joints=None, bvhs_dir=None, t_pos_path=None, max_files=None, save_animations=False, num_workers=1):
+def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DATASET_DIR, face_joints=None, bvhs_dir=None, t_pos_path=None, max_files=None, num_workers=1):
     object_payload = _prepare_object_outputs(
         object_type,
         max_joints,
@@ -843,14 +838,13 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
         save_dir,
         object_payload,
         files_counter,
-        save_animations=save_animations,
     )
     frames_counter += object_frames_counter
 
     return files_counter, frames_counter, max_joints, object_payload['object_cond']
 
 """ create dataset """
-def create_data_samples(objects=None, max_files_per_object=None, save_animations=False, dataset_dir=None, object_workers=8, file_workers=8):
+def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, object_workers=8, file_workers=8):
     ## prepare
     target_dataset_dir = dataset_dir or DATASET_DIR
     os.makedirs(pjoin(target_dataset_dir, MOTION_DIR), exist_ok=True)
@@ -922,7 +916,6 @@ def create_data_samples(objects=None, max_files_per_object=None, save_animations
             target_dataset_dir,
             payload,
             files_counter,
-            save_animations=save_animations,
         )
         frames_counter += object_frames
         cond[object_type] = payload['object_cond']
@@ -1236,10 +1229,9 @@ def process_skeleton(object_name, bvh_dir, face_joints, save_dir, tpos_bvh=None)
     cond = dict()
     cur_counter = files_counter
     files_counter, frames_counter, max_joints, object_cond = process_object(object_name, files_counter, frames_counter, max_joints, squared_positions_error, save_dir=save_dir, bvhs_dir=bvh_dir, face_joints=face_joints, t_pos_path=tpos_bvh)
-    # BUG4 (intentional): save_animations=True is deliberately omitted here to skip MP4
-    # generation during process_skeleton. Generating video previews is expensive and not
-    # required for inference — the docstring in process_new_skeleton.py mentions animations
-    # as an optional sanity check. Pass save_animations=True explicitly if previews are needed.
+    # BUG4 (intentional): MP4 generation is omitted here to skip expensive video
+    # generation during process_skeleton. Generating video previews is not
+    # Note: MP4 generation has been removed - no save_animations parameter needed.
     if object_cond is None:
         print(f"No valid BVH data found for '{object_name}', aborting.")
         return

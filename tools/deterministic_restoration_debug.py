@@ -59,9 +59,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import BVH
+from InverseKinematics import animation_from_positions
 from data_loaders.get_data import get_dataset_loader
 from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np
-from data_loaders.truebones.truebones_utils.plot_script import plot_general_skeleton_3d_motion
 from utils.fixseed import fixseed
 from utils import dist_util
 from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
@@ -96,7 +97,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-interval", default=50, type=int, help="How often to print training metrics.")
     parser.add_argument("--save-interval", default=200, type=int, help="How often to save debug checkpoints.")
     parser.add_argument("--lr", default=1e-4, type=float, help="Learning rate.")
-    parser.add_argument("--skip-video-export", action="store_true", help="Skip MP4 export and only write .npy outputs plus metrics.")
     parser.add_argument("--fixed-timestep", default=10, type=int, help="Deterministic diffusion timestep used for every sample.")
     parser.add_argument("--noise-mode", default="zero", choices=["zero", "fixed-random"], help="Use zero noise or one fixed random noise tensor per sample.")
     parser.add_argument("--lambda-confidence-recon", default=None, type=float, help="Reliable-region preservation weight. Overrides checkpoint args when set.")
@@ -276,12 +276,12 @@ def classify_restoration(position_metrics: dict[str, float]) -> dict[str, object
     }
 
 
-def export_motion(sample_dir: Path, name: str, motion: np.ndarray, parents: list[int], skip_video_export: bool) -> None:
+def export_motion(sample_dir: Path, name: str, motion: np.ndarray, parents: list[int], offsets: np.ndarray, joints_names: list[str]) -> None:
     np.save(sample_dir / f"{name}.npy", motion)
-    if skip_video_export:
-        return
     positions = recover_from_bvh_ric_np(motion)
-    plot_general_skeleton_3d_motion(str(sample_dir / f"{name}.mp4"), parents, positions, title=name, fps=20)
+    out_anim, _, _ = animation_from_positions(positions=positions, parents=parents, offsets=offsets, iterations=150)
+    if out_anim is not None:
+        BVH.save(str(sample_dir / f"{name}.bvh"), out_anim, joints_names)
 
 
 def build_fixed_noise(sample_index: int, shape: torch.Size, device: torch.device, mode: str, seed: int) -> torch.Tensor:
@@ -329,6 +329,8 @@ def collect_samples(args: argparse.Namespace, model_args: SimpleNamespace) -> tu
                 "length": length,
                 "n_joints": n_joints,
                 "parents": [int(parent) for parent in cond_dict[object_type]["parents"]],
+                "offsets": cond_dict[object_type]["offsets"],
+                "joints_names": cond_dict[object_type]["joints_names"],
                 "mean": mean,
                 "std": std,
             }
@@ -348,7 +350,6 @@ def deterministic_eval(
     noise_mode: str,
     seed: int,
     output_dir: Path,
-    skip_video_export: bool,
 ) -> dict[str, object]:
     model.eval()
     summary: list[dict[str, object]] = []
@@ -435,8 +436,8 @@ def deterministic_eval(
 
             sample_eval_dir = eval_dir / f"sample_{sample_index:02d}_{sample['object_type']}"
             sample_eval_dir.mkdir(parents=True, exist_ok=True)
-            export_motion(sample_eval_dir, "pred_xstart_raw", raw_pred_denorm.astype(np.float32), parents, skip_video_export)
-            export_motion(sample_eval_dir, "pred_xstart_restored", pred_denorm.astype(np.float32), parents, skip_video_export)
+            export_motion(sample_eval_dir, "pred_xstart_raw", raw_pred_denorm.astype(np.float32), parents, sample["offsets"], sample["joints_names"])
+            export_motion(sample_eval_dir, "pred_xstart_restored", pred_denorm.astype(np.float32), parents, sample["offsets"], sample["joints_names"])
 
             metrics = {
                 "sample_index": sample_index,
@@ -475,7 +476,6 @@ def deterministic_eval(
         "aggregate": aggregate,
         "reliable_position_tolerance": RELIABLE_POSITION_TOLERANCE,
         "reliable_position_ratio_tolerance": RELIABLE_POSITION_RATIO_TOLERANCE,
-        "skip_video_export": bool(skip_video_export),
         "samples": summary,
     }
     with open(eval_dir / "summary.json", "w", encoding="utf-8") as handle:
@@ -559,7 +559,6 @@ def main() -> int:
         noise_mode=args.noise_mode,
         seed=args.seed,
         output_dir=output_dir,
-        skip_video_export=args.skip_video_export,
     )
     final_report = {
         "model_path": str(Path(args.model_path).resolve()) if args.model_path else "",
@@ -575,7 +574,6 @@ def main() -> int:
         "lambda_velocity": model_args.lambda_velocity,
         "preservation_confidence_threshold": diffusion.preservation_confidence_threshold,
         "preservation_confidence_power": diffusion.preservation_confidence_power,
-        "skip_video_export": bool(args.skip_video_export),
         "deterministic_eval": eval_report,
     }
     with open(output_dir / "report.json", "w", encoding="utf-8") as handle:

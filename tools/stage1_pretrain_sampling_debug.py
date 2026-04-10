@@ -3,13 +3,11 @@ Stage 1 Pretrain Sampling Debug Tool
 
 Description:
     Samples motions from a stage1 clean-prior checkpoint on a fixed evaluation
-    subset and writes a stochastic debug report similar in structure to
-    stochastic_eval, without BVH export.
+    subset and writes a stochastic debug report with per-sample BVH export.
 """
 
 import argparse
 import copy
-from concurrent.futures import ProcessPoolExecutor
 import json
 import os
 import sys
@@ -18,6 +16,8 @@ from types import SimpleNamespace
 
 import numpy as np
 import torch
+import BVH
+from InverseKinematics import animation_from_positions
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -27,7 +27,6 @@ os.chdir(REPO_ROOT)
 
 from data_loaders.get_data import get_dataset_loader
 from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np
-from data_loaders.truebones.truebones_utils.plot_script import plot_general_skeleton_3d_motion
 from utils.fixseed import fixseed
 from utils import dist_util
 from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
@@ -110,9 +109,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sampling-steps", default=0, type=int, help="Respaced diffusion steps. 0 keeps the checkpoint diffusion step count.")
     parser.add_argument("--ddim-eta", default=0.0, type=float, help="DDIM eta parameter.")
     parser.add_argument("--export-samples", default=0, type=int, help="How many selected samples to export per trial. 0 disables exports.")
-    parser.add_argument("--skip-video-export", action="store_true", help="Skip MP4 preview export and only write arrays plus metrics.")
-    parser.add_argument("--render-workers", default=4, type=int, help="MP4 render parallelism. 0 renders inline.")
-    parser.add_argument("--video-fps", default=20, type=int, help="Output FPS for exported MP4 previews.")
     parser.add_argument("--no-ema", action="store_true", help="Disable EMA model averaging and use raw model weights instead.")
     return parser.parse_args()
 
@@ -748,63 +744,22 @@ def build_baseline_comparison(
     }
 
 
-def resolve_video_threads(render_workers: int) -> int:
-    return 1 if render_workers > 1 else 4
-
-
-def render_motion_pair_videos(
-    sample_dir: str,
-    parents: list[int],
-    videos: list[tuple[str, np.ndarray]],
-    fps: int,
-    video_threads: int,
-) -> None:
-    sample_dir_path = Path(sample_dir)
-    for name, positions in videos:
-        plot_general_skeleton_3d_motion(
-            str(sample_dir_path / f"{name}.mp4"),
-            parents,
-            positions,
-            title=name,
-            fps=fps,
-            video_threads=video_threads,
-        )
-
-
 def export_trial_sample(
     sample_dir: Path,
     parents: list[int],
+    offsets: np.ndarray,
+    joints_names: list[str],
     target_motion: np.ndarray,
     generated_motion: np.ndarray,
     target_positions: np.ndarray,
     generated_positions: np.ndarray,
-    skip_video_export: bool,
-    fps: int,
-    video_threads: int,
-    render_executor,
-    render_futures: list,
 ) -> None:
     np.save(sample_dir / "clean_target.npy", target_motion.astype(np.float32))
     np.save(sample_dir / "generated_prediction.npy", generated_motion.astype(np.float32))
-    if skip_video_export:
-        return
-    payload = [
-        ("clean_target", target_positions.astype(np.float32)),
-        ("generated_prediction", generated_positions.astype(np.float32)),
-    ]
-    if render_executor is None:
-        render_motion_pair_videos(str(sample_dir), parents, payload, fps, video_threads)
-    else:
-        render_futures.append(
-            render_executor.submit(
-                render_motion_pair_videos,
-                str(sample_dir),
-                parents,
-                payload,
-                fps,
-                video_threads,
-            )
-        )
+    for name, positions in [("clean_target", target_positions), ("generated_prediction", generated_positions)]:
+        out_anim, _, _ = animation_from_positions(positions=positions.astype(np.float32), parents=parents, offsets=offsets, iterations=150)
+        if out_anim is not None:
+            BVH.save(str(sample_dir / f"{name}.bvh"), out_anim, joints_names)
 
 
 def collect_eval_samples(args: argparse.Namespace, model_args: SimpleNamespace) -> list[dict[str, object]]:
@@ -859,6 +814,8 @@ def collect_eval_samples(args: argparse.Namespace, model_args: SimpleNamespace) 
                 "n_joints": int(cond_cpu["y"]["n_joints"][0].item()),
                 "length": int(cond_cpu["y"]["lengths"][0].item()),
                 "parents": [int(parent) for parent in cond_dict[object_type]["parents"]],
+                "offsets": cond_dict[object_type]["offsets"],
+                "joints_names": cond_dict[object_type]["joints_names"],
                 "mean": cond_dict[object_type]["mean"].astype(np.float32),
                 "std": cond_dict[object_type]["std"].astype(np.float32) + 1e-6,
             }
@@ -894,18 +851,9 @@ def stage1_sampling_eval(
     selected_samples: list[dict[str, object]],
     device: torch.device,
     output_dir: Path,
-    skip_video_export: bool,
 ) -> dict[str, object]:
     checkpoint_state = {key: value.detach().cpu() for key, value in model.state_dict().items()}
     eval_model, eval_diffusion = build_eval_model_and_diffusion(model_args, checkpoint_state, args, device)
-
-    render_workers = max(0, int(args.render_workers))
-    video_threads = resolve_video_threads(render_workers)
-    render_executor = None
-    render_futures = []
-    if not skip_video_export and args.export_samples > 0 and render_workers > 0:
-        max_render_workers = min(render_workers, max(1, os.cpu_count() or 1))
-        render_executor = ProcessPoolExecutor(max_workers=max_render_workers)
 
     sample_trials = {sample_index: [] for sample_index in range(len(selected_samples))}
     trial_aggregates = []
@@ -960,26 +908,16 @@ def stage1_sampling_eval(
                     export_trial_sample(
                         sample_dir=sample_dir,
                         parents=sample["parents"],
+                        offsets=sample["offsets"],
+                        joints_names=sample["joints_names"],
                         target_motion=evaluation["target_denorm"].astype(np.float32),
                         generated_motion=evaluation["generated_denorm"].astype(np.float32),
                         target_positions=evaluation["target_positions"].astype(np.float32),
                         generated_positions=evaluation["generated_positions"].astype(np.float32),
-                        skip_video_export=skip_video_export,
-                        fps=args.video_fps,
-                        video_threads=video_threads,
-                        render_executor=render_executor,
-                        render_futures=render_futures,
                     )
 
         trial_aggregate = summarize_sample_metrics(trial_sample_metrics)
         trial_aggregates.append(trial_aggregate)
-
-    if render_executor is not None:
-        try:
-            for future in render_futures:
-                future.result()
-        finally:
-            render_executor.shutdown(wait=True)
 
     sampling_steps = int(args.sampling_steps) if args.sampling_steps > 0 else int(model_args.diffusion_steps)
     return build_eval_report(
@@ -1027,7 +965,6 @@ def main() -> int:
         selected_samples=selected_samples,
         device=device,
         output_dir=output_dir,
-        skip_video_export=args.skip_video_export or args.export_samples == 0,
     )
     clean_motion_report = build_clean_motion_baseline(args, model_args, selected_samples)
     baseline_comparison = build_baseline_comparison(sampling_report, clean_motion_report)
@@ -1048,7 +985,7 @@ def main() -> int:
             "lambda_repair_recon": float(model_args.lambda_repair_recon),
             "cond_mask_prob": float(getattr(model_args, "cond_mask_prob", 0.0)),
         },
-        "skip_video_export": bool(args.skip_video_export or args.export_samples == 0),
+        "export_samples": int(args.export_samples),
         "stage1_sampling_eval": sampling_report,
         "clean_motion_baseline": clean_motion_report,
         "baseline_comparison": baseline_comparison,

@@ -11,7 +11,6 @@ import torch
 from utils.parser_util import edit_args
 from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
 from utils import dist_util
-from data_loaders.truebones.truebones_utils.plot_script import plot_general_skeleton_correspondance, save_multiple_samples
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np, recover_from_bvh_rot_np
 from data_loaders.truebones.data.dataset import create_temporal_mask_for_window
@@ -124,7 +123,6 @@ def main(args = None, cond_dict = None):
 
         # Recover XYZ *positions* from matrix representation
         bs, max_joints, n_feats, n_frames = sample.shape
-        animations = np.empty(shape=(1 + bs // 5, bs % 5), dtype=object)
         for i, motion in enumerate(sample):
             n_joints = model_kwargs["y"]["n_joints"][i].item()
             length = model_kwargs["y"]["lengths"][i].item()
@@ -149,15 +147,6 @@ def main(args = None, cond_dict = None):
             name_pref_i = name_pref + f"_{i}"
             npy_name = name_pref_i + ".npy"
             bvh_name = name_pref_i + ".bvh"
-            animations[i // 5, i % 5] = plot_general_skeleton_correspondance(
-                parents,
-                joint2color,
-                2,
-                global_positions,
-                dataset="truebones",
-                title=name_pref_i,
-                fps=fps,
-            )
             data = {
                 'motion':motion,
                 'joint2color':joint2color,
@@ -167,9 +156,6 @@ def main(args = None, cond_dict = None):
             if out_anim is not None:
                 BVH.save(pjoin(out_path, bvh_name), out_anim, cond_dict[object_type]['joints_names'])
             print("repetition #" + str(rep_i) + " ,created motion: "+ npy_name)
-        
-        mp4_name = name_pref + ".mp4"
-        save_multiple_samples(out_path, mp4_name, animations, 20, model_kwargs["y"]["lengths"][i].max())
 
 def encode_joints_names(joints_names, t5_conditioner): # joints names should be padded with None to be of max_len 
         names_tokens = t5_conditioner.tokenize(joints_names)

@@ -11,7 +11,6 @@ from utils.parser_util import dift_args
 from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
 from utils import dist_util
 from data_loaders.get_data import get_dataset_loader
-from data_loaders.truebones.truebones_utils.plot_script import plot_general_skeleton_correspondance, save_multiple_samples
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np
 from data_loaders.truebones.data.dataset import create_temporal_mask_for_window
@@ -162,34 +161,16 @@ def vis_dift(t, layer, activations, cond_ref, cond_tgt, motion_ref, motion_tgt, 
     
 
     if dift_type=='temporal':
-        positions_ref = recover_from_bvh_ric_np(motion_ref[:ref_len])
-        positions_tgt  = recover_from_bvh_ric_np(motion_tgt[:tgt_len])
-        animations = np.empty(shape=(1, 2), dtype=object)
-        animations[0, 0] = plot_general_skeleton_correspondance(cond_ref["parents"], joint2color_ref, len(set(values)), positions_ref, "", "truebones", fps=20)
-        animations[0, 1] = plot_general_skeleton_correspondance(cond_tgt["parents"], joint2color_tgt, len(set(values)), positions_tgt, "", "truebones", fps=20) 
-    else:
-        positions_ref = recover_from_bvh_ric_np(motion_ref[:min_length])
-        positions_tgt = recover_from_bvh_ric_np(motion_tgt[:min_length])
-        animations = np.empty(shape=(1, 2), dtype=object)
-        animations[0, 0] = plot_general_skeleton_correspondance(cond_ref["parents"], joint2color_ref, n_kinchains, positions_ref, "", "truebones", fps=20)
-        animations[0, 1] = plot_general_skeleton_correspondance(cond_tgt["parents"], joint2color_tgt, n_kinchains, positions_tgt, "", "truebones", fps=20)
-    if dift_type=='temporal':
-        fname = f"{cond_tgt['object_type']}_diffusion_step_{t}_layer_{layer}_ref_{cond_ref['object_type']}_tgt_{cond_tgt['object_type']}_temporal.mp4"
         npy_fname = f"{cond_tgt['object_type']}_diffusion_step_{t}_layer_{layer}_ref_{cond_ref['object_type']}_tgt_{cond_tgt['object_type']}_temporal.npy"
     else:
-        fname = f"diffusion_step_{t}_layer_{layer}_ref_{cond_ref['object_type']}_tgt_{cond_tgt['object_type']}_spatial.mp4"
         npy_fname = f"diffusion_step_{t}_layer_{layer}_ref_{cond_ref['object_type']}_tgt_{cond_tgt['object_type']}_spatial.npy"
     model_dir = os.path.dirname(model_path)
     model_number = os.path.basename(model_path)[:-3]
-    
+
     out_dir = pjoin(model_dir, model_number, "dift_out")
     os.makedirs(out_dir, exist_ok=True)
     mapping_dict = {"ref": joint2color_ref, "tgt": joint2color_tgt}
     np.save(pjoin(out_dir, npy_fname), mapping_dict, allow_pickle=True)
-    if dift_type == 'spatial':
-        save_multiple_samples(out_dir, fname, animations, 20, min_length) 
-    else:
-        save_multiple_samples(out_dir, fname, animations, 20, max(tgt_len, ref_len))
         
 
 def run_dift(args = None, cond_dict = None):

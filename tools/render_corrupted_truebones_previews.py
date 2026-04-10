@@ -1,14 +1,14 @@
 """
-Corrupted Motion Preview Rendering Tool
+Corrupted Motion BVH Export and Preview Tool
 
 Description:
-    Renders MP4 video previews and heatmaps for stored corrupted reference motions.
-    This tool visualizes the corruption patterns and motion quality by generating
-    skeleton animation videos alongside confidence heatmaps.
+    Exports BVH files and confidence heatmaps for stored corrupted reference motions.
+    This tool exports both clean target and corrupted reference motions as BVH files
+    alongside soft confidence heatmaps.
 
 Features:
     - Loads stored corrupted reference motions and companion data (skeleton, cond dict)
-    - Renders 3D skeletal animations as MP4 videos
+    - Exports clean and corrupted motions as BVH files via inverse kinematics
     - Generates position confidence heatmaps for each motion
     - Supports filtering by object type and configurable sample count
     - Random sampling for quick preview generation
@@ -17,23 +17,23 @@ Usage:
     python render_corrupted_truebones_previews.py \\
         --dataset-dir ./data/processed_anytop \\
         --objects-subset quadropeds_clean \\
-        --output-dir ./preview_videos \\
+        --output-dir ./preview_bvh \\
         --sample-limit 6 \\
         --random-seed 1234
 
-    # Use default output directory (input-dir/../preview_animations):
+    # Use default output directory (input-dir/../corrupted_references_preview):
     python render_corrupted_truebones_previews.py \\
         --dataset-dir ./data/processed_anytop \\
         --objects-subset all
 
-    # Render from custom input directory:
+    # Export from custom input directory:
     python render_corrupted_truebones_previews.py \\
         --input-dir ./custom_corrupted_refs \\
         --output-dir ./previews \\
         --sample-limit 10
 
 Optional Arguments:
-    --output-dir: Output directory for videos and heatmaps (auto-generated if empty)
+    --output-dir: Output directory for BVH files and heatmaps (auto-generated if empty)
     --dataset-dir: Processed dataset root (auto-detected if empty)
     --input-dir: Custom directory with .reference.npy files (defaults to dataset's corrupted_references)
     --objects-subset: Object types to preview - 'all' or specific subset (default: 'all')
@@ -41,12 +41,12 @@ Optional Arguments:
     --random-seed: Seed for deterministic random sampling (default: 1234)
 
 Output:
-    - {motion_name}.mp4: Skeletal animation video
+    - {motion_name}_clean_target.bvh: Clean target motion BVH
+    - {motion_name}_corrupted_reference.bvh: Corrupted reference motion BVH
     - {motion_name}_heatmap.png: Position confidence heatmap
 """
 
 import argparse
-from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
 import os
 import random
@@ -55,6 +55,8 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import BVH
+from InverseKinematics import animation_from_positions
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -71,19 +73,16 @@ from data_loaders.truebones.offline_reference_dataset import (
 )
 from data_loaders.truebones.offline_reference_dataset import get_motion_dir
 from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np
-from data_loaders.truebones.truebones_utils.plot_script import plot_general_skeleton_3d_motion
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Render MP4 previews for stored corrupted-reference motions.")
-    parser.add_argument("--output-dir", default="", help="Directory to write preview videos and heatmaps into. Defaults to <input-dir>/../preview_animations.")
+    parser = argparse.ArgumentParser(description="Export BVH files for stored corrupted-reference motions.")
+    parser.add_argument("--output-dir", default="", help="Directory to write BVH files and heatmaps into. Defaults to <input-dir>/../corrupted_references_preview.")
     parser.add_argument("--dataset-dir", default="", help="Processed dataset root. Defaults to ANYTOP_DATASET_DIR / built-in dataset path.")
     parser.add_argument("--input-dir", default="", help="Directory containing stored corrupted-reference *.reference.npy files. Defaults to the dataset corrupted_references directory.")
     parser.add_argument("--objects-subset", default="all", help="Object subset to preview.")
     parser.add_argument("--sample-limit", default=6, type=int, help="How many stored samples to preview. 0 renders every matching sample in the input directory.")
     parser.add_argument("--random-seed", default=1234, type=int, help="Random seed used when sampling preview motions.")
-    parser.add_argument("--workers", default=8, type=int, help="Preview render parallelism. Values > 1 use that many worker processes and automatically reduce each ffmpeg encode to a single thread.")
-    parser.add_argument("--fps", default=20, type=int, help="Output video FPS.")
     return parser.parse_args()
 
 
@@ -145,18 +144,20 @@ def load_sample_from_dir(input_dir: Path, motion_file: str, dataset_root: Path) 
     }
 
 
-def resolve_video_threads(workers: int) -> int:
-    return 1 if workers > 1 else 4
+def export_motion_bvh(save_path: str, positions: np.ndarray, parents: list[int], offsets: np.ndarray, joints_names: list[str]) -> None:
+    out_anim, _, _ = animation_from_positions(positions=positions, parents=parents, offsets=offsets, iterations=150)
+    if out_anim is not None:
+        BVH.save(save_path, out_anim, joints_names)
 
 
-def render_preview_sample(
+def export_preview_sample(
     motion_file: str,
     dataset_root: str,
     input_dir: str,
     output_dir: str,
     parents: list[int],
-    fps: int,
-    video_threads: int,
+    offsets: np.ndarray,
+    joints_names: list[str],
 ) -> dict[str, object]:
     dataset_root_path = Path(dataset_root)
     input_dir_path = Path(input_dir)
@@ -173,22 +174,8 @@ def render_preview_sample(
     sample_dir = output_dir_path / Path(motion_file).stem
     sample_dir.mkdir(parents=True, exist_ok=True)
 
-    plot_general_skeleton_3d_motion(
-        str(sample_dir / "clean_target.mp4"),
-        parents,
-        clean_positions,
-        title="clean_target",
-        fps=fps,
-        video_threads=video_threads,
-    )
-    plot_general_skeleton_3d_motion(
-        str(sample_dir / "corrupted_reference.mp4"),
-        parents,
-        corrupted_positions,
-        title="corrupted_reference",
-        fps=fps,
-        video_threads=video_threads,
-    )
+    export_motion_bvh(str(sample_dir / "clean_target.bvh"), clean_positions, parents, offsets, joints_names)
+    export_motion_bvh(str(sample_dir / "corrupted_reference.bvh"), corrupted_positions, parents, offsets, joints_names)
     save_confidence_heatmap(confidence[..., 0], sample_dir / "soft_confidence_mask.png")
     return {
         "motion_file": motion_file,
@@ -202,76 +189,33 @@ def main() -> int:
     dataset_root = resolve_dataset_root(args.dataset_dir or None)
     cond_dict = load_cond_dict(dataset_root)
     input_dir, motion_files = select_motion_files(args, dataset_root)
-    workers = max(1, int(args.workers))
-    video_threads = resolve_video_threads(workers)
-    
-    # Determine output_dir: use provided value or default to input_dir parent / preview_animations
+
     if args.output_dir:
         output_dir = Path(args.output_dir).resolve()
     else:
-        output_dir = input_dir.parent / "preview_animations"
-    
+        output_dir = input_dir.parent / "corrupted_references_preview"
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    jobs = []
+    manifest: list[dict[str, object]] = []
     for motion_file in motion_files:
         object_type = infer_object_type(motion_file, cond_dict.keys())
-        jobs.append(
-            {
-                "motion_file": motion_file,
-                "object_type": object_type,
-                "parents": [int(parent) for parent in cond_dict[object_type]["parents"]],
-            }
+        rendered = export_preview_sample(
+            motion_file=motion_file,
+            dataset_root=str(dataset_root),
+            input_dir=str(input_dir),
+            output_dir=str(output_dir),
+            parents=[int(parent) for parent in cond_dict[object_type]["parents"]],
+            offsets=cond_dict[object_type]["offsets"],
+            joints_names=cond_dict[object_type]["joints_names"],
         )
-
-    manifest: list[dict[str, object]] = []
-    if workers == 1:
-        for job in jobs:
-            rendered = render_preview_sample(
-                motion_file=job["motion_file"],
-                dataset_root=str(dataset_root),
-                input_dir=str(input_dir),
-                output_dir=str(output_dir),
-                parents=job["parents"],
-                fps=args.fps,
-                video_threads=video_threads,
-            )
-            manifest.append(
-                {
-                    **rendered,
-                    "object_type": job["object_type"],
-                }
-            )
-    else:
-        max_workers = min(workers, len(jobs), os.cpu_count() or workers)
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            future_to_job = {
-                executor.submit(
-                    render_preview_sample,
-                    motion_file=job["motion_file"],
-                    dataset_root=str(dataset_root),
-                    input_dir=str(input_dir),
-                    output_dir=str(output_dir),
-                    parents=job["parents"],
-                    fps=args.fps,
-                    video_threads=video_threads,
-                ): job
-                for job in jobs
-            }
-            for future in as_completed(future_to_job):
-                job = future_to_job[future]
-                manifest.append(
-                    {
-                        **future.result(),
-                        "object_type": job["object_type"],
-                    }
-                )
+        manifest.append({**rendered, "object_type": object_type})
 
     manifest.sort(key=lambda item: item["motion_file"])
 
     with open(output_dir / "manifest.json", "w", encoding="utf-8") as handle:
         json.dump(manifest, handle, indent=2)
-    print(f"Rendered {len(manifest)} preview sets to {output_dir}")
+    print(f"Exported {len(manifest)} BVH preview sets to {output_dir}")
     return 0
 
 
