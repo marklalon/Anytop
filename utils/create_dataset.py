@@ -7,7 +7,7 @@ from data_loaders.truebones.truebones_utils.param_utils import OBJECT_SUBSETS_DI
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--raw-data-dir", default="", type=str,
-                        help="Path to raw Truebones BVH folders. If not specified, falls back to ANYTOP_RAW_DATA_DIR environment variable.")
+                        help="Path to raw Truebones BVH folders. If not specified, uses default path.")
     parser.add_argument("--dataset-dir", default="", type=str,
                         help="Output directory for processed dataset. Can also be set via ANYTOP_DATASET_DIR.")
     parser.add_argument("--objects-subset", default="all", choices=sorted(OBJECT_SUBSETS_DICT.keys()), type=str,

@@ -10,14 +10,14 @@ DEFAULT_DATASET_DIR = "dataset/truebones/zoo/truebones_processed"
 def get_raw_data_dir(raw_data_dir=None):
         if raw_data_dir is not None:
                 return raw_data_dir
-        return os.environ.get("ANYTOP_RAW_DATA_DIR", DEFAULT_RAW_DATA_DIR)
+        return DEFAULT_RAW_DATA_DIR
 
 
 def get_dataset_dir():
         return os.environ.get("ANYTOP_DATASET_DIR", DEFAULT_DATASET_DIR)
 
 
-RAW_DATA_DIR = get_raw_data_dir()
+RAW_DATA_DIR = DEFAULT_RAW_DATA_DIR
 DATASET_DIR = get_dataset_dir()
 MOTION_DIR = "motions"
 CORRUPTED_REFERENCE_DIR = "corrupted_references"

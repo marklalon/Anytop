@@ -293,7 +293,7 @@ def parse_args() -> argparse.Namespace:
         "--raw-data-dir",
         default="",
         type=str,
-        help="Path to raw Truebones BVH folders. If not specified, falls back to ANYTOP_RAW_DATA_DIR environment variable or default path.",
+        help="Path to raw Truebones BVH folders. If not specified, uses default path.",
     )
     return parser.parse_args()
 
