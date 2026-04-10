@@ -24,9 +24,13 @@ BVHS_DIR = "bvhs"
 FOOT_CONTACT_HEIGHT_THRESH = 0.3
 FOOT_CONTACT_VEL_THRESH = 0.002
 MAX_PATH_LEN = 5.
-# Maximum allowed world-Y (in HML-scaled units) for FLYING creatures before the
-# vertical trajectory is compressed.  FISH use the same magnitude but negated.
-VERTICAL_CLAMP_H = 1.5
+# Vertical clamp thresholds expressed as a ratio of the character's reference
+# body length (measured from the processed skeleton's rest-pose joint span).
+# Motion within VERTICAL_CLAMP_MIN_RATIO is left unchanged; only the excess is
+# compressed into the [min, max] band.
+VERTICAL_CLAMP_MIN_RATIO = 0.5
+VERTICAL_CLAMP_MAX_RATIO = 1.0
+
 COSMETICS = ["PolarBearB", "KingCobra", "Hamster", "Skunk", "Comodoa", "Hippopotamus", "Leapord", "Rhino", "Hound"]
 NO_HANDS = ["Raptor", "Anaconda"]
 MILLIPEDS = ["Cricket", "SpiderG" , "Scorpion", "Isopetra", "FireAnt", "Crab", "Centipede", "Roach", "Ant", "HermitCrab", "Scorpion-2", "Spider"]

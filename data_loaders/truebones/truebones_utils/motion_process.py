@@ -15,7 +15,7 @@ import traceback
 import torch
 import bisect
 import re 
-from data_loaders.truebones.truebones_utils.param_utils import HML_AVG_BONELEN, FOOT_CONTACT_HEIGHT_THRESH, DATASET_DIR, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir, SNAKES, CHAIN_FORWARD_JOINTS, FLYING, FISH, VERTICAL_CLAMP_H
+from data_loaders.truebones.truebones_utils.param_utils import HML_AVG_BONELEN, FOOT_CONTACT_HEIGHT_THRESH, DATASET_DIR, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir, SNAKES, CHAIN_FORWARD_JOINTS, FLYING, FISH, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
 from utils.rotation_conversions import rotation_6d_to_matrix_np
 
 
@@ -406,39 +406,150 @@ def _find_translation_root(anim):
             return j
     return 0
 
-def _clamp_vertical_trajectory(processed_anim, object_type, H=VERTICAL_CLAMP_H):
-    """Scale the translation root's Y animation so it stays within the vertical bound H.
 
-    For FLYING creatures the world-Y of the translation root must not exceed +H.
-    For FISH creatures it must not go below -H (deeper than H below the water surface).
+def _find_descendant_transport_chain(parents, trans_root, max_depth=2):
+    chain = []
+    current = trans_root
+    for _depth in range(max_depth):
+        children = [joint_index for joint_index, parent_index in enumerate(parents) if parent_index == current]
+        if len(children) != 1:
+            break
+        current = children[0]
+        chain.append(current)
+    return chain
 
-    After HML orientation correction the character faces Z+ and Y is the vertical
-    axis, so the local Y of the translation root closely tracks world-space height.
-    We scale that channel by the ratio needed to bring the extreme value to ±H,
-    preserving relative dynamics (a swoop that was 2× higher than a hover stays 2×
-    higher, just compressed into the allowed range).
+
+def _bake_descendant_y_into_translation_root(anim, max_depth=2):
+    """Bake near-root locator-style Y transport back onto the translation root.
+
+    The heuristic is intentionally narrow: follow a single chain at most two levels
+    below the effective translation root, allow one dummy node in the middle, and
+    bake only joints in that chain that carry animated local Y.
+    """
+    trans_root = _find_translation_root(anim)
+    chain = _find_descendant_transport_chain(anim.parents, trans_root, max_depth=max_depth)
+    bake_joints = [joint_index for joint_index in chain if np.ptp(anim.positions[:, joint_index, 1]) > 1e-4]
+    if not bake_joints:
+        return anim
+
+    frozen_positions = anim.positions.copy()
+    for joint_index in bake_joints:
+        frozen_positions[:, joint_index] = frozen_positions[0, joint_index]
+
+    frozen_anim = Animation(
+        anim.rotations.copy(),
+        frozen_positions,
+        anim.orients.copy(),
+        anim.offsets.copy(),
+        anim.parents.copy(),
+    )
+    global_pos = positions_global(anim)
+    frozen_global_pos = positions_global(frozen_anim)
+    anchor_joint = chain[-1]
+    delta_y = global_pos[:, anchor_joint, 1] - frozen_global_pos[:, anchor_joint, 1]
+    if np.max(np.abs(delta_y)) <= 1e-8:
+        return anim
+
+    new_positions = frozen_positions.copy()
+    if trans_root == 0 or anim.parents[trans_root] < 0:
+        new_positions[:, trans_root, 1] += delta_y
+    else:
+        global_rots = rotations_global(frozen_anim)
+        parent_index = anim.parents[trans_root]
+        parent_global_pos = frozen_global_pos[:, parent_index]
+        parent_global_rots = global_rots[:, parent_index]
+        desired_global = frozen_global_pos[:, trans_root].copy()
+        desired_global[:, 1] += delta_y
+        new_positions[:, trans_root] = (-parent_global_rots) * (desired_global - parent_global_pos)
+
+    return Animation(
+        anim.rotations.copy(),
+        new_positions,
+        anim.orients.copy(),
+        anim.offsets.copy(),
+        anim.parents.copy(),
+    )
+
+def _get_reference_body_length(anim):
+    """Estimate a character size from the processed rest pose joint span."""
+    rest_positions = np.zeros_like(anim.offsets)
+    for j, parent in enumerate(anim.parents):
+        if parent >= 0:
+            rest_positions[j] = rest_positions[parent] + anim.offsets[j]
+    joint_deltas = rest_positions[:, None, :] - rest_positions[None, :, :]
+    max_span = np.linalg.norm(joint_deltas, axis=-1).max()
+    return max(float(max_span), 1e-8)
+
+
+def _compress_positive_excursion(values, min_h, max_h):
+    peak = float(values.max())
+    if peak <= max_h or max_h <= min_h:
+        return values, False
+
+    scale = (max_h - min_h) / max(peak - min_h, 1e-8)
+    compressed = values.copy()
+    mask = compressed > min_h
+    compressed[mask] = min_h + (compressed[mask] - min_h) * scale
+    return compressed, True
+
+
+def _compress_negative_excursion(values, min_h, max_h):
+    trough = float(values.min())
+    if trough >= -max_h or max_h <= min_h:
+        return values, False
+
+    scale = (max_h - min_h) / max(abs(trough) - min_h, 1e-8)
+    compressed = values.copy()
+    mask = compressed < -min_h
+    compressed[mask] = -min_h - ((-compressed[mask]) - min_h) * scale
+    return compressed, True
+
+
+def _clamp_vertical_trajectory(
+    processed_anim,
+    object_type,
+    min_ratio=VERTICAL_CLAMP_MIN_RATIO,
+    max_ratio=VERTICAL_CLAMP_MAX_RATIO,
+):
+    """Compress only the vertical excursion that exceeds the allowed size-relative band.
+
+    The allowed band is derived from the processed skeleton's reference body length.
+    Motion within ±minH is left untouched. Only the excess beyond minH is compressed
+    so that the final excursion stays within [minH, maxH].
     """
     if object_type not in FLYING and object_type not in FISH:
         return processed_anim
 
     trans_root = _find_translation_root(processed_anim)
-    # Use global positions so non-root translation joints (e.g. Bip01) are handled correctly.
     global_pos = positions_global(processed_anim)
     world_y = global_pos[:, trans_root, 1]
+    body_length = _get_reference_body_length(processed_anim)
+    min_h = body_length * min_ratio
+    max_h = body_length * max_ratio
 
     if object_type in FLYING:
-        y_max = world_y.max()
-        if y_max <= H:
-            return processed_anim
-        scale_y = H / y_max
-    else:  # FISH
-        y_min = world_y.min()
-        if y_min >= -H:
-            return processed_anim
-        scale_y = H / abs(y_min)
+        clamped_world_y, changed = _compress_positive_excursion(world_y, min_h, max_h)
+    else:
+        clamped_world_y = world_y.copy()
+        clamped_world_y, changed_pos = _compress_positive_excursion(clamped_world_y, min_h, max_h)
+        clamped_world_y, changed_neg = _compress_negative_excursion(clamped_world_y, min_h, max_h)
+        changed = changed_pos or changed_neg
+
+    if not changed:
+        return processed_anim
 
     new_positions = processed_anim.positions.copy()
-    new_positions[:, trans_root, 1] *= scale_y
+    if trans_root == 0 or processed_anim.parents[trans_root] < 0:
+        new_positions[:, trans_root, 1] += clamped_world_y - world_y
+    else:
+        global_rots = rotations_global(processed_anim)
+        parent_index = processed_anim.parents[trans_root]
+        parent_global_pos = global_pos[:, parent_index]
+        parent_global_rots = global_rots[:, parent_index]
+        desired_global = global_pos[:, trans_root].copy()
+        desired_global[:, 1] = clamped_world_y
+        new_positions[:, trans_root] = (-parent_global_rots) * (desired_global - parent_global_pos)
+
     return Animation(
         processed_anim.rotations.copy(),
         new_positions,
@@ -560,7 +671,8 @@ def get_6d_rep(qs):
 """" process anim object """
 def process_anim(anim, object_type, root_pose_init_xz=None, scale_factor=None, face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None):
     rotated = rotate_to_hml_orientation(anim, object_type, face_joints, orientation_quat=orientation_quat, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)
-    centered, root_pose_init_xz_ = move_xz_to_origin(rotated, root_pose_init_xz)
+    baked = _bake_descendant_y_into_translation_root(rotated)
+    centered, root_pose_init_xz_ = move_xz_to_origin(baked, root_pose_init_xz)
     scaled, scale_factor_ = scale(centered, scale_factor)
     return scaled, root_pose_init_xz_, scale_factor_
 
