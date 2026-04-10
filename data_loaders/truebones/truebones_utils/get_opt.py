@@ -1,7 +1,7 @@
 from argparse import Namespace
 import re
 from os.path import join as pjoin
-from data_loaders.truebones.truebones_utils.param_utils import MAX_JOINTS, FEATS_LEN, MAX_PATH_LEN, FPS, OBJECT_SUBSETS_DICT, DATASET_DIR
+from data_loaders.truebones.truebones_utils.param_utils import MAX_JOINTS, FEATS_LEN, MAX_PATH_LEN, FPS, OBJECT_SUBSETS_DICT, DEFAULT_DATASET_DIR
 
 
 def is_float(numStr):
@@ -27,7 +27,7 @@ def is_number(numStr):
 
 def get_opt(device):
     opt = Namespace()
-    opt.data_root = DATASET_DIR
+    opt.data_root = DEFAULT_DATASET_DIR
     opt.cond_file = pjoin(opt.data_root, 'cond.npy') 
     opt.motion_dir = pjoin(opt.data_root, 'motions')
     opt.max_motion_length = 60

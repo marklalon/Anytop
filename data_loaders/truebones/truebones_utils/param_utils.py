@@ -19,8 +19,6 @@ def get_dataset_dir(dataset_dir=None):
         return DEFAULT_DATASET_DIR
 
 
-RAW_DATA_DIR = DEFAULT_RAW_DATA_DIR
-DATASET_DIR = DEFAULT_DATASET_DIR
 MOTION_DIR = "motions"
 CORRUPTED_REFERENCE_DIR = "corrupted_references"
 ANIMATIONS_DIR = "animations"

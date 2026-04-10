@@ -15,7 +15,7 @@ import traceback
 import torch
 import bisect
 import re 
-from data_loaders.truebones.truebones_utils.param_utils import HML_AVG_BONELEN, FOOT_CONTACT_HEIGHT_THRESH, DATASET_DIR, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir, SNAKES, CHAIN_FORWARD_JOINTS, FLYING, FISH, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
+from data_loaders.truebones.truebones_utils.param_utils import HML_AVG_BONELEN, FOOT_CONTACT_HEIGHT_THRESH, DEFAULT_DATASET_DIR, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir, SNAKES, CHAIN_FORWARD_JOINTS, FLYING, FISH, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
 from utils.rotation_conversions import rotation_6d_to_matrix_np
 
 
@@ -1213,7 +1213,7 @@ def _prepare_object_outputs_worker(object_type, max_files, file_workers, raw_dat
 
 """ creates processed tensors for all the files of a given object. Returens statistics and the object condition,
 which includes tpos, relation/distances matrices, offsets, parents, joints names, kinematic chains, mean and std"""    
-def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DATASET_DIR, face_joints=None, bvhs_dir=None, t_pos_path=None, max_files=None, num_workers=1, raw_data_dir=None):
+def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, bvhs_dir=None, t_pos_path=None, max_files=None, num_workers=1, raw_data_dir=None):
     object_payload = _prepare_object_outputs(
         object_type,
         max_joints,
@@ -1241,7 +1241,7 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
 """ create dataset """
 def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, raw_data_dir=None, object_workers=8, file_workers=8):
     ## prepare
-    target_dataset_dir = dataset_dir or DATASET_DIR
+    target_dataset_dir = dataset_dir or DEFAULT_DATASET_DIR
     os.makedirs(pjoin(target_dataset_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(target_dataset_dir, BVHS_DIR), exist_ok=True)
     
