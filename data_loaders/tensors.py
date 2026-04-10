@@ -141,7 +141,7 @@ def truebones_batch_collate(batch):
         reference_motion = None
         soft_confidence_mask = None
         corruption_metadata = None
-        if len(b) > 14:
+        if len(b) > 15:
             reference_motion = torch.zeros((max_len, max_joints, n_feats))
             reference_motion[:, :b[14].shape[1], :] = torch.tensor(b[14])
             soft_confidence_mask = torch.zeros((max_len, max_joints, 1))
@@ -169,8 +169,9 @@ def truebones_batch_collate(batch):
             item['soft_confidence_mask'] = soft_confidence_mask.permute(1, 2, 0).float()
         if corruption_metadata is not None:
             item['corruption_metadata'] = corruption_metadata
-        if len(b) > 17:
-            item['motion_name'] = b[17]
+        motion_name_idx = 17 if len(b) > 17 else (14 if len(b) == 15 else None)
+        if motion_name_idx is not None:
+            item['motion_name'] = b[motion_name_idx]
         adapted_batch.append(item)
 
     return truebones_collate(adapted_batch)

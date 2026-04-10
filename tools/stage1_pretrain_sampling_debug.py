@@ -845,19 +845,16 @@ def collect_eval_samples(args: argparse.Namespace, model_args: SimpleNamespace) 
         )
     motion_dataset.reset_max_len(max(20, effective_num_frames))
     cond_dict = motion_dataset.cond_dict
-    dataset_name_list = list(getattr(motion_dataset, "name_list", []))[int(getattr(motion_dataset, "pointer", 0)) :]
-
     samples = []
     for sample_index, (motion, cond) in enumerate(data):
         cond_cpu = clone_batch_cond(cond)
         object_type = cond_cpu["y"]["object_type"][0]
-        fallback_motion_name = dataset_name_list[sample_index] if sample_index < len(dataset_name_list) else f"sample_{sample_index:04d}"
         samples.append(
             {
                 "sample_index": sample_index,
                 "motion": motion.detach().clone().float(),
                 "cond": cond_cpu,
-                "motion_name": cond_cpu["y"].get("motion_name", [fallback_motion_name])[0],
+                "motion_name": cond_cpu["y"]["motion_name"][0],
                 "object_type": object_type,
                 "n_joints": int(cond_cpu["y"]["n_joints"][0].item()),
                 "length": int(cond_cpu["y"]["lengths"][0].item()),

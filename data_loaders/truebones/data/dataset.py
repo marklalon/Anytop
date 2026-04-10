@@ -174,13 +174,14 @@ def _load_cached_joint_name_embeddings(cache_path: Path, cond_file: str, expecte
 
 
 def _build_joint_name_embeddings(cond_dict: dict, t5_name: str) -> dict[str, np.ndarray]:
-    print(f"Building cached joint-name embeddings with {t5_name} on CPU")
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"Building cached joint-name embeddings with {t5_name} on {device.upper()}")
     t5_conditioner = T5Conditioner(
         name=t5_name,
         finetune=False,
         word_dropout=0.0,
         normalize_text=False,
-        device='cpu',
+        device=device,
     )
 
     embeddings = {}
@@ -340,7 +341,7 @@ class MotionDataset(data.Dataset):
 
         if self.use_reference_conditioning:
             return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, reference_motion, soft_confidence_mask, corruption_metadata, name
-        return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints
+        return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, name
     
     def augment(self, data):
         object_type = data['object_type']

@@ -219,6 +219,9 @@ def _get_head_forward(joints, face_joint_indx, forward_joint_index, forward_base
     if forward_joint_index is None or face_joint_indx is None:
         return None
 
+    if forward_base_joint_index is not None and forward_joint_index == forward_base_joint_index:
+        return None
+
     if forward_base_joint_index is not None:
         forward = joints[:, forward_joint_index] - joints[:, forward_base_joint_index]
     else:
@@ -228,6 +231,10 @@ def _get_head_forward(joints, face_joint_indx, forward_joint_index, forward_base
         torso_center = 0.5 * (hip_center + shoulder_center)
         forward = joints[:, forward_joint_index] - torso_center
     forward = forward * np.array([[1.0, 0.0, 1.0]])
+    if not np.isfinite(forward).all():
+        return None
+    if np.all(np.linalg.norm(forward, axis=-1) < 1e-8):
+        return None
     return _normalize_vectors(forward)
 
 
@@ -268,7 +275,10 @@ def get_root_quat(joints, object_type, face_joint_indx=None, forward_joint_index
             across = across1 + across2
             across = _normalize_vectors(across)
             forward = np.cross(np.array([[0, 1, 0]]), across, axis=-1)
-            forward = _normalize_vectors(forward)
+            if not np.isfinite(forward).all() or np.all(np.linalg.norm(forward, axis=-1) < 1e-8):
+                forward = np.array([[0.0, 0.0, 1.0]]).repeat(len(joints), axis=0)
+            else:
+                forward = _normalize_vectors(forward)
     target = np.array([[0,0,1]]).repeat(len(forward), axis=0)
     root_quat = Quaternions.between(forward, target)
     return root_quat
@@ -1162,7 +1172,7 @@ def add_joint_augmentation(data, mean, std):
 ################################################################
 
 ########################### Tests ##############################
-def process_single_object_type(object_type, save_dir):
+def process_single_object_type(object_type, save_dir, file_workers=8):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(save_dir, ANIMATIONS_DIR), exist_ok=True)
@@ -1179,7 +1189,15 @@ def process_single_object_type(object_type, save_dir):
         print(f"No bvh files exist for object_type {object_type}")
         exit(1)
     cur_counter = files_counter
-    files_counter, frames_counter, max_joints, object_cond = process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir=save_dir)
+    files_counter, frames_counter, max_joints, object_cond = process_object(
+        object_type,
+        files_counter,
+        frames_counter,
+        max_joints,
+        squared_positions_error,
+        save_dir=save_dir,
+        num_workers=file_workers,
+    )
     cond[object_type] = object_cond
     objects_counter[object_type] = files_counter - cur_counter 
 

@@ -15,7 +15,7 @@ Options:
     --skip-validate                      Skip validation step (faster for CI)
     --skip-corrupted-export              Skip corrupted-reference export
     --objects-subset SUBSET              Object subset to process (default: all)
-    --object-workers N                   Concurrent characters to preprocess (default: 8)
+    --object-workers N                   Concurrent characters to preprocess (default: 6)
     --file-workers N                     Worker threads per character for BVH processing (default: 8)
     --corrupted-seed SEED                Random seed for corrupted-reference export (default: 1234)
     --corrupted-sample-limit N           Limit corrupted-reference samples (0=all, default: 0)
@@ -136,7 +136,7 @@ def parse_args() -> argparse.Namespace:
         "--object-workers",
         default=6,
         type=int,
-        help="Concurrent characters to preprocess. Defaults to 8.",
+        help="Concurrent characters to preprocess. Defaults to 6.",
     )
     parser.add_argument(
         "--file-workers",
