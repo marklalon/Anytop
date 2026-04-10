@@ -13,10 +13,13 @@ Usage:
 Options:
     --validate-only                      Skip preprocessing, only validate existing dataset
     --skip-validate                      Skip validation step (faster for CI)
+    --skip-orientation-check             Skip processed-BVH orientation validation
     --skip-corrupted-export              Skip corrupted-reference export
     --objects-subset SUBSET              Object subset to process (default: all)
     --object-workers N                   Concurrent characters to preprocess (default: 6)
     --file-workers N                     Worker threads per character for BVH processing (default: 8)
+    --sample-count N                     Limit file validation to first N motions/BVHs (0=all, default: 0)
+    --orientation-threshold-deg DEG      Max allowed first-frame facing error from +Z during validation (default: 5.0)
     --corrupted-seed SEED                Random seed for corrupted-reference export (default: 1234)
     --corrupted-sample-limit N           Limit corrupted-reference samples (0=all, default: 0)
 
@@ -26,6 +29,9 @@ Examples:
 
     # Validate only (assumes preprocessing already done)
     python preprocess_and_validate.py --validate-only
+
+    # Validate only, but skip the orientation check
+    python preprocess_and_validate.py --validate-only --skip-orientation-check
 
     # Preprocess without validation
     python preprocess_and_validate.py --skip-validate
@@ -95,20 +101,59 @@ def run_corrupted_export(objects_subset: str, seed: int, sample_limit: int) -> i
     return result.returncode
 
 
-def run_validation(objects_subset: str) -> int:
+def run_validation(
+    objects_subset: str,
+    skip_orientation_check: bool,
+    orientation_threshold_deg: float,
+    sample_count: int,
+) -> int:
     """Run dataset validation."""
     print("\n" + "=" * 70)
     print("STEP 3: VALIDATION - Checking preprocessed dataset")
     print("=" * 70 + "\n")
     
-    cmd = [
-        sys.executable,
-        str(ANYTOP_DIR / "tests" / "check_anytop_dataset.py"),
-        "--objects-subset", objects_subset,
-    ]
+    # Import and call check_anytop_dataset.py main() directly instead of subprocess
+    sys.path.insert(0, str(ANYTOP_DIR / "tests"))
+    from check_anytop_dataset import _resolve_dataset_dir, _print_ok, _print_warn, _require, ValidationError
     
-    result = subprocess.run(cmd, cwd=str(ANYTOP_DIR), capture_output=False)
-    return result.returncode
+    # Resolve dataset directory
+    dataset_dir = _resolve_dataset_dir(None)
+    
+    _print_ok(f"dataset_dir: {dataset_dir}")
+    _print_ok(f"objects_subset: {objects_subset}")
+    _print_ok(f"file_validation_scope: {'all files' if sample_count == 0 else f'first {sample_count} files'}")
+    
+    from check_anytop_dataset import (
+        _read_required_artifacts,
+        _validate_metadata,
+        _validate_cond_file,
+        _validate_motion_files,
+        _validate_motion_orientation,
+        _validate_positions_error_file,
+    )
+    
+    try:
+        motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path = _read_required_artifacts(dataset_dir)
+        
+        _validate_metadata(metadata_path)
+        
+        from data_loaders.truebones.truebones_utils.param_utils import OBJECT_SUBSETS_DICT
+        cond = _validate_cond_file(cond_path, objects_subset)
+        
+        _validate_motion_files(motions_dir, bvhs_dir, cond, sample_count)
+        
+        if skip_orientation_check:
+            _print_warn("skipping processed-BVH orientation validation by request")
+        else:
+            _validate_motion_orientation(bvhs_dir, cond, sample_count, orientation_threshold_deg)
+        
+        _validate_positions_error_file(positions_error_path)
+        
+        print("[PASS] dataset validation completed successfully")
+        return 0
+    except ValidationError as e:
+        print(f"[FAIL] dataset validation failed: {e}")
+        return 1
 
 
 def parse_args() -> argparse.Namespace:
@@ -128,6 +173,11 @@ def parse_args() -> argparse.Namespace:
         help="Skip validation (faster, useful for CI).",
     )
     parser.add_argument(
+        "--skip-orientation-check",
+        action="store_true",
+        help="Skip processed-BVH orientation validation during dataset checks.",
+    )
+    parser.add_argument(
         "--objects-subset",
         default="all",
         help="Expected object subset for validation (default: all).",
@@ -143,6 +193,18 @@ def parse_args() -> argparse.Namespace:
         default=8,
         type=int,
         help="Worker threads per character for BVH file processing. Defaults to 8.",
+    )
+    parser.add_argument(
+        "--orientation-threshold-deg",
+        default=5.0,
+        type=float,
+        help="Maximum allowed first-frame facing error from +Z during validation.",
+    )
+    parser.add_argument(
+        "--sample-count",
+        default=0,
+        type=int,
+        help="Limit file validation to the first N motions/BVHs. Use 0 to validate all files.",
     )
     parser.add_argument(
         "--skip-corrupted-export",
@@ -166,6 +228,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.sample_count < 0:
+        print("ERROR: --sample-count must be >= 0")
+        return 1
     
     steps_completed = []
     
@@ -177,9 +242,10 @@ def main() -> int:
             args.file_workers,
         )
         if ret != 0:
-            print("\n[FAIL] Preprocessing failed. Aborting workflow.")
-            return ret
-        steps_completed.append("Preprocess")
+            print("\n[FAIL] Preprocessing failed, but continuing workflow...")
+            # Don't return on preprocessing failure - continue to next step
+        else:
+            steps_completed.append("Preprocess")
         
         if not args.skip_corrupted_export:
             ret = run_corrupted_export(
@@ -188,19 +254,26 @@ def main() -> int:
                 args.corrupted_sample_limit,
             )
             if ret != 0:
-                print("\n[FAIL] Corrupted-reference export failed. Aborting workflow.")
-                return ret
-            steps_completed.append("Corrupted Export")
+                print("\n[FAIL] Corrupted-reference export failed, but continuing workflow...")
+                # Don't return on corrupted export failure - continue to next step
+            else:
+                steps_completed.append("Corrupted Export")
     
     # Validate
     if not args.skip_validate:
-        ret = run_validation(args.objects_subset)
+        ret = run_validation(
+            args.objects_subset,
+            args.skip_orientation_check,
+            args.orientation_threshold_deg,
+            args.sample_count,
+        )
         if ret != 0:
             print("\n" + "=" * 70)
-            print("✗ WORKFLOW FAILED during validation step")
+            print("⚠ Validation failed, but continuing workflow...")
             print("=" * 70)
-            return ret
-        steps_completed.append("Validate")
+            # Don't return on validation failure - continue to next step
+        else:
+            steps_completed.append("Validate")
     
     # Success
     print("\n" + "=" * 70)

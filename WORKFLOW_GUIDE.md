@@ -43,9 +43,9 @@ python preprocess_and_validate.py --skip-validate
 ### Step 3: Validation
 - Runs `tests/check_anytop_dataset.py`
 - Verifies required artifacts exist
-- Validates data types, shapes, and finite values
-- Performs a smoke test by loading a batch through the dataloader
-- Catches configuration issues before training
+- Validates all preprocessed motion/BVH files by default
+- Checks data types, shapes, paired stems, and finite values
+- Catches preprocessing issues before training
 
 ## Options
 
@@ -57,6 +57,7 @@ python preprocess_and_validate.py --skip-validate
 | `--objects-subset` | Expected object type subset (`all`, `hound`, `chicken`, etc.) |
 | `--object-workers` | Concurrent characters to preprocess |
 | `--file-workers` | Worker threads per character for BVH file processing |
+| `--sample-count` | Limit file validation to first `N` motions/BVHs; `0` means validate all files |
 | `--corrupted-seed` | Random seed used for stored corrupted references |
 | `--corrupted-sample-limit` | Limit number of motions that get corrupted references |
 
@@ -86,10 +87,7 @@ cd Anytop
 python preprocess_and_validate.py
 ```
 
-Or use `--skip-validate` to validate without importing the dataloader:
-```bash
-python preprocess_and_validate.py --skip-validate
-```
+Validation now checks only the preprocessed files and does not import the dataloader.
 
 ### Preprocessing succeeds but validation fails
 Common causes:
@@ -97,9 +95,9 @@ Common causes:
 2. **NaN/Inf values** - Invalid floating-point data in tensors
 3. **File counts** - Unequal number of `.npy` and `.bvh` files
 
-Run with `--skip-validate` for detailed file-by-file diagnostics:
+Run validation directly for detailed file-by-file diagnostics:
 ```bash
-python preprocess_and_validate.py --validate-only --skip-validate
+python preprocess_and_validate.py --validate-only
 ```
 
 ## Files Involved
@@ -119,7 +117,7 @@ python preprocess_and_validate.py --validate-only --skip-validate
 ## Advanced Usage
 
 ### Integration with CI/CD
-For automated pipelines, use `--skip-validate` to avoid GPU/dependency issues:
+For automated pipelines, file validation is safe by default. Use `--skip-validate` only if you want to skip the validation step entirely:
 ```bash
 python preprocess_and_validate.py --skip-validate
 ```

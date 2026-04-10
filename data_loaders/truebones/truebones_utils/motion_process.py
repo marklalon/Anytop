@@ -15,7 +15,7 @@ import traceback
 import torch
 import bisect
 import re 
-from data_loaders.truebones.truebones_utils.param_utils import HML_AVG_BONELEN, FOOT_CONTACT_HEIGHT_THRESH, FACE_JOINTS, DATASET_DIR, MAX_PATH_LEN, ANIMATIONS_DIR, MOTION_DIR, NO_BVHS, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir
+from data_loaders.truebones.truebones_utils.param_utils import HML_AVG_BONELEN, FOOT_CONTACT_HEIGHT_THRESH, FACE_JOINTS, DATASET_DIR, MAX_PATH_LEN, MOTION_DIR, NO_BVHS, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir
 from utils.rotation_conversions import rotation_6d_to_matrix_np
 
 
@@ -306,13 +306,39 @@ def move_xz_to_origin(anim, root_pose_init_xz=None):
     new_anim = Animation(anim.rotations.copy(), new_positions, anim.orients.copy(), new_offsets, anim.parents.copy())
     return new_anim, root_pose_init_xz
 
+def _get_hml_orientation_quat(anim, object_type, face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None):
+    global_pos = positions_global(anim)
+    if orientation_quat is None:
+        return get_root_quat(
+            global_pos,
+            object_type,
+            face_joint_indx=face_joints,
+            forward_joint_index=forward_joint_index,
+            forward_base_joint_index=forward_base_joint_index,
+        )[0]
+
+    base_rot = orientation_quat
+    repeated_base_rot = base_rot.repeat(global_pos.shape[0], axis=0)
+    canonical_global_pos = np.repeat(repeated_base_rot[:, None], global_pos.shape[1], axis=1) * global_pos
+    clip_rot = get_root_quat(
+        canonical_global_pos,
+        object_type,
+        face_joint_indx=face_joints,
+        forward_joint_index=forward_joint_index,
+        forward_base_joint_index=forward_base_joint_index,
+    )[0]
+    return clip_rot * base_rot
+
 """" rotate the motion to initially face z+, ground at xz axis (negative y is below ground)"""
 def rotate_to_hml_orientation(anim, object_type, face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None):
-    if orientation_quat is None:
-        global_pos = positions_global(anim)
-        qs_rot = get_root_quat(global_pos, object_type, face_joint_indx=face_joints, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)[0]
-    else:
-        qs_rot = orientation_quat
+    qs_rot = _get_hml_orientation_quat(
+        anim,
+        object_type,
+        face_joints=face_joints,
+        orientation_quat=orientation_quat,
+        forward_joint_index=forward_joint_index,
+        forward_base_joint_index=forward_base_joint_index,
+    )
     new_rots = anim.rotations.copy()
     new_rots[:, 0] = qs_rot.repeat(new_rots.shape[0], axis=0) * new_rots[:, 0]
     new_pos = anim.positions.copy()
@@ -692,7 +718,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=
     if not os.path.isdir(bvhs_dir):
         print(f'skipping {object_type}: raw BVH directory not found at {bvhs_dir}')
         return None
-    bvh_files = [pjoin(bvhs_dir, f) for f in os.listdir(bvhs_dir) if f.lower().endswith('.bvh')]     
+    bvh_files = sorted([pjoin(bvhs_dir, f) for f in os.listdir(bvhs_dir) if f.lower().endswith('.bvh')])
     if len(bvh_files) == 0:
         print(f'skipping {object_type}: no BVH files found in {bvhs_dir}')
         return None
@@ -848,7 +874,6 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
     ## prepare
     target_dataset_dir = dataset_dir or DATASET_DIR
     os.makedirs(pjoin(target_dataset_dir, MOTION_DIR), exist_ok=True)
-    os.makedirs(pjoin(target_dataset_dir, ANIMATIONS_DIR), exist_ok=True)
     os.makedirs(pjoin(target_dataset_dir, BVHS_DIR), exist_ok=True)
     
     ## process
@@ -1168,7 +1193,6 @@ def add_joint_augmentation(data, mean, std):
 def process_single_object_type(object_type, save_dir, file_workers=8):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
-    os.makedirs(pjoin(save_dir, ANIMATIONS_DIR), exist_ok=True)
     os.makedirs(pjoin(save_dir, BVHS_DIR), exist_ok=True)
     
     ## process
@@ -1217,7 +1241,6 @@ def process_single_object_type(object_type, save_dir, file_workers=8):
 def process_skeleton(object_name, bvh_dir, face_joints, save_dir, tpos_bvh=None):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
-    os.makedirs(pjoin(save_dir, ANIMATIONS_DIR), exist_ok=True)
     os.makedirs(pjoin(save_dir, BVHS_DIR), exist_ok=True)
     
     ## process

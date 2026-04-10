@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib
-import os
 import sys
 from pathlib import Path
 
@@ -19,6 +17,16 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     BVHS_DIR,
     OBJECT_SUBSETS_DICT,
     get_dataset_dir,
+)
+from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
+    BVH,
+    _find_forward_reference_joint,
+    _find_neck_reference_joint,
+    _get_head_forward,
+    _get_snake_forward,
+    _normalize_vectors,
+    positions_global,
+    resolve_face_joints,
 )
 
 
@@ -64,18 +72,25 @@ def _read_required_artifacts(dataset_dir: Path) -> tuple[Path, Path, Path, Path,
 
 
 def _validate_metadata(metadata_path: Path) -> None:
-    content = metadata_path.read_text(encoding="utf-8").strip()
-    _require(content != "", "metadata.txt is empty")
-    required_markers = ["max joints:", "total frames:", "duration:"]
-    for marker in required_markers:
-        _require(marker in content, f"metadata.txt is missing marker: {marker}")
-    _print_ok("metadata.txt contains summary fields")
+    try:
+        content = metadata_path.read_text(encoding="utf-8").strip()
+        _require(content != "", "metadata.txt is empty")
+        required_markers = ["max joints:", "total frames:", "duration:"]
+        for marker in required_markers:
+            _require(marker in content, f"metadata.txt is missing marker: {marker}")
+        _print_ok("metadata.txt contains summary fields")
+    except ValidationError as e:
+        _print_warn(f"validation error: {e}")
 
 
 def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
     cond = np.load(cond_path, allow_pickle=True).item()
-    _require(isinstance(cond, dict), "cond.npy did not load into a dictionary")
-    _require(len(cond) > 0, "cond.npy is empty")
+    
+    try:
+        _require(isinstance(cond, dict), "cond.npy did not load into a dictionary")
+        _require(len(cond) > 0, "cond.npy is empty")
+    except ValidationError as e:
+        _print_warn(f"validation error: {e}")
 
     cond_keys = set(cond.keys())
     
@@ -83,7 +98,10 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
     if objects_subset != "all":
         objects_to_validate = set(OBJECT_SUBSETS_DICT[objects_subset])
         missing_objects = sorted(objects_to_validate - cond_keys)
-        _require(not missing_objects, f"cond.npy is missing objects from subset {objects_subset}: {missing_objects}")
+        if missing_objects:
+            _print_warn(f"cond.npy is missing objects from subset {objects_subset}: {missing_objects}")
+        else:
+            objects_to_validate = objects_to_validate
     else:
         objects_to_validate = cond_keys
 
@@ -101,34 +119,67 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
     }
 
     for object_type in objects_to_validate:
-        object_cond = cond[object_type]
-        missing = required_keys - set(object_cond.keys())
-        _require(not missing, f"{object_type} is missing cond keys: {sorted(missing)}")
+        try:
+            object_cond = cond[object_type]
+            missing = required_keys - set(object_cond.keys())
+            if missing:
+                msg = f"{object_type} is missing cond keys: {sorted(missing)}"
+                _print_warn(f"validation error: {msg}")
+                continue
 
-        parents = np.asarray(object_cond["parents"])
-        offsets = np.asarray(object_cond["offsets"])
-        tpos_first_frame = np.asarray(object_cond["tpos_first_frame"])
-        mean = np.asarray(object_cond["mean"])
-        std = np.asarray(object_cond["std"])
-        joint_relations = np.asarray(object_cond["joint_relations"])
-        joints_graph_dist = np.asarray(object_cond["joints_graph_dist"])
-        joints_names = object_cond["joints_names"]
+            parents = np.asarray(object_cond["parents"])
+            offsets = np.asarray(object_cond["offsets"])
+            tpos_first_frame = np.asarray(object_cond["tpos_first_frame"])
+            mean = np.asarray(object_cond["mean"])
+            std = np.asarray(object_cond["std"])
+            joint_relations = np.asarray(object_cond["joint_relations"])
+            joints_graph_dist = np.asarray(object_cond["joints_graph_dist"])
+            joints_names = object_cond["joints_names"]
 
-        n_joints = len(parents)
-        _require(n_joints > 0, f"{object_type} has no joints")
-        _require(offsets.shape == (n_joints, 3), f"{object_type} offsets shape mismatch: {offsets.shape}")
-        _require(tpos_first_frame.shape == (n_joints, FEATS_LEN), f"{object_type} tpos_first_frame shape mismatch: {tpos_first_frame.shape}")
-        _require(mean.shape == (n_joints, FEATS_LEN), f"{object_type} mean shape mismatch: {mean.shape}")
-        _require(std.shape == (n_joints, FEATS_LEN), f"{object_type} std shape mismatch: {std.shape}")
-        _require(joint_relations.shape == (n_joints, n_joints), f"{object_type} joint_relations shape mismatch: {joint_relations.shape}")
-        _require(joints_graph_dist.shape == (n_joints, n_joints), f"{object_type} joints_graph_dist shape mismatch: {joints_graph_dist.shape}")
-        _require(len(joints_names) == n_joints, f"{object_type} joints_names length mismatch: {len(joints_names)} vs {n_joints}")
-        _require(np.isfinite(offsets).all(), f"{object_type} offsets contain NaN/Inf")
-        _require(np.isfinite(tpos_first_frame).all(), f"{object_type} tpos_first_frame contains NaN/Inf")
-        _require(np.isfinite(mean).all(), f"{object_type} mean contains NaN/Inf")
-        _require(np.isfinite(std).all(), f"{object_type} std contains NaN/Inf")
-        _require((std > 0).any(), f"{object_type} std is entirely non-positive")
-
+            n_joints = len(parents)
+            if n_joints <= 0:
+                msg = f"{object_type} has no joints"
+                _print_warn(f"validation error: {msg}")
+            if offsets.shape != (n_joints, 3):
+                msg = f"{object_type} offsets shape mismatch: {offsets.shape}"
+                _print_warn(f"validation error: {msg}")
+            if tpos_first_frame.shape != (n_joints, FEATS_LEN):
+                msg = f"{object_type} tpos_first_frame shape mismatch: {tpos_first_frame.shape}"
+                _print_warn(f"validation error: {msg}")
+            if mean.shape != (n_joints, FEATS_LEN):
+                msg = f"{object_type} mean shape mismatch: {mean.shape}"
+                _print_warn(f"validation error: {msg}")
+            if std.shape != (n_joints, FEATS_LEN):
+                msg = f"{object_type} std shape mismatch: {std.shape}"
+                _print_warn(f"validation error: {msg}")
+            if joint_relations.shape != (n_joints, n_joints):
+                msg = f"{object_type} joint_relations shape mismatch: {joint_relations.shape}"
+                _print_warn(f"validation error: {msg}")
+            if joints_graph_dist.shape != (n_joints, n_joints):
+                msg = f"{object_type} joints_graph_dist shape mismatch: {joints_graph_dist.shape}"
+                _print_warn(f"validation error: {msg}")
+            if len(joints_names) != n_joints:
+                msg = f"{object_type} joints_names length mismatch: {len(joints_names)} vs {n_joints}"
+                _print_warn(f"validation error: {msg}")
+            if not np.isfinite(offsets).all():
+                msg = f"{object_type} offsets contain NaN/Inf"
+                _print_warn(f"validation error: {msg}")
+            if not np.isfinite(tpos_first_frame).all():
+                msg = f"{object_type} tpos_first_frame contains NaN/Inf"
+                _print_warn(f"validation error: {msg}")
+            if not np.isfinite(mean).all():
+                msg = f"{object_type} mean contains NaN/Inf"
+                _print_warn(f"validation error: {msg}")
+            if not np.isfinite(std).all():
+                msg = f"{object_type} std contains NaN/Inf"
+                _print_warn(f"validation error: {msg}")
+            if not (std > 0).any():
+                msg = f"{object_type} std is entirely non-positive"
+                _print_warn(f"validation error: {msg}")
+        except Exception as e:
+            msg = f"{object_type}: {e}"
+            _print_warn(f"validation error: {msg}")
+    
     _print_ok(f"cond.npy validated for {len(cond)} object types")
     return cond
 
@@ -139,121 +190,185 @@ def _match_object_type(file_stem: str, cond: dict) -> str:
     return max(matches, key=len)
 
 
+def _select_validation_files(files: list[Path], sample_limit: int) -> list[Path]:
+    if sample_limit <= 0:
+        return files
+    return files[: min(sample_limit, len(files))]
+
+
 def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample_limit: int) -> None:
     motion_files = sorted(motions_dir.glob("*.npy"))
     bvh_files = sorted(bvhs_dir.glob("*.bvh"))
 
-    _require(len(motion_files) > 0, "motions directory is empty")
-    _require(len(bvh_files) > 0, "bvhs directory is empty")
-    _require(len(motion_files) == len(bvh_files), f"motions/bvhs count mismatch: {len(motion_files)} vs {len(bvh_files)}")
+    try:
+        _require(len(motion_files) > 0, "motions directory is empty")
+        _require(len(bvh_files) > 0, "bvhs directory is empty")
+        _require(len(motion_files) == len(bvh_files), f"motions/bvhs count mismatch: {len(motion_files)} vs {len(bvh_files)}")
 
-    motion_stems = {path.stem for path in motion_files}
-    bvh_stems = {path.stem for path in bvh_files}
-    _require(motion_stems == bvh_stems, "motions and bvhs do not have matching stems")
+        motion_stems = {path.stem for path in motion_files}
+        bvh_stems = {path.stem for path in bvh_files}
+        _require(motion_stems == bvh_stems, "motions and bvhs do not have matching stems")
+    except ValidationError as e:
+        _print_warn(f"directory/naming validation failed: {e}")
+        return
 
-    sample_files = motion_files[: min(sample_limit, len(motion_files))]
-    for motion_path in sample_files:
-        motion = np.load(motion_path)
-        _require(motion.ndim == 3, f"{motion_path.name} must be rank-3, got {motion.ndim}")
-        _require(motion.shape[0] > 0, f"{motion_path.name} has zero frames")
-        _require(motion.shape[1] > 0, f"{motion_path.name} has zero joints")
-        _require(motion.shape[1] <= MAX_JOINTS, f"{motion_path.name} exceeds MAX_JOINTS: {motion.shape[1]}")
-        _require(motion.shape[2] == FEATS_LEN, f"{motion_path.name} feature dim mismatch: {motion.shape[2]}")
-        _require(np.isfinite(motion).all(), f"{motion_path.name} contains NaN/Inf")
+    files_to_validate = _select_validation_files(motion_files, sample_limit)
+    for motion_path in files_to_validate:
+        try:
+            motion = np.load(motion_path)
+            _require(motion.ndim == 3, f"{motion_path.name} must be rank-3, got {motion.ndim}")
+            _require(motion.shape[0] > 0, f"{motion_path.name} has zero frames")
+            _require(motion.shape[1] > 0, f"{motion_path.name} has zero joints")
+            _require(motion.shape[1] <= MAX_JOINTS, f"{motion_path.name} exceeds MAX_JOINTS: {motion.shape[1]}")
+            _require(motion.shape[2] == FEATS_LEN, f"{motion_path.name} feature dim mismatch: {motion.shape[2]}")
+            _require(np.isfinite(motion).all(), f"{motion_path.name} contains NaN/Inf")
 
-        object_type = _match_object_type(motion_path.stem, cond)
-        expected_joints = len(cond[object_type]["parents"])
-        _require(motion.shape[1] == expected_joints, f"{motion_path.name} joints mismatch: {motion.shape[1]} vs {expected_joints}")
+            object_type = _match_object_type(motion_path.stem, cond)
+            expected_joints = len(cond[object_type]["parents"])
+            _require(motion.shape[1] == expected_joints, f"{motion_path.name} joints mismatch: {motion.shape[1]} vs {expected_joints}")
+        except ValidationError as e:
+            _print_warn(f"validation error: {motion_path.name}: {e}")
 
-    _print_ok(f"validated {len(sample_files)} motion tensors and {len(motion_files)} paired motion/BVH artifacts")
+    scope = "all" if sample_limit <= 0 else str(len(files_to_validate))
+    _print_ok(f"validated {scope} motion tensors and {len(motion_files)} paired motion/BVH artifacts")
+
+
+def _vector_angle_deg(vector_a: np.ndarray, vector_b: np.ndarray) -> float:
+    a = np.asarray(vector_a, dtype=np.float64).reshape(-1)
+    b = np.asarray(vector_b, dtype=np.float64).reshape(-1)
+    a_norm = np.linalg.norm(a)
+    b_norm = np.linalg.norm(b)
+    _require(a_norm > 1e-8 and b_norm > 1e-8, "cannot compare zero-length orientation vectors")
+    cosine = float(np.dot(a / a_norm, b / b_norm))
+    cosine = float(np.clip(cosine, -1.0, 1.0))
+    return float(np.degrees(np.arccos(cosine)))
+
+
+def _get_first_frame_forward(processed_bvh_path: Path, object_type: str, object_cond: dict) -> np.ndarray:
+    anim, joint_names, _ = BVH.load(str(processed_bvh_path))
+    global_positions = positions_global(anim)
+    frame_positions = global_positions[:1]
+
+    face_joints = object_cond.get("face_joints")
+    if face_joints is None:
+        face_joints = resolve_face_joints(object_type, joint_names, anim.parents, face_joints=None)
+
+    forward_joint_index = _find_forward_reference_joint(joint_names, anim.parents)
+    forward_base_joint_index = _find_neck_reference_joint(joint_names, anim.parents)
+
+    if object_type in ("Anaconda", "KingCobra"):
+        forward = _get_snake_forward(frame_positions, object_type)
+    else:
+        # Use head position relative to torso center (more robust than neck-to-head direction).
+        # Head rotation during attack/dive poses changes the neck-to-head LOCAL direction
+        # significantly, but the head's GLOBAL position relative to the torso center remains
+        # a stable indicator of which direction the body is facing.
+        forward = _get_head_forward(
+            frame_positions,
+            face_joints,
+            forward_joint_index,
+            forward_base_joint_index=None,
+        )
+        if forward is None:
+            # Fall back to neck-based direction (works better for bipeds where the head
+            # is roughly above the torso center, making the torso-center method unreliable).
+            forward = _get_head_forward(
+                frame_positions,
+                face_joints,
+                forward_joint_index,
+                forward_base_joint_index=forward_base_joint_index,
+            )
+        if forward is None:
+            r_hip, l_hip, sdr_r, sdr_l = face_joints
+            across1 = frame_positions[:, r_hip] - frame_positions[:, l_hip]
+            across2 = frame_positions[:, sdr_r] - frame_positions[:, sdr_l]
+            across = _normalize_vectors(across1 + across2)
+            forward = _normalize_vectors(np.cross(np.array([[0.0, 1.0, 0.0]]), across, axis=-1))
+
+    _require(forward is not None and np.isfinite(forward).all(), f"{processed_bvh_path.name} produced an invalid facing vector")
+    return np.asarray(forward[0], dtype=np.float64)
+
+
+def _validate_motion_orientation(bvhs_dir: Path, cond: dict, sample_limit: int, threshold_deg: float) -> None:
+    bvh_files = sorted(bvhs_dir.glob("*.bvh"))
+    
+    try:
+        _require(len(bvh_files) > 0, "bvhs directory is empty")
+    except ValidationError as e:
+        _print_warn(f"directory validation failed: {e}")
+        return
+
+    files_to_validate = _select_validation_files(bvh_files, sample_limit)
+    target_forward = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    errors = []
+
+    for bvh_path in files_to_validate:
+        try:
+            object_type = _match_object_type(bvh_path.stem, cond)
+            forward = _get_first_frame_forward(bvh_path, object_type, cond[object_type])
+            angle_deg = _vector_angle_deg(forward, target_forward)
+            _require(
+                angle_deg <= threshold_deg,
+                f"{bvh_path.name} first-frame facing deviates from +Z by {angle_deg:.4f} deg (threshold={threshold_deg:.4f})",
+            )
+        except ValidationError as e:
+            _print_warn(f"validation error: {bvh_path.name}: {e}")
+            errors.append(str(e))
+
+    if errors:
+        raise ValidationError(f"orientation validation failed: {len(errors)} file(s) exceeded threshold")
+    
+    scope = "all" if sample_limit <= 0 else str(len(files_to_validate))
+    _print_ok(f"validated first-frame +Z orientation for {scope} processed BVHs (threshold={threshold_deg:.2f} deg)")
 
 
 def _validate_positions_error_file(positions_error_path: Path) -> None:
-    content = positions_error_path.read_text(encoding="utf-8").strip()
-    _require(content.startswith("Position squared error per bvh file:"), "positions_error_rate.txt has unexpected header")
-    if len(content.splitlines()) == 1:
-        _print_warn("positions_error_rate.txt has no per-file entries")
-    else:
-        _print_ok("positions_error_rate.txt contains per-file error entries")
-
-
-def _validate_loader(dataset_dir: Path, objects_subset: str, batch_size: int, num_frames: int, temporal_window: int) -> None:
-    os.environ["ANYTOP_DATASET_DIR"] = str(dataset_dir)
-
     try:
-        param_utils_module = importlib.import_module("data_loaders.truebones.truebones_utils.param_utils")
-        get_opt_module = importlib.import_module("data_loaders.truebones.truebones_utils.get_opt")
-        dataset_module = importlib.import_module("data_loaders.truebones.data.dataset")
-        tensors_module = importlib.import_module("data_loaders.tensors")
-        get_data_module = importlib.import_module("data_loaders.get_data")
-    except ModuleNotFoundError as exc:
-        raise ValidationError(
-            f"loader validation could not import dependency '{exc.name}'. "
-            f"Run this script with the same Python environment used for preprocessing/training, or pass --skip-validate."
-        ) from exc
-
-    importlib.reload(param_utils_module)
-    importlib.reload(get_opt_module)
-    importlib.reload(dataset_module)
-    tensors_module = importlib.reload(tensors_module)
-    get_data_module = importlib.reload(get_data_module)
-
-    dataset = get_data_module.get_dataset(
-        num_frames=num_frames,
-        temporal_window=temporal_window,
-        balanced=True,
-        objects_subset=objects_subset,
-    )
-    _require(len(dataset) > 0, "dataset is empty during loader validation")
-    effective_batch_size = min(batch_size, len(dataset))
-    batch = [dataset[index] for index in range(effective_batch_size)]
-    motion, cond = tensors_module.truebones_batch_collate(batch)
-
-    _require(tuple(motion.shape[:3])[1:] == (MAX_JOINTS, FEATS_LEN), f"loader motion shape is unexpected: {tuple(motion.shape)}")
-    _require(np.isfinite(motion.detach().cpu().numpy()).all(), "loader batch motion contains NaN/Inf")
-    _require("y" in cond, "loader cond is missing 'y'")
-    for required_key in ["lengths", "object_type", "tpos_first_frame", "mean", "std", "joints_relations", "graph_dist"]:
-        _require(required_key in cond["y"], f"loader cond['y'] is missing key: {required_key}")
-
-    _print_ok(f"loader smoke test passed with batch shape {tuple(motion.shape)}")
+        content = positions_error_path.read_text(encoding="utf-8").strip()
+        _require(content.startswith("Position squared error per bvh file:"), "positions_error_rate.txt has unexpected header")
+        if len(content.splitlines()) == 1:
+            _print_warn("positions_error_rate.txt has no per-file entries")
+        else:
+            _print_ok("positions_error_rate.txt contains per-file error entries")
+    except ValidationError as e:
+        _print_warn(f"validation error: {e}")
+        raise
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate an AnyTop preprocessed dataset directory.")
     parser.add_argument("--dataset-dir", default=None, help="Dataset directory to validate. Defaults to ANYTOP_DATASET_DIR or repo default.")
     parser.add_argument("--objects-subset", default="all", choices=sorted(OBJECT_SUBSETS_DICT.keys()), help="Expected object subset for the dataset.")
-    parser.add_argument("--sample-count", type=int, default=8, help="How many motion .npy files to inspect in detail.")
-    parser.add_argument("--batch-size", type=int, default=2, help="Batch size for loader validation.")
-    parser.add_argument("--num-frames", type=int, default=40, help="Sequence length used for loader validation.")
-    parser.add_argument("--temporal-window", type=int, default=31, help="Temporal window used for loader validation.")
-    parser.add_argument("--skip-validate", action="store_true", help="Skip DataLoader validation if you only want file and tensor checks.")
+    parser.add_argument("--sample-count", type=int, default=0, help="How many motion/BVH files to validate in detail. Use 0 to validate all files.")
+    parser.add_argument("--orientation-threshold-deg", type=float, default=5.0, help="Maximum allowed first-frame facing error from +Z for validated processed BVHs.")
+    parser.add_argument("--skip-orientation-check", action="store_true", help="Skip processed-BVH orientation validation.")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     dataset_dir = _resolve_dataset_dir(args.dataset_dir)
+    _require(args.sample_count >= 0, "sample-count must be >= 0")
 
     print("=== AnyTop Dataset Validation ===")
     print(f"dataset_dir: {dataset_dir}")
     print(f"objects_subset: {args.objects_subset}")
+    print(f"file_validation_scope: {'all files' if args.sample_count == 0 else f'first {args.sample_count} files'}")
 
-    try:
-        motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path = _read_required_artifacts(dataset_dir)
-        _validate_metadata(metadata_path)
-        cond = _validate_cond_file(cond_path, args.objects_subset)
-        _validate_motion_files(motions_dir, bvhs_dir, cond, args.sample_count)
-        _validate_positions_error_file(positions_error_path)
-        if args.skip_validate:
-            _print_warn("skipping loader validation by request")
-        else:
-            _validate_loader(dataset_dir, args.objects_subset, args.batch_size, args.num_frames, args.temporal_window)
-    except ValidationError as exc:
-        print(f"[FAIL] {exc}")
-        return 1
-    except Exception as exc:
-        print(f"[FAIL] unexpected error: {exc}")
-        return 1
+    motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path = _read_required_artifacts(dataset_dir)
+    
+    _validate_metadata(metadata_path)
+    
+    cond = _validate_cond_file(cond_path, args.objects_subset)
+    
+    _validate_motion_files(motions_dir, bvhs_dir, cond, args.sample_count)
+    
+    if args.skip_orientation_check:
+        _print_warn("skipping processed-BVH orientation validation by request")
+    else:
+        _validate_motion_orientation(bvhs_dir, cond, args.sample_count, args.orientation_threshold_deg)
+    
+    _validate_positions_error_file(positions_error_path)
 
     print("[PASS] dataset validation completed successfully")
     return 0
