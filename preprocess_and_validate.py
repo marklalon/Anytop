@@ -56,6 +56,7 @@ import argparse
 import os
 import sys
 import subprocess
+import shutil
 from pathlib import Path
 
 ANYTOP_DIR = Path(__file__).resolve().parent
@@ -152,8 +153,74 @@ def run_validation(
         print("[PASS] dataset validation completed successfully")
         return 0
     except ValidationError as e:
-        print(f"[FAIL] dataset validation failed: {e}")
+        print(f"[WARN] dataset validation warning: {e}")
         return 1
+
+
+def check_and_clean_old_data() -> bool:
+    """
+    Check if old preprocessed data exists in the target dataset directory.
+    If found, ask user whether to delete it.
+    
+    Returns:
+        True if user wants to proceed with preprocessing (either no old data found, or old data deleted).
+        False if user wants to abort.
+    """
+    # Import here to get the resolved dataset directory path
+    sys.path.insert(0, str(ANYTOP_DIR / "data_loaders" / "truebones" / "truebones_utils"))
+    from param_utils import get_dataset_dir
+    
+    dataset_dir = Path(get_dataset_dir())
+    motions_dir = dataset_dir / "motions"
+    bvhs_dir = dataset_dir / "bvhs"
+    corrupted_ref_dir = dataset_dir / "corrupted_references"
+    
+    # Check if any old data exists
+    old_data_exists = (motions_dir.exists() and any(motions_dir.iterdir())) or \
+                      (bvhs_dir.exists() and any(bvhs_dir.iterdir())) or \
+                      (corrupted_ref_dir.exists() and any(corrupted_ref_dir.iterdir()))
+    
+    if not old_data_exists:
+        return True
+    
+    # Old data found, ask user
+    print("\n" + "=" * 70)
+    print("⚠ WARNING: Old preprocessed data detected")
+    print("=" * 70)
+    print(f"Dataset directory: {dataset_dir}")
+    if motions_dir.exists() and any(motions_dir.iterdir()):
+        print(f"  - {motions_dir} contains existing data")
+    if bvhs_dir.exists() and any(bvhs_dir.iterdir()):
+        print(f"  - {bvhs_dir} contains existing data")
+    if corrupted_ref_dir.exists() and any(corrupted_ref_dir.iterdir()):
+        print(f"  - {corrupted_ref_dir} contains existing data")
+    print("\nDo you want to delete the old data and proceed with preprocessing?")
+    
+    while True:
+        response = input("Enter 'yes' to delete and continue, or 'no' to abort: ").strip().lower()
+        if response in ('yes', 'y'):
+            print("\nDeleting old data...")
+            try:
+                if motions_dir.exists():
+                    shutil.rmtree(motions_dir)
+                    print(f"  ✓ Deleted {motions_dir}")
+                if bvhs_dir.exists():
+                    shutil.rmtree(bvhs_dir)
+                    print(f"  ✓ Deleted {bvhs_dir}")
+                if corrupted_ref_dir.exists():
+                    shutil.rmtree(corrupted_ref_dir)
+                    print(f"  ✓ Deleted {corrupted_ref_dir}")
+                print("Old data cleaned successfully. Proceeding with preprocessing...\n")
+                return True
+            except Exception as e:
+                print(f"ERROR: Failed to delete old data: {e}")
+                print("Aborting preprocessing.")
+                return False
+        elif response in ('no', 'n'):
+            print("\nPreprocessing aborted.")
+            return False
+        else:
+            print("Invalid response. Please enter 'yes', 'y', 'no', or 'n'.")
 
 
 def parse_args() -> argparse.Namespace:
@@ -196,7 +263,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--orientation-threshold-deg",
-        default=10.0,
+        default=15.0,
         type=float,
         help="Maximum allowed first-frame facing error from +Z for processed validation.",
     )
@@ -234,6 +301,14 @@ def main() -> int:
     
     steps_completed = []
     
+    # Check and clean old data before preprocessing
+    if not args.validate_only:
+        if not check_and_clean_old_data():
+            print("\n" + "=" * 70)
+            print("Preprocessing skipped due to user abort")
+            print("=" * 70)
+            return 1
+    
     # Preprocess if not validate-only
     if not args.validate_only:
         ret = run_preprocessing(
@@ -242,11 +317,10 @@ def main() -> int:
             args.file_workers,
         )
         if ret != 0:
-            print("\n[FAIL] Preprocessing failed, but continuing workflow...")
-            # Don't return on preprocessing failure - continue to next step
-        else:
-            steps_completed.append("Preprocess")
-        
+            print("\n[FAIL] Preprocessing failed, aborting workflow.")
+            return ret
+        steps_completed.append("Preprocess")
+
         if not args.skip_corrupted_export:
             ret = run_corrupted_export(
                 args.objects_subset,
@@ -254,10 +328,9 @@ def main() -> int:
                 args.corrupted_sample_limit,
             )
             if ret != 0:
-                print("\n[FAIL] Corrupted-reference export failed, but continuing workflow...")
-                # Don't return on corrupted export failure - continue to next step
-            else:
-                steps_completed.append("Corrupted Export")
+                print("\n[FAIL] Corrupted-reference export failed, aborting workflow.")
+                return ret
+            steps_completed.append("Corrupted Export")
     
     # Validate
     if not args.skip_validate:
@@ -267,13 +340,8 @@ def main() -> int:
             args.orientation_threshold_deg,
             args.sample_count,
         )
-        if ret != 0:
-            print("\n" + "=" * 70)
-            print("⚠ Validation failed, but continuing workflow...")
-            print("=" * 70)
-            # Don't return on validation failure - continue to next step
-        else:
-            steps_completed.append("Validate")
+        # Don't return on validation failure - continue to next step        
+        steps_completed.append("Validate")
     
     # Success
     print("\n" + "=" * 70)

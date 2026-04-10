@@ -15,7 +15,7 @@ import traceback
 import torch
 import bisect
 import re 
-from data_loaders.truebones.truebones_utils.param_utils import HML_AVG_BONELEN, FOOT_CONTACT_HEIGHT_THRESH, FACE_JOINTS, DATASET_DIR, MAX_PATH_LEN, MOTION_DIR, NO_BVHS, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir, SNAKES, SNAKE_FORWARD_CHAINS
+from data_loaders.truebones.truebones_utils.param_utils import HML_AVG_BONELEN, FOOT_CONTACT_HEIGHT_THRESH, DATASET_DIR, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir, SNAKES, CHAIN_FORWARD_JOINTS, FLYING, FISH, VERTICAL_CLAMP_H
 from utils.rotation_conversions import rotation_6d_to_matrix_np
 
 
@@ -40,11 +40,11 @@ _FACE_JOINT_NEAR_ROOT_EXCLUDE_TOKENS = (
     'spine',
 )
 _FACE_JOINT_HIP_PRIORITIES = (
-    ('thigh', 'leg1', 'upperleg', 'upleg', 'momo'),
+    ('thigh', 'leg1', 'upperleg', 'upleg', 'momo', 'femur'),
     ('leg',),
 )
 _FACE_JOINT_UPPER_PRIORITIES = (
-    ('collarbone', 'clavicle', 'shoulder', 'upperarm', 'arm1', 'kata', 'wing'),
+    ('collarbone', 'clavicle', 'shoulder', 'upperarm', 'arm1', 'kata', 'wing', 'scapula', 'humerus'),
     ('arm', 'hiji', 'elbow', 'forearm'),
     ('te', 'hand'),
 )
@@ -53,11 +53,12 @@ _FORWARD_REFERENCE_PRIORITIES = (
     ('head',),
     ('neck',),
 )
-_ORIENTATION_SEARCH_FRAMES = 60
-
 
 def _normalize_joint_name(name):
+    # Split on lowercase→UPPER (e.g. "ElkRFemur" → "Elk RFemur")
     split_name = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', name)
+    # Also split on UPPER→UPPER+lower (e.g. "RFemur" → "R Femur")
+    split_name = re.sub(r'([A-Z])([A-Z][a-z])', r'\1 \2', split_name)
     return re.sub(r'[^a-z0-9]+', ' ', split_name.lower()).strip()
 
 
@@ -79,8 +80,8 @@ def _vector_angle_deg(vector_a, vector_b):
     return float(np.degrees(np.arccos(cosine)))
 
 
-def _get_snake_forward(joints, object_type):
-    chain = SNAKE_FORWARD_CHAINS.get(object_type)
+def _get_chain_forward(joints, object_type):
+    chain = CHAIN_FORWARD_JOINTS.get(object_type)
     if chain is None:
         return None
 
@@ -224,7 +225,7 @@ def _find_neck_reference_joint(joint_names, parents):
 
 
 def _get_head_forward(joints, face_joint_indx, forward_joint_index, forward_base_joint_index=None):
-    if forward_joint_index is None or face_joint_indx is None:
+    if forward_joint_index is None or not face_joint_indx:
         return None
 
     if forward_base_joint_index is not None and forward_joint_index == forward_base_joint_index:
@@ -253,11 +254,11 @@ def _get_facing_candidates(
     forward_joint_index=None,
     forward_base_joint_index=None,
 ):
-    if object_type in SNAKE_FORWARD_CHAINS:
-        snake_forward = _get_snake_forward(joints, object_type)
-        if snake_forward is None:
+    if object_type in CHAIN_FORWARD_JOINTS:
+        chain_forward = _get_chain_forward(joints, object_type)
+        if chain_forward is None:
             return {}
-        return {'snake': snake_forward}
+        return {'chain': chain_forward}
 
     candidates = {}
     torso_head = _get_head_forward(
@@ -278,7 +279,7 @@ def _get_facing_candidates(
     if neck_head is not None:
         candidates['neck_head'] = neck_head
 
-    if face_joint_indx is not None:
+    if face_joint_indx:
         r_hip, l_hip, sdr_r, sdr_l = face_joint_indx
         across1 = joints[:, r_hip] - joints[:, l_hip]
         across2 = joints[:, sdr_r] - joints[:, sdr_l]
@@ -326,45 +327,6 @@ def _choose_facing_forward(candidates):
     return best_name, best_forward
 
 
-def get_clip_orientation_reference(
-    joints,
-    object_type,
-    face_joint_indx=None,
-    forward_joint_index=None,
-    forward_base_joint_index=None,
-    max_search_frames=_ORIENTATION_SEARCH_FRAMES,
-):
-    if joints.shape[0] == 0:
-        return None, None, None, None
-
-    best_frame_index = None
-    best_name = None
-    best_forward = None
-    best_candidates = None
-    best_rank = None
-    search_frames = min(int(max_search_frames), joints.shape[0])
-
-    for frame_index in range(search_frames):
-        frame_joints = joints[frame_index:frame_index + 1]
-        candidates = _get_facing_candidates(
-            frame_joints,
-            object_type,
-            face_joint_indx=face_joint_indx,
-            forward_joint_index=forward_joint_index,
-            forward_base_joint_index=forward_base_joint_index,
-        )
-        selected_name, selected_forward, score, tiebreak = _score_facing_candidates(candidates)
-        if selected_forward is None:
-            continue
-        rank = (score, tiebreak, -len(candidates), frame_index)
-        if best_rank is None or rank < best_rank:
-            best_frame_index = frame_index
-            best_name = selected_name
-            best_forward = selected_forward
-            best_candidates = candidates
-            best_rank = rank
-
-    return best_frame_index, best_name, best_forward, best_candidates
 
 
 def _get_facing_forward(
@@ -392,23 +354,27 @@ def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints
             return [joint_names.index(name) for name in face_joints]
         return list(face_joints)
 
+    # Snakes use CHAIN_FORWARD_JOINTS for direction; _get_facing_candidates
+    # returns early for them and never unpacks face_joint_indx.
+    if object_type in CHAIN_FORWARD_JOINTS:
+        return []
+
     if joint_names is not None and parents is not None:
         hip_pair = _find_semantic_joint_pair(joint_names, parents, _FACE_JOINT_HIP_PRIORITIES)
         upper_pair = _find_semantic_joint_pair(joint_names, parents, _FACE_JOINT_UPPER_PRIORITIES)
         if hip_pair is not None and upper_pair is not None:
             return [hip_pair[0], hip_pair[1], upper_pair[0], upper_pair[1]]
-
-    if object_type in FACE_JOINTS:
-        return list(FACE_JOINTS[object_type])
+        # Armless animals (e.g. Raptor in NO_HANDS) have no shoulder joints.
+        # Reuse the hip pair as the upper pair so the across-vector and torso
+        # direction still work (forward = nose → hip_center remains valid).
+        if hip_pair is not None:
+            return [hip_pair[0], hip_pair[1], hip_pair[0], hip_pair[1]]
 
     raise ValueError(
         f"Could not resolve face joints for '{object_type}'. Provide --face_joints_names explicitly or add naming rules."
     )
 
 ################## Data Generation #####################
-""" Computes orientation based on object type face joints (hips and shoulder) and reeturns root quaternion 
-rotatation to ensure it faces z+. face_joint_indx is optional for object_types that are not included
-in FACE_JOINTS dict"""
 def get_root_quat(joints, object_type, face_joint_indx=None, forward_joint_index=None, forward_base_joint_index=None):
     if face_joint_indx is None:
         face_joint_indx = resolve_face_joints(object_type)
@@ -439,6 +405,48 @@ def _find_translation_root(anim):
         if np.any(ptp > 1e-3):
             return j
     return 0
+
+def _clamp_vertical_trajectory(processed_anim, object_type, H=VERTICAL_CLAMP_H):
+    """Scale the translation root's Y animation so it stays within the vertical bound H.
+
+    For FLYING creatures the world-Y of the translation root must not exceed +H.
+    For FISH creatures it must not go below -H (deeper than H below the water surface).
+
+    After HML orientation correction the character faces Z+ and Y is the vertical
+    axis, so the local Y of the translation root closely tracks world-space height.
+    We scale that channel by the ratio needed to bring the extreme value to ±H,
+    preserving relative dynamics (a swoop that was 2× higher than a hover stays 2×
+    higher, just compressed into the allowed range).
+    """
+    if object_type not in FLYING and object_type not in FISH:
+        return processed_anim
+
+    trans_root = _find_translation_root(processed_anim)
+    # Use global positions so non-root translation joints (e.g. Bip01) are handled correctly.
+    global_pos = positions_global(processed_anim)
+    world_y = global_pos[:, trans_root, 1]
+
+    if object_type in FLYING:
+        y_max = world_y.max()
+        if y_max <= H:
+            return processed_anim
+        scale_y = H / y_max
+    else:  # FISH
+        y_min = world_y.min()
+        if y_min >= -H:
+            return processed_anim
+        scale_y = H / abs(y_min)
+
+    new_positions = processed_anim.positions.copy()
+    new_positions[:, trans_root, 1] *= scale_y
+    return Animation(
+        processed_anim.rotations.copy(),
+        new_positions,
+        processed_anim.orients.copy(),
+        processed_anim.offsets.copy(),
+        processed_anim.parents.copy(),
+    )
+
 
 """ move motion s.t the effective translation root's XZ is at the origin on the first frame.
 
@@ -496,27 +504,7 @@ def strip_translation_root_xz(anim, translation_root_index):
     )
 
 def _get_hml_orientation_quat(anim, object_type, face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None):
-    global_pos = positions_global(anim)
-    if orientation_quat is not None:
-        return orientation_quat
-
-    if orientation_quat is None:
-        frame_index, _selected_name, selected_forward, _selected_candidates = get_clip_orientation_reference(
-            global_pos,
-            object_type,
-            face_joint_indx=face_joints,
-            forward_joint_index=forward_joint_index,
-            forward_base_joint_index=forward_base_joint_index,
-        )
-        if selected_forward is None:
-            return get_root_quat(
-                global_pos,
-                object_type,
-                face_joint_indx=face_joints,
-                forward_joint_index=forward_joint_index,
-                forward_base_joint_index=forward_base_joint_index,
-            )[0]
-        return Quaternions.between(selected_forward, np.array([[0.0, 0.0, 1.0]], dtype=np.float64))[0]
+    return orientation_quat
 
 """" rotate the motion to initially face z+, ground at xz axis (negative y is below ground)"""
 def rotate_to_hml_orientation(anim, object_type, face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None):
@@ -710,6 +698,8 @@ def get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, scale_factor,
             forward_joint_index=forward_joint_index,
             forward_base_joint_index=forward_base_joint_index,
         )
+        ## clamp vertical trajectory for flying/fish creatures (after scale, in HML units)
+        processed_anim = _clamp_vertical_trajectory(processed_anim, object_type)
     else:
         names = list()
         processed_anim = bvh_path
@@ -1149,19 +1139,18 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
             if os.path.isdir(pjoin(raw_data_dir, obj))
         )
 
-    valid_objects = [obj for obj in objects if obj not in NO_BVHS]
     total_workers, obj_workers, fw = _resolve_preprocessing_workers(
-        valid_objects,
+        objects,
         object_workers=object_workers,
         file_workers=file_workers,
     )
-    print(f'Preprocessing {len(valid_objects)} characters: '
+    print(f'Preprocessing {len(objects)} characters: '
           f'{obj_workers} object workers x {fw} file workers '
           f'(up to {total_workers} concurrent preprocess workers)')
 
-    payloads = [None] * len(valid_objects)
+    payloads = [None] * len(objects)
     if obj_workers <= 1:
-        for idx, object_type in enumerate(valid_objects):
+        for idx, object_type in enumerate(objects):
             payloads[idx] = _prepare_object_outputs(
                 object_type,
                 max_joints=23,
@@ -1177,16 +1166,11 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
                     max_files_per_object,
                     fw,
                 ): idx
-                for idx, object_type in enumerate(valid_objects)
+                for idx, object_type in enumerate(objects)
             }
             for future in as_completed(future_to_idx):
                 idx = future_to_idx[future]
-                try:
-                    payloads[idx] = future.result()
-                except Exception as e:
-                    print(f'ERROR preparing {valid_objects[idx]}: {e}')
-                    traceback.print_exc()
-                    payloads[idx] = None
+                payloads[idx] = future.result()  # propagates exception to abort all processing
 
     files_counter = 0
     frames_counter = 0
@@ -1195,7 +1179,7 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
     squared_positions_error = dict()
     cond = dict()
 
-    for idx, object_type in enumerate(valid_objects):
+    for idx, object_type in enumerate(objects):
         payload = payloads[idx]
         if payload is None:
             continue
@@ -1361,7 +1345,7 @@ def remove_joints_augmentation(data, removal_rate, mean, std):
     motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains = data['motion'], data['length'], data['object_type'], data['parents'], data['joints_graph_dist'], data['joints_relations'], data['tpos_first_frame'], data['offsets'], data['joints_names_embs'], data['kinematic_chains']
     ee = [chain[-1] for chain in kinematic_chains]
     possible_feet = np.unique(np.where(motion[..., -1] > 0)[1])
-    if object_type in ['KingCobra', 'Anaconda']:
+    if object_type in SNAKES:
         possible_feet=[]
     removal_options = [j for j in ee if j not in possible_feet]
     # removal_rate = min(1.0, (removal_rate*len(parents)) / len(removal_options))
@@ -1467,9 +1451,6 @@ def process_single_object_type(object_type, save_dir, file_workers=8):
     objects_counter = dict()
     squared_positions_error = dict()
     cond = dict()
-    if object_type in NO_BVHS:
-        print(f"No bvh files exist for object_type {object_type}")
-        exit(1)
     cur_counter = files_counter
     files_counter, frames_counter, max_joints, object_cond = process_object(
         object_type,

@@ -1,7 +1,7 @@
 import argparse
 import os
 
-from data_loaders.truebones.truebones_utils.param_utils import FACE_JOINTS, OBJECT_SUBSETS_DICT
+from data_loaders.truebones.truebones_utils.param_utils import OBJECT_SUBSETS_DICT
 
 
 def main():
@@ -30,7 +30,7 @@ def main():
 
     objects = args.object_types
     if objects is None:
-        objects = [obj for obj in OBJECT_SUBSETS_DICT[args.objects_subset] if obj in FACE_JOINTS]
+        objects = list(OBJECT_SUBSETS_DICT[args.objects_subset])
 
     from data_loaders.truebones.truebones_utils.motion_process import create_data_samples
 

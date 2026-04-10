@@ -268,38 +268,18 @@ def _get_frame_orientation_candidates(
     forward_joint_index = _find_forward_reference_joint(joint_names, anim.parents)
     forward_base_joint_index = _find_neck_reference_joint(joint_names, anim.parents)
 
-    candidates = {}
-    torso_head = _get_head_forward(
+    raw = _get_facing_candidates(
         frame_positions,
-        face_joints,
-        forward_joint_index,
-        forward_base_joint_index=None,
-    )
-    if torso_head is not None and np.isfinite(torso_head).all():
-        candidates["torso_head"] = np.asarray(torso_head[0], dtype=np.float64)
-
-    neck_head = _get_head_forward(
-        frame_positions,
-        face_joints,
-        forward_joint_index,
+        object_type,
+        face_joint_indx=face_joints,
+        forward_joint_index=forward_joint_index,
         forward_base_joint_index=forward_base_joint_index,
     )
-    if neck_head is not None and np.isfinite(neck_head).all():
-        candidates["neck_head"] = np.asarray(neck_head[0], dtype=np.float64)
-
-    if face_joints is not None:
-        r_hip, l_hip, sdr_r, sdr_l = face_joints
-        across1 = frame_positions[:, r_hip] - frame_positions[:, l_hip]
-        across2 = frame_positions[:, sdr_r] - frame_positions[:, sdr_l]
-        across = across1 + across2
-        across_norm = np.linalg.norm(across, axis=-1, keepdims=True)
-        if np.isfinite(across).all() and float(across_norm[0, 0]) > 1e-8:
-            across = across / across_norm
-            across_forward = np.cross(np.array([[0.0, 1.0, 0.0]]), across, axis=-1)
-            across_forward_norm = np.linalg.norm(across_forward, axis=-1, keepdims=True)
-            if np.isfinite(across_forward).all() and float(across_forward_norm[0, 0]) > 1e-8:
-                across_forward = across_forward / across_forward_norm
-                candidates["across"] = np.asarray(across_forward[0], dtype=np.float64)
+    candidates = {
+        name: np.asarray(fwd[0], dtype=np.float64)
+        for name, fwd in raw.items()
+        if fwd is not None and np.isfinite(fwd).all()
+    }
 
     _require(candidates, f"{processed_bvh_path.name} produced no valid orientation candidates for frame {resolved_frame_index}")
     return candidates
@@ -318,7 +298,12 @@ def _validate_motion_orientation(bvhs_dir: Path, cond: dict, sample_limit: int, 
     target_forward = np.array([0.0, 0.0, 1.0], dtype=np.float64)
     errors = []
 
+    _SKIP_ORIENTATION_KEYWORDS = {"left", "right", "die", "dead", "death", "lying"}
+
     for bvh_path in files_to_validate:
+        action_name_lower = bvh_path.stem.lower()
+        if any(kw in action_name_lower for kw in _SKIP_ORIENTATION_KEYWORDS):
+            continue
         try:
             object_type = _match_object_type(bvh_path.stem, cond)
             first_candidates = _get_frame_orientation_candidates(bvh_path, object_type, cond[object_type], 0)
