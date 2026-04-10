@@ -7,7 +7,7 @@ from data_loaders.truebones.truebones_utils.param_utils import OBJECT_SUBSETS_DI
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--raw-data-dir", default="", type=str,
-                        help="Path to raw Truebones BVH folders. Can also be set via ANYTOP_RAW_DATA_DIR.")
+                        help="Path to raw Truebones BVH folders. If not specified, falls back to ANYTOP_RAW_DATA_DIR environment variable.")
     parser.add_argument("--dataset-dir", default="", type=str,
                         help="Output directory for processed dataset. Can also be set via ANYTOP_DATASET_DIR.")
     parser.add_argument("--objects-subset", default="all", choices=sorted(OBJECT_SUBSETS_DICT.keys()), type=str,
@@ -23,8 +23,6 @@ def main():
                         help="Worker threads per character for BVH file processing. Defaults to 8.")
     args = parser.parse_args()
 
-    if args.raw_data_dir:
-        os.environ["ANYTOP_RAW_DATA_DIR"] = args.raw_data_dir
     if args.dataset_dir:
         os.environ["ANYTOP_DATASET_DIR"] = args.dataset_dir
 
@@ -37,9 +35,10 @@ def main():
     create_data_samples(
         objects=objects,
         max_files_per_object=args.max_files_per_object,
+        dataset_dir=args.dataset_dir or None,
+        raw_data_dir=args.raw_data_dir or None,
         object_workers=args.object_workers,
         file_workers=args.file_workers,
-        dataset_dir=args.dataset_dir or None,
     )
 
 

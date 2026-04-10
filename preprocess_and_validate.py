@@ -62,15 +62,11 @@ from pathlib import Path
 ANYTOP_DIR = Path(__file__).resolve().parent
 
 
-def run_preprocessing(objects_subset: str, object_workers: int, file_workers: int) -> int:
+def run_preprocessing(objects_subset: str, object_workers: int, file_workers: int, raw_data_dir: str = "") -> int:
     """Run the AnyTop dataset preprocessing."""
     print("\n" + "=" * 70)
     print("STEP 1: PREPROCESSING - Creating AnyTop dataset")
     print("=" * 70 + "\n")
-    
-    # Set default raw data directory if not already set
-    if "ANYTOP_RAW_DATA_DIR" not in os.environ:
-        os.environ["ANYTOP_RAW_DATA_DIR"] = r"E:\Dataset\Truebone_Z-OO"
     
     cmd = [
         sys.executable, "-m", "utils.create_dataset",
@@ -78,6 +74,9 @@ def run_preprocessing(objects_subset: str, object_workers: int, file_workers: in
         "--object-workers", str(object_workers),
         "--file-workers", str(file_workers),
     ]
+    
+    if raw_data_dir:
+        cmd.extend(["--raw-data-dir", raw_data_dir])
     
     result = subprocess.run(cmd, cwd=str(ANYTOP_DIR), capture_output=False)
     return result.returncode
@@ -290,6 +289,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="Limit the number of motions to export corrupted references for. 0 exports all motions.",
     )
+    parser.add_argument(
+        "--raw-data-dir",
+        default="",
+        type=str,
+        help="Path to raw Truebones BVH folders. If not specified, falls back to ANYTOP_RAW_DATA_DIR environment variable or default path.",
+    )
     return parser.parse_args()
 
 
@@ -315,6 +320,7 @@ def main() -> int:
             args.objects_subset,
             args.object_workers,
             args.file_workers,
+            args.raw_data_dir,
         )
         if ret != 0:
             print("\n[FAIL] Preprocessing failed, aborting workflow.")
@@ -348,6 +354,7 @@ def main() -> int:
     workflow_desc = " → ".join(steps_completed) if steps_completed else "No steps executed"
     print(f"✓ WORKFLOW COMPLETE: {workflow_desc} succeeded")
     print("=" * 70)
+    return 0
     return 0
 
 

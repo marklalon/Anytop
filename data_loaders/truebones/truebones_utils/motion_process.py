@@ -1068,10 +1068,10 @@ def _process_bvh_file(file_path, object_type, max_joints, root_pose_init_xz, sca
     }
      
 """Prepare processed tensors for all the files of a given object without writing them to disk yet."""
-def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=None, t_pos_path=None, max_files=None, num_workers=1):
+def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=None, t_pos_path=None, max_files=None, num_workers=1, raw_data_dir=None):
     object_cond = dict()
     if bvhs_dir is None:
-        bvhs_dir = pjoin(get_raw_data_dir(), object_type)
+        bvhs_dir = pjoin(get_raw_data_dir(raw_data_dir), object_type)
     if not os.path.isdir(bvhs_dir):
         print(f'skipping {object_type}: raw BVH directory not found at {bvhs_dir}')
         return None
@@ -1202,17 +1202,18 @@ def _resolve_preprocessing_workers(objects, object_workers=8, file_workers=8):
     return total_workers, object_workers, file_workers
 
 
-def _prepare_object_outputs_worker(object_type, max_files, file_workers):
+def _prepare_object_outputs_worker(object_type, max_files, file_workers, raw_data_dir=None):
     return _prepare_object_outputs(
         object_type,
         max_joints=23,
         max_files=max_files,
         num_workers=file_workers,
+        raw_data_dir=raw_data_dir,
     )
 
 """ creates processed tensors for all the files of a given object. Returens statistics and the object condition,
 which includes tpos, relation/distances matrices, offsets, parents, joints names, kinematic chains, mean and std"""    
-def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DATASET_DIR, face_joints=None, bvhs_dir=None, t_pos_path=None, max_files=None, num_workers=1):
+def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DATASET_DIR, face_joints=None, bvhs_dir=None, t_pos_path=None, max_files=None, num_workers=1, raw_data_dir=None):
     object_payload = _prepare_object_outputs(
         object_type,
         max_joints,
@@ -1221,6 +1222,7 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
         t_pos_path=t_pos_path,
         max_files=max_files,
         num_workers=num_workers,
+        raw_data_dir=raw_data_dir,
     )
     if object_payload is None:
         return files_counter, frames_counter, max_joints, None
@@ -1237,7 +1239,7 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
     return files_counter, frames_counter, max_joints, object_payload['object_cond']
 
 """ create dataset """
-def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, object_workers=8, file_workers=8):
+def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, raw_data_dir=None, object_workers=8, file_workers=8):
     ## prepare
     target_dataset_dir = dataset_dir or DATASET_DIR
     os.makedirs(pjoin(target_dataset_dir, MOTION_DIR), exist_ok=True)
@@ -1245,10 +1247,10 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
     
     ## process
     if objects is None:
-        raw_data_dir = get_raw_data_dir()
+        resolved_raw_data_dir = get_raw_data_dir(raw_data_dir)
         objects = sorted(
-            obj for obj in os.listdir(raw_data_dir)
-            if os.path.isdir(pjoin(raw_data_dir, obj))
+            obj for obj in os.listdir(resolved_raw_data_dir)
+            if os.path.isdir(pjoin(resolved_raw_data_dir, obj))
         )
 
     total_workers, obj_workers, fw = _resolve_preprocessing_workers(
@@ -1268,6 +1270,7 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
                 max_joints=23,
                 max_files=max_files_per_object,
                 num_workers=fw,
+                raw_data_dir=raw_data_dir,
             )
     else:
         with ProcessPoolExecutor(max_workers=obj_workers) as executor:
@@ -1277,6 +1280,7 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
                     object_type,
                     max_files_per_object,
                     fw,
+                    raw_data_dir,
                 ): idx
                 for idx, object_type in enumerate(objects)
             }

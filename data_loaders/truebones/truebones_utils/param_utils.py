@@ -7,7 +7,9 @@ DEFAULT_RAW_DATA_DIR = "dataset/truebones/zoo/Truebone_Z-OO"
 DEFAULT_DATASET_DIR = "dataset/truebones/zoo/truebones_processed"
 
 
-def get_raw_data_dir():
+def get_raw_data_dir(raw_data_dir=None):
+        if raw_data_dir is not None:
+                return raw_data_dir
         return os.environ.get("ANYTOP_RAW_DATA_DIR", DEFAULT_RAW_DATA_DIR)
 
 
