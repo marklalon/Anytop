@@ -67,7 +67,7 @@ python preprocess_and_validate.py --skip-validate
 
 ## Output Location
 By default, preprocessed data is saved to the directory specified by:
-- `ANYTOP_DATASET_DIR` environment variable, or
+- `--dataset-dir` command-line argument, or
 - `data/` (if environment variable not set)
 
 Stored corrupted references are written beside clean motions under:

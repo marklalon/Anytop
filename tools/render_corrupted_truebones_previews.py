@@ -78,7 +78,7 @@ from data_loaders.truebones.truebones_utils.motion_process import recover_from_b
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export BVH files for stored corrupted-reference motions.")
     parser.add_argument("--output-dir", default="", help="Directory to write BVH files and heatmaps into. Defaults to <input-dir>/../corrupted_references_preview.")
-    parser.add_argument("--dataset-dir", default="", help="Processed dataset root. Defaults to ANYTOP_DATASET_DIR / built-in dataset path.")
+    parser.add_argument("--dataset-dir", default="", help="Processed dataset root. If not specified, uses default path.")
     parser.add_argument("--input-dir", default="", help="Directory containing stored corrupted-reference *.reference.npy files. Defaults to the dataset corrupted_references directory.")
     parser.add_argument("--objects-subset", default="all", help="Object subset to preview.")
     parser.add_argument("--sample-limit", default=6, type=int, help="How many stored samples to preview. 0 renders every matching sample in the input directory.")

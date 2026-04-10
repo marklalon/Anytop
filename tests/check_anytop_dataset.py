@@ -351,7 +351,7 @@ def _validate_positions_error_file(positions_error_path: Path) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate an AnyTop preprocessed dataset directory.")
-    parser.add_argument("--dataset-dir", default=None, help="Dataset directory to validate. Defaults to ANYTOP_DATASET_DIR or repo default.")
+    parser.add_argument("--dataset-dir", default=None, help="Dataset directory to validate. If not specified, uses default path.")
     parser.add_argument("--objects-subset", default="all", choices=sorted(OBJECT_SUBSETS_DICT.keys()), help="Expected object subset for the dataset.")
     parser.add_argument("--sample-count", type=int, default=0, help="How many motion/BVH files to validate in detail. Use 0 to validate all files.")
     parser.add_argument("--orientation-threshold-deg", type=float, default=5.0, help="Maximum allowed first-frame facing error from +Z for validated processed BVHs.")
