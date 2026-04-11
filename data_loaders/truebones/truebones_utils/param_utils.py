@@ -20,9 +20,8 @@ def get_dataset_dir(dataset_dir=None):
 
 
 MOTION_DIR = "motions"
-CORRUPTED_REFERENCE_DIR = "corrupted_references"
-ANIMATIONS_DIR = "animations"
 BVHS_DIR = "bvhs"
+CORRUPTED_REFERENCE_DIR = "corrupted_references"
 FOOT_CONTACT_HEIGHT_THRESH = 0.3
 FOOT_CONTACT_VEL_THRESH = 0.002
 MAX_PATH_LEN = 5.

@@ -104,7 +104,7 @@ def main(args = None, cond_dict = None):
             out_anim, _1, _2 = animation_from_positions(positions=global_positions, parents=parents, offsets=offsets, iterations=150)
             name_pref = '%s_rep_%d'%(object_type, rep_i)
             existing_npy_files = [filename for filename in os.listdir(out_path) if filename.startswith(name_pref) and filename.endswith('.npy')]
-npy_name = name_pref+'_#%d.npy'%(len(existing_npy_files))
+            npy_name = name_pref+'_#%d.npy'%(len(existing_npy_files))
             bvh_name = name_pref+'_#%d.bvh'%(len(existing_npy_files))
             np.save(pjoin(out_path, npy_name), motion)
             if out_anim is not None:
