@@ -854,6 +854,8 @@ def stage1_sampling_eval(
     sample_trials = {sample_index: [] for sample_index in range(len(selected_samples))}
     trial_aggregates = []
 
+    print(f"[PROGRESS] Starting sampling evaluation with {args.num_trials} trials and {len(selected_samples)} samples...")
+
     for trial_index in range(args.num_trials):
         trial_seed = args.base_seed + trial_index
         fixseed(trial_seed)
@@ -862,11 +864,57 @@ def stage1_sampling_eval(
 
         trial_sample_metrics = []
 
+        total_batches = (len(selected_samples) + args.eval_batch_size - 1) // args.eval_batch_size
         for batch_start in range(0, len(selected_samples), args.eval_batch_size):
             batch_samples = selected_samples[batch_start:batch_start + args.eval_batch_size]
             motion_cpu, cond_cpu = combine_batch_samples(batch_samples)
             motion = motion_cpu.to(device, non_blocking=device.type == "cuda")
             cond = move_cond_to_device(cond_cpu, device)
+            print(f"[PROGRESS] Trial {trial_index:02d} - Batch {batch_start//args.eval_batch_size + 1}/{total_batches} ...", end='\r', flush=True)
+
+            with torch.inference_mode():
+                generated = sample_motion_batch(
+                    eval_diffusion,
+                    eval_model,
+                    motion.shape,
+                    cond,
+                    args.sampling_method,
+                    args.ddim_eta,
+                )
+
+            for item_index, sample in enumerate(batch_samples):
+                global_index = batch_start + item_index
+                n_joints = int(sample["n_joints"])
+                length = int(sample["length"])
+                object_type = str(sample["object_type"])
+
+                target_norm = motion_cpu[item_index, :n_joints, :, :length]
+                generated_norm = generated[item_index, :n_joints, :, :length].detach().cpu()
+
+                evaluation = evaluate_generated_prediction(
+                    target_norm=target_norm,
+                    generated_norm=generated_norm,
+                    n_joints=n_joints,
+                    mean=sample["mean"],
+                    std=sample["std"],
+                )
+                metrics = build_sample_metric_record(evaluation, global_index, sample, trial_index, trial_seed)
+                trial_sample_metrics.append(metrics)
+                sample_trials[global_index].append(metrics)
+
+                if global_index < args.export_samples:
+                    sample_dir = output_dir / "stage1_sampling_eval" / "trials" / f"trial_{trial_index:02d}" / f"sample_{global_index:03d}_{object_type}"
+                    sample_dir.mkdir(parents=True, exist_ok=True)
+                    export_trial_sample(
+                        sample_dir=sample_dir,
+                        parents=sample["parents"],
+                        offsets=sample["offsets"],
+                        joints_names=sample["joints_names"],
+                        target_motion=evaluation["target_denorm"].astype(np.float32),
+                        generated_motion=evaluation["generated_denorm"].astype(np.float32),
+                    )
+
+            print(f"\r[PROGRESS] Trial {trial_index:02d} - Batch {batch_start//args.eval_batch_size + 1}/{total_batches} ... Done")
 
             with torch.inference_mode():
                 generated = sample_motion_batch(
@@ -912,6 +960,7 @@ def stage1_sampling_eval(
 
         trial_aggregate = summarize_sample_metrics(trial_sample_metrics)
         trial_aggregates.append(trial_aggregate)
+        print(f"[PROGRESS] Trial {trial_index:02d} complete. Aggregated metrics computed.")
 
     sampling_steps = int(args.sampling_steps) if args.sampling_steps > 0 else int(model_args.diffusion_steps)
     return build_eval_report(
@@ -950,7 +999,10 @@ def main() -> int:
     model.to(device)
     model.eval()
 
+    print(f"[PROGRESS] Collecting {args.num_eval_samples} evaluation samples from dataset...")
     selected_samples = collect_eval_samples(args, model_args)
+    print(f"[PROGRESS] Collected {len(selected_samples)} samples. Starting sampling evaluation...")
+    
     sampling_report = stage1_sampling_eval(
         args=args,
         model_args=model_args,
@@ -960,6 +1012,7 @@ def main() -> int:
         device=device,
         output_dir=output_dir,
     )
+    print(f"[PROGRESS] Sampling evaluation complete. Building clean motion baseline...")
     clean_motion_report = build_clean_motion_baseline(args, model_args, selected_samples)
     baseline_comparison = build_baseline_comparison(sampling_report, clean_motion_report)
 
@@ -987,7 +1040,6 @@ def main() -> int:
     with open(output_dir / "report.json", "w", encoding="utf-8") as handle:
         json.dump(final_report, handle, indent=2)
 
-    print(json.dumps(final_report, indent=2))
     return 0
 
 
