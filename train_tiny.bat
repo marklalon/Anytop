@@ -3,10 +3,10 @@ set PYTHON_EXE=%~dp0..\.venv\Scripts\python.exe
 
 %PYTHON_EXE% train/train_anytop_two_stage.py ^
 	--run_stage stage1 ^
-	--experiment_root save/stage1_tiny_overfit_all_move_clean_s100000 ^
+	--resume_checkpoint save/stage1_tiny_overfit_all_move_clean_s100000/stage1_pretrain/model000050000.pt ^
+	--experiment_root save/stage1_tiny_overfit_all_clean_s100000 ^
 	--overwrite ^
 	--objects_subset all ^
-	--motion_name_keywords walk,run,sprint ^
 	--diffusion_steps 100 ^
 	--num_frames 60 ^
 	--stage1_batch_size 32 ^
@@ -17,5 +17,8 @@ set PYTHON_EXE=%~dp0..\.venv\Scripts\python.exe
 	--save_interval 5000 ^
 	--log_interval 200 ^
 	--num_workers 8 ^
+	--amp_dtype bf16 ^
+	--cudnn_benchmark ^
+	--allow_tf32 ^
 	--ml_platform_type TensorboardPlatform ^
 	--use_ema

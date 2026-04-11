@@ -57,7 +57,11 @@ def create_training_data_loader(args):
     )
 
 def run_training(args):
-    fixseed(args.seed)
+    fixseed(
+        args.seed,
+        cudnn_benchmark=getattr(args, 'cudnn_benchmark', True),
+        allow_tf32=getattr(args, 'allow_tf32', True),
+    )
     save_dir = prepare_save_dir(args)
     args.checkpoint_step_numbering = 'completed_steps'
 

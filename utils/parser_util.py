@@ -127,6 +127,12 @@ def add_training_options(parser):
                        help="If True, will enable to use an already existing save_dir.")
     group.add_argument("--ml_platform_type", default='NoPlatform', choices=['NoPlatform', 'ClearmlPlatform', 'TensorboardPlatform', 'WandBPlatform'], type=str,
                        help="Choose platform to log results. NoPlatform means no logging.")
+    group.add_argument("--amp_dtype", default='fp32', choices=['fp32', 'fp16', 'bf16'], type=str,
+                       help="Autocast precision for training. bf16 is preferred on supported GPUs; fp32 disables AMP.")
+    group.add_argument("--cudnn_benchmark", action=argparse.BooleanOptionalAction, default=True,
+                       help="Enable cuDNN benchmark autotuning for fixed-shape training workloads.")
+    group.add_argument("--allow_tf32", action=argparse.BooleanOptionalAction, default=True,
+                       help="Allow TF32 matmul and cuDNN kernels on supported NVIDIA GPUs.")
     group.add_argument("--lr", default=1e-4, type=float, help="Learning rate.")
 
     group.add_argument("--weight_decay", default=0.0, type=float, help="Optimizer weight decay.")

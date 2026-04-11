@@ -151,17 +151,25 @@ class MixedPrecisionTrainer:
         *,
         model,
         use_fp16=False,
+        amp_dtype='fp32',
+        amp_enabled=False,
+        device_type='cuda',
         fp16_scale_growth=1e-3,
         initial_lg_loss_scale=INITIAL_LOG_LOSS_SCALE,
     ):
         self.model = model
         self.use_fp16 = use_fp16
+        self.amp_dtype = amp_dtype
+        self.amp_enabled = amp_enabled
+        self.device_type = device_type
         self.fp16_scale_growth = fp16_scale_growth
 
         self.model_params = list(self.model.parameters())
         self.master_params = self.model_params
         self.param_groups_and_shapes = None
         self.lg_loss_scale = initial_lg_loss_scale
+        scaler_enabled = self.amp_enabled and self.amp_dtype == 'fp16' and self.device_type == 'cuda'
+        self.scaler = th.amp.GradScaler('cuda', enabled=scaler_enabled)
 
         if self.use_fp16:
             self.param_groups_and_shapes = get_param_groups_and_shapes(
@@ -174,17 +182,33 @@ class MixedPrecisionTrainer:
         zero_grad(self.model_params)
 
     def backward(self, loss: th.Tensor):
-        if self.use_fp16:
+        if self.amp_enabled:
+            self.scaler.scale(loss).backward()
+        elif self.use_fp16:
             loss_scale = 2 ** self.lg_loss_scale
             (loss * loss_scale).backward()
         else:
             loss.backward()
 
     def optimize(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.StepLR):
+        if self.amp_enabled:
+            return self._optimize_amp(opt, scheduler)
         if self.use_fp16:
             return self._optimize_fp16(opt, scheduler)
         else:
             return self._optimize_normal(opt, scheduler)
+
+    def _optimize_amp(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.StepLR):
+        if self.scaler.is_enabled():
+            self.scaler.unscale_(opt)
+        grad_norm, param_norm = self._compute_norms_from_model()
+        logger.logkv_mean("grad_norm", grad_norm)
+        logger.logkv_mean("param_norm", param_norm)
+        self.scaler.step(opt)
+        self.scaler.update()
+        scheduler.step()
+        logger.logkv_mean("lr", scheduler.get_last_lr()[0])
+        return True
 
     def _optimize_fp16(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.StepLR):
         logger.logkv_mean("lg_loss_scale", self.lg_loss_scale)
@@ -225,6 +249,16 @@ class MixedPrecisionTrainer:
                 if p.grad is not None:
                     grad_norm += th.norm(p.grad, p=2, dtype=th.float32).item() ** 2
         return np.sqrt(grad_norm) / grad_scale, np.sqrt(param_norm)
+
+    def _compute_norms_from_model(self):
+        grad_norm = 0.0
+        param_norm = 0.0
+        for p in self.model_params:
+            with th.no_grad():
+                param_norm += th.norm(p, p=2, dtype=th.float32).item() ** 2
+                if p.grad is not None:
+                    grad_norm += th.norm(p.grad, p=2, dtype=th.float32).item() ** 2
+        return np.sqrt(grad_norm), np.sqrt(param_norm)
 
     def master_params_to_state_dict(self, master_params):
         return master_params_to_state_dict(

@@ -39,7 +39,9 @@ class TrainLoop:
         self.save_interval = args.save_interval
         self.eval_interval = getattr(args, 'eval_interval', 0)
         self.resume_checkpoint = args.resume_checkpoint
-        self.use_fp16 = False  # deprecating this option
+        self.amp_dtype = getattr(args, 'amp_dtype', 'fp32').lower()
+        self.amp_enabled = self.amp_dtype in {'fp16', 'bf16'}
+        self.use_fp16 = self.amp_dtype == 'fp16'
         self.fp16_scale_growth = 1e-3  # deprecating this option
         self.weight_decay = args.weight_decay
         self.lr_anneal_steps = args.lr_anneal_steps
@@ -54,10 +56,27 @@ class TrainLoop:
         self.save_dir = args.save_dir
         self.overwrite = args.overwrite
 
+        self.device = torch.device("cpu")
+        if torch.cuda.is_available() and dist_util.dev() != 'cpu':
+            self.device = torch.device(dist_util.dev())
+        if self.amp_enabled and self.device.type != 'cuda':
+            raise ValueError('AMP requires CUDA. Set --amp_dtype fp32 when training on CPU.')
+        self.non_blocking = self.device.type == 'cuda'
+        self.detect_anomaly = bool(getattr(self.args, 'detect_anomaly', False))
+        self.load_optimizer_state = bool(getattr(self.args, 'load_optimizer_state', True))
+        self.autocast_dtype = None
+        if self.amp_dtype == 'fp16':
+            self.autocast_dtype = torch.float16
+        elif self.amp_dtype == 'bf16':
+            self.autocast_dtype = torch.bfloat16
+
         self._load_and_sync_parameters()
         self.mp_trainer = MixedPrecisionTrainer(
             model=self.model,
-            use_fp16=self.use_fp16,
+            use_fp16=False,
+            amp_dtype=self.amp_dtype,
+            amp_enabled=self.amp_enabled,
+            device_type=self.device.type,
             fp16_scale_growth=self.fp16_scale_growth,
         )
         
@@ -72,13 +91,6 @@ class TrainLoop:
             self._load_optimizer_state()
             # Model was resumed, either due to a restart or a checkpoint
             # being specified at the command line.
-
-        self.device = torch.device("cpu")
-        if torch.cuda.is_available() and dist_util.dev() != 'cpu':
-            self.device = torch.device(dist_util.dev())
-        self.non_blocking = self.device.type == 'cuda'
-        self.detect_anomaly = bool(getattr(self.args, 'detect_anomaly', False))
-        self.load_optimizer_state = bool(getattr(self.args, 'load_optimizer_state', True))
 
         self.schedule_sampler_type = 'uniform'
         self.schedule_sampler = create_named_schedule_sampler(self.schedule_sampler_type, diffusion)
@@ -142,12 +154,16 @@ class TrainLoop:
         state_dict = dist_util.load_state_dict(
             opt_checkpoint, map_location=dist_util.dev()
         )
-        if self.use_fp16:
+        if self.amp_enabled and isinstance(state_dict, dict) and 'opt' in state_dict:
+            if 'scaler' in state_dict and self.mp_trainer.scaler.is_enabled():
+                self.mp_trainer.scaler.load_state_dict(state_dict['scaler'])
+            state_dict = state_dict['opt']
+        elif self.use_fp16:
             if 'scaler' not in state_dict:
                 print("scaler state not found ... not loading it.")
             else:
                 # load grad scaler state
-                self.scaler.load_state_dict(state_dict['scaler'])
+                self.mp_trainer.scaler.load_state_dict(state_dict['scaler'])
                 # for the rest
                 state_dict = state_dict['opt']
 
@@ -239,7 +255,7 @@ class TrainLoop:
 
     def _compute_eval_losses(self, batch, cond):
         t, weights = self.schedule_sampler.sample(batch.shape[0], dist_util.dev())
-        with torch.no_grad():
+        with torch.no_grad(), self._autocast_context():
             losses = self.diffusion.training_losses(
                 self.model,
                 batch,
@@ -358,10 +374,12 @@ class TrainLoop:
             )
 
             if last_batch or not self.use_ddp:
-                losses = compute_losses()
+                with self._autocast_context():
+                    losses = compute_losses()
             else:
                 with self.ddp_model.no_sync():
-                    losses = compute_losses()
+                    with self._autocast_context():
+                        losses = compute_losses()
 
             if isinstance(self.schedule_sampler, LossAwareSampler):
                 self.schedule_sampler.update_with_local_losses(
@@ -373,6 +391,11 @@ class TrainLoop:
                 self.diffusion, t, {k: v * weights for k, v in losses.items()}
             )
             self.mp_trainer.backward(loss)
+
+    def _autocast_context(self):
+        if not self.amp_enabled:
+            return torch.autocast(device_type=self.device.type, enabled=False)
+        return torch.autocast(device_type=self.device.type, dtype=self.autocast_dtype)
 
 
     def _anneal_lr(self):
@@ -402,11 +425,8 @@ class TrainLoop:
                     for e in clip_weights:
                         del state_dict[e]
 
-                if self.use_fp16:
-                    state_dict = self.model.state_dict()
-                else:
-                    state_dict = self.mp_trainer.master_params_to_state_dict(
-                        self.mp_trainer.master_params)
+                state_dict = self.mp_trainer.master_params_to_state_dict(
+                    self.mp_trainer.master_params)
                 del_clip(state_dict)
 
                 if self.args.use_ema and self.model_avg is not None:
@@ -435,11 +455,10 @@ class TrainLoop:
                 opt_ctx = open(opt_path, "wb")
             with opt_ctx as f:
                 opt_state = self.opt.state_dict()
-                if self.use_fp16:
-                    # with fp16 we also save the state dict
+                if self.amp_enabled:
                     opt_state = {
                         'opt': opt_state,
-                        'scaler': self.scaler.state_dict(),
+                        'scaler': self.mp_trainer.scaler.state_dict(),
                     }
 
                 torch.save(opt_state, f)
