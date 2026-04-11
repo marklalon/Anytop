@@ -55,13 +55,13 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import BVH
-from InverseKinematics import animation_from_positions
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+import BVH
+from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
 
 from data_loaders.truebones.offline_reference_dataset import (
     infer_object_type,
@@ -72,7 +72,7 @@ from data_loaders.truebones.offline_reference_dataset import (
     resolve_dataset_root,
 )
 from data_loaders.truebones.offline_reference_dataset import get_motion_dir
-from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np
+from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
 
 
 def parse_args() -> argparse.Namespace:
@@ -144,10 +144,10 @@ def load_sample_from_dir(input_dir: Path, motion_file: str, dataset_root: Path) 
     }
 
 
-def export_motion_bvh(save_path: str, positions: np.ndarray, parents: list[int], offsets: np.ndarray, joints_names: list[str]) -> None:
-    out_anim, _, _ = animation_from_positions(positions=positions, parents=parents, offsets=offsets, iterations=150)
+def export_motion_bvh(save_path: str, motion: np.ndarray, parents: list[int], offsets: np.ndarray, joints_names: list[str]) -> None:
+    out_anim, has_animated_pos = recover_animation_from_motion_np(motion, parents, offsets)
     if out_anim is not None:
-        BVH.save(save_path, out_anim, joints_names)
+        BVH.save(save_path, out_anim, joints_names, positions=has_animated_pos)
 
 
 def export_preview_sample(
@@ -169,13 +169,11 @@ def export_preview_sample(
     corrupted_motion = stored_sample["reference_motion"]
     confidence = stored_sample["soft_confidence_mask"]
 
-    clean_positions = recover_from_bvh_ric_np(clean_motion)
-    corrupted_positions = recover_from_bvh_ric_np(corrupted_motion)
     sample_dir = output_dir_path / Path(motion_file).stem
     sample_dir.mkdir(parents=True, exist_ok=True)
 
-    export_motion_bvh(str(sample_dir / "clean_target.bvh"), clean_positions, parents, offsets, joints_names)
-    export_motion_bvh(str(sample_dir / "corrupted_reference.bvh"), corrupted_positions, parents, offsets, joints_names)
+    export_motion_bvh(str(sample_dir / "clean_target.bvh"), clean_motion, parents, offsets, joints_names)
+    export_motion_bvh(str(sample_dir / "corrupted_reference.bvh"), corrupted_motion, parents, offsets, joints_names)
     save_confidence_heatmap(confidence[..., 0], sample_dir / "soft_confidence_mask.png")
     return {
         "motion_file": motion_file,

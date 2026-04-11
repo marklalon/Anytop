@@ -60,9 +60,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import BVH
-from InverseKinematics import animation_from_positions
 from data_loaders.get_data import get_dataset_loader
-from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np
+from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
 from utils.fixseed import fixseed
 from utils import dist_util
 from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
@@ -278,10 +277,9 @@ def classify_restoration(position_metrics: dict[str, float]) -> dict[str, object
 
 def export_motion(sample_dir: Path, name: str, motion: np.ndarray, parents: list[int], offsets: np.ndarray, joints_names: list[str]) -> None:
     np.save(sample_dir / f"{name}.npy", motion)
-    positions = recover_from_bvh_ric_np(motion)
-    out_anim, _, _ = animation_from_positions(positions=positions, parents=parents, offsets=offsets, iterations=150)
+    out_anim, has_animated_pos = recover_animation_from_motion_np(motion, parents, offsets)
     if out_anim is not None:
-        BVH.save(str(sample_dir / f"{name}.bvh"), out_anim, joints_names)
+        BVH.save(str(sample_dir / f"{name}.bvh"), out_anim, joints_names, positions=has_animated_pos)
 
 
 def build_fixed_noise(sample_index: int, shape: torch.Size, device: torch.device, mode: str, seed: int) -> torch.Tensor:

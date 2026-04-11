@@ -16,17 +16,15 @@ from types import SimpleNamespace
 
 import numpy as np
 import torch
-import BVH
-from InverseKinematics import animation_from_positions
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 os.chdir(REPO_ROOT)
 
+import BVH
 from data_loaders.get_data import get_dataset_loader
-from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np
+from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np, recover_from_bvh_ric_np
 from utils.fixseed import fixseed
 from utils import dist_util
 from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
@@ -751,15 +749,13 @@ def export_trial_sample(
     joints_names: list[str],
     target_motion: np.ndarray,
     generated_motion: np.ndarray,
-    target_positions: np.ndarray,
-    generated_positions: np.ndarray,
 ) -> None:
     np.save(sample_dir / "clean_target.npy", target_motion.astype(np.float32))
     np.save(sample_dir / "generated_prediction.npy", generated_motion.astype(np.float32))
-    for name, positions in [("clean_target", target_positions), ("generated_prediction", generated_positions)]:
-        out_anim, _, _ = animation_from_positions(positions=positions.astype(np.float32), parents=parents, offsets=offsets, iterations=150)
+    for name, motion in [("clean_target", target_motion), ("generated_prediction", generated_motion)]:
+        out_anim, has_animated_pos = recover_animation_from_motion_np(motion.astype(np.float32), parents, offsets)
         if out_anim is not None:
-            BVH.save(str(sample_dir / f"{name}.bvh"), out_anim, joints_names)
+            BVH.save(str(sample_dir / f"{name}.bvh"), out_anim, joints_names, positions=has_animated_pos)
 
 
 def collect_eval_samples(args: argparse.Namespace, model_args: SimpleNamespace) -> list[dict[str, object]]:
@@ -912,8 +908,6 @@ def stage1_sampling_eval(
                         joints_names=sample["joints_names"],
                         target_motion=evaluation["target_denorm"].astype(np.float32),
                         generated_motion=evaluation["generated_denorm"].astype(np.float32),
-                        target_positions=evaluation["target_positions"].astype(np.float32),
-                        generated_positions=evaluation["generated_positions"].astype(np.float32),
                     )
 
         trial_aggregate = summarize_sample_metrics(trial_sample_metrics)

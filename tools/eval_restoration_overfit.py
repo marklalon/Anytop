@@ -47,16 +47,14 @@ from types import SimpleNamespace
 
 import numpy as np
 import torch
-import BVH
-from InverseKinematics import animation_from_positions
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import BVH
 from data_loaders.get_data import get_dataset_loader
-from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np
+from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np, recover_animation_from_motion_np
 from utils.fixseed import fixseed
 from utils import dist_util
 from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
@@ -223,10 +221,10 @@ def sample_motion_batch(
     )
 
 
-def export_motion_bvh(sample_dir: Path, name: str, positions: np.ndarray, parents: list[int], offsets: np.ndarray, joints_names: list[str]) -> None:
-    out_anim, _, _ = animation_from_positions(positions=positions.astype(np.float32), parents=parents, offsets=offsets, iterations=150)
+def export_motion_bvh(sample_dir: Path, name: str, motion: np.ndarray, parents: list[int], offsets: np.ndarray, joints_names: list[str]) -> None:
+    out_anim, has_animated_pos = recover_animation_from_motion_np(motion.astype(np.float32), parents, offsets)
     if out_anim is not None:
-        BVH.save(str(sample_dir / f"{name}.bvh"), out_anim, joints_names)
+        BVH.save(str(sample_dir / f"{name}.bvh"), out_anim, joints_names, positions=has_animated_pos)
 
 
 def main() -> int:
@@ -365,12 +363,12 @@ def main() -> int:
 
             offsets = cond_dict[object_type]["offsets"]
             joints_names = cond_dict[object_type]["joints_names"]
-            for bvh_name, positions in [
-                ("clean_target", target_positions),
-                ("corrupted_reference", reference_positions),
-                ("restored_prediction", restored_positions),
+            for bvh_name, motion in [
+                ("clean_target", target_denorm),
+                ("corrupted_reference", reference_denorm),
+                ("restored_prediction", restored_denorm),
             ]:
-                export_motion_bvh(sample_dir, bvh_name, positions.astype(np.float32), parents, offsets, joints_names)
+                export_motion_bvh(sample_dir, bvh_name, motion.astype(np.float32), parents, offsets, joints_names)
 
             metrics = {
                 "object_type": object_type,

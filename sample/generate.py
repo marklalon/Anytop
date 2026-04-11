@@ -16,12 +16,11 @@ from utils.parser_util import generate_args
 from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
 from utils import dist_util
 from data_loaders.tensors import truebones_batch_collate
-from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np, recover_from_bvh_rot_np
+from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
 from data_loaders.truebones.data.dataset import create_temporal_mask_for_window
 from os.path import join as pjoin
 from model.conditioners import T5Conditioner
 import BVH
-from InverseKinematics import animation_from_positions
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 
 def main(args = None, cond_dict = None):
@@ -99,16 +98,15 @@ def main(args = None, cond_dict = None):
             std = cond_dict[object_type]['std'][None, :]
             motion = motion.cpu().permute(2, 0, 1).numpy() * std + mean
             offsets = cond_dict[object_type]['offsets']
-            global_positions = recover_from_bvh_ric_np(motion)
-            #global_positions, out_anim = recover_from_bvh_rot_np(motion, parents, offsets)
-            out_anim, _1, _2 = animation_from_positions(positions=global_positions, parents=parents, offsets=offsets, iterations=150)
+            out_anim, has_animated_pos = recover_animation_from_motion_np(motion, parents, offsets)
             name_pref = '%s_rep_%d'%(object_type, rep_i)
             existing_npy_files = [filename for filename in os.listdir(out_path) if filename.startswith(name_pref) and filename.endswith('.npy')]
             npy_name = name_pref+'_#%d.npy'%(len(existing_npy_files))
             bvh_name = name_pref+'_#%d.bvh'%(len(existing_npy_files))
             np.save(pjoin(out_path, npy_name), motion)
             if out_anim is not None:
-                BVH.save(pjoin(out_path, bvh_name), out_anim, cond_dict[object_type]['joints_names'])
+                BVH.save(pjoin(out_path, bvh_name), out_anim, cond_dict[object_type]['joints_names'],
+                         positions=has_animated_pos)
             print("repetition #" + str(rep_i) + " ,created motion: "+ npy_name)
 
 def encode_joints_names(joints_names, t5_conditioner): # joints names should be padded with None to be of max_len 

@@ -25,8 +25,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from data_loaders.get_data import get_dataset_loader
 import BVH
-from InverseKinematics import animation_from_positions
-from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np
+from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
 from diffusion.resample import LossAwareSampler, create_named_schedule_sampler
 from utils.fixseed import fixseed
 from utils import dist_util
@@ -338,10 +337,9 @@ def export_trial_sample(
     np.save(sample_dir / "restored_prediction.npy", restored_motion.astype(np.float32))
     np.save(sample_dir / "soft_confidence_mask.npy", confidence.astype(np.float32))
     for name, motion in [("clean_target", target_motion), ("corrupted_reference", reference_motion), ("restored_prediction", restored_motion)]:
-        positions = recover_from_bvh_ric_np(motion.astype(np.float32))
-        out_anim, _, _ = animation_from_positions(positions=positions, parents=parents, offsets=offsets, iterations=150)
+        out_anim, has_animated_pos = recover_animation_from_motion_np(motion.astype(np.float32), parents, offsets)
         if out_anim is not None:
-            BVH.save(str(sample_dir / f"{name}.bvh"), out_anim, joints_names)
+            BVH.save(str(sample_dir / f"{name}.bvh"), out_anim, joints_names, positions=has_animated_pos)
 
 
 def compute_feature_metrics(

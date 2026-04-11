@@ -29,17 +29,15 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-import BVH
-from InverseKinematics import animation_from_positions
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import BVH
 from data_loaders.get_data import get_dataset_loader
-from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np
 from data_loaders.truebones.offline_reference_dataset import resolve_dataset_root
+from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
 
 
 def parse_args() -> argparse.Namespace:
@@ -102,11 +100,10 @@ def export_sample_bvh(
 
         exported = {}
         for name, motion in [("pred_xstart_raw", motion_raw), ("pred_xstart_restored", motion_restored)]:
-            positions = recover_from_bvh_ric_np(motion)
-            out_anim, _, _ = animation_from_positions(positions=positions, parents=parents, offsets=offsets, iterations=150)
+            out_anim, has_animated_pos = recover_animation_from_motion_np(motion, parents, offsets)
             if out_anim is not None:
                 bvh_path = str(sample_dir / f"{name}.bvh")
-                BVH.save(bvh_path, out_anim, joints_names)
+                BVH.save(bvh_path, out_anim, joints_names, positions=has_animated_pos)
                 exported[name] = bvh_path
 
         return {
