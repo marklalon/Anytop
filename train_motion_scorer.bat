@@ -3,7 +3,7 @@ set PYTHON_EXE=%~dp0..\.venv\Scripts\python.exe
 
 %PYTHON_EXE% "%~dp0train\train_motion_scorer.py" ^
     --objects_subset all ^
-    --motion_name_keywords walk,run,sprint ^
+    --action_tags locomotion ^
     --num_frames 60 ^
     --batch_size 32 ^
     --latent_dim 128 ^

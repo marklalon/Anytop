@@ -62,7 +62,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default=0, type=int, help="CUDA device id. Use -1 for CPU.")
     parser.add_argument("--seed", default=10, type=int, help="Global seed for deterministic setup.")
     parser.add_argument("--objects-subset", default="", help="Override the checkpoint objects_subset when set.")
-    parser.add_argument("--motion-name-keywords", default="", help="Override the checkpoint motion_name_keywords when set, e.g. 'walk,run'.")
+    parser.add_argument("--action-tags", default="", help="Override the checkpoint action_tags when set, e.g. 'locomotion,attack'.")
     parser.add_argument("--num-frames", default=-1, type=int, help="Override num_frames when > 0.")
     parser.add_argument("--eval-split", default="val", choices=["train", "val", "test", "all"], help="Dataset split used to choose the fixed subset.")
     parser.add_argument("--num-eval-samples", default=16, type=int, help="Number of unique samples to evaluate across all trials.")
@@ -93,6 +93,9 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
     with open(args_path, "r", encoding="utf-8") as handle:
         model_args = SimpleNamespace(**json.load(handle))
 
+    if not getattr(model_args, "action_tags", ""):
+        model_args.action_tags = getattr(model_args, "motion_name_keywords", "")
+
     model_args.model_path = str(model_path)
     model_args.device = args.device
     model_args.batch_size = args.eval_batch_size
@@ -103,8 +106,8 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
     model_args.lambda_repair_recon = float(model_args.lambda_repair_recon)
     if args.objects_subset:
         model_args.objects_subset = args.objects_subset
-    if args.motion_name_keywords:
-        model_args.motion_name_keywords = args.motion_name_keywords
+    if args.action_tags:
+        model_args.action_tags = args.action_tags
     if args.num_frames > 0:
         model_args.num_frames = args.num_frames
     model_args.sample_limit = 0
@@ -467,7 +470,7 @@ def collect_eval_samples(args: argparse.Namespace, model_args: SimpleNamespace) 
         sample_limit=model_args.sample_limit,
         drop_last=False,
         use_reference_conditioning=False,
-        motion_name_keywords=getattr(model_args, "motion_name_keywords", ""),
+        action_tags=getattr(model_args, "action_tags", ""),
     )
     if args.eval_num_workers > 0:
         loader_kwargs["prefetch_factor"] = model_args.prefetch_factor

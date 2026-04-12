@@ -112,8 +112,8 @@ def add_data_options(parser):
                        help="If empty, will use defaults according to the specified dataset.")
     group.add_argument("--objects_subset", default='all', choices=['all', 'quadropeds', 'flying', 'bipeds', 'millipeds', 'millipeds_snakes', 'quadropeds_clean', 'millipeds_clean', 'flying_clean', 'bipeds_clean', 'all_clean'], type=str,
                        help="Object subset.")
-    group.add_argument("--motion_name_keywords", default='', type=str,
-                       help="Comma-separated motion-name keywords used to keep only matching actions, e.g. 'walk,run'.")
+    group.add_argument("--action_tags", default='', type=str,
+                       help="Comma-separated action tags used to keep only motions whose metadata tags match, e.g. 'locomotion,attack'.")
     group.add_argument("--use_reference_conditioning", action=argparse.BooleanOptionalAction, default=True,
                        help="If False, skip loading offline corrupted reference motions and confidence masks.")
 
@@ -185,7 +185,7 @@ def add_two_stage_options(parser):
     group = parser.add_argument_group('two_stage')
     group.add_argument("--run_stage", default='both', choices=['stage1', 'stage2', 'both'], type=str,
                        help="Run only stage1, only stage2, or both sequentially.")
-    group.add_argument("--experiment_root", default='', type=str,
+    group.add_argument("--output-dir", default='', type=str,
                        help="Optional root directory under which stage1_pretrain and stage2_repair directories will be created.")
     group.add_argument("--stage1_save_dir", default='', type=str,
                        help="Output directory for stage1 clean pretraining.")

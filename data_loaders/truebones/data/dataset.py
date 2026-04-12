@@ -11,7 +11,7 @@ import random
 from typing import Optional
 from torch.utils.data._utils.collate import default_collate
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
-from data_loaders.truebones.truebones_utils.param_utils import filter_motion_names_by_keywords
+from data_loaders.truebones.truebones_utils.param_utils import parse_action_tags
 from data_loaders.truebones.truebones_utils.motion_labels import infer_motion_labels_from_motion_name, load_motion_metadata
 from data_loaders.truebones.truebones_utils.motion_process import remove_joints_augmentation, add_joint_augmentation
 from data_loaders.truebones.offline_reference_dataset import load_corrupted_reference_sample
@@ -22,6 +22,44 @@ DEFAULT_SPLIT_RATIOS = {"train": 0.9, "val": 0.05, "test": 0.05}
 DEFAULT_SPLIT_SEED = 3407
 SUPPORTED_SPLITS = tuple(DEFAULT_SPLIT_RATIOS.keys())
 ALL_SPLIT_NAME = "all"
+
+
+def _normalize_motion_action_tags(raw_action_tags) -> set[str]:
+    if raw_action_tags is None:
+        return set()
+    if isinstance(raw_action_tags, str):
+        values = [raw_action_tags]
+    else:
+        values = raw_action_tags
+    return {
+        str(tag).strip().lower()
+        for tag in values
+        if str(tag).strip()
+    }
+
+
+def filter_motion_names_by_action_tags(
+    motion_names,
+    raw_action_tags,
+    motion_metadata_lookup,
+    object_types,
+):
+    requested_action_tags = set(parse_action_tags(raw_action_tags))
+    if not requested_action_tags:
+        return motion_names
+
+    filtered = set()
+    for motion_name in motion_names:
+        motion_metadata = motion_metadata_lookup.get(motion_name)
+        if motion_metadata is None:
+            motion_metadata = infer_motion_labels_from_motion_name(
+                motion_name,
+                object_types=object_types,
+            )
+        motion_action_tags = _normalize_motion_action_tags(motion_metadata.get('action_tags'))
+        if motion_action_tags.intersection(requested_action_tags):
+            filtered.add(motion_name)
+    return filtered
 
 
 def collate_fn(batch):
@@ -248,7 +286,7 @@ def attach_joint_name_embeddings(cond_dict: dict, cond_file: str, data_root: str
 
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, temporal_window, t5_name, balanced, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, use_reference_conditioning: bool = True):
+    def __init__(self, opt, cond_dict, temporal_window, t5_name, balanced, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, use_reference_conditioning: bool = True, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None):
         self.opt = opt
         self.max_length = 20
         self.pointer = 0
@@ -262,7 +300,8 @@ class MotionDataset(data.Dataset):
         self.motion_cache = OrderedDict()
         data_dict = {}
         all_object_types = self.cond_dict.keys()
-        motion_metadata_lookup = load_motion_metadata(opt.data_root)
+        if motion_metadata_lookup is None:
+            motion_metadata_lookup = load_motion_metadata(opt.data_root)
         new_name_list = []
         length_list = []
         motion_length_cache_path = _motion_length_cache_path(opt.data_root)
@@ -471,7 +510,7 @@ class Truebones(data.Dataset):
         self.opt = opt
         self.balanced = kwargs['balanced']
         self.objects_subset = kwargs['objects_subset']
-        self.motion_name_keywords = kwargs.get('motion_name_keywords', '')
+        self.action_tags = kwargs.get('action_tags', '')
         self.sample_limit = kwargs.get('sample_limit', 0)
         self.use_reference_conditioning = kwargs.get('use_reference_conditioning', True)
         self.motion_cache_size = kwargs.get('motion_cache_size', 0)
@@ -490,7 +529,13 @@ class Truebones(data.Dataset):
             
         self.split_file = pjoin(opt.data_root, f'{split}.txt') if split != ALL_SPLIT_NAME else ''
         allowed_motion_names = load_motion_names_for_split(split, opt.data_root, opt.motion_dir)
-        allowed_motion_names = filter_motion_names_by_keywords(allowed_motion_names, self.motion_name_keywords)
+        motion_metadata_lookup = load_motion_metadata(opt.data_root)
+        allowed_motion_names = filter_motion_names_by_action_tags(
+            allowed_motion_names,
+            self.action_tags,
+            motion_metadata_lookup,
+            cond_dict.keys(),
+        )
         self.motion_dataset = MotionDataset(
             self.opt,
             cond_dict,
@@ -500,6 +545,7 @@ class Truebones(data.Dataset):
             sample_limit=self.sample_limit,
             allowed_motion_names=allowed_motion_names,
             use_reference_conditioning=self.use_reference_conditioning,
+            motion_metadata_lookup=motion_metadata_lookup,
         )
         assert len(self.motion_dataset) > 0, 'You loaded an empty dataset, ' \
                                           'it is probably because your data dir has only texts and no motions.\n' \

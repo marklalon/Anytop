@@ -301,7 +301,7 @@ def create_data_loader(args, split: str, *, shuffle: bool, drop_last: bool, bala
         shuffle=shuffle,
         drop_last=drop_last,
         use_reference_conditioning=False,
-        motion_name_keywords=getattr(args, "motion_name_keywords", ""),
+        action_tags=getattr(args, "action_tags", ""),
         motion_cache_size=getattr(args, "motion_cache_size", 0),
         main_process_prefetch_batches=getattr(args, "main_process_prefetch_batches", 0),
     )
@@ -724,7 +724,7 @@ def compute_and_save_train_stats(args, model: MotionAutoencoder, device: torch.d
         shuffle=False,
         drop_last=False,
         use_reference_conditioning=False,
-        motion_name_keywords=getattr(args, "motion_name_keywords", ""),
+        action_tags=getattr(args, "action_tags", ""),
         motion_cache_size=getattr(args, "motion_cache_size", 0),
         main_process_prefetch_batches=getattr(args, "main_process_prefetch_batches", 0),
     )

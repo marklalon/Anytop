@@ -37,8 +37,8 @@ def build_parser() -> ArgumentParser:
     parser.add_argument("--seed", default=10, type=int, help="Random seed for reproducible debug output.")
     parser.add_argument("--objects_subset", default="", type=str,
                         help="Override objects_subset. Empty reuses the scorer training args.")
-    parser.add_argument("--motion_name_keywords", default="", type=str,
-                        help="Override motion_name_keywords. Empty reuses the scorer training args.")
+    parser.add_argument("--action_tags", default="", type=str,
+                        help="Override action_tags. Empty reuses the scorer training args.")
     parser.add_argument("--num_frames", default=0, type=int,
                         help="Override num_frames. 0 reuses the scorer training args.")
     parser.add_argument("--num_workers", default=0, type=int,
@@ -98,7 +98,7 @@ def build_dataloader(args, scorer: MotionQualityScorer):
     scorer_args = scorer.args
     num_frames = args.num_frames or int(scorer_args.get("num_frames", 120))
     objects_subset = args.objects_subset or scorer_args.get("objects_subset", "all")
-    motion_name_keywords = args.motion_name_keywords or scorer_args.get("motion_name_keywords", "")
+    action_tags = args.action_tags or scorer_args.get("action_tags", scorer_args.get("motion_name_keywords", ""))
     return get_dataset_loader(
         batch_size=args.batch_size,
         num_frames=num_frames,
@@ -113,7 +113,7 @@ def build_dataloader(args, scorer: MotionQualityScorer):
         shuffle=False,
         drop_last=False,
         use_reference_conditioning=False,
-        motion_name_keywords=motion_name_keywords,
+        action_tags=action_tags,
     )
 
 
@@ -149,7 +149,7 @@ def main() -> int:
             "random_sigma": args.random_sigma,
             "seed": args.seed,
             "objects_subset": args.objects_subset or scorer.args.get("objects_subset", "all"),
-            "motion_name_keywords": args.motion_name_keywords or scorer.args.get("motion_name_keywords", ""),
+            "action_tags": args.action_tags or scorer.args.get("action_tags", scorer.args.get("motion_name_keywords", "")),
             "num_frames": args.num_frames or scorer.args.get("num_frames", 120),
         },
         "summary": {

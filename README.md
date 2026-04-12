@@ -166,12 +166,18 @@ To reproduce the flying animals paper model, run:
 python -m train.train_anytop --model_prefix flying --objects_subset flying --lambda_geo 1.0 --auto_resume --gen_during_training --balanced
 ```
 * **General instructions** Checkout './utils/parser_utils.py' to view all configurable parameters and default settings. '--balanced' flag is used to activate the balancing sampler, ensuring fair sampling of all skeletons. Use '--auto_resume' if you want the script to continue from the latest checkpoint in save_dir. Without it, training starts fresh and overwrites existing checkpoints in save_dir. 
+* Use `--action_tags` to keep only motions whose `motion_metadata.json` `action_tags` contain one of the requested tags. Example: `--action_tags locomotion` or `--action_tags locomotion,attack`.
 * **Recommended:** Add `--gen_during_training` to generate motions for each saved checkpoint. 
   This will slow down training but will give you better monitoring.
 * **Recommended:** Add `--use_ema` for Exponential Moving Average to improve performance.
 * Use `--diffusion_steps 50` to train the faster model with less diffusion steps.
 * Use `--device` to define GPU id.
 * Add `--train_platform_type {WandBPlatform, TensorboardPlatform}` to track results with either [WandB](https://wandb.ai/site/) or [Tensorboard](https://www.tensorflow.org/tensorboard).
+
+Example of training only on locomotion clips:
+```shell
+python -m train.train_anytop --model_prefix all_locomotion --objects_subset all --action_tags locomotion --lambda_geo 1.0 --auto_resume --balanced
+```
 
 ## Correspondence
 We release our correspondence code for both joint-level and temporal matching.

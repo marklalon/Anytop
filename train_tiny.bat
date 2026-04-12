@@ -3,8 +3,8 @@ set PYTHON_EXE=%~dp0..\.venv\Scripts\python.exe
 
 %PYTHON_EXE% train/train_anytop_two_stage.py ^
 	--run_stage stage1 ^
-	--resume_checkpoint save/stage1_tiny_overfit_all_move_clean_s100000/stage1_pretrain/model000050000.pt ^
-	--experiment_root save/stage1_tiny_overfit_all_clean_s100000 ^
+	--output-dir save/stage1_tiny_overfit_all_move_clean_s100000 ^
+	--action_tags locomotion ^
 	--auto_resume ^
 	--objects_subset all ^
 	--diffusion_steps 100 ^

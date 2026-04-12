@@ -111,7 +111,7 @@ class TrainLoop:
                 shuffle=False,
                 drop_last=False,
                 use_reference_conditioning=getattr(self.args, 'use_reference_conditioning', True),
-                motion_name_keywords=getattr(self.args, 'motion_name_keywords', ''),
+                action_tags=getattr(self.args, 'action_tags', ''),
             )
         self.use_ddp = False
         self.ddp_model = self.model

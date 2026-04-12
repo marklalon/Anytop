@@ -14,8 +14,8 @@ def _resolve_stage_save_dir(args, stage_name, default_suffix):
     explicit_dir = getattr(args, f'{stage_name}_save_dir', '')
     if explicit_dir:
         return explicit_dir
-    if args.experiment_root:
-        return os.path.join(args.experiment_root, default_suffix)
+    if args.output_dir:
+        return os.path.join(args.output_dir, default_suffix)
     save_root = os.path.join(os.getcwd(), 'save')
     prefix = args.model_prefix or 'AnyTopTwoStage'
     return os.path.join(save_root, f'{prefix}_{default_suffix}')
@@ -75,9 +75,9 @@ def _build_stage_args(base_args, stage_name, save_dir):
 
 
 def _write_manifest(base_args, stage1_args, stage2_args, stage1_checkpoint, stage2_checkpoint):
-    if not base_args.experiment_root:
+    if not base_args.output_dir:
         return
-    os.makedirs(base_args.experiment_root, exist_ok=True)
+    os.makedirs(base_args.output_dir, exist_ok=True)
     manifest = {
         'run_stage': base_args.run_stage,
         'stage1': {
@@ -92,7 +92,7 @@ def _write_manifest(base_args, stage1_args, stage2_args, stage1_checkpoint, stag
             'load_optimizer_state': getattr(stage2_args, 'load_optimizer_state', False),
         },
     }
-    manifest_path = os.path.join(base_args.experiment_root, 'two_stage_manifest.json')
+    manifest_path = os.path.join(base_args.output_dir, 'two_stage_manifest.json')
     with open(manifest_path, 'w') as handle:
         json.dump(manifest, handle, indent=2, sort_keys=True)
 

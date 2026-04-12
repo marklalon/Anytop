@@ -77,26 +77,14 @@ OBJECT_SUBSETS_DICT = {"all" : QUADROPEDS + BIPEDS + MILLIPEDS + SNAKES + FISH +
                        }
 
 
-def parse_motion_name_keywords(raw_keywords):
-        if raw_keywords is None:
+def parse_action_tags(raw_action_tags):
+        if raw_action_tags is None:
                 return tuple()
-        if isinstance(raw_keywords, str):
-                tokens = raw_keywords.replace(';', ',').split(',')
+        if isinstance(raw_action_tags, str):
+                tokens = raw_action_tags.replace(';', ',').split(',')
         else:
-                tokens = raw_keywords
+                tokens = raw_action_tags
         return tuple(token.strip().lower() for token in tokens if str(token).strip())
-
-
-def filter_motion_names_by_keywords(motion_names, raw_keywords):
-        keywords = parse_motion_name_keywords(raw_keywords)
-        if not keywords:
-                return motion_names
-
-        filtered = {
-                name for name in motion_names
-                if any(keyword in name.lower() for keyword in keywords)
-        }
-        return filtered
 
 MAX_JOINTS=143
 FPS=20

@@ -32,7 +32,7 @@ python preprocess_and_validate.py --skip-validate
 - Runs `utils/create_dataset.py`
 - Creates motion `.npy` tensors from input BVH files
 - Generates `cond.npy` (conditioning file with skeleton metadata, including canonical joint names, end-effectors, contact joints, and left/right symmetry pairs)
-- Writes `motion_metadata.json` with per-motion species and action labels
+- Writes `motion_metadata.json` with per-motion species labels, action labels, and `action_tags`
 - Outputs summary to `metadata.txt` and error rates to `positions_error_rate.txt`
 
 ### Step 2: Stored Corrupted References
@@ -73,6 +73,8 @@ By default, preprocessed data is saved to the directory specified by:
 
 Stored corrupted references are written beside clean motions under:
 - `corrupted_references/`
+
+Downstream training and debug scripts can filter motions by semantic tags from `motion_metadata.json` using `--action_tags`, for example `--action_tags locomotion`.
 
 ## Troubleshooting
 
