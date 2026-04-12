@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 
 def lengths_to_mask(lengths, max_len):
     mask = torch.arange(max_len, device=lengths.device).expand(len(lengths), max_len) < lengths.unsqueeze(1)
@@ -28,11 +29,11 @@ def collate_tensors(batch):
     return canvas
 
 def create_padded_relation(relation_np, max_joints, n_joints):
-        # it counts on spatial attention masks!
-        relation = torch.from_numpy(relation_np)
-        padded_relation = torch.zeros((max_joints, max_joints)) 
-        padded_relation[:n_joints, :n_joints ] = relation
-        return padded_relation
+    # it counts on spatial attention masks!
+    relation = torch.as_tensor(relation_np)
+    padded_relation = torch.zeros((max_joints, max_joints)) 
+    padded_relation[:n_joints, :n_joints ] = relation
+    return padded_relation
 
 def truebones_collate(batch):
     notnone_batches = [b for b in batch if b is not None]
@@ -123,18 +124,18 @@ def truebones_batch_collate(batch):
     for b in batch:  
         max_len, n_joints, n_feats = b[0].shape
         tpos_first_frame = torch.zeros((max_joints, n_feats))
-        tpos_first_frame[:n_joints] = torch.tensor(b[3])
+        tpos_first_frame[:n_joints] = torch.from_numpy(np.asarray(b[3], dtype=np.float32))
         motion = torch.zeros((max_len, max_joints, n_feats)) # (frames, max_joints, feature_len) 
-        motion[:, :b[0].shape[1], :] = torch.tensor(b[0])   
+        motion[:, :b[0].shape[1], :] = torch.from_numpy(np.asarray(b[0], dtype=np.float32))
         joints_names_embs = torch.zeros((max_joints, b[9].shape[1]))
-        joints_names_embs[:n_joints] = torch.tensor(b[9])
+        joints_names_embs[:n_joints] = torch.from_numpy(np.asarray(b[9], dtype=np.float32))
         crop_start_ind = b[10]
         mean = torch.zeros((max_joints, n_feats))
-        mean[:n_joints] = torch.tensor(b[11])
+        mean[:n_joints] = torch.from_numpy(np.asarray(b[11], dtype=np.float32))
         std = torch.ones((max_joints, n_feats))
-        std[:n_joints] = torch.tensor(b[12])
+        std[:n_joints] = torch.from_numpy(np.asarray(b[12], dtype=np.float32))
         n_joints = b[0].shape[1]
-        temporal_mask = torch.as_tensor(b[5][:max_len + 1, :max_len + 1]).clone()
+        temporal_mask = torch.as_tensor(b[5][:max_len + 1, :max_len + 1])
         padded_joints_relations =  create_padded_relation(b[7], max_joints, n_joints)
         padded_graph_dist =  create_padded_relation(b[6], max_joints, n_joints)
         object_type = b[8]
@@ -143,9 +144,9 @@ def truebones_batch_collate(batch):
         corruption_metadata = None
         if len(b) > 15:
             reference_motion = torch.zeros((max_len, max_joints, n_feats))
-            reference_motion[:, :b[14].shape[1], :] = torch.tensor(b[14])
+            reference_motion[:, :b[14].shape[1], :] = torch.from_numpy(np.asarray(b[14], dtype=np.float32))
             soft_confidence_mask = torch.zeros((max_len, max_joints, 1))
-            soft_confidence_mask[:, :b[15].shape[1], :] = torch.tensor(b[15])
+            soft_confidence_mask[:, :b[15].shape[1], :] = torch.from_numpy(np.asarray(b[15], dtype=np.float32))
             corruption_metadata = b[16]
 
         item = {

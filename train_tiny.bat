@@ -5,7 +5,7 @@ set PYTHON_EXE=%~dp0..\.venv\Scripts\python.exe
 	--run_stage stage1 ^
 	--resume_checkpoint save/stage1_tiny_overfit_all_move_clean_s100000/stage1_pretrain/model000050000.pt ^
 	--experiment_root save/stage1_tiny_overfit_all_clean_s100000 ^
-	--overwrite ^
+	--auto_resume ^
 	--objects_subset all ^
 	--diffusion_steps 100 ^
 	--num_frames 60 ^

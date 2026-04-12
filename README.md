@@ -144,28 +144,28 @@ Stick figure animation looks something like this:
 
 To reproduce the unified paper model, run:
 ```shell
-python -m train.train_anytop --model_prefix all --objects_subset all --lambda_geo 1.0 --overwrite --balanced
+python -m train.train_anytop --model_prefix all --objects_subset all --lambda_geo 1.0 --auto_resume --balanced
 ```
 
 To reproduce the bipeds paper model, run:
 ```shell
-python -m train.train_anytop --model_prefix bipeds --objects_subset bipeds --lambda_geo 1.0 --overwrite --balanced
+python -m train.train_anytop --model_prefix bipeds --objects_subset bipeds --lambda_geo 1.0 --auto_resume --balanced
 ```
 
 To reproduce the quadropeds paper model, run:
 ```shell
-python -m train.train_anytop --model_prefix quadropeds --objects_subset quadropeds --lambda_geo 1.0 --overwrite --balanced
+python -m train.train_anytop --model_prefix quadropeds --objects_subset quadropeds --lambda_geo 1.0 --auto_resume --balanced
 ```
 To reproduce the millipeds paper model, run:
 ```shell
-python -m train.train_anytop --model_prefix millipeds_snakes --objects_subset millipeds_snakes --lambda_geo 1.0 --overwrite --balanced
+python -m train.train_anytop --model_prefix millipeds_snakes --objects_subset millipeds_snakes --lambda_geo 1.0 --auto_resume --balanced
 ```
 
 To reproduce the flying animals paper model, run:
 ```shell
-python -m train.train_anytop --model_prefix flying --objects_subset flying --lambda_geo 1.0 --overwrite --gen_during_training --balanced
+python -m train.train_anytop --model_prefix flying --objects_subset flying --lambda_geo 1.0 --auto_resume --gen_during_training --balanced
 ```
-* **General instructions** Checkout './utils/parser_utils.py' to view all configurable parameters and default settings. '--balanced' flag is used to activate the balancing sampler, ensuring fair sampling of all skeletons. Use '--overwrite' flag if you wish to resume training of previous checkpoint. 
+* **General instructions** Checkout './utils/parser_utils.py' to view all configurable parameters and default settings. '--balanced' flag is used to activate the balancing sampler, ensuring fair sampling of all skeletons. Use '--auto_resume' if you want the script to continue from the latest checkpoint in save_dir. Without it, training starts fresh and overwrites existing checkpoints in save_dir. 
 * **Recommended:** Add `--gen_during_training` to generate motions for each saved checkpoint. 
   This will slow down training but will give you better monitoring.
 * **Recommended:** Add `--use_ema` for Exponential Moving Average to improve performance.

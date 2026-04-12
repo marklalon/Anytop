@@ -123,8 +123,8 @@ def add_training_options(parser):
                        help="Path to save checkpoints and results.")
     group.add_argument("--model_prefix", type=str,
                        help="Unique string at the beggining of the model name.")
-    group.add_argument("--overwrite", action='store_true',
-                       help="If True, will enable to use an already existing save_dir.")
+    group.add_argument("--auto_resume", action='store_true',
+                       help="If passed, automatically resume from the latest checkpoint in save_dir. Without this flag, training starts fresh and existing checkpoints in save_dir are overwritten.")
     group.add_argument("--ml_platform_type", default='NoPlatform', choices=['NoPlatform', 'ClearmlPlatform', 'TensorboardPlatform', 'WandBPlatform'], type=str,
                        help="Choose platform to log results. NoPlatform means no logging.")
     group.add_argument("--amp_dtype", default='fp32', choices=['fp32', 'fp16', 'bf16'], type=str,
@@ -162,6 +162,10 @@ def add_training_options(parser):
                        help="Limit the number of motion clips loaded for tiny overfit/debug runs. 0 keeps the full dataset.")
     group.add_argument("--prefetch_factor", default=2, type=int,
                        help="Per-worker prefetch factor for the restoration dataset loader.")
+    group.add_argument("--motion_cache_size", default=0, type=int,
+                       help="Number of raw motion clips to keep in an in-memory LRU cache per dataset instance. 0 disables it.")
+    group.add_argument("--main_process_prefetch_batches", default=0, type=int,
+                       help="When num_workers=0, prefetch this many batches on a background thread to overlap data loading with GPU compute. 0 disables it.")
     group.add_argument("--detect_anomaly", action='store_true',
                        help="Enable PyTorch autograd anomaly detection. Useful for debugging, but significantly slows training.")
     group.add_argument("--resume_checkpoint", default="", type=str,

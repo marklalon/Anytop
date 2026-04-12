@@ -54,7 +54,7 @@ class TrainLoop:
 
         self.sync_cuda = torch.cuda.is_available()
         self.save_dir = args.save_dir
-        self.overwrite = args.overwrite
+        self.auto_resume = getattr(args, 'auto_resume', False)
 
         self.device = torch.device("cpu")
         if torch.cuda.is_available() and dist_util.dev() != 'cpu':

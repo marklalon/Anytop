@@ -4,7 +4,7 @@ from torch.utils.data.sampler import WeightedRandomSampler
 import numpy as np
 import os
 import re
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from os.path import join as pjoin
 from pathlib import Path
 import random
@@ -145,6 +145,36 @@ def _joint_name_embedding_cache_path(data_root: str, t5_name: str) -> Path:
     return cache_dir / f"joint_name_t5_{_sanitize_cache_component(t5_name)}.npy"
 
 
+def _motion_length_cache_path(data_root: str) -> Path:
+    cache_dir = Path(data_root) / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / "motion_lengths.npy"
+
+
+def _load_motion_length_cache(cache_path: Path) -> dict[str, dict[str, int]]:
+    if not cache_path.exists():
+        return {}
+    try:
+        payload = np.load(cache_path, allow_pickle=True).item()
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    entries = payload.get("entries")
+    if not isinstance(entries, dict):
+        return {}
+    return entries
+
+
+def _save_motion_length_cache(cache_path: Path, entries: dict[str, dict[str, int]]) -> None:
+    np.save(cache_path, {"entries": entries}, allow_pickle=True)
+
+
+def _read_motion_length(motion_path: str) -> int:
+    motion = np.load(motion_path, mmap_mode='r')
+    return len(motion)
+
+
 def _load_cached_joint_name_embeddings(cache_path: Path, cond_file: str, expected_object_types: set[str]) -> Optional[dict[str, np.ndarray]]:
     if not cache_path.exists():
         return None
@@ -226,30 +256,52 @@ class MotionDataset(data.Dataset):
         self.balanced = balanced
         self.use_reference_conditioning = bool(use_reference_conditioning)
         self.sample_limit = max(0, int(sample_limit))
+        self.motion_cache_size = max(0, int(getattr(opt, 'motion_cache_size', 0)))
+        self.cache_normalized_motion = self.motion_cache_size > 0 and not self.use_reference_conditioning
+        self.motion_cache = OrderedDict()
         data_dict = {}
         all_object_types = self.cond_dict.keys()
         new_name_list = []
         length_list = []
+        motion_length_cache_path = _motion_length_cache_path(opt.data_root)
+        motion_length_cache = _load_motion_length_cache(motion_length_cache_path)
+        cache_dirty = False
+
+        all_motion_files = [name for name in os.listdir(opt.motion_dir) if name.endswith('.npy')]
+        if allowed_motion_names is not None:
+            all_motion_files = [name for name in all_motion_files if name in allowed_motion_names]
 
         for object_type in all_object_types:
-            object_motions = [f for f in os.listdir(opt.motion_dir) if f.startswith(f'{object_type}_')]
-            if allowed_motion_names is not None:
-                object_motions = [name for name in object_motions if name in allowed_motion_names]
+            object_motions = [name for name in all_motion_files if name.startswith(f'{object_type}_')]
             
             for name in object_motions:
                 try:
                     motion_path = pjoin(opt.motion_dir, name)
-                    motion = np.load(motion_path, mmap_mode='r')
+                    stat = os.stat(motion_path)
+                    cache_entry = motion_length_cache.get(name)
+                    if cache_entry is not None and cache_entry.get('mtime_ns') == stat.st_mtime_ns and cache_entry.get('size_bytes') == stat.st_size:
+                        motion_length = int(cache_entry['length'])
+                    else:
+                        motion_length = _read_motion_length(motion_path)
+                        motion_length_cache[name] = {
+                            'length': int(motion_length),
+                            'mtime_ns': int(stat.st_mtime_ns),
+                            'size_bytes': int(stat.st_size),
+                        }
+                        cache_dirty = True
                     data_dict[name] = {
                                         'motion_path': motion_path,
-                                        'length': len(motion),
+                                        'length': motion_length,
                                         'object_type': object_type,
                                        }
                                        
                     new_name_list.append(name)
-                    length_list.append(len(motion))
+                    length_list.append(motion_length)
                 except Exception:
                     pass
+
+        if cache_dirty:
+            _save_motion_length_cache(motion_length_cache_path, motion_length_cache)
                 
         sorted_pairs = sorted(zip(new_name_list, length_list), key=lambda x: x[1])
         if not sorted_pairs:
@@ -297,12 +349,7 @@ class MotionDataset(data.Dataset):
 
     def _prepare_sample(self, name, data):
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std = self.augment(data)
-        std = std + 1e-6
-        motion = (motion - mean[None, :]) / std[None, :]
-        motion = np.nan_to_num(motion)
         ind = 0
-        tpos_first_frame = (tpos_first_frame - mean) / std
-        tpos_first_frame = np.nan_to_num(tpos_first_frame)
         if m_length > self.max_motion_length:
             ind = random.randint(0, m_length - self.max_motion_length)
             motion = motion[ind: ind + self.max_motion_length]
@@ -346,10 +393,25 @@ class MotionDataset(data.Dataset):
     def augment(self, data):
         object_type = data['object_type']
         cond = self.cond_dict[object_type]
-        motion = np.load(data['motion_path'])
+        motion_path = data['motion_path']
+        if self.motion_cache_size > 0:
+            motion = self.motion_cache.get(motion_path)
+            if motion is None:
+                motion = np.load(motion_path).astype(np.float32, copy=False)
+                if self.cache_normalized_motion:
+                    motion = np.nan_to_num((motion - cond['mean'][None, :]) / cond['std_safe'][None, :]).astype(np.float32, copy=False)
+                self.motion_cache[motion_path] = motion
+                self.motion_cache.move_to_end(motion_path)
+                while len(self.motion_cache) > self.motion_cache_size:
+                    self.motion_cache.popitem(last=False)
+            else:
+                self.motion_cache.move_to_end(motion_path)
+        else:
+            motion = np.load(motion_path).astype(np.float32, copy=False)
+            motion = np.nan_to_num((motion - cond['mean'][None, :]) / cond['std_safe'][None, :]).astype(np.float32, copy=False)
         mean = self.cond_dict[object_type]['mean']
-        std = self.cond_dict[object_type]['std']
-        return motion, data['length'], object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], cond['tpos_first_frame'], cond['offsets'], cond['joints_names_embs'], cond['kinematic_chains'], mean, std
+        std = self.cond_dict[object_type]['std_safe']
+        return motion, data['length'], object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], cond['tpos_first_frame_normalized'], cond['offsets'], cond['joints_names_embs'], cond['kinematic_chains'], mean, std
         
     def __len__(self):
         return len(self.name_list) - self.pointer
@@ -407,10 +469,19 @@ class Truebones(data.Dataset):
         self.motion_name_keywords = kwargs.get('motion_name_keywords', '')
         self.sample_limit = kwargs.get('sample_limit', 0)
         self.use_reference_conditioning = kwargs.get('use_reference_conditioning', True)
+        self.motion_cache_size = kwargs.get('motion_cache_size', 0)
+        self.opt.motion_cache_size = self.motion_cache_size
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
         subset = opt.subsets_dict[self.objects_subset] 
         cond_dict = {k:cond_dict[k] for k in subset if k in cond_dict}
         cond_dict = attach_joint_name_embeddings(cond_dict, opt.cond_file, opt.data_root, t5_name)
+        for object_type, cond in cond_dict.items():
+            mean = np.asarray(cond['mean'], dtype=np.float32)
+            std_safe = np.asarray(cond['std'], dtype=np.float32) + 1e-6
+            cond['mean'] = mean
+            cond['std'] = np.asarray(cond['std'], dtype=np.float32)
+            cond['std_safe'] = std_safe
+            cond['tpos_first_frame_normalized'] = np.nan_to_num((np.asarray(cond['tpos_first_frame'], dtype=np.float32) - mean) / std_safe).astype(np.float32, copy=False)
             
         self.split_file = pjoin(opt.data_root, f'{split}.txt') if split != ALL_SPLIT_NAME else ''
         allowed_motion_names = load_motion_names_for_split(split, opt.data_root, opt.motion_dir)
