@@ -9,8 +9,18 @@ DEFAULT_DATASET_DIR = "dataset/truebones/zoo/truebones_processed"
 
 def get_raw_data_dir(raw_data_dir=None):
         if raw_data_dir is not None:
-                return raw_data_dir
-        return DEFAULT_RAW_DATA_DIR
+                resolved_dir = raw_data_dir
+        else:
+                resolved_dir = DEFAULT_RAW_DATA_DIR
+        
+        if not os.path.isdir(resolved_dir):
+                raise FileNotFoundError(
+                        f"Raw BVH directory not found at: {resolved_dir}\n"
+                        f"Please provide a valid path using --raw-data-dir argument.\n"
+                        f"Example: python preprocess_and_validate.py --raw-data-dir /path/to/Truebone_Z-OO"
+                )
+        
+        return resolved_dir
 
 
 def get_dataset_dir(dataset_dir=None):
@@ -22,7 +32,8 @@ def get_dataset_dir(dataset_dir=None):
 MOTION_DIR = "motions"
 BVHS_DIR = "bvhs"
 CORRUPTED_REFERENCE_DIR = "corrupted_references"
-FOOT_CONTACT_HEIGHT_THRESH = 0.3
+MOTION_METADATA_FILE = "motion_metadata.json"
+FOOT_CONTACT_HEIGHT_THRESH = 0.2
 FOOT_CONTACT_VEL_THRESH = 0.002
 MAX_PATH_LEN = 5.
 # Vertical clamp thresholds expressed as a ratio of the character's reference

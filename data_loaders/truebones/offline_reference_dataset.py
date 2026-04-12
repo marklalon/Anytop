@@ -7,6 +7,7 @@ from typing import Iterable
 import numpy as np
 
 from data_loaders.truebones.corruption import MotionCorruptor
+from data_loaders.truebones.truebones_utils.motion_labels import infer_motion_labels_from_motion_name, load_motion_metadata
 from data_loaders.truebones.truebones_utils.param_utils import (
     CORRUPTED_REFERENCE_DIR,
     MOTION_DIR,
@@ -111,6 +112,7 @@ def export_corrupted_reference_dataset(
     dataset_root = resolve_dataset_root(dataset_dir)
     motion_dir = get_motion_dir(dataset_root)
     cond_dict = load_cond_dict(dataset_root)
+    motion_metadata_lookup = load_motion_metadata(dataset_root)
     reference_dir = get_corrupted_reference_dir(dataset_root)
     reference_dir.mkdir(parents=True, exist_ok=True)
 
@@ -176,6 +178,10 @@ def export_corrupted_reference_dataset(
             "seed": int(seed),
             "corruption_metadata": _json_safe(corruption_metadata),
         }
+        sample_metadata.update(
+            motion_metadata_lookup.get(motion_file)
+            or infer_motion_labels_from_motion_name(motion_file, object_type=object_type, object_types=cond_dict.keys())
+        )
         with open(sample_paths["metadata"], "w", encoding="utf-8") as handle:
             json.dump(sample_metadata, handle, indent=2)
         manifest.append(sample_metadata)

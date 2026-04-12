@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -15,16 +16,19 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     MAX_JOINTS,
     MOTION_DIR,
     BVHS_DIR,
+    MOTION_METADATA_FILE,
     OBJECT_SUBSETS_DICT,
     get_dataset_dir,
 )
 from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
     BVH,
+    positions_global,
+)
+from data_loaders.truebones.truebones_utils.face_orientation import (  # noqa: E402
     _get_facing_candidates,
     _find_forward_reference_joint,
     _find_neck_reference_joint,
     _get_head_forward,
-    positions_global,
     resolve_face_joints,
 )
 
@@ -80,6 +84,85 @@ def _validate_metadata(metadata_path: Path) -> None:
         _print_ok("metadata.txt contains summary fields")
     except ValidationError as e:
         _print_warn(f"validation error: {e}")
+
+
+def _validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: dict) -> None:
+    metadata_path = dataset_dir / MOTION_METADATA_FILE
+    if not metadata_path.exists():
+        _print_warn(f"optional artifact missing: {metadata_path}")
+        return
+
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        motions = payload.get("motions", payload)
+        _require(isinstance(motions, dict), f"{MOTION_METADATA_FILE} must contain a motions dictionary")
+        for motion_path in _select_validation_files(motion_files, 16):
+            motion_name = motion_path.name
+            _require(motion_name in motions, f"missing motion metadata entry: {motion_name}")
+            motion_metadata = motions[motion_name]
+            _require(motion_metadata.get("motion_name") == motion_name, f"motion_name mismatch for {motion_name}")
+            object_type = _match_object_type(motion_path.stem, cond)
+            _require(motion_metadata.get("object_type") == object_type, f"object_type mismatch for {motion_name}")
+            _require(bool(motion_metadata.get("species_label")), f"species_label missing for {motion_name}")
+            _require(bool(motion_metadata.get("action_label")), f"action_label missing for {motion_name}")
+            _require(bool(motion_metadata.get("action_category")), f"action_category missing for {motion_name}")
+        _print_ok(f"{MOTION_METADATA_FILE} contains label metadata")
+    except ValidationError as e:
+        _print_warn(f"validation error: {e}")
+
+
+def _validate_optional_semantic_metadata(object_type: str, object_cond: dict, n_joints: int) -> None:
+    canonical_joint_names = object_cond.get("canonical_joint_names")
+    if canonical_joint_names is not None and len(canonical_joint_names) != n_joints:
+        _print_warn(f"validation error: {object_type} canonical_joint_names length mismatch: {len(canonical_joint_names)} vs {n_joints}")
+
+    joint_side_labels = object_cond.get("joint_side_labels")
+    if joint_side_labels is not None:
+        if len(joint_side_labels) != n_joints:
+            _print_warn(f"validation error: {object_type} joint_side_labels length mismatch: {len(joint_side_labels)} vs {n_joints}")
+        else:
+            invalid_labels = sorted({label for label in joint_side_labels if label not in {"left", "right", "center"}})
+            if invalid_labels:
+                _print_warn(f"validation error: {object_type} joint_side_labels contain invalid values: {invalid_labels}")
+
+    for key in ("end_effector_joints", "contact_joints"):
+        indices = object_cond.get(key)
+        if indices is None:
+            continue
+        invalid = [index for index in indices if int(index) < 0 or int(index) >= n_joints]
+        if invalid:
+            _print_warn(f"validation error: {object_type} {key} contain invalid joint indices: {invalid[:8]}")
+
+    symmetry_partner_indices = object_cond.get("symmetry_partner_indices")
+    if symmetry_partner_indices is not None:
+        if len(symmetry_partner_indices) != n_joints:
+            _print_warn(f"validation error: {object_type} symmetry_partner_indices length mismatch: {len(symmetry_partner_indices)} vs {n_joints}")
+        else:
+            for joint_index, partner_index in enumerate(symmetry_partner_indices):
+                partner_index = int(partner_index)
+                if partner_index == -1:
+                    continue
+                if partner_index < 0 or partner_index >= n_joints:
+                    _print_warn(f"validation error: {object_type} symmetry partner out of range at joint {joint_index}: {partner_index}")
+                    break
+                if int(symmetry_partner_indices[partner_index]) != joint_index:
+                    _print_warn(f"validation error: {object_type} symmetry partners are not reciprocal for joints {joint_index} and {partner_index}")
+                    break
+
+    symmetric_joint_pairs = object_cond.get("symmetric_joint_pairs")
+    if symmetric_joint_pairs is not None:
+        for pair in symmetric_joint_pairs:
+            if len(pair) != 2:
+                _print_warn(f"validation error: {object_type} has malformed symmetric_joint_pairs entry: {pair}")
+                break
+            left_index, right_index = int(pair[0]), int(pair[1])
+            if min(left_index, right_index) < 0 or max(left_index, right_index) >= n_joints:
+                _print_warn(f"validation error: {object_type} has out-of-range symmetric_joint_pairs entry: {pair}")
+                break
+
+    is_symmetric = object_cond.get("is_symmetric")
+    if is_symmetric is not None and not isinstance(is_symmetric, (bool, np.bool_)):
+        _print_warn(f"validation error: {object_type} is_symmetric should be boolean, got {type(is_symmetric).__name__}")
 
 
 def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
@@ -175,6 +258,8 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
             if not (std > 0).any():
                 msg = f"{object_type} std is entirely non-positive"
                 _print_warn(f"validation error: {msg}")
+
+            _validate_optional_semantic_metadata(object_type, object_cond, n_joints)
         except Exception as e:
             msg = f"{object_type}: {e}"
             _print_warn(f"validation error: {msg}")
@@ -230,6 +315,7 @@ def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample
 
     scope = "all" if sample_limit <= 0 else str(len(files_to_validate))
     _print_ok(f"validated {scope} motion tensors and {len(motion_files)} paired motion/BVH artifacts")
+    _validate_motion_metadata(motions_dir.parent, motion_files, cond)
 
 
 def _vector_angle_deg(vector_a: np.ndarray, vector_b: np.ndarray) -> float:

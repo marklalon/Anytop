@@ -89,6 +89,10 @@ def truebones_collate(batch):
     if 'motion_name' in notnone_batches[0]:
         motionnamebatch = [b['motion_name'] for b in notnone_batches]
         cond['y'].update({'motion_name': motionnamebatch})
+
+    for key in ('species_label', 'species_group', 'action_label', 'action_category', 'action_tags', 'motion_metadata'):
+        if key in notnone_batches[0]:
+            cond['y'].update({key: [b[key] for b in notnone_batches]})
     
     if 'parents' in notnone_batches[0]:
         parentsbatch = [b['parents'] for b in notnone_batches]
@@ -142,12 +146,15 @@ def truebones_batch_collate(batch):
         reference_motion = None
         soft_confidence_mask = None
         corruption_metadata = None
-        if len(b) > 15:
+        motion_metadata = None
+        if len(b) > 15 and isinstance(b[14], np.ndarray) and isinstance(b[15], np.ndarray):
             reference_motion = torch.zeros((max_len, max_joints, n_feats))
             reference_motion[:, :b[14].shape[1], :] = torch.from_numpy(np.asarray(b[14], dtype=np.float32))
             soft_confidence_mask = torch.zeros((max_len, max_joints, 1))
             soft_confidence_mask[:, :b[15].shape[1], :] = torch.from_numpy(np.asarray(b[15], dtype=np.float32))
             corruption_metadata = b[16]
+        if len(b) >= 16 and isinstance(b[-2], dict) and ('action_category' in b[-2] or 'species_label' in b[-2]):
+            motion_metadata = b[-2]
 
         item = {
             'inp': motion.permute(1, 2, 0).float(), # [seqlen , J, 13] -> [J, 13,  seqlen]
@@ -170,9 +177,13 @@ def truebones_batch_collate(batch):
             item['soft_confidence_mask'] = soft_confidence_mask.permute(1, 2, 0).float()
         if corruption_metadata is not None:
             item['corruption_metadata'] = corruption_metadata
-        motion_name_idx = 17 if len(b) > 17 else (14 if len(b) == 15 else None)
-        if motion_name_idx is not None:
-            item['motion_name'] = b[motion_name_idx]
+        if motion_metadata is not None:
+            item['motion_metadata'] = motion_metadata
+            for key in ('species_label', 'species_group', 'action_label', 'action_category', 'action_tags'):
+                if key in motion_metadata:
+                    item[key] = motion_metadata[key]
+        if len(b) >= 15 and isinstance(b[-1], str):
+            item['motion_name'] = b[-1]
         adapted_batch.append(item)
 
     return truebones_collate(adapted_batch)

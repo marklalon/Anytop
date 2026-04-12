@@ -31,7 +31,8 @@ python preprocess_and_validate.py --skip-validate
 ### Step 1: Preprocessing
 - Runs `utils/create_dataset.py`
 - Creates motion `.npy` tensors from input BVH files
-- Generates `cond.npy` (conditioning file with skeleton metadata)
+- Generates `cond.npy` (conditioning file with skeleton metadata, including canonical joint names, end-effectors, contact joints, and left/right symmetry pairs)
+- Writes `motion_metadata.json` with per-motion species and action labels
 - Outputs summary to `metadata.txt` and error rates to `positions_error_rate.txt`
 
 ### Step 2: Stored Corrupted References

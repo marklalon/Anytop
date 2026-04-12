@@ -12,6 +12,7 @@ from typing import Optional
 from torch.utils.data._utils.collate import default_collate
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.param_utils import filter_motion_names_by_keywords
+from data_loaders.truebones.truebones_utils.motion_labels import infer_motion_labels_from_motion_name, load_motion_metadata
 from data_loaders.truebones.truebones_utils.motion_process import remove_joints_augmentation, add_joint_augmentation
 from data_loaders.truebones.offline_reference_dataset import load_corrupted_reference_sample
 from model.conditioners import T5Conditioner
@@ -261,6 +262,7 @@ class MotionDataset(data.Dataset):
         self.motion_cache = OrderedDict()
         data_dict = {}
         all_object_types = self.cond_dict.keys()
+        motion_metadata_lookup = load_motion_metadata(opt.data_root)
         new_name_list = []
         length_list = []
         motion_length_cache_path = _motion_length_cache_path(opt.data_root)
@@ -293,6 +295,7 @@ class MotionDataset(data.Dataset):
                                         'motion_path': motion_path,
                                         'length': motion_length,
                                         'object_type': object_type,
+                                        'motion_metadata': motion_metadata_lookup.get(name) or infer_motion_labels_from_motion_name(name, object_type=object_type, object_types=all_object_types),
                                        }
                                        
                     new_name_list.append(name)
@@ -349,6 +352,8 @@ class MotionDataset(data.Dataset):
 
     def _prepare_sample(self, name, data):
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std = self.augment(data)
+        motion_metadata = dict(data.get('motion_metadata') or infer_motion_labels_from_motion_name(name, object_type=object_type, object_types=self.cond_dict.keys()))
+        motion_metadata.setdefault('motion_name', name)
         ind = 0
         if m_length > self.max_motion_length:
             ind = random.randint(0, m_length - self.max_motion_length)
@@ -387,8 +392,8 @@ class MotionDataset(data.Dataset):
                                                        ], axis=0)
 
         if self.use_reference_conditioning:
-            return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, reference_motion, soft_confidence_mask, corruption_metadata, name
-        return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, name
+            return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, reference_motion, soft_confidence_mask, corruption_metadata, motion_metadata, name
+        return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name
     
     def augment(self, data):
         object_type = data['object_type']

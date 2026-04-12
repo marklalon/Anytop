@@ -295,6 +295,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         help="Path to raw Truebones BVH folders. If not specified, uses default path.",
     )
+    parser.add_argument(
+        "--dataset-dir",
+        default="",
+        type=str,
+        help="Output directory for processed dataset. If not specified, uses default path.",
+    )
     return parser.parse_args()
 
 

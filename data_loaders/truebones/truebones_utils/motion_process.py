@@ -17,379 +17,24 @@ import bisect
 import re 
 from data_loaders.truebones.truebones_utils.param_utils import HML_AVG_BONELEN, FOOT_CONTACT_HEIGHT_THRESH, DEFAULT_DATASET_DIR, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir, SNAKES, CHAIN_FORWARD_JOINTS, FLYING, FISH, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
 from utils.rotation_conversions import rotation_6d_to_matrix_np
-
-
-_FACE_JOINT_EXCLUDE_TOKENS = (
-    'jiggle',
-    'toe',
-    'foot',
-    'ankle',
-    'ball',
-    'nub',
-    'finger',
-    'thumb',
-    'jaw',
-    'lip',
-    'nose',
-    'eye',
-    'ear',
+from .motion_labels import build_motion_labels, build_object_labels, write_motion_metadata
+from .physics_joint_annotation import (
+    _infer_end_effector_joints,
+    _infer_contact_joints,
+    _build_semantic_metadata,
+    _rest_positions_from_offsets,
+    _normalize_joint_name,
 )
-_FACE_JOINT_NEAR_ROOT_EXCLUDE_TOKENS = (
-    'head',
-    'neck',
-    'spine',
-)
-_FACE_JOINT_HIP_PRIORITIES = (
-    ('thigh', 'leg1', 'upperleg', 'upleg', 'momo', 'femur'),
-    ('leg',),
-)
-_FACE_JOINT_UPPER_PRIORITIES = (
-    ('collarbone', 'clavicle', 'shoulder', 'upperarm', 'arm1', 'kata', 'wing', 'scapula', 'humerus'),
-    ('arm', 'hiji', 'elbow', 'forearm'),
-    ('te', 'hand'),
-)
-_FORWARD_REFERENCE_PRIORITIES = (
-    ('nose', 'snout', 'muzzle', 'beak'),
-    ('head',),
-    ('neck',),
+from .face_orientation import (
+    resolve_face_joints,
+    get_root_quat,
+    rotate_to_hml_orientation,
+    _find_forward_reference_joint,
+    _find_neck_reference_joint,
 )
 
-def _normalize_joint_name(name):
-    # Split on lowercase→UPPER (e.g. "ElkRFemur" → "Elk RFemur")
-    split_name = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', name)
-    # Also split on UPPER→UPPER+lower (e.g. "RFemur" → "R Femur")
-    split_name = re.sub(r'([A-Z])([A-Z][a-z])', r'\1 \2', split_name)
-    return re.sub(r'[^a-z0-9]+', ' ', split_name.lower()).strip()
-
-
-def _normalize_vectors(vectors):
-    norms = np.linalg.norm(vectors, axis=-1, keepdims=True)
-    norms = np.where(norms < 1e-8, 1.0, norms)
-    return vectors / norms
-
-
-def _vector_angle_deg(vector_a, vector_b):
-    a = np.asarray(vector_a, dtype=np.float64).reshape(-1)
-    b = np.asarray(vector_b, dtype=np.float64).reshape(-1)
-    a_norm = np.linalg.norm(a)
-    b_norm = np.linalg.norm(b)
-    if a_norm <= 1e-8 or b_norm <= 1e-8:
-        return 180.0
-    cosine = float(np.dot(a / a_norm, b / b_norm))
-    cosine = float(np.clip(cosine, -1.0, 1.0))
-    return float(np.degrees(np.arccos(cosine)))
-
-
-def _get_chain_forward(joints, object_type):
-    chain = CHAIN_FORWARD_JOINTS.get(object_type)
-    if chain is None:
-        return None
-
-    if len(chain) == 2:
-        neck, head = chain
-        forward = joints[:, head] - joints[:, neck]
-    else:
-        body_base, neck, head = chain
-        forward = (joints[:, head] - joints[:, neck]) + (joints[:, neck] - joints[:, body_base])
-    forward = forward * np.array([[1.0, 0.0, 1.0]])
-    return _normalize_vectors(forward)
-
-
-def _joint_depths(parents):
-    depths = [0] * len(parents)
-    for joint_index in range(1, len(parents)):
-        parent_index = parents[joint_index]
-        if parent_index >= 0:
-            depths[joint_index] = depths[parent_index] + 1
-    return depths
-
-
-def _detect_joint_side(name):
-    normalized = _normalize_joint_name(name)
-    compact = normalized.replace(' ', '')
-    right_markers = (
-        ' right ',
-        ' npc r',
-        ' bip01 r',
-        ' bn r',
-        ' r ',
-        ' r_',
-        ' rleg',
-        ' rarm',
-        ' rthigh',
-        ' rclavicle',
-        ' rupperarm',
-        ' r momo',
-        ' r kata',
-        ' r hiji',
-    )
-    left_markers = (
-        ' left ',
-        ' npc l',
-        ' bip01 l',
-        ' bn l',
-        ' l ',
-        ' l_',
-        ' lleg',
-        ' larm',
-        ' lthigh',
-        ' lclavicle',
-        ' lupperarm',
-        ' l momo',
-        ' l kata',
-        ' l hiji',
-    )
-    padded = f' {normalized} '
-    if any(marker in padded for marker in right_markers) or compact.startswith(('r_', 'rleg', 'rarm', 'rthigh', 'rmomo', 'rkata', 'rhiji')):
-        return 'right'
-    if any(marker in padded for marker in left_markers) or compact.startswith(('l_', 'lleg', 'larm', 'lthigh', 'lmomo', 'lkata', 'lhiji')):
-        return 'left'
-    return None
-
-
-def _face_joint_name_allowed(name):
-    normalized = _normalize_joint_name(name)
-    if any(token in normalized for token in _FACE_JOINT_EXCLUDE_TOKENS):
-        return False
-    return True
-
-
-def _find_semantic_joint_pair(joint_names, parents, priorities, *, exclude_near_root=True):
-    depths = _joint_depths(parents)
-    candidates = {'right': [], 'left': []}
-
-    for joint_index, joint_name in enumerate(joint_names):
-        if not _face_joint_name_allowed(joint_name):
-            continue
-        normalized = _normalize_joint_name(joint_name)
-        if exclude_near_root and any(token in normalized for token in _FACE_JOINT_NEAR_ROOT_EXCLUDE_TOKENS):
-            continue
-
-        side = _detect_joint_side(joint_name)
-        if side is None:
-            continue
-
-        priority_index = None
-        for current_priority, keyword_group in enumerate(priorities):
-            if any(keyword in normalized for keyword in keyword_group):
-                priority_index = current_priority
-                break
-        if priority_index is None:
-            continue
-
-        candidates[side].append((priority_index, depths[joint_index], joint_index))
-
-    if not candidates['right'] or not candidates['left']:
-        return None
-
-    right_index = min(candidates['right'])[2]
-    left_index = min(candidates['left'])[2]
-    return right_index, left_index
-
-
-def _find_forward_reference_joint(joint_names, parents):
-    depths = _joint_depths(parents)
-    candidates = []
-
-    for joint_index, joint_name in enumerate(joint_names):
-        normalized = _normalize_joint_name(joint_name)
-        priority_index = None
-        for current_priority, keyword_group in enumerate(_FORWARD_REFERENCE_PRIORITIES):
-            if any(keyword in normalized for keyword in keyword_group):
-                priority_index = current_priority
-                break
-        if priority_index is None:
-            continue
-        candidates.append((priority_index, -depths[joint_index], joint_index))
-
-    if not candidates:
-        return None
-
-    return min(candidates)[2]
-
-
-def _find_neck_reference_joint(joint_names, parents):
-    depths = _joint_depths(parents)
-    candidates = []
-
-    for joint_index, joint_name in enumerate(joint_names):
-        normalized = _normalize_joint_name(joint_name)
-        if 'neck' not in normalized:
-            continue
-        candidates.append((-depths[joint_index], joint_index))
-
-    if not candidates:
-        return None
-
-    return min(candidates)[1]
-
-
-def _get_head_forward(joints, face_joint_indx, forward_joint_index, forward_base_joint_index=None):
-    if forward_joint_index is None or not face_joint_indx:
-        return None
-
-    if forward_base_joint_index is not None and forward_joint_index == forward_base_joint_index:
-        return None
-
-    if forward_base_joint_index is not None:
-        forward = joints[:, forward_joint_index] - joints[:, forward_base_joint_index]
-    else:
-        r_hip, l_hip, sdr_r, sdr_l = face_joint_indx
-        hip_center = 0.5 * (joints[:, r_hip] + joints[:, l_hip])
-        shoulder_center = 0.5 * (joints[:, sdr_r] + joints[:, sdr_l])
-        torso_center = 0.5 * (hip_center + shoulder_center)
-        forward = joints[:, forward_joint_index] - torso_center
-    forward = forward * np.array([[1.0, 0.0, 1.0]])
-    if not np.isfinite(forward).all():
-        return None
-    if np.all(np.linalg.norm(forward, axis=-1) < 1e-8):
-        return None
-    return _normalize_vectors(forward)
-
-
-def _get_facing_candidates(
-    joints,
-    object_type,
-    face_joint_indx=None,
-    forward_joint_index=None,
-    forward_base_joint_index=None,
-):
-    if object_type in CHAIN_FORWARD_JOINTS:
-        chain_forward = _get_chain_forward(joints, object_type)
-        if chain_forward is None:
-            return {}
-        return {'chain': chain_forward}
-
-    candidates = {}
-    torso_head = _get_head_forward(
-        joints,
-        face_joint_indx,
-        forward_joint_index,
-        forward_base_joint_index=None,
-    )
-    if torso_head is not None:
-        candidates['torso_head'] = torso_head
-
-    neck_head = _get_head_forward(
-        joints,
-        face_joint_indx,
-        forward_joint_index,
-        forward_base_joint_index=forward_base_joint_index,
-    )
-    if neck_head is not None:
-        candidates['neck_head'] = neck_head
-
-    if face_joint_indx:
-        r_hip, l_hip, sdr_r, sdr_l = face_joint_indx
-        across1 = joints[:, r_hip] - joints[:, l_hip]
-        across2 = joints[:, sdr_r] - joints[:, sdr_l]
-        across = across1 + across2
-        across_norm = np.linalg.norm(across, axis=-1, keepdims=True)
-        if np.isfinite(across).all() and not np.all(across_norm < 1e-8):
-            across = across / np.where(across_norm < 1e-8, 1.0, across_norm)
-            forward = np.cross(np.array([[0.0, 1.0, 0.0]]), across, axis=-1)
-            forward_norm = np.linalg.norm(forward, axis=-1, keepdims=True)
-            if np.isfinite(forward).all() and not np.all(forward_norm < 1e-8):
-                candidates['across'] = forward / np.where(forward_norm < 1e-8, 1.0, forward_norm)
-
-    return candidates
-
-
-def _score_facing_candidates(candidates):
-    if not candidates:
-        return None, None, None, None
-
-    target = np.array([[0.0, 0.0, 1.0]], dtype=np.float64)
-    best_name = None
-    best_forward = None
-    best_score = None
-    best_tiebreak = None
-
-    for name, forward in candidates.items():
-        root_quat = Quaternions.between(forward, target)
-        angles = []
-        for other_forward in candidates.values():
-            aligned = root_quat * other_forward
-            angles.append(_vector_angle_deg(aligned[0], target[0]))
-        score = float(np.median(angles))
-        tiebreak = float(np.mean(angles))
-        if best_score is None or score < best_score - 1e-6 or (abs(score - best_score) <= 1e-6 and tiebreak < best_tiebreak):
-            best_name = name
-            best_forward = forward
-            best_score = score
-            best_tiebreak = tiebreak
-
-    return best_name, best_forward, best_score, best_tiebreak
-
-
-def _choose_facing_forward(candidates):
-    best_name, best_forward, _best_score, _best_tiebreak = _score_facing_candidates(candidates)
-    return best_name, best_forward
-
-
-
-
-def _get_facing_forward(
-    joints,
-    object_type,
-    face_joint_indx=None,
-    forward_joint_index=None,
-    forward_base_joint_index=None,
-):
-    _, forward = _choose_facing_forward(
-        _get_facing_candidates(
-            joints,
-            object_type,
-            face_joint_indx=face_joint_indx,
-            forward_joint_index=forward_joint_index,
-            forward_base_joint_index=forward_base_joint_index,
-        )
-    )
-    return forward
-
-
-def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints=None):
-    if face_joints:
-        if joint_names is not None and isinstance(face_joints[0], str):
-            return [joint_names.index(name) for name in face_joints]
-        return list(face_joints)
-
-    # Snakes use CHAIN_FORWARD_JOINTS for direction; _get_facing_candidates
-    # returns early for them and never unpacks face_joint_indx.
-    if object_type in CHAIN_FORWARD_JOINTS:
-        return []
-
-    if joint_names is not None and parents is not None:
-        hip_pair = _find_semantic_joint_pair(joint_names, parents, _FACE_JOINT_HIP_PRIORITIES)
-        upper_pair = _find_semantic_joint_pair(joint_names, parents, _FACE_JOINT_UPPER_PRIORITIES)
-        if hip_pair is not None and upper_pair is not None:
-            return [hip_pair[0], hip_pair[1], upper_pair[0], upper_pair[1]]
-        # Armless animals (e.g. Raptor in NO_HANDS) have no shoulder joints.
-        # Reuse the hip pair as the upper pair so the across-vector and torso
-        # direction still work (forward = nose → hip_center remains valid).
-        if hip_pair is not None:
-            return [hip_pair[0], hip_pair[1], hip_pair[0], hip_pair[1]]
-
-    raise ValueError(
-        f"Could not resolve face joints for '{object_type}'. Provide --face_joints_names explicitly or add naming rules."
-    )
 
 ################## Data Generation #####################
-def get_root_quat(joints, object_type, face_joint_indx=None, forward_joint_index=None, forward_base_joint_index=None):
-    if face_joint_indx is None:
-        face_joint_indx = resolve_face_joints(object_type)
-    forward = _get_facing_forward(
-        joints,
-        object_type,
-        face_joint_indx=face_joint_indx,
-        forward_joint_index=forward_joint_index,
-        forward_base_joint_index=forward_base_joint_index,
-    )
-    if forward is None:
-        forward = np.array([[0.0, 0.0, 1.0]]).repeat(len(joints), axis=0)
-    target = np.array([[0,0,1]]).repeat(len(forward), axis=0)
-    root_quat = Quaternions.between(forward, target)
-    return root_quat
 
 
 def _find_translation_root(anim):
@@ -614,54 +259,46 @@ def strip_translation_root_xz(anim, translation_root_index):
         anim.parents.copy(),
     )
 
-def _get_hml_orientation_quat(anim, object_type, face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None):
-    return orientation_quat
-
-"""" rotate the motion to initially face z+, ground at xz axis (negative y is below ground)"""
-def rotate_to_hml_orientation(anim, object_type, face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None):
-    qs_rot = _get_hml_orientation_quat(
-        anim,
-        object_type,
-        face_joints=face_joints,
-        orientation_quat=orientation_quat,
-        forward_joint_index=forward_joint_index,
-        forward_base_joint_index=forward_base_joint_index,
-    )
-    new_rots = anim.rotations.copy()
-    new_rots[:, 0] = qs_rot.repeat(new_rots.shape[0], axis=0) * new_rots[:, 0]
-    new_pos = anim.positions.copy()
-    new_pos[:, 0] = qs_rot.repeat(new_rots.shape[0], axis=0) * new_pos[:, 0]
-    new_anim = Animation(new_rots, new_pos, anim.orients.copy(), anim.offsets.copy(), anim.parents.copy())
-    return new_anim
-
-""" scale skeleton s.t longest armature is of length HML_AVG_BONELEN """
 def scale(anim, scale_factor=None):
     if scale_factor is None:
         lengths = offset_lengths(anim)
         mean_len = statistics.mean(lengths)
-        scale_factor = HML_AVG_BONELEN/mean_len
-    new_anim = Animation(anim.rotations.copy(), anim.positions * scale_factor ,anim.orients.copy(), anim.offsets * scale_factor,
-                         anim.parents.copy())
+        scale_factor = HML_AVG_BONELEN / mean_len
+    new_anim = Animation(
+        anim.rotations.copy(),
+        anim.positions * scale_factor,
+        anim.orients.copy(),
+        anim.offsets * scale_factor,
+        anim.parents.copy(),
+    )
     return new_anim, scale_factor
 
-""" get foot contact """
-def get_foot_contact(positions, foot_joints_indices, vel_thresh):
+"""Compute framewise binary contact states for the provided contact-capable joints."""
+def get_contact_state(positions, contact_joint_indices, vel_thresh):
     frames_num, joints_num = positions.shape[:2]
-    foot_vel_x = (positions[1:,foot_joints_indices ,0] - positions[:-1,foot_joints_indices ,0]) ** 2
-    foot_vel_y = (positions[1:, foot_joints_indices, 1] - positions[:-1, foot_joints_indices, 1]) **2
-    foot_vel_z = (positions[1:, foot_joints_indices, 2] - positions[:-1, foot_joints_indices, 2]) **2
+    contact_joint_indices = np.asarray(contact_joint_indices, dtype=np.int64)
+    if contact_joint_indices.size == 0:
+        return np.zeros((frames_num - 1, joints_num))
+
+    foot_vel_x = (positions[1:, contact_joint_indices, 0] - positions[:-1, contact_joint_indices, 0]) ** 2
+    foot_vel_y = (positions[1:, contact_joint_indices, 1] - positions[:-1, contact_joint_indices, 1]) ** 2
+    foot_vel_z = (positions[1:, contact_joint_indices, 2] - positions[:-1, contact_joint_indices, 2]) ** 2
     total_vel = foot_vel_x + foot_vel_y + foot_vel_z
-    foot_floor = np.percentile(positions[:, foot_joints_indices, 1], 5.0, axis=0, keepdims=True)
-    relative_height = positions[1:, foot_joints_indices, 1] - foot_floor
+    foot_floor = np.percentile(positions[:, contact_joint_indices, 1], 5.0, axis=0, keepdims=True)
+    relative_height = positions[1:, contact_joint_indices, 1] - foot_floor
     foot_contact_vel_map = np.where(
         np.logical_and(total_vel <= vel_thresh, np.abs(relative_height) <= FOOT_CONTACT_HEIGHT_THRESH),
         1,
         0,
     )
     foot_cont = np.zeros((frames_num-1, joints_num))
-    foot_cont[:, foot_joints_indices] = foot_contact_vel_map.astype(int)
+    foot_cont[:, contact_joint_indices] = foot_contact_vel_map.astype(int)
 
     return foot_cont
+
+
+def get_foot_contact(positions, foot_joints_indices, vel_thresh):
+    return get_contact_state(positions, foot_joints_indices, vel_thresh)
 
 """ get 6d rotations continuous representation"""
 def get_6d_rep(qs):
@@ -682,19 +319,6 @@ def get_common_features_from_T_pose(t_pose_bvh, object_type, face_joints=None):
     face_joints = resolve_face_joints(object_type, t_pos_names, t_pose_anim.parents, face_joints=face_joints)
     forward_joint_index = _find_forward_reference_joint(t_pos_names, t_pose_anim.parents)
     forward_base_joint_index = _find_neck_reference_joint(t_pos_names, t_pose_anim.parents)
-    if object_type in SNAKES:  # limbless animals have no distinct foot joints
-        suspected_foot_indices = [i for i in range(len(t_pos_names))]
-    else:
-        suspected_foot_indices = [i for i in range(len(t_pos_names)) if 'toe' in t_pos_names[i].lower() or 'foot' in t_pos_names[i].lower() or 
-                                  'phalanx' in t_pos_names[i].lower() or 'hoof' in t_pos_names[i].lower() or 'ashi' in t_pos_names[i].lower()]
-                # edge cases
-        for si in suspected_foot_indices:
-            if si in t_pose_anim.parents:
-                #check if all childeren also in suspected_foot_indices, otherwise add them 
-                children = [i for i in range(len(t_pos_names)) if t_pose_anim.parents[i] == si]
-                for c in children:
-                    if c not in suspected_foot_indices:
-                        suspected_foot_indices.append(c)
     # first recover global positions, and then create a brand new non-damaged animation, with position consistent to the offsets 
     t_pose_positions = positions_global(t_pose_anim)
     with open(os.devnull, 'w') as devnull, redirect_stdout(devnull), redirect_stderr(devnull):
@@ -708,8 +332,15 @@ def get_common_features_from_T_pose(t_pose_bvh, object_type, face_joints=None):
         forward_joint_index=forward_joint_index,
         forward_base_joint_index=forward_base_joint_index,
     )
+    scaled_rest_positions = positions_global(scaled)[0]
     offsets = offsets_from_positions(positions_global(scaled), scaled.parents)[0]
-    return root_pose_init_xz, scale_factor, offsets, suspected_foot_indices, scaled.rotations, t_pos_names, scaled, face_joints, t_pose_orientation_quat, forward_joint_index, forward_base_joint_index
+    suspected_foot_indices, contact_joint_source = _infer_contact_joints(
+        object_type,
+        t_pos_names,
+        scaled.parents,
+        scaled_rest_positions,
+    )
+    return root_pose_init_xz, scale_factor, offsets, suspected_foot_indices, scaled.rotations, t_pos_names, scaled, face_joints, t_pose_orientation_quat, forward_joint_index, forward_base_joint_index, contact_joint_source
 
 def get_motion_features(ric_positions, rotations, foot_contact, velocity, max_joints):
     # F = Frames# , J = joints# 
@@ -888,7 +519,7 @@ def get_motion(bvh_path, foot_contact_vel_thresh, object_type, max_joints, root_
             forward_base_joint_index=forward_base_joint_index,
             translation_root_index=translation_root_index,
         )
-        foot_contact = get_foot_contact(global_positions, foot_indices, foot_contact_vel_thresh) 
+        foot_contact = get_contact_state(global_positions, foot_indices, foot_contact_vel_thresh)
         '''Get Joint Rotation Invariant Position Represention'''
         # local velocity wrt root coords system as described in get_rifke definition 
         positions = get_rifke(global_positions, r_rot, translation_root_index=translation_root_index)
@@ -972,6 +603,24 @@ def _reference_stem_tokens(file_path):
     return normalized.split(), normalized.replace(' ', '')
 
 
+_IDLE_REFERENCE_TAIL_PATTERN = re.compile(
+    r'^idle(?:\d+)?(?:loop|cyc|cycle|repeat|repeating)?$'
+)
+_WALK_REFERENCE_TAIL_PATTERN = re.compile(
+    r'^walk(?:ing)?(?:\d+)?(?:loop|cyc|cycle|repeat|repeating|forward|forwards)?$'
+)
+
+
+def _reference_tail_candidates(file_path):
+    stem = os.path.splitext(os.path.basename(file_path))[0].lower()
+    segments = [segment for segment in re.split(r'[^a-z0-9]+', stem) if segment]
+    return [''.join(segments[index:]) for index in range(len(segments))]
+
+
+def _matches_reference_tail(file_path, tail_pattern):
+    return any(tail_pattern.fullmatch(candidate) for candidate in _reference_tail_candidates(file_path))
+
+
 def _is_tpose_reference_path(file_path):
     tokens, compact = _reference_stem_tokens(file_path)
     return (
@@ -984,13 +633,11 @@ def _is_tpose_reference_path(file_path):
 
 
 def _is_idle_reference_path(file_path):
-    tokens, compact = _reference_stem_tokens(file_path)
-    return 'idle' in compact or any(token.startswith('idle') for token in tokens)
+    return _matches_reference_tail(file_path, _IDLE_REFERENCE_TAIL_PATTERN)
 
 
 def _is_walk_reference_path(file_path):
-    tokens, compact = _reference_stem_tokens(file_path)
-    return 'walk' in compact or any(token.startswith('walk') for token in tokens)
+    return _matches_reference_tail(file_path, _WALK_REFERENCE_TAIL_PATTERN)
 
 
 """ find a character-level orientation reference clip with priority T Pose > Idle > Walk """
@@ -1053,12 +700,14 @@ def _process_bvh_file(file_path, object_type, max_joints, root_pose_init_xz, sca
             continue
 
         _, file_name = os.path.split(file_path)
+        raw_action = file_name.split('.')[0]
         file_results.append({
-            'action': file_name.split('.')[0],
+            'action': raw_action,
             'motion': motion,
             'parents': parents,
             'new_anim': new_anim,
             'names': names,
+            'motion_labels': build_motion_labels(object_type, raw_action),
         })
 
     return {
@@ -1091,8 +740,10 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=
         bvh_files = bvh_files[:max_files]
 
     squared_positions_error = dict()
-    root_pose_init_xz, scale_factor, offsets, foot_indices, tpos_rots, names, tpos_anim, face_joints, orientation_quat, forward_joint_index, forward_base_joint_index = get_common_features_from_T_pose(t_pos_path, object_type, face_joints=face_joints)
+    root_pose_init_xz, scale_factor, offsets, foot_indices, tpos_rots, names, tpos_anim, face_joints, orientation_quat, forward_joint_index, forward_base_joint_index, contact_joint_source = get_common_features_from_T_pose(t_pos_path, object_type, face_joints=face_joints)
     t_pos_motion, parents, max_joints, new_anim = get_motion(tpos_anim, FOOT_CONTACT_VEL_THRESH, object_type, max_joints, root_pose_init_xz, scale_factor, offsets, foot_indices, tpos_rots, squared_positions_error, face_joints=face_joints, orientation_quat=orientation_quat, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)
+    rest_positions = _rest_positions_from_offsets(offsets, parents)
+    semantic_metadata = _build_semantic_metadata(object_type, names, parents, offsets, rest_positions=rest_positions)
     object_cond['tpos_first_frame'] = t_pos_motion[0]
     # create topology conditions
     joint_relations, joints_graph_dist = create_topology_edge_relations(tpos_anim.parents, max_path_len = MAX_PATH_LEN)
@@ -1102,12 +753,24 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=
     object_cond['parents'] = parents
     object_cond['offsets'] = offsets
     object_cond['joints_names'] = names
+    object_cond['canonical_joint_names'] = semantic_metadata['canonical_joint_names']
     object_cond['face_joints'] = list(face_joints)
     object_cond['face_joint_names'] = [names[index] for index in face_joints]
+    object_cond['end_effector_joints'] = semantic_metadata['end_effector_joints']
+    object_cond['end_effector_names'] = semantic_metadata['end_effector_names']
+    object_cond['contact_joints'] = semantic_metadata['contact_joints']
+    object_cond['contact_joint_names'] = semantic_metadata['contact_joint_names']
+    object_cond['contact_joint_source'] = semantic_metadata['contact_joint_source']
+    object_cond['joint_side_labels'] = semantic_metadata['joint_side_labels']
+    object_cond['symmetry_partner_indices'] = semantic_metadata['symmetry_partner_indices']
+    object_cond['symmetric_joint_pairs'] = semantic_metadata['symmetric_joint_pairs']
+    object_cond['symmetric_joint_pair_names'] = semantic_metadata['symmetric_joint_pair_names']
+    object_cond['is_symmetric'] = semantic_metadata['is_symmetric']
     object_cond['orientation_reference_source'] = orientation_reference_source
     object_cond['orientation_reference_file'] = os.path.basename(t_pos_path)
     kinematic_chains = parents2kinchains(parents, object_policy(object_type))
     object_cond['kinematic_chains'] = kinematic_chains
+    object_cond.update(build_object_labels(object_type))
     all_tensors = list()
 
     num_workers = min(len(bvh_files), max(1, int(num_workers)))
@@ -1172,8 +835,8 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=
 """Write a prepared object payload to disk with stable sequential clip naming."""
 def _write_object_outputs(save_dir, object_payload, files_counter):
     object_type = object_payload['object_type']
-    face_joints = object_payload['face_joints']
     frames_counter = 0
+    motion_metadata = {}
 
     for result in object_payload['results']:
         motion = result['motion']
@@ -1181,7 +844,8 @@ def _write_object_outputs(save_dir, object_payload, files_counter):
         files_counter += 1
         frames_counter += motion.shape[0]
         name = object_type + "_" + result['action'] + "_" + str(files_counter)
-        np.save(pjoin(save_dir, MOTION_DIR, name + '.npy'), motion)
+        motion_file_name = name + '.npy'
+        np.save(pjoin(save_dir, MOTION_DIR, motion_file_name), motion)
         # Use positions=True whenever any non-root joint carries animated positions
         # (e.g. Horse Bip01).  Without this, BVH.save silently drops those
         # channels because non-root joints get only 3-channel (rotation) entries.
@@ -1192,7 +856,33 @@ def _write_object_outputs(save_dir, object_payload, files_counter):
         BVH.save(pjoin(save_dir, BVHS_DIR, name+".bvh"), anim_obj, result['names'],
                  positions=bool(has_animated_nonroot_pos))
 
-    return files_counter, frames_counter
+        motion_labels = dict(result['motion_labels'])
+        motion_labels['motion_name'] = motion_file_name
+        motion_metadata[motion_file_name] = motion_labels
+
+    return files_counter, frames_counter, motion_metadata
+
+
+def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, max_joints, files_counter, frames_counter, squared_positions_error):
+    print('Total clips: %d, Frames: %d, Duration: %fm' %(files_counter, frames_counter, frames_counter / 12.5 / 60))
+    print('max joints: %d' %(max_joints))
+    text_file = open(pjoin(save_dir, 'metadata.txt'), "w")
+    n = text_file.write('max joints: %d\n' %(max_joints))
+    n = text_file.write('total frames: %d\n' %(frames_counter))
+    n = text_file.write('duration: %d\n' %(frames_counter / 12.5 / 60))
+    n = text_file.write('~~~~ objects_counts - Total: %d ~~~~\n' %(files_counter) )
+    for obj in objects_counter:
+        text_file.write('%s: %d\n' %(obj, objects_counter[obj]))
+    text_file.close()
+
+    error_file = open(pjoin(save_dir, 'positions_error_rate.txt'), "w")
+    n = error_file.write('Position squared error per bvh file:')
+    for f in squared_positions_error.keys():
+        error_file.write('%s: %f\n' %(f, squared_positions_error[f]))
+    error_file.close()
+
+    np.save(pjoin(save_dir, "cond.npy"), cond)
+    write_motion_metadata(save_dir, motion_metadata, files_counter)
 
 def _resolve_preprocessing_workers(objects, object_workers=8, file_workers=8):
     object_count = max(1, len(objects))
@@ -1225,18 +915,18 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
         raw_data_dir=raw_data_dir,
     )
     if object_payload is None:
-        return files_counter, frames_counter, max_joints, None
+        return files_counter, frames_counter, max_joints, None, {}
 
     squared_positions_error.update(object_payload['errors'])
     max_joints = max(max_joints, object_payload['max_joints'])
-    files_counter, object_frames_counter = _write_object_outputs(
+    files_counter, object_frames_counter, object_motion_metadata = _write_object_outputs(
         save_dir,
         object_payload,
         files_counter,
     )
     frames_counter += object_frames_counter
 
-    return files_counter, frames_counter, max_joints, object_payload['object_cond']
+    return files_counter, frames_counter, max_joints, object_payload['object_cond'], object_motion_metadata
 
 """ create dataset """
 def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, raw_data_dir=None, object_workers=8, file_workers=8):
@@ -1294,6 +984,7 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
     objects_counter = dict()
     squared_positions_error = dict()
     cond = dict()
+    motion_metadata = {}
 
     for idx, object_type in enumerate(objects):
         payload = payloads[idx]
@@ -1302,7 +993,7 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
         squared_positions_error.update(payload['errors'])
         max_joints = max(max_joints, payload['max_joints'])
         cur_counter = files_counter
-        files_counter, object_frames = _write_object_outputs(
+        files_counter, object_frames, object_motion_metadata = _write_object_outputs(
             target_dataset_dir,
             payload,
             files_counter,
@@ -1310,25 +1001,18 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
         frames_counter += object_frames
         cond[object_type] = payload['object_cond']
         objects_counter[object_type] = files_counter - cur_counter
+        motion_metadata.update(object_motion_metadata)
 
-    print('Total clips: %d, Frames: %d, Duration: %fm' %(files_counter, frames_counter, frames_counter / 12.5 / 60))
-    print('max joints: %d' %(max_joints))
-    text_file = open(pjoin(target_dataset_dir, 'metadata.txt'), "w")
-    n = text_file.write('max joints: %d\n' %(max_joints))
-    n = text_file.write('total frames: %d\n' %(frames_counter))
-    n = text_file.write('duration: %d\n' %(frames_counter / 12.5 / 60))
-    n = text_file.write('~~~~ objects_counts - Total: %d ~~~~\n' %(files_counter) )
-    for obj in objects_counter:
-        text_file.write('%s: %d\n' %(obj, objects_counter[obj]))
-    text_file.close()
-
-    error_file = open(pjoin(target_dataset_dir, 'positions_error_rate.txt'), "w")
-    n = error_file.write('Position squared error per bvh file:')
-    for f in squared_positions_error.keys():
-        error_file.write('%s: %f\n' %(f, squared_positions_error[f]))
-    error_file.close()
-    
-    np.save(pjoin(target_dataset_dir, "cond.npy"), cond)
+    _write_dataset_artifacts(
+        target_dataset_dir,
+        cond,
+        motion_metadata,
+        objects_counter,
+        max_joints,
+        files_counter,
+        frames_counter,
+        squared_positions_error,
+    )
 ##################################################################
 
 ############ Recover animation from motion features ##############
@@ -1611,8 +1295,9 @@ def process_single_object_type(object_type, save_dir, file_workers=8):
     objects_counter = dict()
     squared_positions_error = dict()
     cond = dict()
+    motion_metadata = {}
     cur_counter = files_counter
-    files_counter, frames_counter, max_joints, object_cond = process_object(
+    files_counter, frames_counter, max_joints, object_cond, object_motion_metadata = process_object(
         object_type,
         files_counter,
         frames_counter,
@@ -1623,25 +1308,18 @@ def process_single_object_type(object_type, save_dir, file_workers=8):
     )
     cond[object_type] = object_cond
     objects_counter[object_type] = files_counter - cur_counter 
+    motion_metadata.update(object_motion_metadata)
 
-    print('Total clips: %d, Frames: %d, Duration: %fm' %(files_counter, frames_counter, frames_counter / 12.5 / 60))
-    print('max joints: %d' %(max_joints))
-    text_file = open(pjoin(save_dir, 'metadata.txt'), "w")
-    n = text_file.write('max joints: %d\n' %(max_joints))
-    n = text_file.write('total frames: %d\n' %(frames_counter))
-    n = text_file.write('duration: %d\n' %(frames_counter / 12.5 / 60))
-    n = text_file.write('~~~~ objects_counts - Total: %d ~~~~\n' %(files_counter) )
-    for obj in objects_counter:
-        text_file.write('%s: %d\n' %(obj, objects_counter[obj]))
-    text_file.close()
-
-    error_file = open(pjoin(save_dir, 'positions_error_rate.txt'), "w")
-    n = error_file.write('Position squared error per bvh file:')
-    for f in squared_positions_error.keys():
-        error_file.write('%s: %f\n' %(f, squared_positions_error[f]))
-    error_file.close()
-    
-    np.save(pjoin(save_dir, "cond.npy"), cond)
+    _write_dataset_artifacts(
+        save_dir,
+        cond,
+        motion_metadata,
+        objects_counter,
+        max_joints,
+        files_counter,
+        frames_counter,
+        squared_positions_error,
+    )
     
     
 def process_skeleton(object_name, bvh_dir, face_joints, save_dir, tpos_bvh=None):
@@ -1656,8 +1334,9 @@ def process_skeleton(object_name, bvh_dir, face_joints, save_dir, tpos_bvh=None)
     objects_counter = dict()
     squared_positions_error = dict()
     cond = dict()
+    motion_metadata = {}
     cur_counter = files_counter
-    files_counter, frames_counter, max_joints, object_cond = process_object(object_name, files_counter, frames_counter, max_joints, squared_positions_error, save_dir=save_dir, bvhs_dir=bvh_dir, face_joints=face_joints, t_pos_path=tpos_bvh)
+    files_counter, frames_counter, max_joints, object_cond, object_motion_metadata = process_object(object_name, files_counter, frames_counter, max_joints, squared_positions_error, save_dir=save_dir, bvhs_dir=bvh_dir, face_joints=face_joints, t_pos_path=tpos_bvh)
     # BUG4 (intentional): MP4 generation is omitted here to skip expensive video
     # generation during process_skeleton. Generating video previews is not
     # Note: MP4 generation has been removed - no save_animations parameter needed.
@@ -1666,23 +1345,16 @@ def process_skeleton(object_name, bvh_dir, face_joints, save_dir, tpos_bvh=None)
         return
     cond[object_name] = object_cond
     objects_counter[object_name] = files_counter - cur_counter 
+    motion_metadata.update(object_motion_metadata)
 
-    print('Total clips: %d, Frames: %d, Duration: %fm' %(files_counter, frames_counter, frames_counter / 12.5 / 60))
-    print('max joints: %d' %(max_joints))
-    text_file = open(pjoin(save_dir, 'metadata.txt'), "w")
-    n = text_file.write('max joints: %d\n' %(max_joints))
-    n = text_file.write('total frames: %d\n' %(frames_counter))
-    n = text_file.write('duration: %d\n' %(frames_counter / 12.5 / 60))
-    n = text_file.write('~~~~ objects_counts - Total: %d ~~~~\n' %(files_counter) )
-    for obj in objects_counter:
-        text_file.write('%s: %d\n' %(obj, objects_counter[obj]))
-    text_file.close()
-
-    error_file = open(pjoin(save_dir, 'positions_error_rate.txt'), "w")
-    n = error_file.write('Position squared error per bvh file:')
-    for f in squared_positions_error.keys():
-        error_file.write('%s: %f\n' %(f, squared_positions_error[f]))
-    error_file.close()
-    
-    np.save(pjoin(save_dir, "cond.npy"), cond)
+    _write_dataset_artifacts(
+        save_dir,
+        cond,
+        motion_metadata,
+        objects_counter,
+        max_joints,
+        files_counter,
+        frames_counter,
+        squared_positions_error,
+    )
 ################################################################
