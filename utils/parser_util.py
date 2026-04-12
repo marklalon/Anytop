@@ -64,11 +64,16 @@ def add_base_options(parser):
     group.add_argument("--seed", default=10, type=int, help="For fixing random seed.")
     group.add_argument("--batch_size", default=16, type=int, help="Batch size during training.")
     group = parser.add_argument_group('diffusion')
-    group.add_argument("--noise_schedule", default='cosine', choices=['linear', 'cosine'], type=str,
-                       help="Noise schedule type")
     group.add_argument("--diffusion_steps", default=100, type=int,
-                       help="Number of diffusion steps (denoted T in the paper)")
-    group.add_argument("--sigma_small", default=True, type=bool, help="Use smaller sigma values.")
+                       help="Number of training timesteps used for continuous-time logging and default ODE discretization.")
+    group.add_argument("--fm_sigma_min", default=1e-4, type=float,
+                       help="Minimum time value sampled during flow matching training.")
+    group.add_argument("--fm_solver", default='euler', choices=['euler', 'midpoint', 'rk4'], type=str,
+                       help="ODE solver used during flow matching sampling.")
+    group.add_argument("--fm_timestep_scale", default=1000.0, type=float,
+                       help="Scale factor applied to continuous t before sinusoidal timestep embedding.")
+    group.add_argument("--fm_num_steps", default=50, type=int,
+                       help="Number of ODE integration steps used at sampling time.")
 
 def add_model_options(parser):
     group = parser.add_argument_group('model')

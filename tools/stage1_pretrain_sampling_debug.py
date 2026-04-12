@@ -68,6 +68,36 @@ STABILITY_KEYS = (
     "delta_direction_flip_rate",
 )
 
+REQUIRED_FLOW_MATCHING_ARGS = (
+    "fm_sigma_min",
+    "fm_solver",
+    "fm_timestep_scale",
+    "fm_num_steps",
+)
+
+LEGACY_DDPM_ARGS = (
+    "noise_schedule",
+    "sigma_small",
+    "timestep_respacing",
+)
+
+
+def validate_flow_matching_checkpoint_args(model_args_dict: dict, args_path: Path) -> None:
+    missing = [key for key in REQUIRED_FLOW_MATCHING_ARGS if key not in model_args_dict]
+    if not missing:
+        return
+
+    legacy_present = [key for key in LEGACY_DDPM_ARGS if key in model_args_dict]
+    legacy_suffix = ""
+    if legacy_present:
+        legacy_suffix = f" Legacy DDPM keys detected: {', '.join(legacy_present)}."
+
+    raise ValueError(
+        "stage1_pretrain_sampling_debug.py only supports Flow Matching checkpoints saved after the migration. "
+        f"Checkpoint args file [{args_path}] is missing required Flow Matching keys: {', '.join(missing)}."
+        f"{legacy_suffix}"
+    )
+
 
 def validate_stage1_checkpoint_args(model_args: SimpleNamespace) -> None:
     violations = []
@@ -103,9 +133,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--selection-seed", default=1234, type=int, help="Seed used to select the fixed evaluation subset.")
     parser.add_argument("--num-trials", default=4, type=int, help="How many stochastic trials to run on the same selected subset.")
     parser.add_argument("--base-seed", default=10, type=int, help="Base seed for stochastic trials. Trial k uses base-seed + k.")
-    parser.add_argument("--sampling-method", default="ddim", choices=["p", "ddim", "plms"], help="Diffusion sampler to use.")
-    parser.add_argument("--sampling-steps", default=0, type=int, help="Respaced diffusion steps. 0 keeps the checkpoint diffusion step count.")
-    parser.add_argument("--ddim-eta", default=0.0, type=float, help="DDIM eta parameter.")
+    parser.add_argument("--fm-solver", default="midpoint", choices=["euler", "midpoint", "rk4"], help="Flow Matching ODE solver to use for evaluation sampling.")
+    parser.add_argument("--fm-num-steps", default=50, type=int, help="Number of Flow Matching ODE steps to use for evaluation sampling.")
     parser.add_argument("--export-samples", default=0, type=int, help="How many selected samples to export per trial. 0 disables exports.")
     parser.add_argument("--no-ema", action="store_true", help="Disable EMA model averaging and use raw model weights instead.")
     return parser.parse_args()
@@ -123,7 +152,10 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
         raise FileNotFoundError(f"Arguments json was not found. Searched: {searched}")
 
     with open(args_path, "r", encoding="utf-8") as handle:
-        model_args = SimpleNamespace(**json.load(handle))
+        model_args_dict = json.load(handle)
+
+    validate_flow_matching_checkpoint_args(model_args_dict, args_path)
+    model_args = SimpleNamespace(**model_args_dict)
 
     model_args.model_path = str(model_path)
     model_args.device = args.device
@@ -147,17 +179,13 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
 
 def configure_sampling(model_args: SimpleNamespace, args: argparse.Namespace) -> None:
     diffusion_steps = int(model_args.diffusion_steps)
-    sampling_steps = int(args.sampling_steps)
-    if sampling_steps < 0:
-        raise ValueError("--sampling-steps must be >= 0")
+    sampling_steps = int(args.fm_num_steps)
+    if sampling_steps <= 0:
+        raise ValueError("--fm-num-steps must be > 0")
     if sampling_steps > diffusion_steps:
-        raise ValueError(f"--sampling-steps ({sampling_steps}) cannot exceed diffusion_steps ({diffusion_steps})")
-    if sampling_steps == 0:
-        model_args.timestep_respacing = ""
-    elif args.sampling_method == "ddim":
-        model_args.timestep_respacing = f"ddim{sampling_steps}"
-    else:
-        model_args.timestep_respacing = str(sampling_steps)
+        raise ValueError(f"--fm-num-steps ({sampling_steps}) cannot exceed diffusion_steps ({diffusion_steps})")
+    model_args.fm_num_steps = sampling_steps
+    model_args.fm_solver = args.fm_solver
 
 
 def clone_batch_cond(cond: dict) -> dict:
@@ -200,26 +228,7 @@ def sample_motion_batch(
     model,
     motion_shape: torch.Size,
     cond: dict,
-    sampling_method: str,
-    ddim_eta: float,
 ) -> torch.Tensor:
-    if sampling_method == "ddim":
-        return diffusion.ddim_sample_loop(
-            model,
-            motion_shape,
-            clip_denoised=False,
-            model_kwargs=cond,
-            progress=False,
-            eta=ddim_eta,
-        )
-    if sampling_method == "plms":
-        return diffusion.plms_sample_loop(
-            model,
-            motion_shape,
-            clip_denoised=False,
-            model_kwargs=cond,
-            progress=False,
-        )
     return diffusion.p_sample_loop(
         model,
         motion_shape,
@@ -660,8 +669,8 @@ def build_eval_report(
     trial_aggregates: list[dict[str, float]],
     sample_trials: dict[int, list[dict[str, object]]],
     num_trials: int,
-    sampling_method: str,
-    sampling_steps: int,
+    fm_solver: str,
+    fm_num_steps: int,
 ) -> dict[str, object]:
     aggregate_mean, aggregate_std = summarize_metric_dicts(trial_aggregates)
     sample_stability = build_sample_stability_report(sample_trials)
@@ -673,8 +682,8 @@ def build_eval_report(
         "selected_motion_names": [str(sample["motion_name"]) for sample in selected_samples],
         "selected_lengths": [int(sample["length"]) for sample in selected_samples],
         "num_trials": num_trials,
-        "sampling_method": sampling_method,
-        "sampling_steps": sampling_steps,
+        "fm_solver": fm_solver,
+        "fm_num_steps": fm_num_steps,
         "core_report": core_report,
     }
 
@@ -709,7 +718,6 @@ def build_clean_motion_baseline(
         sample_trials[sample_index].append(metrics)
 
     trial_aggregate = summarize_sample_metrics(baseline_metrics)
-    sampling_steps = int(args.sampling_steps) if args.sampling_steps > 0 else int(model_args.diffusion_steps)
     baseline_report = build_eval_report(
         args=args,
         model_args=model_args,
@@ -717,8 +725,8 @@ def build_clean_motion_baseline(
         trial_aggregates=[trial_aggregate],
         sample_trials=sample_trials,
         num_trials=1,
-        sampling_method="clean_identity",
-        sampling_steps=sampling_steps,
+        fm_solver="clean_identity",
+        fm_num_steps=int(model_args.fm_num_steps),
     )
     baseline_report["baseline_type"] = "clean_motion_identity"
     return baseline_report
@@ -878,8 +886,6 @@ def stage1_sampling_eval(
                     eval_model,
                     motion.shape,
                     cond,
-                    args.sampling_method,
-                    args.ddim_eta,
                 )
 
             for item_index, sample in enumerate(batch_samples):
@@ -922,8 +928,6 @@ def stage1_sampling_eval(
                     eval_model,
                     motion.shape,
                     cond,
-                    args.sampling_method,
-                    args.ddim_eta,
                 )
 
             for item_index, sample in enumerate(batch_samples):
@@ -962,7 +966,6 @@ def stage1_sampling_eval(
         trial_aggregates.append(trial_aggregate)
         print(f"[PROGRESS] Trial {trial_index:02d} complete. Aggregated metrics computed.")
 
-    sampling_steps = int(args.sampling_steps) if args.sampling_steps > 0 else int(model_args.diffusion_steps)
     return build_eval_report(
         args=args,
         model_args=model_args,
@@ -970,8 +973,8 @@ def stage1_sampling_eval(
         trial_aggregates=trial_aggregates,
         sample_trials=sample_trials,
         num_trials=args.num_trials,
-        sampling_method=args.sampling_method,
-        sampling_steps=sampling_steps,
+        fm_solver=str(model_args.fm_solver),
+        fm_num_steps=int(model_args.fm_num_steps),
     )
 
 

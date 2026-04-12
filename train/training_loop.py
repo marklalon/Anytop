@@ -12,9 +12,8 @@ from diffusion import logger
 from utils import dist_util
 from diffusion.fp16_util import MixedPrecisionTrainer
 from diffusion.nn import update_ema
-from diffusion.resample import LossAwareSampler
 from tqdm import tqdm
-from diffusion.resample import create_named_schedule_sampler
+from diffusion.resample import FlowMatchingUniformSampler
 from sample.generate import main as generate
 import copy
 from utils.model_util import load_model
@@ -92,8 +91,7 @@ class TrainLoop:
             # Model was resumed, either due to a restart or a checkpoint
             # being specified at the command line.
 
-        self.schedule_sampler_type = 'uniform'
-        self.schedule_sampler = create_named_schedule_sampler(self.schedule_sampler_type, diffusion)
+        self.schedule_sampler = FlowMatchingUniformSampler(sigma_min=getattr(diffusion, 'sigma_min', 1e-4))
         
         self.eval_wrapper, self.eval_data, self.eval_gt_data = None, None, None
         if self.args.eval_during_training:
@@ -381,11 +379,6 @@ class TrainLoop:
                     with self._autocast_context():
                         losses = compute_losses()
 
-            if isinstance(self.schedule_sampler, LossAwareSampler):
-                self.schedule_sampler.update_with_local_losses(
-                    t, losses["loss"].detach()
-                )
-
             loss = (losses["loss"] * weights).mean()
             log_loss_dict(
                 self.diffusion, t, {k: v * weights for k, v in losses.items()}
@@ -543,7 +536,7 @@ def log_loss_dict(diffusion, ts, losses):
         logger.logkv_mean(key, values.mean().item())
         # Log the quantiles (four quartiles, in particular).
         for sub_t, sub_loss in zip(ts.cpu().numpy(), values.detach().cpu().numpy()):
-            quartile = int(4 * sub_t / diffusion.num_timesteps)
+            quartile = min(int(4 * float(sub_t)), 3)
             logger.logkv_mean(f"{key}_q{quartile}", sub_loss)
             
 
