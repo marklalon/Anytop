@@ -28,9 +28,9 @@ except ImportError as e:
 try:
     from model.anytop import AnyTop
     from model.conditioners import T5Conditioner
-    from diffusion.flow_matching import FlowMatching
+    from diffusion.gaussian_diffusion import GaussianDiffusion
     from data_loaders.tensors import truebones_batch_collate
-    print("✓ Anytop核心模块：AnyTop, T5Conditioner, FlowMatching, data_loaders")
+    print("✓ Anytop核心模块：AnyTop, T5Conditioner, GaussianDiffusion, data_loaders")
 except ImportError as e:
     print(f"✗ Anytop模块出错: {e}")
 

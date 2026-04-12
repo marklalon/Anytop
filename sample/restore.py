@@ -111,6 +111,7 @@ def main() -> int:
             restored = diffusion.p_sample_loop(
                 model,
                 (batch_size, opt.max_joints, model.feature_len, max_frames),
+                clip_denoised=False,
                 model_kwargs=model_kwargs,
                 progress=True,
             )

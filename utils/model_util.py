@@ -1,5 +1,6 @@
 from model.anytop import AnyTop
-from diffusion.flow_matching import FlowMatching
+from diffusion import gaussian_diffusion as gd
+from diffusion.respace import SpacedDiffusion, space_timesteps
 
 def load_model(model, state_dict):
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
@@ -8,7 +9,7 @@ def load_model(model, state_dict):
 
 def create_model_and_diffusion_general_skeleton(args):
     model = AnyTop(**get_gmdm_args(args))
-    diffusion = create_flow_matching(args)
+    diffusion = create_gaussian_diffusion(args)
     return model, diffusion
 
 def get_gmdm_args(args):
@@ -40,13 +41,38 @@ def get_gmdm_args(args):
             'feature_len':feature_len,  'skip_t5': args.skip_t5, 'value_emb': args.value_emb, 'root_input_feats': 13,
             'disable_reference_branch': args.disable_reference_branch, 'reference_dropout_threshold': args.reference_dropout_threshold}
 
-def create_flow_matching(args):
-    return FlowMatching(
-        num_timesteps=int(getattr(args, 'diffusion_steps', 100)),
-        sigma_min=float(getattr(args, 'fm_sigma_min', 1e-4)),
-        solver=getattr(args, 'fm_solver', 'euler'),
-        timestep_scale=float(getattr(args, 'fm_timestep_scale', 1000.0)),
-        sampling_steps=int(getattr(args, 'fm_num_steps', getattr(args, 'diffusion_steps', 100))),
+def create_gaussian_diffusion(args):
+    # default params
+    predict_xstart = True  # we always predict x_start (a.k.a. x0), that's our deal!
+    steps = int(getattr(args, 'diffusion_steps', 100))
+    scale_beta = 1.  # no scaling
+    timestep_respacing = getattr(args, 'timestep_respacing', '')
+    learn_sigma = False
+    rescale_timesteps = False
+
+    betas = gd.get_named_beta_schedule(args.noise_schedule, steps, scale_beta)
+    loss_type = gd.LossType.MSE
+
+    if not timestep_respacing:
+        timestep_respacing = [steps]
+
+    return SpacedDiffusion(
+        use_timesteps=space_timesteps(steps, timestep_respacing),
+        betas=betas,
+        model_mean_type=(
+            gd.ModelMeanType.EPSILON if not predict_xstart else gd.ModelMeanType.START_X
+        ),
+        model_var_type=(
+            (
+                gd.ModelVarType.FIXED_LARGE
+                if not args.sigma_small
+                else gd.ModelVarType.FIXED_SMALL
+            )
+            if not learn_sigma
+            else gd.ModelVarType.LEARNED_RANGE
+        ),
+        loss_type=loss_type,
+        rescale_timesteps=rescale_timesteps,
         lambda_fs=args.lambda_fs,
         lambda_geo=args.lambda_geo,
         lambda_confidence_recon=args.lambda_confidence_recon,

@@ -26,7 +26,7 @@ if str(REPO_ROOT) not in sys.path:
 from data_loaders.get_data import get_dataset_loader
 import BVH
 from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
-from diffusion.resample import create_named_schedule_sampler
+from diffusion.resample import LossAwareSampler, create_named_schedule_sampler
 from utils.fixseed import fixseed
 from utils import dist_util
 from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
@@ -575,6 +575,8 @@ def train_stochastic_debug(
 
         optimizer.zero_grad(set_to_none=True)
         losses = diffusion.training_losses(model, motion, timesteps, model_kwargs=cond)
+        if isinstance(schedule_sampler, LossAwareSampler):
+            schedule_sampler.update_with_local_losses(timesteps, losses["loss"].detach())
         loss = (losses["loss"] * weights).mean()
         loss.backward()
         optimizer.step()
