@@ -26,10 +26,15 @@ SUPPORTED_SUFFIXES = {".bvh", ".npy"}
 DEFAULT_CHECKPOINT_DIR = "save/motion_scorer_perceptual_v2"
 METRIC_KEYS = (
     "quality_score",
-    "recon_score",
+    "recognizability_score",
     "density_score",
-    "recon_error",
+    "plausibility_score",
+    "physics_score",
+    "species_confidence",
+    "action_confidence",
+    "density_log_prob",
     "density_distance",
+    "physics_distance",
     "mahal_distance",
 )
 
@@ -299,6 +304,7 @@ def score_motion_array(
             motion_tensor,
             n_joints=[chunk.shape[1]],
             lengths=[chunk.shape[0]],
+            object_types=[object_type],
         )
         chunk_result = {
             key: float(result[key].reshape(-1)[0].item())
@@ -431,7 +437,7 @@ def main() -> int:
 
     dataset_root = resolve_dataset_root(args.dataset_dir or None)
     cond_dict = load_cond_dict(dataset_root)
-    scorer = MotionQualityScorer(args.checkpoint_dir, device=args.device)
+    scorer = MotionQualityScorer(args.checkpoint_dir, device=args.device, dataset_dir=str(dataset_root))
 
     recursive = not args.no_recursive
     candidate_paths = collect_candidate_paths(
@@ -470,7 +476,6 @@ def main() -> int:
         except Exception as exc:
             failures.append({"path": str(path), "error": str(exc)})
             print(f"[fail] {path}: {exc}")
-
     samples.sort(key=lambda sample: sample["path"])
     report = {
         "checkpoint": str(scorer.checkpoint_path),
@@ -509,8 +514,12 @@ def main() -> int:
             f"{metrics['quality_score']['max']:.4f}"
         )
         print(
-            "recon_score mean: "
-            f"{metrics['recon_score']['mean']:.4f} | density_score mean: {metrics['density_score']['mean']:.4f}"
+            "recognizability_score mean: "
+            f"{metrics['recognizability_score']['mean']:.4f} | density_score mean: {metrics['density_score']['mean']:.4f}"
+        )
+        print(
+            "plausibility_score mean: "
+            f"{metrics['plausibility_score']['mean']:.4f} | physics_score mean: {metrics['physics_score']['mean']:.4f}"
         )
     print(f"saved report: {output_json}")
 

@@ -4,6 +4,15 @@ import torch
 import torch.nn as nn
 
 
+def _make_mlp(input_dim: int, hidden_dim: int, output_dim: int) -> nn.Sequential:
+    return nn.Sequential(
+        nn.LayerNorm(input_dim),
+        nn.Linear(input_dim, hidden_dim),
+        nn.GELU(),
+        nn.Linear(hidden_dim, output_dim),
+    )
+
+
 def build_motion_valid_mask(
     n_joints: torch.Tensor,
     lengths: torch.Tensor,
@@ -352,3 +361,141 @@ class MotionAutoencoder(nn.Module):
         lengths: torch.Tensor,
     ) -> torch.Tensor:
         return self.encoder(motion, n_joints, lengths)
+
+
+class MotionScorerNet(nn.Module):
+    def __init__(
+        self,
+        *,
+        feature_dim: int = 13,
+        d_model: int = 128,
+        latent_dim: int = 128,
+        num_conv_layers: int = 3,
+        kernel_size: int = 5,
+        max_joints: int = 143,
+        num_species: int,
+        num_actions: int,
+        metadata_dim: int = 0,
+        metadata_hidden_dim: int = 128,
+        phys_dim: int = 30,
+        disc_label_embed_dim: int = 32,
+    ) -> None:
+        super().__init__()
+        self.feature_dim = feature_dim
+        self.latent_dim = latent_dim
+        self.max_joints = max_joints
+        self.num_species = int(num_species)
+        self.num_actions = int(num_actions)
+        self.metadata_dim = int(metadata_dim)
+        self.phys_dim = int(phys_dim)
+
+        self.encoder = MotionEncoder(
+            feature_dim=feature_dim,
+            d_model=d_model,
+            latent_dim=latent_dim,
+            num_conv_layers=num_conv_layers,
+            kernel_size=kernel_size,
+            max_joints=max_joints,
+        )
+        self.metadata_projection = None
+        metadata_context_dim = 0
+        if self.metadata_dim > 0:
+            self.metadata_projection = _make_mlp(self.metadata_dim, metadata_hidden_dim, metadata_hidden_dim)
+            metadata_context_dim = metadata_hidden_dim
+
+        self.species_condition_embedding = nn.Embedding(max(self.num_species, 1), disc_label_embed_dim)
+        self.action_condition_embedding = nn.Embedding(max(self.num_actions, 1), disc_label_embed_dim)
+
+        self.species_head = _make_mlp(latent_dim, d_model, self.num_species)
+        self.action_head = _make_mlp(latent_dim, d_model, self.num_actions)
+        self.phys_head = _make_mlp(latent_dim, d_model, phys_dim)
+
+        disc_input_dim = latent_dim + metadata_context_dim + disc_label_embed_dim * 2
+        self.disc_head = _make_mlp(disc_input_dim, d_model, 1)
+
+    def encode(
+        self,
+        motion: torch.Tensor,
+        n_joints: torch.Tensor,
+        lengths: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.encoder(motion, n_joints, lengths)
+
+    def _build_disc_context(
+        self,
+        latents: torch.Tensor,
+        *,
+        metadata_features: torch.Tensor | None,
+        species_ids: torch.Tensor | None,
+        action_ids: torch.Tensor | None,
+    ) -> torch.Tensor:
+        context_parts = [latents]
+        batch_size = latents.shape[0]
+
+        if self.metadata_projection is not None:
+            if metadata_features is None:
+                metadata_features = latents.new_zeros((batch_size, self.metadata_dim))
+            context_parts.append(self.metadata_projection(metadata_features))
+
+        if species_ids is None:
+            species_ids = torch.zeros(batch_size, dtype=torch.long, device=latents.device)
+        if action_ids is None:
+            action_ids = torch.zeros(batch_size, dtype=torch.long, device=latents.device)
+        context_parts.append(self.species_condition_embedding(species_ids.clamp(min=0, max=max(self.num_species - 1, 0))))
+        context_parts.append(self.action_condition_embedding(action_ids.clamp(min=0, max=max(self.num_actions - 1, 0))))
+        return torch.cat(context_parts, dim=-1)
+
+    def forward_from_latents(
+        self,
+        latents: torch.Tensor,
+        *,
+        metadata_features: torch.Tensor | None = None,
+        species_ids: torch.Tensor | None = None,
+        action_ids: torch.Tensor | None = None,
+        return_species_logits: bool = True,
+        return_action_logits: bool = True,
+        return_disc_logits: bool = True,
+        return_phys_features: bool = True,
+    ) -> dict[str, torch.Tensor]:
+        outputs = {"latents": latents}
+        if return_species_logits:
+            outputs["species_logits"] = self.species_head(latents)
+        if return_action_logits:
+            outputs["action_logits"] = self.action_head(latents)
+        if return_disc_logits:
+            disc_context = self._build_disc_context(
+                latents,
+                metadata_features=metadata_features,
+                species_ids=species_ids,
+                action_ids=action_ids,
+            )
+            outputs["disc_logits"] = self.disc_head(disc_context).squeeze(-1)
+        if return_phys_features:
+            outputs["phys_features"] = self.phys_head(latents)
+        return outputs
+
+    def forward(
+        self,
+        motion: torch.Tensor,
+        n_joints: torch.Tensor,
+        lengths: torch.Tensor,
+        *,
+        metadata_features: torch.Tensor | None = None,
+        species_ids: torch.Tensor | None = None,
+        action_ids: torch.Tensor | None = None,
+        return_species_logits: bool = True,
+        return_action_logits: bool = True,
+        return_disc_logits: bool = True,
+        return_phys_features: bool = True,
+    ) -> dict[str, torch.Tensor]:
+        latents = self.encode(motion, n_joints, lengths)
+        return self.forward_from_latents(
+            latents,
+            metadata_features=metadata_features,
+            species_ids=species_ids,
+            action_ids=action_ids,
+            return_species_logits=return_species_logits,
+            return_action_logits=return_action_logits,
+            return_disc_logits=return_disc_logits,
+            return_phys_features=return_phys_features,
+        )

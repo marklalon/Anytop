@@ -68,9 +68,10 @@ def summarize_scores(result: dict[str, Any]) -> dict[str, float]:
     density_distance_values = result.get("density_distance", result.get("mahal_distance", []))
     return {
         "quality_score_mean": float(np.mean(result["quality_score"])),
-        "recon_score_mean": float(np.mean(result["recon_score"])),
+        "recognizability_score_mean": float(np.mean(result["recognizability_score"])),
         "density_score_mean": float(np.mean(result["density_score"])),
-        "recon_error_mean": float(np.mean(result["recon_error"])),
+        "plausibility_score_mean": float(np.mean(result["plausibility_score"])),
+        "physics_score_mean": float(np.mean(result["physics_score"])),
         "density_distance_mean": float(np.mean(density_distance_values)),
         "mahal_distance_mean": float(np.mean(density_distance_values)),
     }
@@ -128,14 +129,13 @@ def main() -> int:
     n_joints = cond["y"]["n_joints"]
     lengths = cond["y"]["lengths"]
     valid_mask = build_motion_valid_mask(n_joints, lengths, motion.shape[1], motion.shape[-1]).to(motion.dtype)
-
-    train_result = tensor_dict_to_lists(scorer.score(motion, n_joints, lengths))
-    noisy_motion = make_noisy_motion(motion, valid_mask, args.noise_sigma)
-    noisy_result = tensor_dict_to_lists(scorer.score(noisy_motion, n_joints, lengths))
-    random_motion = make_random_motion(motion, valid_mask, args.random_sigma)
-    random_result = tensor_dict_to_lists(scorer.score(random_motion, n_joints, lengths))
-
     object_types = list(cond["y"].get("object_type", [None] * motion.shape[0]))
+
+    train_result = tensor_dict_to_lists(scorer.score(motion, n_joints, lengths, object_types=object_types))
+    noisy_motion = make_noisy_motion(motion, valid_mask, args.noise_sigma)
+    noisy_result = tensor_dict_to_lists(scorer.score(noisy_motion, n_joints, lengths, object_types=object_types))
+    random_motion = make_random_motion(motion, valid_mask, args.random_sigma)
+    random_result = tensor_dict_to_lists(scorer.score(random_motion, n_joints, lengths, object_types=object_types))
     motion_names = list(cond["y"].get("motion_name", [None] * motion.shape[0]))
 
     report = {

@@ -1,21 +1,38 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sys
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data_loaders.truebones.offline_reference_dataset import load_cond_dict
-from model.motion_autoencoder import MotionAutoencoder, motion_perceptual_recon_error_per_sample
+from data_loaders.skeleton_metadata import build_metadata_feature_tensor, load_skeleton_metadata
+from data_loaders.truebones.offline_reference_dataset import load_cond_dict, resolve_dataset_root
+from data_loaders.truebones.truebones_utils.motion_labels import infer_species_label
+from eval.physics_features import extract_physics_features
+from model.motion_autoencoder import MotionScorerNet
+
+
+EPS = 1e-8
+REQUIRED_MULTITASK_STATS_KEYS = {
+    "gmm_covariance_type",
+    "gmm_means",
+    "gmm_covariances",
+    "gmm_weights",
+    "density_percentiles",
+    "mu_phys",
+    "sigma_phys_inv",
+    "phys_percentiles",
+    "score_alpha",
+}
 
 
 def _resolve_checkpoint_path(checkpoint_dir: str | os.PathLike[str]) -> Path:
@@ -51,88 +68,10 @@ def _select_model_state_dict(state_dict: dict[str, Any], prefer_ema: bool) -> di
     return state_dict
 
 
-def _mahalanobis_distance(
-    latents: torch.Tensor,
-    mean: torch.Tensor,
-    cov_inv: torch.Tensor,
-) -> torch.Tensor:
-    diff = latents - mean.unsqueeze(0)
+def _mahalanobis_distance(values: torch.Tensor, mean: torch.Tensor, cov_inv: torch.Tensor) -> torch.Tensor:
+    diff = values - mean.unsqueeze(0)
     distances_sq = torch.einsum("bi,ij,bj->b", diff, cov_inv, diff)
     return torch.sqrt(torch.clamp(distances_sq, min=0.0))
-
-
-def _diagonal_mahalanobis_distance(
-    latents: torch.Tensor,
-    mean: torch.Tensor,
-    var: torch.Tensor,
-) -> torch.Tensor:
-    diff = latents - mean.unsqueeze(0)
-    distances_sq = ((diff * diff) / var.unsqueeze(0)).sum(dim=1)
-    return torch.sqrt(torch.clamp(distances_sq, min=0.0))
-
-
-def _knn_distance(
-    latents: torch.Tensor,
-    reference_latents: torch.Tensor,
-    k: int,
-) -> torch.Tensor:
-    if reference_latents.ndim != 2 or latents.ndim != 2:
-        raise ValueError("Expected [N, D] latent tensors for kNN density scoring.")
-    effective_k = max(1, min(int(k), int(reference_latents.shape[0])))
-    distances = torch.cdist(latents, reference_latents)
-    knn_distances, _ = torch.topk(distances, k=effective_k, largest=False, dim=1)
-    return knn_distances.mean(dim=1)
-
-
-def _empirical_survival_score(values: torch.Tensor, reference_values: torch.Tensor) -> torch.Tensor:
-    if reference_values.numel() == 0:
-        raise ValueError("reference_values must be non-empty for empirical score calibration.")
-    sorted_reference = torch.sort(reference_values.flatten())[0]
-    insertion_indices = torch.searchsorted(sorted_reference, values.flatten(), right=False)
-    tail_counts = sorted_reference.numel() - insertion_indices
-    scores = tail_counts.to(dtype=torch.float32) / float(sorted_reference.numel())
-    return scores.view_as(values)
-
-
-def _smooth_log_reference_score(values: torch.Tensor, reference_values: torch.Tensor, *, eps: float = 1e-8) -> torch.Tensor:
-    if reference_values.numel() == 0:
-        raise ValueError("reference_values must be non-empty for smooth score calibration.")
-    safe_reference = reference_values.flatten().float().clamp_min(eps)
-    safe_values = values.float().clamp_min(eps)
-    log_reference = torch.log(safe_reference)
-    q50 = torch.quantile(log_reference, 0.50)
-    q95 = torch.quantile(log_reference, 0.95)
-    scale = torch.clamp(q95 - q50, min=0.05)
-    return torch.sigmoid((q95 - torch.log(safe_values)) / scale)
-
-
-def _hybrid_reference_score(
-    values: torch.Tensor,
-    reference_values: torch.Tensor,
-    *,
-    empirical_weight: float,
-) -> torch.Tensor:
-    empirical = _empirical_survival_score(values, reference_values)
-    smooth = _smooth_log_reference_score(values, reference_values)
-    blend = float(min(max(empirical_weight, 0.0), 1.0))
-    return blend * empirical + (1.0 - blend) * smooth
-
-
-def _compute_recon_error(args: dict[str, Any], motion: torch.Tensor, reconstruction: torch.Tensor, n_joints: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
-    return motion_perceptual_recon_error_per_sample(
-        motion,
-        reconstruction,
-        n_joints,
-        lengths,
-        position_weight=float(args.get("recon_position_weight", 0.35)),
-        velocity_weight=float(args.get("recon_velocity_weight", 0.30)),
-        acceleration_weight=float(args.get("recon_acceleration_weight", 0.20)),
-        blur_weight=float(args.get("recon_blur_weight", 0.15)),
-    )
-
-
-def _normalize_density_embeddings(latents: torch.Tensor) -> torch.Tensor:
-    return F.normalize(latents.float(), dim=-1)
 
 
 def _to_1d_long_tensor(values, batch_size: int, device: torch.device) -> torch.Tensor:
@@ -144,12 +83,26 @@ def _to_1d_long_tensor(values, batch_size: int, device: torch.device) -> torch.T
     return tensor
 
 
+def _percentile_score(values: torch.Tensor, reference_percentiles: torch.Tensor, *, higher_is_better: bool) -> torch.Tensor:
+    bins = torch.searchsorted(reference_percentiles, values.float(), right=False).float() / 100.0
+    bins = bins.clamp(0.0, 1.0)
+    return bins if higher_is_better else 1.0 - bins
+
+
+def _geometric_mean(scores: Sequence[torch.Tensor], weights: Sequence[float]) -> torch.Tensor:
+    weight_tensor = torch.as_tensor(weights, dtype=torch.float32, device=scores[0].device)
+    stacked = torch.stack([score.clamp(EPS, 1.0) for score in scores], dim=0)
+    weighted_logs = weight_tensor[:, None] * torch.log(stacked)
+    return torch.exp(weighted_logs.sum(dim=0) / weight_tensor.sum().clamp_min(EPS))
+
+
 class MotionQualityScorer:
     def __init__(
         self,
         checkpoint_dir: str | os.PathLike[str],
         device: str = "cuda",
         prefer_ema: bool = True,
+        dataset_dir: str | os.PathLike[str] | None = None,
     ) -> None:
         self.checkpoint_path = _resolve_checkpoint_path(checkpoint_dir)
         self.checkpoint_dir = self.checkpoint_path.parent
@@ -164,27 +117,21 @@ class MotionQualityScorer:
         with open(args_path, "r", encoding="utf-8") as handle:
             self.args = json.load(handle)
 
-        self.autoencoder = MotionAutoencoder(
-            feature_dim=int(self.args.get("feature_dim", 13)),
-            d_model=int(self.args.get("d_model", 128)),
-            latent_dim=int(self.args.get("latent_dim", 64)),
-            num_conv_layers=int(self.args.get("num_conv_layers", 3)),
-            decoder_num_conv_layers=int(self.args.get("decoder_num_conv_layers", 0)),
-            kernel_size=int(self.args.get("kernel_size", 5)),
-            max_joints=int(self.args.get("max_joints", 143)),
-            max_frames=int(self.args.get("num_frames", 120)),
-        )
-        checkpoint_payload = torch.load(self.checkpoint_path, map_location="cpu")
-        model_state = _select_model_state_dict(checkpoint_payload, prefer_ema=prefer_ema)
-        self.autoencoder.load_state_dict(model_state, strict=True)
-        self.autoencoder.to(self.device)
-        self.autoencoder.eval()
+        self.feature_dim = int(self.args.get("feature_dim", 13))
+        self.max_joints = int(self.args.get("max_joints", 143))
+        self.max_frames = int(self.args.get("num_frames", 120))
+        self.dataset_root = resolve_dataset_root(dataset_dir or self.args.get("data_dir") or None)
 
         stats_path = self.checkpoint_dir / "train_stats.npy"
         if not stats_path.exists():
             raise FileNotFoundError(f"train_stats.npy was not found next to the checkpoint: {stats_path}")
         self.train_stats = np.load(stats_path, allow_pickle=True).item()
+        self._validate_checkpoint_match()
+        self._validate_multitask_stats()
+        self._load_model(prefer_ema=prefer_ema)
+        self._load_runtime_stats()
 
+    def _validate_checkpoint_match(self) -> None:
         stats_checkpoint_step = int(self.train_stats.get("checkpoint_step", 0) or 0)
         loaded_checkpoint_step = _checkpoint_step_from_path(self.checkpoint_path)
         if stats_checkpoint_step and loaded_checkpoint_step and stats_checkpoint_step != loaded_checkpoint_step:
@@ -196,50 +143,98 @@ class MotionQualityScorer:
         if not stats_checkpoint_step:
             warnings.warn(
                 "train_stats.npy does not record which checkpoint generated it. "
-                "If density_score looks wrong, recompute scorer stats for the current checkpoint.",
+                "If the loaded scores look wrong, recompute scorer stats for the current checkpoint.",
                 stacklevel=2,
             )
 
-        self.mean = torch.as_tensor(self.train_stats["mean"], dtype=torch.float32, device=self.device)
-        self.cov_inv = torch.as_tensor(self.train_stats["cov_inv"], dtype=torch.float32, device=self.device)
-        self.var = torch.as_tensor(
-            self.train_stats.get("var", np.ones_like(self.train_stats["mean"])),
-            dtype=torch.float32,
-            device=self.device,
+    def _validate_multitask_stats(self) -> None:
+        missing = sorted(REQUIRED_MULTITASK_STATS_KEYS.difference(self.train_stats.keys()))
+        if missing:
+            raise ValueError(
+                "This scorer now only supports motion scorer v3 checkpoints with multitask stats. "
+                f"Missing keys in train_stats.npy: {missing}"
+            )
+
+    def _load_model(self, *, prefer_ema: bool) -> None:
+        checkpoint_payload = torch.load(self.checkpoint_path, map_location="cpu")
+        num_species = int(self.args.get("num_species", len(self.args.get("species_vocab", [])) or 1))
+        num_actions = int(self.args.get("num_actions", len(self.args.get("action_vocab", [])) or 1))
+        metadata_dim = int(self.args.get("metadata_feature_dim", 0))
+        self.model = MotionScorerNet(
+            feature_dim=self.feature_dim,
+            d_model=int(self.args.get("d_model", 128)),
+            latent_dim=int(self.args.get("latent_dim", 128)),
+            num_conv_layers=int(self.args.get("num_conv_layers", 3)),
+            kernel_size=int(self.args.get("kernel_size", 5)),
+            max_joints=self.max_joints,
+            num_species=num_species,
+            num_actions=num_actions,
+            metadata_dim=metadata_dim,
+            metadata_hidden_dim=int(self.args.get("metadata_hidden_dim", 128)),
+            disc_label_embed_dim=int(self.args.get("disc_label_embed_dim", 32)),
         )
-        self.reference_recon_errors = torch.as_tensor(
-            self.train_stats.get("recon_errors", np.asarray([], dtype=np.float32)),
-            dtype=torch.float32,
-            device=self.device,
+        model_state = _select_model_state_dict(checkpoint_payload, prefer_ema=prefer_ema)
+        self.model.load_state_dict(model_state, strict=True)
+        self.model.to(self.device)
+        self.model.eval()
+
+    def _load_runtime_stats(self) -> None:
+        self.skeleton_lookup = load_skeleton_metadata(self.dataset_root)
+        self.gmm_covariance_type = str(self.train_stats["gmm_covariance_type"])
+        self.gmm_means = torch.as_tensor(self.train_stats["gmm_means"], dtype=torch.float32, device=self.device)
+        self.gmm_covariances = torch.as_tensor(self.train_stats["gmm_covariances"], dtype=torch.float32, device=self.device)
+        self.gmm_weights = torch.as_tensor(self.train_stats["gmm_weights"], dtype=torch.float32, device=self.device)
+        self.gmm_log_weights = torch.log(self.gmm_weights.clamp_min(EPS))
+        if self.gmm_covariance_type == "full":
+            self.gmm_cov_inv = torch.linalg.pinv(self.gmm_covariances)
+        else:
+            self.gmm_cov_inv = None
+        self.density_percentiles = torch.as_tensor(self.train_stats["density_percentiles"], dtype=torch.float32, device=self.device)
+        self.mu_phys = torch.as_tensor(self.train_stats["mu_phys"], dtype=torch.float32, device=self.device)
+        self.sigma_phys_inv = torch.as_tensor(self.train_stats["sigma_phys_inv"], dtype=torch.float32, device=self.device)
+        self.phys_percentiles = torch.as_tensor(self.train_stats["phys_percentiles"], dtype=torch.float32, device=self.device)
+        self.score_alpha = [float(value) for value in self.train_stats["score_alpha"]]
+        self.density_mode = f"gmm_{self.gmm_covariance_type}"
+
+    def _gmm_log_prob(self, latents: torch.Tensor) -> torch.Tensor:
+        diff = latents[:, None, :] - self.gmm_means[None, :, :]
+        if self.gmm_covariance_type == "diag":
+            variances = self.gmm_covariances.clamp_min(EPS)
+            mahal = (diff.pow(2) / variances[None, :, :]).sum(dim=-1)
+            log_det = torch.log(variances).sum(dim=-1)
+        else:
+            mahal = torch.einsum("bkd,kde,bke->bk", diff, self.gmm_cov_inv, diff)
+            log_det = torch.logdet(self.gmm_covariances.clamp_min(EPS))
+        dim = latents.shape[-1]
+        normalizer = dim * math.log(2.0 * math.pi)
+        component_log_prob = -0.5 * (mahal + log_det[None, :] + normalizer) + self.gmm_log_weights[None, :]
+        return torch.logsumexp(component_log_prob, dim=1)
+
+    def _prepare_condition_features(
+        self,
+        motion: torch.Tensor,
+        object_types: Sequence[str],
+    ) -> tuple[list[str], torch.Tensor]:
+        batch_size = motion.shape[0]
+        if len(object_types) != batch_size:
+            raise ValueError(f"Expected {batch_size} object_types, got {len(object_types)}")
+        normalized_object_types = [str(object_type) for object_type in object_types]
+        metadata_features = build_metadata_feature_tensor(
+            normalized_object_types,
+            self.skeleton_lookup,
+            max_joints=self.max_joints,
+            device=motion.device,
+            dtype=motion.dtype,
         )
-        self.reference_latents = torch.as_tensor(
-            self.train_stats.get("train_latents", np.asarray([], dtype=np.float32)),
-            dtype=torch.float32,
-            device=self.device,
-        )
-        self.reference_knn_distances = torch.as_tensor(
-            self.train_stats.get("knn_distances", np.asarray([], dtype=np.float32)),
-            dtype=torch.float32,
-            device=self.device,
-        )
-        self.recon_threshold = float(self.train_stats["recon_threshold"])
-        self.density_threshold = float(self.train_stats["density_threshold"])
-        self.alpha = float(self.train_stats.get("alpha", 0.7))
-        self.density_mode = str(self.train_stats.get("density_mode", "diagonal_mahalanobis"))
-        self.density_knn_k = int(self.train_stats.get("density_knn_k", 5))
-        self.density_embedding_kind = str(self.train_stats.get("density_embedding_kind", "raw_latent"))
-        self.recon_score_calibration = str(self.train_stats.get("recon_score_calibration", "hybrid_empirical_logistic_v1"))
-        self.recon_empirical_weight = float(self.train_stats.get("recon_empirical_weight", 0.5))
-        self.feature_dim = int(self.args.get("feature_dim", 13))
-        self.max_joints = int(self.args.get("max_joints", 143))
-        self.max_frames = int(self.args.get("num_frames", 120))
+        return normalized_object_types, metadata_features
 
     def score(
         self,
         motion: torch.Tensor | np.ndarray,
         n_joints,
         lengths,
-    ) -> dict[str, torch.Tensor]:
+        object_types: Sequence[str],
+    ) -> dict[str, torch.Tensor | str]:
         if isinstance(motion, np.ndarray):
             motion = torch.from_numpy(motion)
         motion = motion.to(self.device, dtype=torch.float32)
@@ -257,45 +252,52 @@ class MotionQualityScorer:
         batch_size = motion.shape[0]
         n_joints = _to_1d_long_tensor(n_joints, batch_size, self.device)
         lengths = _to_1d_long_tensor(lengths, batch_size, self.device)
+        object_types, metadata_features = self._prepare_condition_features(motion, object_types)
 
         with torch.no_grad():
-            reconstruction, latents = self.autoencoder(motion, n_joints, lengths)
-            recon_error = _compute_recon_error(self.args, motion, reconstruction, n_joints, lengths)
-            density_embeddings = latents.float()
-            if self.density_embedding_kind == "normalized_latent":
-                density_embeddings = _normalize_density_embeddings(density_embeddings)
-            if self.density_mode == "knn" and self.reference_latents.numel() and self.reference_knn_distances.numel():
-                density_distance = _knn_distance(density_embeddings, self.reference_latents.float(), self.density_knn_k)
-            elif self.density_mode == "diagonal_mahalanobis":
-                density_distance = _diagonal_mahalanobis_distance(density_embeddings, self.mean, self.var)
-            else:
-                density_distance = _mahalanobis_distance(density_embeddings, self.mean, self.cov_inv)
+            outputs = self.model(
+                motion,
+                n_joints,
+                lengths,
+                metadata_features=metadata_features,
+            )
+            species_probs = torch.softmax(outputs["species_logits"], dim=-1)
+            action_probs = torch.softmax(outputs["action_logits"], dim=-1)
+            predicted_species = species_probs.argmax(dim=-1)
+            predicted_action = action_probs.argmax(dim=-1)
+            conditioned = self.model.forward_from_latents(
+                outputs["latents"],
+                metadata_features=metadata_features,
+                species_ids=predicted_species,
+                action_ids=predicted_action,
+            )
+            density_value = self._gmm_log_prob(outputs["latents"].float())
+            physics_features = extract_physics_features(motion, n_joints, lengths, object_types, self.skeleton_lookup)
+            physics_distance = _mahalanobis_distance(physics_features.float(), self.mu_phys, self.sigma_phys_inv)
 
-        if self.reference_recon_errors.numel():
-            if self.recon_score_calibration == "hybrid_empirical_logistic_v1":
-                recon_score = _hybrid_reference_score(
-                    recon_error.float(),
-                    self.reference_recon_errors.float(),
-                    empirical_weight=self.recon_empirical_weight,
-                )
-            else:
-                recon_score = _empirical_survival_score(recon_error.float(), self.reference_recon_errors.float())
-        else:
-            recon_score = 1.0 - torch.clamp(recon_error / max(self.recon_threshold, 1e-8), min=0.0, max=1.0)
-
-        if self.density_mode == "knn" and self.reference_knn_distances.numel():
-            density_score = _empirical_survival_score(density_distance.float(), self.reference_knn_distances.float())
-        else:
-            density_score = 1.0 - torch.clamp(density_distance / max(self.density_threshold, 1e-8), min=0.0, max=1.0)
-        quality_score = self.alpha * recon_score + (1.0 - self.alpha) * density_score
+        species_confidence = species_probs.max(dim=-1).values
+        action_confidence = action_probs.max(dim=-1).values
+        recognizability_score = torch.sqrt((species_confidence * action_confidence).clamp_min(EPS))
+        plausibility_score = torch.sigmoid(conditioned["disc_logits"])
+        density_score = _percentile_score(density_value, self.density_percentiles, higher_is_better=True)
+        physics_score = _percentile_score(-physics_distance, self.phys_percentiles, higher_is_better=True)
+        quality_score = _geometric_mean(
+            [recognizability_score, density_score, plausibility_score, physics_score],
+            self.score_alpha,
+        )
 
         return {
             "quality_score": quality_score.detach().cpu(),
-            "recon_score": recon_score.detach().cpu(),
+            "recognizability_score": recognizability_score.detach().cpu(),
             "density_score": density_score.detach().cpu(),
-            "recon_error": recon_error.detach().cpu(),
-            "density_distance": density_distance.detach().cpu(),
-            "mahal_distance": density_distance.detach().cpu(),
+            "plausibility_score": plausibility_score.detach().cpu(),
+            "physics_score": physics_score.detach().cpu(),
+            "species_confidence": species_confidence.detach().cpu(),
+            "action_confidence": action_confidence.detach().cpu(),
+            "density_log_prob": density_value.detach().cpu(),
+            "density_distance": (-density_value).detach().cpu(),
+            "physics_distance": physics_distance.detach().cpu(),
+            "mahal_distance": physics_distance.detach().cpu(),
             "density_mode": self.density_mode,
         }
 
@@ -306,7 +308,7 @@ class MotionQualityScorer:
         cond_dict: dict[str, dict[str, np.ndarray]] | None = None,
     ) -> dict[str, torch.Tensor | str]:
         if cond_dict is None:
-            cond_dict = load_cond_dict()
+            cond_dict = load_cond_dict(self.dataset_root)
         if object_type not in cond_dict:
             available = ", ".join(sorted(cond_dict.keys()))
             raise KeyError(f"Unknown object_type '{object_type}'. Available types: {available}")
@@ -330,26 +332,33 @@ class MotionQualityScorer:
             motion_tensor,
             n_joints=[motion_np.shape[1]],
             lengths=[motion_np.shape[0]],
+            object_types=[object_type],
         )
         result["object_type"] = object_type
         result["path"] = str(npy_path)
+        result["species_label"] = infer_species_label(object_type)
         return result
 
     def score_batch_from_dataloader(self, dataloader) -> list[dict[str, Any]]:
         scored_samples: list[dict[str, Any]] = []
         for motion, cond in dataloader:
-            batch_result = self.score(motion, cond["y"]["n_joints"], cond["y"]["lengths"])
+            object_types = cond["y"].get("object_type")
+            batch_result = self.score(motion, cond["y"]["n_joints"], cond["y"]["lengths"], object_types=object_types)
             batch_size = motion.shape[0]
-            object_types = cond["y"].get("object_type", [None] * batch_size)
             motion_names = cond["y"].get("motion_name", [None] * batch_size)
             for batch_index in range(batch_size):
                 scored_samples.append(
                     {
                         "quality_score": float(batch_result["quality_score"][batch_index].item()),
-                        "recon_score": float(batch_result["recon_score"][batch_index].item()),
+                        "recognizability_score": float(batch_result["recognizability_score"][batch_index].item()),
                         "density_score": float(batch_result["density_score"][batch_index].item()),
-                        "recon_error": float(batch_result["recon_error"][batch_index].item()),
+                        "plausibility_score": float(batch_result["plausibility_score"][batch_index].item()),
+                        "physics_score": float(batch_result["physics_score"][batch_index].item()),
+                        "species_confidence": float(batch_result["species_confidence"][batch_index].item()),
+                        "action_confidence": float(batch_result["action_confidence"][batch_index].item()),
+                        "density_log_prob": float(batch_result["density_log_prob"][batch_index].item()),
                         "density_distance": float(batch_result["density_distance"][batch_index].item()),
+                        "physics_distance": float(batch_result["physics_distance"][batch_index].item()),
                         "mahal_distance": float(batch_result["mahal_distance"][batch_index].item()),
                         "object_type": object_types[batch_index],
                         "motion_name": motion_names[batch_index],

@@ -12,10 +12,11 @@ class _PrefetchSentinel:
 
 
 class BackgroundPrefetchLoader:
-    def __init__(self, loader, max_prefetch_batches=2):
+    def __init__(self, loader, max_prefetch_batches=2, batch_transform=None):
         self.loader = loader
         self.dataset = loader.dataset
         self.max_prefetch_batches = max(1, int(max_prefetch_batches))
+        self.batch_transform = batch_transform
 
     def __len__(self):
         return len(self.loader)
@@ -28,6 +29,8 @@ class BackgroundPrefetchLoader:
         def _producer():
             try:
                 for batch in self.loader:
+                    if self.batch_transform is not None:
+                        batch = self.batch_transform(batch)
                     data_queue.put(batch)
             except Exception as exc:
                 errors.append(exc)
@@ -65,7 +68,7 @@ def get_dataset(num_frames, split='train', temporal_window=31, t5_name='t5-base'
     return dataset
 
 
-def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=True, objects_subset="all", num_workers=None, prefetch_factor=2, sample_limit=0, shuffle=True, drop_last=True, use_reference_conditioning=True, action_tags='', motion_cache_size=0, main_process_prefetch_batches=0):
+def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=True, objects_subset="all", num_workers=None, prefetch_factor=2, sample_limit=0, shuffle=True, drop_last=True, use_reference_conditioning=True, action_tags='', motion_cache_size=0, main_process_prefetch_batches=0, batch_transform=None):
     if num_workers is None or int(num_workers) < 0:
         cpu_count = os.cpu_count() or 1
         num_workers = min(4, cpu_count)
@@ -104,5 +107,5 @@ def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31
         loader_kwargs['prefetch_factor'] = max(1, int(prefetch_factor))
     loader = DataLoader(**loader_kwargs)
     if num_workers == 0 and int(main_process_prefetch_batches) > 0:
-        return BackgroundPrefetchLoader(loader, max_prefetch_batches=main_process_prefetch_batches)
+        return BackgroundPrefetchLoader(loader, max_prefetch_batches=main_process_prefetch_batches, batch_transform=batch_transform)
     return loader

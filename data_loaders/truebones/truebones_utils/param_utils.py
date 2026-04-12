@@ -1,32 +1,50 @@
 import os
+from pathlib import Path
 import statistics 
 import numpy as np
 
 
-DEFAULT_RAW_DATA_DIR = "dataset/truebones/zoo/Truebone_Z-OO"
-DEFAULT_DATASET_DIR = "dataset/truebones/zoo/truebones_processed"
+_ANYTOP_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_RAW_DATA_DIR = str((_ANYTOP_ROOT / "dataset/truebones/zoo/Truebone_Z-OO").resolve())
+DEFAULT_DATASET_DIR = str((_ANYTOP_ROOT / "dataset/truebones/zoo/truebones_processed").resolve())
+
+
+def _resolve_project_path(path_value):
+        candidate = Path(path_value)
+        if candidate.is_absolute():
+                return candidate
+
+        cwd_candidate = (Path.cwd() / candidate).resolve()
+        if cwd_candidate.exists():
+                return cwd_candidate
+
+        project_candidate = (_ANYTOP_ROOT / candidate).resolve()
+        if project_candidate.exists():
+                return project_candidate
+
+        return project_candidate
 
 
 def get_raw_data_dir(raw_data_dir=None):
         if raw_data_dir is not None:
-                resolved_dir = raw_data_dir
+                resolved_dir = _resolve_project_path(raw_data_dir)
         else:
-                resolved_dir = DEFAULT_RAW_DATA_DIR
+                resolved_dir = _resolve_project_path(DEFAULT_RAW_DATA_DIR)
         
-        if not os.path.isdir(resolved_dir):
+        if not resolved_dir.is_dir():
                 raise FileNotFoundError(
                         f"Raw BVH directory not found at: {resolved_dir}\n"
                         f"Please provide a valid path using --raw-data-dir argument.\n"
                         f"Example: python preprocess_and_validate.py --raw-data-dir /path/to/Truebone_Z-OO"
                 )
         
-        return resolved_dir
+        return str(resolved_dir)
 
 
 def get_dataset_dir(dataset_dir=None):
         if dataset_dir is not None:
-                return dataset_dir
-        return DEFAULT_DATASET_DIR
+                return str(_resolve_project_path(dataset_dir))
+        return str(_resolve_project_path(DEFAULT_DATASET_DIR))
 
 
 MOTION_DIR = "motions"

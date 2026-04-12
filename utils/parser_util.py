@@ -163,7 +163,7 @@ def add_training_options(parser):
     group.add_argument("--prefetch_factor", default=2, type=int,
                        help="Per-worker prefetch factor for the restoration dataset loader.")
     group.add_argument("--motion_cache_size", default=0, type=int,
-                       help="Number of raw motion clips to keep in an in-memory LRU cache per dataset instance. 0 disables it.")
+                       help="Number of entries to keep in in-memory LRU caches for raw motion clips per dataset instance and motion-scorer physics targets per sampled window. 0 disables both caches.")
     group.add_argument("--main_process_prefetch_batches", default=0, type=int,
                        help="When num_workers=0, prefetch this many batches on a background thread to overlap data loading with GPU compute. 0 disables it.")
     group.add_argument("--detect_anomaly", action='store_true',

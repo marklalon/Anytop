@@ -154,6 +154,7 @@ class MixedPrecisionTrainer:
         amp_dtype='fp32',
         amp_enabled=False,
         device_type='cuda',
+        log_norms=True,
         fp16_scale_growth=1e-3,
         initial_lg_loss_scale=INITIAL_LOG_LOSS_SCALE,
     ):
@@ -162,6 +163,7 @@ class MixedPrecisionTrainer:
         self.amp_dtype = amp_dtype
         self.amp_enabled = amp_enabled
         self.device_type = device_type
+        self.log_norms = bool(log_norms)
         self.fp16_scale_growth = fp16_scale_growth
 
         self.model_params = list(self.model.parameters())
@@ -201,9 +203,10 @@ class MixedPrecisionTrainer:
     def _optimize_amp(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.StepLR):
         if self.scaler.is_enabled():
             self.scaler.unscale_(opt)
-        grad_norm, param_norm = self._compute_norms_from_model()
-        logger.logkv_mean("grad_norm", grad_norm)
-        logger.logkv_mean("param_norm", param_norm)
+        if self.log_norms:
+            grad_norm, param_norm = self._compute_norms_from_model()
+            logger.logkv_mean("grad_norm", grad_norm)
+            logger.logkv_mean("param_norm", param_norm)
         self.scaler.step(opt)
         self.scaler.update()
         scheduler.step()
@@ -211,17 +214,21 @@ class MixedPrecisionTrainer:
         return True
 
     def _optimize_fp16(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.StepLR):
-        logger.logkv_mean("lg_loss_scale", self.lg_loss_scale)
+        if self.log_norms:
+            logger.logkv_mean("lg_loss_scale", self.lg_loss_scale)
         model_grads_to_master_grads(self.param_groups_and_shapes, self.master_params)
-        grad_norm, param_norm = self._compute_norms(grad_scale=2 ** self.lg_loss_scale)
-        if check_overflow(grad_norm):
+        grad_norm = 0.0
+        if self.log_norms:
+            grad_norm, param_norm = self._compute_norms(grad_scale=2 ** self.lg_loss_scale)
+        if self.log_norms and check_overflow(grad_norm):
             self.lg_loss_scale -= 1
             logger.log(f"Found NaN, decreased lg_loss_scale to {self.lg_loss_scale}")
             zero_master_grads(self.master_params)
             return False
 
-        logger.logkv_mean("grad_norm", grad_norm)
-        logger.logkv_mean("param_norm", param_norm)
+        if self.log_norms:
+            logger.logkv_mean("grad_norm", grad_norm)
+            logger.logkv_mean("param_norm", param_norm)
 
         self.master_params[0].grad.mul_(1.0 / (2 ** self.lg_loss_scale))
         opt.step()
@@ -232,9 +239,10 @@ class MixedPrecisionTrainer:
         return True
 
     def _optimize_normal(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.StepLR):
-        grad_norm, param_norm = self._compute_norms()
-        logger.logkv_mean("grad_norm", grad_norm)
-        logger.logkv_mean("param_norm", param_norm)
+        if self.log_norms:
+            grad_norm, param_norm = self._compute_norms()
+            logger.logkv_mean("grad_norm", grad_norm)
+            logger.logkv_mean("param_norm", param_norm)
         opt.step()
         scheduler.step()
         logger.logkv_mean("lr", scheduler.get_last_lr()[0])

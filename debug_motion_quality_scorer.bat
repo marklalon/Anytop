@@ -1,6 +1,6 @@
 @echo off
 set PYTHON_EXE=%~dp0..\.venv\Scripts\python.exe
-set CHECKPOINT_DIR=save\motion_scorer_perceptual_v2
+set CHECKPOINT_DIR=save\motion_scorer_v3
 
 %PYTHON_EXE% "%~dp0tools\recompute_motion_scorer_stats.py" ^
     --checkpoint_dir %CHECKPOINT_DIR% ^

@@ -6,27 +6,33 @@ import os
 import re
 import shutil
 import sys
+import threading
 import time
+from collections import OrderedDict
 from argparse import ArgumentParser
-from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn.functional as F
+from sklearn.mixture import GaussianMixture
 from torch.optim import AdamW
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_loaders.get_data import get_dataset_loader
+from data_loaders.skeleton_metadata import (
+    LabelVocab,
+    build_label_vocabs,
+    build_metadata_feature_lookup,
+    load_skeleton_metadata,
+    metadata_feature_dim,
+)
 from diffusion.fp16_util import MixedPrecisionTrainer
 from diffusion.nn import update_ema
-from model.motion_autoencoder import (
-    MotionAutoencoder,
-    build_motion_valid_mask,
-    masked_l1_per_sample,
-    motion_perceptual_recon_error_per_sample,
-)
+from eval.biomechanical_negatives import generate_biomechanical_negative_batch
+from eval.physics_features import extract_physics_features
+from model.motion_autoencoder import MotionScorerNet
 from utils import dist_util
 from utils.fixseed import fixseed
 from utils.ml_platforms import ClearmlPlatform, NoPlatform, TensorboardPlatform, WandBPlatform
@@ -41,95 +47,49 @@ def build_parser() -> ArgumentParser:
 
     group = parser.add_argument_group("motion_scorer")
     group.add_argument("--feature_dim", default=13, type=int, help="Input feature size per joint.")
-    group.add_argument("--d_model", default=128, type=int, help="Hidden size for the encoder and decoder.")
-    group.add_argument("--latent_dim", default=64, type=int, help="Latent size of the autoencoder bottleneck.")
+    group.add_argument("--d_model", default=128, type=int, help="Hidden size for the motion scorer backbone.")
+    group.add_argument("--latent_dim", default=128, type=int, help="Latent size of the scorer bottleneck.")
     group.add_argument("--num_conv_layers", default=3, type=int, help="Number of temporal residual conv blocks.")
-    group.add_argument("--decoder_num_conv_layers", default=0, type=int,
-                       help="Number of temporal residual conv blocks used in the decoder. 0 keeps the lighter decoder used by older checkpoints.")
     group.add_argument("--kernel_size", default=5, type=int, help="Kernel size for temporal conv blocks.")
     group.add_argument("--max_joints", default=143, type=int, help="Maximum padded joint count.")
     group.add_argument("--train_split", default="train", choices=["train", "all", "val", "test"], type=str,
                        help="Dataset split used for training.")
     group.add_argument("--stats_split", default="", type=str,
-                       help="Split used to cache latent statistics after training. Empty means train_split.")
+                       help="Split used to cache scorer statistics after training. Empty means train_split.")
     group.add_argument("--stats_batch_size", default=0, type=int,
                        help="Batch size for the post-training stats pass. 0 reuses batch_size.")
     group.add_argument("--lr_step_size", default=10000, type=int, help="StepLR step size in optimizer steps.")
     group.add_argument("--lr_gamma", default=0.99, type=float, help="StepLR gamma.")
     group.add_argument("--ema_decay", default=0.999, type=float, help="EMA decay when --use_ema is enabled.")
-    group.add_argument("--recon_percentile", default=95.0, type=float,
-                       help="Percentile used to normalize reconstruction errors into scores.")
-    group.add_argument("--density_percentile", default=95.0, type=float,
-                       help="Percentile used to normalize Mahalanobis distances into scores.")
-    group.add_argument("--score_alpha", default=0.7, type=float,
-                       help="Weight assigned to the reconstruction score in the final quality score.")
     group.add_argument("--stats_eps", default=1e-4, type=float,
-                       help="Diagonal regularizer added before inverting the latent covariance matrix.")
-    group.add_argument("--load_optimizer_state", action="store_true",
-                       help="Restore optimizer and scaler state when resuming.")
+                       help="Diagonal regularizer added before inverting covariance matrices.")
     group.add_argument("--timing_log_interval", default=1000, type=int,
                        help="Report averaged timing breakdown every N training steps.")
-    group.add_argument("--recon_position_weight", default=0.35, type=float,
-                       help="Weight for frame-wise reconstruction in the perceptual recon error.")
-    group.add_argument("--recon_velocity_weight", default=0.30, type=float,
-                       help="Weight for first-order temporal differences in the perceptual recon error.")
-    group.add_argument("--recon_acceleration_weight", default=0.20, type=float,
-                       help="Weight for second-order temporal differences in the perceptual recon error.")
-    group.add_argument("--recon_blur_weight", default=0.15, type=float,
-                       help="Weight for low-frequency temporally blurred reconstruction in the perceptual recon error.")
-    group.add_argument("--lambda_quality_invariance", default=0.15, type=float,
-                       help="Weight for keeping latent embeddings stable across detail-preserving augmentations.")
-    group.add_argument("--lambda_quality_variance", default=0.05, type=float,
-                       help="Weight for the variance floor regularizer on normalized latent embeddings.")
-    group.add_argument("--lambda_quality_covariance", default=0.01, type=float,
-                       help="Weight for decorrelating normalized latent embedding dimensions.")
-    group.add_argument("--lambda_quality_margin", default=0.10, type=float,
-                       help="Weight for separating clean embeddings from synthetic negative embeddings.")
-    group.add_argument("--quality_margin", default=0.20, type=float,
-                       help="Cosine-distance margin between clean and negative latent embeddings.")
+    group.add_argument("--load_optimizer_state", action="store_true",
+                       help="Restore optimizer and scaler state when resuming.")
+    group.add_argument("--metadata_hidden_dim", default=128, type=int,
+                       help="Hidden size used to project fixed skeleton metadata features.")
+    group.add_argument("--disc_label_embed_dim", default=32, type=int,
+                       help="Embedding size used to condition the discriminator on species/action labels.")
+    group.add_argument("--cls_warmup_steps", default=2000, type=int,
+                       help="Number of initial steps that optimize only species/action classification.")
+    group.add_argument("--full_loss_warmup_steps", default=2000, type=int,
+                       help="Number of steps used to linearly ramp discriminator/physics/VICReg losses after classification warmup.")
+    group.add_argument("--lambda_species", default=1.0, type=float, help="Weight for species classification CE.")
+    group.add_argument("--lambda_action", default=1.0, type=float, help="Weight for action classification CE.")
+    group.add_argument("--lambda_disc_p", default=0.5, type=float, help="Weight for positive discriminator BCE.")
+    group.add_argument("--lambda_disc_n", default=0.5, type=float, help="Weight for negative discriminator BCE.")
+    group.add_argument("--lambda_phys", default=0.2, type=float, help="Weight for physics feature regression.")
+    group.add_argument("--lambda_vic_var", default=0.05, type=float, help="Weight for VICReg variance floor.")
+    group.add_argument("--lambda_vic_cov", default=0.01, type=float, help="Weight for VICReg covariance decorrelation.")
     group.add_argument("--quality_variance_floor", default=0.5, type=float,
                        help="Minimum per-dimension standard deviation target for normalized latent embeddings.")
-    group.add_argument("--lambda_negative_recon", default=0.10, type=float,
-                       help="Weight for forcing synthetic negatives to reconstruct worse than clean motions.")
-    group.add_argument("--negative_recon_margin", default=0.15, type=float,
-                       help="Margin by which synthetic negatives should exceed clean perceptual recon error.")
-    group.add_argument("--view_noise_sigma", default=0.03, type=float,
-                       help="Gaussian noise strength used for detail-preserving semantic views.")
-    group.add_argument("--recon_bootstrap_steps", default=2000, type=int,
-                       help="Number of initial steps that optimize only clean reconstruction before auxiliary quality losses are enabled.")
-    group.add_argument("--recon_perceptual_warmup_steps", default=4000, type=int,
-                       help="Number of steps used to blend from simple frame-wise reconstruction into the full perceptual reconstruction objective.")
-    group.add_argument("--aux_warmup_steps", default=4000, type=int,
-                       help="Number of steps used to linearly ramp auxiliary quality losses after reconstruction bootstrap.")
-    group.add_argument("--negative_noise_sigma_start", default=0.35, type=float,
-                       help="Initial synthetic-negative noise strength used when auxiliary losses first turn on.")
-    group.add_argument("--negative_noise_sigma", default=1.0, type=float,
-                       help="Gaussian noise strength used for synthetic negative motions.")
+    group.add_argument("--gmm_components", default=64, type=int, help="Number of mixture components used for latent density fitting.")
+    group.add_argument("--gmm_covariance_type", default="diag", choices=["diag", "full"], type=str,
+                       help="Covariance type used for post-training GMM fitting.")
+    group.add_argument("--score_alpha", nargs=4, default=[1.0, 1.0, 1.0, 1.0], type=float,
+                       help="Geometric-mean weights for recognizability, density, plausibility, and physics scores.")
     return parser
-
-
-def compute_recon_error(args, target: torch.Tensor, prediction: torch.Tensor, n_joints: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
-    return motion_perceptual_recon_error_per_sample(
-        target,
-        prediction,
-        n_joints,
-        lengths,
-        position_weight=float(getattr(args, "recon_position_weight", 0.35)),
-        velocity_weight=float(getattr(args, "recon_velocity_weight", 0.30)),
-        acceleration_weight=float(getattr(args, "recon_acceleration_weight", 0.20)),
-        blur_weight=float(getattr(args, "recon_blur_weight", 0.15)),
-    )
-
-
-def compute_bootstrap_recon_error(target: torch.Tensor, prediction: torch.Tensor, n_joints: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
-    return masked_l1_per_sample(target, prediction, n_joints, lengths)
-
-
-def temporal_smooth_motion(motion: torch.Tensor, valid_mask: torch.Tensor) -> torch.Tensor:
-    prev_frames = torch.cat([motion[..., :1], motion[..., :-1]], dim=-1)
-    next_frames = torch.cat([motion[..., 1:], motion[..., -1:]], dim=-1)
-    smoothed = 0.25 * prev_frames + 0.5 * motion + 0.25 * next_frames
-    return smoothed * valid_mask + motion * (1.0 - valid_mask)
 
 
 def linear_warmup_factor(current_step: int, start_step: int, warmup_steps: int) -> float:
@@ -142,57 +102,9 @@ def linear_warmup_factor(current_step: int, start_step: int, warmup_steps: int) 
 
 
 def get_auxiliary_loss_factor(args, current_step: int) -> float:
-    bootstrap_steps = max(0, int(getattr(args, "recon_bootstrap_steps", 0)))
-    recon_warmup_steps = max(0, int(getattr(args, "recon_perceptual_warmup_steps", 0)))
-    warmup_steps = max(0, int(getattr(args, "aux_warmup_steps", 0)))
-    aux_start_step = bootstrap_steps + recon_warmup_steps
-    return linear_warmup_factor(current_step, aux_start_step, warmup_steps)
-
-
-def get_recon_perceptual_factor(args, current_step: int) -> float:
-    bootstrap_steps = max(0, int(getattr(args, "recon_bootstrap_steps", 0)))
-    warmup_steps = max(0, int(getattr(args, "recon_perceptual_warmup_steps", 0)))
-    return linear_warmup_factor(current_step, bootstrap_steps, warmup_steps)
-
-
-def get_negative_noise_sigma(args, aux_factor: float) -> float:
-    start_sigma = float(getattr(args, "negative_noise_sigma_start", 0.35))
-    target_sigma = float(getattr(args, "negative_noise_sigma", 1.0))
-    if aux_factor <= 0.0:
-        return start_sigma
-    return start_sigma + (target_sigma - start_sigma) * float(min(max(aux_factor, 0.0), 1.0))
-
-
-def make_semantic_view(args, motion: torch.Tensor, valid_mask: torch.Tensor) -> torch.Tensor:
-    batch_size = motion.shape[0]
-    smoothed = temporal_smooth_motion(motion, valid_mask)
-    blend = torch.empty((batch_size, 1, 1, 1), device=motion.device, dtype=motion.dtype).uniform_(0.15, 0.55)
-    scale = 1.0 + 0.02 * torch.randn((batch_size, 1, 1, 1), device=motion.device, dtype=motion.dtype)
-    noise = torch.randn_like(motion) * float(getattr(args, "view_noise_sigma", 0.03))
-    view = torch.lerp(motion * scale, smoothed, blend) + noise * valid_mask
-    return view * valid_mask
-
-
-def make_temporal_shuffle_negative(motion: torch.Tensor, lengths: torch.Tensor, valid_mask: torch.Tensor) -> torch.Tensor:
-    shuffled = torch.zeros_like(motion)
-    for batch_index in range(motion.shape[0]):
-        valid_length = int(lengths[batch_index].item())
-        if valid_length <= 1:
-            shuffled[batch_index] = motion[batch_index]
-            continue
-        permutation = torch.randperm(valid_length, device=motion.device)
-        shuffled[batch_index, :, :, :valid_length] = motion[batch_index, :, :, permutation]
-    return shuffled * valid_mask
-
-
-def make_negative_view(args, motion: torch.Tensor, lengths: torch.Tensor, valid_mask: torch.Tensor, *, noise_sigma: float | None = None) -> torch.Tensor:
-    if noise_sigma is None:
-        noise_sigma = float(getattr(args, "negative_noise_sigma", 1.0))
-    random_negative = torch.randn_like(motion) * float(noise_sigma)
-    random_negative = random_negative * valid_mask
-    shuffled_negative = make_temporal_shuffle_negative(motion, lengths, valid_mask)
-    use_random = torch.rand((motion.shape[0], 1, 1, 1), device=motion.device) < 0.5
-    return torch.where(use_random, random_negative, shuffled_negative)
+    cls_warmup_steps = max(0, int(getattr(args, "cls_warmup_steps", 0)))
+    warmup_steps = max(0, int(getattr(args, "full_loss_warmup_steps", 0)))
+    return linear_warmup_factor(current_step, cls_warmup_steps, warmup_steps)
 
 
 def normalize_density_embeddings(latents: torch.Tensor) -> torch.Tensor:
@@ -215,34 +127,12 @@ def _covariance_loss(features: torch.Tensor) -> torch.Tensor:
     return off_diagonal.pow(2).sum() / max(features.shape[1], 1)
 
 
-def compute_quality_regularization(
-    clean_features: torch.Tensor,
-    view_features: torch.Tensor,
-    negative_features: torch.Tensor,
-    *,
-    variance_floor: float,
-    quality_margin: float,
-) -> dict[str, torch.Tensor]:
-    invariance = F.mse_loss(clean_features, view_features)
-    variance = _variance_floor_loss(clean_features, variance_floor) + _variance_floor_loss(view_features, variance_floor)
-    covariance = _covariance_loss(clean_features) + _covariance_loss(view_features)
-    positive_distance = 1.0 - (clean_features * view_features).sum(dim=-1)
-    negative_distance = 1.0 - (clean_features * negative_features).sum(dim=-1)
-    margin = F.relu(positive_distance + float(quality_margin) - negative_distance).mean()
-    return {
-        "invariance": invariance,
-        "variance": variance,
-        "covariance": covariance,
-        "margin": margin,
-    }
-
-
 def prepare_save_dir(args) -> str:
     save_dir = args.save_dir
     if not save_dir:
         save_root = os.path.join(os.getcwd(), "save")
         os.makedirs(save_root, exist_ok=True)
-        prefix = getattr(args, "model_prefix", None) or "MotionScorer"
+        prefix = getattr(args, "model_prefix", None) or "MotionScorerV3"
         model_name = f"{prefix}_dataset_truebones_bs_{args.batch_size}_latentdim_{args.latent_dim}"
         save_dir = os.path.join(save_root, model_name)
         args.save_dir = save_dir
@@ -279,14 +169,14 @@ def clear_motion_scorer_artifacts(save_dir: str) -> None:
         if re.fullmatch(r"model\d+\.pt", file_name) or re.fullmatch(r"opt\d+\.pt", file_name):
             os.remove(file_path)
             continue
-        if file_name in {"args.json", "train_stats.npy", "train_stats_summary.json", "debug_score_report.json"}:
+        if file_name in {"args.json", "train_stats.npy", "train_stats_summary.json", "debug_score_report.json", "sanity_checks.json"}:
             os.remove(file_path)
             continue
         if file_name.startswith("model") and file_name.endswith(".pt.samples") and os.path.isdir(file_path):
             shutil.rmtree(file_path)
 
 
-def create_data_loader(args, split: str, *, shuffle: bool, drop_last: bool, balanced: bool):
+def create_data_loader(args, split: str, *, shuffle: bool, drop_last: bool, balanced: bool, batch_transform=None):
     return get_dataset_loader(
         batch_size=args.batch_size,
         num_frames=args.num_frames,
@@ -304,7 +194,146 @@ def create_data_loader(args, split: str, *, shuffle: bool, drop_last: bool, bala
         action_tags=getattr(args, "action_tags", ""),
         motion_cache_size=getattr(args, "motion_cache_size", 0),
         main_process_prefetch_batches=getattr(args, "main_process_prefetch_batches", 0),
+        batch_transform=batch_transform,
     )
+
+
+def move_aux_to_device(aux_batch: dict | None, device: torch.device, non_blocking: bool) -> dict | None:
+    if aux_batch is None:
+        return None
+    moved = {}
+    for key, value in aux_batch.items():
+        moved[key] = value.to(device, non_blocking=non_blocking) if torch.is_tensor(value) else value
+    return moved
+
+
+class PhysicsTargetLRUCache:
+    def __init__(self, max_entries: int) -> None:
+        self.max_entries = max(0, int(max_entries))
+        self._cache: OrderedDict[tuple[str, int, int, str, int], torch.Tensor] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def _sample_key(self, cond: dict, batch_index: int) -> tuple[str, int, int, str, int] | None:
+        motion_names = cond["y"].get("motion_name")
+        crop_start_indices = cond["y"].get("crop_start_ind")
+        lengths = cond["y"].get("lengths")
+        object_types = cond["y"].get("object_type")
+        n_joints = cond["y"].get("n_joints")
+        if motion_names is None or crop_start_indices is None or lengths is None or object_types is None or n_joints is None:
+            return None
+        return (
+            str(motion_names[batch_index]),
+            int(crop_start_indices[batch_index]),
+            int(lengths[batch_index]),
+            str(object_types[batch_index]),
+            int(n_joints[batch_index]),
+        )
+
+    def _get(self, key: tuple[str, int, int, str, int]) -> torch.Tensor | None:
+        with self._lock:
+            value = self._cache.get(key)
+            if value is None:
+                return None
+            self._cache.move_to_end(key)
+            return value
+
+    def _put(self, key: tuple[str, int, int, str, int], value: torch.Tensor) -> None:
+        with self._lock:
+            self._cache[key] = value.detach().to(device="cpu", dtype=torch.float32)
+            self._cache.move_to_end(key)
+            while len(self._cache) > self.max_entries:
+                self._cache.popitem(last=False)
+
+    def get_batch(self, motion: torch.Tensor, cond: dict, skeleton_lookup) -> torch.Tensor:
+        if self.max_entries <= 0:
+            return extract_physics_features(
+                motion,
+                cond["y"]["n_joints"],
+                cond["y"]["lengths"],
+                cond["y"].get("object_type"),
+                skeleton_lookup,
+            ).detach()
+
+        cached_results: list[torch.Tensor | None] = [None] * int(motion.shape[0])
+        miss_indices: list[int] = []
+        miss_keys: list[tuple[str, int, int, str, int] | None] = []
+        for batch_index in range(int(motion.shape[0])):
+            key = self._sample_key(cond, batch_index)
+            if key is None:
+                miss_indices.append(batch_index)
+                miss_keys.append(None)
+                continue
+            cached_value = self._get(key)
+            if cached_value is None:
+                miss_indices.append(batch_index)
+                miss_keys.append(key)
+            else:
+                cached_results[batch_index] = cached_value
+
+        if miss_indices:
+            miss_features = extract_physics_features(
+                motion[miss_indices],
+                cond["y"]["n_joints"][miss_indices],
+                cond["y"]["lengths"][miss_indices],
+                [cond["y"]["object_type"][index] for index in miss_indices],
+                skeleton_lookup,
+            ).detach()
+            for miss_offset, batch_index in enumerate(miss_indices):
+                feature_cpu = miss_features[miss_offset].to(device="cpu", dtype=torch.float32)
+                cached_results[batch_index] = feature_cpu
+                key = miss_keys[miss_offset]
+                if key is not None:
+                    self._put(key, feature_cpu)
+
+        return torch.stack([result for result in cached_results if result is not None], dim=0).to(device=motion.device, dtype=motion.dtype)
+
+
+class MotionScorerAuxBatchPreprocessor:
+    def __init__(self, skeleton_lookup, species_vocab: LabelVocab, action_vocab: LabelVocab, physics_target_cache: PhysicsTargetLRUCache | None = None) -> None:
+        self.skeleton_lookup = skeleton_lookup
+        self.species_vocab = species_vocab
+        self.action_vocab = action_vocab
+        self.physics_target_cache = physics_target_cache
+        self.enabled = False
+        self.cpu_device = torch.device("cpu")
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled = bool(enabled)
+
+    def __call__(self, batch):
+        motion, cond = batch
+        if not self.enabled:
+            return motion, cond, None
+
+        object_types = cond["y"].get("object_type")
+        species_ids = self.species_vocab.encode_many(cond["y"].get("species_label", []), device=self.cpu_device)
+        action_ids = self.action_vocab.encode_many(cond["y"].get("action_label", []), device=self.cpu_device)
+        if self.physics_target_cache is not None:
+            physics_targets = self.physics_target_cache.get_batch(motion, cond, self.skeleton_lookup)
+        else:
+            physics_targets = extract_physics_features(
+                motion,
+                cond["y"]["n_joints"],
+                cond["y"]["lengths"],
+                object_types,
+                self.skeleton_lookup,
+            )
+        negative_batch = generate_biomechanical_negative_batch(
+            motion,
+            cond["y"]["n_joints"],
+            cond["y"]["lengths"],
+            object_types,
+            self.skeleton_lookup,
+            species_ids,
+            action_ids,
+            num_species=self.species_vocab.size,
+        )
+        return motion, cond, {
+            "physics_targets": physics_targets,
+            "negative_motion": negative_batch["motion"],
+            "negative_species_indices": negative_batch["species_indices"],
+            "negative_action_indices": negative_batch["action_indices"],
+        }
 
 
 def find_latest_checkpoint(save_dir: str, prefix: str = "model") -> str:
@@ -372,10 +401,29 @@ def build_step_lr_scheduler(opt: AdamW, args, completed_steps: int) -> torch.opt
 
 
 class MotionScorerTrainer:
-    def __init__(self, args, ml_platform, data_loader) -> None:
+    def __init__(
+        self,
+        args,
+        ml_platform,
+        data_loader,
+        *,
+        aux_batch_preprocessor=None,
+        physics_target_cache: PhysicsTargetLRUCache | None = None,
+        skeleton_lookup,
+        species_vocab: LabelVocab,
+        action_vocab: LabelVocab,
+    ) -> None:
         self.args = args
         self.ml_platform = ml_platform
         self.data_loader = data_loader
+        self.aux_batch_preprocessor = aux_batch_preprocessor
+        self.physics_target_cache = physics_target_cache
+        self.skeleton_lookup = skeleton_lookup
+        self.species_vocab = species_vocab
+        self.action_vocab = action_vocab
+        self.num_species = args.num_species
+        self.num_actions = args.num_actions
+        self.metadata_dim = args.metadata_feature_dim
 
         dist_util.setup_dist(args.device)
         self.device = dist_util.dev()
@@ -389,16 +437,26 @@ class MotionScorerTrainer:
             self.autocast_dtype = torch.float16
         elif self.amp_dtype == "bf16":
             self.autocast_dtype = torch.bfloat16
+        
+        self.metadata_feature_lookup = build_metadata_feature_lookup(
+            self.skeleton_lookup,
+            max_joints=self.args.max_joints,
+            device=self.device,
+            dtype=torch.float32,
+        )
 
-        self.model = MotionAutoencoder(
+        self.model = MotionScorerNet(
             feature_dim=args.feature_dim,
             d_model=args.d_model,
             latent_dim=args.latent_dim,
             num_conv_layers=args.num_conv_layers,
-            decoder_num_conv_layers=args.decoder_num_conv_layers,
             kernel_size=args.kernel_size,
             max_joints=args.max_joints,
-            max_frames=args.num_frames,
+            num_species=self.num_species,
+            num_actions=self.num_actions,
+            metadata_dim=self.metadata_dim,
+            metadata_hidden_dim=args.metadata_hidden_dim,
+            disc_label_embed_dim=args.disc_label_embed_dim,
         ).to(self.device)
         self.model_avg = copy.deepcopy(self.model) if args.use_ema else None
         self.resume_checkpoint = args.resume_checkpoint.strip() if args.resume_checkpoint else ""
@@ -419,6 +477,7 @@ class MotionScorerTrainer:
             amp_dtype=self.amp_dtype,
             amp_enabled=self.amp_enabled,
             device_type=self.device.type,
+            log_norms=False,
         )
         self.opt = AdamW(self.mp_trainer.master_params, lr=args.lr, weight_decay=args.weight_decay)
 
@@ -434,7 +493,6 @@ class MotionScorerTrainer:
 
         apply_current_optimizer_hparams(self.opt, args)
         self.lr_scheduler = build_step_lr_scheduler(self.opt, args, self.resume_completed_steps)
-
         self.model.train()
 
     def autocast_context(self):
@@ -442,109 +500,144 @@ class MotionScorerTrainer:
             return torch.autocast(device_type=self.device.type, enabled=False)
         return torch.autocast(device_type=self.device.type, dtype=self.autocast_dtype)
 
-    def train_step(self, motion: torch.Tensor, cond: dict, current_step: int) -> float:
+    def _encode_batch_labels(self, cond: dict) -> tuple[torch.Tensor, torch.Tensor]:
+        species_ids = self.species_vocab.encode_many(cond["y"].get("species_label", []), device=self.device)
+        action_ids = self.action_vocab.encode_many(cond["y"].get("action_label", []), device=self.device)
+        return species_ids, action_ids
+
+    def train_step(self, motion: torch.Tensor, cond: dict, current_step: int, precomputed_aux: dict | None = None) -> dict[str, float]:
         n_joints = cond["y"]["n_joints"]
         lengths = cond["y"]["lengths"]
-        valid_mask = build_motion_valid_mask(n_joints, lengths, motion.shape[1], motion.shape[-1], device=motion.device).to(motion.dtype)
-        recon_perceptual_factor = get_recon_perceptual_factor(self.args, current_step)
+        object_types = cond["y"].get("object_type")
+        species_ids, action_ids = self._encode_batch_labels(cond)
         aux_factor = get_auxiliary_loss_factor(self.args, current_step)
-        negative_noise_sigma = get_negative_noise_sigma(self.args, aux_factor)
+        use_auxiliary_branches = aux_factor > 0.0
+
+        metadata_features = None
+        physics_targets = None
+        negative_batch = None
+        if use_auxiliary_branches:
+            metadata_features = torch.stack(
+                [self.metadata_feature_lookup[str(object_type)] for object_type in object_types],
+                dim=0,
+            )
+            if metadata_features.dtype != motion.dtype:
+                metadata_features = metadata_features.to(dtype=motion.dtype)
+            if precomputed_aux is not None:
+                physics_targets = precomputed_aux["physics_targets"]
+                negative_batch = {
+                    "motion": precomputed_aux["negative_motion"],
+                    "species_indices": precomputed_aux["negative_species_indices"],
+                    "action_indices": precomputed_aux["negative_action_indices"],
+                }
+            else:
+                if self.physics_target_cache is not None:
+                    physics_targets = self.physics_target_cache.get_batch(motion, cond, self.skeleton_lookup)
+                else:
+                    physics_targets = extract_physics_features(
+                        motion,
+                        n_joints,
+                        lengths,
+                        object_types,
+                        self.skeleton_lookup,
+                    ).detach()
 
         self.mp_trainer.zero_grad()
         with self.autocast_context():
-            reconstruction, latents = self.model(motion, n_joints, lengths)
-            clean_bootstrap_recon_error = compute_bootstrap_recon_error(motion, reconstruction, n_joints, lengths)
-            clean_perceptual_recon_error = compute_recon_error(self.args, motion, reconstruction, n_joints, lengths)
-            clean_recon_error = torch.lerp(
-                clean_bootstrap_recon_error,
-                clean_perceptual_recon_error,
-                recon_perceptual_factor,
+            clean_outputs = self.model(
+                motion,
+                n_joints,
+                lengths,
+                metadata_features=metadata_features,
+                species_ids=species_ids,
+                action_ids=action_ids,
+                return_disc_logits=use_auxiliary_branches,
+                return_phys_features=use_auxiliary_branches,
             )
-            recon_loss = clean_recon_error.mean()
-            zero = recon_loss.new_zeros(())
 
-            if aux_factor > 0.0:
-                semantic_view = make_semantic_view(self.args, motion, valid_mask)
-                _, semantic_latents = self.model(semantic_view, n_joints, lengths)
-
-                negative_view = make_negative_view(
-                    self.args,
-                    motion,
-                    lengths,
-                    valid_mask,
-                    noise_sigma=negative_noise_sigma,
+            species_loss = F.cross_entropy(clean_outputs["species_logits"], species_ids)
+            action_loss = F.cross_entropy(clean_outputs["action_logits"], action_ids)
+            if use_auxiliary_branches:
+                clean_features = normalize_density_embeddings(clean_outputs["latents"])
+                disc_positive_loss = F.binary_cross_entropy_with_logits(
+                    clean_outputs["disc_logits"],
+                    torch.ones_like(clean_outputs["disc_logits"]),
                 )
-                negative_reconstruction, negative_latents = self.model(negative_view, n_joints, lengths)
-                negative_bootstrap_recon_error = compute_bootstrap_recon_error(
-                    negative_view,
-                    negative_reconstruction,
+                phys_loss = F.mse_loss(clean_outputs["phys_features"], physics_targets)
+                vic_variance_loss = _variance_floor_loss(clean_features, float(self.args.quality_variance_floor))
+                vic_covariance_loss = _covariance_loss(clean_features)
+
+                if negative_batch is None:
+                    negative_batch = generate_biomechanical_negative_batch(
+                        motion,
+                        n_joints,
+                        lengths,
+                        object_types,
+                        self.skeleton_lookup,
+                        species_ids,
+                        action_ids,
+                        num_species=self.species_vocab.size,
+                    )
+                negative_outputs = self.model(
+                    negative_batch["motion"],
                     n_joints,
                     lengths,
+                    metadata_features=metadata_features,
+                    species_ids=negative_batch["species_indices"],
+                    action_ids=negative_batch["action_indices"],
                 )
-                negative_perceptual_recon_error = compute_recon_error(
-                    self.args,
-                    negative_view,
-                    negative_reconstruction,
-                    n_joints,
-                    lengths,
+                disc_negative_loss = F.binary_cross_entropy_with_logits(
+                    negative_outputs["disc_logits"],
+                    torch.zeros_like(negative_outputs["disc_logits"]),
                 )
-                negative_recon_error = torch.lerp(
-                    negative_bootstrap_recon_error,
-                    negative_perceptual_recon_error,
-                    recon_perceptual_factor,
-                )
-
-                clean_features = normalize_density_embeddings(latents)
-                semantic_features = normalize_density_embeddings(semantic_latents)
-                negative_features = normalize_density_embeddings(negative_latents)
-                quality_terms = compute_quality_regularization(
-                    clean_features,
-                    semantic_features,
-                    negative_features,
-                    variance_floor=float(getattr(self.args, "quality_variance_floor", 0.5)),
-                    quality_margin=float(getattr(self.args, "quality_margin", 0.20)),
-                )
-                negative_recon_loss = F.relu(
-                    clean_perceptual_recon_error.detach() + float(getattr(self.args, "negative_recon_margin", 0.15)) - negative_perceptual_recon_error
-                ).mean()
             else:
-                quality_terms = {
-                    "invariance": zero,
-                    "variance": zero,
-                    "covariance": zero,
-                    "margin": zero,
-                }
-                negative_recon_loss = zero
-                negative_recon_error = zero
+                zero = motion.new_zeros(())
+                disc_positive_loss = zero
+                disc_negative_loss = zero
+                phys_loss = zero
+                vic_variance_loss = zero
+                vic_covariance_loss = zero
+                negative_outputs = None
 
             loss = (
-                recon_loss
-                + aux_factor * float(getattr(self.args, "lambda_quality_invariance", 0.15)) * quality_terms["invariance"]
-                + aux_factor * float(getattr(self.args, "lambda_quality_variance", 0.05)) * quality_terms["variance"]
-                + aux_factor * float(getattr(self.args, "lambda_quality_covariance", 0.01)) * quality_terms["covariance"]
-                + aux_factor * float(getattr(self.args, "lambda_quality_margin", 0.10)) * quality_terms["margin"]
-                + aux_factor * float(getattr(self.args, "lambda_negative_recon", 0.10)) * negative_recon_loss
+                float(self.args.lambda_species) * species_loss
+                + float(self.args.lambda_action) * action_loss
+                + aux_factor * float(self.args.lambda_disc_p) * disc_positive_loss
+                + aux_factor * float(self.args.lambda_disc_n) * disc_negative_loss
+                + aux_factor * float(self.args.lambda_phys) * phys_loss
+                + aux_factor * float(self.args.lambda_vic_var) * vic_variance_loss
+                + aux_factor * float(self.args.lambda_vic_cov) * vic_covariance_loss
             )
 
         self.mp_trainer.backward(loss)
         took_step = self.mp_trainer.optimize(self.opt, self.lr_scheduler)
         if took_step and self.model_avg is not None:
             update_ema(self.model_avg.parameters(), self.model.parameters(), rate=self.args.ema_decay)
+
+        with torch.no_grad():
+            species_accuracy = (clean_outputs["species_logits"].argmax(dim=-1) == species_ids).float().mean()
+            action_accuracy = (clean_outputs["action_logits"].argmax(dim=-1) == action_ids).float().mean()
+            if use_auxiliary_branches:
+                clean_disc_prob = torch.sigmoid(clean_outputs["disc_logits"]).mean()
+                negative_disc_prob = torch.sigmoid(negative_outputs["disc_logits"]).mean()
+            else:
+                clean_disc_prob = motion.new_zeros(())
+                negative_disc_prob = motion.new_zeros(())
+
         return {
             "loss": float(loss.detach().item()),
-            "recon_loss": float(recon_loss.detach().item()),
-            "bootstrap_recon_loss": float(clean_bootstrap_recon_error.mean().detach().item()),
-            "perceptual_recon_loss": float(clean_perceptual_recon_error.mean().detach().item()),
-            "quality_invariance": float(quality_terms["invariance"].detach().item()),
-            "quality_variance": float(quality_terms["variance"].detach().item()),
-            "quality_covariance": float(quality_terms["covariance"].detach().item()),
-            "quality_margin": float(quality_terms["margin"].detach().item()),
-            "negative_recon_loss": float(negative_recon_loss.detach().item()),
-            "clean_recon_error": float(clean_recon_error.mean().detach().item()),
-            "negative_recon_error": float(negative_recon_error.mean().detach().item()),
-            "recon_perceptual_factor": float(recon_perceptual_factor),
+            "species_loss": float(species_loss.detach().item()),
+            "action_loss": float(action_loss.detach().item()),
+            "disc_positive_loss": float(disc_positive_loss.detach().item()),
+            "disc_negative_loss": float(disc_negative_loss.detach().item()),
+            "phys_loss": float(phys_loss.detach().item()),
+            "vic_variance_loss": float(vic_variance_loss.detach().item()),
+            "vic_covariance_loss": float(vic_covariance_loss.detach().item()),
+            "species_accuracy": float(species_accuracy.detach().item()),
+            "action_accuracy": float(action_accuracy.detach().item()),
+            "clean_disc_prob": float(clean_disc_prob.detach().item()),
+            "negative_disc_prob": float(negative_disc_prob.detach().item()),
             "aux_factor": float(aux_factor),
-            "negative_noise_sigma": float(negative_noise_sigma),
         }
 
     def save(self, completed_step: int) -> None:
@@ -560,11 +653,12 @@ class MotionScorerTrainer:
         opt_path = os.path.join(self.args.save_dir, f"opt{completed_step:09d}.pt")
         torch.save(opt_state, opt_path)
 
-    def run(self) -> MotionAutoencoder:
+    def run(self) -> MotionScorerNet:
         completed_steps = self.resume_completed_steps
         running_metrics: dict[str, list[float]] = {}
         data_iter = iter(self.data_loader)
         timing_log_interval = max(1, int(getattr(self.args, "timing_log_interval", self.args.log_interval)))
+        startup_log_steps = max(1, min(5, int(self.args.log_interval)))
         timing_totals = {
             "data_wait_s": 0.0,
             "host_to_device_s": 0.0,
@@ -574,23 +668,41 @@ class MotionScorerTrainer:
         timing_steps = 0
         timing_samples = 0
 
+        next_metric_log = min(int(self.args.log_interval), int(self.args.num_steps))
+        next_timing_log = min(int(timing_log_interval), int(self.args.num_steps))
+        print(
+            f"Motion scorer training loop started: next_metrics_step={next_metric_log}, "
+            f"next_timing_step={next_timing_log}, startup_log_steps={startup_log_steps}"
+        )
+
         while completed_steps < self.args.num_steps:
             loop_start = time.perf_counter()
             fetch_start = time.perf_counter()
+            next_step = completed_steps + 1
+            if self.aux_batch_preprocessor is not None:
+                self.aux_batch_preprocessor.set_enabled(get_auxiliary_loss_factor(self.args, next_step) > 0.0)
+            if completed_steps == self.resume_completed_steps:
+                print("Motion scorer waiting for first batch...")
             try:
-                motion, cond = next(data_iter)
+                batch = next(data_iter)
             except StopIteration:
                 data_iter = iter(self.data_loader)
-                motion, cond = next(data_iter)
+                batch = next(data_iter)
+            if isinstance(batch, tuple) and len(batch) == 3:
+                motion, cond, precomputed_aux = batch
+            else:
+                motion, cond = batch
+                precomputed_aux = None
             data_wait_s = time.perf_counter() - fetch_start
 
             host_to_device_start = time.perf_counter()
             motion = motion.to(self.device, non_blocking=self.non_blocking)
             cond = move_cond_to_device(cond, self.device, self.non_blocking)
+            precomputed_aux = move_aux_to_device(precomputed_aux, self.device, self.non_blocking)
             host_to_device_s = time.perf_counter() - host_to_device_start
 
             step_start = time.perf_counter()
-            step_metrics = self.train_step(motion, cond, completed_steps + 1)
+            step_metrics = self.train_step(motion, cond, completed_steps + 1, precomputed_aux=precomputed_aux)
             step_s = time.perf_counter() - step_start
             loop_s = time.perf_counter() - loop_start
 
@@ -604,6 +716,19 @@ class MotionScorerTrainer:
             timing_steps += 1
             timing_samples += int(motion.shape[0])
 
+            if completed_steps <= startup_log_steps:
+                print(
+                    "startup_step[{}]: data_wait_s[{:.2f}] host_to_device_ms[{:.2f}] step_s[{:.2f}] total_s[{:.2f}] samples[{}] aux[{:.3f}]".format(
+                        completed_steps,
+                        data_wait_s,
+                        1000.0 * host_to_device_s,
+                        step_s,
+                        loop_s,
+                        int(motion.shape[0]),
+                        step_metrics.get("aux_factor", 0.0),
+                    )
+                )
+
             if completed_steps % self.args.log_interval == 0 or completed_steps == self.args.num_steps:
                 mean_metrics = {
                     metric_name: float(np.mean(metric_values))
@@ -611,18 +736,17 @@ class MotionScorerTrainer:
                     if metric_values
                 }
                 print(
-                    "step[{}]: total_loss[{:.6f}] recon_loss[{:.6f}] bootstrap_recon[{:.6f}] perceptual_recon[{:.6f}] neg_recon_loss[{:.6f}] quality_inv[{:.6f}] quality_margin[{:.6f}] recon_pf[{:.3f}] aux_factor[{:.3f}] neg_sigma[{:.3f}]".format(
+                    "step[{}]: total_loss[{:.6f}] species_ce[{:.6f}] action_ce[{:.6f}] disc_pos[{:.6f}] disc_neg[{:.6f}] phys[{:.6f}] sp_acc[{:.3f}] act_acc[{:.3f}] aux[{:.3f}]".format(
                         completed_steps,
                         mean_metrics.get("loss", 0.0),
-                        mean_metrics.get("recon_loss", 0.0),
-                        mean_metrics.get("bootstrap_recon_loss", 0.0),
-                        mean_metrics.get("perceptual_recon_loss", 0.0),
-                        mean_metrics.get("negative_recon_loss", 0.0),
-                        mean_metrics.get("quality_invariance", 0.0),
-                        mean_metrics.get("quality_margin", 0.0),
-                        mean_metrics.get("recon_perceptual_factor", 0.0),
+                        mean_metrics.get("species_loss", 0.0),
+                        mean_metrics.get("action_loss", 0.0),
+                        mean_metrics.get("disc_positive_loss", 0.0),
+                        mean_metrics.get("disc_negative_loss", 0.0),
+                        mean_metrics.get("phys_loss", 0.0),
+                        mean_metrics.get("species_accuracy", 0.0),
+                        mean_metrics.get("action_accuracy", 0.0),
                         mean_metrics.get("aux_factor", 0.0),
-                        mean_metrics.get("negative_noise_sigma", 0.0),
                     )
                 )
                 for metric_name, metric_value in mean_metrics.items():
@@ -639,8 +763,7 @@ class MotionScorerTrainer:
                 step_pct = 100.0 * timing_totals["step_s"] / max(timing_totals["loop_s"], 1e-9)
                 samples_per_s = timing_samples / max(timing_totals["loop_s"], 1e-9)
                 print(
-                    "timing[{}]: data_wait_ms[{:.2f}] host_to_device_ms[{:.2f}] step_ms[{:.2f}] total_ms[{:.2f}] "
-                    "data_wait_pct[{:.1f}] step_pct[{:.1f}] samples_per_s[{:.1f}]".format(
+                    "timing[{}]: data_wait_ms[{:.2f}] host_to_device_ms[{:.2f}] step_ms[{:.2f}] total_ms[{:.2f}] data_wait_pct[{:.1f}] step_pct[{:.1f}] samples_per_s[{:.1f}]".format(
                         completed_steps,
                         mean_data_wait_ms,
                         mean_host_to_device_ms,
@@ -671,43 +794,13 @@ class MotionScorerTrainer:
         return self.model_avg if self.model_avg is not None else self.model
 
 
-def mahalanobis_distance_np(latents: np.ndarray, mean: np.ndarray, cov_inv: np.ndarray) -> np.ndarray:
-    diff = latents - mean[None, :]
+def _mahalanobis_distance_np(values: np.ndarray, mean: np.ndarray, cov_inv: np.ndarray) -> np.ndarray:
+    diff = values - mean[None, :]
     distances_sq = np.einsum("bi,ij,bj->b", diff, cov_inv, diff)
     return np.sqrt(np.clip(distances_sq, a_min=0.0, a_max=None))
 
 
-def diagonal_mahalanobis_distance_np(latents: np.ndarray, mean: np.ndarray, var: np.ndarray) -> np.ndarray:
-    diff = latents - mean[None, :]
-    distances_sq = ((diff * diff) / var[None, :]).sum(axis=1)
-    return np.sqrt(np.clip(distances_sq, a_min=0.0, a_max=None))
-
-
-def knn_distance_np(latents: np.ndarray, reference_latents: np.ndarray, k: int, *, exclude_self: bool) -> np.ndarray:
-    if latents.ndim != 2 or reference_latents.ndim != 2:
-        raise ValueError("Expected 2D latent arrays for kNN density computation.")
-    if latents.shape[1] != reference_latents.shape[1]:
-        raise ValueError("Latent dimensions must match for kNN density computation.")
-    if reference_latents.shape[0] == 0:
-        raise ValueError("reference_latents must be non-empty.")
-
-    effective_k = max(1, int(k))
-    required_neighbors = effective_k + (1 if exclude_self else 0)
-    required_neighbors = min(required_neighbors, reference_latents.shape[0])
-
-    diffs = latents[:, None, :] - reference_latents[None, :, :]
-    distances = np.sqrt(np.clip(np.sum(diffs * diffs, axis=2), a_min=0.0, a_max=None))
-    partition = np.partition(distances, kth=required_neighbors - 1, axis=1)[:, :required_neighbors]
-    partition.sort(axis=1)
-
-    if exclude_self and required_neighbors > 1:
-        neighbor_slice = partition[:, 1:required_neighbors]
-    else:
-        neighbor_slice = partition[:, :required_neighbors]
-    return neighbor_slice.mean(axis=1)
-
-
-def compute_and_save_train_stats(args, model: MotionAutoencoder, device: torch.device, autocast_dtype, amp_enabled: bool):
+def compute_and_save_train_stats(args, model: MotionScorerNet, device: torch.device, autocast_dtype, amp_enabled: bool, *, skeleton_lookup) -> None:
     stats_split = args.stats_split or args.train_split
     stats_batch_size = args.stats_batch_size or args.batch_size
     loader = get_dataset_loader(
@@ -730,89 +823,93 @@ def compute_and_save_train_stats(args, model: MotionAutoencoder, device: torch.d
     )
 
     model.eval()
-    all_latents = []
-    all_recon_errors = []
+    latent_batches = []
+    physics_batches = []
     with torch.no_grad():
-        for motion, cond in tqdm(loader, desc="Caching train stats"):
+        for motion, cond in tqdm(loader, desc="Caching scorer stats"):
             motion = motion.to(device, non_blocking=device.type == "cuda")
             cond = move_cond_to_device(cond, device, device.type == "cuda")
+            object_types = cond["y"].get("object_type")
             with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=amp_enabled):
-                reconstruction, latents = model(motion, cond["y"]["n_joints"], cond["y"]["lengths"])
-            recon_error = compute_recon_error(args, motion, reconstruction, cond["y"]["n_joints"], cond["y"]["lengths"])
-            density_embeddings = normalize_density_embeddings(latents)
-            all_latents.append(density_embeddings.detach().float().cpu().numpy())
-            all_recon_errors.append(recon_error.detach().float().cpu().numpy())
+                latents = model.encode(motion, cond["y"]["n_joints"], cond["y"]["lengths"])
+            latent_batches.append(latents.detach().float().cpu().numpy())
+            physics_batches.append(
+                extract_physics_features(
+                    motion,
+                    cond["y"]["n_joints"],
+                    cond["y"]["lengths"],
+                    object_types,
+                    skeleton_lookup,
+                ).detach().float().cpu().numpy()
+            )
 
-    latents = np.concatenate(all_latents, axis=0).astype(np.float64, copy=False)
-    recon_errors = np.concatenate(all_recon_errors, axis=0).astype(np.float64, copy=False)
+    latents = np.concatenate(latent_batches, axis=0).astype(np.float64, copy=False)
+    physics = np.concatenate(physics_batches, axis=0).astype(np.float64, copy=False)
 
-    mean = latents.mean(axis=0)
-    if latents.shape[0] > 1:
-        cov = np.cov(latents, rowvar=False)
+    component_count = min(max(1, int(args.gmm_components)), latents.shape[0])
+    gmm = GaussianMixture(
+        n_components=component_count,
+        covariance_type=str(args.gmm_covariance_type),
+        reg_covar=float(args.stats_eps),
+        random_state=int(args.seed),
+    )
+    gmm.fit(latents)
+    density_values = gmm.score_samples(latents)
+
+    mu_phys = physics.mean(axis=0)
+    if physics.shape[0] > 1:
+        sigma_phys = np.cov(physics, rowvar=False)
     else:
-        cov = np.eye(latents.shape[1], dtype=np.float64)
-    cov = np.atleast_2d(cov)
-    cov += np.eye(cov.shape[0], dtype=np.float64) * float(args.stats_eps)
-    cov_inv = np.linalg.pinv(cov)
-    var = latents.var(axis=0) + float(args.stats_eps)
-    mahal_distances = diagonal_mahalanobis_distance_np(latents, mean, var)
-    density_knn_k = min(5, max(1, latents.shape[0] - 1))
-    knn_distances = knn_distance_np(latents, latents, density_knn_k, exclude_self=True)
+        sigma_phys = np.eye(physics.shape[1], dtype=np.float64)
+    sigma_phys = np.atleast_2d(sigma_phys)
+    sigma_phys += np.eye(sigma_phys.shape[0], dtype=np.float64) * float(args.stats_eps)
+    sigma_phys_inv = np.linalg.pinv(sigma_phys)
+    phys_values = -_mahalanobis_distance_np(physics, mu_phys, sigma_phys_inv)
 
-    recon_threshold = float(max(np.percentile(recon_errors, args.recon_percentile), args.stats_eps))
-    density_threshold = float(max(np.percentile(knn_distances, args.density_percentile), args.stats_eps))
     latest_checkpoint = find_latest_checkpoint(args.save_dir, prefix="model")
     checkpoint_step = parse_checkpoint_number(latest_checkpoint) if latest_checkpoint else 0
-
     stats = {
-        "mean": mean.astype(np.float32),
-        "cov": cov.astype(np.float32),
-        "cov_inv": cov_inv.astype(np.float32),
-        "var": var.astype(np.float32),
-        "recon_errors": recon_errors.astype(np.float32),
-        "mahal_distances": mahal_distances.astype(np.float32),
-        "train_latents": latents.astype(np.float32),
-        "knn_distances": knn_distances.astype(np.float32),
-        "recon_threshold": recon_threshold,
-        "density_threshold": density_threshold,
-        "alpha": float(args.score_alpha),
-        "recon_percentile": float(args.recon_percentile),
-        "density_percentile": float(args.density_percentile),
-        "num_samples": int(latents.shape[0]),
-        "stats_split": stats_split,
-        "density_mode": "knn",
-        "density_knn_k": int(density_knn_k),
-        "density_embedding_kind": "normalized_latent",
-        "recon_error_kind": "motion_perceptual_v1",
-        "recon_score_calibration": "hybrid_empirical_logistic_v1",
-        "recon_empirical_weight": 0.5,
-        "legacy_density_mode": "diagonal_mahalanobis",
+        "gmm_covariance_type": str(args.gmm_covariance_type),
+        "gmm_means": gmm.means_.astype(np.float32),
+        "gmm_covariances": gmm.covariances_.astype(np.float32),
+        "gmm_weights": gmm.weights_.astype(np.float32),
+        "density_percentiles": np.percentile(density_values, np.arange(101)).astype(np.float32),
+        "mu_phys": mu_phys.astype(np.float32),
+        "sigma_phys_inv": sigma_phys_inv.astype(np.float32),
+        "phys_percentiles": np.percentile(phys_values, np.arange(101)).astype(np.float32),
+        "score_alpha": np.asarray(args.score_alpha, dtype=np.float32),
         "checkpoint_path": latest_checkpoint,
         "checkpoint_step": checkpoint_step,
+        "stats_split": stats_split,
+        "num_samples": int(latents.shape[0]),
     }
-    stats_path = os.path.join(args.save_dir, "train_stats.npy")
-    np.save(stats_path, stats, allow_pickle=True)
+    np.save(os.path.join(args.save_dir, "train_stats.npy"), stats, allow_pickle=True)
 
     summary = {
-        "recon_threshold": recon_threshold,
-        "density_threshold": density_threshold,
-        "alpha": float(args.score_alpha),
-        "num_samples": int(latents.shape[0]),
-        "stats_split": stats_split,
-        "density_mode": "knn",
-        "density_knn_k": int(density_knn_k),
-        "density_embedding_kind": "normalized_latent",
-        "recon_error_kind": "motion_perceptual_v1",
-        "recon_score_calibration": "hybrid_empirical_logistic_v1",
-        "recon_empirical_weight": 0.5,
-        "legacy_density_mode": "diagonal_mahalanobis",
         "checkpoint_path": latest_checkpoint,
         "checkpoint_step": checkpoint_step,
+        "stats_split": stats_split,
+        "num_samples": int(latents.shape[0]),
+        "gmm_components": int(component_count),
+        "gmm_covariance_type": str(args.gmm_covariance_type),
+        "score_alpha": [float(value) for value in args.score_alpha],
     }
     with open(os.path.join(args.save_dir, "train_stats_summary.json"), "w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2, sort_keys=True)
 
     model.train()
+
+
+def prepare_training_assets(args):
+    dataset_dir = getattr(args, "data_dir", "") or None
+    skeleton_lookup = load_skeleton_metadata(dataset_dir)
+    species_vocab, action_vocab = build_label_vocabs(dataset_dir)
+    args.num_species = species_vocab.size
+    args.num_actions = action_vocab.size
+    args.species_vocab = list(species_vocab.labels)
+    args.action_vocab = list(action_vocab.labels)
+    args.metadata_feature_dim = metadata_feature_dim(args.max_joints)
+    return skeleton_lookup, species_vocab, action_vocab
 
 
 def main() -> None:
@@ -826,6 +923,19 @@ def main() -> None:
     save_dir = prepare_save_dir(args)
     args.checkpoint_step_numbering = "completed_steps"
 
+    skeleton_lookup, species_vocab, action_vocab = prepare_training_assets(args)
+    physics_target_cache = None
+    if int(getattr(args, "motion_cache_size", 0)) > 0:
+        physics_target_cache = PhysicsTargetLRUCache(getattr(args, "motion_cache_size", 0))
+    batch_transform = None
+    if int(getattr(args, "num_workers", 0)) == 0 and int(getattr(args, "main_process_prefetch_batches", 0)) > 0:
+        batch_transform = MotionScorerAuxBatchPreprocessor(
+            skeleton_lookup,
+            species_vocab,
+            action_vocab,
+            physics_target_cache=physics_target_cache,
+        )
+
     ml_platform_type = eval(args.ml_platform_type)
     ml_platform = ml_platform_type(save_dir=save_dir)
     ml_platform.report_args(args, name="Args")
@@ -834,7 +944,14 @@ def main() -> None:
         json.dump(vars(args), handle, indent=4, sort_keys=True)
 
     data_loader_start = time.perf_counter()
-    data_loader = create_data_loader(args, args.train_split, shuffle=True, drop_last=True, balanced=args.balanced)
+    data_loader = create_data_loader(
+        args,
+        args.train_split,
+        shuffle=True,
+        drop_last=True,
+        balanced=args.balanced,
+        batch_transform=batch_transform,
+    )
     data_loader_build_s = time.perf_counter() - data_loader_start
     print(
         f"Motion scorer DataLoader: num_workers={args.num_workers}, "
@@ -844,13 +961,23 @@ def main() -> None:
         f"timing_log_interval={getattr(args, 'timing_log_interval', 1000)}"
     )
     print(f"Motion scorer startup: data_loader_build_s={data_loader_build_s:.2f}")
+
     trainer_init_start = time.perf_counter()
-    trainer = MotionScorerTrainer(args, ml_platform, data_loader)
+    trainer = MotionScorerTrainer(
+        args,
+        ml_platform,
+        data_loader,
+        aux_batch_preprocessor=batch_transform,
+        physics_target_cache=physics_target_cache,
+        skeleton_lookup=skeleton_lookup,
+        species_vocab=species_vocab,
+        action_vocab=action_vocab,
+    )
     trainer_init_s = time.perf_counter() - trainer_init_start
     print(f"Motion scorer startup: trainer_init_s={trainer_init_s:.2f} total_startup_s={time.perf_counter() - startup_start:.2f}")
     ml_platform.watch_model(trainer.model)
     final_model = trainer.run()
-    compute_and_save_train_stats(args, final_model, trainer.device, trainer.autocast_dtype, trainer.amp_enabled)
+    compute_and_save_train_stats(args, final_model, trainer.device, trainer.autocast_dtype, trainer.amp_enabled, skeleton_lookup=skeleton_lookup)
     ml_platform.close()
 
 

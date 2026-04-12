@@ -1,5 +1,6 @@
 @echo off
 set PYTHON_EXE=%~dp0..\.venv\Scripts\python.exe
+set SAVE_DIR=save\motion_scorer_v3
 
 %PYTHON_EXE% "%~dp0train\train_motion_scorer.py" ^
     --objects_subset all ^
@@ -9,37 +10,24 @@ set PYTHON_EXE=%~dp0..\.venv\Scripts\python.exe
     --latent_dim 128 ^
     --d_model 256 ^
     --num_conv_layers 4 ^
-    --decoder_num_conv_layers 3 ^
     --kernel_size 5 ^
     --num_steps 20000 ^
     --lr 1.5e-4 ^
     --lr_step_size 6000 ^
     --lr_gamma 0.97 ^
-    --save_dir save\motion_scorer_perceptual_v2 ^
+    --save_dir %SAVE_DIR% ^
     --save_interval 5000 ^
     --log_interval 100 ^
+    --timing_log_interval 100 ^
     --num_workers 0 ^
     --motion_cache_size 512 ^
     --main_process_prefetch_batches 4 ^
     --amp_dtype bf16 ^
     --use_ema ^
     --stats_batch_size 32 ^
-    --recon_position_weight 0.35 ^
-    --recon_velocity_weight 0.30 ^
-    --recon_acceleration_weight 0.20 ^
-    --recon_blur_weight 0.15 ^
-    --lambda_quality_invariance 0.15 ^
-    --lambda_quality_variance 0.05 ^
-    --lambda_quality_covariance 0.01 ^
-    --lambda_quality_margin 0.10 ^
-    --quality_margin 0.20 ^
+    --cls_warmup_steps 4000 ^
+    --full_loss_warmup_steps 4000 ^
     --quality_variance_floor 0.50 ^
-    --lambda_negative_recon 0.10 ^
-    --negative_recon_margin 0.15 ^
-    --view_noise_sigma 0.03 ^
-    --recon_bootstrap_steps 4000 ^
-    --recon_perceptual_warmup_steps 4000 ^
-    --aux_warmup_steps 4000 ^
-    --negative_noise_sigma_start 0.35 ^
-    --negative_noise_sigma 1.0 ^
+    --gmm_components 64 ^
+    --gmm_covariance_type diag ^
     --auto_resume
