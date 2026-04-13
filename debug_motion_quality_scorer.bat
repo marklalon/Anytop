@@ -1,6 +1,6 @@
 @echo off
 set PYTHON_EXE=%~dp0..\.venv\Scripts\python.exe
-set CHECKPOINT_TARGET=save\motion_scorer_v7
+set CHECKPOINT_TARGET=save\motion_scorer_v8
 set REPORT_DIR=%CHECKPOINT_TARGET%
 for %%I in ("%CHECKPOINT_TARGET%") do (
     if /I "%%~xI"==".pt" set REPORT_DIR=%%~dpI

@@ -14,7 +14,6 @@ from argparse import ArgumentParser
 import numpy as np
 import torch
 import torch.nn.functional as F
-from sklearn.mixture import GaussianMixture
 from torch.optim import AdamW
 from tqdm import tqdm
 
@@ -82,11 +81,8 @@ def build_parser() -> ArgumentParser:
     group.add_argument("--lambda_phys", default=0.2, type=float, help="Weight for physics feature regression.")
     group.add_argument("--lambda_vic_var", default=0.05, type=float, help="Weight for VICReg variance floor.")
     group.add_argument("--lambda_vic_cov", default=0.01, type=float, help="Weight for VICReg covariance decorrelation.")
-    group.add_argument("--quality_variance_floor", default=0.5, type=float,
+    group.add_argument("--vic_variance_floor", default=0.5, type=float,
                        help="Minimum per-dimension standard deviation target for normalized latent embeddings.")
-    group.add_argument("--gmm_components", default=64, type=int, help="Number of mixture components used for latent density fitting.")
-    group.add_argument("--gmm_covariance_type", default="diag", choices=["diag", "full"], type=str,
-                       help="Covariance type used for post-training GMM fitting.")
     group.add_argument("--density_knn_k", default=5, type=int,
                        help="k used for normalized latent kNN density calibration.")
     group.add_argument("--score_alpha", nargs=4, default=[1.0, 1.0, 1.0, 1.0], type=float,
@@ -611,7 +607,7 @@ class MotionScorerTrainer:
                     torch.ones_like(clean_outputs["disc_logits"]),
                 )
                 phys_loss = F.mse_loss(clean_outputs["phys_features"], physics_targets)
-                vic_variance_loss = _variance_floor_loss(vicreg_features, float(self.args.quality_variance_floor))
+                vic_variance_loss = _variance_floor_loss(vicreg_features, float(self.args.vic_variance_floor))
                 vic_covariance_loss = _covariance_loss(vicreg_features)
 
                 if negative_batch is None:
@@ -913,14 +909,6 @@ def compute_and_save_train_stats(args, model: MotionScorerNet, device: torch.dev
     density_reference_latents = normalize_density_embeddings(torch.from_numpy(latents).float()).cpu().numpy().astype(np.float32, copy=False)
     density_knn_k = max(1, min(int(getattr(args, "density_knn_k", 5)), max(int(density_reference_latents.shape[0]) - 1, 1)))
 
-    component_count = min(max(1, int(args.gmm_components)), latents.shape[0])
-    gmm = GaussianMixture(
-        n_components=component_count,
-        covariance_type=str(args.gmm_covariance_type),
-        reg_covar=float(args.stats_eps),
-        random_state=int(args.seed),
-    )
-    gmm.fit(latents)
     density_values = _knn_density_values_np(
         density_reference_latents,
         k=density_knn_k,
@@ -945,10 +933,6 @@ def compute_and_save_train_stats(args, model: MotionScorerNet, device: torch.dev
         "density_mode": "knn",
         "density_knn_k": int(density_knn_k),
         "density_reference_latents": density_reference_latents.astype(np.float32),
-        "gmm_covariance_type": str(args.gmm_covariance_type),
-        "gmm_means": gmm.means_.astype(np.float32),
-        "gmm_covariances": gmm.covariances_.astype(np.float32),
-        "gmm_weights": gmm.weights_.astype(np.float32),
         "density_percentiles": np.percentile(density_values, np.arange(101)).astype(np.float32),
         "mu_phys": mu_phys.astype(np.float32),
         "sigma_phys_inv": sigma_phys_inv.astype(np.float32),
@@ -968,8 +952,6 @@ def compute_and_save_train_stats(args, model: MotionScorerNet, device: torch.dev
         "num_samples": int(latents.shape[0]),
         "density_mode": "knn",
         "density_knn_k": int(density_knn_k),
-        "gmm_components": int(component_count),
-        "gmm_covariance_type": str(args.gmm_covariance_type),
         "score_alpha": [float(value) for value in args.score_alpha],
     }
     with open(os.path.join(args.save_dir, "train_stats_summary.json"), "w", encoding="utf-8") as handle:
