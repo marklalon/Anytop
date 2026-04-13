@@ -14,6 +14,7 @@ from argparse import ArgumentParser
 import numpy as np
 import torch
 import torch.nn.functional as F
+from sklearn.mixture import GaussianMixture
 from torch.optim import AdamW
 from tqdm import tqdm
 
@@ -23,11 +24,13 @@ from data_loaders.get_data import get_dataset_loader
 from data_loaders.skeleton_metadata import (
     LabelVocab,
     build_label_vocabs,
+    build_metadata_feature_lookup,
     load_skeleton_metadata,
     metadata_feature_dim,
 )
 from diffusion.fp16_util import MixedPrecisionTrainer
 from diffusion.nn import update_ema
+from eval.biomechanical_negatives import NEGATIVE_KINDS, generate_biomechanical_negative_batch
 from eval.physics_features import extract_physics_features
 from model.motion_autoencoder import MotionScorerNet
 from utils import dist_util
@@ -71,12 +74,23 @@ def build_parser() -> ArgumentParser:
     group.add_argument("--cls_warmup_steps", default=2000, type=int,
                        help="Number of initial steps that optimize only species/action classification.")
     group.add_argument("--full_loss_warmup_steps", default=2000, type=int,
-                       help="Number of steps used to linearly ramp physics regression after classification warmup.")
+                       help="Number of steps used to linearly ramp discriminator/physics/VICReg losses after classification warmup.")
     group.add_argument("--lambda_species", default=1.0, type=float, help="Weight for species classification CE.")
     group.add_argument("--lambda_action", default=1.0, type=float, help="Weight for action classification CE.")
+    group.add_argument("--lambda_disc_p", default=0.5, type=float, help="Weight for positive discriminator BCE.")
+    group.add_argument("--lambda_disc_n", default=0.5, type=float, help="Weight for negative discriminator BCE.")
     group.add_argument("--lambda_phys", default=0.2, type=float, help="Weight for physics feature regression.")
-    group.add_argument("--score_alpha", nargs=2, default=[1.0, 1.0], type=float,
-                       help="Geometric-mean weights for recognizability and physics scores.")
+    group.add_argument("--lambda_vic_var", default=0.05, type=float, help="Weight for VICReg variance floor.")
+    group.add_argument("--lambda_vic_cov", default=0.01, type=float, help="Weight for VICReg covariance decorrelation.")
+    group.add_argument("--quality_variance_floor", default=0.5, type=float,
+                       help="Minimum per-dimension standard deviation target for normalized latent embeddings.")
+    group.add_argument("--gmm_components", default=64, type=int, help="Number of mixture components used for latent density fitting.")
+    group.add_argument("--gmm_covariance_type", default="diag", choices=["diag", "full"], type=str,
+                       help="Covariance type used for post-training GMM fitting.")
+    group.add_argument("--density_knn_k", default=5, type=int,
+                       help="k used for normalized latent kNN density calibration.")
+    group.add_argument("--score_alpha", nargs=4, default=[1.0, 1.0, 1.0, 1.0], type=float,
+                       help="Geometric-mean weights for recognizability, density, plausibility, and physics scores.")
     return parser
 
 
@@ -93,6 +107,55 @@ def get_auxiliary_loss_factor(args, current_step: int) -> float:
     cls_warmup_steps = max(0, int(getattr(args, "cls_warmup_steps", 0)))
     warmup_steps = max(0, int(getattr(args, "full_loss_warmup_steps", 0)))
     return linear_warmup_factor(current_step, cls_warmup_steps, warmup_steps)
+
+
+def normalize_density_embeddings(latents: torch.Tensor) -> torch.Tensor:
+    return F.normalize(latents.float(), dim=-1)
+
+
+def _knn_density_values_np(
+    reference_latents: np.ndarray,
+    *,
+    k: int,
+    exclude_self: bool,
+    chunk_size: int = 1024,
+) -> np.ndarray:
+    if reference_latents.ndim != 2:
+        raise ValueError(f"Expected 2D latent array, got {reference_latents.shape}")
+    if reference_latents.shape[0] == 0:
+        return np.zeros((0,), dtype=np.float32)
+    if reference_latents.shape[0] == 1:
+        return np.zeros((1,), dtype=np.float32)
+
+    effective_k = max(1, min(int(k), int(reference_latents.shape[0]) - 1 if exclude_self else int(reference_latents.shape[0])))
+    reference_tensor = torch.from_numpy(reference_latents.astype(np.float32, copy=False))
+    values: list[np.ndarray] = []
+    for start_index in range(0, int(reference_tensor.shape[0]), int(chunk_size)):
+        end_index = min(start_index + int(chunk_size), int(reference_tensor.shape[0]))
+        query_tensor = reference_tensor[start_index:end_index]
+        distances = torch.cdist(query_tensor, reference_tensor)
+        if exclude_self:
+            diag_indices = torch.arange(end_index - start_index)
+            distances[diag_indices, diag_indices + start_index] = float('inf')
+        kth_distances = torch.topk(distances, k=effective_k, dim=1, largest=False).values[:, -1]
+        values.append((-kth_distances).cpu().numpy())
+    return np.concatenate(values, axis=0).astype(np.float32, copy=False)
+
+
+def _variance_floor_loss(features: torch.Tensor, floor: float) -> torch.Tensor:
+    if features.shape[0] <= 1:
+        return torch.zeros((), device=features.device, dtype=features.dtype)
+    std = torch.sqrt(features.var(dim=0, unbiased=False) + 1e-4)
+    return F.relu(float(floor) - std).mean()
+
+
+def _covariance_loss(features: torch.Tensor) -> torch.Tensor:
+    if features.shape[0] <= 1:
+        return torch.zeros((), device=features.device, dtype=features.dtype)
+    centered = features - features.mean(dim=0, keepdim=True)
+    cov = centered.T @ centered / max(features.shape[0] - 1, 1)
+    off_diagonal = cov - torch.diag_embed(torch.diagonal(cov))
+    return off_diagonal.pow(2).sum() / max(features.shape[1], 1)
 
 
 def prepare_save_dir(args) -> str:
@@ -308,8 +371,18 @@ class MotionScorerAuxBatchPreprocessor:
                 feature_mean=cond["y"].get("mean"),
                 feature_std=cond["y"].get("std"),
             )
+        negative_batch = generate_biomechanical_negative_batch(
+            motion,
+            cond["y"]["n_joints"],
+            cond["y"]["lengths"],
+            object_types,
+            self.skeleton_lookup,
+            feature_std=cond["y"].get("std"),
+            negative_kinds=NEGATIVE_KINDS,
+        )
         return motion, cond, {
             "physics_targets": physics_targets,
+            "negative_motion": negative_batch["motion"],
         }
 
 
@@ -341,24 +414,6 @@ def select_model_state_dict(state_dict: dict, prefer_ema: bool) -> dict:
         if "model" in state_dict:
             return state_dict["model"]
     return state_dict
-
-
-def load_motion_scorer_state_dict(model: MotionScorerNet, state_dict: dict, *, allow_legacy_aux: bool) -> None:
-    filtered_state_dict = dict(state_dict)
-    if allow_legacy_aux:
-        filtered_state_dict = {
-            key: value
-            for key, value in filtered_state_dict.items()
-            if not key.startswith("disc_head.") and not key.startswith("metadata_projection.")
-        }
-    incompatible = model.load_state_dict(filtered_state_dict, strict=False)
-    missing = list(incompatible.missing_keys)
-    unexpected = list(incompatible.unexpected_keys)
-    if missing or unexpected:
-        raise RuntimeError(
-            "Failed to load motion scorer checkpoint. "
-            f"Missing keys: {missing}; unexpected keys: {unexpected}"
-        )
 
 
 def move_cond_to_device(cond, device: torch.device, non_blocking: bool) -> dict:
@@ -432,6 +487,13 @@ class MotionScorerTrainer:
             self.autocast_dtype = torch.float16
         elif self.amp_dtype == "bf16":
             self.autocast_dtype = torch.bfloat16
+        
+        self.metadata_feature_lookup = build_metadata_feature_lookup(
+            self.skeleton_lookup,
+            max_joints=self.args.max_joints,
+            device=self.device,
+            dtype=torch.float32,
+        )
 
         self.model = MotionScorerNet(
             feature_dim=args.feature_dim,
@@ -452,10 +514,10 @@ class MotionScorerTrainer:
         if self.resume_checkpoint:
             payload = torch.load(self.resume_checkpoint, map_location="cpu")
             model_state = select_model_state_dict(payload, prefer_ema=False)
-            load_motion_scorer_state_dict(self.model, model_state, allow_legacy_aux=True)
+            self.model.load_state_dict(model_state, strict=True)
             if self.model_avg is not None:
                 avg_state = payload.get("model_avg", model_state)
-                load_motion_scorer_state_dict(self.model_avg, avg_state, allow_legacy_aux=True)
+                self.model_avg.load_state_dict(avg_state, strict=True)
             self.resume_completed_steps = parse_checkpoint_number(self.resume_checkpoint)
 
         self.mp_trainer = MixedPrecisionTrainer(
@@ -500,10 +562,21 @@ class MotionScorerTrainer:
         aux_factor = get_auxiliary_loss_factor(self.args, current_step)
         use_auxiliary_branches = aux_factor > 0.0
 
+        metadata_features = None
         physics_targets = None
+        negative_batch = None
         if use_auxiliary_branches:
+            metadata_features = torch.stack(
+                [self.metadata_feature_lookup[str(object_type)] for object_type in object_types],
+                dim=0,
+            )
+            if metadata_features.dtype != motion.dtype:
+                metadata_features = metadata_features.to(dtype=motion.dtype)
             if precomputed_aux is not None:
                 physics_targets = precomputed_aux["physics_targets"]
+                negative_batch = {
+                    "motion": precomputed_aux["negative_motion"],
+                }
             else:
                 if self.physics_target_cache is not None:
                     physics_targets = self.physics_target_cache.get_batch(motion, cond, self.skeleton_lookup)
@@ -524,21 +597,63 @@ class MotionScorerTrainer:
                 motion,
                 n_joints,
                 lengths,
+                metadata_features=metadata_features,
+                return_disc_logits=use_auxiliary_branches,
                 return_phys_features=use_auxiliary_branches,
             )
 
             species_loss = F.cross_entropy(clean_outputs["species_logits"], species_ids)
             action_loss = F.cross_entropy(clean_outputs["action_logits"], action_ids)
             if use_auxiliary_branches:
+                vicreg_features = normalize_density_embeddings(clean_outputs["latents"])
+                disc_positive_loss = F.binary_cross_entropy_with_logits(
+                    clean_outputs["disc_logits"],
+                    torch.ones_like(clean_outputs["disc_logits"]),
+                )
                 phys_loss = F.mse_loss(clean_outputs["phys_features"], physics_targets)
+                vic_variance_loss = _variance_floor_loss(vicreg_features, float(self.args.quality_variance_floor))
+                vic_covariance_loss = _covariance_loss(vicreg_features)
+
+                if negative_batch is None:
+                    negative_batch = generate_biomechanical_negative_batch(
+                        motion,
+                        n_joints,
+                        lengths,
+                        object_types,
+                        self.skeleton_lookup,
+                        feature_std=cond["y"].get("std"),
+                        negative_kinds=NEGATIVE_KINDS,
+                    )
+                negative_outputs = self.model(
+                    negative_batch["motion"],
+                    n_joints,
+                    lengths,
+                    metadata_features=metadata_features,
+                    return_species_logits=False,
+                    return_action_logits=False,
+                    return_phys_features=False,
+                )
+                disc_negative_loss = F.binary_cross_entropy_with_logits(
+                    negative_outputs["disc_logits"],
+                    torch.zeros_like(negative_outputs["disc_logits"]),
+                )
             else:
                 zero = motion.new_zeros(())
+                disc_positive_loss = zero
+                disc_negative_loss = zero
                 phys_loss = zero
+                vic_variance_loss = zero
+                vic_covariance_loss = zero
+                negative_outputs = None
 
             loss = (
                 float(self.args.lambda_species) * species_loss
                 + float(self.args.lambda_action) * action_loss
+                + aux_factor * float(self.args.lambda_disc_p) * disc_positive_loss
+                + aux_factor * float(self.args.lambda_disc_n) * disc_negative_loss
                 + aux_factor * float(self.args.lambda_phys) * phys_loss
+                + aux_factor * float(self.args.lambda_vic_var) * vic_variance_loss
+                + aux_factor * float(self.args.lambda_vic_cov) * vic_covariance_loss
             )
 
         self.mp_trainer.backward(loss)
@@ -549,14 +664,26 @@ class MotionScorerTrainer:
         with torch.no_grad():
             species_accuracy = (clean_outputs["species_logits"].argmax(dim=-1) == species_ids).float().mean()
             action_accuracy = (clean_outputs["action_logits"].argmax(dim=-1) == action_ids).float().mean()
+            if use_auxiliary_branches:
+                clean_disc_prob = torch.sigmoid(clean_outputs["disc_logits"]).mean()
+                negative_disc_prob = torch.sigmoid(negative_outputs["disc_logits"]).mean()
+            else:
+                clean_disc_prob = motion.new_zeros(())
+                negative_disc_prob = motion.new_zeros(())
 
         return {
             "loss": float(loss.detach().item()),
             "species_loss": float(species_loss.detach().item()),
             "action_loss": float(action_loss.detach().item()),
+            "disc_positive_loss": float(disc_positive_loss.detach().item()),
+            "disc_negative_loss": float(disc_negative_loss.detach().item()),
             "phys_loss": float(phys_loss.detach().item()),
+            "vic_variance_loss": float(vic_variance_loss.detach().item()),
+            "vic_covariance_loss": float(vic_covariance_loss.detach().item()),
             "species_accuracy": float(species_accuracy.detach().item()),
             "action_accuracy": float(action_accuracy.detach().item()),
+            "clean_disc_prob": float(clean_disc_prob.detach().item()),
+            "negative_disc_prob": float(negative_disc_prob.detach().item()),
             "aux_factor": float(aux_factor),
         }
 
@@ -675,14 +802,14 @@ class MotionScorerTrainer:
                     if metric_values
                 }
                 print(
-                    "step[{}]: total_loss[{:.6f}] species_ce[{:.6f}] action_ce[{:.6f}] phys[{:.6f}] sp_acc[{:.3f}] act_acc[{:.3f}] aux[{:.3f}]".format(
+                    "step[{}]: total_loss[{:.6f}] species_ce[{:.6f}] action_ce[{:.6f}] disc_pos[{:.6f}] disc_neg[{:.6f}] phys[{:.6f}] aux[{:.3f}]".format(
                         completed_steps,
                         mean_metrics.get("loss", 0.0),
                         mean_metrics.get("species_loss", 0.0),
                         mean_metrics.get("action_loss", 0.0),
+                        mean_metrics.get("disc_positive_loss", 0.0),
+                        mean_metrics.get("disc_negative_loss", 0.0),
                         mean_metrics.get("phys_loss", 0.0),
-                        mean_metrics.get("species_accuracy", 0.0),
-                        mean_metrics.get("action_accuracy", 0.0),
                         mean_metrics.get("aux_factor", 0.0),
                     )
                 )
@@ -694,11 +821,7 @@ class MotionScorerTrainer:
             if completed_steps % timing_log_interval == 0 or completed_steps == self.args.num_steps:
                 mean_loop_s = timing_totals["loop_s"] / max(timing_steps, 1)
                 mean_data_wait_ms = 1000.0 * timing_totals["data_wait_s"] / max(timing_steps, 1)
-                mean_host_to_device_ms = 1000.0 * timing_totals["host_to_device_s"] / max(timing_steps, 1)
                 mean_step_ms = 1000.0 * timing_totals["step_s"] / max(timing_steps, 1)
-                data_wait_pct = 100.0 * timing_totals["data_wait_s"] / max(timing_totals["loop_s"], 1e-9)
-                step_pct = 100.0 * timing_totals["step_s"] / max(timing_totals["loop_s"], 1e-9)
-                samples_per_s = timing_samples / max(timing_totals["loop_s"], 1e-9)
                 cache_suffix = ""
                 if self.physics_target_cache is not None:
                     cache_hits, cache_misses = self.physics_target_cache.pop_stats()
@@ -708,23 +831,17 @@ class MotionScorerTrainer:
                         cache_suffix = f" physics_cache_hit_pct[{cache_hit_pct:.1f}]]"
                         self.ml_platform.report_scalar("physics_cache_hit_pct", cache_hit_pct, completed_steps, group_name="Timing")
                 print(
-                    "timing[{}]: data_wait_ms[{:.2f}] host_to_device_ms[{:.2f}] step_ms[{:.2f}] total_ms[{:.2f}] data_wait_pct[{:.1f}] step_pct[{:.1f}] samples_per_s[{:.1f}]{}".format(
+                    "timing[{}]: data_wait_ms[{:.2f}] step_ms[{:.2f}] total_ms[{:.2f}] {}".format(
                         completed_steps,
                         mean_data_wait_ms,
-                        mean_host_to_device_ms,
                         mean_step_ms,
                         1000.0 * mean_loop_s,
-                        data_wait_pct,
-                        step_pct,
-                        samples_per_s,
                         cache_suffix,
                     )
                 )
                 self.ml_platform.report_scalar("data_wait_ms", mean_data_wait_ms, completed_steps, group_name="Timing")
-                self.ml_platform.report_scalar("host_to_device_ms", mean_host_to_device_ms, completed_steps, group_name="Timing")
                 self.ml_platform.report_scalar("step_ms", mean_step_ms, completed_steps, group_name="Timing")
                 self.ml_platform.report_scalar("total_ms", 1000.0 * mean_loop_s, completed_steps, group_name="Timing")
-                self.ml_platform.report_scalar("samples_per_s", samples_per_s, completed_steps, group_name="Timing")
                 timing_totals = {
                     "data_wait_s": 0.0,
                     "host_to_device_s": 0.0,
@@ -746,7 +863,7 @@ def _mahalanobis_distance_np(values: np.ndarray, mean: np.ndarray, cov_inv: np.n
     return np.sqrt(np.clip(distances_sq, a_min=0.0, a_max=None))
 
 
-def compute_and_save_train_stats(args, device: torch.device, *, skeleton_lookup) -> None:
+def compute_and_save_train_stats(args, model: MotionScorerNet, device: torch.device, autocast_dtype, amp_enabled: bool, *, skeleton_lookup) -> None:
     stats_split = args.stats_split or args.train_split
     stats_batch_size = args.stats_batch_size or args.batch_size
     loader = get_dataset_loader(
@@ -768,12 +885,17 @@ def compute_and_save_train_stats(args, device: torch.device, *, skeleton_lookup)
         main_process_prefetch_batches=getattr(args, "main_process_prefetch_batches", 0),
     )
 
+    model.eval()
+    latent_batches = []
     physics_batches = []
     with torch.no_grad():
         for motion, cond in tqdm(loader, desc="Caching scorer stats"):
             motion = motion.to(device, non_blocking=device.type == "cuda")
             cond = move_cond_to_device(cond, device, device.type == "cuda")
             object_types = cond["y"].get("object_type")
+            with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=amp_enabled):
+                latents = model.encode(motion, cond["y"]["n_joints"], cond["y"]["lengths"])
+            latent_batches.append(latents.detach().float().cpu().numpy())
             physics_batches.append(
                 extract_physics_features(
                     motion,
@@ -786,7 +908,24 @@ def compute_and_save_train_stats(args, device: torch.device, *, skeleton_lookup)
                 ).detach().float().cpu().numpy()
             )
 
+    latents = np.concatenate(latent_batches, axis=0).astype(np.float64, copy=False)
     physics = np.concatenate(physics_batches, axis=0).astype(np.float64, copy=False)
+    density_reference_latents = normalize_density_embeddings(torch.from_numpy(latents).float()).cpu().numpy().astype(np.float32, copy=False)
+    density_knn_k = max(1, min(int(getattr(args, "density_knn_k", 5)), max(int(density_reference_latents.shape[0]) - 1, 1)))
+
+    component_count = min(max(1, int(args.gmm_components)), latents.shape[0])
+    gmm = GaussianMixture(
+        n_components=component_count,
+        covariance_type=str(args.gmm_covariance_type),
+        reg_covar=float(args.stats_eps),
+        random_state=int(args.seed),
+    )
+    gmm.fit(latents)
+    density_values = _knn_density_values_np(
+        density_reference_latents,
+        k=density_knn_k,
+        exclude_self=True,
+    ).astype(np.float64, copy=False)
 
     mu_phys = physics.mean(axis=0)
     if physics.shape[0] > 1:
@@ -798,29 +937,45 @@ def compute_and_save_train_stats(args, device: torch.device, *, skeleton_lookup)
     sigma_phys_inv = np.linalg.pinv(sigma_phys)
     phys_values = -_mahalanobis_distance_np(physics, mu_phys, sigma_phys_inv)
 
+    explicit_checkpoint = str(getattr(args, "checkpoint_path", "") or "")
     latest_checkpoint = find_latest_checkpoint(args.save_dir, prefix="model")
-    checkpoint_step = parse_checkpoint_number(latest_checkpoint) if latest_checkpoint else 0
+    stats_checkpoint = explicit_checkpoint or latest_checkpoint
+    checkpoint_step = parse_checkpoint_number(stats_checkpoint) if stats_checkpoint else 0
     stats = {
+        "density_mode": "knn",
+        "density_knn_k": int(density_knn_k),
+        "density_reference_latents": density_reference_latents.astype(np.float32),
+        "gmm_covariance_type": str(args.gmm_covariance_type),
+        "gmm_means": gmm.means_.astype(np.float32),
+        "gmm_covariances": gmm.covariances_.astype(np.float32),
+        "gmm_weights": gmm.weights_.astype(np.float32),
+        "density_percentiles": np.percentile(density_values, np.arange(101)).astype(np.float32),
         "mu_phys": mu_phys.astype(np.float32),
         "sigma_phys_inv": sigma_phys_inv.astype(np.float32),
         "phys_percentiles": np.percentile(phys_values, np.arange(101)).astype(np.float32),
         "score_alpha": np.asarray(args.score_alpha, dtype=np.float32),
-        "checkpoint_path": latest_checkpoint,
+        "checkpoint_path": stats_checkpoint,
         "checkpoint_step": checkpoint_step,
         "stats_split": stats_split,
-        "num_samples": int(physics.shape[0]),
+        "num_samples": int(latents.shape[0]),
     }
     np.save(os.path.join(args.save_dir, "train_stats.npy"), stats, allow_pickle=True)
 
     summary = {
-        "checkpoint_path": latest_checkpoint,
+        "checkpoint_path": stats_checkpoint,
         "checkpoint_step": checkpoint_step,
         "stats_split": stats_split,
-        "num_samples": int(physics.shape[0]),
+        "num_samples": int(latents.shape[0]),
+        "density_mode": "knn",
+        "density_knn_k": int(density_knn_k),
+        "gmm_components": int(component_count),
+        "gmm_covariance_type": str(args.gmm_covariance_type),
         "score_alpha": [float(value) for value in args.score_alpha],
     }
     with open(os.path.join(args.save_dir, "train_stats_summary.json"), "w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2, sort_keys=True)
+
+    model.train()
 
 
 def prepare_training_assets(args):
@@ -895,8 +1050,8 @@ def main() -> None:
         action_vocab=action_vocab,
     )    
     ml_platform.watch_model(trainer.model)
-    trainer.run()
-    compute_and_save_train_stats(args, trainer.device, skeleton_lookup=skeleton_lookup)
+    final_model = trainer.run()
+    compute_and_save_train_stats(args, final_model, trainer.device, trainer.autocast_dtype, trainer.amp_enabled, skeleton_lookup=skeleton_lookup)
     ml_platform.close()
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sys
@@ -13,7 +14,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data_loaders.skeleton_metadata import load_skeleton_metadata
+from data_loaders.skeleton_metadata import build_metadata_feature_tensor, load_skeleton_metadata
 from data_loaders.truebones.offline_reference_dataset import load_cond_dict, resolve_dataset_root
 from data_loaders.truebones.truebones_utils.motion_labels import infer_species_label
 from eval.physics_features import extract_physics_features
@@ -21,10 +22,16 @@ from model.motion_autoencoder import MotionScorerNet
 
 
 EPS = 1e-8
-REQUIRED_RUNTIME_STATS_KEYS = {
+REQUIRED_MULTITASK_STATS_KEYS = {
+    "gmm_covariance_type",
+    "gmm_means",
+    "gmm_covariances",
+    "gmm_weights",
+    "density_percentiles",
     "mu_phys",
     "sigma_phys_inv",
     "phys_percentiles",
+    "score_alpha",
 }
 
 
@@ -59,22 +66,6 @@ def _select_model_state_dict(state_dict: dict[str, Any], prefer_ema: bool) -> di
     if "model" in state_dict:
         return state_dict["model"]
     return state_dict
-
-
-def _load_motion_scorer_state_dict(model: MotionScorerNet, state_dict: dict[str, torch.Tensor]) -> None:
-    filtered_state_dict = {
-        key: value
-        for key, value in state_dict.items()
-        if not key.startswith("disc_head.") and not key.startswith("metadata_projection.")
-    }
-    incompatible = model.load_state_dict(filtered_state_dict, strict=False)
-    missing = list(incompatible.missing_keys)
-    unexpected = list(incompatible.unexpected_keys)
-    if missing or unexpected:
-        raise RuntimeError(
-            "Failed to load motion scorer checkpoint. "
-            f"Missing keys: {missing}; unexpected keys: {unexpected}"
-        )
 
 
 def _mahalanobis_distance(values: torch.Tensor, mean: torch.Tensor, cov_inv: torch.Tensor) -> torch.Tensor:
@@ -128,15 +119,26 @@ def _geometric_mean(scores: Sequence[torch.Tensor], weights: Sequence[float]) ->
     return torch.exp(weighted_logs.sum(dim=0) / weight_tensor.sum().clamp_min(EPS))
 
 
-def _normalize_score_alpha(values: Any) -> list[float]:
-    if values is None:
-        return [1.0, 1.0]
-    alpha = [float(value) for value in values]
-    if len(alpha) == 2:
-        return alpha
-    if len(alpha) >= 4:
-        return [alpha[0], alpha[3]]
-    return [1.0, 1.0]
+def _knn_density_values(
+    queries: torch.Tensor,
+    references: torch.Tensor,
+    *,
+    k: int,
+    chunk_size: int = 512,
+) -> torch.Tensor:
+    if references.ndim != 2 or queries.ndim != 2:
+        raise ValueError(f"Expected 2D latent tensors, got {tuple(queries.shape)} and {tuple(references.shape)}")
+    if references.shape[0] == 0:
+        return torch.zeros((queries.shape[0],), dtype=queries.dtype, device=queries.device)
+    effective_k = max(1, min(int(k), int(references.shape[0])))
+    values = []
+    for start_index in range(0, int(queries.shape[0]), int(chunk_size)):
+        end_index = min(start_index + int(chunk_size), int(queries.shape[0]))
+        query_chunk = queries[start_index:end_index]
+        distances = torch.cdist(query_chunk.float(), references.float())
+        kth_distances = torch.topk(distances, k=effective_k, dim=1, largest=False).values[:, -1]
+        values.append(-kth_distances.to(dtype=queries.dtype))
+    return torch.cat(values, dim=0)
 
 
 class MotionQualityScorer:
@@ -171,7 +173,7 @@ class MotionQualityScorer:
             raise FileNotFoundError(f"train_stats.npy was not found next to the checkpoint: {stats_path}")
         self.train_stats = np.load(stats_path, allow_pickle=True).item()
         self._validate_checkpoint_match()
-        self._validate_runtime_stats()
+        self._validate_multitask_stats()
         self._load_model(prefer_ema=prefer_ema)
         self._load_runtime_stats()
 
@@ -191,11 +193,11 @@ class MotionQualityScorer:
                 stacklevel=2,
             )
 
-    def _validate_runtime_stats(self) -> None:
-        missing = sorted(REQUIRED_RUNTIME_STATS_KEYS.difference(self.train_stats.keys()))
+    def _validate_multitask_stats(self) -> None:
+        missing = sorted(REQUIRED_MULTITASK_STATS_KEYS.difference(self.train_stats.keys()))
         if missing:
             raise ValueError(
-                "This scorer requires runtime physics stats next to the checkpoint. "
+                "This scorer now only supports motion scorer v3 checkpoints with multitask stats. "
                 f"Missing keys in train_stats.npy: {missing}"
             )
 
@@ -217,26 +219,77 @@ class MotionQualityScorer:
             metadata_hidden_dim=int(self.args.get("metadata_hidden_dim", 128)),
         )
         model_state = _select_model_state_dict(checkpoint_payload, prefer_ema=prefer_ema)
-        _load_motion_scorer_state_dict(self.model, model_state)
+        self.model.load_state_dict(model_state, strict=True)
         self.model.to(self.device)
         self.model.eval()
 
     def _load_runtime_stats(self) -> None:
         self.skeleton_lookup = load_skeleton_metadata(self.dataset_root)
+        self.density_mode = str(self.train_stats.get("density_mode", f"gmm_{self.train_stats['gmm_covariance_type']}"))
+        self.density_knn_k = int(self.train_stats.get("density_knn_k", 0) or 0)
+        density_reference_latents = self.train_stats.get("density_reference_latents")
+        self.density_reference_latents = None
+        if density_reference_latents is not None:
+            self.density_reference_latents = torch.as_tensor(
+                density_reference_latents,
+                dtype=torch.float32,
+                device=self.device,
+            )
+        self.gmm_covariance_type = str(self.train_stats["gmm_covariance_type"])
+        self.gmm_means = torch.as_tensor(self.train_stats["gmm_means"], dtype=torch.float32, device=self.device)
+        self.gmm_covariances = torch.as_tensor(self.train_stats["gmm_covariances"], dtype=torch.float32, device=self.device)
+        self.gmm_weights = torch.as_tensor(self.train_stats["gmm_weights"], dtype=torch.float32, device=self.device)
+        self.gmm_log_weights = torch.log(self.gmm_weights.clamp_min(EPS))
+        if self.gmm_covariance_type == "full":
+            self.gmm_cov_inv = torch.linalg.pinv(self.gmm_covariances)
+        else:
+            self.gmm_cov_inv = None
+        self.density_percentiles = torch.as_tensor(self.train_stats["density_percentiles"], dtype=torch.float32, device=self.device)
         self.mu_phys = torch.as_tensor(self.train_stats["mu_phys"], dtype=torch.float32, device=self.device)
         self.sigma_phys_inv = torch.as_tensor(self.train_stats["sigma_phys_inv"], dtype=torch.float32, device=self.device)
         self.phys_percentiles = torch.as_tensor(self.train_stats["phys_percentiles"], dtype=torch.float32, device=self.device)
-        self.score_alpha = _normalize_score_alpha(self.train_stats.get("score_alpha"))
+        self.score_alpha = [float(value) for value in self.train_stats["score_alpha"]]
+
+    def _density_value(self, latents: torch.Tensor) -> torch.Tensor:
+        if self.density_mode == "knn" and self.density_reference_latents is not None and self.density_knn_k > 0:
+            normalized_latents = torch.nn.functional.normalize(latents.float(), dim=-1)
+            return _knn_density_values(
+                normalized_latents,
+                self.density_reference_latents,
+                k=self.density_knn_k,
+            )
+        return self._gmm_log_prob(latents)
+
+    def _gmm_log_prob(self, latents: torch.Tensor) -> torch.Tensor:
+        diff = latents[:, None, :] - self.gmm_means[None, :, :]
+        if self.gmm_covariance_type == "diag":
+            variances = self.gmm_covariances.clamp_min(EPS)
+            mahal = (diff.pow(2) / variances[None, :, :]).sum(dim=-1)
+            log_det = torch.log(variances).sum(dim=-1)
+        else:
+            mahal = torch.einsum("bkd,kde,bke->bk", diff, self.gmm_cov_inv, diff)
+            log_det = torch.logdet(self.gmm_covariances.clamp_min(EPS))
+        dim = latents.shape[-1]
+        normalizer = dim * math.log(2.0 * math.pi)
+        component_log_prob = -0.5 * (mahal + log_det[None, :] + normalizer) + self.gmm_log_weights[None, :]
+        return torch.logsumexp(component_log_prob, dim=1)
 
     def _prepare_condition_features(
         self,
         motion: torch.Tensor,
         object_types: Sequence[str],
-    ) -> tuple[list[str], torch.Tensor, torch.Tensor]:
+    ) -> tuple[list[str], torch.Tensor, torch.Tensor, torch.Tensor]:
         batch_size = motion.shape[0]
         if len(object_types) != batch_size:
             raise ValueError(f"Expected {batch_size} object_types, got {len(object_types)}")
         normalized_object_types = [str(object_type) for object_type in object_types]
+        metadata_features = build_metadata_feature_tensor(
+            normalized_object_types,
+            self.skeleton_lookup,
+            max_joints=self.max_joints,
+            device=motion.device,
+            dtype=motion.dtype,
+        )
         target_joints = int(motion.shape[1])
         target_features = int(motion.shape[2])
         feature_mean = torch.stack(
@@ -267,7 +320,7 @@ class MotionQualityScorer:
             ],
             dim=0,
         )
-        return normalized_object_types, feature_mean, feature_std
+        return normalized_object_types, metadata_features, feature_mean, feature_std
 
     def score(
         self,
@@ -293,17 +346,27 @@ class MotionQualityScorer:
         batch_size = motion.shape[0]
         n_joints = _to_1d_long_tensor(n_joints, batch_size, self.device)
         lengths = _to_1d_long_tensor(lengths, batch_size, self.device)
-        object_types, feature_mean, feature_std = self._prepare_condition_features(motion, object_types)
+        object_types, metadata_features, feature_mean, feature_std = self._prepare_condition_features(motion, object_types)
 
         with torch.no_grad():
             outputs = self.model(
                 motion,
                 n_joints,
                 lengths,
+                metadata_features=metadata_features,
+                return_disc_logits=False,
                 return_phys_features=False,
             )
             species_probs = torch.softmax(outputs["species_logits"], dim=-1)
             action_probs = torch.softmax(outputs["action_logits"], dim=-1)
+            conditioned = self.model.forward_from_latents(
+                outputs["latents"],
+                metadata_features=metadata_features,
+                return_species_logits=False,
+                return_action_logits=False,
+                return_phys_features=False,
+            )
+            density_value = self._density_value(outputs["latents"].float())
             physics_features = extract_physics_features(
                 motion,
                 n_joints,
@@ -318,20 +381,28 @@ class MotionQualityScorer:
         species_confidence = species_probs.max(dim=-1).values
         action_confidence = action_probs.max(dim=-1).values
         recognizability_score = (species_confidence * action_confidence).clamp(EPS, 1.0)
+        plausibility_score = torch.sigmoid(conditioned["disc_logits"])
+        density_score = _percentile_score(density_value, self.density_percentiles, higher_is_better=True)
         physics_score = _percentile_score(-physics_distance, self.phys_percentiles, higher_is_better=True)
         quality_score = _geometric_mean(
-            [recognizability_score, physics_score],
+            [recognizability_score, density_score, plausibility_score, physics_score],
             self.score_alpha,
         )
 
         return {
             "quality_score": quality_score.detach().cpu(),
             "recognizability_score": recognizability_score.detach().cpu(),
+            "density_score": density_score.detach().cpu(),
+            "plausibility_score": plausibility_score.detach().cpu(),
+            "plausibility_logit": conditioned["disc_logits"].detach().cpu(),
             "physics_score": physics_score.detach().cpu(),
             "species_confidence": species_confidence.detach().cpu(),
             "action_confidence": action_confidence.detach().cpu(),
+            "density_log_prob": density_value.detach().cpu(),
+            "density_distance": (-density_value).detach().cpu(),
             "physics_distance": physics_distance.detach().cpu(),
             "mahal_distance": physics_distance.detach().cpu(),
+            "density_mode": self.density_mode,
         }
 
     def score_npy(
@@ -384,9 +455,14 @@ class MotionQualityScorer:
                     {
                         "quality_score": float(batch_result["quality_score"][batch_index].item()),
                         "recognizability_score": float(batch_result["recognizability_score"][batch_index].item()),
+                        "density_score": float(batch_result["density_score"][batch_index].item()),
+                        "plausibility_score": float(batch_result["plausibility_score"][batch_index].item()),
+                        "plausibility_logit": float(batch_result["plausibility_logit"][batch_index].item()),
                         "physics_score": float(batch_result["physics_score"][batch_index].item()),
                         "species_confidence": float(batch_result["species_confidence"][batch_index].item()),
                         "action_confidence": float(batch_result["action_confidence"][batch_index].item()),
+                        "density_log_prob": float(batch_result["density_log_prob"][batch_index].item()),
+                        "density_distance": float(batch_result["density_distance"][batch_index].item()),
                         "physics_distance": float(batch_result["physics_distance"][batch_index].item()),
                         "mahal_distance": float(batch_result["mahal_distance"][batch_index].item()),
                         "object_type": object_types[batch_index],

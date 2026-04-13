@@ -65,12 +65,16 @@ def tensor_dict_to_lists(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def summarize_scores(result: dict[str, Any]) -> dict[str, float]:
-    mahal_distance_values = result.get("mahal_distance", result.get("physics_distance", []))
+    density_distance_values = result.get("density_distance", result.get("mahal_distance", []))
     return {
         "quality_score_mean": float(np.mean(result["quality_score"])),
         "recognizability_score_mean": float(np.mean(result["recognizability_score"])),
+        "density_score_mean": float(np.mean(result["density_score"])),
+        "plausibility_score_mean": float(np.mean(result["plausibility_score"])),
+        "plausibility_logit_mean": float(np.mean(result["plausibility_logit"])),
         "physics_score_mean": float(np.mean(result["physics_score"])),
-        "mahal_distance_mean": float(np.mean(mahal_distance_values)),
+        "density_distance_mean": float(np.mean(density_distance_values)),
+        "mahal_distance_mean": float(np.mean(density_distance_values)),
     }
 
 
@@ -137,6 +141,7 @@ def main() -> int:
 
     report = {
         "checkpoint": str(scorer.checkpoint_path),
+        "density_mode": scorer.density_mode,
         "settings": {
             "split": args.split,
             "batch_size": int(motion.shape[0]),
@@ -184,6 +189,7 @@ def main() -> int:
     random_mean = report["summary"]["random"]["quality_score_mean"]
 
     print(f"checkpoint: {report['checkpoint']}")
+    print(f"density_mode: {report['density_mode']}")
     print(f"quality_score_mean: train={train_mean:.4f} noisy={noisy_mean:.4f} random={random_mean:.4f}")
     print(
         "ordering: train>noisy {}/{} | noisy>random {}/{} | train>random {}/{}".format(

@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from tqdm import tqdm
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -27,9 +28,12 @@ DEFAULT_CHECKPOINT_DIR = "save/motion_scorer_perceptual_v2"
 METRIC_KEYS = (
     "quality_score",
     "recognizability_score",
+    "density_score",
+    "plausibility_score",
     "physics_score",
     "species_confidence",
     "action_confidence",
+    "density_distance",
     "physics_distance",
     "mahal_distance",
 )
@@ -314,6 +318,7 @@ def score_motion_array(
         key: float(np.mean([chunk_result[key] for chunk_result in chunk_results]))
         for key in METRIC_KEYS
     }
+    aggregated["density_mode"] = scorer.density_mode
     aggregated["segment_count"] = len(chunk_results)
     aggregated["segment_lengths"] = segment_lengths
     aggregated["frame_count"] = int(motion_np.shape[0])
@@ -469,7 +474,7 @@ def main() -> int:
     bvh_cache: dict[str, dict[str, Any]] = {}
     samples: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
-    for path in candidate_paths:
+    for path in tqdm(candidate_paths, desc="Scoring motions"):
         try:
             sample_report = score_path(
                 scorer=scorer,
@@ -480,16 +485,11 @@ def main() -> int:
                 bvh_cache=bvh_cache,
             )
             samples.append(sample_report)
-            print(
-                f"[{len(samples)}/{len(candidate_paths)}] "
-                f"{path.name} | object_type={sample_report['object_type']} "
-                f"| quality={sample_report['quality_score']:.4f} "
-                f"| source={sample_report['source_mode']}"
-            )
         except Exception as exc:
             failures.append({"path": str(path), "error": str(exc)})
-            print(f"[fail] {path}: {exc}")
     samples.sort(key=lambda sample: sample["path"])
+    if failures:
+        print(f"\n{len(failures)} files failed to score")
     report = {
         "checkpoint": str(scorer.checkpoint_path),
         "dataset_root": str(dataset_root),
@@ -513,10 +513,6 @@ def main() -> int:
     with open(output_json, "w", encoding="utf-8") as handle:
         json.dump(report, handle, indent=2, ensure_ascii=True)
 
-    print()
-    print(f"matched files: {len(candidate_paths)}")
-    print(f"scored files: {len(samples)}")
-    print(f"failed files: {len(failures)}")
     if samples:
         metrics = report["summary"]["metrics"]
         print(
@@ -528,8 +524,13 @@ def main() -> int:
         )
         print(
             "recognizability_score mean: "
-            f"{metrics['recognizability_score']['mean']:.4f} | physics_score mean: {metrics['physics_score']['mean']:.4f}"
+            f"{metrics['recognizability_score']['mean']:.4f} | density_score mean: {metrics['density_score']['mean']:.4f}"
         )
+        print(
+            "plausibility_score mean: "
+            f"{metrics['plausibility_score']['mean']:.4f} | physics_score mean: {metrics['physics_score']['mean']:.4f}"
+        )
+
         saturated_metrics = report["summary"].get("diagnostics", {}).get("saturated_metrics", [])
         if saturated_metrics:
             print(

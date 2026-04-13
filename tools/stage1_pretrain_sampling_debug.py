@@ -283,8 +283,10 @@ def compact_detail_sample(sample: dict[str, object]) -> dict[str, object]:
         "joint_count": int(sample["joint_count"]),
         "quality_score": float(sample["quality_score"]),
         "recognizability_score": float(sample["recognizability_score"]),
+        "density_score": float(sample["density_score"]),
+        "plausibility_score": float(sample["plausibility_score"]),
         "physics_score": float(sample["physics_score"]),
-        "mahal_distance": float(sample["mahal_distance"]),
+        "density_distance": float(sample["density_distance"]),
     }
     if int(sample.get("segment_count", 1)) > 1:
         compact["segment_count"] = int(sample["segment_count"])
@@ -319,14 +321,14 @@ def build_summary_eval_section(eval_result: dict[str, object]) -> dict[str, obje
     metrics = aggregate.get("metrics", {})
     quality_metrics = metrics.get("quality_score", {})
     recognizability_metrics = metrics.get("recognizability_score", {})
-    physics_metrics = metrics.get("physics_score", {})
+    density_metrics = metrics.get("density_score", {})
     return {
         "overall_quality_score": float(quality_metrics.get("mean", 0.0)),
         "quality_score_median": float(quality_metrics.get("median", 0.0)),
         "quality_score_min": float(quality_metrics.get("min", 0.0)),
         "quality_score_max": float(quality_metrics.get("max", 0.0)),
         "recognizability_score_mean": float(recognizability_metrics.get("mean", 0.0)),
-        "physics_score_mean": float(physics_metrics.get("mean", 0.0)),
+        "density_score_mean": float(density_metrics.get("mean", 0.0)),
         "scored_files": int(aggregate.get("scored_files", 0)),
         "failed_files": int(aggregate.get("failed_files", 0)),
     }
@@ -425,15 +427,15 @@ def build_baseline_comparison(
     clean_quality_mean = float(clean_metrics.get("quality_score", {}).get("mean", 0.0))
     sampled_recognizability_mean = float(sampled_metrics.get("recognizability_score", {}).get("mean", 0.0))
     clean_recognizability_mean = float(clean_metrics.get("recognizability_score", {}).get("mean", 0.0))
-    sampled_physics_mean = float(sampled_metrics.get("physics_score", {}).get("mean", 0.0))
-    clean_physics_mean = float(clean_metrics.get("physics_score", {}).get("mean", 0.0))
+    sampled_density_mean = float(sampled_metrics.get("density_score", {}).get("mean", 0.0))
+    clean_density_mean = float(clean_metrics.get("density_score", {}).get("mean", 0.0))
     quality_score_gap = clean_quality_mean - sampled_quality_mean
     recognizability_score_gap = clean_recognizability_mean - sampled_recognizability_mean
-    physics_score_gap = clean_physics_mean - sampled_physics_mean
+    density_score_gap = clean_density_mean - sampled_density_mean
     return {
         "quality_score_gap": quality_score_gap,
         "recognizability_score_gap": recognizability_score_gap,
-        "physics_score_gap": physics_score_gap,
+        "density_score_gap": density_score_gap,
         "objective_separation_passed": bool(quality_score_gap >= 0.10),
         "verdict": "separates_clean_from_sampled" if quality_score_gap >= 0.10 else "needs_better_separation",
     }
