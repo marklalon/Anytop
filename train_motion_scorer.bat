@@ -10,7 +10,7 @@ set SAVE_DIR=save\motion_scorer_v8
     --d_model 256 ^
     --num_conv_layers 4 ^
     --kernel_size 5 ^
-    --num_steps 12500 ^
+    --num_steps 15000 ^
     --lr 1.5e-4 ^
     --lr_step_size 6000 ^
     --lr_gamma 0.97 ^

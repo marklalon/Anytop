@@ -535,12 +535,6 @@ def main() -> int:
             f"{metrics['density_score']['mean']:.4f} | [plausibility_score] mean: {metrics['plausibility_score']['mean']:.4f}"
         )
 
-        saturated_metrics = report["summary"].get("diagnostics", {}).get("saturated_metrics", [])
-        if saturated_metrics:
-            print(
-                "warning: saturated score metrics detected: "
-                f"{', '.join(saturated_metrics)}"
-            )
     print(f"saved report: {output_json}")
 
     return 0 if samples else 1
