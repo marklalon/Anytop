@@ -83,6 +83,29 @@ def _to_1d_long_tensor(values, batch_size: int, device: torch.device) -> torch.T
     return tensor
 
 
+def _align_cond_feature_tensor(
+    values,
+    *,
+    target_joints: int,
+    target_features: int,
+    pad_value: float,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    tensor = torch.as_tensor(values, dtype=dtype, device=device)
+    if tensor.ndim != 2:
+        raise ValueError(f"Expected cond feature tensor with shape [J, F], got {tuple(tensor.shape)}")
+    if tensor.shape[1] != target_features:
+        raise ValueError(
+            f"Expected cond feature tensor feature dim {target_features}, got {tuple(tensor.shape)}"
+        )
+    aligned = torch.full((target_joints, target_features), float(pad_value), dtype=dtype, device=device)
+    joint_count = min(int(tensor.shape[0]), int(target_joints))
+    if joint_count > 0:
+        aligned[:joint_count] = tensor[:joint_count]
+    return aligned
+
+
 def _percentile_score(values: torch.Tensor, reference_percentiles: torch.Tensor, *, higher_is_better: bool) -> torch.Tensor:
     bins = torch.searchsorted(reference_percentiles, values.float(), right=False).float() / 100.0
     bins = bins.clamp(0.0, 1.0)
@@ -94,6 +117,28 @@ def _geometric_mean(scores: Sequence[torch.Tensor], weights: Sequence[float]) ->
     stacked = torch.stack([score.clamp(EPS, 1.0) for score in scores], dim=0)
     weighted_logs = weight_tensor[:, None] * torch.log(stacked)
     return torch.exp(weighted_logs.sum(dim=0) / weight_tensor.sum().clamp_min(EPS))
+
+
+def _knn_density_values(
+    queries: torch.Tensor,
+    references: torch.Tensor,
+    *,
+    k: int,
+    chunk_size: int = 512,
+) -> torch.Tensor:
+    if references.ndim != 2 or queries.ndim != 2:
+        raise ValueError(f"Expected 2D latent tensors, got {tuple(queries.shape)} and {tuple(references.shape)}")
+    if references.shape[0] == 0:
+        return torch.zeros((queries.shape[0],), dtype=queries.dtype, device=queries.device)
+    effective_k = max(1, min(int(k), int(references.shape[0])))
+    values = []
+    for start_index in range(0, int(queries.shape[0]), int(chunk_size)):
+        end_index = min(start_index + int(chunk_size), int(queries.shape[0]))
+        query_chunk = queries[start_index:end_index]
+        distances = torch.cdist(query_chunk.float(), references.float())
+        kth_distances = torch.topk(distances, k=effective_k, dim=1, largest=False).values[:, -1]
+        values.append(-kth_distances.to(dtype=queries.dtype))
+    return torch.cat(values, dim=0)
 
 
 class MotionQualityScorer:
@@ -121,6 +166,7 @@ class MotionQualityScorer:
         self.max_joints = int(self.args.get("max_joints", 143))
         self.max_frames = int(self.args.get("num_frames", 120))
         self.dataset_root = resolve_dataset_root(dataset_dir or self.args.get("data_dir") or None)
+        self.cond_dict = load_cond_dict(self.dataset_root)
 
         stats_path = self.checkpoint_dir / "train_stats.npy"
         if not stats_path.exists():
@@ -179,6 +225,16 @@ class MotionQualityScorer:
 
     def _load_runtime_stats(self) -> None:
         self.skeleton_lookup = load_skeleton_metadata(self.dataset_root)
+        self.density_mode = str(self.train_stats.get("density_mode", f"gmm_{self.train_stats['gmm_covariance_type']}"))
+        self.density_knn_k = int(self.train_stats.get("density_knn_k", 0) or 0)
+        density_reference_latents = self.train_stats.get("density_reference_latents")
+        self.density_reference_latents = None
+        if density_reference_latents is not None:
+            self.density_reference_latents = torch.as_tensor(
+                density_reference_latents,
+                dtype=torch.float32,
+                device=self.device,
+            )
         self.gmm_covariance_type = str(self.train_stats["gmm_covariance_type"])
         self.gmm_means = torch.as_tensor(self.train_stats["gmm_means"], dtype=torch.float32, device=self.device)
         self.gmm_covariances = torch.as_tensor(self.train_stats["gmm_covariances"], dtype=torch.float32, device=self.device)
@@ -193,7 +249,16 @@ class MotionQualityScorer:
         self.sigma_phys_inv = torch.as_tensor(self.train_stats["sigma_phys_inv"], dtype=torch.float32, device=self.device)
         self.phys_percentiles = torch.as_tensor(self.train_stats["phys_percentiles"], dtype=torch.float32, device=self.device)
         self.score_alpha = [float(value) for value in self.train_stats["score_alpha"]]
-        self.density_mode = f"gmm_{self.gmm_covariance_type}"
+
+    def _density_value(self, latents: torch.Tensor) -> torch.Tensor:
+        if self.density_mode == "knn" and self.density_reference_latents is not None and self.density_knn_k > 0:
+            normalized_latents = torch.nn.functional.normalize(latents.float(), dim=-1)
+            return _knn_density_values(
+                normalized_latents,
+                self.density_reference_latents,
+                k=self.density_knn_k,
+            )
+        return self._gmm_log_prob(latents)
 
     def _gmm_log_prob(self, latents: torch.Tensor) -> torch.Tensor:
         diff = latents[:, None, :] - self.gmm_means[None, :, :]
@@ -213,7 +278,7 @@ class MotionQualityScorer:
         self,
         motion: torch.Tensor,
         object_types: Sequence[str],
-    ) -> tuple[list[str], torch.Tensor]:
+    ) -> tuple[list[str], torch.Tensor, torch.Tensor, torch.Tensor]:
         batch_size = motion.shape[0]
         if len(object_types) != batch_size:
             raise ValueError(f"Expected {batch_size} object_types, got {len(object_types)}")
@@ -225,7 +290,37 @@ class MotionQualityScorer:
             device=motion.device,
             dtype=motion.dtype,
         )
-        return normalized_object_types, metadata_features
+        target_joints = int(motion.shape[1])
+        target_features = int(motion.shape[2])
+        feature_mean = torch.stack(
+            [
+                _align_cond_feature_tensor(
+                    self.cond_dict[object_type]["mean"],
+                    target_joints=target_joints,
+                    target_features=target_features,
+                    pad_value=0.0,
+                    device=motion.device,
+                    dtype=motion.dtype,
+                )
+                for object_type in normalized_object_types
+            ],
+            dim=0,
+        )
+        feature_std = torch.stack(
+            [
+                _align_cond_feature_tensor(
+                    self.cond_dict[object_type]["std"],
+                    target_joints=target_joints,
+                    target_features=target_features,
+                    pad_value=1.0,
+                    device=motion.device,
+                    dtype=motion.dtype,
+                )
+                for object_type in normalized_object_types
+            ],
+            dim=0,
+        )
+        return normalized_object_types, metadata_features, feature_mean, feature_std
 
     def score(
         self,
@@ -251,7 +346,7 @@ class MotionQualityScorer:
         batch_size = motion.shape[0]
         n_joints = _to_1d_long_tensor(n_joints, batch_size, self.device)
         lengths = _to_1d_long_tensor(lengths, batch_size, self.device)
-        object_types, metadata_features = self._prepare_condition_features(motion, object_types)
+        object_types, metadata_features, feature_mean, feature_std = self._prepare_condition_features(motion, object_types)
 
         with torch.no_grad():
             outputs = self.model(
@@ -271,8 +366,16 @@ class MotionQualityScorer:
                 return_action_logits=False,
                 return_phys_features=False,
             )
-            density_value = self._gmm_log_prob(outputs["latents"].float())
-            physics_features = extract_physics_features(motion, n_joints, lengths, object_types, self.skeleton_lookup)
+            density_value = self._density_value(outputs["latents"].float())
+            physics_features = extract_physics_features(
+                motion,
+                n_joints,
+                lengths,
+                object_types,
+                self.skeleton_lookup,
+                feature_mean=feature_mean,
+                feature_std=feature_std,
+            )
             physics_distance = _mahalanobis_distance(physics_features.float(), self.mu_phys, self.sigma_phys_inv)
 
         species_confidence = species_probs.max(dim=-1).values

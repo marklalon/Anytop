@@ -1,6 +1,6 @@
 @echo off
 set PYTHON_EXE=%~dp0..\.venv\Scripts\python.exe
-set CHECKPOINT_DIR=save\motion_scorer_v3
+set CHECKPOINT_DIR=save\motion_scorer_v5
 
 %PYTHON_EXE% "%~dp0tools\recompute_motion_scorer_stats.py" ^
     --checkpoint_dir %CHECKPOINT_DIR% ^
@@ -16,7 +16,8 @@ if errorlevel 1 exit /b %errorlevel%
     --noise_sigma 0.10 ^
     --random_sigma 1.0 ^
     --output_json %CHECKPOINT_DIR%\debug_score_report_train.json ^
-    --fail_on_unexpected_order
+    --fail_on_unexpected_order ^
+    %*
 if errorlevel 1 exit /b %errorlevel%
 
 %PYTHON_EXE% "%~dp0tools\debug_motion_quality_scorer.py" ^
@@ -28,4 +29,5 @@ if errorlevel 1 exit /b %errorlevel%
     --random_sigma 1.0 ^
     --split val ^
     --output_json %CHECKPOINT_DIR%\debug_score_report_val.json ^
-    --fail_on_unexpected_order
+    --fail_on_unexpected_order ^
+    %*

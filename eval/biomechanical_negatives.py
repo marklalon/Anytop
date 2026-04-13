@@ -72,6 +72,9 @@ def _kinematic_chain_indices(metadata: SkeletonMetadata, joint_index: int, *, ma
 
 
 def _refresh_derived_channels(sample: torch.Tensor, metadata: SkeletonMetadata, length: int) -> None:
+    # Dataset-provided lengths can describe the uncropped source clip; clamp to
+    # the actual sampled window carried by this tensor before indexing.
+    length = max(1, min(int(length), int(sample.shape[-1])))
     positions = sample[:, :3, :length]
     if length > 1:
         velocity = torch.zeros_like(positions)
@@ -97,6 +100,9 @@ def _motion_delta_stats(
     *,
     sample_std: torch.Tensor | None,
 ) -> tuple[float, float, int, float]:
+    length = min(int(length), int(reference.shape[-1]), int(candidate.shape[-1]))
+    if length <= 0:
+        return 0.0, 0.0, 0, 0.0
     # Evaluate saliency only on non-root joints — root channels 0-2 encode yaw
     # angular velocity and linear xz velocity, not positions, so std-weighted
     # deltas there have different units and would pollute the metric.
@@ -187,6 +193,7 @@ def _joint_meter_positions(
     length: int,
     sample_std: torch.Tensor | None,
 ) -> torch.Tensor:
+    length = max(1, min(int(length), int(sample.shape[-1])))
     if sample_std is None:
         return sample[joint_index, :3, :length].clone()
     std_xyz = sample_std[joint_index, :3].to(device=sample.device, dtype=sample.dtype).clamp_min(1e-4)
@@ -477,7 +484,7 @@ def generate_biomechanical_negative_batch(
 
     for batch_index, object_type in enumerate(object_types):
         metadata = metadata_lookup[str(object_type)]
-        length = max(1, int(lengths_cpu[batch_index]))
+        length = max(1, min(int(lengths_cpu[batch_index]), int(motion.shape[-1])))
         sample = negative_motion[batch_index, : metadata.n_joints, :, :length]
         reference_sample = sample.clone()
         sample_std = None if feature_std is None else feature_std[batch_index, : metadata.n_joints, :]

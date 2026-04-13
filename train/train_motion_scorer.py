@@ -85,6 +85,8 @@ def build_parser() -> ArgumentParser:
     group.add_argument("--gmm_components", default=64, type=int, help="Number of mixture components used for latent density fitting.")
     group.add_argument("--gmm_covariance_type", default="diag", choices=["diag", "full"], type=str,
                        help="Covariance type used for post-training GMM fitting.")
+    group.add_argument("--density_knn_k", default=5, type=int,
+                       help="k used for normalized latent kNN density calibration.")
     group.add_argument("--score_alpha", nargs=4, default=[1.0, 1.0, 1.0, 1.0], type=float,
                        help="Geometric-mean weights for recognizability, density, plausibility, and physics scores.")
     return parser
@@ -107,6 +109,35 @@ def get_auxiliary_loss_factor(args, current_step: int) -> float:
 
 def normalize_density_embeddings(latents: torch.Tensor) -> torch.Tensor:
     return F.normalize(latents.float(), dim=-1)
+
+
+def _knn_density_values_np(
+    reference_latents: np.ndarray,
+    *,
+    k: int,
+    exclude_self: bool,
+    chunk_size: int = 1024,
+) -> np.ndarray:
+    if reference_latents.ndim != 2:
+        raise ValueError(f"Expected 2D latent array, got {reference_latents.shape}")
+    if reference_latents.shape[0] == 0:
+        return np.zeros((0,), dtype=np.float32)
+    if reference_latents.shape[0] == 1:
+        return np.zeros((1,), dtype=np.float32)
+
+    effective_k = max(1, min(int(k), int(reference_latents.shape[0]) - 1 if exclude_self else int(reference_latents.shape[0])))
+    reference_tensor = torch.from_numpy(reference_latents.astype(np.float32, copy=False))
+    values: list[np.ndarray] = []
+    for start_index in range(0, int(reference_tensor.shape[0]), int(chunk_size)):
+        end_index = min(start_index + int(chunk_size), int(reference_tensor.shape[0]))
+        query_tensor = reference_tensor[start_index:end_index]
+        distances = torch.cdist(query_tensor, reference_tensor)
+        if exclude_self:
+            diag_indices = torch.arange(end_index - start_index)
+            distances[diag_indices, diag_indices + start_index] = float('inf')
+        kth_distances = torch.topk(distances, k=effective_k, dim=1, largest=False).values[:, -1]
+        values.append((-kth_distances).cpu().numpy())
+    return np.concatenate(values, axis=0).astype(np.float32, copy=False)
 
 
 def _variance_floor_loss(features: torch.Tensor, floor: float) -> torch.Tensor:
@@ -250,6 +281,8 @@ class PhysicsTargetLRUCache:
                 cond["y"]["lengths"],
                 cond["y"].get("object_type"),
                 skeleton_lookup,
+                feature_mean=cond["y"].get("mean"),
+                feature_std=cond["y"].get("std"),
             ).detach()
 
         cached_results: list[torch.Tensor | None] = [None] * int(motion.shape[0])
@@ -275,6 +308,8 @@ class PhysicsTargetLRUCache:
                 cond["y"]["lengths"][miss_indices],
                 [cond["y"]["object_type"][index] for index in miss_indices],
                 skeleton_lookup,
+                feature_mean=cond["y"]["mean"][miss_indices],
+                feature_std=cond["y"]["std"][miss_indices],
             ).detach()
             for miss_offset, batch_index in enumerate(miss_indices):
                 feature_cpu = miss_features[miss_offset].to(device="cpu", dtype=torch.float32)
@@ -311,6 +346,8 @@ class MotionScorerAuxBatchPreprocessor:
                 cond["y"]["lengths"],
                 object_types,
                 self.skeleton_lookup,
+                feature_mean=cond["y"].get("mean"),
+                feature_std=cond["y"].get("std"),
             )
         negative_batch = generate_biomechanical_negative_batch(
             motion,
@@ -528,6 +565,8 @@ class MotionScorerTrainer:
                         lengths,
                         object_types,
                         self.skeleton_lookup,
+                        feature_mean=cond["y"].get("mean"),
+                        feature_std=cond["y"].get("std"),
                     ).detach()
 
         self.mp_trainer.zero_grad()
@@ -845,11 +884,15 @@ def compute_and_save_train_stats(args, model: MotionScorerNet, device: torch.dev
                     cond["y"]["lengths"],
                     object_types,
                     skeleton_lookup,
+                    feature_mean=cond["y"].get("mean"),
+                    feature_std=cond["y"].get("std"),
                 ).detach().float().cpu().numpy()
             )
 
     latents = np.concatenate(latent_batches, axis=0).astype(np.float64, copy=False)
     physics = np.concatenate(physics_batches, axis=0).astype(np.float64, copy=False)
+    density_reference_latents = normalize_density_embeddings(torch.from_numpy(latents).float()).cpu().numpy().astype(np.float32, copy=False)
+    density_knn_k = max(1, min(int(getattr(args, "density_knn_k", 5)), max(int(density_reference_latents.shape[0]) - 1, 1)))
 
     component_count = min(max(1, int(args.gmm_components)), latents.shape[0])
     gmm = GaussianMixture(
@@ -859,7 +902,11 @@ def compute_and_save_train_stats(args, model: MotionScorerNet, device: torch.dev
         random_state=int(args.seed),
     )
     gmm.fit(latents)
-    density_values = gmm.score_samples(latents)
+    density_values = _knn_density_values_np(
+        density_reference_latents,
+        k=density_knn_k,
+        exclude_self=True,
+    ).astype(np.float64, copy=False)
 
     mu_phys = physics.mean(axis=0)
     if physics.shape[0] > 1:
@@ -874,6 +921,9 @@ def compute_and_save_train_stats(args, model: MotionScorerNet, device: torch.dev
     latest_checkpoint = find_latest_checkpoint(args.save_dir, prefix="model")
     checkpoint_step = parse_checkpoint_number(latest_checkpoint) if latest_checkpoint else 0
     stats = {
+        "density_mode": "knn",
+        "density_knn_k": int(density_knn_k),
+        "density_reference_latents": density_reference_latents.astype(np.float32),
         "gmm_covariance_type": str(args.gmm_covariance_type),
         "gmm_means": gmm.means_.astype(np.float32),
         "gmm_covariances": gmm.covariances_.astype(np.float32),
@@ -895,6 +945,8 @@ def compute_and_save_train_stats(args, model: MotionScorerNet, device: torch.dev
         "checkpoint_step": checkpoint_step,
         "stats_split": stats_split,
         "num_samples": int(latents.shape[0]),
+        "density_mode": "knn",
+        "density_knn_k": int(density_knn_k),
         "gmm_components": int(component_count),
         "gmm_covariance_type": str(args.gmm_covariance_type),
         "score_alpha": [float(value) for value in args.score_alpha],
@@ -946,7 +998,6 @@ def main() -> None:
     with open(os.path.join(save_dir, "args.json"), "w", encoding="utf-8") as handle:
         json.dump(vars(args), handle, indent=4, sort_keys=True)
 
-    data_loader_start = time.perf_counter()
     data_loader = create_data_loader(
         args,
         args.train_split,
@@ -955,7 +1006,6 @@ def main() -> None:
         balanced=args.balanced,
         batch_transform=batch_transform,
     )
-    data_loader_build_s = time.perf_counter() - data_loader_start
     print(
         f"Motion scorer DataLoader: num_workers={args.num_workers}, "
         f"prefetch_factor={getattr(args, 'prefetch_factor', 2) if args.num_workers > 0 else 'n/a'}, "
@@ -963,9 +1013,7 @@ def main() -> None:
         f"main_process_prefetch_batches={getattr(args, 'main_process_prefetch_batches', 0)}, "
         f"timing_log_interval={getattr(args, 'timing_log_interval', 1000)}"
     )
-    print(f"Motion scorer startup: data_loader_build_s={data_loader_build_s:.2f}")
 
-    trainer_init_start = time.perf_counter()
     trainer = MotionScorerTrainer(
         args,
         ml_platform,
@@ -975,9 +1023,7 @@ def main() -> None:
         skeleton_lookup=skeleton_lookup,
         species_vocab=species_vocab,
         action_vocab=action_vocab,
-    )
-    trainer_init_s = time.perf_counter() - trainer_init_start
-    print(f"Motion scorer startup: trainer_init_s={trainer_init_s:.2f} total_startup_s={time.perf_counter() - startup_start:.2f}")
+    )    
     ml_platform.watch_model(trainer.model)
     final_model = trainer.run()
     compute_and_save_train_stats(args, final_model, trainer.device, trainer.autocast_dtype, trainer.amp_enabled, skeleton_lookup=skeleton_lookup)

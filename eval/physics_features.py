@@ -9,6 +9,8 @@ from data_loaders.skeleton_metadata import SkeletonMetadata
 
 PHYSICS_FEATURE_DIM = 30
 _INDEX_TENSOR_CACHE: dict[tuple[tuple[int, ...], str], torch.Tensor] = {}
+_MIN_ABSOLUTE_BONE_BASELINE = 1e-4
+_MIN_RELATIVE_BONE_BASELINE_RATIO = 0.01
 
 
 def _cached_index_tensor(indices: Sequence[int], device: torch.device) -> torch.Tensor:
@@ -105,11 +107,35 @@ def _high_frequency_ratio(signal: torch.Tensor) -> torch.Tensor:
     return high / total
 
 
+def _maybe_denormalize_motion(
+    motion: torch.Tensor,
+    feature_mean: torch.Tensor | None,
+    feature_std: torch.Tensor | None,
+) -> torch.Tensor:
+    if feature_mean is None or feature_std is None:
+        return motion
+    mean = feature_mean.to(device=motion.device, dtype=motion.dtype)
+    std = feature_std.to(device=motion.device, dtype=motion.dtype).clamp_min(1e-6)
+    if mean.ndim != 2 or std.ndim != 2:
+        raise ValueError(
+            f"Expected feature_mean/feature_std to have shape [J, F], got {tuple(mean.shape)} and {tuple(std.shape)}"
+        )
+    if mean.shape != motion.shape[:2] or std.shape != motion.shape[:2]:
+        raise ValueError(
+            f"feature_mean/feature_std shape mismatch for motion slice: motion={tuple(motion.shape[:2])}, "
+            f"mean={tuple(mean.shape)}, std={tuple(std.shape)}"
+        )
+    return motion * std.unsqueeze(-1) + mean.unsqueeze(-1)
+
+
 def _extract_single_sample_features(
     motion: torch.Tensor,
     length: int,
     metadata: SkeletonMetadata,
 ) -> torch.Tensor:
+    # Dataset-provided lengths may refer to the source clip before temporal
+    # cropping; physics features must only read the frames present in `motion`.
+    length = max(1, min(int(length), int(motion.shape[-1])))
     joint_count = min(int(metadata.n_joints), int(motion.shape[0]))
     motion = motion[:joint_count, :, :length]
     positions = motion[:, :3, :].permute(2, 0, 1).contiguous()
@@ -122,8 +148,22 @@ def _extract_single_sample_features(
         child_index_tensor = _cached_index_tensor(edge_child_indices, positions.device)
         parent_index_tensor = _cached_index_tensor(edge_parent_indices, positions.device)
         bone_lengths = torch.linalg.norm(positions[:, child_index_tensor] - positions[:, parent_index_tensor], dim=-1)
-        baseline = bone_lengths.median(dim=0).values.clamp_min(1e-6)
-        bone_deviation = (bone_lengths - baseline.unsqueeze(0)).abs() / baseline.unsqueeze(0)
+        baseline = bone_lengths.median(dim=0).values
+        positive_baseline = baseline[baseline > 1e-6]
+        if positive_baseline.numel():
+            min_valid_baseline = torch.maximum(
+                baseline.new_tensor(_MIN_ABSOLUTE_BONE_BASELINE),
+                positive_baseline.median() * _MIN_RELATIVE_BONE_BASELINE_RATIO,
+            )
+            valid_edge_mask = baseline >= min_valid_baseline
+        else:
+            valid_edge_mask = torch.zeros_like(baseline, dtype=torch.bool)
+        if bool(valid_edge_mask.any().item()):
+            valid_baseline = baseline[valid_edge_mask].clamp_min(1e-6)
+            valid_bone_lengths = bone_lengths[:, valid_edge_mask]
+            bone_deviation = (valid_bone_lengths - valid_baseline.unsqueeze(0)).abs() / valid_baseline.unsqueeze(0)
+        else:
+            bone_deviation = positions.new_zeros((max(length, 1), 1))
     else:
         bone_deviation = positions.new_zeros((max(length, 1), 1))
 
@@ -245,13 +285,32 @@ def extract_physics_features(
     lengths: torch.Tensor,
     object_types: Sequence[str],
     metadata_lookup: Mapping[str, SkeletonMetadata],
+    *,
+    feature_mean: torch.Tensor | None = None,
+    feature_std: torch.Tensor | None = None,
 ) -> torch.Tensor:
     if motion.ndim != 4:
         raise ValueError(f"Expected [B, J, F, T] motion tensor, got {tuple(motion.shape)}")
+    if (feature_mean is None) != (feature_std is None):
+        raise ValueError('feature_mean and feature_std must either both be provided or both be None')
+    if feature_mean is not None:
+        if feature_mean.ndim != 3 or feature_std is None or feature_std.ndim != 3:
+            raise ValueError(
+                f"Expected feature_mean/feature_std to have shape [B, J, F], got "
+                f"{tuple(feature_mean.shape)} and {tuple(feature_std.shape) if feature_std is not None else None}"
+            )
+        if tuple(feature_mean.shape) != tuple(motion.shape[:3]) or tuple(feature_std.shape) != tuple(motion.shape[:3]):
+            raise ValueError(
+                f"feature_mean/feature_std shape mismatch for motion batch: motion={tuple(motion.shape)}, "
+                f"mean={tuple(feature_mean.shape)}, std={tuple(feature_std.shape)}"
+            )
     batch_features = []
     for batch_index, object_type in enumerate(object_types):
-        length = max(1, int(lengths[batch_index].item()))
+        length = max(1, min(int(lengths[batch_index].item()), int(motion.shape[-1])))
         joint_count = max(1, int(n_joints[batch_index].item()))
         sample_motion = motion[batch_index, :joint_count, :, :length]
+        sample_mean = None if feature_mean is None else feature_mean[batch_index, :joint_count, :]
+        sample_std = None if feature_std is None else feature_std[batch_index, :joint_count, :]
+        sample_motion = _maybe_denormalize_motion(sample_motion, sample_mean, sample_std)
         batch_features.append(_extract_single_sample_features(sample_motion, length, metadata_lookup[str(object_type)]))
     return torch.stack(batch_features, dim=0).to(device=motion.device, dtype=motion.dtype)

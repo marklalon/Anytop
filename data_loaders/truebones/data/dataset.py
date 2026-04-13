@@ -128,6 +128,18 @@ def _compute_split_counts(num_items: int) -> dict[str, int]:
     return counts
 
 
+def _compute_filtered_split_counts(num_items: int) -> dict[str, int]:
+    if num_items <= 0:
+        return {split: 0 for split in SUPPORTED_SPLITS}
+    if num_items <= 2:
+        return {"train": num_items, "val": 0, "test": 0}
+    if num_items == 3:
+        return {"train": 2, "val": 1, "test": 0}
+    if num_items == 4:
+        return {"train": 3, "val": 1, "test": 0}
+    return _compute_split_counts(num_items)
+
+
 def ensure_split_manifests(data_root: str, motion_dir: str) -> dict[str, Path]:
     data_root_path = Path(data_root)
     split_paths = {split: data_root_path / f"{split}.txt" for split in SUPPORTED_SPLITS}
@@ -171,6 +183,59 @@ def load_motion_names_for_split(split: str, data_root: str, motion_dir: str) -> 
     if not motion_names:
         raise RuntimeError(f"Split '{split}' is empty: {split_path}")
     return motion_names
+
+
+def load_motion_names_for_split_with_action_tags(
+    split: str,
+    data_root: str,
+    motion_dir: str,
+    raw_action_tags,
+    motion_metadata_lookup,
+    object_types,
+) -> set[str]:
+    requested_action_tags = set(parse_action_tags(raw_action_tags))
+    if not requested_action_tags:
+        return load_motion_names_for_split(split, data_root, motion_dir)
+
+    all_motion_names = set(_list_motion_files(motion_dir))
+    filtered_motion_names = filter_motion_names_by_action_tags(
+        all_motion_names,
+        raw_action_tags,
+        motion_metadata_lookup,
+        object_types,
+    )
+    if split == ALL_SPLIT_NAME:
+        return filtered_motion_names
+
+    grouped_motion_names: dict[str, list[str]] = defaultdict(list)
+    for motion_name in sorted(filtered_motion_names):
+        motion_metadata = motion_metadata_lookup.get(motion_name)
+        if motion_metadata is None:
+            motion_metadata = infer_motion_labels_from_motion_name(
+                motion_name,
+                object_types=object_types,
+            )
+        object_type = str(motion_metadata.get('object_type') or _infer_object_type_from_motion_name(motion_name))
+        grouped_motion_names[object_type].append(motion_name)
+
+    selected_motion_names: set[str] = set()
+    rng = random.Random(DEFAULT_SPLIT_SEED)
+    for object_type in sorted(grouped_motion_names):
+        motion_names = sorted(grouped_motion_names[object_type])
+        rng.shuffle(motion_names)
+        split_counts = _compute_filtered_split_counts(len(motion_names))
+        start_index = 0
+        for current_split in SUPPORTED_SPLITS:
+            end_index = start_index + split_counts[current_split]
+            if current_split == split:
+                selected_motion_names.update(motion_names[start_index:end_index])
+            start_index = end_index
+
+    if not selected_motion_names:
+        raise RuntimeError(
+            f"Split '{split}' is empty after filtering action_tags={sorted(requested_action_tags)}"
+        )
+    return selected_motion_names
 
 
 def _sanitize_cache_component(value: str) -> str:
@@ -527,11 +592,12 @@ class Truebones(data.Dataset):
             cond['std_safe'] = std_safe
             cond['tpos_first_frame_normalized'] = np.nan_to_num((np.asarray(cond['tpos_first_frame'], dtype=np.float32) - mean) / std_safe).astype(np.float32, copy=False)
             
-        self.split_file = pjoin(opt.data_root, f'{split}.txt') if split != ALL_SPLIT_NAME else ''
-        allowed_motion_names = load_motion_names_for_split(split, opt.data_root, opt.motion_dir)
         motion_metadata_lookup = load_motion_metadata(opt.data_root)
-        allowed_motion_names = filter_motion_names_by_action_tags(
-            allowed_motion_names,
+        self.split_file = pjoin(opt.data_root, f'{split}.txt') if split != ALL_SPLIT_NAME else ''
+        allowed_motion_names = load_motion_names_for_split_with_action_tags(
+            split,
+            opt.data_root,
+            opt.motion_dir,
             self.action_tags,
             motion_metadata_lookup,
             cond_dict.keys(),
