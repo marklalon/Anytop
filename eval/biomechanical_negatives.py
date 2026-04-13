@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from typing import Mapping, Sequence
 
 import torch
@@ -30,16 +31,20 @@ NEGATIVE_CHANGED_JOINT_DELTA = 0.08         # joint counts as "changed" if it mo
 NEGATIVE_MIN_CHANGED_JOINTS = 2
 
 
-def _rand_range(sample: torch.Tensor, low: float, high: float) -> torch.Tensor:
-    return torch.empty((), device=sample.device, dtype=sample.dtype).uniform_(low, high)
+def _rand_range(sample: torch.Tensor, low: float, high: float) -> float:
+    # CPU-side RNG — every caller of this used to wrap the result in `float(...)`,
+    # which forced a CUDA sync. `fixseed` seeds python's `random`, so this keeps
+    # determinism without paying a device round-trip per draw.
+    del sample
+    return random.uniform(low, high)
 
 
 def _choose_joint(sample: torch.Tensor, metadata: SkeletonMetadata, *, include_root: bool = False) -> int:
+    del sample
     candidates = tuple(range(metadata.n_joints)) if include_root else metadata.non_root_joints
     if not candidates:
         return 0
-    random_index = int(torch.randint(0, len(candidates), (1,), device=sample.device).item())
-    return int(candidates[random_index])
+    return int(candidates[random.randrange(len(candidates))])
 
 
 def _subtree_indices(metadata: SkeletonMetadata, joint_index: int) -> list[int]:
@@ -102,13 +107,17 @@ def _motion_delta_stats(
     if position_delta.numel() == 0:
         return 0.0, 0.0, 0, 0.0
     per_joint_max = position_delta.amax(dim=(1, 2))
-    changed_joint_count = int((per_joint_max >= NEGATIVE_CHANGED_JOINT_DELTA).sum().item())
-    return (
-        float(position_delta.max().item()),
-        float(position_delta.mean().item()),
-        changed_joint_count,
-        0.0,
-    )
+    # Stack into a single 3-element tensor so we pay one device->host sync
+    # per saliency check instead of three. The comparison and change count are
+    # done on GPU before the single `tolist()` transfer.
+    stats = torch.stack(
+        (
+            position_delta.max(),
+            position_delta.mean(),
+            (per_joint_max >= NEGATIVE_CHANGED_JOINT_DELTA).sum().to(position_delta.dtype),
+        )
+    ).tolist()
+    return float(stats[0]), float(stats[1]), int(stats[2]), 0.0
 
 
 def _negative_is_salient_enough(
@@ -147,23 +156,29 @@ def _apply_position_shift_meters(
     (3, T) for a per-frame shift."""
     if end_index <= start_index:
         return
+    valid_joints = [int(j) for j in joint_indices if 0 < int(j) < sample.shape[0]]
+    if not valid_joints:
+        return
     frame_count = end_index - start_index
     if shift_meters.ndim == 1:
-        shift = shift_meters.view(3, 1).expand(3, frame_count).contiguous()
+        shift = shift_meters.view(1, 3, 1).expand(len(valid_joints), 3, frame_count)
     else:
         shift = shift_meters
         if shift.shape[-1] != frame_count:
             shift = shift[..., :frame_count]
-    for joint_index in joint_indices:
-        if joint_index <= 0 or joint_index >= sample.shape[0]:
-            continue
-        if sample_std is None:
-            inv_std = torch.ones(3, device=sample.device, dtype=sample.dtype)
-        else:
-            inv_std = 1.0 / sample_std[joint_index, :3].to(
-                device=sample.device, dtype=sample.dtype
-            ).clamp_min(1e-4)
-        sample[joint_index, :3, start_index:end_index] += shift * inv_std.view(3, 1)
+        if shift.ndim == 2:
+            shift = shift.unsqueeze(0).expand(len(valid_joints), 3, frame_count)
+
+    idx = torch.as_tensor(valid_joints, device=sample.device, dtype=torch.long)
+    if sample_std is None:
+        scaled_shift = shift
+    else:
+        std_xyz = sample_std[idx, :3].to(device=sample.device, dtype=sample.dtype).clamp_min(1e-4)
+        inv_std = (1.0 / std_xyz).unsqueeze(-1)
+        scaled_shift = shift * inv_std
+    sample[idx, :3, start_index:end_index] = (
+        sample[idx, :3, start_index:end_index] + scaled_shift
+    )
 
 
 def _joint_meter_positions(
@@ -191,13 +206,15 @@ def _apply_foot_slip(
         contact_indices = [index for index in metadata.end_effector_joints if 0 < index < sample.shape[0]]
     if not contact_indices:
         return
-    joint_index = contact_indices[int(torch.randint(0, len(contact_indices), (1,), device=sample.device).item())]
+    joint_index = contact_indices[random.randrange(len(contact_indices))]
     contact_signal = sample[joint_index, 12, :length] > 0.5
     active_frames = torch.nonzero(contact_signal, as_tuple=False).flatten()
     min_window = max(10, length // 3)
     if active_frames.numel() >= min_window:
-        start_index = int(active_frames[0].item())
-        end_index = int(active_frames[-1].item()) + 1
+        # One host transfer for the two endpoints instead of two.
+        endpoints = active_frames[[0, -1]].tolist()
+        start_index = int(endpoints[0])
+        end_index = int(endpoints[1]) + 1
     else:
         start_index = max(0, length // 4)
         end_index = min(length, start_index + max(min_window, length // 2))
@@ -227,7 +244,7 @@ def _apply_bone_length_drift(
     non_root = [index for index in metadata.non_root_joints if 0 < index < sample.shape[0]]
     if not non_root:
         return
-    joint_index = non_root[int(torch.randint(0, len(non_root), (1,), device=sample.device).item())]
+    joint_index = non_root[random.randrange(len(non_root))]
     parent_index = metadata.parents[joint_index] if joint_index < len(metadata.parents) else -1
     subtree = _non_root_subtree(metadata, joint_index)
     if not subtree:
@@ -272,7 +289,7 @@ def _apply_symmetry_break(
     ]
     if not valid_pairs:
         return
-    pair = valid_pairs[int(torch.randint(0, len(valid_pairs), (1,), device=sample.device).item())]
+    pair = valid_pairs[random.randrange(len(valid_pairs))]
     dominant_joint, passive_joint = int(pair[0]), int(pair[1])
     dominant_scale = 1.0 + float(_rand_range(sample, 0.45, 0.85) * strength_scale)
     passive_scale = 1.0 / max(dominant_scale, 1e-6)
@@ -297,15 +314,13 @@ def _apply_joint_jitter(
     non_root = [index for index in metadata.non_root_joints if 0 < index < sample.shape[0]]
     if not non_root:
         return
-    joint_index = non_root[int(torch.randint(0, len(non_root), (1,), device=sample.device).item())]
-    freq = int(torch.randint(8, 18, (1,), device=sample.device).item())
+    joint_index = non_root[random.randrange(len(non_root))]
+    freq = random.randrange(8, 18)
     amplitude = float(_rand_range(sample, 0.05, 0.1) * strength_scale)
     t = torch.linspace(0.0, 1.0, length, device=sample.device, dtype=sample.dtype)
     phase = torch.rand((3,), device=sample.device, dtype=sample.dtype) * (2.0 * torch.pi)
-    jitter = amplitude * torch.stack(
-        [torch.sin(2.0 * torch.pi * float(freq) * t + phase[axis]) for axis in range(3)],
-        dim=0,
-    )
+    angles = (2.0 * torch.pi * float(freq)) * t.unsqueeze(0) + phase.unsqueeze(-1)
+    jitter = amplitude * torch.sin(angles)
     _apply_position_shift_meters(sample, [joint_index], 0, length, jitter, sample_std=sample_std)
 
 
@@ -322,8 +337,8 @@ def _apply_acceleration_burst(
     non_root = [index for index in metadata.non_root_joints if 0 < index < sample.shape[0]]
     if not non_root:
         return
-    joint_index = non_root[int(torch.randint(0, len(non_root), (1,), device=sample.device).item())]
-    center = int(torch.randint(1, max(length - 1, 2), (1,), device=sample.device).item())
+    joint_index = non_root[random.randrange(len(non_root))]
+    center = random.randrange(1, max(length - 1, 2))
     radius = max(4, length // 5)
     start_index = max(0, center - radius)
     end_index = min(length, center + radius + 1)
@@ -349,8 +364,12 @@ def _apply_interpenetration(
     end_effectors = [index for index in metadata.end_effector_joints if 0 < index < sample.shape[0]]
     if not end_effectors:
         return
-    joint_index = end_effectors[int(torch.randint(0, len(end_effectors), (1,), device=sample.device).item())]
-    affected_joints = [j for j in _kinematic_chain_indices(metadata, joint_index, max_depth=5) if j > 0]
+    joint_index = end_effectors[random.randrange(len(end_effectors))]
+    affected_joints = [
+        j
+        for j in _kinematic_chain_indices(metadata, joint_index, max_depth=5)
+        if 0 < j < sample.shape[0]
+    ]
     if not affected_joints:
         return
 
@@ -366,13 +385,25 @@ def _apply_interpenetration(
         pose_positions_m = sample[non_root_range, :3, :length] * std_positions[non_root_range].unsqueeze(-1)
         pose_center = pose_positions_m.mean(dim=0)
 
-    mix = min(0.98, float(0.60 + _rand_range(sample, 0.25, 0.35) * strength_scale))
-    for depth_index, affected_joint in enumerate(affected_joints):
-        joint_mix = max(0.55, min(0.98, mix * (1.0 - 0.08 * depth_index)))
-        current_m = _joint_meter_positions(sample, affected_joint, length, sample_std)
-        target_m = torch.lerp(current_m, pose_center, joint_mix)
-        shift_m = target_m - current_m
-        _apply_position_shift_meters(sample, [affected_joint], 0, length, shift_m, sample_std=sample_std)
+    mix = min(0.98, 0.60 + _rand_range(sample, 0.25, 0.35) * strength_scale)
+    # Compute per-depth mix weights and the combined shift for all affected
+    # joints in one shot, then hand the stacked shift to the (vectorized)
+    # position-shift helper. This collapses what was an O(depth) kernel loop
+    # into a single broadcasted operation.
+    joint_mixes = [max(0.55, min(0.98, mix * (1.0 - 0.08 * d))) for d in range(len(affected_joints))]
+    joint_idx_tensor = torch.as_tensor(affected_joints, device=sample.device, dtype=torch.long)
+    if sample_std is None:
+        current_m = sample[joint_idx_tensor, :3, :length]
+    else:
+        std_xyz = sample_std[joint_idx_tensor, :3].to(
+            device=sample.device, dtype=sample.dtype
+        ).clamp_min(1e-4)
+        current_m = sample[joint_idx_tensor, :3, :length] * std_xyz.unsqueeze(-1)
+    mix_tensor = torch.tensor(joint_mixes, device=sample.device, dtype=sample.dtype).view(-1, 1, 1)
+    shift_m = (pose_center.unsqueeze(0) - current_m) * mix_tensor
+    _apply_position_shift_meters(
+        sample, affected_joints, 0, length, shift_m, sample_std=sample_std
+    )
 
 
 def _warp_time_axis(values: torch.Tensor, *, strength_scale: float = 1.0) -> torch.Tensor:
@@ -440,19 +471,25 @@ def generate_biomechanical_negative_batch(
 
     negative_motion = motion.clone()
     negative_kinds: list[str] = []
+    # Lift the length readback into one host transfer for the whole batch
+    # instead of calling .item() per sample inside the hot loop.
+    lengths_cpu = lengths.detach().to("cpu", non_blocking=True).tolist()
 
     for batch_index, object_type in enumerate(object_types):
         metadata = metadata_lookup[str(object_type)]
-        length = max(1, int(lengths[batch_index].item()))
+        length = max(1, int(lengths_cpu[batch_index]))
         sample = negative_motion[batch_index, : metadata.n_joints, :, :length]
         reference_sample = sample.clone()
         sample_std = None if feature_std is None else feature_std[batch_index, : metadata.n_joints, :]
-        kind = sampled_negative_kinds[int(torch.randint(0, len(sampled_negative_kinds), (1,), device=motion.device).item())]
+        kind = sampled_negative_kinds[random.randrange(len(sampled_negative_kinds))]
         negative_kinds.append(kind)
 
         applied = False
-        for strength_scale in NEGATIVE_STRENGTH_SCALES:
-            sample.copy_(reference_sample)
+        for attempt_index, strength_scale in enumerate(NEGATIVE_STRENGTH_SCALES):
+            # On the very first attempt `sample` already equals `reference_sample`
+            # (we just cloned it), so skip the redundant device-to-device copy.
+            if attempt_index > 0:
+                sample.copy_(reference_sample)
             _apply_negative_kind_with_std(sample, metadata, length, kind, strength_scale=strength_scale, sample_std=sample_std)
             _refresh_derived_channels(sample, metadata, length)
             if _negative_is_salient_enough(reference_sample, sample, length, sample_std=sample_std):
