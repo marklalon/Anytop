@@ -74,7 +74,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sampling-method", default="ddim", choices=["p", "ddim", "plms"], help="Diffusion sampler to use.")
     parser.add_argument("--sampling-steps", default=0, type=int, help="Respaced diffusion steps. 0 keeps the checkpoint diffusion step count.")
     parser.add_argument("--ddim-eta", default=0.0, type=float, help="DDIM eta parameter.")
-    parser.add_argument("--export-samples", default=0, type=int, help="How many selected samples to export per trial. 0 disables exports.")
     parser.add_argument("--no-ema", action="store_true", help="Disable EMA model averaging and use raw model weights instead.")
     return parser.parse_args()
 
@@ -93,8 +92,7 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
     with open(args_path, "r", encoding="utf-8") as handle:
         model_args = SimpleNamespace(**json.load(handle))
 
-    if not getattr(model_args, "action_tags", ""):
-        model_args.action_tags = getattr(model_args, "motion_name_keywords", "")
+    model_args.action_tags = getattr(model_args, "action_tags", "")
 
     model_args.model_path = str(model_path)
     model_args.device = args.device
@@ -321,6 +319,7 @@ def build_summary_eval_section(eval_result: dict[str, object]) -> dict[str, obje
     metrics = aggregate.get("metrics", {})
     quality_metrics = metrics.get("quality_score", {})
     recognizability_metrics = metrics.get("recognizability_score", {})
+    physics_metrics = metrics.get("physics_score", {})
     density_metrics = metrics.get("density_score", {})
     return {
         "overall_quality_score": float(quality_metrics.get("mean", 0.0)),
@@ -328,7 +327,8 @@ def build_summary_eval_section(eval_result: dict[str, object]) -> dict[str, obje
         "quality_score_min": float(quality_metrics.get("min", 0.0)),
         "quality_score_max": float(quality_metrics.get("max", 0.0)),
         "recognizability_score_mean": float(recognizability_metrics.get("mean", 0.0)),
-        "density_score_mean": float(density_metrics.get("mean", 0.0)),
+        "physics_score_mean": float(physics_metrics.get("mean", 0.0)),
+        "reference_density_score_mean": float(density_metrics.get("mean", 0.0)),
         "scored_files": int(aggregate.get("scored_files", 0)),
         "failed_files": int(aggregate.get("failed_files", 0)),
     }
@@ -427,15 +427,19 @@ def build_baseline_comparison(
     clean_quality_mean = float(clean_metrics.get("quality_score", {}).get("mean", 0.0))
     sampled_recognizability_mean = float(sampled_metrics.get("recognizability_score", {}).get("mean", 0.0))
     clean_recognizability_mean = float(clean_metrics.get("recognizability_score", {}).get("mean", 0.0))
+    sampled_physics_mean = float(sampled_metrics.get("physics_score", {}).get("mean", 0.0))
+    clean_physics_mean = float(clean_metrics.get("physics_score", {}).get("mean", 0.0))
     sampled_density_mean = float(sampled_metrics.get("density_score", {}).get("mean", 0.0))
     clean_density_mean = float(clean_metrics.get("density_score", {}).get("mean", 0.0))
     quality_score_gap = clean_quality_mean - sampled_quality_mean
     recognizability_score_gap = clean_recognizability_mean - sampled_recognizability_mean
-    density_score_gap = clean_density_mean - sampled_density_mean
+    physics_score_gap = clean_physics_mean - sampled_physics_mean
+    reference_density_score_gap = clean_density_mean - sampled_density_mean
     return {
         "quality_score_gap": quality_score_gap,
         "recognizability_score_gap": recognizability_score_gap,
-        "density_score_gap": density_score_gap,
+        "physics_score_gap": physics_score_gap,
+        "reference_density_score_gap": reference_density_score_gap,
         "objective_separation_passed": bool(quality_score_gap >= 0.10),
         "verdict": "separates_clean_from_sampled" if quality_score_gap >= 0.10 else "needs_better_separation",
     }
@@ -601,7 +605,7 @@ def stage1_sampling_eval(
                     std=sample["std"],
                 )
 
-                if global_index < args.export_samples:
+                if global_index < args.num_eval_samples:
                     sample_dir = output_dir / "stage1_sampling_eval" / "trials" / f"trial_{trial_index:02d}" / f"sample_{global_index:03d}_{object_type}"
                     sample_dir.mkdir(parents=True, exist_ok=True)
                     export_trial_sample(
@@ -713,7 +717,7 @@ def main() -> int:
         "sampling_steps": int(sampling_report["sampling_steps"]),
         "selection_seed": int(args.selection_seed),
         "base_seed": int(args.base_seed),
-        "export_samples": int(args.export_samples),
+        "num_eval_samples": int(args.num_eval_samples),
         "disable_reference_branch": bool(model_args.disable_reference_branch),
         "stage1_checkpoint_validated": True,
         "stage1_semantics": {
@@ -750,6 +754,10 @@ def main() -> int:
 
     write_json(output_dir / "summary.json", summary_report)
     write_json(output_dir / "detail.json", detail_report)
+
+    sampled_quality = summary_report["sampled_eval"]["overall_quality_score"]
+    clean_quality = summary_report["clean_baseline"]["overall_quality_score"]
+    print(f"[SUMMARY] Sampled_eval vs Clean_baseline {sampled_quality:.4f}/{clean_quality:.4f}")
 
     return 0
 

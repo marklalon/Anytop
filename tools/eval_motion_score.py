@@ -24,7 +24,7 @@ from data_loaders.truebones.offline_reference_dataset import load_cond_dict, res
 from eval.motion_quality_scorer import MotionQualityScorer
 
 SUPPORTED_SUFFIXES = {".bvh", ".npy"}
-DEFAULT_CHECKPOINT_DIR = "save/motion_scorer_perceptual_v2"
+DEFAULT_CHECKPOINT_DIR = "save/motion_scorer_v8"
 # Metric output order: primary quality metrics first, then reference metrics
 # NOTE: density_score and plausibility_score are reference metrics only (excluded from quality_score).
 #       They are kept for debugging but do not contribute to the final quality assessment.

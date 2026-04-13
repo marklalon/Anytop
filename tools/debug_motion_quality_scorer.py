@@ -100,7 +100,7 @@ def build_dataloader(args, scorer: MotionQualityScorer):
     scorer_args = scorer.args
     num_frames = args.num_frames or int(scorer_args.get("num_frames", 120))
     objects_subset = args.objects_subset or scorer_args.get("objects_subset", "all")
-    action_tags = args.action_tags or scorer_args.get("action_tags", scorer_args.get("motion_name_keywords", ""))
+    action_tags = args.action_tags or scorer_args.get("action_tags", "")
     return get_dataset_loader(
         batch_size=args.batch_size,
         num_frames=num_frames,
@@ -150,7 +150,7 @@ def main() -> int:
             "random_sigma": args.random_sigma,
             "seed": args.seed,
             "objects_subset": args.objects_subset or scorer.args.get("objects_subset", "all"),
-            "action_tags": args.action_tags or scorer.args.get("action_tags", scorer.args.get("motion_name_keywords", "")),
+            "action_tags": args.action_tags or scorer.args.get("action_tags", ""),
             "num_frames": args.num_frames or scorer.args.get("num_frames", 120),
         },
         "summary": {
