@@ -5,7 +5,10 @@ from diffusion.respace import SpacedDiffusion, space_timesteps
 def load_model(model, state_dict):
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     assert len(unexpected_keys) == 0
-    assert all([k.startswith('clip_model.') for k in missing_keys])
+    assert all([
+        k.startswith('clip_model.') or k.startswith('quality_proxy.')
+        for k in missing_keys
+    ])
 
 def create_model_and_diffusion_general_skeleton(args):
     model = AnyTop(**get_gmdm_args(args))
@@ -39,7 +42,9 @@ def get_gmdm_args(args):
             'dropout': 0.1, 'activation': "gelu", 'cond_mode': cond_mode,
             'cond_mask_prob': args.cond_mask_prob, 'max_joints': max_joints, 
             'feature_len':feature_len,  'skip_t5': args.skip_t5, 'value_emb': args.value_emb, 'root_input_feats': 13,
-            'disable_reference_branch': args.disable_reference_branch, 'reference_dropout_threshold': args.reference_dropout_threshold}
+            'disable_reference_branch': args.disable_reference_branch, 'reference_dropout_threshold': args.reference_dropout_threshold,
+            'enable_quality_proxy': getattr(args, 'enable_quality_proxy', False),
+            'quality_proxy_hidden_dim': getattr(args, 'quality_proxy_hidden_dim', 128)}
 
 def create_gaussian_diffusion(args):
     # default params
@@ -79,4 +84,10 @@ def create_gaussian_diffusion(args):
         lambda_repair_recon=args.lambda_repair_recon,
         lambda_root=args.lambda_root,
         lambda_velocity=args.lambda_velocity,
+        quality_proxy_layer=getattr(args, 'quality_proxy_layer', -1),
+        quality_proxy_guidance_weight=getattr(args, 'quality_proxy_guidance_weight', 0.0),
+        quality_proxy_guidance_start_step=getattr(args, 'quality_proxy_guidance_start_step', 0),
+        quality_proxy_score_floor=getattr(args, 'quality_proxy_score_floor', 0.0),
+        quality_proxy_score_ceiling=getattr(args, 'quality_proxy_score_ceiling', 1.0),
+        quality_proxy_detach_fallback=bool(getattr(args, 'quality_proxy_detach_fallback', False)),
     )

@@ -10,4 +10,4 @@ set PYTHON_EXE=%~dp0..\.venv\Scripts\python.exe
   --num-trials 1 ^
   --eval-batch-size 16 ^
   --sampling-method ddim ^
-  --sampling-steps 50
+  --sampling-steps 50 %*

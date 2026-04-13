@@ -105,6 +105,10 @@ def add_model_options(parser):
                        help="If passed, joints names wont be added to features")
     group.add_argument("--value_emb", action='store_true',
                        help="If passed, graph multihead attention learns GRPE value embeddings")
+    group.add_argument("--enable_quality_proxy", action='store_true',
+                       help="Enable the lightweight motion-quality proxy head attached to AnyTop decoder activations.")
+    group.add_argument("--quality_proxy_hidden_dim", default=128, type=int,
+                       help="Hidden size for the motion-quality proxy head.")
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')
@@ -180,6 +184,30 @@ def add_training_options(parser):
                        help="If True, will use EMA model averaging.")
     group.add_argument("--balanced", action='store_true',
                        help="Use balancing sampler for fairness between topologies")
+    group.add_argument("--motion_scorer_checkpoint_dir", default='save/motion_scorer_v8', type=str,
+                       help="Path to the frozen motion scorer checkpoint directory used to supervise the quality proxy.")
+    group.add_argument("--quality_proxy_layer", default=-1, type=int,
+                       help="Decoder layer index used to extract activations for the quality proxy. -1 disables activation extraction.")
+    group.add_argument("--quality_proxy_guidance_weight", default=0.05, type=float,
+                       help="Weight of the differentiable proxy guidance loss applied to the main diffusion model.")
+    group.add_argument("--quality_proxy_supervision_weight", default=1.0, type=float,
+                       help="Weight of the sparse teacher supervision loss used to train the proxy head.")
+    group.add_argument("--quality_proxy_guidance_start_step", default=1000, type=int,
+                       help="Training step at which proxy guidance starts contributing to the main model loss.")
+    group.add_argument("--quality_proxy_teacher_interval", default=10, type=int,
+                       help="Run sparse frozen-teacher proxy supervision every N training steps.")
+    group.add_argument("--quality_proxy_teacher_microbatch", default=4, type=int,
+                       help="Maximum number of samples per teacher supervision step.")
+    group.add_argument("--quality_proxy_teacher_low_noise_max_t", default=20, type=int,
+                       help="Maximum timestep used when sampling low-noise teacher supervision batches.")
+    group.add_argument("--quality_proxy_score_floor", default=0.05, type=float,
+                       help="Lower clamp bound applied to proxy-predicted scores before guidance.")
+    group.add_argument("--quality_proxy_score_ceiling", default=0.95, type=float,
+                       help="Upper clamp bound applied to proxy-predicted scores before guidance.")
+    group.add_argument("--quality_proxy_agreement_interval", default=1000, type=int,
+                       help="Log proxy-versus-teacher agreement every N training steps when teacher supervision runs.")
+    group.add_argument("--quality_proxy_detach_fallback", action='store_true',
+                       help="If set, disable differentiable proxy guidance and keep only sparse proxy supervision.")
 
 def add_two_stage_options(parser):
     group = parser.add_argument_group('two_stage')

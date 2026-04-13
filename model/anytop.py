@@ -2,6 +2,7 @@ import torch
 torch.cuda.empty_cache()
 import torch.nn as nn
 from model.motion_transformer import GraphMotionDecoderLayer, GraphMotionDecoder
+from model.quality_proxy import MotionQualityProxyHead
 
 
 def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 10000,
@@ -48,6 +49,7 @@ class AnyTop(nn.Module):
         self.value_emb=kargs.get('value_emb', False)
         self.use_reference_branch = not kargs.get('disable_reference_branch', False)
         self.reference_dropout_threshold = kargs.get('reference_dropout_threshold', 0.05)
+        self.enable_quality_proxy = bool(kargs.get('enable_quality_proxy', False))
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, skip_t5=self.skip_t5)
         self.reference_encoder = ReferenceEncoder(
             self.input_feats,
@@ -68,13 +70,19 @@ class AnyTop(nn.Module):
             
         
         self.output_process = OutputProcess(self.feature_len, self.root_input_feats, self.max_joints, self.latent_dim)
+        self.quality_proxy = None
+        if self.enable_quality_proxy:
+            self.quality_proxy = MotionQualityProxyHead(
+                input_dim=self.latent_dim,
+                hidden_dim=int(kargs.get('quality_proxy_hidden_dim', self.latent_dim)),
+            )
 
-    def forward(self, x, timesteps, get_layer_activation=-1, y=None):
+    def forward(self, x, timesteps, get_layer_activation=-1, y=None, train_step=None, **unused_kwargs):
         """
         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
         timesteps: [batch_size] (int)
         """
-        
+
         joints_mask = y['joints_mask'].to(x.device)
         temp_mask = y['mask'].to(x.device)
         tpos_first_frame = y['tpos_first_frame'].to(x.device).unsqueeze(0)

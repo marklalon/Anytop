@@ -8,9 +8,11 @@ Docstrings have been added, as well as DDIM sampling and a new collection of bet
 
 import enum
 import math
+from contextlib import contextmanager
 import numpy as np
 import torch
 import torch as th
+import torch.nn.functional as F
 from copy import deepcopy
 from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood, geodesic_distance
@@ -134,6 +136,12 @@ class GaussianDiffusion:
         lambda_repair_recon=0.,
         lambda_root=0.,
         lambda_velocity=0.,
+        quality_proxy_layer=-1,
+        quality_proxy_guidance_weight=0.,
+        quality_proxy_guidance_start_step=0,
+        quality_proxy_score_floor=0.0,
+        quality_proxy_score_ceiling=1.0,
+        quality_proxy_detach_fallback=False,
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
@@ -145,6 +153,12 @@ class GaussianDiffusion:
         self.lambda_repair_recon = lambda_repair_recon
         self.lambda_root = lambda_root
         self.lambda_velocity = lambda_velocity
+        self.quality_proxy_layer = int(quality_proxy_layer)
+        self.quality_proxy_guidance_weight = float(quality_proxy_guidance_weight)
+        self.quality_proxy_guidance_start_step = int(quality_proxy_guidance_start_step)
+        self.quality_proxy_score_floor = float(quality_proxy_score_floor)
+        self.quality_proxy_score_ceiling = float(quality_proxy_score_ceiling)
+        self.quality_proxy_detach_fallback = bool(quality_proxy_detach_fallback)
         self.preservation_confidence_threshold = PRESERVATION_CONFIDENCE_THRESHOLD
         self.preservation_confidence_power = PRESERVATION_CONFIDENCE_POWER
 
@@ -188,6 +202,119 @@ class GaussianDiffusion:
         )
 
         self.l2_loss = lambda a, b: (a - b) ** 2  # th.nn.MSELoss(reduction='none')  # must be None for handling mask later on.
+
+    def _unwrap_model(self, model):
+        return getattr(model, 'model', model)
+
+    def has_quality_proxy(self, model):
+        base_model = self._unwrap_model(model)
+        return hasattr(base_model, 'quality_proxy') and base_model.quality_proxy is not None and self.quality_proxy_layer >= 0
+
+    def _current_train_step(self, model_kwargs):
+        if model_kwargs is None:
+            return 0
+        value = model_kwargs.get('train_step')
+        if value is None:
+            return 0
+        if torch.is_tensor(value):
+            return int(value.item())
+        return int(value)
+
+    def _extract_proxy_activation(self, activations):
+        if activations is None:
+            raise ValueError('Proxy activations were requested but not returned by the model.')
+        if self.quality_proxy_layer not in activations:
+            raise KeyError(f'Proxy activation layer {self.quality_proxy_layer} is missing from model activations.')
+        return activations[self.quality_proxy_layer]
+
+    def _pool_proxy_features(self, layer_activation, lengths, actual_joints):
+        motion_activation = layer_activation[1:].permute(1, 2, 0, 3).contiguous()
+        batch_size, max_joints, num_frames, latent_dim = motion_activation.shape
+        frame_index = torch.arange(num_frames, device=motion_activation.device).view(1, 1, num_frames, 1)
+        joint_index = torch.arange(max_joints, device=motion_activation.device).view(1, max_joints, 1, 1)
+        valid_frames = frame_index < lengths.view(batch_size, 1, 1, 1)
+        valid_joints = joint_index < actual_joints.view(batch_size, 1, 1, 1)
+        valid_mask = (valid_frames & valid_joints).to(dtype=motion_activation.dtype)
+        pooled = (motion_activation * valid_mask).sum(dim=(1, 2))
+        denom = valid_mask.sum(dim=(1, 2)).clamp_min(1.0)
+        return pooled / denom
+
+    @contextmanager
+    def _frozen_module(self, module):
+        original = [param.requires_grad for param in module.parameters()]
+        try:
+            for param in module.parameters():
+                param.requires_grad_(False)
+            yield module
+        finally:
+            for param, requires_grad in zip(module.parameters(), original):
+                param.requires_grad_(requires_grad)
+
+    def _quality_proxy_outputs(self, model, pooled_features, *, freeze_proxy_params):
+        base_model = self._unwrap_model(model)
+        if not self.has_quality_proxy(base_model):
+            return None
+        if freeze_proxy_params:
+            with self._frozen_module(base_model.quality_proxy):
+                return base_model.quality_proxy(pooled_features)
+        return base_model.quality_proxy(pooled_features)
+
+    def proxy_teacher_losses(self, model, x_start, t, *, model_kwargs, scorer):
+        base_model = self._unwrap_model(model)
+        if not self.has_quality_proxy(model):
+            raise ValueError('proxy_teacher_losses was called without an enabled quality proxy.')
+        if scorer is None:
+            raise ValueError('proxy_teacher_losses requires a frozen motion scorer instance.')
+
+        model_kwargs = dict(model_kwargs or {})
+        y_kwargs = dict(model_kwargs.get('y', {}))
+        model_kwargs['y'] = y_kwargs
+
+        lengths = y_kwargs['lengths']
+        actual_joints = y_kwargs['n_joints']
+        object_types = y_kwargs['object_type']
+        noise = th.randn_like(x_start)
+        x_t = self.q_sample(x_start, t, noise=noise)
+        model_output, activations = model(x_t, self._scale_timesteps(t), get_layer_activation=self.quality_proxy_layer, **model_kwargs)
+        layer_activation = self._extract_proxy_activation(activations)
+        pooled_features = self._pool_proxy_features(layer_activation, lengths, actual_joints).detach()
+        proxy_outputs = self._quality_proxy_outputs(model, pooled_features, freeze_proxy_params=False)
+
+        teacher_scores = scorer.score(
+            model_output.detach(),
+            actual_joints.detach(),
+            lengths.detach(),
+            object_types=object_types,
+        )
+        teacher_recognizability = teacher_scores['recognizability_score'].to(model_output.device, dtype=model_output.dtype)
+        teacher_physics = teacher_scores['physics_score'].to(model_output.device, dtype=model_output.dtype)
+        teacher_quality = base_model.quality_proxy.combine_scores(teacher_recognizability, teacher_physics)
+
+        recognizability_loss = F.smooth_l1_loss(
+            proxy_outputs['recognizability_score'], teacher_recognizability, reduction='none'
+        )
+        physics_loss = F.smooth_l1_loss(
+            proxy_outputs['physics_score'], teacher_physics, reduction='none'
+        )
+        quality_loss = F.smooth_l1_loss(
+            proxy_outputs['quality_score'], teacher_quality, reduction='none'
+        )
+        supervision_loss = recognizability_loss + physics_loss + 0.5 * quality_loss
+        agreement = 1.0 - (proxy_outputs['quality_score'] - teacher_quality).abs()
+
+        return {
+            'proxy_supervision_loss': supervision_loss,
+            'proxy_recognizability_loss': recognizability_loss,
+            'proxy_physics_loss': physics_loss,
+            'proxy_quality_consistency_loss': quality_loss,
+            'proxy_teacher_quality': teacher_quality,
+            'proxy_teacher_recognizability': teacher_recognizability,
+            'proxy_teacher_physics': teacher_physics,
+            'proxy_pred_quality': proxy_outputs['quality_score'],
+            'proxy_pred_recognizability': proxy_outputs['recognizability_score'],
+            'proxy_pred_physics': proxy_outputs['physics_score'],
+            'proxy_teacher_agreement': agreement,
+        }
 
     def masked_l2(self, a, b, mask):
         # assuming a.shape == b.shape == bs, J, Jdim, seqlen
@@ -1594,7 +1721,23 @@ class GaussianDiffusion:
             if self.loss_type == LossType.RESCALED_KL:
                 terms["loss"] *= self.num_timesteps
         elif self.loss_type == LossType.MSE or self.loss_type == LossType.RESCALED_MSE:
-            model_output = model(x_t, self._scale_timesteps(t), **model_kwargs)
+            proxy_outputs = None
+            if self.has_quality_proxy(model):
+                model_output, activations = model(
+                    x_t,
+                    self._scale_timesteps(t),
+                    get_layer_activation=self.quality_proxy_layer,
+                    **model_kwargs,
+                )
+                layer_activation = self._extract_proxy_activation(activations)
+                pooled_features = self._pool_proxy_features(layer_activation, lengths, actual_joints)
+                proxy_outputs = self._quality_proxy_outputs(
+                    model,
+                    pooled_features,
+                    freeze_proxy_params=not self.quality_proxy_detach_fallback,
+                )
+            else:
+                model_output = model(x_t, self._scale_timesteps(t), **model_kwargs)
 
             if self.model_var_type in [
                 ModelVarType.LEARNED,
@@ -1666,6 +1809,22 @@ class GaussianDiffusion:
             if self.lambda_fs > 0.:
                 terms["foot_sliding_loss"] = self.foot_sliding_loss(target, model_output, mask, relative=True)
                 terms["loss"] = terms["loss"] + self.lambda_fs * terms["foot_sliding_loss"]
+            current_step = self._current_train_step(model_kwargs)
+            if (
+                proxy_outputs is not None
+                and self.quality_proxy_guidance_weight > 0.
+                and not self.quality_proxy_detach_fallback
+                and current_step >= self.quality_proxy_guidance_start_step
+            ):
+                clamped_quality = proxy_outputs['quality_score'].clamp(
+                    min=self.quality_proxy_score_floor,
+                    max=self.quality_proxy_score_ceiling,
+                )
+                terms['proxy_recognizability_score'] = proxy_outputs['recognizability_score']
+                terms['proxy_physics_score'] = proxy_outputs['physics_score']
+                terms['proxy_quality_score'] = clamped_quality
+                terms['proxy_guidance_loss'] = 1.0 - clamped_quality
+                terms['loss'] = terms['loss'] + self.quality_proxy_guidance_weight * terms['proxy_guidance_loss']
 
         else:
             raise NotImplementedError(self.loss_type)

@@ -17,6 +17,7 @@ from tqdm import tqdm
 from diffusion.resample import create_named_schedule_sampler
 from sample.generate import main as generate
 import copy
+from eval.motion_quality_scorer import MotionQualityScorer
 from utils.model_util import load_model
 import random
 from data_loaders.get_data import get_dataset_loader
@@ -113,8 +114,24 @@ class TrainLoop:
                 use_reference_conditioning=getattr(self.args, 'use_reference_conditioning', True),
                 action_tags=getattr(self.args, 'action_tags', ''),
             )
+        self.motion_scorer = None
+        self.quality_proxy_teacher_interval = max(1, int(getattr(self.args, 'quality_proxy_teacher_interval', 10)))
+        self.quality_proxy_teacher_microbatch = max(1, int(getattr(self.args, 'quality_proxy_teacher_microbatch', 4)))
+        self.quality_proxy_teacher_low_noise_max_t = max(0, int(getattr(self.args, 'quality_proxy_teacher_low_noise_max_t', 20)))
+        self.quality_proxy_supervision_weight = float(getattr(self.args, 'quality_proxy_supervision_weight', 1.0))
+        self.quality_proxy_agreement_interval = max(1, int(getattr(self.args, 'quality_proxy_agreement_interval', 1000)))
+        self._setup_quality_proxy_teacher()
         self.use_ddp = False
         self.ddp_model = self.model
+
+    def _setup_quality_proxy_teacher(self):
+        if not bool(getattr(self.args, 'enable_quality_proxy', False)):
+            return
+        checkpoint_dir = str(getattr(self.args, 'motion_scorer_checkpoint_dir', '')).strip()
+        if not checkpoint_dir:
+            raise ValueError('enable_quality_proxy requires --motion_scorer_checkpoint_dir to be set.')
+        device_name = str(self.device)
+        self.motion_scorer = MotionQualityScorer(checkpoint_dir, device=device_name)
 
     def _load_and_sync_parameters(self):
         self.resume_checkpoint = self.find_resume_checkpoint() or self.resume_checkpoint
@@ -245,6 +262,74 @@ class TrainLoop:
             }
         }
 
+    def _with_train_step(self, cond, train_step):
+        updated = {'y': dict(cond['y'])}
+        updated['train_step'] = int(train_step)
+        return updated
+
+    def _slice_cond_value(self, value, indices, index_list):
+        if torch.is_tensor(value):
+            return value.index_select(0, indices)
+        if isinstance(value, list):
+            return [value[i] for i in index_list]
+        if isinstance(value, tuple):
+            return tuple(value[i] for i in index_list)
+        return value
+
+    def _slice_batch_and_cond(self, batch, cond, indices):
+        index_list = indices.detach().cpu().tolist()
+        sliced_cond = {'y': {}}
+        for key, value in cond['y'].items():
+            sliced_cond['y'][key] = self._slice_cond_value(value, indices, index_list)
+        return batch.index_select(0, indices), sliced_cond
+
+    def _should_run_quality_proxy_teacher(self):
+        if self.motion_scorer is None:
+            return False
+        if not bool(getattr(self.args, 'enable_quality_proxy', False)):
+            return False
+        if self.quality_proxy_supervision_weight <= 0.0:
+            return False
+        return (self.total_step() + 1) % self.quality_proxy_teacher_interval == 0
+
+    def _run_quality_proxy_teacher_step(self, batch, cond):
+        sample_count = min(int(batch.shape[0]), self.quality_proxy_teacher_microbatch)
+        if sample_count <= 0:
+            return None
+        indices = torch.randperm(batch.shape[0], device=batch.device)[:sample_count]
+        teacher_batch, teacher_cond = self._slice_batch_and_cond(batch, cond, indices)
+        max_t = min(self.quality_proxy_teacher_low_noise_max_t, self.diffusion.num_timesteps - 1)
+        teacher_t = torch.randint(0, max_t + 1, (sample_count,), device=batch.device)
+        teacher_cond = self._with_train_step(teacher_cond, self.total_step())
+        with self._autocast_context():
+            teacher_losses = self.diffusion.proxy_teacher_losses(
+                self.ddp_model,
+                teacher_batch,
+                teacher_t,
+                model_kwargs=teacher_cond,
+                scorer=self.motion_scorer,
+            )
+        teacher_loss = self.quality_proxy_supervision_weight * teacher_losses['proxy_supervision_loss'].mean()
+        self.mp_trainer.backward(teacher_loss)
+        logged_losses = {
+            'proxy_supervision_loss': teacher_losses['proxy_supervision_loss'],
+            'proxy_recognizability_loss': teacher_losses['proxy_recognizability_loss'],
+            'proxy_physics_loss': teacher_losses['proxy_physics_loss'],
+            'proxy_quality_consistency_loss': teacher_losses['proxy_quality_consistency_loss'],
+        }
+        if (self.total_step() + 1) % self.quality_proxy_agreement_interval == 0:
+            logged_losses.update({
+                'proxy_teacher_agreement': teacher_losses['proxy_teacher_agreement'],
+                'proxy_teacher_quality': teacher_losses['proxy_teacher_quality'],
+                'proxy_pred_quality': teacher_losses['proxy_pred_quality'],
+                'proxy_teacher_recognizability': teacher_losses['proxy_teacher_recognizability'],
+                'proxy_pred_recognizability': teacher_losses['proxy_pred_recognizability'],
+                'proxy_teacher_physics': teacher_losses['proxy_teacher_physics'],
+                'proxy_pred_physics': teacher_losses['proxy_pred_physics'],
+            })
+        log_loss_dict(self.diffusion, teacher_t, logged_losses)
+        return teacher_losses
+
     def _should_save(self, completed_step):
         return completed_step % self.save_interval == 0 or completed_step == self.num_steps
 
@@ -260,7 +345,7 @@ class TrainLoop:
                 self.model,
                 batch,
                 t,
-                model_kwargs=cond,
+                model_kwargs=self._with_train_step(cond, self.total_step()),
             )
 
         reduced = {}
@@ -356,6 +441,8 @@ class TrainLoop:
 
     def forward_backward(self, batch, cond, epoch):
         self.mp_trainer.zero_grad()
+        if self._should_run_quality_proxy_teacher():
+            self._run_quality_proxy_teacher_step(batch, cond)
         for i in range(0, batch.shape[0], self.microbatch):
             # Eliminates the microbatch feature
             assert i == 0
@@ -370,7 +457,7 @@ class TrainLoop:
                 self.ddp_model,
                 micro,  # [bs, ch, image_size, image_size]
                 t,  # [bs](int) sampled timesteps
-                model_kwargs=micro_cond
+                model_kwargs=self._with_train_step(micro_cond, self.total_step())
             )
 
             if last_batch or not self.use_ddp:

@@ -68,9 +68,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-eval-samples", default=16, type=int, help="Number of unique samples to evaluate across all trials.")
     parser.add_argument("--eval-batch-size", default=8, type=int, help="Batch size for sampling evaluation.")
     parser.add_argument("--eval-num-workers", default=0, type=int, help="Evaluation DataLoader workers.")
-    parser.add_argument("--selection-seed", default=1234, type=int, help="Seed used to select the fixed evaluation subset.")
+    parser.add_argument("--selection-seed", default=None, type=int, help="Seed used to select the fixed evaluation subset. Defaults to --seed.")
     parser.add_argument("--num-trials", default=4, type=int, help="How many stochastic trials to run on the same selected subset.")
-    parser.add_argument("--base-seed", default=10, type=int, help="Base seed for stochastic trials. Trial k uses base-seed + k.")
+    parser.add_argument("--base-seed", default=None, type=int, help="Base seed for stochastic trials. Defaults to --seed. Trial k uses base-seed + k.")
     parser.add_argument("--sampling-method", default="ddim", choices=["p", "ddim", "plms"], help="Diffusion sampler to use.")
     parser.add_argument("--sampling-steps", default=0, type=int, help="Respaced diffusion steps. 0 keeps the checkpoint diffusion step count.")
     parser.add_argument("--ddim-eta", default=0.0, type=float, help="DDIM eta parameter.")
@@ -227,6 +227,13 @@ def cleanup_legacy_json_outputs(output_dir: Path) -> None:
     for file_path in output_dir.glob("*.json"):
         if file_path.is_file():
             file_path.unlink()
+
+
+def cleanup_stage1_sampling_eval_directory(output_dir: Path) -> None:
+    import shutil
+    stage1_eval_dir = output_dir / "stage1_sampling_eval"
+    if stage1_eval_dir.exists():
+        shutil.rmtree(stage1_eval_dir)
 
 
 def build_motion_score_sample_report(
@@ -662,10 +669,17 @@ def main() -> int:
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     cleanup_legacy_json_outputs(output_dir)
+    cleanup_stage1_sampling_eval_directory(output_dir)
 
     fixseed(args.seed)
     dist_util.setup_dist(args.device)
     device = dist_util.dev()
+
+    # 派生种子：如果用户未显式设置，则使用 --seed 的值
+    if args.selection_seed is None:
+        args.selection_seed = args.seed
+    if args.base_seed is None:
+        args.base_seed = args.seed
 
     model_args = load_model_args(args)
 
@@ -757,7 +771,7 @@ def main() -> int:
 
     sampled_quality = summary_report["sampled_eval"]["overall_quality_score"]
     clean_quality = summary_report["clean_baseline"]["overall_quality_score"]
-    print(f"[SUMMARY] Sampled_eval vs Clean_baseline {sampled_quality:.4f}/{clean_quality:.4f}")
+    print(f"[SUMMARY] Sampled_eval vs Clean_baseline {sampled_quality:.4f}/{clean_quality:.4f}={100*sampled_quality/clean_quality:.2f}%")
 
     return 0
 
