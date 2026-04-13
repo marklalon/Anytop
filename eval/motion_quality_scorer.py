@@ -171,7 +171,6 @@ class MotionQualityScorer:
             num_actions=num_actions,
             metadata_dim=metadata_dim,
             metadata_hidden_dim=int(self.args.get("metadata_hidden_dim", 128)),
-            disc_label_embed_dim=int(self.args.get("disc_label_embed_dim", 32)),
         )
         model_state = _select_model_state_dict(checkpoint_payload, prefer_ema=prefer_ema)
         self.model.load_state_dict(model_state, strict=True)
@@ -260,16 +259,17 @@ class MotionQualityScorer:
                 n_joints,
                 lengths,
                 metadata_features=metadata_features,
+                return_disc_logits=False,
+                return_phys_features=False,
             )
             species_probs = torch.softmax(outputs["species_logits"], dim=-1)
             action_probs = torch.softmax(outputs["action_logits"], dim=-1)
-            predicted_species = species_probs.argmax(dim=-1)
-            predicted_action = action_probs.argmax(dim=-1)
             conditioned = self.model.forward_from_latents(
                 outputs["latents"],
                 metadata_features=metadata_features,
-                species_ids=predicted_species,
-                action_ids=predicted_action,
+                return_species_logits=False,
+                return_action_logits=False,
+                return_phys_features=False,
             )
             density_value = self._gmm_log_prob(outputs["latents"].float())
             physics_features = extract_physics_features(motion, n_joints, lengths, object_types, self.skeleton_lookup)
@@ -277,7 +277,7 @@ class MotionQualityScorer:
 
         species_confidence = species_probs.max(dim=-1).values
         action_confidence = action_probs.max(dim=-1).values
-        recognizability_score = torch.sqrt((species_confidence * action_confidence).clamp_min(EPS))
+        recognizability_score = (species_confidence * action_confidence).clamp(EPS, 1.0)
         plausibility_score = torch.sigmoid(conditioned["disc_logits"])
         density_score = _percentile_score(density_value, self.density_percentiles, higher_is_better=True)
         physics_score = _percentile_score(-physics_distance, self.phys_percentiles, higher_is_better=True)

@@ -44,6 +44,7 @@ dataset/
 save/
 logs/
 outputs/
+tmp/
 
 # Models (optional - you may want to track these)
 # model_store/

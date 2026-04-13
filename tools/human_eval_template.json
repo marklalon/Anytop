@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "pairs": [
+    {
+      "pair_id": "example_001",
+      "clip_a": "Horse_Walk_001.npy",
+      "clip_b": "Horse_Run_002.npy",
+      "object_type": "Horse",
+      "annotator_1": "a",
+      "annotator_2": "a",
+      "agreed_winner": "a"
+    },
+    {
+      "pair_id": "example_002",
+      "clip_a": "Bear_Idle_003.npy",
+      "clip_b": "Bear_Attack_004.npy",
+      "object_type_a": "Bear",
+      "object_type_b": "Bear",
+      "annotator_1": "b",
+      "annotator_2": "b",
+      "agreed_winner": "b"
+    }
+  ]
+}

@@ -378,7 +378,6 @@ class MotionScorerNet(nn.Module):
         metadata_dim: int = 0,
         metadata_hidden_dim: int = 128,
         phys_dim: int = 30,
-        disc_label_embed_dim: int = 32,
     ) -> None:
         super().__init__()
         self.feature_dim = feature_dim
@@ -403,14 +402,11 @@ class MotionScorerNet(nn.Module):
             self.metadata_projection = _make_mlp(self.metadata_dim, metadata_hidden_dim, metadata_hidden_dim)
             metadata_context_dim = metadata_hidden_dim
 
-        self.species_condition_embedding = nn.Embedding(max(self.num_species, 1), disc_label_embed_dim)
-        self.action_condition_embedding = nn.Embedding(max(self.num_actions, 1), disc_label_embed_dim)
-
         self.species_head = _make_mlp(latent_dim, d_model, self.num_species)
         self.action_head = _make_mlp(latent_dim, d_model, self.num_actions)
         self.phys_head = _make_mlp(latent_dim, d_model, phys_dim)
 
-        disc_input_dim = latent_dim + metadata_context_dim + disc_label_embed_dim * 2
+        disc_input_dim = latent_dim + metadata_context_dim
         self.disc_head = _make_mlp(disc_input_dim, d_model, 1)
 
     def encode(
@@ -426,8 +422,6 @@ class MotionScorerNet(nn.Module):
         latents: torch.Tensor,
         *,
         metadata_features: torch.Tensor | None,
-        species_ids: torch.Tensor | None,
-        action_ids: torch.Tensor | None,
     ) -> torch.Tensor:
         context_parts = [latents]
         batch_size = latents.shape[0]
@@ -436,13 +430,6 @@ class MotionScorerNet(nn.Module):
             if metadata_features is None:
                 metadata_features = latents.new_zeros((batch_size, self.metadata_dim))
             context_parts.append(self.metadata_projection(metadata_features))
-
-        if species_ids is None:
-            species_ids = torch.zeros(batch_size, dtype=torch.long, device=latents.device)
-        if action_ids is None:
-            action_ids = torch.zeros(batch_size, dtype=torch.long, device=latents.device)
-        context_parts.append(self.species_condition_embedding(species_ids.clamp(min=0, max=max(self.num_species - 1, 0))))
-        context_parts.append(self.action_condition_embedding(action_ids.clamp(min=0, max=max(self.num_actions - 1, 0))))
         return torch.cat(context_parts, dim=-1)
 
     def forward_from_latents(
@@ -450,8 +437,6 @@ class MotionScorerNet(nn.Module):
         latents: torch.Tensor,
         *,
         metadata_features: torch.Tensor | None = None,
-        species_ids: torch.Tensor | None = None,
-        action_ids: torch.Tensor | None = None,
         return_species_logits: bool = True,
         return_action_logits: bool = True,
         return_disc_logits: bool = True,
@@ -466,8 +451,6 @@ class MotionScorerNet(nn.Module):
             disc_context = self._build_disc_context(
                 latents,
                 metadata_features=metadata_features,
-                species_ids=species_ids,
-                action_ids=action_ids,
             )
             outputs["disc_logits"] = self.disc_head(disc_context).squeeze(-1)
         if return_phys_features:
@@ -481,8 +464,6 @@ class MotionScorerNet(nn.Module):
         lengths: torch.Tensor,
         *,
         metadata_features: torch.Tensor | None = None,
-        species_ids: torch.Tensor | None = None,
-        action_ids: torch.Tensor | None = None,
         return_species_logits: bool = True,
         return_action_logits: bool = True,
         return_disc_logits: bool = True,
@@ -492,8 +473,6 @@ class MotionScorerNet(nn.Module):
         return self.forward_from_latents(
             latents,
             metadata_features=metadata_features,
-            species_ids=species_ids,
-            action_ids=action_ids,
             return_species_logits=return_species_logits,
             return_action_logits=return_action_logits,
             return_disc_logits=return_disc_logits,

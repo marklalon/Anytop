@@ -30,7 +30,7 @@ from data_loaders.skeleton_metadata import (
 )
 from diffusion.fp16_util import MixedPrecisionTrainer
 from diffusion.nn import update_ema
-from eval.biomechanical_negatives import generate_biomechanical_negative_batch
+from eval.biomechanical_negatives import NEGATIVE_KINDS, generate_biomechanical_negative_batch
 from eval.physics_features import extract_physics_features
 from model.motion_autoencoder import MotionScorerNet
 from utils import dist_util
@@ -69,8 +69,6 @@ def build_parser() -> ArgumentParser:
                        help="Restore optimizer and scaler state when resuming.")
     group.add_argument("--metadata_hidden_dim", default=128, type=int,
                        help="Hidden size used to project fixed skeleton metadata features.")
-    group.add_argument("--disc_label_embed_dim", default=32, type=int,
-                       help="Embedding size used to condition the discriminator on species/action labels.")
     group.add_argument("--cls_warmup_steps", default=2000, type=int,
                        help="Number of initial steps that optimize only species/action classification.")
     group.add_argument("--full_loss_warmup_steps", default=2000, type=int,
@@ -289,10 +287,8 @@ class PhysicsTargetLRUCache:
 
 
 class MotionScorerAuxBatchPreprocessor:
-    def __init__(self, skeleton_lookup, species_vocab: LabelVocab, action_vocab: LabelVocab, physics_target_cache: PhysicsTargetLRUCache | None = None) -> None:
+    def __init__(self, skeleton_lookup, physics_target_cache: PhysicsTargetLRUCache | None = None) -> None:
         self.skeleton_lookup = skeleton_lookup
-        self.species_vocab = species_vocab
-        self.action_vocab = action_vocab
         self.physics_target_cache = physics_target_cache
         self.enabled = False
         self.cpu_device = torch.device("cpu")
@@ -306,8 +302,6 @@ class MotionScorerAuxBatchPreprocessor:
             return motion, cond, None
 
         object_types = cond["y"].get("object_type")
-        species_ids = self.species_vocab.encode_many(cond["y"].get("species_label", []), device=self.cpu_device)
-        action_ids = self.action_vocab.encode_many(cond["y"].get("action_label", []), device=self.cpu_device)
         if self.physics_target_cache is not None:
             physics_targets = self.physics_target_cache.get_batch(motion, cond, self.skeleton_lookup)
         else:
@@ -324,15 +318,12 @@ class MotionScorerAuxBatchPreprocessor:
             cond["y"]["lengths"],
             object_types,
             self.skeleton_lookup,
-            species_ids,
-            action_ids,
-            num_species=self.species_vocab.size,
+            feature_std=cond["y"].get("std"),
+            negative_kinds=NEGATIVE_KINDS,
         )
         return motion, cond, {
             "physics_targets": physics_targets,
             "negative_motion": negative_batch["motion"],
-            "negative_species_indices": negative_batch["species_indices"],
-            "negative_action_indices": negative_batch["action_indices"],
         }
 
 
@@ -456,7 +447,6 @@ class MotionScorerTrainer:
             num_actions=self.num_actions,
             metadata_dim=self.metadata_dim,
             metadata_hidden_dim=args.metadata_hidden_dim,
-            disc_label_embed_dim=args.disc_label_embed_dim,
         ).to(self.device)
         self.model_avg = copy.deepcopy(self.model) if args.use_ema else None
         self.resume_checkpoint = args.resume_checkpoint.strip() if args.resume_checkpoint else ""
@@ -527,8 +517,6 @@ class MotionScorerTrainer:
                 physics_targets = precomputed_aux["physics_targets"]
                 negative_batch = {
                     "motion": precomputed_aux["negative_motion"],
-                    "species_indices": precomputed_aux["negative_species_indices"],
-                    "action_indices": precomputed_aux["negative_action_indices"],
                 }
             else:
                 if self.physics_target_cache is not None:
@@ -549,8 +537,6 @@ class MotionScorerTrainer:
                 n_joints,
                 lengths,
                 metadata_features=metadata_features,
-                species_ids=species_ids,
-                action_ids=action_ids,
                 return_disc_logits=use_auxiliary_branches,
                 return_phys_features=use_auxiliary_branches,
             )
@@ -558,14 +544,14 @@ class MotionScorerTrainer:
             species_loss = F.cross_entropy(clean_outputs["species_logits"], species_ids)
             action_loss = F.cross_entropy(clean_outputs["action_logits"], action_ids)
             if use_auxiliary_branches:
-                clean_features = normalize_density_embeddings(clean_outputs["latents"])
+                vicreg_features = normalize_density_embeddings(clean_outputs["latents"])
                 disc_positive_loss = F.binary_cross_entropy_with_logits(
                     clean_outputs["disc_logits"],
                     torch.ones_like(clean_outputs["disc_logits"]),
                 )
                 phys_loss = F.mse_loss(clean_outputs["phys_features"], physics_targets)
-                vic_variance_loss = _variance_floor_loss(clean_features, float(self.args.quality_variance_floor))
-                vic_covariance_loss = _covariance_loss(clean_features)
+                vic_variance_loss = _variance_floor_loss(vicreg_features, float(self.args.quality_variance_floor))
+                vic_covariance_loss = _covariance_loss(vicreg_features)
 
                 if negative_batch is None:
                     negative_batch = generate_biomechanical_negative_batch(
@@ -574,17 +560,17 @@ class MotionScorerTrainer:
                         lengths,
                         object_types,
                         self.skeleton_lookup,
-                        species_ids,
-                        action_ids,
-                        num_species=self.species_vocab.size,
+                        feature_std=cond["y"].get("std"),
+                        negative_kinds=NEGATIVE_KINDS,
                     )
                 negative_outputs = self.model(
                     negative_batch["motion"],
                     n_joints,
                     lengths,
                     metadata_features=metadata_features,
-                    species_ids=negative_batch["species_indices"],
-                    action_ids=negative_batch["action_indices"],
+                    return_species_logits=False,
+                    return_action_logits=False,
+                    return_phys_features=False,
                 )
                 disc_negative_loss = F.binary_cross_entropy_with_logits(
                     negative_outputs["disc_logits"],
@@ -658,7 +644,10 @@ class MotionScorerTrainer:
         running_metrics: dict[str, list[float]] = {}
         data_iter = iter(self.data_loader)
         timing_log_interval = max(1, int(getattr(self.args, "timing_log_interval", self.args.log_interval)))
-        startup_log_steps = max(1, min(5, int(self.args.log_interval)))
+        cls_warmup_steps = max(0, int(getattr(self.args, "cls_warmup_steps", 0)))
+        aux_warmup_steps = max(0, int(getattr(self.args, "full_loss_warmup_steps", 0)))
+        aux_warmup_start_step = cls_warmup_steps + 1
+        aux_full_weight_step = cls_warmup_steps + aux_warmup_steps
         timing_totals = {
             "data_wait_s": 0.0,
             "host_to_device_s": 0.0,
@@ -672,13 +661,42 @@ class MotionScorerTrainer:
         next_timing_log = min(int(timing_log_interval), int(self.args.num_steps))
         print(
             f"Motion scorer training loop started: next_metrics_step={next_metric_log}, "
-            f"next_timing_step={next_timing_log}, startup_log_steps={startup_log_steps}"
+            f"next_timing_step={next_timing_log}"
         )
+        if cls_warmup_steps > 0 or aux_warmup_steps > 0:
+            print("=" * 100)
+            if cls_warmup_steps > 0 and aux_warmup_steps > 0:
+                print(
+                    f"Warmup schedule: classification-only step[1]-step[{cls_warmup_steps}], "
+                    f"auxiliary ramp step[{aux_warmup_start_step}]-step[{aux_full_weight_step}]"
+                )
+            elif cls_warmup_steps > 0:
+                print(
+                    f"Warmup schedule: classification-only step[1]-step[{cls_warmup_steps}], "
+                    f"full auxiliary weights enable at step[{aux_warmup_start_step}]"
+                )
+            else:
+                print(f"Warmup schedule: auxiliary ramp step[1]-step[{aux_full_weight_step}]")
+            print("=" * 100)
 
         while completed_steps < self.args.num_steps:
             loop_start = time.perf_counter()
             fetch_start = time.perf_counter()
             next_step = completed_steps + 1
+            if cls_warmup_steps > 0 and next_step == aux_warmup_start_step:
+                print("=" * 100)
+                print(
+                    f"Warmup boundary: classification-only warmup finished at step[{cls_warmup_steps}]; "
+                    f"auxiliary loss ramp starts at step[{next_step}]"
+                )
+                print("=" * 100)
+            if aux_warmup_steps > 0 and next_step == aux_full_weight_step:
+                print("=" * 100)
+                print(
+                    f"Warmup boundary: auxiliary loss ramp ends at step[{aux_full_weight_step}]; "
+                    "full auxiliary weights are now active"
+                )
+                print("=" * 100)
             if self.aux_batch_preprocessor is not None:
                 self.aux_batch_preprocessor.set_enabled(get_auxiliary_loss_factor(self.args, next_step) > 0.0)
             if completed_steps == self.resume_completed_steps:
@@ -715,19 +733,6 @@ class MotionScorerTrainer:
             timing_totals["loop_s"] += loop_s
             timing_steps += 1
             timing_samples += int(motion.shape[0])
-
-            if completed_steps <= startup_log_steps:
-                print(
-                    "startup_step[{}]: data_wait_s[{:.2f}] host_to_device_ms[{:.2f}] step_s[{:.2f}] total_s[{:.2f}] samples[{}] aux[{:.3f}]".format(
-                        completed_steps,
-                        data_wait_s,
-                        1000.0 * host_to_device_s,
-                        step_s,
-                        loop_s,
-                        int(motion.shape[0]),
-                        step_metrics.get("aux_factor", 0.0),
-                    )
-                )
 
             if completed_steps % self.args.log_interval == 0 or completed_steps == self.args.num_steps:
                 mean_metrics = {
@@ -931,8 +936,6 @@ def main() -> None:
     if int(getattr(args, "num_workers", 0)) == 0 and int(getattr(args, "main_process_prefetch_batches", 0)) > 0:
         batch_transform = MotionScorerAuxBatchPreprocessor(
             skeleton_lookup,
-            species_vocab,
-            action_vocab,
             physics_target_cache=physics_target_cache,
         )
 

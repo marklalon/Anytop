@@ -67,7 +67,6 @@ def main() -> int:
         num_actions=int(saved_args.get("num_actions", action_vocab.size)),
         metadata_dim=int(saved_args.get("metadata_feature_dim", train_args.metadata_feature_dim)),
         metadata_hidden_dim=int(saved_args.get("metadata_hidden_dim", 128)),
-        disc_label_embed_dim=int(saved_args.get("disc_label_embed_dim", 32)),
     ).to(device)
     payload = torch.load(checkpoint_path, map_location="cpu")
     model.load_state_dict(select_model_state_dict(payload, prefer_ema=True), strict=True)

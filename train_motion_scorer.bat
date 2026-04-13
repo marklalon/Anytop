@@ -1,6 +1,6 @@
 @echo off
 set PYTHON_EXE=%~dp0..\.venv\Scripts\python.exe
-set SAVE_DIR=save\motion_scorer_v3
+set SAVE_DIR=save\motion_scorer_v4
 
 %PYTHON_EXE% "%~dp0train\train_motion_scorer.py" ^
     --objects_subset all ^
@@ -25,8 +25,8 @@ set SAVE_DIR=save\motion_scorer_v3
     --amp_dtype bf16 ^
     --use_ema ^
     --stats_batch_size 32 ^
-    --cls_warmup_steps 4000 ^
-    --full_loss_warmup_steps 4000 ^
+    --cls_warmup_steps 1000 ^
+    --full_loss_warmup_steps 1000 ^
     --quality_variance_floor 0.50 ^
     --gmm_components 64 ^
     --gmm_covariance_type diag ^
