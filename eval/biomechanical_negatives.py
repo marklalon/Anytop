@@ -18,7 +18,7 @@ NEGATIVE_KINDS = (
     "time_warp",
 )
 
-NEGATIVE_STRENGTH_SCALES = (1.0, 1.6, 2.4)
+NEGATIVE_STRENGTH_SCALES = (1.0, 1.5, 2.0)
 
 # Salience thresholds are evaluated in **denormalized meter space** (delta is
 # multiplied by feature_std before comparison, which for non-root joints equals
@@ -235,7 +235,7 @@ def _apply_bone_length_drift(
 
     scale_values = torch.linspace(
         1.0,
-        1.0 + float(_rand_range(sample, 0.50, 0.95) * strength_scale),
+        1.0 + float(_rand_range(sample, 0.1, 0.6) * strength_scale),
         length,
         device=sample.device,
         dtype=sample.dtype,
@@ -299,7 +299,7 @@ def _apply_joint_jitter(
         return
     joint_index = non_root[int(torch.randint(0, len(non_root), (1,), device=sample.device).item())]
     freq = int(torch.randint(8, 18, (1,), device=sample.device).item())
-    amplitude = float(_rand_range(sample, 0.14, 0.26) * strength_scale)
+    amplitude = float(_rand_range(sample, 0.05, 0.1) * strength_scale)
     t = torch.linspace(0.0, 1.0, length, device=sample.device, dtype=sample.dtype)
     phase = torch.rand((3,), device=sample.device, dtype=sample.dtype) * (2.0 * torch.pi)
     jitter = amplitude * torch.stack(
