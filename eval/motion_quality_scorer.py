@@ -23,10 +23,6 @@ from model.motion_autoencoder import MotionScorerNet
 
 EPS = 1e-8
 REQUIRED_MULTITASK_STATS_KEYS = {
-    "gmm_covariance_type",
-    "gmm_means",
-    "gmm_covariances",
-    "gmm_weights",
     "density_percentiles",
     "mu_phys",
     "sigma_phys_inv",
@@ -225,7 +221,7 @@ class MotionQualityScorer:
 
     def _load_runtime_stats(self) -> None:
         self.skeleton_lookup = load_skeleton_metadata(self.dataset_root)
-        self.density_mode = str(self.train_stats.get("density_mode", f"gmm_{self.train_stats['gmm_covariance_type']}"))
+        self.density_mode = str(self.train_stats.get("density_mode", "knn"))
         self.density_knn_k = int(self.train_stats.get("density_knn_k", 0) or 0)
         density_reference_latents = self.train_stats.get("density_reference_latents")
         self.density_reference_latents = None
@@ -235,15 +231,6 @@ class MotionQualityScorer:
                 dtype=torch.float32,
                 device=self.device,
             )
-        self.gmm_covariance_type = str(self.train_stats["gmm_covariance_type"])
-        self.gmm_means = torch.as_tensor(self.train_stats["gmm_means"], dtype=torch.float32, device=self.device)
-        self.gmm_covariances = torch.as_tensor(self.train_stats["gmm_covariances"], dtype=torch.float32, device=self.device)
-        self.gmm_weights = torch.as_tensor(self.train_stats["gmm_weights"], dtype=torch.float32, device=self.device)
-        self.gmm_log_weights = torch.log(self.gmm_weights.clamp_min(EPS))
-        if self.gmm_covariance_type == "full":
-            self.gmm_cov_inv = torch.linalg.pinv(self.gmm_covariances)
-        else:
-            self.gmm_cov_inv = None
         self.density_percentiles = torch.as_tensor(self.train_stats["density_percentiles"], dtype=torch.float32, device=self.device)
         self.mu_phys = torch.as_tensor(self.train_stats["mu_phys"], dtype=torch.float32, device=self.device)
         self.sigma_phys_inv = torch.as_tensor(self.train_stats["sigma_phys_inv"], dtype=torch.float32, device=self.device)
@@ -258,21 +245,10 @@ class MotionQualityScorer:
                 self.density_reference_latents,
                 k=self.density_knn_k,
             )
-        return self._gmm_log_prob(latents)
-
-    def _gmm_log_prob(self, latents: torch.Tensor) -> torch.Tensor:
-        diff = latents[:, None, :] - self.gmm_means[None, :, :]
-        if self.gmm_covariance_type == "diag":
-            variances = self.gmm_covariances.clamp_min(EPS)
-            mahal = (diff.pow(2) / variances[None, :, :]).sum(dim=-1)
-            log_det = torch.log(variances).sum(dim=-1)
-        else:
-            mahal = torch.einsum("bkd,kde,bke->bk", diff, self.gmm_cov_inv, diff)
-            log_det = torch.logdet(self.gmm_covariances.clamp_min(EPS))
-        dim = latents.shape[-1]
-        normalizer = dim * math.log(2.0 * math.pi)
-        component_log_prob = -0.5 * (mahal + log_det[None, :] + normalizer) + self.gmm_log_weights[None, :]
-        return torch.logsumexp(component_log_prob, dim=1)
+        raise ValueError(
+            f"Invalid density_mode: {self.density_mode}. Only kNN density is currently supported. "
+            "Please ensure train_stats.npy contains 'density_mode': 'knn' and 'density_reference_latents'."
+        )
 
     def _prepare_condition_features(
         self,
@@ -384,24 +360,37 @@ class MotionQualityScorer:
         plausibility_score = torch.sigmoid(conditioned["disc_logits"])
         density_score = _percentile_score(density_value, self.density_percentiles, higher_is_better=True)
         physics_score = _percentile_score(-physics_distance, self.phys_percentiles, higher_is_better=True)
+        
+        # NOTE: density_score and plausibility_score are kept for reference but excluded from quality_score.
+        # These scores cannot effectively discriminate between clean and bad motions and were found to be
+        # unreliable indicators of motion quality. However, their underlying loss computations are retained
+        # because physics_score benefits from the physics-guided training that these losses contribute to.
+        # Modified weights: density and plausibility set to 0, only recognizability and physics are used.
+        modified_alpha = [
+            self.score_alpha[0],  # recognizability weight (kept)
+            0.0,                   # density weight (ignored)
+            0.0,                   # plausibility weight (ignored)
+            self.score_alpha[3],  # physics weight (kept)
+        ]
         quality_score = _geometric_mean(
             [recognizability_score, density_score, plausibility_score, physics_score],
-            self.score_alpha,
+            modified_alpha,
         )
 
         return {
             "quality_score": quality_score.detach().cpu(),
             "recognizability_score": recognizability_score.detach().cpu(),
-            "density_score": density_score.detach().cpu(),
-            "plausibility_score": plausibility_score.detach().cpu(),
-            "plausibility_logit": conditioned["disc_logits"].detach().cpu(),
             "physics_score": physics_score.detach().cpu(),
             "species_confidence": species_confidence.detach().cpu(),
             "action_confidence": action_confidence.detach().cpu(),
-            "density_log_prob": density_value.detach().cpu(),
-            "density_distance": (-density_value).detach().cpu(),
             "physics_distance": physics_distance.detach().cpu(),
             "mahal_distance": physics_distance.detach().cpu(),
+            # Reference metrics (excluded from quality_score calculation)
+            "density_score": density_score.detach().cpu(),
+            "plausibility_score": plausibility_score.detach().cpu(),
+            "plausibility_logit": conditioned["disc_logits"].detach().cpu(),
+            "density_log_prob": density_value.detach().cpu(),
+            "density_distance": (-density_value).detach().cpu(),
             "density_mode": self.density_mode,
         }
 

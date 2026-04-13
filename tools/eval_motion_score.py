@@ -25,17 +25,21 @@ from eval.motion_quality_scorer import MotionQualityScorer
 
 SUPPORTED_SUFFIXES = {".bvh", ".npy"}
 DEFAULT_CHECKPOINT_DIR = "save/motion_scorer_perceptual_v2"
+# Metric output order: primary quality metrics first, then reference metrics
+# NOTE: density_score and plausibility_score are reference metrics only (excluded from quality_score).
+#       They are kept for debugging but do not contribute to the final quality assessment.
 METRIC_KEYS = (
     "quality_score",
     "recognizability_score",
-    "density_score",
-    "plausibility_score",
     "physics_score",
     "species_confidence",
     "action_confidence",
-    "density_distance",
     "physics_distance",
     "mahal_distance",
+    # Reference metrics (for debugging only)
+    "density_score",
+    "plausibility_score",
+    "density_distance",
 )
 
 
@@ -516,19 +520,19 @@ def main() -> int:
     if samples:
         metrics = report["summary"]["metrics"]
         print(
-            "quality_score mean/median/min/max: "
+            "[quality_score] mean/median/min/max: "
             f"{metrics['quality_score']['mean']:.4f} / "
             f"{metrics['quality_score']['median']:.4f} / "
             f"{metrics['quality_score']['min']:.4f} / "
             f"{metrics['quality_score']['max']:.4f}"
         )
         print(
-            "recognizability_score mean: "
-            f"{metrics['recognizability_score']['mean']:.4f} | density_score mean: {metrics['density_score']['mean']:.4f}"
+            "[recognizability_score] mean: "
+            f"{metrics['recognizability_score']['mean']:.4f} | [physics_score] mean: {metrics['physics_score']['mean']:.4f}"
         )
         print(
-            "plausibility_score mean: "
-            f"{metrics['plausibility_score']['mean']:.4f} | physics_score mean: {metrics['physics_score']['mean']:.4f}"
+            "[density_score] mean: "
+            f"{metrics['density_score']['mean']:.4f} | [plausibility_score] mean: {metrics['plausibility_score']['mean']:.4f}"
         )
 
         saturated_metrics = report["summary"].get("diagnostics", {}).get("saturated_metrics", [])
