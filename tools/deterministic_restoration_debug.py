@@ -130,8 +130,6 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
             layers=DEFAULT_LAYERS,
             lambda_confidence_recon=2.0 if args.lambda_confidence_recon is None else args.lambda_confidence_recon,
             lambda_repair_recon=1.0 if args.lambda_repair_recon is None else args.lambda_repair_recon,
-            lambda_root=0.25 if args.lambda_root is None else args.lambda_root,
-            lambda_velocity=0.1 if args.lambda_velocity is None else args.lambda_velocity,
             lambda_fs=0.0,
             lambda_geo=0.0,
             noise_schedule=DEFAULT_NOISE_SCHEDULE,
@@ -158,18 +156,12 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
     model_args.lambda_geo = getattr(model_args, "lambda_geo", 0.0)
     model_args.lambda_confidence_recon = getattr(model_args, "lambda_confidence_recon", 2.0)
     model_args.lambda_repair_recon = getattr(model_args, "lambda_repair_recon", 1.0)
-    model_args.lambda_root = getattr(model_args, "lambda_root", 0.25)
-    model_args.lambda_velocity = getattr(model_args, "lambda_velocity", 0.1)
     model_args.noise_schedule = getattr(model_args, "noise_schedule", DEFAULT_NOISE_SCHEDULE)
     model_args.sigma_small = getattr(model_args, "sigma_small", DEFAULT_SIGMA_SMALL)
     if args.lambda_confidence_recon is not None:
         model_args.lambda_confidence_recon = args.lambda_confidence_recon
     if args.lambda_repair_recon is not None:
         model_args.lambda_repair_recon = args.lambda_repair_recon
-    if args.lambda_root is not None:
-        model_args.lambda_root = args.lambda_root
-    if args.lambda_velocity is not None:
-        model_args.lambda_velocity = args.lambda_velocity
     model_args.latent_dim = getattr(model_args, "latent_dim", DEFAULT_LATENT_DIM)
     model_args.layers = getattr(model_args, "layers", DEFAULT_LAYERS)
     model_args.cond_mask_prob = getattr(model_args, "cond_mask_prob", DEFAULT_COND_MASK_PROB)
@@ -568,8 +560,6 @@ def main() -> int:
         "final_training_loss": history[-1].get("loss") if history else None,
         "lambda_confidence_recon": model_args.lambda_confidence_recon,
         "lambda_repair_recon": model_args.lambda_repair_recon,
-        "lambda_root": model_args.lambda_root,
-        "lambda_velocity": model_args.lambda_velocity,
         "preservation_confidence_threshold": diffusion.preservation_confidence_threshold,
         "preservation_confidence_power": diffusion.preservation_confidence_power,
         "deterministic_eval": eval_report,

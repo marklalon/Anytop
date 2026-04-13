@@ -480,7 +480,7 @@ def generate_biomechanical_negative_batch(
     negative_kinds: list[str] = []
     # Lift the length readback into one host transfer for the whole batch
     # instead of calling .item() per sample inside the hot loop.
-    lengths_cpu = lengths.detach().to("cpu", non_blocking=True).tolist()
+    lengths_cpu = lengths.detach().cpu().tolist()
 
     for batch_index, object_type in enumerate(object_types):
         metadata = metadata_lookup[str(object_type)]

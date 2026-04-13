@@ -17,14 +17,26 @@ _MIN_RELATIVE_BONE_BASELINE_RATIO = 0.01
 def _cached_index_tensor(indices: Sequence[int], device: torch.device) -> torch.Tensor:
     key = (tuple(int(index) for index in indices), str(device))
     tensor = _INDEX_TENSOR_CACHE.get(key)
+    if tensor is not None and tensor.is_inference():
+        with torch.inference_mode(False):
+            tensor = tensor.clone()
+        _INDEX_TENSOR_CACHE[key] = tensor
     if tensor is None:
-        tensor = torch.as_tensor(key[0], dtype=torch.long, device=device)
+        with torch.inference_mode(False):
+            tensor = torch.as_tensor(key[0], dtype=torch.long, device=device)
         _INDEX_TENSOR_CACHE[key] = tensor
     return tensor
 
 
 def _as_float_tensor(values: torch.Tensor) -> torch.Tensor:
     return values if values.dtype in (torch.float32, torch.float64) else values.float()
+
+
+def _ensure_autograd_compatible(values: torch.Tensor | None) -> torch.Tensor | None:
+    if values is None or not values.is_inference():
+        return values
+    with torch.inference_mode(False):
+        return values.clone()
 
 
 def _safe_quantile(values: torch.Tensor, q: float) -> torch.Tensor:
@@ -307,6 +319,7 @@ def extract_physics_features(
     *,
     feature_mean: torch.Tensor | None = None,
     feature_std: torch.Tensor | None = None,
+    differentiable: bool = False,
 ) -> torch.Tensor:
     if motion.ndim != 4:
         raise ValueError(f"Expected [B, J, F, T] motion tensor, got {tuple(motion.shape)}")
@@ -323,8 +336,8 @@ def extract_physics_features(
                 f"feature_mean/feature_std shape mismatch for motion batch: motion={tuple(motion.shape)}, "
                 f"mean={tuple(feature_mean.shape)}, std={tuple(feature_std.shape)}"
             )
-    lengths_cpu = lengths.detach().to("cpu", non_blocking=True).tolist()
-    joint_counts_cpu = n_joints.detach().to("cpu", non_blocking=True).tolist()
+    lengths_cpu = lengths.detach().cpu().tolist()
+    joint_counts_cpu = n_joints.detach().cpu().tolist()
     sample_args: list[tuple[torch.Tensor, int, SkeletonMetadata, torch.Tensor | None, torch.Tensor | None]] = []
     for batch_index, object_type in enumerate(object_types):
         length = max(1, min(int(lengths_cpu[batch_index]), int(motion.shape[-1])))
@@ -341,7 +354,18 @@ def extract_physics_features(
 
     batch_features = []
     for sample_motion, length, metadata, sample_mean, sample_std in sample_args:
-        with torch.inference_mode():
-            denormalized_motion = _maybe_denormalize_motion(sample_motion, sample_mean, sample_std)
-            batch_features.append(_extract_single_sample_features(denormalized_motion, length, metadata))
+        if differentiable:
+            with torch.inference_mode(False):
+                sample_motion = _ensure_autograd_compatible(sample_motion)
+                sample_mean = _ensure_autograd_compatible(sample_mean)
+                sample_std = _ensure_autograd_compatible(sample_std)
+                denormalized_motion = _maybe_denormalize_motion(sample_motion, sample_mean, sample_std)
+                batch_features.append(_extract_single_sample_features(denormalized_motion, length, metadata))
+        else:
+            with torch.inference_mode():
+                denormalized_motion = _maybe_denormalize_motion(sample_motion, sample_mean, sample_std)
+                batch_features.append(_extract_single_sample_features(denormalized_motion, length, metadata))
+    if differentiable:
+        with torch.inference_mode(False):
+            return torch.stack(batch_features, dim=0).to(device=motion.device, dtype=motion.dtype)
     return torch.stack(batch_features, dim=0).to(device=motion.device, dtype=motion.dtype)

@@ -8,12 +8,11 @@ Docstrings have been added, as well as DDIM sampling and a new collection of bet
 
 import enum
 import math
-from contextlib import contextmanager
 import numpy as np
 import torch
 import torch as th
-import torch.nn.functional as F
 from copy import deepcopy
+from data_loaders.truebones.truebones_utils.motion_labels import infer_species_label
 from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood, geodesic_distance
 from utils.rotation_conversions import rotation_6d_to_matrix_safe
@@ -21,6 +20,79 @@ from utils.rotation_conversions import rotation_6d_to_matrix_safe
 
 PRESERVATION_CONFIDENCE_THRESHOLD = 0.0
 PRESERVATION_CONFIDENCE_POWER = 1.0
+
+
+def _expand_masked_teacher_losses(teacher_losses, active_indices, batch_size):
+    expanded = {}
+    for key, value in teacher_losses.items():
+        full_value = value.new_zeros((batch_size,) + tuple(value.shape[1:]))
+        full_value[active_indices] = value
+        expanded[key] = full_value
+    return expanded
+
+
+def _compute_masked_semantic_teacher_losses(
+    semantic_teacher,
+    pred_motion,
+    target_motion,
+    *,
+    n_joints,
+    lengths,
+    species_labels,
+    action_labels,
+    temperature,
+    active_indices,
+):
+    if active_indices.numel() == 0:
+        return None
+
+    active_indices_cpu = active_indices.detach().cpu().tolist()
+    subset_species_labels = [species_labels[index] if index < len(species_labels) else "unknown" for index in active_indices_cpu]
+    subset_action_labels = [action_labels[index] if index < len(action_labels) else "unknown" for index in active_indices_cpu]
+    subset_losses = semantic_teacher.compute_losses(
+        pred_motion[active_indices],
+        target_motion[active_indices],
+        n_joints=n_joints[active_indices],
+        lengths=lengths[active_indices],
+        species_labels=subset_species_labels,
+        action_labels=subset_action_labels,
+        temperature=temperature,
+    )
+    return _expand_masked_teacher_losses(subset_losses, active_indices, int(pred_motion.shape[0]))
+
+
+def _resolve_semantic_labels(values, batch_size, *, field_name, object_types=None, motion_metadata=None):
+    resolved = []
+    raw_values = list(values) if isinstance(values, (list, tuple)) else []
+    raw_object_types = list(object_types) if isinstance(object_types, (list, tuple)) else []
+    raw_motion_metadata = list(motion_metadata) if isinstance(motion_metadata, (list, tuple)) else []
+
+    for batch_index in range(batch_size):
+        value = raw_values[batch_index] if batch_index < len(raw_values) else None
+        if (value is None or str(value).strip() == "") and batch_index < len(raw_motion_metadata):
+            sample_metadata = raw_motion_metadata[batch_index]
+            if isinstance(sample_metadata, dict):
+                value = sample_metadata.get(field_name)
+        if (value is None or str(value).strip() == "") and field_name == 'species_label' and batch_index < len(raw_object_types):
+            value = infer_species_label(str(raw_object_types[batch_index]))
+        text = str(value or "").strip().lower()
+        resolved.append(text or "unknown")
+    return resolved
+
+
+def _resolve_object_types(values, batch_size, *, motion_metadata=None):
+    resolved = []
+    raw_values = list(values) if isinstance(values, (list, tuple)) else []
+    raw_motion_metadata = list(motion_metadata) if isinstance(motion_metadata, (list, tuple)) else []
+
+    for batch_index in range(batch_size):
+        value = raw_values[batch_index] if batch_index < len(raw_values) else None
+        if (value is None or str(value).strip() == "") and batch_index < len(raw_motion_metadata):
+            sample_metadata = raw_motion_metadata[batch_index]
+            if isinstance(sample_metadata, dict):
+                value = sample_metadata.get('object_type')
+        resolved.append(str(value or "unknown").strip() or "unknown")
+    return resolved
 
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, scale_betas=1.):
     """
@@ -134,14 +206,18 @@ class GaussianDiffusion:
         lambda_geo=0.,
         lambda_confidence_recon=0.,
         lambda_repair_recon=0.,
-        lambda_root=0.,
-        lambda_velocity=0.,
-        quality_proxy_layer=-1,
-        quality_proxy_guidance_weight=0.,
-        quality_proxy_guidance_start_step=0,
-        quality_proxy_score_floor=0.0,
-        quality_proxy_score_ceiling=1.0,
-        quality_proxy_detach_fallback=False,
+        physics_teacher_weight=0.,
+        physics_teacher_feature_weight=1.0,
+        physics_teacher_margin_weight=0.25,
+        physics_teacher_start_step=0,
+        physics_teacher_max_t=30,
+        semantic_teacher_weight=0.05,
+        semantic_teacher_species_weight=1.0,
+        semantic_teacher_action_weight=1.0,
+        semantic_teacher_kl_weight=0.25,
+        semantic_teacher_start_step=0,
+        semantic_teacher_max_t=30,
+        semantic_teacher_temperature=1.0,
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
@@ -151,14 +227,18 @@ class GaussianDiffusion:
         self.lambda_geo = lambda_geo
         self.lambda_confidence_recon = lambda_confidence_recon
         self.lambda_repair_recon = lambda_repair_recon
-        self.lambda_root = lambda_root
-        self.lambda_velocity = lambda_velocity
-        self.quality_proxy_layer = int(quality_proxy_layer)
-        self.quality_proxy_guidance_weight = float(quality_proxy_guidance_weight)
-        self.quality_proxy_guidance_start_step = int(quality_proxy_guidance_start_step)
-        self.quality_proxy_score_floor = float(quality_proxy_score_floor)
-        self.quality_proxy_score_ceiling = float(quality_proxy_score_ceiling)
-        self.quality_proxy_detach_fallback = bool(quality_proxy_detach_fallback)
+        self.physics_teacher_weight = float(physics_teacher_weight)
+        self.physics_teacher_feature_weight = float(physics_teacher_feature_weight)
+        self.physics_teacher_margin_weight = float(physics_teacher_margin_weight)
+        self.physics_teacher_start_step = int(physics_teacher_start_step)
+        self.physics_teacher_max_t = int(physics_teacher_max_t)
+        self.semantic_teacher_weight = float(semantic_teacher_weight)
+        self.semantic_teacher_species_weight = float(semantic_teacher_species_weight)
+        self.semantic_teacher_action_weight = float(semantic_teacher_action_weight)
+        self.semantic_teacher_kl_weight = float(semantic_teacher_kl_weight)
+        self.semantic_teacher_start_step = int(semantic_teacher_start_step)
+        self.semantic_teacher_max_t = int(semantic_teacher_max_t)
+        self.semantic_teacher_temperature = float(semantic_teacher_temperature)
         self.preservation_confidence_threshold = PRESERVATION_CONFIDENCE_THRESHOLD
         self.preservation_confidence_power = PRESERVATION_CONFIDENCE_POWER
 
@@ -206,10 +286,6 @@ class GaussianDiffusion:
     def _unwrap_model(self, model):
         return getattr(model, 'model', model)
 
-    def has_quality_proxy(self, model):
-        base_model = self._unwrap_model(model)
-        return hasattr(base_model, 'quality_proxy') and base_model.quality_proxy is not None and self.quality_proxy_layer >= 0
-
     def _current_train_step(self, model_kwargs):
         if model_kwargs is None:
             return 0
@@ -219,102 +295,6 @@ class GaussianDiffusion:
         if torch.is_tensor(value):
             return int(value.item())
         return int(value)
-
-    def _extract_proxy_activation(self, activations):
-        if activations is None:
-            raise ValueError('Proxy activations were requested but not returned by the model.')
-        if self.quality_proxy_layer not in activations:
-            raise KeyError(f'Proxy activation layer {self.quality_proxy_layer} is missing from model activations.')
-        return activations[self.quality_proxy_layer]
-
-    def _pool_proxy_features(self, layer_activation, lengths, actual_joints):
-        motion_activation = layer_activation[1:].permute(1, 2, 0, 3).contiguous()
-        batch_size, max_joints, num_frames, latent_dim = motion_activation.shape
-        frame_index = torch.arange(num_frames, device=motion_activation.device).view(1, 1, num_frames, 1)
-        joint_index = torch.arange(max_joints, device=motion_activation.device).view(1, max_joints, 1, 1)
-        valid_frames = frame_index < lengths.view(batch_size, 1, 1, 1)
-        valid_joints = joint_index < actual_joints.view(batch_size, 1, 1, 1)
-        valid_mask = (valid_frames & valid_joints).to(dtype=motion_activation.dtype)
-        pooled = (motion_activation * valid_mask).sum(dim=(1, 2))
-        denom = valid_mask.sum(dim=(1, 2)).clamp_min(1.0)
-        return pooled / denom
-
-    @contextmanager
-    def _frozen_module(self, module):
-        original = [param.requires_grad for param in module.parameters()]
-        try:
-            for param in module.parameters():
-                param.requires_grad_(False)
-            yield module
-        finally:
-            for param, requires_grad in zip(module.parameters(), original):
-                param.requires_grad_(requires_grad)
-
-    def _quality_proxy_outputs(self, model, pooled_features, *, freeze_proxy_params):
-        base_model = self._unwrap_model(model)
-        if not self.has_quality_proxy(base_model):
-            return None
-        if freeze_proxy_params:
-            with self._frozen_module(base_model.quality_proxy):
-                return base_model.quality_proxy(pooled_features)
-        return base_model.quality_proxy(pooled_features)
-
-    def proxy_teacher_losses(self, model, x_start, t, *, model_kwargs, scorer):
-        base_model = self._unwrap_model(model)
-        if not self.has_quality_proxy(model):
-            raise ValueError('proxy_teacher_losses was called without an enabled quality proxy.')
-        if scorer is None:
-            raise ValueError('proxy_teacher_losses requires a frozen motion scorer instance.')
-
-        model_kwargs = dict(model_kwargs or {})
-        y_kwargs = dict(model_kwargs.get('y', {}))
-        model_kwargs['y'] = y_kwargs
-
-        lengths = y_kwargs['lengths']
-        actual_joints = y_kwargs['n_joints']
-        object_types = y_kwargs['object_type']
-        noise = th.randn_like(x_start)
-        x_t = self.q_sample(x_start, t, noise=noise)
-        model_output, activations = model(x_t, self._scale_timesteps(t), get_layer_activation=self.quality_proxy_layer, **model_kwargs)
-        layer_activation = self._extract_proxy_activation(activations)
-        pooled_features = self._pool_proxy_features(layer_activation, lengths, actual_joints).detach()
-        proxy_outputs = self._quality_proxy_outputs(model, pooled_features, freeze_proxy_params=False)
-
-        teacher_scores = scorer.score(
-            model_output.detach(),
-            actual_joints.detach(),
-            lengths.detach(),
-            object_types=object_types,
-        )
-        teacher_recognizability = teacher_scores['recognizability_score'].to(model_output.device, dtype=model_output.dtype)
-        teacher_physics = teacher_scores['physics_score'].to(model_output.device, dtype=model_output.dtype)
-        teacher_quality = base_model.quality_proxy.combine_scores(teacher_recognizability, teacher_physics)
-
-        recognizability_loss = F.smooth_l1_loss(
-            proxy_outputs['recognizability_score'], teacher_recognizability, reduction='none'
-        )
-        physics_loss = F.smooth_l1_loss(
-            proxy_outputs['physics_score'], teacher_physics, reduction='none'
-        )
-        quality_loss = F.smooth_l1_loss(
-            proxy_outputs['quality_score'], teacher_quality, reduction='none'
-        )
-        supervision_loss = recognizability_loss + physics_loss + 0.5 * quality_loss
-        agreement = 1.0 - (proxy_outputs['quality_score'] - teacher_quality).abs()
-
-        return {
-            'proxy_supervision_loss': supervision_loss,
-            'proxy_recognizability_loss': recognizability_loss,
-            'proxy_physics_loss': physics_loss,
-            'proxy_quality_consistency_loss': quality_loss,
-            'proxy_teacher_quality': teacher_quality,
-            'proxy_teacher_recognizability': teacher_recognizability,
-            'proxy_teacher_physics': teacher_physics,
-            'proxy_pred_quality': proxy_outputs['quality_score'],
-            'proxy_pred_recognizability': proxy_outputs['recognizability_score'],
-            'proxy_pred_physics': proxy_outputs['physics_score'],
-            'proxy_teacher_agreement': agreement,
-        }
 
     def masked_l2(self, a, b, mask):
         # assuming a.shape == b.shape == bs, J, Jdim, seqlen
@@ -1670,7 +1650,7 @@ class GaussianDiffusion:
         output = th.where((t == 0), decoder_nll, kl)
         return {"output": output, "pred_xstart": out["pred_xstart"]}
 
-    def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
+    def training_losses(self, model, x_start, t, model_kwargs=None, noise=None, physics_teacher=None, semantic_teacher=None):
         """
         Compute training losses for a single timestep.
 
@@ -1721,23 +1701,7 @@ class GaussianDiffusion:
             if self.loss_type == LossType.RESCALED_KL:
                 terms["loss"] *= self.num_timesteps
         elif self.loss_type == LossType.MSE or self.loss_type == LossType.RESCALED_MSE:
-            proxy_outputs = None
-            if self.has_quality_proxy(model):
-                model_output, activations = model(
-                    x_t,
-                    self._scale_timesteps(t),
-                    get_layer_activation=self.quality_proxy_layer,
-                    **model_kwargs,
-                )
-                layer_activation = self._extract_proxy_activation(activations)
-                pooled_features = self._pool_proxy_features(layer_activation, lengths, actual_joints)
-                proxy_outputs = self._quality_proxy_outputs(
-                    model,
-                    pooled_features,
-                    freeze_proxy_params=not self.quality_proxy_detach_fallback,
-                )
-            else:
-                model_output = model(x_t, self._scale_timesteps(t), **model_kwargs)
+            model_output = model(x_t, self._scale_timesteps(t), **model_kwargs)
 
             if self.model_var_type in [
                 ModelVarType.LEARNED,
@@ -1780,27 +1744,62 @@ class GaussianDiffusion:
                 repair_weights = (1.0 - reference_reliability).clamp(min=0.0, max=1.0)
                 terms["repair_recon_loss"] = self.weighted_temporal_spatial_l2(target, model_output, mask, joints_mask, repair_weights)
                 terms["loss"] = terms["loss"] + self.lambda_repair_recon * terms["repair_recon_loss"]
+
+            current_step = self._current_train_step(model_kwargs)
+            if (
+                semantic_teacher is not None
+                and self.semantic_teacher_weight > 0.0
+                and current_step >= self.semantic_teacher_start_step
+            ):
+                semantic_active_indices = (t <= self.semantic_teacher_max_t).nonzero(as_tuple=False).flatten()
+                resolved_species_labels = _resolve_semantic_labels(
+                    model_kwargs['y'].get('species_label', []),
+                    int(model_output.shape[0]),
+                    field_name='species_label',
+                    object_types=model_kwargs['y'].get('object_type', []),
+                    motion_metadata=model_kwargs['y'].get('motion_metadata', []),
+                )
+                resolved_action_labels = _resolve_semantic_labels(
+                    model_kwargs['y'].get('action_label', []),
+                    int(model_output.shape[0]),
+                    field_name='action_label',
+                    object_types=model_kwargs['y'].get('object_type', []),
+                    motion_metadata=model_kwargs['y'].get('motion_metadata', []),
+                )
+                semantic_losses = _compute_masked_semantic_teacher_losses(
+                    semantic_teacher,
+                    model_output,
+                    target,
+                    n_joints=actual_joints,
+                    lengths=lengths,
+                    species_labels=resolved_species_labels,
+                    action_labels=resolved_action_labels,
+                    temperature=self.semantic_teacher_temperature,
+                    active_indices=semantic_active_indices,
+                )
+                if semantic_losses is not None:
+                    semantic_mask = (t <= self.semantic_teacher_max_t).to(dtype=terms['loss'].dtype)
+                    semantic_kl = (
+                        semantic_losses['semantic_teacher_species_kl']
+                        + semantic_losses['semantic_teacher_action_kl']
+                    )
+                    semantic_total = (
+                        self.semantic_teacher_species_weight * semantic_losses['semantic_teacher_species_ce']
+                        + self.semantic_teacher_action_weight * semantic_losses['semantic_teacher_action_ce']
+                        + self.semantic_teacher_kl_weight * semantic_kl
+                    )
+                    terms['semantic_teacher_species_ce'] = semantic_losses['semantic_teacher_species_ce'] * semantic_mask
+                    terms['semantic_teacher_action_ce'] = semantic_losses['semantic_teacher_action_ce'] * semantic_mask
+                    terms['semantic_teacher_species_kl'] = semantic_losses['semantic_teacher_species_kl'] * semantic_mask
+                    terms['semantic_teacher_action_kl'] = semantic_losses['semantic_teacher_action_kl'] * semantic_mask
+                    terms['semantic_teacher_loss'] = semantic_total * semantic_mask
+                    terms['semantic_teacher_recognizability'] = semantic_losses['semantic_teacher_recognizability'] * semantic_mask
+                    terms['semantic_teacher_target_recognizability'] = semantic_losses['semantic_teacher_target_recognizability'] * semantic_mask
+                    terms['loss'] = terms['loss'] + self.semantic_teacher_weight * terms['semantic_teacher_loss']
         
             # denormalize before applying loss terms 
             target = (target * std) + mean 
             model_output = (model_output * std) + mean 
-
-            if self.lambda_root > 0.:
-                root_weights = mask[:, :1, :, :] * (1.0 + (1.0 - reference_reliability[:, :1]))
-                root_target = torch.cat([target[:, :1, :3, :], target[:, :1, 9:12, :]], dim=2)
-                root_output = torch.cat([model_output[:, :1, :3, :], model_output[:, :1, 9:12, :]], dim=2)
-                terms["root_consistency_loss"] = self.weighted_feature_l2(root_target, root_output, root_weights)
-                terms["loss"] = terms["loss"] + self.lambda_root * terms["root_consistency_loss"]
-            if self.lambda_velocity > 0.:
-                velocity_weights = 1.0 + (1.0 - reference_reliability)
-                terms["velocity_consistency_loss"] = self.weighted_temporal_spatial_l2(
-                    target[:, :, 9:12, :],
-                    model_output[:, :, 9:12, :],
-                    mask,
-                    joints_mask,
-                    velocity_weights,
-                )
-                terms["loss"] = terms["loss"] + self.lambda_velocity * terms["velocity_consistency_loss"]
             
             # # calc all loss terms 
             if self.lambda_geo > 0.:    
@@ -1809,22 +1808,52 @@ class GaussianDiffusion:
             if self.lambda_fs > 0.:
                 terms["foot_sliding_loss"] = self.foot_sliding_loss(target, model_output, mask, relative=True)
                 terms["loss"] = terms["loss"] + self.lambda_fs * terms["foot_sliding_loss"]
-            current_step = self._current_train_step(model_kwargs)
+            low_noise_mask_bool = t <= self.physics_teacher_max_t
             if (
-                proxy_outputs is not None
-                and self.quality_proxy_guidance_weight > 0.
-                and not self.quality_proxy_detach_fallback
-                and current_step >= self.quality_proxy_guidance_start_step
+                physics_teacher is not None
+                and self.physics_teacher_weight > 0.0
+                and current_step >= self.physics_teacher_start_step
             ):
-                clamped_quality = proxy_outputs['quality_score'].clamp(
-                    min=self.quality_proxy_score_floor,
-                    max=self.quality_proxy_score_ceiling,
+                physics_active_indices = low_noise_mask_bool.nonzero(as_tuple=False).flatten()
+                resolved_object_types = _resolve_object_types(
+                    model_kwargs['y'].get('object_type', []),
+                    int(model_output.shape[0]),
+                    motion_metadata=model_kwargs['y'].get('motion_metadata', []),
                 )
-                terms['proxy_recognizability_score'] = proxy_outputs['recognizability_score']
-                terms['proxy_physics_score'] = proxy_outputs['physics_score']
-                terms['proxy_quality_score'] = clamped_quality
-                terms['proxy_guidance_loss'] = 1.0 - clamped_quality
-                terms['loss'] = terms['loss'] + self.quality_proxy_guidance_weight * terms['proxy_guidance_loss']
+                teacher_losses = None
+                if physics_active_indices.numel() > 0:
+                    low_noise_mask_cpu = low_noise_mask_bool.detach().cpu().tolist()
+                    subset_object_types = [
+                        object_type
+                        for object_type, is_active in zip(resolved_object_types, low_noise_mask_cpu)
+                        if is_active
+                    ]
+                    subset_teacher_losses = physics_teacher.compute_losses(
+                        model_output[physics_active_indices],
+                        target[physics_active_indices],
+                        n_joints=actual_joints[physics_active_indices],
+                        lengths=lengths[physics_active_indices],
+                        object_types=subset_object_types,
+                    )
+                    teacher_losses = _expand_masked_teacher_losses(
+                        subset_teacher_losses,
+                        physics_active_indices,
+                        int(model_output.shape[0]),
+                    )
+                if teacher_losses is not None:
+                    low_noise_mask = low_noise_mask_bool.to(dtype=terms['loss'].dtype)
+                    teacher_total = (
+                        self.physics_teacher_feature_weight * teacher_losses['physics_teacher_feature_loss']
+                        + self.physics_teacher_margin_weight * teacher_losses['physics_teacher_margin_loss']
+                    )
+                    terms['physics_teacher_feature_loss'] = teacher_losses['physics_teacher_feature_loss'] * low_noise_mask
+                    terms['physics_teacher_margin_loss'] = teacher_losses['physics_teacher_margin_loss'] * low_noise_mask
+                    terms['physics_teacher_loss'] = teacher_total * low_noise_mask
+                    terms['physics_teacher_distance'] = teacher_losses['physics_teacher_distance'] * low_noise_mask
+                    terms['physics_teacher_target_distance'] = teacher_losses['physics_teacher_target_distance'] * low_noise_mask
+                    terms['physics_teacher_score'] = teacher_losses['physics_teacher_score'] * low_noise_mask
+                    terms['physics_teacher_target_score'] = teacher_losses['physics_teacher_target_score'] * low_noise_mask
+                    terms['loss'] = terms['loss'] + self.physics_teacher_weight * terms['physics_teacher_loss']
 
         else:
             raise NotImplementedError(self.loss_type)

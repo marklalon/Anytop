@@ -17,7 +17,8 @@ from tqdm import tqdm
 from diffusion.resample import create_named_schedule_sampler
 from sample.generate import main as generate
 import copy
-from eval.motion_quality_scorer import MotionQualityScorer
+from eval.direct_physics_teacher import DirectPhysicsTeacher
+from eval.direct_semantic_teacher import DirectSemanticTeacher
 from utils.model_util import load_model
 import random
 from data_loaders.get_data import get_dataset_loader
@@ -81,9 +82,7 @@ class TrainLoop:
             fp16_scale_growth=self.fp16_scale_growth,
         )
         
-
-        self.opt = AdamW(
-            self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay)
+        self.opt = AdamW(self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay)
         self.lr_scheduler = torch.optim.lr_scheduler.StepLR(self.opt, 
                                                 step_size = 10000, 
                                                 gamma = 0.99)
@@ -113,25 +112,31 @@ class TrainLoop:
                 drop_last=False,
                 use_reference_conditioning=getattr(self.args, 'use_reference_conditioning', True),
                 action_tags=getattr(self.args, 'action_tags', ''),
+                motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
+                main_process_prefetch_batches=getattr(self.args, 'main_process_prefetch_batches', 0),
             )
-        self.motion_scorer = None
-        self.quality_proxy_teacher_interval = max(1, int(getattr(self.args, 'quality_proxy_teacher_interval', 10)))
-        self.quality_proxy_teacher_microbatch = max(1, int(getattr(self.args, 'quality_proxy_teacher_microbatch', 4)))
-        self.quality_proxy_teacher_low_noise_max_t = max(0, int(getattr(self.args, 'quality_proxy_teacher_low_noise_max_t', 20)))
-        self.quality_proxy_supervision_weight = float(getattr(self.args, 'quality_proxy_supervision_weight', 1.0))
-        self.quality_proxy_agreement_interval = max(1, int(getattr(self.args, 'quality_proxy_agreement_interval', 1000)))
-        self._setup_quality_proxy_teacher()
+        self.physics_teacher = None
+        self._setup_physics_teacher()
+        self.semantic_teacher = None
+        self._setup_semantic_teacher()
         self.use_ddp = False
         self.ddp_model = self.model
 
-    def _setup_quality_proxy_teacher(self):
-        if not bool(getattr(self.args, 'enable_quality_proxy', False)):
+    def _setup_physics_teacher(self):
+        if float(getattr(self.args, 'physics_teacher_weight', 0.0)) <= 0.0:
             return
-        checkpoint_dir = str(getattr(self.args, 'motion_scorer_checkpoint_dir', '')).strip()
+        checkpoint_dir = str(getattr(self.args, 'physics_teacher_checkpoint_dir', '')).strip()
         if not checkpoint_dir:
-            raise ValueError('enable_quality_proxy requires --motion_scorer_checkpoint_dir to be set.')
-        device_name = str(self.device)
-        self.motion_scorer = MotionQualityScorer(checkpoint_dir, device=device_name)
+            raise ValueError('physics_teacher_weight requires --physics_teacher_checkpoint_dir to be set.')
+        self.physics_teacher = DirectPhysicsTeacher(checkpoint_dir, device=str(self.device))
+
+    def _setup_semantic_teacher(self):
+        if float(getattr(self.args, 'semantic_teacher_weight', 0.0)) <= 0.0:
+            return
+        checkpoint_dir = str(getattr(self.args, 'semantic_teacher_checkpoint_dir', '')).strip()
+        if not checkpoint_dir:
+            raise ValueError('semantic_teacher_weight requires --semantic_teacher_checkpoint_dir to be set.')
+        self.semantic_teacher = DirectSemanticTeacher(checkpoint_dir, device=str(self.device))
 
     def _load_and_sync_parameters(self):
         self.resume_checkpoint = self.find_resume_checkpoint() or self.resume_checkpoint
@@ -184,14 +189,31 @@ class TrainLoop:
                 # for the rest
                 state_dict = state_dict['opt']
 
-        tgt_wd = self.opt.param_groups[0]['weight_decay']
-        print('target weight decay:', tgt_wd)
-        self.opt.load_state_dict(state_dict)
-        print('loaded weight decay (will be replaced):',
-              self.opt.param_groups[0]['weight_decay'])
-        # preserve the weight decay parameter
-        for group in self.opt.param_groups:
-            group['weight_decay'] = tgt_wd
+        target_group_settings = [
+            {
+                'lr': group['lr'],
+                'weight_decay': group['weight_decay'],
+            }
+            for group in self.opt.param_groups
+        ]
+        print('target optimizer settings:', target_group_settings)
+        try:
+            self.opt.load_state_dict(state_dict)
+        except ValueError as exc:
+            logger.log(f"optimizer state restore skipped: {exc}")
+            return
+        print('loaded optimizer settings (will be replaced):', [
+            {
+                'lr': group['lr'],
+                'weight_decay': group['weight_decay'],
+            }
+            for group in self.opt.param_groups
+        ])
+        for group, target in zip(self.opt.param_groups, target_group_settings):
+            group['lr'] = target['lr']
+            group['weight_decay'] = target['weight_decay']
+            if 'initial_lr' in group:
+                group['initial_lr'] = target['lr']
 
     def run_loop(self):
          print('train steps:', self.num_steps)
@@ -267,69 +289,6 @@ class TrainLoop:
         updated['train_step'] = int(train_step)
         return updated
 
-    def _slice_cond_value(self, value, indices, index_list):
-        if torch.is_tensor(value):
-            return value.index_select(0, indices)
-        if isinstance(value, list):
-            return [value[i] for i in index_list]
-        if isinstance(value, tuple):
-            return tuple(value[i] for i in index_list)
-        return value
-
-    def _slice_batch_and_cond(self, batch, cond, indices):
-        index_list = indices.detach().cpu().tolist()
-        sliced_cond = {'y': {}}
-        for key, value in cond['y'].items():
-            sliced_cond['y'][key] = self._slice_cond_value(value, indices, index_list)
-        return batch.index_select(0, indices), sliced_cond
-
-    def _should_run_quality_proxy_teacher(self):
-        if self.motion_scorer is None:
-            return False
-        if not bool(getattr(self.args, 'enable_quality_proxy', False)):
-            return False
-        if self.quality_proxy_supervision_weight <= 0.0:
-            return False
-        return (self.total_step() + 1) % self.quality_proxy_teacher_interval == 0
-
-    def _run_quality_proxy_teacher_step(self, batch, cond):
-        sample_count = min(int(batch.shape[0]), self.quality_proxy_teacher_microbatch)
-        if sample_count <= 0:
-            return None
-        indices = torch.randperm(batch.shape[0], device=batch.device)[:sample_count]
-        teacher_batch, teacher_cond = self._slice_batch_and_cond(batch, cond, indices)
-        max_t = min(self.quality_proxy_teacher_low_noise_max_t, self.diffusion.num_timesteps - 1)
-        teacher_t = torch.randint(0, max_t + 1, (sample_count,), device=batch.device)
-        teacher_cond = self._with_train_step(teacher_cond, self.total_step())
-        with self._autocast_context():
-            teacher_losses = self.diffusion.proxy_teacher_losses(
-                self.ddp_model,
-                teacher_batch,
-                teacher_t,
-                model_kwargs=teacher_cond,
-                scorer=self.motion_scorer,
-            )
-        teacher_loss = self.quality_proxy_supervision_weight * teacher_losses['proxy_supervision_loss'].mean()
-        self.mp_trainer.backward(teacher_loss)
-        logged_losses = {
-            'proxy_supervision_loss': teacher_losses['proxy_supervision_loss'],
-            'proxy_recognizability_loss': teacher_losses['proxy_recognizability_loss'],
-            'proxy_physics_loss': teacher_losses['proxy_physics_loss'],
-            'proxy_quality_consistency_loss': teacher_losses['proxy_quality_consistency_loss'],
-        }
-        if (self.total_step() + 1) % self.quality_proxy_agreement_interval == 0:
-            logged_losses.update({
-                'proxy_teacher_agreement': teacher_losses['proxy_teacher_agreement'],
-                'proxy_teacher_quality': teacher_losses['proxy_teacher_quality'],
-                'proxy_pred_quality': teacher_losses['proxy_pred_quality'],
-                'proxy_teacher_recognizability': teacher_losses['proxy_teacher_recognizability'],
-                'proxy_pred_recognizability': teacher_losses['proxy_pred_recognizability'],
-                'proxy_teacher_physics': teacher_losses['proxy_teacher_physics'],
-                'proxy_pred_physics': teacher_losses['proxy_pred_physics'],
-            })
-        log_loss_dict(self.diffusion, teacher_t, logged_losses)
-        return teacher_losses
-
     def _should_save(self, completed_step):
         return completed_step % self.save_interval == 0 or completed_step == self.num_steps
 
@@ -346,6 +305,8 @@ class TrainLoop:
                 batch,
                 t,
                 model_kwargs=self._with_train_step(cond, self.total_step()),
+                physics_teacher=self.physics_teacher,
+                semantic_teacher=self.semantic_teacher,
             )
 
         reduced = {}
@@ -441,8 +402,6 @@ class TrainLoop:
 
     def forward_backward(self, batch, cond, epoch):
         self.mp_trainer.zero_grad()
-        if self._should_run_quality_proxy_teacher():
-            self._run_quality_proxy_teacher_step(batch, cond)
         for i in range(0, batch.shape[0], self.microbatch):
             # Eliminates the microbatch feature
             assert i == 0
@@ -457,7 +416,9 @@ class TrainLoop:
                 self.ddp_model,
                 micro,  # [bs, ch, image_size, image_size]
                 t,  # [bs](int) sampled timesteps
-                model_kwargs=self._with_train_step(micro_cond, self.total_step())
+                model_kwargs=self._with_train_step(micro_cond, self.total_step()),
+                physics_teacher=self.physics_teacher,
+                semantic_teacher=self.semantic_teacher,
             )
 
             if last_batch or not self.use_ddp:
@@ -629,7 +590,9 @@ def log_loss_dict(diffusion, ts, losses):
     for key, values in losses.items():
         logger.logkv_mean(key, values.mean().item())
         # Log the quantiles (four quartiles, in particular).
-        for sub_t, sub_loss in zip(ts.cpu().numpy(), values.detach().cpu().numpy()):
+        ts_list = ts.detach().cpu().reshape(-1).tolist()
+        loss_list = values.detach().float().cpu().reshape(-1).tolist()
+        for sub_t, sub_loss in zip(ts_list, loss_list):
             quartile = int(4 * sub_t / diffusion.num_timesteps)
             logger.logkv_mean(f"{key}_q{quartile}", sub_loss)
             
