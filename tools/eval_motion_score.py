@@ -27,13 +27,9 @@ DEFAULT_CHECKPOINT_DIR = "save/motion_scorer_perceptual_v2"
 METRIC_KEYS = (
     "quality_score",
     "recognizability_score",
-    "density_score",
-    "plausibility_score",
     "physics_score",
     "species_confidence",
     "action_confidence",
-    "density_log_prob",
-    "density_distance",
     "physics_distance",
     "mahal_distance",
 )
@@ -318,7 +314,6 @@ def score_motion_array(
         key: float(np.mean([chunk_result[key] for chunk_result in chunk_results]))
         for key in METRIC_KEYS
     }
-    aggregated["density_mode"] = scorer.density_mode
     aggregated["segment_count"] = len(chunk_results)
     aggregated["segment_lengths"] = segment_lengths
     aggregated["frame_count"] = int(motion_np.shape[0])
@@ -330,10 +325,21 @@ def build_metric_summary(values: list[float]) -> dict[str, float]:
     values_np = np.asarray(values, dtype=np.float32)
     return {
         "mean": float(values_np.mean()),
+        "std": float(values_np.std()),
         "median": float(np.median(values_np)),
         "min": float(values_np.min()),
         "max": float(values_np.max()),
     }
+
+
+def metric_summary_is_saturated(summary: dict[str, float], *, tolerance: float = 1e-3) -> bool:
+    if summary["max"] - summary["min"] <= tolerance:
+        return True
+    if summary["min"] >= 1.0 - tolerance:
+        return True
+    if summary["max"] <= tolerance:
+        return True
+    return False
 
 
 def build_report_summary(samples: list[dict[str, Any]], failures: list[dict[str, str]]) -> dict[str, Any]:
@@ -349,6 +355,13 @@ def build_report_summary(samples: list[dict[str, Any]], failures: list[dict[str,
     summary["metrics"] = {
         metric_key: build_metric_summary([float(sample[metric_key]) for sample in samples])
         for metric_key in METRIC_KEYS
+    }
+    summary["diagnostics"] = {
+        "saturated_metrics": [
+            metric_key
+            for metric_key, metric_summary in summary["metrics"].items()
+            if metric_key.endswith("_score") and metric_summary_is_saturated(metric_summary)
+        ]
     }
 
     by_object_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -515,12 +528,14 @@ def main() -> int:
         )
         print(
             "recognizability_score mean: "
-            f"{metrics['recognizability_score']['mean']:.4f} | density_score mean: {metrics['density_score']['mean']:.4f}"
+            f"{metrics['recognizability_score']['mean']:.4f} | physics_score mean: {metrics['physics_score']['mean']:.4f}"
         )
-        print(
-            "plausibility_score mean: "
-            f"{metrics['plausibility_score']['mean']:.4f} | physics_score mean: {metrics['physics_score']['mean']:.4f}"
-        )
+        saturated_metrics = report["summary"].get("diagnostics", {}).get("saturated_metrics", [])
+        if saturated_metrics:
+            print(
+                "warning: saturated score metrics detected: "
+                f"{', '.join(saturated_metrics)}"
+            )
     print(f"saved report: {output_json}")
 
     return 0 if samples else 1

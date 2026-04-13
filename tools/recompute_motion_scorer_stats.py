@@ -10,12 +10,10 @@ import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
-from model.motion_autoencoder import MotionScorerNet
 from train.train_motion_scorer import (
     compute_and_save_train_stats,
     find_latest_checkpoint,
     prepare_training_assets,
-    select_model_state_dict,
 )
 
 
@@ -54,35 +52,8 @@ def main() -> int:
     if device.type == "cuda" and not torch.cuda.is_available():
         device = torch.device("cpu")
 
-    skeleton_lookup, species_vocab, action_vocab = prepare_training_assets(train_args)
-
-    model = MotionScorerNet(
-        feature_dim=int(saved_args.get("feature_dim", 13)),
-        d_model=int(saved_args.get("d_model", 128)),
-        latent_dim=int(saved_args.get("latent_dim", 128)),
-        num_conv_layers=int(saved_args.get("num_conv_layers", 3)),
-        kernel_size=int(saved_args.get("kernel_size", 5)),
-        max_joints=int(saved_args.get("max_joints", 143)),
-        num_species=int(saved_args.get("num_species", species_vocab.size)),
-        num_actions=int(saved_args.get("num_actions", action_vocab.size)),
-        metadata_dim=int(saved_args.get("metadata_feature_dim", train_args.metadata_feature_dim)),
-        metadata_hidden_dim=int(saved_args.get("metadata_hidden_dim", 128)),
-    ).to(device)
-    payload = torch.load(checkpoint_path, map_location="cpu")
-    model.load_state_dict(select_model_state_dict(payload, prefer_ema=True), strict=True)
-
-    amp_dtype = str(saved_args.get("amp_dtype", "fp32")).lower()
-    autocast_dtype = None
-    amp_enabled = False
-    if device.type == "cuda":
-        if amp_dtype == "fp16":
-            autocast_dtype = torch.float16
-            amp_enabled = True
-        elif amp_dtype == "bf16":
-            autocast_dtype = torch.bfloat16
-            amp_enabled = True
-
-    compute_and_save_train_stats(train_args, model, device, autocast_dtype, amp_enabled, skeleton_lookup=skeleton_lookup)
+    skeleton_lookup, _species_vocab, _action_vocab = prepare_training_assets(train_args)
+    compute_and_save_train_stats(train_args, device, skeleton_lookup=skeleton_lookup)
     print(f"recomputed train_stats.npy for {checkpoint_path}")
     return 0
 

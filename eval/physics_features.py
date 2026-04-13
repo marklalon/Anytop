@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Mapping, Sequence
 
 import torch
@@ -22,28 +23,42 @@ def _cached_index_tensor(indices: Sequence[int], device: torch.device) -> torch.
     return tensor
 
 
+def _as_float_tensor(values: torch.Tensor) -> torch.Tensor:
+    return values if values.dtype in (torch.float32, torch.float64) else values.float()
+
+
 def _safe_quantile(values: torch.Tensor, q: float) -> torch.Tensor:
     if values.numel() == 0:
         return values.new_zeros(())
-    return torch.quantile(values.float(), q)
+    flat = _as_float_tensor(values).flatten()
+    if flat.numel() == 1:
+        return flat[0]
+    rank = float(q) * float(flat.numel() - 1)
+    lower_index = int(math.floor(rank))
+    upper_index = int(math.ceil(rank))
+    lower_value = flat.kthvalue(lower_index + 1).values
+    if upper_index == lower_index:
+        return lower_value
+    upper_value = flat.kthvalue(upper_index + 1).values
+    return torch.lerp(lower_value, upper_value, flat.new_tensor(rank - lower_index))
 
 
 def _safe_mean(values: torch.Tensor) -> torch.Tensor:
     if values.numel() == 0:
         return values.new_zeros(())
-    return values.float().mean()
+    return _as_float_tensor(values).mean()
 
 
 def _safe_std(values: torch.Tensor) -> torch.Tensor:
     if values.numel() <= 1:
         return values.new_zeros(())
-    return values.float().std(unbiased=False)
+    return _as_float_tensor(values).std(unbiased=False)
 
 
 def _safe_max(values: torch.Tensor) -> torch.Tensor:
     if values.numel() == 0:
         return values.new_zeros(())
-    return values.float().max()
+    return _as_float_tensor(values).max()
 
 
 def _safe_ratio(numerator: torch.Tensor, denominator: torch.Tensor) -> torch.Tensor:
@@ -53,7 +68,8 @@ def _safe_ratio(numerator: torch.Tensor, denominator: torch.Tensor) -> torch.Ten
 def _kurtosis(values: torch.Tensor) -> torch.Tensor:
     if values.numel() <= 3:
         return values.new_zeros(())
-    centered = values.float() - values.float().mean()
+    float_values = _as_float_tensor(values)
+    centered = float_values - float_values.mean()
     variance = centered.pow(2).mean().clamp_min(1e-6)
     return centered.pow(4).mean() / variance.pow(2)
 
@@ -61,7 +77,8 @@ def _kurtosis(values: torch.Tensor) -> torch.Tensor:
 def _autocorr_peak(signal: torch.Tensor, max_lag: int = 12) -> torch.Tensor:
     if signal.numel() <= 2:
         return signal.new_zeros(())
-    centered = signal.float() - signal.float().mean()
+    centered_signal = _as_float_tensor(signal)
+    centered = centered_signal - centered_signal.mean()
     denom = centered.pow(2).sum().clamp_min(1e-6)
     peak = centered.new_zeros(())
     for lag in range(1, min(max_lag, int(signal.numel()) - 1) + 1):
@@ -73,31 +90,33 @@ def _autocorr_peak(signal: torch.Tensor, max_lag: int = 12) -> torch.Tensor:
 def _phase_offset(left: torch.Tensor, right: torch.Tensor, max_lag: int = 8) -> torch.Tensor:
     if left.numel() <= 2 or right.numel() <= 2:
         return left.new_zeros(())
+    left_float = _as_float_tensor(left)
+    right_float = _as_float_tensor(right)
     best_lag = 0
     best_score = None
-    for lag in range(-min(max_lag, int(left.numel()) - 1), min(max_lag, int(left.numel()) - 1) + 1):
+    for lag in range(-min(max_lag, int(left_float.numel()) - 1), min(max_lag, int(left_float.numel()) - 1) + 1):
         if lag < 0:
-            lhs = left[-lag:]
-            rhs = right[: lag + right.shape[0]]
+            lhs = left_float[-lag:]
+            rhs = right_float[: lag + right_float.shape[0]]
         elif lag > 0:
-            lhs = left[: left.shape[0] - lag]
-            rhs = right[lag:]
+            lhs = left_float[: left_float.shape[0] - lag]
+            rhs = right_float[lag:]
         else:
-            lhs = left
-            rhs = right
+            lhs = left_float
+            rhs = right_float
         if lhs.numel() <= 1 or rhs.numel() <= 1:
             continue
-        score = (lhs.float() * rhs.float()).mean()
+        score = (lhs * rhs).mean()
         if best_score is None or score > best_score:
             best_score = score
             best_lag = lag
-    return left.new_tensor(float(best_lag) / max(float(left.numel()), 1.0))
+    return left_float.new_tensor(float(best_lag) / max(float(left_float.numel()), 1.0))
 
 
 def _high_frequency_ratio(signal: torch.Tensor) -> torch.Tensor:
     if signal.numel() <= 4:
         return signal.new_zeros(())
-    spectrum = torch.fft.rfft(signal.float(), dim=0)
+    spectrum = torch.fft.rfft(_as_float_tensor(signal), dim=0)
     power = spectrum.abs().pow(2)
     if power.shape[0] <= 2:
         return signal.new_zeros(())
@@ -138,10 +157,10 @@ def _extract_single_sample_features(
     length = max(1, min(int(length), int(motion.shape[-1])))
     joint_count = min(int(metadata.n_joints), int(motion.shape[0]))
     motion = motion[:joint_count, :, :length]
-    positions = motion[:, :3, :].permute(2, 0, 1).contiguous()
-    velocities = motion[:, 9:12, :].permute(2, 0, 1).contiguous()
-    contact_channel = motion[:, 12, :].permute(1, 0).contiguous()
-    root_rot6d = motion[0, 3:9, :].permute(1, 0).contiguous()
+    positions = motion[:, :3, :].permute(2, 0, 1)
+    velocities = motion[:, 9:12, :].permute(2, 0, 1)
+    contact_channel = motion[:, 12, :].permute(1, 0)
+    root_rot6d = motion[0, 3:9, :].permute(1, 0)
     if metadata.edge_child_indices:
         edge_child_indices = [index for index in metadata.edge_child_indices if index < joint_count]
         edge_parent_indices = metadata.edge_parent_indices[: len(edge_child_indices)]
@@ -172,6 +191,8 @@ def _extract_single_sample_features(
     accel_norm = torch.linalg.norm(accel, dim=-1) if accel.numel() else velocities.new_zeros((0, joint_count))
     jerk = accel[1:] - accel[:-1] if accel.shape[0] > 1 else velocities.new_zeros((0, joint_count, 3))
     jerk_norm = torch.linalg.norm(jerk, dim=-1) if jerk.numel() else velocities.new_zeros((0, joint_count))
+    pose_center = positions.mean(dim=1)
+    pose_center_xz = pose_center[:, [0, 2]]
 
     contact_indices = metadata.contact_joints[:]
     if contact_indices:
@@ -189,8 +210,7 @@ def _extract_single_sample_features(
         if active_positions.numel():
             landing_cluster = torch.linalg.norm(active_positions[:, [0, 2]] - active_positions[:, [0, 2]].mean(dim=0), dim=-1)
             support_centroid = contact_positions[:, :, [0, 2]].mean(dim=1)
-            pose_center = positions.mean(dim=1)[:, [0, 2]]
-            support_offset = torch.linalg.norm(pose_center - support_centroid, dim=-1)
+            support_offset = torch.linalg.norm(pose_center_xz - support_centroid, dim=-1)
         else:
             landing_cluster = positions.new_zeros((0,))
             support_offset = positions.new_zeros((0,))
@@ -224,7 +244,6 @@ def _extract_single_sample_features(
     else:
         symmetry_metrics_tensor = positions.new_zeros((4,))
 
-    pose_center = positions.mean(dim=1)
     pose_center_smoothness = _safe_mean(torch.linalg.norm(pose_center[2:] - 2.0 * pose_center[1:-1] + pose_center[:-2], dim=-1))
     kinetic_energy_series = joint_speed.pow(2).mean(dim=1)
     bbox_min = positions.min(dim=1).values
@@ -304,13 +323,25 @@ def extract_physics_features(
                 f"feature_mean/feature_std shape mismatch for motion batch: motion={tuple(motion.shape)}, "
                 f"mean={tuple(feature_mean.shape)}, std={tuple(feature_std.shape)}"
             )
-    batch_features = []
+    lengths_cpu = lengths.detach().to("cpu", non_blocking=True).tolist()
+    joint_counts_cpu = n_joints.detach().to("cpu", non_blocking=True).tolist()
+    sample_args: list[tuple[torch.Tensor, int, SkeletonMetadata, torch.Tensor | None, torch.Tensor | None]] = []
     for batch_index, object_type in enumerate(object_types):
-        length = max(1, min(int(lengths[batch_index].item()), int(motion.shape[-1])))
-        joint_count = max(1, int(n_joints[batch_index].item()))
-        sample_motion = motion[batch_index, :joint_count, :, :length]
-        sample_mean = None if feature_mean is None else feature_mean[batch_index, :joint_count, :]
-        sample_std = None if feature_std is None else feature_std[batch_index, :joint_count, :]
-        sample_motion = _maybe_denormalize_motion(sample_motion, sample_mean, sample_std)
-        batch_features.append(_extract_single_sample_features(sample_motion, length, metadata_lookup[str(object_type)]))
+        length = max(1, min(int(lengths_cpu[batch_index]), int(motion.shape[-1])))
+        joint_count = max(1, int(joint_counts_cpu[batch_index]))
+        sample_args.append(
+            (
+                motion[batch_index, :joint_count, :, :length],
+                length,
+                metadata_lookup[str(object_type)],
+                None if feature_mean is None else feature_mean[batch_index, :joint_count, :],
+                None if feature_std is None else feature_std[batch_index, :joint_count, :],
+            )
+        )
+
+    batch_features = []
+    for sample_motion, length, metadata, sample_mean, sample_std in sample_args:
+        with torch.inference_mode():
+            denormalized_motion = _maybe_denormalize_motion(sample_motion, sample_mean, sample_std)
+            batch_features.append(_extract_single_sample_features(denormalized_motion, length, metadata))
     return torch.stack(batch_features, dim=0).to(device=motion.device, dtype=motion.dtype)

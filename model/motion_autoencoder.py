@@ -385,7 +385,6 @@ class MotionScorerNet(nn.Module):
         self.max_joints = max_joints
         self.num_species = int(num_species)
         self.num_actions = int(num_actions)
-        self.metadata_dim = int(metadata_dim)
         self.phys_dim = int(phys_dim)
 
         self.encoder = MotionEncoder(
@@ -396,18 +395,9 @@ class MotionScorerNet(nn.Module):
             kernel_size=kernel_size,
             max_joints=max_joints,
         )
-        self.metadata_projection = None
-        metadata_context_dim = 0
-        if self.metadata_dim > 0:
-            self.metadata_projection = _make_mlp(self.metadata_dim, metadata_hidden_dim, metadata_hidden_dim)
-            metadata_context_dim = metadata_hidden_dim
-
         self.species_head = _make_mlp(latent_dim, d_model, self.num_species)
         self.action_head = _make_mlp(latent_dim, d_model, self.num_actions)
         self.phys_head = _make_mlp(latent_dim, d_model, phys_dim)
-
-        disc_input_dim = latent_dim + metadata_context_dim
-        self.disc_head = _make_mlp(disc_input_dim, d_model, 1)
 
     def encode(
         self,
@@ -417,29 +407,12 @@ class MotionScorerNet(nn.Module):
     ) -> torch.Tensor:
         return self.encoder(motion, n_joints, lengths)
 
-    def _build_disc_context(
-        self,
-        latents: torch.Tensor,
-        *,
-        metadata_features: torch.Tensor | None,
-    ) -> torch.Tensor:
-        context_parts = [latents]
-        batch_size = latents.shape[0]
-
-        if self.metadata_projection is not None:
-            if metadata_features is None:
-                metadata_features = latents.new_zeros((batch_size, self.metadata_dim))
-            context_parts.append(self.metadata_projection(metadata_features))
-        return torch.cat(context_parts, dim=-1)
-
     def forward_from_latents(
         self,
         latents: torch.Tensor,
         *,
-        metadata_features: torch.Tensor | None = None,
         return_species_logits: bool = True,
         return_action_logits: bool = True,
-        return_disc_logits: bool = True,
         return_phys_features: bool = True,
     ) -> dict[str, torch.Tensor]:
         outputs = {"latents": latents}
@@ -447,12 +420,6 @@ class MotionScorerNet(nn.Module):
             outputs["species_logits"] = self.species_head(latents)
         if return_action_logits:
             outputs["action_logits"] = self.action_head(latents)
-        if return_disc_logits:
-            disc_context = self._build_disc_context(
-                latents,
-                metadata_features=metadata_features,
-            )
-            outputs["disc_logits"] = self.disc_head(disc_context).squeeze(-1)
         if return_phys_features:
             outputs["phys_features"] = self.phys_head(latents)
         return outputs
@@ -463,18 +430,14 @@ class MotionScorerNet(nn.Module):
         n_joints: torch.Tensor,
         lengths: torch.Tensor,
         *,
-        metadata_features: torch.Tensor | None = None,
         return_species_logits: bool = True,
         return_action_logits: bool = True,
-        return_disc_logits: bool = True,
         return_phys_features: bool = True,
     ) -> dict[str, torch.Tensor]:
         latents = self.encode(motion, n_joints, lengths)
         return self.forward_from_latents(
             latents,
-            metadata_features=metadata_features,
             return_species_logits=return_species_logits,
             return_action_logits=return_action_logits,
-            return_disc_logits=return_disc_logits,
             return_phys_features=return_phys_features,
         )

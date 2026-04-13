@@ -486,7 +486,7 @@ def generate_biomechanical_negative_batch(
         metadata = metadata_lookup[str(object_type)]
         length = max(1, min(int(lengths_cpu[batch_index]), int(motion.shape[-1])))
         sample = negative_motion[batch_index, : metadata.n_joints, :, :length]
-        reference_sample = sample.clone()
+        reference_sample = motion[batch_index, : metadata.n_joints, :, :length]
         sample_std = None if feature_std is None else feature_std[batch_index, : metadata.n_joints, :]
         kind = sampled_negative_kinds[random.randrange(len(sampled_negative_kinds))]
         negative_kinds.append(kind)
@@ -498,7 +498,6 @@ def generate_biomechanical_negative_batch(
             if attempt_index > 0:
                 sample.copy_(reference_sample)
             _apply_negative_kind_with_std(sample, metadata, length, kind, strength_scale=strength_scale, sample_std=sample_std)
-            _refresh_derived_channels(sample, metadata, length)
             if _negative_is_salient_enough(reference_sample, sample, length, sample_std=sample_std):
                 applied = True
                 break
@@ -517,7 +516,10 @@ def generate_biomechanical_negative_batch(
             )
             if kind != "interpenetration":
                 _apply_interpenetration(sample, metadata, length, strength_scale=1.8, sample_std=sample_std)
-            _refresh_derived_channels(sample, metadata, length)
+
+        # Only the final accepted negative needs refreshed velocity/contact
+        # channels; doing this per attempt dominates CPU time in the hot loop.
+        _refresh_derived_channels(sample, metadata, length)
 
     return {
         "motion": negative_motion,

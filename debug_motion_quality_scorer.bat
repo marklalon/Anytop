@@ -1,11 +1,6 @@
 @echo off
 set PYTHON_EXE=%~dp0..\.venv\Scripts\python.exe
-set CHECKPOINT_DIR=save\motion_scorer_v5
-
-%PYTHON_EXE% "%~dp0tools\recompute_motion_scorer_stats.py" ^
-    --checkpoint_dir %CHECKPOINT_DIR% ^
-    --device cuda
-if errorlevel 1 exit /b %errorlevel%
+set CHECKPOINT_DIR=save\motion_scorer_v6
 
 %PYTHON_EXE% "%~dp0tools\debug_motion_quality_scorer.py" ^
     --checkpoint_dir %CHECKPOINT_DIR% ^
