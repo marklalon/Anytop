@@ -192,6 +192,8 @@ def add_training_options(parser):
                        help="Number of steps to linearly ramp direct physics teacher supervision from zero to full weight after physics_teacher_start_step.")
     group.add_argument("--physics_teacher_max_t", default=30, type=int,
                        help="Maximum diffusion timestep at which the direct physics teacher loss is applied.")
+    group.add_argument("--physics_features_device", default="auto", type=str, choices=["auto", "cpu"],
+                       help="Device used for extract_physics_features per-sample computation. 'auto' keeps it on the motion tensor's device (usually cuda); 'cpu' moves per-sample slices to CPU to avoid kernel-launch overhead on many tiny ops.")
     group.add_argument("--semantic_teacher_weight", default=0.05, type=float,
                        help="Overall weight of the direct semantic teacher loss applied to the main model.")
     group.add_argument("--semantic_teacher_species_weight", default=1.0, type=float,

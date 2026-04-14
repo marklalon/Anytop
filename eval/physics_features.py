@@ -376,6 +376,7 @@ def extract_physics_features(
     feature_mean: torch.Tensor | None = None,
     feature_std: torch.Tensor | None = None,
     differentiable: bool = False,
+    compute_device: torch.device | str | None = None,
 ) -> torch.Tensor:
     if motion.ndim != 4:
         raise ValueError(f"Expected [B, J, F, T] motion tensor, got {tuple(motion.shape)}")
@@ -396,6 +397,7 @@ def extract_physics_features(
     B = motion.shape[0]
     lengths_cpu = lengths.detach().cpu().tolist()
     joint_counts_cpu = n_joints.detach().cpu().tolist()
+    target_compute_device = torch.device(compute_device) if compute_device is not None else None
 
     all_features = [None] * B
     for i in range(B):
@@ -405,6 +407,12 @@ def extract_physics_features(
         sample_motion = motion[i, :joint_count, :, :length]
         sample_mean = None if feature_mean is None else feature_mean[i, :joint_count, :]
         sample_std = None if feature_std is None else feature_std[i, :joint_count, :]
+        if target_compute_device is not None and sample_motion.device != target_compute_device:
+            sample_motion = sample_motion.to(target_compute_device)
+            if sample_mean is not None:
+                sample_mean = sample_mean.to(target_compute_device)
+            if sample_std is not None:
+                sample_std = sample_std.to(target_compute_device)
 
         if differentiable:
             with torch.inference_mode(False):

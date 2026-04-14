@@ -41,12 +41,16 @@ class DirectPhysicsTeacher:
         *,
         device: str | torch.device = "cuda",
         dataset_dir: str | os.PathLike[str] | None = None,
+        features_compute_device: str | torch.device | None = None,
     ) -> None:
         checkpoint_path = _resolve_checkpoint_dir(checkpoint_dir)
         requested_device = torch.device(device)
         if requested_device.type == "cuda" and not torch.cuda.is_available():
             requested_device = torch.device("cpu")
         self.device = requested_device
+        self.features_compute_device = (
+            torch.device(features_compute_device) if features_compute_device is not None else None
+        )
 
         args_path = checkpoint_path / "args.json"
         if not args_path.exists():
@@ -94,6 +98,7 @@ class DirectPhysicsTeacher:
                 lengths.detach(),
                 object_types,
                 self.skeleton_lookup,
+                compute_device=self.features_compute_device,
             ).float()
 
     def compute_losses(
@@ -113,6 +118,7 @@ class DirectPhysicsTeacher:
             object_types,
             self.skeleton_lookup,
             differentiable=True,
+            compute_device=self.features_compute_device,
         ).float()
 
         if target_features is None:

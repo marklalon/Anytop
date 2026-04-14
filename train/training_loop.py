@@ -128,7 +128,13 @@ class TrainLoop:
         checkpoint_dir = str(getattr(self.args, 'motion_scorer_checkpoint_dir', '')).strip()
         if not checkpoint_dir:
             raise ValueError('physics_teacher_weight requires --motion_scorer_checkpoint_dir to be set.')
-        self.physics_teacher = DirectPhysicsTeacher(checkpoint_dir, device=str(self.device))
+        features_device_raw = str(getattr(self.args, 'physics_features_device', 'auto')).strip().lower()
+        features_compute_device = torch.device('cpu') if features_device_raw == 'cpu' else None
+        self.physics_teacher = DirectPhysicsTeacher(
+            checkpoint_dir,
+            device=str(self.device),
+            features_compute_device=features_compute_device,
+        )
 
     def _setup_semantic_teacher(self):
         if float(getattr(self.args, 'semantic_teacher_weight', 0.0)) <= 0.0:
