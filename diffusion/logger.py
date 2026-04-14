@@ -15,6 +15,11 @@ import warnings
 from collections import defaultdict
 from contextlib import contextmanager
 
+try:
+    from tqdm import tqdm
+except ImportError:  # pragma: no cover
+    tqdm = None
+
 DEBUG = 10
 INFO = 20
 WARN = 30
@@ -72,22 +77,20 @@ class HumanOutputFormat(KVWriter, SeqWriter):
                 % (key, " " * (keywidth - len(key)), val, " " * (valwidth - len(val)))
             )
         lines.append(dashes)
-        self.file.write("\n".join(lines) + "\n")
-
-        # Flush the output to the file
-        self.file.flush()
+        self._write_text("\n".join(lines))
 
     def _truncate(self, s):
         maxlen = 30
         return s[: maxlen - 3] + "..." if len(s) > maxlen else s
 
     def writeseq(self, seq):
-        seq = list(seq)
-        for (i, elem) in enumerate(seq):
-            self.file.write(elem)
-            if i < len(seq) - 1:  # add space unless this is the last one
-                self.file.write(" ")
-        self.file.write("\n")
+        self._write_text(" ".join(map(str, seq)))
+
+    def _write_text(self, text):
+        if tqdm is not None and self.file in {sys.stdout, sys.stderr}:
+            tqdm.write(text, file=self.file)
+            return
+        self.file.write(text + "\n")
         self.file.flush()
 
     def close(self):

@@ -178,8 +178,8 @@ def add_training_options(parser):
                        help="If True, will use EMA model averaging.")
     group.add_argument("--balanced", action='store_true',
                        help="Use balancing sampler for fairness between topologies")
-    group.add_argument("--physics_teacher_checkpoint_dir", default='save/motion_scorer_v8', type=str,
-                       help="Path to the motion-scorer stats directory used by the direct physics teacher. Only train_stats.npy and args.json are loaded; no scorer network is instantiated.")
+    group.add_argument("--motion_scorer_checkpoint_dir", default='save/motion_scorer_v8', type=str,
+                       help="Path to the motion-scorer checkpoint directory used by both physics and semantic teachers.")
     group.add_argument("--physics_teacher_weight", default=0.0, type=float,
                        help="Overall weight of the direct physics teacher loss applied to the main model.")
     group.add_argument("--physics_teacher_feature_weight", default=1.0, type=float,
@@ -188,10 +188,10 @@ def add_training_options(parser):
                        help="Weight of the manifold margin term inside the direct physics teacher loss.")
     group.add_argument("--physics_teacher_start_step", default=0, type=int,
                        help="Training step at which direct physics teacher supervision starts contributing to the main model loss.")
+    group.add_argument("--physics_teacher_ramp_steps", default=0, type=int,
+                       help="Number of steps to linearly ramp direct physics teacher supervision from zero to full weight after physics_teacher_start_step.")
     group.add_argument("--physics_teacher_max_t", default=30, type=int,
                        help="Maximum diffusion timestep at which the direct physics teacher loss is applied.")
-    group.add_argument("--semantic_teacher_checkpoint_dir", default='save/motion_scorer_v8', type=str,
-                       help="Path to the motion-scorer checkpoint directory used by the direct semantic teacher.")
     group.add_argument("--semantic_teacher_weight", default=0.05, type=float,
                        help="Overall weight of the direct semantic teacher loss applied to the main model.")
     group.add_argument("--semantic_teacher_species_weight", default=1.0, type=float,
@@ -202,6 +202,8 @@ def add_training_options(parser):
                        help="Weight of the clean-motion logits distillation term inside the direct semantic teacher loss.")
     group.add_argument("--semantic_teacher_start_step", default=0, type=int,
                        help="Training step at which direct semantic teacher supervision starts contributing to the main model loss.")
+    group.add_argument("--semantic_teacher_ramp_steps", default=0, type=int,
+                       help="Number of steps to linearly ramp direct semantic teacher supervision from zero to full weight after semantic_teacher_start_step.")
     group.add_argument("--semantic_teacher_max_t", default=30, type=int,
                        help="Maximum diffusion timestep at which the direct semantic teacher loss is applied.")
     group.add_argument("--semantic_teacher_temperature", default=1.0, type=float,

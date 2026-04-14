@@ -13,6 +13,7 @@ import torch
 import torch as th
 from copy import deepcopy
 from data_loaders.truebones.truebones_utils.motion_labels import infer_species_label
+from diffusion import logger
 from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood, geodesic_distance
 from utils.rotation_conversions import rotation_6d_to_matrix_safe
@@ -29,6 +30,71 @@ def _expand_masked_teacher_losses(teacher_losses, active_indices, batch_size):
         full_value[active_indices] = value
         expanded[key] = full_value
     return expanded
+
+
+def _masked_teacher_mean(values, active_mask):
+    active_values = values[active_mask]
+    if active_values.numel() == 0:
+        return values.new_zeros(())
+    return active_values.mean()
+
+
+def _broadcast_batch_scalar(value, batch_size):
+    return value.reshape(1).expand(batch_size)
+
+
+def _normalize_teacher_batch_term(values, active_mask):
+    return _broadcast_batch_scalar(_masked_teacher_mean(values, active_mask), int(values.shape[0]))
+
+
+def _teacher_weight_scale(current_step, start_step, ramp_steps):
+    current_step = int(current_step)
+    start_step = int(start_step)
+    ramp_steps = int(ramp_steps)
+    if current_step < start_step:
+        return 0.0
+    if ramp_steps <= 0:
+        return 1.0
+    progress = (current_step - start_step + 1) / float(ramp_steps)
+    return max(0.0, min(progress, 1.0))
+
+
+def _teacher_ramp_end_step(start_step, ramp_steps):
+    start_step = int(start_step)
+    ramp_steps = int(ramp_steps)
+    if ramp_steps <= 0:
+        return start_step
+    return start_step + ramp_steps - 1
+
+
+def _compute_masked_teacher_losses(
+    physics_teacher,
+    pred_motion,
+    target_motion,
+    *,
+    n_joints,
+    lengths,
+    object_types,
+    active_mask,
+):
+    active_indices = active_mask.nonzero(as_tuple=False).flatten()
+    if active_indices.numel() == 0:
+        return None
+
+    active_mask_cpu = active_mask.detach().cpu().tolist()
+    subset_object_types = [
+        object_type
+        for object_type, is_active in zip(object_types, active_mask_cpu)
+        if is_active
+    ]
+    subset_losses = physics_teacher.compute_losses(
+        pred_motion[active_indices],
+        target_motion[active_indices],
+        n_joints=n_joints[active_indices],
+        lengths=lengths[active_indices],
+        object_types=subset_object_types,
+    )
+    return _expand_masked_teacher_losses(subset_losses, active_indices, int(pred_motion.shape[0]))
 
 
 def _compute_masked_semantic_teacher_losses(
@@ -210,12 +276,14 @@ class GaussianDiffusion:
         physics_teacher_feature_weight=1.0,
         physics_teacher_margin_weight=0.25,
         physics_teacher_start_step=0,
+        physics_teacher_ramp_steps=0,
         physics_teacher_max_t=30,
         semantic_teacher_weight=0.05,
         semantic_teacher_species_weight=1.0,
         semantic_teacher_action_weight=1.0,
         semantic_teacher_kl_weight=0.25,
         semantic_teacher_start_step=0,
+        semantic_teacher_ramp_steps=0,
         semantic_teacher_max_t=30,
         semantic_teacher_temperature=1.0,
     ):
@@ -231,14 +299,22 @@ class GaussianDiffusion:
         self.physics_teacher_feature_weight = float(physics_teacher_feature_weight)
         self.physics_teacher_margin_weight = float(physics_teacher_margin_weight)
         self.physics_teacher_start_step = int(physics_teacher_start_step)
+        self.physics_teacher_ramp_steps = int(physics_teacher_ramp_steps)
         self.physics_teacher_max_t = int(physics_teacher_max_t)
         self.semantic_teacher_weight = float(semantic_teacher_weight)
         self.semantic_teacher_species_weight = float(semantic_teacher_species_weight)
         self.semantic_teacher_action_weight = float(semantic_teacher_action_weight)
         self.semantic_teacher_kl_weight = float(semantic_teacher_kl_weight)
         self.semantic_teacher_start_step = int(semantic_teacher_start_step)
+        self.semantic_teacher_ramp_steps = int(semantic_teacher_ramp_steps)
         self.semantic_teacher_max_t = int(semantic_teacher_max_t)
         self.semantic_teacher_temperature = float(semantic_teacher_temperature)
+        self._teacher_ramp_logs = {
+            'physics_start': False,
+            'physics_end': False,
+            'semantic_start': False,
+            'semantic_end': False,
+        }
         self.preservation_confidence_threshold = PRESERVATION_CONFIDENCE_THRESHOLD
         self.preservation_confidence_power = PRESERVATION_CONFIDENCE_POWER
 
@@ -295,6 +371,35 @@ class GaussianDiffusion:
         if torch.is_tensor(value):
             return int(value.item())
         return int(value)
+
+    def _maybe_log_teacher_ramp_events(self, current_step):
+        physics_end_step = _teacher_ramp_end_step(self.physics_teacher_start_step, self.physics_teacher_ramp_steps)
+        if self.physics_teacher_weight > 0.0 and not self._teacher_ramp_logs['physics_start'] and current_step >= self.physics_teacher_start_step:
+            logger.warn(
+                f"========== PHYSICS TEACHER RAMP START step={current_step} start_step={self.physics_teacher_start_step} "
+                f"ramp_steps={self.physics_teacher_ramp_steps} target_weight={self.physics_teacher_weight:.4f} =========="
+            )
+            self._teacher_ramp_logs['physics_start'] = True
+        if self.physics_teacher_weight > 0.0 and not self._teacher_ramp_logs['physics_end'] and current_step >= physics_end_step:
+            logger.warn(
+                f"========== PHYSICS TEACHER RAMP FULL step={current_step} full_weight_step={physics_end_step} "
+                f"target_weight={self.physics_teacher_weight:.4f} =========="
+            )
+            self._teacher_ramp_logs['physics_end'] = True
+
+        semantic_end_step = _teacher_ramp_end_step(self.semantic_teacher_start_step, self.semantic_teacher_ramp_steps)
+        if self.semantic_teacher_weight > 0.0 and not self._teacher_ramp_logs['semantic_start'] and current_step >= self.semantic_teacher_start_step:
+            logger.warn(
+                f"========== SEMANTIC TEACHER RAMP START step={current_step} start_step={self.semantic_teacher_start_step} "
+                f"ramp_steps={self.semantic_teacher_ramp_steps} target_weight={self.semantic_teacher_weight:.4f} =========="
+            )
+            self._teacher_ramp_logs['semantic_start'] = True
+        if self.semantic_teacher_weight > 0.0 and not self._teacher_ramp_logs['semantic_end'] and current_step >= semantic_end_step:
+            logger.warn(
+                f"========== SEMANTIC TEACHER RAMP FULL step={current_step} full_weight_step={semantic_end_step} "
+                f"target_weight={self.semantic_teacher_weight:.4f} =========="
+            )
+            self._teacher_ramp_logs['semantic_end'] = True
 
     def masked_l2(self, a, b, mask):
         # assuming a.shape == b.shape == bs, J, Jdim, seqlen
@@ -1746,10 +1851,16 @@ class GaussianDiffusion:
                 terms["loss"] = terms["loss"] + self.lambda_repair_recon * terms["repair_recon_loss"]
 
             current_step = self._current_train_step(model_kwargs)
+            self._maybe_log_teacher_ramp_events(current_step)
+            semantic_teacher_scale = _teacher_weight_scale(
+                current_step,
+                self.semantic_teacher_start_step,
+                self.semantic_teacher_ramp_steps,
+            )
             if (
                 semantic_teacher is not None
                 and self.semantic_teacher_weight > 0.0
-                and current_step >= self.semantic_teacher_start_step
+                and semantic_teacher_scale > 0.0
             ):
                 semantic_active_indices = (t <= self.semantic_teacher_max_t).nonzero(as_tuple=False).flatten()
                 resolved_species_labels = _resolve_semantic_labels(
@@ -1778,7 +1889,7 @@ class GaussianDiffusion:
                     active_indices=semantic_active_indices,
                 )
                 if semantic_losses is not None:
-                    semantic_mask = (t <= self.semantic_teacher_max_t).to(dtype=terms['loss'].dtype)
+                    semantic_active_mask = t <= self.semantic_teacher_max_t
                     semantic_kl = (
                         semantic_losses['semantic_teacher_species_kl']
                         + semantic_losses['semantic_teacher_action_kl']
@@ -1788,14 +1899,20 @@ class GaussianDiffusion:
                         + self.semantic_teacher_action_weight * semantic_losses['semantic_teacher_action_ce']
                         + self.semantic_teacher_kl_weight * semantic_kl
                     )
-                    terms['semantic_teacher_species_ce'] = semantic_losses['semantic_teacher_species_ce'] * semantic_mask
-                    terms['semantic_teacher_action_ce'] = semantic_losses['semantic_teacher_action_ce'] * semantic_mask
-                    terms['semantic_teacher_species_kl'] = semantic_losses['semantic_teacher_species_kl'] * semantic_mask
-                    terms['semantic_teacher_action_kl'] = semantic_losses['semantic_teacher_action_kl'] * semantic_mask
-                    terms['semantic_teacher_loss'] = semantic_total * semantic_mask
-                    terms['semantic_teacher_recognizability'] = semantic_losses['semantic_teacher_recognizability'] * semantic_mask
-                    terms['semantic_teacher_target_recognizability'] = semantic_losses['semantic_teacher_target_recognizability'] * semantic_mask
-                    terms['loss'] = terms['loss'] + self.semantic_teacher_weight * terms['semantic_teacher_loss']
+                    terms['semantic_teacher_loss'] = _normalize_teacher_batch_term(
+                        semantic_total,
+                        semantic_active_mask,
+                    )
+                    terms['semantic_teacher_recognizability'] = _normalize_teacher_batch_term(
+                        semantic_losses['semantic_teacher_recognizability'],
+                        semantic_active_mask,
+                    )
+                    terms['semantic_teacher_target_recognizability'] = _normalize_teacher_batch_term(
+                        semantic_losses['semantic_teacher_target_recognizability'],
+                        semantic_active_mask,
+                    )
+                    terms['semantic_teacher_active_fraction'] = semantic_active_mask.to(dtype=terms['loss'].dtype)
+                    terms['loss'] = terms['loss'] + (self.semantic_teacher_weight * semantic_teacher_scale) * terms['semantic_teacher_loss']
         
             # denormalize before applying loss terms 
             target = (target * std) + mean 
@@ -1809,51 +1926,61 @@ class GaussianDiffusion:
                 terms["foot_sliding_loss"] = self.foot_sliding_loss(target, model_output, mask, relative=True)
                 terms["loss"] = terms["loss"] + self.lambda_fs * terms["foot_sliding_loss"]
             low_noise_mask_bool = t <= self.physics_teacher_max_t
+            physics_teacher_scale = _teacher_weight_scale(
+                current_step,
+                self.physics_teacher_start_step,
+                self.physics_teacher_ramp_steps,
+            )
             if (
                 physics_teacher is not None
                 and self.physics_teacher_weight > 0.0
-                and current_step >= self.physics_teacher_start_step
+                and physics_teacher_scale > 0.0
             ):
-                physics_active_indices = low_noise_mask_bool.nonzero(as_tuple=False).flatten()
                 resolved_object_types = _resolve_object_types(
                     model_kwargs['y'].get('object_type', []),
                     int(model_output.shape[0]),
                     motion_metadata=model_kwargs['y'].get('motion_metadata', []),
                 )
-                teacher_losses = None
-                if physics_active_indices.numel() > 0:
-                    low_noise_mask_cpu = low_noise_mask_bool.detach().cpu().tolist()
-                    subset_object_types = [
-                        object_type
-                        for object_type, is_active in zip(resolved_object_types, low_noise_mask_cpu)
-                        if is_active
-                    ]
-                    subset_teacher_losses = physics_teacher.compute_losses(
-                        model_output[physics_active_indices],
-                        target[physics_active_indices],
-                        n_joints=actual_joints[physics_active_indices],
-                        lengths=lengths[physics_active_indices],
-                        object_types=subset_object_types,
-                    )
-                    teacher_losses = _expand_masked_teacher_losses(
-                        subset_teacher_losses,
-                        physics_active_indices,
-                        int(model_output.shape[0]),
-                    )
+                teacher_losses = _compute_masked_teacher_losses(
+                    physics_teacher,
+                    model_output,
+                    target,
+                    n_joints=actual_joints,
+                    lengths=lengths,
+                    object_types=resolved_object_types,
+                    active_mask=low_noise_mask_bool,
+                )
                 if teacher_losses is not None:
-                    low_noise_mask = low_noise_mask_bool.to(dtype=terms['loss'].dtype)
                     teacher_total = (
                         self.physics_teacher_feature_weight * teacher_losses['physics_teacher_feature_loss']
                         + self.physics_teacher_margin_weight * teacher_losses['physics_teacher_margin_loss']
                     )
-                    terms['physics_teacher_feature_loss'] = teacher_losses['physics_teacher_feature_loss'] * low_noise_mask
-                    terms['physics_teacher_margin_loss'] = teacher_losses['physics_teacher_margin_loss'] * low_noise_mask
-                    terms['physics_teacher_loss'] = teacher_total * low_noise_mask
-                    terms['physics_teacher_distance'] = teacher_losses['physics_teacher_distance'] * low_noise_mask
-                    terms['physics_teacher_target_distance'] = teacher_losses['physics_teacher_target_distance'] * low_noise_mask
-                    terms['physics_teacher_score'] = teacher_losses['physics_teacher_score'] * low_noise_mask
-                    terms['physics_teacher_target_score'] = teacher_losses['physics_teacher_target_score'] * low_noise_mask
-                    terms['loss'] = terms['loss'] + self.physics_teacher_weight * terms['physics_teacher_loss']
+                    terms['physics_teacher_loss'] = _normalize_teacher_batch_term(
+                        teacher_total,
+                        low_noise_mask_bool,
+                    )
+                    terms['physics_teacher_margin_loss'] = _normalize_teacher_batch_term(
+                        teacher_losses['physics_teacher_margin_loss'],
+                        low_noise_mask_bool,
+                    )
+                    terms['physics_teacher_distance'] = _normalize_teacher_batch_term(
+                        teacher_losses['physics_teacher_distance'],
+                        low_noise_mask_bool,
+                    )
+                    terms['physics_teacher_target_distance'] = _normalize_teacher_batch_term(
+                        teacher_losses['physics_teacher_target_distance'],
+                        low_noise_mask_bool,
+                    )
+                    terms['physics_teacher_score'] = _normalize_teacher_batch_term(
+                        teacher_losses['physics_teacher_score'],
+                        low_noise_mask_bool,
+                    )
+                    terms['physics_teacher_target_score'] = _normalize_teacher_batch_term(
+                        teacher_losses['physics_teacher_target_score'],
+                        low_noise_mask_bool,
+                    )
+                    terms['physics_teacher_active_fraction'] = low_noise_mask_bool.to(dtype=terms['loss'].dtype)
+                    terms['loss'] = terms['loss'] + (self.physics_teacher_weight * physics_teacher_scale) * terms['physics_teacher_loss']
 
         else:
             raise NotImplementedError(self.loss_type)

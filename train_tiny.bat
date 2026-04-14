@@ -6,19 +6,20 @@ pushd "%SCRIPT_DIR%"
 
 %PYTHON_EXE% train/train_anytop_two_stage.py ^
 	--run_stage stage1 ^
-	--output-dir save/stage1_tiny_overfit_locomotion_teacher_s100_v2 ^
-	--physics_teacher_checkpoint_dir save/motion_scorer_v8 ^
-	--physics_teacher_weight 0.05 ^
+	--output-dir save/stage1_tiny_overfit_locomotion_teacher_s100_v3 ^
+	--motion_scorer_checkpoint_dir save/motion_scorer_v8 ^
+	--physics_teacher_weight 0.1 ^
 	--physics_teacher_feature_weight 1.0 ^
-	--physics_teacher_margin_weight 0.25 ^
-	--physics_teacher_start_step 0 ^
+	--physics_teacher_margin_weight 0.5 ^
+	--physics_teacher_start_step 200 ^
+	--physics_teacher_ramp_steps 100 ^
 	--physics_teacher_max_t 30 ^
-	--semantic_teacher_checkpoint_dir save/motion_scorer_v8 ^
 	--semantic_teacher_weight 0.05 ^
 	--semantic_teacher_species_weight 1.0 ^
 	--semantic_teacher_action_weight 1.0 ^
 	--semantic_teacher_kl_weight 0.25 ^
-	--semantic_teacher_start_step 0 ^
+	--semantic_teacher_start_step 100 ^
+	--semantic_teacher_ramp_steps 100 ^
 	--semantic_teacher_max_t 30 ^
 	--semantic_teacher_temperature 1.0 ^
 	--action_tags locomotion ^
@@ -29,7 +30,7 @@ pushd "%SCRIPT_DIR%"
 	--stage1_batch_size 32 ^
 	--stage1_sample_limit -1 ^
 	--stage1_lr 5e-5 ^
-	--stage1_num_steps 100 ^
+	--stage1_num_steps 20000 ^
 	--lambda_geo 1.0 ^
 	--save_interval 2500 ^
 	--log_interval 100 ^

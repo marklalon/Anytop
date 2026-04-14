@@ -125,17 +125,17 @@ class TrainLoop:
     def _setup_physics_teacher(self):
         if float(getattr(self.args, 'physics_teacher_weight', 0.0)) <= 0.0:
             return
-        checkpoint_dir = str(getattr(self.args, 'physics_teacher_checkpoint_dir', '')).strip()
+        checkpoint_dir = str(getattr(self.args, 'motion_scorer_checkpoint_dir', '')).strip()
         if not checkpoint_dir:
-            raise ValueError('physics_teacher_weight requires --physics_teacher_checkpoint_dir to be set.')
+            raise ValueError('physics_teacher_weight requires --motion_scorer_checkpoint_dir to be set.')
         self.physics_teacher = DirectPhysicsTeacher(checkpoint_dir, device=str(self.device))
 
     def _setup_semantic_teacher(self):
         if float(getattr(self.args, 'semantic_teacher_weight', 0.0)) <= 0.0:
             return
-        checkpoint_dir = str(getattr(self.args, 'semantic_teacher_checkpoint_dir', '')).strip()
+        checkpoint_dir = str(getattr(self.args, 'motion_scorer_checkpoint_dir', '')).strip()
         if not checkpoint_dir:
-            raise ValueError('semantic_teacher_weight requires --semantic_teacher_checkpoint_dir to be set.')
+            raise ValueError('semantic_teacher_weight requires --motion_scorer_checkpoint_dir to be set.')
         self.semantic_teacher = DirectSemanticTeacher(checkpoint_dir, device=str(self.device))
 
     def _load_and_sync_parameters(self):
@@ -216,9 +216,9 @@ class TrainLoop:
                 group['initial_lr'] = target['lr']
 
     def run_loop(self):
-         print('train steps:', self.num_steps)
-         while self.total_step() < self.num_steps:
-            print(f'Starting a new epoch at step {self.total_step()}')
+        tqdm.write(f'train steps: {self.num_steps}')
+        while self.total_step() < self.num_steps:
+            tqdm.write(f'Starting a new epoch at step {self.total_step()}')
             data_iter = iter(tqdm(self.data))
             while True:
                 try:
@@ -237,11 +237,9 @@ class TrainLoop:
                 completed_step = self.total_step() + 1
 
                 if completed_step % self.log_interval == 0:
-                    print()
-                    print(cond['y']['object_type'])
                     for k,v in logger.get_current().dumpkvs().items():
                         if k == 'loss':
-                            print('step[{}]: loss[{:0.5f}]'.format(completed_step, v))
+                            tqdm.write('step[{}]: loss[{:0.5f}]'.format(completed_step, v))
                         if k in ['step', 'samples'] or '_q' in k:
                             continue
                         else:

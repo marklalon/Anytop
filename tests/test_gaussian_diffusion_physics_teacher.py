@@ -11,7 +11,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
-from diffusion.gaussian_diffusion import _compute_masked_teacher_losses  # noqa: E402
+from diffusion.gaussian_diffusion import (  # noqa: E402
+    _compute_masked_teacher_losses,
+    _normalize_teacher_batch_term,
+    _teacher_ramp_end_step,
+    _teacher_weight_scale,
+)
 
 
 class _FakePhysicsTeacher:
@@ -91,6 +96,27 @@ class GaussianDiffusionPhysicsTeacherTests(unittest.TestCase):
 
         self.assertIsNone(losses)
         self.assertEqual(len(teacher.calls), 0)
+
+    def test_normalize_teacher_batch_term_uses_only_active_mean(self):
+        values = torch.tensor([2.0, 0.0, 6.0, 0.0])
+        active_mask = torch.tensor([True, False, True, False])
+
+        normalized = _normalize_teacher_batch_term(values, active_mask)
+
+        self.assertTrue(torch.equal(normalized, torch.tensor([4.0, 4.0, 4.0, 4.0])))
+        self.assertAlmostEqual(float(normalized.mean().item()), 4.0)
+
+    def test_teacher_weight_scale_respects_start_and_ramp(self):
+        self.assertEqual(_teacher_weight_scale(2999, 3000, 2000), 0.0)
+        self.assertAlmostEqual(_teacher_weight_scale(3000, 3000, 2000), 0.0005)
+        self.assertAlmostEqual(_teacher_weight_scale(3999, 3000, 2000), 0.5)
+        self.assertAlmostEqual(_teacher_weight_scale(4999, 3000, 2000), 1.0)
+        self.assertAlmostEqual(_teacher_weight_scale(8000, 3000, 2000), 1.0)
+        self.assertAlmostEqual(_teacher_weight_scale(3000, 3000, 0), 1.0)
+
+    def test_teacher_ramp_end_step_matches_scale_boundary(self):
+        self.assertEqual(_teacher_ramp_end_step(3000, 1000), 3999)
+        self.assertEqual(_teacher_ramp_end_step(3000, 0), 3000)
 
 
 if __name__ == "__main__":
