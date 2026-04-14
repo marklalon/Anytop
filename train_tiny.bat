@@ -41,6 +41,8 @@ pushd "%SCRIPT_DIR%"
 	--amp_dtype bf16 ^
 	--cudnn_benchmark ^
 	--allow_tf32 ^
+	--use_torch_compile ^
+	--torch_compile_mode default ^
 	--ml_platform_type TensorboardPlatform ^
 	--use_ema
 

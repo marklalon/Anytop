@@ -114,6 +114,7 @@ class TrainLoop:
                 action_tags=getattr(self.args, 'action_tags', ''),
                 motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
                 main_process_prefetch_batches=getattr(self.args, 'main_process_prefetch_batches', 0),
+                amp_dtype=getattr(self.args, 'amp_dtype', 'fp32'),
             )
         self.physics_teacher = None
         self._setup_physics_teacher()
@@ -121,6 +122,10 @@ class TrainLoop:
         self._setup_semantic_teacher()
         self.use_ddp = False
         self.ddp_model = self.model
+        self.use_torch_compile = bool(getattr(self.args, 'use_torch_compile', False))
+        self.torch_compile_mode = str(getattr(self.args, 'torch_compile_mode', 'default') or 'default')
+        self.forward_model = self.ddp_model
+        self._setup_compiled_forward_model()
 
     def _setup_physics_teacher(self):
         if float(getattr(self.args, 'physics_teacher_weight', 0.0)) <= 0.0:
@@ -143,6 +148,28 @@ class TrainLoop:
         if not checkpoint_dir:
             raise ValueError('semantic_teacher_weight requires --motion_scorer_checkpoint_dir to be set.')
         self.semantic_teacher = DirectSemanticTeacher(checkpoint_dir, device=str(self.device))
+
+    def _setup_compiled_forward_model(self):
+        if not self.use_torch_compile:
+            return
+        if not hasattr(torch, 'compile'):
+            raise RuntimeError('torch.compile was requested, but this PyTorch build does not expose torch.compile.')
+        try:
+            self.forward_model = torch.compile(self.ddp_model, mode=self.torch_compile_mode)
+        except Exception as exc:
+            raise RuntimeError(
+                f'torch.compile failed for AnyTop training (mode={self.torch_compile_mode}). '
+                'Disable --use_torch_compile or choose a different --torch_compile_mode.'
+            ) from exc
+        print(f'[INFO] Enabled torch.compile for AnyTop training forward path (mode={self.torch_compile_mode}).')
+
+    def _maybe_mark_compile_step_begin(self):
+        if not self.use_torch_compile or self.device.type != 'cuda':
+            return
+        compiler_api = getattr(torch, 'compiler', None)
+        if compiler_api is None or not hasattr(compiler_api, 'cudagraph_mark_step_begin'):
+            return
+        compiler_api.cudagraph_mark_step_begin()
 
     def _load_and_sync_parameters(self):
         self.resume_checkpoint = self.find_resume_checkpoint() or self.resume_checkpoint
@@ -417,7 +444,7 @@ class TrainLoop:
 
             compute_losses = functools.partial(
                 self.diffusion.training_losses,
-                self.ddp_model,
+                self.forward_model,
                 micro,  # [bs, ch, image_size, image_size]
                 t,  # [bs](int) sampled timesteps
                 model_kwargs=self._with_train_step(micro_cond, self.total_step()),
@@ -425,6 +452,7 @@ class TrainLoop:
                 semantic_teacher=self.semantic_teacher,
             )
 
+            self._maybe_mark_compile_step_begin()
             if last_batch or not self.use_ddp:
                 with self._autocast_context():
                     losses = compute_losses()
