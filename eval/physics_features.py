@@ -4,12 +4,12 @@ import math
 from typing import Mapping, Sequence
 
 import torch
-
 from data_loaders.skeleton_metadata import SkeletonMetadata
 
 
 PHYSICS_FEATURE_DIM = 30
 _INDEX_TENSOR_CACHE: dict[tuple[tuple[int, ...], str], torch.Tensor] = {}
+_METADATA_FEATURE_CACHE: dict[tuple[str, str], tuple] = {}
 _MIN_ABSOLUTE_BONE_BASELINE = 1e-4
 _MIN_RELATIVE_BONE_BASELINE_RATIO = 0.01
 
@@ -26,6 +26,58 @@ def _cached_index_tensor(indices: Sequence[int], device: torch.device) -> torch.
             tensor = torch.as_tensor(key[0], dtype=torch.long, device=device)
         _INDEX_TENSOR_CACHE[key] = tensor
     return tensor
+
+
+def _get_cached_metadata_indices(metadata: SkeletonMetadata, joint_count: int, device: torch.device):
+    """Cache and return per-object-type index tensors derived from metadata.
+    
+    This avoids recomputing filtered index lists and tensors for the same
+    object_type on every training step.
+    """
+    cache_key = (metadata.object_type, str(device))
+    cached = _METADATA_FEATURE_CACHE.get(cache_key)
+    if cached is not None and cached[0] == joint_count:
+        return cached[1]
+    
+    # Compute all index tensors once
+    result = {}
+    
+    # Edge indices filtered by joint_count
+    if metadata.edge_child_indices:
+        edge_child_indices = [index for index in metadata.edge_child_indices if index < joint_count]
+        edge_parent_indices = metadata.edge_parent_indices[: len(edge_child_indices)]
+    else:
+        edge_child_indices = []
+        edge_parent_indices = []
+    result['edge_child_indices'] = edge_child_indices
+    result['edge_parent_indices'] = edge_parent_indices
+    if edge_child_indices:
+        result['child_index_tensor'] = _cached_index_tensor(edge_child_indices, device)
+        result['parent_index_tensor'] = _cached_index_tensor(edge_parent_indices, device)
+    
+    # Contact indices
+    contact_indices = metadata.contact_joints[:]
+    if contact_indices:
+        valid_contact_indices = [index for index in contact_indices if index < joint_count]
+    else:
+        valid_contact_indices = []
+    result['valid_contact_indices'] = valid_contact_indices
+    if valid_contact_indices:
+        result['contact_index_tensor'] = _cached_index_tensor(valid_contact_indices, device)
+    
+    # Symmetry indices
+    symmetry_left_indices = [index for index in metadata.symmetry_left_indices if index < joint_count]
+    symmetry_right_indices = [index for index in metadata.symmetry_right_indices if index < joint_count]
+    result['symmetry_left_indices'] = symmetry_left_indices
+    result['symmetry_right_indices'] = symmetry_right_indices
+    result['has_symmetry'] = bool(symmetry_left_indices and len(symmetry_left_indices) == len(symmetry_right_indices))
+    if result['has_symmetry']:
+        result['left_index_tensor'] = _cached_index_tensor(symmetry_left_indices, device)
+        result['right_index_tensor'] = _cached_index_tensor(symmetry_right_indices, device)
+    
+    # Cache and return
+    _METADATA_FEATURE_CACHE[cache_key] = (joint_count, result)
+    return result
 
 
 def _as_float_tensor(values: torch.Tensor) -> torch.Tensor:
@@ -92,9 +144,11 @@ def _autocorr_peak(signal: torch.Tensor, max_lag: int = 12) -> torch.Tensor:
     centered_signal = _as_float_tensor(signal)
     centered = centered_signal - centered_signal.mean()
     denom = centered.pow(2).sum().clamp_min(1e-6)
+    T = centered.numel()
+    max_lag = min(max_lag, T - 1)
     peak = centered.new_zeros(())
-    for lag in range(1, min(max_lag, int(signal.numel()) - 1) + 1):
-        corr = (centered[:-lag] * centered[lag:]).sum() / denom
+    for lag in range(1, max_lag + 1):
+        corr = (centered[:T - lag] * centered[lag:]).sum() / denom
         peak = torch.maximum(peak, corr)
     return peak
 
@@ -104,14 +158,16 @@ def _phase_offset(left: torch.Tensor, right: torch.Tensor, max_lag: int = 8) -> 
         return left.new_zeros(())
     left_float = _as_float_tensor(left)
     right_float = _as_float_tensor(right)
-    best_lag = 0
+    T = left_float.numel()
+    max_lag = min(max_lag, T - 1)
     best_score = None
-    for lag in range(-min(max_lag, int(left_float.numel()) - 1), min(max_lag, int(left_float.numel()) - 1) + 1):
+    best_lag = 0
+    for lag in range(-max_lag, max_lag + 1):
         if lag < 0:
             lhs = left_float[-lag:]
-            rhs = right_float[: lag + right_float.shape[0]]
+            rhs = right_float[:lag + T]
         elif lag > 0:
-            lhs = left_float[: left_float.shape[0] - lag]
+            lhs = left_float[:T - lag]
             rhs = right_float[lag:]
         else:
             lhs = left_float
@@ -122,7 +178,7 @@ def _phase_offset(left: torch.Tensor, right: torch.Tensor, max_lag: int = 8) -> 
         if best_score is None or score > best_score:
             best_score = score
             best_lag = lag
-    return left_float.new_tensor(float(best_lag) / max(float(left_float.numel()), 1.0))
+    return left_float.new_tensor(float(best_lag) / max(float(T), 1.0))
 
 
 def _high_frequency_ratio(signal: torch.Tensor) -> torch.Tensor:
@@ -173,11 +229,13 @@ def _extract_single_sample_features(
     velocities = motion[:, 9:12, :].permute(2, 0, 1)
     contact_channel = motion[:, 12, :].permute(1, 0)
     root_rot6d = motion[0, 3:9, :].permute(1, 0)
-    if metadata.edge_child_indices:
-        edge_child_indices = [index for index in metadata.edge_child_indices if index < joint_count]
-        edge_parent_indices = metadata.edge_parent_indices[: len(edge_child_indices)]
-        child_index_tensor = _cached_index_tensor(edge_child_indices, positions.device)
-        parent_index_tensor = _cached_index_tensor(edge_parent_indices, positions.device)
+
+    # Use cached metadata indices to avoid recomputing per-sample
+    cached_md = _get_cached_metadata_indices(metadata, joint_count, positions.device)
+
+    if cached_md.get('edge_child_indices'):
+        child_index_tensor = cached_md['child_index_tensor']
+        parent_index_tensor = cached_md['parent_index_tensor']
         bone_lengths = torch.linalg.norm(positions[:, child_index_tensor] - positions[:, parent_index_tensor], dim=-1)
         baseline = bone_lengths.median(dim=0).values
         positive_baseline = baseline[baseline > 1e-6]
@@ -206,13 +264,8 @@ def _extract_single_sample_features(
     pose_center = positions.mean(dim=1)
     pose_center_xz = pose_center[:, [0, 2]]
 
-    contact_indices = metadata.contact_joints[:]
-    if contact_indices:
-        valid_contact_indices = [index for index in contact_indices if index < joint_count]
-    else:
-        valid_contact_indices = []
-    if valid_contact_indices:
-        contact_index_tensor = _cached_index_tensor(valid_contact_indices, positions.device)
+    if cached_md.get('valid_contact_indices'):
+        contact_index_tensor = cached_md['contact_index_tensor']
         contact_mask = contact_channel[:, contact_index_tensor] > 0.5
         contact_speed = torch.linalg.norm(velocities[:, contact_index_tensor][:, :, [0, 2]], dim=-1)
         active_contact_speed = contact_speed[contact_mask]
@@ -232,19 +285,21 @@ def _extract_single_sample_features(
         landing_cluster = positions.new_zeros((0,))
         support_offset = positions.new_zeros((0,))
 
-    symmetry_left_indices = [index for index in metadata.symmetry_left_indices if index < joint_count]
-    symmetry_right_indices = [index for index in metadata.symmetry_right_indices if index < joint_count]
-    if symmetry_left_indices and len(symmetry_left_indices) == len(symmetry_right_indices):
-        left_index_tensor = _cached_index_tensor(symmetry_left_indices, positions.device)
-        right_index_tensor = _cached_index_tensor(symmetry_right_indices, positions.device)
+    if cached_md.get('has_symmetry'):
+        left_index_tensor = cached_md['left_index_tensor']
+        right_index_tensor = cached_md['right_index_tensor']
         left_speeds = joint_speed[:, left_index_tensor]
         right_speeds = joint_speed[:, right_index_tensor]
         left_centered = left_speeds - left_speeds.mean(dim=0, keepdim=True)
         right_centered = right_speeds - right_speeds.mean(dim=0, keepdim=True)
         denom = (left_centered.pow(2).sum(dim=0) * right_centered.pow(2).sum(dim=0)).sqrt().clamp_min(1e-6)
         corr = (left_centered * right_centered).sum(dim=0) / denom
-        amp_ratio = torch.minimum(left_speeds.mean(dim=0), right_speeds.mean(dim=0)) / torch.maximum(left_speeds.mean(dim=0), right_speeds.mean(dim=0)).clamp_min(1e-6)
-        energy_ratio = torch.minimum(left_speeds.pow(2).mean(dim=0), right_speeds.pow(2).mean(dim=0)) / torch.maximum(left_speeds.pow(2).mean(dim=0), right_speeds.pow(2).mean(dim=0)).clamp_min(1e-6)
+        left_mean = left_speeds.mean(dim=0)
+        right_mean = right_speeds.mean(dim=0)
+        amp_ratio = torch.minimum(left_mean, right_mean) / torch.maximum(left_mean, right_mean).clamp_min(1e-6)
+        left_energy = left_speeds.pow(2).mean(dim=0)
+        right_energy = right_speeds.pow(2).mean(dim=0)
+        energy_ratio = torch.minimum(left_energy, right_energy) / torch.maximum(left_energy, right_energy).clamp_min(1e-6)
         phase_values = torch.stack(
             [_phase_offset(left_speeds[:, index], right_speeds[:, index]) for index in range(left_speeds.shape[1])],
             dim=0,
@@ -265,12 +320,13 @@ def _extract_single_sample_features(
     bbox_height = bbox_extent[:, 1]
     pose_spread = torch.linalg.norm(bbox_extent, dim=-1)
 
+    bone_deviation_flat = bone_deviation.flatten()
     rigid_features = torch.stack(
         [
             _safe_mean(bone_deviation),
             _safe_max(bone_deviation),
-            _safe_quantile(bone_deviation.flatten(), 0.95),
-            _safe_quantile(bone_deviation.flatten(), 0.99),
+            _safe_quantile(bone_deviation_flat, 0.95),
+            _safe_quantile(bone_deviation_flat, 0.99),
             _safe_mean((bone_deviation > 0.05).float()),
         ]
     )
@@ -336,36 +392,33 @@ def extract_physics_features(
                 f"feature_mean/feature_std shape mismatch for motion batch: motion={tuple(motion.shape)}, "
                 f"mean={tuple(feature_mean.shape)}, std={tuple(feature_std.shape)}"
             )
+
+    B = motion.shape[0]
     lengths_cpu = lengths.detach().cpu().tolist()
     joint_counts_cpu = n_joints.detach().cpu().tolist()
-    sample_args: list[tuple[torch.Tensor, int, SkeletonMetadata, torch.Tensor | None, torch.Tensor | None]] = []
-    for batch_index, object_type in enumerate(object_types):
-        length = max(1, min(int(lengths_cpu[batch_index]), int(motion.shape[-1])))
-        joint_count = max(1, int(joint_counts_cpu[batch_index]))
-        sample_args.append(
-            (
-                motion[batch_index, :joint_count, :, :length],
-                length,
-                metadata_lookup[str(object_type)],
-                None if feature_mean is None else feature_mean[batch_index, :joint_count, :],
-                None if feature_std is None else feature_std[batch_index, :joint_count, :],
-            )
-        )
 
-    batch_features = []
-    for sample_motion, length, metadata, sample_mean, sample_std in sample_args:
+    all_features = [None] * B
+    for i in range(B):
+        length = max(1, min(int(lengths_cpu[i]), int(motion.shape[-1])))
+        joint_count = max(1, int(joint_counts_cpu[i]))
+        metadata = metadata_lookup[str(object_types[i])]
+        sample_motion = motion[i, :joint_count, :, :length]
+        sample_mean = None if feature_mean is None else feature_mean[i, :joint_count, :]
+        sample_std = None if feature_std is None else feature_std[i, :joint_count, :]
+
         if differentiable:
             with torch.inference_mode(False):
                 sample_motion = _ensure_autograd_compatible(sample_motion)
                 sample_mean = _ensure_autograd_compatible(sample_mean)
                 sample_std = _ensure_autograd_compatible(sample_std)
                 denormalized_motion = _maybe_denormalize_motion(sample_motion, sample_mean, sample_std)
-                batch_features.append(_extract_single_sample_features(denormalized_motion, length, metadata))
+                all_features[i] = _extract_single_sample_features(denormalized_motion, length, metadata)
         else:
             with torch.inference_mode():
                 denormalized_motion = _maybe_denormalize_motion(sample_motion, sample_mean, sample_std)
-                batch_features.append(_extract_single_sample_features(denormalized_motion, length, metadata))
+                all_features[i] = _extract_single_sample_features(denormalized_motion, length, metadata)
+
     if differentiable:
         with torch.inference_mode(False):
-            return torch.stack(batch_features, dim=0).to(device=motion.device, dtype=motion.dtype)
-    return torch.stack(batch_features, dim=0).to(device=motion.device, dtype=motion.dtype)
+            return torch.stack(all_features, dim=0).to(device=motion.device, dtype=motion.dtype)
+    return torch.stack(all_features, dim=0).to(device=motion.device, dtype=motion.dtype)

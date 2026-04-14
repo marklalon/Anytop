@@ -11,15 +11,15 @@ pushd "%SCRIPT_DIR%"
 	--physics_teacher_weight 0.1 ^
 	--physics_teacher_feature_weight 1.0 ^
 	--physics_teacher_margin_weight 0.5 ^
-	--physics_teacher_start_step 200 ^
-	--physics_teacher_ramp_steps 100 ^
+	--physics_teacher_start_step 3000 ^
+	--physics_teacher_ramp_steps 1000 ^
 	--physics_teacher_max_t 30 ^
 	--semantic_teacher_weight 0.05 ^
 	--semantic_teacher_species_weight 1.0 ^
 	--semantic_teacher_action_weight 1.0 ^
 	--semantic_teacher_kl_weight 0.25 ^
-	--semantic_teacher_start_step 100 ^
-	--semantic_teacher_ramp_steps 100 ^
+	--semantic_teacher_start_step 2000 ^
+	--semantic_teacher_ramp_steps 1000 ^
 	--semantic_teacher_max_t 30 ^
 	--semantic_teacher_temperature 1.0 ^
 	--action_tags locomotion ^

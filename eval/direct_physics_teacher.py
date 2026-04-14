@@ -34,6 +34,7 @@ def _percentile_score(values: torch.Tensor, reference_percentiles: torch.Tensor)
 
 
 class DirectPhysicsTeacher:
+
     def __init__(
         self,
         checkpoint_dir: str | os.PathLike[str],
@@ -73,6 +74,28 @@ class DirectPhysicsTeacher:
         self.phys_percentiles = torch.as_tensor(train_stats["phys_percentiles"], dtype=torch.float32, device=self.device)
         self.feature_scale = torch.sqrt(torch.diagonal(self.sigma_phys_inv).clamp_min(1e-6))
 
+    def compute_target_features(
+        self,
+        target_motion: torch.Tensor,
+        *,
+        n_joints: torch.Tensor,
+        lengths: torch.Tensor,
+        object_types: Sequence[str],
+    ) -> torch.Tensor:
+        """Compute physics features for the target motion (no gradient).
+
+        The caller should cache the result and pass it to ``compute_losses``
+        via the ``target_features`` argument to avoid redundant computation.
+        """
+        with torch.no_grad():
+            return extract_physics_features(
+                target_motion.detach(),
+                n_joints.detach(),
+                lengths.detach(),
+                object_types,
+                self.skeleton_lookup,
+            ).float()
+
     def compute_losses(
         self,
         pred_motion: torch.Tensor,
@@ -81,6 +104,7 @@ class DirectPhysicsTeacher:
         n_joints: torch.Tensor,
         lengths: torch.Tensor,
         object_types: Sequence[str],
+        target_features: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         pred_features = extract_physics_features(
             pred_motion,
@@ -90,14 +114,14 @@ class DirectPhysicsTeacher:
             self.skeleton_lookup,
             differentiable=True,
         ).float()
-        with torch.no_grad():
-            target_features = extract_physics_features(
-                target_motion.detach(),
-                n_joints.detach(),
-                lengths.detach(),
-                object_types,
-                self.skeleton_lookup,
-            ).float()
+
+        if target_features is None:
+            target_features = self.compute_target_features(
+                target_motion,
+                n_joints=n_joints,
+                lengths=lengths,
+                object_types=object_types,
+            )
 
         scale = self.feature_scale.unsqueeze(0)
         pred_scaled = pred_features * scale

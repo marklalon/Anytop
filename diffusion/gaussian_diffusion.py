@@ -47,6 +47,25 @@ def _normalize_teacher_batch_term(values, active_mask):
     return _broadcast_batch_scalar(_masked_teacher_mean(values, active_mask), int(values.shape[0]))
 
 
+def _normalize_teacher_batch_terms(losses_dict, keys, active_mask):
+    """Normalize multiple teacher loss terms at once, sharing the active count computation."""
+    active_count = active_mask.sum()
+    batch_size = None
+    result = {}
+    for key in keys:
+        value = losses_dict.get(key)
+        if value is None:
+            continue
+        if batch_size is None:
+            batch_size = int(value.shape[0])
+        if active_count > 0:
+            mean_val = value[active_mask].mean()
+        else:
+            mean_val = value.new_zeros(())
+        result[key] = _broadcast_batch_scalar(mean_val, batch_size)
+    return result
+
+
 def _teacher_weight_scale(current_step, start_step, ramp_steps):
     current_step = int(current_step)
     start_step = int(start_step)
@@ -76,23 +95,23 @@ def _compute_masked_teacher_losses(
     lengths,
     object_types,
     active_mask,
+    target_features=None,
 ):
     active_indices = active_mask.nonzero(as_tuple=False).flatten()
     if active_indices.numel() == 0:
         return None
 
-    active_mask_cpu = active_mask.detach().cpu().tolist()
-    subset_object_types = [
-        object_type
-        for object_type, is_active in zip(object_types, active_mask_cpu)
-        if is_active
-    ]
+    # Use boolean indexing instead of CPU transfer for filtering object_types
+    active_indices_list = active_indices.detach().cpu().tolist()
+    subset_object_types = [object_types[i] for i in active_indices_list]
+    subset_target_features = target_features[active_indices] if target_features is not None else None
     subset_losses = physics_teacher.compute_losses(
         pred_motion[active_indices],
         target_motion[active_indices],
         n_joints=n_joints[active_indices],
         lengths=lengths[active_indices],
         object_types=subset_object_types,
+        target_features=subset_target_features,
     )
     return _expand_masked_teacher_losses(subset_losses, active_indices, int(pred_motion.shape[0]))
 
@@ -315,6 +334,15 @@ class GaussianDiffusion:
             'semantic_start': False,
             'semantic_end': False,
         }
+        # Single-entry cache for target physics features at the caller level.
+        # Size-1 cache for physics teacher target features. We hold strong
+        # references to the input tensors so their Python ids cannot be
+        # reused by a later allocation, and compare via `is` on lookup.
+        self._target_phys_cache_target: torch.Tensor | None = None
+        self._target_phys_cache_n_joints: torch.Tensor | None = None
+        self._target_phys_cache_lengths: torch.Tensor | None = None
+        self._target_phys_cache_object_types: tuple | None = None
+        self._target_phys_cache_features: torch.Tensor | None = None
         self.preservation_confidence_threshold = PRESERVATION_CONFIDENCE_THRESHOLD
         self.preservation_confidence_power = PRESERVATION_CONFIDENCE_POWER
 
@@ -1899,19 +1927,20 @@ class GaussianDiffusion:
                         + self.semantic_teacher_action_weight * semantic_losses['semantic_teacher_action_ce']
                         + self.semantic_teacher_kl_weight * semantic_kl
                     )
-                    terms['semantic_teacher_loss'] = _normalize_teacher_batch_term(
-                        semantic_total,
+                    semantic_losses['_semantic_total'] = semantic_total
+                    normalized_semantic = _normalize_teacher_batch_terms(
+                        semantic_losses,
+                        [
+                            '_semantic_total',
+                            'semantic_teacher_recognizability',
+                            'semantic_teacher_target_recognizability',
+                        ],
                         semantic_active_mask,
                     )
-                    terms['semantic_teacher_recognizability'] = _normalize_teacher_batch_term(
-                        semantic_losses['semantic_teacher_recognizability'],
-                        semantic_active_mask,
-                    )
-                    terms['semantic_teacher_target_recognizability'] = _normalize_teacher_batch_term(
-                        semantic_losses['semantic_teacher_target_recognizability'],
-                        semantic_active_mask,
-                    )
-                    terms['semantic_teacher_active_fraction'] = semantic_active_mask.to(dtype=terms['loss'].dtype)
+                    terms['semantic_teacher_loss'] = normalized_semantic['_semantic_total']
+                    terms['semantic_teacher_recognizability'] = normalized_semantic['semantic_teacher_recognizability']
+                    terms['semantic_teacher_target_recognizability'] = normalized_semantic['semantic_teacher_target_recognizability']
+                    terms['semantic_teacher_active_fraction'] = semantic_active_mask.float().mean()
                     terms['loss'] = terms['loss'] + (self.semantic_teacher_weight * semantic_teacher_scale) * terms['semantic_teacher_loss']
         
             # denormalize before applying loss terms 
@@ -1941,6 +1970,30 @@ class GaussianDiffusion:
                     int(model_output.shape[0]),
                     motion_metadata=model_kwargs['y'].get('motion_metadata', []),
                 )
+                # Compute or retrieve cached target features for the full batch.
+                # Strong refs + `is` comparison: the cached tensors cannot be
+                # GC'd (so their Python ids cannot be reused), and identity is
+                # checked directly rather than through a reusable hash key.
+                resolved_object_types_tuple = tuple(resolved_object_types)
+                if (
+                    self._target_phys_cache_target is target
+                    and self._target_phys_cache_n_joints is actual_joints
+                    and self._target_phys_cache_lengths is lengths
+                    and self._target_phys_cache_object_types == resolved_object_types_tuple
+                ):
+                    target_features = self._target_phys_cache_features
+                else:
+                    target_features = physics_teacher.compute_target_features(
+                        target,
+                        n_joints=actual_joints,
+                        lengths=lengths,
+                        object_types=resolved_object_types,
+                    )
+                    self._target_phys_cache_target = target
+                    self._target_phys_cache_n_joints = actual_joints
+                    self._target_phys_cache_lengths = lengths
+                    self._target_phys_cache_object_types = resolved_object_types_tuple
+                    self._target_phys_cache_features = target_features
                 teacher_losses = _compute_masked_teacher_losses(
                     physics_teacher,
                     model_output,
@@ -1949,37 +2002,28 @@ class GaussianDiffusion:
                     lengths=lengths,
                     object_types=resolved_object_types,
                     active_mask=low_noise_mask_bool,
+                    target_features=target_features,
                 )
                 if teacher_losses is not None:
                     teacher_total = (
                         self.physics_teacher_feature_weight * teacher_losses['physics_teacher_feature_loss']
                         + self.physics_teacher_margin_weight * teacher_losses['physics_teacher_margin_loss']
                     )
-                    terms['physics_teacher_loss'] = _normalize_teacher_batch_term(
-                        teacher_total,
+                    teacher_losses['physics_teacher_loss'] = teacher_total
+                    normalized = _normalize_teacher_batch_terms(
+                        teacher_losses,
+                        [
+                            'physics_teacher_loss',
+                            'physics_teacher_margin_loss',
+                            'physics_teacher_distance',
+                            'physics_teacher_target_distance',
+                            'physics_teacher_score',
+                            'physics_teacher_target_score',
+                        ],
                         low_noise_mask_bool,
                     )
-                    terms['physics_teacher_margin_loss'] = _normalize_teacher_batch_term(
-                        teacher_losses['physics_teacher_margin_loss'],
-                        low_noise_mask_bool,
-                    )
-                    terms['physics_teacher_distance'] = _normalize_teacher_batch_term(
-                        teacher_losses['physics_teacher_distance'],
-                        low_noise_mask_bool,
-                    )
-                    terms['physics_teacher_target_distance'] = _normalize_teacher_batch_term(
-                        teacher_losses['physics_teacher_target_distance'],
-                        low_noise_mask_bool,
-                    )
-                    terms['physics_teacher_score'] = _normalize_teacher_batch_term(
-                        teacher_losses['physics_teacher_score'],
-                        low_noise_mask_bool,
-                    )
-                    terms['physics_teacher_target_score'] = _normalize_teacher_batch_term(
-                        teacher_losses['physics_teacher_target_score'],
-                        low_noise_mask_bool,
-                    )
-                    terms['physics_teacher_active_fraction'] = low_noise_mask_bool.to(dtype=terms['loss'].dtype)
+                    terms.update(normalized)
+                    terms['physics_teacher_active_fraction'] = low_noise_mask_bool.float().mean()
                     terms['loss'] = terms['loss'] + (self.physics_teacher_weight * physics_teacher_scale) * terms['physics_teacher_loss']
 
         else:
