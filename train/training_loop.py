@@ -114,7 +114,6 @@ class TrainLoop:
                 action_tags=getattr(self.args, 'action_tags', ''),
                 motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
                 main_process_prefetch_batches=getattr(self.args, 'main_process_prefetch_batches', 0),
-                amp_dtype=getattr(self.args, 'amp_dtype', 'fp32'),
             )
         self.physics_teacher = None
         self._setup_physics_teacher()

@@ -243,10 +243,10 @@ def _sanitize_cache_component(value: str) -> str:
     return sanitized.strip("._") or "default"
 
 
-def _joint_name_embedding_cache_path(data_root: str, t5_name: str, amp_dtype: str) -> Path:
+def _joint_name_embedding_cache_path(data_root: str, t5_name: str) -> Path:
     cache_dir = Path(data_root) / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir / f"joint_name_t5_{_sanitize_cache_component(t5_name)}_{_sanitize_cache_component(amp_dtype)}.npy"
+    return cache_dir / f"joint_name_t5_{_sanitize_cache_component(t5_name)}.npy"
 
 
 def _motion_length_cache_path(data_root: str) -> Path:
@@ -307,27 +307,15 @@ def _load_cached_joint_name_embeddings(cache_path: Path, cond_file: str, expecte
     return {object_type: np.asarray(embeddings[object_type], dtype=np.float32) for object_type in expected_object_types}
 
 
-def _resolve_t5_autocast_dtype(amp_dtype: str) -> Optional[str]:
-    normalized = str(amp_dtype or 'fp32').strip().lower()
-    if normalized == 'bf16':
-        return 'bfloat16'
-    if normalized == 'fp16':
-        return 'float16'
-    return None
-
-
-def _build_joint_name_embeddings(cond_dict: dict, t5_name: str, amp_dtype: str) -> dict[str, np.ndarray]:
+def _build_joint_name_embeddings(cond_dict: dict, t5_name: str) -> dict[str, np.ndarray]:
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    autocast_dtype = _resolve_t5_autocast_dtype(amp_dtype)
-    precision_label = autocast_dtype or 'float32'
-    print(f"Building cached joint-name embeddings with {t5_name} on {device.upper()} using {precision_label}")
+    print(f"Building cached joint-name embeddings with {t5_name} on {device.upper()}")
     t5_conditioner = T5Conditioner(
         name=t5_name,
         finetune=False,
         word_dropout=0.0,
         normalize_text=False,
         device=device,
-        autocast_dtype=autocast_dtype,
     )
 
     embeddings = {}
@@ -336,21 +324,20 @@ def _build_joint_name_embeddings(cond_dict: dict, t5_name: str, amp_dtype: str) 
             joints_names = cond_dict[object_type]['joints_names']
             names_tokens = t5_conditioner.tokenize(joints_names)
             embs = t5_conditioner(names_tokens)
-            embeddings[object_type] = embs.detach().float().cpu().numpy().astype(np.float32, copy=False)
+            embeddings[object_type] = embs.detach().cpu().numpy().astype(np.float32, copy=False)
     return embeddings
 
 
-def attach_joint_name_embeddings(cond_dict: dict, cond_file: str, data_root: str, t5_name: str, amp_dtype: str = 'fp32') -> dict:
+def attach_joint_name_embeddings(cond_dict: dict, cond_file: str, data_root: str, t5_name: str) -> dict:
     object_types = set(cond_dict.keys())
-    cache_path = _joint_name_embedding_cache_path(data_root, t5_name, amp_dtype)
+    cache_path = _joint_name_embedding_cache_path(data_root, t5_name)
     cached_embeddings = _load_cached_joint_name_embeddings(cache_path, cond_file, object_types)
 
     if cached_embeddings is None:
-        cached_embeddings = _build_joint_name_embeddings(cond_dict, t5_name, amp_dtype)
+        cached_embeddings = _build_joint_name_embeddings(cond_dict, t5_name)
         payload = {
             "_meta": {
                 "t5_name": t5_name,
-                "amp_dtype": amp_dtype,
                 "cond_mtime_ns": Path(cond_file).stat().st_mtime_ns,
             },
             "embeddings": cached_embeddings,
@@ -592,12 +579,11 @@ class Truebones(data.Dataset):
         self.sample_limit = kwargs.get('sample_limit', 0)
         self.use_reference_conditioning = kwargs.get('use_reference_conditioning', True)
         self.motion_cache_size = kwargs.get('motion_cache_size', 0)
-        self.amp_dtype = kwargs.get('amp_dtype', 'fp32')
         self.opt.motion_cache_size = self.motion_cache_size
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
         subset = opt.subsets_dict[self.objects_subset] 
         cond_dict = {k:cond_dict[k] for k in subset if k in cond_dict}
-        cond_dict = attach_joint_name_embeddings(cond_dict, opt.cond_file, opt.data_root, t5_name, amp_dtype=self.amp_dtype)
+        cond_dict = attach_joint_name_embeddings(cond_dict, opt.cond_file, opt.data_root, t5_name)
         for object_type, cond in cond_dict.items():
             mean = np.asarray(cond['mean'], dtype=np.float32)
             std_safe = np.asarray(cond['std'], dtype=np.float32) + 1e-6

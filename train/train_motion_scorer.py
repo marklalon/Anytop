@@ -222,7 +222,6 @@ def create_data_loader(args, split: str, *, shuffle: bool, drop_last: bool, bala
         motion_cache_size=getattr(args, "motion_cache_size", 0),
         main_process_prefetch_batches=getattr(args, "main_process_prefetch_batches", 0),
         batch_transform=batch_transform,
-        amp_dtype=getattr(args, 'amp_dtype', 'fp32'),
     )
 
 
@@ -880,7 +879,6 @@ def compute_and_save_train_stats(args, model: MotionScorerNet, device: torch.dev
         action_tags=getattr(args, "action_tags", ""),
         motion_cache_size=getattr(args, "motion_cache_size", 0),
         main_process_prefetch_batches=getattr(args, "main_process_prefetch_batches", 0),
-        amp_dtype=getattr(args, 'amp_dtype', 'fp32'),
     )
 
     model.eval()
