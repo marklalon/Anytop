@@ -549,20 +549,36 @@ def rotation_6d_to_matrix_np(cont6d):
 
 def rotation_6d_to_matrix_safe(cont6d):
     assert cont6d.shape[-1] == 6, "The last dimension must be 6"
-    epsilon=1e-8
-    cont6d = torch.nan_to_num(cont6d) + epsilon 
+    epsilon = 1e-6
+    cont6d = torch.nan_to_num(cont6d)
     x_raw = cont6d[..., 0:3]
     y_raw = cont6d[..., 3:6]
-    x = x_raw / torch.linalg.norm(x_raw, dim=-1, keepdims=True)
-    z = torch.cross(x, y_raw, dim=-1)
-    z = z / torch.linalg.norm(z, dim=-1, keepdims=True)
-    y = torch.cross(z, x, dim=-1)
+
+    x = F.normalize(x_raw, dim=-1, eps=epsilon)
+    y = y_raw - (x * y_raw).sum(dim=-1, keepdim=True) * x
+
+    # Near-collinear 6D inputs make the Gram-Schmidt residual almost zero,
+    # which can produce enormous gradients during normalization.
+    abs_x = x.abs()
+    fallback_axis = torch.zeros_like(x)
+    use_x_axis = (abs_x[..., 0] <= abs_x[..., 1]) & (abs_x[..., 0] <= abs_x[..., 2])
+    use_y_axis = (abs_x[..., 1] < abs_x[..., 0]) & (abs_x[..., 1] <= abs_x[..., 2])
+    fallback_axis[..., 0] = use_x_axis.to(x.dtype)
+    fallback_axis[..., 1] = use_y_axis.to(x.dtype)
+    fallback_axis[..., 2] = (~(use_x_axis | use_y_axis)).to(x.dtype)
+    fallback_y = torch.cross(fallback_axis, x, dim=-1)
+
+    y_norm = torch.linalg.norm(y, dim=-1, keepdims=True)
+    y = torch.where(y_norm > epsilon, y, fallback_y)
+    y = F.normalize(y, dim=-1, eps=epsilon)
+    z = F.normalize(torch.cross(x, y, dim=-1), dim=-1, eps=epsilon)
+
     x = x[..., None]
     y = y[..., None]
     z = z[..., None]
 
     mat = torch.cat([x, y, z], dim=-1)
-    return mat 
+    return mat
 
 def matrix_to_rotation_6d(matrix: torch.Tensor) -> torch.Tensor:
     """

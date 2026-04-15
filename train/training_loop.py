@@ -3,6 +3,7 @@ import os
 import re
 import time
 import json
+import numpy as np
 from os.path import join as pjoin
 from typing import Optional
 import blobfile as bf
@@ -10,7 +11,7 @@ import torch
 from torch.optim import AdamW
 from diffusion import logger
 from utils import dist_util
-from diffusion.fp16_util import MixedPrecisionTrainer
+from diffusion.fp16_util import MixedPrecisionTrainer, format_nonfinite_stats, inspect_optimizer_state, sanitize_optimizer_state
 from diffusion.nn import update_ema
 from diffusion.resample import LossAwareSampler
 from tqdm import tqdm
@@ -125,6 +126,8 @@ class TrainLoop:
         self.torch_compile_mode = str(getattr(self.args, 'torch_compile_mode', 'default') or 'default')
         self.forward_model = self.ddp_model
         self._setup_compiled_forward_model()
+        self._interval_loss_sums = {}
+        self._interval_loss_counts = {}
 
     def _setup_physics_teacher(self):
         if float(getattr(self.args, 'physics_teacher_weight', 0.0)) <= 0.0:
@@ -205,47 +208,74 @@ class TrainLoop:
             logger.log("optimizer checkpoint not found; skipping optimizer state restore")
             return
         logger.log(f"loading optimizer state from checkpoint: {opt_checkpoint}")
-        state_dict = dist_util.load_state_dict(
+        checkpoint_data = dist_util.load_state_dict(
             opt_checkpoint, map_location=dist_util.dev()
         )
-        if self.amp_enabled and isinstance(state_dict, dict) and 'opt' in state_dict:
-            if 'scaler' in state_dict and self.mp_trainer.scaler.is_enabled():
-                self.mp_trainer.scaler.load_state_dict(state_dict['scaler'])
-            state_dict = state_dict['opt']
-        elif self.use_fp16:
-            if 'scaler' not in state_dict:
-                print("scaler state not found ... not loading it.")
-            else:
-                # load grad scaler state
-                self.mp_trainer.scaler.load_state_dict(state_dict['scaler'])
-                # for the rest
-                state_dict = state_dict['opt']
+        
+        # Handle both new and old checkpoint formats
+        if isinstance(checkpoint_data, dict) and 'opt' in checkpoint_data:
+            state_dict = checkpoint_data['opt']
+        else:
+            state_dict = checkpoint_data
+        
+        # Load AMP scaler if available
+        if self.amp_enabled and isinstance(checkpoint_data, dict) and 'scaler' in checkpoint_data:
+            if self.mp_trainer.scaler.is_enabled():
+                self.mp_trainer.scaler.load_state_dict(checkpoint_data['scaler'])
+        elif self.use_fp16 and isinstance(checkpoint_data, dict) and 'scaler' in checkpoint_data:
+            print("scaler state found, loading it.")
+            self.mp_trainer.scaler.load_state_dict(checkpoint_data['scaler'])
 
-        target_group_settings = [
-            {
-                'lr': group['lr'],
-                'weight_decay': group['weight_decay'],
-            }
-            for group in self.opt.param_groups
-        ]
-        print('target optimizer settings:', target_group_settings)
+        # Load optimizer state WITHOUT overriding LR
+        logger.log(f"loading optimizer state from {opt_checkpoint}")
         try:
             self.opt.load_state_dict(state_dict)
         except ValueError as exc:
             logger.log(f"optimizer state restore skipped: {exc}")
             return
-        print('loaded optimizer settings (will be replaced):', [
-            {
-                'lr': group['lr'],
-                'weight_decay': group['weight_decay'],
-            }
-            for group in self.opt.param_groups
-        ])
-        for group, target in zip(self.opt.param_groups, target_group_settings):
-            group['lr'] = target['lr']
-            group['weight_decay'] = target['weight_decay']
-            if 'initial_lr' in group:
-                group['initial_lr'] = target['lr']
+        logger.log("optimizer state restored successfully")
+        optimizer_state_stats = sanitize_optimizer_state(self.opt)
+        if optimizer_state_stats['found']:
+            logger.log(
+                "Sanitized non-finite optimizer state after restore "
+                f"({format_nonfinite_stats(optimizer_state_stats)})"
+            )
+        
+        # Restore LR scheduler state to continue from the correct step
+        if isinstance(checkpoint_data, dict) and 'scheduler' in checkpoint_data:
+            try:
+                self.lr_scheduler.load_state_dict(checkpoint_data['scheduler'])
+                logger.log("LR scheduler state restored")
+            except Exception as exc:
+                logger.log(f"LR scheduler state restore skipped: {exc}")
+        elif self.resume_checkpoint:
+            try:
+                checkpoint_number = parse_checkpoint_number_from_filename(self.resume_checkpoint)
+                numbering_mode = self._get_checkpoint_step_numbering(self.resume_checkpoint)
+                if numbering_mode == 'completed_steps':
+                    inferred_last_epoch = checkpoint_number
+                else:
+                    inferred_last_epoch = max(checkpoint_number, 0)
+                self.lr_scheduler.last_epoch = inferred_last_epoch
+                self.lr_scheduler._step_count = inferred_last_epoch + 1
+                self.lr_scheduler._last_lr = [group['lr'] for group in self.opt.param_groups]
+                logger.log(f"LR scheduler state inferred from resume checkpoint step {inferred_last_epoch}")
+            except Exception as exc:
+                logger.log(f"LR scheduler inference skipped: {exc}")
+        
+        # Restore RNG states for reproducible data shuffling
+        if isinstance(checkpoint_data, dict) and 'torch_rng_state' in checkpoint_data:
+            try:
+                torch.set_rng_state(checkpoint_data['torch_rng_state'])
+                if torch.cuda.is_available() and 'cuda_rng_state' in checkpoint_data:
+                    torch.cuda.set_rng_state_all(checkpoint_data['cuda_rng_state'])
+                if 'python_rng_state' in checkpoint_data:
+                    random.setstate(checkpoint_data['python_rng_state'])
+                if 'numpy_rng_state' in checkpoint_data:
+                    np.random.set_state(checkpoint_data['numpy_rng_state'])
+                logger.log("RNG states restored for reproducible data shuffling")
+            except Exception as exc:
+                logger.log(f"RNG state restore skipped: {exc}")
 
     def run_loop(self):
         tqdm.write(f'train steps: {self.num_steps}')
@@ -269,7 +299,10 @@ class TrainLoop:
                 completed_step = self.total_step() + 1
 
                 if completed_step % self.log_interval == 0:
-                    for k,v in logger.get_current().dumpkvs().items():
+                    self._assert_optimizer_state_finite(completed_step)
+                    interval_loss_metrics = self._flush_interval_loss_metrics()
+                    logger_metrics = logger.get_current().dumpkvs().items()
+                    for k, v in [*interval_loss_metrics.items(), *logger_metrics]:
                         if k == 'loss':
                             tqdm.write('step[{}]: loss[{:0.5f}]'.format(completed_step, v))
                         if k in ['step', 'samples'] or '_q' in k:
@@ -327,6 +360,35 @@ class TrainLoop:
             return False
         return completed_step % self.eval_interval == 0 or completed_step == self.num_steps
 
+    def _assert_optimizer_state_finite(self, completed_step):
+        state_stats = inspect_optimizer_state(self.opt)
+        if state_stats['found']:
+            raise RuntimeError(
+                'Detected non-finite optimizer state at '
+                f'step {completed_step} ({format_nonfinite_stats(state_stats)})'
+            )
+
+    def _accumulate_interval_losses(self, losses):
+        for key, value in losses.items():
+            if not torch.is_tensor(value):
+                continue
+            mean_value = value.detach().float().mean()
+            if key in self._interval_loss_sums:
+                self._interval_loss_sums[key] = self._interval_loss_sums[key] + mean_value
+                self._interval_loss_counts[key] += 1
+            else:
+                self._interval_loss_sums[key] = mean_value.clone()
+                self._interval_loss_counts[key] = 1
+
+    def _flush_interval_loss_metrics(self):
+        metrics = {}
+        for key, total in self._interval_loss_sums.items():
+            count = max(self._interval_loss_counts.get(key, 1), 1)
+            metrics[key] = float((total / count).item())
+        self._interval_loss_sums.clear()
+        self._interval_loss_counts.clear()
+        return metrics
+
     def _compute_eval_losses(self, batch, cond):
         t, weights = self.schedule_sampler.sample(batch.shape[0], dist_util.dev())
         with torch.no_grad(), self._autocast_context():
@@ -358,9 +420,8 @@ class TrainLoop:
         gen_args.motion_length = 6.0 #None  # length is taken from the dataset
         gen_args.load_from_model_name = True
         all_objects = self.data.dataset.motion_dataset.cond_dict.keys() 
-        random.seed(self.step)
-        gen_args.object_type = random.sample(all_objects, gen_args.num_samples)
-        random.seed(self.args.seed)
+        selection_rng = random.Random(int(completed_step))
+        gen_args.object_type = selection_rng.sample(list(all_objects), gen_args.num_samples)
         all_sample_save_path = generate(gen_args, self.data.dataset.motion_dataset.cond_dict)
         self.train_platform.report_media(title='Motion', series='Predicted Motion', iteration=completed_step,
                                          local_path=all_sample_save_path)
@@ -466,9 +527,7 @@ class TrainLoop:
                 )
 
             loss = (losses["loss"] * weights).mean()
-            log_loss_dict(
-                self.diffusion, t, {k: v * weights for k, v in losses.items()}
-            )
+            self._accumulate_interval_losses({k: v * weights for k, v in losses.items()})
             self.mp_trainer.backward(loss)
 
     def _autocast_context(self):
@@ -539,6 +598,18 @@ class TrainLoop:
                         'opt': opt_state,
                         'scaler': self.mp_trainer.scaler.state_dict(),
                     }
+                else:
+                    opt_state = {'opt': opt_state}
+                
+                # Save LR scheduler state for proper resumption
+                opt_state['scheduler'] = self.lr_scheduler.state_dict()
+                
+                # Save RNG states to ensure reproducible data shuffling on resume
+                opt_state['torch_rng_state'] = torch.get_rng_state()
+                if torch.cuda.is_available():
+                    opt_state['cuda_rng_state'] = torch.cuda.get_rng_state_all()
+                opt_state['python_rng_state'] = random.getstate()
+                opt_state['numpy_rng_state'] = np.random.get_state()
 
                 torch.save(opt_state, f)
                 
@@ -615,17 +686,6 @@ def get_blob_logdir():
     # You can change this to be a separate path to save checkpoints to
     # a blobstore or some external drive.
     return logger.get_dir()
-
-
-def log_loss_dict(diffusion, ts, losses):
-    for key, values in losses.items():
-        logger.logkv_mean(key, values.mean().item())
-        # Log the quantiles (four quartiles, in particular).
-        ts_list = ts.detach().cpu().reshape(-1).tolist()
-        loss_list = values.detach().float().cpu().reshape(-1).tolist()
-        for sub_t, sub_loss in zip(ts_list, loss_list):
-            quartile = int(4 * sub_t / diffusion.num_timesteps)
-            logger.logkv_mean(f"{key}_q{quartile}", sub_loss)
             
 
 

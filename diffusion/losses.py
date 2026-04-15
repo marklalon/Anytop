@@ -93,6 +93,9 @@ def geodesic_distance(R_pred, R_gt):
     # Q = th.matmul(U, Vt) 
     #R_pred_orth = th.linalg.qr(R_pred)[0]
     
+    R_pred = R_pred.float()
+    R_gt = R_gt.float()
+
     # Compute the relative rotation matrix
     R_rel = th.matmul(R_pred.transpose(-1, -2), R_gt)
     

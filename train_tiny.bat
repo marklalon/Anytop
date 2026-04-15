@@ -6,7 +6,7 @@ pushd "%SCRIPT_DIR%"
 
 %PYTHON_EXE% train/train_anytop_two_stage.py ^
 	--run_stage stage1 ^
-	--output-dir save/stage1_tiny_overfit_locomotion_teacher_s100_v4 ^
+	--output-dir save/stage1_tiny_overfit_locomotion_teacher_v5 ^
 	--motion_scorer_checkpoint_dir save/motion_scorer_v8 ^
 	--physics_teacher_weight 0.05 ^
 	--physics_teacher_feature_weight 1.0 ^
@@ -31,7 +31,7 @@ pushd "%SCRIPT_DIR%"
 	--stage1_batch_size 32 ^
 	--stage1_sample_limit -1 ^
 	--stage1_lr 5e-5 ^
-	--stage1_num_steps 20000 ^
+	--stage1_num_steps 100000 ^
 	--lambda_geo 1.0 ^
 	--save_interval 1000 ^
 	--log_interval 100 ^

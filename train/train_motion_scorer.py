@@ -27,7 +27,7 @@ from data_loaders.skeleton_metadata import (
     load_skeleton_metadata,
     metadata_feature_dim,
 )
-from diffusion.fp16_util import MixedPrecisionTrainer
+from diffusion.fp16_util import MixedPrecisionTrainer, format_nonfinite_stats, inspect_optimizer_state, sanitize_optimizer_state
 from diffusion.nn import update_ema
 from eval.biomechanical_negatives import NEGATIVE_KINDS, generate_biomechanical_negative_batch
 from eval.physics_features import extract_physics_features
@@ -152,6 +152,10 @@ def _covariance_loss(features: torch.Tensor) -> torch.Tensor:
     cov = centered.T @ centered / max(features.shape[0] - 1, 1)
     off_diagonal = cov - torch.diag_embed(torch.diagonal(cov))
     return off_diagonal.pow(2).sum() / max(features.shape[1], 1)
+
+
+def _fp32_loss_context(device: torch.device):
+    return torch.autocast(device_type=device.type, enabled=False)
 
 
 def prepare_save_dir(args) -> str:
@@ -535,6 +539,12 @@ class MotionScorerTrainer:
                         self.mp_trainer.scaler.load_state_dict(opt_state["scaler"])
                     opt_state = opt_state["opt"]
                 self.opt.load_state_dict(opt_state)
+                optimizer_state_stats = sanitize_optimizer_state(self.opt)
+                if optimizer_state_stats["found"]:
+                    print(
+                        "Sanitized non-finite optimizer state after restore "
+                        f"({format_nonfinite_stats(optimizer_state_stats)})"
+                    )
 
         apply_current_optimizer_hparams(self.opt, args)
         self.lr_scheduler = build_step_lr_scheduler(self.opt, args, self.resume_completed_steps)
@@ -598,28 +608,17 @@ class MotionScorerTrainer:
                 return_phys_features=use_auxiliary_branches,
             )
 
-            species_loss = F.cross_entropy(clean_outputs["species_logits"], species_ids)
-            action_loss = F.cross_entropy(clean_outputs["action_logits"], action_ids)
-            if use_auxiliary_branches:
-                vicreg_features = normalize_density_embeddings(clean_outputs["latents"])
-                disc_positive_loss = F.binary_cross_entropy_with_logits(
-                    clean_outputs["disc_logits"],
-                    torch.ones_like(clean_outputs["disc_logits"]),
+            if use_auxiliary_branches and negative_batch is None:
+                negative_batch = generate_biomechanical_negative_batch(
+                    motion,
+                    n_joints,
+                    lengths,
+                    object_types,
+                    self.skeleton_lookup,
+                    feature_std=cond["y"].get("std"),
+                    negative_kinds=NEGATIVE_KINDS,
                 )
-                phys_loss = F.mse_loss(clean_outputs["phys_features"], physics_targets)
-                vic_variance_loss = _variance_floor_loss(vicreg_features, float(self.args.vic_variance_floor))
-                vic_covariance_loss = _covariance_loss(vicreg_features)
-
-                if negative_batch is None:
-                    negative_batch = generate_biomechanical_negative_batch(
-                        motion,
-                        n_joints,
-                        lengths,
-                        object_types,
-                        self.skeleton_lookup,
-                        feature_std=cond["y"].get("std"),
-                        negative_kinds=NEGATIVE_KINDS,
-                    )
+            if use_auxiliary_branches:
                 negative_outputs = self.model(
                     negative_batch["motion"],
                     n_joints,
@@ -629,18 +628,36 @@ class MotionScorerTrainer:
                     return_action_logits=False,
                     return_phys_features=False,
                 )
+            else:
+                negative_outputs = None
+
+        with _fp32_loss_context(self.device):
+            species_logits = clean_outputs["species_logits"].float()
+            action_logits = clean_outputs["action_logits"].float()
+            species_loss = F.cross_entropy(species_logits, species_ids)
+            action_loss = F.cross_entropy(action_logits, action_ids)
+            if use_auxiliary_branches:
+                vicreg_features = normalize_density_embeddings(clean_outputs["latents"])
+                disc_logits = clean_outputs["disc_logits"].float()
+                disc_positive_loss = F.binary_cross_entropy_with_logits(
+                    disc_logits,
+                    torch.ones_like(disc_logits),
+                )
+                phys_loss = F.mse_loss(clean_outputs["phys_features"].float(), physics_targets.float())
+                vic_variance_loss = _variance_floor_loss(vicreg_features, float(self.args.vic_variance_floor))
+                vic_covariance_loss = _covariance_loss(vicreg_features)
+                negative_disc_logits = negative_outputs["disc_logits"].float()
                 disc_negative_loss = F.binary_cross_entropy_with_logits(
-                    negative_outputs["disc_logits"],
-                    torch.zeros_like(negative_outputs["disc_logits"]),
+                    negative_disc_logits,
+                    torch.zeros_like(negative_disc_logits),
                 )
             else:
-                zero = motion.new_zeros(())
+                zero = motion.new_zeros((), dtype=torch.float32)
                 disc_positive_loss = zero
                 disc_negative_loss = zero
                 phys_loss = zero
                 vic_variance_loss = zero
                 vic_covariance_loss = zero
-                negative_outputs = None
 
             loss = (
                 float(self.args.lambda_species) * species_loss
@@ -658,29 +675,29 @@ class MotionScorerTrainer:
             update_ema(self.model_avg.parameters(), self.model.parameters(), rate=self.args.ema_decay)
 
         with torch.no_grad():
-            species_accuracy = (clean_outputs["species_logits"].argmax(dim=-1) == species_ids).float().mean()
-            action_accuracy = (clean_outputs["action_logits"].argmax(dim=-1) == action_ids).float().mean()
+            species_accuracy = (species_logits.argmax(dim=-1) == species_ids).float().mean()
+            action_accuracy = (action_logits.argmax(dim=-1) == action_ids).float().mean()
             if use_auxiliary_branches:
-                clean_disc_prob = torch.sigmoid(clean_outputs["disc_logits"]).mean()
-                negative_disc_prob = torch.sigmoid(negative_outputs["disc_logits"]).mean()
+                clean_disc_prob = torch.sigmoid(disc_logits).mean()
+                negative_disc_prob = torch.sigmoid(negative_disc_logits).mean()
             else:
                 clean_disc_prob = motion.new_zeros(())
                 negative_disc_prob = motion.new_zeros(())
 
         return {
-            "loss": float(loss.detach().item()),
-            "species_loss": float(species_loss.detach().item()),
-            "action_loss": float(action_loss.detach().item()),
-            "disc_positive_loss": float(disc_positive_loss.detach().item()),
-            "disc_negative_loss": float(disc_negative_loss.detach().item()),
-            "phys_loss": float(phys_loss.detach().item()),
-            "vic_variance_loss": float(vic_variance_loss.detach().item()),
-            "vic_covariance_loss": float(vic_covariance_loss.detach().item()),
-            "species_accuracy": float(species_accuracy.detach().item()),
-            "action_accuracy": float(action_accuracy.detach().item()),
-            "clean_disc_prob": float(clean_disc_prob.detach().item()),
-            "negative_disc_prob": float(negative_disc_prob.detach().item()),
-            "aux_factor": float(aux_factor),
+            "loss": loss.detach().float(),
+            "species_loss": species_loss.detach().float(),
+            "action_loss": action_loss.detach().float(),
+            "disc_positive_loss": disc_positive_loss.detach().float(),
+            "disc_negative_loss": disc_negative_loss.detach().float(),
+            "phys_loss": phys_loss.detach().float(),
+            "vic_variance_loss": vic_variance_loss.detach().float(),
+            "vic_covariance_loss": vic_covariance_loss.detach().float(),
+            "species_accuracy": species_accuracy.detach().float(),
+            "action_accuracy": action_accuracy.detach().float(),
+            "clean_disc_prob": clean_disc_prob.detach().float(),
+            "negative_disc_prob": negative_disc_prob.detach().float(),
+            "aux_factor": motion.new_tensor(float(aux_factor), dtype=torch.float32),
         }
 
     def save(self, completed_step: int) -> None:
@@ -698,7 +715,8 @@ class MotionScorerTrainer:
 
     def run(self) -> MotionScorerNet:
         completed_steps = self.resume_completed_steps
-        running_metrics: dict[str, list[float]] = {}
+        running_metrics: dict[str, torch.Tensor] = {}
+        running_metric_counts: dict[str, int] = {}
         data_iter = iter(self.data_loader)
         timing_log_interval = max(1, int(getattr(self.args, "timing_log_interval", self.args.log_interval)))
         cls_warmup_steps = max(0, int(getattr(self.args, "cls_warmup_steps", 0)))
@@ -783,7 +801,13 @@ class MotionScorerTrainer:
 
             completed_steps += 1
             for metric_name, metric_value in step_metrics.items():
-                running_metrics.setdefault(metric_name, []).append(metric_value)
+                detached_value = metric_value.detach()
+                if metric_name in running_metrics:
+                    running_metrics[metric_name] = running_metrics[metric_name] + detached_value
+                    running_metric_counts[metric_name] += 1
+                else:
+                    running_metrics[metric_name] = detached_value.clone()
+                    running_metric_counts[metric_name] = 1
             timing_totals["data_wait_s"] += data_wait_s
             timing_totals["host_to_device_s"] += host_to_device_s
             timing_totals["step_s"] += step_s
@@ -792,10 +816,10 @@ class MotionScorerTrainer:
             timing_samples += int(motion.shape[0])
 
             if completed_steps % self.args.log_interval == 0 or completed_steps == self.args.num_steps:
+                self._assert_optimizer_state_finite(completed_steps)
                 mean_metrics = {
-                    metric_name: float(np.mean(metric_values))
-                    for metric_name, metric_values in running_metrics.items()
-                    if metric_values
+                    metric_name: float((metric_total / max(running_metric_counts[metric_name], 1)).item())
+                    for metric_name, metric_total in running_metrics.items()
                 }
                 print(
                     "step[{}]: total_loss[{:.6f}] species_ce[{:.6f}] action_ce[{:.6f}] disc_pos[{:.6f}] disc_neg[{:.6f}] phys[{:.6f}] aux[{:.3f}]".format(
@@ -813,6 +837,7 @@ class MotionScorerTrainer:
                     self.ml_platform.report_scalar(metric_name, metric_value, completed_steps, group_name="Train")
                 self.ml_platform.report_scalar("lr", self.lr_scheduler.get_last_lr()[0], completed_steps, group_name="Train")
                 running_metrics.clear()
+                running_metric_counts.clear()
 
             if completed_steps % timing_log_interval == 0 or completed_steps == self.args.num_steps:
                 mean_loop_s = timing_totals["loop_s"] / max(timing_steps, 1)
@@ -851,6 +876,14 @@ class MotionScorerTrainer:
                 self.save(completed_steps)
 
         return self.model_avg if self.model_avg is not None else self.model
+
+    def _assert_optimizer_state_finite(self, completed_step: int) -> None:
+        state_stats = inspect_optimizer_state(self.opt)
+        if state_stats["found"]:
+            raise RuntimeError(
+                "Detected non-finite optimizer state at "
+                f"step {completed_step} ({format_nonfinite_stats(state_stats)})"
+            )
 
 
 def _mahalanobis_distance_np(values: np.ndarray, mean: np.ndarray, cov_inv: np.ndarray) -> np.ndarray:

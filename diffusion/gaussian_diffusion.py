@@ -517,13 +517,15 @@ class GaussianDiffusion:
         # assuming a.shape == b.shape == bs, J, Jdim, seqlen
         # assuming temp_mask.shape == bs, 1, 1, seqlen
         # assuming spat_mask.shape == bs, 1, 1, max_joints
+        a = a.float()
+        b = b.float()
         rots_target = rotation_6d_to_matrix_safe(a.permute(0, 3, 1, 2)[..., 3:9])
         rots_pred = rotation_6d_to_matrix_safe(b.permute(0, 3, 1, 2)[..., 3:9])
         loss = geodesic_distance(rots_pred, rots_target).permute(0, 2, 3, 1)
         temp_masked_loss = loss * temp_mask.float()
         spat_temp_masked_loss = (temp_masked_loss * spat_mask.float().transpose(1,3))
         loss = sum_flat(spat_temp_masked_loss)  # gives \sigma_euclidean over unmasked elements
-        non_zero_elements = lengths * n_joints 
+        non_zero_elements = (lengths * n_joints).float()
         loss_val = loss / non_zero_elements
         return loss_val
     
@@ -531,6 +533,8 @@ class GaussianDiffusion:
         # assuming a.shape == b.shape == bs, J, Jdim, seqlen
         # assuming temp_mask.shape == bs, 1, 1, seqlen
         # assuming spat_mask.shape == bs, 1, 1, max_joints
+        a = a.float()
+        b = b.float()
         
         # gt foot contact. Multiplied by temporal mask to zero out the last frame fc. Spatial mask is not needed since irrelevant joints fc is already zero 
         fc = a[..., 12, :-1] * temp_mask[..., 0, 1:] != 0   # (bs, J, seqlen-1)

@@ -92,14 +92,15 @@ class DirectPhysicsTeacher:
         via the ``target_features`` argument to avoid redundant computation.
         """
         with torch.no_grad():
-            return extract_physics_features(
-                target_motion.detach(),
-                n_joints.detach(),
-                lengths.detach(),
-                object_types,
-                self.skeleton_lookup,
-                compute_device=self.features_compute_device,
-            ).float()
+            with torch.autocast(device_type=target_motion.device.type, enabled=False):
+                return extract_physics_features(
+                    target_motion.detach().float(),
+                    n_joints.detach(),
+                    lengths.detach(),
+                    object_types,
+                    self.skeleton_lookup,
+                    compute_device=self.features_compute_device,
+                ).float()
 
     def compute_losses(
         self,
@@ -111,37 +112,40 @@ class DirectPhysicsTeacher:
         object_types: Sequence[str],
         target_features: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
-        pred_features = extract_physics_features(
-            pred_motion,
-            n_joints,
-            lengths,
-            object_types,
-            self.skeleton_lookup,
-            differentiable=True,
-            compute_device=self.features_compute_device,
-        ).float()
+        with torch.autocast(device_type=pred_motion.device.type, enabled=False):
+            pred_features = extract_physics_features(
+                pred_motion.float(),
+                n_joints,
+                lengths,
+                object_types,
+                self.skeleton_lookup,
+                differentiable=True,
+                compute_device=self.features_compute_device,
+            ).float()
 
-        if target_features is None:
-            target_features = self.compute_target_features(
-                target_motion,
-                n_joints=n_joints,
-                lengths=lengths,
-                object_types=object_types,
-            )
+            if target_features is None:
+                target_features = self.compute_target_features(
+                    target_motion,
+                    n_joints=n_joints,
+                    lengths=lengths,
+                    object_types=object_types,
+                )
+            else:
+                target_features = target_features.float()
 
-        scale = self.feature_scale.unsqueeze(0)
-        pred_scaled = pred_features * scale
-        target_scaled = target_features * scale
-        feature_loss = F.smooth_l1_loss(pred_scaled, target_scaled, reduction="none").mean(dim=1)
+            scale = self.feature_scale.unsqueeze(0)
+            pred_scaled = pred_features * scale
+            target_scaled = target_features * scale
+            feature_loss = F.smooth_l1_loss(pred_scaled, target_scaled, reduction="none").mean(dim=1)
 
-        pred_distance_sq = _mahalanobis_distance_sq(pred_features, self.mu_phys, self.sigma_phys_inv)
-        target_distance_sq = _mahalanobis_distance_sq(target_features, self.mu_phys, self.sigma_phys_inv)
-        margin_loss = torch.relu(pred_distance_sq - target_distance_sq)
+            pred_distance_sq = _mahalanobis_distance_sq(pred_features, self.mu_phys, self.sigma_phys_inv)
+            target_distance_sq = _mahalanobis_distance_sq(target_features, self.mu_phys, self.sigma_phys_inv)
+            margin_loss = torch.relu(pred_distance_sq - target_distance_sq)
 
-        pred_distance = torch.sqrt(pred_distance_sq.clamp_min(0.0))
-        target_distance = torch.sqrt(target_distance_sq.clamp_min(0.0))
-        pred_score = _percentile_score(-pred_distance, self.phys_percentiles)
-        target_score = _percentile_score(-target_distance, self.phys_percentiles)
+            pred_distance = torch.sqrt(pred_distance_sq.clamp_min(0.0))
+            target_distance = torch.sqrt(target_distance_sq.clamp_min(0.0))
+            pred_score = _percentile_score(-pred_distance, self.phys_percentiles)
+            target_score = _percentile_score(-target_distance, self.phys_percentiles)
 
         return {
             "physics_teacher_feature_loss": feature_loss,

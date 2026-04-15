@@ -113,38 +113,44 @@ class DirectSemanticTeacher:
             unknown_index=self.action_unknown_index,
         )
 
-        pred_outputs = self.model(
-            pred_motion,
-            n_joints,
-            lengths,
-            return_disc_logits=False,
-            return_phys_features=False,
-        )
-        with torch.no_grad():
-            target_outputs = self.model(
-                target_motion.detach(),
-                n_joints.detach(),
-                lengths.detach(),
+        with torch.autocast(device_type=pred_motion.device.type, enabled=False):
+            pred_outputs = self.model(
+                pred_motion.float(),
+                n_joints,
+                lengths,
                 return_disc_logits=False,
                 return_phys_features=False,
             )
+            with torch.no_grad():
+                target_outputs = self.model(
+                    target_motion.detach().float(),
+                    n_joints.detach(),
+                    lengths.detach(),
+                    return_disc_logits=False,
+                    return_phys_features=False,
+                )
 
-        species_ce = F.cross_entropy(pred_outputs["species_logits"], species_ids, reduction="none")
-        action_ce = F.cross_entropy(pred_outputs["action_logits"], action_ids, reduction="none")
+            pred_species_logits = pred_outputs["species_logits"].float()
+            pred_action_logits = pred_outputs["action_logits"].float()
+            target_species_logits = target_outputs["species_logits"].float()
+            target_action_logits = target_outputs["action_logits"].float()
 
-        species_log_probs = F.log_softmax(pred_outputs["species_logits"] / temperature, dim=-1)
-        action_log_probs = F.log_softmax(pred_outputs["action_logits"] / temperature, dim=-1)
-        target_species_probs = F.softmax(target_outputs["species_logits"] / temperature, dim=-1)
-        target_action_probs = F.softmax(target_outputs["action_logits"] / temperature, dim=-1)
-        species_kl = F.kl_div(species_log_probs, target_species_probs, reduction="none").sum(dim=-1)
-        action_kl = F.kl_div(action_log_probs, target_action_probs, reduction="none").sum(dim=-1)
-        species_kl = species_kl * (temperature ** 2)
-        action_kl = action_kl * (temperature ** 2)
+            species_ce = F.cross_entropy(pred_species_logits, species_ids, reduction="none")
+            action_ce = F.cross_entropy(pred_action_logits, action_ids, reduction="none")
 
-        pred_species_confidence = torch.softmax(pred_outputs["species_logits"], dim=-1).max(dim=-1).values
-        pred_action_confidence = torch.softmax(pred_outputs["action_logits"], dim=-1).max(dim=-1).values
-        target_species_confidence = torch.softmax(target_outputs["species_logits"], dim=-1).max(dim=-1).values
-        target_action_confidence = torch.softmax(target_outputs["action_logits"], dim=-1).max(dim=-1).values
+            species_log_probs = F.log_softmax(pred_species_logits / temperature, dim=-1)
+            action_log_probs = F.log_softmax(pred_action_logits / temperature, dim=-1)
+            target_species_probs = F.softmax(target_species_logits / temperature, dim=-1)
+            target_action_probs = F.softmax(target_action_logits / temperature, dim=-1)
+            species_kl = F.kl_div(species_log_probs, target_species_probs, reduction="none").sum(dim=-1)
+            action_kl = F.kl_div(action_log_probs, target_action_probs, reduction="none").sum(dim=-1)
+            species_kl = species_kl * (temperature ** 2)
+            action_kl = action_kl * (temperature ** 2)
+
+            pred_species_confidence = torch.softmax(pred_species_logits, dim=-1).max(dim=-1).values
+            pred_action_confidence = torch.softmax(pred_action_logits, dim=-1).max(dim=-1).values
+            target_species_confidence = torch.softmax(target_species_logits, dim=-1).max(dim=-1).values
+            target_action_confidence = torch.softmax(target_action_logits, dim=-1).max(dim=-1).values
 
         return {
             "semantic_teacher_species_ce": species_ce,

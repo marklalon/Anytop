@@ -145,6 +145,79 @@ def param_grad_or_zeros(param):
         return th.zeros_like(param)
 
 
+def _count_nonfinite_entries(tensor):
+    if not th.is_tensor(tensor) or not th.is_floating_point(tensor):
+        return 0, 0
+    inf_count = int(th.isinf(tensor).sum().item())
+    nan_count = int(th.isnan(tensor).sum().item())
+    return inf_count, nan_count
+
+
+def count_nonfinite_gradients(parameters):
+    inf_count = 0
+    nan_count = 0
+    for param in parameters:
+        if param.grad is None:
+            continue
+        grad_inf_count, grad_nan_count = _count_nonfinite_entries(param.grad)
+        inf_count += grad_inf_count
+        nan_count += grad_nan_count
+    return {
+        "inf": inf_count,
+        "nan": nan_count,
+        "found": (inf_count + nan_count) > 0,
+    }
+
+
+def inspect_optimizer_state(optimizer):
+    inf_count = 0
+    nan_count = 0
+    by_key = {}
+    for state in optimizer.state.values():
+        for key, value in state.items():
+            if not th.is_tensor(value) or not th.is_floating_point(value):
+                continue
+            inf_in_tensor, nan_in_tensor = _count_nonfinite_entries(value)
+            total_nonfinite = inf_in_tensor + nan_in_tensor
+            if total_nonfinite == 0:
+                continue
+            inf_count += inf_in_tensor
+            nan_count += nan_in_tensor
+            by_key[key] = by_key.get(key, 0) + total_nonfinite
+    return {
+        "inf": inf_count,
+        "nan": nan_count,
+        "by_key": by_key,
+        "found": (inf_count + nan_count) > 0,
+    }
+
+
+def sanitize_optimizer_state(optimizer):
+    stats = inspect_optimizer_state(optimizer)
+    for state in optimizer.state.values():
+        for key, value in state.items():
+            if not th.is_tensor(value) or not th.is_floating_point(value):
+                continue
+            if not th.isfinite(value).all():
+                value.masked_fill_(~th.isfinite(value), 0.0)
+    return stats
+
+
+def format_nonfinite_stats(stats):
+    parts = []
+    inf_count = int(stats.get("inf", 0))
+    nan_count = int(stats.get("nan", 0))
+    if inf_count:
+        parts.append(f"inf={inf_count}")
+    if nan_count:
+        parts.append(f"nan={nan_count}")
+    by_key = stats.get("by_key", {}) or {}
+    if by_key:
+        key_summary = ", ".join(f"{key}:{count}" for key, count in sorted(by_key.items()))
+        parts.append(f"keys=[{key_summary}]")
+    return " ".join(parts) if parts else "none"
+
+
 class MixedPrecisionTrainer:
     def __init__(
         self,
@@ -207,6 +280,17 @@ class MixedPrecisionTrainer:
             grad_norm, param_norm = self._compute_norms_from_model()
             logger.logkv_mean("grad_norm", grad_norm)
             logger.logkv_mean("param_norm", param_norm)
+        grad_stats = count_nonfinite_gradients(self.model_params)
+        if grad_stats["found"]:
+            logger.log(
+                "Skipping optimizer step due to non-finite gradients under AMP "
+                f"({format_nonfinite_stats(grad_stats)})"
+            )
+            if self.scaler.is_enabled():
+                self.scaler.step(opt)
+                self.scaler.update()
+            self.zero_grad()
+            return False
         self.scaler.step(opt)
         self.scaler.update()
         scheduler.step()
@@ -243,6 +327,14 @@ class MixedPrecisionTrainer:
             grad_norm, param_norm = self._compute_norms()
             logger.logkv_mean("grad_norm", grad_norm)
             logger.logkv_mean("param_norm", param_norm)
+        grad_stats = count_nonfinite_gradients(self.master_params)
+        if grad_stats["found"]:
+            logger.log(
+                "Skipping optimizer step due to non-finite gradients "
+                f"({format_nonfinite_stats(grad_stats)})"
+            )
+            zero_master_grads(self.master_params)
+            return False
         opt.step()
         scheduler.step()
         logger.logkv_mean("lr", scheduler.get_last_lr()[0])
