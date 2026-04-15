@@ -99,11 +99,23 @@ def geodesic_distance(R_pred, R_gt):
     # Compute the relative rotation matrix
     R_rel = th.matmul(R_pred.transpose(-1, -2), R_gt)
     
-    # Compute the trace of the relative rotation matrix
+    # Compute the trace of the relative rotation matrix.
     trace = th.diagonal(R_rel, dim1=-2, dim2=-1).sum(-1)
-    
-    # Compute the geodesic loss (angle in radians)
+
+    # Recover the angle via atan2(sin(theta), cos(theta)) instead of acos(cos(theta)).
+    # This avoids the derivative blow-up of acos near identity rotations, where
+    # cos(theta) approaches 1 and tiny trace noise can produce very large gradients.
     epsilon = 1e-6
-    theta = th.arccos(th.clamp((trace - 1) / 2, -1+epsilon, 1-epsilon))
+    cos_theta = th.clamp((trace - 1) * 0.5, -1.0 + epsilon, 1.0 - epsilon)
+    skew_vec = th.stack(
+        (
+            R_rel[..., 2, 1] - R_rel[..., 1, 2],
+            R_rel[..., 0, 2] - R_rel[..., 2, 0],
+            R_rel[..., 1, 0] - R_rel[..., 0, 1],
+        ),
+        dim=-1,
+    )
+    sin_theta = 0.5 * th.linalg.norm(skew_vec, dim=-1)
+    theta = th.atan2(sin_theta, cos_theta)
     
     return theta[..., None]

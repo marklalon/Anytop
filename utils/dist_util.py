@@ -55,6 +55,10 @@ def load_state_dict(path, **kwargs):
     """
     Load a PyTorch file without redundant fetches across MPI ranks.
     """
+    # Resume checkpoints and optimizer payloads are full Python pickles.
+    # PyTorch 2.6 changed torch.load() to default to weights_only=True,
+    # which breaks trusted local training checkpoints unless callers opt out.
+    kwargs.setdefault("weights_only", False)
     return th.load(path, **kwargs)
 
 

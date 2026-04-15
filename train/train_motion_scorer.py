@@ -512,7 +512,7 @@ class MotionScorerTrainer:
         self.resume_completed_steps = 0
 
         if self.resume_checkpoint:
-            payload = torch.load(self.resume_checkpoint, map_location="cpu")
+            payload = torch.load(self.resume_checkpoint, map_location="cpu", weights_only=False)
             model_state = select_model_state_dict(payload, prefer_ema=False)
             self.model.load_state_dict(model_state, strict=True)
             if self.model_avg is not None:
@@ -533,7 +533,7 @@ class MotionScorerTrainer:
         if self.resume_checkpoint and args.load_optimizer_state:
             opt_path = os.path.join(os.path.dirname(self.resume_checkpoint), f"opt{self.resume_completed_steps:09d}.pt")
             if os.path.exists(opt_path):
-                opt_state = torch.load(opt_path, map_location="cpu")
+                opt_state = torch.load(opt_path, map_location="cpu", weights_only=False)
                 if self.amp_enabled and isinstance(opt_state, dict) and "opt" in opt_state:
                     if "scaler" in opt_state and self.mp_trainer.scaler.is_enabled():
                         self.mp_trainer.scaler.load_state_dict(opt_state["scaler"])

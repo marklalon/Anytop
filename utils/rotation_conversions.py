@@ -550,6 +550,7 @@ def rotation_6d_to_matrix_np(cont6d):
 def rotation_6d_to_matrix_safe(cont6d):
     assert cont6d.shape[-1] == 6, "The last dimension must be 6"
     epsilon = 1e-6
+    fallback_threshold = 1e-4
     cont6d = torch.nan_to_num(cont6d)
     x_raw = cont6d[..., 0:3]
     y_raw = cont6d[..., 3:6]
@@ -569,7 +570,7 @@ def rotation_6d_to_matrix_safe(cont6d):
     fallback_y = torch.cross(fallback_axis, x, dim=-1)
 
     y_norm = torch.linalg.norm(y, dim=-1, keepdims=True)
-    y = torch.where(y_norm > epsilon, y, fallback_y)
+    y = torch.where(y_norm > fallback_threshold, y, fallback_y)
     y = F.normalize(y, dim=-1, eps=epsilon)
     z = F.normalize(torch.cross(x, y, dim=-1), dim=-1, eps=epsilon)
 

@@ -198,7 +198,7 @@ class MotionQualityScorer:
             )
 
     def _load_model(self, *, prefer_ema: bool) -> None:
-        checkpoint_payload = torch.load(self.checkpoint_path, map_location="cpu")
+        checkpoint_payload = torch.load(self.checkpoint_path, map_location="cpu", weights_only=False)
         num_species = int(self.args.get("num_species", len(self.args.get("species_vocab", [])) or 1))
         num_actions = int(self.args.get("num_actions", len(self.args.get("action_vocab", [])) or 1))
         metadata_dim = int(self.args.get("metadata_feature_dim", 0))

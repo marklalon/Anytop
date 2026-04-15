@@ -71,7 +71,7 @@ class DirectSemanticTeacher:
             metadata_dim=int(self.args.get("metadata_feature_dim", 0)),
             metadata_hidden_dim=int(self.args.get("metadata_hidden_dim", 128)),
         )
-        checkpoint_payload = torch.load(checkpoint_path, map_location="cpu")
+        checkpoint_payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         model_state = checkpoint_payload.get("model_avg") or checkpoint_payload.get("model") or checkpoint_payload
         model.load_state_dict(model_state, strict=True)
         model.to(self.device)
