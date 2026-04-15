@@ -11,7 +11,7 @@ import torch.nn.functional as F
 
 from data_loaders.skeleton_metadata import load_skeleton_metadata
 from data_loaders.truebones.offline_reference_dataset import resolve_dataset_root
-from eval.physics_features import extract_physics_features
+from eval.physics_features import extract_physics_features, select_physics_score_features
 
 
 def _resolve_checkpoint_dir(checkpoint_dir: str | os.PathLike[str]) -> Path:
@@ -133,13 +133,19 @@ class DirectPhysicsTeacher:
             else:
                 target_features = target_features.float()
 
+            pred_features_for_score = pred_features
+            target_features_for_score = target_features
+            if pred_features_for_score.shape[-1] != self.mu_phys.shape[-1]:
+                pred_features_for_score = select_physics_score_features(pred_features_for_score)
+                target_features_for_score = select_physics_score_features(target_features_for_score)
+
             scale = self.feature_scale.unsqueeze(0)
-            pred_scaled = pred_features * scale
-            target_scaled = target_features * scale
+            pred_scaled = pred_features_for_score * scale
+            target_scaled = target_features_for_score * scale
             feature_loss = F.smooth_l1_loss(pred_scaled, target_scaled, reduction="none").mean(dim=1)
 
-            pred_distance_sq = _mahalanobis_distance_sq(pred_features, self.mu_phys, self.sigma_phys_inv)
-            target_distance_sq = _mahalanobis_distance_sq(target_features, self.mu_phys, self.sigma_phys_inv)
+            pred_distance_sq = _mahalanobis_distance_sq(pred_features_for_score, self.mu_phys, self.sigma_phys_inv)
+            target_distance_sq = _mahalanobis_distance_sq(target_features_for_score, self.mu_phys, self.sigma_phys_inv)
             margin_loss = torch.relu(pred_distance_sq - target_distance_sq)
 
             pred_distance = torch.sqrt(pred_distance_sq.clamp_min(0.0))

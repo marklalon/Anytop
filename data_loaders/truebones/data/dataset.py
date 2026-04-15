@@ -94,6 +94,23 @@ def _infer_object_type_from_motion_name(name: str) -> str:
     return name.split("_", 1)[0]
 
 
+def _normalize_fixed_motion_name(raw_value: str) -> str:
+    value = str(raw_value or '').strip()
+    if not value:
+        return ''
+    normalized = value.replace('\\', '/')
+    base_name = Path(normalized).name
+    stem, suffix = os.path.splitext(base_name)
+    suffix = suffix.lower()
+    if suffix == '.bvh':
+        return f'{stem}.npy'
+    if suffix == '.npy':
+        return base_name
+    if base_name.lower().endswith('.npy'):
+        return base_name
+    return f'{base_name}.npy'
+
+
 def _compute_split_counts(num_items: int) -> dict[str, int]:
     if num_items <= 0:
         return {split: 0 for split in SUPPORTED_SPLITS}
@@ -360,6 +377,8 @@ class MotionDataset(data.Dataset):
         self.balanced = balanced
         self.use_reference_conditioning = bool(use_reference_conditioning)
         self.sample_limit = max(0, int(sample_limit))
+        self.fixed_motion_name = _normalize_fixed_motion_name(getattr(opt, 'fixed_motion', ''))
+        self.fixed_window_start = int(getattr(opt, 'fixed_window_start', 0))
         self.motion_cache_size = max(0, int(getattr(opt, 'motion_cache_size', 0)))
         self.cache_normalized_motion = self.motion_cache_size > 0 and not self.use_reference_conditioning
         self.motion_cache = OrderedDict()
@@ -374,7 +393,14 @@ class MotionDataset(data.Dataset):
         cache_dirty = False
 
         all_motion_files = [name for name in os.listdir(opt.motion_dir) if name.endswith('.npy')]
-        if allowed_motion_names is not None:
+        if self.fixed_motion_name:
+            fixed_motion_path = pjoin(opt.motion_dir, self.fixed_motion_name)
+            if not os.path.exists(fixed_motion_path):
+                raise FileNotFoundError(
+                    f"Fixed motion '{self.fixed_motion_name}' was not found under {opt.motion_dir}."
+                )
+            all_motion_files = [self.fixed_motion_name]
+        elif allowed_motion_names is not None:
             all_motion_files = [name for name in all_motion_files if name in allowed_motion_names]
 
         for object_type in all_object_types:
@@ -413,6 +439,20 @@ class MotionDataset(data.Dataset):
         sorted_pairs = sorted(zip(new_name_list, length_list), key=lambda x: x[1])
         if not sorted_pairs:
             raise RuntimeError("No motion clips were found for the requested dataset subset.")
+
+        if self.fixed_motion_name:
+            fixed_entry = data_dict.get(self.fixed_motion_name)
+            if fixed_entry is None:
+                raise RuntimeError(
+                    f"Fixed motion '{self.fixed_motion_name}' was not loaded into the dataset subset."
+                )
+            max_valid_start = max(0, int(fixed_entry['length']) - int(self.max_motion_length))
+            if self.fixed_window_start < 0 or self.fixed_window_start > max_valid_start:
+                raise ValueError(
+                    f"fixed_window_start={self.fixed_window_start} is invalid for motion '{self.fixed_motion_name}' "
+                    f"with length={int(fixed_entry['length'])} and num_frames={int(self.max_motion_length)}. "
+                    f"Valid range is [0, {max_valid_start}]."
+                )
 
         minimum_valid_index = np.searchsorted([pair[1] for pair in sorted_pairs], self.max_length)
         if self.sample_limit > 0:
@@ -460,7 +500,10 @@ class MotionDataset(data.Dataset):
         motion_metadata.setdefault('motion_name', name)
         ind = 0
         if m_length > self.max_motion_length:
-            ind = random.randint(0, m_length - self.max_motion_length)
+            if self.fixed_motion_name:
+                ind = self.fixed_window_start
+            else:
+                ind = random.randint(0, m_length - self.max_motion_length)
             motion = motion[ind: ind + self.max_motion_length]
             m_length = self.max_motion_length
 
@@ -579,7 +622,11 @@ class Truebones(data.Dataset):
         self.sample_limit = kwargs.get('sample_limit', 0)
         self.use_reference_conditioning = kwargs.get('use_reference_conditioning', True)
         self.motion_cache_size = kwargs.get('motion_cache_size', 0)
+        self.fixed_motion = kwargs.get('fixed_motion', '')
+        self.fixed_window_start = kwargs.get('fixed_window_start', 0)
         self.opt.motion_cache_size = self.motion_cache_size
+        self.opt.fixed_motion = self.fixed_motion
+        self.opt.fixed_window_start = self.fixed_window_start
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
         subset = opt.subsets_dict[self.objects_subset] 
         cond_dict = {k:cond_dict[k] for k in subset if k in cond_dict}

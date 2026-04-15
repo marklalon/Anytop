@@ -48,7 +48,7 @@ class AnyTop(nn.Module):
         self.value_emb=kargs.get('value_emb', False)
         self.use_reference_branch = not kargs.get('disable_reference_branch', False)
         self.reference_dropout_threshold = kargs.get('reference_dropout_threshold', 0.05)
-        self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, skip_t5=self.skip_t5)
+        self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, skip_t5=self.skip_t5, dropout_prob=self.dropout)
         self.reference_encoder = ReferenceEncoder(
             self.input_feats,
             self.root_input_feats,
@@ -56,6 +56,7 @@ class AnyTop(nn.Module):
             t5_out_dim,
             skip_t5=self.skip_t5,
             confidence_dropout_threshold=self.reference_dropout_threshold,
+            dropout_prob=self.dropout,
         ) if self.use_reference_branch else None
 
         seqTransDecoderLayer = GraphMotionDecoderLayer(d_model=self.latent_dim,
@@ -127,7 +128,7 @@ class AnyTop(nn.Module):
 # in the case of GMDM, the input process is as follows: 
 # embed each joint of each frame of each motion in batch by the same MLP, separately ! 
 class InputProcess(nn.Module):
-    def __init__(self, input_feats, root_input_feats, latent_dim, t5_output_dim, skip_t5=False):
+    def __init__(self, input_feats, root_input_feats, latent_dim, t5_output_dim, skip_t5=False, dropout_prob=0):
         super().__init__()
         self.input_feats = input_feats
         self.latent_dim = latent_dim
@@ -138,7 +139,7 @@ class InputProcess(nn.Module):
         self.tpos_joint_embedding = nn.Linear(self.input_feats, self.latent_dim)
         self.skip_t5=skip_t5
         if not self.skip_t5:
-            self.joints_names_dropout = nn.Dropout(p=0.1)
+            self.joints_names_dropout = nn.Dropout(p=dropout_prob)
             self.text_embedding = nn.Linear(t5_output_dim, self.latent_dim)
     def forward(self, x, tpos_first_frame, joints_embedded_names, crop_start_ind):
         # x.shape = [batch_size, joints, 13, frames]
@@ -178,7 +179,7 @@ class OutputProcess(nn.Module):
 
 
 class ReferenceEncoder(nn.Module):
-    def __init__(self, input_feats, root_input_feats, latent_dim, t5_output_dim, skip_t5=False, confidence_dropout_threshold=0.05):
+    def __init__(self, input_feats, root_input_feats, latent_dim, t5_output_dim, skip_t5=False, confidence_dropout_threshold=0.05, dropout_prob=0):
         super().__init__()
         self.latent_dim = latent_dim
         self.skip_t5 = skip_t5
@@ -186,7 +187,7 @@ class ReferenceEncoder(nn.Module):
         self.root_embedding = nn.Linear(root_input_feats + 1, latent_dim)
         self.joint_embedding = nn.Linear(input_feats + 1, latent_dim)
         if not skip_t5:
-            self.joints_names_dropout = nn.Dropout(p=0.1)
+            self.joints_names_dropout = nn.Dropout(p=dropout_prob)
             self.text_embedding = nn.Linear(t5_output_dim, latent_dim)
 
     def forward(self, reference_motion, confidence_mask, joints_embedded_names, crop_start_ind):

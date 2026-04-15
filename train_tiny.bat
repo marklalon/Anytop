@@ -6,42 +6,26 @@ pushd "%SCRIPT_DIR%"
 
 %PYTHON_EXE% train/train_anytop_two_stage.py ^
 	--run_stage stage1 ^
-	--output-dir save/stage1_tiny_overfit_locomotion_teacher_v5 ^
-	--motion_scorer_checkpoint_dir save/motion_scorer_v8 ^
-	--physics_teacher_weight 0.05 ^
-	--physics_teacher_feature_weight 1.0 ^
-	--physics_teacher_margin_weight 0.25 ^
-	--physics_teacher_start_step 0 ^
-	--physics_teacher_ramp_steps 0 ^
-	--physics_teacher_max_t 30 ^
-	--physics_features_device cpu ^
-	--semantic_teacher_weight 0.05 ^
-	--semantic_teacher_species_weight 1.0 ^
-	--semantic_teacher_action_weight 1.0 ^
-	--semantic_teacher_kl_weight 0.25 ^
-	--semantic_teacher_start_step 0 ^
-	--semantic_teacher_ramp_steps 0 ^
-	--semantic_teacher_max_t 30 ^
-	--semantic_teacher_temperature 1.0 ^
-	--action_tags locomotion ^
+	--output-dir save/stage1_tiny_overfit_horse_runloop28_fixed_v1 ^
+	--fixed_motion dataset\truebones\zoo\truebones_processed\bvhs\Horse___RunLoop_28.bvh ^
+	--fixed_window_start 0 ^
 	--auto_resume ^
 	--objects_subset all ^
 	--diffusion_steps 100 ^
-	--num_frames 60 ^
-	--stage1_batch_size 32 ^
-	--stage1_sample_limit -1 ^
+	--num_frames 30 ^
+	--stage1_batch_size 1 ^
 	--stage1_lr 5e-5 ^
-	--stage1_num_steps 100000 ^
-	--lambda_geo 1.0 ^
-	--save_interval 1000 ^
+	--stage1_num_steps 10000 ^
+	--dropout_prob 0 ^
+	--lambda_geo 0.0 ^
+	--save_interval 2000 ^
 	--log_interval 100 ^
 	--num_workers 0 ^
-	--motion_cache_size 512 ^
-	--main_process_prefetch_batches 6 ^
-	--amp_dtype bf16 ^
+	--motion_cache_size 1 ^
+	--main_process_prefetch_batches 1 ^
+	--amp_dtype fp32 ^
 	--cudnn_benchmark ^
-	--allow_tf32 ^
-	--ml_platform_type TensorboardPlatform ^
-	--use_ema
+	--no-allow_tf32 ^
+	--ml_platform_type TensorboardPlatform
 
 popd

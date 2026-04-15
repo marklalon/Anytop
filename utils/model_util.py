@@ -40,7 +40,7 @@ def get_gmdm_args(args):
 
     return {'njoints': njoints, 'nfeats': nfeats, 't5_out_dim': t5_out_dim,
             'latent_dim': args.latent_dim, 'ff_size': 1024, 'num_layers': args.layers, 'num_heads': 4,
-            'dropout': 0.1, 'activation': "gelu", 'cond_mode': cond_mode,
+            'dropout': getattr(args, 'dropout_prob', 0.1), 'activation': "gelu", 'cond_mode': cond_mode,
             'cond_mask_prob': args.cond_mask_prob, 'max_joints': max_joints, 
             'feature_len':feature_len,  'skip_t5': args.skip_t5, 'value_emb': args.value_emb, 'root_input_feats': 13,
             'disable_reference_branch': args.disable_reference_branch, 'reference_dropout_threshold': args.reference_dropout_threshold}

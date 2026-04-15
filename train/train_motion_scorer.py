@@ -30,7 +30,7 @@ from data_loaders.skeleton_metadata import (
 from diffusion.fp16_util import MixedPrecisionTrainer, format_nonfinite_stats, inspect_optimizer_state, sanitize_optimizer_state
 from diffusion.nn import update_ema
 from eval.biomechanical_negatives import NEGATIVE_KINDS, generate_biomechanical_negative_batch
-from eval.physics_features import extract_physics_features
+from eval.physics_features import extract_physics_features, select_physics_score_features
 from model.motion_autoencoder import MotionScorerNet
 from utils import dist_util
 from utils.fixseed import fixseed
@@ -939,6 +939,7 @@ def compute_and_save_train_stats(args, model: MotionScorerNet, device: torch.dev
 
     latents = np.concatenate(latent_batches, axis=0).astype(np.float64, copy=False)
     physics = np.concatenate(physics_batches, axis=0).astype(np.float64, copy=False)
+    physics_for_score = select_physics_score_features(physics)
     density_reference_latents = normalize_density_embeddings(torch.from_numpy(latents).float()).cpu().numpy().astype(np.float32, copy=False)
     density_knn_k = max(1, min(int(getattr(args, "density_knn_k", 5)), max(int(density_reference_latents.shape[0]) - 1, 1)))
 
@@ -948,15 +949,15 @@ def compute_and_save_train_stats(args, model: MotionScorerNet, device: torch.dev
         exclude_self=True,
     ).astype(np.float64, copy=False)
 
-    mu_phys = physics.mean(axis=0)
-    if physics.shape[0] > 1:
-        sigma_phys = np.cov(physics, rowvar=False)
+    mu_phys = physics_for_score.mean(axis=0)
+    if physics_for_score.shape[0] > 1:
+        sigma_phys = np.cov(physics_for_score, rowvar=False)
     else:
-        sigma_phys = np.eye(physics.shape[1], dtype=np.float64)
+        sigma_phys = np.eye(physics_for_score.shape[1], dtype=np.float64)
     sigma_phys = np.atleast_2d(sigma_phys)
     sigma_phys += np.eye(sigma_phys.shape[0], dtype=np.float64) * float(args.stats_eps)
     sigma_phys_inv = np.linalg.pinv(sigma_phys)
-    phys_values = -_mahalanobis_distance_np(physics, mu_phys, sigma_phys_inv)
+    phys_values = -_mahalanobis_distance_np(physics_for_score, mu_phys, sigma_phys_inv)
 
     explicit_checkpoint = str(getattr(args, "checkpoint_path", "") or "")
     latest_checkpoint = find_latest_checkpoint(args.save_dir, prefix="model")

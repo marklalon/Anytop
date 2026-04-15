@@ -297,7 +297,7 @@ class GaussianDiffusion:
         physics_teacher_start_step=0,
         physics_teacher_ramp_steps=0,
         physics_teacher_max_t=30,
-        semantic_teacher_weight=0.05,
+        semantic_teacher_weight=0.,
         semantic_teacher_species_weight=1.0,
         semantic_teacher_action_weight=1.0,
         semantic_teacher_kl_weight=0.25,

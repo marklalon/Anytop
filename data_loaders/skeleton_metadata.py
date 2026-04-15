@@ -22,6 +22,7 @@ class SkeletonMetadata:
     is_symmetric: bool
     n_joints: int
     joint_depths: tuple[int, ...]
+    offsets: tuple[tuple[float, float, float], ...] = tuple()
     canonical_up_axis: str = "y"
     non_root_joints: tuple[int, ...] = tuple()
     edge_child_indices: tuple[int, ...] = tuple()
@@ -134,6 +135,7 @@ def load_skeleton_metadata(
         metadata[object_type] = SkeletonMetadata(
             object_type=str(object_type),
             parents=parents,
+            offsets=tuple(tuple(float(component) for component in offset) for offset in object_cond.get("offsets", [])),
             end_effector_joints=_to_int_tuple(object_cond.get("end_effector_joints")),
             contact_joints=_to_int_tuple(object_cond.get("contact_joints")),
             symmetry_partner_indices=_to_int_tuple(object_cond.get("symmetry_partner_indices")),

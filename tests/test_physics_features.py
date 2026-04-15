@@ -71,6 +71,69 @@ def _build_motion() -> torch.Tensor:
     return motion
 
 
+def _build_rigid_weight_test_metadata() -> dict[str, SkeletonMetadata]:
+    metadata = SkeletonMetadata(
+        object_type="RigidWeightRig",
+        parents=(-1, 0, 0, 0),
+        end_effector_joints=(1, 2, 3),
+        contact_joints=(),
+        symmetry_partner_indices=(-1, -1, -1, -1),
+        symmetric_joint_pairs=(),
+        is_symmetric=False,
+        n_joints=4,
+        joint_depths=(0, 1, 1, 1),
+        edge_child_indices=(1, 2, 3),
+        edge_parent_indices=(0, 0, 0),
+        symmetry_left_indices=(),
+        symmetry_right_indices=(),
+        subtree_indices=((0, 1, 2, 3), (1,), (2,), (3,)),
+        max_joint_depth=1,
+    )
+    return {metadata.object_type: metadata}
+
+
+def _build_rigid_weight_test_motion(*, perturb_long_bone: bool) -> torch.Tensor:
+    motion = torch.zeros((1, 4, 13, 4), dtype=torch.float32)
+    root = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    long_a = torch.tensor(
+        [
+            [1.0, 1.1, 0.9, 1.0] if perturb_long_bone else [1.0, 1.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    long_b = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    short_helper = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 0.0],
+            [0.1, 0.11, 0.09, 0.1] if not perturb_long_bone else [0.1, 0.1, 0.1, 0.1],
+            [0.0, 0.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    motion[0, 0, :3, :] = root
+    motion[0, 1, :3, :] = long_a
+    motion[0, 2, :3, :] = long_b
+    motion[0, 3, :3, :] = short_helper
+    motion[0, 0, 3:9, :] = torch.tensor([[1.0], [0.0], [0.0], [0.0], [1.0], [0.0]], dtype=torch.float32)
+    return motion
+
+
 class PhysicsFeaturesTests(unittest.TestCase):
     def setUp(self) -> None:
         _INDEX_TENSOR_CACHE.clear()
@@ -163,6 +226,33 @@ class PhysicsFeaturesTests(unittest.TestCase):
 
         self.assertIsNotNone(motion.grad)
         self.assertEqual(tuple(motion.grad.shape), tuple(motion.shape))
+
+    def test_rigid_features_downweight_short_auxiliary_bones(self):
+        metadata_lookup = _build_rigid_weight_test_metadata()
+        n_joints = torch.tensor([4], dtype=torch.long)
+        lengths = torch.tensor([4], dtype=torch.long)
+
+        short_bone_motion = _build_rigid_weight_test_motion(perturb_long_bone=False)
+        long_bone_motion = _build_rigid_weight_test_motion(perturb_long_bone=True)
+
+        short_features = extract_physics_features(
+            short_bone_motion,
+            n_joints,
+            lengths,
+            ["RigidWeightRig"],
+            metadata_lookup,
+        )
+        long_features = extract_physics_features(
+            long_bone_motion,
+            n_joints,
+            lengths,
+            ["RigidWeightRig"],
+            metadata_lookup,
+        )
+
+        self.assertLess(float(short_features[0, 0]), float(long_features[0, 0]))
+        self.assertLess(float(short_features[0, 2]), float(long_features[0, 2]))
+        self.assertLess(float(short_features[0, 4]), float(long_features[0, 4]))
 
 
 if __name__ == "__main__":

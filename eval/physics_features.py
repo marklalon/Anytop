@@ -3,15 +3,19 @@ from __future__ import annotations
 import math
 from typing import Mapping, Sequence
 
+import numpy as np
 import torch
 from data_loaders.skeleton_metadata import SkeletonMetadata
+from data_loaders.truebones.truebones_utils import motion_process
 
 
 PHYSICS_FEATURE_DIM = 30
+PHYSICS_SCORE_FEATURE_SLICE = slice(5, PHYSICS_FEATURE_DIM)
 _INDEX_TENSOR_CACHE: dict[tuple[tuple[int, ...], str], torch.Tensor] = {}
 _METADATA_FEATURE_CACHE: dict[tuple[str, str], tuple] = {}
 _MIN_ABSOLUTE_BONE_BASELINE = 1e-4
 _MIN_RELATIVE_BONE_BASELINE_RATIO = 0.01
+_SHORT_BONE_WEIGHT_EXPONENT = 2.0
 
 
 def _cached_index_tensor(indices: Sequence[int], device: torch.device) -> torch.Tensor:
@@ -129,6 +133,61 @@ def _safe_ratio(numerator: torch.Tensor, denominator: torch.Tensor) -> torch.Ten
     return numerator / denominator.clamp_min(1e-6)
 
 
+def select_physics_score_features(values: torch.Tensor | np.ndarray) -> torch.Tensor | np.ndarray:
+    return values[..., PHYSICS_SCORE_FEATURE_SLICE]
+
+
+def _compute_rigid_bone_deviation(
+    positions: torch.Tensor,
+    child_index_tensor: torch.Tensor,
+    parent_index_tensor: torch.Tensor,
+    length: int,
+) -> torch.Tensor:
+    bone_lengths = torch.linalg.norm(positions[:, child_index_tensor] - positions[:, parent_index_tensor], dim=-1)
+    baseline = bone_lengths.median(dim=0).values
+    positive_baseline = baseline[baseline > 1e-6]
+    if not positive_baseline.numel():
+        return positions.new_zeros((max(length, 1), 1))
+
+    min_valid_baseline = torch.maximum(
+        baseline.new_tensor(_MIN_ABSOLUTE_BONE_BASELINE),
+        positive_baseline.median() * _MIN_RELATIVE_BONE_BASELINE_RATIO,
+    )
+    valid_edge_mask = baseline >= min_valid_baseline
+    if not bool(valid_edge_mask.any().item()):
+        return positions.new_zeros((max(length, 1), 1))
+
+    valid_baseline = baseline[valid_edge_mask].clamp_min(1e-6)
+    valid_bone_lengths = bone_lengths[:, valid_edge_mask]
+    raw_bone_deviation = (valid_bone_lengths - valid_baseline.unsqueeze(0)).abs() / valid_baseline.unsqueeze(0)
+
+    # Very short auxiliary bones can produce large relative deviations from tiny
+    # absolute changes that are barely visible once the motion is projected back
+    # onto a rigid skeleton for export. Downweight those edges so rigid features
+    # track visually meaningful skeleton drift instead of helper-bone noise.
+    skeleton_median_baseline = valid_baseline.median().clamp_min(1e-6)
+    short_bone_scale = (valid_baseline / skeleton_median_baseline).clamp(min=1e-6, max=1.0)
+    return raw_bone_deviation * short_bone_scale.pow(_SHORT_BONE_WEIGHT_EXPONENT).unsqueeze(0)
+
+
+def _reconstruct_export_positions(
+    motion: torch.Tensor,
+    metadata: SkeletonMetadata,
+) -> torch.Tensor | None:
+    if not metadata.offsets:
+        return None
+    motion_np = motion.permute(2, 0, 1).detach().cpu().numpy().astype(np.float32, copy=False)
+    offsets = np.asarray(metadata.offsets[: motion.shape[0]], dtype=np.float32)
+    parents = [int(parent) for parent in metadata.parents[: motion.shape[0]]]
+    if offsets.shape[0] != motion.shape[0] or len(parents) != motion.shape[0]:
+        return None
+    rigid_anim, _has_animated_pos = motion_process.recover_animation_from_motion_np(motion_np, parents, offsets)
+    if rigid_anim is None:
+        return None
+    rigid_positions = motion_process.positions_global(rigid_anim).astype(np.float32, copy=False)
+    return torch.from_numpy(rigid_positions).to(device=motion.device, dtype=motion.dtype)
+
+
 def _kurtosis(values: torch.Tensor) -> torch.Tensor:
     if values.numel() <= 3:
         return values.new_zeros(())
@@ -219,6 +278,8 @@ def _extract_single_sample_features(
     motion: torch.Tensor,
     length: int,
     metadata: SkeletonMetadata,
+    *,
+    use_export_rigid_positions: bool = False,
 ) -> torch.Tensor:
     # Dataset-provided lengths may refer to the source clip before temporal
     # cropping; physics features must only read the frames present in `motion`.
@@ -226,6 +287,11 @@ def _extract_single_sample_features(
     joint_count = min(int(metadata.n_joints), int(motion.shape[0]))
     motion = motion[:joint_count, :, :length]
     positions = motion[:, :3, :].permute(2, 0, 1)
+    rigid_positions = positions
+    if use_export_rigid_positions:
+        reconstructed_positions = _reconstruct_export_positions(motion, metadata)
+        if reconstructed_positions is not None:
+            rigid_positions = reconstructed_positions
     velocities = motion[:, 9:12, :].permute(2, 0, 1)
     contact_channel = motion[:, 12, :].permute(1, 0)
     root_rot6d = motion[0, 3:9, :].permute(1, 0)
@@ -236,23 +302,12 @@ def _extract_single_sample_features(
     if cached_md.get('edge_child_indices'):
         child_index_tensor = cached_md['child_index_tensor']
         parent_index_tensor = cached_md['parent_index_tensor']
-        bone_lengths = torch.linalg.norm(positions[:, child_index_tensor] - positions[:, parent_index_tensor], dim=-1)
-        baseline = bone_lengths.median(dim=0).values
-        positive_baseline = baseline[baseline > 1e-6]
-        if positive_baseline.numel():
-            min_valid_baseline = torch.maximum(
-                baseline.new_tensor(_MIN_ABSOLUTE_BONE_BASELINE),
-                positive_baseline.median() * _MIN_RELATIVE_BONE_BASELINE_RATIO,
-            )
-            valid_edge_mask = baseline >= min_valid_baseline
-        else:
-            valid_edge_mask = torch.zeros_like(baseline, dtype=torch.bool)
-        if bool(valid_edge_mask.any().item()):
-            valid_baseline = baseline[valid_edge_mask].clamp_min(1e-6)
-            valid_bone_lengths = bone_lengths[:, valid_edge_mask]
-            bone_deviation = (valid_bone_lengths - valid_baseline.unsqueeze(0)).abs() / valid_baseline.unsqueeze(0)
-        else:
-            bone_deviation = positions.new_zeros((max(length, 1), 1))
+        bone_deviation = _compute_rigid_bone_deviation(
+            rigid_positions,
+            child_index_tensor,
+            parent_index_tensor,
+            length,
+        )
     else:
         bone_deviation = positions.new_zeros((max(length, 1), 1))
 
@@ -420,11 +475,21 @@ def extract_physics_features(
                 sample_mean = _ensure_autograd_compatible(sample_mean)
                 sample_std = _ensure_autograd_compatible(sample_std)
                 denormalized_motion = _maybe_denormalize_motion(sample_motion, sample_mean, sample_std)
-                all_features[i] = _extract_single_sample_features(denormalized_motion, length, metadata)
+                all_features[i] = _extract_single_sample_features(
+                    denormalized_motion,
+                    length,
+                    metadata,
+                    use_export_rigid_positions=False,
+                )
         else:
             with torch.inference_mode():
                 denormalized_motion = _maybe_denormalize_motion(sample_motion, sample_mean, sample_std)
-                all_features[i] = _extract_single_sample_features(denormalized_motion, length, metadata)
+                all_features[i] = _extract_single_sample_features(
+                    denormalized_motion,
+                    length,
+                    metadata,
+                    use_export_rigid_positions=True,
+                )
 
     if differentiable:
         with torch.inference_mode(False):

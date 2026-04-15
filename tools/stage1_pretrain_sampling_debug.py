@@ -63,8 +63,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", default=10, type=int, help="Global seed for deterministic setup.")
     parser.add_argument("--objects-subset", default="", help="Override the checkpoint objects_subset when set.")
     parser.add_argument("--action-tags", default="", help="Override the checkpoint action_tags when set, e.g. 'locomotion,attack'.")
+    parser.add_argument("--fixed-motion", default="", help="Override the checkpoint fixed_motion when set. Accepts a processed .npy name or a BVH/.npy path.")
+    parser.add_argument("--fixed-window-start", default=None, type=int, help="Override the checkpoint fixed_window_start when set.")
     parser.add_argument("--num-frames", default=-1, type=int, help="Override num_frames when > 0.")
     parser.add_argument("--eval-split", default="val", choices=["train", "val", "test", "all"], help="Dataset split used to choose the fixed subset.")
+    parser.add_argument(
+        "--sample-limit",
+        default=-1,
+        type=int,
+        help="Override sample_limit used to build the evaluation subset. -1 keeps the checkpoint value, 0 loads the full split.",
+    )
     parser.add_argument("--num-eval-samples", default=16, type=int, help="Number of unique samples to evaluate across all trials.")
     parser.add_argument("--eval-batch-size", default=8, type=int, help="Batch size for sampling evaluation.")
     parser.add_argument("--eval-num-workers", default=0, type=int, help="Evaluation DataLoader workers.")
@@ -106,9 +114,18 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
         model_args.objects_subset = args.objects_subset
     if args.action_tags:
         model_args.action_tags = args.action_tags
+    if args.fixed_motion:
+        model_args.fixed_motion = args.fixed_motion
+    else:
+        model_args.fixed_motion = getattr(model_args, "fixed_motion", "")
+    if args.fixed_window_start is not None:
+        model_args.fixed_window_start = int(args.fixed_window_start)
+    else:
+        model_args.fixed_window_start = int(getattr(model_args, "fixed_window_start", 0))
     if args.num_frames > 0:
         model_args.num_frames = args.num_frames
-    model_args.sample_limit = 0
+    checkpoint_sample_limit = int(getattr(model_args, "sample_limit", 0))
+    model_args.sample_limit = checkpoint_sample_limit if int(args.sample_limit) < 0 else int(args.sample_limit)
     model_args.num_workers = args.eval_num_workers
     validate_stage1_checkpoint_args(model_args)
     return model_args
@@ -483,6 +500,8 @@ def collect_eval_samples(args: argparse.Namespace, model_args: SimpleNamespace) 
         drop_last=False,
         use_reference_conditioning=False,
         action_tags=getattr(model_args, "action_tags", ""),
+        fixed_motion=getattr(model_args, "fixed_motion", ""),
+        fixed_window_start=getattr(model_args, "fixed_window_start", 0),
     )
     if args.eval_num_workers > 0:
         loader_kwargs["prefetch_factor"] = model_args.prefetch_factor
@@ -732,6 +751,8 @@ def main() -> int:
         "selection_seed": int(args.selection_seed),
         "base_seed": int(args.base_seed),
         "num_eval_samples": int(args.num_eval_samples),
+        "fixed_motion": str(getattr(model_args, "fixed_motion", "")),
+        "fixed_window_start": int(getattr(model_args, "fixed_window_start", 0)),
         "disable_reference_branch": bool(model_args.disable_reference_branch),
         "stage1_checkpoint_validated": True,
         "stage1_semantics": {

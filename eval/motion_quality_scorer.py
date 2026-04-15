@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data_loaders.skeleton_metadata import build_metadata_feature_tensor, load_skeleton_metadata
 from data_loaders.truebones.offline_reference_dataset import load_cond_dict, resolve_dataset_root
 from data_loaders.truebones.truebones_utils.motion_labels import infer_species_label
-from eval.physics_features import extract_physics_features
+from eval.physics_features import extract_physics_features, select_physics_score_features
 from model.motion_autoencoder import MotionScorerNet
 
 
@@ -352,7 +352,10 @@ class MotionQualityScorer:
                 feature_mean=feature_mean,
                 feature_std=feature_std,
             )
-            physics_distance = _mahalanobis_distance(physics_features.float(), self.mu_phys, self.sigma_phys_inv)
+            physics_features_for_score = physics_features.float()
+            if physics_features_for_score.shape[-1] != self.mu_phys.shape[-1]:
+                physics_features_for_score = select_physics_score_features(physics_features_for_score)
+            physics_distance = _mahalanobis_distance(physics_features_for_score, self.mu_phys, self.sigma_phys_inv)
 
         species_confidence = species_probs.max(dim=-1).values
         action_confidence = action_probs.max(dim=-1).values

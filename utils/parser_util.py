@@ -103,6 +103,8 @@ def add_model_options(parser):
                        help="If passed, joints names wont be added to features")
     group.add_argument("--value_emb", action='store_true',
                        help="If passed, graph multihead attention learns GRPE value embeddings")
+    group.add_argument("--dropout_prob", default=0.1, type=float,
+                       help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')
@@ -112,6 +114,10 @@ def add_data_options(parser):
                        help="Object subset.")
     group.add_argument("--action_tags", default='', type=str,
                        help="Comma-separated action tags used to keep only motions whose metadata tags match, e.g. 'locomotion,attack'.")
+    group.add_argument("--fixed_motion", default='', type=str,
+                       help="Optional fixed motion clip for deterministic tiny overfit/debug runs. Accepts a processed .npy name or a BVH/.npy path; BVH paths are mapped to the matching processed .npy clip.")
+    group.add_argument("--fixed_window_start", default=0, type=int,
+                       help="Start frame used when --fixed_motion is set and the motion is longer than num_frames. The selected training/eval window stays fixed instead of random cropping.")
     group.add_argument("--use_reference_conditioning", action=argparse.BooleanOptionalAction, default=True,
                        help="If False, skip loading offline corrupted reference motions and confidence masks.")
 
@@ -198,7 +204,7 @@ def add_training_options(parser):
                        help="Maximum diffusion timestep at which the direct physics teacher loss is applied.")
     group.add_argument("--physics_features_device", default="auto", type=str, choices=["auto", "cpu"],
                        help="Device used for extract_physics_features per-sample computation. 'auto' keeps it on the motion tensor's device (usually cuda); 'cpu' moves per-sample slices to CPU to avoid kernel-launch overhead on many tiny ops.")
-    group.add_argument("--semantic_teacher_weight", default=0.05, type=float,
+    group.add_argument("--semantic_teacher_weight", default=0.0, type=float,
                        help="Overall weight of the direct semantic teacher loss applied to the main model.")
     group.add_argument("--semantic_teacher_species_weight", default=1.0, type=float,
                        help="Weight of the species classification term inside the direct semantic teacher loss.")
