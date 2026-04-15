@@ -145,7 +145,6 @@ def main() -> int:
                 "object_type": object_type,
                 "length": length,
                 "n_joints": n_joints,
-                "crop_start_ind": int(cond["y"]["crop_start_ind"][batch_index].item()),
                 "species_label": str(cond["y"].get("species_label", [""] * len(object_types))[batch_index]),
                 "action_label": str(cond["y"].get("action_label", [""] * len(object_types))[batch_index]),
                 "feature_max_abs_delta": float(motion_abs_delta.max()),

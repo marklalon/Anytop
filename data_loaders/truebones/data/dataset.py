@@ -379,6 +379,7 @@ class MotionDataset(data.Dataset):
         self.sample_limit = max(0, int(sample_limit))
         self.fixed_motion_name = _normalize_fixed_motion_name(getattr(opt, 'fixed_motion', ''))
         self.fixed_window_start = int(getattr(opt, 'fixed_window_start', 0))
+        self.fixed_motion_virtual_length = 1
         self.motion_cache_size = max(0, int(getattr(opt, 'motion_cache_size', 0)))
         self.cache_normalized_motion = self.motion_cache_size > 0 and not self.use_reference_conditioning
         self.motion_cache = OrderedDict()
@@ -447,11 +448,12 @@ class MotionDataset(data.Dataset):
                     f"Fixed motion '{self.fixed_motion_name}' was not loaded into the dataset subset."
                 )
             max_valid_start = max(0, int(fixed_entry['length']) - int(self.max_motion_length))
-            if self.fixed_window_start < 0 or self.fixed_window_start > max_valid_start:
+            self.fixed_motion_virtual_length = max_valid_start + 1
+            if self.fixed_window_start != -1 and (self.fixed_window_start < 0 or self.fixed_window_start > max_valid_start):
                 raise ValueError(
                     f"fixed_window_start={self.fixed_window_start} is invalid for motion '{self.fixed_motion_name}' "
                     f"with length={int(fixed_entry['length'])} and num_frames={int(self.max_motion_length)}. "
-                    f"Valid range is [0, {max_valid_start}]."
+                    f"Valid range is [0, {max_valid_start}] or -1 for random cropping."
                 )
 
         minimum_valid_index = np.searchsorted([pair[1] for pair in sorted_pairs], self.max_length)
@@ -500,7 +502,7 @@ class MotionDataset(data.Dataset):
         motion_metadata.setdefault('motion_name', name)
         ind = 0
         if m_length > self.max_motion_length:
-            if self.fixed_motion_name:
+            if self.fixed_motion_name and self.fixed_window_start >= 0:
                 ind = self.fixed_window_start
             else:
                 ind = random.randint(0, m_length - self.max_motion_length)
@@ -566,9 +568,14 @@ class MotionDataset(data.Dataset):
         return motion, data['length'], object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], cond['tpos_first_frame_normalized'], cond['offsets'], cond['joints_names_embs'], cond['kinematic_chains'], mean, std
         
     def __len__(self):
+        if self.fixed_motion_name and self.fixed_window_start == -1 and self.name_list:
+            return max(1, int(self.fixed_motion_virtual_length))
         return len(self.name_list) - self.pointer
 
     def __getitem__(self, item):
+        if self.fixed_motion_name and self.fixed_window_start == -1:
+            name = self.name_list[0]
+            return self._prepare_sample(name, self.data_dict[name])
         if self.balanced:
             idx = item #self.pointer + item (handled in weighted sampler)
         else:
@@ -624,6 +631,8 @@ class Truebones(data.Dataset):
         self.motion_cache_size = kwargs.get('motion_cache_size', 0)
         self.fixed_motion = kwargs.get('fixed_motion', '')
         self.fixed_window_start = kwargs.get('fixed_window_start', 0)
+        if self.fixed_window_start == -1 and not self.fixed_motion:
+            raise ValueError('fixed_window_start=-1 (random cropping) requires --fixed_motion.')
         self.opt.motion_cache_size = self.motion_cache_size
         self.opt.fixed_motion = self.fixed_motion
         self.opt.fixed_window_start = self.fixed_window_start

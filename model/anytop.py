@@ -84,13 +84,12 @@ class AnyTop(nn.Module):
         
         bs, njoints, nfeats, nframes = x.shape
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
-        x = self.input_process(x, tpos_first_frame, y['joints_names_embs'], y['crop_start_ind']) # applies linear layer on each frame to convert it to latent dim
+        x = self.input_process(x, tpos_first_frame, y['joints_names_embs']) # applies linear layer on each frame to convert it to latent dim
         if self.reference_encoder is not None and y is not None and 'reference_motion' in y and 'soft_confidence_mask' in y:
             reference_memory, reference_key_padding_mask = self.reference_encoder(
                 y['reference_motion'].to(x.device),
                 y['soft_confidence_mask'].to(x.device),
                 y['joints_names_embs'],
-                y['crop_start_ind'],
             )
         spatial_mask = 1.0 - joints_mask[:, 0, 0, 1:, 1:]
         spatial_mask = spatial_mask.unsqueeze(1).unsqueeze(1).repeat(1, nframes + 1, self.num_heads, 1, 1).reshape(-1,self.num_heads, njoints, njoints)
@@ -141,7 +140,7 @@ class InputProcess(nn.Module):
         if not self.skip_t5:
             self.joints_names_dropout = nn.Dropout(p=dropout_prob)
             self.text_embedding = nn.Linear(t5_output_dim, self.latent_dim)
-    def forward(self, x, tpos_first_frame, joints_embedded_names, crop_start_ind):
+    def forward(self, x, tpos_first_frame, joints_embedded_names):
         # x.shape = [batch_size, joints, 13, frames]
         x = x.permute(3, 0, 1, 2) # [frames, batch_size, n_joints, features_len]
         tpos_all_joints_except_root = self.tpos_joint_embedding(tpos_first_frame[:, :, 1:])
@@ -155,7 +154,6 @@ class InputProcess(nn.Module):
             joints_embedded_names = self.text_embedding(self.joints_names_dropout(joints_embedded_names.to(x.device)))
             x = x + joints_embedded_names[None, ...]# [frames, batch_size, n_joints, d]
         positions = torch.arange(x.shape[0], device=x.device).view(1, -1, 1).repeat(x.shape[1], 1, 1)
-        positions[:,1:,:] = positions[:,1:,:] + crop_start_ind.to(x.device).view(-1, 1, 1)
         pos_emb = create_sin_embedding(positions, self.latent_dim)[0]
         return x + pos_emb.unsqueeze(1).unsqueeze(1)
 
@@ -190,7 +188,7 @@ class ReferenceEncoder(nn.Module):
             self.joints_names_dropout = nn.Dropout(p=dropout_prob)
             self.text_embedding = nn.Linear(t5_output_dim, latent_dim)
 
-    def forward(self, reference_motion, confidence_mask, joints_embedded_names, crop_start_ind):
+    def forward(self, reference_motion, confidence_mask, joints_embedded_names):
         gated_reference = reference_motion * confidence_mask.clamp(0.0, 1.0)
         reference_input = torch.cat([gated_reference, confidence_mask], dim=2)
         reference_input = reference_input.permute(3, 0, 1, 2)
@@ -201,7 +199,6 @@ class ReferenceEncoder(nn.Module):
             joints_embedded_names = self.text_embedding(self.joints_names_dropout(joints_embedded_names.to(encoded.device)))
             encoded = encoded + joints_embedded_names[None, ...]
         positions = torch.arange(encoded.shape[0], device=encoded.device).view(1, -1, 1).repeat(encoded.shape[1], 1, 1)
-        positions = positions + crop_start_ind.to(encoded.device).view(-1, 1, 1)
         pos_emb = create_sin_embedding(positions, self.latent_dim)[0]
         encoded = encoded + pos_emb.unsqueeze(1).unsqueeze(1)
 

@@ -54,7 +54,17 @@ class TrainLoop:
         self.resume_step = 0
         self.global_batch = self.batch_size # * dist.get_world_size()
         self.num_steps = args.num_steps
-        self.num_epochs = self.num_steps // len(self.data) + 1
+        data_length = len(self.data)
+        if data_length <= 0:
+            dataset_length = None
+            if hasattr(self.data, 'dataset'):
+                dataset_length = len(self.data.dataset)
+            raise ValueError(
+                f"Training DataLoader is empty (loader_len={data_length}, dataset_len={dataset_length}, batch_size={self.batch_size}). "
+                "This usually means the dataset has fewer effective samples than one full batch. "
+                "For single-motion training on a long clip, enable --fixed_motion_random_crop so one fixed motion can provide many random windows per epoch."
+            )
+        self.num_epochs = self.num_steps // data_length + 1
 
         self.sync_cuda = torch.cuda.is_available()
         self.save_dir = args.save_dir

@@ -52,8 +52,6 @@ def truebones_collate(batch):
         
     if 'temporal_mask' in notnone_batches[0]:
         temporalmasksbatch = [b['temporal_mask'] for b in notnone_batches]
-    if 'crop_start_ind' in notnone_batches[0]:
-        cropstartindbatch = [b['crop_start_ind'] for b in notnone_batches]
     if 'reference_motion' in notnone_batches[0]:
         referencebatch = [b['reference_motion'] for b in notnone_batches]
     if 'soft_confidence_mask' in notnone_batches[0]:
@@ -66,7 +64,6 @@ def truebones_collate(batch):
     meanbatchTensor = collate_tensors(meanbatch)
     stdbatchTensor = collate_tensors(stdbatch)
     lenbatchTensor = torch.as_tensor(lenbatch)
-    cropstartindTensor = torch.as_tensor(cropstartindbatch)
     lengthsmaskbatchTensor = lengths_to_mask(lenbatchTensor, databatchTensor.shape[-1]).unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
     jointsnumbatchTensor = torch.as_tensor(jointsnumbatch)
     jointsmaskbatchTensor = n_joints_to_mask(jointsnumbatchTensor, databatchTensor.shape[1]).unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
@@ -75,7 +72,7 @@ def truebones_collate(batch):
     maskbatchTensor = length_to_temp_mask(collated_temporalmasksbatch, lenbatchTensor, collated_temporalmasksbatch[0].size(0) - 1).unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
 
     motion = databatchTensor
-    cond = {'y': {'mask': maskbatchTensor, 'lengths': lenbatchTensor, 'lengths_mask': lengthsmaskbatchTensor, 'tpos_first_frame': tposfirstframebatchTensor, 'crop_start_ind': cropstartindTensor, 'mean': meanbatchTensor, 'std':stdbatchTensor}}
+    cond = {'y': {'mask': maskbatchTensor, 'lengths': lenbatchTensor, 'lengths_mask': lengthsmaskbatchTensor, 'tpos_first_frame': tposfirstframebatchTensor, 'mean': meanbatchTensor, 'std':stdbatchTensor}}
 
     if 'reference_motion' in notnone_batches[0]:
         cond['y'].update({'reference_motion': collate_tensors(referencebatch)})
@@ -133,7 +130,6 @@ def truebones_batch_collate(batch):
         motion[:, :b[0].shape[1], :] = torch.from_numpy(np.asarray(b[0], dtype=np.float32))
         joints_names_embs = torch.zeros((max_joints, b[9].shape[1]))
         joints_names_embs[:n_joints] = torch.from_numpy(np.asarray(b[9], dtype=np.float32))
-        crop_start_ind = b[10]
         mean = torch.zeros((max_joints, n_feats))
         mean[:n_joints] = torch.from_numpy(np.asarray(b[11], dtype=np.float32))
         std = torch.ones((max_joints, n_feats))
@@ -167,7 +163,6 @@ def truebones_batch_collate(batch):
             'object_type': object_type,
             'joints_names_embs': joints_names_embs,
             'tpos_first_frame': tpos_first_frame, 
-            'crop_start_ind': crop_start_ind,
             'mean': mean,
             'std': std
         } 

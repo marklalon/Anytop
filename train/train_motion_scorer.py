@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -226,6 +227,8 @@ def create_data_loader(args, split: str, *, shuffle: bool, drop_last: bool, bala
         motion_cache_size=getattr(args, "motion_cache_size", 0),
         main_process_prefetch_batches=getattr(args, "main_process_prefetch_batches", 0),
         batch_transform=batch_transform,
+        fixed_motion=getattr(args, 'fixed_motion', ''),
+        fixed_window_start=getattr(args, 'fixed_window_start', 0),
     )
 
 
@@ -246,23 +249,26 @@ class PhysicsTargetLRUCache:
         self._hits = 0
         self._misses = 0
 
-    def _sample_key(self, cond: dict, batch_index: int) -> tuple[str, int, int, str, int] | None:
+    def _sample_key(self, motion: torch.Tensor, cond: dict, batch_index: int) -> tuple[str, int, str, int, str] | None:
         motion_names = cond["y"].get("motion_name")
-        crop_start_indices = cond["y"].get("crop_start_ind")
         lengths = cond["y"].get("lengths")
         object_types = cond["y"].get("object_type")
         n_joints = cond["y"].get("n_joints")
-        if motion_names is None or crop_start_indices is None or lengths is None or object_types is None or n_joints is None:
+        if motion_names is None or lengths is None or object_types is None or n_joints is None:
             return None
+        sample_length = int(lengths[batch_index])
+        sample_n_joints = int(n_joints[batch_index])
+        sample_motion = motion[batch_index, :sample_n_joints, :, :sample_length].detach().to(device="cpu", dtype=torch.float32).contiguous()
+        fingerprint = hashlib.blake2b(sample_motion.numpy().tobytes(), digest_size=8).hexdigest()
         return (
             str(motion_names[batch_index]),
-            int(crop_start_indices[batch_index]),
-            int(lengths[batch_index]),
+            sample_length,
             str(object_types[batch_index]),
-            int(n_joints[batch_index]),
+            sample_n_joints,
+            fingerprint,
         )
 
-    def _get(self, key: tuple[str, int, int, str, int]) -> torch.Tensor | None:
+    def _get(self, key: tuple[str, int, str, int, str]) -> torch.Tensor | None:
         with self._lock:
             value = self._cache.get(key)
             if value is None:
@@ -278,7 +284,7 @@ class PhysicsTargetLRUCache:
             self._misses = 0
         return hits, misses
 
-    def _put(self, key: tuple[str, int, int, str, int], value: torch.Tensor) -> None:
+    def _put(self, key: tuple[str, int, str, int, str], value: torch.Tensor) -> None:
         with self._lock:
             self._cache[key] = value.detach().to(device="cpu", dtype=torch.float32)
             self._cache.move_to_end(key)
@@ -307,9 +313,9 @@ class PhysicsTargetLRUCache:
 
         cached_results: list[torch.Tensor | None] = [None] * int(motion.shape[0])
         miss_indices: list[int] = []
-        miss_keys: list[tuple[str, int, int, str, int] | None] = []
+        miss_keys: list[tuple[str, int, str, int, str] | None] = []
         for batch_index in range(int(motion.shape[0])):
-            key = self._sample_key(cond, batch_index)
+            key = self._sample_key(motion, cond, batch_index)
             if key is None:
                 miss_indices.append(batch_index)
                 miss_keys.append(None)
@@ -912,6 +918,8 @@ def compute_and_save_train_stats(args, model: MotionScorerNet, device: torch.dev
         action_tags=getattr(args, "action_tags", ""),
         motion_cache_size=getattr(args, "motion_cache_size", 0),
         main_process_prefetch_batches=getattr(args, "main_process_prefetch_batches", 0),
+        fixed_motion=getattr(args, 'fixed_motion', ''),
+        fixed_window_start=getattr(args, 'fixed_window_start', 0),
     )
 
     model.eval()

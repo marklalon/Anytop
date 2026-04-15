@@ -117,13 +117,10 @@ def _analyze_target_step(loop: TrainLoop) -> None:
     target_step = current_step + 1
     motion_names = cond["y"].get("motion_name", [])
     object_types = cond["y"].get("object_type", [])
-    crop_start = cond["y"].get("crop_start_ind")
 
     print(f"target_step={target_step}")
     print("motion_names=", motion_names)
     print("object_types=", object_types)
-    if torch.is_tensor(crop_start):
-        print("crop_start_ind=", crop_start.tolist())
 
     t, weights = loop.schedule_sampler.sample(batch.shape[0], dist_util.dev())
     noise = torch.randn_like(batch)

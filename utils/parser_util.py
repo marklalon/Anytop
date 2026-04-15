@@ -117,7 +117,7 @@ def add_data_options(parser):
     group.add_argument("--fixed_motion", default='', type=str,
                        help="Optional fixed motion clip for deterministic tiny overfit/debug runs. Accepts a processed .npy name or a BVH/.npy path; BVH paths are mapped to the matching processed .npy clip.")
     group.add_argument("--fixed_window_start", default=0, type=int,
-                       help="Start frame used when --fixed_motion is set and the motion is longer than num_frames. The selected training/eval window stays fixed instead of random cropping.")
+                       help="Start frame used when --fixed_motion is set and the motion is longer than num_frames. Use 0 for fixed window cropping, or -1 for random window cropping on every sample.")
     group.add_argument("--use_reference_conditioning", action=argparse.BooleanOptionalAction, default=True,
                        help="If False, skip loading offline corrupted reference motions and confidence masks.")
 
