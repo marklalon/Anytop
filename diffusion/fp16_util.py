@@ -10,6 +10,7 @@ from torch._utils import _flatten_dense_tensors, _unflatten_dense_tensors
 from diffusion import logger
 
 INITIAL_LOG_LOSS_SCALE = 20.0
+GRAD_NORM_ABORT_THRESHOLD = 1e12
 
 
 def convert_module_to_f16(l):
@@ -203,6 +204,51 @@ def sanitize_optimizer_state(optimizer):
     return stats
 
 
+def inspect_optimizer_slot_max(optimizer, slot_key, *, param_name_lookup=None, top_k=5):
+    max_abs = 0.0
+    top_entries = []
+    found = False
+    for param, state in optimizer.state.items():
+        value = state.get(slot_key)
+        if not th.is_tensor(value) or not th.is_floating_point(value):
+            continue
+        found = True
+        abs_value = th.nan_to_num(
+            value.detach().abs().float(),
+            nan=float("inf"),
+            posinf=float("inf"),
+            neginf=float("inf"),
+        )
+        slot_max = float(abs_value.max().item()) if abs_value.numel() else 0.0
+        max_abs = max(max_abs, slot_max)
+        param_name = None if param_name_lookup is None else param_name_lookup.get(id(param))
+        if not param_name:
+            param_name = "<unnamed>"
+        top_entries.append({"name": param_name, "max_abs": slot_max})
+
+    top_entries.sort(key=lambda entry: entry["max_abs"], reverse=True)
+    return {
+        "slot_key": slot_key,
+        "found": found,
+        "max_abs": max_abs,
+        "top": top_entries[: max(int(top_k), 0)],
+    }
+
+
+def format_optimizer_slot_max(stats):
+    slot_key = stats.get("slot_key", "slot")
+    if not stats.get("found", False):
+        return f"{slot_key}_absmax=n/a"
+    parts = [f"{slot_key}_absmax={float(stats.get('max_abs', 0.0)):.6e}"]
+    top_entries = stats.get("top", []) or []
+    if top_entries:
+        summary = ", ".join(
+            f"{entry['name']}:{float(entry['max_abs']):.3e}" for entry in top_entries[:3]
+        )
+        parts.append(f"top=[{summary}]")
+    return " ".join(parts)
+
+
 def format_nonfinite_stats(stats):
     parts = []
     inf_count = int(stats.get("inf", 0))
@@ -216,6 +262,10 @@ def format_nonfinite_stats(stats):
         key_summary = ", ".join(f"{key}:{count}" for key, count in sorted(by_key.items()))
         parts.append(f"keys=[{key_summary}]")
     return " ".join(parts) if parts else "none"
+
+
+def should_abort_on_grad_norm(value):
+    return np.isfinite(value) and value > GRAD_NORM_ABORT_THRESHOLD
 
 
 class MixedPrecisionTrainer:
@@ -280,6 +330,11 @@ class MixedPrecisionTrainer:
             grad_norm, param_norm = self._compute_norms_from_model()
             logger.logkv_mean("grad_norm", grad_norm)
             logger.logkv_mean("param_norm", param_norm)
+            if should_abort_on_grad_norm(grad_norm):
+                raise RuntimeError(
+                    "Detected abnormal finite grad_norm before optimizer step under AMP "
+                    f"(grad_norm={grad_norm:.6e}, threshold={GRAD_NORM_ABORT_THRESHOLD:.1e})"
+                )
         grad_stats = count_nonfinite_gradients(self.model_params)
         if grad_stats["found"]:
             logger.log(
@@ -304,6 +359,11 @@ class MixedPrecisionTrainer:
         grad_norm = 0.0
         if self.log_norms:
             grad_norm, param_norm = self._compute_norms(grad_scale=2 ** self.lg_loss_scale)
+            if should_abort_on_grad_norm(grad_norm):
+                raise RuntimeError(
+                    "Detected abnormal finite grad_norm before optimizer step under FP16 "
+                    f"(grad_norm={grad_norm:.6e}, threshold={GRAD_NORM_ABORT_THRESHOLD:.1e})"
+                )
         if self.log_norms and check_overflow(grad_norm):
             self.lg_loss_scale -= 1
             logger.log(f"Found NaN, decreased lg_loss_scale to {self.lg_loss_scale}")
@@ -327,6 +387,11 @@ class MixedPrecisionTrainer:
             grad_norm, param_norm = self._compute_norms()
             logger.logkv_mean("grad_norm", grad_norm)
             logger.logkv_mean("param_norm", param_norm)
+            if should_abort_on_grad_norm(grad_norm):
+                raise RuntimeError(
+                    "Detected abnormal finite grad_norm before optimizer step "
+                    f"(grad_norm={grad_norm:.6e}, threshold={GRAD_NORM_ABORT_THRESHOLD:.1e})"
+                )
         grad_stats = count_nonfinite_gradients(self.master_params)
         if grad_stats["found"]:
             logger.log(

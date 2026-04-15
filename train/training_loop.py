@@ -11,7 +11,7 @@ import torch
 from torch.optim import AdamW
 from diffusion import logger
 from utils import dist_util
-from diffusion.fp16_util import MixedPrecisionTrainer, format_nonfinite_stats, inspect_optimizer_state, sanitize_optimizer_state
+from diffusion.fp16_util import MixedPrecisionTrainer, format_nonfinite_stats, format_optimizer_slot_max, inspect_optimizer_slot_max, inspect_optimizer_state, sanitize_optimizer_state
 from diffusion.nn import update_ema
 from diffusion.resample import LossAwareSampler
 from tqdm import tqdm
@@ -25,6 +25,7 @@ import random
 from data_loaders.get_data import get_dataset_loader
 
 INITIAL_LOG_LOSS_SCALE = 20.0
+EXP_AVG_SQ_CHECKPOINT_ALERT_THRESHOLD = 1e20
 
 class TrainLoop:
     def __init__(self, args, train_platform, model, diffusion, data):
@@ -84,6 +85,7 @@ class TrainLoop:
         )
         
         self.opt = AdamW(self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay)
+        self._optimizer_param_names = {id(param): name for name, param in self.model.named_parameters()}
         self.lr_scheduler = torch.optim.lr_scheduler.StepLR(self.opt, 
                                                 step_size = 10000, 
                                                 gamma = 0.99)
@@ -168,10 +170,10 @@ class TrainLoop:
     def _maybe_mark_compile_step_begin(self):
         if not self.use_torch_compile or self.device.type != 'cuda':
             return
-        compiler_api = getattr(torch, 'compiler', None)
-        if compiler_api is None or not hasattr(compiler_api, 'cudagraph_mark_step_begin'):
-            return
-        compiler_api.cudagraph_mark_step_begin()
+        # Explicit cudagraph step marking caused sporadic giant finite gradients
+        # on the compiled AnyTop training path in this workspace's torch/CUDA stack.
+        # Keep the hook disabled unless a future stack-specific validation proves it safe.
+        return
 
     def _load_and_sync_parameters(self):
         self.resume_checkpoint = self.find_resume_checkpoint() or self.resume_checkpoint
@@ -263,19 +265,7 @@ class TrainLoop:
             except Exception as exc:
                 logger.log(f"LR scheduler inference skipped: {exc}")
         
-        # Restore RNG states for reproducible data shuffling
-        if isinstance(checkpoint_data, dict) and 'torch_rng_state' in checkpoint_data:
-            try:
-                torch.set_rng_state(checkpoint_data['torch_rng_state'])
-                if torch.cuda.is_available() and 'cuda_rng_state' in checkpoint_data:
-                    torch.cuda.set_rng_state_all(checkpoint_data['cuda_rng_state'])
-                if 'python_rng_state' in checkpoint_data:
-                    random.setstate(checkpoint_data['python_rng_state'])
-                if 'numpy_rng_state' in checkpoint_data:
-                    np.random.set_state(checkpoint_data['numpy_rng_state'])
-                logger.log("RNG states restored for reproducible data shuffling")
-            except Exception as exc:
-                logger.log(f"RNG state restore skipped: {exc}")
+        self._restore_rng_states(checkpoint_data)
 
     def run_loop(self):
         tqdm.write(f'train steps: {self.num_steps}')
@@ -359,6 +349,86 @@ class TrainLoop:
         if not self.args.eval_during_training or self.eval_data is None or self.eval_interval <= 0:
             return False
         return completed_step % self.eval_interval == 0 or completed_step == self.num_steps
+
+    def _restore_rng_states(self, checkpoint_data):
+        if not isinstance(checkpoint_data, dict):
+            return
+
+        restored = []
+        errors = []
+
+        torch_rng_state = checkpoint_data.get('torch_rng_state')
+        if torch_rng_state is not None:
+            try:
+                if torch.is_tensor(torch_rng_state):
+                    torch_rng_state = torch_rng_state.detach().to(device='cpu', dtype=torch.uint8)
+                torch.set_rng_state(torch_rng_state)
+                restored.append('torch')
+            except Exception as exc:
+                errors.append(f"torch={exc}")
+
+        cuda_rng_state = checkpoint_data.get('cuda_rng_state')
+        if torch.cuda.is_available() and cuda_rng_state is not None:
+            try:
+                normalized_cuda_rng_state = []
+                for state in cuda_rng_state:
+                    if torch.is_tensor(state):
+                        state = state.detach().to(device='cpu', dtype=torch.uint8)
+                    normalized_cuda_rng_state.append(state)
+                torch.cuda.set_rng_state_all(normalized_cuda_rng_state)
+                restored.append('cuda')
+            except Exception as exc:
+                errors.append(f"cuda={exc}")
+
+        if 'python_rng_state' in checkpoint_data:
+            try:
+                random.setstate(checkpoint_data['python_rng_state'])
+                restored.append('python')
+            except Exception as exc:
+                errors.append(f"python={exc}")
+
+        if 'numpy_rng_state' in checkpoint_data:
+            try:
+                np.random.set_state(checkpoint_data['numpy_rng_state'])
+                restored.append('numpy')
+            except Exception as exc:
+                errors.append(f"numpy={exc}")
+
+        if restored:
+            logger.log(
+                'RNG states restored for reproducible data shuffling '
+                f"({', '.join(restored)})"
+            )
+        if errors:
+            logger.log(f"RNG state restore skipped for some entries: {'; '.join(errors)}")
+
+    def _monitor_checkpoint_optimizer_state(self, completed_step):
+        slot_stats = inspect_optimizer_slot_max(
+            self.opt,
+            'exp_avg_sq',
+            param_name_lookup=self._optimizer_param_names,
+        )
+        if not slot_stats['found']:
+            return None
+
+        max_abs = float(slot_stats['max_abs'])
+        self.train_platform.report_scalar(
+            name='exp_avg_sq_absmax',
+            value=max_abs,
+            iteration=completed_step,
+            group_name='Optimizer',
+        )
+        logger.log(
+            f"Checkpoint optimizer monitor at step {completed_step}: "
+            f"{format_optimizer_slot_max(slot_stats)}"
+        )
+        if max_abs > EXP_AVG_SQ_CHECKPOINT_ALERT_THRESHOLD:
+            return (
+                'Detected abnormal Adam exp_avg_sq growth at checkpoint step '
+                f"{completed_step} ({format_optimizer_slot_max(slot_stats)}; "
+                f"threshold={EXP_AVG_SQ_CHECKPOINT_ALERT_THRESHOLD:.1e})"
+            )
+        return None
 
     def _assert_optimizer_state_finite(self, completed_step):
         state_stats = inspect_optimizer_state(self.opt)
@@ -554,6 +624,8 @@ class TrainLoop:
 
 
     def save(self, completed_step):
+            checkpoint_alert = self._monitor_checkpoint_optimizer_state(completed_step)
+
             def save_checkpoint():
                 def del_clip(state_dict):
                     # Do not save CLIP weights
@@ -612,6 +684,9 @@ class TrainLoop:
                 opt_state['numpy_rng_state'] = np.random.get_state()
 
                 torch.save(opt_state, f)
+
+            if checkpoint_alert is not None:
+                raise RuntimeError(checkpoint_alert)
                 
     def find_resume_checkpoint(self) -> Optional[str]:
         '''look for all file in save directory in the pattent of model{number}.pt

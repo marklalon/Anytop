@@ -51,7 +51,10 @@ class TensorboardPlatform(MLPlatform):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         from torch.utils.tensorboard import SummaryWriter
-        self.writer = SummaryWriter(log_dir=self.save_dir)
+        import datetime
+        run_name = datetime.datetime.now().strftime("run_%Y%m%d_%H%M%S")
+        log_dir = os.path.join(self.save_dir, run_name)
+        self.writer = SummaryWriter(log_dir=log_dir)
 
     def report_scalar(self, name, value, iteration, group_name=None):
         self.writer.add_scalar(f'{group_name}/{name}', value, iteration)
