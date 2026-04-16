@@ -1,6 +1,6 @@
 from motion_lib import BVH, Animation, Quaternions
-from motion_lib.Animation import positions_global, rotations_global, offsets_from_positions, offsets_global
-from InverseKinematics import animation_from_positions
+from motion_lib.Animation import positions_global, rotations_global, offsets_from_positions, offsets_global, offset_lengths
+from motion_lib import animation_from_positions
 import numpy as np 
 import os 
 from os.path import join as pjoin
@@ -34,6 +34,12 @@ from .face_orientation import (
 
 
 ################## Data Generation #####################
+
+# Maximum XZ displacement (in HML-normalised units) a clip's root may travel
+# before we consider it a locomotion clip and forcibly zero the root XZ.
+# In-place actions (attacks, idles, jumps) drift < 0.5 units; walkers/runners
+# travel several units per second at typical Truebones frame-rates.
+ROOT_XZ_STRIP_THRESHOLD = 0.5
 
 
 def _find_translation_root(anim):
@@ -221,6 +227,17 @@ def move_xz_to_origin(anim, root_pose_init_xz=None):
     new_offsets[0] -= root_pose_init_xz
     new_anim = Animation(anim.rotations.copy(), new_positions, anim.orients.copy(), new_offsets, anim.parents.copy())
     return new_anim, root_pose_init_xz
+
+
+def _xz_locomotion_extent(anim, translation_root_index):
+    """Return the maximum XZ distance the translation root travels from its frame-0 position.
+
+    After ``move_xz_to_origin`` the root starts at (0, y, 0), so this is simply
+    the max L2 norm of the root's XZ coordinates across all frames.
+    """
+    global_pos = positions_global(anim)
+    root_xz = global_pos[:, translation_root_index, [0, 2]]
+    return float(np.max(np.linalg.norm(root_xz, axis=-1)))
 
 
 def strip_translation_root_xz(anim, translation_root_index):
@@ -506,7 +523,10 @@ def get_motion(bvh_path, foot_contact_vel_thresh, object_type, max_joints, root_
             preloaded=preloaded,
         )
         translation_root_index = _find_translation_root(new_anim)
-        new_anim = strip_translation_root_xz(new_anim, translation_root_index)
+        xz_extent = _xz_locomotion_extent(new_anim, translation_root_index)
+        has_locomotion = xz_extent > ROOT_XZ_STRIP_THRESHOLD
+        if has_locomotion:
+            new_anim = strip_translation_root_xz(new_anim, translation_root_index)
         ## extract features
         # cont_6d_params, r_velocity, velocity, r_rot, global_positions = get_bvh_cont6d_params(new_anim, object_type)
         cont_6d_params, r_velocity, velocity, r_rot, global_positions = get_bvh_cont6d_params(
@@ -526,11 +546,12 @@ def get_motion(bvh_path, foot_contact_vel_thresh, object_type, max_joints, root_
         # r_velocity = np.arcsin(r_velocity[:, 2:3])
         # l_velocity = velocity[:, [0, 2]]
         local_vel = np.repeat(r_rot[1:, None], global_positions.shape[1], axis=1) * (global_positions[1:] - global_positions[:-1])
-        # Strip root XZ plane velocity so the representation is fully root-relative and
-        # consistent with RIFKE (which already zeros root XZ in position space).
-        # This removes trajectory variation across creature types, letting the model focus
-        # on body articulation patterns regardless of locomotion speed or direction.
-        local_vel[:, translation_root_index, [0, 2]] = 0.0
+        # For locomotion clips the root XZ position has already been zeroed by
+        # strip_translation_root_xz, so the velocity must be zeroed too to stay
+        # consistent with RIFKE.  For in-place clips we keep the XZ velocity so
+        # the representation faithfully captures small positional shifts.
+        if has_locomotion:
+            local_vel[:, translation_root_index, [0, 2]] = 0.0
         # root_data = np.concatenate([r_velocity, l_velocity, root_y[:-1]], axis=-1)
         features, max_joints = get_motion_features(positions, cont_6d_params, foot_contact, local_vel, max_joints)
         return features, new_anim.parents, max_joints, new_anim

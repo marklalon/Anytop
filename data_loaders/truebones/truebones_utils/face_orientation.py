@@ -2,8 +2,8 @@
 
 import numpy as np
 import re
-from Quaternions import Quaternions
-from Animation import Animation
+from motion_lib.Quaternions import Quaternions
+from motion_lib.Animation import Animation
 from .param_utils import CHAIN_FORWARD_JOINTS
 
 

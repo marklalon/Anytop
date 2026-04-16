@@ -3,7 +3,8 @@ from . import BVH
 from .Animation import Animation
 from .Quaternions import Quaternions
 from . import AnimationStructure
+from .InverseKinematics import animation_from_positions
 
-__all__ = ['BVH', 'Animation', 'Quaternions', 'AnimationStructure']
+__all__ = ['BVH', 'Animation', 'Quaternions', 'AnimationStructure', 'InverseKinematics', 'animation_from_positions']
 
 
