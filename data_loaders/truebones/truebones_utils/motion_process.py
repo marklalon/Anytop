@@ -37,9 +37,9 @@ from .face_orientation import (
 
 # Maximum XZ displacement (in HML-normalised units) a clip's root may travel
 # before we consider it a locomotion clip and forcibly zero the root XZ.
-# In-place actions (attacks, idles, jumps) drift < 0.5 units; walkers/runners
+# In-place actions (attacks, idles, jumps) drift < 1 units; walkers/runners
 # travel several units per second at typical Truebones frame-rates.
-ROOT_XZ_STRIP_THRESHOLD = 0.5
+ROOT_XZ_STRIP_THRESHOLD = 1
 
 
 def _find_translation_root(anim):
@@ -84,7 +84,7 @@ def _bake_descendant_y_into_translation_root(anim, max_depth=2):
 
     frozen_positions = anim.positions.copy()
     for joint_index in bake_joints:
-        frozen_positions[:, joint_index] = frozen_positions[0, joint_index]
+        frozen_positions[:, joint_index, 1] = frozen_positions[0, joint_index, 1]
 
     frozen_anim = Animation(
         anim.rotations.copy(),
@@ -230,14 +230,17 @@ def move_xz_to_origin(anim, root_pose_init_xz=None):
 
 
 def _xz_locomotion_extent(anim, translation_root_index):
-    """Return the maximum XZ distance the translation root travels from its frame-0 position.
+    """Return the clip-wide XZ span of the translation root.
 
-    After ``move_xz_to_origin`` the root starts at (0, y, 0), so this is simply
-    the max L2 norm of the root's XZ coordinates across all frames.
+    Using only the first/last-frame delta misses clips that lunge far away and
+    then return near their starting point by the end of the slice. Those clips
+    still produce visible root drift in exported processed BVHs, so we classify
+    locomotion from the full XZ coverage of the trajectory instead.
     """
     global_pos = positions_global(anim)
     root_xz = global_pos[:, translation_root_index, [0, 2]]
-    return float(np.max(np.linalg.norm(root_xz, axis=-1)))
+    xz_span = np.ptp(root_xz, axis=0)
+    return float(np.linalg.norm(xz_span))
 
 
 def strip_translation_root_xz(anim, translation_root_index):
@@ -501,12 +504,12 @@ def get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, scale_factor,
         error_key = f'{bvh_path}[{slice_inds[0]}:{slice_inds[1]}]'
     squared_positions_error[error_key] = float(squared_error)
 
-    return new_anim, names  
+    return new_anim, processed_anim, names  
     
 """ get motion feature representation"""
 def get_motion(bvh_path, foot_contact_vel_thresh, object_type, max_joints, root_pose_init_xz, scale_factor, offsets, foot_indices, tpos_rots, squared_positions_error, face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None, slice_inds=None, preloaded=None):
     try:
-        new_anim, names = get_hml_aligned_anim(
+        new_anim, export_anim, names = get_hml_aligned_anim(
             bvh_path,
             object_type,
             root_pose_init_xz,
@@ -523,10 +526,12 @@ def get_motion(bvh_path, foot_contact_vel_thresh, object_type, max_joints, root_
             preloaded=preloaded,
         )
         translation_root_index = _find_translation_root(new_anim)
-        xz_extent = _xz_locomotion_extent(new_anim, translation_root_index)
+        export_translation_root_index = _find_translation_root(export_anim)
+        xz_extent = _xz_locomotion_extent(export_anim, export_translation_root_index)
         has_locomotion = xz_extent > ROOT_XZ_STRIP_THRESHOLD
         if has_locomotion:
             new_anim = strip_translation_root_xz(new_anim, translation_root_index)
+            export_anim = strip_translation_root_xz(export_anim, export_translation_root_index)
         ## extract features
         # cont_6d_params, r_velocity, velocity, r_rot, global_positions = get_bvh_cont6d_params(new_anim, object_type)
         cont_6d_params, r_velocity, velocity, r_rot, global_positions = get_bvh_cont6d_params(
@@ -554,10 +559,10 @@ def get_motion(bvh_path, foot_contact_vel_thresh, object_type, max_joints, root_
             local_vel[:, translation_root_index, [0, 2]] = 0.0
         # root_data = np.concatenate([r_velocity, l_velocity, root_y[:-1]], axis=-1)
         features, max_joints = get_motion_features(positions, cont_6d_params, foot_contact, local_vel, max_joints)
-        return features, new_anim.parents, max_joints, new_anim
+        return features, new_anim.parents, max_joints, new_anim, export_anim
     except Exception as err:
         print(err)
-        return None, None, max_joints, None
+        return None, None, max_joints, None, None
 
 """ computes mean and std for a list of motions """
 def get_mean_std(data):
@@ -694,7 +699,7 @@ def _process_bvh_file(file_path, object_type, max_joints, root_pose_init_xz, sca
         else:
             slice_ind = anim_len
 
-        motion, parents, file_max_joints, new_anim = get_motion(
+        motion, parents, file_max_joints, new_anim, export_anim = get_motion(
             file_path,
             FOOT_CONTACT_VEL_THRESH,
             object_type,
@@ -726,6 +731,7 @@ def _process_bvh_file(file_path, object_type, max_joints, root_pose_init_xz, sca
             'motion': motion,
             'parents': parents,
             'new_anim': new_anim,
+            'export_anim': export_anim,
             'names': names,
             'motion_labels': build_motion_labels(object_type, raw_action),
         })
@@ -761,7 +767,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=
 
     squared_positions_error = dict()
     root_pose_init_xz, scale_factor, offsets, foot_indices, tpos_rots, names, tpos_anim, face_joints, orientation_quat, forward_joint_index, forward_base_joint_index, contact_joint_source = get_common_features_from_T_pose(t_pos_path, object_type, face_joints=face_joints)
-    t_pos_motion, parents, max_joints, new_anim = get_motion(tpos_anim, FOOT_CONTACT_VEL_THRESH, object_type, max_joints, root_pose_init_xz, scale_factor, offsets, foot_indices, tpos_rots, squared_positions_error, face_joints=face_joints, orientation_quat=orientation_quat, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)
+    t_pos_motion, parents, max_joints, new_anim, _export_anim = get_motion(tpos_anim, FOOT_CONTACT_VEL_THRESH, object_type, max_joints, root_pose_init_xz, scale_factor, offsets, foot_indices, tpos_rots, squared_positions_error, face_joints=face_joints, orientation_quat=orientation_quat, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)
     rest_positions = _rest_positions_from_offsets(offsets, parents)
     semantic_metadata = _build_semantic_metadata(object_type, names, parents, offsets, rest_positions=rest_positions)
     object_cond['tpos_first_frame'] = t_pos_motion[0]
@@ -866,10 +872,11 @@ def _write_object_outputs(save_dir, object_payload, files_counter):
         name = object_type + "_" + result['action'] + "_" + str(files_counter)
         motion_file_name = name + '.npy'
         np.save(pjoin(save_dir, MOTION_DIR, motion_file_name), motion)
-        # Use positions=True whenever any non-root joint carries animated positions
-        # (e.g. Horse Bip01).  Without this, BVH.save silently drops those
-        # channels because non-root joints get only 3-channel (rotation) entries.
-        anim_obj = result['new_anim']
+        # Export the visually faithful processed animation rather than the
+        # T-pose-reparameterized training animation. The latter preserves global
+        # positions under this repo's FK but can look distorted in external BVH
+        # viewers because its local position/offset decomposition is training-oriented.
+        anim_obj = result['export_anim']
         has_animated_nonroot_pos = np.any(
             np.ptp(anim_obj.positions[:, 1:, :], axis=0) > 1e-4
         )
