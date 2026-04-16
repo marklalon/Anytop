@@ -129,7 +129,6 @@ class GaussianDiffusion:
         model_var_type,
         loss_type,
         rescale_timesteps=False,
-        lambda_fs=0.,
         lambda_geo=0.,
         lambda_confidence_recon=0.,
         lambda_repair_recon=0.,
@@ -138,7 +137,6 @@ class GaussianDiffusion:
         self.model_var_type = model_var_type
         self.loss_type = loss_type
         self.rescale_timesteps = rescale_timesteps
-        self.lambda_fs = lambda_fs
         self.lambda_geo = lambda_geo
         self.lambda_confidence_recon = lambda_confidence_recon
         self.lambda_repair_recon = lambda_repair_recon
@@ -286,29 +284,6 @@ class GaussianDiffusion:
         spat_temp_masked_loss = (temp_masked_loss * spat_mask.float().transpose(1,3))
         loss = sum_flat(spat_temp_masked_loss)  # gives \sigma_euclidean over unmasked elements
         non_zero_elements = (lengths * n_joints).float()
-        loss_val = loss / non_zero_elements
-        return loss_val
-    
-    def foot_sliding_loss(self, a, b, temp_mask, relative=True):
-        # assuming a.shape == b.shape == bs, J, Jdim, seqlen
-        # assuming temp_mask.shape == bs, 1, 1, seqlen
-        # assuming spat_mask.shape == bs, 1, 1, max_joints
-        a = a.float()
-        b = b.float()
-        
-        # gt foot contact. Multiplied by temporal mask to zero out the last frame fc. Spatial mask is not needed since irrelevant joints fc is already zero 
-        fc = a[..., 12, :-1] * temp_mask[..., 0, 1:] != 0   # (bs, J, seqlen-1)
-        
-        # compute root relative velocity from ric positions
-        vel_tgt = (a[..., :3, 1:] - a[..., :3, :-1]) # (bs, J, 3, seqlen-1)
-        vel_pred = (b[..., :3, 1:] - b[..., :3, :-1]) # (bs, J, 3, seqlen-1)
-        if relative:
-            loss_term = self.l2_loss(vel_tgt, vel_pred).sum(dim=-2).sqrt() * fc 
-        else:
-            loss_term = (vel_pred**2).sum(dim=-2).sqrt() * fc 
-        
-        loss = sum_flat(loss_term)  # gives \sigma_euclidean over unmasked elements
-        non_zero_elements = 1 + torch.count_nonzero(fc, dim = (-1, -2)) # +1 to rement division by zero
         loss_val = loss / non_zero_elements
         return loss_val
 
@@ -1650,9 +1625,6 @@ class GaussianDiffusion:
             if self.lambda_geo > 0.:    
                 terms["geodesic_loss"] = self.geodesic_loss(target, model_output, mask, joints_mask, lengths, actual_joints)
                 terms["loss"] = terms["loss"] + self.lambda_geo * terms["geodesic_loss"]
-            if self.lambda_fs > 0.:
-                terms["foot_sliding_loss"] = self.foot_sliding_loss(target, model_output, mask, relative=True)
-                terms["loss"] = terms["loss"] + self.lambda_fs * terms["foot_sliding_loss"]
 
         else:
             raise NotImplementedError(self.loss_type)

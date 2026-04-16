@@ -179,9 +179,8 @@ def _print_report(path: str, report: MotionQualityReport, use_color: bool = True
 
     rows = [
         ("Rotation 6D consistency",   s.rotation_6d_consistency,   "w=0.45 [primary]"),
-        ("Contact flag validity",      s.contact_flag_validity,     "w=0.35 [primary]"),
-        ("Jerk smoothness",            s.jerk_smoothness,           "w=0.10"),
-        ("Temporal variance",          s.temporal_variance,         "w=0.10"),
+        ("Jerk smoothness",            s.jerk_smoothness,           "w=0.275"),
+        ("Temporal variance",          s.temporal_variance,         "w=0.275"),
     ]
 
     for label, score, note in rows:
@@ -212,10 +211,10 @@ def _print_summary(records: List[Tuple[str, MotionQualityReport]], use_color: bo
     print(f"{'='*90}")
     hdr = (
         f"  {'File':<45s}  {'Type':<14s}  "
-        f"{'rot6d':>5s}  {'cont':>5s}  {'jerk':>5s}  {'var':>5s}  {'TOTAL':>6s}"
+        f"{'rot6d':>5s}  {'jerk':>5s}  {'var':>5s}  {'TOTAL':>6s}"
     )
     print(hdr)
-    print(f"  {'-'*45}  {'-'*14}  " + "  ".join(["-----"] * 4) + "  ------")
+    print(f"  {'-'*45}  {'-'*14}  " + "  ".join(["-----"] * 3) + "  ------")
 
     for path, r in records:
         short = path[-44:] if len(path) > 45 else path
@@ -224,7 +223,6 @@ def _print_summary(records: List[Tuple[str, MotionQualityReport]], use_color: bo
         print(
             f"  {short:<45s}  {otype:<14s}  "
             f"{r.rotation_6d_consistency:5.3f}  "
-            f"{r.contact_flag_validity:5.3f}  "
             f"{r.jerk_smoothness:5.3f}  "
             f"{r.temporal_variance:5.3f}  "
             f"{total_str:>6s}"
@@ -258,7 +256,7 @@ def _write_csv(records: List[Tuple[str, MotionQualityReport]], out_path: str) ->
     fieldnames = [
         "file", "object_type", "n_frames", "n_joints", "has_reference",
         "total_score",
-        "rotation_6d_consistency", "contact_flag_validity",
+        "rotation_6d_consistency",
         "jerk_smoothness", "temporal_variance",
     ] + list(records[0][1].raw.keys())
 
@@ -274,7 +272,6 @@ def _write_csv(records: List[Tuple[str, MotionQualityReport]], out_path: str) ->
                 "has_reference":           int(r.has_reference),
                 "total_score":             r.total_score,
                 "rotation_6d_consistency": r.rotation_6d_consistency,
-                "contact_flag_validity":   r.contact_flag_validity,
                 "jerk_smoothness":         r.jerk_smoothness,
                 "temporal_variance":       r.temporal_variance,
             }
@@ -381,7 +378,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--sort-by",
-        choices=["total", "rot", "contact", "file"],
+        choices=["total", "rot", "file"],
         default="file",
         help="Sort summary table by this column (default: file).",
     )
@@ -445,10 +442,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Sort
     sort_key = {
-        "total":   lambda x: -x[1].total_score,
-        "rot":     lambda x: -x[1].rotation_6d_consistency,
-        "contact": lambda x: -x[1].contact_flag_validity,
-        "file":    lambda x: x[0],
+        "total": lambda x: -x[1].total_score,
+        "rot":   lambda x: -x[1].rotation_6d_consistency,
+        "file":  lambda x: x[0],
     }[args.sort_by]
     records.sort(key=sort_key)
 

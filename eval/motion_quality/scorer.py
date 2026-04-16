@@ -11,28 +11,24 @@ Motion format  (N_frames × N_joints × 13  float32, normalised):
     ch 0-2  : local RIC position
     ch 3-8  : 6-D rotation  (two packed 3-D vectors, each ~unit-length)
     ch 9-11 : linear velocity
-    ch 12   : foot-contact flag  (ground-truth: hard 0/1)
+    ch 12   : foot-contact flag (not evaluated)
 
 Score range:  0.0 (worst) → 1.0 (perfect)
 
 Sub-scores
 ----------
-rotation_6d_consistency   [primary, w=0.45]
+rotation_6d_consistency   [primary, w=0.5]
     The 6-D rotation representation stores two orthonormal basis vectors.
     Ground-truth motions have exact unit norms (deviation = 0).
     Diffusion-model outputs accumulate small floating-point drift, making
     this a perfectly reliable discriminator between GT and generated motion.
 
-contact_flag_validity     [primary, w=0.35]
-    Ground-truth contact flags are hard 0 or 1.
-    Generated motions produce soft continuous values that exceed [0, 1] bounds.
-
-jerk_smoothness           [supporting, w=0.10]
-    Mean-squared jerk (3rd temporal derivative) of rotation channels,
+jerk_smoothness           [supporting, w=0.3]
+    Activity-normalised jerk of rotation and position channels,
     normalised against the reference-dataset IQR for this skeleton.
     Penalises both excessive jitter AND extreme over-smoothing.
 
-temporal_variance         [supporting, w=0.10]
+temporal_variance         [supporting, w=0.2]
     Overall temporal variance of the clip, normalised against the reference
     dataset IQR.  Over-smoothed generated clips have abnormally low variance.
 """
@@ -46,7 +42,6 @@ from typing import Dict, Optional
 import numpy as np
 
 from .reference_stats import (
-    CH_CONT,
     CH_POS,
     CH_ROT,
     CH_ROT_A,
@@ -60,10 +55,9 @@ from .reference_stats import (
 # ---------------------------------------------------------------------------
 # Scoring weights  (must sum to 1.0)
 # ---------------------------------------------------------------------------
-_W_ROT_CONSISTENCY  = 0.45   # primary: geometry check
-_W_CONTACT_VALIDITY = 0.35   # primary: contact flag range
-_W_JERK             = 0.10   # supporting
-_W_TEMPORAL_VAR     = 0.10   # supporting
+_W_ROT_CONSISTENCY  = 0.5    # primary: geometry check
+_W_JERK             = 0.3   # supporting
+_W_TEMPORAL_VAR     = 0.2   # supporting
 
 
 @dataclass
@@ -75,7 +69,6 @@ class MotionQualityReport:
 
     # -- Sub-scores [0, 1] (higher = better) --
     rotation_6d_consistency: float = 0.0
-    contact_flag_validity: float = 0.0
     jerk_smoothness: float = 0.0
     temporal_variance: float = 0.0
 
@@ -92,7 +85,6 @@ class MotionQualityReport:
         return {
             "total_score":             round(self.total_score, 4),
             "rotation_6d_consistency": round(self.rotation_6d_consistency, 4),
-            "contact_flag_validity":   round(self.contact_flag_validity, 4),
             "jerk_smoothness":         round(self.jerk_smoothness, 4),
             "temporal_variance":       round(self.temporal_variance, 4),
             "raw":                     {k: round(v, 6) for k, v in self.raw.items()},
@@ -114,10 +106,9 @@ class MotionQualityReport:
             f"  +---------------------------------------+--------+",
             f"  | Sub-score                             | Score  |",
             f"  +---------------------------------------+--------+",
-            f"  | Rotation 6D consistency  (w=0.45)    | {self.rotation_6d_consistency:5.3f}  |",
-            f"  | Contact flag validity    (w=0.35)    | {self.contact_flag_validity:5.3f}  |",
-            f"  | Jerk smoothness         (w=0.10)    | {self.jerk_smoothness:5.3f}  |",
-            f"  | Temporal variance       (w=0.10)    | {self.temporal_variance:5.3f}  |",
+            f"  | Rotation 6D consistency  (w=0.5)    | {self.rotation_6d_consistency:5.3f}  |",
+            f"  | Jerk smoothness         (w=0.3)  | {self.jerk_smoothness:5.3f}  |",
+            f"  | Temporal variance       (w=0.2)  | {self.temporal_variance:5.3f}  |",
             f"  +---------------------------------------+--------+",
             f"  | TOTAL                                | {self.total_score:5.3f}  |",
             f"  +---------------------------------------+--------+",
@@ -230,37 +221,7 @@ class LightweightMotionQualityScorer:
         }
         return score, raw
 
-    # ------------------------------------------------------------------
-    # Primary metric: contact flag validity
-    # ------------------------------------------------------------------
 
-    @staticmethod
-    def _score_contact_validity(motion: np.ndarray) -> tuple[float, dict]:
-        """
-        Ground-truth contact flags are hard 0/1.
-        Generated motions produce values outside [0, 1].
-
-        Returns (score [0,1], raw_dict).
-        """
-        cont = motion[:, :, CH_CONT]     # (T, J)
-
-        below_zero = float(np.maximum(0.0 - cont, 0.0).mean())
-        above_one  = float(np.maximum(cont - 1.0, 0.0).mean())
-        # Soft binary check: how far is the average value from 0 or 1?
-        softness = float(np.minimum(cont, 1.0 - cont).mean())
-
-        violation = below_zero + above_one
-        # calibrated: violation≈0 (clean) → score→1;
-        # violation≈0.02-0.05 (generated) → score→0
-        score = _sigmoid_score(violation, center=0.005, scale=0.005)
-
-        raw = {
-            "contact_below_zero_mean":  below_zero,
-            "contact_above_one_mean":   above_one,
-            "contact_softness_mean":    softness,
-            "contact_violation_total":  violation,
-        }
-        return score, raw
 
     # ------------------------------------------------------------------
     # Supporting: jerk smoothness
@@ -372,11 +333,9 @@ class LightweightMotionQualityScorer:
 
         raw: dict = {}
 
-        # Primary sub-scores
+        # Primary sub-score
         s_rot,  r_rot  = self._score_rotation_6d(motion)
-        s_cont, r_cont = self._score_contact_validity(motion)
         raw.update(r_rot)
-        raw.update(r_cont)
 
         # Supporting sub-scores
         s_jerk, r_jerk = self._score_jerk(motion)
@@ -387,7 +346,6 @@ class LightweightMotionQualityScorer:
         # Weighted total
         total = (
             _W_ROT_CONSISTENCY  * s_rot  +
-            _W_CONTACT_VALIDITY * s_cont +
             _W_JERK             * s_jerk +
             _W_TEMPORAL_VAR     * s_tvar
         )
@@ -395,7 +353,6 @@ class LightweightMotionQualityScorer:
         return MotionQualityReport(
             total_score=float(np.clip(total, 0.0, 1.0)),
             rotation_6d_consistency=float(np.clip(s_rot, 0.0, 1.0)),
-            contact_flag_validity=float(np.clip(s_cont, 0.0, 1.0)),
             jerk_smoothness=float(np.clip(s_jerk, 0.0, 1.0)),
             temporal_variance=float(np.clip(s_tvar, 0.0, 1.0)),
             raw=raw,
