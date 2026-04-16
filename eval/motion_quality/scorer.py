@@ -47,12 +47,13 @@ import numpy as np
 
 from .reference_stats import (
     CH_CONT,
+    CH_POS,
     CH_ROT,
     CH_ROT_A,
     CH_ROT_B,
     CH_VEL,
     PerSkeletonReferenceStats,
-    _compute_jerk,
+    _compute_normalised_jerk,
 )
 
 
@@ -156,9 +157,11 @@ def _iqr_score(value: float, p25: float, p75: float, penalty_dir: str = "above")
     iqr = max(p75 - p25, 1e-12)
 
     if penalty_dir == "above":
-        # Smooth: score=1 when value <= p25, score=0.5 at p75, falls off above
-        excess = max(0.0, value - p75)
-        return _sigmoid_score(excess, 0.0, iqr * 0.5)
+        # Sigmoid centred at p75: score→1 as value→0, score=0.5 at p75,
+        # score→0 as value→∞.  This means low jerk always scores higher than
+        # high jerk, so a near-static GT clip (very low jerk) correctly beats
+        # a generated clip whose jerk happens to sit inside the IQR.
+        return _sigmoid_score(value, center=p75, scale=iqr * 0.5)
 
     elif penalty_dir == "below":
         shortfall = max(0.0, p25 - value)
@@ -265,27 +268,54 @@ class LightweightMotionQualityScorer:
 
     def _score_jerk(self, motion: np.ndarray) -> tuple[float, dict]:
         """
-        Jerk of rotation channels, normalised against reference IQR.
-        Penalises both excessive jitter and extreme over-smoothing.
+        Activity-normalised, root-weighted jerk of rotation and position channels.
+
+        Each per-joint jerk value is divided by that joint's own temporal variance
+        (activity level) before aggregation.  This makes the metric scale-invariant:
+        a clip with large legitimate motion is not penalised more than one with small
+        motion just because raw jerk is proportional to motion magnitude.
+
+        Why pos+rot (not vel):
+        - Position jerk on the root is the strongest visual jitter signal
+          (pred root pos jerk is typically 10-350x higher than clean after normalisation).
+        - Velocity channels in diffusion outputs are intrinsically smooth regardless
+          of positional jitter, so including velocity jerk biases scores in favour of
+          generated motions.
+        Why root-weighted:
+        - Without upweighting root, its high jitter is diluted by ~79 smooth joints.
         """
-        jerk_rot = _compute_jerk(motion, CH_ROT)
-        jerk_vel = _compute_jerk(motion, CH_VEL)
-        combined = (jerk_rot + jerk_vel) / 2.0
+        jerk_rot = _compute_normalised_jerk(motion, CH_ROT)
+        jerk_pos = _compute_normalised_jerk(motion, CH_POS)
 
         raw = {
-            "jerk_rot": jerk_rot,
-            "jerk_vel": jerk_vel,
+            "jerk_rot_norm": jerk_rot,
+            "jerk_pos_norm": jerk_pos,
         }
 
         if self.ref_stats is None:
-            # No reference: use a generic rule-of-thumb threshold
-            score = _sigmoid_score(jerk_rot, center=1e-3, scale=5e-3)
+            # No reference: use calibrated sigmoid on log10 scale so the metric
+            # works across the wide dynamic range of normalised jerk values.
+            import math
+            log_rot = math.log10(max(jerk_rot, 1e-30))
+            log_pos = math.log10(max(jerk_pos, 1e-30))
+            # Centres calibrated on normalised motion data.
+            # scale=0.8 gives ~0.8 for clean-level values and ~0.2 for jittery pred.
+            score_rot = _sigmoid_score(log_rot, center=-3.0, scale=0.8)
+            score_pos = _sigmoid_score(log_pos, center=-3.0, scale=0.8)
+            # Position jerk weighted higher (0.7) because root position jitter is
+            # more visually salient than rotation jitter, and diffusion models
+            # tend to produce smoother rotations while their position channels
+            # are noisier — equal weighting would let clean rotation mask pos jitter.
+            score = 0.3 * score_rot + 0.7 * score_pos
         else:
             r = self.ref_stats
-            # penalise both extremes (below p25 = over-smooth, above p75 = too jerky)
-            score_rot = _iqr_score(jerk_rot, r.jerk_rot_p25, r.jerk_rot_p75, "both")
-            score_vel = _iqr_score(jerk_vel, r.jerk_vel_p25, r.jerk_vel_p75, "both")
-            score = (score_rot + score_vel) / 2.0
+            # Only penalise "above" (too jerky). GT motions can legitimately be
+            # near-static (idle, slow), so low jerk must NOT be penalised here.
+            # Over-smoothing detection is handled separately by temporal_variance.
+            score_rot = _iqr_score(jerk_rot, r.jerk_rot_p25, r.jerk_rot_p75, "above")
+            score_pos = _iqr_score(jerk_pos, r.jerk_pos_p25, r.jerk_pos_p75, "above")
+            # Same positional bias as the no-reference path.
+            score = 0.3 * score_rot + 0.7 * score_pos
 
         return score, raw
 

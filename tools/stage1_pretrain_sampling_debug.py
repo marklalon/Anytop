@@ -563,7 +563,7 @@ def main() -> int:
         "selected_sample_count": len(selected_sample_manifest),
         "num_trials": int(args.num_trials),
         "sampling_method": args.sampling_method,
-        "sampling_steps": int(sampling_report["sampling_steps"]),
+        "sampling_steps": int(export_result["sampling_steps"]),
         "selection_seed": int(args.selection_seed),
         "base_seed": int(args.base_seed),
         "num_eval_samples": int(args.num_eval_samples),

@@ -41,10 +41,10 @@ class PerSkeletonReferenceStats:
         per_channel_mean: np.ndarray,    # (13,)  mean over frames×joints
         per_channel_std: np.ndarray,     # (13,)  std  over frames×joints
         per_joint_vel_std: np.ndarray,   # (J,)   velocity magnitude std per joint
-        jerk_rot_p25: float,             # 25th percentile of per-frame rot jerk
+        jerk_rot_p25: float,             # 25th percentile of root-weighted rot jerk
         jerk_rot_p75: float,             # 75th percentile
-        jerk_vel_p25: float,
-        jerk_vel_p75: float,
+        jerk_pos_p25: float,             # 25th percentile of root-weighted pos jerk
+        jerk_pos_p75: float,             # 75th percentile
         temporal_var_p25: float,         # 25th percentile of temporal variance
         temporal_var_p75: float,
         n_motions: int,
@@ -55,8 +55,8 @@ class PerSkeletonReferenceStats:
         self.per_joint_vel_std = per_joint_vel_std
         self.jerk_rot_p25 = jerk_rot_p25
         self.jerk_rot_p75 = jerk_rot_p75
-        self.jerk_vel_p25 = jerk_vel_p25
-        self.jerk_vel_p75 = jerk_vel_p75
+        self.jerk_pos_p25 = jerk_pos_p25
+        self.jerk_pos_p75 = jerk_pos_p75
         self.temporal_var_p25 = temporal_var_p25
         self.temporal_var_p75 = temporal_var_p75
         self.n_motions = n_motions
@@ -65,21 +65,51 @@ class PerSkeletonReferenceStats:
 # Module-level cache: {object_type -> PerSkeletonReferenceStats}
 _CACHE: Dict[str, PerSkeletonReferenceStats] = {}
 
+_ROOT_JERK_WEIGHT = 5.0  # root joint contribution relative to other joints
 
-def _compute_jerk(motion: np.ndarray, ch: slice) -> float:
-    """Mean squared jerk of channels `ch` across time."""
+
+def _compute_normalised_jerk(motion: np.ndarray, ch: slice) -> float:
+    """Root-weighted jerk normalised by per-joint activity (variance).
+
+    Dividing per-joint jerk by per-joint variance produces a scale-invariant
+    *relative jitter* metric: a clip with lots of movement AND lots of jerk is
+    not penalised more than a clip with tiny movement and tiny jerk.  This is
+    critical because normalised GT motions and diffusion outputs can have very
+    different absolute jerk magnitudes while appearing equally smooth or jittery
+    at the joint level.
+
+    For near-static joints (variance ≈ 0) the normalisation clamps to a safe
+    value so that idle joints do not dominate the score.
+    """
     r = motion[:, :, ch]          # (T, J, C)
-    a = np.diff(np.diff(r, axis=0), axis=0)   # 2nd diff = acceleration
-    j = np.diff(a, axis=0)                    # 3rd diff = jerk
-    return float((j ** 2).mean())
+    a = np.diff(np.diff(r, axis=0), axis=0)
+    j = np.diff(a, axis=0)                   # (T-3, J, C)
+
+    per_joint_jerk = (j ** 2).mean(axis=(0, 2))          # (J,)
+    per_joint_var  = r.var(axis=0).mean(axis=-1)          # (J,)  activity level
+
+    # Normalise jerk by activity; treat near-static joints as "fine"
+    normalised = per_joint_jerk / (per_joint_var + 1e-10)  # (J,)
+
+    J = normalised.shape[0]
+    weights = np.ones(J, dtype=np.float64)
+    weights[0] = _ROOT_JERK_WEIGHT
+    weights /= weights.sum()
+    return float((normalised * weights).sum())
 
 
 def _compute_for_motion(motion: np.ndarray):
-    """Return (jerk_rot, jerk_vel, temporal_var) for one motion clip."""
-    jerk_rot = _compute_jerk(motion, CH_ROT)
-    jerk_vel = _compute_jerk(motion, CH_VEL)
+    """Return (jerk_rot, jerk_pos, temporal_var) for one motion clip.
+
+    Uses normalised (activity-scaled), root-weighted jerk.
+    Velocity jerk is excluded: diffusion models produce smooth velocity
+    channels regardless of positional jitter, which biases the metric in
+    favour of generated motions.
+    """
+    jerk_rot = _compute_normalised_jerk(motion, CH_ROT)
+    jerk_pos = _compute_normalised_jerk(motion, CH_POS)
     temporal_var = float(motion.var(axis=0).mean())
-    return jerk_rot, jerk_vel, temporal_var
+    return jerk_rot, jerk_pos, temporal_var
 
 
 def compute_reference_stats(
@@ -99,7 +129,7 @@ def compute_reference_stats(
         return None
 
     all_frames: list[np.ndarray] = []
-    jerk_rots, jerk_vels, temporal_vars = [], [], []
+    jerk_rots, jerk_poss, temporal_vars = [], [], []
     per_joint_vel_sq_sum = None
     n_frames_total = 0
 
@@ -114,9 +144,9 @@ def compute_reference_stats(
         # Flatten to (T*J, 13) for channel statistics
         all_frames.append(m.reshape(-1, 13))
 
-        jr, jv, tv = _compute_for_motion(m)
+        jr, jp, tv = _compute_for_motion(m)
         jerk_rots.append(jr)
-        jerk_vels.append(jv)
+        jerk_poss.append(jp)
         temporal_vars.append(tv)
 
         # Per-joint velocity magnitude
@@ -143,8 +173,8 @@ def compute_reference_stats(
         per_joint_vel_std=per_joint_vel_std,
         jerk_rot_p25=float(np.percentile(jerk_rots, 25)),
         jerk_rot_p75=float(np.percentile(jerk_rots, 75)),
-        jerk_vel_p25=float(np.percentile(jerk_vels, 25)),
-        jerk_vel_p75=float(np.percentile(jerk_vels, 75)),
+        jerk_pos_p25=float(np.percentile(jerk_poss, 25)),
+        jerk_pos_p75=float(np.percentile(jerk_poss, 75)),
         temporal_var_p25=float(np.percentile(temporal_vars, 25)),
         temporal_var_p75=float(np.percentile(temporal_vars, 75)),
         n_motions=n_motion,

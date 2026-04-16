@@ -22,9 +22,9 @@ if not defined MODEL_PATH (
   --eval-split all ^
   --sample-limit -1 ^
   --num-frames 60 ^
-  --num-eval-samples 4 ^
+  --num-eval-samples 8 ^
   --num-trials 1 ^
-  --eval-batch-size 4 ^
+  --eval-batch-size 8 ^
   --sampling-method ddim ^
   --sampling-steps 100 ^
   --no-ema %*
