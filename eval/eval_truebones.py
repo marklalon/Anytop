@@ -13,7 +13,7 @@ original_repr = torch.Tensor.__repr__
 torch.Tensor.__repr__ = custom_repr
 from utils.parser_util import evaluation_parser
 import os
-import BVH # pip install git+https://github.com/inbar-2344/Motion.git
+from motion_lib import BVH
 import random
 import math
 

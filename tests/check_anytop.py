@@ -18,7 +18,7 @@ except ImportError as e:
 
 # Test Motion library
 try:
-    import BVH
+    from motion_lib import BVH
     from InverseKinematics import animation_from_positions
     print("✓ Motion库：BVH, InverseKinematics")
 except ImportError as e:

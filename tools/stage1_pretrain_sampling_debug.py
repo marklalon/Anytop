@@ -22,7 +22,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 os.chdir(REPO_ROOT)
 
-import BVH
+from motion_lib import BVH
 from data_loaders.get_data import get_dataset_loader
 from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
 from utils.fixseed import fixseed

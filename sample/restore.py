@@ -14,7 +14,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from data_loaders.get_data import get_dataset_loader
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
-import BVH
+from motion_lib import BVH
 from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
 from utils import dist_util
 from utils.fixseed import fixseed

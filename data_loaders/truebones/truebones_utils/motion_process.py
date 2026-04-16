@@ -1,10 +1,9 @@
-import BVH
-from Animation import *
+from motion_lib import BVH, Animation, Quaternions
+from motion_lib.Animation import positions_global, rotations_global, offsets_from_positions, offsets_global
 from InverseKinematics import animation_from_positions
 import numpy as np 
 import os 
 from os.path import join as pjoin
-from Quaternions import Quaternions
 import re
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from contextlib import redirect_stdout, redirect_stderr

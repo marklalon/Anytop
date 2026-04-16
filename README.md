@@ -37,7 +37,6 @@ Setup conda env:
 ```shell
 conda env create -f environment.yaml
 conda activate anytop
-pip install git+https://github.com/inbar-2344/Motion.git
 ```
 
 ### 2. Download and Preprocess Truebones dataset
@@ -241,7 +240,7 @@ We provide a script to visualize motion data as animated skeletons in Blender, s
 The script accepts either a single .bvh file or a directory containing multiple .bvh files. For each file, it generates a corresponding .blend file with the skeleton animation rendered in an empty scene.
 **Note**: To export an .mp4 render, you'll need to manually set up lighting and position the camera in the Blender UI.  
 Before running the command below, make sure to install the following dependencies in Blender’s Python environment:
-* git+https://github.com/inbar-2344/Motion.git
+* BVH parsing (bundled in codebase, originally from https://github.com/inbar-2344/Motion)
 * tqdm
 * scipy
 

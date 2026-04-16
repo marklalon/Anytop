@@ -4,9 +4,9 @@ import sys
 sys.path.append('.')
 import numpy as np
 import os
-import BVH
+from motion_lib import BVH
 from visualization.visualize_stick_figure_blender import StickFigure, save_blender_file
-import Animation
+from motion_lib import Animation
 from utils.parser_util import render_parser
 from mathutils import Vector, Euler
 

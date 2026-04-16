@@ -16,7 +16,7 @@ from data_loaders.truebones.truebones_utils.motion_process import recover_animat
 from data_loaders.truebones.data.dataset import create_temporal_mask_for_window
 from os.path import join as pjoin
 from model.conditioners import T5Conditioner
-import BVH
+from motion_lib import BVH
 from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 

@@ -34,7 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import BVH
+from motion_lib import BVH
 from data_loaders.get_data import get_dataset_loader
 from data_loaders.truebones.offline_reference_dataset import resolve_dataset_root
 from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
