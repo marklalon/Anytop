@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=stage1_tiny_overfit_horse_resetless_v1
+set RUN_NAME=stage1_tiny_overfit_horse_resetless_v2
 
 pushd "%SCRIPT_DIR%"
 
@@ -13,10 +13,10 @@ pushd "%SCRIPT_DIR%"
 	--auto_resume ^
 	--objects_subset all ^
 	--diffusion_steps 100 ^
-	--num_frames 30 ^
+	--num_frames 60 ^
 	--stage1_batch_size 4 ^
 	--stage1_lr 2e-5 ^
-	--stage1_num_steps 100000 ^
+	--stage1_num_steps 50000 ^
 	--dropout_prob 0.0 ^
 	--lambda_geo 0.0 ^
 	--save_interval 2000 ^

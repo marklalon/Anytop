@@ -68,8 +68,6 @@ class DirectSemanticTeacher:
             max_joints=int(self.args.get("max_joints", 143)),
             num_species=int(self.args.get("num_species", len(species_vocab) or 1)),
             num_actions=int(self.args.get("num_actions", len(action_vocab) or 1)),
-            metadata_dim=int(self.args.get("metadata_feature_dim", 0)),
-            metadata_hidden_dim=int(self.args.get("metadata_hidden_dim", 128)),
         )
         checkpoint_payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         model_state = checkpoint_payload.get("model_avg") or checkpoint_payload.get("model") or checkpoint_payload
@@ -118,7 +116,6 @@ class DirectSemanticTeacher:
                 pred_motion.float(),
                 n_joints,
                 lengths,
-                return_disc_logits=False,
                 return_phys_features=False,
             )
             with torch.no_grad():
@@ -126,7 +123,6 @@ class DirectSemanticTeacher:
                     target_motion.detach().float(),
                     n_joints.detach(),
                     lengths.detach(),
-                    return_disc_logits=False,
                     return_phys_features=False,
                 )
 

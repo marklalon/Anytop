@@ -86,36 +86,6 @@ def _teacher_ramp_end_step(start_step, ramp_steps):
     return start_step + ramp_steps - 1
 
 
-def _compute_masked_teacher_losses(
-    physics_teacher,
-    pred_motion,
-    target_motion,
-    *,
-    n_joints,
-    lengths,
-    object_types,
-    active_mask,
-    target_features=None,
-):
-    active_indices = active_mask.nonzero(as_tuple=False).flatten()
-    if active_indices.numel() == 0:
-        return None
-
-    # Use boolean indexing instead of CPU transfer for filtering object_types
-    active_indices_list = active_indices.detach().cpu().tolist()
-    subset_object_types = [object_types[i] for i in active_indices_list]
-    subset_target_features = target_features[active_indices] if target_features is not None else None
-    subset_losses = physics_teacher.compute_losses(
-        pred_motion[active_indices],
-        target_motion[active_indices],
-        n_joints=n_joints[active_indices],
-        lengths=lengths[active_indices],
-        object_types=subset_object_types,
-        target_features=subset_target_features,
-    )
-    return _expand_masked_teacher_losses(subset_losses, active_indices, int(pred_motion.shape[0]))
-
-
 def _compute_masked_semantic_teacher_losses(
     semantic_teacher,
     pred_motion,
@@ -291,12 +261,6 @@ class GaussianDiffusion:
         lambda_geo=0.,
         lambda_confidence_recon=0.,
         lambda_repair_recon=0.,
-        physics_teacher_weight=0.,
-        physics_teacher_feature_weight=1.0,
-        physics_teacher_margin_weight=0.25,
-        physics_teacher_start_step=0,
-        physics_teacher_ramp_steps=0,
-        physics_teacher_max_t=30,
         semantic_teacher_weight=0.,
         semantic_teacher_species_weight=1.0,
         semantic_teacher_action_weight=1.0,
@@ -314,12 +278,6 @@ class GaussianDiffusion:
         self.lambda_geo = lambda_geo
         self.lambda_confidence_recon = lambda_confidence_recon
         self.lambda_repair_recon = lambda_repair_recon
-        self.physics_teacher_weight = float(physics_teacher_weight)
-        self.physics_teacher_feature_weight = float(physics_teacher_feature_weight)
-        self.physics_teacher_margin_weight = float(physics_teacher_margin_weight)
-        self.physics_teacher_start_step = int(physics_teacher_start_step)
-        self.physics_teacher_ramp_steps = int(physics_teacher_ramp_steps)
-        self.physics_teacher_max_t = int(physics_teacher_max_t)
         self.semantic_teacher_weight = float(semantic_teacher_weight)
         self.semantic_teacher_species_weight = float(semantic_teacher_species_weight)
         self.semantic_teacher_action_weight = float(semantic_teacher_action_weight)
@@ -329,20 +287,9 @@ class GaussianDiffusion:
         self.semantic_teacher_max_t = int(semantic_teacher_max_t)
         self.semantic_teacher_temperature = float(semantic_teacher_temperature)
         self._teacher_ramp_logs = {
-            'physics_start': False,
-            'physics_end': False,
             'semantic_start': False,
             'semantic_end': False,
         }
-        # Single-entry cache for target physics features at the caller level.
-        # Size-1 cache for physics teacher target features. We hold strong
-        # references to the input tensors so their Python ids cannot be
-        # reused by a later allocation, and compare via `is` on lookup.
-        self._target_phys_cache_target: torch.Tensor | None = None
-        self._target_phys_cache_n_joints: torch.Tensor | None = None
-        self._target_phys_cache_lengths: torch.Tensor | None = None
-        self._target_phys_cache_object_types: tuple | None = None
-        self._target_phys_cache_features: torch.Tensor | None = None
         self.preservation_confidence_threshold = PRESERVATION_CONFIDENCE_THRESHOLD
         self.preservation_confidence_power = PRESERVATION_CONFIDENCE_POWER
 
@@ -401,20 +348,6 @@ class GaussianDiffusion:
         return int(value)
 
     def _maybe_log_teacher_ramp_events(self, current_step):
-        physics_end_step = _teacher_ramp_end_step(self.physics_teacher_start_step, self.physics_teacher_ramp_steps)
-        if self.physics_teacher_weight > 0.0 and not self._teacher_ramp_logs['physics_start'] and current_step >= self.physics_teacher_start_step:
-            logger.warn(
-                f"========== PHYSICS TEACHER RAMP START step={current_step} start_step={self.physics_teacher_start_step} "
-                f"ramp_steps={self.physics_teacher_ramp_steps} target_weight={self.physics_teacher_weight:.4f} =========="
-            )
-            self._teacher_ramp_logs['physics_start'] = True
-        if self.physics_teacher_weight > 0.0 and not self._teacher_ramp_logs['physics_end'] and current_step >= physics_end_step:
-            logger.warn(
-                f"========== PHYSICS TEACHER RAMP FULL step={current_step} full_weight_step={physics_end_step} "
-                f"target_weight={self.physics_teacher_weight:.4f} =========="
-            )
-            self._teacher_ramp_logs['physics_end'] = True
-
         semantic_end_step = _teacher_ramp_end_step(self.semantic_teacher_start_step, self.semantic_teacher_ramp_steps)
         if self.semantic_teacher_weight > 0.0 and not self._teacher_ramp_logs['semantic_start'] and current_step >= self.semantic_teacher_start_step:
             logger.warn(
@@ -1787,7 +1720,7 @@ class GaussianDiffusion:
         output = th.where((t == 0), decoder_nll, kl)
         return {"output": output, "pred_xstart": out["pred_xstart"]}
 
-    def training_losses(self, model, x_start, t, model_kwargs=None, noise=None, physics_teacher=None, semantic_teacher=None):
+    def training_losses(self, model, x_start, t, model_kwargs=None, noise=None, semantic_teacher=None):
         """
         Compute training losses for a single timestep.
 
@@ -1958,77 +1891,6 @@ class GaussianDiffusion:
             if self.lambda_fs > 0.:
                 terms["foot_sliding_loss"] = self.foot_sliding_loss(target, model_output, mask, relative=True)
                 terms["loss"] = terms["loss"] + self.lambda_fs * terms["foot_sliding_loss"]
-            low_noise_mask_bool = t <= self.physics_teacher_max_t
-            physics_teacher_scale = _teacher_weight_scale(
-                current_step,
-                self.physics_teacher_start_step,
-                self.physics_teacher_ramp_steps,
-            )
-            if (
-                physics_teacher is not None
-                and self.physics_teacher_weight > 0.0
-                and physics_teacher_scale > 0.0
-            ):
-                resolved_object_types = _resolve_object_types(
-                    model_kwargs['y'].get('object_type', []),
-                    int(model_output.shape[0]),
-                    motion_metadata=model_kwargs['y'].get('motion_metadata', []),
-                )
-                # Compute or retrieve cached target features for the full batch.
-                # Strong refs + `is` comparison: the cached tensors cannot be
-                # GC'd (so their Python ids cannot be reused), and identity is
-                # checked directly rather than through a reusable hash key.
-                resolved_object_types_tuple = tuple(resolved_object_types)
-                if (
-                    self._target_phys_cache_target is target
-                    and self._target_phys_cache_n_joints is actual_joints
-                    and self._target_phys_cache_lengths is lengths
-                    and self._target_phys_cache_object_types == resolved_object_types_tuple
-                ):
-                    target_features = self._target_phys_cache_features
-                else:
-                    target_features = physics_teacher.compute_target_features(
-                        target,
-                        n_joints=actual_joints,
-                        lengths=lengths,
-                        object_types=resolved_object_types,
-                    )
-                    self._target_phys_cache_target = target
-                    self._target_phys_cache_n_joints = actual_joints
-                    self._target_phys_cache_lengths = lengths
-                    self._target_phys_cache_object_types = resolved_object_types_tuple
-                    self._target_phys_cache_features = target_features
-                teacher_losses = _compute_masked_teacher_losses(
-                    physics_teacher,
-                    model_output,
-                    target,
-                    n_joints=actual_joints,
-                    lengths=lengths,
-                    object_types=resolved_object_types,
-                    active_mask=low_noise_mask_bool,
-                    target_features=target_features,
-                )
-                if teacher_losses is not None:
-                    teacher_total = (
-                        self.physics_teacher_feature_weight * teacher_losses['physics_teacher_feature_loss']
-                        + self.physics_teacher_margin_weight * teacher_losses['physics_teacher_margin_loss']
-                    )
-                    teacher_losses['physics_teacher_loss'] = teacher_total
-                    normalized = _normalize_teacher_batch_terms(
-                        teacher_losses,
-                        [
-                            'physics_teacher_loss',
-                            'physics_teacher_margin_loss',
-                            'physics_teacher_distance',
-                            'physics_teacher_target_distance',
-                            'physics_teacher_score',
-                            'physics_teacher_target_score',
-                        ],
-                        low_noise_mask_bool,
-                    )
-                    terms.update(normalized)
-                    terms['physics_teacher_active_fraction'] = low_noise_mask_bool.float().mean()
-                    terms['loss'] = terms['loss'] + (self.physics_teacher_weight * physics_teacher_scale) * terms['physics_teacher_loss']
 
         else:
             raise NotImplementedError(self.loss_type)

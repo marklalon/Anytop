@@ -171,7 +171,7 @@ def add_training_options(parser):
     group.add_argument("--prefetch_factor", default=2, type=int,
                        help="Per-worker prefetch factor for the restoration dataset loader.")
     group.add_argument("--motion_cache_size", default=0, type=int,
-                       help="Number of entries to keep in in-memory LRU caches for raw motion clips per dataset instance and motion-scorer physics targets per sampled window. 0 disables both caches.")
+                       help="Number of entries to keep in in-memory LRU cache for raw motion clips per dataset instance. 0 disables the cache.")
     group.add_argument("--main_process_prefetch_batches", default=0, type=int,
                        help="When num_workers=0, prefetch this many batches on a background thread to overlap data loading with GPU compute. 0 disables it.")
     group.add_argument("--detect_anomaly", action='store_true',
@@ -189,21 +189,7 @@ def add_training_options(parser):
     group.add_argument("--balanced", action='store_true',
                        help="Use balancing sampler for fairness between topologies")
     group.add_argument("--motion_scorer_checkpoint_dir", default='save/motion_scorer_v8', type=str,
-                       help="Path to the motion-scorer checkpoint directory used by both physics and semantic teachers.")
-    group.add_argument("--physics_teacher_weight", default=0.0, type=float,
-                       help="Overall weight of the direct physics teacher loss applied to the main model.")
-    group.add_argument("--physics_teacher_feature_weight", default=1.0, type=float,
-                       help="Weight of the feature-matching term inside the direct physics teacher loss.")
-    group.add_argument("--physics_teacher_margin_weight", default=0.25, type=float,
-                       help="Weight of the manifold margin term inside the direct physics teacher loss.")
-    group.add_argument("--physics_teacher_start_step", default=0, type=int,
-                       help="Training step at which direct physics teacher supervision starts contributing to the main model loss.")
-    group.add_argument("--physics_teacher_ramp_steps", default=0, type=int,
-                       help="Number of steps to linearly ramp direct physics teacher supervision from zero to full weight after physics_teacher_start_step.")
-    group.add_argument("--physics_teacher_max_t", default=30, type=int,
-                       help="Maximum diffusion timestep at which the direct physics teacher loss is applied.")
-    group.add_argument("--physics_features_device", default="auto", type=str, choices=["auto", "cpu"],
-                       help="Device used for extract_physics_features per-sample computation. 'auto' keeps it on the motion tensor's device (usually cuda); 'cpu' moves per-sample slices to CPU to avoid kernel-launch overhead on many tiny ops.")
+                       help="Path to the motion-scorer checkpoint directory used by the semantic teacher.")
     group.add_argument("--semantic_teacher_weight", default=0.0, type=float,
                        help="Overall weight of the direct semantic teacher loss applied to the main model.")
     group.add_argument("--semantic_teacher_species_weight", default=1.0, type=float,

@@ -13,7 +13,6 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from diffusion import logger
-from eval import direct_physics_teacher as direct_physics_teacher_module
 from eval.direct_semantic_teacher import DirectSemanticTeacher
 from model.motion_transformer import GraphMultiHeadAttention
 from train.train_anytop import create_training_data_loader
@@ -63,18 +62,6 @@ def _wrap_attention_modules(model: torch.nn.Module, timer_store: TimerStore) -> 
 
 def _wrap_teacher_modules(trainer: TrainLoop, timer_store: TimerStore) -> callable:
     restore_callbacks = []
-
-    if trainer.physics_teacher is not None:
-        _wrap_bound_method(trainer.physics_teacher, "compute_target_features", timer_store, "physics_teacher_total_s")
-        _wrap_bound_method(trainer.physics_teacher, "compute_losses", timer_store, "physics_teacher_total_s")
-
-        original_extract = direct_physics_teacher_module.extract_physics_features
-
-        def timed_extract(*args, **kwargs):
-            return timer_store.timed("physics_feature_extract_s", original_extract, *args, **kwargs)
-
-        direct_physics_teacher_module.extract_physics_features = timed_extract
-        restore_callbacks.append(lambda: setattr(direct_physics_teacher_module, "extract_physics_features", original_extract))
 
     if trainer.semantic_teacher is not None:
         _wrap_bound_method(trainer.semantic_teacher, "compute_losses", timer_store, "semantic_teacher_total_s")
@@ -173,13 +160,9 @@ def _run_profile(trainer: TrainLoop, warmup_steps: int, profile_steps: int) -> d
                 total_step_s += step_s
                 total_loop_s += loop_s
 
-        physics_teacher_total_s = timer_store.totals.get("physics_teacher_total_s", 0.0)
         semantic_teacher_total_s = timer_store.totals.get("semantic_teacher_total_s", 0.0)
-        teacher_total_s = physics_teacher_total_s + semantic_teacher_total_s
-        feature_extract_s = timer_store.totals.get("physics_feature_extract_s", 0.0)
-        teacher_non_feature_s = max(teacher_total_s - feature_extract_s, 0.0)
         attention_s = timer_store.totals.get("attention_graph_s", 0.0) + timer_store.totals.get("attention_mha_s", 0.0)
-        other_step_s = max(total_step_s - attention_s - teacher_non_feature_s - feature_extract_s, 0.0)
+        other_step_s = max(total_step_s - attention_s - semantic_teacher_total_s, 0.0)
 
         denom = total_loop_s if total_loop_s > 0 else 1.0
         summary = {
@@ -189,22 +172,14 @@ def _run_profile(trainer: TrainLoop, warmup_steps: int, profile_steps: int) -> d
                 "step_total": total_step_s,
                 "data_wait": total_data_wait_s,
                 "attention_total": attention_s,
-                "teacher_total": teacher_total_s,
-                "teacher_non_feature": teacher_non_feature_s,
-                "physics_feature_extract": feature_extract_s,
+                "semantic_teacher_total": semantic_teacher_total_s,
                 "other_step": other_step_s,
             },
             "percent_of_loop": {
                 "data_wait": 100.0 * total_data_wait_s / denom,
                 "attention_total": 100.0 * attention_s / denom,
-                "teacher_non_feature": 100.0 * teacher_non_feature_s / denom,
-                "physics_feature_extract": 100.0 * feature_extract_s / denom,
+                "semantic_teacher_total": 100.0 * semantic_teacher_total_s / denom,
                 "other_step": 100.0 * other_step_s / denom,
-            },
-            "teacher_breakdown": {
-                "physics_teacher_total_s": physics_teacher_total_s,
-                "semantic_teacher_total_s": semantic_teacher_total_s,
-                "physics_feature_share_of_teacher_pct": 100.0 * feature_extract_s / max(teacher_total_s, 1e-12),
             },
             "attention_breakdown": {
                 "graph_attention_s": timer_store.totals.get("attention_graph_s", 0.0),

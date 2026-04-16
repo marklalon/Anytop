@@ -25,21 +25,12 @@ from eval.motion_quality_scorer import MotionQualityScorer
 
 SUPPORTED_SUFFIXES = {".bvh", ".npy"}
 DEFAULT_CHECKPOINT_DIR = "save/motion_scorer_v8"
-# Metric output order: primary quality metrics first, then reference metrics
-# NOTE: density_score and plausibility_score are reference metrics only (excluded from quality_score).
-#       They are kept for debugging but do not contribute to the final quality assessment.
+# Metric output order: primary quality metrics first.
 METRIC_KEYS = (
     "quality_score",
     "recognizability_score",
-    "physics_score",
     "species_confidence",
     "action_confidence",
-    "physics_distance",
-    "mahal_distance",
-    # Reference metrics (for debugging only)
-    "density_score",
-    "plausibility_score",
-    "density_distance",
 )
 
 
@@ -322,7 +313,6 @@ def score_motion_array(
         key: float(np.mean([chunk_result[key] for chunk_result in chunk_results]))
         for key in METRIC_KEYS
     }
-    aggregated["density_mode"] = scorer.density_mode
     aggregated["segment_count"] = len(chunk_results)
     aggregated["segment_lengths"] = segment_lengths
     aggregated["frame_count"] = int(motion_np.shape[0])
@@ -528,11 +518,7 @@ def main() -> int:
         )
         print(
             "[recognizability_score] mean: "
-            f"{metrics['recognizability_score']['mean']:.4f} | [physics_score] mean: {metrics['physics_score']['mean']:.4f}"
-        )
-        print(
-            "[density_score] mean: "
-            f"{metrics['density_score']['mean']:.4f} | [plausibility_score] mean: {metrics['plausibility_score']['mean']:.4f}"
+            f"{metrics['recognizability_score']['mean']:.4f}"
         )
 
     print(f"saved report: {output_json}")

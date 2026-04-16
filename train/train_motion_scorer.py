@@ -16,7 +16,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
-from tqdm import tqdm
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -24,14 +23,9 @@ from data_loaders.get_data import get_dataset_loader
 from data_loaders.skeleton_metadata import (
     LabelVocab,
     build_label_vocabs,
-    build_metadata_feature_lookup,
-    load_skeleton_metadata,
-    metadata_feature_dim,
 )
 from diffusion.fp16_util import MixedPrecisionTrainer, format_nonfinite_stats, inspect_optimizer_state, sanitize_optimizer_state
 from diffusion.nn import update_ema
-from eval.biomechanical_negatives import NEGATIVE_KINDS, generate_biomechanical_negative_batch
-from eval.physics_features import extract_physics_features, select_physics_score_features
 from model.motion_autoencoder import MotionScorerNet
 from utils import dist_util
 from utils.fixseed import fixseed
@@ -56,103 +50,18 @@ def build_parser() -> ArgumentParser:
                        help="Dataset split used for training.")
     group.add_argument("--stats_split", default="", type=str,
                        help="Split used to cache scorer statistics after training. Empty means train_split.")
-    group.add_argument("--stats_batch_size", default=0, type=int,
-                       help="Batch size for the post-training stats pass. 0 reuses batch_size.")
     group.add_argument("--lr_step_size", default=10000, type=int, help="StepLR step size in optimizer steps.")
     group.add_argument("--lr_gamma", default=0.99, type=float, help="StepLR gamma.")
     group.add_argument("--ema_decay", default=0.999, type=float, help="EMA decay when --use_ema is enabled.")
-    group.add_argument("--stats_eps", default=1e-4, type=float,
-                       help="Diagonal regularizer added before inverting covariance matrices.")
     group.add_argument("--timing_log_interval", default=1000, type=int,
                        help="Report averaged timing breakdown every N training steps.")
-    group.add_argument("--physics_target_cache_size", default=-1, type=int,
-                       help="LRU size for cached motion-scorer physics targets. -1 reuses motion_cache_size; larger values are cheap because each entry is only a small feature vector.")
     group.add_argument("--load_optimizer_state", action="store_true",
                        help="Restore optimizer and scaler state when resuming.")
-    group.add_argument("--metadata_hidden_dim", default=128, type=int,
-                       help="Hidden size used to project fixed skeleton metadata features.")
-    group.add_argument("--cls_warmup_steps", default=2000, type=int,
-                       help="Number of initial steps that optimize only species/action classification.")
-    group.add_argument("--full_loss_warmup_steps", default=2000, type=int,
-                       help="Number of steps used to linearly ramp discriminator/physics/VICReg losses after classification warmup.")
     group.add_argument("--lambda_species", default=1.0, type=float, help="Weight for species classification CE.")
     group.add_argument("--lambda_action", default=1.0, type=float, help="Weight for action classification CE.")
-    group.add_argument("--lambda_disc_p", default=0.5, type=float, help="Weight for positive discriminator BCE.")
-    group.add_argument("--lambda_disc_n", default=0.5, type=float, help="Weight for negative discriminator BCE.")
-    group.add_argument("--lambda_phys", default=0.2, type=float, help="Weight for physics feature regression.")
-    group.add_argument("--lambda_vic_var", default=0.05, type=float, help="Weight for VICReg variance floor.")
-    group.add_argument("--lambda_vic_cov", default=0.01, type=float, help="Weight for VICReg covariance decorrelation.")
-    group.add_argument("--vic_variance_floor", default=0.5, type=float,
-                       help="Minimum per-dimension standard deviation target for normalized latent embeddings.")
-    group.add_argument("--density_knn_k", default=5, type=int,
-                       help="k used for normalized latent kNN density calibration.")
-    group.add_argument("--score_alpha", nargs=4, default=[1.0, 1.0, 1.0, 1.0], type=float,
-                       help="Geometric-mean weights for recognizability, density, plausibility, and physics scores.")
+    group.add_argument("--score_alpha", nargs=1, default=[1.0], type=float,
+                       help="Geometric-mean weights for recognizability score aggregation.")
     return parser
-
-
-def linear_warmup_factor(current_step: int, start_step: int, warmup_steps: int) -> float:
-    if current_step <= start_step:
-        return 0.0
-    if warmup_steps <= 0:
-        return 1.0
-    progress = (current_step - start_step) / float(warmup_steps)
-    return float(min(max(progress, 0.0), 1.0))
-
-
-def get_auxiliary_loss_factor(args, current_step: int) -> float:
-    cls_warmup_steps = max(0, int(getattr(args, "cls_warmup_steps", 0)))
-    warmup_steps = max(0, int(getattr(args, "full_loss_warmup_steps", 0)))
-    return linear_warmup_factor(current_step, cls_warmup_steps, warmup_steps)
-
-
-def normalize_density_embeddings(latents: torch.Tensor) -> torch.Tensor:
-    return F.normalize(latents.float(), dim=-1)
-
-
-def _knn_density_values_np(
-    reference_latents: np.ndarray,
-    *,
-    k: int,
-    exclude_self: bool,
-    chunk_size: int = 1024,
-) -> np.ndarray:
-    if reference_latents.ndim != 2:
-        raise ValueError(f"Expected 2D latent array, got {reference_latents.shape}")
-    if reference_latents.shape[0] == 0:
-        return np.zeros((0,), dtype=np.float32)
-    if reference_latents.shape[0] == 1:
-        return np.zeros((1,), dtype=np.float32)
-
-    effective_k = max(1, min(int(k), int(reference_latents.shape[0]) - 1 if exclude_self else int(reference_latents.shape[0])))
-    reference_tensor = torch.from_numpy(reference_latents.astype(np.float32, copy=False))
-    values: list[np.ndarray] = []
-    for start_index in range(0, int(reference_tensor.shape[0]), int(chunk_size)):
-        end_index = min(start_index + int(chunk_size), int(reference_tensor.shape[0]))
-        query_tensor = reference_tensor[start_index:end_index]
-        distances = torch.cdist(query_tensor, reference_tensor)
-        if exclude_self:
-            diag_indices = torch.arange(end_index - start_index)
-            distances[diag_indices, diag_indices + start_index] = float('inf')
-        kth_distances = torch.topk(distances, k=effective_k, dim=1, largest=False).values[:, -1]
-        values.append((-kth_distances).cpu().numpy())
-    return np.concatenate(values, axis=0).astype(np.float32, copy=False)
-
-
-def _variance_floor_loss(features: torch.Tensor, floor: float) -> torch.Tensor:
-    if features.shape[0] <= 1:
-        return torch.zeros((), device=features.device, dtype=features.dtype)
-    std = torch.sqrt(features.var(dim=0, unbiased=False) + 1e-4)
-    return F.relu(float(floor) - std).mean()
-
-
-def _covariance_loss(features: torch.Tensor) -> torch.Tensor:
-    if features.shape[0] <= 1:
-        return torch.zeros((), device=features.device, dtype=features.dtype)
-    centered = features - features.mean(dim=0, keepdim=True)
-    cov = centered.T @ centered / max(features.shape[0] - 1, 1)
-    off_diagonal = cov - torch.diag_embed(torch.diagonal(cov))
-    return off_diagonal.pow(2).sum() / max(features.shape[1], 1)
 
 
 def _fp32_loss_context(device: torch.device):
@@ -208,7 +117,7 @@ def clear_motion_scorer_artifacts(save_dir: str) -> None:
             shutil.rmtree(file_path)
 
 
-def create_data_loader(args, split: str, *, shuffle: bool, drop_last: bool, balanced: bool, batch_transform=None):
+def create_data_loader(args, split: str, *, shuffle: bool, drop_last: bool, balanced: bool):
     return get_dataset_loader(
         batch_size=args.batch_size,
         num_frames=args.num_frames,
@@ -226,170 +135,9 @@ def create_data_loader(args, split: str, *, shuffle: bool, drop_last: bool, bala
         action_tags=getattr(args, "action_tags", ""),
         motion_cache_size=getattr(args, "motion_cache_size", 0),
         main_process_prefetch_batches=getattr(args, "main_process_prefetch_batches", 0),
-        batch_transform=batch_transform,
         fixed_motion=getattr(args, 'fixed_motion', ''),
         fixed_window_start=getattr(args, 'fixed_window_start', 0),
     )
-
-
-def move_aux_to_device(aux_batch: dict | None, device: torch.device, non_blocking: bool) -> dict | None:
-    if aux_batch is None:
-        return None
-    moved = {}
-    for key, value in aux_batch.items():
-        moved[key] = value.to(device, non_blocking=non_blocking) if torch.is_tensor(value) else value
-    return moved
-
-
-class PhysicsTargetLRUCache:
-    def __init__(self, max_entries: int) -> None:
-        self.max_entries = max(0, int(max_entries))
-        self._cache: OrderedDict[tuple[str, int, int, str, int], torch.Tensor] = OrderedDict()
-        self._lock = threading.Lock()
-        self._hits = 0
-        self._misses = 0
-
-    def _sample_key(self, motion: torch.Tensor, cond: dict, batch_index: int) -> tuple[str, int, str, int, str] | None:
-        motion_names = cond["y"].get("motion_name")
-        lengths = cond["y"].get("lengths")
-        object_types = cond["y"].get("object_type")
-        n_joints = cond["y"].get("n_joints")
-        if motion_names is None or lengths is None or object_types is None or n_joints is None:
-            return None
-        sample_length = int(lengths[batch_index])
-        sample_n_joints = int(n_joints[batch_index])
-        sample_motion = motion[batch_index, :sample_n_joints, :, :sample_length].detach().to(device="cpu", dtype=torch.float32).contiguous()
-        fingerprint = hashlib.blake2b(sample_motion.numpy().tobytes(), digest_size=8).hexdigest()
-        return (
-            str(motion_names[batch_index]),
-            sample_length,
-            str(object_types[batch_index]),
-            sample_n_joints,
-            fingerprint,
-        )
-
-    def _get(self, key: tuple[str, int, str, int, str]) -> torch.Tensor | None:
-        with self._lock:
-            value = self._cache.get(key)
-            if value is None:
-                return None
-            self._cache.move_to_end(key)
-            return value
-
-    def pop_stats(self) -> tuple[int, int]:
-        with self._lock:
-            hits = self._hits
-            misses = self._misses
-            self._hits = 0
-            self._misses = 0
-        return hits, misses
-
-    def _put(self, key: tuple[str, int, str, int, str], value: torch.Tensor) -> None:
-        with self._lock:
-            self._cache[key] = value.detach().to(device="cpu", dtype=torch.float32)
-            self._cache.move_to_end(key)
-            while len(self._cache) > self.max_entries:
-                self._cache.popitem(last=False)
-
-    def _record_hit(self) -> None:
-        with self._lock:
-            self._hits += 1
-
-    def _record_miss(self) -> None:
-        with self._lock:
-            self._misses += 1
-
-    def get_batch(self, motion: torch.Tensor, cond: dict, skeleton_lookup) -> torch.Tensor:
-        if self.max_entries <= 0:
-            return extract_physics_features(
-                motion,
-                cond["y"]["n_joints"],
-                cond["y"]["lengths"],
-                cond["y"].get("object_type"),
-                skeleton_lookup,
-                feature_mean=cond["y"].get("mean"),
-                feature_std=cond["y"].get("std"),
-            ).detach()
-
-        cached_results: list[torch.Tensor | None] = [None] * int(motion.shape[0])
-        miss_indices: list[int] = []
-        miss_keys: list[tuple[str, int, str, int, str] | None] = []
-        for batch_index in range(int(motion.shape[0])):
-            key = self._sample_key(motion, cond, batch_index)
-            if key is None:
-                miss_indices.append(batch_index)
-                miss_keys.append(None)
-                continue
-            cached_value = self._get(key)
-            if cached_value is None:
-                miss_indices.append(batch_index)
-                miss_keys.append(key)
-                self._record_miss()
-            else:
-                cached_results[batch_index] = cached_value
-                self._record_hit()
-
-        if miss_indices:
-            miss_features = extract_physics_features(
-                motion[miss_indices],
-                cond["y"]["n_joints"][miss_indices],
-                cond["y"]["lengths"][miss_indices],
-                [cond["y"]["object_type"][index] for index in miss_indices],
-                skeleton_lookup,
-                feature_mean=cond["y"]["mean"][miss_indices],
-                feature_std=cond["y"]["std"][miss_indices],
-            ).detach()
-            for miss_offset, batch_index in enumerate(miss_indices):
-                feature_cpu = miss_features[miss_offset].to(device="cpu", dtype=torch.float32)
-                cached_results[batch_index] = feature_cpu
-                key = miss_keys[miss_offset]
-                if key is not None:
-                    self._put(key, feature_cpu)
-
-        return torch.stack([result for result in cached_results if result is not None], dim=0).to(device=motion.device, dtype=motion.dtype)
-
-
-class MotionScorerAuxBatchPreprocessor:
-    def __init__(self, skeleton_lookup, physics_target_cache: PhysicsTargetLRUCache | None = None) -> None:
-        self.skeleton_lookup = skeleton_lookup
-        self.physics_target_cache = physics_target_cache
-        self.enabled = False
-        self.cpu_device = torch.device("cpu")
-
-    def set_enabled(self, enabled: bool) -> None:
-        self.enabled = bool(enabled)
-
-    def __call__(self, batch):
-        motion, cond = batch
-        if not self.enabled:
-            return motion, cond, None
-
-        object_types = cond["y"].get("object_type")
-        if self.physics_target_cache is not None:
-            physics_targets = self.physics_target_cache.get_batch(motion, cond, self.skeleton_lookup)
-        else:
-            physics_targets = extract_physics_features(
-                motion,
-                cond["y"]["n_joints"],
-                cond["y"]["lengths"],
-                object_types,
-                self.skeleton_lookup,
-                feature_mean=cond["y"].get("mean"),
-                feature_std=cond["y"].get("std"),
-            )
-        negative_batch = generate_biomechanical_negative_batch(
-            motion,
-            cond["y"]["n_joints"],
-            cond["y"]["lengths"],
-            object_types,
-            self.skeleton_lookup,
-            feature_std=cond["y"].get("std"),
-            negative_kinds=NEGATIVE_KINDS,
-        )
-        return motion, cond, {
-            "physics_targets": physics_targets,
-            "negative_motion": negative_batch["motion"],
-        }
 
 
 def find_latest_checkpoint(save_dir: str, prefix: str = "model") -> str:
@@ -462,24 +210,16 @@ class MotionScorerTrainer:
         args,
         ml_platform,
         data_loader,
-        *,
-        aux_batch_preprocessor=None,
-        physics_target_cache: PhysicsTargetLRUCache | None = None,
-        skeleton_lookup,
         species_vocab: LabelVocab,
         action_vocab: LabelVocab,
     ) -> None:
         self.args = args
         self.ml_platform = ml_platform
         self.data_loader = data_loader
-        self.aux_batch_preprocessor = aux_batch_preprocessor
-        self.physics_target_cache = physics_target_cache
-        self.skeleton_lookup = skeleton_lookup
         self.species_vocab = species_vocab
         self.action_vocab = action_vocab
         self.num_species = args.num_species
         self.num_actions = args.num_actions
-        self.metadata_dim = args.metadata_feature_dim
 
         dist_util.setup_dist(args.device)
         self.device = dist_util.dev()
@@ -493,13 +233,6 @@ class MotionScorerTrainer:
             self.autocast_dtype = torch.float16
         elif self.amp_dtype == "bf16":
             self.autocast_dtype = torch.bfloat16
-        
-        self.metadata_feature_lookup = build_metadata_feature_lookup(
-            self.skeleton_lookup,
-            max_joints=self.args.max_joints,
-            device=self.device,
-            dtype=torch.float32,
-        )
 
         self.model = MotionScorerNet(
             feature_dim=args.feature_dim,
@@ -510,8 +243,6 @@ class MotionScorerTrainer:
             max_joints=args.max_joints,
             num_species=self.num_species,
             num_actions=self.num_actions,
-            metadata_dim=self.metadata_dim,
-            metadata_hidden_dim=args.metadata_hidden_dim,
         ).to(self.device)
         self.model_avg = copy.deepcopy(self.model) if args.use_ema else None
         self.resume_checkpoint = args.resume_checkpoint.strip() if args.resume_checkpoint else ""
@@ -566,42 +297,11 @@ class MotionScorerTrainer:
         action_ids = self.action_vocab.encode_many(cond["y"].get("action_label", []), device=self.device)
         return species_ids, action_ids
 
-    def train_step(self, motion: torch.Tensor, cond: dict, current_step: int, precomputed_aux: dict | None = None) -> dict[str, float]:
+    def train_step(self, motion: torch.Tensor, cond: dict, current_step: int) -> dict[str, float]:
+        del current_step
         n_joints = cond["y"]["n_joints"]
         lengths = cond["y"]["lengths"]
-        object_types = cond["y"].get("object_type")
         species_ids, action_ids = self._encode_batch_labels(cond)
-        aux_factor = get_auxiliary_loss_factor(self.args, current_step)
-        use_auxiliary_branches = aux_factor > 0.0
-
-        metadata_features = None
-        physics_targets = None
-        negative_batch = None
-        if use_auxiliary_branches:
-            metadata_features = torch.stack(
-                [self.metadata_feature_lookup[str(object_type)] for object_type in object_types],
-                dim=0,
-            )
-            if metadata_features.dtype != motion.dtype:
-                metadata_features = metadata_features.to(dtype=motion.dtype)
-            if precomputed_aux is not None:
-                physics_targets = precomputed_aux["physics_targets"]
-                negative_batch = {
-                    "motion": precomputed_aux["negative_motion"],
-                }
-            else:
-                if self.physics_target_cache is not None:
-                    physics_targets = self.physics_target_cache.get_batch(motion, cond, self.skeleton_lookup)
-                else:
-                    physics_targets = extract_physics_features(
-                        motion,
-                        n_joints,
-                        lengths,
-                        object_types,
-                        self.skeleton_lookup,
-                        feature_mean=cond["y"].get("mean"),
-                        feature_std=cond["y"].get("std"),
-                    ).detach()
 
         self.mp_trainer.zero_grad()
         with self.autocast_context():
@@ -609,70 +309,17 @@ class MotionScorerTrainer:
                 motion,
                 n_joints,
                 lengths,
-                metadata_features=metadata_features,
-                return_disc_logits=use_auxiliary_branches,
-                return_phys_features=use_auxiliary_branches,
             )
-
-            if use_auxiliary_branches and negative_batch is None:
-                negative_batch = generate_biomechanical_negative_batch(
-                    motion,
-                    n_joints,
-                    lengths,
-                    object_types,
-                    self.skeleton_lookup,
-                    feature_std=cond["y"].get("std"),
-                    negative_kinds=NEGATIVE_KINDS,
-                )
-            if use_auxiliary_branches:
-                negative_outputs = self.model(
-                    negative_batch["motion"],
-                    n_joints,
-                    lengths,
-                    metadata_features=metadata_features,
-                    return_species_logits=False,
-                    return_action_logits=False,
-                    return_phys_features=False,
-                )
-            else:
-                negative_outputs = None
 
         with _fp32_loss_context(self.device):
             species_logits = clean_outputs["species_logits"].float()
             action_logits = clean_outputs["action_logits"].float()
             species_loss = F.cross_entropy(species_logits, species_ids)
             action_loss = F.cross_entropy(action_logits, action_ids)
-            if use_auxiliary_branches:
-                vicreg_features = normalize_density_embeddings(clean_outputs["latents"])
-                disc_logits = clean_outputs["disc_logits"].float()
-                disc_positive_loss = F.binary_cross_entropy_with_logits(
-                    disc_logits,
-                    torch.ones_like(disc_logits),
-                )
-                phys_loss = F.mse_loss(clean_outputs["phys_features"].float(), physics_targets.float())
-                vic_variance_loss = _variance_floor_loss(vicreg_features, float(self.args.vic_variance_floor))
-                vic_covariance_loss = _covariance_loss(vicreg_features)
-                negative_disc_logits = negative_outputs["disc_logits"].float()
-                disc_negative_loss = F.binary_cross_entropy_with_logits(
-                    negative_disc_logits,
-                    torch.zeros_like(negative_disc_logits),
-                )
-            else:
-                zero = motion.new_zeros((), dtype=torch.float32)
-                disc_positive_loss = zero
-                disc_negative_loss = zero
-                phys_loss = zero
-                vic_variance_loss = zero
-                vic_covariance_loss = zero
 
             loss = (
                 float(self.args.lambda_species) * species_loss
                 + float(self.args.lambda_action) * action_loss
-                + aux_factor * float(self.args.lambda_disc_p) * disc_positive_loss
-                + aux_factor * float(self.args.lambda_disc_n) * disc_negative_loss
-                + aux_factor * float(self.args.lambda_phys) * phys_loss
-                + aux_factor * float(self.args.lambda_vic_var) * vic_variance_loss
-                + aux_factor * float(self.args.lambda_vic_cov) * vic_covariance_loss
             )
 
         self.mp_trainer.backward(loss)
@@ -683,27 +330,13 @@ class MotionScorerTrainer:
         with torch.no_grad():
             species_accuracy = (species_logits.argmax(dim=-1) == species_ids).float().mean()
             action_accuracy = (action_logits.argmax(dim=-1) == action_ids).float().mean()
-            if use_auxiliary_branches:
-                clean_disc_prob = torch.sigmoid(disc_logits).mean()
-                negative_disc_prob = torch.sigmoid(negative_disc_logits).mean()
-            else:
-                clean_disc_prob = motion.new_zeros(())
-                negative_disc_prob = motion.new_zeros(())
 
         return {
             "loss": loss.detach().float(),
             "species_loss": species_loss.detach().float(),
             "action_loss": action_loss.detach().float(),
-            "disc_positive_loss": disc_positive_loss.detach().float(),
-            "disc_negative_loss": disc_negative_loss.detach().float(),
-            "phys_loss": phys_loss.detach().float(),
-            "vic_variance_loss": vic_variance_loss.detach().float(),
-            "vic_covariance_loss": vic_covariance_loss.detach().float(),
             "species_accuracy": species_accuracy.detach().float(),
             "action_accuracy": action_accuracy.detach().float(),
-            "clean_disc_prob": clean_disc_prob.detach().float(),
-            "negative_disc_prob": negative_disc_prob.detach().float(),
-            "aux_factor": motion.new_tensor(float(aux_factor), dtype=torch.float32),
         }
 
     def save(self, completed_step: int) -> None:
@@ -725,10 +358,6 @@ class MotionScorerTrainer:
         running_metric_counts: dict[str, int] = {}
         data_iter = iter(self.data_loader)
         timing_log_interval = max(1, int(getattr(self.args, "timing_log_interval", self.args.log_interval)))
-        cls_warmup_steps = max(0, int(getattr(self.args, "cls_warmup_steps", 0)))
-        aux_warmup_steps = max(0, int(getattr(self.args, "full_loss_warmup_steps", 0)))
-        aux_warmup_start_step = cls_warmup_steps + 1
-        aux_full_weight_step = cls_warmup_steps + aux_warmup_steps
         timing_totals = {
             "data_wait_s": 0.0,
             "host_to_device_s": 0.0,
@@ -736,7 +365,6 @@ class MotionScorerTrainer:
             "loop_s": 0.0,
         }
         timing_steps = 0
-        timing_samples = 0
 
         next_metric_log = min(int(self.args.log_interval), int(self.args.num_steps))
         next_timing_log = min(int(timing_log_interval), int(self.args.num_steps))
@@ -744,42 +372,10 @@ class MotionScorerTrainer:
             f"Motion scorer training loop started: next_metrics_step={next_metric_log}, "
             f"next_timing_step={next_timing_log}"
         )
-        if cls_warmup_steps > 0 or aux_warmup_steps > 0:
-            print("=" * 100)
-            if cls_warmup_steps > 0 and aux_warmup_steps > 0:
-                print(
-                    f"Warmup schedule: classification-only step[1]-step[{cls_warmup_steps}], "
-                    f"auxiliary ramp step[{aux_warmup_start_step}]-step[{aux_full_weight_step}]"
-                )
-            elif cls_warmup_steps > 0:
-                print(
-                    f"Warmup schedule: classification-only step[1]-step[{cls_warmup_steps}], "
-                    f"full auxiliary weights enable at step[{aux_warmup_start_step}]"
-                )
-            else:
-                print(f"Warmup schedule: auxiliary ramp step[1]-step[{aux_full_weight_step}]")
-            print("=" * 100)
 
         while completed_steps < self.args.num_steps:
             loop_start = time.perf_counter()
             fetch_start = time.perf_counter()
-            next_step = completed_steps + 1
-            if cls_warmup_steps > 0 and next_step == aux_warmup_start_step:
-                print("=" * 100)
-                print(
-                    f"Warmup boundary: classification-only warmup finished at step[{cls_warmup_steps}]; "
-                    f"auxiliary loss ramp starts at step[{next_step}]"
-                )
-                print("=" * 100)
-            if aux_warmup_steps > 0 and next_step == aux_full_weight_step:
-                print("=" * 100)
-                print(
-                    f"Warmup boundary: auxiliary loss ramp ends at step[{aux_full_weight_step}]; "
-                    "full auxiliary weights are now active"
-                )
-                print("=" * 100)
-            if self.aux_batch_preprocessor is not None:
-                self.aux_batch_preprocessor.set_enabled(get_auxiliary_loss_factor(self.args, next_step) > 0.0)
             if completed_steps == self.resume_completed_steps:
                 print("Motion scorer waiting for first batch...")
             try:
@@ -787,21 +383,16 @@ class MotionScorerTrainer:
             except StopIteration:
                 data_iter = iter(self.data_loader)
                 batch = next(data_iter)
-            if isinstance(batch, tuple) and len(batch) == 3:
-                motion, cond, precomputed_aux = batch
-            else:
-                motion, cond = batch
-                precomputed_aux = None
+            motion, cond = batch
             data_wait_s = time.perf_counter() - fetch_start
 
             host_to_device_start = time.perf_counter()
             motion = motion.to(self.device, non_blocking=self.non_blocking)
             cond = move_cond_to_device(cond, self.device, self.non_blocking)
-            precomputed_aux = move_aux_to_device(precomputed_aux, self.device, self.non_blocking)
             host_to_device_s = time.perf_counter() - host_to_device_start
 
             step_start = time.perf_counter()
-            step_metrics = self.train_step(motion, cond, completed_steps + 1, precomputed_aux=precomputed_aux)
+            step_metrics = self.train_step(motion, cond, completed_steps + 1)
             step_s = time.perf_counter() - step_start
             loop_s = time.perf_counter() - loop_start
 
@@ -819,7 +410,6 @@ class MotionScorerTrainer:
             timing_totals["step_s"] += step_s
             timing_totals["loop_s"] += loop_s
             timing_steps += 1
-            timing_samples += int(motion.shape[0])
 
             if completed_steps % self.args.log_interval == 0 or completed_steps == self.args.num_steps:
                 self._assert_optimizer_state_finite(completed_steps)
@@ -828,15 +418,13 @@ class MotionScorerTrainer:
                     for metric_name, metric_total in running_metrics.items()
                 }
                 print(
-                    "step[{}]: total_loss[{:.6f}] species_ce[{:.6f}] action_ce[{:.6f}] disc_pos[{:.6f}] disc_neg[{:.6f}] phys[{:.6f}] aux[{:.3f}]".format(
+                    "step[{}]: total_loss[{:.6f}] species_ce[{:.6f}] action_ce[{:.6f}] species_acc[{:.4f}] action_acc[{:.4f}]".format(
                         completed_steps,
                         mean_metrics.get("loss", 0.0),
                         mean_metrics.get("species_loss", 0.0),
                         mean_metrics.get("action_loss", 0.0),
-                        mean_metrics.get("disc_positive_loss", 0.0),
-                        mean_metrics.get("disc_negative_loss", 0.0),
-                        mean_metrics.get("phys_loss", 0.0),
-                        mean_metrics.get("aux_factor", 0.0),
+                        mean_metrics.get("species_accuracy", 0.0),
+                        mean_metrics.get("action_accuracy", 0.0),
                     )
                 )
                 for metric_name, metric_value in mean_metrics.items():
@@ -849,21 +437,12 @@ class MotionScorerTrainer:
                 mean_loop_s = timing_totals["loop_s"] / max(timing_steps, 1)
                 mean_data_wait_ms = 1000.0 * timing_totals["data_wait_s"] / max(timing_steps, 1)
                 mean_step_ms = 1000.0 * timing_totals["step_s"] / max(timing_steps, 1)
-                cache_suffix = ""
-                if self.physics_target_cache is not None:
-                    cache_hits, cache_misses = self.physics_target_cache.pop_stats()
-                    cache_lookups = cache_hits + cache_misses
-                    if cache_lookups > 0:
-                        cache_hit_pct = 100.0 * cache_hits / max(cache_lookups, 1)
-                        cache_suffix = f" physics_cache_hit_pct[{cache_hit_pct:.1f}]]"
-                        self.ml_platform.report_scalar("physics_cache_hit_pct", cache_hit_pct, completed_steps, group_name="Timing")
                 print(
-                    "timing[{}]: data_wait_ms[{:.2f}] step_ms[{:.2f}] total_ms[{:.2f}] {}".format(
+                    "timing[{}]: data_wait_ms[{:.2f}] step_ms[{:.2f}] total_ms[{:.2f}]".format(
                         completed_steps,
                         mean_data_wait_ms,
                         mean_step_ms,
                         1000.0 * mean_loop_s,
-                        cache_suffix,
                     )
                 )
                 self.ml_platform.report_scalar("data_wait_ms", mean_data_wait_ms, completed_steps, group_name="Timing")
@@ -876,7 +455,6 @@ class MotionScorerTrainer:
                     "loop_s": 0.0,
                 }
                 timing_steps = 0
-                timing_samples = 0
 
             if completed_steps % self.args.save_interval == 0 or completed_steps == self.args.num_steps:
                 self.save(completed_steps)
@@ -892,98 +470,17 @@ class MotionScorerTrainer:
             )
 
 
-def _mahalanobis_distance_np(values: np.ndarray, mean: np.ndarray, cov_inv: np.ndarray) -> np.ndarray:
-    diff = values - mean[None, :]
-    distances_sq = np.einsum("bi,ij,bj->b", diff, cov_inv, diff)
-    return np.sqrt(np.clip(distances_sq, a_min=0.0, a_max=None))
-
-
-def compute_and_save_train_stats(args, model: MotionScorerNet, device: torch.device, autocast_dtype, amp_enabled: bool, *, skeleton_lookup) -> None:
+def compute_and_save_train_stats(args) -> None:
     stats_split = args.stats_split or args.train_split
-    stats_batch_size = args.stats_batch_size or args.batch_size
-    loader = get_dataset_loader(
-        batch_size=stats_batch_size,
-        num_frames=args.num_frames,
-        split=stats_split,
-        temporal_window=getattr(args, "temporal_window", 31),
-        t5_name="t5-base",
-        balanced=False,
-        objects_subset=args.objects_subset,
-        num_workers=args.num_workers,
-        prefetch_factor=getattr(args, "prefetch_factor", 2),
-        sample_limit=args.sample_limit,
-        shuffle=False,
-        drop_last=False,
-        use_reference_conditioning=False,
-        action_tags=getattr(args, "action_tags", ""),
-        motion_cache_size=getattr(args, "motion_cache_size", 0),
-        main_process_prefetch_batches=getattr(args, "main_process_prefetch_batches", 0),
-        fixed_motion=getattr(args, 'fixed_motion', ''),
-        fixed_window_start=getattr(args, 'fixed_window_start', 0),
-    )
-
-    model.eval()
-    latent_batches = []
-    physics_batches = []
-    with torch.no_grad():
-        for motion, cond in tqdm(loader, desc="Caching scorer stats"):
-            motion = motion.to(device, non_blocking=device.type == "cuda")
-            cond = move_cond_to_device(cond, device, device.type == "cuda")
-            object_types = cond["y"].get("object_type")
-            with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=amp_enabled):
-                latents = model.encode(motion, cond["y"]["n_joints"], cond["y"]["lengths"])
-            latent_batches.append(latents.detach().float().cpu().numpy())
-            physics_batches.append(
-                extract_physics_features(
-                    motion,
-                    cond["y"]["n_joints"],
-                    cond["y"]["lengths"],
-                    object_types,
-                    skeleton_lookup,
-                    feature_mean=cond["y"].get("mean"),
-                    feature_std=cond["y"].get("std"),
-                ).detach().float().cpu().numpy()
-            )
-
-    latents = np.concatenate(latent_batches, axis=0).astype(np.float64, copy=False)
-    physics = np.concatenate(physics_batches, axis=0).astype(np.float64, copy=False)
-    physics_for_score = select_physics_score_features(physics)
-    density_reference_latents = normalize_density_embeddings(torch.from_numpy(latents).float()).cpu().numpy().astype(np.float32, copy=False)
-    density_knn_k = max(1, min(int(getattr(args, "density_knn_k", 5)), max(int(density_reference_latents.shape[0]) - 1, 1)))
-
-    density_values = _knn_density_values_np(
-        density_reference_latents,
-        k=density_knn_k,
-        exclude_self=True,
-    ).astype(np.float64, copy=False)
-
-    mu_phys = physics_for_score.mean(axis=0)
-    if physics_for_score.shape[0] > 1:
-        sigma_phys = np.cov(physics_for_score, rowvar=False)
-    else:
-        sigma_phys = np.eye(physics_for_score.shape[1], dtype=np.float64)
-    sigma_phys = np.atleast_2d(sigma_phys)
-    sigma_phys += np.eye(sigma_phys.shape[0], dtype=np.float64) * float(args.stats_eps)
-    sigma_phys_inv = np.linalg.pinv(sigma_phys)
-    phys_values = -_mahalanobis_distance_np(physics_for_score, mu_phys, sigma_phys_inv)
-
     explicit_checkpoint = str(getattr(args, "checkpoint_path", "") or "")
     latest_checkpoint = find_latest_checkpoint(args.save_dir, prefix="model")
     stats_checkpoint = explicit_checkpoint or latest_checkpoint
     checkpoint_step = parse_checkpoint_number(stats_checkpoint) if stats_checkpoint else 0
     stats = {
-        "density_mode": "knn",
-        "density_knn_k": int(density_knn_k),
-        "density_reference_latents": density_reference_latents.astype(np.float32),
-        "density_percentiles": np.percentile(density_values, np.arange(101)).astype(np.float32),
-        "mu_phys": mu_phys.astype(np.float32),
-        "sigma_phys_inv": sigma_phys_inv.astype(np.float32),
-        "phys_percentiles": np.percentile(phys_values, np.arange(101)).astype(np.float32),
         "score_alpha": np.asarray(args.score_alpha, dtype=np.float32),
         "checkpoint_path": stats_checkpoint,
         "checkpoint_step": checkpoint_step,
         "stats_split": stats_split,
-        "num_samples": int(latents.shape[0]),
     }
     np.save(os.path.join(args.save_dir, "train_stats.npy"), stats, allow_pickle=True)
 
@@ -991,27 +488,20 @@ def compute_and_save_train_stats(args, model: MotionScorerNet, device: torch.dev
         "checkpoint_path": stats_checkpoint,
         "checkpoint_step": checkpoint_step,
         "stats_split": stats_split,
-        "num_samples": int(latents.shape[0]),
-        "density_mode": "knn",
-        "density_knn_k": int(density_knn_k),
         "score_alpha": [float(value) for value in args.score_alpha],
     }
     with open(os.path.join(args.save_dir, "train_stats_summary.json"), "w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2, sort_keys=True)
 
-    model.train()
-
 
 def prepare_training_assets(args):
     dataset_dir = getattr(args, "data_dir", "") or None
-    skeleton_lookup = load_skeleton_metadata(dataset_dir)
     species_vocab, action_vocab = build_label_vocabs(dataset_dir)
     args.num_species = species_vocab.size
     args.num_actions = action_vocab.size
     args.species_vocab = list(species_vocab.labels)
     args.action_vocab = list(action_vocab.labels)
-    args.metadata_feature_dim = metadata_feature_dim(args.max_joints)
-    return skeleton_lookup, species_vocab, action_vocab
+    return species_vocab, action_vocab
 
 
 def main() -> None:
@@ -1025,19 +515,7 @@ def main() -> None:
     save_dir = prepare_save_dir(args)
     args.checkpoint_step_numbering = "completed_steps"
 
-    skeleton_lookup, species_vocab, action_vocab = prepare_training_assets(args)
-    physics_target_cache = None
-    physics_target_cache_size = int(getattr(args, "physics_target_cache_size", -1))
-    if physics_target_cache_size < 0:
-        physics_target_cache_size = int(getattr(args, "motion_cache_size", 0))
-    if physics_target_cache_size > 0:
-        physics_target_cache = PhysicsTargetLRUCache(physics_target_cache_size)
-    batch_transform = None
-    if int(getattr(args, "num_workers", 0)) == 0 and int(getattr(args, "main_process_prefetch_batches", 0)) > 0:
-        batch_transform = MotionScorerAuxBatchPreprocessor(
-            skeleton_lookup,
-            physics_target_cache=physics_target_cache,
-        )
+    species_vocab, action_vocab = prepare_training_assets(args)
 
     ml_platform_type = eval(args.ml_platform_type)
     ml_platform = ml_platform_type(save_dir=save_dir)
@@ -1052,13 +530,11 @@ def main() -> None:
         shuffle=True,
         drop_last=True,
         balanced=args.balanced,
-        batch_transform=batch_transform,
     )
     print(
         f"Motion scorer DataLoader: num_workers={args.num_workers}, "
         f"prefetch_factor={getattr(args, 'prefetch_factor', 2) if args.num_workers > 0 else 'n/a'}, "
         f"motion_cache_size={getattr(args, 'motion_cache_size', 0)}, "
-        f"physics_target_cache_size={physics_target_cache_size}, "
         f"main_process_prefetch_batches={getattr(args, 'main_process_prefetch_batches', 0)}, "
         f"timing_log_interval={getattr(args, 'timing_log_interval', 1000)}"
     )
@@ -1067,15 +543,13 @@ def main() -> None:
         args,
         ml_platform,
         data_loader,
-        aux_batch_preprocessor=batch_transform,
-        physics_target_cache=physics_target_cache,
-        skeleton_lookup=skeleton_lookup,
         species_vocab=species_vocab,
         action_vocab=action_vocab,
-    )    
+    )
+
     ml_platform.watch_model(trainer.model)
-    final_model = trainer.run()
-    compute_and_save_train_stats(args, final_model, trainer.device, trainer.autocast_dtype, trainer.amp_enabled, skeleton_lookup=skeleton_lookup)
+    trainer.run()
+    compute_and_save_train_stats(args)
     ml_platform.close()
 
 

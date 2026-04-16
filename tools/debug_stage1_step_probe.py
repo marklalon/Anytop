@@ -135,7 +135,6 @@ def _analyze_target_step(loop: TrainLoop) -> None:
                 t,
                 model_kwargs=model_kwargs,
                 noise=noise,
-                physics_teacher=loop.physics_teacher,
                 semantic_teacher=loop.semantic_teacher,
             )
 
@@ -148,11 +147,6 @@ def _analyze_target_step(loop: TrainLoop) -> None:
     print("weighted_losses=", json.dumps(scalar_losses, indent=2, sort_keys=True))
     print("sampled_t=", t.detach().cpu().tolist())
 
-    physics_scale = _teacher_weight_scale(
-        current_step,
-        loop.diffusion.physics_teacher_start_step,
-        loop.diffusion.physics_teacher_ramp_steps,
-    )
     semantic_scale = _teacher_weight_scale(
         current_step,
         loop.diffusion.semantic_teacher_start_step,
@@ -165,13 +159,6 @@ def _analyze_target_step(loop: TrainLoop) -> None:
     ]
     if "geodesic_loss" in losses:
         components.append(("geodesic", (loop.diffusion.lambda_geo * losses["geodesic_loss"] * weights).mean()))
-    if "physics_teacher_loss" in losses:
-        components.append(
-            (
-                "physics_teacher",
-                (loop.diffusion.physics_teacher_weight * physics_scale * losses["physics_teacher_loss"] * weights).mean(),
-            )
-        )
     if "semantic_teacher_loss" in losses:
         components.append(
             (
@@ -188,10 +175,6 @@ def _analyze_target_step(loop: TrainLoop) -> None:
         }
         if "geodesic_loss" in losses:
             component_lookup["geodesic"] = (loop.diffusion.lambda_geo * losses["geodesic_loss"] * weights).mean()
-        if "physics_teacher_loss" in losses:
-            component_lookup["physics_teacher"] = (
-                loop.diffusion.physics_teacher_weight * physics_scale * losses["physics_teacher_loss"] * weights
-            ).mean()
         if "semantic_teacher_loss" in losses:
             component_lookup["semantic_teacher"] = (
                 loop.diffusion.semantic_teacher_weight * semantic_scale * losses["semantic_teacher_loss"] * weights

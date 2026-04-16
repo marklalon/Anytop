@@ -18,7 +18,6 @@ from tqdm import tqdm
 from diffusion.resample import create_named_schedule_sampler
 from sample.generate import main as generate
 import copy
-from eval.direct_physics_teacher import DirectPhysicsTeacher
 from eval.direct_semantic_teacher import DirectSemanticTeacher
 from utils.model_util import load_model
 import random
@@ -130,8 +129,6 @@ class TrainLoop:
                 fixed_motion=getattr(self.args, 'fixed_motion', ''),
                 fixed_window_start=getattr(self.args, 'fixed_window_start', 0),
             )
-        self.physics_teacher = None
-        self._setup_physics_teacher()
         self.semantic_teacher = None
         self._setup_semantic_teacher()
         self.use_ddp = False
@@ -142,20 +139,6 @@ class TrainLoop:
         self._setup_compiled_forward_model()
         self._interval_loss_sums = {}
         self._interval_loss_counts = {}
-
-    def _setup_physics_teacher(self):
-        if float(getattr(self.args, 'physics_teacher_weight', 0.0)) <= 0.0:
-            return
-        checkpoint_dir = str(getattr(self.args, 'motion_scorer_checkpoint_dir', '')).strip()
-        if not checkpoint_dir:
-            raise ValueError('physics_teacher_weight requires --motion_scorer_checkpoint_dir to be set.')
-        features_device_raw = str(getattr(self.args, 'physics_features_device', 'auto')).strip().lower()
-        features_compute_device = torch.device('cpu') if features_device_raw == 'cpu' else None
-        self.physics_teacher = DirectPhysicsTeacher(
-            checkpoint_dir,
-            device=str(self.device),
-            features_compute_device=features_compute_device,
-        )
 
     def _setup_semantic_teacher(self):
         if float(getattr(self.args, 'semantic_teacher_weight', 0.0)) <= 0.0:
@@ -479,7 +462,6 @@ class TrainLoop:
                 batch,
                 t,
                 model_kwargs=self._with_train_step(cond, self.total_step()),
-                physics_teacher=self.physics_teacher,
                 semantic_teacher=self.semantic_teacher,
             )
 
@@ -590,7 +572,6 @@ class TrainLoop:
                 micro,  # [bs, ch, image_size, image_size]
                 t,  # [bs](int) sampled timesteps
                 model_kwargs=self._with_train_step(micro_cond, self.total_step()),
-                physics_teacher=self.physics_teacher,
                 semantic_teacher=self.semantic_teacher,
             )
 
