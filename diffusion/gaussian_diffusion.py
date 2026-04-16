@@ -12,7 +12,6 @@ import numpy as np
 import torch
 import torch as th
 from copy import deepcopy
-from data_loaders.truebones.truebones_utils.motion_labels import infer_species_label
 from diffusion import logger
 from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood, geodesic_distance
@@ -21,133 +20,6 @@ from utils.rotation_conversions import rotation_6d_to_matrix_safe
 
 PRESERVATION_CONFIDENCE_THRESHOLD = 0.0
 PRESERVATION_CONFIDENCE_POWER = 1.0
-
-
-def _expand_masked_teacher_losses(teacher_losses, active_indices, batch_size):
-    expanded = {}
-    for key, value in teacher_losses.items():
-        full_value = value.new_zeros((batch_size,) + tuple(value.shape[1:]))
-        full_value[active_indices] = value
-        expanded[key] = full_value
-    return expanded
-
-
-def _masked_teacher_mean(values, active_mask):
-    active_values = values[active_mask]
-    if active_values.numel() == 0:
-        return values.new_zeros(())
-    return active_values.mean()
-
-
-def _broadcast_batch_scalar(value, batch_size):
-    return value.reshape(1).expand(batch_size)
-
-
-def _normalize_teacher_batch_term(values, active_mask):
-    return _broadcast_batch_scalar(_masked_teacher_mean(values, active_mask), int(values.shape[0]))
-
-
-def _normalize_teacher_batch_terms(losses_dict, keys, active_mask):
-    """Normalize multiple teacher loss terms at once, sharing the active count computation."""
-    active_count = active_mask.sum()
-    batch_size = None
-    result = {}
-    for key in keys:
-        value = losses_dict.get(key)
-        if value is None:
-            continue
-        if batch_size is None:
-            batch_size = int(value.shape[0])
-        if active_count > 0:
-            mean_val = value[active_mask].mean()
-        else:
-            mean_val = value.new_zeros(())
-        result[key] = _broadcast_batch_scalar(mean_val, batch_size)
-    return result
-
-
-def _teacher_weight_scale(current_step, start_step, ramp_steps):
-    current_step = int(current_step)
-    start_step = int(start_step)
-    ramp_steps = int(ramp_steps)
-    if current_step < start_step:
-        return 0.0
-    if ramp_steps <= 0:
-        return 1.0
-    progress = (current_step - start_step + 1) / float(ramp_steps)
-    return max(0.0, min(progress, 1.0))
-
-
-def _teacher_ramp_end_step(start_step, ramp_steps):
-    start_step = int(start_step)
-    ramp_steps = int(ramp_steps)
-    if ramp_steps <= 0:
-        return start_step
-    return start_step + ramp_steps - 1
-
-
-def _compute_masked_semantic_teacher_losses(
-    semantic_teacher,
-    pred_motion,
-    target_motion,
-    *,
-    n_joints,
-    lengths,
-    species_labels,
-    action_labels,
-    temperature,
-    active_indices,
-):
-    if active_indices.numel() == 0:
-        return None
-
-    active_indices_cpu = active_indices.detach().cpu().tolist()
-    subset_species_labels = [species_labels[index] if index < len(species_labels) else "unknown" for index in active_indices_cpu]
-    subset_action_labels = [action_labels[index] if index < len(action_labels) else "unknown" for index in active_indices_cpu]
-    subset_losses = semantic_teacher.compute_losses(
-        pred_motion[active_indices],
-        target_motion[active_indices],
-        n_joints=n_joints[active_indices],
-        lengths=lengths[active_indices],
-        species_labels=subset_species_labels,
-        action_labels=subset_action_labels,
-        temperature=temperature,
-    )
-    return _expand_masked_teacher_losses(subset_losses, active_indices, int(pred_motion.shape[0]))
-
-
-def _resolve_semantic_labels(values, batch_size, *, field_name, object_types=None, motion_metadata=None):
-    resolved = []
-    raw_values = list(values) if isinstance(values, (list, tuple)) else []
-    raw_object_types = list(object_types) if isinstance(object_types, (list, tuple)) else []
-    raw_motion_metadata = list(motion_metadata) if isinstance(motion_metadata, (list, tuple)) else []
-
-    for batch_index in range(batch_size):
-        value = raw_values[batch_index] if batch_index < len(raw_values) else None
-        if (value is None or str(value).strip() == "") and batch_index < len(raw_motion_metadata):
-            sample_metadata = raw_motion_metadata[batch_index]
-            if isinstance(sample_metadata, dict):
-                value = sample_metadata.get(field_name)
-        if (value is None or str(value).strip() == "") and field_name == 'species_label' and batch_index < len(raw_object_types):
-            value = infer_species_label(str(raw_object_types[batch_index]))
-        text = str(value or "").strip().lower()
-        resolved.append(text or "unknown")
-    return resolved
-
-
-def _resolve_object_types(values, batch_size, *, motion_metadata=None):
-    resolved = []
-    raw_values = list(values) if isinstance(values, (list, tuple)) else []
-    raw_motion_metadata = list(motion_metadata) if isinstance(motion_metadata, (list, tuple)) else []
-
-    for batch_index in range(batch_size):
-        value = raw_values[batch_index] if batch_index < len(raw_values) else None
-        if (value is None or str(value).strip() == "") and batch_index < len(raw_motion_metadata):
-            sample_metadata = raw_motion_metadata[batch_index]
-            if isinstance(sample_metadata, dict):
-                value = sample_metadata.get('object_type')
-        resolved.append(str(value or "unknown").strip() or "unknown")
-    return resolved
 
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, scale_betas=1.):
     """
@@ -261,14 +133,6 @@ class GaussianDiffusion:
         lambda_geo=0.,
         lambda_confidence_recon=0.,
         lambda_repair_recon=0.,
-        semantic_teacher_weight=0.,
-        semantic_teacher_species_weight=1.0,
-        semantic_teacher_action_weight=1.0,
-        semantic_teacher_kl_weight=0.25,
-        semantic_teacher_start_step=0,
-        semantic_teacher_ramp_steps=0,
-        semantic_teacher_max_t=30,
-        semantic_teacher_temperature=1.0,
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
@@ -278,18 +142,6 @@ class GaussianDiffusion:
         self.lambda_geo = lambda_geo
         self.lambda_confidence_recon = lambda_confidence_recon
         self.lambda_repair_recon = lambda_repair_recon
-        self.semantic_teacher_weight = float(semantic_teacher_weight)
-        self.semantic_teacher_species_weight = float(semantic_teacher_species_weight)
-        self.semantic_teacher_action_weight = float(semantic_teacher_action_weight)
-        self.semantic_teacher_kl_weight = float(semantic_teacher_kl_weight)
-        self.semantic_teacher_start_step = int(semantic_teacher_start_step)
-        self.semantic_teacher_ramp_steps = int(semantic_teacher_ramp_steps)
-        self.semantic_teacher_max_t = int(semantic_teacher_max_t)
-        self.semantic_teacher_temperature = float(semantic_teacher_temperature)
-        self._teacher_ramp_logs = {
-            'semantic_start': False,
-            'semantic_end': False,
-        }
         self.preservation_confidence_threshold = PRESERVATION_CONFIDENCE_THRESHOLD
         self.preservation_confidence_power = PRESERVATION_CONFIDENCE_POWER
 
@@ -336,31 +188,6 @@ class GaussianDiffusion:
 
     def _unwrap_model(self, model):
         return getattr(model, 'model', model)
-
-    def _current_train_step(self, model_kwargs):
-        if model_kwargs is None:
-            return 0
-        value = model_kwargs.get('train_step')
-        if value is None:
-            return 0
-        if torch.is_tensor(value):
-            return int(value.item())
-        return int(value)
-
-    def _maybe_log_teacher_ramp_events(self, current_step):
-        semantic_end_step = _teacher_ramp_end_step(self.semantic_teacher_start_step, self.semantic_teacher_ramp_steps)
-        if self.semantic_teacher_weight > 0.0 and not self._teacher_ramp_logs['semantic_start'] and current_step >= self.semantic_teacher_start_step:
-            logger.warn(
-                f"========== SEMANTIC TEACHER RAMP START step={current_step} start_step={self.semantic_teacher_start_step} "
-                f"ramp_steps={self.semantic_teacher_ramp_steps} target_weight={self.semantic_teacher_weight:.4f} =========="
-            )
-            self._teacher_ramp_logs['semantic_start'] = True
-        if self.semantic_teacher_weight > 0.0 and not self._teacher_ramp_logs['semantic_end'] and current_step >= semantic_end_step:
-            logger.warn(
-                f"========== SEMANTIC TEACHER RAMP FULL step={current_step} full_weight_step={semantic_end_step} "
-                f"target_weight={self.semantic_teacher_weight:.4f} =========="
-            )
-            self._teacher_ramp_logs['semantic_end'] = True
 
     def masked_l2(self, a, b, mask):
         # assuming a.shape == b.shape == bs, J, Jdim, seqlen
@@ -1720,7 +1547,7 @@ class GaussianDiffusion:
         output = th.where((t == 0), decoder_nll, kl)
         return {"output": output, "pred_xstart": out["pred_xstart"]}
 
-    def training_losses(self, model, x_start, t, model_kwargs=None, noise=None, semantic_teacher=None):
+    def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
         """
         Compute training losses for a single timestep.
 
@@ -1814,71 +1641,6 @@ class GaussianDiffusion:
                 repair_weights = (1.0 - reference_reliability).clamp(min=0.0, max=1.0)
                 terms["repair_recon_loss"] = self.weighted_temporal_spatial_l2(target, model_output, mask, joints_mask, repair_weights)
                 terms["loss"] = terms["loss"] + self.lambda_repair_recon * terms["repair_recon_loss"]
-
-            current_step = self._current_train_step(model_kwargs)
-            self._maybe_log_teacher_ramp_events(current_step)
-            semantic_teacher_scale = _teacher_weight_scale(
-                current_step,
-                self.semantic_teacher_start_step,
-                self.semantic_teacher_ramp_steps,
-            )
-            if (
-                semantic_teacher is not None
-                and self.semantic_teacher_weight > 0.0
-                and semantic_teacher_scale > 0.0
-            ):
-                semantic_active_indices = (t <= self.semantic_teacher_max_t).nonzero(as_tuple=False).flatten()
-                resolved_species_labels = _resolve_semantic_labels(
-                    model_kwargs['y'].get('species_label', []),
-                    int(model_output.shape[0]),
-                    field_name='species_label',
-                    object_types=model_kwargs['y'].get('object_type', []),
-                    motion_metadata=model_kwargs['y'].get('motion_metadata', []),
-                )
-                resolved_action_labels = _resolve_semantic_labels(
-                    model_kwargs['y'].get('action_label', []),
-                    int(model_output.shape[0]),
-                    field_name='action_label',
-                    object_types=model_kwargs['y'].get('object_type', []),
-                    motion_metadata=model_kwargs['y'].get('motion_metadata', []),
-                )
-                semantic_losses = _compute_masked_semantic_teacher_losses(
-                    semantic_teacher,
-                    model_output,
-                    target,
-                    n_joints=actual_joints,
-                    lengths=lengths,
-                    species_labels=resolved_species_labels,
-                    action_labels=resolved_action_labels,
-                    temperature=self.semantic_teacher_temperature,
-                    active_indices=semantic_active_indices,
-                )
-                if semantic_losses is not None:
-                    semantic_active_mask = t <= self.semantic_teacher_max_t
-                    semantic_kl = (
-                        semantic_losses['semantic_teacher_species_kl']
-                        + semantic_losses['semantic_teacher_action_kl']
-                    )
-                    semantic_total = (
-                        self.semantic_teacher_species_weight * semantic_losses['semantic_teacher_species_ce']
-                        + self.semantic_teacher_action_weight * semantic_losses['semantic_teacher_action_ce']
-                        + self.semantic_teacher_kl_weight * semantic_kl
-                    )
-                    semantic_losses['_semantic_total'] = semantic_total
-                    normalized_semantic = _normalize_teacher_batch_terms(
-                        semantic_losses,
-                        [
-                            '_semantic_total',
-                            'semantic_teacher_recognizability',
-                            'semantic_teacher_target_recognizability',
-                        ],
-                        semantic_active_mask,
-                    )
-                    terms['semantic_teacher_loss'] = normalized_semantic['_semantic_total']
-                    terms['semantic_teacher_recognizability'] = normalized_semantic['semantic_teacher_recognizability']
-                    terms['semantic_teacher_target_recognizability'] = normalized_semantic['semantic_teacher_target_recognizability']
-                    terms['semantic_teacher_active_fraction'] = semantic_active_mask.float().mean()
-                    terms['loss'] = terms['loss'] + (self.semantic_teacher_weight * semantic_teacher_scale) * terms['semantic_teacher_loss']
         
             # denormalize before applying loss terms 
             target = (target * std) + mean 

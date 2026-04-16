@@ -18,7 +18,6 @@ from tqdm import tqdm
 from diffusion.resample import create_named_schedule_sampler
 from sample.generate import main as generate
 import copy
-from eval.direct_semantic_teacher import DirectSemanticTeacher
 from utils.model_util import load_model
 import random
 from data_loaders.get_data import get_dataset_loader
@@ -129,8 +128,6 @@ class TrainLoop:
                 fixed_motion=getattr(self.args, 'fixed_motion', ''),
                 fixed_window_start=getattr(self.args, 'fixed_window_start', 0),
             )
-        self.semantic_teacher = None
-        self._setup_semantic_teacher()
         self.use_ddp = False
         self.ddp_model = self.model
         self.use_torch_compile = bool(getattr(self.args, 'use_torch_compile', False))
@@ -139,14 +136,6 @@ class TrainLoop:
         self._setup_compiled_forward_model()
         self._interval_loss_sums = {}
         self._interval_loss_counts = {}
-
-    def _setup_semantic_teacher(self):
-        if float(getattr(self.args, 'semantic_teacher_weight', 0.0)) <= 0.0:
-            return
-        checkpoint_dir = str(getattr(self.args, 'motion_scorer_checkpoint_dir', '')).strip()
-        if not checkpoint_dir:
-            raise ValueError('semantic_teacher_weight requires --motion_scorer_checkpoint_dir to be set.')
-        self.semantic_teacher = DirectSemanticTeacher(checkpoint_dir, device=str(self.device))
 
     def _setup_compiled_forward_model(self):
         if not self.use_torch_compile:
@@ -462,7 +451,6 @@ class TrainLoop:
                 batch,
                 t,
                 model_kwargs=self._with_train_step(cond, self.total_step()),
-                semantic_teacher=self.semantic_teacher,
             )
 
         reduced = {}
@@ -572,7 +560,6 @@ class TrainLoop:
                 micro,  # [bs, ch, image_size, image_size]
                 t,  # [bs](int) sampled timesteps
                 model_kwargs=self._with_train_step(micro_cond, self.total_step()),
-                semantic_teacher=self.semantic_teacher,
             )
 
             self._maybe_mark_compile_step_begin()

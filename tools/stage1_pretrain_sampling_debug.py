@@ -25,8 +25,6 @@ os.chdir(REPO_ROOT)
 import BVH
 from data_loaders.get_data import get_dataset_loader
 from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
-from eval.motion_quality_scorer import MotionQualityScorer
-from tools.eval_motion_score import DEFAULT_CHECKPOINT_DIR, build_report_summary, score_motion_array
 from utils.fixseed import fixseed
 from utils import dist_util
 from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
@@ -54,11 +52,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Stage1 pretrain sampling debug tool with stochastic aggregate reports.")
     parser.add_argument("--model-path", required=True, help="Path to a stage1 model checkpoint.")
     parser.add_argument("--output-dir", required=True, help="Directory to write reports and exported samples.")
-    parser.add_argument(
-        "--motion-score-checkpoint-dir",
-        default=DEFAULT_CHECKPOINT_DIR,
-        help="Motion scorer checkpoint directory or specific checkpoint path used for evaluation reports.",
-    )
     parser.add_argument("--device", default=0, type=int, help="CUDA device id. Use -1 for CPU.")
     parser.add_argument("--seed", default=10, type=int, help="Global seed for deterministic setup.")
     parser.add_argument("--objects-subset", default="", help="Override the checkpoint objects_subset when set.")
@@ -253,73 +246,6 @@ def cleanup_stage1_sampling_eval_directory(output_dir: Path) -> None:
         shutil.rmtree(stage1_eval_dir)
 
 
-def build_motion_score_sample_report(
-    *,
-    score_result: dict[str, object],
-    sample: dict[str, object],
-    sample_index: int,
-    trial_index: int,
-    trial_seed: int,
-    path: str,
-    source_mode: str,
-) -> dict[str, object]:
-    sample_report = dict(score_result)
-    sample_report.update(
-        {
-            "path": path,
-            "scored_from": path,
-            "object_type": str(sample["object_type"]),
-            "source_mode": source_mode,
-            "motion_name": str(sample["motion_name"]),
-            "sample_index": int(sample_index),
-            "trial_index": int(trial_index),
-            "trial_seed": int(trial_seed),
-            "length": int(sample["length"]),
-            "n_joints": int(sample["n_joints"]),
-        }
-    )
-    return sample_report
-
-
-def compact_eval_aggregate(samples: list[dict[str, object]], failures: list[dict[str, str]]) -> dict[str, object]:
-    report_summary = build_report_summary(samples, failures)
-    metrics = dict(report_summary.get("metrics", {}))
-    return {
-        "scored_files": int(report_summary["scored_files"]),
-        "failed_files": int(report_summary["failed_files"]),
-        "metrics": metrics,
-    }
-
-
-def compact_detail_sample(sample: dict[str, object]) -> dict[str, object]:
-    compact = {
-        "sample_index": int(sample["sample_index"]),
-        "trial_index": int(sample["trial_index"]),
-        "trial_seed": int(sample["trial_seed"]),
-        "motion_name": str(sample["motion_name"]),
-        "object_type": str(sample["object_type"]),
-        "path": str(sample["path"]),
-        "source_mode": str(sample["source_mode"]),
-        "frame_count": int(sample["frame_count"]),
-        "joint_count": int(sample["joint_count"]),
-        "quality_score": float(sample["quality_score"]),
-        "recognizability_score": float(sample["recognizability_score"]),
-    }
-    if int(sample.get("segment_count", 1)) > 1:
-        compact["segment_count"] = int(sample["segment_count"])
-        compact["segment_lengths"] = [int(length) for length in sample.get("segment_lengths", [])]
-    return compact
-
-
-def build_eval_result(samples: list[dict[str, object]], failures: list[dict[str, str]]) -> dict[str, object]:
-    sorted_samples = sorted(samples, key=lambda sample: str(sample["path"]))
-    return {
-        "aggregate": compact_eval_aggregate(sorted_samples, failures),
-        "samples": [compact_detail_sample(sample) for sample in sorted_samples],
-        "failures": failures,
-    }
-
-
 def build_selected_sample_manifest(selected_samples: list[dict[str, object]]) -> list[dict[str, object]]:
     return [
         {
@@ -333,122 +259,57 @@ def build_selected_sample_manifest(selected_samples: list[dict[str, object]]) ->
     ]
 
 
-def build_summary_eval_section(eval_result: dict[str, object]) -> dict[str, object]:
-    aggregate = eval_result["aggregate"]
-    metrics = aggregate.get("metrics", {})
-    quality_metrics = metrics.get("quality_score", {})
-    recognizability_metrics = metrics.get("recognizability_score", {})
+def build_export_sample_record(
+    *,
+    sample: dict[str, object],
+    sample_index: int,
+    trial_index: int,
+    trial_seed: int,
+    sample_dir: Path,
+) -> dict[str, object]:
     return {
-        "overall_quality_score": float(quality_metrics.get("mean", 0.0)),
-        "quality_score_median": float(quality_metrics.get("median", 0.0)),
-        "quality_score_min": float(quality_metrics.get("min", 0.0)),
-        "quality_score_max": float(quality_metrics.get("max", 0.0)),
-        "recognizability_score_mean": float(recognizability_metrics.get("mean", 0.0)),
-        "scored_files": int(aggregate.get("scored_files", 0)),
-        "failed_files": int(aggregate.get("failed_files", 0)),
+        "sample_index": int(sample_index),
+        "trial_index": int(trial_index),
+        "trial_seed": int(trial_seed),
+        "motion_name": str(sample["motion_name"]),
+        "object_type": str(sample["object_type"]),
+        "sample_dir": str(sample_dir),
+        "generated_path": str(sample_dir / "generated_prediction.npy"),
+        "target_path": str(sample_dir / "clean_target.npy"),
+        "length": int(sample["length"]),
+        "n_joints": int(sample["n_joints"]),
     }
 
 
-def build_eval_report(
+def build_export_result(
     *,
     args: argparse.Namespace,
     model_args: SimpleNamespace,
     selected_samples: list[dict[str, object]],
-    num_trials: int,
-    sampling_method: str,
-    sampling_steps: int,
-    motion_scorer: MotionQualityScorer,
     samples: list[dict[str, object]],
     failures: list[dict[str, str]],
 ) -> dict[str, object]:
+    sampling_steps = int(args.sampling_steps) if args.sampling_steps > 0 else int(model_args.diffusion_steps)
     return {
         "split": args.eval_split,
         "objects_subset": model_args.objects_subset,
         "selected_sample_count": len(selected_samples),
-        "num_trials": num_trials,
-        "sampling_method": sampling_method,
+        "num_trials": int(args.num_trials),
+        "sampling_method": args.sampling_method,
         "sampling_steps": sampling_steps,
-        "motion_score_checkpoint": str(motion_scorer.checkpoint_path),
-        "motion_score_device": str(motion_scorer.device),
-        "result": build_eval_result(samples, failures),
+        "exported_samples": sorted(samples, key=lambda sample: (sample["trial_index"], sample["sample_index"])),
+        "failures": failures,
     }
 
 
-def build_clean_motion_baseline(
-    args: argparse.Namespace,
-    model_args: SimpleNamespace,
-    selected_samples: list[dict[str, object]],
-    motion_scorer: MotionQualityScorer,
-    output_dir: Path,
-) -> dict[str, object]:
-    baseline_samples = []
-    failures = []
-
-    for sample_index, sample in enumerate(selected_samples):
-        n_joints = int(sample["n_joints"])
-        length = int(sample["length"])
-        target_norm = sample["motion"][0, :n_joints, :, :length]
-        target_denorm = denormalize_motion(target_norm, n_joints, sample["mean"], sample["std"]).astype(np.float32)
-        sample_path = (
-            output_dir
-            / "clean_motion_baseline"
-            / f"sample_{sample_index:03d}_{sample['object_type']}"
-            / "clean_target.npy"
-        )
-        try:
-            score_result = score_motion_array(
-                scorer=motion_scorer,
-                motion_np=target_denorm,
-                object_type=str(sample["object_type"]),
-                object_cond=sample["score_object_cond"],
-            )
-            baseline_samples.append(
-                build_motion_score_sample_report(
-                    score_result=score_result,
-                    sample=sample,
-                    sample_index=sample_index,
-                    trial_index=0,
-                    trial_seed=args.selection_seed,
-                    path=str(sample_path),
-                    source_mode="stage1_clean_target_denorm",
-                )
-            )
-        except Exception as exc:
-            failures.append({"path": str(sample_path), "error": str(exc)})
-
-    sampling_steps = int(args.sampling_steps) if args.sampling_steps > 0 else int(model_args.diffusion_steps)
-    baseline_report = build_eval_report(
-        args=args,
-        model_args=model_args,
-        selected_samples=selected_samples,
-        num_trials=1,
-        sampling_method="clean_identity",
-        sampling_steps=sampling_steps,
-        motion_scorer=motion_scorer,
-        samples=baseline_samples,
-        failures=failures,
-    )
-    baseline_report["baseline_type"] = "clean_motion_identity"
-    return baseline_report
-
-
-def build_baseline_comparison(
-    sampled_report: dict[str, object],
-    clean_report: dict[str, object],
-) -> dict[str, object]:
-    sampled_metrics = sampled_report["result"]["aggregate"].get("metrics", {})
-    clean_metrics = clean_report["result"]["aggregate"].get("metrics", {})
-    sampled_quality_mean = float(sampled_metrics.get("quality_score", {}).get("mean", 0.0))
-    clean_quality_mean = float(clean_metrics.get("quality_score", {}).get("mean", 0.0))
-    sampled_recognizability_mean = float(sampled_metrics.get("recognizability_score", {}).get("mean", 0.0))
-    clean_recognizability_mean = float(clean_metrics.get("recognizability_score", {}).get("mean", 0.0))
-    quality_score_gap = clean_quality_mean - sampled_quality_mean
-    recognizability_score_gap = clean_recognizability_mean - sampled_recognizability_mean
+def build_summary_export_section(export_result: dict[str, object]) -> dict[str, object]:
     return {
-        "quality_score_gap": quality_score_gap,
-        "recognizability_score_gap": recognizability_score_gap,
-        "objective_separation_passed": bool(quality_score_gap >= 0.10),
-        "verdict": "separates_clean_from_sampled" if quality_score_gap >= 0.10 else "needs_better_separation",
+        "selected_sample_count": int(export_result["selected_sample_count"]),
+        "num_trials": int(export_result["num_trials"]),
+        "exported_samples": len(export_result["exported_samples"]),
+        "failed_exports": len(export_result["failures"]),
+        "sampling_method": str(export_result["sampling_method"]),
+        "sampling_steps": int(export_result["sampling_steps"]),
     }
 
 
@@ -524,10 +385,6 @@ def collect_eval_samples(args: argparse.Namespace, model_args: SimpleNamespace) 
                 "parents": [int(parent) for parent in cond_dict[object_type]["parents"]],
                 "offsets": cond_dict[object_type]["offsets"],
                 "joints_names": cond_dict[object_type]["joints_names"],
-                "score_object_cond": {
-                    "mean": cond_dict[object_type]["mean"].astype(np.float32),
-                    "std": cond_dict[object_type]["std"].astype(np.float32),
-                },
                 "mean": cond_dict[object_type]["mean"].astype(np.float32),
                 "std": cond_dict[object_type]["std"].astype(np.float32) + 1e-6,
             }
@@ -561,14 +418,13 @@ def stage1_sampling_eval(
     model: torch.nn.Module,
     diffusion,
     selected_samples: list[dict[str, object]],
-    motion_scorer: MotionQualityScorer,
     device: torch.device,
     output_dir: Path,
 ) -> dict[str, object]:
     checkpoint_state = {key: value.detach().cpu() for key, value in model.state_dict().items()}
     eval_model, eval_diffusion = build_eval_model_and_diffusion(model_args, checkpoint_state, args, device)
 
-    motion_score_samples = []
+    exported_samples = []
     failures = []
 
     print(f"[PROGRESS] Starting sampling evaluation with {args.num_trials} trials and {len(selected_samples)} samples...")
@@ -616,54 +472,38 @@ def stage1_sampling_eval(
 
                 if global_index < args.num_eval_samples:
                     sample_dir = output_dir / "stage1_sampling_eval" / "trials" / f"trial_{trial_index:02d}" / f"sample_{global_index:03d}_{object_type}"
-                    sample_dir.mkdir(parents=True, exist_ok=True)
-                    export_trial_sample(
-                        sample_dir=sample_dir,
-                        parents=sample["parents"],
-                        offsets=sample["offsets"],
-                        joints_names=sample["joints_names"],
-                        target_motion=evaluation["target_denorm"].astype(np.float32),
-                        generated_motion=evaluation["generated_denorm"].astype(np.float32),
-                    )
-
-                sample_path = output_dir / "stage1_sampling_eval" / "trials" / f"trial_{trial_index:02d}" / f"sample_{global_index:03d}_{object_type}" / "generated_prediction.npy"
-                try:
-                    score_result = score_motion_array(
-                        scorer=motion_scorer,
-                        motion_np=evaluation["generated_denorm"].astype(np.float32),
-                        object_type=object_type,
-                        object_cond=sample["score_object_cond"],
-                    )
-                    motion_score_samples.append(
-                        build_motion_score_sample_report(
-                            score_result=score_result,
-                            sample=sample,
-                            sample_index=global_index,
-                            trial_index=trial_index,
-                            trial_seed=trial_seed,
-                            path=str(sample_path),
-                            source_mode="stage1_generated_denorm",
+                    try:
+                        sample_dir.mkdir(parents=True, exist_ok=True)
+                        export_trial_sample(
+                            sample_dir=sample_dir,
+                            parents=sample["parents"],
+                            offsets=sample["offsets"],
+                            joints_names=sample["joints_names"],
+                            target_motion=evaluation["target_denorm"].astype(np.float32),
+                            generated_motion=evaluation["generated_denorm"].astype(np.float32),
                         )
-                    )
-                except Exception as exc:
-                    failures.append({"path": str(sample_path), "error": str(exc)})
+                        exported_samples.append(
+                            build_export_sample_record(
+                                sample=sample,
+                                sample_index=global_index,
+                                trial_index=trial_index,
+                                trial_seed=trial_seed,
+                                sample_dir=sample_dir,
+                            )
+                        )
+                    except Exception as exc:
+                        failures.append({"path": str(sample_dir), "error": str(exc)})
 
             print(f"\r[PROGRESS] Trial {trial_index:02d} - Batch {batch_start//args.eval_batch_size + 1}/{total_batches} ... Done")
         print(f"[PROGRESS] Trial {trial_index:02d} complete. Aggregated metrics computed.")
 
-    sampling_steps = int(args.sampling_steps) if args.sampling_steps > 0 else int(model_args.diffusion_steps)
-    sampling_report = build_eval_report(
+    return build_export_result(
         args=args,
         model_args=model_args,
         selected_samples=selected_samples,
-        num_trials=args.num_trials,
-        sampling_method=args.sampling_method,
-        sampling_steps=sampling_steps,
-        motion_scorer=motion_scorer,
-        samples=motion_score_samples,
+        samples=exported_samples,
         failures=failures,
     )
-    return sampling_report
 
 
 def main() -> int:
@@ -696,30 +536,23 @@ def main() -> int:
     model.to(device)
     model.eval()
 
-    motion_scorer = MotionQualityScorer(args.motion_score_checkpoint_dir, device=str(device))
-
     print(f"[PROGRESS] Collecting {args.num_eval_samples} evaluation samples from dataset...")
     selected_samples = collect_eval_samples(args, model_args)
     print(f"[PROGRESS] Collected {len(selected_samples)} samples. Starting sampling evaluation...")
     
-    sampling_report = stage1_sampling_eval(
+    export_result = stage1_sampling_eval(
         args=args,
         model_args=model_args,
         model=model,
         diffusion=diffusion,
         selected_samples=selected_samples,
-        motion_scorer=motion_scorer,
         device=device,
         output_dir=output_dir,
     )
-    print(f"[PROGRESS] Sampling evaluation complete. Building clean motion baseline...")
-    clean_motion_report = build_clean_motion_baseline(args, model_args, selected_samples, motion_scorer, output_dir)
-    baseline_comparison = build_baseline_comparison(sampling_report, clean_motion_report)
 
     selected_sample_manifest = build_selected_sample_manifest(selected_samples)
     run_info = {
         "model_path": str(Path(args.model_path).resolve()),
-        "motion_score_checkpoint": str(motion_scorer.checkpoint_path),
         "output_dir": str(output_dir),
         "split": args.eval_split,
         "objects_subset": model_args.objects_subset,
@@ -749,7 +582,6 @@ def main() -> int:
     summary_report = {
         "run": {
             "model_path": run_info["model_path"],
-            "motion_score_checkpoint": run_info["motion_score_checkpoint"],
             "split": run_info["split"],
             "objects_subset": run_info["objects_subset"],
             "selected_sample_count": run_info["selected_sample_count"],
@@ -757,25 +589,24 @@ def main() -> int:
             "sampling_method": run_info["sampling_method"],
             "sampling_steps": run_info["sampling_steps"],
         },
-        "sampled_eval": build_summary_eval_section(sampling_report["result"]),
-        "clean_baseline": build_summary_eval_section(clean_motion_report["result"]),
-        "comparison": baseline_comparison,
+        "exports": build_summary_export_section(export_result),
     }
 
     detail_report = {
         "run": run_info,
         "selected_samples": selected_sample_manifest,
-        "sampled_eval": sampling_report["result"],
-        "clean_baseline": clean_motion_report["result"],
-        "comparison": baseline_comparison,
+        "exports": export_result,
     }
 
     write_json(output_dir / "summary.json", summary_report)
     write_json(output_dir / "detail.json", detail_report)
 
-    sampled_quality = summary_report["sampled_eval"]["overall_quality_score"]
-    clean_quality = summary_report["clean_baseline"]["overall_quality_score"]
-    print(f"[SUMMARY] Sampled_eval vs Clean_baseline {sampled_quality:.4f}/{clean_quality:.4f}={100*sampled_quality/clean_quality:.2f}%")
+    print(
+        "[SUMMARY] Exported "
+        f"{summary_report['exports']['exported_samples']} samples across "
+        f"{summary_report['exports']['num_trials']} trials "
+        f"({summary_report['exports']['failed_exports']} failures)."
+    )
 
     return 0
 

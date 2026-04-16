@@ -18,7 +18,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from diffusion.fp16_util import count_nonfinite_gradients, format_nonfinite_stats, inspect_optimizer_state
-from diffusion.gaussian_diffusion import _teacher_weight_scale
 from train.train_anytop import create_training_data_loader
 from train.training_loop import TrainLoop
 from utils import dist_util
@@ -135,7 +134,6 @@ def _analyze_target_step(loop: TrainLoop) -> None:
                 t,
                 model_kwargs=model_kwargs,
                 noise=noise,
-                semantic_teacher=loop.semantic_teacher,
             )
 
     losses = compute_losses()
@@ -147,25 +145,12 @@ def _analyze_target_step(loop: TrainLoop) -> None:
     print("weighted_losses=", json.dumps(scalar_losses, indent=2, sort_keys=True))
     print("sampled_t=", t.detach().cpu().tolist())
 
-    semantic_scale = _teacher_weight_scale(
-        current_step,
-        loop.diffusion.semantic_teacher_start_step,
-        loop.diffusion.semantic_teacher_ramp_steps,
-    )
-
     components: list[tuple[str, torch.Tensor]] = [
         ("total_loss", (losses["loss"] * weights).mean()),
         ("l_simple", (losses["l_simple"] * weights).mean()),
     ]
     if "geodesic_loss" in losses:
         components.append(("geodesic", (loop.diffusion.lambda_geo * losses["geodesic_loss"] * weights).mean()))
-    if "semantic_teacher_loss" in losses:
-        components.append(
-            (
-                "semantic_teacher",
-                (loop.diffusion.semantic_teacher_weight * semantic_scale * losses["semantic_teacher_loss"] * weights).mean(),
-            )
-        )
 
     for name, _ in components:
         losses = compute_losses()
@@ -175,10 +160,6 @@ def _analyze_target_step(loop: TrainLoop) -> None:
         }
         if "geodesic_loss" in losses:
             component_lookup["geodesic"] = (loop.diffusion.lambda_geo * losses["geodesic_loss"] * weights).mean()
-        if "semantic_teacher_loss" in losses:
-            component_lookup["semantic_teacher"] = (
-                loop.diffusion.semantic_teacher_weight * semantic_scale * losses["semantic_teacher_loss"] * weights
-            ).mean()
 
         scalar = component_lookup[name]
         loop.mp_trainer.zero_grad()

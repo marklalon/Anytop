@@ -188,24 +188,6 @@ def add_training_options(parser):
                        help="If True, will use EMA model averaging.")
     group.add_argument("--balanced", action='store_true',
                        help="Use balancing sampler for fairness between topologies")
-    group.add_argument("--motion_scorer_checkpoint_dir", default='save/motion_scorer_v8', type=str,
-                       help="Path to the motion-scorer checkpoint directory used by the semantic teacher.")
-    group.add_argument("--semantic_teacher_weight", default=0.0, type=float,
-                       help="Overall weight of the direct semantic teacher loss applied to the main model.")
-    group.add_argument("--semantic_teacher_species_weight", default=1.0, type=float,
-                       help="Weight of the species classification term inside the direct semantic teacher loss.")
-    group.add_argument("--semantic_teacher_action_weight", default=1.0, type=float,
-                       help="Weight of the action classification term inside the direct semantic teacher loss.")
-    group.add_argument("--semantic_teacher_kl_weight", default=0.25, type=float,
-                       help="Weight of the clean-motion logits distillation term inside the direct semantic teacher loss.")
-    group.add_argument("--semantic_teacher_start_step", default=0, type=int,
-                       help="Training step at which direct semantic teacher supervision starts contributing to the main model loss.")
-    group.add_argument("--semantic_teacher_ramp_steps", default=0, type=int,
-                       help="Number of steps to linearly ramp direct semantic teacher supervision from zero to full weight after semantic_teacher_start_step.")
-    group.add_argument("--semantic_teacher_max_t", default=30, type=int,
-                       help="Maximum diffusion timestep at which the direct semantic teacher loss is applied.")
-    group.add_argument("--semantic_teacher_temperature", default=1.0, type=float,
-                       help="Softmax temperature used for semantic teacher logits distillation.")
 
 def add_two_stage_options(parser):
     group = parser.add_argument_group('two_stage')

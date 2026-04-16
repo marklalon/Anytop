@@ -81,12 +81,4 @@ def create_gaussian_diffusion(args):
         lambda_geo=args.lambda_geo,
         lambda_confidence_recon=args.lambda_confidence_recon,
         lambda_repair_recon=args.lambda_repair_recon,
-        semantic_teacher_weight=getattr(args, 'semantic_teacher_weight', 0.05),
-        semantic_teacher_species_weight=getattr(args, 'semantic_teacher_species_weight', 1.0),
-        semantic_teacher_action_weight=getattr(args, 'semantic_teacher_action_weight', 1.0),
-        semantic_teacher_kl_weight=getattr(args, 'semantic_teacher_kl_weight', 0.25),
-        semantic_teacher_start_step=getattr(args, 'semantic_teacher_start_step', 0),
-        semantic_teacher_ramp_steps=getattr(args, 'semantic_teacher_ramp_steps', 0),
-        semantic_teacher_max_t=getattr(args, 'semantic_teacher_max_t', 30),
-        semantic_teacher_temperature=getattr(args, 'semantic_teacher_temperature', 1.0),
     )

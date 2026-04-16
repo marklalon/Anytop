@@ -13,7 +13,6 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from diffusion import logger
-from eval.direct_semantic_teacher import DirectSemanticTeacher
 from model.motion_transformer import GraphMultiHeadAttention
 from train.train_anytop import create_training_data_loader
 from train.training_loop import TrainLoop
@@ -60,19 +59,6 @@ def _wrap_attention_modules(model: torch.nn.Module, timer_store: TimerStore) -> 
             _wrap_bound_method(module, "forward", timer_store, "attention_mha_s")
 
 
-def _wrap_teacher_modules(trainer: TrainLoop, timer_store: TimerStore) -> callable:
-    restore_callbacks = []
-
-    if trainer.semantic_teacher is not None:
-        _wrap_bound_method(trainer.semantic_teacher, "compute_losses", timer_store, "semantic_teacher_total_s")
-
-    def restore() -> None:
-        for callback in restore_callbacks:
-            callback()
-
-    return restore
-
-
 def _load_args(run_dir: str) -> SimpleNamespace:
     args_path = os.path.join(run_dir, "args.json")
     with open(args_path, "r", encoding="utf-8") as handle:
@@ -116,80 +102,73 @@ def _build_trainer(args: SimpleNamespace) -> TrainLoop:
 def _run_profile(trainer: TrainLoop, warmup_steps: int, profile_steps: int) -> dict[str, object]:
     timer_store = TimerStore()
     _wrap_attention_modules(trainer.model, timer_store)
-    restore_teachers = _wrap_teacher_modules(trainer, timer_store)
     data_iter = iter(trainer.data)
 
-    try:
-        total_profiled_steps = 0
-        total_data_wait_s = 0.0
-        total_step_s = 0.0
-        total_loop_s = 0.0
+    total_profiled_steps = 0
+    total_data_wait_s = 0.0
+    total_step_s = 0.0
+    total_loop_s = 0.0
 
-        for step_index in range(warmup_steps + profile_steps):
-            loop_start = time.perf_counter()
-            _synchronize_if_needed()
-            fetch_start = time.perf_counter()
-            try:
-                motion, cond = next(data_iter)
-            except StopIteration:
-                data_iter = iter(trainer.data)
-                motion, cond = next(data_iter)
-            _synchronize_if_needed()
-            data_wait_s = time.perf_counter() - fetch_start
+    for step_index in range(warmup_steps + profile_steps):
+        loop_start = time.perf_counter()
+        _synchronize_if_needed()
+        fetch_start = time.perf_counter()
+        try:
+            motion, cond = next(data_iter)
+        except StopIteration:
+            data_iter = iter(trainer.data)
+            motion, cond = next(data_iter)
+        _synchronize_if_needed()
+        data_wait_s = time.perf_counter() - fetch_start
 
-            motion = trainer._move_batch_to_device(motion)
-            cond = trainer._move_cond_to_device(cond)
+        motion = trainer._move_batch_to_device(motion)
+        cond = trainer._move_cond_to_device(cond)
 
-            _synchronize_if_needed()
-            step_start = time.perf_counter()
-            trainer.run_step(motion, cond)
-            _synchronize_if_needed()
-            step_s = time.perf_counter() - step_start
-            loop_s = time.perf_counter() - loop_start
+        _synchronize_if_needed()
+        step_start = time.perf_counter()
+        trainer.run_step(motion, cond)
+        _synchronize_if_needed()
+        step_s = time.perf_counter() - step_start
+        loop_s = time.perf_counter() - loop_start
 
-            trainer.step += 1
+        trainer.step += 1
 
-            if step_index + 1 == warmup_steps:
-                timer_store.totals.clear()
-                timer_store.counts.clear()
-                continue
+        if step_index + 1 == warmup_steps:
+            timer_store.totals.clear()
+            timer_store.counts.clear()
+            continue
 
-            if step_index >= warmup_steps:
-                total_profiled_steps += 1
-                total_data_wait_s += data_wait_s
-                total_step_s += step_s
-                total_loop_s += loop_s
+        if step_index >= warmup_steps:
+            total_profiled_steps += 1
+            total_data_wait_s += data_wait_s
+            total_step_s += step_s
+            total_loop_s += loop_s
 
-        semantic_teacher_total_s = timer_store.totals.get("semantic_teacher_total_s", 0.0)
-        attention_s = timer_store.totals.get("attention_graph_s", 0.0) + timer_store.totals.get("attention_mha_s", 0.0)
-        other_step_s = max(total_step_s - attention_s - semantic_teacher_total_s, 0.0)
+    attention_s = timer_store.totals.get("attention_graph_s", 0.0) + timer_store.totals.get("attention_mha_s", 0.0)
+    other_step_s = max(total_step_s - attention_s, 0.0)
 
-        denom = total_loop_s if total_loop_s > 0 else 1.0
-        summary = {
-            "profiled_steps": total_profiled_steps,
-            "timings_s": {
-                "loop_total": total_loop_s,
-                "step_total": total_step_s,
-                "data_wait": total_data_wait_s,
-                "attention_total": attention_s,
-                "semantic_teacher_total": semantic_teacher_total_s,
-                "other_step": other_step_s,
-            },
-            "percent_of_loop": {
-                "data_wait": 100.0 * total_data_wait_s / denom,
-                "attention_total": 100.0 * attention_s / denom,
-                "semantic_teacher_total": 100.0 * semantic_teacher_total_s / denom,
-                "other_step": 100.0 * other_step_s / denom,
-            },
-            "attention_breakdown": {
-                "graph_attention_s": timer_store.totals.get("attention_graph_s", 0.0),
-                "mha_attention_s": timer_store.totals.get("attention_mha_s", 0.0),
-            },
-            "call_counts": dict(timer_store.counts),
-        }
-        return summary
-    finally:
-        restore_teachers()
+    denom = total_loop_s if total_loop_s > 0 else 1.0
+    summary = {
+        "profiled_steps": total_profiled_steps,
+        "timings_s": {
+            "loop_total": total_loop_s,
+            "step_total": total_step_s,
+            "data_wait": total_data_wait_s,
+            "attention_total": attention_s,
+            "other_step": other_step_s,
+        },
+        "percent_of_loop": {
+            "data_wait": 100.0 * total_data_wait_s / denom,
+            "attention_total": 100.0 * attention_s / denom,
+            "other_step": 100.0 * other_step_s / denom,
+        },
+        "attention_breakdown": {
+            "graph_attention_s": timer_store.totals.get("attention_graph_s", 0.0),
+            "mha_attention_s": timer_store.totals.get("attention_mha_s", 0.0),
+        },
+        "call_counts": dict(timer_store.counts),
+    }
+    return summary
 
 
 def main() -> None:
