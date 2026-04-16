@@ -17,7 +17,7 @@ Score range:  0.0 (worst) → 1.0 (perfect)
 
 Sub-scores
 ----------
-rotation_6d_consistency   [primary, w=0.5]
+rotation_6d_consistency   [primary, w=0.6]
     The 6-D rotation representation stores two orthonormal basis vectors.
     Ground-truth motions have exact unit norms (deviation = 0).
     Diffusion-model outputs accumulate small floating-point drift, making
@@ -28,7 +28,7 @@ jerk_smoothness           [supporting, w=0.3]
     normalised against the reference-dataset IQR for this skeleton.
     Penalises both excessive jitter AND extreme over-smoothing.
 
-temporal_variance         [supporting, w=0.2]
+temporal_variance         [supporting, w=0.1]
     Overall temporal variance of the clip, normalised against the reference
     dataset IQR.  Over-smoothed generated clips have abnormally low variance.
 """
@@ -55,9 +55,9 @@ from .reference_stats import (
 # ---------------------------------------------------------------------------
 # Scoring weights  (must sum to 1.0)
 # ---------------------------------------------------------------------------
-_W_ROT_CONSISTENCY  = 0.5    # primary: geometry check
+_W_ROT_CONSISTENCY  = 0.6    # primary: geometry check
 _W_JERK             = 0.3   # supporting
-_W_TEMPORAL_VAR     = 0.2   # supporting
+_W_TEMPORAL_VAR     = 0.1   # supporting
 
 
 @dataclass
@@ -106,9 +106,9 @@ class MotionQualityReport:
             f"  +---------------------------------------+--------+",
             f"  | Sub-score                             | Score  |",
             f"  +---------------------------------------+--------+",
-            f"  | Rotation 6D consistency  (w=0.5)    | {self.rotation_6d_consistency:5.3f}  |",
+            f"  | Rotation 6D consistency  (w=0.6)    | {self.rotation_6d_consistency:5.3f}  |",
             f"  | Jerk smoothness         (w=0.3)  | {self.jerk_smoothness:5.3f}  |",
-            f"  | Temporal variance       (w=0.2)  | {self.temporal_variance:5.3f}  |",
+            f"  | Temporal variance       (w=0.1)  | {self.temporal_variance:5.3f}  |",
             f"  +---------------------------------------+--------+",
             f"  | TOTAL                                | {self.total_score:5.3f}  |",
             f"  +---------------------------------------+--------+",
@@ -256,7 +256,6 @@ class LightweightMotionQualityScorer:
         if self.ref_stats is None:
             # No reference: use calibrated sigmoid on log10 scale so the metric
             # works across the wide dynamic range of normalised jerk values.
-            import math
             log_rot = math.log10(max(jerk_rot, 1e-30))
             log_pos = math.log10(max(jerk_pos, 1e-30))
             # Centres calibrated on normalised motion data.
@@ -273,8 +272,25 @@ class LightweightMotionQualityScorer:
             # Only penalise "above" (too jerky). GT motions can legitimately be
             # near-static (idle, slow), so low jerk must NOT be penalised here.
             # Over-smoothing detection is handled separately by temporal_variance.
-            score_rot = _iqr_score(jerk_rot, r.jerk_rot_p25, r.jerk_rot_p75, "above")
-            score_pos = _iqr_score(jerk_pos, r.jerk_pos_p25, r.jerk_pos_p75, "above")
+            #
+            # Use log10 scale so that small differences between clean and pred
+            # (both typically well below the reference p75) are amplified.
+            # Center and scale are derived from reference stats in log space to
+            # remain calibrated without hard-coded constants.
+            log_jerk_rot = math.log10(max(jerk_rot, 1e-30))
+            log_jerk_pos = math.log10(max(jerk_pos, 1e-30))
+            log_center_rot = math.log10(max((r.jerk_rot_p25 + r.jerk_rot_p75) / 2.0, 1e-30))
+            log_center_pos = math.log10(max((r.jerk_pos_p25 + r.jerk_pos_p75) / 2.0, 1e-30))
+            log_scale_rot = max(
+                math.log10(max(r.jerk_rot_p75, 1e-30)) - math.log10(max(r.jerk_rot_p25, 1e-30)),
+                0.1,
+            )
+            log_scale_pos = max(
+                math.log10(max(r.jerk_pos_p75, 1e-30)) - math.log10(max(r.jerk_pos_p25, 1e-30)),
+                0.1,
+            )
+            score_rot = _sigmoid_score(log_jerk_rot, center=log_center_rot, scale=log_scale_rot * 0.5)
+            score_pos = _sigmoid_score(log_jerk_pos, center=log_center_pos, scale=log_scale_pos * 0.5)
             # Same positional bias as the no-reference path.
             score = 0.3 * score_rot + 0.7 * score_pos
 
