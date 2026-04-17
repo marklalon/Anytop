@@ -22,7 +22,7 @@ if not defined MODEL_PATH (
   --action_category locomotion ^
   --num-frames 60 ^
   --num-eval-samples 32 ^
-  --num-threads 8 ^
+  --num-threads 1 ^
   --sampling-method p ^
   --sampling-steps 100 ^
   --no-ema %*

@@ -11,8 +11,6 @@ import copy
 import json
 import os
 import sys
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
@@ -127,6 +125,13 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
     model_args.num_workers = args.eval_num_workers
     validate_stage1_checkpoint_args(model_args)
     return model_args
+
+
+def resolve_eval_subset_action_tags(model_args: SimpleNamespace) -> str:
+    action_category = str(getattr(model_args, "action_category", "") or "").strip().lower()
+    if action_category:
+        return action_category
+    return str(getattr(model_args, "action_tags", "") or "").strip()
 
 
 def configure_sampling(model_args: SimpleNamespace, args: argparse.Namespace) -> None:
@@ -254,11 +259,17 @@ def cleanup_stage1_sampling_eval_directory(output_dir: Path) -> None:
 def build_selected_sample_manifest(selected_samples: list[dict[str, object]]) -> list[dict[str, object]]:
     manifest = []
     for sample in selected_samples:
+        target_length = int(sample.get("target_length", sample["length"]))
+        generated_length = int(sample.get("generated_length", target_length))
+        overlap_length = int(sample.get("overlap_length", min(target_length, generated_length)))
         record = {
             "sample_index": int(sample["sample_index"]),
             "motion_name": str(sample["motion_name"]),
             "object_type": str(sample["object_type"]),
-            "length": int(sample["length"]),
+            "length": target_length,
+            "target_length": target_length,
+            "generated_length": generated_length,
+            "overlap_length": overlap_length,
             "n_joints": int(sample["n_joints"]),
         }
         if "source_mode" in sample:
@@ -276,6 +287,10 @@ def build_export_sample_record(
     sample_seed: int,
     sample_dir: Path,
 ) -> dict[str, object]:
+    target_length = int(sample.get("target_length", sample["length"]))
+    generated_length = int(sample.get("generated_length", target_length))
+    overlap_length = int(sample.get("overlap_length", min(target_length, generated_length)))
+    generated_overlap_path = sample_dir / "generated_prediction_overlap.npy"
     return {
         "sample_index": int(sample_index),
         "sample_seed": int(sample_seed),
@@ -284,7 +299,11 @@ def build_export_sample_record(
         "sample_dir": str(sample_dir),
         "generated_path": str(sample_dir / "generated_prediction.npy"),
         "target_path": str(sample_dir / "clean_target.npy"),
-        "length": int(sample["length"]),
+        "generated_overlap_path": str(generated_overlap_path) if overlap_length != generated_length else "",
+        "length": target_length,
+        "target_length": target_length,
+        "generated_length": generated_length,
+        "overlap_length": overlap_length,
         "n_joints": int(sample["n_joints"]),
     }
 
@@ -296,6 +315,7 @@ def build_export_result(
     selected_samples: list[dict[str, object]],
     samples: list[dict[str, object]],
     failures: list[dict[str, str]],
+    num_threads: int,
 ) -> dict[str, object]:
     sampling_steps = int(args.sampling_steps) if args.sampling_steps > 0 else int(model_args.diffusion_steps)
     return {
@@ -303,7 +323,7 @@ def build_export_result(
         "objects_subset": model_args.objects_subset,
         "sample_mode": args.sample_mode,
         "selected_sample_count": len(selected_samples),
-        "num_threads": int(args.num_threads),
+        "num_threads": int(num_threads),
         "sampling_method": args.sampling_method,
         "sampling_steps": sampling_steps,
         "exported_samples": sorted(samples, key=lambda sample: sample["sample_index"]),
@@ -312,11 +332,18 @@ def build_export_result(
 
 
 def build_summary_export_section(export_result: dict[str, object]) -> dict[str, object]:
+    exported_samples = export_result["exported_samples"]
+    mixed_length_samples = sum(
+        1
+        for sample in exported_samples
+        if int(sample.get("target_length", sample.get("length", 0))) != int(sample.get("generated_length", sample.get("length", 0)))
+    )
     return {
         "selected_sample_count": int(export_result["selected_sample_count"]),
         "num_threads": int(export_result["num_threads"]),
-        "exported_samples": len(export_result["exported_samples"]),
+        "exported_samples": len(exported_samples),
         "failed_exports": len(export_result["failures"]),
+        "mixed_length_samples": int(mixed_length_samples),
         "sampling_method": str(export_result["sampling_method"]),
         "sampling_steps": int(export_result["sampling_steps"]),
     }
@@ -329,10 +356,20 @@ def export_trial_sample(
     joints_names: list[str],
     target_motion: np.ndarray,
     generated_motion: np.ndarray,
+    generated_overlap_motion: Optional[np.ndarray] = None,
 ) -> None:
     np.save(sample_dir / "clean_target.npy", target_motion.astype(np.float32))
     np.save(sample_dir / "generated_prediction.npy", generated_motion.astype(np.float32))
-    for name, motion in [("clean_target", target_motion), ("generated_prediction", generated_motion)]:
+    if generated_overlap_motion is not None:
+        np.save(sample_dir / "generated_prediction_overlap.npy", generated_overlap_motion.astype(np.float32))
+    motions_to_export = [
+        ("clean_target", target_motion),
+        ("generated_prediction", generated_motion),
+    ]
+    if generated_overlap_motion is not None:
+        motions_to_export.append(("generated_prediction_overlap", generated_overlap_motion))
+
+    for name, motion in motions_to_export:
         out_anim, has_animated_pos = recover_animation_from_motion_np(motion.astype(np.float32), parents, offsets)
         if out_anim is not None:
             BVH.save(str(sample_dir / f"{name}.bvh"), out_anim, joints_names, positions=has_animated_pos)
@@ -359,7 +396,9 @@ def build_virtual_eval_sample(
     cond_cpu = clone_batch_cond(cond_batch)
     object_type = cond_cpu["y"]["object_type"][0]
     n_joints = int(cond_cpu["y"]["n_joints"][0].item())
-    length = int(cond_cpu["y"]["lengths"][0].item())
+    target_length = int(cond_cpu["y"]["lengths"][0].item())
+    generated_length = int(motion_batch.shape[-1])
+    overlap_length = min(target_length, generated_length)
 
     return {
         "sample_index": -1,
@@ -368,7 +407,10 @@ def build_virtual_eval_sample(
         "motion_name": cond_cpu["y"]["motion_name"][0],
         "object_type": object_type,
         "n_joints": n_joints,
-        "length": length,
+        "length": target_length,
+        "target_length": target_length,
+        "generated_length": generated_length,
+        "overlap_length": overlap_length,
         "parents": [int(parent) for parent in prepared_sample[2]],
         "offsets": cond_dict[object_type]["offsets"],
         "joints_names": cond_dict[object_type]["joints_names"],
@@ -401,6 +443,9 @@ def collect_eval_samples(args: argparse.Namespace, model_args: SimpleNamespace, 
     rng = py_random.Random(selection_seed)
 
     # Load all available motions from the dataset
+    eval_subset_action_tags = resolve_eval_subset_action_tags(model_args)
+    model_args.eval_subset_action_tags = eval_subset_action_tags
+
     loader_kwargs = dict(
         batch_size=1,
         num_frames=model_args.num_frames,
@@ -414,7 +459,9 @@ def collect_eval_samples(args: argparse.Namespace, model_args: SimpleNamespace, 
         shuffle=False,
         drop_last=False,
         use_reference_conditioning=False,
-        action_tags=getattr(model_args, "action_tags", ""),
+        action_tags=eval_subset_action_tags,
+        fixed_motion=getattr(model_args, "fixed_motion", ""),
+        fixed_window_start=int(getattr(model_args, "fixed_window_start", 0)),
     )
     data_full = get_dataset_loader(**loader_kwargs)
     motion_dataset = data_full.dataset.motion_dataset
@@ -500,12 +547,18 @@ def stage1_sampling_eval(
 
     exported_samples: list[dict[str, object]] = []
     failures: list[dict[str, str]] = []
-    lock = threading.Lock()
     total = len(selected_samples)
+    actual_num_threads = 1
+
+    if int(args.num_threads) != actual_num_threads:
+        print(
+            "[WARN] stage1_sampling_eval runs serially to keep per-sample RNG isolated. "
+            f"Requested num_threads={int(args.num_threads)} will be ignored."
+        )
 
     print(
         f"[PROGRESS] Starting sampling evaluation: {total} samples, "
-        f"{args.num_threads} thread(s) ..."
+        f"{actual_num_threads} thread(s) ..."
     )
 
     def process_sample(sample_index: int) -> None:
@@ -533,11 +586,14 @@ def stage1_sampling_eval(
             )
 
         n_joints = int(sample["n_joints"])
-        length = int(sample["length"])
+        target_length = int(sample.get("target_length", sample["length"]))
+        generated_length = int(sample.get("generated_length", generated.shape[-1]))
+        overlap_length = int(sample.get("overlap_length", min(target_length, generated_length)))
         object_type = str(sample["object_type"])
 
-        target_norm = motion_cpu[0, :n_joints, :, :length]
-        generated_norm = generated[0, :n_joints, :, :length].detach().cpu()
+        target_norm = motion_cpu[0, :n_joints, :, :target_length]
+        generated_norm = generated[0, :n_joints, :, :generated_length].detach().cpu()
+        generated_overlap_norm = generated[0, :n_joints, :, :overlap_length].detach().cpu()
 
         evaluation = evaluate_generated_prediction(
             target_norm=target_norm,
@@ -546,6 +602,12 @@ def stage1_sampling_eval(
             mean=sample["mean"],
             std=sample["std"],
         )
+        generated_overlap_denorm = denormalize_motion(
+            generated_overlap_norm,
+            n_joints=n_joints,
+            mean=sample["mean"],
+            std=sample["std"],
+        ).astype(np.float32)
 
         sample_dir = output_dir / "stage1_sampling_eval" / f"sample_{sample_index:03d}_{object_type}"
         try:
@@ -557,6 +619,7 @@ def stage1_sampling_eval(
                 joints_names=sample["joints_names"],
                 target_motion=evaluation["target_denorm"].astype(np.float32),
                 generated_motion=evaluation["generated_denorm"].astype(np.float32),
+                generated_overlap_motion=generated_overlap_denorm if overlap_length != generated_length else None,
             )
             record = build_export_sample_record(
                 sample=sample,
@@ -564,22 +627,14 @@ def stage1_sampling_eval(
                 sample_seed=sample_seed,
                 sample_dir=sample_dir,
             )
-            with lock:
-                exported_samples.append(record)
+            exported_samples.append(record)
         except Exception as exc:
-            with lock:
-                failures.append({"path": str(sample_dir), "error": str(exc)})
+            failures.append({"path": str(sample_dir), "error": str(exc)})
 
         print(f"[PROGRESS] Sample {sample_index:03d}/{total - 1:03d} done (seed={sample_seed})")
 
-    with ThreadPoolExecutor(max_workers=args.num_threads) as executor:
-        futures = {executor.submit(process_sample, i): i for i in range(total)}
-        for future in as_completed(futures):
-            exc = future.exception()
-            if exc is not None:
-                sample_index = futures[future]
-                with lock:
-                    failures.append({"path": f"sample_{sample_index:03d}", "error": str(exc)})
+    for sample_index in range(total):
+        process_sample(sample_index)
 
     return build_export_result(
         args=args,
@@ -587,6 +642,7 @@ def stage1_sampling_eval(
         selected_samples=selected_samples,
         samples=exported_samples,
         failures=failures,
+        num_threads=actual_num_threads,
     )
 
 
@@ -654,6 +710,8 @@ def main() -> int:
         "num_eval_samples": int(args.num_eval_samples),
         "fixed_motion": str(getattr(model_args, "fixed_motion", "")),
         "fixed_window_start": int(getattr(model_args, "fixed_window_start", 0)),
+        "dual_length_export": True,
+        "eval_subset_action_tags": str(getattr(model_args, "eval_subset_action_tags", getattr(model_args, "action_tags", ""))),
         "action_category": str(getattr(model_args, "action_category", "")),
         "disable_reference_branch": bool(model_args.disable_reference_branch),
         "stage1_checkpoint_validated": True,
