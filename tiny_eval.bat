@@ -2,7 +2,7 @@
 setlocal
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=stage1_tiny_overfit_horse_resetless_v2
+set RUN_NAME=stage1_tiny_overfit_horse_slowwalk_v1
 set SAVE_DIR=%SCRIPT_DIR%save\%RUN_NAME%\stage1_pretrain
 set OUTPUT_DIR=%SCRIPT_DIR%outputs\%RUN_NAME%
 rem set MODEL_PATH="D:\AI\pcvg-skeleton-animation\Anytop\save\stage1_tiny_overfit_horse_resetless_v1\stage1_pretrain\model000040000.pt"
@@ -21,10 +21,10 @@ if not defined MODEL_PATH (
   --output-dir "%OUTPUT_DIR%" ^
   --eval-split all ^
   --sample-limit -1 ^
-  --num-frames 60 ^
-  --num-eval-samples 8 ^
+  --num-frames 30 ^
+  --num-eval-samples 32 ^
   --num-trials 1 ^
-  --eval-batch-size 8 ^
+  --eval-batch-size 32 ^
   --sampling-method ddim ^
   --sampling-steps 100 ^
   --no-ema %*

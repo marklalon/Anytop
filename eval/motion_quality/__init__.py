@@ -1,5 +1,5 @@
-"""Lightweight motion quality evaluation — no trained model required."""
+"""Distribution-based motion quality evaluation — no trained model required."""
 
-from .scorer import LightweightMotionQualityScorer, MotionQualityReport
+from .scorer import DistributionMotionQualityScorer, DistributionEvalReport
 
-__all__ = ["LightweightMotionQualityScorer", "MotionQualityReport"]
+__all__ = ["DistributionMotionQualityScorer", "DistributionEvalReport"]

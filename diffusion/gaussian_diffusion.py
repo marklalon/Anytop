@@ -132,6 +132,7 @@ class GaussianDiffusion:
         lambda_geo=0.,
         lambda_confidence_recon=0.,
         lambda_repair_recon=0.,
+        lambda_fs=0.,
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
@@ -140,6 +141,7 @@ class GaussianDiffusion:
         self.lambda_geo = lambda_geo
         self.lambda_confidence_recon = lambda_confidence_recon
         self.lambda_repair_recon = lambda_repair_recon
+        self.lambda_fs = lambda_fs # deprecated, not used
         self.preservation_confidence_threshold = PRESERVATION_CONFIDENCE_THRESHOLD
         self.preservation_confidence_power = PRESERVATION_CONFIDENCE_POWER
 

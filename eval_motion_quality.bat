@@ -1,5 +1,4 @@
 python eval/evaluate_motion_quality.py ^
-  "outputs/stage1_tiny_overfit_all_move_clean_s100000/stage1_sampling_eval/trials/trial_00/*/clean_target.npy" ^
-  "outputs/stage1_tiny_overfit_all_move_clean_s100000/stage1_sampling_eval/trials/trial_00/*/generated_prediction.npy" ^
-  --dataset-dir dataset/truebones/zoo/truebones_processed ^
-  --quiet --cond-file dataset/truebones/zoo/truebones_processed/cond.npy
+  --clean     "outputs/stage1_tiny_overfit_horse_slowwalk_v1/stage1_sampling_eval/trials/trial_00/*/clean_target.npy" ^
+  --generated "outputs/stage1_tiny_overfit_horse_slowwalk_v1/stage1_sampling_eval/trials/trial_00/*/generated_prediction.npy" ^
+  --output-json outputs/stage1_tiny_overfit_horse_slowwalk_v1/motion_quality_report.json
