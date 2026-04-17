@@ -11,8 +11,11 @@ import copy
 import json
 import os
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional
 
 import numpy as np
 import torch
@@ -24,6 +27,7 @@ os.chdir(REPO_ROOT)
 
 from motion_lib import BVH
 from data_loaders.get_data import get_dataset_loader
+from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
 from utils.fixseed import fixseed
 from utils import dist_util
@@ -59,19 +63,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fixed-motion", default="", help="Override the checkpoint fixed_motion when set. Accepts a processed .npy name or a BVH/.npy path.")
     parser.add_argument("--fixed-window-start", default=None, type=int, help="Override the checkpoint fixed_window_start when set.")
     parser.add_argument("--num-frames", default=-1, type=int, help="Override num_frames when > 0.")
-    parser.add_argument("--eval-split", default="val", choices=["train", "val", "test", "all"], help="Dataset split used to choose the fixed subset.")
     parser.add_argument(
-        "--sample-limit",
-        default=-1,
-        type=int,
-        help="Override sample_limit used to build the evaluation subset. -1 keeps the checkpoint value, 0 loads the full split.",
+        "--sample-mode",
+        default="eval_subset",
+        choices=["eval_subset"],
+        help="eval_subset samples different dataset windows.",
     )
-    parser.add_argument("--num-eval-samples", default=16, type=int, help="Number of unique samples to evaluate across all trials.")
-    parser.add_argument("--eval-batch-size", default=8, type=int, help="Batch size for sampling evaluation.")
+    parser.add_argument("--num-eval-samples", default=16, type=int, help="Number of unique samples to evaluate. Each sample runs as an independent batch-1 inference.")
+    parser.add_argument("--num-threads", default=4, type=int, help="Number of parallel worker threads used to run sample inferences concurrently.")
     parser.add_argument("--eval-num-workers", default=0, type=int, help="Evaluation DataLoader workers.")
     parser.add_argument("--selection-seed", default=None, type=int, help="Seed used to select the fixed evaluation subset. Defaults to --seed.")
-    parser.add_argument("--num-trials", default=4, type=int, help="How many stochastic trials to run on the same selected subset.")
-    parser.add_argument("--base-seed", default=None, type=int, help="Base seed for stochastic trials. Defaults to --seed. Trial k uses base-seed + k.")
+    parser.add_argument("--base-seed", default=None, type=int, help="Base seed for per-sample seeds. Defaults to --seed. Sample k uses base-seed + k.")
     parser.add_argument("--sampling-method", default="ddim", choices=["p", "ddim", "plms"], help="Diffusion sampler to use.")
     parser.add_argument("--sampling-steps", default=0, type=int, help="Respaced diffusion steps. 0 keeps the checkpoint diffusion step count.")
     parser.add_argument("--ddim-eta", default=0.0, type=float, help="DDIM eta parameter.")
@@ -97,7 +99,7 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
 
     model_args.model_path = str(model_path)
     model_args.device = args.device
-    model_args.batch_size = args.eval_batch_size
+    model_args.batch_size = 1
     model_args.cond_mask_prob = 0.0
     model_args.disable_reference_branch = bool(model_args.disable_reference_branch)
     model_args.use_reference_conditioning = bool(model_args.use_reference_conditioning)
@@ -117,8 +119,7 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
         model_args.fixed_window_start = int(getattr(model_args, "fixed_window_start", 0))
     if args.num_frames > 0:
         model_args.num_frames = args.num_frames
-    checkpoint_sample_limit = int(getattr(model_args, "sample_limit", 0))
-    model_args.sample_limit = checkpoint_sample_limit if int(args.sample_limit) < 0 else int(args.sample_limit)
+    model_args.sample_limit = -1
     model_args.num_workers = args.eval_num_workers
     validate_stage1_checkpoint_args(model_args)
     return model_args
@@ -247,30 +248,33 @@ def cleanup_stage1_sampling_eval_directory(output_dir: Path) -> None:
 
 
 def build_selected_sample_manifest(selected_samples: list[dict[str, object]]) -> list[dict[str, object]]:
-    return [
-        {
+    manifest = []
+    for sample in selected_samples:
+        record = {
             "sample_index": int(sample["sample_index"]),
             "motion_name": str(sample["motion_name"]),
             "object_type": str(sample["object_type"]),
             "length": int(sample["length"]),
             "n_joints": int(sample["n_joints"]),
         }
-        for sample in selected_samples
-    ]
+        if "source_mode" in sample:
+            record["source_mode"] = str(sample["source_mode"])
+        if "reference_sample_index" in sample:
+            record["reference_sample_index"] = int(sample["reference_sample_index"])
+        manifest.append(record)
+    return manifest
 
 
 def build_export_sample_record(
     *,
     sample: dict[str, object],
     sample_index: int,
-    trial_index: int,
-    trial_seed: int,
+    sample_seed: int,
     sample_dir: Path,
 ) -> dict[str, object]:
     return {
         "sample_index": int(sample_index),
-        "trial_index": int(trial_index),
-        "trial_seed": int(trial_seed),
+        "sample_seed": int(sample_seed),
         "motion_name": str(sample["motion_name"]),
         "object_type": str(sample["object_type"]),
         "sample_dir": str(sample_dir),
@@ -291,13 +295,14 @@ def build_export_result(
 ) -> dict[str, object]:
     sampling_steps = int(args.sampling_steps) if args.sampling_steps > 0 else int(model_args.diffusion_steps)
     return {
-        "split": args.eval_split,
+        "split": "all",
         "objects_subset": model_args.objects_subset,
+        "sample_mode": args.sample_mode,
         "selected_sample_count": len(selected_samples),
-        "num_trials": int(args.num_trials),
+        "num_threads": int(args.num_threads),
         "sampling_method": args.sampling_method,
         "sampling_steps": sampling_steps,
-        "exported_samples": sorted(samples, key=lambda sample: (sample["trial_index"], sample["sample_index"])),
+        "exported_samples": sorted(samples, key=lambda sample: sample["sample_index"]),
         "failures": failures,
     }
 
@@ -305,7 +310,7 @@ def build_export_result(
 def build_summary_export_section(export_result: dict[str, object]) -> dict[str, object]:
     return {
         "selected_sample_count": int(export_result["selected_sample_count"]),
-        "num_trials": int(export_result["num_trials"]),
+        "num_threads": int(export_result["num_threads"]),
         "exported_samples": len(export_result["exported_samples"]),
         "failed_exports": len(export_result["failures"]),
         "sampling_method": str(export_result["sampling_method"]),
@@ -329,34 +334,95 @@ def export_trial_sample(
             BVH.save(str(sample_dir / f"{name}.bvh"), out_anim, joints_names, positions=has_animated_pos)
 
 
-def collect_eval_samples(args: argparse.Namespace, model_args: SimpleNamespace) -> list[dict[str, object]]:
-    fixseed(args.selection_seed)
+def build_virtual_eval_sample(
+    motion_dataset,
+    cond_dict: dict[str, dict[str, object]],
+    motion_name: str,
+    window_start: int,
+) -> dict[str, object]:
+    raw_data = motion_dataset.data_dict[motion_name]
+    previous_fixed_motion_name = motion_dataset.fixed_motion_name
+    previous_fixed_window_start = motion_dataset.fixed_window_start
+    try:
+        motion_dataset.fixed_motion_name = motion_name
+        motion_dataset.fixed_window_start = int(window_start)
+        prepared_sample = motion_dataset._prepare_sample(motion_name, raw_data)
+    finally:
+        motion_dataset.fixed_motion_name = previous_fixed_motion_name
+        motion_dataset.fixed_window_start = previous_fixed_window_start
+
+    motion_batch, cond_batch = truebones_batch_collate([prepared_sample])
+    cond_cpu = clone_batch_cond(cond_batch)
+    object_type = cond_cpu["y"]["object_type"][0]
+    n_joints = int(cond_cpu["y"]["n_joints"][0].item())
+    length = int(cond_cpu["y"]["lengths"][0].item())
+
+    return {
+        "sample_index": -1,
+        "motion": motion_batch.detach().clone().float(),
+        "cond": cond_cpu,
+        "motion_name": cond_cpu["y"]["motion_name"][0],
+        "object_type": object_type,
+        "n_joints": n_joints,
+        "length": length,
+        "parents": [int(parent) for parent in prepared_sample[2]],
+        "offsets": cond_dict[object_type]["offsets"],
+        "joints_names": cond_dict[object_type]["joints_names"],
+        "mean": prepared_sample[11].astype(np.float32),
+        "std": prepared_sample[12].astype(np.float32) + 1e-6,
+    }
+
+
+def clone_eval_sample(sample: dict[str, object]) -> dict[str, object]:
+    cloned: dict[str, object] = {}
+    for key, value in sample.items():
+        if key == "motion":
+            cloned[key] = value.detach().clone()
+        elif key == "cond":
+            cloned[key] = clone_batch_cond(value)
+        else:
+            cloned[key] = copy.deepcopy(value)
+    return cloned
+
+
+def collect_eval_samples(args: argparse.Namespace, model_args: SimpleNamespace, verbose: bool = True) -> list[dict[str, object]]:
+    """
+    Collect evaluation samples with virtual sample expansion.
+    Each sample is randomly selected from motions and cropped at a random window.
+    """
+    import random as py_random
+
+    selection_seed = args.selection_seed if args.selection_seed is not None else args.seed
+    fixseed(selection_seed)
+    rng = py_random.Random(selection_seed)
+
+    # Load all available motions from the dataset
     loader_kwargs = dict(
         batch_size=1,
         num_frames=model_args.num_frames,
-        split=args.eval_split,
+        split="all",
         temporal_window=model_args.temporal_window,
         t5_name=model_args.t5_name,
         balanced=False,
         objects_subset=model_args.objects_subset,
-        num_workers=args.eval_num_workers,
-        sample_limit=model_args.sample_limit,
+        num_workers=0,
+        sample_limit=0,  # Load ALL motions
+        shuffle=False,
         drop_last=False,
         use_reference_conditioning=False,
         action_tags=getattr(model_args, "action_tags", ""),
-        fixed_motion=getattr(model_args, "fixed_motion", ""),
-        fixed_window_start=getattr(model_args, "fixed_window_start", 0),
     )
-    if args.eval_num_workers > 0:
-        loader_kwargs["prefetch_factor"] = model_args.prefetch_factor
-    data = get_dataset_loader(**loader_kwargs)
-    motion_dataset = data.dataset.motion_dataset
+    data_full = get_dataset_loader(**loader_kwargs)
+    motion_dataset = data_full.dataset.motion_dataset
+
+    # Get dataset info
     dataset_frame_cap = int(getattr(motion_dataset, "max_motion_length", model_args.num_frames))
     selected_frame_cap = int(getattr(motion_dataset, "max_available_length", dataset_frame_cap))
     effective_num_frames = min(int(model_args.num_frames), dataset_frame_cap, selected_frame_cap)
     model_args.dataset_max_motion_length = dataset_frame_cap
     model_args.selected_subset_max_motion_length = selected_frame_cap
     model_args.effective_num_frames = effective_num_frames
+    
     if int(model_args.num_frames) > dataset_frame_cap:
         print(
             f"Warning: requested num_frames={int(model_args.num_frames)} exceeds dataset max_motion_length={dataset_frame_cap}. "
@@ -367,33 +433,37 @@ def collect_eval_samples(args: argparse.Namespace, model_args: SimpleNamespace) 
             f"Warning: selected evaluation subset only provides up to {selected_frame_cap} frames. "
             f"Evaluation will use {selected_frame_cap} frames."
         )
+    
     motion_dataset.reset_max_len(max(20, effective_num_frames))
     cond_dict = motion_dataset.cond_dict
+
+    eligible_motions = []
+    for motion_name, motion_length in zip(motion_dataset.name_list, motion_dataset.length_arr):
+        motion_length = int(motion_length)
+        eligible_motions.append((motion_name, motion_length))
+
+    if not eligible_motions:
+        raise RuntimeError(f"No suitable motions found for virtual sampling. Required effective num_frames: {effective_num_frames}")
+
     samples = []
-    for sample_index, (motion, cond) in enumerate(data):
-        cond_cpu = clone_batch_cond(cond)
-        object_type = cond_cpu["y"]["object_type"][0]
-        samples.append(
-            {
-                "sample_index": sample_index,
-                "motion": motion.detach().clone().float(),
-                "cond": cond_cpu,
-                "motion_name": cond_cpu["y"]["motion_name"][0],
-                "object_type": object_type,
-                "n_joints": int(cond_cpu["y"]["n_joints"][0].item()),
-                "length": int(cond_cpu["y"]["lengths"][0].item()),
-                "parents": [int(parent) for parent in cond_dict[object_type]["parents"]],
-                "offsets": cond_dict[object_type]["offsets"],
-                "joints_names": cond_dict[object_type]["joints_names"],
-                "mean": cond_dict[object_type]["mean"].astype(np.float32),
-                "std": cond_dict[object_type]["std"].astype(np.float32) + 1e-6,
-            }
+    while len(samples) < args.num_eval_samples:
+        motion_name, motion_length = rng.choice(eligible_motions)
+        max_start = max(0, motion_length - effective_num_frames)
+        window_start = rng.randint(0, max_start) if max_start > 0 else 0
+        sample = build_virtual_eval_sample(
+            motion_dataset=motion_dataset,
+            cond_dict=cond_dict,
+            motion_name=motion_name,
+            window_start=window_start,
         )
-        if len(samples) >= args.num_eval_samples:
-            break
+        sample["sample_index"] = len(samples)
+        samples.append(sample)
 
     if not samples:
         raise RuntimeError("No evaluation samples were collected.")
+
+    if verbose:
+        print(f"[PROGRESS] Collected {len(samples)} virtual samples")
     return samples
 
 
@@ -424,78 +494,83 @@ def stage1_sampling_eval(
     checkpoint_state = {key: value.detach().cpu() for key, value in model.state_dict().items()}
     eval_model, eval_diffusion = build_eval_model_and_diffusion(model_args, checkpoint_state, args, device)
 
-    exported_samples = []
-    failures = []
+    exported_samples: list[dict[str, object]] = []
+    failures: list[dict[str, str]] = []
+    lock = threading.Lock()
+    total = len(selected_samples)
 
-    print(f"[PROGRESS] Starting sampling evaluation with {args.num_trials} trials and {len(selected_samples)} samples...")
+    print(
+        f"[PROGRESS] Starting sampling evaluation: {total} samples, "
+        f"{args.num_threads} thread(s) ..."
+    )
 
-    for trial_index in range(args.num_trials):
-        trial_seed = args.base_seed + trial_index
-        fixseed(trial_seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(trial_seed)
+    def process_sample(sample_index: int) -> None:
+        sample = selected_samples[sample_index]
+        sample_seed = args.base_seed + sample_index
+        fixseed(sample_seed)
 
-        total_batches = (len(selected_samples) + args.eval_batch_size - 1) // args.eval_batch_size
-        for batch_start in range(0, len(selected_samples), args.eval_batch_size):
-            batch_samples = selected_samples[batch_start:batch_start + args.eval_batch_size]
-            motion_cpu, cond_cpu = combine_batch_samples(batch_samples)
-            motion = motion_cpu.to(device, non_blocking=device.type == "cuda")
-            cond = move_cond_to_device(cond_cpu, device)
-            print(f"[PROGRESS] Trial {trial_index:02d} - Batch {batch_start//args.eval_batch_size + 1}/{total_batches} ...", end='\r', flush=True)
+        motion_cpu, cond_cpu = combine_batch_samples([sample])
+        motion = motion_cpu.to(device, non_blocking=device.type == "cuda")
+        cond = move_cond_to_device(cond_cpu, device)
 
-            with torch.inference_mode():
-                generated = sample_motion_batch(
-                    eval_diffusion,
-                    eval_model,
-                    motion.shape,
-                    cond,
-                    args.sampling_method,
-                    args.ddim_eta,
-                )
+        with torch.inference_mode():
+            generated = sample_motion_batch(
+                eval_diffusion,
+                eval_model,
+                motion.shape,
+                cond,
+                args.sampling_method,
+                args.ddim_eta,
+            )
 
-            for item_index, sample in enumerate(batch_samples):
-                global_index = batch_start + item_index
-                n_joints = int(sample["n_joints"])
-                length = int(sample["length"])
-                object_type = str(sample["object_type"])
+        n_joints = int(sample["n_joints"])
+        length = int(sample["length"])
+        object_type = str(sample["object_type"])
 
-                target_norm = motion_cpu[item_index, :n_joints, :, :length]
-                generated_norm = generated[item_index, :n_joints, :, :length].detach().cpu()
+        target_norm = motion_cpu[0, :n_joints, :, :length]
+        generated_norm = generated[0, :n_joints, :, :length].detach().cpu()
 
-                evaluation = evaluate_generated_prediction(
-                    target_norm=target_norm,
-                    generated_norm=generated_norm,
-                    n_joints=n_joints,
-                    mean=sample["mean"],
-                    std=sample["std"],
-                )
+        evaluation = evaluate_generated_prediction(
+            target_norm=target_norm,
+            generated_norm=generated_norm,
+            n_joints=n_joints,
+            mean=sample["mean"],
+            std=sample["std"],
+        )
 
-                if global_index < args.num_eval_samples:
-                    sample_dir = output_dir / "stage1_sampling_eval" / "trials" / f"trial_{trial_index:02d}" / f"sample_{global_index:03d}_{object_type}"
-                    try:
-                        sample_dir.mkdir(parents=True, exist_ok=True)
-                        export_trial_sample(
-                            sample_dir=sample_dir,
-                            parents=sample["parents"],
-                            offsets=sample["offsets"],
-                            joints_names=sample["joints_names"],
-                            target_motion=evaluation["target_denorm"].astype(np.float32),
-                            generated_motion=evaluation["generated_denorm"].astype(np.float32),
-                        )
-                        exported_samples.append(
-                            build_export_sample_record(
-                                sample=sample,
-                                sample_index=global_index,
-                                trial_index=trial_index,
-                                trial_seed=trial_seed,
-                                sample_dir=sample_dir,
-                            )
-                        )
-                    except Exception as exc:
-                        failures.append({"path": str(sample_dir), "error": str(exc)})
+        sample_dir = output_dir / "stage1_sampling_eval" / f"sample_{sample_index:03d}_{object_type}"
+        try:
+            sample_dir.mkdir(parents=True, exist_ok=True)
+            export_trial_sample(
+                sample_dir=sample_dir,
+                parents=sample["parents"],
+                offsets=sample["offsets"],
+                joints_names=sample["joints_names"],
+                target_motion=evaluation["target_denorm"].astype(np.float32),
+                generated_motion=evaluation["generated_denorm"].astype(np.float32),
+            )
+            record = build_export_sample_record(
+                sample=sample,
+                sample_index=sample_index,
+                sample_seed=sample_seed,
+                sample_dir=sample_dir,
+            )
+            with lock:
+                exported_samples.append(record)
+        except Exception as exc:
+            with lock:
+                failures.append({"path": str(sample_dir), "error": str(exc)})
 
-            print(f"\r[PROGRESS] Trial {trial_index:02d} - Batch {batch_start//args.eval_batch_size + 1}/{total_batches} ... Done")
-        print(f"[PROGRESS] Trial {trial_index:02d} complete. Aggregated metrics computed.")
+        print(f"[PROGRESS] Sample {sample_index:03d}/{total - 1:03d} done (seed={sample_seed})")
+
+    with ThreadPoolExecutor(max_workers=args.num_threads) as executor:
+        futures = {executor.submit(process_sample, i): i for i in range(total)}
+        for future in as_completed(futures):
+            exc = future.exception()
+            if exc is not None:
+                sample_index = futures[future]
+                with lock:
+                    failures.append({"path": f"sample_{sample_index:03d}", "error": str(exc)})
 
     return build_export_result(
         args=args,
@@ -536,7 +611,7 @@ def main() -> int:
     model.to(device)
     model.eval()
 
-    print(f"[PROGRESS] Collecting {args.num_eval_samples} evaluation samples from dataset...")
+    print(f"[PROGRESS] Collecting {args.num_eval_samples} samples using mode={args.sample_mode} ...")
     selected_samples = collect_eval_samples(args, model_args)
     print(f"[PROGRESS] Collected {len(selected_samples)} samples. Starting sampling evaluation...")
     
@@ -554,14 +629,15 @@ def main() -> int:
     run_info = {
         "model_path": str(Path(args.model_path).resolve()),
         "output_dir": str(output_dir),
-        "split": args.eval_split,
+        "split": "all",
         "objects_subset": model_args.objects_subset,
+        "sample_mode": args.sample_mode,
         "num_frames": int(model_args.num_frames),
         "dataset_max_motion_length": int(getattr(model_args, "dataset_max_motion_length", model_args.num_frames)),
         "selected_subset_max_motion_length": int(getattr(model_args, "selected_subset_max_motion_length", model_args.num_frames)),
         "effective_num_frames": int(getattr(model_args, "effective_num_frames", model_args.num_frames)),
         "selected_sample_count": len(selected_sample_manifest),
-        "num_trials": int(args.num_trials),
+        "num_threads": int(args.num_threads),
         "sampling_method": args.sampling_method,
         "sampling_steps": int(export_result["sampling_steps"]),
         "selection_seed": int(args.selection_seed),
@@ -584,8 +660,9 @@ def main() -> int:
             "model_path": run_info["model_path"],
             "split": run_info["split"],
             "objects_subset": run_info["objects_subset"],
+            "sample_mode": run_info["sample_mode"],
             "selected_sample_count": run_info["selected_sample_count"],
-            "num_trials": run_info["num_trials"],
+            "num_threads": run_info["num_threads"],
             "sampling_method": run_info["sampling_method"],
             "sampling_steps": run_info["sampling_steps"],
         },
@@ -603,8 +680,7 @@ def main() -> int:
 
     print(
         "[SUMMARY] Exported "
-        f"{summary_report['exports']['exported_samples']} samples across "
-        f"{summary_report['exports']['num_trials']} trials "
+        f"{summary_report['exports']['exported_samples']} samples "
         f"({summary_report['exports']['failed_exports']} failures)."
     )
 

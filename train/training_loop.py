@@ -120,7 +120,7 @@ class TrainLoop:
                 prefetch_factor=self.args.prefetch_factor,
                 sample_limit=self.args.sample_limit,
                 shuffle=False,
-                drop_last=False,
+                drop_last=getattr(self.args, 'drop_last', False),
                 use_reference_conditioning=getattr(self.args, 'use_reference_conditioning', True),
                 action_tags=getattr(self.args, 'action_tags', ''),
                 motion_cache_size=getattr(self.args, 'motion_cache_size', 0),

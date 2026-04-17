@@ -110,8 +110,8 @@ def add_data_options(parser):
     group = parser.add_argument_group('dataset')
     group.add_argument("--data_dir", default="", type=str,
                        help="If empty, will use defaults according to the specified dataset.")
-    group.add_argument("--objects_subset", default='all', choices=['all', 'quadropeds', 'flying', 'bipeds', 'millipeds', 'millipeds_snakes', 'quadropeds_clean', 'millipeds_clean', 'flying_clean', 'bipeds_clean', 'all_clean'], type=str,
-                       help="Object subset.")
+    group.add_argument("--objects_subset", default='all', type=str,
+                       help="Object subset. Can be a predefined category (e.g. 'all', 'quadropeds', 'flying', 'bipeds', 'millipeds', etc.) or a single species name (e.g. 'Horse', 'Dragon').")
     group.add_argument("--action_tags", default='', type=str,
                        help="Comma-separated action tags used to keep only motions whose metadata tags match, e.g. 'locomotion,attack'.")
     group.add_argument("--fixed_motion", default='', type=str,
@@ -188,6 +188,9 @@ def add_training_options(parser):
                        help="If True, will use EMA model averaging.")
     group.add_argument("--balanced", action='store_true',
                        help="Use balancing sampler for fairness between topologies")
+    group.add_argument("--drop_last", action='store_true', default=False,
+                       help="Drop the last incomplete batch at the end of each epoch. "
+                            "False means the last batch may be smaller than the others.")
 
 def add_two_stage_options(parser):
     group = parser.add_argument_group('two_stage')

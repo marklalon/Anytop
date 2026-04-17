@@ -97,6 +97,7 @@ def create_training_data_loader(args):
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor,
         sample_limit=args.sample_limit,
+        drop_last=getattr(args, 'drop_last', False),
         use_reference_conditioning=getattr(args, 'use_reference_conditioning', True),
         action_tags=getattr(args, 'action_tags', ''),
         motion_cache_size=getattr(args, 'motion_cache_size', 0),

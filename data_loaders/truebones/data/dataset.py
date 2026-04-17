@@ -18,7 +18,7 @@ from data_loaders.truebones.offline_reference_dataset import load_corrupted_refe
 from model.conditioners import T5Conditioner
 
 
-DEFAULT_SPLIT_RATIOS = {"train": 0.9, "val": 0.05, "test": 0.05}
+DEFAULT_SPLIT_RATIOS = {"train": 1.0, "val": 0.0, "test": 0.0}
 DEFAULT_SPLIT_SEED = 3407
 SUPPORTED_SPLITS = tuple(DEFAULT_SPLIT_RATIOS.keys())
 ALL_SPLIT_NAME = "all"
@@ -637,7 +637,12 @@ class Truebones(data.Dataset):
         self.opt.fixed_motion = self.fixed_motion
         self.opt.fixed_window_start = self.fixed_window_start
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
-        subset = opt.subsets_dict[self.objects_subset] 
+        # Support both predefined subsets and single species names
+        if self.objects_subset in opt.subsets_dict:
+            subset = opt.subsets_dict[self.objects_subset]
+        else:
+            # Treat as a single species name
+            subset = [self.objects_subset]
         cond_dict = {k:cond_dict[k] for k in subset if k in cond_dict}
         cond_dict = attach_joint_name_embeddings(cond_dict, opt.cond_file, opt.data_root, t5_name)
         for object_type, cond in cond_dict.items():
