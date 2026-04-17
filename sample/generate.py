@@ -67,7 +67,8 @@ def main(args = None, cond_dict = None):
     t5_conditioner = T5Conditioner(name=args.t5_name, finetune=False, word_dropout=0.0, normalize_text=False, device='cuda')
     model.to(dist_util.dev())
     model.eval()  # disable random masking
-    _, model_kwargs = create_condition(object_types, cond_dict, n_frames, args.temporal_window, t5_conditioner=t5_conditioner, max_joints=opt.max_joints, feature_len=opt.feature_len)
+    action_category = getattr(args, 'action_category', None) or None
+    _, model_kwargs = create_condition(object_types, cond_dict, n_frames, args.temporal_window, t5_conditioner=t5_conditioner, max_joints=opt.max_joints, feature_len=opt.feature_len, action_category=action_category)
 
 
     for rep_i in range(args.num_repetitions):
@@ -114,7 +115,18 @@ def encode_joints_names(joints_names, t5_conditioner): # joints names should be 
         embs = t5_conditioner(names_tokens)
         return embs
     
-def create_condition(object_types, cond_dict, n_frames, temporal_window, t5_conditioner, max_joints, feature_len):
+def create_condition(object_types, cond_dict, n_frames, temporal_window, t5_conditioner, max_joints, feature_len, action_category=None):
+    """Build model_kwargs for a batch of object_types.
+
+    Args:
+        action_category (str | None): Optional action category to condition
+            generation on (e.g. ``'locomotion'``, ``'attack'``). Must be one
+            of the 12 known tags: attack, death, emote, fall, jump,
+            locomotion, other, pose, posture, reaction, rise, turn.
+            When provided, the action embedding is injected into each sample
+            in the batch. Only effective if the model was trained with
+            ``--use_action_cond``.
+    """
     batches = list()
     for object_type in object_types:
         if object_type not in cond_dict:
@@ -149,8 +161,17 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, t5_cond
         batch.append(mean)
         batch.append(std)
         batch.append(max_joints)
+        # Inject action condition metadata so truebones_batch_collate picks it up.
+        # b[-2] must be a dict with 'action_category' or 'species_label' (len >= 16).
+        tag = str(action_category).strip().lower() if action_category else None
+        motion_metadata = {
+            'action_category': tag,
+            'action_tags': [tag] if tag else [],
+        }
+        batch.append(motion_metadata)   # index 14: detected as b[-2] when len==16
+        batch.append(object_type)       # index 15: used as motion_name string
         batches.append(batch)
-        
+
     return truebones_batch_collate(batches)
 
 

@@ -105,6 +105,10 @@ def add_model_options(parser):
                        help="If passed, graph multihead attention learns GRPE value embeddings")
     group.add_argument("--dropout_prob", default=0.1, type=float,
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
+    group.add_argument("--use_action_cond", action='store_true',
+                       help="If passed, enables action-tag conditioning. The model learns a small embedding "
+                            "for the 12 known action categories and adds it to all tokens in the input process. "
+                            "Classifier-free guidance dropout is applied at the rate of --cond_mask_prob.")
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')
@@ -248,7 +252,12 @@ def add_generate_options(parser):
                             "Maximum is 9.8 for HumanML3D (text-to-motion), and 2.0 for HumanAct12 (action-to-motion)")
     group.add_argument("--object_type", default=['Flamingo'], type=str, nargs='+',
                        help="An object type to be generated. If empty, will generate flamingo :).")
-    
+    group.add_argument("--action_category", default='', type=str,
+                       help="Action category to condition generation on. Must be one of the 12 known tags: "
+                            "attack, death, emote, fall, jump, locomotion, other, pose, posture, reaction, rise, turn. "
+                            "Only effective when the model was trained with --use_action_cond. "
+                            "Leave empty for unconditional generation.")
+
 def add_dift_options(parser):
     # bvhs_dir, sample_bvh, face_joints, save_dir=None, tpos_bvh=None
     group = parser.add_argument_group('dift')
@@ -286,6 +295,8 @@ def add_edit_options(parser):
                     help="samples npy")
     group.add_argument("--object_type", default='Flamingo', type=str,
                     help="An object type to be generated. If empty, will generate flamingo :).")
+    group.add_argument("--target_frames", default=0, type=int,
+                       help="Optional target frame count for edited output. 0 keeps the input sample length. When set, the reference motion is linearly resampled to this length before prefix/suffix inpainting is applied.")
     group.add_argument("--upper_body_root", default=[0], type=int, nargs='+',
                        help="defines the root joints of the upper body for upper_body editing mode.")
     group.add_argument("--unique_str", default='', type=str, help="A string to be added to the file name to identify a specific change. Should start with '_'.")

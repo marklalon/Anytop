@@ -3,11 +3,18 @@
 Generate a large batch of image samples from a model and save them as a large
 numpy array. This can be used to produce samples for FID evaluation.
 """
+import sys
+import os
+
+# Ensure parent directory is in path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from utils.fixseed import fixseed
 import os
 from os.path import join as pjoin
 import numpy as np
 import torch
+import torch.nn.functional as F
 from utils.parser_util import edit_args
 from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
 from utils import dist_util
@@ -69,13 +76,22 @@ def main(args = None, cond_dict = None):
         args.temporal_window,
         t5_conditioner,
         max_joints=opt.max_joints, 
-        feature_len=opt.feature_len
+        feature_len=opt.feature_len,
+        target_frames=args.target_frames,
     )
     motions = motions.to(dist_util.dev())
     max_frames = motions.shape[-1]
     # add inpainting mask according to args
     model_kwargs["y"]["inpainted_motion"] = motions
     if args.edit_mode == "in_between":
+        if not 0.0 <= args.prefix_end <= 1.0:
+            raise ValueError(f"prefix_end must be within [0, 1], got {args.prefix_end}.")
+        if not 0.0 <= args.suffix_start <= 1.0:
+            raise ValueError(f"suffix_start must be within [0, 1], got {args.suffix_start}.")
+        if args.prefix_end > args.suffix_start:
+            raise ValueError(
+                f"prefix_end ({args.prefix_end}) cannot be greater than suffix_start ({args.suffix_start})."
+            )
         model_kwargs["y"]["inpainting_mask"] = torch.ones_like(
             motions, dtype=torch.bool, device=motions.device
         )  # True means use gt motion
@@ -130,7 +146,7 @@ def main(args = None, cond_dict = None):
             object_type = model_kwargs["y"]["object_type"][i]
             parents = model_kwargs["y"]["parents"][i]
             mean = cond_dict[object_type]["mean"][None, :]
-            std = cond_dict[object_type]["std"][None, :]
+            std = cond_dict[object_type].get("std_safe", cond_dict[object_type]["std"])[None, :]
             inpaint_mask = model_kwargs["y"]["inpainting_mask"][i].any(dim=1)	
             joint2color = {
                 frame: {
@@ -160,24 +176,38 @@ def encode_joints_names(joints_names, t5_conditioner): # joints names should be 
         names_tokens = t5_conditioner.tokenize(joints_names)
         embs = t5_conditioner(names_tokens)
         return embs
+
+def resize_motion_frames(motion, target_frames):
+    motion = np.asarray(motion, dtype=np.float32)
+    if target_frames <= 0 or motion.shape[0] == target_frames:
+        return motion
+    if motion.shape[0] == 1:
+        return np.repeat(motion, target_frames, axis=0)
+
+    motion_tensor = torch.from_numpy(motion).permute(1, 2, 0).reshape(1, -1, motion.shape[0])
+    resized = F.interpolate(motion_tensor, size=target_frames, mode="linear", align_corners=False)
+    return resized.reshape(motion.shape[1], motion.shape[2], target_frames).permute(2, 0, 1).cpu().numpy()
     
-def prepare_inpainting_inputs(motions, object_type, cond_dict, temporal_window, t5_conditioner, max_joints, feature_len):
+def prepare_inpainting_inputs(motions, object_type, cond_dict, temporal_window, t5_conditioner, max_joints, feature_len, target_frames=0):
     batches = list()
+    mean = np.asarray(cond_dict['mean'], dtype=np.float32)
+    std = np.asarray(cond_dict.get('std_safe', cond_dict['std']), dtype=np.float32)
+    tpos_first_frame = cond_dict.get('tpos_first_frame_normalized')
+    if tpos_first_frame is None:
+        tpos_first_frame = (np.asarray(cond_dict['tpos_first_frame'], dtype=np.float32) - mean) / (std + 1e-6)
+    tpos_first_frame = np.nan_to_num(tpos_first_frame)
     for motion in motions:
-        n_frames = motion.shape[0]
+        prepared_motion = resize_motion_frames(motion, target_frames)
+        prepared_motion = np.nan_to_num((prepared_motion - mean[None, :]) / (std[None, :] + 1e-6)).astype(np.float32, copy=False)
+        n_frames = prepared_motion.shape[0]
         batch = list()
         parents = cond_dict['parents']
         n_joints = len(parents)
-        mean = cond_dict['mean']
-        std = cond_dict['std']
-        tpos_first_frame = cond_dict['tpos_first_frame']
-        tpos_first_frame =  (tpos_first_frame - mean) / (std + 1e-6)
-        tpos_first_frame = np.nan_to_num(tpos_first_frame)
         joint_relations = cond_dict['joint_relations']
         joints_graph_dist = cond_dict['joints_graph_dist']
         offsets = cond_dict['offsets']
         joints_names_embs = encode_joints_names(cond_dict['joints_names'] , t5_conditioner).detach().cpu().numpy()
-        batch.append(np.zeros((n_frames, n_joints, feature_len)))
+        batch.append(prepared_motion)
         batch.append(n_frames)
         batch.append(parents)
         batch.append(tpos_first_frame)

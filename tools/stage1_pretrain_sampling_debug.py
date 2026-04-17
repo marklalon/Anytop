@@ -78,6 +78,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sampling-steps", default=0, type=int, help="Respaced diffusion steps. 0 keeps the checkpoint diffusion step count.")
     parser.add_argument("--ddim-eta", default=0.0, type=float, help="DDIM eta parameter.")
     parser.add_argument("--no-ema", action="store_true", help="Disable EMA model averaging and use raw model weights instead.")
+    parser.add_argument("--action_category", default="", help="Action category to condition generation on, e.g. 'locomotion'. "
+                        "Must be one of: attack, death, emote, fall, jump, locomotion, other, pose, posture, reaction, rise, turn. "
+                        "Overrides action_tags in each sample's condition. Only effective when the model was trained with --use_action_cond.")
     return parser.parse_args()
 
 
@@ -96,6 +99,7 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
         model_args = SimpleNamespace(**json.load(handle))
 
     model_args.action_tags = getattr(model_args, "action_tags", "")
+    model_args.action_category = str(getattr(args, "action_category", "") or "").strip().lower()
 
     model_args.model_path = str(model_path)
     model_args.device = args.device
@@ -510,6 +514,11 @@ def stage1_sampling_eval(
         fixseed(sample_seed)
 
         motion_cpu, cond_cpu = combine_batch_samples([sample])
+        # Override action condition if --action_category was specified.
+        action_category = str(getattr(model_args, "action_category", "") or "").strip().lower()
+        if action_category:
+            cond_cpu["y"]["action_tags"] = [[action_category]]
+            cond_cpu["y"]["action_category"] = [action_category]
         motion = motion_cpu.to(device, non_blocking=device.type == "cuda")
         cond = move_cond_to_device(cond_cpu, device)
 
@@ -645,6 +654,7 @@ def main() -> int:
         "num_eval_samples": int(args.num_eval_samples),
         "fixed_motion": str(getattr(model_args, "fixed_motion", "")),
         "fixed_window_start": int(getattr(model_args, "fixed_window_start", 0)),
+        "action_category": str(getattr(model_args, "action_category", "")),
         "disable_reference_branch": bool(model_args.disable_reference_branch),
         "stage1_checkpoint_validated": True,
         "stage1_semantics": {

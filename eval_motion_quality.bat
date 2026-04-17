@@ -2,7 +2,7 @@
 setlocal
 
 set SCRIPT_DIR=%~dp0
-set RUN_NAME=stage1_tiny_overfit_horse_locomotion_pose_v1
+set RUN_NAME=stage1_tiny_overfit_horse_locomotion_pose_v3
 set OUTPUT_DIR=%SCRIPT_DIR%outputs\%RUN_NAME%
 set CLEAN_DIR=%OUTPUT_DIR%\stage1_sampling_eval
 set GENERATED_DIR=%OUTPUT_DIR%\stage1_sampling_eval

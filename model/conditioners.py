@@ -247,6 +247,90 @@ class BaseConditioner(nn.Module):
         """
         raise NotImplementedError()
 
+KNOWN_ACTION_TAGS = [
+    'attack', 'death', 'emote', 'fall', 'jump', 'locomotion',
+    'other', 'pose', 'posture', 'reaction', 'rise', 'turn',
+]
+
+
+class ActionTagConditioner(nn.Module):
+    """Embeds a list of action tags (per batch item) into a fixed-size dense vector.
+
+    At training time the action_tags from motion_metadata are used.
+    At eval/generate time an action_category string (which shares the same
+    vocabulary as action_tags) can be passed in as a single-element list.
+
+    Classifier-free guidance is applied during training by zeroing the
+    embedding with probability ``cond_mask_prob``.
+
+    Args:
+        latent_dim (int): Output embedding dimension.
+        cond_mask_prob (float): Probability of nullifying the condition
+            during training (CFG dropout). Default: 0.1.
+    """
+
+    PAD_IDX: int = 0
+
+    def __init__(self, latent_dim: int, cond_mask_prob: float = 0.1) -> None:
+        super().__init__()
+        self.tag2idx: tp.Dict[str, int] = {
+            tag: i + 1 for i, tag in enumerate(KNOWN_ACTION_TAGS)
+        }
+        self.vocab_size = len(KNOWN_ACTION_TAGS) + 1  # +1 for PAD at index 0
+        self.latent_dim = latent_dim
+        self.cond_mask_prob = cond_mask_prob
+        self.embedding = nn.Embedding(self.vocab_size, latent_dim, padding_idx=self.PAD_IDX)
+        self.proj = nn.Linear(latent_dim, latent_dim)
+
+    def _tags_to_tensor(
+        self,
+        tags_batch: tp.List[tp.Optional[tp.Union[str, tp.List[str]]]],
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Convert a batch of tag lists to a pooled embedding [B, latent_dim]."""
+        B = len(tags_batch)
+        max_tags = max(
+            (len(t) if isinstance(t, (list, tuple)) else (1 if t else 0) for t in tags_batch),
+            default=0,
+        )
+        if max_tags == 0:
+            return torch.zeros(B, self.latent_dim, device=device)
+
+        indices = torch.zeros(B, max_tags, dtype=torch.long, device=device)
+        valid_mask = torch.zeros(B, max_tags, device=device)
+
+        for i, tags in enumerate(tags_batch):
+            if tags is None:
+                continue
+            if isinstance(tags, str):
+                tags = [tags]
+            for j, tag in enumerate(tags):
+                idx = self.tag2idx.get(str(tag).strip().lower(), self.PAD_IDX)
+                indices[i, j] = idx
+                if idx != self.PAD_IDX:
+                    valid_mask[i, j] = 1.0
+
+        embs = self.embedding(indices)  # [B, max_tags, latent_dim]
+        denom = valid_mask.sum(dim=1, keepdim=True).clamp(min=1.0)
+        pooled = (embs * valid_mask.unsqueeze(-1)).sum(dim=1) / denom  # [B, latent_dim]
+        return self.proj(pooled)
+
+    def forward(
+        self,
+        tags_batch: tp.List[tp.Optional[tp.Union[str, tp.List[str]]]],
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Return action condition embedding [B, latent_dim].
+
+        Applies CFG dropout (zeros the embedding) during training.
+        """
+        emb = self._tags_to_tensor(tags_batch, device)
+        if self.training and self.cond_mask_prob > 0.0:
+            keep = (torch.rand(emb.shape[0], 1, device=device) >= self.cond_mask_prob).float()
+            emb = emb * keep
+        return emb
+
+
 class TextConditioner(BaseConditioner):
     ...
 
