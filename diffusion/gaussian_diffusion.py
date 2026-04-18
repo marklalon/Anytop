@@ -127,12 +127,18 @@ class GaussianDiffusion:
         loss_type,
         rescale_timesteps=False,
         lambda_geo=0.,
+        joint_mask_prob=0.,
+        joint_mask_max_frac=0.3,
+        lambda_vel=0.,
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
         self.loss_type = loss_type
         self.rescale_timesteps = rescale_timesteps
         self.lambda_geo = lambda_geo
+        self.joint_mask_prob = joint_mask_prob
+        self.joint_mask_max_frac = joint_mask_max_frac
+        self.lambda_vel = lambda_vel
 
         # Use float64 for accuracy.
         betas = np.array(betas, dtype=np.float64)
@@ -247,6 +253,20 @@ class GaussianDiffusion:
         loss = sum_flat(spat_temp_masked_loss)  # gives \sigma_euclidean over unmasked elements
         non_zero_elements = (lengths * n_joints).float()
         loss_val = loss / non_zero_elements
+        return loss_val
+
+    def velocity_consistency_loss(self, model_output, temp_mask, spat_mask, lengths, n_joints):
+        # model_output: [bs, njoints, nfeats, nframes] (denormalized)
+        # vel[t] should equal pos[t+1] - pos[t]; enforce this across all valid frames.
+        pos = model_output[:, :, 0:3, :]    # [bs, njoints, 3, nframes]
+        vel = model_output[:, :, 9:12, :]   # [bs, njoints, 3, nframes]
+        finite_diff = pos[:, :, :, 1:] - pos[:, :, :, :-1]  # [bs, njoints, 3, nframes-1]
+        pred_vel    = vel[:, :, :, :-1]                       # [bs, njoints, 3, nframes-1]
+        loss = (finite_diff - pred_vel) ** 2
+        # Align masks to nframes-1 (drop last time-step)
+        temp_shifted = temp_mask[:, :, :, :-1]                                  # [bs, 1, 1, nframes-1]
+        valid = temp_shifted.float() * spat_mask.float().transpose(1, 3)        # [bs, njoints, 1, nframes-1]
+        loss_val = (loss * valid).sum() / (valid.sum() * 3).clamp(min=1)
         return loss_val
 
     def q_mean_variance(self, x_start, t):
@@ -1507,6 +1527,21 @@ class GaussianDiffusion:
             noise = th.randn_like(x_start)
         x_t = self.q_sample(x_start, t, noise=noise)
 
+        # Joint masking: replace a random subset of non-root joints with fresh Gaussian
+        # noise so the model must reconstruct them from context joints + skeleton structure.
+        if self.joint_mask_prob > 0.0:
+            x_t = x_t.clone()
+            for i in range(x_t.shape[0]):
+                if th.rand(1).item() > self.joint_mask_prob:
+                    continue
+                n_valid = int(actual_joints[i].item()) if hasattr(actual_joints[i], 'item') else int(actual_joints[i])
+                n_candidates = n_valid - 1  # exclude root (index 0)
+                if n_candidates < 1:
+                    continue
+                n_mask = max(1, int(math.ceil(self.joint_mask_max_frac * n_candidates)))
+                perm = th.randperm(n_candidates, device=x_t.device)[:n_mask] + 1
+                x_t[i, perm, :, :] = th.randn_like(x_t[i, perm, :, :])
+
         terms = {}
 
         if self.loss_type == LossType.KL or self.loss_type == LossType.RESCALED_KL:
@@ -1562,9 +1597,13 @@ class GaussianDiffusion:
             model_output = (model_output * std) + mean 
             
             # # calc all loss terms 
-            if self.lambda_geo > 0.:    
+            if self.lambda_geo > 0.:
                 terms["geodesic_loss"] = self.geodesic_loss(target, model_output, mask, joints_mask, lengths, actual_joints)
                 terms["loss"] = terms["loss"] + self.lambda_geo * terms["geodesic_loss"]
+
+            if self.lambda_vel > 0.:
+                terms["vel_loss"] = self.velocity_consistency_loss(model_output, mask, joints_mask, lengths, actual_joints)
+                terms["loss"] = terms["loss"] + self.lambda_vel * terms["vel_loss"]
 
         else:
             raise NotImplementedError(self.loss_type)
