@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=stage1_tiny_overfit_horse_locomotion_pose_v3
+set RUN_NAME=stage1_tiny_overfit_horse_locomotion_pose_v5
 
 pushd "%SCRIPT_DIR%"
 
@@ -19,8 +19,8 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--num_frames 60 ^
 	--stage1_batch_size 4 ^
 	--stage1_lr 5e-5 ^
-	--stage1_num_steps 50000 ^
-	--dropout_prob 0.0 ^
+	--stage1_num_steps 30000 ^
+	--dropout_prob 0.1 ^
 	--lambda_geo 0.0 ^
 	--save_interval 2000 ^
 	--log_interval 100 ^

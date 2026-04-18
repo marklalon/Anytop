@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.fixseed import fixseed
 import numpy as np
 import torch
+import torch.nn as nn
 from utils.parser_util import generate_args
 from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
 from utils import dist_util
@@ -22,6 +23,39 @@ from os.path import join as pjoin
 from model.conditioners import T5Conditioner
 from motion_lib import BVH
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
+
+class _CFGWrapper(nn.Module):
+    """Wraps a model for classifier-free guidance at inference time.
+
+    Performs two forward passes per denoising step (conditioned and
+    unconditioned) and returns the linearly extrapolated prediction:
+        out = out_uncond + guidance_scale * (out_cond - out_uncond)
+
+    The unconditioned pass is obtained by zeroing the action-tag condition
+    (empty action_tags list → zero embedding from ActionTagConditioner).
+    All structural conditions (skeleton topology, T-pose, joint names) are
+    kept unchanged in both passes.
+    """
+
+    def __init__(self, model: nn.Module, guidance_scale: float) -> None:
+        super().__init__()
+        self.model = model
+        self.guidance_scale = guidance_scale
+
+    @property
+    def feature_len(self) -> int:
+        return self.model.feature_len
+
+    def forward(self, x: torch.Tensor, timesteps: torch.Tensor, **model_kwargs) -> torch.Tensor:
+        out_cond = self.model(x, timesteps, **model_kwargs)
+        if self.guidance_scale == 1.0:
+            return out_cond
+        bs = x.shape[0]
+        y = model_kwargs.get("y", {})
+        y_uncond = {**y, "action_tags": [[] for _ in range(bs)], "action_category": [None] * bs}
+        out_uncond = self.model(x, timesteps, **{**model_kwargs, "y": y_uncond})
+        return out_uncond + self.guidance_scale * (out_cond - out_uncond)
+
 
 def main(args = None, cond_dict = None):
     if args is None:
@@ -67,6 +101,10 @@ def main(args = None, cond_dict = None):
     t5_conditioner = T5Conditioner(name=args.t5_name, finetune=False, word_dropout=0.0, normalize_text=False, device='cuda')
     model.to(dist_util.dev())
     model.eval()  # disable random masking
+    guidance_scale = float(getattr(args, 'guidance_scale', 1.0))
+    if guidance_scale != 1.0:
+        print(f"CFG enabled: guidance_scale={guidance_scale}")
+        model = _CFGWrapper(model, guidance_scale)
     action_category = getattr(args, 'action_category', None) or None
     _, model_kwargs = create_condition(object_types, cond_dict, n_frames, args.temporal_window, t5_conditioner=t5_conditioner, max_joints=opt.max_joints, feature_len=opt.feature_len, action_category=action_category)
 

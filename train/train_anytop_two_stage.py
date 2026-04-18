@@ -56,7 +56,6 @@ def _build_stage_args(base_args, stage_name, save_dir):
 
     if stage_name == 'stage1':
         stage_args.train_split = 'all'
-        stage_args.cond_mask_prob = 0.0
         if base_args.stage1_resume_checkpoint:
             stage_args.resume_checkpoint = base_args.stage1_resume_checkpoint
     else:

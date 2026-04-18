@@ -83,9 +83,10 @@ def add_model_options(parser):
     group.add_argument("--latent_dim", default=128, type=int,
                        help="Transformer/GRU width.")
     group.add_argument("--cond_mask_prob", default=.1, type=float,
-                       help="Reserved classifier-free condition masking probability."
-                           " The current AnyTop training path stores this value in args but does not apply masking automatically.")
-    group.add_argument("--lambda_fs", default=0.0, type=float, help="Foot contact loss.")
+                       help="Classifier-free guidance dropout probability. Only consumed when"
+                            " --use_action_cond is set: ActionTagConditioner zeros the action embedding"
+                            " with this probability during training so inference-time guidance_scale != 1.0"
+                            " has a valid unconditional branch.")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Foot contact loss.")
     group.add_argument("--t5_name", default='t5-base', choices=["t5-small", "t5-base", "t5-large", "t5-3b", "t5-11b",
               "google/flan-t5-small", "google/flan-t5-base", "google/flan-t5-large",
@@ -248,6 +249,12 @@ def add_generate_options(parser):
                             "attack, death, emote, fall, jump, locomotion, other, pose, posture, reaction, rise, turn. "
                             "Only effective when the model was trained with --use_action_cond. "
                             "Leave empty for unconditional generation.")
+    group.add_argument("--guidance_scale", default=1.0, type=float,
+                       help="Classifier-free guidance scale for inference. 1.0 disables CFG. "
+                            "Values > 1 sharpen the conditional distribution and improve within-category "
+                            "diversity by amplifying the difference between conditioned and unconditioned "
+                            "predictions. Typical range: 1.5–5.0. Only effective when the model was "
+                            "trained with --dropout_prob > 0 and --use_action_cond.")
 
 def add_dift_options(parser):
     # bvhs_dir, sample_bvh, face_joints, save_dir=None, tpos_bvh=None

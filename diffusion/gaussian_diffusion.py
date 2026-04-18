@@ -127,14 +127,12 @@ class GaussianDiffusion:
         loss_type,
         rescale_timesteps=False,
         lambda_geo=0.,
-        lambda_fs=0.,
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
         self.loss_type = loss_type
         self.rescale_timesteps = rescale_timesteps
         self.lambda_geo = lambda_geo
-        self.lambda_fs = lambda_fs # deprecated, not used
 
         # Use float64 for accuracy.
         betas = np.array(betas, dtype=np.float64)
