@@ -43,7 +43,6 @@ def get_gmdm_args(args):
             'dropout': getattr(args, 'dropout_prob', 0.1), 'activation': "gelu", 'cond_mode': cond_mode,
             'cond_mask_prob': args.cond_mask_prob, 'max_joints': max_joints, 
             'feature_len':feature_len,  'skip_t5': args.skip_t5, 'value_emb': args.value_emb, 'root_input_feats': 13,
-            'disable_reference_branch': args.disable_reference_branch, 'reference_dropout_threshold': args.reference_dropout_threshold,
             'use_action_cond': getattr(args, 'use_action_cond', False)}
 
 def create_gaussian_diffusion(args):
@@ -80,6 +79,4 @@ def create_gaussian_diffusion(args):
         rescale_timesteps=rescale_timesteps,
         lambda_fs=args.lambda_fs,
         lambda_geo=args.lambda_geo,
-        lambda_confidence_recon=args.lambda_confidence_recon,
-        lambda_repair_recon=args.lambda_repair_recon,
     )

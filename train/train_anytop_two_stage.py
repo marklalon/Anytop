@@ -56,17 +56,11 @@ def _build_stage_args(base_args, stage_name, save_dir):
 
     if stage_name == 'stage1':
         stage_args.train_split = 'all'
-        stage_args.disable_reference_branch = True
-        stage_args.use_reference_conditioning = False
         stage_args.cond_mask_prob = 0.0
-        stage_args.lambda_confidence_recon = 0.0
-        stage_args.lambda_repair_recon = 0.0
         if base_args.stage1_resume_checkpoint:
             stage_args.resume_checkpoint = base_args.stage1_resume_checkpoint
     else:
         stage_args.train_split = 'train'
-        stage_args.disable_reference_branch = False
-        stage_args.use_reference_conditioning = True
         stage_args.load_optimizer_state = bool(base_args.stage2_load_optimizer_state)
         if base_args.stage2_resume_checkpoint:
             stage_args.resume_checkpoint = base_args.stage2_resume_checkpoint

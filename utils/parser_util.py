@@ -87,12 +87,6 @@ def add_model_options(parser):
                            " The current AnyTop training path stores this value in args but does not apply masking automatically.")
     group.add_argument("--lambda_fs", default=0.0, type=float, help="Foot contact loss.")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Foot contact loss.")
-    group.add_argument("--lambda_confidence_recon", default=5.0, type=float, help="Reference-preservation loss on reliable observed regions.")
-    group.add_argument("--lambda_repair_recon", default=1.0, type=float, help="Reconstruction loss focused on low-confidence and missing regions.")
-    group.add_argument("--disable_reference_branch", action='store_true',
-                       help="Disable the restoration reference branch and train only the AnyTop prior.")
-    group.add_argument("--reference_dropout_threshold", default=0.2, type=float,
-                       help="Reference confidence values below this threshold are treated as unusable during attention.")
     group.add_argument("--t5_name", default='t5-base', choices=["t5-small", "t5-base", "t5-large", "t5-3b", "t5-11b",
               "google/flan-t5-small", "google/flan-t5-base", "google/flan-t5-large",
               "google/flan-t5-xl", "google/flan-t5-xxl"], type=str,
@@ -122,9 +116,6 @@ def add_data_options(parser):
                        help="Optional fixed motion clip for deterministic tiny overfit/debug runs. Accepts a processed .npy name or a BVH/.npy path; BVH paths are mapped to the matching processed .npy clip.")
     group.add_argument("--fixed_window_start", default=0, type=int,
                        help="Start frame used when --fixed_motion is set and the motion is longer than num_frames. Use 0 for fixed window cropping, or -1 for random window cropping on every sample.")
-    group.add_argument("--use_reference_conditioning", action=argparse.BooleanOptionalAction, default=True,
-                       help="If False, skip loading offline corrupted reference motions and confidence masks.")
-
 def add_training_options(parser):
     group = parser.add_argument_group('training')
     group.add_argument("--save_dir", type=str,

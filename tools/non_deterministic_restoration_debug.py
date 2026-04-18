@@ -69,8 +69,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", default=DEFAULT_WEIGHT_DECAY, type=float, help="AdamW weight decay.")
     parser.add_argument("--schedule-sampler", default="uniform", help="Schedule sampler used for full-schedule timestep sampling during training.")
     parser.add_argument("--disable-train-shuffle", action="store_true", help="Disable shuffling for the training loader.")
-    parser.add_argument("--lambda-confidence-recon", default=None, type=float, help="Reliable-region preservation weight. Overrides checkpoint args when set.")
-    parser.add_argument("--lambda-repair-recon", default=None, type=float, help="Low-confidence repair reconstruction weight. Overrides checkpoint args when set.")
     parser.add_argument("--lambda-root", default=None, type=float, help="Root consistency weight. Overrides checkpoint args when set.")
     parser.add_argument("--lambda-velocity", default=None, type=float, help="Velocity consistency weight. Overrides checkpoint args when set.")
     parser.add_argument("--eval-split", default="train", choices=["train", "val", "test"], help="Dataset split used for post-training stochastic evaluation.")
@@ -111,8 +109,6 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
             sample_limit=args.sample_limit,
             latent_dim=DEFAULT_LATENT_DIM,
             layers=DEFAULT_LAYERS,
-            lambda_confidence_recon=2.0 if args.lambda_confidence_recon is None else args.lambda_confidence_recon,
-            lambda_repair_recon=1.0 if args.lambda_repair_recon is None else args.lambda_repair_recon,
             lambda_fs=0.0,
             lambda_geo=0.0,
             noise_schedule=DEFAULT_NOISE_SCHEDULE,
@@ -121,8 +117,6 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
             skip_t5=False,
             value_emb=False,
             diffusion_steps=DEFAULT_DIFFUSION_STEPS,
-            disable_reference_branch=False,
-            reference_dropout_threshold=0.05,
             timestep_respacing="",
         )
 
@@ -139,20 +133,12 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
     model_args.sigma_small = getattr(model_args, "sigma_small", DEFAULT_SIGMA_SMALL)
     model_args.lambda_fs = getattr(model_args, "lambda_fs", 0.0)
     model_args.lambda_geo = getattr(model_args, "lambda_geo", 0.0)
-    model_args.lambda_confidence_recon = getattr(model_args, "lambda_confidence_recon", 2.0)
-    model_args.lambda_repair_recon = getattr(model_args, "lambda_repair_recon", 1.0)
-    if args.lambda_confidence_recon is not None:
-        model_args.lambda_confidence_recon = args.lambda_confidence_recon
-    if args.lambda_repair_recon is not None:
-        model_args.lambda_repair_recon = args.lambda_repair_recon
     model_args.latent_dim = getattr(model_args, "latent_dim", DEFAULT_LATENT_DIM)
     model_args.layers = getattr(model_args, "layers", DEFAULT_LAYERS)
     model_args.cond_mask_prob = getattr(model_args, "cond_mask_prob", DEFAULT_COND_MASK_PROB)
     model_args.skip_t5 = getattr(model_args, "skip_t5", False)
     model_args.value_emb = getattr(model_args, "value_emb", False)
     model_args.diffusion_steps = getattr(model_args, "diffusion_steps", DEFAULT_DIFFUSION_STEPS)
-    model_args.disable_reference_branch = getattr(model_args, "disable_reference_branch", False)
-    model_args.reference_dropout_threshold = getattr(model_args, "reference_dropout_threshold", 0.05)
     model_args.timestep_respacing = getattr(model_args, "timestep_respacing", "")
     return model_args
 
@@ -843,10 +829,6 @@ def main() -> int:
         "schedule_sampler": args.schedule_sampler,
         "train_shuffle": not args.disable_train_shuffle,
         "final_training_loss": history[-1].get("loss") if history else None,
-        "lambda_confidence_recon": model_args.lambda_confidence_recon,
-        "lambda_repair_recon": model_args.lambda_repair_recon,
-        "preservation_confidence_threshold": diffusion.preservation_confidence_threshold,
-        "preservation_confidence_power": diffusion.preservation_confidence_power,
         "stochastic_eval": sampling_report,
     }
     with open(output_dir / "report.json", "w", encoding="utf-8") as handle:

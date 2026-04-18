@@ -18,9 +18,6 @@ from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood, geo
 from utils.rotation_conversions import rotation_6d_to_matrix_safe
 
 
-PRESERVATION_CONFIDENCE_THRESHOLD = 0.0
-PRESERVATION_CONFIDENCE_POWER = 1.0
-
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, scale_betas=1.):
     """
     Get a pre-defined beta schedule for the given name.
@@ -130,8 +127,6 @@ class GaussianDiffusion:
         loss_type,
         rescale_timesteps=False,
         lambda_geo=0.,
-        lambda_confidence_recon=0.,
-        lambda_repair_recon=0.,
         lambda_fs=0.,
     ):
         self.model_mean_type = model_mean_type
@@ -139,11 +134,7 @@ class GaussianDiffusion:
         self.loss_type = loss_type
         self.rescale_timesteps = rescale_timesteps
         self.lambda_geo = lambda_geo
-        self.lambda_confidence_recon = lambda_confidence_recon
-        self.lambda_repair_recon = lambda_repair_recon
         self.lambda_fs = lambda_fs # deprecated, not used
-        self.preservation_confidence_threshold = PRESERVATION_CONFIDENCE_THRESHOLD
-        self.preservation_confidence_power = PRESERVATION_CONFIDENCE_POWER
 
         # Use float64 for accuracy.
         betas = np.array(betas, dtype=np.float64)
@@ -213,14 +204,6 @@ class GaussianDiffusion:
         mse_loss_val = loss / non_zero_elements
         return mse_loss_val
 
-    def weighted_temporal_spatial_l2(self, a, b, temp_mask, spat_mask, weights):
-        if weights.dim() == 3:
-            weights = weights.unsqueeze(2)
-        combined_mask = temp_mask.float() * spat_mask.float().transpose(1, 3) * weights.float()
-        loss = sum_flat(self.l2_loss(a, b) * combined_mask)
-        denom = sum_flat(combined_mask) * a.size(2)
-        return loss / (denom + 1e-8)
-
     def weighted_feature_l2(self, a, b, weights):
         if weights.dim() == 3:
             weights = weights.unsqueeze(2)
@@ -228,27 +211,6 @@ class GaussianDiffusion:
         loss = sum_flat(weighted_loss)
         denom = sum_flat(weights.float()) * a.size(2)
         return loss / (denom + 1e-8)
-
-    def confidence_weights(self, confidence):
-        if confidence is None:
-            return None
-        return confidence.clamp(0.0, 1.0)
-
-    def apply_reference_fusion(self, prediction, reference_motion, confidence):
-        if reference_motion is None or confidence is None:
-            return prediction
-        reference_motion = reference_motion.to(prediction.device, dtype=prediction.dtype)
-        confidence = confidence.to(prediction.device, dtype=prediction.dtype)
-        reliability = self.confidence_weights(confidence)
-        return torch.lerp(prediction, reference_motion, reliability)
-
-    def get_reference_fusion_inputs(self, model_kwargs):
-        if not model_kwargs:
-            return None, None
-        conditioning = model_kwargs.get('y')
-        if conditioning is None:
-            return None, None
-        return conditioning.get('reference_motion'), conditioning.get('soft_confidence_mask')
 
     def quat_to_mat(self, qs):
         r = qs[..., 0]
@@ -1544,17 +1506,7 @@ class GaussianDiffusion:
         joints_mask = model_kwargs['y']['joints_mask'][:, :, :, 1, 1:]
         mean = model_kwargs['y']['mean'][..., None]
         std = model_kwargs['y']['std'][..., None]
-        confidence = model_kwargs['y'].get('soft_confidence_mask')
-        reference_motion = model_kwargs['y'].get('reference_motion')
-        if confidence is None:
-            confidence = torch.ones_like(x_start[:, :, :1, :])
-        confidence = confidence.clamp(0.0, 1.0)
-        reference_reliability = self.confidence_weights(confidence)
-        if reference_motion is None:
-            reference_motion = x_start
-        else:
-            reference_motion = reference_motion.to(x_start.device, dtype=x_start.dtype)
-        
+
         if model_kwargs is None:
             model_kwargs = {}
         if noise is None:
@@ -1610,15 +1562,7 @@ class GaussianDiffusion:
             terms["l_simple"] = self.temporal_spatial_masked_l2(target, model_output, mask, joints_mask, lengths, actual_joints)
             terms["loss"] = torch.zeros_like(terms["l_simple"])
             terms["loss"] = terms["loss"] + terms["l_simple"]
-            if self.lambda_confidence_recon > 0.:
-                reliable_weights = reference_reliability.clamp(min=0.0, max=1.0)
-                terms["confidence_recon_loss"] = self.weighted_temporal_spatial_l2(reference_motion, model_output, mask, joints_mask, reliable_weights)
-                terms["loss"] = terms["loss"] + self.lambda_confidence_recon * terms["confidence_recon_loss"]
-            if self.lambda_repair_recon > 0.:
-                repair_weights = (1.0 - reference_reliability).clamp(min=0.0, max=1.0)
-                terms["repair_recon_loss"] = self.weighted_temporal_spatial_l2(target, model_output, mask, joints_mask, repair_weights)
-                terms["loss"] = terms["loss"] + self.lambda_repair_recon * terms["repair_recon_loss"]
-        
+
             # denormalize before applying loss terms 
             target = (target * std) + mean 
             model_output = (model_output * std) + mean 

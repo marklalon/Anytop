@@ -52,7 +52,7 @@ class BackgroundPrefetchLoader:
 def get_dataset_class(name):
     return Truebones
 
-def get_dataset(num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=False, objects_subset="all", sample_limit=0, use_reference_conditioning=True, action_tags='', motion_cache_size=0, fixed_motion='', fixed_window_start=0):
+def get_dataset(num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=False, objects_subset="all", sample_limit=0, action_tags='', motion_cache_size=0, fixed_motion='', fixed_window_start=0):
     dataset = Truebones(
         split=split,
         num_frames=num_frames,
@@ -61,7 +61,6 @@ def get_dataset(num_frames, split='train', temporal_window=31, t5_name='t5-base'
         balanced=balanced,
         objects_subset=objects_subset,
         sample_limit=sample_limit,
-        use_reference_conditioning=use_reference_conditioning,
         action_tags=action_tags,
         motion_cache_size=motion_cache_size,
         fixed_motion=fixed_motion,
@@ -69,7 +68,7 @@ def get_dataset(num_frames, split='train', temporal_window=31, t5_name='t5-base'
     )
     return dataset
 
-def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=True, objects_subset="all", num_workers=None, prefetch_factor=2, sample_limit=0, shuffle=True, drop_last=True, use_reference_conditioning=True, action_tags='', motion_cache_size=0, main_process_prefetch_batches=0, batch_transform=None, fixed_motion='', fixed_window_start=0):
+def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=True, objects_subset="all", num_workers=None, prefetch_factor=2, sample_limit=0, shuffle=True, drop_last=True, action_tags='', motion_cache_size=0, main_process_prefetch_batches=0, batch_transform=None, fixed_motion='', fixed_window_start=0):
     if num_workers is None or int(num_workers) < 0:
         cpu_count = os.cpu_count() or 1
         num_workers = min(4, cpu_count)
@@ -83,7 +82,6 @@ def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31
         balanced=balanced,
         objects_subset=objects_subset,
         sample_limit=sample_limit,
-        use_reference_conditioning=use_reference_conditioning,
         action_tags=action_tags,
         motion_cache_size=motion_cache_size,
         fixed_motion=fixed_motion,

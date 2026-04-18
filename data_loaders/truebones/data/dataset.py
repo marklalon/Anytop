@@ -14,7 +14,6 @@ from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.param_utils import parse_action_tags
 from data_loaders.truebones.truebones_utils.motion_labels import infer_motion_labels_from_motion_name, load_motion_metadata
 from data_loaders.truebones.truebones_utils.motion_process import remove_joints_augmentation, add_joint_augmentation
-from data_loaders.truebones.offline_reference_dataset import load_corrupted_reference_sample
 from model.conditioners import T5Conditioner
 
 
@@ -368,20 +367,19 @@ def attach_joint_name_embeddings(cond_dict: dict, cond_file: str, data_root: str
 
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, temporal_window, t5_name, balanced, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, use_reference_conditioning: bool = True, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None):
+    def __init__(self, opt, cond_dict, temporal_window, t5_name, balanced, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None):
         self.opt = opt
         self.max_length = 20
         self.pointer = 0
         self.max_motion_length = opt.max_motion_length
         self.cond_dict = cond_dict
         self.balanced = balanced
-        self.use_reference_conditioning = bool(use_reference_conditioning)
         self.sample_limit = max(0, int(sample_limit))
         self.fixed_motion_name = _normalize_fixed_motion_name(getattr(opt, 'fixed_motion', ''))
         self.fixed_window_start = int(getattr(opt, 'fixed_window_start', 0))
         self.fixed_motion_virtual_length = 1
         self.motion_cache_size = max(0, int(getattr(opt, 'motion_cache_size', 0)))
-        self.cache_normalized_motion = self.motion_cache_size > 0 and not self.use_reference_conditioning
+        self.cache_normalized_motion = self.motion_cache_size > 0
         self.motion_cache = OrderedDict()
         data_dict = {}
         all_object_types = self.cond_dict.keys()
@@ -509,39 +507,13 @@ class MotionDataset(data.Dataset):
             motion = motion[ind: ind + self.max_motion_length]
             m_length = self.max_motion_length
 
-        reference_motion = None
-        soft_confidence_mask = None
-        corruption_metadata = None
-        if self.use_reference_conditioning:
-            stored_sample = load_corrupted_reference_sample(name, dataset_dir=self.opt.data_root)
-            reference_motion = np.nan_to_num((stored_sample['reference_motion'] - mean[None, :]) / std[None, :]).astype(np.float32)
-            soft_confidence_mask = stored_sample['soft_confidence_mask'].astype(np.float32)
-            corruption_metadata = stored_sample['metadata'].get('corruption_metadata')
-
-            if reference_motion.shape[0] > m_length:
-                reference_motion = reference_motion[ind: ind + m_length]
-            if soft_confidence_mask.shape[0] > m_length:
-                soft_confidence_mask = soft_confidence_mask[ind: ind + m_length]
-
         if m_length < self.max_motion_length:
             pad_frames = self.max_motion_length - m_length
             motion = np.concatenate([
                                      motion,
                                      np.zeros((pad_frames, motion.shape[1], motion.shape[2]), dtype=motion.dtype)
                                      ], axis=0)
-            if reference_motion is not None:
-                reference_motion = np.concatenate([
-                                                   reference_motion,
-                                                   np.zeros((pad_frames, reference_motion.shape[1], reference_motion.shape[2]), dtype=reference_motion.dtype)
-                                                   ], axis=0)
-            if soft_confidence_mask is not None:
-                soft_confidence_mask = np.concatenate([
-                                                       soft_confidence_mask,
-                                                       np.zeros((pad_frames, soft_confidence_mask.shape[1], soft_confidence_mask.shape[2]), dtype=soft_confidence_mask.dtype)
-                                                       ], axis=0)
 
-        if self.use_reference_conditioning:
-            return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, reference_motion, soft_confidence_mask, corruption_metadata, motion_metadata, name
         return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name
     
     def augment(self, data):
@@ -627,7 +599,6 @@ class Truebones(data.Dataset):
         self.objects_subset = kwargs['objects_subset']
         self.action_tags = kwargs.get('action_tags', '')
         self.sample_limit = kwargs.get('sample_limit', 0)
-        self.use_reference_conditioning = kwargs.get('use_reference_conditioning', True)
         self.motion_cache_size = kwargs.get('motion_cache_size', 0)
         self.fixed_motion = kwargs.get('fixed_motion', '')
         self.fixed_window_start = kwargs.get('fixed_window_start', 0)
@@ -671,7 +642,6 @@ class Truebones(data.Dataset):
             self.balanced,
             sample_limit=self.sample_limit,
             allowed_motion_names=allowed_motion_names,
-            use_reference_conditioning=self.use_reference_conditioning,
             motion_metadata_lookup=motion_metadata_lookup,
         )
         assert len(self.motion_dataset) > 0, 'You loaded an empty dataset, ' \

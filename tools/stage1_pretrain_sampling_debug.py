@@ -32,24 +32,6 @@ from utils import dist_util
 from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
 
 
-def validate_stage1_checkpoint_args(model_args: SimpleNamespace) -> None:
-    violations = []
-    if not bool(getattr(model_args, "disable_reference_branch", False)):
-        violations.append("disable_reference_branch must be true")
-    if bool(getattr(model_args, "use_reference_conditioning", False)):
-        violations.append("use_reference_conditioning must be false")
-    if float(getattr(model_args, "lambda_confidence_recon", 0.0)) != 0.0:
-        violations.append("lambda_confidence_recon must be 0")
-    if float(getattr(model_args, "lambda_repair_recon", 0.0)) != 0.0:
-        violations.append("lambda_repair_recon must be 0")
-    if violations:
-        details = "; ".join(violations)
-        raise ValueError(
-            "stage1_pretrain_sampling_debug.py only supports clean-prior stage1 checkpoints. "
-            f"Loaded checkpoint args are restoration-oriented: {details}."
-        )
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Stage1 pretrain sampling debug tool with stochastic aggregate reports.")
     parser.add_argument("--model-path", required=True, help="Path to a stage1 model checkpoint.")
@@ -103,10 +85,6 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
     model_args.device = args.device
     model_args.batch_size = 1
     model_args.cond_mask_prob = 0.0
-    model_args.disable_reference_branch = bool(model_args.disable_reference_branch)
-    model_args.use_reference_conditioning = bool(model_args.use_reference_conditioning)
-    model_args.lambda_confidence_recon = float(model_args.lambda_confidence_recon)
-    model_args.lambda_repair_recon = float(model_args.lambda_repair_recon)
     if args.objects_subset:
         model_args.objects_subset = args.objects_subset
     if args.action_tags:
@@ -123,7 +101,6 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
         model_args.num_frames = args.num_frames
     model_args.sample_limit = -1
     model_args.num_workers = args.eval_num_workers
-    validate_stage1_checkpoint_args(model_args)
     return model_args
 
 
@@ -458,7 +435,6 @@ def collect_eval_samples(args: argparse.Namespace, model_args: SimpleNamespace, 
         sample_limit=0,  # Load ALL motions
         shuffle=False,
         drop_last=False,
-        use_reference_conditioning=False,
         action_tags=eval_subset_action_tags,
         fixed_motion=getattr(model_args, "fixed_motion", ""),
         fixed_window_start=int(getattr(model_args, "fixed_window_start", 0)),
@@ -713,12 +689,8 @@ def main() -> int:
         "dual_length_export": True,
         "eval_subset_action_tags": str(getattr(model_args, "eval_subset_action_tags", getattr(model_args, "action_tags", ""))),
         "action_category": str(getattr(model_args, "action_category", "")),
-        "disable_reference_branch": bool(model_args.disable_reference_branch),
         "stage1_checkpoint_validated": True,
         "stage1_semantics": {
-            "use_reference_conditioning": bool(model_args.use_reference_conditioning),
-            "lambda_confidence_recon": float(model_args.lambda_confidence_recon),
-            "lambda_repair_recon": float(model_args.lambda_repair_recon),
             "cond_mask_prob": float(getattr(model_args, "cond_mask_prob", 0.0)),
         },
     }
