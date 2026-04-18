@@ -88,6 +88,12 @@ def add_model_options(parser):
                             " with this probability during training so inference-time guidance_scale != 1.0"
                             " has a valid unconditional branch.")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Foot contact loss.")
+    group.add_argument("--aug_speed_range", default=0.0, type=float,
+                       help="Speed augmentation range (0.0=off). E.g. 0.2 randomly stretches/compresses"
+                            " each clip's time axis by ±20%% before the random-window crop.")
+    group.add_argument("--aug_mirror_prob", default=0.0, type=float,
+                       help="Probability of applying left-right mirror augmentation (0.0=off, 0.5=half)."
+                            " Swaps symmetric joint pairs and negates X-axis components of pos/rot/vel.")
     group.add_argument("--t5_name", default='t5-base', choices=["t5-small", "t5-base", "t5-large", "t5-3b", "t5-11b",
               "google/flan-t5-small", "google/flan-t5-base", "google/flan-t5-large",
               "google/flan-t5-xl", "google/flan-t5-xxl"], type=str,
