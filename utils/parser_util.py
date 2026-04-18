@@ -166,7 +166,7 @@ def add_training_options(parser):
                        help="Save checkpoints and run evaluation each N steps")
     group.add_argument("--num_steps", default=600_000, type=int,
                        help="Training will stop after the specified number of steps.")
-    group.add_argument("--num_frames", default=120, type=int,
+    group.add_argument("--num_frames", default=60, type=int,
                        help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
     group.add_argument("--num_workers", default=0, type=int,
                        help="Number of DataLoader worker processes. Use 0 to load on the main process, or -1 to pick a conservative automatic worker count.")
@@ -247,7 +247,7 @@ def add_sampling_options(parser):
 
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')
-    group.add_argument("--motion_length", default=6.0, type=float,
+    group.add_argument("--motion_length", default=2.0, type=float,
                        help="The length of the sampled motion [in seconds]. "
                             "Maximum is 9.8 for HumanML3D (text-to-motion), and 2.0 for HumanAct12 (action-to-motion)")
     group.add_argument("--object_type", default=['Flamingo'], type=str, nargs='+',
