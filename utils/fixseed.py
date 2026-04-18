@@ -3,11 +3,11 @@ import torch
 import random
 
 
-def fixseed(seed, cudnn_benchmark=True, allow_tf32=True):
-    torch.backends.cudnn.benchmark = bool(cudnn_benchmark)
+def fixseed(seed):
     if torch.cuda.is_available():
-        torch.backends.cuda.matmul.allow_tf32 = bool(allow_tf32)
-        torch.backends.cudnn.allow_tf32 = bool(allow_tf32)
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

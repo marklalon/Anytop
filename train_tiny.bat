@@ -20,7 +20,7 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--stage1_batch_size 4 ^
 	--stage1_lr 5e-5 ^
 	--stage1_num_steps 50000 ^
-	--lr_anneal_steps 100000
+	--lr_anneal_steps 100000 ^
 	--dropout_prob 0.1 ^
 	--cond_mask_prob 0.1 ^
 	--aug_speed_range 0.2 ^
@@ -34,9 +34,6 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--num_workers 0 ^
 	--motion_cache_size 512 ^
 	--main_process_prefetch_batches 4 ^
-	--amp_dtype fp32 ^
-	--cudnn_benchmark ^
-	--no-allow_tf32 ^
 	--auto_resume ^
 	--ml_platform_type TensorboardPlatform
 	

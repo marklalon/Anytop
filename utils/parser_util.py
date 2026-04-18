@@ -146,14 +146,6 @@ def add_training_options(parser):
                        help="Choose platform to log results. NoPlatform means no logging.")
     group.add_argument("--amp_dtype", default='fp32', choices=['fp32', 'fp16', 'bf16'], type=str,
                        help="Autocast precision for training. bf16 is preferred on supported GPUs; fp32 disables AMP.")
-    group.add_argument("--cudnn_benchmark", action=argparse.BooleanOptionalAction, default=True,
-                       help="Enable cuDNN benchmark autotuning for fixed-shape training workloads.")
-    group.add_argument("--allow_tf32", action=argparse.BooleanOptionalAction, default=True,
-                       help="Allow TF32 matmul and cuDNN kernels on supported NVIDIA GPUs.")
-    group.add_argument("--use_torch_compile", action=argparse.BooleanOptionalAction, default=False,
-                       help="Enable torch.compile for the main training forward path. This can improve throughput on supported PyTorch/CUDA stacks, but may increase startup time.")
-    group.add_argument("--torch_compile_mode", default='default', choices=['default', 'reduce-overhead', 'max-autotune'], type=str,
-                       help="torch.compile mode used when --use_torch_compile is enabled.")
     group.add_argument("--lr", default=1e-4, type=float, help="Learning rate.")
 
     group.add_argument("--weight_decay", default=0.0, type=float, help="Optimizer weight decay.")

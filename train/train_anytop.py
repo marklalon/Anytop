@@ -34,9 +34,32 @@ def find_latest_checkpoint(save_dir, prefix='model'):
     return candidates[-1][1]
 
 
-def clear_training_artifacts(save_dir):
+def _confirm_deletion(save_dir):
+    """Prompt the user to confirm deletion of existing checkpoint artifacts."""
+    files = []
+    for file_name in os.listdir(save_dir):
+        if re.fullmatch(r'model\d+\.pt', file_name) or re.fullmatch(r'opt\d+\.pt', file_name) or file_name == 'args.json':
+            files.append(file_name)
+        elif file_name.startswith('model') and file_name.endswith('.pt.samples') and os.path.isdir(os.path.join(save_dir, file_name)):
+            files.append(file_name + '/')
+    if not files:
+        return True
+    print(f'[WARNING] The following existing artifacts will be deleted from {save_dir}:')
+    for f in files:
+        print(f'  - {f}')
+    while True:
+        response = input('Proceed with deletion? (y/n): ').strip().lower()
+        if response in ('y', 'n'):
+            return response == 'y'
+        print('Please enter y or n.')
+
+
+def clear_training_artifacts(save_dir, confirm=True):
     if not os.path.isdir(save_dir):
         return
+    if confirm and not _confirm_deletion(save_dir):
+        print('[ERROR] Deletion cancelled by user. Exiting program.')
+        sys.exit(1)
     for file_name in os.listdir(save_dir):
         file_path = os.path.join(save_dir, file_name)
         if re.fullmatch(r'model\d+\.pt', file_name) or re.fullmatch(r'opt\d+\.pt', file_name):
@@ -70,7 +93,7 @@ def prepare_save_dir(args):
             if not latest_checkpoint:
                 print(f'[INFO] auto_resume was requested but no checkpoint was found in save_dir [{save_dir}]. Starting fresh training.')
                 args.resume_checkpoint = ''
-                clear_training_artifacts(save_dir)
+                clear_training_artifacts(save_dir, confirm=True)
             else:
                 args.resume_checkpoint = latest_checkpoint
                 if not getattr(args, 'load_optimizer_state', False):
@@ -82,7 +105,7 @@ def prepare_save_dir(args):
             print(f'[INFO] Auto-resuming AnyTop from {args.resume_checkpoint}')
     elif not getattr(args, 'resume_checkpoint', ''):
         args.resume_checkpoint = ''
-        clear_training_artifacts(save_dir)
+        clear_training_artifacts(save_dir, confirm=True)
     return save_dir
 
 def create_training_data_loader(args):
@@ -106,11 +129,7 @@ def create_training_data_loader(args):
     )
 
 def run_training(args):
-    fixseed(
-        args.seed,
-        cudnn_benchmark=getattr(args, 'cudnn_benchmark', True),
-        allow_tf32=getattr(args, 'allow_tf32', True),
-    )
+    fixseed(args.seed)
     save_dir = prepare_save_dir(args)
     args.checkpoint_step_numbering = 'completed_steps'
 

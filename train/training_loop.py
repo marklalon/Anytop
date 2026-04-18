@@ -129,34 +129,9 @@ class TrainLoop:
             )
         self.use_ddp = False
         self.ddp_model = self.model
-        self.use_torch_compile = bool(getattr(self.args, 'use_torch_compile', False))
-        self.torch_compile_mode = str(getattr(self.args, 'torch_compile_mode', 'default') or 'default')
         self.forward_model = self.ddp_model
-        self._setup_compiled_forward_model()
         self._interval_loss_sums = {}
         self._interval_loss_counts = {}
-
-    def _setup_compiled_forward_model(self):
-        if not self.use_torch_compile:
-            return
-        if not hasattr(torch, 'compile'):
-            raise RuntimeError('torch.compile was requested, but this PyTorch build does not expose torch.compile.')
-        try:
-            self.forward_model = torch.compile(self.ddp_model, mode=self.torch_compile_mode)
-        except Exception as exc:
-            raise RuntimeError(
-                f'torch.compile failed for AnyTop training (mode={self.torch_compile_mode}). '
-                'Disable --use_torch_compile or choose a different --torch_compile_mode.'
-            ) from exc
-        print(f'[INFO] Enabled torch.compile for AnyTop training forward path (mode={self.torch_compile_mode}).')
-
-    def _maybe_mark_compile_step_begin(self):
-        if not self.use_torch_compile or self.device.type != 'cuda':
-            return
-        # Explicit cudagraph step marking caused sporadic giant finite gradients
-        # on the compiled AnyTop training path in this workspace's torch/CUDA stack.
-        # Keep the hook disabled unless a future stack-specific validation proves it safe.
-        return
 
     def _load_and_sync_parameters(self):
         self.resume_checkpoint = self.find_resume_checkpoint() or self.resume_checkpoint
@@ -561,7 +536,6 @@ class TrainLoop:
                 model_kwargs=self._with_train_step(micro_cond, self.total_step()),
             )
 
-            self._maybe_mark_compile_step_begin()
             if last_batch or not self.use_ddp:
                 with self._autocast_context():
                     losses = compute_losses()
