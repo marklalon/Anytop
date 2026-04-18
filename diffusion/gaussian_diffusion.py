@@ -355,10 +355,6 @@ class GaussianDiffusion:
             # print('inpainting_mask', inpainting_mask.shape, inpainting_mask[0,0,0,:])
             # print('inpainted_motion', inpainted_motion.shape, inpainted_motion)
 
-        reference_motion, confidence = self.get_reference_fusion_inputs(model_kwargs)
-        if self.model_mean_type == ModelMeanType.START_X:
-            model_output = self.apply_reference_fusion(model_output, reference_motion, confidence)
-
         if self.model_var_type in [ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE]:
             assert model_output.shape == (B, C * 2, *x.shape[2:])
             model_output, model_var_values = th.split(model_output, C, dim=1)
