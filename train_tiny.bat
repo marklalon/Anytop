@@ -18,9 +18,9 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--diffusion_steps 100 ^
 	--num_frames 60 ^
 	--stage1_batch_size 4 ^
-	--stage1_lr 5e-5 ^
+	--stage1_lr 2.67e-5 ^
 	--stage1_num_steps 50000 ^
-	--lr_anneal_steps 60000 ^
+	--lr_anneal_steps 55000 ^
 	--dropout_prob 0.1 ^
 	--cond_mask_prob 0.2 ^
 	--aug_speed_range 0.2 ^

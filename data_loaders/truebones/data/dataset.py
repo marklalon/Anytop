@@ -379,7 +379,6 @@ class MotionDataset(data.Dataset):
         self.fixed_window_start = int(getattr(opt, 'fixed_window_start', 0))
         self.fixed_motion_virtual_length = 1
         self.motion_cache_size = max(0, int(getattr(opt, 'motion_cache_size', 0)))
-        self.cache_normalized_motion = self.motion_cache_size > 0
         self.motion_cache = OrderedDict()
         data_dict = {}
         all_object_types = self.cond_dict.keys()
@@ -513,6 +512,7 @@ class MotionDataset(data.Dataset):
                 tiles = (pad_frames // m_length) + 1
                 loop_pad = np.tile(motion, (tiles, 1, 1))[:pad_frames]
                 motion = np.concatenate([motion, loop_pad], axis=0)
+                m_length = self.max_motion_length
             else:
                 motion = np.concatenate([
                                          motion,
@@ -529,8 +529,6 @@ class MotionDataset(data.Dataset):
             motion = self.motion_cache.get(motion_path)
             if motion is None:
                 motion = np.load(motion_path).astype(np.float32, copy=False)
-                if self.cache_normalized_motion:
-                    motion = np.nan_to_num((motion - cond['mean'][None, :]) / cond['std_safe'][None, :]).astype(np.float32, copy=False)
                 self.motion_cache[motion_path] = motion
                 self.motion_cache.move_to_end(motion_path)
                 while len(self.motion_cache) > self.motion_cache_size:
@@ -539,10 +537,31 @@ class MotionDataset(data.Dataset):
                 self.motion_cache.move_to_end(motion_path)
         else:
             motion = np.load(motion_path).astype(np.float32, copy=False)
-            motion = np.nan_to_num((motion - cond['mean'][None, :]) / cond['std_safe'][None, :]).astype(np.float32, copy=False)
 
         speed_range = getattr(self.opt, 'aug_speed_range', 0.0)
         mirror_prob = getattr(self.opt, 'aug_mirror_prob', 0.0)
+
+        if mirror_prob > 0.0 and random.random() < mirror_prob:
+            spi = cond.get('symmetry_partner_indices')
+            if spi is not None and len(spi) == motion.shape[1]:
+                mirrored_cache_key = f'{motion_path}__mirrored_raw'
+                if self.motion_cache_size > 0 and mirrored_cache_key in self.motion_cache:
+                    motion = self.motion_cache[mirrored_cache_key]
+                    self.motion_cache.move_to_end(mirrored_cache_key)
+                else:
+                    # Mirror in raw feature space. Doing this after normalization is wrong
+                    # when mirrored channels have non-zero means.
+                    perm = list(range(len(spi)))
+                    for i, partner in enumerate(spi):
+                        if partner != -1:
+                            perm[i] = int(partner)
+                    motion = motion[:, perm, :].copy()
+                    motion[:, :, [0, 4, 5, 6, 9]] *= -1
+                    if self.motion_cache_size > 0:
+                        self.motion_cache[mirrored_cache_key] = motion
+                        self.motion_cache.move_to_end(mirrored_cache_key)
+                        while len(self.motion_cache) > self.motion_cache_size:
+                            self.motion_cache.popitem(last=False)
 
         if speed_range > 0.0:
             # Resample time axis: alpha<1 speeds up (fewer frames), alpha>1 slows down (more frames).
@@ -557,35 +576,7 @@ class MotionDataset(data.Dataset):
                 w = (src - lo)[:, None, None]
                 motion = motion[lo] * (1.0 - w) + motion[hi] * w
 
-        if mirror_prob > 0.0 and random.random() < mirror_prob:
-            spi = cond.get('symmetry_partner_indices')
-            if spi is not None and len(spi) == motion.shape[1]:
-                # Check if mirrored version is already cached.
-                mirrored_cache_key = f'{motion_path}__mirrored'
-                if self.motion_cache_size > 0 and mirrored_cache_key in self.motion_cache:
-                    motion = self.motion_cache[mirrored_cache_key]
-                    self.motion_cache.move_to_end(mirrored_cache_key)
-                else:
-                    # Build joint permutation: swap each joint with its symmetric partner.
-                    # Joints without a partner (spi[i]==-1) stay in place (midline joints).
-                    perm = list(range(len(spi)))
-                    for i, partner in enumerate(spi):
-                        if partner != -1:
-                            perm[i] = int(partner)
-                    motion = motion[:, perm, :].copy()   # copy to avoid modifying original cache after perm
-                    # Mirror across the sagittal (YZ) plane: negate x-components.
-                    # 6D rotation layout is [R00,R10,R20, R01,R11,R21]; under M=diag(-1,1,1):
-                    #   R'=M·R·M^T → R'[i,j]=M[i,i]·R[i,j]·M[j,j]
-                    #   → negate R10(feat 4), R20(feat 5), R01(feat 6); R00/R11/R21 unchanged.
-                    # Feature layout per joint: [pos_x(0), pos_y(1), pos_z(2),
-                    #                            rot×6(3-8), vel_x(9), vel_y(10), vel_z(11), foot(12)]
-                    motion[:, :, [0, 4, 5, 6, 9]] *= -1
-                    # Cache the mirrored result for future reuse.
-                    if self.motion_cache_size > 0:
-                        self.motion_cache[mirrored_cache_key] = motion
-                        self.motion_cache.move_to_end(mirrored_cache_key)
-                        while len(self.motion_cache) > self.motion_cache_size:
-                            self.motion_cache.popitem(last=False)
+        motion = np.nan_to_num((motion - cond['mean'][None, :]) / cond['std_safe'][None, :]).astype(np.float32, copy=False)
 
         m_length = motion.shape[0]
         mean = self.cond_dict[object_type]['mean']

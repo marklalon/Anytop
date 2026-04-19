@@ -328,6 +328,31 @@ def get_contact_state(positions, contact_joint_indices, vel_thresh):
     return foot_cont
 
 
+def get_terminal_contact_state(positions, contact_joint_indices, vel_thresh, is_loop):
+    """Compute the terminal-frame contact row for feature export.
+
+    For looping clips we evaluate the wrap-around transition from the last frame
+    back to the first frame. For non-looping clips we emit zeros, matching the
+    user's requested terminal-velocity semantics.
+    """
+    joints_num = positions.shape[1]
+    terminal_contact = np.zeros((joints_num,), dtype=np.float32)
+    contact_joint_indices = np.asarray(contact_joint_indices, dtype=np.int64)
+    if not is_loop or positions.shape[0] < 2 or contact_joint_indices.size == 0:
+        return terminal_contact
+
+    foot_delta = positions[0, contact_joint_indices] - positions[-1, contact_joint_indices]
+    total_vel = np.sum(foot_delta ** 2, axis=-1)
+    foot_floor = np.percentile(positions[:, contact_joint_indices, 1], 5.0, axis=0)
+    relative_height = positions[0, contact_joint_indices, 1] - foot_floor
+    terminal_contact[contact_joint_indices] = np.where(
+        np.logical_and(total_vel <= vel_thresh, np.abs(relative_height) <= FOOT_CONTACT_HEIGHT_THRESH),
+        1.0,
+        0.0,
+    )
+    return terminal_contact
+
+
 def get_foot_contact(positions, foot_joints_indices, vel_thresh):
     return get_contact_state(positions, foot_joints_indices, vel_thresh)
 
@@ -373,13 +398,13 @@ def get_common_features_from_T_pose(t_pose_bvh, object_type, face_joints=None):
     )
     return root_pose_init_xz, scale_factor, offsets, suspected_foot_indices, scaled.rotations, t_pos_names, scaled, face_joints, t_pose_orientation_quat, forward_joint_index, forward_base_joint_index, contact_joint_source
 
-def get_motion_features(ric_positions, rotations, foot_contact, velocity, max_joints):
+def get_motion_features(ric_positions, rotations, foot_contact, velocity, terminal_velocity, terminal_contact, max_joints):
     # F = Frames# , J = joints# 
     # parents (J,1)
     # positions (F, J, 3)
     # rotations (F, J, 6)
-    # foot_contact (F - 1, J, 1)
-    # velocity (F - 1, J, 3)
+    # foot_contact (F - 1, J, 1) + one terminal row
+    # velocity (F - 1, J, 3) + one terminal row
     # offsets (J, 3)
     
     # feature len = 13 (pos, rot, vel, foot)
@@ -387,12 +412,29 @@ def get_motion_features(ric_positions, rotations, foot_contact, velocity, max_jo
     frames, joints = ric_positions.shape[0:2]
     if joints > max_joints:
         max_joints = joints
-    pos = ric_positions[:-1]  ## (Frames-1, joints, 3)
-    rot = rotations[:-1] ## (frames -1, joints, 6)
-    vel = velocity ## (Frames - 1, joints , 3)
-    foot = foot_contact.reshape(frames - 1, joints , 1) ## (Frames - 1, 1)
+    pos = ric_positions  ## (Frames, joints, 3)
+    rot = rotations ## (Frames, joints, 6)
+    vel = np.concatenate([velocity, terminal_velocity[None, ...]], axis=0) ## (Frames, joints, 3)
+    foot = np.concatenate([
+        foot_contact.reshape(frames - 1, joints, 1),
+        terminal_contact.reshape(1, joints, 1),
+    ], axis=0) ## (Frames, joints, 1)
     features= np.concatenate([pos, rot, vel, foot], axis=-1) 
     return features, max_joints
+
+
+def _compute_terminal_local_velocity(global_positions, root_rot, is_loop):
+    """Return the final per-joint velocity row for exported features.
+
+    Looping clips use the wrap-around delta last->first, expressed in the first
+    frame's root coordinate system. Non-looping clips emit zeros.
+    """
+    terminal_velocity = np.zeros((global_positions.shape[1], 3), dtype=global_positions.dtype)
+    if not is_loop or global_positions.shape[0] < 2:
+        return terminal_velocity
+    wrap_delta = global_positions[0] - global_positions[-1]
+    terminal_velocity = np.repeat(root_rot[0:1], global_positions.shape[1], axis=0) * wrap_delta
+    return terminal_velocity
 
 '''return positions in root coords system. Meaning, each frame faces Z+, and the root is at [0, root_height, 0]'''
 def get_rifke(global_positions, root_rot, translation_root_index=0):
@@ -559,19 +601,35 @@ def get_motion(bvh_path, foot_contact_vel_thresh, object_type, max_joints, root_
         '''Get Joint Rotation Invariant Position Represention'''
         # local velocity wrt root coords system as described in get_rifke definition 
         positions = get_rifke(global_positions, r_rot, translation_root_index=translation_root_index)
+        is_loop = _detect_motion_loop(positions)
         # root_y = positions[:, 0, 1:2]
         # r_velocity = np.arcsin(r_velocity[:, 2:3])
         # l_velocity = velocity[:, [0, 2]]
         local_vel = np.repeat(r_rot[1:, None], global_positions.shape[1], axis=1) * (global_positions[1:] - global_positions[:-1])
+        terminal_local_vel = _compute_terminal_local_velocity(global_positions, r_rot, is_loop)
         # For locomotion clips the root XZ position has already been zeroed by
         # strip_translation_root_xz, so the velocity must be zeroed too to stay
         # consistent with RIFKE.  For in-place clips we keep the XZ velocity so
         # the representation faithfully captures small positional shifts.
         if has_locomotion:
             local_vel[:, translation_root_index, [0, 2]] = 0.0
+            terminal_local_vel[translation_root_index, [0, 2]] = 0.0
+        terminal_contact = get_terminal_contact_state(
+            global_positions,
+            foot_indices,
+            foot_contact_vel_thresh,
+            is_loop,
+        )
         # root_data = np.concatenate([r_velocity, l_velocity, root_y[:-1]], axis=-1)
-        features, max_joints = get_motion_features(positions, cont_6d_params, foot_contact, local_vel, max_joints)
-        is_loop = _detect_motion_loop(positions)
+        features, max_joints = get_motion_features(
+            positions,
+            cont_6d_params,
+            foot_contact,
+            local_vel,
+            terminal_local_vel,
+            terminal_contact,
+            max_joints,
+        )
         return features, new_anim.parents, max_joints, new_anim, export_anim, is_loop
     except Exception as err:
         print(err)
