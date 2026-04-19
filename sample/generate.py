@@ -126,6 +126,7 @@ def main(args = None, cond_dict = None):
 
     ddim_eta = float(getattr(args, 'ddim_eta', 0.0))
     for rep_i in range(args.num_repetitions):
+        fixseed(args.seed + rep_i)
         print(f'### Sampling [repetitions #{rep_i}] method={sampling_method} steps={sampling_steps or "full"}')
         if sampling_method == 'ddim':
             sample = diffusion.ddim_sample_loop(
@@ -144,7 +145,7 @@ def main(args = None, cond_dict = None):
                 model_kwargs=model_kwargs,
                 progress=True,
             )
-        else:
+        elif sampling_method in ('p', 'ddpm'):
             sample = diffusion.p_sample_loop(
                 model,
                 (args.batch_size, max_joints, model.feature_len, n_frames),
@@ -157,6 +158,8 @@ def main(args = None, cond_dict = None):
                 noise=None,
                 const_noise=False,
             )
+        else:
+            raise ValueError(f"Unknown sampling_method: {sampling_method}")
 
         # Recover XYZ *positions* from matrix representation
         bs, max_joints, n_feats, n_frames = sample.shape

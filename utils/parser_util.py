@@ -264,8 +264,8 @@ def add_generate_options(parser):
                             "diversity by amplifying the difference between conditioned and unconditioned "
                             "predictions. Typical range: 1.5–5.0. Only effective when the model was "
                             "trained with --dropout_prob > 0 and --use_action_cond.")
-    group.add_argument("--sampling_method", default="ddim", choices=["p", "ddim", "plms"],
-                       help="Diffusion sampler to use. 'p' = DDPM (slow, full steps). 'ddim' = DDIM (fast, recommended). Default: ddim.")
+    group.add_argument("--sampling_method", default="ddim", choices=["p", "ddpm", "ddim", "plms"],
+                       help="Diffusion sampler to use. 'p'/'ddpm' = DDPM (slow, high quality). 'ddim' = DDIM (fast, recommended). 'plms' = PLMS (medium speed). Default: ddim.")
     group.add_argument("--sampling_steps", default=100, type=int,
                        help="Number of respaced diffusion steps. 0 = use checkpoint's full diffusion_steps. Default: 100.")
     group.add_argument("--ddim_eta", default=0.0, type=float,

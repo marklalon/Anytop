@@ -13,7 +13,6 @@ import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Optional
 
 import numpy as np
 import torch
@@ -42,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--action-tags", default="", help="Override the checkpoint action_tags when set, e.g. 'locomotion,attack'.")
     parser.add_argument("--fixed-motion", default="", help="Override the checkpoint fixed_motion when set. Accepts a processed .npy name or a BVH/.npy path.")
     parser.add_argument("--fixed-window-start", default=None, type=int, help="Override the checkpoint fixed_window_start when set.")
-    parser.add_argument("--num-frames", default=-1, type=int, help="Override num_frames when > 0.")
+    parser.add_argument("--max-frames", default=-1, type=int, help="Override num_frames when > 0.")
     parser.add_argument(
         "--sample-mode",
         default="eval_subset",
@@ -97,8 +96,8 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
         model_args.fixed_window_start = int(args.fixed_window_start)
     else:
         model_args.fixed_window_start = int(getattr(model_args, "fixed_window_start", 0))
-    if args.num_frames > 0:
-        model_args.num_frames = args.num_frames
+    if args.max_frames > 0:
+        model_args.num_frames = args.max_frames
     model_args.sample_limit = -1
     model_args.num_workers = args.eval_num_workers
     return model_args
@@ -237,16 +236,12 @@ def build_selected_sample_manifest(selected_samples: list[dict[str, object]]) ->
     manifest = []
     for sample in selected_samples:
         target_length = int(sample.get("target_length", sample["length"]))
-        generated_length = int(sample.get("generated_length", target_length))
-        overlap_length = int(sample.get("overlap_length", min(target_length, generated_length)))
         record = {
             "sample_index": int(sample["sample_index"]),
             "motion_name": str(sample["motion_name"]),
             "object_type": str(sample["object_type"]),
             "length": target_length,
             "target_length": target_length,
-            "generated_length": generated_length,
-            "overlap_length": overlap_length,
             "n_joints": int(sample["n_joints"]),
         }
         if "source_mode" in sample:
@@ -265,9 +260,6 @@ def build_export_sample_record(
     sample_dir: Path,
 ) -> dict[str, object]:
     target_length = int(sample.get("target_length", sample["length"]))
-    generated_length = int(sample.get("generated_length", target_length))
-    overlap_length = int(sample.get("overlap_length", min(target_length, generated_length)))
-    generated_overlap_path = sample_dir / "generated_prediction_overlap.npy"
     return {
         "sample_index": int(sample_index),
         "sample_seed": int(sample_seed),
@@ -276,11 +268,8 @@ def build_export_sample_record(
         "sample_dir": str(sample_dir),
         "generated_path": str(sample_dir / "generated_prediction.npy"),
         "target_path": str(sample_dir / "clean_target.npy"),
-        "generated_overlap_path": str(generated_overlap_path) if overlap_length != generated_length else "",
         "length": target_length,
         "target_length": target_length,
-        "generated_length": generated_length,
-        "overlap_length": overlap_length,
         "n_joints": int(sample["n_joints"]),
     }
 
@@ -310,17 +299,11 @@ def build_export_result(
 
 def build_summary_export_section(export_result: dict[str, object]) -> dict[str, object]:
     exported_samples = export_result["exported_samples"]
-    mixed_length_samples = sum(
-        1
-        for sample in exported_samples
-        if int(sample.get("target_length", sample.get("length", 0))) != int(sample.get("generated_length", sample.get("length", 0)))
-    )
     return {
         "selected_sample_count": int(export_result["selected_sample_count"]),
         "num_threads": int(export_result["num_threads"]),
         "exported_samples": len(exported_samples),
         "failed_exports": len(export_result["failures"]),
-        "mixed_length_samples": int(mixed_length_samples),
         "sampling_method": str(export_result["sampling_method"]),
         "sampling_steps": int(export_result["sampling_steps"]),
     }
@@ -333,20 +316,10 @@ def export_trial_sample(
     joints_names: list[str],
     target_motion: np.ndarray,
     generated_motion: np.ndarray,
-    generated_overlap_motion: Optional[np.ndarray] = None,
 ) -> None:
     np.save(sample_dir / "clean_target.npy", target_motion.astype(np.float32))
     np.save(sample_dir / "generated_prediction.npy", generated_motion.astype(np.float32))
-    if generated_overlap_motion is not None:
-        np.save(sample_dir / "generated_prediction_overlap.npy", generated_overlap_motion.astype(np.float32))
-    motions_to_export = [
-        ("clean_target", target_motion),
-        ("generated_prediction", generated_motion),
-    ]
-    if generated_overlap_motion is not None:
-        motions_to_export.append(("generated_prediction_overlap", generated_overlap_motion))
-
-    for name, motion in motions_to_export:
+    for name, motion in [("clean_target", target_motion), ("generated_prediction", generated_motion)]:
         out_anim, has_animated_pos = recover_animation_from_motion_np(motion.astype(np.float32), parents, offsets)
         if out_anim is not None:
             BVH.save(str(sample_dir / f"{name}.bvh"), out_anim, joints_names, positions=has_animated_pos)
@@ -357,25 +330,27 @@ def build_virtual_eval_sample(
     cond_dict: dict[str, dict[str, object]],
     motion_name: str,
     window_start: int,
+    num_frames: int,
 ) -> dict[str, object]:
     raw_data = motion_dataset.data_dict[motion_name]
     previous_fixed_motion_name = motion_dataset.fixed_motion_name
     previous_fixed_window_start = motion_dataset.fixed_window_start
+    previous_max_motion_length = motion_dataset.max_motion_length
     try:
         motion_dataset.fixed_motion_name = motion_name
         motion_dataset.fixed_window_start = int(window_start)
+        motion_dataset.max_motion_length = num_frames
         prepared_sample = motion_dataset._prepare_sample(motion_name, raw_data)
     finally:
         motion_dataset.fixed_motion_name = previous_fixed_motion_name
         motion_dataset.fixed_window_start = previous_fixed_window_start
+        motion_dataset.max_motion_length = previous_max_motion_length
 
     motion_batch, cond_batch = truebones_batch_collate([prepared_sample])
     cond_cpu = clone_batch_cond(cond_batch)
     object_type = cond_cpu["y"]["object_type"][0]
     n_joints = int(cond_cpu["y"]["n_joints"][0].item())
     target_length = int(cond_cpu["y"]["lengths"][0].item())
-    generated_length = int(motion_batch.shape[-1])
-    overlap_length = min(target_length, generated_length)
 
     return {
         "sample_index": -1,
@@ -386,8 +361,6 @@ def build_virtual_eval_sample(
         "n_joints": n_joints,
         "length": target_length,
         "target_length": target_length,
-        "generated_length": generated_length,
-        "overlap_length": overlap_length,
         "parents": [int(parent) for parent in prepared_sample[2]],
         "offsets": cond_dict[object_type]["offsets"],
         "joints_names": cond_dict[object_type]["joints_names"],
@@ -445,23 +418,11 @@ def collect_eval_samples(args: argparse.Namespace, model_args: SimpleNamespace, 
     # Get dataset info
     dataset_frame_cap = int(getattr(motion_dataset, "max_motion_length", model_args.num_frames))
     selected_frame_cap = int(getattr(motion_dataset, "max_available_length", dataset_frame_cap))
-    effective_num_frames = min(int(model_args.num_frames), dataset_frame_cap, selected_frame_cap)
+    args_num_frames = int(model_args.num_frames)
     model_args.dataset_max_motion_length = dataset_frame_cap
     model_args.selected_subset_max_motion_length = selected_frame_cap
-    model_args.effective_num_frames = effective_num_frames
-    
-    if int(model_args.num_frames) > dataset_frame_cap:
-        print(
-            f"Warning: requested num_frames={int(model_args.num_frames)} exceeds dataset max_motion_length={dataset_frame_cap}. "
-            f"Evaluation will use {effective_num_frames} frames."
-        )
-    if selected_frame_cap < effective_num_frames:
-        print(
-            f"Warning: selected evaluation subset only provides up to {selected_frame_cap} frames. "
-            f"Evaluation will use {selected_frame_cap} frames."
-        )
-    
-    motion_dataset.reset_max_len(max(20, effective_num_frames))
+    model_args.effective_num_frames = args_num_frames
+
     cond_dict = motion_dataset.cond_dict
 
     eligible_motions = []
@@ -470,18 +431,24 @@ def collect_eval_samples(args: argparse.Namespace, model_args: SimpleNamespace, 
         eligible_motions.append((motion_name, motion_length))
 
     if not eligible_motions:
-        raise RuntimeError(f"No suitable motions found for virtual sampling. Required effective num_frames: {effective_num_frames}")
+        raise RuntimeError("No suitable motions found for virtual sampling.")
 
     samples = []
     while len(samples) < args.num_eval_samples:
         motion_name, motion_length = rng.choice(eligible_motions)
-        max_start = max(0, motion_length - effective_num_frames)
-        window_start = rng.randint(0, max_start) if max_start > 0 else 0
+        # Per-sample num_frames: use min(args_num_frames, motion_length); window randomly if longer
+        if motion_length >= args_num_frames:
+            sample_num_frames = args_num_frames
+            window_start = rng.randint(0, motion_length - args_num_frames)
+        else:
+            sample_num_frames = motion_length
+            window_start = 0
         sample = build_virtual_eval_sample(
             motion_dataset=motion_dataset,
             cond_dict=cond_dict,
             motion_name=motion_name,
             window_start=window_start,
+            num_frames=sample_num_frames,
         )
         sample["sample_index"] = len(samples)
         samples.append(sample)
@@ -548,6 +515,8 @@ def stage1_sampling_eval(
         if action_category:
             cond_cpu["y"]["action_tags"] = [[action_category]]
             cond_cpu["y"]["action_category"] = [action_category]
+        # Override tpos_first_frame with the actual first frame of the clean target motion.
+        cond_cpu["y"]["tpos_first_frame"] = motion_cpu[0, :, :, 0].unsqueeze(0).clone()
         motion = motion_cpu.to(device, non_blocking=device.type == "cuda")
         cond = move_cond_to_device(cond_cpu, device)
 
@@ -563,13 +532,10 @@ def stage1_sampling_eval(
 
         n_joints = int(sample["n_joints"])
         target_length = int(sample.get("target_length", sample["length"]))
-        generated_length = int(sample.get("generated_length", generated.shape[-1]))
-        overlap_length = int(sample.get("overlap_length", min(target_length, generated_length)))
         object_type = str(sample["object_type"])
 
         target_norm = motion_cpu[0, :n_joints, :, :target_length]
-        generated_norm = generated[0, :n_joints, :, :generated_length].detach().cpu()
-        generated_overlap_norm = generated[0, :n_joints, :, :overlap_length].detach().cpu()
+        generated_norm = generated[0, :n_joints, :, :target_length].detach().cpu()
 
         evaluation = evaluate_generated_prediction(
             target_norm=target_norm,
@@ -578,12 +544,6 @@ def stage1_sampling_eval(
             mean=sample["mean"],
             std=sample["std"],
         )
-        generated_overlap_denorm = denormalize_motion(
-            generated_overlap_norm,
-            n_joints=n_joints,
-            mean=sample["mean"],
-            std=sample["std"],
-        ).astype(np.float32)
 
         sample_dir = output_dir / "stage1_sampling_eval" / f"sample_{sample_index:03d}_{object_type}"
         try:
@@ -595,7 +555,6 @@ def stage1_sampling_eval(
                 joints_names=sample["joints_names"],
                 target_motion=evaluation["target_denorm"].astype(np.float32),
                 generated_motion=evaluation["generated_denorm"].astype(np.float32),
-                generated_overlap_motion=generated_overlap_denorm if overlap_length != generated_length else None,
             )
             record = build_export_sample_record(
                 sample=sample,
