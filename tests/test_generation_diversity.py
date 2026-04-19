@@ -73,20 +73,9 @@ def nn_action(gen_feat, train_clips):
     return train_clips[best]["action"] if best else None
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--gen_dir", required=True)
-    parser.add_argument("--object_type", default="Horse")
-    parser.add_argument("--action_tags", default="locomotion,pose")
-    args = parser.parse_args()
-
-    action_tags = [t.strip() for t in args.action_tags.split(",")]
-
-    train_clips = load_training_clips(METADATA_PATH, MOTIONS_DIR, args.object_type, action_tags)
-    gen_samples  = load_generated_samples(args.gen_dir)
-
+def report_diversity(object_type, action_tags, train_clips, gen_samples):
+    """Generate diversity report for a single object_type."""
     if not gen_samples:
-        print("No generated .npy files found.")
         return
 
     # bucket generated samples by nearest-neighbour action category
@@ -100,7 +89,10 @@ def main():
     for info in train_clips.values():
         train_by_action[info["action"]].append(info["feat"])
 
-    print(f"\n{'Action':<14} {'Train clips':>11} {'Train div':>10} {'Gen samples':>12} {'Gen div':>10} {'Ratio':>8}  Status")
+    print(f"\n{'='*75}")
+    print(f"Object Type: {object_type}")
+    print(f"{'='*75}")
+    print(f"{'Action':<14} {'Train clips':>11} {'Train div':>10} {'Gen samples':>12} {'Gen div':>10} {'Ratio':>8}  Status")
     print("-" * 75)
     for tag in action_tags:
         t_feats = train_by_action.get(tag, [])
@@ -122,6 +114,36 @@ def main():
     all_g = list(gen_samples.values())
     overall_ratio = pairwise_diversity(all_g) / max(pairwise_diversity(all_t), 1e-8)
     print(f"\n{'Overall':<14} {len(all_t):>11} {pairwise_diversity(all_t):>10.4f} {len(all_g):>12} {pairwise_diversity(all_g):>10.4f} {overall_ratio:>8.3f}")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--gen_dir", required=True)
+    parser.add_argument("--object_type", default="Horse", type=str,
+                        help="Object type(s) to analyze. Can be comma or space separated for multiple types.")
+    parser.add_argument("--action_tags", default="locomotion,pose")
+    args = parser.parse_args()
+
+    action_tags = [t.strip() for t in args.action_tags.split(",")]
+    
+    # Parse multiple object_types (space or comma separated)
+    object_types_str = args.object_type.replace(',', ' ')
+    object_types = [t.strip() for t in object_types_str.split() if t.strip()]
+    
+    gen_samples = load_generated_samples(args.gen_dir)
+    if not gen_samples:
+        print("No generated .npy files found.")
+        return
+
+    # Process each object_type
+    for obj_type in object_types:
+        train_clips = load_training_clips(METADATA_PATH, MOTIONS_DIR, obj_type, action_tags)
+        # Filter gen_samples for this object_type (by filename prefix)
+        filtered_gen_samples = {k: v for k, v in gen_samples.items() if k.startswith(obj_type)}
+        if filtered_gen_samples:
+            report_diversity(obj_type, action_tags, train_clips, filtered_gen_samples)
+        else:
+            print(f"\nNo generated samples found for object_type: {obj_type}")
 
 
 if __name__ == "__main__":
