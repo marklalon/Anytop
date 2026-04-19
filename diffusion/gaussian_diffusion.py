@@ -1527,10 +1527,14 @@ class GaussianDiffusion:
             noise = th.randn_like(x_start)
         x_t = self.q_sample(x_start, t, noise=noise)
 
-        # Joint masking: replace a random subset of non-root joints with fresh Gaussian
-        # noise so the model must reconstruct them from context joints + skeleton structure.
+        # Joint masking: replace a random subset of non-root joints with T-pose values
+        # at the same diffusion noise level t, so the model must reconstruct actual motion
+        # from context joints + skeleton structure. Using T-pose (static reference pose)
+        # instead of fresh Gaussian noise keeps masked joints within the data distribution
+        # and avoids the train/inference mismatch that pure noise causes at low timesteps.
         if self.joint_mask_prob > 0.0:
             x_t = x_t.clone()
+            tpos = model_kwargs['y']['tpos_first_frame']  # [bs, max_joints, nfeats], normalized
             for i in range(x_t.shape[0]):
                 if th.rand(1).item() > self.joint_mask_prob:
                     continue
@@ -1540,7 +1544,11 @@ class GaussianDiffusion:
                     continue
                 n_mask = max(1, int(math.ceil(self.joint_mask_max_frac * n_candidates)))
                 perm = th.randperm(n_candidates, device=x_t.device)[:n_mask] + 1
-                x_t[i, perm, :, :] = th.randn_like(x_t[i, perm, :, :])
+                # T-pose fill broadcast across frames: [n_masked, nfeats] -> [n_masked, nfeats, nframes]
+                tpose_fill = tpos[i, perm, :].unsqueeze(-1).expand(-1, -1, x_t.shape[-1])
+                alpha_bar_t = float(self.alphas_cumprod[t[i]])
+                mask_noise = th.randn_like(tpose_fill)
+                x_t[i, perm, :, :] = math.sqrt(alpha_bar_t) * tpose_fill + math.sqrt(1.0 - alpha_bar_t) * mask_noise
 
         terms = {}
 
