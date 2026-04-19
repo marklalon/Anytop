@@ -352,6 +352,7 @@ def build_virtual_eval_sample(
     n_joints = int(cond_cpu["y"]["n_joints"][0].item())
     target_length = int(cond_cpu["y"]["lengths"][0].item())
 
+    motion_metadata = prepared_sample[14]
     return {
         "sample_index": -1,
         "motion": motion_batch.detach().clone().float(),
@@ -361,6 +362,7 @@ def build_virtual_eval_sample(
         "n_joints": n_joints,
         "length": target_length,
         "target_length": target_length,
+        "is_loop": bool(motion_metadata.get("is_loop", False)),
         "parents": [int(parent) for parent in prepared_sample[2]],
         "offsets": cond_dict[object_type]["offsets"],
         "joints_names": cond_dict[object_type]["joints_names"],
@@ -534,7 +536,9 @@ def stage1_sampling_eval(
         target_length = int(sample.get("target_length", sample["length"]))
         object_type = str(sample["object_type"])
 
-        target_norm = motion_cpu[0, :n_joints, :, :target_length]
+        is_loop = bool(sample.get("is_loop", False))
+        target_frames = motion_cpu.shape[3] if is_loop else target_length
+        target_norm = motion_cpu[0, :n_joints, :, :target_frames]
         generated_norm = generated[0, :n_joints, :, :target_length].detach().cpu()
 
         evaluation = evaluate_generated_prediction(

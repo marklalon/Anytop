@@ -509,10 +509,15 @@ class MotionDataset(data.Dataset):
 
         if m_length < self.max_motion_length:
             pad_frames = self.max_motion_length - m_length
-            motion = np.concatenate([
-                                     motion,
-                                     np.zeros((pad_frames, motion.shape[1], motion.shape[2]), dtype=motion.dtype)
-                                     ], axis=0)
+            if motion_metadata.get('is_loop') and m_length > 0:
+                tiles = (pad_frames // m_length) + 1
+                loop_pad = np.tile(motion, (tiles, 1, 1))[:pad_frames]
+                motion = np.concatenate([motion, loop_pad], axis=0)
+            else:
+                motion = np.concatenate([
+                                         motion,
+                                         np.zeros((pad_frames, motion.shape[1], motion.shape[2]), dtype=motion.dtype)
+                                         ], axis=0)
 
         return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name
     

@@ -41,6 +41,18 @@ from .face_orientation import (
 # travel several units per second at typical Truebones frame-rates.
 ROOT_XZ_STRIP_THRESHOLD = 1
 
+# Mean L2 distance (per joint, in HML-normalised units) between first and last
+# frame poses below which a clip is classified as looping.
+LOOP_DETECTION_POS_THRESHOLD = 0.10
+
+
+def _detect_motion_loop(positions):
+    """Return True if the last frame's root-relative pose is close to the first frame's."""
+    if positions.shape[0] < 2:
+        return False
+    per_joint_dist = np.linalg.norm(positions[-1] - positions[0], axis=-1)
+    return bool(np.mean(per_joint_dist) < LOOP_DETECTION_POS_THRESHOLD)
+
 
 def _find_translation_root(anim):
     """Return the index of the first joint (from root) with significant position animation.
@@ -559,10 +571,11 @@ def get_motion(bvh_path, foot_contact_vel_thresh, object_type, max_joints, root_
             local_vel[:, translation_root_index, [0, 2]] = 0.0
         # root_data = np.concatenate([r_velocity, l_velocity, root_y[:-1]], axis=-1)
         features, max_joints = get_motion_features(positions, cont_6d_params, foot_contact, local_vel, max_joints)
-        return features, new_anim.parents, max_joints, new_anim, export_anim
+        is_loop = _detect_motion_loop(positions)
+        return features, new_anim.parents, max_joints, new_anim, export_anim, is_loop
     except Exception as err:
         print(err)
-        return None, None, max_joints, None, None
+        return None, None, max_joints, None, None, False
 
 """ computes mean and std for a list of motions """
 def get_mean_std(data):
@@ -699,7 +712,7 @@ def _process_bvh_file(file_path, object_type, max_joints, root_pose_init_xz, sca
         else:
             slice_ind = anim_len
 
-        motion, parents, file_max_joints, new_anim, export_anim = get_motion(
+        motion, parents, file_max_joints, new_anim, export_anim, is_loop = get_motion(
             file_path,
             FOOT_CONTACT_VEL_THRESH,
             object_type,
@@ -733,6 +746,7 @@ def _process_bvh_file(file_path, object_type, max_joints, root_pose_init_xz, sca
             'new_anim': new_anim,
             'export_anim': export_anim,
             'names': names,
+            'is_loop': is_loop,
             'motion_labels': build_motion_labels(object_type, raw_action),
         })
 
@@ -767,7 +781,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=
 
     squared_positions_error = dict()
     root_pose_init_xz, scale_factor, offsets, foot_indices, tpos_rots, names, tpos_anim, face_joints, orientation_quat, forward_joint_index, forward_base_joint_index, contact_joint_source = get_common_features_from_T_pose(t_pos_path, object_type, face_joints=face_joints)
-    t_pos_motion, parents, max_joints, new_anim, _export_anim = get_motion(tpos_anim, FOOT_CONTACT_VEL_THRESH, object_type, max_joints, root_pose_init_xz, scale_factor, offsets, foot_indices, tpos_rots, squared_positions_error, face_joints=face_joints, orientation_quat=orientation_quat, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)
+    t_pos_motion, parents, max_joints, new_anim, _export_anim, _tpos_is_loop = get_motion(tpos_anim, FOOT_CONTACT_VEL_THRESH, object_type, max_joints, root_pose_init_xz, scale_factor, offsets, foot_indices, tpos_rots, squared_positions_error, face_joints=face_joints, orientation_quat=orientation_quat, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)
     rest_positions = _rest_positions_from_offsets(offsets, parents)
     semantic_metadata = _build_semantic_metadata(object_type, names, parents, offsets, rest_positions=rest_positions)
     object_cond['tpos_first_frame'] = t_pos_motion[0]
@@ -885,6 +899,7 @@ def _write_object_outputs(save_dir, object_payload, files_counter):
 
         motion_labels = dict(result['motion_labels'])
         motion_labels['motion_name'] = motion_file_name
+        motion_labels['is_loop'] = result.get('is_loop', False)
         motion_metadata[motion_file_name] = motion_labels
 
     return files_counter, frames_counter, motion_metadata
