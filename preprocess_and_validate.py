@@ -4,8 +4,7 @@ Unified Preprocessing + Validation Workflow
 ============================================
 Automatically chains AnyTop dataset creation with validation:
   1. Preprocessing: Creates motion tensors and conditioning files
-  2. Corrupted Export: Generates stored corrupted-reference motions (by default)
-  3. Validation: Validates the preprocessed dataset
+  2. Validation: Validates the preprocessed dataset
 
 Usage:
     python preprocess_and_validate.py [OPTIONS]
@@ -14,17 +13,14 @@ Options:
     --validate-only                      Skip preprocessing, only validate existing dataset
     --skip-validate                      Skip validation step (faster for CI)
     --skip-orientation-check             Skip processed-BVH orientation validation
-    --skip-corrupted-export              Skip corrupted-reference export
     --objects-subset SUBSET              Object subset to process (default: all)
     --object-workers N                   Concurrent characters to preprocess (default: 8)
     --file-workers N                     Worker threads per character for BVH processing (default: 8)
     --sample-count N                     Limit file validation to first N motions/BVHs (0=all, default: 0)
     --orientation-threshold-deg DEG      Max allowed canonicalized first-frame facing error from +Z during validation (default: 15.0)
-    --corrupted-seed SEED                Random seed for corrupted-reference export (default: 1234)
-    --corrupted-sample-limit N           Limit corrupted-reference samples (0=all, default: 0)
 
 Examples:
-    # Full workflow: preprocess → corrupted export → validate
+    # Full workflow: preprocess → validate
     python preprocess_and_validate.py
 
     # Validate only (assumes preprocessing already done)
@@ -36,20 +32,14 @@ Examples:
     # Preprocess without validation
     python preprocess_and_validate.py --skip-validate
 
-    # Preprocess without corrupted-reference export
-    python preprocess_and_validate.py --skip-corrupted-export
-
     # Preprocess specific object subset with custom settings
     python preprocess_and_validate.py --objects-subset "Hound" --object-workers 4 --file-workers 8
-
-    # Corrupted export with custom seed and sample limit
-    python preprocess_and_validate.py --corrupted-seed 42 --corrupted-sample-limit 100
 
     # Validate only a specific object subset
     python preprocess_and_validate.py --validate-only --objects-subset "Monkey"
 
-    # Fast CI workflow (skip validation and corrupted export)
-    python preprocess_and_validate.py --skip-validate --skip-corrupted-export
+    # Fast CI workflow (skip validation)
+    python preprocess_and_validate.py --skip-validate
 """
 
 import argparse
@@ -82,25 +72,6 @@ def run_preprocessing(objects_subset: str, object_workers: int, file_workers: in
     return result.returncode
 
 
-def run_corrupted_export(objects_subset: str, seed: int, sample_limit: int) -> int:
-    """Generate stored corrupted-reference motions alongside the clean dataset."""
-    print("\n" + "=" * 70)
-    print("STEP 2: CORRUPTED REFERENCES - Exporting stored corrupted motions")
-    print("=" * 70 + "\n")
-
-    cmd = [
-        sys.executable,
-        str(ANYTOP_DIR / "tools" / "export_corrupted_truebones_samples.py"),
-        "--objects-subset", objects_subset,
-        "--seed", str(seed),
-    ]
-    if sample_limit > 0:
-        cmd.extend(["--sample-limit", str(sample_limit)])
-
-    result = subprocess.run(cmd, cwd=str(ANYTOP_DIR), capture_output=False)
-    return result.returncode
-
-
 def run_validation(
     objects_subset: str,
     skip_orientation_check: bool,
@@ -109,7 +80,7 @@ def run_validation(
 ) -> int:
     """Run dataset validation."""
     print("\n" + "=" * 70)
-    print("STEP 3: VALIDATION - Checking preprocessed dataset")
+    print("STEP 2: VALIDATION - Checking preprocessed dataset")
     print("=" * 70 + "\n")
     
     # Import and call check_anytop_dataset.py main() directly instead of subprocess
@@ -172,12 +143,10 @@ def check_and_clean_old_data(dataset_dir: str = "") -> bool:
     dataset_dir_path = Path(get_dataset_dir(dataset_dir if dataset_dir else None))
     motions_dir = dataset_dir_path / "motions"
     bvhs_dir = dataset_dir_path / "bvhs"
-    corrupted_ref_dir = dataset_dir_path / "corrupted_references"
     
     # Check if any old data exists
     old_data_exists = (motions_dir.exists() and any(motions_dir.iterdir())) or \
-                      (bvhs_dir.exists() and any(bvhs_dir.iterdir())) or \
-                      (corrupted_ref_dir.exists() and any(corrupted_ref_dir.iterdir()))
+                      (bvhs_dir.exists() and any(bvhs_dir.iterdir()))
     
     if not old_data_exists:
         return True
@@ -191,8 +160,6 @@ def check_and_clean_old_data(dataset_dir: str = "") -> bool:
         print(f"  - {motions_dir} contains existing data")
     if bvhs_dir.exists() and any(bvhs_dir.iterdir()):
         print(f"  - {bvhs_dir} contains existing data")
-    if corrupted_ref_dir.exists() and any(corrupted_ref_dir.iterdir()):
-        print(f"  - {corrupted_ref_dir} contains existing data")
     print("\nDo you want to delete the old data and proceed with preprocessing?")
     
     while True:
@@ -206,9 +173,6 @@ def check_and_clean_old_data(dataset_dir: str = "") -> bool:
                 if bvhs_dir.exists():
                     shutil.rmtree(bvhs_dir)
                     print(f"  ✓ Deleted {bvhs_dir}")
-                if corrupted_ref_dir.exists():
-                    shutil.rmtree(corrupted_ref_dir)
-                    print(f"  ✓ Deleted {corrupted_ref_dir}")
                 print("Old data cleaned successfully. Proceeding with preprocessing...\n")
                 return True
             except Exception as e:
@@ -273,23 +237,6 @@ def parse_args() -> argparse.Namespace:
         help="Limit file validation to the first N motions/BVHs. Use 0 to validate all files.",
     )
     parser.add_argument(
-        "--skip-corrupted-export",
-        action="store_true",
-        help="Skip generating stored corrupted-reference motions after preprocessing.",
-    )
-    parser.add_argument(
-        "--corrupted-seed",
-        default=1234,
-        type=int,
-        help="Seed used when exporting stored corrupted-reference motions.",
-    )
-    parser.add_argument(
-        "--corrupted-sample-limit",
-        default=0,
-        type=int,
-        help="Limit the number of motions to export corrupted references for. 0 exports all motions.",
-    )
-    parser.add_argument(
         "--raw-data-dir",
         default="",
         type=str,
@@ -333,17 +280,6 @@ def main() -> int:
             return ret
         steps_completed.append("Preprocess")
 
-        if not args.skip_corrupted_export:
-            ret = run_corrupted_export(
-                args.objects_subset,
-                args.corrupted_seed,
-                args.corrupted_sample_limit,
-            )
-            if ret != 0:
-                print("\n[FAIL] Corrupted-reference export failed, aborting workflow.")
-                return ret
-            steps_completed.append("Corrupted Export")
-    
     # Validate
     if not args.skip_validate:
         ret = run_validation(

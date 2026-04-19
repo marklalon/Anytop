@@ -7,17 +7,11 @@ A unified command-line interface that chains AnyTop dataset preprocessing direct
 
 ### Python (All Platforms)
 ```bash
-# Run full workflow (preprocess + corrupted references + validate)
+# Run full workflow (preprocess + validate)
 python preprocess_and_validate.py
 
 # Use more CPU across object types and BVH files
 python preprocess_and_validate.py --objects-subset quadropeds --object-workers 8 --file-workers 8
-
-# Regenerate stored corrupted references only
-python tools/export_corrupted_truebones_samples.py --objects-subset quadropeds_clean
-
-# Render a random QA subset of stored corrupted references
-python tools/render_corrupted_truebones_previews.py --output-dir outputs/corrupted_previews --objects-subset quadropeds_clean --sample-limit 6 --random-seed 1234
 
 # Validate only (skip preprocessing)
 python preprocess_and_validate.py --validate-only
@@ -35,13 +29,7 @@ python preprocess_and_validate.py --skip-validate
 - Writes `motion_metadata.json` with per-motion species labels, action labels, and `action_tags`
 - Outputs summary to `metadata.txt` and error rates to `positions_error_rate.txt`
 
-### Step 2: Stored Corrupted References
-- Runs `tools/export_corrupted_truebones_samples.py`
-- Writes corrupted references next to `motions/` under `corrupted_references/`
-- Saves only `.npy` + `.json` metadata files for speed
-- Does not generate MP4 previews during export
-
-### Step 3: Validation
+### Step 2: Validation
 - Runs `tests/check_anytop_dataset.py`
 - Verifies required artifacts exist
 - Validates all preprocessed motion/BVH files by default
@@ -54,13 +42,10 @@ python preprocess_and_validate.py --skip-validate
 |--------|--------|
 | `--validate-only` | Skip preprocessing, run validation on existing dataset |
 | `--skip-validate` | Skip validation (useful for quick checks or CI) |
-| `--skip-corrupted-export` | Skip generating stored corrupted references after preprocessing |
 | `--objects-subset` | Expected object type subset (`all`, `hound`, `chicken`, etc.) |
 | `--object-workers` | Concurrent characters to preprocess |
 | `--file-workers` | Worker threads per character for BVH file processing |
 | `--sample-count` | Limit file validation to first `N` motions/BVHs; `0` means validate all files |
-| `--corrupted-seed` | Random seed used for stored corrupted references |
-| `--corrupted-sample-limit` | Limit number of motions that get corrupted references |
 
 ## Exit Codes
 - `0` - Success (both preprocessing and validation passed)
@@ -70,9 +55,6 @@ python preprocess_and_validate.py --skip-validate
 By default, preprocessed data is saved to the directory specified by:
 - `--dataset-dir` command-line argument, or
 - `data/` (if environment variable not set)
-
-Stored corrupted references are written beside clean motions under:
-- `corrupted_references/`
 
 Downstream training and debug scripts can filter motions by semantic tags from `motion_metadata.json` using `--action_tags`, for example `--action_tags locomotion`.
 
@@ -109,8 +91,6 @@ python preprocess_and_validate.py --validate-only
 - `preprocess_and_validate.py` - Main orchestration script (Python)
 - `tests/check_anytop.py` - Environment compatibility check
 - `tests/check_anytop_dataset.py` - Dataset validation script
-- `tools/export_corrupted_truebones_samples.py` - Stored corrupted-reference exporter
-- `tools/render_corrupted_truebones_previews.py` - Optional MP4 preview renderer
 
 ### Existing Referenced Files
 - `utils/create_dataset.py` - Dataset creation entry point
