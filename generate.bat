@@ -6,7 +6,7 @@ REM 多个类型用空格分隔（直接传给 --object_type nargs='+'）
 set OBJECT_TYPE=Lion Bear
 set NUM_REPETITIONS=8
 set ACTION_CATEGORY=locomotion
-set GUIDANCE_SCALE=2
+set GUIDANCE_SCALE=1
 
 pushd "%SCRIPT_DIR%"
 
@@ -42,7 +42,9 @@ REM 一次调用 generate.py，所有类型作为 batch 并行生成
     --object_type %OBJECT_TYPE% ^
     --num_repetitions %NUM_REPETITIONS% ^
     --action_category %ACTION_CATEGORY% ^
-    --guidance_scale %GUIDANCE_SCALE%
+    --guidance_scale %GUIDANCE_SCALE% ^
+    --sampling_method ddim ^
+    --sampling_steps 100
 
 if %errorlevel% neq 0 (
     echo Error: Generation failed.

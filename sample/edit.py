@@ -20,9 +20,8 @@ from utils.model_util import create_model_and_diffusion_general_skeleton, load_m
 from utils import dist_util
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
-from data_loaders.truebones.data.dataset import create_temporal_mask_for_window
+from data_loaders.truebones.data.dataset import create_temporal_mask_for_window, attach_joint_name_embeddings
 from os.path import join as pjoin
-from model.conditioners import T5Conditioner
 from motion_lib import BVH
 from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
@@ -36,8 +35,12 @@ def main(args = None, cond_dict = None):
     if cond_dict is None:
         if args.cond_path:
             cond_dict=np.load(args.cond_path, allow_pickle=True).item()
+            actual_cond_file = args.cond_path
         else:
             cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
+            actual_cond_file = opt.cond_file
+    else:
+        actual_cond_file = opt.cond_file
 
     out_path = args.output_dir
     name = os.path.basename(os.path.dirname(args.model_path))        
@@ -63,9 +66,9 @@ def main(args = None, cond_dict = None):
     elif 'model' in state_dict:
         state_dict = state_dict['model']
     load_model(model, state_dict)
-    
-    print("Loading T5 model")
-    t5_conditioner = T5Conditioner(name=args.t5_name, finetune=False, word_dropout=0.0, normalize_text=False, device='cuda')
+
+    print("Building/loading joint-name T5 embedding cache...")
+    attach_joint_name_embeddings(cond_dict, actual_cond_file, opt.data_root, args.t5_name)
     model.to(dist_util.dev())
     model.eval()  # disable random masking
     motions_list = [np.load(sample) for sample in args.samples]
@@ -74,7 +77,6 @@ def main(args = None, cond_dict = None):
         args.object_type,
         cond_dict[args.object_type],
         args.temporal_window,
-        t5_conditioner,
         max_joints=opt.max_joints, 
         feature_len=opt.feature_len,
         target_frames=args.target_frames,
@@ -188,7 +190,7 @@ def resize_motion_frames(motion, target_frames):
     resized = F.interpolate(motion_tensor, size=target_frames, mode="linear", align_corners=False)
     return resized.reshape(motion.shape[1], motion.shape[2], target_frames).permute(2, 0, 1).cpu().numpy()
     
-def prepare_inpainting_inputs(motions, object_type, cond_dict, temporal_window, t5_conditioner, max_joints, feature_len, target_frames=0):
+def prepare_inpainting_inputs(motions, object_type, cond_dict, temporal_window, max_joints, feature_len, target_frames=0):
     batches = list()
     mean = np.asarray(cond_dict['mean'], dtype=np.float32)
     std = np.asarray(cond_dict.get('std_safe', cond_dict['std']), dtype=np.float32)
@@ -206,7 +208,7 @@ def prepare_inpainting_inputs(motions, object_type, cond_dict, temporal_window, 
         joint_relations = cond_dict['joint_relations']
         joints_graph_dist = cond_dict['joints_graph_dist']
         offsets = cond_dict['offsets']
-        joints_names_embs = encode_joints_names(cond_dict['joints_names'] , t5_conditioner).detach().cpu().numpy()
+        joints_names_embs = cond_dict['joints_names_embs']
         batch.append(prepared_motion)
         batch.append(n_frames)
         batch.append(parents)

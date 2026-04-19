@@ -18,9 +18,8 @@ from utils.model_util import create_model_and_diffusion_general_skeleton, load_m
 from utils import dist_util
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
-from data_loaders.truebones.data.dataset import create_temporal_mask_for_window
+from data_loaders.truebones.data.dataset import create_temporal_mask_for_window, attach_joint_name_embeddings
 from os.path import join as pjoin
-from model.conditioners import T5Conditioner
 from motion_lib import BVH
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 
@@ -66,8 +65,12 @@ def main(args = None, cond_dict = None):
     if cond_dict is None:
         if args.cond_path:
             cond_dict=np.load(args.cond_path, allow_pickle=True).item()
+            actual_cond_file = args.cond_path
         else:
             cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
+            actual_cond_file = opt.cond_file
+    else:
+        actual_cond_file = opt.cond_file
 
     out_path = args.output_dir
     name = os.path.basename(os.path.dirname(args.model_path))        
@@ -86,6 +89,18 @@ def main(args = None, cond_dict = None):
     # args.num_repetitions = 1
 
     print("Creating model and diffusion...")
+    # Configure respaced sampling steps before creating diffusion
+    sampling_steps = int(getattr(args, 'sampling_steps', 100))
+    sampling_method = str(getattr(args, 'sampling_method', 'ddim')).lower()
+    if sampling_steps > 0:
+        if sampling_method == 'ddim':
+            args.timestep_respacing = f'ddim{sampling_steps}'
+        elif sampling_method == 'plms':
+            args.timestep_respacing = f'ddim{sampling_steps}'  # plms uses same respacing format
+        else:
+            args.timestep_respacing = str(sampling_steps)
+    else:
+        args.timestep_respacing = ''
     model, diffusion = create_model_and_diffusion_general_skeleton(args)
 
     print(f"Loading checkpoints from [{args.model_path}]...")
@@ -96,9 +111,9 @@ def main(args = None, cond_dict = None):
     elif 'model' in state_dict:
         state_dict = state_dict['model']
     load_model(model, state_dict)
-    
-    print("Loading T5 model")
-    t5_conditioner = T5Conditioner(name=args.t5_name, finetune=False, word_dropout=0.0, normalize_text=False, device='cuda')
+
+    print("Building/loading joint-name T5 embedding cache...")
+    attach_joint_name_embeddings(cond_dict, actual_cond_file, opt.data_root, args.t5_name)
     model.to(dist_util.dev())
     model.eval()  # disable random masking
     guidance_scale = float(getattr(args, 'guidance_scale', 1.0))
@@ -106,25 +121,42 @@ def main(args = None, cond_dict = None):
         print(f"CFG enabled: guidance_scale={guidance_scale}")
         model = _CFGWrapper(model, guidance_scale)
     action_category = getattr(args, 'action_category', None) or None
-    _, model_kwargs = create_condition(object_types, cond_dict, n_frames, args.temporal_window, t5_conditioner=t5_conditioner, max_joints=opt.max_joints, feature_len=opt.feature_len, action_category=action_category)
+    _, model_kwargs = create_condition(object_types, cond_dict, n_frames, args.temporal_window, max_joints=opt.max_joints, feature_len=opt.feature_len, action_category=action_category)
 
 
+    ddim_eta = float(getattr(args, 'ddim_eta', 0.0))
     for rep_i in range(args.num_repetitions):
-        print(f'### Sampling [repetitions #{rep_i}]')
-        sample_fn = diffusion.p_sample_loop
-
-        sample = sample_fn(
-            model,
-            (args.batch_size, max_joints, model.feature_len, n_frames),
-            clip_denoised=False,
-            model_kwargs=model_kwargs,
-            skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
-            init_image=None,
-            progress=True,
-            dump_steps=None,
-            noise=None,
-            const_noise=False,
-        )
+        print(f'### Sampling [repetitions #{rep_i}] method={sampling_method} steps={sampling_steps or "full"}')
+        if sampling_method == 'ddim':
+            sample = diffusion.ddim_sample_loop(
+                model,
+                (args.batch_size, max_joints, model.feature_len, n_frames),
+                clip_denoised=False,
+                model_kwargs=model_kwargs,
+                progress=True,
+                eta=ddim_eta,
+            )
+        elif sampling_method == 'plms':
+            sample = diffusion.plms_sample_loop(
+                model,
+                (args.batch_size, max_joints, model.feature_len, n_frames),
+                clip_denoised=False,
+                model_kwargs=model_kwargs,
+                progress=True,
+            )
+        else:
+            sample = diffusion.p_sample_loop(
+                model,
+                (args.batch_size, max_joints, model.feature_len, n_frames),
+                clip_denoised=False,
+                model_kwargs=model_kwargs,
+                skip_timesteps=0,
+                init_image=None,
+                progress=True,
+                dump_steps=None,
+                noise=None,
+                const_noise=False,
+            )
 
         # Recover XYZ *positions* from matrix representation
         bs, max_joints, n_feats, n_frames = sample.shape
@@ -148,12 +180,7 @@ def main(args = None, cond_dict = None):
                          positions=has_animated_pos)
             print("repetition #" + str(rep_i) + " ,created motion: "+ npy_name)
 
-def encode_joints_names(joints_names, t5_conditioner): # joints names should be padded with None to be of max_len 
-        names_tokens = t5_conditioner.tokenize(joints_names)
-        embs = t5_conditioner(names_tokens)
-        return embs
-    
-def create_condition(object_types, cond_dict, n_frames, temporal_window, t5_conditioner, max_joints, feature_len, action_category=None):
+def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joints, feature_len, action_category=None):
     """Build model_kwargs for a batch of object_types.
 
     Args:
@@ -184,7 +211,7 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, t5_cond
         joint_relations = cond_dict[object_type]['joint_relations']
         joints_graph_dist = cond_dict[object_type]['joints_graph_dist']
         offsets = cond_dict[object_type]['offsets']
-        joints_names_embs = encode_joints_names(cond_dict[object_type]['joints_names'] , t5_conditioner).detach().cpu().numpy()
+        joints_names_embs = cond_dict[object_type]['joints_names_embs']
         batch.append(np.zeros((n_frames, n_joints, feature_len)))
         batch.append(n_frames)
         batch.append(parents)

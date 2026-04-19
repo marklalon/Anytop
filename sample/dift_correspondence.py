@@ -13,9 +13,8 @@ from utils import dist_util
 from data_loaders.get_data import get_dataset_loader
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np
-from data_loaders.truebones.data.dataset import create_temporal_mask_for_window
+from data_loaders.truebones.data.dataset import create_temporal_mask_for_window, attach_joint_name_embeddings
 from os.path import join as pjoin
-from model.conditioners import T5Conditioner
 import random
 import multiprocessing
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
@@ -26,7 +25,7 @@ def encode_joints_names(joints_names, t5_conditioner): # joints names should be 
         embs = t5_conditioner(names_tokens)
         return embs
 
-def create_sample_in_batch(motion, object_type, cond_dict_for_object, temporal_window, t5_conditioner, max_joints):
+def create_sample_in_batch(motion, object_type, cond_dict_for_object, temporal_window, max_joints):
     batch=list()
     parents = cond_dict_for_object['parents']
     n_joints = len(parents)
@@ -41,7 +40,7 @@ def create_sample_in_batch(motion, object_type, cond_dict_for_object, temporal_w
     joint_relations = cond_dict_for_object['joint_relations']
     joints_graph_dist = cond_dict_for_object['joints_graph_dist']
     offsets = cond_dict_for_object['offsets']
-    joints_names_embs = encode_joints_names(cond_dict_for_object['joints_names'] , t5_conditioner).detach().cpu().numpy()
+    joints_names_embs = cond_dict_for_object['joints_names_embs']
     batch.append(motion)
     batch.append(n_frames)
     batch.append(parents)
@@ -58,14 +57,14 @@ def create_sample_in_batch(motion, object_type, cond_dict_for_object, temporal_w
     batch.append(max_joints)
     return batch
 
-def create_batch_from_motion_paths(motion_paths, cond_dict, temporal_window, t5_conditioner, max_joints):
+def create_batch_from_motion_paths(motion_paths, cond_dict, temporal_window, max_joints):
     batches = list()
     motions = list()
     cond_dicts = list()
     for motion_path in motion_paths:
         object_type = os.path.basename(motion_path).split('_')[0]
         motion, cond_dict_object_type = process_object_type(motion_path=motion_path, object_type=object_type, cond=cond_dict)
-        batches.append(create_sample_in_batch(motion, object_type, cond_dict_object_type, temporal_window, t5_conditioner, max_joints))
+        batches.append(create_sample_in_batch(motion, object_type, cond_dict_object_type, temporal_window, max_joints))
         motions.append(motion)
         cond_dicts.append(cond_dict_object_type)
     return *truebones_batch_collate(batches), motions, cond_dicts
@@ -182,8 +181,12 @@ def run_dift(args = None, cond_dict = None):
     if cond_dict is None:
         if args.cond_path:
             cond_dict=np.load(args.cond_path, allow_pickle=True).item()
+            actual_cond_file = args.cond_path
         else:
             cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
+            actual_cond_file = opt.cond_file
+    else:
+        actual_cond_file = opt.cond_file
     out_path = args.output_dir
     name = os.path.basename(os.path.dirname(args.model_path))        
     niter = os.path.basename(args.model_path).replace('model', '').replace('.pt', '')
@@ -216,12 +219,12 @@ def run_dift(args = None, cond_dict = None):
     elif 'model' in state_dict:
         state_dict = state_dict['model']
     load_model(model, state_dict)
-    
-    print("Loading T5 model")
-    t5_conditioner = T5Conditioner(name=args.t5_name, finetune=False, word_dropout=0.0, normalize_text=False, device='cuda')
+
+    print("Building/loading joint-name T5 embedding cache...")
+    attach_joint_name_embeddings(cond_dict, actual_cond_file, opt.data_root, args.t5_name)
     model.to(dist_util.dev())
     model.eval()  # disable random masking
-    batch, model_kwargs, motions, cond_dicts =  create_batch_from_motion_paths([args.sample_ref] + args.sample_tgt, cond_dict, args.temporal_window, t5_conditioner, max_joints=opt.max_joints)
+    batch, model_kwargs, motions, cond_dicts = create_batch_from_motion_paths([args.sample_ref] + args.sample_tgt, cond_dict, args.temporal_window, max_joints=opt.max_joints)
     sample_fn = diffusion.p_sample_single_timestep
     for rep_i in range(args.num_repetitions):
         print(f'### Sampling [repetitions #{rep_i}]')
