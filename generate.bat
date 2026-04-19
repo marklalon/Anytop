@@ -10,19 +10,27 @@ set GUIDANCE_SCALE=1
 
 pushd "%SCRIPT_DIR%"
 
-REM 自动查找最新的 model 文件
-for /f "delims=" %%i in ('dir /b /o-d "save\%RUN_NAME%\stage1_pretrain\model*.pt" 2^>nul') do (
-    set MODEL_PATH=%%i
-    goto :found_model
+if not defined MODEL_FILE (
+    REM 自动查找最新的 model 文件
+    for /f "delims=" %%i in ('dir /b /o-d "save\%RUN_NAME%\stage1_pretrain\model*.pt" 2^>nul') do (
+        set MODEL_FILE=%%i
+        goto :found_model
+    )
 )
+
 :found_model
-if not defined MODEL_PATH (
+if not defined MODEL_FILE (
     echo Error: No model file found in save\%RUN_NAME%\stage1_pretrain\
     popd
     exit /b 1
 )
 
-set OUTPUT_DIR=outputs\%RUN_NAME%\generate
+REM 通用方法：先去掉扩展名，再去掉 "model" 前缀
+set STEP_NUM=%MODEL_FILE:.pt=%
+set STEP_NUM=%STEP_NUM:model=%
+
+set MODEL_PATH=save\%RUN_NAME%\stage1_pretrain\%MODEL_FILE%
+set OUTPUT_DIR=outputs\%RUN_NAME%\generate_step%STEP_NUM%
 
 REM 清空 output_dir 目录
 if exist %OUTPUT_DIR% (
@@ -37,7 +45,7 @@ echo Output dir: %OUTPUT_DIR%
 
 REM 一次调用 generate.py，所有类型作为 batch 并行生成
 %PYTHON_EXE% sample/generate.py ^
-    --model_path "save\%RUN_NAME%\stage1_pretrain\%MODEL_PATH%" ^
+    --model_path "%MODEL_PATH%" ^
     --output_dir %OUTPUT_DIR% ^
     --object_type %OBJECT_TYPE% ^
     --num_repetitions %NUM_REPETITIONS% ^
