@@ -18,7 +18,7 @@ from data_loaders.truebones.truebones_utils.physics_joint_annotation import buil
 from model.conditioners import T5Conditioner
 
 
-DEFAULT_SPLIT_RATIOS = {"train": 1.0, "val": 0.0, "test": 0.0}
+DEFAULT_SPLIT_RATIOS = {"train": 0.95, "val": 0.05, "test": 0.0}
 DEFAULT_SPLIT_SEED = 3407
 SUPPORTED_SPLITS = tuple(DEFAULT_SPLIT_RATIOS.keys())
 ALL_SPLIT_NAME = "all"
@@ -115,9 +115,6 @@ def _mirror_offsets_array(offsets: np.ndarray, perm: np.ndarray) -> np.ndarray:
     return mirrored
 
 
-
-
-
 def _compute_split_counts(num_items: int) -> dict[str, int]:
     if num_items <= 0:
         return {split: 0 for split in SUPPORTED_SPLITS}
@@ -130,7 +127,8 @@ def _compute_split_counts(num_items: int) -> dict[str, int]:
 
     raw_counts = {split: DEFAULT_SPLIT_RATIOS[split] * num_items for split in SUPPORTED_SPLITS}
     counts = {split: int(np.floor(raw_counts[split])) for split in SUPPORTED_SPLITS}
-    minimums = {"train": 1, "val": 1, "test": 1}
+    # Minimums respect the split ratios - if a split has 0.0 ratio, it should have 0 minimum
+    minimums = {split: (1 if DEFAULT_SPLIT_RATIOS[split] > 0 else 0) for split in SUPPORTED_SPLITS}
 
     for split, minimum in minimums.items():
         counts[split] = max(counts[split], minimum)
@@ -170,21 +168,23 @@ def ensure_split_manifests(data_root: str, motion_dir: str) -> dict[str, Path]:
     if all(path.exists() for path in split_paths.values()):
         return split_paths
 
+    # Group motion names by object_type (animal character)
     grouped_motion_names: dict[str, list[str]] = defaultdict(list)
     for motion_name in _list_motion_files(motion_dir):
         grouped_motion_names[_infer_object_type_from_motion_name(motion_name)].append(motion_name)
 
+    # Shuffle object types and assign all their motions to the same split
     manifests = {split: [] for split in SUPPORTED_SPLITS}
     rng = random.Random(DEFAULT_SPLIT_SEED)
-    for object_type in sorted(grouped_motion_names):
-        motion_names = sorted(grouped_motion_names[object_type])
-        rng.shuffle(motion_names)
-        split_counts = _compute_split_counts(len(motion_names))
-        start_index = 0
-        for split in SUPPORTED_SPLITS:
-            end_index = start_index + split_counts[split]
-            manifests[split].extend(motion_names[start_index:end_index])
-            start_index = end_index
+    object_types = sorted(grouped_motion_names.keys())
+    rng.shuffle(object_types)
+    split_counts = _compute_split_counts(len(object_types))
+    start_index = 0
+    for split in SUPPORTED_SPLITS:
+        end_index = start_index + split_counts[split]
+        for object_type in object_types[start_index:end_index]:
+            manifests[split].extend(grouped_motion_names[object_type])
+        start_index = end_index
 
     for split, split_path in split_paths.items():
         split_path.write_text("\n".join(sorted(manifests[split])) + "\n", encoding="utf-8")
@@ -242,18 +242,19 @@ def load_motion_names_for_split_with_action_tags(
         object_type = str(motion_metadata.get('object_type') or _infer_object_type_from_motion_name(motion_name))
         grouped_motion_names[object_type].append(motion_name)
 
+    # Shuffle object types and assign all their motions to the same split
     selected_motion_names: set[str] = set()
     rng = random.Random(DEFAULT_SPLIT_SEED)
-    for object_type in sorted(grouped_motion_names):
-        motion_names = sorted(grouped_motion_names[object_type])
-        rng.shuffle(motion_names)
-        split_counts = _compute_filtered_split_counts(len(motion_names))
-        start_index = 0
-        for current_split in SUPPORTED_SPLITS:
-            end_index = start_index + split_counts[current_split]
+    object_types = sorted(grouped_motion_names.keys())
+    rng.shuffle(object_types)
+    split_counts = _compute_filtered_split_counts(len(object_types))
+    start_index = 0
+    for current_split in SUPPORTED_SPLITS:
+        end_index = start_index + split_counts[current_split]
+        for object_type in object_types[start_index:end_index]:
             if current_split == split:
-                selected_motion_names.update(motion_names[start_index:end_index])
-            start_index = end_index
+                selected_motion_names.update(grouped_motion_names[object_type])
+        start_index = end_index
 
     if not selected_motion_names:
         raise RuntimeError(

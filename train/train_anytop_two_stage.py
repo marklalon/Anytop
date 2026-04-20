@@ -55,14 +55,15 @@ def _build_stage_args(base_args, stage_name, save_dir):
     _apply_stage_override(stage_args, 'sample_limit', getattr(base_args, f'{stage_name}_sample_limit'), -1)
 
     if stage_name == 'stage1':
-        stage_args.train_split = 'all'
+        train_split = getattr(stage_args, 'train_split', 'train')
+        print(f'[INFO] Stage 1: train_split={train_split}')
         if base_args.stage1_resume_checkpoint:
             stage_args.resume_checkpoint = base_args.stage1_resume_checkpoint
     else:
+        # Stage 2 placeholder - to be implemented
         stage_args.train_split = 'train'
-        stage_args.load_optimizer_state = bool(base_args.stage2_load_optimizer_state)
-        if base_args.stage2_resume_checkpoint:
-            stage_args.resume_checkpoint = base_args.stage2_resume_checkpoint
+        stage_args.load_optimizer_state = False
+        stage_args.resume_checkpoint = ''
 
     return stage_args
 
@@ -104,18 +105,8 @@ def main():
         stage1_checkpoint = _find_latest_model_checkpoint(stage1_save_dir)
 
     if args.run_stage in ('stage2', 'both'):
-        stage2_save_dir = _resolve_stage_save_dir(args, 'stage2', 'stage2_repair')
-        stage2_args = _build_stage_args(args, 'stage2', stage2_save_dir)
-        if not getattr(stage2_args, 'resume_checkpoint', ''):
-            if args.run_stage == 'stage2':
-                stage1_save_dir = _resolve_stage_save_dir(args, 'stage1', 'stage1_pretrain')
-                stage2_args.resume_checkpoint = _find_latest_model_checkpoint(stage1_save_dir)
-            else:
-                stage2_args.resume_checkpoint = stage1_checkpoint
-        if not stage2_args.resume_checkpoint:
-            raise FileNotFoundError('Stage 2 requires a checkpoint. Provide --stage2_resume_checkpoint or point stage1_save_dir to an existing stage1 run.')
-        run_training(stage2_args)
-        stage2_checkpoint = _find_latest_model_checkpoint(stage2_save_dir)
+        # Stage 2 placeholder - to be implemented
+        print('Stage 2: placeholder, no implementation yet.')
 
     _write_manifest(args, stage1_args, stage2_args, stage1_checkpoint, stage2_checkpoint)
 
