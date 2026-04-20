@@ -82,9 +82,9 @@ def add_model_options(parser):
                        help="Number of layers.")
     group.add_argument("--latent_dim", default=128, type=int,
                        help="Transformer/GRU width.")
-    group.add_argument("--cond_mask_prob", default=.1, type=float,
-                       help="Classifier-free guidance dropout probability. Only consumed when"
-                            " --use_action_cond is set: ActionTagConditioner zeros the action embedding"
+    group.add_argument("--action_cond_mask_prob", default=.1, type=float,
+                       help="Classifier-free guidance dropout probability for action conditioning."
+                            " Only consumed when --use_action_cond is set: ActionTagConditioner zeros the action embedding"
                             " with this probability during training so inference-time guidance_scale != 1.0"
                             " has a valid unconditional branch.")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Foot contact loss.")
@@ -120,7 +120,7 @@ def add_model_options(parser):
     group.add_argument("--use_action_cond", action='store_true',
                        help="If passed, enables action-tag conditioning. The model learns a small embedding "
                             "for the 12 known action categories and adds it to all tokens in the input process. "
-                            "Classifier-free guidance dropout is applied at the rate of --cond_mask_prob.")
+                            "Classifier-free guidance dropout is applied at the rate of --action_cond_mask_prob.")
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')

@@ -22,7 +22,7 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--stage1_num_steps 100000 ^
 	--lr_anneal_steps 150000 ^
 	--dropout_prob 0.1 ^
-	--cond_mask_prob 0.2 ^
+	--action_cond_mask_prob 0.3 ^
 	--aug_speed_range 0.2 ^
 	--aug_mirror_prob 0.5 ^
 	--joint_mask_prob 0.2 ^

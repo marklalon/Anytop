@@ -44,12 +44,12 @@ class AnyTop(nn.Module):
         self.input_feats = self.feature_len
         self.root_input_feats = root_input_feats
         self.cond_mode = kargs.get('cond_mode', 'no_cond')
-        self.cond_mask_prob = kargs.get('cond_mask_prob', 0.)
+        self.action_cond_mask_prob = kargs.get('action_cond_mask_prob', 0.)
         self.skip_t5=kargs.get('skip_t5', False)
         self.value_emb=kargs.get('value_emb', False)
         self.use_action_cond = kargs.get('use_action_cond', False)
         self.action_conditioner = (
-            ActionTagConditioner(latent_dim=self.latent_dim, cond_mask_prob=self.cond_mask_prob)
+            ActionTagConditioner(latent_dim=self.latent_dim, action_cond_mask_prob=self.action_cond_mask_prob)
             if self.use_action_cond else None
         )
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, skip_t5=self.skip_t5, dropout_prob=self.dropout)

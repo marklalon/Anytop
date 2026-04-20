@@ -261,24 +261,24 @@ class ActionTagConditioner(nn.Module):
     vocabulary as action_tags) can be passed in as a single-element list.
 
     Classifier-free guidance is applied during training by zeroing the
-    embedding with probability ``cond_mask_prob``.
+    embedding with probability ``action_cond_mask_prob``.
 
     Args:
         latent_dim (int): Output embedding dimension.
-        cond_mask_prob (float): Probability of nullifying the condition
+        action_cond_mask_prob (float): Probability of nullifying the condition
             during training (CFG dropout). Default: 0.1.
     """
 
     PAD_IDX: int = 0
 
-    def __init__(self, latent_dim: int, cond_mask_prob: float = 0.1) -> None:
+    def __init__(self, latent_dim: int, action_cond_mask_prob: float = 0.1) -> None:
         super().__init__()
         self.tag2idx: tp.Dict[str, int] = {
             tag: i + 1 for i, tag in enumerate(KNOWN_ACTION_TAGS)
         }
         self.vocab_size = len(KNOWN_ACTION_TAGS) + 1  # +1 for PAD at index 0
         self.latent_dim = latent_dim
-        self.cond_mask_prob = cond_mask_prob
+        self.action_cond_mask_prob = action_cond_mask_prob
         self.embedding = nn.Embedding(self.vocab_size, latent_dim, padding_idx=self.PAD_IDX)
         self.proj = nn.Linear(latent_dim, latent_dim)
 
@@ -325,8 +325,8 @@ class ActionTagConditioner(nn.Module):
         Applies CFG dropout (zeros the embedding) during training.
         """
         emb = self._tags_to_tensor(tags_batch, device)
-        if self.training and self.cond_mask_prob > 0.0:
-            keep = (torch.rand(emb.shape[0], 1, device=device) >= self.cond_mask_prob).float()
+        if self.training and self.action_cond_mask_prob > 0.0:
+            keep = (torch.rand(emb.shape[0], 1, device=device) >= self.action_cond_mask_prob).float()
             emb = emb * keep
         return emb
 
@@ -415,7 +415,18 @@ class T5Conditioner(TextConditioner):
                 s = s[len(prefix):]  
         return s 
     
+    NON_ANATOMICAL_TOKENS = {"Dummy", "Projectile", "Brain", "Ponytail", "Node", "Nub"}
+
+    def _is_anatomical(self, processed: str) -> bool:
+        words = set(processed.split())
+        if words & self.NON_ANATOMICAL_TOKENS:
+            return False
+        if {"End", "Site"} <= words:
+            return False
+        return True
+
     def _split_and_replace(self, s):
+        s = s.replace('ForeArm', 'Forearm')
         splitted = re.split('(?=[A-Z]|_)', s)
         new_splitted = list()
         for part in splitted:
@@ -436,12 +447,15 @@ class T5Conditioner(TextConditioner):
                 clean_part = 'Tail'
                 new_splitted.append(clean_part)
             else:
-                new_splitted.append(clean_part)
-        return ' '.join(new_splitted)     
-                
+                new_splitted.append(clean_part[0].upper() + clean_part[1:])
+        sides = [w for w in new_splitted if w in ("Left", "Right")]
+        rest  = [w for w in new_splitted if w not in ("Left", "Right")]
+        return ' '.join(sides + rest)
+
     def tokenize(self, x: tp.List[tp.Optional[str]]) -> tp.Dict[str, torch.Tensor]:
         # if current sample doesn't have a certain attribute, replace with empty string
         entries: tp.List[str] = [self._split_and_replace(self._remove_prefix(xi)) if xi is not None else "" for xi in x]
+        entries = [e if self._is_anatomical(e) else "" for e in entries]
         if self.normalize_text:
             _, _, entries = self.text_normalizer(entries, return_text=True)
         if self.word_dropout > 0. and self.training:

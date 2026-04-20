@@ -81,7 +81,7 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
     model_args.model_path = str(model_path)
     model_args.device = args.device
     model_args.batch_size = 1
-    model_args.cond_mask_prob = 0.0
+    model_args.action_cond_mask_prob = 0.0
     if args.objects_subset:
         model_args.objects_subset = args.objects_subset
     if args.action_tags:
@@ -612,7 +612,7 @@ def main() -> int:
         "action_category": str(getattr(model_args, "action_category", "")),
         "stage1_checkpoint_validated": True,
         "stage1_semantics": {
-            "cond_mask_prob": float(getattr(model_args, "cond_mask_prob", 0.0)),
+            "action_cond_mask_prob": float(getattr(model_args, "action_cond_mask_prob", 0.0)),
         },
     }
 
