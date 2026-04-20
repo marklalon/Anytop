@@ -89,7 +89,6 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
     if args.max_frames > 0:
         model_args.num_frames = args.max_frames
     model_args.sample_limit = -1
-    model_args.num_workers = args.eval_num_workers
     return model_args
 
 

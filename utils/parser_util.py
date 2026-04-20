@@ -166,16 +166,12 @@ def add_training_options(parser):
                        help="Training will stop after the specified number of steps.")
     group.add_argument("--num_frames", default=60, type=int,
                        help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
-    group.add_argument("--num_workers", default=0, type=int,
-                       help="Number of DataLoader worker processes. Use 0 to load on the main process, or -1 to pick a conservative automatic worker count.")
     group.add_argument("--sample_limit", default=0, type=int,
                        help="Limit the number of motion clips loaded for tiny overfit/debug runs. 0 keeps the full dataset.")
-    group.add_argument("--prefetch_factor", default=2, type=int,
-                       help="Per-worker prefetch factor for the restoration dataset loader.")
     group.add_argument("--motion_cache_size", default=0, type=int,
                        help="Number of entries to keep in in-memory LRU cache for raw motion clips per dataset instance. 0 disables the cache.")
-    group.add_argument("--main_process_prefetch_batches", default=0, type=int,
-                       help="When num_workers=0, prefetch this many batches on a background thread to overlap data loading with GPU compute. 0 disables it.")
+    group.add_argument("--main_process_prefetch_batches", default=4, type=int,
+                       help="Prefetch this many batches on background thread for main-thread data loading to overlap with GPU compute. 0 disables it.")
     group.add_argument("--detect_anomaly", action='store_true',
                        help="Enable PyTorch autograd anomaly detection. Useful for debugging, but significantly slows training.")
     group.add_argument("--resume_checkpoint", default="", type=str,
@@ -255,8 +251,8 @@ def add_generate_options(parser):
                             "attack, death, emote, fall, jump, locomotion, other, pose, posture, reaction, rise, turn. "
                             "Only effective when the model was trained with --use_action_cond. "
                             "Leave empty for unconditional generation.")
-    group.add_argument("--guidance_scale", default=1.0, type=float,
-                       help="Classifier-free guidance scale for inference. 1.0 disables CFG. "
+    group.add_argument("--action_guidance_scale", default=1.0, type=float,
+                       help="Classifier-free guidance scale for action inference. 1.0 disables CFG. "
                             "Values > 1 sharpen the conditional distribution and improve within-category "
                             "diversity by amplifying the difference between conditioned and unconditioned "
                             "predictions. Typical range: 1.5–5.0. Only effective when the model was "

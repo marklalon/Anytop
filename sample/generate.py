@@ -116,10 +116,14 @@ def main(args = None, cond_dict = None):
     attach_joint_name_embeddings(cond_dict, actual_cond_file, opt.data_root, args.t5_name)
     model.to(dist_util.dev())
     model.eval()  # disable random masking
-    guidance_scale = float(getattr(args, 'guidance_scale', 1.0))
-    if guidance_scale != 1.0:
-        print(f"CFG enabled: guidance_scale={guidance_scale}")
-        model = _CFGWrapper(model, guidance_scale)
+    action_guidance_scale = float(getattr(args, 'action_guidance_scale', 1.0))
+    if action_guidance_scale == 0.0:
+        # Scale=0 means unconditional output; skip CFG wrapper to avoid double forward pass.
+        # The model will be called with empty action_tags (no action_category set below).
+        print(f"Action CFG disabled (scale=0): unconditional generation")
+    elif action_guidance_scale != 1.0:
+        print(f"Action CFG enabled: action_guidance_scale={action_guidance_scale}")
+        model = _CFGWrapper(model, action_guidance_scale)
     action_category = getattr(args, 'action_category', None) or None
     _, model_kwargs = create_condition(object_types, cond_dict, n_frames, args.temporal_window, max_joints=opt.max_joints, feature_len=opt.feature_len, action_category=action_category)
 

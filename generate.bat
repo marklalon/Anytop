@@ -1,12 +1,14 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=stage1_tiny_overfit_horse_locomotion_pose_v16
+set RUN_NAME=stage1_tiny_overfit_horse_locomotion_pose_v17
 REM 多个类型用空格分隔（直接传给 --object_type nargs='+'）。支持指定训练时模型没见过的Object Type来实现0样本泛化推理
-set OBJECT_TYPE=Buffalo Deer Crocodile
-set NUM_REPETITIONS=8
+set OBJECT_TYPE=Buffalo Deer Jaguar
+set NUM_REPETITIONS=4
 set ACTION_CATEGORY=locomotion
-set GUIDANCE_SCALE=1
+set ACTION_GUIDANCE_SCALE=2
+
+rem set MODEL_FILE=model000050000.pt
 
 pushd "%SCRIPT_DIR%"
 
@@ -39,7 +41,6 @@ if exist %OUTPUT_DIR% (
 )
 mkdir %OUTPUT_DIR% 2>nul
 
-echo Generating with model: %MODEL_PATH%
 echo Object types: %OBJECT_TYPE%
 echo Output dir: %OUTPUT_DIR%
 
@@ -50,9 +51,10 @@ REM 一次调用 generate.py，所有类型作为 batch 并行生成
     --object_type %OBJECT_TYPE% ^
     --num_repetitions %NUM_REPETITIONS% ^
     --action_category %ACTION_CATEGORY% ^
-    --guidance_scale %GUIDANCE_SCALE% ^
+    --action_guidance_scale %ACTION_GUIDANCE_SCALE% ^
+    --motion_length 2.0 ^
     --sampling_method ddim ^
-    --sampling_steps 100
+    --sampling_steps 50
 
 if %errorlevel% neq 0 (
     echo Error: Generation failed.

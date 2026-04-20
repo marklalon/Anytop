@@ -106,6 +106,7 @@ def prepare_save_dir(args):
     elif not getattr(args, 'resume_checkpoint', ''):
         args.resume_checkpoint = ''
         clear_training_artifacts(save_dir, confirm=True)
+    print(f'[INFO] save_dir: {save_dir}')
     return save_dir
 
 def create_training_data_loader(args):
@@ -117,8 +118,6 @@ def create_training_data_loader(args):
         t5_name=args.t5_name,
         balanced=args.balanced,
         objects_subset=args.objects_subset,
-        num_workers=args.num_workers,
-        prefetch_factor=args.prefetch_factor,
         sample_limit=args.sample_limit,
         drop_last=getattr(args, 'drop_last', False),
         action_tags=getattr(args, 'action_tags', ''),

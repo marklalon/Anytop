@@ -115,8 +115,6 @@ class TrainLoop:
                 t5_name=self.args.t5_name,
                 balanced=False,
                 objects_subset=self.args.objects_subset,
-                num_workers=self.args.num_workers,
-                prefetch_factor=self.args.prefetch_factor,
                 sample_limit=self.args.sample_limit,
                 shuffle=False,
                 drop_last=getattr(self.args, 'drop_last', False),
