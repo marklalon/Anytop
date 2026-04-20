@@ -185,6 +185,106 @@ _CANONICAL_NAME_REPLACEMENTS = {
     'kata': 'Shoulder',
     'tai': 'Tail',
 }
+_EMBED_TEXT_SKIP_TOKENS = {
+    'mid',
+    'rear',
+    'front',
+    'back',
+    'base',
+    'tip',
+    'nub',
+    'end',
+    'site',
+}
+_EMBED_TEXT_NON_ANATOMICAL_TOKENS = {
+    'brain',
+    'center',
+    'cog',
+    'dummy',
+    'fur',
+    'ik',
+    'locator',
+    'mesh',
+    'node',
+    'ponytail',
+    'projectile',
+    'trajectory',
+}
+_EMBED_TEXT_HEAD_FEATURE_TOKENS = {
+    'beard',
+    'ear',
+    'eye',
+    'tongue',
+}
+_SPECIES_LINEAGE_TAGS = {
+    'Alligator': ('Reptile', 'Crocodilian'),
+    'Anaconda': ('Reptile', 'Snake'),
+    'Ant': ('Arthropod', 'Insect'),
+    'Bat': ('Flying', 'Mammal'),
+    'Bear': ('Mammal', 'Ursid'),
+    'Bird': ('Flying', 'Bird'),
+    'BrownBear': ('Mammal', 'Ursid'),
+    'Buffalo': ('Mammal', 'Bovid'),
+    'Buzzard': ('Flying', 'Bird'),
+    'Camel': ('Mammal', 'Megafauna'),
+    'Cat': ('Mammal', 'Felid'),
+    'Centipede': ('Arthropod', 'Myriapod'),
+    'Chicken': ('Bird', 'Biped'),
+    'Comodoa': ('Reptile', 'Lizard'),
+    'Coyote': ('Mammal', 'Canid'),
+    'Crab': ('Arthropod', 'Crustacean'),
+    'Cricket': ('Arthropod', 'Insect'),
+    'Crocodile': ('Reptile', 'Crocodilian'),
+    'Deer': ('Mammal', 'Cervid'),
+    'Dragon': ('Flying', 'Reptile'),
+    'Eagle': ('Flying', 'Bird'),
+    'Elephant': ('Mammal', 'Proboscidean'),
+    'FireAnt': ('Arthropod', 'Insect'),
+    'Flamingo': ('Bird', 'Biped'),
+    'Fox': ('Mammal', 'Canid'),
+    'Gazelle': ('Mammal', 'Bovid'),
+    'Giantbee': ('Flying', 'Insect'),
+    'Goat': ('Mammal', 'Bovid'),
+    'Hamster': ('Mammal', 'Rodent'),
+    'HermitCrab': ('Arthropod', 'Crustacean'),
+    'Hippopotamus': ('Mammal', 'Megafauna'),
+    'Horse': ('Mammal', 'Megafauna'),
+    'Hound': ('Mammal', 'Canid'),
+    'Isopetra': ('Arthropod', 'Myriapod'),
+    'Jaguar': ('Mammal', 'Felid'),
+    'KingCobra': ('Reptile', 'Snake'),
+    'Leapord': ('Mammal', 'Felid'),
+    'Lion': ('Mammal', 'Felid'),
+    'Lynx': ('Mammal', 'Felid'),
+    'Mammoth': ('Mammal', 'Proboscidean'),
+    'Ostrich': ('Bird', 'Biped'),
+    'Parrot': ('Flying', 'Bird'),
+    'Parrot2': ('Flying', 'Bird'),
+    'Pigeon': ('Flying', 'Bird'),
+    'PolarBear': ('Mammal', 'Ursid'),
+    'PolarBearB': ('Mammal', 'Ursid'),
+    'Pteranodon': ('Reptile', 'Pterosaur'),
+    'Puppy': ('Mammal', 'Canid'),
+    'Raindeer': ('Mammal', 'Cervid'),
+    'Raptor': ('Reptile', 'Dinosaur'),
+    'Raptor2': ('Reptile', 'Dinosaur'),
+    'Raptor3': ('Reptile', 'Dinosaur'),
+    'Rat': ('Mammal', 'Rodent'),
+    'Rhino': ('Mammal', 'Megafauna'),
+    'Roach': ('Arthropod', 'Insect'),
+    'SabreToothTiger': ('Mammal', 'Felid'),
+    'SandMouse': ('Mammal', 'Felid'),
+    'Scorpion': ('Arthropod', 'Arachnid'),
+    'Scorpion-2': ('Arthropod', 'Arachnid'),
+    'Spider': ('Arthropod', 'Arachnid'),
+    'SpiderG': ('Arthropod', 'Arachnid'),
+    'Stego': ('Reptile', 'Dinosaur'),
+    'Trex': ('Reptile', 'Dinosaur'),
+    'Tricera': ('Reptile', 'Dinosaur'),
+    'Tukan': ('Flying', 'Bird'),
+    'Turtle': ('Reptile', 'Chelonian'),
+    'Tyranno': ('Reptile', 'Dinosaur'),
+}
 
 
 def _normalize_joint_name(name):
@@ -222,6 +322,106 @@ def _canonicalize_joint_name(name):
         else:
             canonical_parts.append(clean_part.capitalize())
     return ' '.join(canonical_parts) if canonical_parts else name.strip()
+
+
+def _titlecase_identifier_tokens(value):
+    normalized = _normalize_joint_name(str(value))
+    if not normalized:
+        return []
+    return [token.capitalize() for token in normalized.split() if token]
+
+
+def _species_lineage_tokens(object_cond):
+    object_type = str(object_cond.get('object_type') or '').strip()
+    return list(_SPECIES_LINEAGE_TAGS.get(object_type, ()))
+
+
+def _refine_joint_embedding_name(name):
+    canonical_name = _canonicalize_joint_name(name)
+    refined_tokens = []
+    for token in canonical_name.split():
+        clean_token = re.sub(r'[^a-z0-9]+', '', token.lower())
+        clean_token = re.sub(r'\d+$', '', clean_token)
+        if not clean_token or clean_token.isdigit() or clean_token in _EMBED_TEXT_SKIP_TOKENS:
+            continue
+        if clean_token in _EMBED_TEXT_NON_ANATOMICAL_TOKENS:
+            continue
+        if clean_token in ('sippo', 'tai') or clean_token.startswith('tail'):
+            refined_tokens.append('Tail')
+        elif clean_token.startswith('toe'):
+            refined_tokens.append('Toe')
+        elif clean_token.startswith('finger'):
+            refined_tokens.append('Finger')
+        elif clean_token == 'arm':
+            refined_tokens.append('UpperArm')
+        elif clean_token in ('fore', 'forearm'):
+            refined_tokens.append('Forearm')
+        elif clean_token == 'upleg':
+            refined_tokens.append('UpperLeg')
+        elif clean_token == 'clip':
+            refined_tokens.append('Appendage')
+        elif clean_token in _EMBED_TEXT_HEAD_FEATURE_TOKENS:
+            refined_tokens.append('HeadFeature')
+        else:
+            refined_tokens.append(clean_token.capitalize())
+
+    merged_tokens = []
+    index = 0
+    while index < len(refined_tokens):
+        pair = tuple(token.lower() for token in refined_tokens[index:index + 2])
+        if pair in (('upper', 'leg'), ('up', 'leg')):
+            merged_tokens.append('Thigh')
+            index += 2
+            continue
+        if pair == ('fore', 'arm'):
+            merged_tokens.append('Forearm')
+            index += 2
+            continue
+        if pair == ('upper', 'arm'):
+            merged_tokens.append('UpperArm')
+            index += 2
+            continue
+        merged_tokens.append(refined_tokens[index])
+        index += 1
+
+    return merged_tokens or canonical_name.split()
+
+
+def build_joint_embedding_texts(object_cond):
+    base_joint_names = object_cond.get('canonical_joint_names') or object_cond.get('joints_names') or []
+    if not base_joint_names:
+        return []
+
+    species_group_tokens = _titlecase_identifier_tokens(object_cond.get('species_group', 'other')) or ['Other']
+    lineage_tokens = _species_lineage_tokens(object_cond)
+    joint_side_labels = list(object_cond.get('joint_side_labels') or ['center'] * len(base_joint_names))
+    contact_joints = {int(joint_index) for joint_index in list(object_cond.get('contact_joints') or [])}
+    end_effector_joints = {int(joint_index) for joint_index in list(object_cond.get('end_effector_joints') or [])}
+
+    texts = []
+    for joint_index, joint_name in enumerate(base_joint_names):
+        refined_tokens = _refine_joint_embedding_name(joint_name)
+        lowered_tokens = {token.lower() for token in refined_tokens}
+        if lowered_tokens & _EMBED_TEXT_NON_ANATOMICAL_TOKENS:
+            texts.append('')
+            continue
+
+        semantic_tokens = list(species_group_tokens)
+        semantic_tokens.append('Animal')
+        semantic_tokens.extend(lineage_tokens)
+        semantic_tokens.append('Joint')
+        semantic_tokens.extend(refined_tokens)
+
+        side = joint_side_labels[joint_index] if joint_index < len(joint_side_labels) else 'center'
+        if side in ('left', 'right'):
+            semantic_tokens.append(side.capitalize())
+        if joint_index in contact_joints:
+            semantic_tokens.append('Contact')
+        if joint_index in end_effector_joints:
+            semantic_tokens.append('EndEffector')
+        texts.append(' '.join(semantic_tokens))
+
+    return texts
 
 
 def _joint_signature(name):

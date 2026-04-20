@@ -14,6 +14,7 @@ from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.param_utils import parse_action_tags
 from data_loaders.truebones.truebones_utils.motion_labels import infer_motion_labels_from_motion_name, load_motion_metadata
 from data_loaders.truebones.truebones_utils.motion_process import remove_joints_augmentation, add_joint_augmentation
+from data_loaders.truebones.truebones_utils.physics_joint_annotation import build_joint_embedding_texts
 from model.conditioners import T5Conditioner
 
 
@@ -21,6 +22,7 @@ DEFAULT_SPLIT_RATIOS = {"train": 1.0, "val": 0.0, "test": 0.0}
 DEFAULT_SPLIT_SEED = 3407
 SUPPORTED_SPLITS = tuple(DEFAULT_SPLIT_RATIOS.keys())
 ALL_SPLIT_NAME = "all"
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 3
 
 
 def _normalize_motion_action_tags(raw_action_tags) -> set[str]:
@@ -321,6 +323,8 @@ def _load_cached_joint_name_embeddings(cache_path: Path, cond_file: str, expecte
     cond_mtime_ns = Path(cond_file).stat().st_mtime_ns
     if metadata.get("cond_mtime_ns") != cond_mtime_ns:
         return None
+    if metadata.get("embedding_schema_version") != JOINT_NAME_EMBEDDING_SCHEMA_VERSION:
+        return None
 
     missing_objects = [object_type for object_type in expected_object_types if object_type not in embeddings]
     if missing_objects:
@@ -343,8 +347,8 @@ def _build_joint_name_embeddings(cond_dict: dict, t5_name: str) -> dict[str, np.
     embeddings = {}
     with torch.no_grad():
         for object_type in sorted(cond_dict):
-            joints_names = cond_dict[object_type]['joints_names']
-            names_tokens = t5_conditioner.tokenize(joints_names)
+            embedding_texts = build_joint_embedding_texts(cond_dict[object_type])
+            names_tokens = t5_conditioner.tokenize_entries(embedding_texts)
             embs = t5_conditioner(names_tokens)
             embeddings[object_type] = embs.detach().cpu().numpy().astype(np.float32, copy=False)
     return embeddings
@@ -361,6 +365,7 @@ def attach_joint_name_embeddings(cond_dict: dict, cond_file: str, data_root: str
             "_meta": {
                 "t5_name": t5_name,
                 "cond_mtime_ns": Path(cond_file).stat().st_mtime_ns,
+                "embedding_schema_version": JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
             },
             "embeddings": cached_embeddings,
         }

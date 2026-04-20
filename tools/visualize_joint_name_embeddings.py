@@ -2,9 +2,12 @@
 Joint Name Embedding Distribution Visualizer
 
 Description:
-    Loads joint names from cond.npy, encodes them with T5 (using the same
-    preprocessing pipeline as the model), aggregates per-animal, then produces:
+    Loads joint names from cond.npy, encodes them with T5 through the actual
+    T5Conditioner pipeline, aggregates per-animal, then produces:
       1. t-SNE scatter plot — animals colored by species group
+
+    A similarity report is also written so cosine neighbors and embedding norms
+    can be inspected directly instead of relying only on 2D layout.
 
     Biologically similar animals should cluster together if joint name embeddings
     carry meaningful anatomical signal.
@@ -23,105 +26,23 @@ Usage:
 
 import argparse
 import os
-import re
 import sys
 from pathlib import Path
 
 import numpy as np
 import torch
 
-# ---------------------------------------------------------------------------
-# Preprocessing — mirrors T5Conditioner in model/conditioners.py exactly
-# ---------------------------------------------------------------------------
+# Add project root to path so imports from Anytop/ work when running the script directly.
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-REMOVE_PREFIXES = ["BN_Bip01", "Bip01", "BN", "NPC", "jt", "Sabrecat", "Elk"]
-JAPANESE_WORDS = {
-    "momo": "Thigh", "sippo": "Tail", "mune": "Chest", "hiza": "Knee",
-    "hara": "Stomach", "ashi": "Leg", "hiji": "Elbow", "koshi": "Hips",
-    "te": "Hand", "kubi": "Neck", "atama": "Head", "ago": "Jaw", "kata": "Shoulder",
-}
+from data_loaders.truebones.truebones_utils.physics_joint_annotation import build_joint_embedding_texts
+from model.conditioners import T5Conditioner
 
-
-def _remove_prefix(s: str) -> str:
-    if s.startswith("Sabrecat"):
-        s = s[:-6]
-    for prefix in REMOVE_PREFIXES:
-        if s.startswith(prefix):
-            s = s[len(prefix):]
-    return s
-
-
-def _split_and_replace(s: str) -> str:
-    s = s.replace('ForeArm', 'Forearm')
-    splitted = re.split(r"(?=[A-Z]|_)", s)
-    new_splitted = []
-    for part in splitted:
-        clean = re.sub(r"[\d_]+", "", part)
-        if not clean:
-            continue
-        elif clean in ("L", "l"):
-            new_splitted.append("Left")
-        elif clean in ("R", "r"):
-            new_splitted.append("Right")
-        elif len(clean) == 1:
-            continue
-        elif clean == "Tai":
-            new_splitted.append("Tail")
-        elif clean in JAPANESE_WORDS:
-            new_splitted.append(JAPANESE_WORDS[clean])
-        else:
-            new_splitted.append(clean[0].upper() + clean[1:])
-    sides = [w for w in new_splitted if w in ("Left", "Right")]
-    rest  = [w for w in new_splitted if w not in ("Left", "Right")]
-    return " ".join(sides + rest)
-
-
-# Words that indicate non-anatomical rig/game nodes — skip joints containing any of these.
-# "Nub" = structural end-effector bone; "end"+"site" = BVH end sites.
-NON_ANATOMICAL = {"Dummy", "Projectile", "Brain", "Ponytail", "Node", "Nub"}
-
-
-def _is_anatomical(processed: str) -> bool:
-    words = set(processed.split())
-    if words & NON_ANATOMICAL:
-        return False
-    if {"End", "Site"} <= words:
-        return False
-    return True
-
-
-def preprocess_joint_name(name: str) -> str:
-    return _split_and_replace(_remove_prefix(name))
-
-
-# ---------------------------------------------------------------------------
-# Embedding
-# ---------------------------------------------------------------------------
-
-def embed_names_t5(names: list[str], model_name: str, device: str) -> np.ndarray:
-    """Mean-pool T5 encoder hidden states — same as T5Conditioner.forward()."""
-    from transformers import T5EncoderModel, T5Tokenizer
-
-    print(f"  Loading {model_name} …", flush=True)
-    tokenizer = T5Tokenizer.from_pretrained(model_name)
-    model = T5EncoderModel.from_pretrained(model_name).to(device).eval()
-
-    processed = [n if n else "" for n in names]
-
-    BATCH = 128
-    all_embs = []
-    with torch.no_grad():
-        for i in range(0, len(processed), BATCH):
-            batch = processed[i : i + BATCH]
-            inputs = tokenizer(batch, return_tensors="pt", padding=True).to(device)
-            mask = inputs["attention_mask"]
-            out = model(**inputs).last_hidden_state  # (B, seq, d)
-            # masked mean-pool
-            denom = mask.sum(dim=-1, keepdim=True).clamp(min=1).float()
-            emb = (out * mask.unsqueeze(-1)).sum(dim=1) / denom
-            all_embs.append(emb.cpu().float().numpy())
-
-    return np.concatenate(all_embs, axis=0)  # (N, d)
+def l2_normalize(emb: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    norm = float(np.linalg.norm(emb))
+    if norm <= eps:
+        return emb.copy()
+    return emb / norm
 
 
 # ---------------------------------------------------------------------------
@@ -146,42 +67,45 @@ def load_cond(path: str) -> dict:
     return raw
 
 
-def per_animal_embedding(cond: dict, t5_model: str, device: str) -> dict:
+def per_animal_embedding(cond: dict, t5_model: str, device: str, normalize_means: bool) -> dict:
     """
-    Returns {animal_name: (mean_emb, species_group)} where mean_emb is (d,).
-    Encodes all joint names in a single batch for efficiency.
+    Returns per-animal diagnostics including the exact semantic joint-text mean embedding.
     """
     animals = sorted(cond.keys())
+    print(f"Loading {t5_model} through T5Conditioner …")
+    conditioner = T5Conditioner(
+        name=t5_model,
+        finetune=False,
+        word_dropout=0.0,
+        normalize_text=False,
+        device=device,
+    )
 
-    # Preprocess and filter non-anatomical joints to mirror T5Conditioner.tokenize().
-    # No deduplication: duplicate names (e.g. numbered sub-bones) each contribute
-    # one embedding, consistent with how the model sees the data during training.
-    animal_joint_lists: list[list[str]] = []
-    for a in animals:
-        raw_names = cond[a].get("joints_names") or []
-        anatomical: list[str] = []
-        for n in raw_names:
-            proc = preprocess_joint_name(str(n))
-            if _is_anatomical(proc):
-                anatomical.append(proc)
-        animal_joint_lists.append(anatomical)
-
-    # Flatten for a single batched forward pass (names already preprocessed)
-    flat_names = [n for lst in animal_joint_lists for n in lst]
-    print(f"Encoding {len(flat_names)} anatomical joint names across {len(animals)} animals …")
-    flat_embs = embed_names_t5(flat_names, t5_model, device)  # (total_joints, d)
-
-    # Re-aggregate: mean per animal
     result = {}
-    idx = 0
-    for a, jlist in zip(animals, animal_joint_lists):
-        k = len(jlist)
-        if k == 0:
+    for a in animals:
+        raw_names = [str(name) for name in (cond[a].get("joints_names") or [])]
+        if not raw_names:
             continue
-        mean_emb = flat_embs[idx : idx + k].mean(axis=0)
+
+        embedding_texts = build_joint_embedding_texts(cond[a])
+        anatomical_joint_count = sum(1 for text in embedding_texts if text)
+
+        with torch.no_grad():
+            joint_inputs = conditioner.tokenize_entries(embedding_texts)
+            joint_embs = conditioner(joint_inputs).detach().cpu().float().numpy()
+
+        mean_emb = joint_embs.mean(axis=0)
+        plot_emb = l2_normalize(mean_emb) if normalize_means else mean_emb
         group = cond[a].get("species_group", "unknown")
-        result[a] = (mean_emb, group)
-        idx += k
+        result[a] = {
+            "mean_emb": mean_emb,
+            "plot_emb": plot_emb,
+            "group": group,
+            "raw_joint_count": len(raw_names),
+            "anatomical_joint_count": anatomical_joint_count,
+            "filtered_joint_count": len(raw_names) - anatomical_joint_count,
+            "mean_norm": float(np.linalg.norm(mean_emb)),
+        }
 
     return result
 
@@ -192,8 +116,8 @@ def plot_tsne(animal_embs: dict, output_dir: Path, perplexity: int):
     import matplotlib.patches as mpatches
 
     animals = list(animal_embs.keys())
-    embs = np.stack([animal_embs[a][0] for a in animals])
-    groups = [animal_embs[a][1] for a in animals]
+    embs = np.stack([animal_embs[a]["plot_emb"] for a in animals])
+    groups = [animal_embs[a]["group"] for a in animals]
 
     print("Running t-SNE …")
     coords = TSNE(n_components=2, perplexity=perplexity, random_state=42,
@@ -224,13 +148,92 @@ def plot_tsne(animal_embs: dict, output_dir: Path, perplexity: int):
         for g in GROUP_ORDER if any(grp == g for grp in groups)
     ]
     ax.legend(handles=legend_handles, loc="best", fontsize=9)
-    ax.set_title("t-SNE of Per-Animal Mean Joint-Name T5 Embeddings", fontsize=13)
+    ax.set_title("t-SNE of L2-Normalized Per-Animal Semantic Joint-Text T5 Embeddings", fontsize=13)
     ax.axis("off")
     fig.tight_layout()
     out = output_dir / "tsne_joint_embeddings.png"
     fig.savefig(out, dpi=150)
     plt.close(fig)
     print(f"  Saved: {out}")
+
+
+def save_similarity_report(animal_embs: dict, output_dir: Path, top_k: int = 8):
+    animals = list(animal_embs.keys())
+    report_lines = []
+    raw_embs = {animal: animal_embs[animal]["mean_emb"] for animal in animals}
+    mismatch_rows = []
+    gap_rows = []
+
+    cosine_values = []
+    for i, animal_a in enumerate(animals):
+        for animal_b in animals[i + 1 :]:
+            emb_a = raw_embs[animal_a]
+            emb_b = raw_embs[animal_b]
+            cosine = float(np.dot(emb_a, emb_b) / (np.linalg.norm(emb_a) * np.linalg.norm(emb_b)))
+            cosine_values.append(cosine)
+
+    if cosine_values:
+        report_lines.append(
+            "pairwise cosine stats: "
+            f"min={min(cosine_values):.4f} mean={np.mean(cosine_values):.4f} max={max(cosine_values):.4f}"
+        )
+        report_lines.append("")
+
+    for animal in animals:
+        current = animal_embs[animal]
+        current_group = current["group"]
+        report_lines.append(
+            f"[{animal}] group={current['group']} raw_joints={current['raw_joint_count']} "
+            f"anatomical={current['anatomical_joint_count']} filtered={current['filtered_joint_count']} "
+            f"mean_norm={current['mean_norm']:.4f}"
+        )
+
+        neighbors = []
+        for other in animals:
+            if other == animal:
+                continue
+            emb_a = raw_embs[animal]
+            emb_b = raw_embs[other]
+            cosine = float(np.dot(emb_a, emb_b) / (np.linalg.norm(emb_a) * np.linalg.norm(emb_b)))
+            euclidean = float(np.linalg.norm(emb_a - emb_b))
+            neighbors.append((cosine, euclidean, other, animal_embs[other]["group"]))
+        neighbors.sort(key=lambda item: item[0], reverse=True)
+
+        same_group = [cosine for cosine, _euclidean, _other, group in neighbors if group == current_group]
+        different_group = [cosine for cosine, _euclidean, _other, group in neighbors if group != current_group]
+        group_gap = float(np.mean(same_group) - np.mean(different_group)) if same_group and different_group else 0.0
+        gap_rows.append((group_gap, animal, current_group))
+
+        top_neighbor = neighbors[0]
+        if top_neighbor[3] != current_group:
+            mismatch_rows.append((top_neighbor[0], animal, current_group, top_neighbor[2], top_neighbor[3]))
+
+        report_lines.append(f"  same_group_minus_diff_group={group_gap:.4f}")
+        for cosine, euclidean, other, other_group in neighbors[:top_k]:
+            report_lines.append(
+                f"  {other:<18} group={other_group:<10} cosine={cosine:.4f} euclidean={euclidean:.4f}"
+            )
+        report_lines.append("")
+
+    report_lines.append("Suspicious Cross-Group Top-1 Neighbors")
+    if mismatch_rows:
+        for cosine, animal, group, other, other_group in sorted(mismatch_rows, reverse=True):
+            report_lines.append(
+                f"  {animal:<18} group={group:<10} top1={other:<18} top1_group={other_group:<10} cosine={cosine:.4f}"
+            )
+    else:
+        report_lines.append("  none")
+
+    report_lines.append("")
+    report_lines.append("Lowest Same-Group Separation")
+    for group_gap, animal, group in sorted(gap_rows)[:12]:
+        report_lines.append(
+            f"  {animal:<18} group={group:<10} same_group_minus_diff_group={group_gap:.4f}"
+        )
+
+    report_path = output_dir / "animal_similarity_report.txt"
+    report_path.write_text("\n".join(report_lines), encoding="utf-8")
+    print(f"  Saved: {report_path}")
 
 
 def main():
@@ -248,6 +251,8 @@ def main():
                         help="t-SNE perplexity (default: 15; try 5-30 for <100 animals)")
     parser.add_argument("--device", default=None,
                         help="Torch device (auto: cuda if available, else cpu)")
+    parser.add_argument("--raw-means", action="store_true",
+                        help="Use unnormalized per-animal mean embeddings for t-SNE. By default means are L2-normalized first.")
     args = parser.parse_args()
 
     # Auto-detect cond.npy
@@ -274,15 +279,14 @@ def main():
     cond = load_cond(args.cond_path)
     print(f"Loaded {len(cond)} animals.")
 
-    animal_embs = per_animal_embedding(cond, args.t5_model, device)
+    animal_embs = per_animal_embedding(cond, args.t5_model, device, normalize_means=not args.raw_means)
 
     print("\n--- Generating plots ---")
     plot_tsne(animal_embs, output_dir, args.tsne_perplexity)
+    save_similarity_report(animal_embs, output_dir)
 
     print(f"\nDone. Outputs in: {output_dir.resolve()}")
 
 
 if __name__ == "__main__":
-    # Add project root to path so imports from Anytop/ work if needed
-    sys.path.insert(0, str(Path(__file__).parent.parent))
     main()

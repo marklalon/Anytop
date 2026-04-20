@@ -452,10 +452,7 @@ class T5Conditioner(TextConditioner):
         rest  = [w for w in new_splitted if w not in ("Left", "Right")]
         return ' '.join(sides + rest)
 
-    def tokenize(self, x: tp.List[tp.Optional[str]]) -> tp.Dict[str, torch.Tensor]:
-        # if current sample doesn't have a certain attribute, replace with empty string
-        entries: tp.List[str] = [self._split_and_replace(self._remove_prefix(xi)) if xi is not None else "" for xi in x]
-        entries = [e if self._is_anatomical(e) else "" for e in entries]
+    def _finalize_entries(self, entries: tp.List[str]) -> tp.List[str]:
         if self.normalize_text:
             _, _, entries = self.text_normalizer(entries, return_text=True)
         if self.word_dropout > 0. and self.training:
@@ -464,6 +461,10 @@ class T5Conditioner(TextConditioner):
                 words = [word for word in entry.split(" ") if random.random() >= self.word_dropout]
                 new_entries.append(" ".join(words))
             entries = new_entries
+        return entries
+
+    def tokenize_entries(self, entries: tp.List[str]) -> tp.Dict[str, torch.Tensor]:
+        entries = self._finalize_entries(list(entries))
 
         empty_idx = torch.LongTensor([i for i, xi in enumerate(entries) if xi == ""])
 
@@ -471,6 +472,12 @@ class T5Conditioner(TextConditioner):
         mask = inputs['attention_mask']
         mask[empty_idx, :] = 0  # zero-out index where the input is non-existant
         return inputs
+
+    def tokenize(self, x: tp.List[tp.Optional[str]]) -> tp.Dict[str, torch.Tensor]:
+        # if current sample doesn't have a certain attribute, replace with empty string
+        entries: tp.List[str] = [self._split_and_replace(self._remove_prefix(xi)) if xi is not None else "" for xi in x]
+        entries = [e if self._is_anatomical(e) else "" for e in entries]
+        return self.tokenize_entries(entries)
 
     def forward(self, inputs: tp.Dict[str, torch.Tensor]) -> ConditionType:
         mask = inputs['attention_mask']
