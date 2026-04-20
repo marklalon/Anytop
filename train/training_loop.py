@@ -59,8 +59,7 @@ class TrainLoop:
                 dataset_length = len(self.data.dataset)
             raise ValueError(
                 f"Training DataLoader is empty (loader_len={data_length}, dataset_len={dataset_length}, batch_size={self.batch_size}). "
-                "This usually means the dataset has fewer effective samples than one full batch. "
-                "For single-motion training on a long clip, enable --fixed_motion_random_crop so one fixed motion can provide many random windows per epoch."
+                "This usually means the dataset has fewer effective samples than one full batch."
             )
         self.num_epochs = self.num_steps // data_length + 1
 
@@ -124,8 +123,6 @@ class TrainLoop:
                 action_tags=getattr(self.args, 'action_tags', ''),
                 motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
                 main_process_prefetch_batches=getattr(self.args, 'main_process_prefetch_batches', 0),
-                fixed_motion=getattr(self.args, 'fixed_motion', ''),
-                fixed_window_start=getattr(self.args, 'fixed_window_start', 0),
             )
         self.use_ddp = False
         self.ddp_model = self.model

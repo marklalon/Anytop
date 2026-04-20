@@ -39,8 +39,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", default=10, type=int, help="Global seed for deterministic setup.")
     parser.add_argument("--objects-subset", default="", help="Override the checkpoint objects_subset when set.")
     parser.add_argument("--action-tags", default="", help="Override the checkpoint action_tags when set, e.g. 'locomotion,attack'.")
-    parser.add_argument("--fixed-motion", default="", help="Override the checkpoint fixed_motion when set. Accepts a processed .npy name or a BVH/.npy path.")
-    parser.add_argument("--fixed-window-start", default=None, type=int, help="Override the checkpoint fixed_window_start when set.")
     parser.add_argument("--max-frames", default=-1, type=int, help="Override num_frames when > 0.")
     parser.add_argument(
         "--sample-mode",
@@ -88,14 +86,6 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
         model_args.objects_subset = args.objects_subset
     if args.action_tags:
         model_args.action_tags = args.action_tags
-    if args.fixed_motion:
-        model_args.fixed_motion = args.fixed_motion
-    else:
-        model_args.fixed_motion = getattr(model_args, "fixed_motion", "")
-    if args.fixed_window_start is not None:
-        model_args.fixed_window_start = int(args.fixed_window_start)
-    else:
-        model_args.fixed_window_start = int(getattr(model_args, "fixed_window_start", 0))
     if args.max_frames > 0:
         model_args.num_frames = args.max_frames
     model_args.sample_limit = -1
@@ -325,52 +315,6 @@ def export_trial_sample(
             BVH.save(str(sample_dir / f"{name}.bvh"), out_anim, joints_names, positions=has_animated_pos)
 
 
-def build_virtual_eval_sample(
-    motion_dataset,
-    cond_dict: dict[str, dict[str, object]],
-    motion_name: str,
-    window_start: int,
-    num_frames: int,
-) -> dict[str, object]:
-    raw_data = motion_dataset.data_dict[motion_name]
-    previous_fixed_motion_name = motion_dataset.fixed_motion_name
-    previous_fixed_window_start = motion_dataset.fixed_window_start
-    previous_max_motion_length = motion_dataset.max_motion_length
-    try:
-        motion_dataset.fixed_motion_name = motion_name
-        motion_dataset.fixed_window_start = int(window_start)
-        motion_dataset.max_motion_length = num_frames
-        prepared_sample = motion_dataset._prepare_sample(motion_name, raw_data)
-    finally:
-        motion_dataset.fixed_motion_name = previous_fixed_motion_name
-        motion_dataset.fixed_window_start = previous_fixed_window_start
-        motion_dataset.max_motion_length = previous_max_motion_length
-
-    motion_batch, cond_batch = truebones_batch_collate([prepared_sample])
-    cond_cpu = clone_batch_cond(cond_batch)
-    object_type = cond_cpu["y"]["object_type"][0]
-    n_joints = int(cond_cpu["y"]["n_joints"][0].item())
-    target_length = int(cond_cpu["y"]["lengths"][0].item())
-
-    motion_metadata = prepared_sample[14]
-    return {
-        "sample_index": -1,
-        "motion": motion_batch.detach().clone().float(),
-        "cond": cond_cpu,
-        "motion_name": cond_cpu["y"]["motion_name"][0],
-        "object_type": object_type,
-        "n_joints": n_joints,
-        "length": target_length,
-        "target_length": target_length,
-        "is_loop": bool(motion_metadata.get("is_loop", False)),
-        "parents": [int(parent) for parent in prepared_sample[2]],
-        "offsets": cond_dict[object_type]["offsets"],
-        "joints_names": cond_dict[object_type]["joints_names"],
-        "mean": prepared_sample[11].astype(np.float32),
-        "std": prepared_sample[12].astype(np.float32) + 1e-6,
-    }
-
-
 def clone_eval_sample(sample: dict[str, object]) -> dict[str, object]:
     cloned: dict[str, object] = {}
     for key, value in sample.items():
@@ -411,8 +355,6 @@ def collect_eval_samples(args: argparse.Namespace, model_args: SimpleNamespace, 
         shuffle=False,
         drop_last=False,
         action_tags=eval_subset_action_tags,
-        fixed_motion=getattr(model_args, "fixed_motion", ""),
-        fixed_window_start=int(getattr(model_args, "fixed_window_start", 0)),
     )
     data_full = get_dataset_loader(**loader_kwargs)
     motion_dataset = data_full.dataset.motion_dataset
@@ -424,8 +366,6 @@ def collect_eval_samples(args: argparse.Namespace, model_args: SimpleNamespace, 
     model_args.dataset_max_motion_length = dataset_frame_cap
     model_args.selected_subset_max_motion_length = selected_frame_cap
     model_args.effective_num_frames = args_num_frames
-
-    cond_dict = motion_dataset.cond_dict
 
     eligible_motions = []
     for motion_name, motion_length in zip(motion_dataset.name_list, motion_dataset.length_arr):
@@ -445,13 +385,34 @@ def collect_eval_samples(args: argparse.Namespace, model_args: SimpleNamespace, 
         else:
             sample_num_frames = motion_length
             window_start = 0
-        sample = build_virtual_eval_sample(
-            motion_dataset=motion_dataset,
-            cond_dict=cond_dict,
-            motion_name=motion_name,
-            window_start=window_start,
-            num_frames=sample_num_frames,
+        prepared_sample = motion_dataset.prepare_sample_by_name(
+            motion_name,
+            target_num_frames=sample_num_frames,
+            crop_start=window_start,
+            loop_offset=0,
         )
+        motion_batch, cond_batch = truebones_batch_collate([prepared_sample])
+        cond_cpu = clone_batch_cond(cond_batch)
+        object_type = cond_cpu["y"]["object_type"][0]
+        n_joints = int(cond_cpu["y"]["n_joints"][0].item())
+        target_length = int(cond_cpu["y"]["lengths"][0].item())
+        motion_metadata = prepared_sample[14]
+        sample = {
+            "sample_index": len(samples),
+            "motion": motion_batch.detach().clone().float(),
+            "cond": cond_cpu,
+            "motion_name": cond_cpu["y"]["motion_name"][0],
+            "object_type": object_type,
+            "n_joints": n_joints,
+            "length": target_length,
+            "target_length": target_length,
+            "is_loop": bool(motion_metadata.get("is_loop", False)),
+            "parents": [int(parent) for parent in prepared_sample[2]],
+            "offsets": motion_dataset.cond_dict[object_type]["offsets"],
+            "joints_names": motion_dataset.cond_dict[object_type]["joints_names"],
+            "mean": prepared_sample[11].astype(np.float32),
+            "std": prepared_sample[12].astype(np.float32) + 1e-6,
+        }
         sample["sample_index"] = len(samples)
         samples.append(sample)
 
@@ -647,8 +608,6 @@ def main() -> int:
         "selection_seed": int(args.selection_seed),
         "base_seed": int(args.base_seed),
         "num_eval_samples": int(args.num_eval_samples),
-        "fixed_motion": str(getattr(model_args, "fixed_motion", "")),
-        "fixed_window_start": int(getattr(model_args, "fixed_window_start", 0)),
         "dual_length_export": True,
         "eval_subset_action_tags": str(getattr(model_args, "eval_subset_action_tags", getattr(model_args, "action_tags", ""))),
         "action_category": str(getattr(model_args, "action_category", "")),

@@ -78,6 +78,17 @@ def apply_mirror(motion: np.ndarray, symmetry_partner_indices: np.ndarray) -> np
     return mirrored
 
 
+def apply_mirror_offsets(offsets: np.ndarray, symmetry_partner_indices: np.ndarray) -> np.ndarray:
+    spi = symmetry_partner_indices
+    perm = list(range(len(spi)))
+    for i, partner in enumerate(spi):
+        if partner != -1:
+            perm[i] = int(partner)
+    mirrored = offsets[perm].copy()
+    mirrored[:, 0] *= -1
+    return mirrored
+
+
 def export_bvh(save_path: Path, motion: np.ndarray, parents: list[int], offsets: np.ndarray, joints_names: list[str]) -> bool:
     anim, has_animated_pos = recover_animation_from_motion_np(motion, parents, offsets)
     if anim is None:
@@ -160,8 +171,10 @@ def main() -> int:
             clean_path = obj_dir / f"{stem}_clean.bvh"
             mirror_path = obj_dir / f"{stem}_mirror.bvh"
 
+            mirrored_offsets = apply_mirror_offsets(np.asarray(offsets, dtype=np.float32), spi)
+
             ok_clean = export_bvh(clean_path, motion, parents, offsets, joints_names)
-            ok_mirror = export_bvh(mirror_path, mirrored, parents, offsets, joints_names)
+            ok_mirror = export_bvh(mirror_path, mirrored, parents, mirrored_offsets, joints_names)
 
             status = []
             if ok_clean:

@@ -93,21 +93,27 @@ def _infer_object_type_from_motion_name(name: str) -> str:
     return name.split("_", 1)[0]
 
 
-def _normalize_fixed_motion_name(raw_value: str) -> str:
-    value = str(raw_value or '').strip()
-    if not value:
-        return ''
-    normalized = value.replace('\\', '/')
-    base_name = Path(normalized).name
-    stem, suffix = os.path.splitext(base_name)
-    suffix = suffix.lower()
-    if suffix == '.bvh':
-        return f'{stem}.npy'
-    if suffix == '.npy':
-        return base_name
-    if base_name.lower().endswith('.npy'):
-        return base_name
-    return f'{base_name}.npy'
+def _build_symmetry_permutation(symmetry_partner_indices) -> np.ndarray:
+    spi = np.asarray(symmetry_partner_indices, dtype=np.int64)
+    perm = np.arange(len(spi), dtype=np.int64)
+    valid = spi >= 0
+    perm[valid] = spi[valid]
+    return perm
+
+
+def _mirror_motion_feature_array(features: np.ndarray, perm: np.ndarray) -> np.ndarray:
+    mirrored = np.asarray(features)[perm].copy() if features.ndim == 2 else np.asarray(features)[:, perm, :].copy()
+    mirrored[..., [0, 4, 5, 6, 9]] *= -1
+    return mirrored
+
+
+def _mirror_offsets_array(offsets: np.ndarray, perm: np.ndarray) -> np.ndarray:
+    mirrored = np.asarray(offsets)[perm].copy()
+    mirrored[:, 0] *= -1
+    return mirrored
+
+
+
 
 
 def _compute_split_counts(num_items: int) -> dict[str, int]:
@@ -367,17 +373,15 @@ def attach_joint_name_embeddings(cond_dict: dict, cond_file: str, data_root: str
 
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, temporal_window, t5_name, balanced, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None):
+    def __init__(self, opt, cond_dict, temporal_window, t5_name, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None):
         self.opt = opt
-        self.max_length = 20
+        self.temporal_window = int(temporal_window)
+        self.min_length = 20
         self.pointer = 0
-        self.max_motion_length = opt.max_motion_length
+        self.max_motion_length = num_frames
         self.cond_dict = cond_dict
         self.balanced = balanced
         self.sample_limit = max(0, int(sample_limit))
-        self.fixed_motion_name = _normalize_fixed_motion_name(getattr(opt, 'fixed_motion', ''))
-        self.fixed_window_start = int(getattr(opt, 'fixed_window_start', 0))
-        self.fixed_motion_virtual_length = 1
         self.motion_cache_size = max(0, int(getattr(opt, 'motion_cache_size', 0)))
         self.motion_cache = OrderedDict()
         data_dict = {}
@@ -391,14 +395,7 @@ class MotionDataset(data.Dataset):
         cache_dirty = False
 
         all_motion_files = [name for name in os.listdir(opt.motion_dir) if name.endswith('.npy')]
-        if self.fixed_motion_name:
-            fixed_motion_path = pjoin(opt.motion_dir, self.fixed_motion_name)
-            if not os.path.exists(fixed_motion_path):
-                raise FileNotFoundError(
-                    f"Fixed motion '{self.fixed_motion_name}' was not found under {opt.motion_dir}."
-                )
-            all_motion_files = [self.fixed_motion_name]
-        elif allowed_motion_names is not None:
+        if allowed_motion_names is not None:
             all_motion_files = [name for name in all_motion_files if name in allowed_motion_names]
 
         for object_type in all_object_types:
@@ -438,22 +435,7 @@ class MotionDataset(data.Dataset):
         if not sorted_pairs:
             raise RuntimeError("No motion clips were found for the requested dataset subset.")
 
-        if self.fixed_motion_name:
-            fixed_entry = data_dict.get(self.fixed_motion_name)
-            if fixed_entry is None:
-                raise RuntimeError(
-                    f"Fixed motion '{self.fixed_motion_name}' was not loaded into the dataset subset."
-                )
-            max_valid_start = max(0, int(fixed_entry['length']) - int(self.max_motion_length))
-            self.fixed_motion_virtual_length = max_valid_start + 1
-            if self.fixed_window_start != -1 and (self.fixed_window_start < 0 or self.fixed_window_start > max_valid_start):
-                raise ValueError(
-                    f"fixed_window_start={self.fixed_window_start} is invalid for motion '{self.fixed_motion_name}' "
-                    f"with length={int(fixed_entry['length'])} and num_frames={int(self.max_motion_length)}. "
-                    f"Valid range is [0, {max_valid_start}] or -1 for random cropping."
-                )
-
-        minimum_valid_index = np.searchsorted([pair[1] for pair in sorted_pairs], self.max_length)
+        minimum_valid_index = np.searchsorted([pair[1] for pair in sorted_pairs], self.min_length)
         if self.sample_limit > 0:
             preferred_valid_index = np.searchsorted([pair[1] for pair in sorted_pairs], self.max_motion_length)
             candidate_pairs = sorted_pairs[preferred_valid_index:]
@@ -478,53 +460,89 @@ class MotionDataset(data.Dataset):
         self.max_available_length = int(self.length_arr.max()) if len(self.length_arr) > 0 else 0
         self.data_dict = data_dict
         self.name_list = name_list
-        self.temporal_mask_template = create_temporal_mask_for_window(temporal_window, self.max_motion_length)
-        self.reset_max_len(self.max_length)
+        self.temporal_mask_template = create_temporal_mask_for_window(self.temporal_window, self.max_motion_length)
+        self.reset_min_len(self.min_length)
 
-    def reset_max_len(self, length):
+    def reset_min_len(self, length):
         if self.max_available_length > 0:
             length = min(length, self.max_available_length)
         assert length <= self.max_motion_length
         self.pointer = np.searchsorted(self.length_arr, length)
-        self.max_length = length
+        self.min_length = length
     
     def inv_transform(self, x, y):
         mean = self.cond_dict[y['object_type']]['mean']
         std = self.cond_dict[y['object_type']]['std']
         return x * std + mean
 
-    def _prepare_sample(self, name, data):
+    def _get_temporal_mask(self, target_num_frames):
+        if int(target_num_frames) == int(self.max_motion_length):
+            return self.temporal_mask_template
+        return create_temporal_mask_for_window(self.temporal_window, int(target_num_frames))
+
+    def prepare_sample_by_name(self, name, target_num_frames=None, crop_start=None, loop_offset=None):
+        if name not in self.data_dict:
+            raise KeyError(f"Unknown motion sample '{name}'.")
+        return self._prepare_sample(
+            name,
+            self.data_dict[name],
+            target_num_frames=target_num_frames,
+            crop_start=crop_start,
+            loop_offset=loop_offset,
+        )
+
+    def _prepare_sample(self, name, data, target_num_frames=None, crop_start=None, loop_offset=None):
+        if target_num_frames is None:
+            target_num_frames = self.max_motion_length
+        target_num_frames = int(target_num_frames)
+        if target_num_frames <= 0:
+            raise ValueError(f"target_num_frames must be positive, got {target_num_frames}.")
+
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std = self.augment(data)
         motion_metadata = dict(data.get('motion_metadata') or infer_motion_labels_from_motion_name(name, object_type=object_type, object_types=self.cond_dict.keys()))
         motion_metadata.setdefault('motion_name', name)
         ind = 0
-        if m_length > self.max_motion_length:
-            if self.fixed_motion_name and self.fixed_window_start >= 0:
-                ind = self.fixed_window_start
+        if m_length > target_num_frames:
+            max_start = m_length - target_num_frames
+            if crop_start is None:
+                ind = random.randint(0, max_start)
             else:
-                ind = random.randint(0, m_length - self.max_motion_length)
-            motion = motion[ind: ind + self.max_motion_length]
-            m_length = self.max_motion_length
+                ind = int(crop_start)
+                if ind < 0 or ind > max_start:
+                    raise ValueError(
+                        f"crop_start={ind} is invalid for motion '{name}' with length={m_length} and target_num_frames={target_num_frames}."
+                    )
+            motion = motion[ind: ind + target_num_frames]
+            m_length = target_num_frames
 
-        if m_length < self.max_motion_length:
-            pad_frames = self.max_motion_length - m_length
+        if m_length < target_num_frames:
+            pad_frames = target_num_frames - m_length
             if motion_metadata.get('is_loop') and m_length > 0:
-                tiles = (pad_frames // m_length) + 1
-                loop_pad = np.tile(motion, (tiles, 1, 1))[:pad_frames]
-                motion = np.concatenate([motion, loop_pad], axis=0)
-                m_length = self.max_motion_length
+                if loop_offset is None:
+                    offset = random.randint(0, m_length - 1)
+                else:
+                    offset = int(loop_offset)
+                    if offset < 0 or offset >= m_length:
+                        raise ValueError(
+                            f"loop_offset={offset} is invalid for loop motion '{name}' with length={m_length}."
+                        )
+                loop_indices = (np.arange(target_num_frames, dtype=np.int64) + offset) % m_length
+                motion = motion[loop_indices]
+                m_length = target_num_frames
             else:
                 motion = np.concatenate([
                                          motion,
                                          np.zeros((pad_frames, motion.shape[1], motion.shape[2]), dtype=motion.dtype)
                                          ], axis=0)
 
-        return motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name
+        temporal_mask = self._get_temporal_mask(target_num_frames)
+        return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name
     
     def augment(self, data):
         object_type = data['object_type']
         cond = self.cond_dict[object_type]
         motion_path = data['motion_path']
+        mirror_perm = None
         if self.motion_cache_size > 0:
             motion = self.motion_cache.get(motion_path)
             if motion is None:
@@ -544,6 +562,7 @@ class MotionDataset(data.Dataset):
         if mirror_prob > 0.0 and random.random() < mirror_prob:
             spi = cond.get('symmetry_partner_indices')
             if spi is not None and len(spi) == motion.shape[1]:
+                mirror_perm = _build_symmetry_permutation(spi)
                 mirrored_cache_key = f'{motion_path}__mirrored_raw'
                 if self.motion_cache_size > 0 and mirrored_cache_key in self.motion_cache:
                     motion = self.motion_cache[mirrored_cache_key]
@@ -551,12 +570,7 @@ class MotionDataset(data.Dataset):
                 else:
                     # Mirror in raw feature space. Doing this after normalization is wrong
                     # when mirrored channels have non-zero means.
-                    perm = list(range(len(spi)))
-                    for i, partner in enumerate(spi):
-                        if partner != -1:
-                            perm[i] = int(partner)
-                    motion = motion[:, perm, :].copy()
-                    motion[:, :, [0, 4, 5, 6, 9]] *= -1
+                    motion = _mirror_motion_feature_array(motion, mirror_perm)
                     if self.motion_cache_size > 0:
                         self.motion_cache[mirrored_cache_key] = motion
                         self.motion_cache.move_to_end(mirrored_cache_key)
@@ -581,23 +595,25 @@ class MotionDataset(data.Dataset):
         m_length = motion.shape[0]
         mean = self.cond_dict[object_type]['mean']
         std = self.cond_dict[object_type]['std_safe']
-        return motion, m_length, object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], cond['tpos_first_frame_normalized'], cond['offsets'], cond['joints_names_embs'], cond['kinematic_chains'], mean, std
+        if mirror_perm is not None:
+            mirrored_tpose_raw = _mirror_motion_feature_array(np.asarray(cond['tpos_first_frame'], dtype=np.float32), mirror_perm)
+            tpos_first_frame = np.nan_to_num((mirrored_tpose_raw - mean) / std).astype(np.float32, copy=False)
+            offsets = _mirror_offsets_array(np.asarray(cond['offsets'], dtype=np.float32), mirror_perm)
+        else:
+            tpos_first_frame = cond['tpos_first_frame_normalized']
+            offsets = cond['offsets']
+        return motion, m_length, object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], tpos_first_frame, offsets, cond['joints_names_embs'], cond['kinematic_chains'], mean, std
         
     def __len__(self):
-        if self.fixed_motion_name and self.fixed_window_start == -1 and self.name_list:
-            return max(1, int(self.fixed_motion_virtual_length))
         return len(self.name_list) - self.pointer
 
     def __getitem__(self, item):
-        if self.fixed_motion_name and self.fixed_window_start == -1:
-            name = self.name_list[0]
-            return self._prepare_sample(name, self.data_dict[name])
         if self.balanced:
             idx = item #self.pointer + item (handled in weighted sampler)
         else:
             idx = self.pointer + item
         name = self.name_list[idx]
-        return self._prepare_sample(name, self.data_dict[name])
+        return self.prepare_sample_by_name(name)
 
 class TruebonesSampler(WeightedRandomSampler):
     def __init__(self, data_source):
@@ -637,20 +653,13 @@ class Truebones(data.Dataset):
         opt = get_opt(device)
         opt.motion_dir = pjoin(abs_base_path, opt.motion_dir)
         opt.data_root = pjoin(abs_base_path, opt.data_root)
-        opt.max_motion_length = min(opt.max_motion_length, kwargs['num_frames'])
         self.opt = opt
         self.balanced = kwargs['balanced']
         self.objects_subset = kwargs['objects_subset']
         self.action_tags = kwargs.get('action_tags', '')
         self.sample_limit = kwargs.get('sample_limit', 0)
         self.motion_cache_size = kwargs.get('motion_cache_size', 0)
-        self.fixed_motion = kwargs.get('fixed_motion', '')
-        self.fixed_window_start = kwargs.get('fixed_window_start', 0)
-        if self.fixed_window_start == -1 and not self.fixed_motion:
-            raise ValueError('fixed_window_start=-1 (random cropping) requires --fixed_motion.')
         self.opt.motion_cache_size = self.motion_cache_size
-        self.opt.fixed_motion = self.fixed_motion
-        self.opt.fixed_window_start = self.fixed_window_start
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
         # Support both predefined subsets and single species names
         if self.objects_subset in opt.subsets_dict:
@@ -684,6 +693,7 @@ class Truebones(data.Dataset):
             temporal_window,
             t5_name,
             self.balanced,
+            num_frames=kwargs['num_frames'],
             sample_limit=self.sample_limit,
             allowed_motion_names=allowed_motion_names,
             motion_metadata_lookup=motion_metadata_lookup,

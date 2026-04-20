@@ -118,13 +118,10 @@ def collect_loop_motions(
 
     # Collect metadata for all samples to find loop motions
     for idx in range(dataset_len):
-        if motion_dataset.fixed_motion_name and motion_dataset.fixed_window_start == -1:
-            name = name_list[0]
-        else:
-            actual_idx = motion_dataset.pointer + idx if not motion_dataset.balanced else idx
-            if actual_idx >= len(name_list):
-                continue
-            name = name_list[actual_idx]
+        actual_idx = motion_dataset.pointer + idx if not motion_dataset.balanced else idx
+        if actual_idx >= len(name_list):
+            continue
+        name = name_list[actual_idx]
 
         if name not in data_dict:
             continue

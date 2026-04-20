@@ -124,8 +124,6 @@ def create_training_data_loader(args):
         action_tags=getattr(args, 'action_tags', ''),
         motion_cache_size=getattr(args, 'motion_cache_size', 0),
         main_process_prefetch_batches=getattr(args, 'main_process_prefetch_batches', 0),
-        fixed_motion=getattr(args, 'fixed_motion', ''),
-        fixed_window_start=getattr(args, 'fixed_window_start', 0),
     )
 
 def run_training(args):

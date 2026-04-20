@@ -130,10 +130,7 @@ def add_data_options(parser):
                        help="Object subset. Can be a predefined category (e.g. 'all', 'quadropeds', 'flying', 'bipeds', 'millipeds', etc.) or a single species name (e.g. 'Horse', 'Dragon').")
     group.add_argument("--action_tags", default='', type=str,
                        help="Comma-separated action tags used to keep only motions whose metadata tags match, e.g. 'locomotion,attack'.")
-    group.add_argument("--fixed_motion", default='', type=str,
-                       help="Optional fixed motion clip for deterministic tiny overfit/debug runs. Accepts a processed .npy name or a BVH/.npy path; BVH paths are mapped to the matching processed .npy clip.")
-    group.add_argument("--fixed_window_start", default=0, type=int,
-                       help="Start frame used when --fixed_motion is set and the motion is longer than num_frames. Use 0 for fixed window cropping, or -1 for random window cropping on every sample.")
+
 def add_training_options(parser):
     group = parser.add_argument_group('training')
     group.add_argument("--save_dir", type=str,
