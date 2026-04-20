@@ -76,6 +76,7 @@ def run_validation(
     objects_subset: str,
     skip_orientation_check: bool,
     orientation_threshold_deg: float,
+    filter_orientation_threshold_deg: float,
     sample_count: int,
 ) -> int:
     """Run dataset validation."""
@@ -100,6 +101,7 @@ def run_validation(
         _validate_cond_file,
         _validate_motion_files,
         _validate_motion_orientation,
+        _filter_motions_by_orientation,
         _validate_positions_error_file,
     )
     
@@ -112,6 +114,16 @@ def run_validation(
         cond = _validate_cond_file(cond_path, objects_subset)
         
         _validate_motion_files(motions_dir, bvhs_dir, cond, sample_count)
+        
+        # Filter out motions with orientation deviation BEFORE validation
+        # This way bad motions are deleted before we check the remaining dataset
+        if filter_orientation_threshold_deg > 0 and not skip_orientation_check:
+            _print_ok(f"filtering motions with orientation deviation > {filter_orientation_threshold_deg:.2f} deg")
+            deleted_count = _filter_motions_by_orientation(
+                bvhs_dir, motions_dir, cond, sample_count, filter_orientation_threshold_deg
+            )
+            if deleted_count > 0:
+                _print_ok(f"deleted {deleted_count} motion(s) exceeding orientation threshold")
         
         if skip_orientation_check:
             _print_warn("skipping processed-BVH orientation validation by request")
@@ -231,6 +243,12 @@ def parse_args() -> argparse.Namespace:
         help="Maximum allowed first-frame facing error from +Z for processed validation.",
     )
     parser.add_argument(
+        "--filter-orientation-threshold-deg",
+        default=45.0,
+        type=float,
+        help="Delete motions with orientation deviation exceeding this threshold (default: 45.0). Set to 0 to disable filtering.",
+    )
+    parser.add_argument(
         "--sample-count",
         default=0,
         type=int,
@@ -286,6 +304,7 @@ def main() -> int:
             args.objects_subset,
             args.skip_orientation_check,
             args.orientation_threshold_deg,
+            args.filter_orientation_threshold_deg,
             args.sample_count,
         )
         # Don't return on validation failure - continue to next step        

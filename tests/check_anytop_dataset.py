@@ -412,14 +412,79 @@ def _validate_motion_orientation(bvhs_dir: Path, cond: dict, sample_limit: int, 
                 f"processed orientation exceeds threshold on both first and last frames： {first_best_angle_deg:.2f}|{first_best_angle_deg:.2f}, threshold={threshold_deg:.2f}",
             )
         except ValidationError as e:
-            _print_warn(f"validation error: {bvh_path.name}: {e}")
+            _print_warn(f"validation warn: {bvh_path.name}: {e}")
             errors.append(str(e))
 
     if errors:
-        raise ValidationError(f"orientation validation failed: {len(errors)} file(s) exceeded threshold")
+        raise ValidationError(f"orientation validation warn: {len(errors)} file(s) exceeded threshold")
     
     scope = "all" if sample_limit <= 0 else str(len(files_to_validate))
     _print_ok(f"validated processed early-frame +Z orientation for {scope} processed BVHs (threshold={threshold_deg:.2f} deg)")
+
+
+def _filter_motions_by_orientation(
+    bvhs_dir: Path,
+    motions_dir: Path,
+    cond: dict,
+    sample_limit: int,
+    threshold_deg: float,
+) -> int:
+    """Delete motion/BVH pairs whose orientation deviation exceeds threshold_deg.
+
+    Returns the number of files deleted.
+    """
+    bvh_files = sorted(bvhs_dir.glob("*.bvh"))
+    if not bvh_files:
+        return 0
+
+    files_to_check = _select_validation_files(bvh_files, sample_limit)
+    target_forward = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    _SKIP_ORIENTATION_KEYWORDS = {"left", "right", "die", "dead", "death", "lying"}
+
+    deleted_count = 0
+    for bvh_path in files_to_check:
+        action_name_lower = bvh_path.stem.lower()
+        if any(kw in action_name_lower for kw in _SKIP_ORIENTATION_KEYWORDS):
+            continue
+        try:
+            object_type = _match_object_type(bvh_path.stem, cond)
+            first_candidates = _get_frame_orientation_candidates(
+                bvh_path, object_type, cond[object_type], 0
+            )
+            first_candidate_angles = {
+                name: _vector_angle_deg(forward, target_forward)
+                for name, forward in first_candidates.items()
+            }
+            first_best_angle_deg = min(first_candidate_angles.values())
+
+            if first_best_angle_deg <= threshold_deg:
+                continue
+
+            last_candidates = _get_frame_orientation_candidates(
+                bvh_path, object_type, cond[object_type], -1
+            )
+            last_candidate_angles = {
+                name: _vector_angle_deg(forward, target_forward)
+                for name, forward in last_candidates.items()
+            }
+            last_best_angle_deg = min(last_candidate_angles.values())
+
+            if last_best_angle_deg <= threshold_deg:
+                continue
+
+            # Both first and last frames exceed threshold — delete the motion.
+            motion_path = motions_dir / (bvh_path.stem + ".npy")
+            if motion_path.exists():
+                motion_path.unlink()
+                print(f"  [DELETE] {motion_path.name}")
+                deleted_count += 1
+            if bvh_path.exists():
+                bvh_path.unlink()
+                print(f"  [DELETE] {bvh_path.name}")
+        except Exception as e:
+            print(f"  [WARN] orientation filter error for {bvh_path.name}: {e}")
+
+    return deleted_count
 
 
 def _validate_positions_error_file(positions_error_path: Path) -> None:

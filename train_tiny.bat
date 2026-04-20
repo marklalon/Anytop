@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=stage1_tiny_overfit_horse_locomotion_pose_v17
+set RUN_NAME=stage1_tiny_overfit_horse_locomotion_pose_v18
 
 pushd "%SCRIPT_DIR%"
 
