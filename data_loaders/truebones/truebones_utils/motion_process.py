@@ -566,6 +566,22 @@ def strip_translation_root_xz(anim, translation_root_index):
         anim.parents.copy(),
     )
 
+
+def needs_bvh_position_channels(anim, tol=1e-4):
+    """Return True when BVH export must write non-root position channels.
+
+    This repo's internal FK uses ``anim.positions`` directly as each joint's local
+    translation. Exporting with ``positions=False`` makes BVH viewers reconstruct
+    every non-root joint from the static rest ``offsets`` instead, so any non-root
+    local position that differs from those offsets must be written explicitly.
+    """
+    if anim.positions.shape[1] <= 1:
+        return False
+
+    nonroot_positions = np.asarray(anim.positions[:, 1:, :], dtype=np.float64)
+    rest_offsets = np.asarray(anim.offsets[1:], dtype=np.float64)[None, :, :]
+    return bool(np.any(np.abs(nonroot_positions - rest_offsets) > tol))
+
 def scale(anim, scale_factor=None):
     if scale_factor is None:
         lengths = offset_lengths(anim)
@@ -1329,11 +1345,8 @@ def _write_object_outputs(save_dir, object_payload, files_counter):
         # positions under this repo's FK but can look distorted in external BVH
         # viewers because its local position/offset decomposition is training-oriented.
         anim_obj = result['export_anim']
-        has_animated_nonroot_pos = np.any(
-            np.ptp(anim_obj.positions[:, 1:, :], axis=0) > 1e-4
-        )
         BVH.save(pjoin(save_dir, BVHS_DIR, name+".bvh"), anim_obj, result.get('canonical_names', result['names']),
-                 positions=bool(has_animated_nonroot_pos))
+                 positions=needs_bvh_position_channels(anim_obj))
 
         motion_labels = dict(result['motion_labels'])
         motion_labels['motion_name'] = motion_file_name

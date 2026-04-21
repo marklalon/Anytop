@@ -319,11 +319,8 @@ def process_animal(animal_dir: Path):
             print("  WARNING: get_motion returned None, no .npy saved.")
 
         # Save processed BVH ----------------------------------------------
-        has_animated_nonroot = np.any(
-            np.ptp(export_anim.positions[:, 1:, :], axis=0) > 1e-4
-        )
         bvh_path_out = bvh_out / f"{animal_name}_{clip_name}.bvh"
-        BVH.save(str(bvh_path_out), export_anim, names, positions=bool(has_animated_nonroot))
+        BVH.save(str(bvh_path_out), export_anim, names, positions=needs_bvh_position_channels(export_anim))
         print(f"  Saved BVH     : {bvh_path_out.relative_to(animal_dir)}")
 
         # -----------------------------------------------------------------
