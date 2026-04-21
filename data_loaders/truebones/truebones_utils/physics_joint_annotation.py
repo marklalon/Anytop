@@ -216,6 +216,19 @@ _EMBED_TEXT_HEAD_FEATURE_TOKENS = {
     'eye',
     'tongue',
 }
+
+_CHAIN_INDEX_ORDINAL_TOKENS = {
+    1: 'First',
+    2: 'Second',
+    3: 'Third',
+    4: 'Fourth',
+    5: 'Fifth',
+    6: 'Sixth',
+    7: 'Seventh',
+    8: 'Eighth',
+    9: 'Ninth',
+    10: 'Tenth',
+}
 _SPECIES_LINEAGE_TAGS = {
     'Alligator': ('Reptile', 'Crocodilian'),
     'Anaconda': ('Reptile', 'Snake'),
@@ -387,6 +400,72 @@ def _refine_joint_embedding_name(name):
     return merged_tokens or canonical_name.split()
 
 
+def _chain_index_token(index):
+    index = int(index)
+    return _CHAIN_INDEX_ORDINAL_TOKENS.get(index, f'Index{index}')
+
+
+def _chain_role_token(chain_index, chain_length):
+    chain_index = int(chain_index)
+    chain_length = int(chain_length)
+    if chain_length <= 1:
+        return None
+    if chain_index <= 1:
+        return 'ChainStart'
+    if chain_index >= chain_length:
+        return 'ChainEnd'
+    relative_position = float(chain_index - 1) / float(max(chain_length - 1, 1))
+    if relative_position <= 0.34:
+        return 'ChainEarly'
+    if relative_position >= 0.67:
+        return 'ChainLate'
+    return 'ChainMiddle'
+
+
+def _build_chain_relative_joint_tokens(refined_tokens_per_joint, parents):
+    joint_count = len(refined_tokens_per_joint)
+    if parents is None or len(parents) != joint_count:
+        return [[] for _ in range(joint_count)]
+
+    parents = np.asarray(parents, dtype=np.int64)
+    children = _child_map(parents)
+    signatures = [tuple(tokens) for tokens in refined_tokens_per_joint]
+    upward_steps = np.zeros(joint_count, dtype=np.int32)
+    downward_steps = np.zeros(joint_count, dtype=np.int32)
+
+    for joint_index in range(joint_count):
+        parent_index = int(parents[joint_index])
+        if parent_index >= 0 and signatures[parent_index] and signatures[parent_index] == signatures[joint_index]:
+            upward_steps[joint_index] = upward_steps[parent_index] + 1
+
+    for joint_index in range(joint_count - 1, -1, -1):
+        matching_children = [
+            child_index
+            for child_index in children[joint_index]
+            if signatures[joint_index] and signatures[child_index] == signatures[joint_index]
+        ]
+        if matching_children:
+            downward_steps[joint_index] = 1 + max(downward_steps[child_index] for child_index in matching_children)
+
+    chain_lengths = upward_steps + downward_steps + 1
+    chain_tokens = []
+    for joint_index in range(joint_count):
+        signature = signatures[joint_index]
+        chain_length = int(chain_lengths[joint_index])
+        if not signature or chain_length <= 1:
+            chain_tokens.append([])
+            continue
+
+        chain_index = int(upward_steps[joint_index]) + 1
+        joint_tokens = ['Segment', _chain_index_token(chain_index)]
+        role_token = _chain_role_token(chain_index, chain_length)
+        if role_token is not None:
+            joint_tokens.append(role_token)
+        chain_tokens.append(joint_tokens)
+
+    return chain_tokens
+
+
 def build_joint_embedding_texts(object_cond):
     base_joint_names = object_cond.get('canonical_joint_names') or object_cond.get('joints_names') or []
     if not base_joint_names:
@@ -397,10 +476,12 @@ def build_joint_embedding_texts(object_cond):
     joint_side_labels = list(object_cond.get('joint_side_labels') or ['center'] * len(base_joint_names))
     contact_joints = {int(joint_index) for joint_index in list(object_cond.get('contact_joints') or [])}
     end_effector_joints = {int(joint_index) for joint_index in list(object_cond.get('end_effector_joints') or [])}
+    refined_tokens_per_joint = [_refine_joint_embedding_name(joint_name) for joint_name in base_joint_names]
+    chain_relative_tokens = _build_chain_relative_joint_tokens(refined_tokens_per_joint, object_cond.get('parents'))
 
     texts = []
     for joint_index, joint_name in enumerate(base_joint_names):
-        refined_tokens = _refine_joint_embedding_name(joint_name)
+        refined_tokens = refined_tokens_per_joint[joint_index]
         lowered_tokens = {token.lower() for token in refined_tokens}
         if lowered_tokens & _EMBED_TEXT_NON_ANATOMICAL_TOKENS:
             texts.append('')
@@ -411,6 +492,7 @@ def build_joint_embedding_texts(object_cond):
         semantic_tokens.extend(lineage_tokens)
         semantic_tokens.append('Joint')
         semantic_tokens.extend(refined_tokens)
+        semantic_tokens.extend(chain_relative_tokens[joint_index])
 
         side = joint_side_labels[joint_index] if joint_index < len(joint_side_labels) else 'center'
         if side in ('left', 'right'):

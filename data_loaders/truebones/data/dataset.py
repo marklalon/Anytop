@@ -22,7 +22,7 @@ DEFAULT_SPLIT_RATIOS = {"train": 0.95, "val": 0.05, "test": 0.0}
 DEFAULT_SPLIT_SEED = 3407
 SUPPORTED_SPLITS = tuple(DEFAULT_SPLIT_RATIOS.keys())
 ALL_SPLIT_NAME = "all"
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 3
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 4
 
 
 def _normalize_motion_action_tags(raw_action_tags) -> set[str]:

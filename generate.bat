@@ -1,9 +1,9 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=stage1_tiny_overfit_horse_locomotion_pose_v17
+set RUN_NAME=stage1_quadropeds_v1
 REM 多个类型用空格分隔（直接传给 --object_type nargs='+'）。支持指定训练时模型没见过的Object Type来实现0样本泛化推理
-set OBJECT_TYPE=Buffalo Deer Jaguar
+set OBJECT_TYPE=Buffalo Cricket Rat
 set NUM_REPETITIONS=4
 set ACTION_CATEGORY=locomotion
 set ACTION_GUIDANCE_SCALE=2
