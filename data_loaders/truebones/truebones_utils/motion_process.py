@@ -51,6 +51,9 @@ ROOT_XZ_STRIP_THRESHOLD = 1
 LOOP_DETECTION_POS_THRESHOLD = 0.10
 
 
+_EMITTED_MIRROR_SAFEGUARD_WARNINGS = set()
+
+
 def _canonical_name_for_bvh(name, fallback_name):
     compact_name = re.sub(r'[^0-9A-Za-z_]+', '', str(name or ''))
     if compact_name:
@@ -272,6 +275,9 @@ def _refresh_joint_metadata_in_object_cond(object_cond):
     object_cond['symmetry_partner_indices'] = semantic_metadata['symmetry_partner_indices']
     object_cond['symmetric_joint_pairs'] = semantic_metadata['symmetric_joint_pairs']
     object_cond['symmetric_joint_pair_names'] = semantic_metadata['symmetric_joint_pair_names']
+    object_cond['mirror_disabled_joint_indices'] = semantic_metadata['mirror_disabled_joint_indices']
+    object_cond['mirror_disabled_joint_names'] = semantic_metadata['mirror_disabled_joint_names']
+    object_cond['mirror_disabled_warnings'] = semantic_metadata['mirror_disabled_warnings']
     object_cond['is_symmetric'] = semantic_metadata['is_symmetric']
 
 
@@ -691,6 +697,102 @@ def get_motion_features(ric_positions, rotations, foot_contact, velocity, termin
     ], axis=0) ## (Frames, joints, 1)
     features= np.concatenate([pos, rot, vel, foot], axis=-1) 
     return features, max_joints
+
+
+def _warn_mirror_disabled_subtrees(object_cond):
+    disabled_joint_indices = tuple(int(index) for index in object_cond['mirror_disabled_joint_indices'])
+    if not disabled_joint_indices:
+        return
+
+    object_type = str(object_cond['object_type'])
+    warning_key = (object_type, disabled_joint_indices)
+    if warning_key in _EMITTED_MIRROR_SAFEGUARD_WARNINGS:
+        return
+
+    _EMITTED_MIRROR_SAFEGUARD_WARNINGS.add(warning_key)
+    warning_messages = list(object_cond['mirror_disabled_warnings'])
+    if not warning_messages:
+        names = ', '.join(str(name) for name in object_cond['mirror_disabled_joint_names'])
+        warning_messages = [f'unpaired mirrored joints [{names}] will be neutralized during mirror augmentation.']
+
+    for message in warning_messages:
+        print(f'[WARN] {object_type}: {message}')
+
+
+def _neutralize_mirror_disabled_subtrees(features, object_cond, mirrored_offsets):
+    disabled_joint_indices = sorted({
+        int(index)
+        for index in object_cond['mirror_disabled_joint_indices']
+        if int(index) > 0
+    })
+    if not disabled_joint_indices:
+        return np.asarray(features).copy()
+
+    motion = np.asarray(features, dtype=np.float32)
+    parents = np.asarray(object_cond['parents'], dtype=np.int64)
+    offsets = np.asarray(mirrored_offsets, dtype=np.float64)
+    anim, _has_animated_pos = recover_animation_from_motion_np(motion, parents, offsets)
+    if anim is None:
+        return motion.copy()
+
+    neutral_positions = anim.positions.copy()
+    neutral_rotations = anim.rotations.copy()
+    neutral_positions[:, disabled_joint_indices] = offsets[disabled_joint_indices][None, :, :]
+    neutral_rotations[:, disabled_joint_indices] = Quaternions.id((motion.shape[0], len(disabled_joint_indices)))
+
+    neutral_anim = Animation(
+        neutral_rotations,
+        neutral_positions,
+        anim.orients.copy(),
+        offsets.copy(),
+        parents.copy(),
+    )
+    translation_root_index = _find_translation_root(neutral_anim)
+    contact_joint_indices = list(object_cond['contact_joints'])
+    face_joints = list(object_cond['face_joints']) or None
+
+    cont_6d_params, _r_velocity, _velocity, r_rot, global_positions = get_bvh_cont6d_params(
+        neutral_anim,
+        str(object_cond['object_type']),
+        face_joints=face_joints,
+        joint_names=list(object_cond['joints_names']),
+        translation_root_index=translation_root_index,
+    )
+    positions = get_rifke(global_positions, r_rot, translation_root_index=translation_root_index)
+    is_loop = _detect_motion_loop(positions)
+    local_vel = np.repeat(r_rot[1:, None], global_positions.shape[1], axis=1) * (global_positions[1:] - global_positions[:-1])
+    terminal_local_vel = _compute_terminal_local_velocity(global_positions, r_rot, is_loop)
+    foot_contact = get_contact_state(global_positions, contact_joint_indices, FOOT_CONTACT_VEL_THRESH)
+    terminal_contact = get_terminal_contact_state(global_positions, contact_joint_indices, FOOT_CONTACT_VEL_THRESH, is_loop)
+    neutralized, _max_joints = get_motion_features(
+        positions,
+        cont_6d_params,
+        foot_contact,
+        local_vel,
+        terminal_local_vel,
+        terminal_contact,
+        motion.shape[1],
+    )
+    return neutralized.astype(motion.dtype, copy=False)
+
+
+def mirror_features_with_safeguards(features, object_cond):
+    spi = np.asarray(object_cond['symmetry_partner_indices'], dtype=np.int64)
+    perm = np.arange(len(spi), dtype=np.int64)
+    valid = spi >= 0
+    perm[valid] = spi[valid]
+
+    mirrored = np.asarray(features)[perm].copy() if np.asarray(features).ndim == 2 else np.asarray(features)[:, perm, :].copy()
+    mirrored[..., [0, 4, 5, 6, 9]] *= -1
+
+    mirrored_offsets = np.asarray(object_cond['offsets'], dtype=np.float32)[perm].copy()
+    mirrored_offsets[:, 0] *= -1
+
+    if object_cond['mirror_disabled_joint_indices']:
+        _warn_mirror_disabled_subtrees(object_cond)
+        mirrored = _neutralize_mirror_disabled_subtrees(mirrored, object_cond, mirrored_offsets)
+
+    return mirrored, mirrored_offsets
 
 
 def _compute_terminal_local_velocity(global_positions, root_rot, is_loop):
@@ -1137,6 +1239,9 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=
     object_cond['symmetry_partner_indices'] = semantic_metadata['symmetry_partner_indices']
     object_cond['symmetric_joint_pairs'] = semantic_metadata['symmetric_joint_pairs']
     object_cond['symmetric_joint_pair_names'] = semantic_metadata['symmetric_joint_pair_names']
+    object_cond['mirror_disabled_joint_indices'] = semantic_metadata['mirror_disabled_joint_indices']
+    object_cond['mirror_disabled_joint_names'] = semantic_metadata['mirror_disabled_joint_names']
+    object_cond['mirror_disabled_warnings'] = semantic_metadata['mirror_disabled_warnings']
     object_cond['is_symmetric'] = semantic_metadata['is_symmetric']
     object_cond['orientation_reference_source'] = orientation_reference_source
     object_cond['orientation_reference_file'] = os.path.basename(t_pos_path)

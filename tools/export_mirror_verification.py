@@ -41,7 +41,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from motion_lib import BVH
-from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
+from data_loaders.truebones.truebones_utils.motion_process import (
+    mirror_features_with_safeguards,
+    recover_animation_from_motion_np,
+)
 from data_loaders.truebones.offline_reference_dataset import (
     infer_object_type,
     list_motion_files,
@@ -49,44 +52,6 @@ from data_loaders.truebones.offline_reference_dataset import (
     get_motion_dir,
     resolve_dataset_root,
 )
-
-
-def apply_mirror(motion: np.ndarray, symmetry_partner_indices: np.ndarray) -> np.ndarray:
-    """Mirror motion across the sagittal (YZ) plane.
-
-    Replicates the augmentation in dataset.py:augment() exactly:
-      1. Permute joints so left <-> right partners swap.
-      2. Negate x-signed feature channels (pos_x, three 6D rot elements, vel_x).
-
-    Feature layout per joint:
-      [pos_x(0), pos_y(1), pos_z(2), rot×6(3-8), vel_x(9), vel_y(10), vel_z(11), foot(12)]
-
-    Args:
-        motion: (T, J, C) float32 array of raw (unnormalized) motion features.
-        symmetry_partner_indices: length-J array; -1 for midline joints.
-
-    Returns:
-        New (T, J, C) array with mirror transformation applied.
-    """
-    spi = symmetry_partner_indices
-    perm = list(range(len(spi)))
-    for i, partner in enumerate(spi):
-        if partner != -1:
-            perm[i] = int(partner)
-    mirrored = motion[:, perm, :].copy()
-    mirrored[:, :, [0, 4, 5, 6, 9]] *= -1
-    return mirrored
-
-
-def apply_mirror_offsets(offsets: np.ndarray, symmetry_partner_indices: np.ndarray) -> np.ndarray:
-    spi = symmetry_partner_indices
-    perm = list(range(len(spi)))
-    for i, partner in enumerate(spi):
-        if partner != -1:
-            perm[i] = int(partner)
-    mirrored = offsets[perm].copy()
-    mirrored[:, 0] *= -1
-    return mirrored
 
 
 def export_bvh(save_path: Path, motion: np.ndarray, parents: list[int], offsets: np.ndarray, joints_names: list[str]) -> bool:
@@ -100,9 +65,9 @@ def export_bvh(save_path: Path, motion: np.ndarray, parents: list[int], offsets:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export clean + mirrored BVH pairs for aug_mirror_prob verification.")
     parser.add_argument("--dataset-dir", default="", help="Processed dataset root directory.")
-    parser.add_argument("--output-dir", default="mirror_verification", help="Output directory for BVH files.")
+    parser.add_argument("--output-dir", default="outputs/mirror_verification", help="Output directory for BVH files.")
     parser.add_argument("--objects-subset", default="all", help="Object subset to sample from.")
-    parser.add_argument("--sample-count", default=2, type=int, help="Motions to export per symmetric object type.")
+    parser.add_argument("--sample-count", default=8, type=int, help="Motions to export per symmetric object type.")
     parser.add_argument("--random-seed", default=0, type=int, help="RNG seed for reproducible sampling.")
     return parser.parse_args()
 
@@ -150,10 +115,11 @@ def main() -> int:
         n = min(remaining, len(files))
         selected = sorted(rng.sample(files, n)) if n > 0 else []
         remaining -= n
-        parents = [int(p) for p in cond_dict[obj]['parents']]
-        offsets = cond_dict[obj]['offsets']
-        joints_names = list(cond_dict[obj]['joints_names'])
-        spi = np.asarray(cond_dict[obj]['symmetry_partner_indices'])
+        object_cond = cond_dict[obj]
+        parents = [int(p) for p in object_cond['parents']]
+        offsets = object_cond['offsets']
+        joints_names = list(object_cond['joints_names'])
+        spi = np.asarray(object_cond['symmetry_partner_indices'])
 
         obj_dir = output_dir / obj
         obj_dir.mkdir(parents=True, exist_ok=True)
@@ -166,12 +132,10 @@ def main() -> int:
         for motion_file in selected:
             stem = Path(motion_file).stem
             motion = np.load(motion_dir / motion_file).astype(np.float32)
-            mirrored = apply_mirror(motion, spi)
+            mirrored, mirrored_offsets = mirror_features_with_safeguards(motion, object_cond)
 
             clean_path = obj_dir / f"{stem}_clean.bvh"
             mirror_path = obj_dir / f"{stem}_mirror.bvh"
-
-            mirrored_offsets = apply_mirror_offsets(np.asarray(offsets, dtype=np.float32), spi)
 
             ok_clean = export_bvh(clean_path, motion, parents, offsets, joints_names)
             ok_mirror = export_bvh(mirror_path, mirrored, parents, mirrored_offsets, joints_names)

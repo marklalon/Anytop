@@ -55,7 +55,11 @@ def list_motion_files(
         requested = {name for name in motion_names}
         selected = [name for name in all_motion_files if name in requested]
     else:
-        allowed_objects = set(OBJECT_SUBSETS_DICT.get(objects_subset, OBJECT_SUBSETS_DICT["all"]))
+        if objects_subset in OBJECT_SUBSETS_DICT:
+            allowed_objects = set(OBJECT_SUBSETS_DICT[objects_subset])
+        else:
+            # Treat as a single object type name (e.g. "Horse")
+            allowed_objects = {objects_subset}
         selected = [name for name in all_motion_files if _matches_object_subset(name, allowed_objects)]
     if sample_limit > 0:
         selected = selected[:sample_limit]

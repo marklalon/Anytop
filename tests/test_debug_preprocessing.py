@@ -295,7 +295,7 @@ def process_animal(animal_dir: Path):
             get_motion,
         )
         local_errors = {}
-        motion, parents, _, _, _ = get_motion(
+        motion, parents, max_joints_out, new_anim, export_anim, is_loop = get_motion(
             bvh_path,
             FOOT_CONTACT_VEL_THRESH,
             animal_name,

@@ -553,6 +553,13 @@ def _joint_signature(name):
     return ' '.join(fallback_tokens)
 
 
+def _fallback_child_signature(name):
+    return ' '.join(
+        token for token in _joint_signature(name).split()
+        if not token.isdigit()
+    )
+
+
 def _joint_semantic_text(name):
     normalized = _normalize_joint_name(name)
     canonical = _canonicalize_joint_name(name).lower()
@@ -940,7 +947,46 @@ def _symmetry_pair_score(left_index, right_index, rest_positions, depths, parent
     return parent_penalty, depth_error, mirror_error + yz_error, left_index, right_index
 
 
-def _infer_symmetry_metadata(joint_names, parents, rest_positions):
+def _local_mirror_error(left_index, right_index, left_parent, right_parent, rest_positions):
+    left_anchor = rest_positions[left_parent] if left_parent >= 0 else np.zeros(3, dtype=np.float64)
+    right_anchor = rest_positions[right_parent] if right_parent >= 0 else np.zeros(3, dtype=np.float64)
+    left_delta = rest_positions[left_index] - left_anchor
+    right_delta = rest_positions[right_index] - right_anchor
+    mirror_error = abs(float(left_delta[0] + right_delta[0]))
+    yz_error = float(np.linalg.norm(left_delta[1:] - right_delta[1:]))
+    local_scale = max(float(np.linalg.norm(left_delta)), float(np.linalg.norm(right_delta)), 1e-6)
+    return mirror_error, yz_error, local_scale
+
+
+def _passes_conservative_child_mirror_check(left_index, right_index, left_parent, right_parent, rest_positions):
+    mirror_error, yz_error, local_scale = _local_mirror_error(
+        left_index,
+        right_index,
+        left_parent,
+        right_parent,
+        rest_positions,
+    )
+    tolerance = max(1e-3, local_scale * 0.35)
+    return mirror_error <= tolerance and yz_error <= tolerance
+
+
+def _collect_subtree_indices(root_index, children):
+    collected = []
+    stack = [int(root_index)]
+    while stack:
+        joint_index = stack.pop()
+        collected.append(joint_index)
+        stack.extend(children[joint_index])
+    return collected
+
+
+def _format_joint_name_list(indices, joint_names):
+    if not indices:
+        return '-'
+    return ', '.join(str(joint_names[joint_index]) for joint_index in indices)
+
+
+def _infer_symmetry_metadata(joint_names, parents, rest_positions, return_details=False):
     depths = _joint_depths(parents)
     joint_side_labels = []
     grouped_indices = {}
@@ -987,7 +1033,75 @@ def _infer_symmetry_metadata(joint_names, parents, rest_positions):
             symmetry_partner_indices[best_right] = left_index
             symmetric_joint_pairs.append([left_index, best_right])
 
+    children = [[] for _ in range(len(parents))]
+    for joint_index, parent_index in enumerate(parents):
+        if parent_index >= 0:
+            children[parent_index].append(joint_index)
+
+    changed = True
+    while changed:
+        changed = False
+        for left_parent, right_parent in list(symmetric_joint_pairs):
+            left_unpaired = [joint_index for joint_index in children[left_parent] if symmetry_partner_indices[joint_index] < 0]
+            right_unpaired = [joint_index for joint_index in children[right_parent] if symmetry_partner_indices[joint_index] < 0]
+            if len(left_unpaired) != 1 or len(right_unpaired) != 1:
+                continue
+
+            left_index = left_unpaired[0]
+            right_index = right_unpaired[0]
+            if not _passes_conservative_child_mirror_check(
+                left_index,
+                right_index,
+                left_parent,
+                right_parent,
+                rest_positions,
+            ):
+                continue
+
+            symmetry_partner_indices[left_index] = right_index
+            symmetry_partner_indices[right_index] = left_index
+            joint_side_labels[left_index] = 'left'
+            joint_side_labels[right_index] = 'right'
+            symmetric_joint_pairs.append([left_index, right_index])
+            changed = True
+
+    mirror_disabled_joint_indices = set()
+    mirror_disabled_warnings = []
+    seen_warning_keys = set()
+    for left_parent, right_parent in symmetric_joint_pairs:
+        left_unpaired = [joint_index for joint_index in children[left_parent] if symmetry_partner_indices[joint_index] < 0]
+        right_unpaired = [joint_index for joint_index in children[right_parent] if symmetry_partner_indices[joint_index] < 0]
+        if not left_unpaired and not right_unpaired:
+            continue
+
+        warning_key = (left_parent, right_parent, tuple(left_unpaired), tuple(right_unpaired))
+        if warning_key not in seen_warning_keys:
+            mirror_disabled_warnings.append(
+                'unpaired mirrored child chains under '
+                f'{joint_names[left_parent]} <-> {joint_names[right_parent]}: '
+                f'left=[{_format_joint_name_list(left_unpaired, joint_names)}], '
+                f'right=[{_format_joint_name_list(right_unpaired, joint_names)}]. '
+                'Mirror augmentation will neutralize these subtrees.'
+            )
+            seen_warning_keys.add(warning_key)
+
+        for root_index in left_unpaired + right_unpaired:
+            mirror_disabled_joint_indices.update(_collect_subtree_indices(root_index, children))
+
+    if return_details:
+        sorted_disabled_joint_indices = sorted(int(joint_index) for joint_index in mirror_disabled_joint_indices)
+        return {
+            'joint_side_labels': joint_side_labels,
+            'symmetry_partner_indices': symmetry_partner_indices,
+            'symmetric_joint_pairs': symmetric_joint_pairs,
+            'mirror_disabled_joint_indices': sorted_disabled_joint_indices,
+            'mirror_disabled_joint_names': [joint_names[joint_index] for joint_index in sorted_disabled_joint_indices],
+            'mirror_disabled_warnings': mirror_disabled_warnings,
+        }
+
     return joint_side_labels, symmetry_partner_indices, symmetric_joint_pairs
+
+
 
 
 def _infer_is_symmetric(symmetric_joint_pairs, joint_side_labels):
@@ -1030,7 +1144,10 @@ def _build_semantic_metadata(object_type, joint_names, parents, offsets, rest_po
         set(_infer_end_effector_joints(parents, joint_names=joint_names, rest_positions=rest_positions))
         | leaf_contact_joints
     )
-    joint_side_labels, symmetry_partner_indices, symmetric_joint_pairs = _infer_symmetry_metadata(joint_names, parents, rest_positions)
+    symmetry_metadata = _infer_symmetry_metadata(joint_names, parents, rest_positions, return_details=True)
+    joint_side_labels = symmetry_metadata['joint_side_labels']
+    symmetry_partner_indices = symmetry_metadata['symmetry_partner_indices']
+    symmetric_joint_pairs = symmetry_metadata['symmetric_joint_pairs']
     is_symmetric = _infer_is_symmetric(symmetric_joint_pairs, joint_side_labels)
     return {
         'canonical_joint_names': canonical_joint_names,
@@ -1043,5 +1160,8 @@ def _build_semantic_metadata(object_type, joint_names, parents, offsets, rest_po
         'symmetry_partner_indices': symmetry_partner_indices,
         'symmetric_joint_pairs': symmetric_joint_pairs,
         'symmetric_joint_pair_names': [[joint_names[left], joint_names[right]] for left, right in symmetric_joint_pairs],
+        'mirror_disabled_joint_indices': symmetry_metadata['mirror_disabled_joint_indices'],
+        'mirror_disabled_joint_names': symmetry_metadata['mirror_disabled_joint_names'],
+        'mirror_disabled_warnings': symmetry_metadata['mirror_disabled_warnings'],
         'is_symmetric': bool(is_symmetric),
     }

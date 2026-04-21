@@ -13,7 +13,11 @@ from torch.utils.data._utils.collate import default_collate
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.param_utils import parse_action_tags
 from data_loaders.truebones.truebones_utils.motion_labels import infer_motion_labels_from_motion_name, load_motion_metadata
-from data_loaders.truebones.truebones_utils.motion_process import remove_joints_augmentation, add_joint_augmentation
+from data_loaders.truebones.truebones_utils.motion_process import (
+    add_joint_augmentation,
+    mirror_features_with_safeguards,
+    remove_joints_augmentation,
+)
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import JOINT_NAME_EMBEDDING_SCHEMA_VERSION
 
 
@@ -508,7 +512,8 @@ class MotionDataset(data.Dataset):
         object_type = data['object_type']
         cond = self.cond_dict[object_type]
         motion_path = data['motion_path']
-        mirror_perm = None
+        mirror_applied = False
+        mirrored_offsets = None
         if self.motion_cache_size > 0:
             motion = self.motion_cache.get(motion_path)
             if motion is None:
@@ -528,17 +533,15 @@ class MotionDataset(data.Dataset):
         if mirror_prob > 0.0 and random.random() < mirror_prob:
             spi = cond.get('symmetry_partner_indices')
             if spi is not None and len(spi) == motion.shape[1]:
-                mirror_perm = _build_symmetry_permutation(spi)
-                mirrored_cache_key = f'{motion_path}__mirrored_raw'
+                mirror_applied = True
+                mirrored_cache_key = f'{motion_path}__mirrored_raw__safe_v1'
                 if self.motion_cache_size > 0 and mirrored_cache_key in self.motion_cache:
-                    motion = self.motion_cache[mirrored_cache_key]
+                    motion, mirrored_offsets = self.motion_cache[mirrored_cache_key]
                     self.motion_cache.move_to_end(mirrored_cache_key)
                 else:
-                    # Mirror in raw feature space. Doing this after normalization is wrong
-                    # when mirrored channels have non-zero means.
-                    motion = _mirror_motion_feature_array(motion, mirror_perm)
+                    motion, mirrored_offsets = mirror_features_with_safeguards(motion, cond)
                     if self.motion_cache_size > 0:
-                        self.motion_cache[mirrored_cache_key] = motion
+                        self.motion_cache[mirrored_cache_key] = (motion, mirrored_offsets)
                         self.motion_cache.move_to_end(mirrored_cache_key)
                         while len(self.motion_cache) > self.motion_cache_size:
                             self.motion_cache.popitem(last=False)
@@ -561,10 +564,13 @@ class MotionDataset(data.Dataset):
         m_length = motion.shape[0]
         mean = self.cond_dict[object_type]['mean']
         std = self.cond_dict[object_type]['std_safe']
-        if mirror_perm is not None:
-            mirrored_tpose_raw = _mirror_motion_feature_array(np.asarray(cond['tpos_first_frame'], dtype=np.float32), mirror_perm)
+        if mirror_applied:
+            mirrored_tpose_raw, _mirrored_tpose_offsets = mirror_features_with_safeguards(
+                np.asarray(cond['tpos_first_frame'], dtype=np.float32),
+                cond,
+            )
             tpos_first_frame = np.nan_to_num((mirrored_tpose_raw - mean) / std).astype(np.float32, copy=False)
-            offsets = _mirror_offsets_array(np.asarray(cond['offsets'], dtype=np.float32), mirror_perm)
+            offsets = mirrored_offsets
         else:
             tpos_first_frame = cond['tpos_first_frame_normalized']
             offsets = cond['offsets']
