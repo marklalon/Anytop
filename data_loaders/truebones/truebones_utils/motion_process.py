@@ -715,6 +715,26 @@ def get_motion_features(ric_positions, rotations, foot_contact, velocity, termin
     return features, max_joints
 
 
+def infer_translation_root_from_features(data, tol=1e-5):
+    """Infer which joint row carries the effective translation-root trajectory.
+
+    The feature tensor stores root-facing rotation on joint row 0, but the XZ
+    trajectory itself lives on the effective translation root row. For rigs like
+    Horse, this is an intermediate joint (e.g. Bip01), whose RIFKE XZ is exactly
+    zero because all joints are expressed relative to it.
+    """
+    motion = np.asarray(data, dtype=np.float64)
+    if motion.ndim != 3:
+        raise ValueError(f"Expected motion features with shape (F, J, C), got {motion.shape}.")
+
+    xz_abs_max = np.max(np.abs(motion[:, :, [0, 2]]), axis=(0, 2))
+    zero_xz_candidates = np.flatnonzero(xz_abs_max <= tol)
+    if zero_xz_candidates.size > 0:
+        return int(zero_xz_candidates[0])
+
+    return int(np.argmin(xz_abs_max))
+
+
 def _warn_mirror_disabled_subtrees(object_cond):
     disabled_joint_indices = tuple(int(index) for index in object_cond['mirror_disabled_joint_indices'])
     if not disabled_joint_indices:
@@ -1510,17 +1530,29 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
 ##################################################################
 
 ############ Recover animation from motion features ##############
-def recover_root_quat_and_pos_np(data):
-    # root_feature_vector.shape = (frames, angular_vel || linear_xz_vel || root_height || zero pad)
-    r_rot_quat = Quaternions.from_transforms(rotation_6d_to_matrix_np(data[:, 3:9]))
+def recover_root_quat_and_pos_np(data, translation_root_index=None):
+    motion = np.asarray(data)
+    if motion.ndim == 2:
+        root_features = motion
+        translation_features = motion
+    elif motion.ndim == 3:
+        if translation_root_index is None:
+            translation_root_index = infer_translation_root_from_features(motion)
+        root_features = motion[:, 0, :]
+        translation_features = motion[:, translation_root_index, :]
+    else:
+        raise ValueError(f"Expected feature tensor with shape (F, C) or (F, J, C), got {motion.shape}.")
 
-    r_pos = np.zeros(data.shape[:-1] + (3,))
-    r_pos[..., 1:, [0, 2]] = data[..., :-1, [9, 11]]
+    # joint row 0 stores the root-facing rotation used by the representation.
+    r_rot_quat = Quaternions.from_transforms(rotation_6d_to_matrix_np(root_features[:, 3:9]))
+
+    r_pos = np.zeros(root_features.shape[:-1] + (3,))
+    r_pos[..., 1:, [0, 2]] = translation_features[..., :-1, [9, 11]]
     '''Add Y-axis rotation to root position'''
     r_pos = -r_rot_quat * r_pos
 
     r_pos = np.cumsum(r_pos, axis = -2)
-    r_pos[...,1] = data[..., 1]
+    r_pos[...,1] = translation_features[..., 1]
     return r_rot_quat, r_pos
 
 """ recover quaternions and positions from features for numpy only"""
@@ -1548,20 +1580,24 @@ def recover_root_quat_and_pos(data):
     return r_rot_quat, r_pos
 
 """ recover xyz positions from ric (root relative positions) torch """
-def recover_from_bvh_ric_np(data):
-    r_rot_quat, r_pos = recover_root_quat_and_pos_np(data[..., 0, :])
-    positions = data[..., 1:, :3]
+def recover_from_bvh_ric_np(data, translation_root_index=None):
+    if translation_root_index is None:
+        translation_root_index = infer_translation_root_from_features(data)
+
+    r_rot_quat, r_pos = recover_root_quat_and_pos_np(data, translation_root_index=translation_root_index)
+    positions = np.asarray(data[..., :3], dtype=np.float32).copy()
     positions = np.repeat(-r_rot_quat[..., None, :], positions.shape[-2], axis=-2) * positions
     '''Add root XZ to joints'''
     positions[..., 0] += r_pos[..., 0:1]
     positions[..., 2] += r_pos[..., 2:3]
-    '''Concate root and joints'''
-    positions = np.concatenate([r_pos[..., np.newaxis, :], positions], axis=-2)
     return positions
 
 """ recover xyz positions from rot (root relative positions) torch """
-def recover_from_bvh_rot_np(data, parents, offsets):
-    r_rot_quat, r_pos = recover_root_quat_and_pos_np(data[:,0])
+def recover_from_bvh_rot_np(data, parents, offsets, translation_root_index=None):
+    if translation_root_index is None:
+        translation_root_index = infer_translation_root_from_features(data)
+
+    r_rot_quat, r_pos = recover_root_quat_and_pos_np(data, translation_root_index=translation_root_index)
     r_rot_cont6d = get_6d_rep(r_rot_quat)
     start_indx = 3
     end_indx = 9
@@ -1574,8 +1610,18 @@ def recover_from_bvh_rot_np(data, parents, offsets):
     rotations = Quaternions.from_transforms(cont6d_params)
     rotations[:, 0] = -r_rot_quat * rotations[:, 0]
     positions = offsets[None].repeat(data.shape[0], axis=0)
-    positions[:, 0] = r_pos
+    root_global = (-r_rot_quat) * np.asarray(data[:, 0, :3], dtype=np.float32)
+    root_global[:, 0] += r_pos[:, 0]
+    root_global[:, 2] += r_pos[:, 2]
+    positions[:, 0] = root_global
     anim = Animation(rotations=rotations, positions=positions, parents=parents, offsets=offsets, orients=Quaternions.id(0))
+
+    if translation_root_index != 0 and parents[translation_root_index] >= 0:
+        global_rots = rotations_global(anim)
+        global_pos = positions_global(anim)
+        parent_index = parents[translation_root_index]
+        positions[:, translation_root_index] = (-global_rots[:, parent_index]) * (r_pos - global_pos[:, parent_index])
+        anim = Animation(rotations=rotations, positions=positions, parents=parents, offsets=offsets, orients=Quaternions.id(0))
 
     return positions_global(anim), anim
 
@@ -1596,22 +1642,26 @@ Returns:
                       (caller should pass this as BVH.save(..., positions=...))
 """
 def recover_animation_from_motion_np(data, parents, offsets, pos_err_threshold=0.01):
-    target_global        = recover_from_bvh_ric_np(data)              # (F, J, 3)
-    _, anim_rot          = recover_from_bvh_rot_np(data, parents, offsets)
+    translation_root_index = infer_translation_root_from_features(data)
+    target_global        = recover_from_bvh_ric_np(data, translation_root_index=translation_root_index)              # (F, J, 3)
+    _, anim_rot          = recover_from_bvh_rot_np(data, parents, offsets, translation_root_index=translation_root_index)
     glob_rot             = positions_global(anim_rot)                  # (F, J, 3)
 
     # joints whose FK-predicted global position drifts from the RIC truth
     per_joint_err = np.abs(target_global - glob_rot).max(axis=(0, 2)) # (J,)
     animated_joints = sorted(
-        j for j in range(1, len(parents)) if per_joint_err[j] > pos_err_threshold
+        j for j in range(len(parents)) if per_joint_err[j] > pos_err_threshold
     )
 
     if not animated_joints:
-        return anim_rot, False
+        return anim_rot, needs_bvh_position_channels(anim_rot)
 
     # solve for the local position that reproduces target_global under the new rots
     new_pos = anim_rot.positions.copy()
     for j in animated_joints:
+        if j == 0 or parents[j] < 0:
+            new_pos[:, j] = target_global[:, j]
+            continue
         temp      = Animation(anim_rot.rotations, new_pos, anim_rot.orients,
                               anim_rot.offsets, anim_rot.parents)
         tg_rots   = rotations_global(temp)
@@ -1621,7 +1671,7 @@ def recover_animation_from_motion_np(data, parents, offsets, pos_err_threshold=0
 
     anim_fixed = Animation(anim_rot.rotations, new_pos, anim_rot.orients,
                            anim_rot.offsets, anim_rot.parents)
-    return anim_fixed, True
+    return anim_fixed, needs_bvh_position_channels(anim_fixed)
 
 ################################################################
 
