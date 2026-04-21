@@ -15,7 +15,7 @@ Options:
     --skip-validate                      Skip validation step (faster for CI)
     --skip-orientation-check             Skip processed-BVH orientation validation
     --objects-subset SUBSET              Object subset to process (default: all)
-    --object-workers N                   Concurrent characters to preprocess (default: 8)
+    --object-workers N                   Concurrent characters to preprocess (default: 16)
     --file-workers N                     Worker threads per character for BVH processing (default: 8)
     --sample-count N                     Limit file validation to first N motions/BVHs (0=all, default: 0)
     --orientation-threshold-deg DEG      Max allowed canonicalized first-frame facing error from +Z during validation (default: 15.0)
@@ -78,42 +78,20 @@ def run_preprocessing(objects_subset: str, object_workers: int, file_workers: in
 
 
 def run_re_encode_joint_names_only(dataset_dir: str = "") -> int:
-    """Re-encode joint names into cond.npy without re-preprocessing motions."""
+    """Regenerate non-motion dataset artifacts without re-preprocessing motions."""
     print("\n" + "=" * 70)
-    print("Re-encoding joint names into cond.npy")
+    print("Regenerating dataset sidecar artifacts")
     print("=" * 70 + "\n")
     
-    # Import utilities from the truebones_utils package
-    sys.path.insert(0, str(ANYTOP_DIR / "data_loaders" / "truebones"))
-    from truebones_utils.param_utils import get_dataset_dir
-    from truebones_utils.motion_process import _attach_joint_name_embeddings_to_cond
-    
-    # Resolve dataset directory
-    dataset_dir_path = get_dataset_dir(dataset_dir if dataset_dir else None)
-    cond_path = Path(dataset_dir_path) / "cond.npy"
-    
-    if not cond_path.exists():
-        print(f"ERROR: cond.npy not found at {cond_path}")
-        print("Please run full preprocessing first with: python preprocess_and_validate.py")
-        return 1
-    
     try:
-        print(f"Loading cond.npy from {cond_path}")
-        cond = dict(np.load(cond_path, allow_pickle=True).item())
-        
-        print(f"Found {len(cond)} objects in cond.npy")
-        
-        # Re-encode joint names
-        _attach_joint_name_embeddings_to_cond(cond, str(Path(dataset_dir_path)))
-        
-        # Save back
-        print(f"Saving updated cond.npy")
-        np.save(str(cond_path), cond)
-        
-        print("[PASS] Joint name re-encoding completed successfully")
+        sys.path.insert(0, str(ANYTOP_DIR / "tools"))
+        from re_encode_joint_names import regenerate_dataset_artifacts
+
+        dataset_dir_path = regenerate_dataset_artifacts(dataset_dir or None)
+        print(f"[PASS] Dataset sidecar regeneration completed successfully: {dataset_dir_path}")
         return 0
     except Exception as e:
-        print(f"ERROR: Failed to re-encode joint names: {e}")
+        print(f"ERROR: Failed to regenerate dataset artifacts: {e}")
         import traceback
         traceback.print_exc()
         return 1
@@ -143,34 +121,35 @@ def run_validation(
     _print_ok(f"file_validation_scope: {'all files' if sample_count == 0 else f'first {sample_count} files'}")
     
     from check_anytop_dataset import (
+        _prepare_dataset_for_validation,
         _read_required_artifacts,
         _validate_metadata,
         _validate_cond_file,
         _validate_motion_files,
+        _validate_motion_metadata,
         _validate_motion_orientation,
-        _filter_motions_by_orientation,
         _validate_positions_error_file,
     )
     
     try:
+        effective_filter_threshold_deg = 0.0
+        if not skip_orientation_check and filter_orientation_threshold_deg > 0:
+            effective_filter_threshold_deg = min(filter_orientation_threshold_deg, orientation_threshold_deg)
+
+        _prepare_dataset_for_validation(
+            dataset_dir,
+            objects_subset,
+            sample_count,
+            skip_orientation_check,
+            effective_filter_threshold_deg,
+        )
+
         motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path = _read_required_artifacts(dataset_dir)
-        
-        _validate_metadata(metadata_path)
-        
-        from data_loaders.truebones.truebones_utils.param_utils import OBJECT_SUBSETS_DICT
         cond = _validate_cond_file(cond_path, objects_subset)
-        
+        motion_files = sorted(motions_dir.glob("*.npy"))
+        _validate_metadata(metadata_path, motion_files, cond)
+        _validate_motion_metadata(dataset_dir, motion_files, cond)
         _validate_motion_files(motions_dir, bvhs_dir, cond, sample_count)
-        
-        # Filter out motions with orientation deviation BEFORE validation
-        # This way bad motions are deleted before we check the remaining dataset
-        if filter_orientation_threshold_deg > 0 and not skip_orientation_check:
-            _print_ok(f"filtering motions with orientation deviation > {filter_orientation_threshold_deg:.2f} deg")
-            deleted_count = _filter_motions_by_orientation(
-                bvhs_dir, motions_dir, cond, sample_count, filter_orientation_threshold_deg
-            )
-            if deleted_count > 0:
-                _print_ok(f"deleted {deleted_count} motion(s) exceeding orientation threshold")
         
         if skip_orientation_check:
             _print_warn("skipping processed-BVH orientation validation by request")
@@ -179,19 +158,23 @@ def run_validation(
         
         _validate_positions_error_file(positions_error_path)
         
-        # Force-delete split manifests so they are regenerated on next training run.
-        # This ensures train/val/test.txt always reflect the current motion files.
-        for split_name in ("train", "val", "test"):
-            split_path = dataset_dir / f"{split_name}.txt"
-            if split_path.exists():
-                split_path.unlink()
-                _print_ok(f"deleted {split_path.name} (will be regenerated on next training)")
-        
         print("[PASS] dataset validation completed successfully")
         return 0
     except ValidationError as e:
         print(f"[WARN] dataset validation warning: {e}")
         return 1
+    finally:
+        # Force-delete split manifests so they are regenerated on next training run.
+        # This ensures train/val/test.txt always reflect the current motion files.
+        # Execute this after validation (even if validation failed).
+        try:
+            for split_name in ("train", "val", "test"):
+                split_path = dataset_dir / f"{split_name}.txt"
+                if split_path.exists():
+                    split_path.unlink()
+                    print(f"[OK] deleted {split_path.name} (will be regenerated on next training)")
+        except Exception as e:
+            print(f"[WARN] failed to delete split manifests: {e}")
 
 
 def check_and_clean_old_data(dataset_dir: str = "") -> bool:
@@ -293,9 +276,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--object-workers",
-        default=8,
+        default=16,
         type=int,
-        help="Concurrent characters to preprocess. Defaults to 8.",
+        help="Concurrent characters to preprocess. Defaults to 16.",
     )
     parser.add_argument(
         "--file-workers",

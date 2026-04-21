@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -60,7 +62,7 @@ def _resolve_dataset_dir(raw_value: str | None) -> Path:
     return path.resolve()
 
 
-def _read_required_artifacts(dataset_dir: Path) -> tuple[Path, Path, Path, Path, Path]:
+def _read_required_artifacts(dataset_dir: Path, silent: bool = False) -> tuple[Path, Path, Path, Path, Path]:
     motions_dir = dataset_dir / MOTION_DIR
     bvhs_dir = dataset_dir / BVHS_DIR
     cond_path = dataset_dir / "cond.npy"
@@ -70,45 +72,9 @@ def _read_required_artifacts(dataset_dir: Path) -> tuple[Path, Path, Path, Path,
     for path in [dataset_dir, motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path]:
         _require(path.exists(), f"missing required artifact: {path}")
 
-    _print_ok(f"required artifacts found under {dataset_dir}")
+    if not silent:
+        _print_ok(f"required artifacts found under {dataset_dir}")
     return motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path
-
-
-def _validate_metadata(metadata_path: Path) -> None:
-    try:
-        content = metadata_path.read_text(encoding="utf-8").strip()
-        _require(content != "", "metadata.txt is empty")
-        required_markers = ["max joints:", "total frames:", "duration:"]
-        for marker in required_markers:
-            _require(marker in content, f"metadata.txt is missing marker: {marker}")
-        _print_ok("metadata.txt contains summary fields")
-    except ValidationError as e:
-        _print_warn(f"validation error: {e}")
-
-
-def _validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: dict) -> None:
-    metadata_path = dataset_dir / MOTION_METADATA_FILE
-    if not metadata_path.exists():
-        _print_warn(f"optional artifact missing: {metadata_path}")
-        return
-
-    try:
-        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-        motions = payload.get("motions", payload)
-        _require(isinstance(motions, dict), f"{MOTION_METADATA_FILE} must contain a motions dictionary")
-        for motion_path in _select_validation_files(motion_files, 16):
-            motion_name = motion_path.name
-            _require(motion_name in motions, f"missing motion metadata entry: {motion_name}")
-            motion_metadata = motions[motion_name]
-            _require(motion_metadata.get("motion_name") == motion_name, f"motion_name mismatch for {motion_name}")
-            object_type = _match_object_type(motion_path.stem, cond)
-            _require(motion_metadata.get("object_type") == object_type, f"object_type mismatch for {motion_name}")
-            _require(bool(motion_metadata.get("species_label")), f"species_label missing for {motion_name}")
-            _require(bool(motion_metadata.get("action_label")), f"action_label missing for {motion_name}")
-            _require(bool(motion_metadata.get("action_category")), f"action_category missing for {motion_name}")
-        _print_ok(f"{MOTION_METADATA_FILE} contains label metadata")
-    except ValidationError as e:
-        _print_warn(f"validation error: {e}")
 
 
 def _validate_optional_semantic_metadata(object_type: str, object_cond: dict, n_joints: int) -> None:
@@ -288,6 +254,83 @@ def _select_validation_files(files: list[Path], sample_limit: int) -> list[Path]
     return files[: min(sample_limit, len(files))]
 
 
+def _normalize_identifier(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def _collect_motion_stats(motion_files: list[Path], cond: dict | None = None) -> tuple[int, int, Counter[str], set[str]]:
+    total_frames = 0
+    max_joints = 0
+    object_counts: Counter[str] = Counter()
+    object_types: set[str] = set()
+
+    known_object_types = tuple(cond.keys()) if cond else None
+    for motion_path in motion_files:
+        motion = np.load(motion_path, mmap_mode="r")
+        total_frames += int(motion.shape[0])
+        max_joints = max(max_joints, int(motion.shape[1]))
+        if cond is not None:
+            object_type = _match_object_type(motion_path.stem, cond)
+        else:
+            from data_loaders.truebones.truebones_utils.motion_labels import infer_motion_labels_from_motion_name
+
+            object_type = str(
+                infer_motion_labels_from_motion_name(motion_path.name, object_types=known_object_types).get("object_type")
+            )
+        object_counts[object_type] += 1
+        object_types.add(object_type)
+
+    return total_frames, max_joints, object_counts, object_types
+
+
+def _prune_excess_joint_motions(motions_dir: Path, bvhs_dir: Path, cond: dict, sample_limit: int) -> set[str]:
+    motion_files = sorted(motions_dir.glob("*.npy"))
+    bvh_files = sorted(bvhs_dir.glob("*.bvh"))
+
+    try:
+        _require(len(motion_files) > 0, "motions directory is empty")
+        _require(len(bvh_files) > 0, "bvhs directory is empty")
+        _require(len(motion_files) == len(bvh_files), f"motions/bvhs count mismatch: {len(motion_files)} vs {len(bvh_files)}")
+
+        motion_stems = {path.stem for path in motion_files}
+        bvh_stems = {path.stem for path in bvh_files}
+        _require(motion_stems == bvh_stems, "motions and bvhs do not have matching stems")
+    except ValidationError as e:
+        _print_warn(f"directory/naming validation failed before pruning: {e}")
+        return set()
+
+    files_to_scan = _select_validation_files(motion_files, sample_limit)
+    excess_joints_chars: set[str] = set()
+    deleted_stems: set[str] = set()
+
+    for motion_path in files_to_scan:
+        try:
+            motion = np.load(motion_path, mmap_mode="r")
+            if motion.ndim != 3 or motion.shape[1] <= MAX_JOINTS:
+                continue
+            object_type = _match_object_type(motion_path.stem, cond)
+            excess_joints_chars.add(object_type)
+            _print_warn(f"{motion_path.name} exceeds MAX_JOINTS: {motion.shape[1]}")
+        except Exception as exc:
+            _print_warn(f"failed to inspect {motion_path.name} during pre-validation pruning: {exc}")
+
+    for object_type in sorted(excess_joints_chars):
+        char_motions = [path for path in motion_files if path.stem.startswith(f"{object_type}_")]
+        char_bvhs = [path for path in bvh_files if path.stem.startswith(f"{object_type}_")]
+        for path in char_motions + char_bvhs:
+            try:
+                path.unlink()
+                deleted_stems.add(path.stem)
+            except OSError as exc:
+                _print_warn(f"failed to delete {path.name}: {exc}")
+        _print_warn(
+            f"deleted {len(char_motions)} motion(s) + {len(char_bvhs)} BVH(s) for {object_type} "
+            f"(joint count exceeds MAX_JOINTS={MAX_JOINTS})"
+        )
+
+    return deleted_stems
+
+
 def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample_limit: int) -> None:
     motion_files = sorted(motions_dir.glob("*.npy"))
     bvh_files = sorted(bvhs_dir.glob("*.bvh"))
@@ -305,19 +348,13 @@ def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample
         return
 
     files_to_validate = _select_validation_files(motion_files, sample_limit)
-    excess_joints_chars: set[str] = set()
-
     for motion_path in files_to_validate:
         try:
             motion = np.load(motion_path)
             _require(motion.ndim == 3, f"{motion_path.name} must be rank-3, got {motion.ndim}")
             _require(motion.shape[0] > 0, f"{motion_path.name} has zero frames")
             _require(motion.shape[1] > 0, f"{motion_path.name} has zero joints")
-
-            # Explicit check for MAX_JOINTS — track offending characters for deletion.
-            if motion.shape[1] > MAX_JOINTS:
-                object_type = _match_object_type(motion_path.stem, cond)
-                excess_joints_chars.add(object_type)
+            _require(motion.shape[1] <= MAX_JOINTS, f"{motion_path.name} exceeds MAX_JOINTS: {motion.shape[1]}")
 
             _require(motion.shape[2] == FEATS_LEN, f"{motion_path.name} feature dim mismatch: {motion.shape[2]}")
             _require(np.isfinite(motion).all(), f"{motion_path.name} contains NaN/Inf")
@@ -328,28 +365,8 @@ def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample
         except ValidationError as e:
             _print_warn(f"validation error: {motion_path.name}: {e}")
 
-    # Delete all motion/BVH files for characters whose joint count exceeds MAX_JOINTS.
-    if excess_joints_chars:
-        deleted_stems: set[str] = set()
-        for obj_type in sorted(excess_joints_chars):
-            char_motions = [f for f in motion_files if f.stem.startswith(f"{obj_type}_")]
-            char_bvhs = [f for f in bvh_files if f.stem.startswith(f"{obj_type}_")]
-            for f in char_motions + char_bvhs:
-                try:
-                    f.unlink()
-                    deleted_stems.add(f.stem)
-                except OSError as exc:
-                    _print_warn(f"failed to delete {f.name}: {exc}")
-            _print_warn(
-                f"deleted {len(char_motions)} motion(s) + {len(char_bvhs)} BVH(s) for {obj_type} "
-                f"(joint count exceeds MAX_JOINTS={MAX_JOINTS})"
-            )
-        motion_files = [f for f in motion_files if f.stem not in deleted_stems]
-        bvh_files = [f for f in bvh_files if f.stem not in deleted_stems]
-
     scope = "all" if sample_limit <= 0 else str(len(files_to_validate))
     _print_ok(f"validated {scope} motion tensors and {len(motion_files)} paired motion/BVH artifacts")
-    _validate_motion_metadata(motions_dir.parent, motion_files, cond)
 
 
 def _vector_angle_deg(vector_a: np.ndarray, vector_b: np.ndarray) -> float:
@@ -462,20 +479,20 @@ def _filter_motions_by_orientation(
     cond: dict,
     sample_limit: int,
     threshold_deg: float,
-) -> int:
+) -> set[str]:
     """Delete motion/BVH pairs whose orientation deviation exceeds threshold_deg.
 
-    Returns the number of files deleted.
+    Returns the deleted motion stems.
     """
     bvh_files = sorted(bvhs_dir.glob("*.bvh"))
     if not bvh_files:
-        return 0
+        return set()
 
     files_to_check = _select_validation_files(bvh_files, sample_limit)
     target_forward = np.array([0.0, 0.0, 1.0], dtype=np.float64)
     _SKIP_ORIENTATION_KEYWORDS = {"left", "right", "die", "dead", "death", "lying"}
 
-    deleted_count = 0
+    deleted_stems: set[str] = set()
     for bvh_path in files_to_check:
         action_name_lower = bvh_path.stem.lower()
         if any(kw in action_name_lower for kw in _SKIP_ORIENTATION_KEYWORDS):
@@ -511,14 +528,171 @@ def _filter_motions_by_orientation(
             if motion_path.exists():
                 motion_path.unlink()
                 print(f"  [DELETE] {motion_path.name}")
-                deleted_count += 1
+                deleted_stems.add(motion_path.stem)
             if bvh_path.exists():
                 bvh_path.unlink()
                 print(f"  [DELETE] {bvh_path.name}")
         except Exception as e:
             print(f"  [WARN] orientation filter error for {bvh_path.name}: {e}")
 
-    return deleted_count
+    return deleted_stems
+
+
+def _validate_metadata(metadata_path: Path, motion_files: list[Path], cond: dict, silent: bool = False) -> bool:
+    is_valid = True
+    try:
+        content = metadata_path.read_text(encoding="utf-8").strip()
+        _require(content != "", "metadata.txt is empty")
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        parsed: dict[str, str] = {}
+        object_counts: dict[str, int] = {}
+        in_object_counts = False
+        for line in lines:
+            if line.startswith("~~~~ objects_counts"):
+                in_object_counts = True
+                continue
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            key = key.strip()
+            value = value.strip()
+            if in_object_counts:
+                object_counts[key] = int(float(value))
+            else:
+                parsed[key.lower()] = value
+
+        total_frames, max_joints, expected_counts, _ = _collect_motion_stats(motion_files, cond)
+        _require(int(float(parsed.get("max joints", "-1"))) == max_joints, f"metadata.txt max joints mismatch: {parsed.get('max joints')} vs {max_joints}")
+        _require(int(float(parsed.get("total frames", "-1"))) == total_frames, f"metadata.txt total frames mismatch: {parsed.get('total frames')} vs {total_frames}")
+        _require(object_counts == dict(expected_counts), f"metadata.txt object counts mismatch: {object_counts} vs {dict(expected_counts)}")
+        if not silent:
+            _print_ok("metadata.txt summary matches motion files")
+    except (ValidationError, ValueError) as e:
+        _print_warn(f"validation error: {e}")
+        is_valid = False
+    return is_valid
+
+
+def _validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: dict, silent: bool = False) -> bool:
+    metadata_path = dataset_dir / MOTION_METADATA_FILE
+    if not metadata_path.exists():
+        _print_warn(f"optional artifact missing: {metadata_path}")
+        return False
+
+    is_valid = True
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        motions = payload.get("motions", payload)
+        _require(isinstance(motions, dict), f"{MOTION_METADATA_FILE} must contain a motions dictionary")
+
+        expected_motion_names = {motion_path.name for motion_path in motion_files}
+        actual_motion_names = set(motions.keys())
+        _require(actual_motion_names == expected_motion_names, f"{MOTION_METADATA_FILE} entries mismatch with motions directory")
+
+        for motion_path in motion_files:
+            motion_name = motion_path.name
+            motion_metadata = motions[motion_name]
+            _require(motion_metadata.get("motion_name") == motion_name, f"motion_name mismatch for {motion_name}")
+            object_type = _match_object_type(motion_path.stem, cond)
+            _require(motion_metadata.get("object_type") == object_type, f"object_type mismatch for {motion_name}")
+            _require(bool(motion_metadata.get("species_label")), f"species_label missing for {motion_name}")
+            _require(bool(motion_metadata.get("action_label")), f"action_label missing for {motion_name}")
+            _require(bool(motion_metadata.get("action_category")), f"action_category missing for {motion_name}")
+
+        total_clips = payload.get("total_clips")
+        if total_clips is not None:
+            _require(int(total_clips) == len(motion_files), f"{MOTION_METADATA_FILE} total_clips mismatch: {total_clips} vs {len(motion_files)}")
+
+        if not silent:
+            _print_ok(f"{MOTION_METADATA_FILE} matches motion files")
+    except ValidationError as e:
+        _print_warn(f"validation error: {e}")
+        is_valid = False
+    return is_valid
+
+
+def _validate_generated_artifacts_consistency(dataset_dir: Path, cond: dict, objects_subset: str, silent: bool = False) -> bool:
+    motions_dir = dataset_dir / MOTION_DIR
+    bvhs_dir = dataset_dir / BVHS_DIR
+    motion_files = sorted(motions_dir.glob("*.npy"))
+    bvh_files = sorted(bvhs_dir.glob("*.bvh"))
+    if not motion_files or not bvh_files:
+        _print_warn("generated artifact consistency check skipped: motions/bvhs missing")
+        return False
+
+    is_consistent = True
+    motion_stems = {path.stem for path in motion_files}
+    bvh_stems = {path.stem for path in bvh_files}
+    if motion_stems != bvh_stems:
+        _print_warn("generated artifact consistency error: motions and bvhs do not have matching stems")
+        is_consistent = False
+
+    try:
+        _, _, _, object_types_in_motions = _collect_motion_stats(motion_files, cond)
+    except ValidationError as e:
+        _print_warn(f"generated artifact consistency error: {e}")
+        return False
+
+    cond_keys = set(cond.keys())
+    if cond_keys != object_types_in_motions:
+        _print_warn(
+            f"generated artifact consistency error: cond.npy object set mismatch: {sorted(cond_keys)} vs {sorted(object_types_in_motions)}"
+        )
+        is_consistent = False
+
+    if objects_subset != "all":
+        expected_subset = set(OBJECT_SUBSETS_DICT[objects_subset])
+        missing_subset_objects = sorted(object_types_in_motions - expected_subset)
+        if missing_subset_objects:
+            _print_warn(
+                f"generated artifact consistency error: motions contain objects outside subset {objects_subset}: {missing_subset_objects}"
+            )
+            is_consistent = False
+
+    metadata_path = dataset_dir / "metadata.txt"
+    if not _validate_metadata(metadata_path, motion_files, cond, silent=silent):
+        is_consistent = False
+
+    if not _validate_motion_metadata(dataset_dir, motion_files, cond, silent=silent):
+        is_consistent = False
+
+    return is_consistent
+
+
+def _prepare_dataset_for_validation(
+    dataset_dir: Path,
+    objects_subset: str,
+    sample_count: int,
+    skip_orientation_check: bool,
+    filter_orientation_threshold_deg: float,
+) -> None:
+    motions_dir, bvhs_dir, cond_path, _metadata_path, _positions_error_path = _read_required_artifacts(dataset_dir, silent=True)
+    cond = dict(np.load(cond_path, allow_pickle=True).item())
+
+    deleted_joint_stems = _prune_excess_joint_motions(motions_dir, bvhs_dir, cond, sample_count)
+    deleted_orientation_stems: set[str] = set()
+    if filter_orientation_threshold_deg > 0 and not skip_orientation_check:
+        _print_ok(f"filtering motions with orientation deviation > {filter_orientation_threshold_deg:.2f} deg")
+        deleted_orientation_stems = _filter_motions_by_orientation(
+            bvhs_dir,
+            motions_dir,
+            cond,
+            sample_count,
+            filter_orientation_threshold_deg,
+        )
+        if deleted_orientation_stems:
+            _print_ok(f"deleted {len(deleted_orientation_stems)} motion(s) exceeding orientation threshold")
+
+    needs_regeneration = bool(deleted_joint_stems or deleted_orientation_stems)
+    if not needs_regeneration:
+        needs_regeneration = not _validate_generated_artifacts_consistency(dataset_dir, cond, objects_subset, silent=True)
+
+    if needs_regeneration:
+        _print_warn("regenerating non-motion dataset artifacts to match current motions")
+        sys.path.insert(0, str(REPO_ROOT / "tools"))
+        from re_encode_joint_names import regenerate_dataset_artifacts
+
+        regenerate_dataset_artifacts(str(dataset_dir))
 
 
 def _validate_positions_error_file(positions_error_path: Path) -> None:
@@ -554,11 +728,20 @@ def main() -> int:
     print(f"objects_subset: {args.objects_subset}")
     print(f"file_validation_scope: {'all files' if args.sample_count == 0 else f'first {args.sample_count} files'}")
 
+    _prepare_dataset_for_validation(
+        dataset_dir,
+        args.objects_subset,
+        args.sample_count,
+        args.skip_orientation_check,
+        args.orientation_threshold_deg,
+    )
+
     motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path = _read_required_artifacts(dataset_dir)
-    
-    _validate_metadata(metadata_path)
-    
     cond = _validate_cond_file(cond_path, args.objects_subset)
+
+    motion_files = sorted(motions_dir.glob("*.npy"))
+    _validate_metadata(metadata_path, motion_files, cond)
+    _validate_motion_metadata(dataset_dir, motion_files, cond)
     
     _validate_motion_files(motions_dir, bvhs_dir, cond, args.sample_count)
     
