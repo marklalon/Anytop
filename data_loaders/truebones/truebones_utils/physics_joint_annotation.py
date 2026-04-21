@@ -1,5 +1,7 @@
 """End effector detection and symmetry analysis utilities."""
 
+from collections import Counter
+
 import numpy as np
 import re
 from .param_utils import SNAKES
@@ -217,6 +219,8 @@ _EMBED_TEXT_HEAD_FEATURE_TOKENS = {
     'tongue',
 }
 
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 6
+
 _CHAIN_INDEX_ORDINAL_TOKENS = {
     1: 'First',
     2: 'Second',
@@ -305,6 +309,8 @@ def _normalize_joint_name(name):
     split_name = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', name)
     # Also split on UPPER→UPPER+lower (e.g. "RFemur" → "R Femur")
     split_name = re.sub(r'([A-Z])([A-Z][a-z])', r'\1 \2', split_name)
+    split_name = re.sub(r'([A-Za-z])([0-9])', r'\1 \2', split_name)
+    split_name = re.sub(r'([0-9])([A-Za-z])', r'\1 \2', split_name)
     return re.sub(r'[^a-z0-9]+', ' ', split_name.lower()).strip()
 
 
@@ -342,6 +348,30 @@ def _titlecase_identifier_tokens(value):
     if not normalized:
         return []
     return [token.capitalize() for token in normalized.split() if token]
+
+
+def _collapse_solitary_head_feature_indices(canonical_joint_names):
+    normalized_tokens = [_normalize_joint_name(name).split() for name in canonical_joint_names]
+    base_counts = Counter(
+        tuple(tokens[:-1])
+        for tokens in normalized_tokens
+        if len(tokens) >= 2
+        and tokens[-1].isdigit()
+        and any(token in _EMBED_TEXT_HEAD_FEATURE_TOKENS for token in tokens[:-1])
+    )
+
+    collapsed_names = []
+    for name, tokens in zip(canonical_joint_names, normalized_tokens):
+        if (
+            len(tokens) >= 2
+            and tokens[-1].isdigit()
+            and any(token in _EMBED_TEXT_HEAD_FEATURE_TOKENS for token in tokens[:-1])
+            and base_counts[tuple(tokens[:-1])] == 1
+        ):
+            collapsed_names.append(' '.join(token.capitalize() for token in tokens[:-1]))
+            continue
+        collapsed_names.append(name)
+    return collapsed_names
 
 
 def _species_lineage_tokens(object_cond):
@@ -488,9 +518,7 @@ def build_joint_embedding_texts(object_cond):
             continue
 
         semantic_tokens = list(species_group_tokens)
-        semantic_tokens.append('Animal')
         semantic_tokens.extend(lineage_tokens)
-        semantic_tokens.append('Joint')
         semantic_tokens.extend(refined_tokens)
         semantic_tokens.extend(chain_relative_tokens[joint_index])
 
@@ -982,6 +1010,7 @@ def _build_semantic_metadata(object_type, joint_names, parents, offsets, rest_po
     parents = np.asarray(parents, dtype=np.int64)
     rest_positions = _rest_positions_from_offsets(offsets, parents) if rest_positions is None else np.asarray(rest_positions, dtype=np.float64)
     canonical_joint_names = [_canonicalize_joint_name(name) for name in joint_names]
+    canonical_joint_names = _collapse_solitary_head_feature_indices(canonical_joint_names)
     contact_joints, contact_joint_source = _infer_contact_joints(
         object_type,
         joint_names,

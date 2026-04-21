@@ -213,7 +213,6 @@ def main() -> int:
         opt=opt,
         cond_dict=cond_dict,
         temporal_window=31,       # standard window — only affects temporal_mask, not augmentation
-        t5_name="t5-base",        # unused: embeddings are stubbed
         balanced=False,
         num_frames=args.num_frames,
         sample_limit=0,

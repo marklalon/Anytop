@@ -155,10 +155,12 @@ def check_and_clean_old_data(dataset_dir: str = "") -> bool:
     dataset_dir_path = Path(get_dataset_dir(dataset_dir if dataset_dir else None))
     motions_dir = dataset_dir_path / "motions"
     bvhs_dir = dataset_dir_path / "bvhs"
+    joint_name_inspection_dir = dataset_dir_path / "joint_name_inspection"
     
     # Check if any old data exists
     old_data_exists = (motions_dir.exists() and any(motions_dir.iterdir())) or \
-                      (bvhs_dir.exists() and any(bvhs_dir.iterdir()))
+                      (bvhs_dir.exists() and any(bvhs_dir.iterdir())) or \
+                      (joint_name_inspection_dir.exists() and any(joint_name_inspection_dir.iterdir()))
     
     if not old_data_exists:
         return True
@@ -172,6 +174,8 @@ def check_and_clean_old_data(dataset_dir: str = "") -> bool:
         print(f"  - {motions_dir} contains existing data")
     if bvhs_dir.exists() and any(bvhs_dir.iterdir()):
         print(f"  - {bvhs_dir} contains existing data")
+    if joint_name_inspection_dir.exists() and any(joint_name_inspection_dir.iterdir()):
+        print(f"  - {joint_name_inspection_dir} contains existing data")
     print("\nDo you want to delete the old data and proceed with preprocessing?")
     
     while True:
@@ -185,6 +189,9 @@ def check_and_clean_old_data(dataset_dir: str = "") -> bool:
                 if bvhs_dir.exists():
                     shutil.rmtree(bvhs_dir)
                     print(f"  ✓ Deleted {bvhs_dir}")
+                if joint_name_inspection_dir.exists():
+                    shutil.rmtree(joint_name_inspection_dir)
+                    print(f"  ✓ Deleted {joint_name_inspection_dir}")
                 print("Old data cleaned successfully. Proceeding with preprocessing...\n")
                 return True
             except Exception as e:

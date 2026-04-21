@@ -195,6 +195,7 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
         "parents",
         "offsets",
         "joints_names",
+        "joints_names_embs",
         "kinematic_chains",
         "mean",
         "std",
@@ -217,6 +218,7 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
             joint_relations = np.asarray(object_cond["joint_relations"])
             joints_graph_dist = np.asarray(object_cond["joints_graph_dist"])
             joints_names = object_cond["joints_names"]
+            joints_names_embs = np.asarray(object_cond["joints_names_embs"])
 
             n_joints = len(parents)
             if n_joints <= 0:
@@ -243,6 +245,9 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
             if len(joints_names) != n_joints:
                 msg = f"{object_type} joints_names length mismatch: {len(joints_names)} vs {n_joints}"
                 _print_warn(f"validation error: {msg}")
+            if joints_names_embs.ndim != 2 or joints_names_embs.shape[0] != n_joints:
+                msg = f"{object_type} joints_names_embs shape mismatch: {joints_names_embs.shape}"
+                _print_warn(f"validation error: {msg}")
             if not np.isfinite(offsets).all():
                 msg = f"{object_type} offsets contain NaN/Inf"
                 _print_warn(f"validation error: {msg}")
@@ -254,6 +259,9 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
                 _print_warn(f"validation error: {msg}")
             if not np.isfinite(std).all():
                 msg = f"{object_type} std contains NaN/Inf"
+                _print_warn(f"validation error: {msg}")
+            if not np.isfinite(joints_names_embs).all():
+                msg = f"{object_type} joints_names_embs contain NaN/Inf"
                 _print_warn(f"validation error: {msg}")
             if not (std > 0).any():
                 msg = f"{object_type} std is entirely non-positive"

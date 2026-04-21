@@ -8,12 +8,12 @@ import os
 import numpy as np
 import torch
 from utils.parser_util import dift_args
-from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
+from utils.model_util import create_model_and_diffusion_general_skeleton, load_model, resolve_t5_out_dim
 from utils import dist_util
 from data_loaders.get_data import get_dataset_loader
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np
-from data_loaders.truebones.data.dataset import create_temporal_mask_for_window, attach_joint_name_embeddings
+from data_loaders.truebones.data.dataset import create_temporal_mask_for_window, ensure_joint_name_embeddings
 from os.path import join as pjoin
 import random
 import multiprocessing
@@ -209,6 +209,7 @@ def run_dift(args = None, cond_dict = None):
     # total_num_samples = args.num_samples * args.num_repetitions
 
     print("Creating model and diffusion...")
+    resolve_t5_out_dim(args, cond_source=actual_cond_file)
     model, diffusion = create_model_and_diffusion_general_skeleton(args)
 
     print(f"Loading checkpoints from [{args.model_path}]...")
@@ -220,8 +221,8 @@ def run_dift(args = None, cond_dict = None):
         state_dict = state_dict['model']
     load_model(model, state_dict)
 
-    print("Building/loading joint-name T5 embedding cache...")
-    attach_joint_name_embeddings(cond_dict, actual_cond_file, opt.data_root, args.t5_name)
+    print("Validating precomputed joint-name embeddings from cond.npy...")
+    ensure_joint_name_embeddings(cond_dict, expected_embedding_dim=args.t5_out_dim, cond_source=actual_cond_file)
     model.to(dist_util.dev())
     model.eval()  # disable random masking
     batch, model_kwargs, motions, cond_dicts = create_batch_from_motion_paths([args.sample_ref] + args.sample_tgt, cond_dict, args.temporal_window, max_joints=opt.max_joints)

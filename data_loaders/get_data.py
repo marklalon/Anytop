@@ -52,12 +52,11 @@ class BackgroundPrefetchLoader:
 def get_dataset_class(name):
     return Truebones
 
-def get_dataset(num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=False, objects_subset="all", sample_limit=0, action_tags='', motion_cache_size=0):
+def get_dataset(num_frames, split='train', temporal_window=31, balanced=False, objects_subset="all", sample_limit=0, action_tags='', motion_cache_size=0):
     dataset = Truebones(
         split=split,
         num_frames=num_frames,
         temporal_window=temporal_window,
-        t5_name=t5_name,
         balanced=balanced,
         objects_subset=objects_subset,
         sample_limit=sample_limit,
@@ -66,13 +65,12 @@ def get_dataset(num_frames, split='train', temporal_window=31, t5_name='t5-base'
     )
     return dataset
 
-def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31, t5_name='t5-base', balanced=True, objects_subset="all", num_workers=None, prefetch_factor=2, sample_limit=0, shuffle=True, drop_last=True, action_tags='', motion_cache_size=0, main_process_prefetch_batches=0, batch_transform=None):
+def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31, balanced=True, objects_subset="all", num_workers=None, prefetch_factor=2, sample_limit=0, shuffle=True, drop_last=True, action_tags='', motion_cache_size=0, main_process_prefetch_batches=0, batch_transform=None):
     # Always use main thread (num_workers=0) - multi-worker paths removed
     dataset = get_dataset(
         num_frames=num_frames,
         split=split,
         temporal_window=temporal_window,
-        t5_name=t5_name,
         balanced=balanced,
         objects_subset=objects_subset,
         sample_limit=sample_limit,

@@ -1,6 +1,53 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+
 from model.anytop import AnyTop
 from diffusion import gaussian_diffusion as gd
 from diffusion.respace import SpacedDiffusion, space_timesteps
+
+
+def infer_t5_out_dim_from_cond(cond_source: str | Path | dict) -> int:
+    if isinstance(cond_source, dict):
+        cond_dict = cond_source
+        source_label = 'cond dictionary'
+    else:
+        source_label = str(cond_source)
+        cond_dict = np.load(source_label, allow_pickle=True).item()
+
+    if not isinstance(cond_dict, dict) or not cond_dict:
+        raise RuntimeError(f"Unable to infer t5_out_dim from {source_label}: cond is empty or invalid.")
+
+    for object_type in sorted(cond_dict):
+        object_cond = cond_dict[object_type]
+        joints_names_embs = object_cond.get('joints_names_embs')
+        if joints_names_embs is None:
+            continue
+        joints_names_embs = np.asarray(joints_names_embs)
+        if joints_names_embs.ndim == 2 and joints_names_embs.shape[1] > 0:
+            return int(joints_names_embs.shape[1])
+
+    raise RuntimeError(
+        f"Unable to infer t5_out_dim from {source_label}: no object contains a valid joints_names_embs matrix."
+    )
+
+
+def resolve_t5_out_dim(args, cond_source: str | Path | dict | None = None) -> int:
+    configured_dim = int(getattr(args, 't5_out_dim', 0) or 0)
+    if configured_dim > 0:
+        return configured_dim
+
+    if cond_source is not None:
+        resolved_dim = infer_t5_out_dim_from_cond(cond_source)
+        setattr(args, 't5_out_dim', resolved_dim)
+        return resolved_dim
+
+    raise RuntimeError(
+        't5_out_dim is not set and could not be inferred. '
+        'Provide a cond.npy with precomputed joints_names_embs or load a checkpoint that stores t5_out_dim.'
+    )
 
 def load_model(model, state_dict):
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
@@ -17,20 +64,7 @@ def create_model_and_diffusion_general_skeleton(args):
     return model, diffusion
 
 def get_gmdm_args(args):
-    t5_model_dim = {
-        "t5-small": 512,
-        "t5-base": 768,
-        "t5-large": 1024,
-        "t5-3b": 1024,
-        "t5-11b": 1024,
-        "google/flan-t5-small": 512,
-        "google/flan-t5-base": 768,
-        "google/flan-t5-large": 1024,
-        "google/flan-t5-3b": 1024,
-        "google/flan-t5-11b": 1024,
-    }
-    # default args
-    t5_out_dim = t5_model_dim[args.t5_name]
+    t5_out_dim = resolve_t5_out_dim(args)
     njoints = 23
     nfeats = 1
     max_joints=143 #irrelevant

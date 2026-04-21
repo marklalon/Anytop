@@ -2,8 +2,8 @@
 Joint Name Embedding Distribution Visualizer
 
 Description:
-    Loads joint names from cond.npy, encodes them with T5 through the actual
-    T5Conditioner pipeline, aggregates per-animal, then produces:
+    Loads precomputed joint-name embeddings from cond.npy, aggregates per-animal,
+    then produces:
       1. t-SNE scatter plot — animals colored by species group
 
     A similarity report is also written so cosine neighbors and embedding norms
@@ -16,27 +16,23 @@ Usage:
     # From Anytop/ directory:
     python tools/visualize_joint_name_embeddings.py
 
-    # Custom paths / model:
+    # Custom paths:
     python tools/visualize_joint_name_embeddings.py \\
         --cond-path dataset/truebones/zoo/truebones_processed/cond.npy \\
-        --t5-model t5-small \\
         --output-dir ./joint_emb_vis \\
         --tsne-perplexity 15
 """
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
 import numpy as np
-import torch
 
 # Add project root to path so imports from Anytop/ work when running the script directly.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import build_joint_embedding_texts
-from model.conditioners import T5Conditioner
 
 def l2_normalize(emb: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     norm = float(np.linalg.norm(emb))
@@ -67,36 +63,66 @@ def load_cond(path: str) -> dict:
     return raw
 
 
-def per_animal_embedding(cond: dict, t5_model: str, device: str, normalize_means: bool) -> dict:
+def _embedding_texts_for_object(object_cond: dict) -> list[str]:
+    meta = object_cond.get("joints_names_embs_meta") or {}
+    embedding_texts = meta.get("embedding_texts")
+    if embedding_texts is not None:
+        return [str(text) for text in embedding_texts]
+    return [str(text) for text in build_joint_embedding_texts(object_cond)]
+
+
+def _embedding_source_description(cond: dict) -> str:
+    model_names = []
+    schema_versions = []
+    dims = []
+    for object_cond in cond.values():
+        meta = object_cond.get("joints_names_embs_meta") or {}
+        if meta.get("t5_name") is not None:
+            model_names.append(str(meta["t5_name"]))
+        if meta.get("schema_version") is not None:
+            schema_versions.append(str(meta["schema_version"]))
+        if meta.get("embedding_dim") is not None:
+            dims.append(str(meta["embedding_dim"]))
+
+    parts = ["source: cond.npy precomputed joints_names_embs"]
+    if model_names:
+        parts.append(f"model={sorted(set(model_names))}")
+    if schema_versions:
+        parts.append(f"schema={sorted(set(schema_versions))}")
+    if dims:
+        parts.append(f"dim={sorted(set(dims))}")
+    return " | ".join(parts)
+
+
+def per_animal_embedding(cond: dict, normalize_means: bool) -> dict:
     """
-    Returns per-animal diagnostics including the exact semantic joint-text mean embedding.
+    Returns per-animal diagnostics including the precomputed semantic joint-name mean embedding.
     """
     animals = sorted(cond.keys())
-    print(f"Loading {t5_model} through T5Conditioner …")
-    conditioner = T5Conditioner(
-        name=t5_model,
-        finetune=False,
-        word_dropout=0.0,
-        normalize_text=False,
-        device=device,
-    )
 
     result = {}
     for a in animals:
-        raw_names = [str(name) for name in (cond[a].get("joints_names") or [])]
+        object_cond = cond[a]
+        raw_names = [str(name) for name in (object_cond.get("joints_names") or [])]
         if not raw_names:
             continue
 
-        embedding_texts = build_joint_embedding_texts(cond[a])
-        anatomical_joint_count = sum(1 for text in embedding_texts if text)
+        joint_embs = object_cond.get("joints_names_embs")
+        if joint_embs is None:
+            print(f"Warning: {a} is missing joints_names_embs in cond.npy, skipping.")
+            continue
 
-        with torch.no_grad():
-            joint_inputs = conditioner.tokenize_entries(embedding_texts)
-            joint_embs = conditioner(joint_inputs).detach().cpu().float().numpy()
+        joint_embs = np.asarray(joint_embs, dtype=np.float32)
+        if joint_embs.ndim != 2 or joint_embs.shape[0] == 0 or joint_embs.shape[1] == 0:
+            print(f"Warning: {a} has invalid joints_names_embs shape {joint_embs.shape}, skipping.")
+            continue
+
+        embedding_texts = _embedding_texts_for_object(object_cond)
+        anatomical_joint_count = sum(1 for text in embedding_texts if text)
 
         mean_emb = joint_embs.mean(axis=0)
         plot_emb = l2_normalize(mean_emb) if normalize_means else mean_emb
-        group = cond[a].get("species_group", "unknown")
+        group = object_cond.get("species_group", "unknown")
         result[a] = {
             "mean_emb": mean_emb,
             "plot_emb": plot_emb,
@@ -238,19 +264,13 @@ def save_similarity_report(animal_embs: dict, output_dir: Path, top_k: int = 8):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Visualize T5 joint-name embedding distribution across animals.")
+        description="Visualize precomputed joint-name embedding distribution across animals.")
     parser.add_argument("--cond-path", default=None,
                         help="Path to cond.npy (auto-detected if omitted)")
-    parser.add_argument("--t5-model", default="t5-small",
-                        choices=["t5-small", "t5-base", "t5-large",
-                                 "google/flan-t5-small", "google/flan-t5-base"],
-                        help="T5 variant to use for encoding (default: t5-small)")
     parser.add_argument("--output-dir", default="outputs/joint_emb_vis",
                         help="Directory to write PNGs into")
     parser.add_argument("--tsne-perplexity", type=int, default=15,
                         help="t-SNE perplexity (default: 15; try 5-30 for <100 animals)")
-    parser.add_argument("--device", default=None,
-                        help="Torch device (auto: cuda if available, else cpu)")
     parser.add_argument("--raw-means", action="store_true",
                         help="Use unnormalized per-animal mean embeddings for t-SNE. By default means are L2-normalized first.")
     args = parser.parse_args()
@@ -269,17 +289,16 @@ def main():
         if args.cond_path is None:
             sys.exit("Could not auto-detect cond.npy. Pass --cond-path explicitly.")
 
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     print(f"cond.npy : {args.cond_path}")
-    print(f"T5 model : {args.t5_model}  |  device: {device}")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     cond = load_cond(args.cond_path)
     print(f"Loaded {len(cond)} animals.")
+    print(_embedding_source_description(cond))
 
-    animal_embs = per_animal_embedding(cond, args.t5_model, device, normalize_means=not args.raw_means)
+    animal_embs = per_animal_embedding(cond, normalize_means=not args.raw_means)
 
     print("\n--- Generating plots ---")
     plot_tsne(animal_embs, output_dir, args.tsne_perplexity)

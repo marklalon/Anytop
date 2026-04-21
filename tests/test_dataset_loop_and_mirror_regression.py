@@ -36,7 +36,6 @@ def test_loop_padding_updates_effective_length() -> None:
     dataset = Truebones(
         split="train",
         temporal_window=31,
-        t5_name="t5-base",
         num_frames=NUM_FRAMES,
         balanced=False,
         objects_subset=LOOP_SUBSET,
@@ -70,7 +69,6 @@ def test_loop_padding_random_offset_wraps_without_truncation() -> None:
     dataset = Truebones(
         split="train",
         temporal_window=31,
-        t5_name="t5-base",
         num_frames=NUM_FRAMES,
         balanced=False,
         objects_subset=LOOP_SUBSET,
@@ -101,7 +99,6 @@ def test_explicit_window_start_respects_requested_crop() -> None:
     dataset = Truebones(
         split="train",
         temporal_window=31,
-        t5_name="t5-base",
         num_frames=NUM_FRAMES,
         balanced=False,
         objects_subset=LOOP_SUBSET,
@@ -137,7 +134,6 @@ def test_mirror_augmentation_runs_before_normalization() -> None:
     dataset = Truebones(
         split="train",
         temporal_window=31,
-        t5_name="t5-base",
         num_frames=NUM_FRAMES,
         balanced=False,
         objects_subset=MIRROR_SUBSET,

@@ -16,8 +16,9 @@ from utils.parser_util import train_args
 from utils import dist_util
 from train.training_loop import TrainLoop
 from data_loaders.get_data import get_dataset_loader
-from utils.model_util import create_model_and_diffusion_general_skeleton
+from utils.model_util import create_model_and_diffusion_general_skeleton, resolve_t5_out_dim
 from utils.ml_platforms import ClearmlPlatform, TensorboardPlatform, NoPlatform, WandBPlatform #required
+from data_loaders.truebones.truebones_utils.get_opt import get_opt
 
 
 def find_latest_checkpoint(save_dir, prefix='model'):
@@ -115,7 +116,6 @@ def create_training_data_loader(args):
         num_frames=args.num_frames,
         split=getattr(args, 'train_split', 'train'),
         temporal_window=args.temporal_window,
-        t5_name=args.t5_name,
         balanced=args.balanced,
         objects_subset=args.objects_subset,
         sample_limit=args.sample_limit,
@@ -129,6 +129,8 @@ def run_training(args):
     fixseed(args.seed)
     save_dir = prepare_save_dir(args)
     args.checkpoint_step_numbering = 'completed_steps'
+    opt = get_opt(args.device)
+    resolve_t5_out_dim(args, cond_source=opt.cond_file)
 
     ml_platform_type = eval(args.ml_platform_type)
     ml_platform = ml_platform_type(save_dir=args.save_dir)

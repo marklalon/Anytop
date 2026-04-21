@@ -249,7 +249,6 @@ def main() -> int:
         dataset = Truebones(
             split=args.split,
             temporal_window=31,
-            t5_name="t5-base",
             num_frames=args.max_frames,
             balanced=args.balanced,
             objects_subset=args.objects_subset,

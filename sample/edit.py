@@ -16,11 +16,11 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from utils.parser_util import edit_args
-from utils.model_util import create_model_and_diffusion_general_skeleton, load_model
+from utils.model_util import create_model_and_diffusion_general_skeleton, load_model, resolve_t5_out_dim
 from utils import dist_util
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
-from data_loaders.truebones.data.dataset import create_temporal_mask_for_window, attach_joint_name_embeddings
+from data_loaders.truebones.data.dataset import create_temporal_mask_for_window, ensure_joint_name_embeddings
 from os.path import join as pjoin
 from motion_lib import BVH
 from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
@@ -56,6 +56,7 @@ def main(args = None, cond_dict = None):
     args.batch_size = args.num_samples  # Sampling a single batch from the testset, with exactly args.num_samples
 
     print("Creating model and diffusion...")
+    resolve_t5_out_dim(args, cond_source=actual_cond_file)
     model, diffusion = create_model_and_diffusion_general_skeleton(args)
 
     print(f"Loading checkpoints from [{args.model_path}]...")
@@ -67,8 +68,8 @@ def main(args = None, cond_dict = None):
         state_dict = state_dict['model']
     load_model(model, state_dict)
 
-    print("Building/loading joint-name T5 embedding cache...")
-    attach_joint_name_embeddings(cond_dict, actual_cond_file, opt.data_root, args.t5_name)
+    print("Validating precomputed joint-name embeddings from cond.npy...")
+    ensure_joint_name_embeddings(cond_dict, expected_embedding_dim=args.t5_out_dim, cond_source=actual_cond_file)
     model.to(dist_util.dev())
     model.eval()  # disable random masking
     motions_list = [np.load(sample) for sample in args.samples]
@@ -170,8 +171,12 @@ def main(args = None, cond_dict = None):
             }
             np.save(pjoin(out_path, npy_name), data, allow_pickle=True)
             if out_anim is not None:
-                BVH.save(pjoin(out_path, bvh_name), out_anim, cond_dict[object_type]['joints_names'],
-                         positions=has_animated_pos)
+                BVH.save(
+                    pjoin(out_path, bvh_name),
+                    out_anim,
+                    cond_dict[object_type].get('canonical_bvh_joint_names', cond_dict[object_type]['joints_names']),
+                    positions=has_animated_pos,
+                )
             print("repetition #" + str(rep_i) + " ,created motion: "+ npy_name)
 
 def encode_joints_names(joints_names, t5_conditioner): # joints names should be padded with None to be of max_len 

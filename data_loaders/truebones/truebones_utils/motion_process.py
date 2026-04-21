@@ -1,6 +1,7 @@
 from motion_lib import BVH, Animation, Quaternions
 from motion_lib.Animation import positions_global, rotations_global, offsets_from_positions, offsets_global, offset_lengths
 from motion_lib import animation_from_positions
+import json
 import numpy as np 
 import os 
 from os.path import join as pjoin
@@ -23,6 +24,8 @@ from .physics_joint_annotation import (
     _build_semantic_metadata,
     _rest_positions_from_offsets,
     _normalize_joint_name,
+    build_joint_embedding_texts,
+    JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
 )
 from .face_orientation import (
     resolve_face_joints,
@@ -44,6 +47,78 @@ ROOT_XZ_STRIP_THRESHOLD = 1
 # Mean L2 distance (per joint, in HML-normalised units) between first and last
 # frame poses below which a clip is classified as looping.
 LOOP_DETECTION_POS_THRESHOLD = 0.10
+
+
+def _canonical_name_for_bvh(name, fallback_name):
+    compact_name = re.sub(r'[^0-9A-Za-z_]+', '', str(name or ''))
+    if compact_name:
+        return compact_name
+    fallback_compact = re.sub(r'[^0-9A-Za-z_]+', '', str(fallback_name or ''))
+    return fallback_compact or 'Joint'
+
+
+def _build_joint_name_inspection_rows(object_cond, embedding_texts):
+    raw_names = list(object_cond.get('joints_names') or [])
+    canonical_names = list(object_cond.get('canonical_joint_names') or raw_names)
+    canonical_bvh_names = list(object_cond.get('canonical_bvh_joint_names') or canonical_names)
+    side_labels = list(object_cond.get('joint_side_labels') or ['center'] * len(raw_names))
+    contact_joints = {int(joint_index) for joint_index in list(object_cond.get('contact_joints') or [])}
+    end_effector_joints = {int(joint_index) for joint_index in list(object_cond.get('end_effector_joints') or [])}
+
+    inspection_rows = []
+    for joint_index, raw_name in enumerate(raw_names):
+        canonical_name = canonical_names[joint_index] if joint_index < len(canonical_names) else raw_name
+        embedding_text = embedding_texts[joint_index] if joint_index < len(embedding_texts) else ''
+        inspection_rows.append({
+            'index': int(joint_index),
+            'raw_name': str(raw_name),
+            'canonical_name': str(canonical_name),
+            'canonical_bvh_name': str(canonical_bvh_names[joint_index] if joint_index < len(canonical_bvh_names) else canonical_name),
+            'embedding_text': str(embedding_text),
+            'is_anatomical': bool(str(embedding_text).strip()),
+            'side': str(side_labels[joint_index] if joint_index < len(side_labels) else 'center'),
+            'is_contact': bool(joint_index in contact_joints),
+            'is_end_effector': bool(joint_index in end_effector_joints),
+        })
+    return inspection_rows
+
+
+def _attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base'):
+    from model.conditioners import T5Conditioner
+
+    if not cond:
+        return
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    inspection_dir = pjoin(save_dir, 'joint_name_inspection')
+    os.makedirs(inspection_dir, exist_ok=True)
+
+    print(f'Encoding joint names into cond.npy with {t5_name} on {device.upper()}')
+    t5_conditioner = T5Conditioner(
+        name=t5_name,
+        finetune=False,
+        word_dropout=0.0,
+        normalize_text=False,
+        device=device,
+    )
+
+    with torch.no_grad():
+        for object_type in sorted(cond):
+            object_cond = cond[object_type]
+            embedding_texts = build_joint_embedding_texts(object_cond)
+            names_tokens = t5_conditioner.tokenize_entries(embedding_texts)
+            embs = t5_conditioner(names_tokens).detach().cpu().numpy().astype(np.float32, copy=False)
+            object_cond['joints_names_embs'] = embs
+            object_cond['joints_names_embs_meta'] = {
+                't5_name': t5_name,
+                'schema_version': JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
+                'embedding_dim': int(embs.shape[1]) if embs.ndim == 2 else 0,
+                'embedding_texts': list(embedding_texts),
+            }
+
+            inspection_path = pjoin(inspection_dir, f'{object_type}.json')
+            with open(inspection_path, 'w', encoding='utf-8') as inspection_file:
+                json.dump(_build_joint_name_inspection_rows(object_cond, embedding_texts), inspection_file, indent=2)
 
 
 def _detect_motion_loop(positions):
@@ -852,6 +927,10 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=
     object_cond['offsets'] = offsets
     object_cond['joints_names'] = names
     object_cond['canonical_joint_names'] = semantic_metadata['canonical_joint_names']
+    object_cond['canonical_bvh_joint_names'] = [
+        _canonical_name_for_bvh(canonical_name, raw_name)
+        for canonical_name, raw_name in zip(semantic_metadata['canonical_joint_names'], names)
+    ]
     object_cond['face_joints'] = list(face_joints)
     object_cond['face_joint_names'] = [names[index] for index in face_joints]
     object_cond['end_effector_joints'] = semantic_metadata['end_effector_joints']
@@ -909,6 +988,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=
             all_tensors.append(motion)
             files_counter += 1
             frames_counter += motion.shape[0]
+            result['canonical_names'] = list(object_cond['canonical_bvh_joint_names'])
             prepared_results.append(result)
 
     if len(all_tensors) == 0:
@@ -952,7 +1032,7 @@ def _write_object_outputs(save_dir, object_payload, files_counter):
         has_animated_nonroot_pos = np.any(
             np.ptp(anim_obj.positions[:, 1:, :], axis=0) > 1e-4
         )
-        BVH.save(pjoin(save_dir, BVHS_DIR, name+".bvh"), anim_obj, result['names'],
+        BVH.save(pjoin(save_dir, BVHS_DIR, name+".bvh"), anim_obj, result.get('canonical_names', result['names']),
                  positions=bool(has_animated_nonroot_pos))
 
         motion_labels = dict(result['motion_labels'])
@@ -981,6 +1061,7 @@ def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, m
         error_file.write('%s: %f\n' %(f, squared_positions_error[f]))
     error_file.close()
 
+    _attach_joint_name_embeddings_to_cond(cond, save_dir)
     np.save(pjoin(save_dir, "cond.npy"), cond)
     write_motion_metadata(save_dir, motion_metadata, files_counter)
 

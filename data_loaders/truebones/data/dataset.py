@@ -3,26 +3,24 @@ from torch.utils import data
 from torch.utils.data.sampler import WeightedRandomSampler
 import numpy as np
 import os
-import re
 from collections import OrderedDict, defaultdict
 from os.path import join as pjoin
 from pathlib import Path
 import random
 from typing import Optional
+import warnings
 from torch.utils.data._utils.collate import default_collate
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.param_utils import parse_action_tags
 from data_loaders.truebones.truebones_utils.motion_labels import infer_motion_labels_from_motion_name, load_motion_metadata
 from data_loaders.truebones.truebones_utils.motion_process import remove_joints_augmentation, add_joint_augmentation
-from data_loaders.truebones.truebones_utils.physics_joint_annotation import build_joint_embedding_texts
-from model.conditioners import T5Conditioner
+from data_loaders.truebones.truebones_utils.physics_joint_annotation import JOINT_NAME_EMBEDDING_SCHEMA_VERSION
 
 
 DEFAULT_SPLIT_RATIOS = {"train": 0.95, "val": 0.05, "test": 0.0}
 DEFAULT_SPLIT_SEED = 3407
 SUPPORTED_SPLITS = tuple(DEFAULT_SPLIT_RATIOS.keys())
 ALL_SPLIT_NAME = "all"
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 4
 
 
 def _normalize_motion_action_tags(raw_action_tags) -> set[str]:
@@ -263,17 +261,6 @@ def load_motion_names_for_split_with_action_tags(
     return selected_motion_names
 
 
-def _sanitize_cache_component(value: str) -> str:
-    sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
-    return sanitized.strip("._") or "default"
-
-
-def _joint_name_embedding_cache_path(data_root: str, t5_name: str) -> Path:
-    cache_dir = Path(data_root) / "cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return cache_dir / f"joint_name_t5_{_sanitize_cache_component(t5_name)}.npy"
-
-
 def _motion_length_cache_path(data_root: str) -> Path:
     cache_dir = Path(data_root) / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -304,82 +291,55 @@ def _read_motion_length(motion_path: str) -> int:
     return len(motion)
 
 
-def _load_cached_joint_name_embeddings(cache_path: Path, cond_file: str, expected_object_types: set[str]) -> Optional[dict[str, np.ndarray]]:
-    if not cache_path.exists():
-        return None
+def ensure_joint_name_embeddings(
+    cond_dict: dict,
+    expected_embedding_dim: Optional[int] = None,
+    cond_source: str = 'cond.npy',
+) -> dict:
+    for object_type, cond in cond_dict.items():
+        joints_names_embs = cond.get('joints_names_embs')
+        if joints_names_embs is None:
+            raise RuntimeError(
+                f"{cond_source} for '{object_type}' is missing joints_names_embs. "
+                "Re-run preprocessing with the updated pipeline."
+            )
 
-    try:
-        payload = np.load(cache_path, allow_pickle=True).item()
-    except Exception:
-        return None
+        joints_names_embs = np.asarray(joints_names_embs, dtype=np.float32)
+        if joints_names_embs.ndim != 2:
+            raise RuntimeError(
+                f"{cond_source} for '{object_type}' has invalid joints_names_embs shape {joints_names_embs.shape}."
+            )
 
-    if not isinstance(payload, dict):
-        return None
+        if expected_embedding_dim is not None and int(joints_names_embs.shape[1]) != int(expected_embedding_dim):
+            raise RuntimeError(
+                f"{cond_source} for '{object_type}' has embedding dim {joints_names_embs.shape[1]} "
+                f"but the model expects {expected_embedding_dim}."
+            )
 
-    metadata = payload.get("_meta", {})
-    embeddings = payload.get("embeddings")
-    if not isinstance(metadata, dict) or not isinstance(embeddings, dict):
-        return None
+        parents = cond.get('parents')
+        joint_count = len(parents) if parents is not None else 0
+        if joint_count and joints_names_embs.shape[0] != joint_count:
+            raise RuntimeError(
+                f"{cond_source} for '{object_type}' has {joints_names_embs.shape[0]} joint-name embeddings "
+                f"but {joint_count} joints in parents."
+            )
 
-    cond_mtime_ns = Path(cond_file).stat().st_mtime_ns
-    if metadata.get("cond_mtime_ns") != cond_mtime_ns:
-        return None
-    if metadata.get("embedding_schema_version") != JOINT_NAME_EMBEDDING_SCHEMA_VERSION:
-        return None
+        meta = cond.get('joints_names_embs_meta')
+        if isinstance(meta, dict):
+            schema_version = meta.get('schema_version')
+            if schema_version is not None and int(schema_version) != JOINT_NAME_EMBEDDING_SCHEMA_VERSION:
+                warnings.warn(
+                    f"{cond_source} for '{object_type}' uses joint-name embedding schema {schema_version}; "
+                    f"current code expects {JOINT_NAME_EMBEDDING_SCHEMA_VERSION}.",
+                    stacklevel=2,
+                )
 
-    missing_objects = [object_type for object_type in expected_object_types if object_type not in embeddings]
-    if missing_objects:
-        return None
-
-    return {object_type: np.asarray(embeddings[object_type], dtype=np.float32) for object_type in expected_object_types}
-
-
-def _build_joint_name_embeddings(cond_dict: dict, t5_name: str) -> dict[str, np.ndarray]:
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f"Building cached joint-name embeddings with {t5_name} on {device.upper()}")
-    t5_conditioner = T5Conditioner(
-        name=t5_name,
-        finetune=False,
-        word_dropout=0.0,
-        normalize_text=False,
-        device=device,
-    )
-
-    embeddings = {}
-    with torch.no_grad():
-        for object_type in sorted(cond_dict):
-            embedding_texts = build_joint_embedding_texts(cond_dict[object_type])
-            names_tokens = t5_conditioner.tokenize_entries(embedding_texts)
-            embs = t5_conditioner(names_tokens)
-            embeddings[object_type] = embs.detach().cpu().numpy().astype(np.float32, copy=False)
-    return embeddings
-
-
-def attach_joint_name_embeddings(cond_dict: dict, cond_file: str, data_root: str, t5_name: str) -> dict:
-    object_types = set(cond_dict.keys())
-    cache_path = _joint_name_embedding_cache_path(data_root, t5_name)
-    cached_embeddings = _load_cached_joint_name_embeddings(cache_path, cond_file, object_types)
-
-    if cached_embeddings is None:
-        cached_embeddings = _build_joint_name_embeddings(cond_dict, t5_name)
-        payload = {
-            "_meta": {
-                "t5_name": t5_name,
-                "cond_mtime_ns": Path(cond_file).stat().st_mtime_ns,
-                "embedding_schema_version": JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
-            },
-            "embeddings": cached_embeddings,
-        }
-        np.save(cache_path, payload, allow_pickle=True)
-        print(f"Saved joint-name embedding cache to {cache_path}")
-
-    for object_type in object_types:
-        cond_dict[object_type]['joints_names_embs'] = cached_embeddings[object_type]
+        cond['joints_names_embs'] = joints_names_embs
     return cond_dict
 
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, temporal_window, t5_name, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None):
+    def __init__(self, opt, cond_dict, temporal_window, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None):
         self.opt = opt
         self.temporal_window = int(temporal_window)
         self.min_length = 20
@@ -651,7 +611,7 @@ class TruebonesSampler(WeightedRandomSampler):
         super().__init__(num_samples=num_samples, weights=weights)
     
 class Truebones(data.Dataset):
-    def __init__(self, split="train", temporal_window=31, t5_name='t5-base', **kwargs):
+    def __init__(self, split="train", temporal_window=31, **kwargs):
         if split not in SUPPORTED_SPLITS and split != ALL_SPLIT_NAME:
             raise ValueError(f"Unsupported split '{split}'. Expected one of {SUPPORTED_SPLITS + (ALL_SPLIT_NAME,)}.")
         abs_base_path = f'.'
@@ -674,7 +634,7 @@ class Truebones(data.Dataset):
             # Treat as a single species name
             subset = [self.objects_subset]
         cond_dict = {k:cond_dict[k] for k in subset if k in cond_dict}
-        cond_dict = attach_joint_name_embeddings(cond_dict, opt.cond_file, opt.data_root, t5_name)
+        cond_dict = ensure_joint_name_embeddings(cond_dict, cond_source=opt.cond_file)
         for object_type, cond in cond_dict.items():
             mean = np.asarray(cond['mean'], dtype=np.float32)
             std_safe = np.asarray(cond['std'], dtype=np.float32) + 1e-6
@@ -697,7 +657,6 @@ class Truebones(data.Dataset):
             self.opt,
             cond_dict,
             temporal_window,
-            t5_name,
             self.balanced,
             num_frames=kwargs['num_frames'],
             sample_limit=self.sample_limit,
