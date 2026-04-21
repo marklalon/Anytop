@@ -690,7 +690,7 @@ def _prepare_dataset_for_validation(
     if needs_regeneration:
         _print_warn("regenerating non-motion dataset artifacts to match current motions")
         sys.path.insert(0, str(REPO_ROOT / "tools"))
-        from re_encode_joint_names import regenerate_dataset_artifacts
+        from regenerate_dataset_artifacts import regenerate_dataset_artifacts
 
         regenerate_dataset_artifacts(str(dataset_dir))
 

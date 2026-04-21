@@ -85,7 +85,7 @@ def run_re_encode_joint_names_only(dataset_dir: str = "") -> int:
     
     try:
         sys.path.insert(0, str(ANYTOP_DIR / "tools"))
-        from re_encode_joint_names import regenerate_dataset_artifacts
+        from regenerate_dataset_artifacts import regenerate_dataset_artifacts
 
         dataset_dir_path = regenerate_dataset_artifacts(dataset_dir or None)
         print(f"[PASS] Dataset sidecar regeneration completed successfully: {dataset_dir_path}")

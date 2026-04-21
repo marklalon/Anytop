@@ -5,7 +5,7 @@ Quick script to regenerate dataset sidecar artifacts without re-preprocessing mo
 This is a lightweight alternative to: python preprocess_and_validate.py --re-encode-joint-names-only
 
 Usage:
-    python tools/re_encode_joint_names.py [--dataset-dir PATH] [--t5-model NAME]
+    python tools/regenerate_dataset_artifacts.py [--dataset-dir PATH] [--t5-model NAME]
 
 Options:
     --dataset-dir PATH      Path to dataset directory (uses default if not specified)
@@ -13,13 +13,13 @@ Options:
 
 Examples:
     # Regenerate sidecar artifacts with default settings
-    python tools/re_encode_joint_names.py
+    python tools/regenerate_dataset_artifacts.py
 
     # Re-encode with custom dataset directory
-    python tools/re_encode_joint_names.py --dataset-dir /path/to/dataset
+    python tools/regenerate_dataset_artifacts.py --dataset-dir /path/to/dataset
 
     # Re-encode with different T5 model
-    python tools/re_encode_joint_names.py --t5-model t5-large
+    python tools/regenerate_dataset_artifacts.py --t5-model t5-large
 """
 
 import argparse
