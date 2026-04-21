@@ -179,6 +179,14 @@ def run_validation(
         
         _validate_positions_error_file(positions_error_path)
         
+        # Force-delete split manifests so they are regenerated on next training run.
+        # This ensures train/val/test.txt always reflect the current motion files.
+        for split_name in ("train", "val", "test"):
+            split_path = dataset_dir / f"{split_name}.txt"
+            if split_path.exists():
+                split_path.unlink()
+                _print_ok(f"deleted {split_path.name} (will be regenerated on next training)")
+        
         print("[PASS] dataset validation completed successfully")
         return 0
     except ValidationError as e:

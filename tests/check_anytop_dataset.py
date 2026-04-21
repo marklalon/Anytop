@@ -305,13 +305,20 @@ def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample
         return
 
     files_to_validate = _select_validation_files(motion_files, sample_limit)
+    excess_joints_chars: set[str] = set()
+
     for motion_path in files_to_validate:
         try:
             motion = np.load(motion_path)
             _require(motion.ndim == 3, f"{motion_path.name} must be rank-3, got {motion.ndim}")
             _require(motion.shape[0] > 0, f"{motion_path.name} has zero frames")
             _require(motion.shape[1] > 0, f"{motion_path.name} has zero joints")
-            _require(motion.shape[1] <= MAX_JOINTS, f"{motion_path.name} exceeds MAX_JOINTS: {motion.shape[1]}")
+
+            # Explicit check for MAX_JOINTS — track offending characters for deletion.
+            if motion.shape[1] > MAX_JOINTS:
+                object_type = _match_object_type(motion_path.stem, cond)
+                excess_joints_chars.add(object_type)
+
             _require(motion.shape[2] == FEATS_LEN, f"{motion_path.name} feature dim mismatch: {motion.shape[2]}")
             _require(np.isfinite(motion).all(), f"{motion_path.name} contains NaN/Inf")
 
@@ -320,6 +327,25 @@ def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample
             _require(motion.shape[1] == expected_joints, f"{motion_path.name} joints mismatch: {motion.shape[1]} vs {expected_joints}")
         except ValidationError as e:
             _print_warn(f"validation error: {motion_path.name}: {e}")
+
+    # Delete all motion/BVH files for characters whose joint count exceeds MAX_JOINTS.
+    if excess_joints_chars:
+        deleted_stems: set[str] = set()
+        for obj_type in sorted(excess_joints_chars):
+            char_motions = [f for f in motion_files if f.stem.startswith(f"{obj_type}_")]
+            char_bvhs = [f for f in bvh_files if f.stem.startswith(f"{obj_type}_")]
+            for f in char_motions + char_bvhs:
+                try:
+                    f.unlink()
+                    deleted_stems.add(f.stem)
+                except OSError as exc:
+                    _print_warn(f"failed to delete {f.name}: {exc}")
+            _print_warn(
+                f"deleted {len(char_motions)} motion(s) + {len(char_bvhs)} BVH(s) for {obj_type} "
+                f"(joint count exceeds MAX_JOINTS={MAX_JOINTS})"
+            )
+        motion_files = [f for f in motion_files if f.stem not in deleted_stems]
+        bvh_files = [f for f in bvh_files if f.stem not in deleted_stems]
 
     scope = "all" if sample_limit <= 0 else str(len(files_to_validate))
     _print_ok(f"validated {scope} motion tensors and {len(motion_files)} paired motion/BVH artifacts")
