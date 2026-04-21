@@ -1,6 +1,7 @@
 from motion_lib import BVH, Animation, Quaternions
 from motion_lib.Animation import positions_global, rotations_global, offsets_from_positions, offsets_global, offset_lengths
 from motion_lib import animation_from_positions
+from collections import Counter, defaultdict
 import json
 import numpy as np 
 import os 
@@ -24,6 +25,7 @@ from .physics_joint_annotation import (
     _build_semantic_metadata,
     _rest_positions_from_offsets,
     _normalize_joint_name,
+    _strip_joint_name_prefix,
     build_joint_embedding_texts,
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
 )
@@ -83,6 +85,196 @@ def _build_joint_name_inspection_rows(object_cond, embedding_texts):
     return inspection_rows
 
 
+def _remove_token_counts(tokens, counts_to_remove):
+    remaining_counts = Counter(counts_to_remove)
+    remaining_tokens = []
+    for token in tokens:
+        if remaining_counts.get(token, 0) > 0:
+            remaining_counts[token] -= 1
+            continue
+        remaining_tokens.append(token)
+    return remaining_tokens
+
+
+def _joint_disambiguation_tokens(raw_name, canonical_name):
+    raw_value = str(raw_name or '')
+    stripped_raw = _strip_joint_name_prefix(raw_value)
+    raw_tokens = _normalize_joint_name(stripped_raw).split()
+    canonical_tokens = _normalize_joint_name(canonical_name).split()
+    residual_tokens = _remove_token_counts(raw_tokens, Counter(canonical_tokens))
+    if raw_value.lower().startswith('jt'):
+        residual_tokens.append('joint')
+    return residual_tokens
+
+
+def _display_disambiguation_tokens(raw_tokens):
+    token_map = {
+        'c': 'Center',
+        'joint': 'Joint',
+        'l': 'Left',
+        'left': 'Left',
+        'r': 'Right',
+        'right': 'Right',
+        'x': 'Copy',
+    }
+    token_priority = {
+        'Copy': 0,
+        'Joint': 1,
+        'Left': 2,
+        'Right': 3,
+        'Center': 4,
+    }
+
+    display_tokens = []
+    seen = set()
+    for token in raw_tokens:
+        display_token = token_map.get(token, token.capitalize())
+        if display_token in seen:
+            continue
+        seen.add(display_token)
+        display_tokens.append(display_token)
+
+    display_tokens.sort(key=lambda token: (token_priority.get(token, 99), token))
+    if len(display_tokens) > 1 and 'Center' in display_tokens:
+        display_tokens = [token for token in display_tokens if token != 'Center']
+    return display_tokens
+
+
+def _disambiguate_duplicate_canonical_names(raw_names, canonical_names):
+    updated_names = list(canonical_names)
+    grouped_indices = defaultdict(list)
+    for joint_index, canonical_name in enumerate(canonical_names):
+        grouped_indices[str(canonical_name)].append(joint_index)
+
+    for canonical_name, indices in grouped_indices.items():
+        raw_name_set = {str(raw_names[index]) for index in indices}
+        if len(indices) <= 1 or len(raw_name_set) <= 1:
+            continue
+
+        residual_token_lists = [
+            _joint_disambiguation_tokens(raw_names[index], canonical_name)
+            for index in indices
+        ]
+        common_counts = Counter(residual_token_lists[0])
+        for tokens in residual_token_lists[1:]:
+            common_counts &= Counter(tokens)
+
+        candidate_suffixes = []
+        for tokens in residual_token_lists:
+            unique_tokens = _remove_token_counts(tokens, common_counts)
+            candidate_suffixes.append(_display_disambiguation_tokens(unique_tokens))
+
+        for local_index, joint_index in enumerate(indices):
+            suffix_tokens = candidate_suffixes[local_index]
+            if suffix_tokens:
+                updated_names[joint_index] = ' '.join([str(canonical_name), *suffix_tokens])
+
+        seen_names = set()
+        duplicate_positions = []
+        for local_index, joint_index in enumerate(indices):
+            resolved_name = updated_names[joint_index]
+            if resolved_name in seen_names:
+                duplicate_positions.append(local_index)
+            else:
+                seen_names.add(resolved_name)
+
+        if duplicate_positions:
+            occurrence_counts = Counter()
+            for local_index, joint_index in enumerate(indices):
+                occurrence_counts[updated_names[joint_index]] += 1
+                if occurrence_counts[updated_names[joint_index]] > 1:
+                    updated_names[joint_index] = f"{updated_names[joint_index]} Variant{occurrence_counts[updated_names[joint_index]]}"
+
+    return updated_names
+
+
+def _collect_joint_name_collision_groups(cond):
+    collision_groups = []
+    for object_type in sorted(cond):
+        object_cond = cond[object_type]
+        raw_names = list(object_cond.get('joints_names') or [])
+        canonical_names = list(object_cond.get('canonical_joint_names') or raw_names)
+        canonical_bvh_names = list(object_cond.get('canonical_bvh_joint_names') or canonical_names)
+        grouped_rows = defaultdict(list)
+
+        for joint_index, raw_name in enumerate(raw_names):
+            canonical_name = canonical_names[joint_index] if joint_index < len(canonical_names) else str(raw_name)
+            grouped_rows[str(canonical_name)].append({
+                'index': int(joint_index),
+                'raw_name': str(raw_name),
+                'canonical_bvh_name': str(canonical_bvh_names[joint_index] if joint_index < len(canonical_bvh_names) else canonical_name),
+            })
+
+        for canonical_name, items in grouped_rows.items():
+            if len({item['raw_name'] for item in items}) <= 1:
+                continue
+            collision_groups.append({
+                'object_type': str(object_type),
+                'canonical_name': str(canonical_name),
+                'rows': items,
+            })
+    return collision_groups
+
+
+def _write_joint_name_collision_report(cond, save_dir):
+    collision_groups = _collect_joint_name_collision_groups(cond)
+    report = {
+        'num_objects': int(len(cond)),
+        'num_collision_groups': int(len(collision_groups)),
+        'collision_groups': collision_groups,
+    }
+    report_path = pjoin(save_dir, 'joint_name_collision_report.json')
+    with open(report_path, 'w', encoding='utf-8') as report_file:
+        json.dump(report, report_file, indent=2)
+
+    if collision_groups:
+        print(f'[WARN] canonical joint-name collision scan found {len(collision_groups)} group(s); report: {report_path}')
+        for group in collision_groups[:20]:
+            raw_names = ' | '.join(row['raw_name'] for row in group['rows'])
+            print(f"  - {group['object_type']}: {group['canonical_name']} <- {raw_names}")
+        if len(collision_groups) > 20:
+            print(f'  ... {len(collision_groups) - 20} additional group(s) omitted from console output')
+    else:
+        print(f'[PASS] canonical joint-name collision scan found no duplicate canonical names; report: {report_path}')
+
+    return collision_groups
+
+
+def _refresh_joint_metadata_in_object_cond(object_cond):
+    joint_names = list(object_cond.get('joints_names') or [])
+    if not joint_names:
+        return
+
+    semantic_metadata = _build_semantic_metadata(
+        str(object_cond.get('object_type') or ''),
+        joint_names,
+        np.asarray(object_cond.get('parents'), dtype=np.int64),
+        np.asarray(object_cond.get('offsets'), dtype=np.float64),
+    )
+    object_cond['canonical_joint_names'] = _disambiguate_duplicate_canonical_names(
+        joint_names,
+        semantic_metadata['canonical_joint_names'],
+    )
+    object_cond['canonical_bvh_joint_names'] = [
+        _canonical_name_for_bvh(canonical_name, raw_name)
+        for canonical_name, raw_name in zip(semantic_metadata['canonical_joint_names'], joint_names)
+    ]
+    object_cond['canonical_bvh_joint_names'] = [
+        _canonical_name_for_bvh(canonical_name, raw_name)
+        for canonical_name, raw_name in zip(object_cond['canonical_joint_names'], joint_names)
+    ]
+    object_cond['end_effector_joints'] = semantic_metadata['end_effector_joints']
+    object_cond['end_effector_names'] = semantic_metadata['end_effector_names']
+    object_cond['contact_joints'] = semantic_metadata['contact_joints']
+    object_cond['contact_joint_names'] = semantic_metadata['contact_joint_names']
+    object_cond['contact_joint_source'] = semantic_metadata['contact_joint_source']
+    object_cond['joint_side_labels'] = semantic_metadata['joint_side_labels']
+    object_cond['symmetry_partner_indices'] = semantic_metadata['symmetry_partner_indices']
+    object_cond['symmetric_joint_pairs'] = semantic_metadata['symmetric_joint_pairs']
+    object_cond['symmetric_joint_pair_names'] = semantic_metadata['symmetric_joint_pair_names']
+    object_cond['is_symmetric'] = semantic_metadata['is_symmetric']
+
+
 def _attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base'):
     from model.conditioners import T5Conditioner
 
@@ -105,6 +297,7 @@ def _attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base'):
     with torch.no_grad():
         for object_type in sorted(cond):
             object_cond = cond[object_type]
+            _refresh_joint_metadata_in_object_cond(object_cond)
             embedding_texts = build_joint_embedding_texts(object_cond)
             names_tokens = t5_conditioner.tokenize_entries(embedding_texts)
             embs = t5_conditioner(names_tokens).detach().cpu().numpy().astype(np.float32, copy=False)
@@ -119,6 +312,8 @@ def _attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base'):
             inspection_path = pjoin(inspection_dir, f'{object_type}.json')
             with open(inspection_path, 'w', encoding='utf-8') as inspection_file:
                 json.dump(_build_joint_name_inspection_rows(object_cond, embedding_texts), inspection_file, indent=2)
+
+    _write_joint_name_collision_report(cond, save_dir)
 
 
 def _detect_motion_loop(positions):

@@ -11,6 +11,7 @@ Usage:
 
 Options:
     --validate-only                      Skip preprocessing, only validate existing dataset
+    --re-encode-joint-names-only         Skip preprocessing and validation, only re-encode joint names into cond.npy
     --skip-validate                      Skip validation step (faster for CI)
     --skip-orientation-check             Skip processed-BVH orientation validation
     --objects-subset SUBSET              Object subset to process (default: all)
@@ -32,6 +33,9 @@ Examples:
     # Preprocess without validation
     python preprocess_and_validate.py --skip-validate
 
+    # Re-encode joint names only (fast, no motion re-export)
+    python preprocess_and_validate.py --re-encode-joint-names-only
+
     # Preprocess specific object subset with custom settings
     python preprocess_and_validate.py --objects-subset "Hound" --object-workers 4 --file-workers 8
 
@@ -48,6 +52,7 @@ import sys
 import subprocess
 import shutil
 from pathlib import Path
+import numpy as np
 
 ANYTOP_DIR = Path(__file__).resolve().parent
 
@@ -70,6 +75,48 @@ def run_preprocessing(objects_subset: str, object_workers: int, file_workers: in
     
     result = subprocess.run(cmd, cwd=str(ANYTOP_DIR), capture_output=False)
     return result.returncode
+
+
+def run_re_encode_joint_names_only(dataset_dir: str = "") -> int:
+    """Re-encode joint names into cond.npy without re-preprocessing motions."""
+    print("\n" + "=" * 70)
+    print("Re-encoding joint names into cond.npy")
+    print("=" * 70 + "\n")
+    
+    # Import utilities from the truebones_utils package
+    sys.path.insert(0, str(ANYTOP_DIR / "data_loaders" / "truebones"))
+    from truebones_utils.param_utils import get_dataset_dir
+    from truebones_utils.motion_process import _attach_joint_name_embeddings_to_cond
+    
+    # Resolve dataset directory
+    dataset_dir_path = get_dataset_dir(dataset_dir if dataset_dir else None)
+    cond_path = Path(dataset_dir_path) / "cond.npy"
+    
+    if not cond_path.exists():
+        print(f"ERROR: cond.npy not found at {cond_path}")
+        print("Please run full preprocessing first with: python preprocess_and_validate.py")
+        return 1
+    
+    try:
+        print(f"Loading cond.npy from {cond_path}")
+        cond = dict(np.load(cond_path, allow_pickle=True).item())
+        
+        print(f"Found {len(cond)} objects in cond.npy")
+        
+        # Re-encode joint names
+        _attach_joint_name_embeddings_to_cond(cond, str(Path(dataset_dir_path)))
+        
+        # Save back
+        print(f"Saving updated cond.npy")
+        np.save(str(cond_path), cond)
+        
+        print("[PASS] Joint name re-encoding completed successfully")
+        return 0
+    except Exception as e:
+        print(f"ERROR: Failed to re-encode joint names: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
 
 
 def run_validation(
@@ -217,6 +264,11 @@ def parse_args() -> argparse.Namespace:
         help="Skip preprocessing and only validate the existing dataset.",
     )
     parser.add_argument(
+        "--re-encode-joint-names-only",
+        action="store_true",
+        help="Skip preprocessing and validation, only re-encode joint names into cond.npy.",
+    )
+    parser.add_argument(
         "--skip-validate",
         action="store_true",
         help="Skip validation (faster, useful for CI).",
@@ -281,6 +333,10 @@ def main() -> int:
     if args.sample_count < 0:
         print("ERROR: --sample-count must be >= 0")
         return 1
+    
+    # Handle re-encode joint names only mode
+    if args.re_encode_joint_names_only:
+        return run_re_encode_joint_names_only(args.dataset_dir)
     
     steps_completed = []
     

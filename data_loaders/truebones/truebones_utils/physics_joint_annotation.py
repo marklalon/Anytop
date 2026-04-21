@@ -201,10 +201,12 @@ _EMBED_TEXT_SKIP_TOKENS = {
 _EMBED_TEXT_NON_ANATOMICAL_TOKENS = {
     'brain',
     'center',
+    'copy',
     'cog',
     'dummy',
     'fur',
     'ik',
+    'joint',
     'locator',
     'mesh',
     'node',
@@ -219,7 +221,7 @@ _EMBED_TEXT_HEAD_FEATURE_TOKENS = {
     'tongue',
 }
 
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 6
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 7
 
 _CHAIN_INDEX_ORDINAL_TOKENS = {
     1: 'First',
@@ -337,7 +339,10 @@ def _canonicalize_joint_name(name):
         elif clean_part in _CANONICAL_NAME_REPLACEMENTS:
             canonical_parts.append(_CANONICAL_NAME_REPLACEMENTS[clean_part])
         elif len(clean_part) == 1:
-            continue
+            # Skip single letters (except digits which are preserved for disambiguation)
+            if not clean_part.isdigit():
+                continue
+            canonical_parts.append(clean_part)
         else:
             canonical_parts.append(clean_part.capitalize())
     return ' '.join(canonical_parts) if canonical_parts else name.strip()
@@ -487,7 +492,7 @@ def _build_chain_relative_joint_tokens(refined_tokens_per_joint, parents):
             continue
 
         chain_index = int(upward_steps[joint_index]) + 1
-        joint_tokens = ['Segment', _chain_index_token(chain_index)]
+        joint_tokens = ['Segment', _chain_index_token(chain_index), 'Of', str(chain_length)]
         role_token = _chain_role_token(chain_index, chain_length)
         if role_token is not None:
             joint_tokens.append(role_token)
@@ -501,7 +506,6 @@ def build_joint_embedding_texts(object_cond):
     if not base_joint_names:
         return []
 
-    species_group_tokens = _titlecase_identifier_tokens(object_cond.get('species_group', 'other')) or ['Other']
     lineage_tokens = _species_lineage_tokens(object_cond)
     joint_side_labels = list(object_cond.get('joint_side_labels') or ['center'] * len(base_joint_names))
     contact_joints = {int(joint_index) for joint_index in list(object_cond.get('contact_joints') or [])}
@@ -517,7 +521,7 @@ def build_joint_embedding_texts(object_cond):
             texts.append('')
             continue
 
-        semantic_tokens = list(species_group_tokens)
+        semantic_tokens = list()
         semantic_tokens.extend(lineage_tokens)
         semantic_tokens.extend(refined_tokens)
         semantic_tokens.extend(chain_relative_tokens[joint_index])
