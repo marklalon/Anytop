@@ -184,6 +184,16 @@ class GaussianDiffusion:
     def _unwrap_model(self, model):
         return getattr(model, 'model', model)
 
+    def _fp32_math_context(self, *tensors):
+        device_type = None
+        for tensor in tensors:
+            if isinstance(tensor, th.Tensor):
+                device_type = tensor.device.type
+                break
+        if device_type is None:
+            device_type = "cuda" if th.cuda.is_available() else "cpu"
+        return th.autocast(device_type=device_type, enabled=False)
+
     def masked_l2(self, a, b, mask):
         # assuming a.shape == b.shape == bs, J, Jdim, seqlen
         # assuming mask.shape == bs, 1, 1, seqlen
@@ -377,7 +387,7 @@ class GaussianDiffusion:
             assert model_output.shape == (B, C * 2, *x.shape[2:])
             model_output, model_var_values = th.split(model_output, C, dim=1)
             if self.model_var_type == ModelVarType.LEARNED:
-                model_log_variance = model_var_values
+                model_log_variance = model_var_values.float()
                 model_variance = th.exp(model_log_variance)
             else:
                 min_log = _extract_into_tensor(
@@ -385,7 +395,7 @@ class GaussianDiffusion:
                 )
                 max_log = _extract_into_tensor(np.log(self.betas), t, x.shape)
                 # The model_var_values is [-1, 1] for [min_var, max_var].
-                frac = (model_var_values + 1) / 2
+                frac = (model_var_values.float() + 1) / 2
                 model_log_variance = frac * max_log + (1 - frac) * min_log
                 model_variance = th.exp(model_log_variance)
         else:
@@ -1575,14 +1585,15 @@ class GaussianDiffusion:
                 model_output, model_var_values = th.split(model_output, C, dim=1)
                 # Learn the variance using the variational bound, but don't let
                 # it affect our mean prediction.
-                frozen_out = th.cat([model_output.detach(), model_var_values], dim=1)
-                terms["vb"] = self._vb_terms_bpd(
-                    model=lambda *args, r=frozen_out: r,
-                    x_start=x_start,
-                    x_t=x_t,
-                    t=t,
-                    clip_denoised=False,
-                )["output"]
+                frozen_out = th.cat([model_output.detach(), model_var_values], dim=1).float()
+                with self._fp32_math_context(x_t, x_start, frozen_out):
+                    terms["vb"] = self._vb_terms_bpd(
+                        model=lambda *args, r=frozen_out: r,
+                        x_start=x_start.float(),
+                        x_t=x_t.float(),
+                        t=t,
+                        clip_denoised=False,
+                    )["output"]
                 if self.loss_type == LossType.RESCALED_MSE:
                     # Divide by 1000 for equivalence with initial implementation.
                     # Without a factor of 1/1000, the VB term hurts the MSE term.
@@ -1596,22 +1607,35 @@ class GaussianDiffusion:
                 ModelMeanType.EPSILON: noise,
             }[self.model_mean_type]
             assert model_output.shape == target.shape == x_start.shape  # [bs, njoints, nfeats, nframes]
-            terms["l_simple"] = self.temporal_spatial_masked_l2(target, model_output, mask, joints_mask, lengths, actual_joints)
-            terms["loss"] = torch.zeros_like(terms["l_simple"])
-            terms["loss"] = terms["loss"] + terms["l_simple"]
+            with self._fp32_math_context(model_output, target, mean, std):
+                target_fp32 = target.float()
+                model_output_fp32 = model_output.float()
+                mask_fp32 = mask.float()
+                joints_mask_fp32 = joints_mask.float()
+                lengths_fp32 = lengths.float()
+                actual_joints_fp32 = actual_joints.float()
+                mean_fp32 = mean.float()
+                std_fp32 = std.float()
 
-            # denormalize before applying loss terms 
-            target = (target * std) + mean 
-            model_output = (model_output * std) + mean 
-            
-            # # calc all loss terms 
-            if self.lambda_geo > 0.:
-                terms["geodesic_loss"] = self.geodesic_loss(target, model_output, mask, joints_mask, lengths, actual_joints)
-                terms["loss"] = terms["loss"] + self.lambda_geo * terms["geodesic_loss"]
+                terms["l_simple"] = self.temporal_spatial_masked_l2(
+                    target_fp32, model_output_fp32, mask_fp32, joints_mask_fp32, lengths_fp32, actual_joints_fp32
+                )
+                terms["loss"] = terms["l_simple"].clone()
 
-            if self.lambda_vel > 0.:
-                terms["vel_loss"] = self.velocity_consistency_loss(model_output, mask, joints_mask, lengths, actual_joints)
-                terms["loss"] = terms["loss"] + self.lambda_vel * terms["vel_loss"]
+                target_denorm = (target_fp32 * std_fp32) + mean_fp32
+                model_output_denorm = (model_output_fp32 * std_fp32) + mean_fp32
+
+                if self.lambda_geo > 0.:
+                    terms["geodesic_loss"] = self.geodesic_loss(
+                        target_denorm, model_output_denorm, mask_fp32, joints_mask_fp32, lengths_fp32, actual_joints_fp32
+                    )
+                    terms["loss"] = terms["loss"] + self.lambda_geo * terms["geodesic_loss"]
+
+                if self.lambda_vel > 0.:
+                    terms["vel_loss"] = self.velocity_consistency_loss(
+                        model_output_denorm, mask_fp32, joints_mask_fp32, lengths_fp32, actual_joints_fp32
+                    )
+                    terms["loss"] = terms["loss"] + self.lambda_vel * terms["vel_loss"]
 
         else:
             raise NotImplementedError(self.loss_type)

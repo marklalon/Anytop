@@ -21,7 +21,7 @@ from data_loaders.truebones.truebones_utils.motion_process import (
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import JOINT_NAME_EMBEDDING_SCHEMA_VERSION
 
 
-DEFAULT_SPLIT_RATIOS = {"train": 0.95, "val": 0.05, "test": 0.0}
+DEFAULT_SPLIT_RATIOS = {"train": 0.9, "val": 0.1, "test": 0.0}
 DEFAULT_SPLIT_SEED = 3407
 SUPPORTED_SPLITS = tuple(DEFAULT_SPLIT_RATIOS.keys())
 ALL_SPLIT_NAME = "all"
@@ -245,23 +245,32 @@ def load_motion_names_for_split_with_action_tags(
         grouped_motion_names[object_type].append(motion_name)
 
     # Shuffle object types and assign all their motions to the same split
-    selected_motion_names: set[str] = set()
+    all_split_results: dict[str, set[str]] = {s: set() for s in SUPPORTED_SPLITS}
     rng = random.Random(DEFAULT_SPLIT_SEED)
-    object_types = sorted(grouped_motion_names.keys())
-    rng.shuffle(object_types)
-    split_counts = _compute_filtered_split_counts(len(object_types))
+    object_types_list = sorted(grouped_motion_names.keys())
+    rng.shuffle(object_types_list)
+    split_counts = _compute_filtered_split_counts(len(object_types_list))
     start_index = 0
     for current_split in SUPPORTED_SPLITS:
         end_index = start_index + split_counts[current_split]
-        for object_type in object_types[start_index:end_index]:
-            if current_split == split:
-                selected_motion_names.update(grouped_motion_names[object_type])
+        for object_type in object_types_list[start_index:end_index]:
+            all_split_results[current_split].update(grouped_motion_names[object_type])
         start_index = end_index
+
+    selected_motion_names = all_split_results[split]
 
     if not selected_motion_names:
         raise RuntimeError(
             f"Split '{split}' is empty after filtering action_tags={sorted(requested_action_tags)}"
         )
+    
+    # Generate split manifest files for manual verification
+    data_root_path = Path(data_root)
+    for split_name in SUPPORTED_SPLITS:
+        split_path = data_root_path / f"{split_name}.txt"
+        if all_split_results[split_name]:
+            split_path.write_text("\n".join(sorted(all_split_results[split_name])) + "\n", encoding="utf-8")
+    
     return selected_motion_names
 
 

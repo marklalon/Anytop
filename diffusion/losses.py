@@ -9,6 +9,7 @@ import numpy as np
 import torch as th
 
 
+@th.amp.custom_fwd(cast_inputs=th.float32, device_type="cuda")
 def normal_kl(mean1, logvar1, mean2, logvar2):
     """
     Compute the KL divergence between two gaussians.
@@ -47,6 +48,7 @@ def approx_standard_normal_cdf(x):
     return 0.5 * (1.0 + th.tanh(np.sqrt(2.0 / np.pi) * (x + 0.044715 * th.pow(x, 3))))
 
 
+@th.amp.custom_fwd(cast_inputs=th.float32, device_type="cuda")
 def discretized_gaussian_log_likelihood(x, *, means, log_scales):
     """
     Compute the log-likelihood of a Gaussian distribution discretizing to a

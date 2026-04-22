@@ -52,7 +52,7 @@ def resolve_t5_out_dim(args, cond_source: str | Path | dict | None = None) -> in
 def load_model(model, state_dict):
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     unexpected_keys = [key for key in unexpected_keys if not key.startswith('quality_proxy.')]
-    assert len(unexpected_keys) == 0
+    assert len(unexpected_keys) == 0, f"Unexpected keys in checkpoint: {unexpected_keys}"
     assert all([
         k.startswith('clip_model.') or k.startswith('action_conditioner.')
         for k in missing_keys
