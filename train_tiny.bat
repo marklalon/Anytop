@@ -22,10 +22,13 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--diffusion_steps 100 ^
 	--num_frames 60 ^
 	--stage1_batch_size 32 ^
-	--stage1_lr 1e-4 ^
+	--stage1_lr 5e-5 ^
 	--stage1_num_steps 100000 ^
 	--lr_scheduler_step_size 5000 ^
-	--lr_scheduler_gamma 0.95 ^
+	--lr_scheduler_gamma 0.9 ^
+	--eval_during_training ^
+	--eval_interval 1000 ^
+	--eval_num_samples 32 ^
 	--dropout_prob 0.1 ^
 	--aug_speed_range 0.2 ^
 	--aug_mirror_prob 0.5 ^

@@ -1,14 +1,14 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=stage1_quadropeds_v2_7_1
+set RUN_NAME=stage1_quadropeds_v2_9
 REM 多个类型用空格分隔（直接传给 --object_type nargs='+'）。支持指定训练时模型没见过的Object Type来实现0样本泛化推理
 set OBJECT_TYPE=Buffalo Comodoa Flamingo Goat SandMouse
 set NUM_REPETITIONS=4
 set ACTION_CATEGORY=locomotion
 set ACTION_GUIDANCE_SCALE=1
 
-rem set MODEL_FILE=model000050000.pt
+rem set MODEL_FILE=model000040000.pt
 
 pushd "%SCRIPT_DIR%"
 
@@ -54,17 +54,8 @@ REM 一次调用 generate.py，所有类型作为 batch 并行生成
     --action_guidance_scale %ACTION_GUIDANCE_SCALE% ^
     --motion_length 2.0 ^
     --sampling_method ddim ^
-    --sampling_steps 50
-
-if %errorlevel% neq 0 (
-    echo Error: Generation failed.
-    popd
-    exit /b 1
-)
-
-REM 一次调用 test_generation_diversity.py，支持多个 object_type
-echo Running diversity test for all object types...
-%PYTHON_EXE% tests\test_generation_diversity.py --gen_dir %OUTPUT_DIR% --object_type "%OBJECT_TYPE%" --action_tags %ACTION_CATEGORY%
+    --sampling_steps 50 ^
+    --eval_split all
 
 popd
 

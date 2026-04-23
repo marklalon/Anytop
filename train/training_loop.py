@@ -484,14 +484,14 @@ class TrainLoop:
                 break
 
         if seen_samples == 0:
-            print('Validation skipped because the evaluation split is empty.')
+            tqdm.write('Validation skipped because the evaluation split is empty.')
             return
 
         averaged = {key: value / seen_samples for key, value in totals.items()}
         current_step = self.total_step()
         completed_step = current_step + 1
         if 'loss' in averaged:
-            print('val_step[{}]: val_loss[{:0.5f}]'.format(completed_step, averaged['loss']))
+            tqdm.write('val_step[{}]: val_loss[{:0.5f}]'.format(completed_step, averaged['loss']))
         for key, value in averaged.items():
             self.train_platform.report_scalar(name=key, value=value, iteration=completed_step, group_name='Val')
 
