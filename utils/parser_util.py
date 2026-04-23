@@ -241,10 +241,6 @@ def add_generate_options(parser):
                             "Maximum is 9.8 for HumanML3D (text-to-motion), and 2.0 for HumanAct12 (action-to-motion)")
     group.add_argument("--object_type", default=['Flamingo'], type=str, nargs='+',
                        help="An object type to be generated. If empty, will generate flamingo :).")
-    group.add_argument("--action_category", default='', type=str,
-                       help="Action category for evaluation/logging purposes. Must be one of the 12 known tags: "
-                            "attack, death, emote, fall, jump, locomotion, other, pose, posture, reaction, rise, turn. "
-                            "Leave empty for unconditional generation.")
     group.add_argument("--sampling_method", default="ddim", choices=["p", "ddpm", "ddim", "plms"],
                        help="Diffusion sampler to use. 'p'/'ddpm' = DDPM (slow, high quality). 'ddim' = DDIM (fast, recommended). 'plms' = PLMS (medium speed). Default: ddim.")
     group.add_argument("--sampling_steps", default=100, type=int,

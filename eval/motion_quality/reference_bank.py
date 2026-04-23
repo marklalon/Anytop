@@ -53,7 +53,7 @@ class ReferenceSpeciesSummary:
 class WeightedReferenceBank:
     dataset_root: str
     object_type: str
-    action_category: str
+    action_tags: str
     top_k_species: int
     clips: List[ReferenceClip]
     species: List[ReferenceSpeciesSummary]
@@ -84,24 +84,69 @@ def _embedding_for_object(cond: Mapping[str, object]) -> np.ndarray:
     return _l2_normalize(joint_embs.mean(axis=0))
 
 
-def _collect_action_category_paths(
+def _normalize_motion_action_tags(raw_action_tags) -> set[str]:
+    """Normalize motion action tags to a set of lowercase strings."""
+    if raw_action_tags is None:
+        return set()
+    if isinstance(raw_action_tags, str):
+        values = [raw_action_tags]
+    else:
+        values = raw_action_tags
+    return {
+        str(tag).strip().lower()
+        for tag in values
+        if str(tag).strip()
+    }
+
+
+def _collect_action_tags_paths(
     dataset_root: Path,
     cond_lookup: Mapping[str, Mapping[str, object]],
-    action_category: str,
+    action_tags: str,
 ) -> Dict[str, List[str]]:
+    """Collect motion paths grouped by object type, filtered by action_tags.
+    
+    Args:
+        dataset_root: Path to dataset root
+        cond_lookup: Mapping of object types to cond data
+        action_tags: Comma/semicolon-separated action tags to filter by
+    
+    Returns:
+        Dict mapping object_type to list of motion paths that match any of the action_tags
+    """
     motion_dir = get_motion_dir(dataset_root)
     metadata_lookup = load_motion_metadata(dataset_root)
     object_types = tuple(cond_lookup.keys())
     grouped: Dict[str, List[str]] = {}
+    
+    # Parse requested action tags
+    # Support both comma and semicolon separation
+    if action_tags is None:
+        requested_tags = set()
+    else:
+        tokens = str(action_tags).replace(';', ',').split(',')
+        requested_tags = {
+            token.strip().lower() 
+            for token in tokens 
+            if str(token).strip()
+        }
+    
+    if not requested_tags:
+        raise ValueError("action_tags must contain at least one tag")
 
     for path in sorted(motion_dir.glob("*.npy")):
         motion_name = path.name
         metadata = metadata_lookup.get(motion_name)
         if metadata is None:
             metadata = infer_motion_labels_from_motion_name(motion_name, object_types=object_types)
-        motion_action = str(metadata.get("action_category") or "").strip().lower()
-        if motion_action != action_category:
+        
+        # Get motion's action tags and normalize to set
+        motion_action_tags = _normalize_motion_action_tags(metadata.get("action_tags"))
+        
+        # Check if motion has any of the requested tags
+        if not motion_action_tags.intersection(requested_tags):
             continue
+        
         object_type = str(metadata.get("object_type") or "").strip()
         if not object_type:
             object_type = infer_motion_labels_from_motion_name(motion_name, object_types=object_types)["object_type"]
@@ -113,7 +158,7 @@ def _collect_action_category_paths(
 
 def _select_species_weights(
     query_object_type: str,
-    action_category: str,
+    action_tags: str,
     action_paths_by_species: Mapping[str, Sequence[str]],
     cond_lookup: Mapping[str, Mapping[str, object]],
     top_k_species: int,
@@ -134,7 +179,7 @@ def _select_species_weights(
 
     if not candidates:
         raise ValueError(
-            f"No dataset reference motions found for action_category={action_category!r}"
+            f"No dataset reference motions found for action_tags={action_tags!r}"
         )
 
     candidates.sort(key=lambda item: (item[1], item[0]))
@@ -158,7 +203,7 @@ def _select_species_weights(
 
 def build_weighted_reference_bank(
     object_type: str,
-    action_category: str,
+    action_tags: str,
     dataset_root: Optional[str] = None,
     top_k_species: int = 5,
     min_frames: int = 8,
@@ -166,14 +211,14 @@ def build_weighted_reference_bank(
     dataset_root_path = resolve_dataset_root(dataset_root)
     cond_lookup = load_cond_dict(dataset_root_path)
     object_key = _resolve_lookup_key(object_type, cond_lookup)
-    action_key = str(action_category or "").strip().lower()
-    if not action_key:
-        raise ValueError("action_category must be a non-empty string")
+    action_tags_str = str(action_tags or "").strip()
+    if not action_tags_str:
+        raise ValueError("action_tags must be a non-empty string")
 
-    action_paths_by_species = _collect_action_category_paths(dataset_root_path, cond_lookup, action_key)
+    action_paths_by_species = _collect_action_tags_paths(dataset_root_path, cond_lookup, action_tags_str)
     selected_species = _select_species_weights(
         object_key,
-        action_key,
+        action_tags_str,
         action_paths_by_species,
         cond_lookup,
         top_k_species,
@@ -221,7 +266,7 @@ def build_weighted_reference_bank(
 
     if not clips:
         raise ValueError(
-            f"No valid reference motions found for object_type={object_key!r}, action_category={action_key!r}"
+            f"No valid reference motions found for object_type={object_key!r}, action_tags={action_tags_str!r}"
         )
 
     total_weight = float(sum(clip.weight for clip in clips))
@@ -254,7 +299,7 @@ def build_weighted_reference_bank(
     return WeightedReferenceBank(
         dataset_root=str(dataset_root_path),
         object_type=object_key,
-        action_category=action_key,
+        action_tags=action_tags_str,
         top_k_species=int(top_k_species),
         clips=clips,
         species=species_summaries,

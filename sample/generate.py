@@ -147,7 +147,7 @@ def main(args=None, cond_dict=None):
     )
     model.to(dist_util.dev())
     model.eval()
-    action_category = getattr(args, 'action_category', None) or None
+    action_tags = getattr(args, 'action_tags', None) or None
 
     ddim_eta = float(getattr(args, 'ddim_eta', 0.0))
 
@@ -164,8 +164,7 @@ def main(args=None, cond_dict=None):
             n_frames,
             args.temporal_window,
             max_joints=opt.max_joints,
-            feature_len=opt.feature_len,
-            action_category=action_category,
+            feature_len=opt.feature_len
         )
         sample = _sample_object_type_batch(
             diffusion=diffusion,
@@ -209,45 +208,48 @@ def main(args=None, cond_dict=None):
             print(f'    Created motion {sample_idx + 1}/{args.batch_size}: {npy_name}')
 
     # Evaluate generated motions using DistributionMotionQualityScorer
-    print('\n### Evaluating motion quality with DistributionMotionQualityScorer...')
-    try:
-        scorer = DistributionMotionQualityScorer(fps=fps)
-        
-        # Group generated motions by object_type
-        for object_type in object_types:
-            # Find all .npy files for this object type
-            npy_files = [
-                f for f in os.listdir(out_path)
-                if f.startswith(f'{object_type}_#') and f.endswith('.npy')
-            ]
-            
-            if not npy_files:
-                print(f'  {object_type}: no generated motions found')
-                continue
-            
-            # Load motions
-            motions = []
-            for npy_file in npy_files:
-                motion = np.load(pjoin(out_path, npy_file))
-                motions.append(motion)
-            
-            # Evaluate
-            try:
-                report = scorer.evaluate(
-                    motions=motions,
-                    object_type=object_type,
-                    action_category=action_category or 'any',
-                )
-                print(f'  {object_type}: {report.overall_score:.3f}')
-            except Exception as e:
-                print(f'  {object_type}: evaluation failed - {e}')
-    except Exception as e:
-        print(f'  Quality evaluation skipped: {e}')
+    if action_tags:
+        print('\n### Evaluating motion quality with DistributionMotionQualityScorer...')
+        try:
+            scorer = DistributionMotionQualityScorer(fps=fps)
+
+            # Group generated motions by object_type
+            for object_type in object_types:
+                # Find all .npy files for this object type
+                npy_files = [
+                    f for f in os.listdir(out_path)
+                    if f.startswith(f'{object_type}_#') and f.endswith('.npy')
+                ]
+
+                if not npy_files:
+                    print(f'  {object_type}: no generated motions found')
+                    continue
+
+                # Load motions
+                motions = []
+                for npy_file in npy_files:
+                    motion = np.load(pjoin(out_path, npy_file))
+                    motions.append(motion)
+
+                # Evaluate
+                try:
+                    report = scorer.evaluate(
+                        motions=motions,
+                        object_type=object_type,
+                        action_tags=action_tags,
+                    )
+                    print(f'  {object_type}: {report.overall_score:.3f}')
+                except Exception as e:
+                    print(f'  {object_type}: evaluation failed - {e}')
+        except Exception as e:
+            print(f'  Quality evaluation skipped: {e}')
+    else:
+        print('\n### Skipping motion quality evaluation: no action_tags were provided.')
 
     return out_path
 
 
-def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joints, feature_len, action_category=None):
+def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joints, feature_len):
     """Build model_kwargs for a batch of object_types.
     """
     batches = list()

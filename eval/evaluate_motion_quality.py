@@ -12,7 +12,7 @@ Usage
 python eval/evaluate_motion_quality.py \
     --motions "outputs/trial_00/*.npy" \
     --object-type Buffalo \
-    --action-category locomotion
+    --action-tags locomotion,attack
 """
 
 from __future__ import annotations
@@ -97,7 +97,7 @@ def _print_report(report: DistributionEvalReport, use_color: bool) -> None:
     print(f"{'=' * 74}")
     print(
         f"  Object : {report.object_type or 'unknown'}  |  "
-        f"Action : {report.action_category or 'unknown'}"
+        f"Action : {report.action_tags or 'unknown'}"
     )
     print(
         f"  Query  : {report.n_input} clip(s) / {report.input_total_frames} frames  |  "
@@ -149,11 +149,11 @@ def build_parser() -> argparse.ArgumentParser:
             Low-Shot Weighted-Reference Motion Quality Evaluator
             ─────────────────────────────────────────────────────
             Compares one or more query motions against a weighted reference prior
-            assembled from dataset motions with the same semantic action category.
+            assembled from dataset motions with the same semantic action tags.
 
             Reference construction:
               • semantic Top-K species neighbors in cond.npy joint-name embedding space
-              • dataset motions filtered by action_category
+              • dataset motions filtered by action_tags (supports comma/semicolon separation)
               • species weights distributed across reference clips by frame count
 
             Scores two dimensions:
@@ -179,10 +179,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Object type key present in cond.npy, e.g. Buffalo or Horse.",
     )
     parser.add_argument(
-        "--action_category",
+        "--action_tags",
         required=True,
-        metavar="TAG",
-        help="Semantic action_category label, e.g. locomotion or attack.",
+        metavar="TAGS",
+        help="Semantic action tags (comma/semicolon-separated), e.g. 'locomotion' or 'attack,jump'.",
     )
     parser.add_argument(
         "--dataset_root",
@@ -244,7 +244,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         report = scorer.evaluate(
             motions=motions,
             object_type=args.object_type,
-            action_category=args.action_category,
+            action_tags=args.action_tags,
             top_k_species=args.top_k_species,
         )
     except (ValueError, KeyError, FileNotFoundError, RuntimeError) as exc:

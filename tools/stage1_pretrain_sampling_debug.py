@@ -469,11 +469,6 @@ def stage1_sampling_eval(
         fixseed(sample_seed)
 
         motion_cpu, cond_cpu = combine_batch_samples([sample])
-        # Override action condition if --action_category was specified.
-        action_category = str(getattr(model_args, "action_category", "") or "").strip().lower()
-        if action_category:
-            cond_cpu["y"]["action_tags"] = [[action_category]]
-            cond_cpu["y"]["action_category"] = [action_category]
         # Override tpos_first_frame with the actual first frame of the clean target motion.
         cond_cpu["y"]["tpos_first_frame"] = motion_cpu[0, :, :, 0].unsqueeze(0).clone()
         motion = motion_cpu.to(device, non_blocking=device.type == "cuda")

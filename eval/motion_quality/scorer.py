@@ -4,13 +4,13 @@ Low-Shot Weighted-Reference Motion Quality Scorer
 
 Scores one or more query motions by comparing them against a weighted
 reference prior assembled from dataset motions that share the requested
-semantic action category.
+semantic action tags.
 
 Reference construction
 ----------------------
 - Resolve the query species in cond.npy.
 - Find the Top-K nearest species in semantic joint-name embedding space.
-- Filter dataset motions by action_category.
+- Filter dataset motions by action_tags.
 - Distribute each selected species weight across its reference motions in
   proportion to motion frame count.
 
@@ -54,7 +54,7 @@ class DistributionEvalReport:
     """Full low-shot weighted-reference quality report."""
 
     object_type: Optional[str]
-    action_category: Optional[str]
+    action_tags: Optional[str]
     n_input: int
     n_reference: int
     input_total_frames: int
@@ -119,7 +119,7 @@ class DistributionEvalReport:
             },
             "meta": {
                 "object_type": self.object_type,
-                "action_category": self.action_category,
+                "action_tags": self.action_tags,
                 "n_input": self.n_input,
                 "input_total_frames": self.input_total_frames,
             },
@@ -131,7 +131,7 @@ class DistributionEvalReport:
         lines = [
             "Low-Shot Weighted-Reference Motion Quality Report",
             f"  Object type : {self.object_type or 'unknown'}",
-            f"  Action      : {self.action_category or 'unknown'}",
+            f"  Action tags : {self.action_tags or 'unknown'}",
             f"  Inputs      : {self.n_input} clip(s) / {self.input_total_frames} frames",
             f"  Reference   : {self.n_reference} clip(s) / {self.reference_total_frames} frames",
             "",
@@ -660,7 +660,7 @@ class DistributionMotionQualityScorer:
         self,
         motions: List[np.ndarray],
         object_type: str,
-        action_category: str,
+        action_tags: str,
         top_k_species: int = 5,
     ) -> DistributionEvalReport:
         query_motions = [
@@ -679,7 +679,7 @@ class DistributionMotionQualityScorer:
         query_joint_groups, joint_group_source = self._resolve_macro_joint_groups(object_key, next(iter(query_joint_counts)))
         reference_bank = build_weighted_reference_bank(
             object_type=object_key,
-            action_category=action_category,
+            action_tags=action_tags,
             dataset_root=self.dataset_root,
             top_k_species=top_k_species,
             min_frames=_MIN_CLIP_FRAMES,
@@ -713,7 +713,7 @@ class DistributionMotionQualityScorer:
         overall = float(np.clip(0.6 * macro["score"] + 0.4 * local["score"], 0.0, 1.0))
         return DistributionEvalReport(
             object_type=object_key,
-            action_category=str(action_category or "").strip().lower(),
+            action_tags=str(action_tags or "").strip(),
             n_input=len(query_motions),
             n_reference=len(reference_bank.clips),
             input_total_frames=int(sum(motion.shape[0] for motion in query_motions)),
