@@ -78,9 +78,9 @@ def truebones_collate(batch):
         motionnamebatch = [b['motion_name'] for b in notnone_batches]
         cond['y'].update({'motion_name': motionnamebatch})
 
-    for key in ('species_label', 'species_group'):
-        if key in notnone_batches[0]:
-            cond['y'].update({key: [b[key] for b in notnone_batches]})
+    for key in ('species_label', 'species_group', 'action_tags'):
+        if any(key in batch_item for batch_item in notnone_batches):
+            cond['y'].update({key: [batch_item.get(key) for batch_item in notnone_batches]})
     
     if 'parents' in notnone_batches[0]:
         parentsbatch = [b['parents'] for b in notnone_batches]
@@ -128,7 +128,7 @@ def truebones_batch_collate(batch):
         padded_graph_dist =  create_padded_relation(b[6], max_joints, n_joints)
         object_type = b[8]
         motion_metadata = None
-        if len(b) >= 16 and isinstance(b[-2], dict) and ('action_category' in b[-2] or 'species_label' in b[-2]):
+        if len(b) >= 16 and isinstance(b[-2], dict) and ('action_category' in b[-2] or 'species_label' in b[-2] or 'action_tags' in b[-2]):
             motion_metadata = b[-2]
 
         item = {
@@ -146,7 +146,7 @@ def truebones_batch_collate(batch):
             'std': std
         }
         if motion_metadata is not None:
-            for key in ('species_label', 'species_group'):
+            for key in ('species_label', 'species_group', 'action_tags'):
                 if key in motion_metadata:
                     item[key] = motion_metadata[key]
         if len(b) >= 15 and isinstance(b[-1], str):

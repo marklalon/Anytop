@@ -29,6 +29,21 @@ from eval.motion_quality import DistributionMotionQualityScorer
 INITIAL_LOG_LOSS_SCALE = 20.0
 EXP_AVG_SQ_CHECKPOINT_ALERT_THRESHOLD = 1e20
 
+
+def _normalize_eval_action_tags(raw_action_tags):
+    if raw_action_tags is None:
+        return ()
+    if isinstance(raw_action_tags, str):
+        values = raw_action_tags.replace(';', ',').split(',')
+    else:
+        values = raw_action_tags
+    normalized = {
+        str(tag).strip().lower()
+        for tag in values
+        if str(tag).strip()
+    }
+    return tuple(sorted(normalized))
+
 class TrainLoop:
     def __init__(self, args, train_platform, model, diffusion, data):
         self.args = args
@@ -480,9 +495,9 @@ class TrainLoop:
         if not self.args.eval_during_training or self.eval_data is None:
             return
         cond_dict = self.data.dataset.motion_dataset.cond_dict
-        action_tags = self.args.action_tags
         infer_model = self.model_avg if self.model_avg is not None else self.model
-        all_motions = {}
+        motion_groups = {}
+        missing_action_tag_count = 0
         seen_samples = 0
         max_eval_samples = int(self.args.eval_num_samples)
         eval_iter = iter(self.eval_data)
@@ -515,12 +530,19 @@ class TrainLoop:
 
                 for i in range(batch_size):
                     object_type = cond['y']['object_type'][i]
+                    action_tags = _normalize_eval_action_tags(
+                        cond['y'].get('action_tags', [None] * batch_size)[i]
+                    )
+                    if not action_tags:
+                        missing_action_tag_count += 1
+                        continue
                     n_joints = cond['y']['n_joints'][i].item()
                     motion_sample = sample[i][:n_joints]
                     mean = cond_dict[object_type]['mean'][None, :]
                     std = cond_dict[object_type]['std'][None, :]
                     motion_np = motion_sample.cpu().permute(2, 0, 1).numpy() * std + mean
-                    all_motions.setdefault(object_type, []).append(motion_np.astype(np.float32))
+                    group_key = (object_type, action_tags)
+                    motion_groups.setdefault(group_key, []).append(motion_np.astype(np.float32))
 
                 seen_samples += batch_size
                 if max_eval_samples > 0 and seen_samples >= max_eval_samples:
@@ -528,30 +550,35 @@ class TrainLoop:
 
         infer_model.train()
 
-        if not all_motions:
+        if missing_action_tag_count:
+            tqdm.write(f'Validation skipped {missing_action_tag_count} motion(s) without action_tags.')
+
+        if not motion_groups:
             tqdm.write('Validation skipped: eval split returned no samples.')
             return
 
         macro_scores = []
         local_scores = []
-        for object_type, motions in all_motions.items():
+        score_weights = []
+        for (object_type, action_tags), motions in motion_groups.items():
             try:
                 report = self.scorer.evaluate(
                     motions=motions,
                     object_type=object_type,
-                    action_tags=action_tags,
+                    action_tags=','.join(action_tags),
                 )
             except Exception as exc:
-                tqdm.write(f'[eval] Scoring failed for {object_type}: {exc}')
+                tqdm.write(f"[eval] Scoring failed for {object_type} ({','.join(action_tags)}): {exc}")
                 continue
             macro_scores.append(report.macro_fidelity_score)
             local_scores.append(report.local_naturalness_score)
+            score_weights.append(len(motions))
 
         if not macro_scores:
             return
 
-        avg_macro = float(np.mean(macro_scores))
-        avg_local = float(np.mean(local_scores))
+        avg_macro = float(np.average(macro_scores, weights=score_weights))
+        avg_local = float(np.average(local_scores, weights=score_weights))
         completed_step = self.total_step() + 1
         tqdm.write('val_step[{}]: Macro[{:.4f}] Local[{:.4f}]'.format(completed_step, avg_macro, avg_local))
         self.train_platform.report_scalar(name='Macro', value=avg_macro, iteration=completed_step, group_name='Val')
