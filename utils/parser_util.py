@@ -144,6 +144,10 @@ def add_training_options(parser):
     group.add_argument("--amp_dtype", default='fp32', choices=['fp32', 'fp16', 'bf16'], type=str,
                        help="Autocast precision for training. bf16 is preferred on supported GPUs; fp32 disables AMP.")
     group.add_argument("--lr", default=1e-4, type=float, help="Learning rate.")
+    group.add_argument("--lr_scheduler_step_size", default=10000, type=int,
+                       help="StepLR step size: decay LR every N optimizer steps.")
+    group.add_argument("--lr_scheduler_gamma", default=0.99, type=float,
+                       help="StepLR gamma: multiplicative factor for LR decay.")
 
     group.add_argument("--weight_decay", default=0.0, type=float, help="Optimizer weight decay.")
     group.add_argument("--lr_anneal_steps", default=0, type=int, help="Number of learning rate anneal steps.")

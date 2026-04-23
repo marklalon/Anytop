@@ -93,9 +93,9 @@ class TrainLoop:
         
         self.opt = AdamW(self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay)
         self._optimizer_param_names = {id(param): name for name, param in self.model.named_parameters()}
-        self.lr_scheduler = torch.optim.lr_scheduler.StepLR(self.opt, 
-                                                step_size = 10000, 
-                                                gamma = 0.99)
+        self.lr_scheduler = torch.optim.lr_scheduler.StepLR(self.opt,
+                                                step_size=getattr(self.args, 'lr_scheduler_step_size', 10000),
+                                                gamma=getattr(self.args, 'lr_scheduler_gamma', 0.99))
         
         if self.resume_step and bool(getattr(self.args, 'load_optimizer_state', True)):
             self._load_optimizer_state()

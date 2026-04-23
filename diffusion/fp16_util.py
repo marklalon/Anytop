@@ -346,6 +346,7 @@ class MixedPrecisionTrainer:
                 self.scaler.update()
             self.zero_grad()
             return False
+        th.nn.utils.clip_grad_norm_(self.model_params, max_norm=1.0)
         self.scaler.step(opt)
         self.scaler.update()
         scheduler.step()
@@ -400,6 +401,7 @@ class MixedPrecisionTrainer:
             )
             zero_master_grads(self.master_params)
             return False
+        th.nn.utils.clip_grad_norm_(self.model_params, max_norm=1.0)
         opt.step()
         scheduler.step()
         logger.logkv_mean("lr", scheduler.get_last_lr()[0])

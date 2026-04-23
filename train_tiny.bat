@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=stage1_quadropeds_v2_8
+set RUN_NAME=stage1_quadropeds_v2_9
 
 pushd "%SCRIPT_DIR%"
 
@@ -24,15 +24,16 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--stage1_batch_size 32 ^
 	--stage1_lr 1e-4 ^
 	--stage1_num_steps 100000 ^
+	--lr_scheduler_step_size 5000 ^
+	--lr_scheduler_gamma 0.95 ^
 	--dropout_prob 0.1 ^
 	--aug_speed_range 0.2 ^
 	--aug_mirror_prob 0.5 ^
 	--joint_mask_prob 0.2 ^
 	--joint_mask_max_frac 0.2 ^
-	--lambda_vel 0.5 ^
+	--lambda_vel 0.2 ^
 	--lambda_geo 0.0 ^
-	--amp_dtype bf16 ^
 	--motion_cache_size 512 ^
-	--main_process_prefetch_batches 32
+	--main_process_prefetch_batches 64
 	
 popd
