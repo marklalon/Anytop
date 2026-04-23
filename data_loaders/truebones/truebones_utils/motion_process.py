@@ -798,7 +798,8 @@ def _neutralize_mirror_disabled_subtrees(features, object_cond, mirrored_offsets
     positions = get_rifke(global_positions, r_rot, translation_root_index=translation_root_index)
     is_loop = _detect_motion_loop(positions)
     local_vel = np.repeat(r_rot[1:, None], global_positions.shape[1], axis=1) * (global_positions[1:] - global_positions[:-1])
-    terminal_local_vel = _compute_terminal_local_velocity(global_positions, r_rot, is_loop)
+    prev_velocity = local_vel[-1] if local_vel.shape[0] > 0 else None
+    terminal_local_vel = _compute_terminal_local_velocity(global_positions, r_rot, is_loop, prev_frame_velocity=prev_velocity)
     foot_contact = get_contact_state(global_positions, contact_joint_indices, FOOT_CONTACT_VEL_THRESH)
     terminal_contact = get_terminal_contact_state(global_positions, contact_joint_indices, FOOT_CONTACT_VEL_THRESH, is_loop)
     neutralized, _max_joints = get_motion_features(
@@ -832,17 +833,23 @@ def mirror_features_with_safeguards(features, object_cond):
     return mirrored, mirrored_offsets
 
 
-def _compute_terminal_local_velocity(global_positions, root_rot, is_loop):
+def _compute_terminal_local_velocity(global_positions, root_rot, is_loop, prev_frame_velocity=None):
     """Return the final per-joint velocity row for exported features.
 
     Looping clips use the wrap-around delta last->first, expressed in the first
-    frame's root coordinate system. Non-looping clips emit zeros.
+    frame's root coordinate system. Non-looping clips use the velocity from the
+    previous frame if provided, otherwise emit zeros.
     """
     terminal_velocity = np.zeros((global_positions.shape[1], 3), dtype=global_positions.dtype)
-    if not is_loop or global_positions.shape[0] < 2:
+    if global_positions.shape[0] < 2:
         return terminal_velocity
-    wrap_delta = global_positions[0] - global_positions[-1]
-    terminal_velocity = np.repeat(root_rot[0:1], global_positions.shape[1], axis=0) * wrap_delta
+    
+    if is_loop:
+        wrap_delta = global_positions[0] - global_positions[-1]
+        terminal_velocity = np.repeat(root_rot[0:1], global_positions.shape[1], axis=0) * wrap_delta
+    elif prev_frame_velocity is not None:
+        terminal_velocity = prev_frame_velocity
+    
     return terminal_velocity
 
 '''return positions in root coords system. Meaning, each frame faces Z+, and the root is at [0, root_height, 0]'''
@@ -1015,7 +1022,8 @@ def get_motion(bvh_path, foot_contact_vel_thresh, object_type, max_joints, root_
         # r_velocity = np.arcsin(r_velocity[:, 2:3])
         # l_velocity = velocity[:, [0, 2]]
         local_vel = np.repeat(r_rot[1:, None], global_positions.shape[1], axis=1) * (global_positions[1:] - global_positions[:-1])
-        terminal_local_vel = _compute_terminal_local_velocity(global_positions, r_rot, is_loop)
+        prev_velocity = local_vel[-1] if local_vel.shape[0] > 0 else None
+        terminal_local_vel = _compute_terminal_local_velocity(global_positions, r_rot, is_loop, prev_frame_velocity=prev_velocity)
         # For locomotion clips the root XZ position has already been zeroed by
         # strip_translation_root_xz, so the velocity must be zeroed too to stay
         # consistent with RIFKE.  For in-place clips we keep the XZ velocity so
