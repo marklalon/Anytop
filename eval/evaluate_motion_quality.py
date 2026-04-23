@@ -1,28 +1,18 @@
 #!/usr/bin/env python
 """
-Distribution-Based Motion Quality Evaluator
-============================================
+Low-Shot Weighted-Reference Motion Quality Evaluator
+====================================================
 
-Evaluates motion quality by comparing the statistical distributions of
-generated vs clean (GT) motion samples.  Requires ≥32 clips in each set.
+Evaluates one or more motion clips by comparing them against a weighted
+reference prior built from dataset motions that share the requested semantic
+action category.
 
 Usage
 -----
-# Basic comparison
-python eval/evaluate_motion_quality.py \\
-    --generated "outputs/trial_00/*/generated_prediction.npy" \\
-    --clean     "outputs/trial_00/*/clean_target.npy"
-
-# With JSON output (object-type is inferred automatically from clean filenames)
-python eval/evaluate_motion_quality.py \\
-    --generated "outputs/trial_00/*/generated_prediction.npy" \\
-    --clean     "dataset/.../motions/Human_*.npy" \\
-    --output-json report.json
-
-# Sanity check: clean vs clean should score ~1.0
-python eval/evaluate_motion_quality.py \\
-    --generated "dataset/truebones/zoo/truebones_processed/motions/Human_*.npy" \\
-    --clean     "dataset/truebones/zoo/truebones_processed/motions/Human_*.npy"
+python eval/evaluate_motion_quality.py \
+    --motions "outputs/trial_00/*.npy" \
+    --object-type Buffalo \
+    --action-category locomotion
 """
 
 from __future__ import annotations
@@ -31,7 +21,6 @@ import argparse
 import glob
 import json
 import os
-import re
 import sys
 import textwrap
 from pathlib import Path
@@ -39,80 +28,47 @@ from typing import List, Optional
 
 import numpy as np
 
-# ---------------------------------------------------------------------------
-# Ensure project root is on sys.path
-# ---------------------------------------------------------------------------
-_SCRIPT_DIR = Path(__file__).resolve().parent      # eval/
-_ANYTOP_DIR = _SCRIPT_DIR.parent                   # Anytop/
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_ANYTOP_DIR = _SCRIPT_DIR.parent
 if str(_ANYTOP_DIR) not in sys.path:
     sys.path.insert(0, str(_ANYTOP_DIR))
 
-from eval.motion_quality.scorer import DistributionMotionQualityScorer, DistributionEvalReport
+from eval.motion_quality.scorer import DistributionEvalReport, DistributionMotionQualityScorer
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _expand_patterns(patterns: List[str]) -> List[str]:
-    """Expand glob patterns to a sorted, deduplicated list of absolute paths."""
     seen: set[str] = set()
     result: list[str] = []
-    for pat in patterns:
-        for p in sorted(glob.glob(pat, recursive=True)):
-            ap = os.path.abspath(p)
-            if ap not in seen:
-                seen.add(ap)
-                result.append(ap)
+    for pattern in patterns:
+        for path in sorted(glob.glob(pattern, recursive=True)):
+            absolute_path = os.path.abspath(path)
+            if absolute_path not in seen:
+                seen.add(absolute_path)
+                result.append(absolute_path)
     return result
 
 
 def _load_motions(paths: List[str], label: str) -> List[np.ndarray]:
-    """Load .npy motion files; skip and warn on shape mismatches."""
     motions = []
     skipped = 0
     for path in paths:
         try:
-            m = np.load(path)
-        except Exception as e:
-            print(f"[warn] {label}: failed to load {path}: {e}", file=sys.stderr)
+            motion = np.load(path)
+        except Exception as exc:
+            print(f"[warn] {label}: failed to load {path}: {exc}", file=sys.stderr)
             skipped += 1
             continue
-        if m.ndim != 3 or m.shape[-1] != 13:
+        if motion.ndim != 3 or motion.shape[-1] != 13:
             print(
-                f"[warn] {label}: expected (T,J,13), got {m.shape} — skipping {path}",
+                f"[warn] {label}: expected (T,J,13), got {motion.shape} - skipping {path}",
                 file=sys.stderr,
             )
             skipped += 1
             continue
-        motions.append(m.astype(np.float32))
+        motions.append(motion.astype(np.float32))
     if skipped:
-        print(f"[info] {label}: skipped {skipped} file(s) with invalid format", file=sys.stderr)
+        print(f"[info] {label}: skipped {skipped} invalid file(s)", file=sys.stderr)
     return motions
-
-
-def _infer_object_type(paths: List[str]) -> Optional[str]:
-    """Infer object type from clean file paths.
-
-    Checks (in order):
-    1. Filename stem: matches 'Horse_001.npy' -> 'Horse'
-    2. Parent directory name: matches 'sample_000_Horse' -> 'Horse'
-
-    Only accepts uppercase-initial prefixes to avoid matching generic names
-    like 'clean_target' or 'generated_prediction'.
-    """
-    for path in paths:
-        p = Path(path)
-        # Try filename stem first
-        m = re.match(r'^([A-Z][A-Za-z0-9]*)_', p.stem)
-        if m:
-            return m.group(1)
-        # Try parent directory name (e.g. sample_000_Horse -> Horse)
-        for part in reversed(p.parent.parts):
-            m2 = re.search(r'_([A-Z][A-Za-z0-9]+)$', part)
-            if m2:
-                return m2.group(1)
-    return None
 
 
 def _color(score: float, text: str, use_color: bool) -> str:
@@ -133,196 +89,171 @@ def _bar(score: float, width: int = 20) -> str:
 
 
 def _print_report(report: DistributionEvalReport, use_color: bool) -> None:
-    clr = lambda v, t: _color(v, t, use_color)
+    clr = lambda value, text: _color(value, text, use_color)
 
     print()
-    print(f"{'=' * 70}")
-    print(f"  Distribution Motion Quality Report")
-    print(f"{'=' * 70}")
+    print(f"{'=' * 74}")
+    print("  Low-Shot Weighted-Reference Motion Quality Report")
+    print(f"{'=' * 74}")
     print(
         f"  Object : {report.object_type or 'unknown'}  |  "
-        f"{report.n_generated} generated  /  {report.n_clean} clean"
+        f"Action : {report.action_category or 'unknown'}"
+    )
+    print(
+        f"  Query  : {report.n_input} clip(s) / {report.input_total_frames} frames  |  "
+        f"Reference : {report.n_reference} clip(s) / {report.reference_total_frames} frames"
     )
     print()
 
     rows = [
         ("Macro distribution fidelity", report.macro_fidelity_score, "w=0.60"),
-        ("Local joint naturalness",     report.local_naturalness_score, "w=0.40"),
+        ("Local joint naturalness", report.local_naturalness_score, "w=0.40"),
     ]
     for label, score, note in rows:
-        bar       = _bar(score)
-        score_str = clr(score, f"{score:.3f}")
-        print(f"  {label:<32s} {score_str}  {bar}  {note}")
+        print(f"  {label:<32s} {clr(score, f'{score:.3f}')}  {_bar(score)}  {note}")
 
     print()
-    total_str = clr(report.overall_score, f"{report.overall_score:.3f}")
-    print(f"  {'OVERALL SCORE':<32s} {total_str}  {_bar(report.overall_score)}")
-
+    print(f"  {'OVERALL SCORE':<32s} {clr(report.overall_score, f'{report.overall_score:.3f}')}  {_bar(report.overall_score)}")
     print()
-    print("  Macro detail:")
-    print(f"    Feature groups            {json.dumps(report.macro_feature_group_scores, sort_keys=True)}")
-    print(f"    Joint groups              {json.dumps(report.macro_joint_group_scores, sort_keys=True)}")
-    print(f"    Joint group sizes         {json.dumps(report.macro_joint_group_sizes, sort_keys=True)}")
+    print("  Reference species:")
+    for species in report.reference_species:
+        print(
+            "    "
+            f"{species['object_type']:<18} weight={species['species_weight']:.4f} "
+            f"distance={species['cosine_distance']:.4f} clips={species['clip_count']} frames={species['total_frames']}"
+        )
     print()
-
-    print("  Local detail:")
+    print(f"  Macro feature groups : {json.dumps(report.macro_feature_group_scores, sort_keys=True)}")
+    print(f"  Macro joint groups   : {json.dumps(report.macro_joint_group_scores, sort_keys=True)}")
     local_component_scores = report.raw.get("local_component_scores")
     if local_component_scores:
-        print(f"    Metric scores            {json.dumps(local_component_scores, sort_keys=True)}")
+        print(f"  Local metric scores  : {json.dumps(local_component_scores, sort_keys=True)}")
     local_joint_group_scores = report.raw.get("local_joint_group_scores")
     if local_joint_group_scores:
-        print(f"    Joint groups             {json.dumps(local_joint_group_scores, sort_keys=True)}")
-    local_psd_jsd_by_group = report.raw.get("local_psd_jsd_by_group")
-    if local_psd_jsd_by_group:
-        print(f"    PSD JSD groups           {json.dumps(local_psd_jsd_by_group, sort_keys=True)}")
+        print(f"  Local joint groups   : {json.dumps(local_joint_group_scores, sort_keys=True)}")
     print()
 
 
 def _write_json(report: DistributionEvalReport, path: str) -> None:
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(report.as_dict(), fh, indent=2)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(report.as_dict(), handle, indent=2)
     print(f"[info] JSON report written -> {path}")
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+    parser = argparse.ArgumentParser(
         prog="evaluate_motion_quality",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description=textwrap.dedent("""\
-            Distribution-Based Motion Quality Evaluator
-            ─────────────────────────────────────────────
-            Compares the statistical distributions of generated vs clean (GT)
-            motion clips.  Requires ≥32 clips in each set.
+        description=textwrap.dedent(
+            """\
+            Low-Shot Weighted-Reference Motion Quality Evaluator
+            ─────────────────────────────────────────────────────
+            Compares one or more query motions against a weighted reference prior
+            assembled from dataset motions with the same semantic action category.
 
-            Scores two dimensions (50/50 weight each):
-                            • Macro distribution fidelity  — robust per-feature Wasserstein
-                                aggregation on kinematic feature vectors with root/axial/limb
-                                joint grouping (temporal statistics + frequency content)
-              • Local joint naturalness      — spectral flatness, PSD shape,
-                autocorrelation, jerk and snap distributions
+            Reference construction:
+              • semantic Top-K species neighbors in cond.npy joint-name embedding space
+              • dataset motions filtered by action_category
+              • species weights distributed across reference clips by frame count
 
-            Score range: 0.0 (worst) → 1.0 (perfect match with clean).
-            A clean-vs-clean split should always score ≈ 1.0 (sanity check).
-        """),
-        epilog=textwrap.dedent("""\
-            Examples:
-              python eval/evaluate_motion_quality.py \\
-                  --generated "outputs/trial_00/*/generated_prediction.npy" \\
-                  --clean     "outputs/trial_00/*/clean_target.npy"
+            Scores two dimensions:
+              • Macro distribution fidelity  — robust deviation of kinematic clip features
+              • Local joint naturalness      — robust deviation of spectral/smoothness summaries
 
-              python eval/evaluate_motion_quality.py \\
-                  --generated "outputs/trial_00/*/generated.npy" \\
-                  --clean     "dataset/.../motions/Human_*.npy" \\
-                  --output-json report.json
-        """),
+            Score range: 0.0 (worst) → 1.0 (best match to the weighted reference prior).
+            """
+        ),
     )
-    p.add_argument(
-        "--generated", "-g",
+    parser.add_argument(
+        "--motions",
+        "-m",
         nargs="+",
         required=True,
         metavar="PATTERN",
-        help="Glob pattern(s) for generated motion .npy files.",
+        help="Glob pattern(s) for query motion .npy files.",
     )
-    p.add_argument(
-        "--clean", "-c",
-        nargs="+",
+    parser.add_argument(
+        "--object_type",
         required=True,
-        metavar="PATTERN",
-        help="Glob pattern(s) for clean (GT) motion .npy files.",
-    )
-    p.add_argument(
-        "--object-type",
-        default=None,
         metavar="TYPE",
-        help="Skeleton type name stored as metadata (e.g. Human, Cat). "
-             "Inferred automatically from clean filenames when not specified.",
+        help="Object type key present in cond.npy, e.g. Buffalo or Horse.",
     )
-    p.add_argument(
+    parser.add_argument(
+        "--action_category",
+        required=True,
+        metavar="TAG",
+        help="Semantic action_category label, e.g. locomotion or attack.",
+    )
+    parser.add_argument(
+        "--dataset_root",
+        default=None,
+        metavar="DIR",
+        help="Dataset root containing cond.npy, motion_metadata.json, and motions/. Auto-detected when omitted.",
+    )
+    parser.add_argument(
+        "--top_k_species",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Number of semantic neighbor species to use for the weighted reference prior (default: 5).",
+    )
+    parser.add_argument(
         "--fps",
         type=int,
         default=30,
         metavar="N",
         help="Frame rate of the motion data (default: 30).",
     )
-    p.add_argument(
-        "--min-samples",
-        type=int,
-        default=32,
-        metavar="N",
-        help="Minimum number of clips required in each set (default: 32).",
-    )
-    p.add_argument(
-        "--output-json",
+    parser.add_argument(
+        "--output_json",
         default=None,
         metavar="FILE",
-        help="Write JSON report to this file.",
+        help="Write the report as JSON.",
     )
-    p.add_argument(
-        "--quiet", "-q",
+    parser.add_argument(
+        "--quiet",
+        "-q",
         action="store_true",
-        help="Suppress verbose report; print only the score line.",
+        help="Suppress the verbose report and print only the score line.",
     )
-    p.add_argument(
-        "--no-color",
+    parser.add_argument(
+        "--no_color",
         action="store_true",
         help="Disable ANSI colour in terminal output.",
     )
-    return p
+    return parser
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     use_color = not args.no_color and sys.stdout.isatty()
 
-    gen_paths = _expand_patterns(args.generated)
-    cln_paths = _expand_patterns(args.clean)
-
-    if args.object_type is None:
-        args.object_type = _infer_object_type(cln_paths)
-
-    if not gen_paths:
-        print("[error] No generated files found.", file=sys.stderr)
-        return 1
-    if not cln_paths:
-        print("[error] No clean files found.", file=sys.stderr)
+    motion_paths = _expand_patterns(args.motions)
+    if not motion_paths:
+        print("[error] No query motion files found.", file=sys.stderr)
         return 1
 
-    print(f"Loading {len(gen_paths)} generated and {len(cln_paths)} clean motions ...")
-    gen_motions = _load_motions(gen_paths, "generated")
-    cln_motions = _load_motions(cln_paths, "clean")
-
-    if len(gen_motions) < args.min_samples:
-        print(
-            f"[error] Only {len(gen_motions)} valid generated clips; "
-            f"need ≥{args.min_samples}.",
-            file=sys.stderr,
-        )
-        return 1
-    if len(cln_motions) < args.min_samples:
-        print(
-            f"[error] Only {len(cln_motions)} valid clean clips; "
-            f"need ≥{args.min_samples}.",
-            file=sys.stderr,
-        )
+    print(f"Loading {len(motion_paths)} query motion(s) ...")
+    motions = _load_motions(motion_paths, "query")
+    if not motions:
+        print("[error] No valid query motions were loaded.", file=sys.stderr)
         return 1
 
-    print(f"Evaluating {len(gen_motions)} generated vs {len(cln_motions)} clean clips ...\n")
-
-    scorer = DistributionMotionQualityScorer(fps=args.fps, min_batch_size=args.min_samples)
+    scorer = DistributionMotionQualityScorer(fps=args.fps, dataset_root=args.dataset_root)
     try:
-        report = scorer.evaluate(gen_motions, cln_motions, object_type=args.object_type)
-    except ValueError as e:
-        print(f"[error] {e}", file=sys.stderr)
+        report = scorer.evaluate(
+            motions=motions,
+            object_type=args.object_type,
+            action_category=args.action_category,
+            top_k_species=args.top_k_species,
+        )
+    except (ValueError, KeyError, FileNotFoundError, RuntimeError) as exc:
+        print(f"[error] {exc}", file=sys.stderr)
         return 1
 
     if args.quiet:
-        clr = lambda v, t: _color(v, t, use_color)
         print(
-            f"overall={clr(report.overall_score, f'{report.overall_score:.3f}')}  "
+            f"overall={_color(report.overall_score, f'{report.overall_score:.3f}', use_color)}  "
             f"macro={report.macro_fidelity_score:.3f}  "
             f"local={report.local_naturalness_score:.3f}"
         )
@@ -331,7 +262,6 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.output_json:
         _write_json(report, args.output_json)
-
     return 0
 
 

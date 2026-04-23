@@ -1,4 +1,4 @@
-"""Distribution-based motion quality evaluation — no trained model required."""
+"""Low-shot weighted-reference motion quality evaluation — no trained model required."""
 
 from .scorer import DistributionMotionQualityScorer, DistributionEvalReport
 

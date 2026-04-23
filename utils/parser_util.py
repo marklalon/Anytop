@@ -267,8 +267,8 @@ def add_generate_options(parser):
                        help="Number of respaced diffusion steps. 0 = use checkpoint's full diffusion_steps. Default: 100.")
     group.add_argument("--ddim_eta", default=0.0, type=float,
                        help="DDIM eta parameter. 0.0 = deterministic. Default: 0.0.")
-    group.add_argument("--eval_loss_after_generation", action='store_true', default=True,
-                       help="Compute and output loss values for generated samples after generation.")
+    group.add_argument("--use_reference_noise", action='store_true',
+                       help="Use a clean reference motion from the selected eval_split as init_image so sampling starts from q_sample(x0, t, eps) instead of pure Gaussian noise. Also enables post-generation reference loss reporting.")
     group.add_argument("--eval_split", default='val', choices=['val', 'test', 'all'], type=str,
                        help="Reference split for post-generation loss evaluation. Uses original motions from this split.")
 

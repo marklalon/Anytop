@@ -13,7 +13,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from data_loaders.get_data import get_dataset_loader
+from data_loaders.get_data import get_dataset, get_dataset_loader
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import (
     create_temporal_mask_for_window,
@@ -82,6 +82,56 @@ def _compute_eval_losses(model, diffusion, batch, cond, device):
             continue
         reduced[key] = float((value.detach() * weights).mean().item())
     return reduced
+
+
+def build_reference_init_batch(args, n_frames, object_types, action_category, device, repetition_index):
+    eval_split = str(getattr(args, 'eval_split', 'val'))
+    action_tags = str(action_category or '').strip().lower()
+    motion_cache_size = getattr(args, 'motion_cache_size', 0)
+    dataset_cache = {}
+    object_occurrences = {}
+    selected_motion_names = []
+    batch_motions = []
+
+    for object_type in object_types:
+        dataset = dataset_cache.get(object_type)
+        if dataset is None:
+            dataset = get_dataset(
+                num_frames=n_frames,
+                split=eval_split,
+                temporal_window=args.temporal_window,
+                balanced=False,
+                objects_subset=object_type,
+                sample_limit=0,
+                action_tags=action_tags,
+                motion_cache_size=motion_cache_size,
+            )
+            dataset_cache[object_type] = dataset
+
+        motion_dataset = dataset.motion_dataset
+
+        if len(motion_dataset.name_list) == 0:
+            raise RuntimeError(
+                f"No reference motions found in split='{eval_split}' for "
+                f"object_type='{object_type}' action_category='{action_tags or 'any'}'."
+            )
+
+        occurrence_index = object_occurrences.get(object_type, 0)
+        requested_index = repetition_index + occurrence_index
+        motion_name = motion_dataset.name_list[requested_index % len(motion_dataset.name_list)]
+        sample = motion_dataset.prepare_sample_by_name(
+            motion_name,
+            target_num_frames=n_frames,
+            crop_start=0,
+            loop_offset=0,
+        )
+        motion, _ = truebones_batch_collate([sample])
+        batch_motions.append(motion[0])
+        selected_motion_names.append(motion_name)
+        object_occurrences[object_type] = occurrence_index + 1
+
+    init_image = torch.stack(batch_motions, dim=0).to(device=device, non_blocking=True)
+    return init_image, selected_motion_names
 
 
 def compute_reference_eval_losses(model, diffusion, args, n_frames, object_types, action_category, device):
@@ -275,10 +325,23 @@ def main(args=None, cond_dict=None):
     )
 
     ddim_eta = float(getattr(args, 'ddim_eta', 0.0))
-    eval_loss = getattr(args, 'eval_loss_after_generation', True)
+    use_reference_noise = bool(getattr(args, 'use_reference_noise', False))
 
     for rep_i in range(args.num_repetitions):
         fixseed(args.seed + rep_i)
+        init_image = None
+        if use_reference_noise:
+            init_image, reference_motion_names = build_reference_init_batch(
+                args,
+                n_frames,
+                object_types,
+                action_category,
+                dist_util.dev(),
+                rep_i,
+            )
+            print('### Using reference motions for init noise:')
+            for object_type, motion_name in zip(object_types, reference_motion_names):
+                print(f'  {object_type}: {motion_name}')
         print(f'### Sampling [repetitions #{rep_i}] method={sampling_method} steps={sampling_steps or "full"}')
         if sampling_method == 'ddim':
             sample = diffusion.ddim_sample_loop(
@@ -288,6 +351,7 @@ def main(args=None, cond_dict=None):
                 model_kwargs=model_kwargs,
                 progress=True,
                 eta=ddim_eta,
+                init_image=init_image,
             )
         elif sampling_method == 'plms':
             sample = diffusion.plms_sample_loop(
@@ -296,6 +360,7 @@ def main(args=None, cond_dict=None):
                 clip_denoised=False,
                 model_kwargs=model_kwargs,
                 progress=True,
+                init_image=init_image,
             )
         elif sampling_method in ('p', 'ddpm'):
             sample = diffusion.p_sample_loop(
@@ -304,7 +369,7 @@ def main(args=None, cond_dict=None):
                 clip_denoised=False,
                 model_kwargs=model_kwargs,
                 skip_timesteps=0,
-                init_image=None,
+                init_image=init_image,
                 progress=True,
                 dump_steps=None,
                 noise=None,
@@ -344,7 +409,7 @@ def main(args=None, cond_dict=None):
                 )
             print('repetition #' + str(rep_i) + ' ,created motion: ' + npy_name)
 
-    if eval_loss:
+    if use_reference_noise:
         print('\n### Computing reference validation losses from original motions...')
         eval_model = model.model if isinstance(model, _CFGWrapper) else model
         losses, per_object_losses, used_motion_names, seen_samples = compute_reference_eval_losses(
