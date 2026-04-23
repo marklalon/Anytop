@@ -249,15 +249,6 @@ def main(args=None, cond_dict=None):
 
 def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joints, feature_len, action_category=None):
     """Build model_kwargs for a batch of object_types.
-
-    Args:
-        action_category (str | None): Optional action category to condition
-            generation on (e.g. ``'locomotion'``, ``'attack'``). Must be one
-            of the 12 known tags: attack, death, emote, fall, jump,
-            locomotion, other, pose, posture, reaction, rise, turn.
-            When provided, the action embedding is injected into each sample
-            in the batch. Only effective if the model was trained with
-            ``--use_action_cond``.
     """
     batches = list()
     for object_type in object_types:
@@ -292,12 +283,6 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joi
         batch.append(mean)
         batch.append(std)
         batch.append(max_joints)
-        tag = str(action_category).strip().lower() if action_category else None
-        motion_metadata = {
-            'action_category': tag,
-            'action_tags': [tag] if tag else [],
-        }
-        batch.append(motion_metadata)
         batch.append(object_type)
         batches.append(batch)
 

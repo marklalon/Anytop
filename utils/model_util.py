@@ -54,9 +54,9 @@ def load_model(model, state_dict):
     unexpected_keys = [key for key in unexpected_keys if not key.startswith('quality_proxy.')]
     assert len(unexpected_keys) == 0, f"Unexpected keys in checkpoint: {unexpected_keys}"
     assert all([
-        k.startswith('clip_model.') or k.startswith('action_conditioner.')
+        k.startswith('clip_model.')
         for k in missing_keys
-    ]), f"Unexpected missing keys: {[k for k in missing_keys if not k.startswith('clip_model.') and not k.startswith('action_conditioner.')]}"
+    ]), f"Unexpected missing keys: {[k for k in missing_keys if not k.startswith('clip_model.')]}"
 
 def create_model_and_diffusion_general_skeleton(args):
     model = AnyTop(**get_gmdm_args(args))
@@ -75,9 +75,8 @@ def get_gmdm_args(args):
     return {'njoints': njoints, 'nfeats': nfeats, 't5_out_dim': t5_out_dim,
             'latent_dim': args.latent_dim, 'ff_size': 1024, 'num_layers': args.layers, 'num_heads': 4,
             'dropout': getattr(args, 'dropout_prob', 0.1), 'activation': "gelu", 'cond_mode': cond_mode,
-            'action_cond_mask_prob': args.action_cond_mask_prob, 'max_joints': max_joints, 
-            'feature_len':feature_len,  'skip_t5': args.skip_t5, 'value_emb': args.value_emb, 'root_input_feats': 13,
-            'use_action_cond': getattr(args, 'use_action_cond', False)}
+            'max_joints': max_joints, 
+            'feature_len':feature_len,  'skip_t5': args.skip_t5, 'value_emb': args.value_emb, 'root_input_feats': 13}
 
 def create_gaussian_diffusion(args):
     # default params

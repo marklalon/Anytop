@@ -82,11 +82,6 @@ def add_model_options(parser):
                        help="Number of layers.")
     group.add_argument("--latent_dim", default=128, type=int,
                        help="Transformer/GRU width.")
-    group.add_argument("--action_cond_mask_prob", default=.1, type=float,
-                       help="Classifier-free guidance dropout probability for action conditioning."
-                            " Only consumed when --use_action_cond is set: ActionTagConditioner zeros the action embedding"
-                            " with this probability during training so inference-time guidance_scale != 1.0"
-                            " has a valid unconditional branch.")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Foot contact loss.")
     group.add_argument("--aug_speed_range", default=0.0, type=float,
                        help="Speed augmentation range (0.0=off). E.g. 0.2 randomly stretches/compresses"
@@ -114,10 +109,6 @@ def add_model_options(parser):
                        help="If passed, graph multihead attention learns GRPE value embeddings")
     group.add_argument("--dropout_prob", default=0.1, type=float,
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
-    group.add_argument("--use_action_cond", action='store_true',
-                       help="If passed, enables action-tag conditioning. The model learns a small embedding "
-                            "for the 12 known action categories and adds it to all tokens in the input process. "
-                            "Classifier-free guidance dropout is applied at the rate of --action_cond_mask_prob.")
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')
@@ -251,9 +242,8 @@ def add_generate_options(parser):
     group.add_argument("--object_type", default=['Flamingo'], type=str, nargs='+',
                        help="An object type to be generated. If empty, will generate flamingo :).")
     group.add_argument("--action_category", default='', type=str,
-                       help="Action category to condition generation on. Must be one of the 12 known tags: "
+                       help="Action category for evaluation/logging purposes. Must be one of the 12 known tags: "
                             "attack, death, emote, fall, jump, locomotion, other, pose, posture, reaction, rise, turn. "
-                            "Only effective when the model was trained with --use_action_cond. "
                             "Leave empty for unconditional generation.")
     group.add_argument("--sampling_method", default="ddim", choices=["p", "ddpm", "ddim", "plms"],
                        help="Diffusion sampler to use. 'p'/'ddpm' = DDPM (slow, high quality). 'ddim' = DDIM (fast, recommended). 'plms' = PLMS (medium speed). Default: ddim.")

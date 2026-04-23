@@ -78,7 +78,7 @@ def truebones_collate(batch):
         motionnamebatch = [b['motion_name'] for b in notnone_batches]
         cond['y'].update({'motion_name': motionnamebatch})
 
-    for key in ('species_label', 'species_group', 'action_label', 'action_category', 'action_tags', 'motion_metadata'):
+    for key in ('species_label', 'species_group', 'action_label', 'motion_metadata'):
         if key in notnone_batches[0]:
             cond['y'].update({key: [b[key] for b in notnone_batches]})
     
@@ -147,7 +147,7 @@ def truebones_batch_collate(batch):
         }
         if motion_metadata is not None:
             item['motion_metadata'] = motion_metadata
-            for key in ('species_label', 'species_group', 'action_label', 'action_category', 'action_tags'):
+            for key in ('species_label', 'species_group', 'action_label'):
                 if key in motion_metadata:
                     item[key] = motion_metadata[key]
         if len(b) >= 15 and isinstance(b[-1], str):

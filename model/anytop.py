@@ -2,7 +2,6 @@ import torch
 torch.cuda.empty_cache()
 import torch.nn as nn
 from model.motion_transformer import GraphMotionDecoderLayer, GraphMotionDecoder
-from model.conditioners import ActionTagConditioner
 
 
 def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 10000,
@@ -44,14 +43,8 @@ class AnyTop(nn.Module):
         self.input_feats = self.feature_len
         self.root_input_feats = root_input_feats
         self.cond_mode = kargs.get('cond_mode', 'no_cond')
-        self.action_cond_mask_prob = kargs.get('action_cond_mask_prob', 0.)
         self.skip_t5=kargs.get('skip_t5', False)
         self.value_emb=kargs.get('value_emb', False)
-        self.use_action_cond = kargs.get('use_action_cond', False)
-        self.action_conditioner = (
-            ActionTagConditioner(latent_dim=self.latent_dim, action_cond_mask_prob=self.action_cond_mask_prob)
-            if self.use_action_cond else None
-        )
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, skip_t5=self.skip_t5, dropout_prob=self.dropout)
 
         seqTransDecoderLayer = GraphMotionDecoderLayer(d_model=self.latent_dim,
@@ -78,13 +71,7 @@ class AnyTop(nn.Module):
         bs, njoints, nfeats, nframes = x.shape
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
 
-        action_emb = None
-        if self.action_conditioner is not None and y is not None:
-            # y['action_tags'] is a list[list[str]] (one per batch item), or absent
-            raw_tags = y.get('action_tags', [None] * bs)
-            action_emb = self.action_conditioner(raw_tags, device=x.device)  # [B, latent_dim]
-
-        x = self.input_process(x, tpos_first_frame, y['joints_names_embs'], action_emb=action_emb) # applies linear layer on each frame to convert it to latent dim
+        x = self.input_process(x, tpos_first_frame, y['joints_names_embs']) # applies linear layer on each frame to convert it to latent dim
         spatial_mask = 1.0 - joints_mask[:, 0, 0, 1:, 1:]
         spatial_mask = spatial_mask.unsqueeze(1).unsqueeze(1).repeat(1, nframes + 1, self.num_heads, 1, 1).reshape(-1,self.num_heads, njoints, njoints)
         temporal_mask = 1.0 - temp_mask.repeat(1, njoints, self.num_heads, 1, 1).reshape(-1, nframes + 1, nframes + 1).float()
@@ -132,7 +119,7 @@ class InputProcess(nn.Module):
         if not self.skip_t5:
             self.joints_names_dropout = nn.Dropout(p=dropout_prob)
             self.text_embedding = nn.Linear(t5_output_dim, self.latent_dim)
-    def forward(self, x, tpos_first_frame, joints_embedded_names, action_emb=None):
+    def forward(self, x, tpos_first_frame, joints_embedded_names):
         # x.shape = [batch_size, joints, 13, frames]
         x = x.permute(3, 0, 1, 2) # [frames, batch_size, n_joints, features_len]
         tpos_all_joints_except_root = self.tpos_joint_embedding(tpos_first_frame[:, :, 1:])
@@ -145,9 +132,6 @@ class InputProcess(nn.Module):
         if not self.skip_t5:
             joints_embedded_names = self.text_embedding(self.joints_names_dropout(joints_embedded_names.to(x.device)))
             x = x + joints_embedded_names[None, ...]# [frames, batch_size, n_joints, d]
-        if action_emb is not None:
-            # action_emb: [B, latent_dim] → broadcast over [frames, B, joints, latent_dim]
-            x = x + action_emb[None, :, None, :]
         positions = torch.arange(x.shape[0], device=x.device).view(1, -1, 1).repeat(x.shape[1], 1, 1)
         pos_emb = create_sin_embedding(positions, self.latent_dim)[0]
         return x + pos_emb.unsqueeze(1).unsqueeze(1)

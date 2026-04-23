@@ -55,9 +55,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sampling-steps", default=0, type=int, help="Respaced diffusion steps. 0 keeps the checkpoint diffusion step count.")
     parser.add_argument("--ddim-eta", default=0.0, type=float, help="DDIM eta parameter.")
     parser.add_argument("--no-ema", action="store_true", help="Disable EMA model averaging and use raw model weights instead.")
-    parser.add_argument("--action_category", default="", help="Action category to condition generation on, e.g. 'locomotion'. "
-                        "Must be one of: attack, death, emote, fall, jump, locomotion, other, pose, posture, reaction, rise, turn. "
-                        "Overrides action_tags in each sample's condition. Only effective when the model was trained with --use_action_cond.")
+    parser.add_argument("--action_category", default="", help="Action category for evaluation/logging purposes, e.g. 'locomotion'. "
+                        "Must be one of: attack, death, emote, fall, jump, locomotion, other, pose, posture, reaction, rise, turn.")
     return parser.parse_args()
 
 
@@ -81,7 +80,6 @@ def load_model_args(args: argparse.Namespace) -> SimpleNamespace:
     model_args.model_path = str(model_path)
     model_args.device = args.device
     model_args.batch_size = 1
-    model_args.action_cond_mask_prob = 0.0
     if args.objects_subset:
         model_args.objects_subset = args.objects_subset
     if args.action_tags:
