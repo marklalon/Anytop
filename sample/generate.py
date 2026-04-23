@@ -39,37 +39,49 @@ def _move_batch_to_device(batch, device):
     return batch.to(device, non_blocking=True)
 
 
-class _CFGWrapper(nn.Module):
-    """Wraps a model for classifier-free guidance at inference time.
+def _sample_object_type_batch(
+    diffusion,
+    model,
+    model_kwargs,
+    sampling_method,
+    sample_shape,
+    ddim_eta,
+    seed,
+    device,
+):
+    fixseed(seed)
+    init_image = None
+    noise = torch.randn(sample_shape, device=device)
+    common_kwargs = dict(
+        model=model,
+        shape=sample_shape,
+        noise=noise,
+        clip_denoised=False,
+        model_kwargs=model_kwargs,
+        device=device,
+        init_image=init_image,
+    )
 
-    Performs two forward passes per denoising step (conditioned and
-    unconditioned) and returns the linearly extrapolated prediction:
-        out = out_uncond + guidance_scale * (out_cond - out_uncond)
-
-    The unconditioned pass is obtained by zeroing the action-tag condition
-    (empty action_tags list -> zero embedding from ActionTagConditioner).
-    All structural conditions (skeleton topology, T-pose, joint names) are
-    kept unchanged in both passes.
-    """
-
-    def __init__(self, model: nn.Module, guidance_scale: float) -> None:
-        super().__init__()
-        self.model = model
-        self.guidance_scale = guidance_scale
-
-    @property
-    def feature_len(self) -> int:
-        return self.model.feature_len
-
-    def forward(self, x: torch.Tensor, timesteps: torch.Tensor, **model_kwargs) -> torch.Tensor:
-        out_cond = self.model(x, timesteps, **model_kwargs)
-        if self.guidance_scale == 1.0:
-            return out_cond
-        bs = x.shape[0]
-        y = model_kwargs.get('y', {})
-        y_uncond = {**y, 'action_tags': [[] for _ in range(bs)], 'action_category': [None] * bs}
-        out_uncond = self.model(x, timesteps, **{**model_kwargs, 'y': y_uncond})
-        return out_uncond + self.guidance_scale * (out_cond - out_uncond)
+    if sampling_method == 'ddim':
+        return diffusion.ddim_sample_loop(
+            progress=True,
+            eta=ddim_eta,
+            **common_kwargs,
+        )
+    if sampling_method == 'plms':
+        return diffusion.plms_sample_loop(
+            progress=True,
+            **common_kwargs,
+        )
+    if sampling_method in ('p', 'ddpm'):
+        return diffusion.p_sample_loop(
+            progress=True,
+            skip_timesteps=0,
+            dump_steps=None,
+            const_noise=False,
+            **common_kwargs,
+        )
+    raise ValueError(f'Unknown sampling_method: {sampling_method}')
 
 
 def main(args=None, cond_dict=None):
@@ -102,7 +114,6 @@ def main(args=None, cond_dict=None):
             'samples_{}_{}_seed{}'.format(name, niter, args.seed),
         )
     os.makedirs(out_path, exist_ok=True)
-    args.batch_size = len(object_types)
 
     print('Creating model and diffusion...')
     resolve_t5_out_dim(args, cond_source=actual_cond_file)
@@ -136,82 +147,54 @@ def main(args=None, cond_dict=None):
     )
     model.to(dist_util.dev())
     model.eval()
-    action_guidance_scale = float(getattr(args, 'action_guidance_scale', 1.0))
-    if action_guidance_scale == 0.0:
-        print('Action CFG disabled (scale=0): unconditional generation')
-    elif action_guidance_scale != 1.0:
-        print(f'Action CFG enabled: action_guidance_scale={action_guidance_scale}')
-        model = _CFGWrapper(model, action_guidance_scale)
     action_category = getattr(args, 'action_category', None) or None
-    _, model_kwargs = create_condition(
-        object_types,
-        cond_dict,
-        n_frames,
-        args.temporal_window,
-        max_joints=opt.max_joints,
-        feature_len=opt.feature_len,
-        action_category=action_category,
-    )
 
     ddim_eta = float(getattr(args, 'ddim_eta', 0.0))
 
-    for rep_i in range(args.num_repetitions):
-        fixseed(args.seed + rep_i)
-        init_image = None
-        print(f'### Sampling [repetitions #{rep_i}] method={sampling_method} steps={sampling_steps or "full"}')
-        if sampling_method == 'ddim':
-            sample = diffusion.ddim_sample_loop(
-                model,
-                (args.batch_size, max_joints, model.feature_len, n_frames),
-                clip_denoised=False,
-                model_kwargs=model_kwargs,
-                progress=True,
-                eta=ddim_eta,
-                init_image=init_image,
-            )
-        elif sampling_method == 'plms':
-            sample = diffusion.plms_sample_loop(
-                model,
-                (args.batch_size, max_joints, model.feature_len, n_frames),
-                clip_denoised=False,
-                model_kwargs=model_kwargs,
-                progress=True,
-                init_image=init_image,
-            )
-        elif sampling_method in ('p', 'ddpm'):
-            sample = diffusion.p_sample_loop(
-                model,
-                (args.batch_size, max_joints, model.feature_len, n_frames),
-                clip_denoised=False,
-                model_kwargs=model_kwargs,
-                skip_timesteps=0,
-                init_image=init_image,
-                progress=True,
-                dump_steps=None,
-                noise=None,
-                const_noise=False,
-            )
-        else:
-            raise ValueError(f'Unknown sampling_method: {sampling_method}')
+    # Generate samples per object_type sequentially, with one batch per object_type.
+    for object_idx, object_type in enumerate(object_types):
+        print(f'\n### Sampling object_type: {object_type}')
+        print(f'    method={sampling_method} steps={sampling_steps or "full"} batch_size={args.batch_size}')
 
-        bs, max_joints, n_feats, n_frames = sample.shape
-        for i, motion in enumerate(sample):
-            n_joints = model_kwargs['y']['n_joints'][i].item()
+        # Create condition for batch_size samples of the same object_type
+        obj_batch = [object_type] * args.batch_size
+        _, model_kwargs = create_condition(
+            obj_batch,
+            cond_dict,
+            n_frames,
+            args.temporal_window,
+            max_joints=opt.max_joints,
+            feature_len=opt.feature_len,
+            action_category=action_category,
+        )
+        sample = _sample_object_type_batch(
+            diffusion=diffusion,
+            model=model,
+            model_kwargs=model_kwargs,
+            sampling_method=sampling_method,
+            sample_shape=(args.batch_size, max_joints, model.feature_len, n_frames),
+            ddim_eta=ddim_eta,
+            seed=args.seed + object_idx,
+            device=dist_util.dev(),
+        )
+
+        for sample_idx, motion in enumerate(sample):
+            n_joints = model_kwargs['y']['n_joints'][sample_idx].item()
             motion = motion[:n_joints]
-            object_type = model_kwargs['y']['object_type'][i]
-            parents = model_kwargs['y']['parents'][i]
+            parents = model_kwargs['y']['parents'][sample_idx]
             mean = cond_dict[object_type]['mean'][None, :]
             std = cond_dict[object_type]['std'][None, :]
             motion = motion.cpu().permute(2, 0, 1).numpy() * std + mean
             offsets = cond_dict[object_type]['offsets']
             out_anim, has_animated_pos = recover_animation_from_motion_np(motion, parents, offsets)
-            name_pref = '%s_rep_%d' % (object_type, rep_i)
+            
+            # Generate unique filename
             existing_npy_files = [
                 filename for filename in os.listdir(out_path)
-                if filename.startswith(name_pref) and filename.endswith('.npy')
+                if filename.startswith(object_type) and filename.endswith('.npy')
             ]
-            npy_name = name_pref + '_#%d.npy' % (len(existing_npy_files))
-            bvh_name = name_pref + '_#%d.bvh' % (len(existing_npy_files))
+            npy_name = f'{object_type}_#{len(existing_npy_files)}.npy'
+            bvh_name = f'{object_type}_#{len(existing_npy_files)}.bvh'
             np.save(pjoin(out_path, npy_name), motion)
             if out_anim is not None:
                 BVH.save(
@@ -223,7 +206,7 @@ def main(args=None, cond_dict=None):
                     ),
                     positions=has_animated_pos,
                 )
-            print('repetition #' + str(rep_i) + ' ,created motion: ' + npy_name)
+            print(f'    Created motion {sample_idx + 1}/{args.batch_size}: {npy_name}')
 
     # Evaluate generated motions using DistributionMotionQualityScorer
     print('\n### Evaluating motion quality with DistributionMotionQualityScorer...')
@@ -235,7 +218,7 @@ def main(args=None, cond_dict=None):
             # Find all .npy files for this object type
             npy_files = [
                 f for f in os.listdir(out_path)
-                if f.startswith(object_type) and f.endswith('.npy')
+                if f.startswith(f'{object_type}_#') and f.endswith('.npy')
             ]
             
             if not npy_files:

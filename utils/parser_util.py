@@ -255,22 +255,12 @@ def add_generate_options(parser):
                             "attack, death, emote, fall, jump, locomotion, other, pose, posture, reaction, rise, turn. "
                             "Only effective when the model was trained with --use_action_cond. "
                             "Leave empty for unconditional generation.")
-    group.add_argument("--action_guidance_scale", default=1.0, type=float,
-                       help="Classifier-free guidance scale for action inference. 1.0 disables CFG. "
-                            "Values > 1 sharpen the conditional distribution and improve within-category "
-                            "diversity by amplifying the difference between conditioned and unconditioned "
-                            "predictions. Typical range: 1.5–5.0. Only effective when the model was "
-                            "trained with --dropout_prob > 0 and --use_action_cond.")
     group.add_argument("--sampling_method", default="ddim", choices=["p", "ddpm", "ddim", "plms"],
                        help="Diffusion sampler to use. 'p'/'ddpm' = DDPM (slow, high quality). 'ddim' = DDIM (fast, recommended). 'plms' = PLMS (medium speed). Default: ddim.")
     group.add_argument("--sampling_steps", default=100, type=int,
                        help="Number of respaced diffusion steps. 0 = use checkpoint's full diffusion_steps. Default: 100.")
     group.add_argument("--ddim_eta", default=0.0, type=float,
                        help="DDIM eta parameter. 0.0 = deterministic. Default: 0.0.")
-    group.add_argument("--use_reference_noise", action='store_true',
-                       help="Use a clean reference motion from the selected eval_split as init_image so sampling starts from q_sample(x0, t, eps) instead of pure Gaussian noise. Also enables post-generation reference loss reporting.")
-    group.add_argument("--eval_split", default='val', choices=['val', 'test', 'all'], type=str,
-                       help="Reference split for post-generation loss evaluation. Uses original motions from this split.")
 
 def add_dift_options(parser):
     # bvhs_dir, sample_bvh, face_joints, save_dir=None, tpos_bvh=None
