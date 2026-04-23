@@ -298,6 +298,7 @@ def _attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base'):
         word_dropout=0.0,
         normalize_text=False,
         device=device,
+        autocast_dtype=None,
     )
 
     with torch.no_grad():

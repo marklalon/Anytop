@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=stage1_quadropeds_v2_9
+set RUN_NAME=stage1_quadropeds_tmp
 
 pushd "%SCRIPT_DIR%"
 
@@ -37,6 +37,7 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--lambda_vel 0.2 ^
 	--lambda_geo 0.0 ^
 	--motion_cache_size 512 ^
+	--amp_dtype bf16 ^
 	--main_process_prefetch_batches 64
 	
 popd

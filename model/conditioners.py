@@ -366,9 +366,19 @@ class T5Conditioner(TextConditioner):
     JAPANESE_WORDS = {"momo":"Thigh", "sippo":"Tail", "mune":"Chest", "hiza":"Knee", "hara":"Stomach",
                       "ashi":"Leg", "hiji": "Elbow", "koshi":"Hips", "te":"Hand", "kubi":"Neck", "atama":"Head", 
                       "ago":"Jaw", "kata":"Shoulder"}
+
+    AUTOCAST_DTYPES = {
+        None: None,
+        'fp32': None,
+        'float32': None,
+        'fp16': torch.float16,
+        'float16': torch.float16,
+        'bf16': torch.bfloat16,
+        'bfloat16': torch.bfloat16,
+    }
     
     def __init__(self, name: str, finetune: bool, device: str,
-                 autocast_dtype: tp.Optional[str] = 'float32', word_dropout: float = 0.,
+                 autocast_dtype: tp.Optional[str] = None, word_dropout: float = 0.,
                  normalize_text: bool = False):
         assert name in self.MODELS, f"Unrecognized t5 model name (should in {self.MODELS})"
         super().__init__(self.MODELS_DIMS[name])
@@ -376,15 +386,14 @@ class T5Conditioner(TextConditioner):
         self.name = name
         self.finetune = finetune
         self.word_dropout = word_dropout
-        if autocast_dtype is None or self.device == 'cpu':
+        resolved_autocast_dtype = self.AUTOCAST_DTYPES.get(autocast_dtype)
+        if autocast_dtype not in self.AUTOCAST_DTYPES:
+            raise ValueError(f"Unsupported T5 autocast dtype: {autocast_dtype}")
+        if resolved_autocast_dtype is None or self.device == 'cpu':
             self.autocast = TorchAutocast(enabled=False)
-            if self.device != 'cpu':
-                print("T5 has no autocast, this might lead to NaN")
         else:
-            dtype = getattr(torch, autocast_dtype)
-            assert isinstance(dtype, torch.dtype)
             print(f"T5 will be evaluated with autocast as {autocast_dtype}")
-            self.autocast = TorchAutocast(enabled=True, device_type=self.device, dtype=dtype)
+            self.autocast = TorchAutocast(enabled=True, device_type=self.device, dtype=resolved_autocast_dtype)
         # Let's disable logging temporarily because T5 will vomit some errors otherwise.
         # thanks https://gist.github.com/simon-weber/7853144
         previous_level = logging.root.manager.disable

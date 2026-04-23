@@ -1,10 +1,152 @@
+import math
 import torch 
 import torch.nn as nn
 from typing import Optional, Union, Callable, Tuple
 from torch import Tensor
 import torch.nn.functional as F
-from torch.nn import MultiheadAttention
 CUDA_LAUNCH_BLOCKING=1
+
+
+class _AttentionOutProjection(nn.Module):
+    def __init__(self, embed_dim: int, bias: bool = True):
+        super().__init__()
+        self.weight = nn.Parameter(torch.empty(embed_dim, embed_dim))
+        if bias:
+            self.bias = nn.Parameter(torch.empty(embed_dim))
+        else:
+            self.register_parameter('bias', None)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        if self.bias is not None:
+            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight)
+            bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+            nn.init.uniform_(self.bias, -bound, bound)
+
+
+class SelectiveMultiheadAttention(nn.Module):
+    def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.0, bias: bool = True):
+        super().__init__()
+        if embed_dim % num_heads != 0:
+            raise ValueError(f"embed_dim must be divisible by num_heads (got embed_dim={embed_dim}, num_heads={num_heads})")
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.dropout = float(dropout)
+        self.head_dim = embed_dim // num_heads
+        self.scaling = self.head_dim ** -0.5
+        self.autocast_dtype: torch.dtype | None = None
+        self.autocast_device_type = 'cuda'
+
+        self.in_proj_weight = nn.Parameter(torch.empty(3 * embed_dim, embed_dim))
+        if bias:
+            self.in_proj_bias = nn.Parameter(torch.empty(3 * embed_dim))
+        else:
+            self.register_parameter('in_proj_bias', None)
+        self.out_proj = _AttentionOutProjection(embed_dim, bias=bias)
+        self._reset_parameters()
+
+    def _reset_parameters(self):
+        nn.init.xavier_uniform_(self.in_proj_weight)
+        if self.in_proj_bias is not None:
+            nn.init.constant_(self.in_proj_bias, 0.0)
+
+    def configure_precision(self, *, device_type: str, autocast_dtype: torch.dtype | None) -> bool:
+        self.autocast_device_type = device_type
+        self.autocast_dtype = autocast_dtype
+        return True
+
+    def _bf16_context(self, reference_tensor: Tensor):
+        device_type = reference_tensor.device.type if torch.is_tensor(reference_tensor) else self.autocast_device_type
+        if self.autocast_dtype is None:
+            return torch.autocast(device_type=device_type, enabled=False)
+        return torch.autocast(device_type=device_type, dtype=self.autocast_dtype)
+
+    def _project_bf16(self, inputs: Tensor, weight: Tensor, bias: Optional[Tensor]) -> Tensor:
+        with self._bf16_context(inputs):
+            return F.linear(inputs, weight, bias)
+
+    def _apply_attention_mask(self, scores: Tensor, attn_mask: Optional[Tensor]) -> Tensor:
+        if attn_mask is None:
+            return scores
+        if attn_mask.dtype == torch.bool:
+            if attn_mask.dim() == 2:
+                return scores.masked_fill(attn_mask.unsqueeze(0).unsqueeze(0), float('-inf'))
+            if attn_mask.dim() == 3:
+                batch_size, num_heads, tgt_len, src_len = scores.shape
+                if attn_mask.shape[0] == batch_size * num_heads:
+                    return scores.masked_fill(attn_mask.view(batch_size, num_heads, tgt_len, src_len), float('-inf'))
+                if attn_mask.shape[0] == batch_size:
+                    return scores.masked_fill(attn_mask.unsqueeze(1), float('-inf'))
+        else:
+            attn_mask = attn_mask.to(device=scores.device, dtype=scores.dtype)
+            if attn_mask.dim() == 2:
+                return scores + attn_mask.unsqueeze(0).unsqueeze(0)
+            if attn_mask.dim() == 3:
+                batch_size, num_heads, tgt_len, src_len = scores.shape
+                if attn_mask.shape[0] == batch_size * num_heads:
+                    return scores + attn_mask.view(batch_size, num_heads, tgt_len, src_len)
+                if attn_mask.shape[0] == batch_size:
+                    return scores + attn_mask.unsqueeze(1)
+        raise ValueError(f"Unsupported attn_mask shape: {tuple(attn_mask.shape)}")
+
+    def _apply_key_padding_mask(self, scores: Tensor, key_padding_mask: Optional[Tensor]) -> Tensor:
+        if key_padding_mask is None:
+            return scores
+        if key_padding_mask.dtype == torch.bool:
+            return scores.masked_fill(key_padding_mask[:, None, None, :].to(device=scores.device), float('-inf'))
+        return scores + key_padding_mask.to(device=scores.device, dtype=scores.dtype)[:, None, None, :]
+
+    def _softmax_fp32(self, scores: Tensor) -> Tensor:
+        return torch.softmax(scores.float(), dim=-1)
+
+    def forward(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        attn_mask: Optional[Tensor] = None,
+        key_padding_mask: Optional[Tensor] = None,
+        need_weights: bool = True,
+        average_attn_weights: bool = True,
+    ):
+        tgt_len, batch_size, _ = query.shape
+        src_len = key.shape[0]
+
+        q_weight, k_weight, v_weight = self.in_proj_weight.chunk(3, dim=0)
+        if self.in_proj_bias is None:
+            q_bias = k_bias = v_bias = None
+        else:
+            q_bias, k_bias, v_bias = self.in_proj_bias.chunk(3, dim=0)
+
+        q = self._project_bf16(query, q_weight, q_bias)
+        k = self._project_bf16(key, k_weight, k_bias)
+        v = self._project_bf16(value, v_weight, v_bias)
+
+        q = q.transpose(0, 1).reshape(batch_size, tgt_len, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.transpose(0, 1).reshape(batch_size, src_len, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.transpose(0, 1).reshape(batch_size, src_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+        scores = torch.matmul(q.float(), k.float().transpose(-2, -1)) * self.scaling
+        scores = self._apply_attention_mask(scores, attn_mask)
+        scores = self._apply_key_padding_mask(scores, key_padding_mask)
+        attn_weights_fp32 = self._softmax_fp32(scores)
+        attn_weights_fp32 = F.dropout(attn_weights_fp32, p=self.dropout, training=self.training)
+
+        attn_weights = attn_weights_fp32.to(dtype=v.dtype)
+        with self._bf16_context(v):
+            attn_output = torch.matmul(attn_weights, v)
+
+        attn_output = attn_output.transpose(1, 2).contiguous().reshape(batch_size, tgt_len, self.embed_dim)
+        attn_output = attn_output.transpose(0, 1)
+        attn_output = self._project_bf16(attn_output, self.out_proj.weight, self.out_proj.bias)
+        attn_output = attn_output.float()
+
+        if not need_weights:
+            return attn_output, None
+        if average_attn_weights:
+            return attn_output, attn_weights_fp32.mean(dim=1)
+        return attn_output, attn_weights_fp32
 
 class GraphMultiHeadAttention(nn.Module):
     def __init__(self, d_model, dropout, nheads):
@@ -180,8 +322,8 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         self.d_model= d_model
         self.heads = nhead
         self.spatial_attn = GraphMultiHeadAttention(d_model = d_model, nheads = nhead, dropout=dropout)
-        self.temporal_attn = MultiheadAttention(self.d_model, nhead, dropout=dropout) 
-        self.reference_attn = MultiheadAttention(self.d_model, nhead, dropout=dropout)
+        self.temporal_attn = SelectiveMultiheadAttention(self.d_model, nhead, dropout=dropout)
+        self.reference_attn = SelectiveMultiheadAttention(self.d_model, nhead, dropout=dropout)
         self.embed_timesteps = nn.Linear(d_model, d_model)
         self.norm_ref = nn.LayerNorm(d_model)
         self.dropout_ref = nn.Dropout(dropout)

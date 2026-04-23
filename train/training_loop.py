@@ -21,6 +21,7 @@ import copy
 from utils.model_util import load_model
 import random
 from data_loaders.get_data import get_dataset_loader
+from model.selective_autocast import enable_selective_autocast
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 EXP_AVG_SQ_CHECKPOINT_ALERT_THRESHOLD = 1e20
@@ -80,8 +81,18 @@ class TrainLoop:
             self.autocast_dtype = torch.float16
         elif self.amp_dtype == 'bf16':
             self.autocast_dtype = torch.bfloat16
+        self.use_selective_autocast = self.amp_dtype == 'bf16'
 
         self._load_and_sync_parameters()
+        if self.use_selective_autocast:
+            patched_modules = enable_selective_autocast(
+                self.model,
+                device_type=self.device.type,
+                autocast_dtype=self.autocast_dtype,
+            )
+            logger.log(
+                f"Selective {self.amp_dtype} autocast enabled for {patched_modules} linear/attention/conv modules; softmax and dropout stay fp32"
+            )
         self.mp_trainer = MixedPrecisionTrainer(
             model=self.model,
             use_fp16=False,
@@ -548,7 +559,7 @@ class TrainLoop:
             self.mp_trainer.backward(loss)
 
     def _autocast_context(self):
-        if not self.amp_enabled:
+        if not self.amp_enabled or self.use_selective_autocast:
             return torch.autocast(device_type=self.device.type, enabled=False)
         return torch.autocast(device_type=self.device.type, dtype=self.autocast_dtype)
 
