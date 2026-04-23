@@ -55,7 +55,6 @@ REM 一次调用 generate.py，所有类型作为 batch 并行生成
     --motion_length 2.0 ^
     --sampling_method ddim ^
     --sampling_steps 50 ^
-    --use_reference_noise ^
     --eval_split all
 
 popd

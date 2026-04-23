@@ -32,182 +32,11 @@ from utils.model_util import (
     resolve_t5_out_dim,
 )
 from utils.parser_util import generate_args
+from eval.motion_quality import DistributionMotionQualityScorer
 
 
 def _move_batch_to_device(batch, device):
     return batch.to(device, non_blocking=True)
-
-
-def _move_cond_to_device(cond, device):
-    return {
-        'y': {
-            key: val.to(device, non_blocking=True) if torch.is_tensor(val) else val
-            for key, val in cond['y'].items()
-        }
-    }
-
-
-def _slice_cond_batch(cond, count):
-    sliced = {'y': {}}
-    for key, val in cond['y'].items():
-        if torch.is_tensor(val):
-            sliced['y'][key] = val[:count]
-        elif isinstance(val, list):
-            sliced['y'][key] = val[:count]
-        else:
-            sliced['y'][key] = val
-    return sliced
-
-
-def _with_train_step(cond, train_step):
-    updated = {'y': dict(cond['y'])}
-    updated['train_step'] = int(train_step)
-    return updated
-
-
-def _compute_eval_losses(model, diffusion, batch, cond, device):
-    schedule_sampler = create_named_schedule_sampler('uniform', diffusion)
-    t, weights = schedule_sampler.sample(batch.shape[0], device)
-    with torch.no_grad():
-        losses = diffusion.training_losses(
-            model,
-            batch,
-            t,
-            model_kwargs=_with_train_step(cond, 0),
-        )
-
-    reduced = {}
-    for key, value in losses.items():
-        if not torch.is_tensor(value):
-            continue
-        reduced[key] = float((value.detach() * weights).mean().item())
-    return reduced
-
-
-def build_reference_init_batch(args, n_frames, object_types, action_category, device, repetition_index):
-    eval_split = str(getattr(args, 'eval_split', 'val'))
-    action_tags = str(action_category or '').strip().lower()
-    motion_cache_size = getattr(args, 'motion_cache_size', 0)
-    dataset_cache = {}
-    object_occurrences = {}
-    selected_motion_names = []
-    batch_motions = []
-
-    for object_type in object_types:
-        dataset = dataset_cache.get(object_type)
-        if dataset is None:
-            dataset = get_dataset(
-                num_frames=n_frames,
-                split=eval_split,
-                temporal_window=args.temporal_window,
-                balanced=False,
-                objects_subset=object_type,
-                sample_limit=0,
-                action_tags=action_tags,
-                motion_cache_size=motion_cache_size,
-            )
-            dataset_cache[object_type] = dataset
-
-        motion_dataset = dataset.motion_dataset
-
-        if len(motion_dataset.name_list) == 0:
-            raise RuntimeError(
-                f"No reference motions found in split='{eval_split}' for "
-                f"object_type='{object_type}' action_category='{action_tags or 'any'}'."
-            )
-
-        occurrence_index = object_occurrences.get(object_type, 0)
-        requested_index = repetition_index + occurrence_index
-        motion_name = motion_dataset.name_list[requested_index % len(motion_dataset.name_list)]
-        sample = motion_dataset.prepare_sample_by_name(
-            motion_name,
-            target_num_frames=n_frames,
-            crop_start=0,
-            loop_offset=0,
-        )
-        motion, _ = truebones_batch_collate([sample])
-        batch_motions.append(motion[0])
-        selected_motion_names.append(motion_name)
-        object_occurrences[object_type] = occurrence_index + 1
-
-    init_image = torch.stack(batch_motions, dim=0).to(device=device, non_blocking=True)
-    return init_image, selected_motion_names
-
-
-def compute_reference_eval_losses(model, diffusion, args, n_frames, object_types, action_category, device):
-    eval_split = str(getattr(args, 'eval_split', 'val'))
-    eval_batch_size = max(1, int(getattr(args, 'eval_batch_size', 32)))
-    action_tags = str(action_category or '').strip().lower()
-    per_object_target = max(1, int(getattr(args, 'num_repetitions', 1)))
-    totals = {}
-    seen_samples = 0
-    used_motion_names = {}
-    per_object_totals = {}
-    per_object_seen = {}
-
-    for object_type in list(dict.fromkeys(object_types)):
-        try:
-            loader = get_dataset_loader(
-                batch_size=min(eval_batch_size, per_object_target),
-                num_frames=n_frames,
-                split=eval_split,
-                temporal_window=args.temporal_window,
-                balanced=False,
-                objects_subset=object_type,
-                sample_limit=0,
-                shuffle=False,
-                drop_last=False,
-                action_tags=action_tags,
-                motion_cache_size=getattr(args, 'motion_cache_size', 0),
-                main_process_prefetch_batches=getattr(args, 'main_process_prefetch_batches', 0),
-            )
-        except Exception as exc:
-            print(f"[WARN] Reference eval skipped for {object_type}: {exc}")
-            continue
-
-        collected = 0
-        used_motion_names[object_type] = []
-        per_object_totals[object_type] = {}
-        per_object_seen[object_type] = 0
-        for motion, cond in loader:
-            remaining = per_object_target - collected
-            if remaining <= 0:
-                break
-            if motion.shape[0] > remaining:
-                motion = motion[:remaining]
-                cond = _slice_cond_batch(cond, remaining)
-
-            used_motion_names[object_type].extend(cond['y'].get('motion_name', []))
-            motion = _move_batch_to_device(motion, device)
-            cond = _move_cond_to_device(cond, device)
-            batch_losses = _compute_eval_losses(model, diffusion, motion, cond, device)
-            batch_size = motion.shape[0]
-            for key, value in batch_losses.items():
-                totals[key] = totals.get(key, 0.0) + (value * batch_size)
-                per_object_totals[object_type][key] = per_object_totals[object_type].get(key, 0.0) + (value * batch_size)
-            collected += batch_size
-            seen_samples += batch_size
-            per_object_seen[object_type] += batch_size
-
-        if collected == 0:
-            print(
-                f"[WARN] No reference motions found in split='{eval_split}' for "
-                f"object_type='{object_type}' action_category='{action_tags or 'any'}'."
-            )
-
-    if seen_samples == 0:
-        return None, None, used_motion_names, seen_samples
-
-    averaged = {key: value / seen_samples for key, value in totals.items()}
-    per_object_averaged = {}
-    for object_type, obj_totals in per_object_totals.items():
-        obj_seen = per_object_seen.get(object_type, 0)
-        if obj_seen <= 0:
-            continue
-        per_object_averaged[object_type] = {
-            key: value / obj_seen for key, value in obj_totals.items()
-        }
-    return averaged, per_object_averaged, used_motion_names, seen_samples
 
 
 class _CFGWrapper(nn.Module):
@@ -325,23 +154,10 @@ def main(args=None, cond_dict=None):
     )
 
     ddim_eta = float(getattr(args, 'ddim_eta', 0.0))
-    use_reference_noise = bool(getattr(args, 'use_reference_noise', False))
 
     for rep_i in range(args.num_repetitions):
         fixseed(args.seed + rep_i)
         init_image = None
-        if use_reference_noise:
-            init_image, reference_motion_names = build_reference_init_batch(
-                args,
-                n_frames,
-                object_types,
-                action_category,
-                dist_util.dev(),
-                rep_i,
-            )
-            print('### Using reference motions for init noise:')
-            for object_type, motion_name in zip(object_types, reference_motion_names):
-                print(f'  {object_type}: {motion_name}')
         print(f'### Sampling [repetitions #{rep_i}] method={sampling_method} steps={sampling_steps or "full"}')
         if sampling_method == 'ddim':
             sample = diffusion.ddim_sample_loop(
@@ -409,30 +225,41 @@ def main(args=None, cond_dict=None):
                 )
             print('repetition #' + str(rep_i) + ' ,created motion: ' + npy_name)
 
-    if use_reference_noise:
-        print('\n### Computing reference validation losses from original motions...')
-        eval_model = model.model if isinstance(model, _CFGWrapper) else model
-        losses, per_object_losses, used_motion_names, seen_samples = compute_reference_eval_losses(
-            eval_model,
-            diffusion,
-            args,
-            n_frames,
-            object_types,
-            action_category,
-            dist_util.dev(),
-        )
-        if losses is None:
-            print('### Reference Validation Losses: skipped (no matching original motions found)')
-        else:
-            print(f'### Reference Validation Losses ({seen_samples} original motions):')
-            for object_type, motion_names in used_motion_names.items():
-                if motion_names:
-                    print(f"  {object_type}: {', '.join(motion_names)}")
-            if per_object_losses:
-                print('### Reference Validation Losses By Object Type:')
-                for object_type, metrics in per_object_losses.items():
-                    metrics_text = ', '.join(f"{k}={v:.5f}" for k, v in metrics.items())
-                    print(f"  {object_type}: {metrics_text}")
+    # Evaluate generated motions using DistributionMotionQualityScorer
+    print('\n### Evaluating motion quality with DistributionMotionQualityScorer...')
+    try:
+        scorer = DistributionMotionQualityScorer(fps=fps)
+        
+        # Group generated motions by object_type
+        for object_type in object_types:
+            # Find all .npy files for this object type
+            npy_files = [
+                f for f in os.listdir(out_path)
+                if f.startswith(object_type) and f.endswith('.npy')
+            ]
+            
+            if not npy_files:
+                print(f'  {object_type}: no generated motions found')
+                continue
+            
+            # Load motions
+            motions = []
+            for npy_file in npy_files:
+                motion = np.load(pjoin(out_path, npy_file))
+                motions.append(motion)
+            
+            # Evaluate
+            try:
+                report = scorer.evaluate(
+                    motions=motions,
+                    object_type=object_type,
+                    action_category=action_category or 'any',
+                )
+                print(f'  {object_type}: {report.overall_score:.3f}')
+            except Exception as e:
+                print(f'  {object_type}: evaluation failed - {e}')
+    except Exception as e:
+        print(f'  Quality evaluation skipped: {e}')
 
     return out_path
 
