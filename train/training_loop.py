@@ -3,6 +3,7 @@ import os
 import re
 import time
 import json
+import copy as pycopy
 import numpy as np
 from os.path import join as pjoin
 from typing import Optional
@@ -19,9 +20,11 @@ from diffusion.resample import create_named_schedule_sampler
 from sample.generate import main as generate
 import copy
 from utils.model_util import load_model
+from utils.model_util import create_model_and_diffusion_general_skeleton
 import random
 from data_loaders.get_data import get_dataset_loader
 from model.selective_autocast import enable_selective_autocast
+from eval.motion_quality import DistributionMotionQualityScorer
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 EXP_AVG_SQ_CHECKPOINT_ALERT_THRESHOLD = 1e20
@@ -117,6 +120,8 @@ class TrainLoop:
         self.schedule_sampler = create_named_schedule_sampler(self.schedule_sampler_type, diffusion)
         
         self.eval_wrapper, self.eval_data, self.eval_gt_data = None, None, None
+        self.inference_diffusion = None
+        self.scorer = None
         if self.args.eval_during_training:
             self.eval_data = get_dataset_loader(
                 batch_size=self.args.eval_batch_size,
@@ -132,6 +137,11 @@ class TrainLoop:
                 motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
                 main_process_prefetch_batches=getattr(self.args, 'main_process_prefetch_batches', 0),
             )
+            sampling_steps = int(getattr(self.args, 'sampling_steps', 100))
+            infer_args = pycopy.deepcopy(self.args)
+            infer_args.timestep_respacing = f'ddim{sampling_steps}' if sampling_steps > 0 else ''
+            _, self.inference_diffusion = create_model_and_diffusion_general_skeleton(infer_args)
+            self.scorer = DistributionMotionQualityScorer(fps=30)
         self.use_ddp = False
         self.ddp_model = self.model
         self.forward_model = self.ddp_model
@@ -469,42 +479,83 @@ class TrainLoop:
     def evaluate(self):
         if not self.args.eval_during_training or self.eval_data is None:
             return
-        totals = {}
+        cond_dict = self.data.dataset.motion_dataset.cond_dict
+        action_tags = self.args.action_tags
+        infer_model = self.model_avg if self.model_avg is not None else self.model
+        all_motions = {}
         seen_samples = 0
         max_eval_samples = int(self.args.eval_num_samples)
-
         eval_iter = iter(self.eval_data)
 
-        while True:
-            try:
-                motion, cond = next(eval_iter)
-            except StopIteration:
-                break
+        infer_model.eval()
+        with torch.no_grad():
+            while True:
+                try:
+                    motion, cond = next(eval_iter)
+                except StopIteration:
+                    break
 
-            motion = self._move_batch_to_device(motion)
-            cond = self._move_cond_to_device(cond)
+                cond = self._move_cond_to_device(cond)
+                batch_size = motion.shape[0]
+                max_joints = motion.shape[1]
+                n_frames = motion.shape[3]
 
-            batch_losses = self._compute_eval_losses(motion, cond)
-            batch_size = motion.shape[0]
+                sample_shape = (batch_size, max_joints, infer_model.feature_len, n_frames)
+                noise = torch.randn(sample_shape, device=dist_util.dev())
+                sample = self.inference_diffusion.ddim_sample_loop(
+                    model=infer_model,
+                    shape=sample_shape,
+                    noise=noise,
+                    clip_denoised=False,
+                    model_kwargs=cond,
+                    device=dist_util.dev(),
+                    progress=False,
+                    eta=0.0,
+                )
 
-            for key, value in batch_losses.items():
-                totals[key] = totals.get(key, 0.0) + (value * batch_size)
+                for i in range(batch_size):
+                    object_type = cond['y']['object_type'][i]
+                    n_joints = cond['y']['n_joints'][i].item()
+                    motion_sample = sample[i][:n_joints]
+                    mean = cond_dict[object_type]['mean'][None, :]
+                    std = cond_dict[object_type]['std'][None, :]
+                    motion_np = motion_sample.cpu().permute(2, 0, 1).numpy() * std + mean
+                    all_motions.setdefault(object_type, []).append(motion_np.astype(np.float32))
 
-            seen_samples += batch_size
-            if max_eval_samples > 0 and seen_samples >= max_eval_samples:
-                break
+                seen_samples += batch_size
+                if max_eval_samples > 0 and seen_samples >= max_eval_samples:
+                    break
 
-        if seen_samples == 0:
-            tqdm.write('Validation skipped because the evaluation split is empty.')
+        infer_model.train()
+
+        if not all_motions:
+            tqdm.write('Validation skipped: eval split returned no samples.')
             return
 
-        averaged = {key: value / seen_samples for key, value in totals.items()}
-        current_step = self.total_step()
-        completed_step = current_step + 1
-        if 'loss' in averaged:
-            tqdm.write('val_step[{}]: val_loss[{:0.5f}]'.format(completed_step, averaged['loss']))
-        for key, value in averaged.items():
-            self.train_platform.report_scalar(name=key, value=value, iteration=completed_step, group_name='Val')
+        macro_scores = []
+        local_scores = []
+        for object_type, motions in all_motions.items():
+            try:
+                report = self.scorer.evaluate(
+                    motions=motions,
+                    object_type=object_type,
+                    action_tags=action_tags,
+                )
+            except Exception as exc:
+                tqdm.write(f'[eval] Scoring failed for {object_type}: {exc}')
+                continue
+            macro_scores.append(report.macro_fidelity_score)
+            local_scores.append(report.local_naturalness_score)
+
+        if not macro_scores:
+            return
+
+        avg_macro = float(np.mean(macro_scores))
+        avg_local = float(np.mean(local_scores))
+        completed_step = self.total_step() + 1
+        tqdm.write('val_step[{}]: Macro[{:.4f}] Local[{:.4f}]'.format(completed_step, avg_macro, avg_local))
+        self.train_platform.report_scalar(name='Macro', value=avg_macro, iteration=completed_step, group_name='Val')
+        self.train_platform.report_scalar(name='Local', value=avg_local, iteration=completed_step, group_name='Val')
 
 
 

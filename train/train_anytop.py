@@ -143,6 +143,11 @@ def run_training(args):
     dist_util.setup_dist(args.device)
 
     data = create_training_data_loader(args)
+    
+    # Print motion count in train split
+    train_split = getattr(args, 'train_split', 'train')
+    num_motions = len(data.dataset)
+    print(f"[INFO] Train split '{train_split}': {num_motions} motions")
 
     model, diffusion = create_model_and_diffusion_general_skeleton(args)
     model.to(dist_util.dev())
@@ -153,6 +158,8 @@ def run_training(args):
 
 def main():
     args = train_args()
+    if args.eval_during_training and not getattr(args, 'action_tags', '').strip():
+        raise SystemExit('--action_tags is required when --eval_during_training is set')
     run_training(args)
 
 if __name__ == "__main__":
