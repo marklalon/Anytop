@@ -141,7 +141,7 @@ def add_training_options(parser):
                        help="If passed, automatically resume from the latest checkpoint in save_dir. Without this flag, training starts fresh and existing checkpoints in save_dir are overwritten.")
     group.add_argument("--ml_platform_type", default='NoPlatform', choices=['NoPlatform', 'ClearmlPlatform', 'TensorboardPlatform', 'WandBPlatform'], type=str,
                        help="Choose platform to log results. NoPlatform means no logging.")
-    group.add_argument("--amp_dtype", default='fp32', choices=['fp32', 'fp16', 'bf16'], type=str,
+    group.add_argument("--amp_dtype", default='fp32', choices=['fp32', 'bf16'], type=str,
                        help="Autocast precision for training. fp32 disables AMP; bf16 uses selective autocast on linear and attention modules only.")
     group.add_argument("--lr", default=1e-4, type=float, help="Learning rate.")
     group.add_argument("--lr_scheduler_step_size", default=10000, type=int,

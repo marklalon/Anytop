@@ -37,6 +37,7 @@ class SelectiveMultiheadAttention(nn.Module):
         self.scaling = self.head_dim ** -0.5
         self.autocast_dtype: torch.dtype | None = None
         self.autocast_device_type = 'cuda'
+        self.use_selective_bf16 = False
 
         self.in_proj_weight = nn.Parameter(torch.empty(3 * embed_dim, embed_dim))
         if bias:
@@ -54,11 +55,12 @@ class SelectiveMultiheadAttention(nn.Module):
     def configure_precision(self, *, device_type: str, autocast_dtype: torch.dtype | None) -> bool:
         self.autocast_device_type = device_type
         self.autocast_dtype = autocast_dtype
+        self.use_selective_bf16 = autocast_dtype == torch.bfloat16
         return True
 
     def _bf16_context(self, reference_tensor: Tensor):
         device_type = reference_tensor.device.type if torch.is_tensor(reference_tensor) else self.autocast_device_type
-        if self.autocast_dtype is None:
+        if not self.use_selective_bf16:
             return torch.autocast(device_type=device_type, enabled=False)
         return torch.autocast(device_type=device_type, dtype=self.autocast_dtype)
 
@@ -127,7 +129,9 @@ class SelectiveMultiheadAttention(nn.Module):
         k = k.transpose(0, 1).reshape(batch_size, src_len, self.num_heads, self.head_dim).transpose(1, 2)
         v = v.transpose(0, 1).reshape(batch_size, src_len, self.num_heads, self.head_dim).transpose(1, 2)
 
-        scores = torch.matmul(q.float(), k.float().transpose(-2, -1)) * self.scaling
+        with self._bf16_context(q):
+            scores = torch.matmul(q, k.transpose(-2, -1))
+        scores = scores.float() * self.scaling
         scores = self._apply_attention_mask(scores, attn_mask)
         scores = self._apply_key_padding_mask(scores, key_padding_mask)
         attn_weights_fp32 = self._softmax_fp32(scores)
@@ -139,8 +143,7 @@ class SelectiveMultiheadAttention(nn.Module):
 
         attn_output = attn_output.transpose(1, 2).contiguous().reshape(batch_size, tgt_len, self.embed_dim)
         attn_output = attn_output.transpose(0, 1)
-        attn_output = self._project_bf16(attn_output, self.out_proj.weight, self.out_proj.bias)
-        attn_output = attn_output.float()
+        attn_output = self._project_bf16(attn_output, self.out_proj.weight, self.out_proj.bias).float()
 
         if not need_weights:
             return attn_output, None
@@ -153,6 +156,9 @@ class GraphMultiHeadAttention(nn.Module):
         super().__init__()
 
         self.nheads = nheads
+        self.autocast_dtype: torch.dtype | None = None
+        self.autocast_device_type = 'cuda'
+        self.use_selective_bf16 = False
 
         self.att_size = att_size = d_model // nheads
         self.scale = att_size ** -0.5
@@ -163,6 +169,25 @@ class GraphMultiHeadAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         self.output_layer = nn.Linear(nheads * att_size, d_model)
+
+    def configure_precision(self, *, device_type: str, autocast_dtype: torch.dtype | None) -> bool:
+        self.autocast_device_type = device_type
+        self.autocast_dtype = autocast_dtype
+        self.use_selective_bf16 = autocast_dtype == torch.bfloat16
+        return True
+
+    def _bf16_context(self, reference_tensor: Tensor):
+        device_type = reference_tensor.device.type if torch.is_tensor(reference_tensor) else self.autocast_device_type
+        if not self.use_selective_bf16:
+            return torch.autocast(device_type=device_type, enabled=False)
+        return torch.autocast(device_type=device_type, dtype=self.autocast_dtype)
+
+    def _project_bf16(self, inputs: Tensor, linear: nn.Linear) -> Tensor:
+        with self._bf16_context(inputs):
+            return F.linear(inputs, linear.weight, linear.bias)
+
+    def _softmax_fp32(self, scores: Tensor) -> Tensor:
+        return torch.softmax(scores.float(), dim=3)
 
     def forward(
         self,
@@ -185,9 +210,9 @@ class GraphMultiHeadAttention(nn.Module):
         d_v = self.att_size
         batch_size = q.size(0)
 
-        q = self.linear_q(q).view(batch_size, -1, self.nheads, d_k)
-        k = self.linear_k(k).view(batch_size, -1, self.nheads, d_k)
-        v = self.linear_v(v).view(batch_size, -1, self.nheads, d_v)
+        q = self._project_bf16(q, self.linear_q).view(batch_size, -1, self.nheads, d_k)
+        k = self._project_bf16(k, self.linear_k).view(batch_size, -1, self.nheads, d_k)
+        v = self._project_bf16(v, self.linear_v).view(batch_size, -1, self.nheads, d_v)
 
         q = q.transpose(1, 2)  # [b, h, q_len, d_k]
         v = v.transpose(1, 2)  # [b, h, v_len, d_v]
@@ -210,35 +235,33 @@ class GraphMultiHeadAttention(nn.Module):
             1, num_edge_types, self.nheads, self.att_size
         ).transpose(1, 2)
 
-        query_hop = torch.matmul(q, query_hop_emb.transpose(2, 3))
-        query_hop = torch.gather(
-            query_hop, 3, distance.unsqueeze(1).repeat(1, self.nheads, 1, 1)
-        )
-        query_edge = torch.matmul(q, query_edge_emb.transpose(2, 3))
-        query_edge = torch.gather(
-            query_edge, 3, edge_attr.unsqueeze(1).repeat(1, self.nheads, 1, 1)
-        )
+        with self._bf16_context(q):
+            query_hop = torch.matmul(q, query_hop_emb.transpose(2, 3))
+            query_hop = torch.gather(
+                query_hop, 3, distance.unsqueeze(1).repeat(1, self.nheads, 1, 1)
+            )
+            query_edge = torch.matmul(q, query_edge_emb.transpose(2, 3))
+            query_edge = torch.gather(
+                query_edge, 3, edge_attr.unsqueeze(1).repeat(1, self.nheads, 1, 1)
+            )
 
-        key_hop = torch.matmul(k, key_hop_emb.transpose(2, 3))
-        key_hop = torch.gather(
-            key_hop, 3, distance.unsqueeze(1).repeat(1, self.nheads, 1, 1)
-        )
-        key_edge = torch.matmul(k, key_edge_emb.transpose(2, 3))
-        key_edge = torch.gather(
-            key_edge, 3, edge_attr.unsqueeze(1).repeat(1, self.nheads, 1, 1)
-        )
+            key_hop = torch.matmul(k, key_hop_emb.transpose(2, 3))
+            key_hop = torch.gather(
+                key_hop, 3, distance.unsqueeze(1).repeat(1, self.nheads, 1, 1)
+            )
+            key_edge = torch.matmul(k, key_edge_emb.transpose(2, 3))
+            key_edge = torch.gather(
+                key_edge, 3, edge_attr.unsqueeze(1).repeat(1, self.nheads, 1, 1)
+            )
+            qk = torch.matmul(q, k.transpose(2, 3))
 
-        spatial_bias = (query_hop + key_hop)
-        edge_bais = (query_edge + key_edge)
-
-        x = torch.matmul(q, k.transpose(2, 3)) + spatial_bias + edge_bais
-
-        x = x * self.scale
+        # Accumulate in fp32 to prevent catastrophic cancellation from summing bf16 terms
+        x = (qk.float() + query_hop.float() + key_hop.float() + query_edge.float() + key_edge.float()) * self.scale
 
         if mask is not None:
-            x = x + mask
+            x = x + mask.to(device=x.device, dtype=torch.float32)
 
-        x = torch.softmax(x, dim=3)
+        x = self._softmax_fp32(x)
         x = self.dropout(x)
         if value_hop_emb is not None:
             value_hop_emb = value_hop_emb.view(
@@ -251,6 +274,7 @@ class GraphMultiHeadAttention(nn.Module):
             value_hop_att = torch.zeros(
                 (batch_size, self.nheads, sequence_length, num_hop_types),
                 device=value_hop_emb.device,
+                dtype=x.dtype,
             )
             value_hop_att = torch.scatter_add(
                 value_hop_att, 3, distance.unsqueeze(1).repeat(1, self.nheads, 1, 1), x
@@ -258,17 +282,19 @@ class GraphMultiHeadAttention(nn.Module):
             value_edge_att = torch.zeros(
                 (batch_size, self.nheads, sequence_length, num_edge_types),
                 device=value_hop_emb.device,
+                dtype=x.dtype,
             )
             value_edge_att = torch.scatter_add(
                 value_edge_att, 3, edge_attr.unsqueeze(1).repeat(1, self.nheads, 1, 1), x
             )
-        x = torch.matmul(x, v)
-        if value_hop_emb is not None:
-            x = x + torch.matmul(value_hop_att, value_hop_emb) + torch.matmul(value_edge_att, value_edge_emb)
+        with self._bf16_context(v):
+            x = torch.matmul(x, v)
+            if value_hop_emb is not None:
+                x = x + torch.matmul(value_hop_att, value_hop_emb) + torch.matmul(value_edge_att, value_edge_emb)
         x = x.transpose(1, 2).contiguous()
         x = x.view(batch_size, -1, self.nheads * d_v)
 
-        x = self.output_layer(x)
+        x = self._project_bf16(x, self.output_layer).float()
         assert x.size() == orig_q_size
         return x
 

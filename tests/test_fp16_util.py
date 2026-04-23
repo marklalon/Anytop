@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch.optim import AdamW
 
 from diffusion.fp16_util import MixedPrecisionTrainer, inspect_optimizer_state, sanitize_optimizer_state
-from model.motion_transformer import SelectiveMultiheadAttention
+from model.motion_transformer import GraphMultiHeadAttention, SelectiveMultiheadAttention
 from model.selective_autocast import enable_selective_autocast
 
 
@@ -95,10 +95,13 @@ class _ActivationProbe(nn.Module):
     def __init__(self):
         super().__init__()
         self.last_input_dtype = None
+        self.last_output_dtype = None
 
     def forward(self, input):
         self.last_input_dtype = input.dtype
-        return torch.nn.functional.gelu(input)
+        output = torch.nn.functional.gelu(input)
+        self.last_output_dtype = output.dtype
+        return output
 
 
 class _RecordingConv1d(nn.Conv1d):
@@ -141,6 +144,7 @@ class _RecordingSelectiveMultiheadAttention(SelectiveMultiheadAttention):
         self.recorded_k_dtype = None
         self.recorded_v_dtype = None
         self.recorded_proj_dtype = None
+        self.recorded_scores_dtype = None
         self.recorded_softmax_dtype = None
 
     def _project_bf16(self, inputs, weight, bias):
@@ -156,13 +160,51 @@ class _RecordingSelectiveMultiheadAttention(SelectiveMultiheadAttention):
         return output
 
     def _softmax_fp32(self, scores):
+        self.recorded_scores_dtype = scores.dtype
         output = super()._softmax_fp32(scores)
         self.recorded_softmax_dtype = output.dtype
         return output
 
 
+class _RecordingGraphMultiHeadAttention(GraphMultiHeadAttention):
+    def __init__(self, d_model, dropout, nheads):
+        super().__init__(d_model, dropout, nheads)
+        self.recorded_q_dtype = None
+        self.recorded_k_dtype = None
+        self.recorded_v_dtype = None
+        self.recorded_proj_dtype = None
+        self.recorded_scores_dtype = None
+        self.recorded_softmax_dtype = None
+
+    def _project_bf16(self, inputs, linear):
+        output = super()._project_bf16(inputs, linear)
+        if linear is self.linear_q:
+            self.recorded_q_dtype = output.dtype
+        elif linear is self.linear_k:
+            self.recorded_k_dtype = output.dtype
+        elif linear is self.linear_v:
+            self.recorded_v_dtype = output.dtype
+        elif linear is self.output_layer:
+            self.recorded_proj_dtype = output.dtype
+        return output
+
+    def _softmax_fp32(self, scores):
+        self.recorded_scores_dtype = scores.dtype
+        output = super()._softmax_fp32(scores)
+        self.recorded_softmax_dtype = output.dtype
+        return output
+
+    def reset_records(self):
+        self.recorded_q_dtype = None
+        self.recorded_k_dtype = None
+        self.recorded_v_dtype = None
+        self.recorded_proj_dtype = None
+        self.recorded_scores_dtype = None
+        self.recorded_softmax_dtype = None
+
+
 class SelectiveAutocastTests(unittest.TestCase):
-    def test_selective_autocast_runs_linear_in_bf16_but_restores_fp32_between_layers(self):
+    def test_selective_autocast_runs_linear_and_activation_in_bf16(self):
         first_linear = _RecordingLinear(4, 8)
         activation_probe = _ActivationProbe()
         second_linear = _RecordingLinear(8, 2)
@@ -179,10 +221,30 @@ class SelectiveAutocastTests(unittest.TestCase):
         self.assertEqual(patched, 2)
         self.assertEqual(first_linear.recorded_output_dtype, torch.bfloat16)
         self.assertEqual(second_linear.recorded_output_dtype, torch.bfloat16)
+        self.assertEqual(activation_probe.last_input_dtype, torch.bfloat16)
+        self.assertEqual(activation_probe.last_output_dtype, torch.bfloat16)
+        self.assertEqual(output.dtype, torch.bfloat16)
+
+    def test_selective_autocast_is_noop_without_bf16_dtype(self):
+        linear = _RecordingLinear(4, 8)
+        activation_probe = _ActivationProbe()
+        model = nn.Sequential(linear, activation_probe)
+
+        patched = enable_selective_autocast(
+            model,
+            device_type='cpu',
+            autocast_dtype=torch.float16,
+        )
+
+        output = model(torch.randn(3, 4, dtype=torch.float32))
+
+        self.assertEqual(patched, 0)
+        self.assertEqual(linear.recorded_output_dtype, torch.float32)
         self.assertEqual(activation_probe.last_input_dtype, torch.float32)
+        self.assertEqual(activation_probe.last_output_dtype, torch.float32)
         self.assertEqual(output.dtype, torch.float32)
 
-    def test_selective_autocast_runs_conv_in_bf16_but_leaves_activation_in_fp32(self):
+    def test_selective_autocast_runs_conv_and_activation_in_bf16(self):
         conv = _RecordingConv1d(2, 4, kernel_size=1)
         activation_probe = _ActivationProbe()
         model = nn.Sequential(conv, activation_probe)
@@ -197,8 +259,9 @@ class SelectiveAutocastTests(unittest.TestCase):
 
         self.assertEqual(patched, 1)
         self.assertEqual(conv.recorded_output_dtype, torch.bfloat16)
-        self.assertEqual(activation_probe.last_input_dtype, torch.float32)
-        self.assertEqual(output.dtype, torch.float32)
+        self.assertEqual(activation_probe.last_input_dtype, torch.bfloat16)
+        self.assertEqual(activation_probe.last_output_dtype, torch.bfloat16)
+        self.assertEqual(output.dtype, torch.bfloat16)
 
     def test_selective_autocast_forces_softmax_to_fp32(self):
         model = nn.Sequential(_SoftmaxProbe(), _FunctionalSoftmaxProbe())
@@ -227,9 +290,106 @@ class SelectiveAutocastTests(unittest.TestCase):
         self.assertEqual(attn.recorded_k_dtype, torch.bfloat16)
         self.assertEqual(attn.recorded_v_dtype, torch.bfloat16)
         self.assertEqual(attn.recorded_proj_dtype, torch.bfloat16)
+        self.assertEqual(attn.recorded_scores_dtype, torch.bfloat16)
+        self.assertEqual(attn.recorded_softmax_dtype, torch.float32)
+        self.assertEqual(output.dtype, torch.bfloat16)
+        self.assertEqual(weights.dtype, torch.float32)
+
+    def test_selective_multihead_attention_stays_fp32_without_bf16_configuration(self):
+        attn = _RecordingSelectiveMultiheadAttention(embed_dim=8, num_heads=2, dropout=0.0)
+        attn.configure_precision(device_type='cpu', autocast_dtype=torch.float16)
+
+        query = torch.randn(5, 3, 8, dtype=torch.float32)
+        attn_mask = torch.zeros(3 * 2, 5, 5, dtype=torch.float32)
+        output, weights = attn(query, query, query, attn_mask=attn_mask, need_weights=True)
+
+        self.assertEqual(attn.recorded_q_dtype, torch.float32)
+        self.assertEqual(attn.recorded_k_dtype, torch.float32)
+        self.assertEqual(attn.recorded_v_dtype, torch.float32)
+        self.assertEqual(attn.recorded_proj_dtype, torch.float32)
+        self.assertEqual(attn.recorded_scores_dtype, torch.float32)
         self.assertEqual(attn.recorded_softmax_dtype, torch.float32)
         self.assertEqual(output.dtype, torch.float32)
         self.assertEqual(weights.dtype, torch.float32)
+
+    def test_graph_multihead_attention_keeps_qkv_proj_bf16_but_uses_fp32_softmax(self):
+        attn = _RecordingGraphMultiHeadAttention(d_model=8, dropout=0.0, nheads=2)
+        enable_selective_autocast(
+            attn,
+            device_type='cpu',
+            autocast_dtype=torch.bfloat16,
+        )
+
+        batch_size = 2
+        sequence_length = 4
+        q = torch.randn(batch_size, sequence_length, 8, dtype=torch.float32)
+        distance = torch.randint(0, 3, (batch_size, sequence_length, sequence_length), dtype=torch.long)
+        edge_attr = torch.randint(0, 4, (batch_size, sequence_length, sequence_length), dtype=torch.long)
+        query_hop_emb = torch.randn(3, 8, dtype=torch.float32)
+        query_edge_emb = torch.randn(4, 8, dtype=torch.float32)
+        key_hop_emb = torch.randn(3, 8, dtype=torch.float32)
+        key_edge_emb = torch.randn(4, 8, dtype=torch.float32)
+
+        output = attn(
+            q,
+            q,
+            q,
+            query_hop_emb,
+            query_edge_emb,
+            key_hop_emb,
+            key_edge_emb,
+            None,
+            None,
+            distance,
+            edge_attr,
+            None,
+        )
+
+        self.assertEqual(attn.recorded_q_dtype, torch.bfloat16)
+        self.assertEqual(attn.recorded_k_dtype, torch.bfloat16)
+        self.assertEqual(attn.recorded_v_dtype, torch.bfloat16)
+        self.assertEqual(attn.recorded_proj_dtype, torch.bfloat16)
+        self.assertEqual(attn.recorded_scores_dtype, torch.bfloat16)
+        self.assertEqual(attn.recorded_softmax_dtype, torch.float32)
+        self.assertEqual(output.dtype, torch.bfloat16)
+
+    def test_graph_multihead_attention_stays_fp32_without_bf16_configuration(self):
+        attn = _RecordingGraphMultiHeadAttention(d_model=8, dropout=0.0, nheads=2)
+        attn.configure_precision(device_type='cpu', autocast_dtype=None)
+        attn.reset_records()
+
+        batch_size = 2
+        sequence_length = 4
+        q = torch.randn(batch_size, sequence_length, 8, dtype=torch.float32)
+        distance = torch.randint(0, 3, (batch_size, sequence_length, sequence_length), dtype=torch.long)
+        edge_attr = torch.randint(0, 4, (batch_size, sequence_length, sequence_length), dtype=torch.long)
+        query_hop_emb = torch.randn(3, 8, dtype=torch.float32)
+        query_edge_emb = torch.randn(4, 8, dtype=torch.float32)
+        key_hop_emb = torch.randn(3, 8, dtype=torch.float32)
+        key_edge_emb = torch.randn(4, 8, dtype=torch.float32)
+
+        output = attn(
+            q,
+            q,
+            q,
+            query_hop_emb,
+            query_edge_emb,
+            key_hop_emb,
+            key_edge_emb,
+            None,
+            None,
+            distance,
+            edge_attr,
+            None,
+        )
+
+        self.assertEqual(attn.recorded_q_dtype, torch.float32)
+        self.assertEqual(attn.recorded_k_dtype, torch.float32)
+        self.assertEqual(attn.recorded_v_dtype, torch.float32)
+        self.assertEqual(attn.recorded_proj_dtype, torch.float32)
+        self.assertEqual(attn.recorded_scores_dtype, torch.float32)
+        self.assertEqual(attn.recorded_softmax_dtype, torch.float32)
+        self.assertEqual(output.dtype, torch.float32)
 
 
 if __name__ == "__main__":

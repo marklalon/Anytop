@@ -88,8 +88,8 @@ class AnyTop(nn.Module):
         spatial_mask = 1.0 - joints_mask[:, 0, 0, 1:, 1:]
         spatial_mask = spatial_mask.unsqueeze(1).unsqueeze(1).repeat(1, nframes + 1, self.num_heads, 1, 1).reshape(-1,self.num_heads, njoints, njoints)
         temporal_mask = 1.0 - temp_mask.repeat(1, njoints, self.num_heads, 1, 1).reshape(-1, nframes + 1, nframes + 1).float()
-        spatial_mask[spatial_mask == 1.0] = -1e9
-        temporal_mask[temporal_mask == 1.0] = -1e9
+        spatial_mask[spatial_mask == 1.0] = -1e4
+        temporal_mask[temporal_mask == 1.0] = -1e4
         
         output = self.seqTransDecoder(
             tgt=x,
