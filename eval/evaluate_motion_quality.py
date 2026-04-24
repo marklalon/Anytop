@@ -133,7 +133,7 @@ def _print_report(report: DistributionEvalReport, use_color: bool) -> None:
     print(f"  Macro joint groups   : {json.dumps(_round4_dict(report.macro_joint_group_scores), sort_keys=True)}")
     local_component_scores = report.raw.get("local_component_scores")
     if local_component_scores:
-        print(f"  Local metric scores  : {json.dumps(_round4_dict(local_component_scores), sort_keys=True)}")
+        print(f"  Local metric scores  : {json.dumps(_round4_dict(local_component_scores))}")
     local_joint_group_scores = report.raw.get("local_joint_group_scores")
     if local_joint_group_scores:
         print(f"  Local joint groups   : {json.dumps(_round4_dict(local_joint_group_scores), sort_keys=True)}")

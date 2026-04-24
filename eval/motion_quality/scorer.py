@@ -43,7 +43,7 @@ import scipy.signal
 from data_loaders.truebones.offline_reference_dataset import load_cond_dict
 
 from .reference_bank import ReferenceClip, WeightedReferenceBank, build_weighted_reference_bank
-from .reference_stats import CH_POS, CH_ROT, CH_VEL
+from .reference_stats import CH_POS, CH_ROT
 
 _MIN_CLIP_FRAMES = 8
 _LOCAL_GROUP_ORDER = ("root", "axial", "limbs")
@@ -72,15 +72,10 @@ class DistributionEvalReport:
     macro_top_deviating_features: List[Tuple[str, float]]
 
     local_naturalness_score: float
-    local_psd_jsd_root: float
-    local_psd_jsd_limbs: float
     local_spectral_flatness_score: float
     local_jerk_score: float
-    local_acf_peak_score: float
-    local_spectral_centroid_score: float
     local_snap_score: float
     local_bone_length_score: float
-    local_bone_length_change_score: float
     local_bone_rotation_score: float
 
     overall_score: float
@@ -107,16 +102,11 @@ class DistributionEvalReport:
                 ],
             },
             "local": {
-                "psd_jsd_root": round(self.local_psd_jsd_root, 4),
-                "psd_jsd_limbs": round(self.local_psd_jsd_limbs, 4),
-                "spectral_flatness_score": round(self.local_spectral_flatness_score, 4),
-                "jerk_score": round(self.local_jerk_score, 4),
-                "acf_peak_score": round(self.local_acf_peak_score, 4),
-                "spectral_centroid_score": round(self.local_spectral_centroid_score, 4),
-                "snap_score": round(self.local_snap_score, 4),
-                "bone_length_score": round(self.local_bone_length_score, 4),
-                "bone_length_change_score": round(self.local_bone_length_change_score, 4),
-                "bone_rotation_score": round(self.local_bone_rotation_score, 4),
+                "jerk_score (w=0.328)": round(self.local_jerk_score, 4),
+                "snap_score (w=0.228)": round(self.local_snap_score, 4),
+                "spectral_flatness_score (w=0.228)": round(self.local_spectral_flatness_score, 4),
+                "bone_length_score (w=0.108)": round(self.local_bone_length_score, 4),
+                "bone_rotation_score (w=0.108)": round(self.local_bone_rotation_score, 4),
             },
             "reference": {
                 "scoring_mode": self.scoring_mode,
@@ -207,20 +197,6 @@ def _weighted_iqr(values: np.ndarray, weights: np.ndarray) -> float:
     return float(q75 - q25)
 
 
-def _psd_jsd(psd1: np.ndarray, psd2: np.ndarray) -> float:
-    p = np.asarray(psd1, dtype=np.float64)
-    q = np.asarray(psd2, dtype=np.float64)
-    p = p / (p.sum() + 1e-30)
-    q = q / (q.sum() + 1e-30)
-    m = 0.5 * (p + q)
-
-    def _kl(a: np.ndarray, b: np.ndarray) -> float:
-        mask = a > 0
-        return float(np.sum(a[mask] * np.log((a[mask] + 1e-30) / (b[mask] + 1e-30))))
-
-    return max(0.0, 0.5 * (_kl(p, m) + _kl(q, m)))
-
-
 def _local_metric_abs_floor(name: str) -> float:
     if name == "psd_bin":
         return 0.01
@@ -232,8 +208,6 @@ def _local_metric_abs_floor(name: str) -> float:
         return 0.05
     if name == "bone_length":
         return 0.01
-    if name == "bone_length_change":
-        return 0.005
     if name == "bone_rotation":
         return 0.02
     return 0.02
@@ -244,8 +218,6 @@ def _macro_feature_group(name: str) -> str:
         return "pos"
     if name.startswith("rot_"):
         return "rot"
-    if name.startswith("vel_") or name.startswith("vel_mag_"):
-        return "vel"
     return "freq"
 
 
@@ -264,10 +236,6 @@ def _macro_feature_abs_floor(name: str) -> float:
         return 0.03
     if name.startswith("spectral_centroid_"):
         return 0.02
-    if name.startswith("vel_mag_"):
-        return 0.02
-    if name.startswith("vel_"):
-        return 0.01
     if name.startswith("pos_") or name.startswith("rot_"):
         return 0.01
     return 0.01
@@ -473,7 +441,7 @@ def _compute_macro_features(
     feats: List[float] = []
     names: List[str] = []
 
-    for ch_name, ch in [("pos", CH_POS), ("rot", CH_ROT), ("vel", CH_VEL)]:
+    for ch_name, ch in [("pos", CH_POS), ("rot", CH_ROT)]:
         x = motion[:, :, ch].astype(np.float64)
 
         mu = x.mean(axis=0)
@@ -491,12 +459,6 @@ def _compute_macro_features(
         else:
             acorr = np.zeros(joint_count)
         _append_joint_group_scalar_features(feats, names, f"{ch_name}_lag1", acorr, joint_groups)
-
-    vel = motion[:, :, CH_VEL].astype(np.float64)
-    vel_mag = np.sqrt((vel ** 2).sum(axis=-1))
-    pcts = np.percentile(vel_mag, [10, 25, 50, 75, 90], axis=0)
-    for pi, pname in enumerate(["p10", "p25", "p50", "p75", "p90"]):
-        _append_joint_group_scalar_features(feats, names, f"vel_mag_{pname}", pcts[pi], joint_groups)
 
     pos = motion[:, :, CH_POS].astype(np.float64)
     dom_ratios = np.zeros(joint_count)
@@ -524,42 +486,17 @@ def _compute_local_features(motion: np.ndarray, nperseg: int) -> Dict[str, np.nd
     pos = motion[:, :, CH_POS].astype(np.float64)
 
     spectral_flatness = np.zeros(joint_count)
-    spectral_centroid = np.zeros(joint_count)
-    acf_peak = np.zeros(joint_count)
     jerk_norm = np.zeros(joint_count)
     snap_norm = np.zeros(joint_count)
 
     for joint_index in range(joint_count):
         flatness_values = []
-        centroid_values = []
         for channel_index in range(3):
             freqs_j, psd = _welch_psd(pos[:, joint_index, channel_index], nperseg)
             log_mean = float(np.mean(np.log(psd)))
             arith_mean = float(np.mean(psd))
             flatness_values.append(math.exp(log_mean) / max(arith_mean, 1e-30))
-            centroid_values.append(float((freqs_j * psd).sum() / psd.sum()))
         spectral_flatness[joint_index] = float(np.mean(flatness_values))
-        spectral_centroid[joint_index] = float(np.mean(centroid_values))
-
-    if t_len >= _MIN_CLIP_FRAMES:
-        min_lag = max(1, t_len // 8)
-        max_lag = t_len // 2
-        for joint_index in range(joint_count):
-            peaks = []
-            for channel_index in range(3):
-                sig = pos[:, joint_index, channel_index]
-                sig_centered = sig - sig.mean()
-                if sig_centered.std() < 1e-8:
-                    peaks.append(0.0)
-                    continue
-                acf_full = np.correlate(sig_centered, sig_centered, mode="full")
-                acf_half = acf_full[t_len - 1 :]
-                acf_norm = acf_half / (acf_half[0] + 1e-30)
-                if max_lag > min_lag:
-                    peaks.append(float(acf_norm[min_lag : max_lag + 1].max()))
-                else:
-                    peaks.append(0.0)
-            acf_peak[joint_index] = float(np.mean(peaks))
 
     if t_len >= 4:
         jerk3 = np.diff(np.diff(np.diff(pos, axis=0), axis=0), axis=0)
@@ -575,8 +512,6 @@ def _compute_local_features(motion: np.ndarray, nperseg: int) -> Dict[str, np.nd
 
     return {
         "spectral_flatness": spectral_flatness,
-        "spectral_centroid": spectral_centroid,
-        "acf_peak": acf_peak,
         "jerk_norm": jerk_norm,
         "snap_norm": snap_norm,
     }
@@ -822,7 +757,7 @@ class DistributionMotionQualityScorer:
         self.fps = fps
         self.dataset_root = dataset_root
         self.macro_cell_weights = {}
-        for feature in ["pos", "rot", "freq", "vel"]:
+        for feature in ["pos", "rot", "freq"]:
             for joint in ["root", "axial", "limbs"]:
                 feature_weight = 1.5 if feature in ["pos", "rot"] else 1.0
                 joint_weight = 1.5 if joint == "axial" else 1.0
@@ -911,15 +846,10 @@ class DistributionMotionQualityScorer:
             macro_joint_group_sizes={name: int(len(indices)) for name, indices in query_joint_groups.items()},
             macro_top_deviating_features=macro["top_features"],
             local_naturalness_score=local["score"],
-            local_psd_jsd_root=local["psd_jsd_root"],
-            local_psd_jsd_limbs=local["psd_jsd_limbs"],
             local_spectral_flatness_score=local["component_scores"]["spectral_flatness"],
             local_jerk_score=local["component_scores"]["jerk_norm"],
-            local_acf_peak_score=local["component_scores"]["acf_peak"],
-            local_spectral_centroid_score=local["component_scores"]["spectral_centroid"],
             local_snap_score=local["component_scores"]["snap_norm"],
             local_bone_length_score=local["component_scores"]["bone_length"],
-            local_bone_length_change_score=local["component_scores"]["bone_length_change"],
             local_bone_rotation_score=local["component_scores"]["bone_rotation"],
             overall_score=overall,
             raw={
@@ -1071,48 +1001,31 @@ class DistributionMotionQualityScorer:
         query_active_groups = [name for name, _ in _active_joint_groups(query_joint_groups)]
         query_bone_groups = [name for name in query_active_groups if name != "root"]
         query_local = []
-        query_psds = []
         query_bone_lengths = []
-        query_bone_length_changes = []
         query_bone_rotations = []
         for motion in query_motions:
             local_features = _compute_local_features(motion, nperseg)
-            joint_psd = _compute_joint_psd(motion, nperseg)
             query_local.append({
                 key: _group_scalar_means(values, query_joint_groups)
                 for key, values in local_features.items()
             })
-            query_psds.append(_group_psd_means(joint_psd, query_joint_groups))
             query_bone_lengths.append(_group_bone_time_series(_compute_bone_lengths(motion, np.zeros(0, dtype=np.int64)), query_joint_groups))
-            query_bone_length_changes.append(
-                _group_bone_time_series(_compute_bone_length_change_rate(motion, np.zeros(0, dtype=np.int64)), query_joint_groups)
-            )
             query_bone_rotations.append(
                 _group_bone_time_series(_compute_bone_rotation_angle(motion, np.zeros(0, dtype=np.int64)), query_joint_groups)
             )
 
         reference_local = []
-        reference_psds = []
         reference_bone_lengths = []
-        reference_bone_length_changes = []
         reference_bone_rotations = []
         for clip in reference_clips:
             clip_joint_groups, _ = self._resolve_macro_joint_groups(clip.object_type, clip.motion.shape[1])
             local_features = _compute_local_features(clip.motion, nperseg)
-            joint_psd = _compute_joint_psd(clip.motion, nperseg)
             reference_local.append({
                 key: _group_scalar_means(values, clip_joint_groups)
                 for key, values in local_features.items()
             })
-            reference_psds.append(_group_psd_means(joint_psd, clip_joint_groups))
             reference_bone_lengths.append(
                 _group_bone_time_series(_compute_bone_lengths(clip.motion, np.zeros(0, dtype=np.int64)), clip_joint_groups)
-            )
-            reference_bone_length_changes.append(
-                _group_bone_time_series(
-                    _compute_bone_length_change_rate(clip.motion, np.zeros(0, dtype=np.int64)),
-                    clip_joint_groups,
-                )
             )
             reference_bone_rotations.append(
                 _group_bone_time_series(_compute_bone_rotation_angle(clip.motion, np.zeros(0, dtype=np.int64)), clip_joint_groups)
@@ -1123,9 +1036,8 @@ class DistributionMotionQualityScorer:
         metric_group_scale: Dict[str, Dict[str, float]] = {}
         metric_group_tolerance: Dict[str, Dict[str, float]] = {}
         metric_group_penalty: Dict[str, Dict[str, float]] = {}
-        psd_jsd_by_group: Dict[str, float] = {}
 
-        for metric_name in ["spectral_flatness", "spectral_centroid", "acf_peak", "jerk_norm", "snap_norm"]:
+        for metric_name in ["spectral_flatness", "jerk_norm", "snap_norm"]:
             metric_group_scores[metric_name] = {}
             metric_group_dev[metric_name] = {}
             metric_group_scale[metric_name] = {}
@@ -1154,52 +1066,10 @@ class DistributionMotionQualityScorer:
                 metric_group_scale[metric_name][group_name] = detail["scale"]
                 metric_group_penalty[metric_name][group_name] = 1.0 - detail["score"]
 
-        metric_group_scores["psd_jsd"] = {}
-        metric_group_dev["psd_jsd"] = {}
-        metric_group_scale["psd_jsd"] = {}
-        metric_group_tolerance["psd_jsd"] = {}
-        metric_group_penalty["psd_jsd"] = {}
-        for group_name in query_active_groups:
-            query_vectors = [sample[group_name] for sample in query_psds if group_name in sample]
-            reference_pairs = [
-                (sample[group_name], reference_weights[index])
-                for index, sample in enumerate(reference_psds)
-                if group_name in sample
-            ]
-            if not query_vectors or not reference_pairs:
-                continue
 
-            query_matrix = np.stack(query_vectors, axis=0)
-            reference_matrix = np.stack([value for value, _ in reference_pairs], axis=0)
-            reference_group_weights = _normalize_weights(np.asarray([weight for _, weight in reference_pairs], dtype=np.float64))
-
-            bin_scores = []
-            bin_deviation = []
-            bin_scales = []
-            for freq_index in range(reference_matrix.shape[1]):
-                detail = _score_query_against_reference(
-                    query_matrix[:, freq_index],
-                    query_weights,
-                    reference_matrix[:, freq_index],
-                    reference_group_weights,
-                    _local_metric_abs_floor("psd_bin"),
-                )
-                bin_scores.append(detail["score"])
-                bin_deviation.append(detail["normalized_deviation"])
-                bin_scales.append(detail["scale"])
-
-            metric_group_scores["psd_jsd"][group_name] = float(np.mean(bin_scores))
-            metric_group_dev["psd_jsd"][group_name] = float(np.mean(bin_deviation))
-            metric_group_scale["psd_jsd"][group_name] = float(np.mean(bin_scales))
-            metric_group_penalty["psd_jsd"][group_name] = 1.0 - metric_group_scores["psd_jsd"][group_name]
-
-            query_mean_psd = _weighted_mean_vector(query_matrix, query_weights)
-            reference_mean_psd = _weighted_mean_vector(reference_matrix, reference_group_weights)
-            psd_jsd_by_group[group_name] = _psd_jsd(query_mean_psd, reference_mean_psd)
 
         bone_metric_sources = {
             "bone_length": (query_bone_lengths, reference_bone_lengths),
-            "bone_length_change": (query_bone_length_changes, reference_bone_length_changes),
             "bone_rotation": (query_bone_rotations, reference_bone_rotations),
         }
         for metric_name, (query_metric_samples, reference_metric_samples) in bone_metric_sources.items():
@@ -1235,21 +1105,19 @@ class DistributionMotionQualityScorer:
                 metric_group_penalty[metric_name][group_name] = detail["penalty"]
 
         metric_weights = {
-            "spectral_flatness": 0.175,
-            "psd_jsd": 0.175,
-            "jerk_norm": 0.14,
-            "acf_peak": 0.105,
-            "spectral_centroid": 0.07,
-            "snap_norm": 0.035,
-            "bone_length": 0.12,
-            "bone_length_change": 0.08,
-            "bone_rotation": 0.10,
+            "jerk_norm": 0.328,
+            "snap_norm": 0.228,
+            "spectral_flatness": 0.228,
+            "bone_length": 0.108,
+            "bone_rotation": 0.108,
         }
-        component_scores = {
-            metric_name: float(np.mean(list(metric_group_scores[metric_name].values())))
-            if metric_group_scores[metric_name] else 0.0
-            for metric_name in metric_weights
-        }
+        # Build component_scores in weight-descending order (Python 3.7+ preserves dict insertion order)
+        component_scores = {}
+        for metric_name in ["jerk_norm", "snap_norm", "spectral_flatness", "bone_length", "bone_rotation"]:
+            component_scores[metric_name] = (
+                float(np.mean(list(metric_group_scores[metric_name].values())))
+                if metric_group_scores[metric_name] else 0.0
+            )
         local_group_scores = {
             group_name: float(np.mean([
                 metric_group_scores[metric_name][group_name]
@@ -1263,8 +1131,6 @@ class DistributionMotionQualityScorer:
 
         return {
             "score": float(np.clip(local_score, 0.0, 1.0)),
-            "psd_jsd_root": float(psd_jsd_by_group.get("root", 0.0)),
-            "psd_jsd_limbs": float(psd_jsd_by_group.get("limbs", 0.0)),
             "component_scores": component_scores,
             "raw": {
                 "local_component_scores": component_scores,
@@ -1274,7 +1140,6 @@ class DistributionMotionQualityScorer:
                 "local_metric_group_scale": metric_group_scale,
                 "local_metric_group_tolerance": metric_group_tolerance,
                 "local_metric_group_penalty": metric_group_penalty,
-                "local_psd_jsd_by_group": psd_jsd_by_group,
                 "local_active_joint_groups": query_active_groups,
             },
         }
