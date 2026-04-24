@@ -91,6 +91,12 @@ def _bar(score: float, width: int = 20) -> str:
 def _print_report(report: DistributionEvalReport, use_color: bool) -> None:
     clr = lambda value, text: _color(value, text, use_color)
 
+    def _round4_dict(values: dict) -> dict:
+        return {
+            key: (round(float(value), 4) if isinstance(value, (int, float, np.floating)) else value)
+            for key, value in values.items()
+        }
+
     print()
     print(f"{'=' * 74}")
     print("  Low-Shot Weighted-Reference Motion Quality Report")
@@ -106,14 +112,14 @@ def _print_report(report: DistributionEvalReport, use_color: bool) -> None:
     print()
 
     rows = [
-        ("Macro distribution fidelity", report.macro_fidelity_score, "w=0.60"),
-        ("Local joint naturalness", report.local_naturalness_score, "w=0.40"),
+        ("Macro distribution fidelity", report.macro_fidelity_score, "w=0.50"),
+        ("Local joint naturalness", report.local_naturalness_score, "w=0.50"),
     ]
     for label, score, note in rows:
-        print(f"  {label:<32s} {clr(score, f'{score:.3f}')}  {_bar(score)}  {note}")
+        print(f"  {label:<32s} {clr(score, f'{score:.4f}')}  {_bar(score)}  {note}")
 
     print()
-    print(f"  {'OVERALL SCORE':<32s} {clr(report.overall_score, f'{report.overall_score:.3f}')}  {_bar(report.overall_score)}")
+    print(f"  {'OVERALL SCORE':<32s} {clr(report.overall_score, f'{report.overall_score:.4f}')}  {_bar(report.overall_score)}")
     print()
     print("  Reference species:")
     for species in report.reference_species:
@@ -123,14 +129,14 @@ def _print_report(report: DistributionEvalReport, use_color: bool) -> None:
             f"distance={species['cosine_distance']:.4f} clips={species['clip_count']} frames={species['total_frames']}"
         )
     print()
-    print(f"  Macro feature groups : {json.dumps(report.macro_feature_group_scores, sort_keys=True)}")
-    print(f"  Macro joint groups   : {json.dumps(report.macro_joint_group_scores, sort_keys=True)}")
+    print(f"  Macro feature groups : {json.dumps(_round4_dict(report.macro_feature_group_scores), sort_keys=True)}")
+    print(f"  Macro joint groups   : {json.dumps(_round4_dict(report.macro_joint_group_scores), sort_keys=True)}")
     local_component_scores = report.raw.get("local_component_scores")
     if local_component_scores:
-        print(f"  Local metric scores  : {json.dumps(local_component_scores, sort_keys=True)}")
+        print(f"  Local metric scores  : {json.dumps(_round4_dict(local_component_scores), sort_keys=True)}")
     local_joint_group_scores = report.raw.get("local_joint_group_scores")
     if local_joint_group_scores:
-        print(f"  Local joint groups   : {json.dumps(local_joint_group_scores, sort_keys=True)}")
+        print(f"  Local joint groups   : {json.dumps(_round4_dict(local_joint_group_scores), sort_keys=True)}")
     print()
 
 
@@ -253,9 +259,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.quiet:
         print(
-            f"overall={_color(report.overall_score, f'{report.overall_score:.3f}', use_color)}  "
-            f"macro={report.macro_fidelity_score:.3f}  "
-            f"local={report.local_naturalness_score:.3f}"
+            f"overall={_color(report.overall_score, f'{report.overall_score:.4f}', use_color)}  "
+            f"macro={report.macro_fidelity_score:.4f}  "
+            f"local={report.local_naturalness_score:.4f}"
         )
     else:
         _print_report(report, use_color)
