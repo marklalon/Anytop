@@ -3,6 +3,7 @@
 Generate a large batch of image samples from a model and save them as a large
 numpy array. This can be used to produce samples for FID evaluation.
 """
+import concurrent.futures
 import os
 import sys
 
@@ -12,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import torch
 import torch.nn as nn
+from tqdm import tqdm
 
 from data_loaders.get_data import get_dataset, get_dataset_loader
 from data_loaders.tensors import truebones_batch_collate
@@ -37,6 +39,22 @@ from eval.motion_quality import DistributionMotionQualityScorer
 
 def _move_batch_to_device(batch, device):
     return batch.to(device, non_blocking=True)
+
+
+def _export_motion(task):
+    motion_np, parents_np, offsets, npy_name, joint_names, out_path = task
+    out_anim, has_animated_pos = recover_animation_from_motion_np(
+        motion_np, parents_np, offsets
+    )
+    np.save(pjoin(out_path, npy_name), motion_np)
+    if out_anim is not None:
+        BVH.save(
+            pjoin(out_path, npy_name.replace('.npy', '.bvh')),
+            out_anim,
+            joint_names,
+            positions=has_animated_pos,
+        )
+    return npy_name
 
 
 def _sample_object_type_batch(
@@ -151,61 +169,82 @@ def main(args=None, cond_dict=None):
 
     ddim_eta = float(getattr(args, 'ddim_eta', 0.0))
 
-    # Generate samples per object_type sequentially, with one batch per object_type.
-    for object_idx, object_type in enumerate(object_types):
-        print(f'\n### Sampling object_type: {object_type}')
-        print(f'    method={sampling_method} steps={sampling_steps or "full"} batch_size={args.batch_size}')
+    # Create thread pool ONCE to minimize overhead across all object_types.
+    # Threads still benefit from GIL release inside np.save / np.savetxt (C code),
+    # and recover_animation_from_motion_np uses numpy ops that often release the GIL.
+    num_workers = 8
+    export_pool = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
+    try:
+        # Generate samples per object_type sequentially, with one batch per object_type.
+        for object_idx, object_type in enumerate(object_types):
+            print(f'\n### Sampling object_type: {object_type}')
+            print(f'    method={sampling_method} steps={sampling_steps or "full"} batch_size={args.batch_size}')
 
-        # Create condition for batch_size samples of the same object_type
-        obj_batch = [object_type] * args.batch_size
-        _, model_kwargs = create_condition(
-            obj_batch,
-            cond_dict,
-            n_frames,
-            args.temporal_window,
-            max_joints=opt.max_joints,
-            feature_len=opt.feature_len
-        )
-        sample = _sample_object_type_batch(
-            diffusion=diffusion,
-            model=model,
-            model_kwargs=model_kwargs,
-            sampling_method=sampling_method,
-            sample_shape=(args.batch_size, max_joints, model.feature_len, n_frames),
-            ddim_eta=ddim_eta,
-            seed=args.seed + object_idx,
-            device=dist_util.dev(),
-        )
+            # Create condition for batch_size samples of the same object_type
+            obj_batch = [object_type] * args.batch_size
+            _, model_kwargs = create_condition(
+                obj_batch,
+                cond_dict,
+                n_frames,
+                args.temporal_window,
+                max_joints=opt.max_joints,
+                feature_len=opt.feature_len
+            )
+            sample = _sample_object_type_batch(
+                diffusion=diffusion,
+                model=model,
+                model_kwargs=model_kwargs,
+                sampling_method=sampling_method,
+                sample_shape=(args.batch_size, max_joints, model.feature_len, n_frames),
+                ddim_eta=ddim_eta,
+                seed=args.seed + object_idx,
+                device=dist_util.dev(),
+            )
 
-        for sample_idx, motion in enumerate(sample):
-            n_joints = model_kwargs['y']['n_joints'][sample_idx].item()
-            motion = motion[:n_joints]
-            parents = model_kwargs['y']['parents'][sample_idx]
-            mean = cond_dict[object_type]['mean'][None, :]
-            std = cond_dict[object_type]['std'][None, :]
-            motion = motion.cpu().permute(2, 0, 1).numpy() * std + mean
-            offsets = cond_dict[object_type]['offsets']
-            out_anim, has_animated_pos = recover_animation_from_motion_np(motion, parents, offsets)
-            
-            # Generate unique filename
+            # Pre-compute filenames with a single directory scan
             existing_npy_files = [
-                filename for filename in os.listdir(out_path)
-                if filename.startswith(object_type) and filename.endswith('.npy')
+                f for f in os.listdir(out_path)
+                if f.startswith(object_type) and f.endswith('.npy')
             ]
-            npy_name = f'{object_type}_#{len(existing_npy_files)}.npy'
-            bvh_name = f'{object_type}_#{len(existing_npy_files)}.bvh'
-            np.save(pjoin(out_path, npy_name), motion)
-            if out_anim is not None:
-                BVH.save(
-                    pjoin(out_path, bvh_name),
-                    out_anim,
-                    cond_dict[object_type].get(
-                        'canonical_bvh_joint_names',
-                        cond_dict[object_type]['joints_names'],
-                    ),
-                    positions=has_animated_pos,
-                )
-            print(f'    Created motion {sample_idx + 1}/{args.batch_size}: {npy_name}')
+            base_index = len(existing_npy_files)
+
+            # Collect export tasks (in-process, no pickling needed)
+            joint_names = cond_dict[object_type].get(
+                'canonical_bvh_joint_names',
+                cond_dict[object_type]['joints_names'],
+            )
+            export_tasks = []
+            for sample_idx, motion in enumerate(sample):
+                n_joints = model_kwargs['y']['n_joints'][sample_idx].item()
+                motion = motion[:n_joints]
+                parents = model_kwargs['y']['parents'][sample_idx]
+                mean = cond_dict[object_type]['mean'][None, :]
+                std = cond_dict[object_type]['std'][None, :]
+                motion_np = motion.cpu().permute(2, 0, 1).numpy() * std + mean
+                offsets = cond_dict[object_type]['offsets']
+
+                npy_name = f'{object_type}_#{base_index + sample_idx}.npy'
+                export_tasks.append((
+                    motion_np,
+                    parents,  # already np.ndarray, shared in-process
+                    offsets,
+                    npy_name,
+                    joint_names,
+                    out_path,
+                ))
+
+            # Parallel export using ThreadPoolExecutor.
+            # np.save / np.savetxt release the GIL (C-level I/O), so threads
+            # can overlap I/O with each other and with the host sampler loop.
+            results = list(
+                tqdm(export_pool.map(_export_motion, export_tasks),
+                      total=len(export_tasks),
+                      desc=f'{object_type} export')
+            )
+            for npy_name in results:
+                print(f'    Created motion: {npy_name}')
+    finally:
+        export_pool.shutdown(wait=True)
 
     # Evaluate generated motions using DistributionMotionQualityScorer
     if action_tags:

@@ -297,26 +297,34 @@ def save(filename, anim, names=None, frametime=1.0/24.0, order='xyz', positions=
         f.write("MOTION\n")
         f.write("Frames: %i\n" % anim.shape[0]);
         f.write("Frame Time: %f\n" % frametime);
-            
+
         rots = np.degrees(anim.rotations.euler(order=order))
         poss = anim.positions
-        
-        for i in range(anim.shape[0]):
-            for j in range(anim.shape[1]):
+        end_sites_set = set(end_sites)
 
-                if j not in end_sites:
-                    if positions or j == 0:
+        # Vectorize MOTION data: build a single 2D float array and use
+        # np.savetxt which runs in C and releases the GIL.
+        n_frames, n_joints = anim.shape
+        p0, p1, p2 = ordermap[print_order[0]], ordermap[print_order[1]], ordermap[print_order[2]]
 
-                        f.write("%f %f %f %f %f %f " % (
-                            poss[i,j,0],                  poss[i,j,1],                  poss[i,j,2],
-                            rots[i,j,ordermap[print_order[0]]], rots[i,j,ordermap[print_order[1]]], rots[i,j,ordermap[print_order[2]]]))
+        # Collect all float columns in BVH joint order (skip end sites)
+        all_vals = np.empty((n_frames, 0), dtype=np.float64)
+        for j in range(n_joints):
+            if j in end_sites_set:
+                continue
+            if positions or j == 0:
+                cols = np.column_stack([
+                    poss[:, j, 0], poss[:, j, 1], poss[:, j, 2],
+                    rots[:, j, p0], rots[:, j, p1], rots[:, j, p2]
+                ])
+            else:
+                cols = np.column_stack([
+                    rots[:, j, p0], rots[:, j, p1], rots[:, j, p2]
+                ])
+            all_vals = np.hstack([all_vals, cols])
 
-                    else:
-
-                        f.write("%f %f %f " % (
-                            rots[i,j,ordermap[print_order[0]]], rots[i,j,ordermap[print_order[1]]], rots[i,j,ordermap[print_order[2]]]))
-
-            f.write("\n")
+        # np.savetxt is C-level I/O, releases GIL during the heavy lifting
+        np.savetxt(f, all_vals, fmt="%f", delimiter=" ")
     
     
 def save_joint(f, anim, names, t, i, print_order, children, positions=False):

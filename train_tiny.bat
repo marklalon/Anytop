@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=stage1_quadropeds_v3
+set RUN_NAME=stage1_quadropeds_locomotion_v1
 
 pushd "%SCRIPT_DIR%"
 
@@ -16,7 +16,7 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--ml_platform_type TensorboardPlatform ^
 	--objects_subset quadropeds ^
 	--train_split train ^
-	--action_tags locomotion,pose ^
+	--action_tags locomotion ^
 	--latent_dim 256 ^
 	--layers 8 ^
 	--diffusion_steps 100 ^

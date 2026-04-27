@@ -3,11 +3,11 @@ set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
 set RUN_NAME=stage1_quadropeds_v2_9
 REM 多个类型用空格分隔（直接传给 --object_type nargs='+'）。支持指定训练时模型没见过的Object Type来实现0样本泛化推理
-set OBJECT_TYPE=Buffalo
+set OBJECT_TYPE=Comodoa
 set BATCH_SIZE=32
 set ACTION_TAGS=locomotion
 
-rem set MODEL_FILE=model000080000.pt
+rem set MODEL_FILE=model000002000.pt
 
 pushd "%SCRIPT_DIR%"
 
@@ -53,7 +53,7 @@ REM 一次调用 generate.py；脚本会按 object_type 逐个生成，每个 ob
     --action_tags %ACTION_TAGS% ^
     --motion_length 2.0 ^
     --sampling_method ddim ^
-    --sampling_steps 50 %*
+    --sampling_steps 100 %*
 
 popd
 
