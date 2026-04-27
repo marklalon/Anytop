@@ -185,38 +185,6 @@ def add_training_options(parser):
                        help="Drop the last incomplete batch at the end of each epoch. "
                             "False means the last batch may be smaller than the others.")
 
-def add_two_stage_options(parser):
-    group = parser.add_argument_group('two_stage')
-    group.add_argument("--run_stage", default='both', choices=['stage1', 'stage2', 'both'], type=str,
-                       help="Run only stage1, only stage2, or both sequentially.")
-    group.add_argument("--output-dir", default='', type=str,
-                       help="Optional root directory under which stage1_pretrain and stage2_repair directories will be created.")
-    group.add_argument("--stage1_save_dir", default='', type=str,
-                       help="Output directory for stage1 clean pretraining.")
-    group.add_argument("--stage2_save_dir", default='', type=str,
-                       help="Output directory for stage2 repair finetuning.")
-    group.add_argument("--stage1_num_steps", default=-1, type=int,
-                       help="Override num_steps for stage1 only.")
-    group.add_argument("--stage2_num_steps", default=-1, type=int,
-                       help="Override num_steps for stage2 only.")
-    group.add_argument("--stage1_batch_size", default=-1, type=int,
-                       help="Override batch_size for stage1 only.")
-    group.add_argument("--stage2_batch_size", default=-1, type=int,
-                       help="Override batch_size for stage2 only.")
-    group.add_argument("--stage1_lr", default=-1.0, type=float,
-                       help="Override learning rate for stage1 only.")
-    group.add_argument("--stage2_lr", default=-1.0, type=float,
-                       help="Override learning rate for stage2 only.")
-    group.add_argument("--stage1_sample_limit", default=-1, type=int,
-                       help="Override sample_limit for stage1 only.")
-    group.add_argument("--stage2_sample_limit", default=-1, type=int,
-                       help="Override sample_limit for stage2 only.")
-    group.add_argument("--stage1_resume_checkpoint", default='', type=str,
-                       help="Optional checkpoint to resume stage1 from.")
-    group.add_argument("--stage2_resume_checkpoint", default='', type=str,
-                       help="Optional checkpoint to start stage2 from. If empty, stage1 output checkpoint is used.")
-    group.add_argument("--stage2_load_optimizer_state", action='store_true',
-                       help="If passed, stage2 also restores optimizer state from the resume checkpoint directory.")
 
 def add_sampling_options(parser):
     group = parser.add_argument_group('sampling')
@@ -319,14 +287,6 @@ def train_args():
     add_training_options(parser)
     return parser.parse_args()
 
-def train_two_stage_args():
-    parser = ArgumentParser()
-    add_base_options(parser)
-    add_data_options(parser)
-    add_model_options(parser)
-    add_training_options(parser)
-    add_two_stage_options(parser)
-    return parser.parse_args()
 
 def generate_args():
     parser = ArgumentParser()

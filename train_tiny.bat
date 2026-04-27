@@ -7,9 +7,8 @@ pushd "%SCRIPT_DIR%"
 
 REM 使用 --objects_subset Horse 指定单个物种的所有动作作为训练集
 REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
-%PYTHON_EXE% train/train_anytop_two_stage.py ^
-	--run_stage stage1 ^
-	--output-dir save/%RUN_NAME% ^
+%PYTHON_EXE% train/train_anytop.py ^
+	--save_dir save/%RUN_NAME% ^
 	--save_interval 2000 ^
 	--log_interval 100 ^
 	--auto_resume ^
@@ -21,9 +20,9 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--layers 8 ^
 	--diffusion_steps 100 ^
 	--num_frames 60 ^
-	--stage1_batch_size 32 ^
-	--stage1_lr 5e-5 ^
-	--stage1_num_steps 100000 ^
+	--batch_size 32 ^
+	--lr 5e-5 ^
+	--num_steps 100000 ^
 	--lr_scheduler_step_size 5000 ^
 	--lr_scheduler_gamma 0.95 ^
 	--eval_during_training ^
