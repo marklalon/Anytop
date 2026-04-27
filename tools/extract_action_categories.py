@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 # Load the metadata JSON file
-metadata_path = Path('dataset/truebones/zoo/truebones_processed/motion_metadata.json')
+metadata_path = Path(__file__).resolve().parent.parent / 'dataset' / 'truebones' / 'zoo' / 'truebones_processed' / 'motion_metadata.json'
 
 with open(metadata_path, 'r', encoding='utf-8') as handle:
     payload = json.load(handle)
