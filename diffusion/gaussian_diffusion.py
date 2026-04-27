@@ -373,16 +373,6 @@ class GaussianDiffusion:
         else:
             model_output = model(x, self._scale_timesteps(t), **model_kwargs)
 
-        conditioning = model_kwargs.get('y') if model_kwargs is not None else None
-        if conditioning is not None and 'inpainting_mask' in conditioning.keys() and 'inpainted_motion' in conditioning.keys():
-            inpainting_mask, inpainted_motion = conditioning['inpainting_mask'], conditioning['inpainted_motion']
-            assert self.model_mean_type == ModelMeanType.START_X, 'This feature supports only X_start pred for mow!'
-            assert model_output.shape == inpainting_mask.shape == inpainted_motion.shape
-            model_output = (model_output * ~inpainting_mask) + (inpainted_motion * inpainting_mask)
-            # print('model_output', model_output.shape, model_output)
-            # print('inpainting_mask', inpainting_mask.shape, inpainting_mask[0,0,0,:])
-            # print('inpainted_motion', inpainted_motion.shape, inpainted_motion)
-
         if self.model_var_type in [ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE]:
             assert model_output.shape == (B, C * 2, *x.shape[2:])
             model_output, model_var_values = th.split(model_output, C, dim=1)
