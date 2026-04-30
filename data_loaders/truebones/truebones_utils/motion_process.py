@@ -1267,6 +1267,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=
     object_cond['object_type'] = object_type
     object_cond['parents'] = parents
     object_cond['offsets'] = offsets
+    object_cond['scale_factor'] = float(scale_factor)
     object_cond['joints_names'] = names
     object_cond['canonical_joint_names'] = semantic_metadata['canonical_joint_names']
     object_cond['canonical_bvh_joint_names'] = [
@@ -1290,6 +1291,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=
     object_cond['is_symmetric'] = semantic_metadata['is_symmetric']
     object_cond['orientation_reference_source'] = orientation_reference_source
     object_cond['orientation_reference_file'] = os.path.basename(t_pos_path)
+    object_cond['orientation_quat'] = np.array(orientation_quat, dtype=np.float64)
     kinematic_chains = parents2kinchains(parents, object_policy(object_type))
     object_cond['kinematic_chains'] = kinematic_chains
     object_cond.update(build_object_labels(object_type))

@@ -233,7 +233,7 @@ def load(filename, start=None, end=None, order=None, world=True):
     return (Animation(quat_rotations, positions, orients, offsets, parents), names, frametime)
 
     
-def save(filename, anim, names=None, frametime=1.0/24.0, order='xyz', positions=False, orients=True):
+def save(filename, anim, names=None, frametime=1.0/24.0, order='xyz', positions=False, orients=True, all_joints_as_names=False):
     """
     Saves an Animation to file as BVH
     
@@ -262,6 +262,10 @@ def save(filename, anim, names=None, frametime=1.0/24.0, order='xyz', positions=
     orients : bool
         Multiply joint orients to the rotations
         before saving.
+
+    all_joints_as_names : bool
+        If True, leaf joints are written as JOINT with CHANNELS instead of End Site.
+        This preserves all joint names in the BVH instead of losing leaf joints as unnamed End Sites.
         
     """
 
@@ -269,9 +273,11 @@ def save(filename, anim, names=None, frametime=1.0/24.0, order='xyz', positions=
     if names is None:
         names = ["joint_" + str(i) for i in range(len(anim.parents))]
 
-    # anim, names = anim.sort(names)
     children = AnimationStructure.children_list(anim.parents)
-    if anim.shape[1] > 1: # end sites exist only if there is more than a root vertex
+    if all_joints_as_names:
+        # Treat all joints as named JOINT entries (no End Site collapsing)
+        end_sites = []
+    elif anim.shape[1] > 1:
         end_sites = [i for i,c in enumerate(children) if len(c)==0]
     else:
         end_sites = []
@@ -289,7 +295,7 @@ def save(filename, anim, names=None, frametime=1.0/24.0, order='xyz', positions=
             (t, channelmap_inv[print_order[0]], channelmap_inv[print_order[1]], channelmap_inv[print_order[2]]))
 
         for child in children[0]:
-            t = save_joint(f, anim, names, t, child, print_order=print_order, children=children, positions=positions)
+            t = save_joint(f, anim, names, t, child, print_order=print_order, children=children, positions=positions, all_joints_as_names=all_joints_as_names)
 
         t = t[:-1]
         f.write("%s}\n" % t)
@@ -327,12 +333,15 @@ def save(filename, anim, names=None, frametime=1.0/24.0, order='xyz', positions=
         np.savetxt(f, all_vals, fmt="%f", delimiter=" ")
     
     
-def save_joint(f, anim, names, t, i, print_order, children, positions=False):
+def save_joint(f, anim, names, t, i, print_order, children, positions=False, all_joints_as_names=False):
     end_site = False
-    if len(children[i]) == 0: #anim.parents[i+1] != i:
+    if len(children[i]) == 0:
         end_site = True
 
     if not end_site:
+        f.write("%sJOINT %s\n" % (t, names[i]))
+    elif all_joints_as_names:
+        # Write leaf joints as JOINT instead of End Site to preserve names
         f.write("%sJOINT %s\n" % (t, names[i]))
     else:
         f.write("%sEnd Site\n" % t)
@@ -342,7 +351,7 @@ def save_joint(f, anim, names, t, i, print_order, children, positions=False):
 
     f.write("%sOFFSET %f %f %f\n" % (t, anim.offsets[i,0], anim.offsets[i,1], anim.offsets[i,2]))
 
-    if not end_site:
+    if not end_site or all_joints_as_names:
         if positions:
             f.write("%sCHANNELS 6 Xposition Yposition Zposition %s %s %s \n" % (t,
                 channelmap_inv[print_order[0]], channelmap_inv[print_order[1]], channelmap_inv[print_order[2]]))
@@ -351,7 +360,7 @@ def save_joint(f, anim, names, t, i, print_order, children, positions=False):
                 channelmap_inv[print_order[0]], channelmap_inv[print_order[1]], channelmap_inv[print_order[2]]))
 
         for j in children[i]:
-            t = save_joint(f, anim, names, t, j, print_order=print_order, children=children, positions=positions)
+            t = save_joint(f, anim, names, t, j, print_order=print_order, children=children, positions=positions, all_joints_as_names=all_joints_as_names)
 
     t = t[:-1]
     f.write("%s}\n" % t)

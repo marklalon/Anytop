@@ -134,7 +134,7 @@ def run_validation(
     try:
         effective_filter_threshold_deg = 0.0
         if not skip_orientation_check and filter_orientation_threshold_deg > 0:
-            effective_filter_threshold_deg = min(filter_orientation_threshold_deg, orientation_threshold_deg)
+            effective_filter_threshold_deg = filter_orientation_threshold_deg
 
         _prepare_dataset_for_validation(
             dataset_dir,
