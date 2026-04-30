@@ -1221,6 +1221,7 @@ def _process_bvh_file(file_path, object_type, max_joints, root_pose_init_xz, sca
             'new_anim': new_anim,
             'export_anim': export_anim,
             'names': names,
+            'frame_time': frame_time,
             'is_loop': is_loop,
             'motion_labels': build_motion_labels(object_type, raw_action),
         })
@@ -1377,6 +1378,7 @@ def _write_object_outputs(save_dir, object_payload, files_counter):
         # viewers because its local position/offset decomposition is training-oriented.
         anim_obj = result['export_anim']
         BVH.save(pjoin(save_dir, BVHS_DIR, name+".bvh"), anim_obj, result.get('canonical_names', result['names']),
+                 frametime=result.get('frame_time', 1.0/24.0),
                  positions=needs_bvh_position_channels(anim_obj))
 
         motion_labels = dict(result['motion_labels'])
