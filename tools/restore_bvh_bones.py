@@ -14,33 +14,20 @@ This script reverses all three:
     restored_positions = processed_positions / scale_factor
     restored_offsets   = processed_offsets   / scale_factor
 
-The scale_factor can come from three sources:
-  - cond.npy['scale_factor'] (from future preprocessing runs)
-  - --raw_bvh (previeous/preprocessed data where cond.npy lacks it)
-  - --scale_factor CLI argument
+The scale_factor is always computed from the raw BVH (--raw_bvh).
 
 cond.npy is loaded from the default dataset path automatically;
 use --cond_npy to override.
 
 Usage:
-    # Basic: cond.npy has scale_factor, no raw BVH needed
-    python tools/restore_bvh_bones.py --input_bvh in.bvh --output_bvh out.bvh
-    
-    # Existing data without scale_factor: provide raw BVH
-    python tools/restore_bvh_bones.py --object_type Hound \
-        --input_bvh in.bvh --output_bvh out.bvh --raw_bvh raw_hound.bvh
-    
-    # Explicit scale factor
-    python tools/restore_bvh_bones.py --object_type Hound \
-        --input_bvh in.bvh --output_bvh out.bvh --scale_factor 0.0185
-    
-    # Batch restore
-    python tools/restore_bvh_bones.py --input_dir bvhs/ --output_dir restored/
+    python tools/restore_bvh_bones.py --input_bvh in.bvh --output_bvh out.bvh \
+        --raw_bvh raw_hound.bvh
 """
 
 import argparse
 import numpy as np
 import os
+import re
 import sys
 
 # Add Anytop to path
@@ -48,8 +35,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ANYTOP_DIR = os.path.join(SCRIPT_DIR, '..')
 sys.path.insert(0, ANYTOP_DIR)
 
-from motion_lib.BVH import load as bvh_load, save as bvh_save
+from motion_lib.BVH import load as bvh_load, save as bvh_save, channelmap, channelmap_inv
 from motion_lib.Animation import offset_lengths as animation_offset_lengths
+from motion_lib.AnimationStructure import children_list
 from motion_lib.Quaternions import Quaternions
 
 
@@ -76,12 +64,12 @@ def _get_hml_avg_bonelen():
     return HML_AVG_BONELEN
 
 
-def _compute_scale_factor_from_raw(raw_bvh_path):
-    """Compute the scale factor that was applied during preprocessing,
-    by loading the raw BVH and comparing with HML_AVG_BONELEN formula.
+def _get_scale_factor(raw_bvh_path):
+    """Compute the scale factor from the raw BVH.
 
     scale_factor = HML_AVG_BONELEN / mean(offset_lengths(raw_offsets))
     Uses the same offset_lengths() formula as motion_process.py for consistency.
+    Returns scale_factor (float) or None on failure.
     """
     raw_anim, raw_names, _ = bvh_load(raw_bvh_path)
     lengths = animation_offset_lengths(raw_anim)
@@ -94,53 +82,6 @@ def _compute_scale_factor_from_raw(raw_bvh_path):
     print(f"  Computed scale_factor from raw BVH: {sf:.6f} "
           f"(HML_AVG={hml:.4f} / mean_bone_len={mean_len:.4f})")
     return sf
-
-
-def _compute_scale_factor_from_comparison(raw_bvh_path, cond_offsets):
-    """Alternative: compute scale_factor by comparing raw offsets with
-    cond.npy's (scaled) offsets directly.
-
-    For each bone: scaled_offset[i] = original_offset[i] * scale_factor
-    So scale_factor ≈ mean(scaled_len / raw_len)
-    """
-    raw_anim, raw_names, _ = bvh_load(raw_bvh_path)
-    raw_offsets = raw_anim.offsets
-    raw_lens = np.linalg.norm(raw_offsets, axis=1)
-    scaled_lens = np.linalg.norm(cond_offsets, axis=1)
-    # Avoid division by zero for zero-offset joints (e.g. koshi)
-    mask = raw_lens > 1e-8
-    ratios = scaled_lens[mask] / raw_lens[mask]
-    sf = float(np.mean(ratios))
-    print(f"  Computed scale_factor from offset comparison: {sf:.6f} "
-          f"(from {mask.sum()}/{len(raw_lens)} non-zero offsets)")
-    return sf
-
-
-def _get_scale_factor(obj_cond, raw_bvh_path=None, scale_factor_arg=None):
-    """Resolve the scale factor from available sources (priority order):
-    1. --scale_factor CLI argument
-    2. cond.npy['scale_factor'] (future preprocessing runs)
-    3. --raw_bvh path (existing data, auto-compute)
-    Returns (scale_factor, source_description) or (None, reason).
-    """
-    if scale_factor_arg is not None:
-        return float(scale_factor_arg), "CLI argument"
-
-    cond_sf = obj_cond.get('scale_factor')
-    if cond_sf is not None:
-        return float(cond_sf), "cond.npy['scale_factor']"
-
-    if raw_bvh_path is not None:
-        sf = _compute_scale_factor_from_raw(raw_bvh_path)
-        if sf is not None:
-            return sf, f"computed from raw BVH ({os.path.basename(raw_bvh_path)})"
-        # Fallback: direct offset comparison
-        cond_offsets = obj_cond.get('offsets')
-        if cond_offsets is not None:
-            sf = _compute_scale_factor_from_comparison(raw_bvh_path, cond_offsets)
-            return sf, f"computed from offset comparison ({os.path.basename(raw_bvh_path)})"
-
-    return None, "not available"
 
 
 def _auto_detect_object_type_from_filename(bvh_path, cond):
@@ -194,8 +135,160 @@ def _validate_mapping(bvh_names, canonical_names):
     return True
 
 
+def _parse_raw_bvh_hierarchy(raw_bvh_path):
+    """Extract hierarchy metadata from a raw (unprocessed) BVH file.
+
+    Returns:
+        hierarchy_text: The full HIERARCHY block text (before MOTION).
+        rotation_order: Euler order string, e.g. 'yxz'.
+        raw_joint_names: Ordered list of joint names in the raw hierarchy (no End Sites).
+        end_site_parent_names: Set of names of joints that have an End Site child.
+    """
+    with open(raw_bvh_path, 'r') as f:
+        content = f.read()
+
+    parts = content.split('MOTION', 1)
+    hierarchy_text = parts[0]
+
+    # Extract rotation order from the first CHANNELS line
+    rotation_order = 'xyz'
+    for match in re.finditer(
+        r'CHANNELS\s+\d+\s+Xposition\s+Yposition\s+Zposition\s+'
+        r'(Xrotation|Yrotation|Zrotation)\s+'
+        r'(Xrotation|Yrotation|Zrotation)\s+'
+        r'(Xrotation|Yrotation|Zrotation)',
+        hierarchy_text
+    ):
+        r1, r2, r3 = match.groups()
+        print_order = channelmap[r1] + channelmap[r2] + channelmap[r3]
+        rotation_order = print_order[::-1]
+        break
+
+    # Parse hierarchy to identify End Site parents and joint order
+    raw_joint_names = []
+    end_site_parent_names = set()
+    stack = []  # names stack for tracking parent during End Site
+    current_name = None
+
+    for line in hierarchy_text.split('\n'):
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        # ROOT or JOINT declaration
+        m = re.match(r'(?:ROOT|JOINT)\s+(\S+)', stripped)
+        if m:
+            name = m.group(1)
+            current_name = name
+            raw_joint_names.append(name)
+            continue
+
+        if '{' in stripped:
+            if current_name is not None:
+                stack.append(current_name)
+            else:
+                stack.append(None)
+            continue
+
+        if '}' in stripped:
+            if stack:
+                stack.pop()
+            continue
+
+        if 'End Site' in stripped:
+            if stack:
+                end_site_parent_names.add(stack[-1])
+
+    return hierarchy_text, rotation_order, raw_joint_names, end_site_parent_names
+
+
+def _save_bvh_with_raw_hierarchy(
+    output_path,
+    anim,
+    joint_names,
+    frametime,
+    hierarchy_text,
+    rotation_order,
+    raw_joint_names,
+    end_site_parent_names,
+):
+    """Save a BVH file using a raw BVH hierarchy as template.
+
+    Writes the HIERARCHY block verbatim from the raw BVH, then writes
+    MOTION data converted from ``anim`` using the correct rotation order.
+
+    For non-root joints, position channels are filled from anim.offsets
+    (which have been unscaled to original size) because the processed BVH
+    only has rotation channels for non-root joints (positions are zero),
+    but the raw BVH carries the static OFFSET values as per-joint position
+    channels.
+    """
+    # Build ordered list of motion-joint indices (skip End Sites in raw hierarchy)
+    motion_joint_order = []
+    for raw_name in raw_joint_names:
+        if raw_name in joint_names:
+            idx = joint_names.index(raw_name)
+        else:
+            idx = -1
+        motion_joint_order.append(idx)
+
+    print_order = rotation_order[::-1]
+
+    # Convert quaternion rotations to Euler degrees in the correct order.
+    # euler(order=rotation_order) returns an (F, J, 3) array where the last
+    # axis is indexed according to rotation_order (e.g. 'yxz' -> axis 0=y, 1=x, 2=z).
+    # Build an axis→index map from the actual euler order so we pick the correct
+    # column for each print-order axis.
+    rots = np.degrees(anim.rotations.euler(order=rotation_order))
+    euler_order_map = {c: i for i, c in enumerate(rotation_order)}
+    p0, p1, p2 = euler_order_map[print_order[0]], euler_order_map[print_order[1]], euler_order_map[print_order[2]]
+    poss = anim.positions
+    offsets = anim.offsets  # unscaled bone offsets
+
+    n_frames = anim.shape[0]
+
+    with open(output_path, 'w') as f:
+        f.write(hierarchy_text)
+        if not hierarchy_text.rstrip().endswith('MOTION'):
+            f.write('MOTION\n')
+        f.write(f'Frames: {n_frames}\n')
+        f.write(f'Frame Time: {frametime}\n')
+
+        all_vals = np.empty((n_frames, 0), dtype=np.float64)
+
+        for raw_idx, raw_name in enumerate(raw_joint_names):
+            proc_idx = motion_joint_order[raw_idx]
+            if proc_idx < 0:
+                continue
+
+            # Non-root joints in processed BVH only have rotation channels;
+            # their positions are zero. The raw BVH carries the static OFFSET
+            # values as per-joint position channels, so fill from offsets.
+            if raw_idx == 0:
+                # Root: use actual position data (includes translation).
+                px, py, pz = poss[:, proc_idx, 0], poss[:, proc_idx, 1], poss[:, proc_idx, 2]
+            else:
+                # Non-root: fill constant offset values.
+                px = np.full(n_frames, float(offsets[proc_idx, 0]))
+                py = np.full(n_frames, float(offsets[proc_idx, 1]))
+                pz = np.full(n_frames, float(offsets[proc_idx, 2]))
+
+            # Write 6 channels: pos + rot in print_order
+            cols = np.column_stack([
+                px, py, pz,
+                rots[:, proc_idx, p0], rots[:, proc_idx, p1], rots[:, proc_idx, p2]
+            ])
+            all_vals = np.hstack([all_vals, cols])
+
+        np.savetxt(f, all_vals, fmt="%f", delimiter=" ")
+
+    print(f"  Rotation order preserved: {rotation_order} (printed as {print_order})")
+    print(f"  End Site blocks preserved: {len(end_site_parent_names)} joints")
+    print(f"  Non-root positions filled from offsets (const per joint)")
+
+
 def restore_bvh(input_bvh, cond_npy, output_bvh, object_type=None,
-                raw_bvh=None, scale_factor=None):
+                raw_bvh=None):
     """
     Restore original bone names and scale in a processed/generated BVH.
 
@@ -205,9 +298,7 @@ def restore_bvh(input_bvh, cond_npy, output_bvh, object_type=None,
         output_bvh: Path to write the restored BVH
         object_type: Object type key in cond.npy (e.g., "Hound", "Horse").
                      If None, auto-detect from root joint name.
-        raw_bvh: Optional raw BVH path for computing scale_factor
-                 (used when cond.npy lacks scale_factor).
-        scale_factor: Explicit scale factor override.
+        raw_bvh: Raw BVH path for computing scale_factor and preserving hierarchy.
     """
     # Load cond.npy
     if isinstance(cond_npy, str):
@@ -262,17 +353,15 @@ def restore_bvh(input_bvh, cond_npy, output_bvh, object_type=None,
             new_names.append(bvh_names[i])
     print(f"  Restored names: {mapped}/{len(bvh_names)} joints mapped to original names")
 
-    # --- Scale restoration ---
-    sf_value, sf_source = _get_scale_factor(obj_cond, raw_bvh_path=raw_bvh,
-                                            scale_factor_arg=scale_factor)
+    # --- Scale restoration (always computed from raw BVH) ---
+    sf_value = _get_scale_factor(raw_bvh)
     if sf_value is not None:
         print(f"  Scale factor: {sf_value:.6f}")
-        # Unscale positions and offsets
         anim.positions = anim.positions / sf_value
         anim.offsets = anim.offsets / sf_value
         print(f"  Unscaled positions and offsets by {sf_value:.6f}")
     else:
-        print(f"  WARNING: scale_factor {sf_source}. Scaling NOT restored.")
+        print(f"  WARNING: scale_factor computation failed. Scaling NOT restored.")
 
     # --- Orientation (face direction) restoration ---
     ori_quat = obj_cond.get('orientation_quat')
@@ -292,9 +381,17 @@ def restore_bvh(input_bvh, cond_npy, output_bvh, object_type=None,
     else:
         print(f"  WARNING: orientation_quat not found in cond.npy. Orientation NOT restored.")
 
+    # --- Use raw BVH hierarchy as template ---
+    hierarchy_text, rotation_order, raw_joint_names, end_site_parent_names = \
+        _parse_raw_bvh_hierarchy(raw_bvh)
+    print(f"  Extracted raw hierarchy: {len(raw_joint_names)} named joints, "
+          f"{len(end_site_parent_names)} End Site parents, order={rotation_order}")
+
     # Save the restored BVH
-    bvh_save(output_bvh, anim, new_names, frametime=frametime,
-             positions=True, all_joints_as_names=True)
+    _save_bvh_with_raw_hierarchy(
+        output_bvh, anim, new_names, frametime,
+        hierarchy_text, rotation_order, raw_joint_names, end_site_parent_names,
+    )
     print(f"Saved restored BVH: {output_bvh}")
 
     # Verification
@@ -307,43 +404,6 @@ def restore_bvh(input_bvh, cond_npy, output_bvh, object_type=None,
     return output_bvh
 
 
-def batch_restore(cond_npy, input_dir, output_dir, raw_dir=None):
-    """Restore all BVH files in a directory."""
-    cond = np.load(cond_npy, allow_pickle=True).item()
-    os.makedirs(output_dir, exist_ok=True)
-
-    bvh_files = sorted([f for f in os.listdir(input_dir) if f.lower().endswith('.bvh')])
-    if not bvh_files:
-        print(f"No .bvh files found in {input_dir}")
-        return
-
-    for bvh_file in bvh_files:
-        input_path = os.path.join(input_dir, bvh_file)
-        output_path = os.path.join(output_dir, bvh_file)
-
-        obj_type = _auto_detect_object_type_from_filename(input_path, cond)
-
-        print(f"\n[{bvh_file}]")
-        if obj_type is None:
-            print(f"  SKIP: Cannot detect object_type from filename")
-            continue
-
-        # Find raw BVH for this object if raw_dir provided
-        raw_bvh_path = None
-        if raw_dir is not None:
-            obj_raw_dir = os.path.join(raw_dir, obj_type)
-            if os.path.isdir(obj_raw_dir):
-                raw_bvhs = [f for f in os.listdir(obj_raw_dir) if f.endswith('.bvh')]
-                if raw_bvhs:
-                    raw_bvh_path = os.path.join(obj_raw_dir, raw_bvhs[0])
-
-        try:
-            restore_bvh(input_path, cond, output_path, object_type=obj_type,
-                        raw_bvh=raw_bvh_path)
-        except Exception as e:
-            print(f"  ERROR: {e}")
-
-
 def main():
     parser = argparse.ArgumentParser(
         description='Restore original BVH bone names and scale from Anytop processed/generated BVHs'
@@ -352,54 +412,29 @@ def main():
     parser.add_argument('--cond_npy', type=str, default=None,
                         help=f'Path to cond.npy file (default: {_DEFAULT_COND_NPY})')
 
-    # Single file mode
-    parser.add_argument('--input_bvh', type=str, default=None,
-                        help='Input BVH file path')
-    parser.add_argument('--output_bvh', type=str, default=None,
+    parser.add_argument('--input_bvh', type=str, required=True,
+                        help='Input BVH file path (processed or model-generated)')
+    parser.add_argument('--output_bvh', type=str, required=True,
                         help='Output BVH file path')
     parser.add_argument('--object_type', type=str, default=None,
                         help='Object type key in cond.npy (e.g., "Hound"). '
-                             'If omitted, auto-detected from root joint name.')
-
-    # Batch mode
-    parser.add_argument('--input_dir', type=str, default=None,
-                        help='Input directory containing BVH files (batch mode)')
-    parser.add_argument('--output_dir', type=str, default=None,
-                        help='Output directory for restored BVH files (batch mode)')
-
-    # Scale restoration
-    parser.add_argument('--raw_bvh', type=str, default=None,
-                        help='Raw (unprocessed) BVH file to compute scale_factor. '
-                             'Required if cond.npy lacks scale_factor key.')
-    parser.add_argument('--raw_dir', type=str, default=None,
-                        help='Root directory containing raw BVH folders (batch mode). '
-                             'E.g. Anytop/dataset/truebones/zoo/Truebone_Z-OO/')
-    parser.add_argument('--scale_factor', type=float, default=None,
-                        help='Explicit scale factor override.')
+                             'If omitted, auto-detected from filename.')
+    parser.add_argument('--raw_bvh', type=str, required=True,
+                        help='Raw (unprocessed) BVH file. Used for computing scale_factor '
+                             'and preserving the original hierarchy structure.')
 
     args = parser.parse_args()
-    
-    # Apply default cond_npy path
+
     cond_npy_path = args.cond_npy or _DEFAULT_COND_NPY
     if not os.path.isfile(cond_npy_path):
         parser.error(f"cond.npy not found at {cond_npy_path}. Use --cond_npy to specify a custom path.")
+    if not os.path.isfile(args.input_bvh):
+        parser.error(f"Input BVH not found: {args.input_bvh}")
+    if not os.path.isfile(args.raw_bvh):
+        parser.error(f"Raw BVH not found: {args.raw_bvh}")
 
-    if args.input_bvh and args.input_dir:
-        parser.error("Provide either --input_bvh or --input_dir, not both")
-    if not args.input_bvh and not args.input_dir:
-        parser.error("Provide either --input_bvh or --input_dir")
-    if args.input_bvh and not args.output_bvh:
-        parser.error("--output_bvh is required when using --input_bvh")
-    if args.input_dir and not args.output_dir:
-        parser.error("--output_dir is required when using --input_dir")
-
-    if args.input_bvh:
-        restore_bvh(args.input_bvh, cond_npy_path, args.output_bvh,
-                     object_type=args.object_type,
-                     raw_bvh=args.raw_bvh, scale_factor=args.scale_factor)
-    else:
-        batch_restore(cond_npy_path, args.input_dir, args.output_dir,
-                      raw_dir=args.raw_dir)
+    restore_bvh(args.input_bvh, cond_npy_path, args.output_bvh,
+                object_type=args.object_type, raw_bvh=args.raw_bvh)
 
 
 if __name__ == '__main__':

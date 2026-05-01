@@ -1268,7 +1268,6 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=
     object_cond['object_type'] = object_type
     object_cond['parents'] = parents
     object_cond['offsets'] = offsets
-    object_cond['scale_factor'] = float(scale_factor)
     object_cond['joints_names'] = names
     object_cond['canonical_joint_names'] = semantic_metadata['canonical_joint_names']
     object_cond['canonical_bvh_joint_names'] = [
@@ -1379,7 +1378,8 @@ def _write_object_outputs(save_dir, object_payload, files_counter):
         anim_obj = result['export_anim']
         BVH.save(pjoin(save_dir, BVHS_DIR, name+".bvh"), anim_obj, result.get('canonical_names', result['names']),
                  frametime=result.get('frame_time', 1.0/24.0),
-                 positions=needs_bvh_position_channels(anim_obj))
+                 positions=needs_bvh_position_channels(anim_obj),
+                 all_joints_as_names=True)
 
         motion_labels = dict(result['motion_labels'])
         motion_labels['motion_name'] = motion_file_name
