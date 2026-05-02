@@ -464,11 +464,7 @@ def _quaternion_angle_degrees(source_q: np.ndarray, target_q: np.ndarray) -> np.
 
 
 def _measure_fbx_glb_error(fbx_path: str, glb_path: str) -> dict[str, Any]:
-    """Compare FBX source against GLB target on display frames (integer frame indices).
-
-    Uses display-frame comparison (frame 0, 1, 2, ...) rather than keyframe
-    sample times, to avoid interpolation drift between formats that place
-    keyframes at different positions.
+    """Compare FBX source against GLB target by raw sample index.
 
     This metric is diagnostic only. Blender's FBX and glTF importers can keep
     visually equivalent animation while producing different armature wrapper
@@ -485,20 +481,18 @@ def _measure_fbx_glb_error(fbx_path: str, glb_path: str) -> dict[str, Any]:
         )
 
     bone_names = source_meta["bone_names"]
-    source_offset = float(source_meta["actual_sample_times"][0])
-    target_offset = float(target_meta["actual_sample_times"][0])
-    source_display_frames = int(round(source_meta["actual_sample_times"][-1] - source_offset)) + 1
-    target_display_frames = int(round(target_meta["actual_sample_times"][-1] - target_offset)) + 1
-    compare_frame_count = min(source_display_frames, target_display_frames)
-    compare_times = np.arange(compare_frame_count, dtype=np.float64)
+    source_sample_times = np.asarray(source_meta["actual_sample_times"], dtype=np.float64)
+    target_sample_times = np.asarray(target_meta["actual_sample_times"], dtype=np.float64)
+    compare_frame_count = min(len(source_sample_times), len(target_sample_times))
+    compare_indices = np.arange(compare_frame_count, dtype=np.int32)
 
     source_pose = _load_fbx_world_pose_data(
         fbx_path,
-        sample_times=(compare_times + source_offset).tolist(),
+        sample_times=source_sample_times[:compare_frame_count].tolist(),
     )
     target_pose = _load_glb_world_pose_data(
         glb_path,
-        sample_times=(compare_times + target_offset).tolist(),
+        sample_times=target_sample_times[:compare_frame_count].tolist(),
     )
 
     position_errors = np.linalg.norm(
@@ -530,12 +524,12 @@ def _measure_fbx_glb_error(fbx_path: str, glb_path: str) -> dict[str, Any]:
     return {
         "bone_names": bone_names,
         "num_frames": compare_frame_count,
-        "compare_times": compare_times.tolist(),
-        "source_num_frames": source_display_frames,
-        "target_num_frames": target_display_frames,
+        "compare_times": compare_indices.tolist(),
+        "source_num_frames": int(len(source_sample_times)),
+        "target_num_frames": int(len(target_sample_times)),
         "max_error": float(position_errors.max()),
         "worst_frame": int(worst_frame_idx),
-        "worst_time": float(compare_times[worst_frame_idx]),
+        "worst_time": float(compare_indices[worst_frame_idx]),
         "worst_bone": bone_names[worst_bone_idx],
         "per_bone_error": per_bone_error,
         "per_frame_error": per_frame_error,

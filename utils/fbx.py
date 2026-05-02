@@ -44,6 +44,11 @@ def import_fbx(filepath: str, ignore_leaf_bones: bool = True) -> None:
     This wraps the common pattern of patching the light import and calling
     ``bpy.ops.import_scene.fbx`` with our standard parameters.
 
+    ``force_connect_children`` is hardcoded to False to preserve the source
+    rig's original head/tail connectivity semantics.
+    ``automatic_bone_orientation`` is hardcoded to True for consistent
+    bone axis orientation across imports.
+
     Raises ``RuntimeError`` if bpy is not available.
     """
     import bpy
@@ -52,7 +57,7 @@ def import_fbx(filepath: str, ignore_leaf_bones: bool = True) -> None:
     bpy.ops.import_scene.fbx(
         filepath=filepath,
         ignore_leaf_bones=ignore_leaf_bones,
-        force_connect_children=True,
+        force_connect_children=False,
         automatic_bone_orientation=True,
         bake_space_transform=False,
         use_custom_normals=False,
