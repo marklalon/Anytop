@@ -469,6 +469,11 @@ def _measure_fbx_glb_error(fbx_path: str, glb_path: str) -> dict[str, Any]:
     Uses display-frame comparison (frame 0, 1, 2, ...) rather than keyframe
     sample times, to avoid interpolation drift between formats that place
     keyframes at different positions.
+
+    This metric is diagnostic only. Blender's FBX and glTF importers can keep
+    visually equivalent animation while producing different armature wrapper
+    transforms and different bone-head semantics, so cross-format bone-head and
+    local-channel errors are not a reliable roundtrip oracle.
     """
     source_meta = _load_fbx_world_pose_data(fbx_path)
     target_meta = _load_glb_world_pose_data(glb_path)
@@ -886,18 +891,19 @@ def test_fbx_glb_npy_roundtrip(
             fps=source_fps,
         )
 
-        # Phase G: Compare intermediate GLB vs source FBX (baseline)
+        # Phase G: Compare intermediate GLB vs source FBX (diagnostic only)
         baseline_metrics = _measure_fbx_glb_error(anim_fbx, intermediate_glb)
-        _print_comparison_report("Baseline (FBX vs intermediate GLB)", baseline_metrics)
+        _print_comparison_report("Diagnostic (FBX vs intermediate GLB)", baseline_metrics)
 
-        # Phase H: Compare recovered GLB vs source FBX (roundtrip)
+        # Phase H: Compare recovered GLB vs source FBX (diagnostic only)
         recovered_metrics = _measure_fbx_glb_error(anim_fbx, recovered_glb)
-        _print_comparison_report("Roundtrip (FBX vs recovered GLB)", recovered_metrics)
+        _print_comparison_report("Diagnostic (FBX vs recovered GLB)", recovered_metrics)
 
         # Phase I: Compare recovered GLB vs intermediate GLB in the shared GLB domain.
-        # FBX and GLB imports in Blender differ by a fixed wrapper/basis transform,
-        # so cross-format world-space errors are diagnostic only. The actual
-        # roundtrip fidelity check needs to stay within the GLB domain.
+        # FBX and GLB imports in Blender do not preserve equivalent bone-head
+        # semantics across formats, so cross-format errors above are diagnostic
+        # only. The actual roundtrip fidelity check needs to stay within the GLB
+        # domain.
         glb_pair_metrics = _measure_glb_pair_error(intermediate_glb, recovered_glb)
         _print_comparison_report("Roundtrip (intermediate GLB vs recovered GLB)", glb_pair_metrics)
 
@@ -985,12 +991,12 @@ if __name__ == "__main__":
     print("\nSummary:")
     print(f"  NPY encoding error         : {result['npy_error']:.6f}")
     print(
-        f"  FBX -> intermediate GLB    : {result['baseline_error']:.6f} "
+        f"  FBX -> intermediate GLB    : {result['baseline_error']:.6f}  [diagnostic only] "
         f"(bone={result['baseline_worst_bone']}, sample={result['baseline_worst_frame']}, "
         f"time={result['baseline_worst_time']:.6f})"
     )
     print(
-        f"  FBX -> recovered GLB       : {result['recovered_error']:.6f} "
+        f"  FBX -> recovered GLB       : {result['recovered_error']:.6f}  [diagnostic only] "
         f"(bone={result['recovered_worst_bone']}, sample={result['recovered_worst_frame']}, "
         f"time={result['recovered_worst_time']:.6f})"
     )
