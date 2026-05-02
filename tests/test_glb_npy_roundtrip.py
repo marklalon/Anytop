@@ -8,6 +8,24 @@ exports `recovered_export.glb`, and compares both exported GLBs against the
 source GLB on every frame and every bone in Blender world space.
 
 Requires bpy (Blender as Python module) in the current Python environment.
+
+Usage examples:
+    # Use anim-glb as both T-pose source and animation source (default behavior):
+    python test_glb_npy_roundtrip.py \\
+        --anim-glb outputs/glb_npy_roundtrip/original.glb \\
+        --object-type Horse
+
+    # Specify a separate T-pose GLB for skeleton metadata:
+    python test_glb_npy_roundtrip.py \\
+        --tpose-glb outputs/tpose.glb \\
+        --anim-glb outputs/glb_npy_roundtrip/original.glb \\
+        --object-type Horse
+
+    # Custom output directory and tolerance:
+    python test_glb_npy_roundtrip.py \\
+        --anim-glb outputs/glb_npy_roundtrip/original.glb \\
+        --output-dir outputs/my_roundtrip \\
+        --tolerance 0.001
 """
 from __future__ import annotations
 
@@ -707,8 +725,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--tpose-glb",
-        default=os.path.join(_ANYTOP_ROOT, "outputs", "glb_npy_roundtrip", "tpose.glb"),
-        help="Path to T-pose GLB file used as skeleton metadata and export container.",
+        default=None,
+        help="Path to T-pose GLB file used as skeleton metadata and export container. Defaults to --anim-glb if not specified.",
     )
     parser.add_argument(
         "--anim-glb",
@@ -736,6 +754,9 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
+
+    if args.tpose_glb is None:
+        args.tpose_glb = args.anim_glb
 
     print(f"T-pose GLB : {args.tpose_glb}")
     print(f"Anim GLB   : {args.anim_glb}")

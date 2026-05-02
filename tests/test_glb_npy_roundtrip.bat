@@ -3,7 +3,6 @@ set SCRIPT_DIR=%~dp0
 set ANYTOP_ROOT=%SCRIPT_DIR%..
 
 python "%SCRIPT_DIR%test_glb_npy_roundtrip.py" ^
-    --output-dir "%ANYTOP_ROOT%\outputs\glb_npy_roundtrip" ^
-    --tpose-glb "%ANYTOP_ROOT%\outputs\glb_npy_roundtrip\tpose.glb" ^
-    --anim-glb "%ANYTOP_ROOT%\outputs\glb_npy_roundtrip\original.glb" ^
+    --output-dir "D:\AI\pcvg-skeleton-animation\Anytop\outputs\glb_npy_roundtrip" ^
+    --anim-glb "D:\AI\pcvg-skeleton-animation\Anytop\outputs\glb_npy_roundtrip\AlligatorALL-Bite1.glb" ^
     --object-type Horse
