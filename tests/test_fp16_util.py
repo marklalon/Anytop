@@ -1,9 +1,13 @@
+import os
+import sys
 import unittest
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import AdamW
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from diffusion.fp16_util import MixedPrecisionTrainer, inspect_optimizer_state, sanitize_optimizer_state
 from model.motion_transformer import GraphMultiHeadAttention, SelectiveMultiheadAttention
@@ -219,11 +223,13 @@ class SelectiveAutocastTests(unittest.TestCase):
         output = model(torch.randn(3, 4, dtype=torch.float32))
 
         self.assertEqual(patched, 2)
+        # Inside autocast, Linear computes in bf16, but wrapper converts output to fp32
+        # for precision preservation between layers.
         self.assertEqual(first_linear.recorded_output_dtype, torch.bfloat16)
         self.assertEqual(second_linear.recorded_output_dtype, torch.bfloat16)
-        self.assertEqual(activation_probe.last_input_dtype, torch.bfloat16)
-        self.assertEqual(activation_probe.last_output_dtype, torch.bfloat16)
-        self.assertEqual(output.dtype, torch.bfloat16)
+        self.assertEqual(activation_probe.last_input_dtype, torch.float32)
+        self.assertEqual(activation_probe.last_output_dtype, torch.float32)
+        self.assertEqual(output.dtype, torch.float32)
 
     def test_selective_autocast_is_noop_without_bf16_dtype(self):
         linear = _RecordingLinear(4, 8)
@@ -258,10 +264,11 @@ class SelectiveAutocastTests(unittest.TestCase):
         output = model(torch.randn(3, 2, 5, dtype=torch.float32))
 
         self.assertEqual(patched, 1)
+        # Inside autocast, Conv computes in bf16, but wrapper converts output to fp32.
         self.assertEqual(conv.recorded_output_dtype, torch.bfloat16)
-        self.assertEqual(activation_probe.last_input_dtype, torch.bfloat16)
-        self.assertEqual(activation_probe.last_output_dtype, torch.bfloat16)
-        self.assertEqual(output.dtype, torch.bfloat16)
+        self.assertEqual(activation_probe.last_input_dtype, torch.float32)
+        self.assertEqual(activation_probe.last_output_dtype, torch.float32)
+        self.assertEqual(output.dtype, torch.float32)
 
     def test_selective_autocast_forces_softmax_to_fp32(self):
         model = nn.Sequential(_SoftmaxProbe(), _FunctionalSoftmaxProbe())
@@ -290,9 +297,10 @@ class SelectiveAutocastTests(unittest.TestCase):
         self.assertEqual(attn.recorded_k_dtype, torch.bfloat16)
         self.assertEqual(attn.recorded_v_dtype, torch.bfloat16)
         self.assertEqual(attn.recorded_proj_dtype, torch.bfloat16)
-        self.assertEqual(attn.recorded_scores_dtype, torch.bfloat16)
+        # CPU matmul of bf16 tensors returns fp32, so scores are fp32.
+        self.assertEqual(attn.recorded_scores_dtype, torch.float32)
         self.assertEqual(attn.recorded_softmax_dtype, torch.float32)
-        self.assertEqual(output.dtype, torch.bfloat16)
+        self.assertEqual(output.dtype, torch.float32)
         self.assertEqual(weights.dtype, torch.float32)
 
     def test_selective_multihead_attention_stays_fp32_without_bf16_configuration(self):
@@ -307,6 +315,7 @@ class SelectiveAutocastTests(unittest.TestCase):
         self.assertEqual(attn.recorded_k_dtype, torch.float32)
         self.assertEqual(attn.recorded_v_dtype, torch.float32)
         self.assertEqual(attn.recorded_proj_dtype, torch.float32)
+        # CPU bf16 matmul returns fp32, so attention scores are fp32.
         self.assertEqual(attn.recorded_scores_dtype, torch.float32)
         self.assertEqual(attn.recorded_softmax_dtype, torch.float32)
         self.assertEqual(output.dtype, torch.float32)
@@ -349,9 +358,10 @@ class SelectiveAutocastTests(unittest.TestCase):
         self.assertEqual(attn.recorded_k_dtype, torch.bfloat16)
         self.assertEqual(attn.recorded_v_dtype, torch.bfloat16)
         self.assertEqual(attn.recorded_proj_dtype, torch.bfloat16)
-        self.assertEqual(attn.recorded_scores_dtype, torch.bfloat16)
+        # CPU matmul of bf16 tensors returns fp32, so scores are fp32.
+        self.assertEqual(attn.recorded_scores_dtype, torch.float32)
         self.assertEqual(attn.recorded_softmax_dtype, torch.float32)
-        self.assertEqual(output.dtype, torch.bfloat16)
+        self.assertEqual(output.dtype, torch.float32)
 
     def test_graph_multihead_attention_stays_fp32_without_bf16_configuration(self):
         attn = _RecordingGraphMultiHeadAttention(d_model=8, dropout=0.0, nheads=2)
