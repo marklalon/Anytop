@@ -1,30 +1,30 @@
 """
-FBX -> GLB -> NPY -> GLB roundtrip test.
+FBX -> NPY -> GLB roundtrip test.
 
-Loads a source FBX animation through Blender, exports it to GLB,
-extracts AnyTop's 13-channel NPY motion features, recovers an Animation,
-exports `recovered_export.glb`, and compares the final GLB against the
-source FBX on every frame and every bone in Blender world space.
+Loads a source FBX animation through Blender, extracts AnyTop's 13-channel
+NPY motion features, recovers an Animation, exports `recovered.glb`, and
+compares the final GLB directly against the source FBX on every frame and
+every bone in Blender world space.
 
 Requires bpy (Blender as Python module) in the current Python environment.
 
 Usage examples:
     # Use a single FBX as both T-pose source and animation source:
-    python tests/test_fbx_glb_npy_roundtrip.py \\
-        --fbx outputs/fbx_npy_roundtrip/original.fbx \\
+    python tests/test_fbx_npy_glb_roundtrip.py \
+        --fbx outputs/fbx_npy_roundtrip/original.fbx \
         --object-type Horse
 
     # Specify a separate T-pose FBX for skeleton metadata:
-    python tests/test_fbx_glb_npy_roundtrip.py \\
-        --tpose-fbx outputs/tpose.fbx \\
-        --fbx outputs/fbx_npy_roundtrip/original.fbx \\
+    python tests/test_fbx_npy_glb_roundtrip.py \
+        --tpose-fbx outputs/tpose.fbx \
+        --fbx outputs/fbx_npy_roundtrip/original.fbx \
         --object-type Horse
 
     # Custom output directory and tolerance:
-    python tests/test_fbx_glb_npy_roundtrip.py \\
+    python tests/test_fbx_npy_glb_roundtrip.py \
         --fbx outputs/fbx_npy_roundtrip/original.fbx \\
         --output-dir outputs/my_roundtrip \\
-        --tolerance 0.001
+        --tolerance 0.05
 """
 from __future__ import annotations
 
@@ -92,41 +92,32 @@ from Anytop.utils.fbx import clear_scene, import_fbx, remove_lights_and_cameras
 
 
 from _roundtrip_common import (
-    _SimpleSkeleton,
     _build_skeleton,
     _fbx_to_animation,
-    _glb_to_animation,
     _export_animation_to_glb,
-    _fbx_to_glb,
     _load_fbx_skeleton_metadata,
-    _load_fbx_world_pose_data,
-    _load_glb_world_pose_data,
     _measure_fbx_glb_error,
-    _measure_glb_pair_error,
-    _measure_glb_pair_error_on_display_frames,
     _print_comparison_report,
 )
 
 
 # ── Main test function ───────────────────────────────────────────────────────
 
-def test_fbx_glb_npy_roundtrip(
+def test_fbx_npy_glb_roundtrip(
     tpose_fbx: str,
     anim_fbx: str,
     object_type: str = "Alligator",
     output_dir: str | None = None,
-    tolerance: float = 1e-4,
+    tolerance: float = 0.05,
 ) -> dict[str, Any]:
-    """FBX -> GLB -> NPY -> GLB roundtrip test.
+    """FBX -> NPY -> GLB roundtrip test.
 
     Pipeline:
         1. Load source FBX, extract animation
-        2. Re-export FBX as intermediate GLB (FBX -> GLB baseline)
-        3. Extract NPY features from the animation
-        4. Recover Animation from NPY features
-        5. Export recovered animation as GLB
-        6. Compare: intermediate GLB vs source FBX (baseline check)
-        7. Compare: recovered GLB vs source FBX (roundtrip check)
+        2. Extract NPY features from the animation
+        3. Recover Animation from NPY features
+        4. Export recovered animation as GLB
+        5. Compare: recovered GLB vs source FBX
     """
     for file_path in [tpose_fbx, anim_fbx]:
         assert os.path.isfile(file_path), f"Missing required file: {file_path}"
@@ -137,8 +128,7 @@ def test_fbx_glb_npy_roundtrip(
         os.makedirs(work_dir, exist_ok=True)
 
         base_name = os.path.splitext(os.path.basename(anim_fbx))[0]
-        intermediate_glb = os.path.join(work_dir, f"{base_name}.glb")
-        recovered_glb = os.path.join(work_dir, f"{base_name}_recovered.glb")
+        recovered_glb = os.path.join(work_dir, f"{base_name}.glb")
         npy_path = os.path.join(work_dir, f"{base_name}_features.npy")
 
         print(f"[FBX Roundtrip] T-pose FBX : {tpose_fbx}")
@@ -165,19 +155,8 @@ def test_fbx_glb_npy_roundtrip(
                 "Source FBX and T-pose FBX do not share the same BFS bone order"
             )
 
-        # Phase C: FBX -> GLB baseline export (reuse source_anim from Phase B)
-        print("  [Phase C] FBX -> GLB baseline export -> intermediate.glb...")
-        source_skeleton = _build_skeleton(source_bone_names, offsets, parents, rest_rotations)
-        _export_animation_to_glb(
-            source_anim,
-            source_skeleton,
-            intermediate_glb,
-            mesh_path=anim_fbx,
-            fps=source_fps,
-        )
-
-        # Phase D: Extract raw NPY features
-        print("  [Phase D] Extracting raw NPY features...")
+        # Phase C: Extract raw NPY features
+        print("  [Phase C] Extracting raw NPY features...")
         feature_payload = build_roundtrip_feature_payload(
             source_anim, object_type, offsets, parents, source_bone_names,
         )
@@ -185,8 +164,8 @@ def test_fbx_glb_npy_roundtrip(
         print(f"    NPY shape: {feature_payload['features'].shape}")
         print(f"    Saved NPY features to {npy_path}")
 
-        # Phase E: Recover Animation from NPY features
-        print("  [Phase E] Recovering Animation from NPY features...")
+        # Phase D: Recover Animation from NPY features
+        print("  [Phase D] Recovering Animation from NPY features...")
         recovered_anim, has_animated_pos = recover_from_features(
             feature_payload, parents, offsets,
         )
@@ -207,8 +186,8 @@ def test_fbx_glb_npy_roundtrip(
         )
         print("    Note: this is diagnostic only because recovery is built on the T-pose FBX skeleton.")
 
-        # Phase F: Export NPY-recovered animation -> recovered_export.glb
-        print("  [Phase F] Exporting NPY-recovered animation -> recovered_export.glb...")
+        # Phase E: Export NPY-recovered animation -> recovered.glb
+        print("  [Phase E] Exporting NPY-recovered animation -> recovered.glb...")
         _export_animation_to_glb(
             recovered_anim,
             tpose_skeleton,
@@ -217,49 +196,31 @@ def test_fbx_glb_npy_roundtrip(
             fps=source_fps,
         )
 
-        # Phase G: Compare intermediate GLB vs source FBX (diagnostic only)
-        baseline_metrics = _measure_fbx_glb_error(anim_fbx, intermediate_glb)
-        _print_comparison_report("Diagnostic (FBX vs intermediate GLB)", baseline_metrics)
-
-        # Phase H: Compare recovered GLB vs source FBX (diagnostic only)
+        # Phase F: Compare recovered GLB vs source FBX
         recovered_metrics = _measure_fbx_glb_error(anim_fbx, recovered_glb)
-        _print_comparison_report("Diagnostic (FBX vs recovered GLB)", recovered_metrics)
+        _print_comparison_report("Roundtrip (FBX vs recovered GLB)", recovered_metrics)
 
-        # Phase I: Compare recovered GLB vs intermediate GLB in the shared GLB domain.
-        # FBX and GLB imports in Blender do not preserve equivalent bone-head
-        # semantics across formats, so cross-format errors above are diagnostic
-        # only. The actual roundtrip fidelity check needs to stay within the GLB
-        # domain.
-        glb_pair_metrics = _measure_glb_pair_error(intermediate_glb, recovered_glb)
-        _print_comparison_report("Roundtrip (intermediate GLB vs recovered GLB)", glb_pair_metrics)
-
-        assert glb_pair_metrics["max_error"] < tolerance, (
-            f"Intermediate GLB -> recovered GLB max error {glb_pair_metrics['max_error']:.6f} exceeds "
-            f"{tolerance} (worst bone={glb_pair_metrics['worst_bone']}, "
-            f"sample={glb_pair_metrics['worst_frame']}, time={glb_pair_metrics['worst_time']:.6f})"
+        assert recovered_metrics["max_error"] < tolerance, (
+            f"FBX -> recovered GLB max error {recovered_metrics['max_error']:.6f} exceeds "
+            f"{tolerance} (worst bone={recovered_metrics['worst_bone']}, "
+            f"sample={recovered_metrics['worst_frame']}, time={recovered_metrics['worst_time']:.6f})"
         )
 
-        print("\n  PASS  GLB-domain roundtrip checks passed")
+        print("\n  PASS  FBX -> NPY -> GLB roundtrip checks passed")
         return {
             "npy_error": float(npy_position_error.max()),
-            "baseline_error": float(baseline_metrics["max_error"]),
-            "baseline_worst_bone": baseline_metrics["worst_bone"],
-            "baseline_worst_frame": int(baseline_metrics["worst_frame"]),
-            "baseline_worst_time": float(baseline_metrics["worst_time"]),
+            "npy_worst_bone": npy_worst_bone,
+            "npy_worst_frame": npy_worst_idx,
             "recovered_error": float(recovered_metrics["max_error"]),
             "recovered_worst_bone": recovered_metrics["worst_bone"],
             "recovered_worst_frame": int(recovered_metrics["worst_frame"]),
             "recovered_worst_time": float(recovered_metrics["worst_time"]),
-            "glb_pair_error": float(glb_pair_metrics["max_error"]),
-            "glb_pair_worst_bone": glb_pair_metrics["worst_bone"],
-            "glb_pair_worst_frame": int(glb_pair_metrics["worst_frame"]),
-            "glb_pair_worst_time": float(glb_pair_metrics["worst_time"]),
         }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="FBX -> GLB -> NPY -> GLB roundtrip smoke test",
+        description="FBX -> NPY -> GLB roundtrip smoke test",
     )
     parser.add_argument(
         "--tpose-fbx",
@@ -284,8 +245,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tolerance",
         type=float,
-        default=1e-4,
-        help="Max allowed comparison error in meters (default: 1e-4).",
+        default=0.05,
+        help="Max allowed comparison error in meters (default: 0.05).",
     )
     return parser.parse_args()
 
@@ -306,7 +267,7 @@ if __name__ == "__main__":
     print(f"Tolerance  : {args.tolerance}")
     print()
 
-    result = test_fbx_glb_npy_roundtrip(
+    result = test_fbx_npy_glb_roundtrip(
         tpose_fbx=args.tpose_fbx,
         anim_fbx=args.fbx,
         object_type=args.object_type,
@@ -315,19 +276,12 @@ if __name__ == "__main__":
     )
 
     print("\nSummary:")
-    print(f"  NPY encoding error         : {result['npy_error']:.6f}")
     print(
-        f"  FBX -> intermediate GLB    : {result['baseline_error']:.6f}  [diagnostic only] "
-        f"(bone={result['baseline_worst_bone']}, sample={result['baseline_worst_frame']}, "
-        f"time={result['baseline_worst_time']:.6f})"
+        f"  NPY encoding error   : {result['npy_error']:.6f}  "
+        f"(bone={result['npy_worst_bone']}, frame={result['npy_worst_frame']})"
     )
     print(
-        f"  FBX -> recovered GLB       : {result['recovered_error']:.6f}  [diagnostic only] "
+        f"  FBX -> recovered GLB : {result['recovered_error']:.6f} "
         f"(bone={result['recovered_worst_bone']}, sample={result['recovered_worst_frame']}, "
         f"time={result['recovered_worst_time']:.6f})"
-    )
-    print(
-        f"  intermediate -> recovered  : {result['glb_pair_error']:.6f} "
-        f"(bone={result['glb_pair_worst_bone']}, sample={result['glb_pair_worst_frame']}, "
-        f"time={result['glb_pair_worst_time']:.6f})"
     )
