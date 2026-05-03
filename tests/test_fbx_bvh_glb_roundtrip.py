@@ -11,16 +11,16 @@ Requires bpy (Blender as Python module) in the current Python environment.
 
 Usage examples:
     # Single FBX as both T-pose and animation source:
-    python tests/test_fbx_glb_bvh_roundtrip.py \\
+    python tests/test_fbx_bvh_glb_roundtrip.py \
         --fbx outputs/fbx_npy_roundtrip/original.fbx
 
     # Separate T-pose FBX:
-    python tests/test_fbx_glb_bvh_roundtrip.py \\
+    python tests/test_fbx_bvh_glb_roundtrip.py \
         --tpose-fbx outputs/tpose.fbx \\
         --fbx outputs/fbx_npy_roundtrip/original.fbx
 
     # Custom output directory and tolerance:
-    python tests/test_fbx_glb_bvh_roundtrip.py \\
+    python tests/test_fbx_bvh_glb_roundtrip.py \\
         --fbx outputs/fbx_npy_roundtrip/original.fbx \\
         --output-dir outputs/my_bvh_roundtrip \\
         --tolerance 0.002
@@ -144,7 +144,7 @@ def _bvh_to_glb_via_blender_bridge(
 
 # ── Main test function ───────────────────────────────────────────────────────
 
-def test_fbx_glb_bvh_roundtrip(
+def test_fbx_bvh_glb_roundtrip(
     tpose_fbx: str,
     anim_fbx: str,
     output_dir: str | None = None,
@@ -270,7 +270,7 @@ if __name__ == "__main__":
     print(f"Tolerance  : {args.tolerance}")
     print()
 
-    result = test_fbx_glb_bvh_roundtrip(
+    result = test_fbx_bvh_glb_roundtrip(
         tpose_fbx=args.tpose_fbx,
         anim_fbx=args.fbx,
         output_dir=args.output_dir,
