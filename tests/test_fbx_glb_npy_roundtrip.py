@@ -41,16 +41,15 @@ import numpy as np
 import torch
 
 
-# ── ensure repo root is on sys.path ──────────────────────────────────────────
+# ── ensure parent of Anytop is on sys.path (so `import Anytop` works) ───────
 _ANYTOP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _REPO_ROOT = os.path.dirname(_ANYTOP_ROOT)
-sys.path.insert(0, _REPO_ROOT)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+if _ANYTOP_ROOT not in sys.path:
+    sys.path.insert(1, _ANYTOP_ROOT)
 
 # ── Resolve utils namespace conflict ────────────────────────────────────────
-import utils
-import utils.geometry
-import utils.quaternion
-
 import importlib.machinery
 import importlib.util
 
@@ -345,7 +344,7 @@ def _export_animation_to_glb(
     mesh_path: str,
     fps: float,
 ) -> None:
-    from postprocessing.exporter import AnimationExporter
+    from Anytop.utils.exporter import AnimationExporter
 
     exporter = AnimationExporter(skeleton, fps=fps)
     joint_rotations = torch.from_numpy(animation.rotations.qs.astype(np.float32))
