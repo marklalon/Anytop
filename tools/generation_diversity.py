@@ -4,7 +4,7 @@ Compares mean pairwise L2 distance of generated .npy samples against the
 training clips they map to, per action category.
 
 Usage:
-    python tests/test_generation_diversity.py [--gen_dir <path>] [--action_tags locomotion,pose]
+    python tools/generation_diversity.py [--gen_dir <path>] [--action_tags locomotion,pose]
 
 A diversity ratio (gen/train) below 0.3 indicates collapse; above 0.7 is healthy.
 """

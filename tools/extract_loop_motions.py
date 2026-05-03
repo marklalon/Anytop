@@ -7,7 +7,7 @@ Description:
     motion_metadata['is_loop'] == True, causing the dataset to tile the motion.
 
 Usage (from Anytop directory with venv active):
-    python tests/test_extract_loop_motions.py \\
+    python tools/extract_loop_motions.py \\
         --num-samples 10 \\
         --output-dir ./loop_motion_previews \\
         --objects-subset all \\

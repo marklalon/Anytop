@@ -1,4 +1,4 @@
-"""test_debug_preprocessing.py
+"""debug_preprocessing.py
 
 Processes all BVH files found under dataset/truebones/zoo/debug/<Animal>/,
 writes processed motion .npy files alongside the sources, then validates
@@ -26,7 +26,7 @@ on certain rigs (Horse, Bear, Camel).  The script reports these separately so
 unexpected large errors are clearly visible.
 
 Usage (from Anytop directory with venv active):
-    python tests/test_debug_preprocessing.py
+    python tools/debug_preprocessing.py
 """
 
 import sys

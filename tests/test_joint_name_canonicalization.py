@@ -1,7 +1,11 @@
 import json
 import numpy as np
+import os
+import sys
 import tempfile
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_loaders.truebones.truebones_utils.motion_process import (
     _collect_joint_name_collision_groups,

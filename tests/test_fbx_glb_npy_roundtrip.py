@@ -10,18 +10,18 @@ Requires bpy (Blender as Python module) in the current Python environment.
 
 Usage examples:
     # Use a single FBX as both T-pose source and animation source:
-    python test_fbx_glb_npy_roundtrip.py \\
+    python tests/test_fbx_glb_npy_roundtrip.py \\
         --fbx outputs/fbx_npy_roundtrip/original.fbx \\
         --object-type Horse
 
     # Specify a separate T-pose FBX for skeleton metadata:
-    python test_fbx_glb_npy_roundtrip.py \\
+    python tests/test_fbx_glb_npy_roundtrip.py \\
         --tpose-fbx outputs/tpose.fbx \\
         --fbx outputs/fbx_npy_roundtrip/original.fbx \\
         --object-type Horse
 
     # Custom output directory and tolerance:
-    python test_fbx_glb_npy_roundtrip.py \\
+    python tests/test_fbx_glb_npy_roundtrip.py \\
         --fbx outputs/fbx_npy_roundtrip/original.fbx \\
         --output-dir outputs/my_roundtrip \\
         --tolerance 0.001
@@ -935,7 +935,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--fbx",
-        default=os.path.join(_ANYTOP_ROOT, "outputs", "fbx_npy_roundtrip", "original.fbx"),
+        default=os.path.join(_ANYTOP_ROOT, "dataset", "truebones", "zoo", "Truebone_Z-OO", "Horse", "HorseALL-RunToStop.fbx"),
         help="Path to source animation FBX file.",
     )
     parser.add_argument(
