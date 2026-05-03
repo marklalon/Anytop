@@ -128,7 +128,7 @@ def test_fbx_npy_glb_roundtrip(
         os.makedirs(work_dir, exist_ok=True)
 
         base_name = os.path.splitext(os.path.basename(anim_fbx))[0]
-        recovered_glb = os.path.join(work_dir, f"{base_name}.glb")
+        recovered_glb = os.path.join(work_dir, f"{base_name}_recovered.glb")
         npy_path = os.path.join(work_dir, f"{base_name}_features.npy")
 
         print(f"[FBX Roundtrip] T-pose FBX : {tpose_fbx}")
@@ -187,7 +187,7 @@ def test_fbx_npy_glb_roundtrip(
         print("    Note: this is diagnostic only because recovery is built on the T-pose FBX skeleton.")
 
         # Phase E: Export NPY-recovered animation -> recovered.glb
-        print("  [Phase E] Exporting NPY-recovered animation -> recovered.glb...")
+        print(f"  [Phase E] Exporting NPY-recovered animation -> {os.path.basename(recovered_glb)}...")
         _export_animation_to_glb(
             recovered_anim,
             tpose_skeleton,
