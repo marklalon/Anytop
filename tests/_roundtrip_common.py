@@ -569,19 +569,84 @@ def _load_glb_world_pose_data(glb_path: str, sample_times: Optional[list[float]]
     }
 
 
+def _compute_child_centroid_directions(
+    positions: np.ndarray,
+    parents: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build a twist-invariant world-space direction per bone from child heads.
+
+    For each bone, use the vector from that bone's head to the centroid of its
+    child bone heads. This remains comparable across FBX/glTF imports even when
+    the importer chooses different local bone rolls or tail semantics. The
+    returned baseline lengths let callers reject degenerate cases where a child
+    centroid collapses onto the parent head in one format, making the direction
+    angle numerically meaningless.
+    """
+    frame_count, joint_count, _ = positions.shape
+    directions = np.zeros((frame_count, joint_count, 3), dtype=np.float64)
+    valid = np.zeros((frame_count, joint_count), dtype=bool)
+    lengths = np.zeros((frame_count, joint_count), dtype=np.float64)
+
+    children_by_parent = [[] for _ in range(joint_count)]
+    for child_idx, parent_idx in enumerate(parents):
+        if parent_idx >= 0:
+            children_by_parent[int(parent_idx)].append(child_idx)
+
+    for parent_idx, child_indices in enumerate(children_by_parent):
+        if not child_indices:
+            continue
+        child_centroid = positions[:, child_indices, :].mean(axis=1)
+        vectors = child_centroid - positions[:, parent_idx, :]
+        vector_lengths = np.linalg.norm(vectors, axis=-1)
+        lengths[:, parent_idx] = vector_lengths
+        nonzero = vector_lengths > 1e-8
+        if np.any(nonzero):
+            directions[nonzero, parent_idx, :] = vectors[nonzero] / vector_lengths[nonzero, None]
+            valid[nonzero, parent_idx] = True
+
+    return directions, valid, lengths
+
+
 def _quaternion_angle_degrees(source_q: np.ndarray, target_q: np.ndarray) -> np.ndarray:
     dots = np.sum(source_q * target_q, axis=-1)
     dots = np.clip(np.abs(dots), 0.0, 1.0)
     return np.degrees(2.0 * np.arccos(dots))
 
 
-def _measure_fbx_glb_error(fbx_path: str, glb_path: str) -> dict[str, Any]:
+def _rotate_positions_about_x(positions: np.ndarray, degrees: float) -> np.ndarray:
+    if abs(degrees) < 1e-8:
+        return positions
+    radians = np.deg2rad(degrees)
+    cos_theta = np.cos(radians)
+    sin_theta = np.sin(radians)
+    rotation = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, cos_theta, -sin_theta],
+            [0.0, sin_theta, cos_theta],
+        ],
+        dtype=np.float64,
+    )
+    return positions @ rotation.T
+
+
+def _measure_fbx_glb_error(
+    fbx_path: str,
+    glb_path: str,
+    undo_target_global_x_deg: float = 0.0,
+) -> dict[str, Any]:
     """Compare FBX source against GLB target by raw sample index.
 
     This metric is diagnostic only. Blender's FBX and glTF importers can keep
     visually equivalent animation while producing different armature wrapper
     transforms and different bone-head semantics, so cross-format bone-head and
     local-channel errors are not a reliable roundtrip oracle.
+
+    When both assets are re-imported into Blender for comparison, keep
+    ``undo_target_global_x_deg`` at ``0.0`` unless a separate probe proves an
+    extra correction is still needed. Blender's glTF importer already converts
+    the exported Y-up asset back into Blender world space, so manually undoing
+    that axis change here can fabricate a large false error.
     """
     source_meta = _load_fbx_world_pose_data(fbx_path)
     target_meta = _load_glb_world_pose_data(glb_path)
@@ -607,30 +672,58 @@ def _measure_fbx_glb_error(fbx_path: str, glb_path: str) -> dict[str, Any]:
         sample_times=target_sample_times[:compare_frame_count].tolist(),
     )
 
+    target_positions = _rotate_positions_about_x(
+        target_pose["positions"],
+        -undo_target_global_x_deg,
+    )
+
     position_errors = np.linalg.norm(
-        source_pose["positions"] - target_pose["positions"], axis=-1,
+        source_pose["positions"] - target_positions, axis=-1,
     )
     per_bone_error = position_errors.max(axis=0)
     per_frame_error = position_errors.max(axis=1)
     worst_flat_idx = int(np.argmax(position_errors))
     worst_frame_idx, worst_bone_idx = np.unravel_index(worst_flat_idx, position_errors.shape)
 
-    source_anim, source_anim_bones, _source_fps = _fbx_to_animation(fbx_path)
-    target_anim, target_anim_bones, _target_fps = _glb_to_animation(glb_path)
+    source_directions, source_valid, source_lengths = _compute_child_centroid_directions(
+        source_pose["positions"],
+        source_meta["parents"],
+    )
+    target_directions, target_valid, target_lengths = _compute_child_centroid_directions(
+        target_positions,
+        target_meta["parents"],
+    )
+    valid_direction_mask = source_valid & target_valid
+    length_denominator = np.maximum(source_lengths, target_lengths)
+    stable_length_ratio = np.zeros_like(source_lengths)
+    nonzero_length_mask = length_denominator > 1e-8
+    stable_length_ratio[nonzero_length_mask] = (
+        np.minimum(source_lengths[nonzero_length_mask], target_lengths[nonzero_length_mask])
+        / length_denominator[nonzero_length_mask]
+    )
+    valid_direction_mask &= stable_length_ratio >= 0.1
     rotation_diag = None
-    if source_anim_bones == target_anim_bones:
-        compared_rot_frames = min(source_anim.rotations.qs.shape[0], target_anim.rotations.qs.shape[0])
-        compared_rot_joints = min(source_anim.rotations.qs.shape[1], target_anim.rotations.qs.shape[1])
-        angle_errors = _quaternion_angle_degrees(
-            source_anim.rotations.qs[:compared_rot_frames, :compared_rot_joints],
-            target_anim.rotations.qs[:compared_rot_frames, :compared_rot_joints],
+    if np.any(valid_direction_mask):
+        direction_dots = np.clip(
+            np.sum(source_directions * target_directions, axis=-1),
+            -1.0,
+            1.0,
         )
-        rot_worst_flat_idx = int(np.argmax(angle_errors))
-        rot_worst_frame_idx, rot_worst_bone_idx = np.unravel_index(rot_worst_flat_idx, angle_errors.shape)
+        direction_errors = np.zeros_like(direction_dots)
+        direction_errors[valid_direction_mask] = np.degrees(
+            np.arccos(direction_dots[valid_direction_mask]),
+        )
+        direction_errors[~valid_direction_mask] = -1.0
+        rot_worst_flat_idx = int(np.argmax(direction_errors))
+        rot_worst_frame_idx, rot_worst_bone_idx = np.unravel_index(
+            rot_worst_flat_idx,
+            direction_errors.shape,
+        )
         rotation_diag = {
-            "max_deg": float(angle_errors.max()),
+            "label": "World child-direction diagnostic",
+            "max_deg": float(direction_errors[rot_worst_frame_idx, rot_worst_bone_idx]),
             "worst_frame": int(rot_worst_frame_idx),
-            "worst_bone": source_anim_bones[rot_worst_bone_idx],
+            "worst_bone": bone_names[rot_worst_bone_idx],
         }
 
     return {
@@ -815,7 +908,8 @@ def _print_comparison_report(label: str, metrics: dict[str, Any]) -> None:
 
     rotation_diag = metrics.get("rotation_diag")
     if rotation_diag is not None:
+        diag_label = rotation_diag.get("label", "Rotation diagnostic")
         print(
-            f"    Rotation diagnostic: {rotation_diag['max_deg']:.6f}deg "
+            f"    {diag_label}: {rotation_diag['max_deg']:.6f}deg "
             f"(bone={rotation_diag['worst_bone']}, frame={rotation_diag['worst_frame']})"
         )
