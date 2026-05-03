@@ -109,9 +109,9 @@ def run_validation(
     print("STEP 2: VALIDATION - Checking preprocessed dataset")
     print("=" * 70 + "\n")
     
-    # Import and call check_anytop_dataset.py main() directly instead of subprocess
-    sys.path.insert(0, str(ANYTOP_DIR / "tests"))
-    from check_anytop_dataset import _resolve_dataset_dir, _print_ok, _print_warn, _require, ValidationError
+    # Import and call validate_anytop_dataset.py main() directly instead of subprocess
+    sys.path.insert(0, str(ANYTOP_DIR / "utils"))
+    from validate_anytop_dataset import _resolve_dataset_dir, _print_ok, _print_warn, _require, ValidationError
     
     # Resolve dataset directory
     dataset_dir = _resolve_dataset_dir(None)
@@ -120,7 +120,7 @@ def run_validation(
     _print_ok(f"objects_subset: {objects_subset}")
     _print_ok(f"file_validation_scope: {'all files' if sample_count == 0 else f'first {sample_count} files'}")
     
-    from check_anytop_dataset import (
+    from validate_anytop_dataset import (
         _prepare_dataset_for_validation,
         _read_required_artifacts,
         _validate_metadata,

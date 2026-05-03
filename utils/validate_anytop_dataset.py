@@ -460,7 +460,7 @@ def _validate_motion_orientation(bvhs_dir: Path, cond: dict, sample_limit: int, 
             last_best_name, last_best_angle_deg = min(last_candidate_angles.items(), key=lambda item: item[1])
             _require(
                 last_best_angle_deg <= threshold_deg,
-                f"processed orientation exceeds threshold on both first and last frames： {first_best_angle_deg:.2f}|{first_best_angle_deg:.2f}, threshold={threshold_deg:.2f}",
+                f"processed orientation exceeds threshold on both first and last frames: {first_best_angle_deg:.2f}|{last_best_angle_deg:.2f}, threshold={threshold_deg:.2f}",
             )
         except ValidationError as e:
             _print_warn(f"validation warn: {bvh_path.name}: {e}")

@@ -250,13 +250,15 @@ def _fbx_to_animation(fbx_path: str) -> tuple[Any, list[str], float]:
     bpy.context.view_layer.objects.active = armature
     bpy.ops.object.mode_set(mode="POSE")
 
+    # Pre-build ordered pose_bone list to avoid repeated dict lookups
     pose_bones = armature.pose.bones
+    ordered_pose_bones = [pose_bones.get(bone_name) for bone_name in bone_names]
+
     for frame_idx, sample_time in enumerate(sample_times):
         _set_scene_time(scene, sample_time)
         bpy.context.view_layer.update()
 
-        for joint_idx, bone_name in enumerate(bone_names):
-            pose_bone = pose_bones.get(bone_name)
+        for joint_idx, pose_bone in enumerate(ordered_pose_bones):
             if pose_bone is None:
                 rot_qs[frame_idx, joint_idx] = [1.0, 0.0, 0.0, 0.0]
                 pos_np[frame_idx, joint_idx] = offsets[joint_idx]
@@ -298,13 +300,15 @@ def _glb_to_animation(glb_path: str) -> tuple[Any, list[str], float]:
     bpy.context.view_layer.objects.active = armature
     bpy.ops.object.mode_set(mode="POSE")
 
+    # Pre-build ordered pose_bone list to avoid repeated dict lookups
     pose_bones = armature.pose.bones
+    ordered_pose_bones = [pose_bones.get(bone_name) for bone_name in bone_names]
+
     for frame_idx, sample_time in enumerate(sample_times):
         _set_scene_time(scene, sample_time)
         bpy.context.view_layer.update()
 
-        for joint_idx, bone_name in enumerate(bone_names):
-            pose_bone = pose_bones.get(bone_name)
+        for joint_idx, pose_bone in enumerate(ordered_pose_bones):
             if pose_bone is None:
                 rot_qs[frame_idx, joint_idx] = [1.0, 0.0, 0.0, 0.0]
                 pos_np[frame_idx, joint_idx] = offsets[joint_idx]
@@ -374,30 +378,38 @@ def _fbx_to_glb(fbx_path: str, output_glb: str) -> None:
 # ── Comparison helpers ───────────────────────────────────────────────────────
 
 def _collect_bone_world_positions(armature, bone_names, sample_times):
+    """Collect bone-head world positions at each sample time.
+
+    Optimized: frame-outer / bone-inner loop so that view_layer.update()
+    is called once per frame instead of once per (frame, bone) pair.
+    Additionally, pose_bone lookups are pre-computed outside the loop.
+    """
     import bpy
     from mathutils import Vector
 
     scene = bpy.context.scene
-    result: dict[str, np.ndarray] = {}
+    num_frames = len(sample_times)
+    result = {name: np.zeros((num_frames, 3), dtype=np.float64) for name in bone_names}
 
     bpy.context.view_layer.objects.active = armature
     bpy.ops.object.mode_set(mode="OBJECT")
 
-    positions = np.zeros((len(sample_times), 3), dtype=np.float64)
-    for bone_name in bone_names:
-        for frame_idx, sample_time in enumerate(sample_times):
-            _set_scene_time(scene, sample_time)
-            bpy.context.view_layer.update()
+    # Pre-build pose_bone lookup list to avoid repeated dict lookups
+    ordered_pose_bones = [armature.pose.bones.get(name) for name in bone_names]
 
-            pose_bone = armature.pose.bones.get(bone_name)
+    for frame_idx, sample_time in enumerate(sample_times):
+        _set_scene_time(scene, sample_time)
+        bpy.context.view_layer.update()
+
+        for joint_idx, bone_name in enumerate(bone_names):
+            pose_bone = ordered_pose_bones[joint_idx]
             if pose_bone is None:
-                positions[frame_idx] = (0.0, 0.0, 0.0)
+                result[bone_name][frame_idx] = (0.0, 0.0, 0.0)
                 continue
 
             head_local = pose_bone.head
             head_world = armature.matrix_world @ Vector((head_local.x, head_local.y, head_local.z))
-            positions[frame_idx] = (head_world.x, head_world.y, head_world.z)
-        result[bone_name] = positions.copy()
+            result[bone_name][frame_idx] = (head_world.x, head_world.y, head_world.z)
 
     return result
 
@@ -839,9 +851,16 @@ def test_fbx_glb_npy_roundtrip(
                 "Source FBX and T-pose FBX do not share the same BFS bone order"
             )
 
-        # Phase C: FBX -> GLB baseline export
+        # Phase C: FBX -> GLB baseline export (reuse source_anim from Phase B)
         print("  [Phase C] FBX -> GLB baseline export -> intermediate.glb...")
-        _fbx_to_glb(anim_fbx, intermediate_glb)
+        source_skeleton = _build_skeleton(source_bone_names, offsets, parents, rest_rotations)
+        _export_animation_to_glb(
+            source_anim,
+            source_skeleton,
+            intermediate_glb,
+            mesh_path=anim_fbx,
+            fps=source_fps,
+        )
 
         # Phase D: Extract raw NPY features
         print("  [Phase D] Extracting raw NPY features...")
