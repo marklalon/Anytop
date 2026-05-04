@@ -19,7 +19,8 @@ Pipeline:
     → reverse orientation (conjugate of orientation_quat)
     → AnimationExporter + T-pose FBX → skinned GLB
 
-No BVH intermediate is used.
+A BVH file is also auto-exported alongside the GLB (same directory, same stem,
+.bvh extension) using the same AnimationExporter.
 
 Note: locomotion XZ is stripped during preprocessing and cannot be
 recovered from the NPY alone.  The output GLB plays the motion in-place.
@@ -174,6 +175,8 @@ def restore_glb(
 
     Returns:
         The absolute path of the written GLB file.
+        A BVH file is also auto-exported alongside the GLB at the same path
+        (same stem, .bvh extension).
     """
     import torch
     from Anytop.utils.exporter import AnimationExporter
@@ -300,19 +303,12 @@ def restore_glb(
     root_translation = torch.from_numpy(recovered_anim.positions[:, 0, :].astype(np.float32))
     root_rotation = torch.from_numpy(recovered_anim.rotations.qs[:, 0, :].astype(np.float32))
 
-    # For rotation-only animations, non-root bone translations should be zero
-    # (= stay at FBX rest/bind position).  Passing bone_translations=None lets
-    # the FBX-imported armature bones stay at their Blender rest positions.
-    # Only pass bone_translations if non-root bones have genuinely animated
-    # local positions (e.g. IK bones in unusual rigs).
-    bone_translations = None
-    if has_animated_pos:
-        print(
-            "  Warning: non-root animated positions detected but bone_translations "
-            "are not mapped to FBX coordinate space in this script. "
-            "Non-root bone local translations will be kept at rest (T-pose)."
-        )
-
+    # GLB: keep non-root bone translations at the FBX rest/bind position.
+    # The recovered local positions are in BVH convention (identity rest
+    # rotations); the FBX armature has its own non-identity rest rotations,
+    # so feeding the BVH-frame translations into FBX pose bones would
+    # dislocate the rig.  Rotation-only animation gives the documented
+    # in-place GLB.
     print(f"  Exporting GLB → {output_glb}")
     exporter.export(
         joint_rotations,
@@ -320,7 +316,27 @@ def restore_glb(
         root_rotation,
         output_glb,
         mesh_path=tpose_fbx,
-        bone_translations=bone_translations,
+        bone_translations=None,
+    )
+
+    # ── Auto-export BVH alongside GLB ──────────────────────────────────────────
+    # BVH uses identity rest rotations (same convention as recover_from_features),
+    # so recovered_anim.positions can be fed directly as per-joint local
+    # translations.  This is required because Anytop's preprocessing puts
+    # locomotion on the *translation root* (often a non-root bone like Bip01),
+    # not on the skeleton root — without bone_translations the moving joint
+    # would be locked to its rest offset and the animation would look broken.
+    output_bvh = os.path.splitext(output_glb)[0] + ".bvh"
+    print(f"  Exporting BVH → {output_bvh}")
+    bone_translations_bvh = torch.from_numpy(
+        recovered_anim.positions.astype(np.float32)
+    )
+    exporter.export(
+        joint_rotations,
+        root_translation,
+        root_rotation,
+        output_bvh,
+        bone_translations=bone_translations_bvh,
     )
 
     return os.path.abspath(output_glb)
@@ -402,9 +418,12 @@ def main() -> None:
             "Use --cond_npy to specify a custom path."
         )
 
+    output_bvh = os.path.splitext(args.output_glb)[0] + ".bvh"
+
     print(f"NPY         : {args.npy}")
     print(f"T-pose FBX  : {args.tpose_fbx}")
     print(f"Output GLB  : {args.output_glb}")
+    print(f"Output BVH  : {output_bvh}")
     print(f"cond.npy    : {cond_npy_path}")
     print(f"FPS         : {args.fps}")
     print(f"Restore ori : {not args.no_orientation_restore}")
@@ -421,6 +440,7 @@ def main() -> None:
     )
 
     print(f"\nDone → {out}")
+    print(f"       → {output_bvh}")
 
 
 if __name__ == "__main__":
