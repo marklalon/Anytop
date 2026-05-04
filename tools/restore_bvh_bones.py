@@ -262,17 +262,11 @@ def _save_bvh_with_raw_hierarchy(
             if proc_idx < 0:
                 continue
 
-            # Non-root joints in processed BVH only have rotation channels;
-            # their positions are zero. The raw BVH carries the static OFFSET
-            # values as per-joint position channels, so fill from offsets.
-            if raw_idx == 0:
-                # Root: use actual position data (includes translation).
-                px, py, pz = poss[:, proc_idx, 0], poss[:, proc_idx, 1], poss[:, proc_idx, 2]
-            else:
-                # Non-root: fill constant offset values.
-                px = np.full(n_frames, float(offsets[proc_idx, 0]))
-                py = np.full(n_frames, float(offsets[proc_idx, 1]))
-                pz = np.full(n_frames, float(offsets[proc_idx, 2]))
+            # Use animated position data for all joints.  In this BVH format
+            # every joint carries 6 channels (pos+rot) and some non-root
+            # joints (e.g. Bip01, Handle) hold the actual root-motion
+            # translation that must be preserved.
+            px, py, pz = poss[:, proc_idx, 0], poss[:, proc_idx, 1], poss[:, proc_idx, 2]
 
             # Write 6 channels: pos + rot in print_order
             cols = np.column_stack([
@@ -285,7 +279,7 @@ def _save_bvh_with_raw_hierarchy(
 
     print(f"  Rotation order preserved: {rotation_order} (printed as {print_order})")
     print(f"  End Site blocks preserved: {len(end_site_parent_names)} joints")
-    print(f"  Non-root positions filled from offsets (const per joint)")
+    print(f"  Animated position channels preserved for all joints")
 
 
 def restore_bvh(input_bvh, cond_npy, output_bvh, object_type=None,
