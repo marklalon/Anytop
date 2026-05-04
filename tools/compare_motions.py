@@ -32,11 +32,7 @@ from typing import Any
 
 import numpy as np
 
-from Anytop.utils.rotation_numpy import (
-    apply_rotation_to_quaternions_wxyz_np,
-    matrix_to_quat_wxyz_np,
-    quat_to_matrix_wxyz_np,
-)
+from Anytop.utils.rotation_numpy import apply_rotation_to_quaternions_wxyz_np
 
 
 # ── Path setup ────────────────────────────────────────────────────────────────
@@ -395,19 +391,6 @@ def _quaternion_angle_degrees(q_a: np.ndarray, q_b: np.ndarray) -> np.ndarray:
     return np.degrees(2.0 * np.arccos(dots))
 
 
-def _quat_to_matrix(qs: np.ndarray) -> np.ndarray:
-    """Convert (..., 4) quaternions (w,x,y,z) to (..., 3, 3) rotation matrices."""
-    return quat_to_matrix_wxyz_np(qs)
-
-
-def _matrix_to_quat(mats: np.ndarray) -> np.ndarray:
-    """Convert (..., 3, 3) rotation matrices to (..., 4) quaternions (w,x,y,z).
-
-    Fully vectorized implementation using the stable numerical recipe.
-    """
-    return matrix_to_quat_wxyz_np(mats)
-
-
 def _compute_mean_bone_length_from_rest(offsets: np.ndarray, parents: np.ndarray) -> float:
     """Compute mean bone length from rest-pose offsets (child bones only)."""
     child_mask = parents >= 0
@@ -445,16 +428,6 @@ def _compute_mean_bone_length_from_positions(
     if not lengths:
         return 0.0
     return float(np.stack(lengths, axis=0).mean())
-
-
-def _apply_rotation_to_positions(positions: np.ndarray, R: np.ndarray) -> np.ndarray:
-    """Apply 3x3 rotation R to (F, J, 3) positions: pos @ R.T"""
-    return positions @ R.T
-
-
-def _apply_rotation_to_quaternions(rotations: np.ndarray, R: np.ndarray) -> np.ndarray:
-    """Apply 3x3 rotation R to (F, J, 4) quaternions: convert→R @ mat→convert back."""
-    return apply_rotation_to_quaternions_wxyz_np(rotations, R)
 
 
 def _compute_common_bone_reindex(
@@ -608,7 +581,7 @@ def _detect_and_align(
     best_error = float("inf")
 
     for label, R in candidates:
-        pos_candidate = _apply_rotation_to_positions(pos_b_aligned, R)
+        pos_candidate = pos_b_aligned @ R.T
         err = float(np.mean(np.linalg.norm(pos_a - pos_candidate, axis=-1)))
         if err < best_error:
             best_error = err
@@ -629,11 +602,10 @@ def _detect_and_align(
         aligned_rotations = motion_b.world_rotations.copy()
     else:
         # Scale is already baked into pos_b_aligned; apply rotation on top
-        aligned_positions = _apply_rotation_to_positions(
-            scale * motion_b.world_positions + translation_offset[np.newaxis, np.newaxis, :],
-            best_R,
-        )
-        aligned_rotations = _apply_rotation_to_quaternions(motion_b.world_rotations, best_R)
+        aligned_positions = (
+            scale * motion_b.world_positions + translation_offset[np.newaxis, np.newaxis, :]
+        ) @ best_R.T
+        aligned_rotations = apply_rotation_to_quaternions_wxyz_np(motion_b.world_rotations, best_R)
 
     motion_b_aligned = MotionData(
         file_path=motion_b.file_path,

@@ -33,31 +33,6 @@ def _canonical_bone_name(name: str) -> str:
     return name.replace(" ", "_").lower()
 
 
-def _quat_multiply_np(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
-    """Hamilton product q1 ⊗ q2.  (..., 4) each.  Handles broadcasting."""
-    return quat_multiply_wxyz_np(q1, q2)
-
-
-def _quat_conjugate_np(q: np.ndarray) -> np.ndarray:
-    """Conjugate (w, -x, -y, -z)."""
-    return quat_conjugate_wxyz_np(q)
-
-
-def _quat_rotate_np(q: np.ndarray, v: np.ndarray) -> np.ndarray:
-    """Rotate vector(s) v by quaternion(s) q.  q (..., 4), v (..., 3)."""
-    return quat_rotate_wxyz_np(q, v)
-
-
-def _apply_rotation_to_positions_np(positions: np.ndarray, R: np.ndarray) -> np.ndarray:
-    """Apply 3x3 rotation R to (F, J, 3) positions: pos @ R.T"""
-    return positions @ R.T
-
-
-def _apply_rotation_to_quaternions_np(rotations: np.ndarray, R: np.ndarray) -> np.ndarray:
-    """Apply 3x3 rotation R to (..., 4) quaternions → (..., 4)."""
-    return apply_rotation_to_quaternions_wxyz_np(rotations, R)
-
-
 def _generate_coordinate_candidates_np():
     """Generate candidate 3x3 rotation/flip matrices for auto-detection."""
     I = np.eye(3, dtype=np.float64)
@@ -114,7 +89,7 @@ def _batch_forward_kinematics_np(
     if rest_rotations is not None:
         total_local = np.zeros((F, J, 4), dtype=np.float64)
         for j in range(J):
-            total_local[:, j] = _quat_multiply_np(
+            total_local[:, j] = quat_multiply_wxyz_np(
                 rest_rotations[j:j+1], local_rotations[:, j]
             )
     else:
@@ -129,10 +104,10 @@ def _batch_forward_kinematics_np(
             world_pos[:, j] = local_positions[:, j]
             world_rot[:, j] = total_local[:, j]
         else:
-            world_pos[:, j] = world_pos[:, p] + _quat_rotate_np(
+            world_pos[:, j] = world_pos[:, p] + quat_rotate_wxyz_np(
                 world_rot[:, p], local_positions[:, j]
             )
-            world_rot[:, j] = _quat_multiply_np(world_rot[:, p], total_local[:, j])
+            world_rot[:, j] = quat_multiply_wxyz_np(world_rot[:, p], total_local[:, j])
 
     return world_pos, world_rot
 
@@ -158,16 +133,16 @@ def _batch_pose_fk_np(
 
     for j in range(J):
         rest_q = np.repeat(rest_rotations[j:j+1], F, axis=0)
-        total_local_rot = _quat_multiply_np(rest_q, pose_rotations[:, j])
-        pose_loc_in_parent = rest_offsets[j:j+1] + _quat_rotate_np(rest_q, pose_locations[:, j])
+        total_local_rot = quat_multiply_wxyz_np(rest_q, pose_rotations[:, j])
+        pose_loc_in_parent = rest_offsets[j:j+1] + quat_rotate_wxyz_np(rest_q, pose_locations[:, j])
 
         p = parents[j]
         if p < 0:
             world_pos[:, j] = pose_loc_in_parent
             world_rot[:, j] = total_local_rot
         else:
-            world_pos[:, j] = world_pos[:, p] + _quat_rotate_np(world_rot[:, p], pose_loc_in_parent)
-            world_rot[:, j] = _quat_multiply_np(world_rot[:, p], total_local_rot)
+            world_pos[:, j] = world_pos[:, p] + quat_rotate_wxyz_np(world_rot[:, p], pose_loc_in_parent)
+            world_rot[:, j] = quat_multiply_wxyz_np(world_rot[:, p], total_local_rot)
 
     return world_pos, world_rot
 
@@ -622,7 +597,7 @@ class AnimationExporter:
             best_err = float("inf")
 
             for label, R in candidates:
-                pos_candidate = _apply_rotation_to_positions_np(pos_input_rest_st, R)
+                pos_candidate = pos_input_rest_st @ R.T
                 err = float(np.mean(np.linalg.norm(pos_fbx_rest - pos_candidate, axis=-1)))
                 if err < best_err:
                     best_err = err
@@ -637,11 +612,10 @@ class AnimationExporter:
 
             target_wpos = np.repeat(fbx_rest_wpos, num_frames, axis=0)
             target_wrot = np.repeat(fbx_rest_wrot, num_frames, axis=0)
-            aligned_input_wpos = _apply_rotation_to_positions_np(
-                input_wpos * scale + t_align[np.newaxis, np.newaxis, :],
-                best_R,
-            )
-            aligned_input_wrot = _apply_rotation_to_quaternions_np(input_wrot, best_R)
+            aligned_input_wpos = (
+                input_wpos * scale + t_align[np.newaxis, np.newaxis, :]
+            ) @ best_R.T
+            aligned_input_wrot = apply_rotation_to_quaternions_wxyz_np(input_wrot, best_R)
 
             for ii, fi in enumerate(input_to_fbx):
                 if fi >= 0:
@@ -665,22 +639,22 @@ class AnimationExporter:
                     parent_world_rot = target_wrot[:, parent_j]
                     parent_world_pos = target_wpos[:, parent_j]
 
-                rel_world_rot = _quat_multiply_np(
-                    _quat_conjugate_np(parent_world_rot),
+                rel_world_rot = quat_multiply_wxyz_np(
+                    quat_conjugate_wxyz_np(parent_world_rot),
                     target_wrot[:, j],
                 )
-                fbx_pose_rot[:, j] = _quat_multiply_np(
-                    _quat_conjugate_np(np.repeat(fbx_rest_rots[j:j+1], num_frames, axis=0)),
+                fbx_pose_rot[:, j] = quat_multiply_wxyz_np(
+                    quat_conjugate_wxyz_np(np.repeat(fbx_rest_rots[j:j+1], num_frames, axis=0)),
                     rel_world_rot,
                 )
 
                 rel_world_pos = target_wpos[:, j] - parent_world_pos
-                rel_parent_pos = _quat_rotate_np(
-                    _quat_conjugate_np(parent_world_rot),
+                rel_parent_pos = quat_rotate_wxyz_np(
+                    quat_conjugate_wxyz_np(parent_world_rot),
                     rel_world_pos,
                 )
-                fbx_pose_loc[:, j] = _quat_rotate_np(
-                    _quat_conjugate_np(np.repeat(fbx_rest_rots[j:j+1], num_frames, axis=0)),
+                fbx_pose_loc[:, j] = quat_rotate_wxyz_np(
+                    quat_conjugate_wxyz_np(np.repeat(fbx_rest_rots[j:j+1], num_frames, axis=0)),
                     rel_parent_pos - np.repeat(fbx_offsets[j:j+1], num_frames, axis=0),
                 )
 
