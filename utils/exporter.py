@@ -15,6 +15,12 @@ import torch
 from torch import Tensor
 
 from Anytop.utils.fbx import import_fbx, remove_lights_and_cameras
+from Anytop.utils.rotation_numpy import (
+    apply_rotation_to_quaternions_wxyz_np,
+    quat_conjugate_wxyz_np,
+    quat_multiply_wxyz_np,
+    quat_rotate_wxyz_np,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -29,97 +35,17 @@ def _canonical_bone_name(name: str) -> str:
 
 def _quat_multiply_np(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
     """Hamilton product q1 ⊗ q2.  (..., 4) each.  Handles broadcasting."""
-    w1, x1, y1, z1 = q1[..., 0], q1[..., 1], q1[..., 2], q1[..., 3]
-    w2, x2, y2, z2 = q2[..., 0], q2[..., 1], q2[..., 2], q2[..., 3]
-    w = w1*w2 - x1*x2 - y1*y2 - z1*z2
-    x = w1*x2 + x1*w2 + y1*z2 - z1*y2
-    y = w1*y2 - x1*z2 + y1*w2 + z1*x2
-    z = w1*z2 + x1*y2 - y1*x2 + z1*w2
-    return np.stack([w, x, y, z], axis=-1)
+    return quat_multiply_wxyz_np(q1, q2)
 
 
 def _quat_conjugate_np(q: np.ndarray) -> np.ndarray:
     """Conjugate (w, -x, -y, -z)."""
-    out = q.copy()
-    out[..., 1:] *= -1
-    return out
+    return quat_conjugate_wxyz_np(q)
 
 
 def _quat_rotate_np(q: np.ndarray, v: np.ndarray) -> np.ndarray:
     """Rotate vector(s) v by quaternion(s) q.  q (..., 4), v (..., 3)."""
-    q_conj = _quat_conjugate_np(q)
-    qv = np.concatenate([np.zeros_like(v[..., :1]), v], axis=-1)  # (..., 4)
-    return _quat_multiply_np(_quat_multiply_np(q, qv), q_conj)[..., 1:]
-
-
-def _quat_to_matrix_np(qs: np.ndarray) -> np.ndarray:
-    """(..., 4) quaternions (w,x,y,z) → (..., 3, 3) rotation matrices."""
-    qw, qx, qy, qz = qs[..., 0], qs[..., 1], qs[..., 2], qs[..., 3]
-    x2, y2, z2 = qx + qx, qy + qy, qz + qz
-    xx, yy, wx = qx * x2, qy * y2, qw * x2
-    xy, yz, wy = qx * y2, qy * z2, qw * y2
-    xz, zz, wz = qx * z2, qz * z2, qw * z2
-
-    mat = np.zeros(qs.shape[:-1] + (3, 3), dtype=qs.dtype)
-    mat[..., 0, 0] = 1.0 - (yy + zz)
-    mat[..., 0, 1] = xy - wz
-    mat[..., 0, 2] = xz + wy
-    mat[..., 1, 0] = xy + wz
-    mat[..., 1, 1] = 1.0 - (xx + zz)
-    mat[..., 1, 2] = yz - wx
-    mat[..., 2, 0] = xz - wy
-    mat[..., 2, 1] = yz + wx
-    mat[..., 2, 2] = 1.0 - (xx + yy)
-    return mat
-
-
-def _matrix_to_quat_np(mats: np.ndarray) -> np.ndarray:
-    """(..., 3, 3) rotation matrices → (..., 4) quaternions (w,x,y,z)."""
-    orig_shape = mats.shape[:-2]
-    m = mats.reshape(-1, 3, 3)
-    N = m.shape[0]
-    quats = np.zeros((N, 4), dtype=mats.dtype)
-
-    m00, m01, m02 = m[:, 0, 0], m[:, 0, 1], m[:, 0, 2]
-    m10, m11, m12 = m[:, 1, 0], m[:, 1, 1], m[:, 1, 2]
-    m20, m21, m22 = m[:, 2, 0], m[:, 2, 1], m[:, 2, 2]
-    trace = m00 + m11 + m22
-
-    mask1 = trace > 0.0
-    if np.any(mask1):
-        s = 0.5 / np.sqrt(trace[mask1] + 1.0)
-        quats[mask1, 0] = 0.25 / s
-        quats[mask1, 1] = (m21[mask1] - m12[mask1]) * s
-        quats[mask1, 2] = (m02[mask1] - m20[mask1]) * s
-        quats[mask1, 3] = (m10[mask1] - m01[mask1]) * s
-
-    mask2 = (~mask1) & (m00 > m11) & (m00 > m22)
-    if np.any(mask2):
-        s = 2.0 * np.sqrt(1.0 + m00[mask2] - m11[mask2] - m22[mask2])
-        quats[mask2, 0] = (m21[mask2] - m12[mask2]) / s
-        quats[mask2, 1] = 0.25 * s
-        quats[mask2, 2] = (m01[mask2] + m10[mask2]) / s
-        quats[mask2, 3] = (m02[mask2] + m20[mask2]) / s
-
-    mask3 = (~mask1) & (~mask2) & (m11 > m22)
-    if np.any(mask3):
-        s = 2.0 * np.sqrt(1.0 + m11[mask3] - m00[mask3] - m22[mask3])
-        quats[mask3, 0] = (m02[mask3] - m20[mask3]) / s
-        quats[mask3, 1] = (m01[mask3] + m10[mask3]) / s
-        quats[mask3, 2] = 0.25 * s
-        quats[mask3, 3] = (m12[mask3] + m21[mask3]) / s
-
-    mask4 = (~mask1) & (~mask2) & (~mask3)
-    if np.any(mask4):
-        s = 2.0 * np.sqrt(1.0 + m22[mask4] - m00[mask4] - m11[mask4])
-        quats[mask4, 0] = (m10[mask4] - m01[mask4]) / s
-        quats[mask4, 1] = (m02[mask4] + m20[mask4]) / s
-        quats[mask4, 2] = (m12[mask4] + m21[mask4]) / s
-        quats[mask4, 3] = 0.25 * s
-
-    norms = np.maximum(np.linalg.norm(quats, axis=-1, keepdims=True), 1e-12)
-    quats = quats / norms
-    return quats.reshape(orig_shape + (4,))
+    return quat_rotate_wxyz_np(q, v)
 
 
 def _apply_rotation_to_positions_np(positions: np.ndarray, R: np.ndarray) -> np.ndarray:
@@ -129,9 +55,7 @@ def _apply_rotation_to_positions_np(positions: np.ndarray, R: np.ndarray) -> np.
 
 def _apply_rotation_to_quaternions_np(rotations: np.ndarray, R: np.ndarray) -> np.ndarray:
     """Apply 3x3 rotation R to (..., 4) quaternions → (..., 4)."""
-    mats = _quat_to_matrix_np(rotations.astype(np.float64))  # (..., 3, 3)
-    rotated_mats = R.astype(np.float64) @ mats               # R @ mats with broadcast
-    return _matrix_to_quat_np(rotated_mats).astype(rotations.dtype)
+    return apply_rotation_to_quaternions_wxyz_np(rotations, R)
 
 
 def _generate_coordinate_candidates_np():

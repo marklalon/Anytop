@@ -32,6 +32,12 @@ from typing import Any
 
 import numpy as np
 
+from Anytop.utils.rotation_numpy import (
+    apply_rotation_to_quaternions_wxyz_np,
+    matrix_to_quat_wxyz_np,
+    quat_to_matrix_wxyz_np,
+)
+
 
 # ── Path setup ────────────────────────────────────────────────────────────────
 
@@ -391,23 +397,7 @@ def _quaternion_angle_degrees(q_a: np.ndarray, q_b: np.ndarray) -> np.ndarray:
 
 def _quat_to_matrix(qs: np.ndarray) -> np.ndarray:
     """Convert (..., 4) quaternions (w,x,y,z) to (..., 3, 3) rotation matrices."""
-    qw, qx, qy, qz = qs[..., 0], qs[..., 1], qs[..., 2], qs[..., 3]
-    x2, y2, z2 = qx + qx, qy + qy, qz + qz
-    xx, yy, wx = qx * x2, qy * y2, qw * x2
-    xy, yz, wy = qx * y2, qy * z2, qw * y2
-    xz, zz, wz = qx * z2, qz * z2, qw * z2
-
-    mat = np.zeros(qs.shape[:-1] + (3, 3), dtype=qs.dtype)
-    mat[..., 0, 0] = 1.0 - (yy + zz)
-    mat[..., 0, 1] = xy - wz
-    mat[..., 0, 2] = xz + wy
-    mat[..., 1, 0] = xy + wz
-    mat[..., 1, 1] = 1.0 - (xx + zz)
-    mat[..., 1, 2] = yz - wx
-    mat[..., 2, 0] = xz - wy
-    mat[..., 2, 1] = yz + wx
-    mat[..., 2, 2] = 1.0 - (xx + yy)
-    return mat
+    return quat_to_matrix_wxyz_np(qs)
 
 
 def _matrix_to_quat(mats: np.ndarray) -> np.ndarray:
@@ -415,59 +405,7 @@ def _matrix_to_quat(mats: np.ndarray) -> np.ndarray:
 
     Fully vectorized implementation using the stable numerical recipe.
     """
-    orig_shape = mats.shape[:-2]
-    m = mats.reshape(-1, 3, 3)  # (N, 3, 3)
-    N = m.shape[0]
-    quats = np.zeros((N, 4), dtype=mats.dtype)
-
-    # Precompute common terms
-    m00, m01, m02 = m[:, 0, 0], m[:, 0, 1], m[:, 0, 2]
-    m10, m11, m12 = m[:, 1, 0], m[:, 1, 1], m[:, 1, 2]
-    m20, m21, m22 = m[:, 2, 0], m[:, 2, 1], m[:, 2, 2]
-
-    trace = m00 + m11 + m22
-
-    # Case 1: trace > 0
-    mask1 = trace > 0.0
-    if np.any(mask1):
-        s = 0.5 / np.sqrt(trace[mask1] + 1.0)
-        quats[mask1, 0] = 0.25 / s
-        quats[mask1, 1] = (m21[mask1] - m12[mask1]) * s
-        quats[mask1, 2] = (m02[mask1] - m20[mask1]) * s
-        quats[mask1, 3] = (m10[mask1] - m01[mask1]) * s
-
-    # Case 2: m00 > m11 and m00 > m22
-    mask2 = (~mask1) & (m00 > m11) & (m00 > m22)
-    if np.any(mask2):
-        s = 2.0 * np.sqrt(1.0 + m00[mask2] - m11[mask2] - m22[mask2])
-        quats[mask2, 0] = (m21[mask2] - m12[mask2]) / s
-        quats[mask2, 1] = 0.25 * s
-        quats[mask2, 2] = (m01[mask2] + m10[mask2]) / s
-        quats[mask2, 3] = (m02[mask2] + m20[mask2]) / s
-
-    # Case 3: m11 > m22
-    mask3 = (~mask1) & (~mask2) & (m11 > m22)
-    if np.any(mask3):
-        s = 2.0 * np.sqrt(1.0 + m11[mask3] - m00[mask3] - m22[mask3])
-        quats[mask3, 0] = (m02[mask3] - m20[mask3]) / s
-        quats[mask3, 1] = (m01[mask3] + m10[mask3]) / s
-        quats[mask3, 2] = 0.25 * s
-        quats[mask3, 3] = (m12[mask3] + m21[mask3]) / s
-
-    # Case 4: m22 is largest
-    mask4 = (~mask1) & (~mask2) & (~mask3)
-    if np.any(mask4):
-        s = 2.0 * np.sqrt(1.0 + m22[mask4] - m00[mask4] - m11[mask4])
-        quats[mask4, 0] = (m10[mask4] - m01[mask4]) / s
-        quats[mask4, 1] = (m02[mask4] + m20[mask4]) / s
-        quats[mask4, 2] = (m12[mask4] + m21[mask4]) / s
-        quats[mask4, 3] = 0.25 * s
-
-    # Normalize
-    norms = np.maximum(np.linalg.norm(quats, axis=-1, keepdims=True), 1e-12)
-    quats = quats / norms
-
-    return quats.reshape(orig_shape + (4,))
+    return matrix_to_quat_wxyz_np(mats)
 
 
 def _compute_mean_bone_length_from_rest(offsets: np.ndarray, parents: np.ndarray) -> float:
@@ -516,12 +454,7 @@ def _apply_rotation_to_positions(positions: np.ndarray, R: np.ndarray) -> np.nda
 
 def _apply_rotation_to_quaternions(rotations: np.ndarray, R: np.ndarray) -> np.ndarray:
     """Apply 3x3 rotation R to (F, J, 4) quaternions: convert→R @ mat→convert back."""
-    orig_dtype = rotations.dtype
-    mats = _quat_to_matrix(rotations.astype(np.float64))
-    # R @ mats: (3,3) @ (F,J,3,3) → (F,J,3,3)
-    # Use distinct subscripts: R(i,k) @ mats(f,j,k,l) → result(f,j,i,l)
-    rotated_mats = np.einsum("ik,fjkl->fjil", R.astype(np.float64), mats)
-    return _matrix_to_quat(rotated_mats).astype(orig_dtype)
+    return apply_rotation_to_quaternions_wxyz_np(rotations, R)
 
 
 def _compute_common_bone_reindex(
