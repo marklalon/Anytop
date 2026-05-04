@@ -56,7 +56,7 @@ class MotionData:
     offsets: np.ndarray           # (J, 3) rest-pose offsets
     world_positions: np.ndarray   # (F, J, 3) world-space bone-head positions
     world_rotations: np.ndarray   # (F, J, 4) world-space quaternions (w, x, y, z)
-    sample_times: list[float]     # (F,) sample times in seconds
+    sample_times: list[float]     # (F,) sample times in seconds, relative to clip start
     fps: float
     num_frames: int
     num_joints: int
@@ -65,7 +65,7 @@ class MotionData:
 @dataclass
 class AlignmentResult:
     """Detected alignment corrections applied to motion B."""
-    time_offset: float           # B.sample_times[0] - A.sample_times[0]
+    time_offset: float           # B.sample_times[0] - A.sample_times[0] in seconds
     translation_offset: np.ndarray  # (3,) mean root pos of A - mean root pos of B
     rotation_matrix: np.ndarray     # (3, 3) applied to B positions & rotations
     rotation_label: str             # human-readable name of the rotation
@@ -109,8 +109,8 @@ def _set_scene_time(scene, sample_time: float) -> None:
     scene.frame_set(frame, subframe=subframe)
 
 
-def _get_action_sample_times(armature) -> list[float]:
-    """Extract sorted unique keyframe times from an armature's action."""
+def _get_action_sample_frames(armature) -> list[float]:
+    """Extract sorted unique keyframe frame values from an armature's action."""
     action = armature.animation_data.action if armature.animation_data else None
     if action is None:
         return [0.0]
@@ -132,6 +132,16 @@ def _infer_sample_fps(scene, sample_times: list[float]) -> float:
     if positive_deltas.size == 0:
         return float(scene_fps)
     return float(scene_fps / np.median(positive_deltas))
+
+
+def _sample_frames_to_relative_seconds(sample_frames: list[float], fps: float) -> list[float]:
+    """Convert Blender frame values to relative seconds from clip start."""
+    if not sample_frames:
+        return [0.0]
+    if fps <= 1e-8:
+        return [0.0 for _ in sample_frames]
+    first_frame = float(sample_frames[0])
+    return [float(frame - first_frame) / float(fps) for frame in sample_frames]
 
 
 def _read_bvh_frame_rate(file_path: str) -> float:
@@ -216,7 +226,7 @@ def _extract_armature_skeleton_data(armature):
     return bone_names, parents, offsets, rest_rotations
 
 
-def _collect_armature_world_pose_data(armature, sample_times: list[float],
+def _collect_armature_world_pose_data(armature, sample_frames: list[float],
                                        bone_names: list[str]) -> dict[str, Any]:
     """Collect bone-head world positions and world quaternions at each sample time.
 
@@ -224,13 +234,13 @@ def _collect_armature_world_pose_data(armature, sample_times: list[float],
     to ensure consistent indexing between skeleton metadata and pose data.
 
     Returns dict with keys:
-        bone_names, sample_times, head_positions (F, J, 3), world_rotations (F, J, 4)
+        bone_names, sample_frames, head_positions (F, J, 3), world_rotations (F, J, 4)
     """
     import bpy
     from mathutils import Vector
 
     scene = bpy.context.scene
-    num_frames = len(sample_times)
+    num_frames = len(sample_frames)
     num_joints = len(bone_names)
     head_positions = np.zeros((num_frames, num_joints, 3), dtype=np.float64)
     world_rotations = np.zeros((num_frames, num_joints, 4), dtype=np.float64)
@@ -238,8 +248,8 @@ def _collect_armature_world_pose_data(armature, sample_times: list[float],
     bpy.context.view_layer.objects.active = armature
     bpy.ops.object.mode_set(mode="OBJECT")
 
-    for frame_idx, sample_time in enumerate(sample_times):
-        _set_scene_time(scene, float(sample_time))
+    for frame_idx, sample_frame in enumerate(sample_frames):
+        _set_scene_time(scene, float(sample_frame))
         bpy.context.view_layer.update()
         for bone_idx, bone_name in enumerate(bone_names):
             pose_bone = armature.pose.bones.get(bone_name)
@@ -253,7 +263,7 @@ def _collect_armature_world_pose_data(armature, sample_times: list[float],
 
     return {
         "bone_names": bone_names,
-        "sample_times": np.asarray(sample_times, dtype=np.float64),
+        "sample_frames": np.asarray(sample_frames, dtype=np.float64),
         "head_positions": head_positions,
         "world_rotations": world_rotations,
     }
@@ -283,7 +293,7 @@ def _load_motion(file_path: str) -> MotionData:
             bpy.ops.import_anim.bvh(filepath=file_path)
     elif file_format == "fbx":
         from Anytop.utils.fbx import import_fbx
-        import_fbx(file_path, ignore_leaf_bones=False)
+        import_fbx(file_path)
     elif file_format == "glb":
         bpy.ops.import_scene.gltf(filepath=file_path)
 
@@ -298,7 +308,7 @@ def _load_motion(file_path: str) -> MotionData:
     num_joints = len(bone_names)
 
     # Determine sample times and FPS
-    sample_times = _get_action_sample_times(armature)
+    sample_frames = _get_action_sample_frames(armature)
     scene = bpy.context.scene
 
     # For BVH, read FPS from the file header's "Frame Time" field directly,
@@ -307,11 +317,12 @@ def _load_motion(file_path: str) -> MotionData:
     if file_format == "bvh":
         fps = _read_bvh_frame_rate(file_path)
     else:
-        fps = _infer_sample_fps(scene, sample_times)
-    num_frames = len(sample_times)
+        fps = _infer_sample_fps(scene, sample_frames)
+    sample_times = _sample_frames_to_relative_seconds(sample_frames, fps)
+    num_frames = len(sample_frames)
 
     # Collect world-space pose data (pass BFS-ordered bone names for consistency)
-    pose_data = _collect_armature_world_pose_data(armature, sample_times, bone_names)
+    pose_data = _collect_armature_world_pose_data(armature, sample_frames, bone_names)
 
     # Double-check bone name consistency
     assert pose_data["bone_names"] == bone_names, (
@@ -602,19 +613,29 @@ def _detect_and_align(
     rot_b = motion_b.world_rotations[:, idx_b, :]  # (F, K, 4)
 
     # ── Step 3: Detect scale FIRST (before translation) ────────────────────
-    # Use world-position bone lengths with A's parent structure for both A and B.
-    # This works even when A and B have different bone hierarchies, because we
-    # match by canonical name and use A's parent→child relationships.
-    ref_parents_a = np.array([motion_a.parents[i] for i in idx_a], dtype=np.int32)
+    # Use world-position bone lengths for only the parent→child pairs where
+    # both bones are in the common set (shared by A and B). This ensures the
+    # bone length comparison is valid regardless of differing hierarchies.
     ref_canonical_a = [_canonical_bone_name(motion_a.bone_names[i]) for i in idx_a]
     reindexed_bone_names_a = [motion_a.bone_names[i] for i in idx_a]
     reindexed_canonical_a = {_canonical_bone_name(n): i for i, n in enumerate(reindexed_bone_names_a)}
 
+    # Map A's parent indices from its original index space to the common-bone
+    # index space (0..K-1).  A parent that is not in the common set is set to
+    # -1 so that _compute_mean_bone_length_from_positions skips that bone.
+    orig_a_to_common = {orig_idx: ci for ci, orig_idx in enumerate(idx_a)}
+    common_parents = np.array(
+        [orig_a_to_common.get(p, -1) if p >= 0 else -1 for p in motion_a.parents],
+        dtype=np.int32,
+    )
+    # Subset to only the common bones
+    common_parents_subset = common_parents[idx_a]
+
     mean_len_a = _compute_mean_bone_length_from_positions(
-        pos_a, ref_parents_a, reindexed_canonical_a, ref_canonical_a, ref_parents_a,
+        pos_a, common_parents_subset, reindexed_canonical_a, ref_canonical_a, common_parents_subset,
     )
     mean_len_b = _compute_mean_bone_length_from_positions(
-        pos_b, ref_parents_a, reindexed_canonical_a, ref_canonical_a, ref_parents_a,
+        pos_b, common_parents_subset, reindexed_canonical_a, ref_canonical_a, common_parents_subset,
     )
 
     if mean_len_b > 1e-8 and mean_len_a > 1e-8:
@@ -664,7 +685,6 @@ def _detect_and_align(
     # ── Step 6: Build aligned B ─────────────────────────────────────────────
     is_identity_transform = bool(
         abs(time_offset) < 1e-6
-        and abs(time_offset) < 1e-6
         and np.allclose(best_R, np.eye(3), atol=1e-8)
         and abs(scale - 1.0) < 1e-8
         and np.allclose(translation_offset, 0.0, atol=1e-8)
@@ -953,7 +973,12 @@ def _print_summary(
     rot = result["rotation"]
 
     def _fmt_path(p: str) -> str:
-        return os.path.relpath(p, REPO_ROOT) if os.path.isabs(p) else p
+        if not os.path.isabs(p):
+            return p
+        try:
+            return os.path.relpath(p, REPO_ROOT)
+        except ValueError:
+            return p
 
     print(f"[Motion A] {_fmt_path(motion_a.file_path)}")
     print(f"           format={motion_a.file_format.upper()}  frames={motion_a.num_frames}  "
