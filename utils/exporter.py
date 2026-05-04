@@ -280,7 +280,7 @@ class AnimationExporter:
                     continue
 
                 parent_id = self.skeleton.bones[j].parent_id
-                if use_internal_armature or mesh_path:
+                if use_internal_armature:
                     rot_val = jr[f][j]
                     pbone.location = (0.0, 0.0, 0.0)
                 elif parent_id is None:

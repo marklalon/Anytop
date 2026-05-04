@@ -622,10 +622,18 @@ def _detect_and_align(
     else:
         scale = 1.0
 
+    # Skip scale alignment if difference is negligible (< 0.001)
+    if abs(scale - 1.0) < 0.001:
+        scale = 1.0
+
     # ── Step 4: Detect translation offset (after scaling B) ────────────────
     # Scale B first, then compute translation from root positions
     pos_b_scaled = pos_b * scale
     translation_offset = np.mean(pos_a[:, 0, :] - pos_b_scaled[:, 0, :], axis=0)  # (3,)
+
+    # Skip translation alignment if difference is negligible (< 1e-5)
+    if np.linalg.norm(translation_offset) < 1e-5:
+        translation_offset = np.zeros(3, dtype=np.float64)
 
     # Apply scale + translation to B
     pos_b_aligned = pos_b_scaled + translation_offset[np.newaxis, np.newaxis, :]
@@ -647,7 +655,9 @@ def _detect_and_align(
 
     # ── Step 6: Build aligned B ─────────────────────────────────────────────
     is_identity_transform = bool(
-        np.allclose(best_R, np.eye(3), atol=1e-8)
+        abs(time_offset) < 1e-6
+        and abs(time_offset) < 1e-6
+        and np.allclose(best_R, np.eye(3), atol=1e-8)
         and abs(scale - 1.0) < 1e-8
         and np.allclose(translation_offset, 0.0, atol=1e-8)
     )

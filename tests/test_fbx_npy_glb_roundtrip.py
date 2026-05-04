@@ -96,8 +96,14 @@ from _roundtrip_common import (
     _fbx_to_animation,
     _export_animation_to_glb,
     _load_fbx_skeleton_metadata,
-    _measure_fbx_glb_error,
-    _print_comparison_report,
+)
+
+from tools.compare_motions import (
+    _load_motion,
+    _validate_compatible,
+    _detect_and_align,
+    _compare_motions,
+    _print_summary,
 )
 
 
@@ -131,24 +137,20 @@ def test_fbx_npy_glb_roundtrip(
         recovered_glb = os.path.join(work_dir, f"{base_name}_recovered.glb")
         npy_path = os.path.join(work_dir, f"{base_name}_features.npy")
 
-        print(f"[FBX Roundtrip] T-pose FBX : {tpose_fbx}")
-        print(f"[FBX Roundtrip] Source FBX  : {anim_fbx}")
-        print(f"[FBX Roundtrip] Output dir  : {work_dir}")
-
         # Phase A: Load T-pose FBX for skeleton metadata
-        print("  [Phase A] Loading T-pose FBX for skeleton metadata...")
+        print("[Phase A] Loading T-pose FBX for skeleton metadata...")
         tpose_meta_bone_names, parents, offsets, rest_rotations = _load_fbx_skeleton_metadata(tpose_fbx)
         tpose_anim, tpose_bone_names, tpose_fps = _fbx_to_animation(tpose_fbx)
-        print(f"    Joints: {len(tpose_bone_names)}, FPS: {tpose_fps:.1f}")
+        print(f"Joints: {len(tpose_bone_names)}, FPS: {tpose_fps:.1f}")
         if tpose_meta_bone_names != tpose_bone_names:
             raise AssertionError("T-pose FBX animation bone order does not match extracted skeleton metadata")
 
         tpose_skeleton = _build_skeleton(tpose_bone_names, offsets, parents, rest_rotations)
 
         # Phase B: Load source FBX and extract motion
-        print("  [Phase B] Loading source FBX and extracting motion...")
+        print("[Phase B] Loading source FBX and extracting motion...")
         source_anim, source_bone_names, source_fps = _fbx_to_animation(anim_fbx)
-        print(f"    Frames: {len(source_anim)}, Joints: {source_anim.shape[1]}, FPS: {source_fps:.1f}")
+        print(f"Frames: {len(source_anim)}, Joints: {source_anim.shape[1]}, FPS: {source_fps:.1f}")
 
         if source_bone_names != tpose_bone_names:
             raise AssertionError(
@@ -156,22 +158,22 @@ def test_fbx_npy_glb_roundtrip(
             )
 
         # Phase C: Extract raw NPY features
-        print("  [Phase C] Extracting raw NPY features...")
+        print("[Phase C] Extracting raw NPY features...")
         feature_payload = build_roundtrip_feature_payload(
             source_anim, object_type, offsets, parents, source_bone_names,
         )
         np.save(npy_path, feature_payload, allow_pickle=True)
-        print(f"    NPY shape: {feature_payload['features'].shape}")
-        print(f"    Saved NPY features to {npy_path}")
+        print(f"  NPY shape: {feature_payload['features'].shape}")
+        print(f"Saved NPY features to {npy_path}")
 
         # Phase D: Recover Animation from NPY features
-        print("  [Phase D] Recovering Animation from NPY features...")
+        print("[Phase D] Recovering Animation from NPY features...")
         recovered_anim, has_animated_pos = recover_from_features(
             feature_payload, parents, offsets,
         )
-        print(f"    Recovered frames: {len(recovered_anim)}")
+        print(f"  Recovered frames: {len(recovered_anim)}")
         if has_animated_pos:
-            print("    (has non-root animated position channels)")
+            print("(has non-root animated position channels)")
 
         from motion_lib.Animation import positions_global
 
@@ -181,13 +183,13 @@ def test_fbx_npy_glb_roundtrip(
         npy_worst_idx = int(np.argmax(npy_position_error))
         npy_worst_bone = source_bone_names[npy_worst_idx] if npy_worst_idx < len(source_bone_names) else "?"
         print(
-            "  [Diag] Animation-domain source-vs-recovered max per-joint error: "
+            "[Diag] Animation-domain source-vs-recovered max per-joint error: "
             f"{npy_position_error.max():.6f} ({npy_worst_bone})"
         )
-        print("    Note: this is diagnostic only because recovery is built on the T-pose FBX skeleton.")
+        print("Note: this is diagnostic only because recovery is built on the T-pose FBX skeleton.")
 
         # Phase E: Export NPY-recovered animation -> recovered.glb
-        print(f"  [Phase E] Exporting NPY-recovered animation -> {os.path.basename(recovered_glb)}...")
+        print(f"[Phase E] Exporting NPY-recovered animation -> {os.path.basename(recovered_glb)}...")
         _export_animation_to_glb(
             recovered_anim,
             tpose_skeleton,
@@ -196,25 +198,41 @@ def test_fbx_npy_glb_roundtrip(
             fps=source_fps,
         )
 
-        # Phase F: Compare recovered GLB vs source FBX
-        recovered_metrics = _measure_fbx_glb_error(anim_fbx, recovered_glb)
-        _print_comparison_report("Roundtrip (FBX vs recovered GLB)", recovered_metrics)
+        # Phase F: Compare recovered GLB vs source FBX using compare_motions.py
+        print("[Phase F] Comparing recovered GLB vs source FBX via compare_motions...")
+        motion_a = _load_motion(anim_fbx)
+        motion_b = _load_motion(recovered_glb)
+        _validate_compatible(motion_a, motion_b)
+        motion_b_aligned, _alignment = _detect_and_align(motion_a, motion_b)
+        result = _compare_motions(motion_a, motion_b_aligned, _alignment)
+        print(f"{'Compare Motions':=^{70}}")
+        _print_summary(motion_a, motion_b, _alignment, result)
 
-        assert recovered_metrics["max_error"] < tolerance, (
-            f"FBX -> recovered GLB max error {recovered_metrics['max_error']:.6f} exceeds "
-            f"{tolerance} (worst bone={recovered_metrics['worst_bone']}, "
-            f"sample={recovered_metrics['worst_frame']}, time={recovered_metrics['worst_time']:.6f})"
+        pos_result = result["position"]
+        assert pos_result["max_error"] < tolerance, (
+            f"FBX -> recovered GLB max error {pos_result['max_error']:.6f} exceeds "
+            f"{tolerance} (worst bone={pos_result['worst_bone']}, "
+            f"frame={pos_result['worst_frame']})"
         )
 
-        print("\n  PASS  FBX -> NPY -> GLB roundtrip checks passed")
+        # Map worst_frame to sample time for the return dict
+        worst_frame = pos_result["worst_frame"]
+        recovered_worst_time = float(motion_a.sample_times[worst_frame]) \
+            if worst_frame < len(motion_a.sample_times) else 0.0
+
+        print("\nPASS  FBX -> NPY -> GLB roundtrip checks passed")
         return {
             "npy_error": float(npy_position_error.max()),
             "npy_worst_bone": npy_worst_bone,
             "npy_worst_frame": npy_worst_idx,
-            "recovered_error": float(recovered_metrics["max_error"]),
-            "recovered_worst_bone": recovered_metrics["worst_bone"],
-            "recovered_worst_frame": int(recovered_metrics["worst_frame"]),
-            "recovered_worst_time": float(recovered_metrics["worst_time"]),
+            "recovered_error": float(pos_result["max_error"]),
+            "recovered_error_pct_char": float(pos_result["max_error_pct_char"]),
+            "recovered_worst_bone": pos_result["worst_bone"],
+            "recovered_worst_frame": int(worst_frame),
+            "recovered_worst_time": recovered_worst_time,
+            "rot_max": float(result["rotation"]["max_error_deg"]),
+            "rot_worst_bone": result["rotation"]["worst_bone"],
+            "rot_worst_frame": int(result["rotation"]["worst_frame"]),
         }
 
 
@@ -276,12 +294,10 @@ if __name__ == "__main__":
     )
 
     print("\nSummary:")
-    print(
-        f"  NPY encoding error   : {result['npy_error']:.6f}  "
-        f"(bone={result['npy_worst_bone']}, frame={result['npy_worst_frame']})"
-    )
-    print(
-        f"  FBX -> recovered GLB : {result['recovered_error']:.6f} "
-        f"(bone={result['recovered_worst_bone']}, sample={result['recovered_worst_frame']}, "
-        f"time={result['recovered_worst_time']:.6f})"
-    )
+    print(f"  NPY encoding error   : {result['npy_error']:.6f}  "
+          f"(bone={result['npy_worst_bone']}, frame={result['npy_worst_frame']})")
+    print(f"  FBX -> recovered GLB : pos_max={result['recovered_error']:.6f} ({result['recovered_error_pct_char']:.4f}%) "
+          f"(bone={result['recovered_worst_bone']}, frame={result['recovered_worst_frame']}, "
+          f"time={result['recovered_worst_time']:.6f})")
+    print(f"  Rotation error       : max={result['rot_max']:.6f}°  "
+          f"(bone={result['rot_worst_bone']}, frame={result['rot_worst_frame']})")
