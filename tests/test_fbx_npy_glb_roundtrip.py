@@ -95,6 +95,8 @@ from _roundtrip_common import (
     _build_skeleton,
     _fbx_to_animation,
     _export_animation_to_glb,
+    _load_fbx_scene,
+    _load_glb_scene,
     _load_fbx_skeleton_metadata,
 )
 
@@ -108,6 +110,94 @@ from tools.compare_motions import (
 
 
 # ── Main test function ───────────────────────────────────────────────────────
+
+def _pick_primary_mesh():
+    import bpy
+
+    meshes = [obj for obj in bpy.data.objects if obj.type == "MESH"]
+    if not meshes:
+        raise RuntimeError("No mesh found in scene")
+
+    named_mesh = next((obj for obj in meshes if obj.name == "U3DMesh"), None)
+    if named_mesh is not None:
+        return named_mesh
+    return max(meshes, key=lambda obj: len(obj.data.vertices))
+
+
+def _sample_world_mesh_points(mesh_obj, frame_idx: int) -> np.ndarray:
+    import bpy
+
+    scene = bpy.context.scene
+    scene.frame_set(frame_idx)
+    bpy.context.view_layer.update()
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    obj_eval = mesh_obj.evaluated_get(depsgraph)
+    mesh_eval = obj_eval.to_mesh()
+    matrix_world = np.array(obj_eval.matrix_world, dtype=np.float64)
+    try:
+        points = np.array([
+            (matrix_world @ np.array([vertex.co[0], vertex.co[1], vertex.co[2], 1.0], dtype=np.float64))[:3]
+            for vertex in mesh_eval.vertices
+        ], dtype=np.float64)
+    finally:
+        obj_eval.to_mesh_clear()
+    return points
+
+
+def _nearest_surface_stats(points_a: np.ndarray, points_b: np.ndarray) -> dict[str, float]:
+    from mathutils import kdtree
+
+    def _one_way(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
+        tree = kdtree.KDTree(len(dst))
+        for idx, point in enumerate(dst):
+            tree.insert(tuple(float(v) for v in point), idx)
+        tree.balance()
+
+        distances = np.empty((len(src),), dtype=np.float64)
+        for idx, point in enumerate(src):
+            _co, _dst_idx, dist = tree.find(tuple(float(v) for v in point))
+            distances[idx] = dist
+        return distances
+
+    a_to_b = _one_way(points_a, points_b)
+    b_to_a = _one_way(points_b, points_a)
+    both = np.concatenate([a_to_b, b_to_a], axis=0)
+    return {
+        "mean": float(both.mean()),
+        "max": float(both.max()),
+        "p99": float(np.quantile(both, 0.99)),
+    }
+
+
+def _compare_mesh_surfaces(source_fbx: str, recovered_glb: str, alignment, sample_frames: list[int]) -> dict[str, Any]:
+    _load_fbx_scene(source_fbx)
+    source_mesh = _pick_primary_mesh()
+    source_samples = {
+        frame_idx: _sample_world_mesh_points(source_mesh, frame_idx)
+        for frame_idx in sample_frames
+    }
+
+    _load_glb_scene(recovered_glb)
+    recovered_mesh = _pick_primary_mesh()
+
+    rotation = np.asarray(alignment.rotation_matrix, dtype=np.float64)
+    translation = np.asarray(alignment.translation_offset, dtype=np.float64)
+    scale = float(alignment.scale)
+
+    per_frame = []
+    for frame_idx in sample_frames:
+        recovered_points = _sample_world_mesh_points(recovered_mesh, frame_idx)
+        aligned_recovered = (scale * recovered_points + translation[np.newaxis, :]) @ rotation.T
+        stats = _nearest_surface_stats(source_samples[frame_idx], aligned_recovered)
+        stats["frame"] = int(frame_idx)
+        per_frame.append(stats)
+
+    return {
+        "per_frame": per_frame,
+        "mean": float(np.mean([item["mean"] for item in per_frame])),
+        "max": float(np.max([item["max"] for item in per_frame])),
+        "p99": float(np.max([item["p99"] for item in per_frame])),
+    }
 
 def test_fbx_npy_glb_roundtrip(
     tpose_fbx: str,
@@ -208,11 +298,31 @@ def test_fbx_npy_glb_roundtrip(
         print(f"{'Compare Motions':=^{70}}")
         _print_summary(motion_a, motion_b, _alignment, result)
 
+        sample_frames = sorted({0, max(motion_a.num_frames // 2, 0), max(motion_a.num_frames - 1, 0)})
+        mesh_result = _compare_mesh_surfaces(anim_fbx, recovered_glb, _alignment, sample_frames)
+        char_size = max(float(result["position"]["character_size"]), 1e-8)
+        mesh_mean_pct_char = mesh_result["mean"] / char_size * 100.0
+        mesh_p99_pct_char = mesh_result["p99"] / char_size * 100.0
+        print(
+            "[Mesh] nearest-surface error: "
+            f"mean={mesh_result['mean']:.6f} ({mesh_mean_pct_char:.4f}%), "
+            f"p99={mesh_result['p99']:.6f} ({mesh_p99_pct_char:.4f}%), "
+            f"max={mesh_result['max']:.6f}"
+        )
+
         pos_result = result["position"]
         assert pos_result["max_error"] < tolerance, (
             f"FBX -> recovered GLB max error {pos_result['max_error']:.6f} exceeds "
             f"{tolerance} (worst bone={pos_result['worst_bone']}, "
             f"frame={pos_result['worst_frame']})"
+        )
+        assert mesh_mean_pct_char < 3.5, (
+            f"FBX -> recovered GLB mesh mean surface error {mesh_result['mean']:.6f} "
+            f"({mesh_mean_pct_char:.4f}% of character size) exceeds 3.5%"
+        )
+        assert mesh_p99_pct_char < 12.0, (
+            f"FBX -> recovered GLB mesh p99 surface error {mesh_result['p99']:.6f} "
+            f"({mesh_p99_pct_char:.4f}% of character size) exceeds 12.0%"
         )
 
         # Map worst_frame to sample time for the return dict
@@ -230,6 +340,8 @@ def test_fbx_npy_glb_roundtrip(
             "recovered_worst_bone": pos_result["worst_bone"],
             "recovered_worst_frame": int(worst_frame),
             "recovered_worst_time": recovered_worst_time,
+            "mesh_mean_error": float(mesh_result["mean"]),
+            "mesh_p99_error": float(mesh_result["p99"]),
             "rot_max": float(result["rotation"]["max_error_deg"]),
             "rot_worst_bone": result["rotation"]["worst_bone"],
             "rot_worst_frame": int(result["rotation"]["worst_frame"]),
@@ -299,5 +411,6 @@ if __name__ == "__main__":
     print(f"  FBX -> recovered GLB : pos_max={result['recovered_error']:.6f} ({result['recovered_error_pct_char']:.4f}%) "
           f"(bone={result['recovered_worst_bone']}, frame={result['recovered_worst_frame']}, "
           f"time={result['recovered_worst_time']:.6f})")
+    print(f"  Mesh surface error   : mean={result['mesh_mean_error']:.6f}  p99={result['mesh_p99_error']:.6f}")
     print(f"  Rotation error       : max={result['rot_max']:.6f}°  "
           f"(bone={result['rot_worst_bone']}, frame={result['rot_worst_frame']})")

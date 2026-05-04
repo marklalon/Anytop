@@ -302,27 +302,23 @@ def restore_glb(
     # Bone translations for BVH (total local position = rest_offset + displacement)
     bone_translations_bvh = torch.from_numpy(recovered_anim.positions.astype(np.float32))
 
-    # Bone translations for GLB (displacement only = total - rest_offset)
-    scaled_offsets_t = torch.from_numpy(scaled_offsets.astype(np.float32))
-    bone_translations_glb = torch.from_numpy(recovered_anim.positions.astype(np.float32))
-    for _j in range(1, J):
-        bone_translations_glb[:, _j, :] = (
-            bone_translations_glb[:, _j, :] - scaled_offsets_t[_j].unsqueeze(0)
-        )
+    # Bone translations for GLB: pass raw positions when per-bone positions exist,
+    # otherwise None (exporter uses rest offsets for non-root bones)
+    bone_translations_glb = torch.from_numpy(recovered_anim.positions.astype(np.float32)) if has_animated_pos else None
 
     os.makedirs(os.path.dirname(os.path.abspath(output_glb)) or ".", exist_ok=True)
 
-    # ── Export bones-only GLB (internal armature, correct) ─────────────────
-    # internal_glb_config without mesh payload → skeleton-only armature.
-    # Identity rest rotations → no BVH→FBX conversion needed.
-    # Fixed root: armature carries root transform, root pose bone is identity.
+    # ── Export skinned GLB via mesh_path (T-pose FBX) ──────────────────────
+    # The exporter handles retargeting: world-space alignment from HML skeleton
+    # to FBX armature, followed by FBX-local conversion.
     exporter = AnimationExporter(skeleton, fps=fps)
-    print(f"  Exporting bones-only GLB → {output_glb}")
+    print(f"  Exporting skinned GLB → {output_glb}  (mesh: {tpose_fbx})")
     exporter.export(
         joint_rotations,
         root_translation,
         root_rotation,
         output_glb,
+        mesh_path=tpose_fbx,
         bone_translations=bone_translations_glb,
     )
 
