@@ -42,7 +42,7 @@ def _move_batch_to_device(batch, device):
 
 
 def _export_motion(task):
-    motion_np, parents_np, offsets, npy_name, joint_names, out_path = task
+    motion_np, parents_np, offsets, npy_name, joint_names, out_path, fps = task
     out_anim, has_animated_pos = recover_animation_from_motion_np(
         motion_np, parents_np, offsets
     )
@@ -52,7 +52,9 @@ def _export_motion(task):
             pjoin(out_path, npy_name.replace('.npy', '.bvh')),
             out_anim,
             joint_names,
+            frametime=1.0 / fps,
             positions=has_animated_pos,
+            all_joints_as_names=True,
         )
     return npy_name
 
@@ -231,6 +233,7 @@ def main(args=None, cond_dict=None):
                     npy_name,
                     joint_names,
                     out_path,
+                    fps,
                 ))
 
             # Parallel export using ThreadPoolExecutor.

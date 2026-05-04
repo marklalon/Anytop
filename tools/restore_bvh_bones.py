@@ -247,6 +247,7 @@ def _save_bvh_with_raw_hierarchy(
 
     n_frames = anim.shape[0]
 
+    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
     with open(output_path, 'w') as f:
         f.write(hierarchy_text)
         if not hierarchy_text.rstrip().endswith('MOTION'):

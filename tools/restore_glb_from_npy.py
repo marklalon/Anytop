@@ -1,0 +1,427 @@
+"""
+restore_glb_from_npy.py
+
+Restore a preprocessed Anytop NPY motion file back to a skinned GLB,
+using a T-pose FBX as the mesh/rig source.
+
+Anytop's preprocessing applies three transforms to every motion:
+  1. Bone names canonicalized  (Bip01_L_Foot → LeftFoot, etc.)
+  2. Skeleton scaled           (mean bone length → HML_AVG_BONELEN)
+  3. Root rotated to face +Z   (orientation_quat applied)
+
+This script reverses all three and exports a skinned GLB whose armature
+matches the original T-pose FBX bone names, scale, and facing direction.
+
+Pipeline:
+  NPY features (F, J, 13)
+    → recover_from_features (HML space, +Z facing)
+    → unscale positions ÷ scale_factor
+    → reverse orientation (conjugate of orientation_quat)
+    → AnimationExporter + T-pose FBX → skinned GLB
+
+No BVH intermediate is used.
+
+Note: locomotion XZ is stripped during preprocessing and cannot be
+recovered from the NPY alone.  The output GLB plays the motion in-place.
+
+Usage:
+    python tools/restore_glb_from_npy.py \\
+        --npy   "D:/AI/.../Horse___RunToStop_29.npy" \\
+        --tpose_fbx "D:/AI/.../HorseALL-TPOSE.fbx"  \\
+        --output_glb "outputs/Horse___RunToStop_29.glb"
+
+    # Override auto-detected values
+    python tools/restore_glb_from_npy.py \\
+        --npy   my_motion.npy \\
+        --tpose_fbx my_tpose.fbx \\
+        --output_glb my_motion.glb \\
+        --object_type Horse \\
+        --fps 30 \\
+        --cond_npy /custom/path/cond.npy
+"""
+
+import argparse
+import importlib.machinery
+import importlib.util
+import os
+import sys
+
+import numpy as np
+
+# ── Path setup ────────────────────────────────────────────────────────────────
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ANYTOP_DIR = os.path.realpath(os.path.join(SCRIPT_DIR, ".."))
+REPO_ROOT = os.path.dirname(ANYTOP_DIR)
+
+for _p in [REPO_ROOT, ANYTOP_DIR, os.path.join(ANYTOP_DIR, "tests")]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+# ── Fix utils namespace conflict (same workaround as test_fbx_npy_glb_roundtrip.py) ──
+
+_rotconv_path = os.path.join(ANYTOP_DIR, "utils", "rotation_conversions.py")
+if os.path.isfile(_rotconv_path) and "utils.rotation_conversions" not in sys.modules:
+    _loader = importlib.machinery.SourceFileLoader("utils.rotation_conversions", _rotconv_path)
+    _spec = importlib.util.spec_from_loader("utils.rotation_conversions", _loader, origin=_rotconv_path)
+    _mod = importlib.util.module_from_spec(_spec)
+    sys.modules["utils.rotation_conversions"] = _mod
+    _spec.loader.exec_module(_mod)
+
+_npy_rt_path = os.path.join(ANYTOP_DIR, "utils", "npy_roundtrip_utils.py")
+if os.path.isfile(_npy_rt_path) and "utils.npy_roundtrip_utils" not in sys.modules:
+    _loader = importlib.machinery.SourceFileLoader("utils.npy_roundtrip_utils", _npy_rt_path)
+    _spec = importlib.util.spec_from_loader("utils.npy_roundtrip_utils", _loader, origin=_npy_rt_path)
+    _mod = importlib.util.module_from_spec(_spec)
+    sys.modules["utils.npy_roundtrip_utils"] = _mod
+    _spec.loader.exec_module(_mod)
+
+from utils.npy_roundtrip_utils import coerce_feature_payload, recover_from_features
+from motion_lib.Quaternions import Quaternions
+
+# ── Default cond.npy path ─────────────────────────────────────────────────────
+
+_DEFAULT_COND_NPY = os.path.realpath(
+    os.path.join(ANYTOP_DIR, "dataset", "truebones", "zoo", "truebones_processed", "cond.npy")
+)
+
+# ── HML_AVG_BONELEN (lazy-loaded) ─────────────────────────────────────────────
+
+_HML_AVG_BONELEN = None
+
+
+def _get_hml_avg_bonelen() -> float:
+    global _HML_AVG_BONELEN
+    if _HML_AVG_BONELEN is None:
+        from data_loaders.truebones.truebones_utils.param_utils import HML_AVG_BONELEN as _v
+        _HML_AVG_BONELEN = float(_v)
+    return _HML_AVG_BONELEN
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _auto_detect_object_type_from_filename(npy_path: str, cond: dict) -> str | None:
+    """Auto-detect object_type from NPY filename.
+
+    Filenames follow the pattern: {ObjectType}___{Action}_{ClipID}.npy
+    e.g. Horse___RunToStop_29.npy, Sea_Lion___Swim_42.npy
+    """
+    basename = os.path.splitext(os.path.basename(npy_path))[0]
+    sep = "___"
+    if sep in basename:
+        candidate = basename.split(sep)[0]
+        if candidate in cond:
+            return candidate
+    # Fallback: progressively longer prefixes (handles "Sea_Lion" etc.)
+    if "_" in basename:
+        parts = basename.split("_")
+        for i in range(1, len(parts)):
+            candidate = "_".join(parts[:i])
+            if candidate in cond:
+                return candidate
+    return None
+
+
+def _compute_scale_factor(
+    joints_names: list[str],
+    fbx_bone_names: list[str],
+    fbx_offsets: np.ndarray,
+) -> float | None:
+    """Compute HML_AVG_BONELEN / mean(FBX_bone_lengths) for named non-root bones.
+
+    Matches cond bones to FBX bones by name.  Excludes the root (index 0)
+    because the root bone typically has a zero offset.
+    """
+    fbx_off_map = {n: o for n, o in zip(fbx_bone_names, fbx_offsets)}
+    matched_offsets = [
+        fbx_off_map[n]
+        for n in joints_names[1:]   # skip root
+        if n in fbx_off_map
+    ]
+    if not matched_offsets:
+        return None
+    lengths = np.linalg.norm(np.array(matched_offsets, dtype=np.float64), axis=-1)
+    non_zero = lengths[lengths > 1e-8]
+    if non_zero.size == 0:
+        return None
+    mean_len = float(np.mean(non_zero))
+    return _get_hml_avg_bonelen() / mean_len
+
+
+# ── Main restore function ─────────────────────────────────────────────────────
+
+def restore_glb(
+    npy_path: str,
+    tpose_fbx: str,
+    output_glb: str,
+    cond_npy: str | None = None,
+    object_type: str | None = None,
+    fps: float = 30.0,
+    restore_orientation: bool = True,
+) -> str:
+    """Restore a preprocessed NPY motion file to a skinned GLB.
+
+    Args:
+        npy_path:            Path to the preprocessed .npy motion file.
+        tpose_fbx:           Path to the T-pose FBX (provides skin + armature).
+        output_glb:          Path for the output .glb file.
+        cond_npy:            Path to cond.npy; defaults to the dataset default.
+        object_type:         Character type key (e.g. "Horse").  Auto-detected
+                             from the NPY filename if None.
+        fps:                 Animation frame rate for the output GLB.
+        restore_orientation: When True (default), reverse the +Z face-direction
+                             transform applied during preprocessing.
+
+    Returns:
+        The absolute path of the written GLB file.
+    """
+    import torch
+    from Anytop.utils.exporter import AnimationExporter
+
+    # ── Load cond.npy ─────────────────────────────────────────────────────────
+    cond_npy_path = cond_npy or _DEFAULT_COND_NPY
+    if not os.path.isfile(cond_npy_path):
+        raise FileNotFoundError(f"cond.npy not found: {cond_npy_path}")
+    cond = np.load(cond_npy_path, allow_pickle=True).item()
+
+    # ── Detect object_type ────────────────────────────────────────────────────
+    if object_type is None:
+        object_type = _auto_detect_object_type_from_filename(npy_path, cond)
+        if object_type is None:
+            raise ValueError(
+                f"Cannot auto-detect object_type from '{os.path.basename(npy_path)}'.\n"
+                f"  Available: {list(cond.keys())}\n"
+                f"  Pass --object_type explicitly."
+            )
+        print(f"  Auto-detected object_type: {object_type}")
+    elif object_type not in cond:
+        raise ValueError(
+            f"object_type '{object_type}' not found in cond.npy.\n"
+            f"  Available: {list(cond.keys())}"
+        )
+
+    obj_cond = cond[object_type]
+    joints_names: list[str] = list(obj_cond["joints_names"])
+    parents = np.array(obj_cond["parents"], dtype=np.int32)
+    offsets_hml = np.array(obj_cond["offsets"], dtype=np.float64)  # HML scale
+
+    print(f"  Skeleton: {len(joints_names)} joints, root='{joints_names[0]}'")
+
+    # ── Load NPY features ─────────────────────────────────────────────────────
+    raw = np.load(npy_path, allow_pickle=True)
+    if raw.dtype == object:
+        raw = raw.item()
+    features, _ = coerce_feature_payload(raw)
+
+    F, J, C = features.shape
+    if J != len(joints_names):
+        raise ValueError(
+            f"NPY has J={J} joints but cond.npy has {len(joints_names)} joints for '{object_type}'."
+        )
+    if C != 13:
+        raise ValueError(f"Expected 13 channels per joint, got {C}.")
+
+    print(f"  NPY: {F} frames, {J} joints, {C} channels")
+
+    # ── Load T-pose FBX for bone-name verification and scale computation ───────
+    print("  Loading T-pose FBX for scale computation...")
+    from _roundtrip_common import _load_fbx_skeleton_metadata, _build_skeleton
+
+    fbx_bone_names, _fbx_parents, fbx_offsets, _fbx_rest_rots = _load_fbx_skeleton_metadata(
+        tpose_fbx
+    )
+    print(f"  FBX armature: {len(fbx_bone_names)} bones, root='{fbx_bone_names[0]}'")
+
+    # Verify all cond joint names exist in FBX armature
+    fbx_name_set = set(fbx_bone_names)
+    missing = [n for n in joints_names if n not in fbx_name_set]
+    if missing:
+        print(
+            f"  WARNING: {len(missing)} cond.npy joints not found in FBX armature:\n"
+            f"    {missing[:10]}{'...' if len(missing) > 10 else ''}\n"
+            f"  These bones will be skipped during export (kept at FBX rest pose)."
+        )
+    else:
+        print(f"  All {J} cond joints found in FBX armature.")
+
+    # ── Compute scale factor ──────────────────────────────────────────────────
+    scale_factor = _compute_scale_factor(joints_names, fbx_bone_names, fbx_offsets)
+    if scale_factor is None:
+        print("  WARNING: Could not compute scale_factor from FBX offsets. Using 1.0.")
+        scale_factor = 1.0
+    else:
+        print(
+            f"  Scale factor: {scale_factor:.6f}  "
+            f"(HML_AVG={_get_hml_avg_bonelen():.4f} / mean_fbx_bonelen)"
+        )
+
+    # ── Recover Animation (in HML feature space) ──────────────────────────────
+    print("  Recovering animation from features...")
+    recovered_anim, has_animated_pos = recover_from_features(features, parents, offsets_hml)
+    print(f"  Recovered: {recovered_anim.shape[0]} frames")
+    if has_animated_pos:
+        print("  Note: non-root bone translations detected (unusual for BVH-sourced clips).")
+
+    # ── Unscale positions to original mesh scale ───────────────────────────────
+    # Rotations are scale-invariant; only translations need unscaling.
+    recovered_anim.positions = recovered_anim.positions / scale_factor
+    recovered_anim.offsets = offsets_hml / scale_factor
+
+    # ── Reverse orientation (preprocessing rotated root to face +Z) ────────────
+    if restore_orientation:
+        ori_quat = obj_cond.get("orientation_quat")
+        if ori_quat is not None:
+            ori_q = Quaternions(np.array(ori_quat, dtype=np.float64))
+            # Preprocessing: new_rots[:,0] = ori_q * old_rots[:,0]
+            # Reverse:       old_rots[:,0] = conjugate(ori_q) * new_rots[:,0]
+            conj = -ori_q
+            recovered_anim.rotations[:, 0] = conj * recovered_anim.rotations[:, 0]
+            recovered_anim.positions[:, 0] = conj * recovered_anim.positions[:, 0]
+            print("  Orientation restored.")
+        else:
+            print("  WARNING: orientation_quat not found in cond.npy — orientation not restored.")
+
+    # ── Build skeleton (drives FBX armature pose-bone lookup by name) ─────────
+    # rest_rotations=None → identity quaternions (BVH convention).
+    # The exporter only uses bone.name and parent_id (for root detection) in
+    # the mesh_path GLB branch, so rest_offset/rest_rotation don't affect output.
+    skeleton = _build_skeleton(
+        joints_names,
+        offsets_hml / scale_factor,
+        parents,
+        rest_rotations=None,
+    )
+
+    # ── Export GLB ────────────────────────────────────────────────────────────
+    os.makedirs(os.path.dirname(os.path.abspath(output_glb)) or ".", exist_ok=True)
+
+    exporter = AnimationExporter(skeleton, fps=fps)
+    joint_rotations = torch.from_numpy(recovered_anim.rotations.qs.astype(np.float32))
+    root_translation = torch.from_numpy(recovered_anim.positions[:, 0, :].astype(np.float32))
+    root_rotation = torch.from_numpy(recovered_anim.rotations.qs[:, 0, :].astype(np.float32))
+
+    # For rotation-only animations, non-root bone translations should be zero
+    # (= stay at FBX rest/bind position).  Passing bone_translations=None lets
+    # the FBX-imported armature bones stay at their Blender rest positions.
+    # Only pass bone_translations if non-root bones have genuinely animated
+    # local positions (e.g. IK bones in unusual rigs).
+    bone_translations = None
+    if has_animated_pos:
+        print(
+            "  Warning: non-root animated positions detected but bone_translations "
+            "are not mapped to FBX coordinate space in this script. "
+            "Non-root bone local translations will be kept at rest (T-pose)."
+        )
+
+    print(f"  Exporting GLB → {output_glb}")
+    exporter.export(
+        joint_rotations,
+        root_translation,
+        root_rotation,
+        output_glb,
+        mesh_path=tpose_fbx,
+        bone_translations=bone_translations,
+    )
+
+    return os.path.abspath(output_glb)
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Restore a preprocessed Anytop NPY motion to a skinned GLB "
+            "using a T-pose FBX as the rig/skin source."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument(
+        "--npy", required=True,
+        help="Path to the preprocessed .npy motion file.",
+    )
+    parser.add_argument(
+        "--tpose_fbx", required=True,
+        help="Path to the T-pose FBX (provides skin weights + armature).",
+    )
+    parser.add_argument(
+        "--output_glb",
+        default=None,
+        help=(
+            "Output GLB path.  Defaults to outputs/restore_glb_from_npy/<stem>.glb "
+            "relative to the Anytop directory."
+        ),
+    )
+    parser.add_argument(
+        "--cond_npy",
+        default=None,
+        help=f"Path to cond.npy.  Default: {_DEFAULT_COND_NPY}",
+    )
+    parser.add_argument(
+        "--object_type",
+        default=None,
+        help=(
+            "Character type key in cond.npy (e.g. 'Horse').  "
+            "Auto-detected from the NPY filename if not specified."
+        ),
+    )
+    parser.add_argument(
+        "--fps",
+        type=float,
+        default=30.0,
+        help="Animation frame rate for the output GLB (default: 30).",
+    )
+    parser.add_argument(
+        "--no_orientation_restore",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip orientation reversal.  The output GLB will face +Z "
+            "(canonical direction) rather than the original FBX facing."
+        ),
+    )
+
+    args = parser.parse_args()
+
+    if not os.path.isfile(args.npy):
+        parser.error(f"NPY file not found: {args.npy}")
+    if not os.path.isfile(args.tpose_fbx):
+        parser.error(f"T-pose FBX not found: {args.tpose_fbx}")
+
+    if args.output_glb is None:
+        stem = os.path.splitext(os.path.basename(args.npy))[0]
+        args.output_glb = os.path.join(
+            ANYTOP_DIR, "outputs", "restore_glb_from_npy", f"{stem}.glb"
+        )
+
+    cond_npy_path = args.cond_npy or _DEFAULT_COND_NPY
+    if not os.path.isfile(cond_npy_path):
+        parser.error(
+            f"cond.npy not found: {cond_npy_path}\n"
+            "Use --cond_npy to specify a custom path."
+        )
+
+    print(f"NPY         : {args.npy}")
+    print(f"T-pose FBX  : {args.tpose_fbx}")
+    print(f"Output GLB  : {args.output_glb}")
+    print(f"cond.npy    : {cond_npy_path}")
+    print(f"FPS         : {args.fps}")
+    print(f"Restore ori : {not args.no_orientation_restore}")
+    print()
+
+    out = restore_glb(
+        npy_path=args.npy,
+        tpose_fbx=args.tpose_fbx,
+        output_glb=args.output_glb,
+        cond_npy=cond_npy_path,
+        object_type=args.object_type,
+        fps=args.fps,
+        restore_orientation=not args.no_orientation_restore,
+    )
+
+    print(f"\nDone → {out}")
+
+
+if __name__ == "__main__":
+    main()
