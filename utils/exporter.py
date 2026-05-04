@@ -312,8 +312,6 @@ class AnimationExporter:
         else:
             raise ValueError(f"Unsupported export format: {ext!r}")
 
-        print(f"[Exporter] Saved animation → {output_path}")
-
     # ------------------------------------------------------------------
     # BVH export  (delegates to Anytop's battle-tested BVH.save)
     # ------------------------------------------------------------------

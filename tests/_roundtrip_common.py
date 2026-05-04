@@ -135,6 +135,14 @@ def _load_glb_scene(glb_path: str):
     return armature
 
 
+def _load_glb_skeleton_metadata(
+    glb_path: str,
+) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
+    """Load a GLB file and extract bone names, parents, offsets, and rest rotations."""
+    armature = _load_glb_scene(glb_path)
+    return _extract_armature_skeleton_data(armature)
+
+
 # ── Skeleton data extraction ─────────────────────────────────────────────────
 
 def _extract_armature_skeleton_data(

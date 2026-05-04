@@ -32,10 +32,8 @@ from typing import Any
 
 import numpy as np
 
-from Anytop.utils.rotation_numpy import apply_rotation_to_quaternions_wxyz_np
 
-
-# ── Path setup ────────────────────────────────────────────────────────────────
+# ── Path setup (must come before Anytop imports) ──────────────────────────────
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ANYTOP_ROOT = os.path.realpath(os.path.join(SCRIPT_DIR, ".."))
@@ -44,6 +42,8 @@ REPO_ROOT = os.path.dirname(ANYTOP_ROOT)
 for _p in [REPO_ROOT, ANYTOP_ROOT]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+from Anytop.utils.rotation_numpy import apply_rotation_to_quaternions_wxyz_np
 
 
 # ── Data structures ───────────────────────────────────────────────────────────

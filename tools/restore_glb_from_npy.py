@@ -2,7 +2,7 @@
 restore_glb_from_npy.py
 
 Restore a preprocessed Anytop NPY motion file back to a skinned GLB,
-using a T-pose FBX as the mesh/rig source.
+using a T-pose FBX/GLB/GLTF as the mesh/rig source.
 
 Anytop's preprocessing applies three transforms to every motion:
   1. Bone names canonicalized  (Bip01_L_Foot → LeftFoot, etc.)
@@ -26,9 +26,16 @@ Note: locomotion XZ is stripped during preprocessing and cannot be
 recovered from the NPY alone.  The output GLB plays the motion in-place.
 
 Usage:
+    # Using FBX T-pose
     python tools/restore_glb_from_npy.py \\
         --npy   "D:/AI/.../Horse___RunToStop_29.npy" \\
         --tpose_fbx "D:/AI/.../HorseALL-TPOSE.fbx"  \\
+        --output_glb "outputs/Horse___RunToStop_29.glb"
+
+    # Using GLB T-pose
+    python tools/restore_glb_from_npy.py \\
+        --npy   "D:/AI/.../Horse___RunToStop_29.npy" \\
+        --tpose_fbx "D:/AI/.../HorseALL-RunToStop.glb"  \\
         --output_glb "outputs/Horse___RunToStop_29.glb"
 
     # Override auto-detected values
@@ -227,14 +234,25 @@ def restore_glb(
 
     print(f"  NPY: {F} frames, {J} joints, {C} channels")
 
-    # ── Load T-pose FBX for bone-name verification and scale computation ───────
-    print("  Loading T-pose FBX for scale computation...")
-    from _roundtrip_common import _load_fbx_skeleton_metadata, _build_skeleton
+    # ── Load T-pose mesh (FBX or GLB) for bone-name verification and scale computation ──
+    print("  Loading T-pose mesh for scale computation...")
+    from _roundtrip_common import _load_fbx_skeleton_metadata, _load_glb_skeleton_metadata, _build_skeleton
 
-    fbx_bone_names, _fbx_parents, fbx_offsets, _fbx_rest_rots = _load_fbx_skeleton_metadata(
-        tpose_fbx
-    )
-    print(f"  FBX armature: {len(fbx_bone_names)} bones, root='{fbx_bone_names[0]}'")
+    tpose_lower = tpose_fbx.lower()
+    if tpose_lower.endswith(".fbx"):
+        fbx_bone_names, _fbx_parents, fbx_offsets, _fbx_rest_rots = _load_fbx_skeleton_metadata(
+            tpose_fbx
+        )
+        print(f"  FBX armature: {len(fbx_bone_names)} bones, root='{fbx_bone_names[0]}'")
+    elif tpose_lower.endswith((".glb", ".gltf")):
+        fbx_bone_names, _fbx_parents, fbx_offsets, _fbx_rest_rots = _load_glb_skeleton_metadata(
+            tpose_fbx
+        )
+        print(f"  GLB armature: {len(fbx_bone_names)} bones, root='{fbx_bone_names[0]}'")
+    else:
+        raise ValueError(
+            f"Unsupported T-pose mesh format: {tpose_fbx} — expected .fbx, .glb, or .gltf"
+        )
 
     # Verify all cond joint names exist in FBX armature
     fbx_name_set = set(fbx_bone_names)
@@ -324,7 +342,6 @@ def restore_glb(
 
     # ── Auto-export BVH alongside GLB ──────────────────────────────────────
     output_bvh = os.path.splitext(output_glb)[0] + ".bvh"
-    print(f"  Exporting BVH → {output_bvh}")
     exporter.export(
         joint_rotations,
         root_translation,
@@ -342,7 +359,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Restore a preprocessed Anytop NPY motion to a skinned GLB "
-            "using a T-pose FBX as the rig/skin source."
+            "using a T-pose FBX/GLB/GLTF as the rig/skin source."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
@@ -353,7 +370,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--tpose_fbx", required=True,
-        help="Path to the T-pose FBX (provides skin weights + armature).",
+        help="Path to the T-pose mesh (.fbx, .glb, or .gltf) that provides skin weights + armature.",
     )
     parser.add_argument(
         "--output_glb",
@@ -405,7 +422,7 @@ def main() -> None:
     if not os.path.isfile(args.npy):
         parser.error(f"NPY file not found: {args.npy}")
     if not os.path.isfile(args.tpose_fbx):
-        parser.error(f"T-pose FBX not found: {args.tpose_fbx}")
+        parser.error(f"T-pose mesh not found: {args.tpose_fbx}")
 
     if args.output_glb is None:
         stem = os.path.splitext(os.path.basename(args.npy))[0]
@@ -423,7 +440,7 @@ def main() -> None:
     output_bvh = os.path.splitext(args.output_glb)[0] + ".bvh"
 
     print(f"NPY           : {args.npy}")
-    print(f"T-pose FBX    : {args.tpose_fbx}")
+    print(f"T-pose mesh   : {args.tpose_fbx}")
     print(f"Output GLB    : {args.output_glb}")
     print(f"Output BVH    : {output_bvh}")
     print(f"cond.npy      : {cond_npy_path}")
@@ -441,9 +458,6 @@ def main() -> None:
         fps=args.fps,
         restore_orientation=not args.no_orientation_restore,
     )
-
-    print(f"\nDone → {out}")
-    print(f"       → {output_bvh}")
 
     # ── Auto-compare: BVH vs GLB via compare_motions.py ────────────────────
     compare_script = os.path.join(SCRIPT_DIR, "compare_motions.py")
