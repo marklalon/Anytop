@@ -627,9 +627,17 @@ def _detect_and_align(
         scale = 1.0
 
     # ── Step 4: Detect translation offset (after scaling B) ────────────────
-    # Scale B first, then compute translation from root positions
+    # Scale B first, then compute translation from root positions.
+    # Use the first common root bone (parents == -1) for robust alignment.
     pos_b_scaled = pos_b * scale
-    translation_offset = np.mean(pos_a[:, 0, :] - pos_b_scaled[:, 0, :], axis=0)  # (3,)
+    root_in_common = None
+    for ci, orig_idx in enumerate(idx_a):
+        if motion_a.parents[orig_idx] == -1:
+            root_in_common = ci
+            break
+    if root_in_common is None:
+        root_in_common = 0  # fallback to first common bone
+    translation_offset = pos_a[0, root_in_common, :] - pos_b_scaled[0, root_in_common, :]  # (3,)
 
     # Skip translation alignment if difference is negligible (< 1e-5)
     if np.linalg.norm(translation_offset) < 1e-5:
