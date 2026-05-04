@@ -147,6 +147,46 @@ def _batch_pose_fk_np(
     return world_pos, world_rot
 
 
+def _batch_internal_fk_np(
+    joint_rotations: np.ndarray,
+    root_translation: np.ndarray,
+    root_rotation: np.ndarray,
+    parents: np.ndarray,
+    rest_offsets: np.ndarray,
+    rest_rotations: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Match Anytop forward_kinematics root semantics in numpy.
+
+    The pipeline skeleton uses a separate root world transform:
+        world_root = T(root_translation) * R(root_rotation)
+    and then applies each bone's parent-local rest transform followed by the
+    animated local joint rotation. This differs from Blender pose-bone channel
+    semantics and must be preserved before retargeting to an imported FBX rig.
+    """
+    F, J = joint_rotations.shape[:2]
+    world_pos = np.zeros((F, J, 3), dtype=np.float64)
+    world_rot = np.zeros((F, J, 4), dtype=np.float64)
+
+    for j in range(J):
+        rest_q = np.repeat(rest_rotations[j:j+1], F, axis=0)
+        total_local_rot = quat_multiply_wxyz_np(rest_q, joint_rotations[:, j])
+
+        p = parents[j]
+        if p < 0:
+            offset_world = quat_rotate_wxyz_np(
+                root_rotation,
+                np.repeat(rest_offsets[j:j+1], F, axis=0),
+            )
+            world_pos[:, j] = root_translation + offset_world
+            world_rot[:, j] = quat_multiply_wxyz_np(root_rotation, total_local_rot)
+        else:
+            child_offset = np.repeat(rest_offsets[j:j+1], F, axis=0)
+            world_pos[:, j] = world_pos[:, p] + quat_rotate_wxyz_np(world_rot[:, p], child_offset)
+            world_rot[:, j] = quat_multiply_wxyz_np(world_rot[:, p], total_local_rot)
+
+    return world_pos, world_rot
+
+
 def _extract_fbx_skeleton_data(armature):
     """Extract bone names, parents, offsets, rest rotations from a Blender armature.
 
@@ -336,7 +376,6 @@ class AnimationExporter:
         joint_names = [b.name.replace(" ", "_") for b in self.skeleton.bones]
 
         base_quat = joint_rotations.detach().clone()
-        base_quat[:, 0, :] = root_rotation.detach()
         rest_quat = torch.stack([b.rest_rotation for b in self.skeleton.bones], dim=0).to(
             device=base_quat.device,
             dtype=base_quat.dtype,
@@ -347,7 +386,7 @@ class AnimationExporter:
         )
         baked_quat[:, 0, :] = quat_multiply(
             root_rotation.detach(),
-            rest_quat[0].unsqueeze(0).expand(F, -1),
+            baked_quat[:, 0, :],
         )
         rotations = Quaternions(baked_quat.cpu().to(torch.float64).numpy())
 
@@ -480,21 +519,6 @@ class AnimationExporter:
             rt_np = np.array(rt, dtype=np.float64)           # (F, 3)
             rr_np = np.array(rr, dtype=np.float64)           # (F, 4)
 
-            input_local_rot_np = jr_np.copy()
-            for j in range(len(bone_names)):
-                if self.skeleton.bones[j].parent_id is None:
-                    input_local_rot_np[:, j] = rr_np
-
-            # Pose-bone translation deltas.
-            local_pos_np = np.zeros((num_frames, len(bone_names), 3), dtype=np.float64)
-            for j in range(len(bone_names)):
-                if self.skeleton.bones[j].parent_id is None:
-                    local_pos_np[:, j] = rt_np
-                elif bt is not None:
-                    local_pos_np[:, j] = np.array([bt[f][j] for f in range(num_frames)], dtype=np.float64)
-                else:
-                    local_pos_np[:, j] = 0.0
-
             # Rest rotations from input skeleton
             rest_rot_input = np.array([
                 b.rest_rotation.detach().cpu().numpy().astype(np.float64)
@@ -513,10 +537,35 @@ class AnimationExporter:
                 for b in self.skeleton.bones
             ])
 
-            input_wpos, input_wrot = _batch_pose_fk_np(
-                input_local_rot_np, local_pos_np, parents_input,
-                rest_offsets_input, rest_rot_input,
-            )
+            if bt is None:
+                input_wpos, input_wrot = _batch_internal_fk_np(
+                    jr_np,
+                    rt_np,
+                    rr_np,
+                    parents_input,
+                    rest_offsets_input,
+                    rest_rot_input,
+                )
+            else:
+                input_local_rot_np = jr_np.copy()
+                for j in range(len(bone_names)):
+                    if self.skeleton.bones[j].parent_id is None:
+                        input_local_rot_np[:, j] = rr_np
+
+                local_pos_np = np.zeros((num_frames, len(bone_names), 3), dtype=np.float64)
+                for j in range(len(bone_names)):
+                    if self.skeleton.bones[j].parent_id is None:
+                        local_pos_np[:, j] = rt_np
+                    else:
+                        local_pos_np[:, j] = np.array([bt[f][j] for f in range(num_frames)], dtype=np.float64)
+
+                input_wpos, input_wrot = _batch_pose_fk_np(
+                    input_local_rot_np,
+                    local_pos_np,
+                    parents_input,
+                    rest_offsets_input,
+                    rest_rot_input,
+                )
 
             # ── E) Compute FBX rest-pose world-space ─────────────────
             # One-frame rest pose: identity pose rotations + zero pose translations
