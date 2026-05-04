@@ -45,6 +45,7 @@ import argparse
 import importlib.machinery
 import importlib.util
 import os
+import subprocess
 import sys
 
 import numpy as np
@@ -284,53 +285,50 @@ def restore_glb(
         else:
             print("  WARNING: orientation_quat not found in cond.npy — orientation not restored.")
 
-    # ── Build skeleton (drives FBX armature pose-bone lookup by name) ─────────
-    # rest_rotations=None → identity quaternions (BVH convention).
-    # The exporter only uses bone.name and parent_id (for root detection) in
-    # the mesh_path GLB branch, so rest_offset/rest_rotation don't affect output.
+    # ── Build skeleton (identity rest, HML offsets scaled to FBX size) ─────
+    scaled_offsets = offsets_hml / scale_factor
     skeleton = _build_skeleton(
         joints_names,
-        offsets_hml / scale_factor,
+        scaled_offsets,
         parents,
         rest_rotations=None,
     )
 
-    # ── Export GLB ────────────────────────────────────────────────────────────
-    os.makedirs(os.path.dirname(os.path.abspath(output_glb)) or ".", exist_ok=True)
-
-    exporter = AnimationExporter(skeleton, fps=fps)
+    # ── Common animation tensors ───────────────────────────────────────────
     joint_rotations = torch.from_numpy(recovered_anim.rotations.qs.astype(np.float32))
     root_translation = torch.from_numpy(recovered_anim.positions[:, 0, :].astype(np.float32))
     root_rotation = torch.from_numpy(recovered_anim.rotations.qs[:, 0, :].astype(np.float32))
 
-    # GLB: keep non-root bone translations at the FBX rest/bind position.
-    # The recovered local positions are in BVH convention (identity rest
-    # rotations); the FBX armature has its own non-identity rest rotations,
-    # so feeding the BVH-frame translations into FBX pose bones would
-    # dislocate the rig.  Rotation-only animation gives the documented
-    # in-place GLB.
-    print(f"  Exporting GLB → {output_glb}")
+    # Bone translations for BVH (total local position = rest_offset + displacement)
+    bone_translations_bvh = torch.from_numpy(recovered_anim.positions.astype(np.float32))
+
+    # Bone translations for GLB (displacement only = total - rest_offset)
+    scaled_offsets_t = torch.from_numpy(scaled_offsets.astype(np.float32))
+    bone_translations_glb = torch.from_numpy(recovered_anim.positions.astype(np.float32))
+    for _j in range(1, J):
+        bone_translations_glb[:, _j, :] = (
+            bone_translations_glb[:, _j, :] - scaled_offsets_t[_j].unsqueeze(0)
+        )
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_glb)) or ".", exist_ok=True)
+
+    # ── Export bones-only GLB (internal armature, correct) ─────────────────
+    # internal_glb_config without mesh payload → skeleton-only armature.
+    # Identity rest rotations → no BVH→FBX conversion needed.
+    # Fixed root: armature carries root transform, root pose bone is identity.
+    exporter = AnimationExporter(skeleton, fps=fps)
+    print(f"  Exporting bones-only GLB → {output_glb}")
     exporter.export(
         joint_rotations,
         root_translation,
         root_rotation,
         output_glb,
-        mesh_path=tpose_fbx,
-        bone_translations=None,
+        bone_translations=bone_translations_glb,
     )
 
-    # ── Auto-export BVH alongside GLB ──────────────────────────────────────────
-    # BVH uses identity rest rotations (same convention as recover_from_features),
-    # so recovered_anim.positions can be fed directly as per-joint local
-    # translations.  This is required because Anytop's preprocessing puts
-    # locomotion on the *translation root* (often a non-root bone like Bip01),
-    # not on the skeleton root — without bone_translations the moving joint
-    # would be locked to its rest offset and the animation would look broken.
+    # ── Auto-export BVH alongside GLB ──────────────────────────────────────
     output_bvh = os.path.splitext(output_glb)[0] + ".bvh"
     print(f"  Exporting BVH → {output_bvh}")
-    bone_translations_bvh = torch.from_numpy(
-        recovered_anim.positions.astype(np.float32)
-    )
     exporter.export(
         joint_rotations,
         root_translation,
@@ -397,6 +395,14 @@ def main() -> None:
             "(canonical direction) rather than the original FBX facing."
         ),
     )
+    parser.add_argument(
+        "--skip_compare",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip automatic BVH-vs-GLB comparison after export via compare_motions.py."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -420,13 +426,14 @@ def main() -> None:
 
     output_bvh = os.path.splitext(args.output_glb)[0] + ".bvh"
 
-    print(f"NPY         : {args.npy}")
-    print(f"T-pose FBX  : {args.tpose_fbx}")
-    print(f"Output GLB  : {args.output_glb}")
-    print(f"Output BVH  : {output_bvh}")
-    print(f"cond.npy    : {cond_npy_path}")
-    print(f"FPS         : {args.fps}")
-    print(f"Restore ori : {not args.no_orientation_restore}")
+    print(f"NPY           : {args.npy}")
+    print(f"T-pose FBX    : {args.tpose_fbx}")
+    print(f"Output GLB    : {args.output_glb}")
+    print(f"Output BVH    : {output_bvh}")
+    print(f"cond.npy      : {cond_npy_path}")
+    print(f"FPS           : {args.fps}")
+    print(f"Restore ori   : {not args.no_orientation_restore}")
+    print(f"Skip compare  : {args.skip_compare}")
     print()
 
     out = restore_glb(
@@ -441,6 +448,31 @@ def main() -> None:
 
     print(f"\nDone → {out}")
     print(f"       → {output_bvh}")
+
+    # ── Auto-compare: BVH vs GLB via compare_motions.py ────────────────────
+    compare_script = os.path.join(SCRIPT_DIR, "compare_motions.py")
+    if not args.skip_compare and os.path.isfile(compare_script):
+        print()
+        print("─" * 60)
+        print("  Running compare_motions.py (BVH vs GLB) ...")
+        print("─" * 60)
+        print()
+        try:
+            subprocess.run(
+                [
+                    sys.executable, compare_script,
+                    "--motion_a", output_bvh,
+                    "--motion_b", args.output_glb,
+                ],
+                cwd=ANYTOP_DIR,
+                check=True,
+            )
+        except FileNotFoundError:
+            print("  [WARN] bpy not available in this environment — comparison skipped.")
+        except subprocess.CalledProcessError as e:
+            print(f"  [WARN] compare_motions.py exited with code {e.returncode}.")
+        except Exception as e:
+            print(f"  [WARN] compare_motions.py failed: {e}")
 
 
 if __name__ == "__main__":

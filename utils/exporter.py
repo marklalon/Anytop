@@ -281,8 +281,18 @@ class AnimationExporter:
 
                 parent_id = self.skeleton.bones[j].parent_id
                 if use_internal_armature:
-                    rot_val = jr[f][j]
-                    pbone.location = (0.0, 0.0, 0.0)
+                    # The armature object carries the root transform;
+                    # the root pose bone must be identity to avoid double-applying.
+                    if parent_id is None:
+                        rot_val = [1.0, 0.0, 0.0, 0.0]  # identity — armature handles root
+                        pbone.location = (0.0, 0.0, 0.0)
+                    else:
+                        rot_val = jr[f][j]
+                        if bt is not None:
+                            loc_val = bt[f][j]
+                            pbone.location = (loc_val[0], loc_val[1], loc_val[2])
+                        else:
+                            pbone.location = (0.0, 0.0, 0.0)
                 elif parent_id is None:
                     loc_val = rt[f]
                     rot_val = rr[f]
