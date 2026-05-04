@@ -7,7 +7,6 @@ environment. BVH export delegates to the Anytop motion_lib.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
@@ -270,23 +269,6 @@ def _normalize_imported_armature_and_meshes(bpy, armature) -> None:
         obj.matrix_world = Matrix.Translation(world_positions[obj.name])
 
 
-@dataclass
-class InternalGlbConfig:
-    """Configuration for internal GLB export (no external mesh source)."""
-
-    render_vertices: Optional[Tensor] = None
-    render_faces: Optional[Tensor] = None
-    render_skin_weights: Optional[Tensor] = None
-    unit_scale: float = 1.0
-
-    @property
-    def has_mesh_payload(self) -> bool:
-        return all(
-            x is not None
-            for x in (self.render_vertices, self.render_faces, self.render_skin_weights)
-        )
-
-
 class AnimationExporter:
     """Export optimised joint rotations to GLB or BVH."""
 
@@ -301,8 +283,7 @@ class AnimationExporter:
     def export(self, joint_rotations: Tensor, root_translation: Tensor,
                root_rotation: Tensor, output_path: str,
                mesh_path: Optional[str] = None,
-               bone_translations: Optional[Tensor] = None,
-               internal_glb_config: Optional[InternalGlbConfig] = None) -> None:
+               bone_translations: Optional[Tensor] = None) -> None:
         """Export animation to the format inferred from *output_path* extension.
 
         Args:
@@ -316,19 +297,6 @@ class AnimationExporter:
                                positions (e.g. IK control bones in complex
                                rigs like Horse).  If None, non-root bones
                                keep their rest-pose local position.
-            internal_glb_config: configuration for internal GLB export.
-                                 When it has a complete mesh payload, creates both
-                                 armature and skinned mesh from the internal skeleton
-                                 and vertex/face/skin data instead of importing an
-                                 external asset.  When *mesh_path* is provided,
-                                 imports the external asset for its mesh + armature
-                                 and keyframes animation on it.  When neither is
-                                 provided, only the armature is exported
-                                 (skeleton-only GLB, no mesh or skinning).
-
-                                 In all cases, *unit_scale* (if set on
-                                 *internal_glb_config*) is applied to the skeleton
-                                 before armature creation.
         """
         ext = os.path.splitext(output_path)[1].lower()
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -340,8 +308,7 @@ class AnimationExporter:
         elif ext == ".glb":
             self._export_glb(joint_rotations, root_translation,
                              root_rotation, output_path, mesh_path,
-                             bone_translations=bone_translations,
-                             internal_glb_config=internal_glb_config)
+                             bone_translations=bone_translations)
         else:
             raise ValueError(f"Unsupported export format: {ext!r}")
 
@@ -432,18 +399,12 @@ class AnimationExporter:
     def _export_glb(self, joint_rotations: Tensor, root_translation: Tensor,
                     root_rotation: Tensor, output_path: str,
                     mesh_path: Optional[str],
-                    bone_translations: Optional[Tensor] = None,
-                    internal_glb_config: Optional[InternalGlbConfig] = None) -> None:
+                    bone_translations: Optional[Tensor] = None) -> None:
         """Export GLB directly through bpy in the current Python process.
 
-        When *internal_glb_config* has a complete mesh payload, creates both
-        armature and skinned mesh from the internal skeleton and vertex/face/skin
-        data.  When *mesh_path* is provided, imports the external asset for its
-        mesh + armature and keyframes animation on it.  When neither is provided,
+        When *mesh_path* is provided, imports the external asset for its
+        mesh + armature and keyframes animation on it.  When not provided,
         only the armature is exported (skeleton-only GLB, no mesh or skinning).
-
-        In all cases, *unit_scale* (if set on *internal_glb_config*) is applied
-        to the skeleton before armature creation.
         """
         try:
             import bpy
@@ -465,21 +426,10 @@ class AnimationExporter:
         bpy.ops.wm.read_factory_settings(use_empty=True)
 
         armature = None
-        export_scale = float(internal_glb_config.unit_scale) if internal_glb_config else 1.0
-        export_skeleton = self._scale_skeleton_for_export(export_scale)
-        use_internal_armature = bool(internal_glb_config and internal_glb_config.has_mesh_payload)
+        export_skeleton = self.skeleton
         mesh_path_lower = mesh_path.lower() if mesh_path else None
         yup = False
-        if use_internal_armature:
-            armature = self._create_armature_from_skeleton(bpy, skeleton=export_skeleton)
-            self._create_skinned_mesh_from_payload(
-                bpy=bpy,
-                armature=armature,
-                vertices=internal_glb_config.render_vertices * export_scale,
-                faces=internal_glb_config.render_faces,
-                skin_weights=internal_glb_config.render_skin_weights,
-            )
-        elif mesh_path:
+        if mesh_path:
             # 外部 mesh (FBX/GLB) 为 Y-up 坐标系，导出时需 yup=True 以保持一致
             yup = True
             if mesh_path_lower.endswith(".fbx"):
@@ -501,7 +451,7 @@ class AnimationExporter:
         # Retargeting: convert input-skeleton animation to FBX armature
         # local space via world-space alignment.
         # ────────────────────────────────────────────────────────────────
-        if mesh_path and not use_internal_armature:
+        if mesh_path:
             # ── A) Extract FBX skeleton metadata ───────────────────────
             fbx_names, fbx_parents, fbx_offsets, fbx_rest_rots = _extract_fbx_skeleton_data(armature)
             J_fbx = len(fbx_names)
@@ -743,38 +693,18 @@ class AnimationExporter:
 
         for f in range(num_frames):
             scene.frame_set(f)
-            if use_internal_armature:
-                loc_val = [export_scale * value for value in rt[f]]
-                rot_val = rr[f]
-                armature.location = (loc_val[0], loc_val[1], loc_val[2])
-                armature.rotation_quaternion = (rot_val[0], rot_val[1], rot_val[2], rot_val[3])
-                armature.keyframe_insert(data_path="location", frame=f)
-                armature.keyframe_insert(data_path="rotation_quaternion", frame=f)
             for j, bname in enumerate(bone_names):
                 pbone = armature.pose.bones.get(bname)
                 if pbone is None:
                     continue
 
-                if mesh_path and not use_internal_armature:
+                if mesh_path:
                     # After retargeting, bones are FBX bones and parent comes from FBX
                     parent_id = fbx_parents[j] if j < len(fbx_names) else -1
                 else:
                     parent_id = self.skeleton.bones[j].parent_id if self.skeleton.bones[j].parent_id is not None else -1
                 is_root = parent_id < 0
-                if use_internal_armature:
-                    # The armature object carries the root transform;
-                    # the root pose bone must be identity to avoid double-applying.
-                    if is_root:
-                        rot_val = [1.0, 0.0, 0.0, 0.0]  # identity — armature handles root
-                        pbone.location = (0.0, 0.0, 0.0)
-                    else:
-                        rot_val = jr[f][j]
-                        if bt is not None:
-                            loc_val = bt[f][j]
-                            pbone.location = (loc_val[0], loc_val[1], loc_val[2])
-                        else:
-                            pbone.location = (0.0, 0.0, 0.0)
-                elif is_root:
+                if is_root:
                     loc_val = rt[f]
                     rot_val = rr[f]
                     pbone.location = (loc_val[0], loc_val[1], loc_val[2])
@@ -821,40 +751,6 @@ class AnimationExporter:
             export_apply=False,
             export_yup=yup,
         )
-
-    def _create_skinned_mesh_from_payload(
-        self,
-        bpy,
-        armature,
-        vertices: Tensor,
-        faces: Tensor,
-        skin_weights: Tensor,
-    ):
-        scene = bpy.context.scene
-        mesh_data = bpy.data.meshes.new("PCVGMesh")
-        vertex_array = vertices.detach().cpu().numpy()
-        face_array = faces.detach().cpu().numpy()
-        mesh_data.from_pydata(
-            [tuple(float(v) for v in vertex) for vertex in vertex_array],
-            [],
-            [tuple(int(index) for index in face) for face in face_array],
-        )
-        mesh_data.update()
-
-        mesh_obj = bpy.data.objects.new("PCVGMesh", mesh_data)
-        scene.collection.objects.link(mesh_obj)
-
-        weight_array = skin_weights.detach().cpu().numpy()
-        vertex_groups = [mesh_obj.vertex_groups.new(name=bone.name) for bone in self.skeleton.bones]
-        for vertex_idx, weights in enumerate(weight_array):
-            nonzero_indices = np.nonzero(weights > 1e-8)[0]
-            for bone_idx in nonzero_indices:
-                vertex_groups[int(bone_idx)].add([vertex_idx], float(weights[bone_idx]), "REPLACE")
-
-        modifier = mesh_obj.modifiers.new(name="Armature", type="ARMATURE")
-        modifier.object = armature
-        mesh_obj.parent = armature
-        return mesh_obj
 
     def _create_armature_from_skeleton(self, bpy, skeleton=None):
         from mathutils import Quaternion, Vector
@@ -918,20 +814,3 @@ class AnimationExporter:
 
         bpy.ops.object.mode_set(mode="OBJECT")
         return armature_obj
-
-    def _scale_skeleton_for_export(self, unit_scale: float):
-        from Anytop.kinematics.skeleton import Bone, Skeleton
-
-        if abs(unit_scale - 1.0) < 1e-8:
-            return self.skeleton
-
-        scaled_bones = []
-        for bone in self.skeleton.bones:
-            scaled_bones.append(Bone(
-                id=bone.id,
-                name=bone.name,
-                parent_id=bone.parent_id,
-                rest_offset=bone.rest_offset.detach().clone() * unit_scale,
-                rest_rotation=bone.rest_rotation.detach().clone(),
-            ))
-        return Skeleton(scaled_bones)

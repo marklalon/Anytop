@@ -118,10 +118,7 @@ def _pick_primary_mesh():
     if not meshes:
         raise RuntimeError("No mesh found in scene")
 
-    named_mesh = next((obj for obj in meshes if obj.name == "U3DMesh"), None)
-    if named_mesh is not None:
-        return named_mesh
-    return max(meshes, key=lambda obj: len(obj.data.vertices))
+    return max(meshes, key=lambda obj: len(obj.data.polygons))
 
 
 def _sample_world_mesh_points(mesh_obj, frame_idx: int) -> np.ndarray:
