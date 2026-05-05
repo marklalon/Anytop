@@ -117,3 +117,30 @@ def test_joint_name_collision_report_is_empty_after_disambiguation():
         assert report_path.exists()
         report = json.loads(report_path.read_text(encoding="utf-8"))
         assert report["num_collision_groups"] == 0
+
+
+if __name__ == "__main__":
+    import traceback
+
+    tests = [
+        test_tai_tokens_are_canonicalized_to_tail_bvh_names,
+        test_solitary_ear_indices_are_removed_but_tail_chain_indices_remain,
+        test_toe_root_indices_are_preserved_for_parallel_digits,
+        test_refresh_joint_metadata_rewrites_stale_canonical_names,
+        test_refresh_joint_metadata_disambiguates_duplicate_canonical_names,
+        test_joint_name_collision_report_is_empty_after_disambiguation,
+    ]
+
+    passed = 0
+    failed = 0
+    for test in tests:
+        try:
+            test()
+            print(f"  PASS {test.__name__}")
+            passed += 1
+        except Exception as e:
+            print(f"  FAIL {test.__name__}: {e}")
+            traceback.print_exc()
+            failed += 1
+
+    print(f"\n{passed} passed, {failed} failed, {len(tests)} total")

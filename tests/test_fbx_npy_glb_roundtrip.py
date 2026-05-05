@@ -107,6 +107,10 @@ from tools.compare_motions import (
 
 # ── Main test function ───────────────────────────────────────────────────────
 
+_COLOR_RED = "\033[31m"
+_COLOR_RESET = "\033[0m"
+
+
 def test_fbx_npy_glb_roundtrip(
     tpose_fbx: str,
     anim_fbx: str,
@@ -205,6 +209,7 @@ def test_fbx_npy_glb_roundtrip(
         _print_summary(motion_a, motion_b, _alignment, result)
 
         # ── Mesh surface comparison (gated on both having skinning) ──
+        errors: list[str] = []
         mesh_result = None
         if motion_a.has_skinned_mesh and motion_b.has_skinned_mesh:
             mesh_result = _compute_mesh_surface_error(
@@ -216,30 +221,40 @@ def test_fbx_npy_glb_roundtrip(
             char_size = max(float(result["position"]["character_size"]), 1e-8)
             mesh_mean_pct_char = mesh_result["mean"] / char_size * 100.0
             mesh_p99_pct_char = mesh_result["p99"] / char_size * 100.0
-            assert mesh_mean_pct_char < 0.2, (
-                f"FBX -> recovered GLB mesh mean surface error {mesh_result['mean']:.6f} "
-                f"({mesh_mean_pct_char:.4f}% of character size) exceeds 0.2%"
-            )
-            assert mesh_p99_pct_char < 2.0, (
-                f"FBX -> recovered GLB mesh p99 surface error {mesh_result['p99']:.6f} "
-                f"({mesh_p99_pct_char:.4f}% of character size) exceeds 2.0%"
-            )
+            if mesh_mean_pct_char >= 0.2:
+                errors.append(
+                    f"FBX -> recovered GLB mesh mean surface error {mesh_result['mean']:.6f} "
+                    f"({mesh_mean_pct_char:.4f}% of character size) exceeds 0.2%"
+                )
+            if mesh_p99_pct_char >= 2.0:
+                errors.append(
+                    f"FBX -> recovered GLB mesh p99 surface error {mesh_result['p99']:.6f} "
+                    f"({mesh_p99_pct_char:.4f}% of character size) exceeds 2.0%"
+                )
         else:
             print("[Mesh] Skipping mesh surface comparison (one or both motions lack skinning)")
 
         pos_result = result["position"]
-        assert pos_result["max_error"] < tolerance, (
-            f"FBX -> recovered GLB max error {pos_result['max_error']:.6f} exceeds "
-            f"{tolerance} (worst bone={pos_result['worst_bone']}, "
-            f"frame={pos_result['worst_frame']})"
-        )
+        if pos_result["max_error"] >= tolerance:
+            errors.append(
+                f"FBX -> recovered GLB max error {pos_result['max_error']:.6f} exceeds "
+                f"{tolerance} (worst bone={pos_result['worst_bone']}, "
+                f"frame={pos_result['worst_frame']})"
+            )
 
         # Map worst_frame to sample time for the return dict
         worst_frame = pos_result["worst_frame"]
         recovered_worst_time = float(motion_a.sample_times[worst_frame]) \
             if worst_frame < len(motion_a.sample_times) else 0.0
 
-        print("\nPASS  FBX -> NPY -> GLB roundtrip checks passed")
+        # Print PASS/FAIL
+        passed = len(errors) == 0
+        status = "PASS" if passed else f"{_COLOR_RED}FAIL{_COLOR_RESET}"
+        if errors:
+            for err in errors:
+                print(f"\n  [{status}] {_COLOR_RED}{err}{_COLOR_RESET}")
+        else:
+            print(f"\n  [{status}] FBX -> NPY -> GLB roundtrip checks passed")
         return {
             "npy_error": float(npy_position_error.max()),
             "npy_worst_bone": npy_worst_bone,

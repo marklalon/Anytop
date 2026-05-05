@@ -31,6 +31,15 @@ import tempfile
 from typing import Any
 
 
+# ANSI colors
+_COLOR_RED = "\033[31m"
+_COLOR_RESET = "\033[0m"
+
+
+_COLOR_RED = "\033[31m"
+_COLOR_RESET = "\033[0m"
+
+
 # ── Path setup ────────────────────────────────────────────────────────────────
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _ANYTOP_ROOT = os.path.dirname(_SCRIPT_DIR)
@@ -175,11 +184,12 @@ def _check_pass(result: dict[str, Any], pos_tol: float, rot_tol: float,
     pos_max = result["position"]["max_error"]
     pos_max_pct_char = result["position"]["max_error_pct_char"]
     rot_max = result["rotation"]["max_error_deg"]
-    passed = pos_max_pct_char <= pos_tol and rot_max <= rot_tol
+    world_quat_max = result["world_quaternion"]["max_error_deg"]
+    passed = pos_max_pct_char <= pos_tol and rot_max <= rot_tol and world_quat_max <= rot_tol
 
-    status = "PASS" if passed else "FAIL"
+    status = f"{_COLOR_RED}FAIL{_COLOR_RESET}" if not passed else "PASS"
     print(f"\n  [{status}] {label}: pos_max={pos_max:.6f} ({pos_max_pct_char:.4f}%), "
-          f"rot_max={rot_max:.6f}°")
+          f"rot_max={rot_max:.6f}°, world_quat_max={world_quat_max:.6f}°")
     return passed
 
 
@@ -223,7 +233,7 @@ def main() -> None:
             print(f"  {label}: frames={m.num_frames}, bones={m.num_joints}, "
                   f"fps={m.fps:.2f}, format={m.file_format.upper()}")
 
-        print(f"\n[Tolerances] position={args.pos_tolerance:.2f}% char  rotation={args.rot_tolerance:.4f}°")
+        print(f"\n[Tolerances] position={args.pos_tolerance:.2f}% char  rotation={args.rot_tolerance:.4f}°  world_quaternion={args.rot_tolerance:.4f}°")
 
         # ── Self-comparisons (expect near-zero error) ──────────────────────
         print("\n\n### Self-comparisons (expect near-zero error) ###\n")
@@ -240,7 +250,7 @@ def main() -> None:
             rot_max = result["rotation"]["max_error_deg"]
             passed = pos_max <= SELF_TOL and rot_max <= SELF_TOL
 
-            status = "PASS" if passed else "FAIL"
+            status = f"{_COLOR_RED}FAIL{_COLOR_RESET}" if not passed else "PASS"
             print(f"  [{status}] {label} self: pos_max={pos_max:.2e}, rot_max={rot_max:.2e} (tol={SELF_TOL:.0e})")
             all_passed = all_passed and passed
 
@@ -269,7 +279,7 @@ def main() -> None:
 
         # ── Summary ─────────────────────────────────────────────────────────
         print(f"\n\n{'#'*70}")
-        overall = "ALL TESTS PASSED" if all_passed else "SOME TESTS FAILED"
+        overall = "ALL TESTS PASSED" if all_passed else f"{_COLOR_RED}SOME TESTS FAILED{_COLOR_RESET}"
         print(f"  {overall}")
         print(f"{'#'*70}\n")
 

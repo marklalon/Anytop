@@ -58,6 +58,10 @@ _DEFAULT_FBX = os.path.join(
 )
 
 
+_COLOR_RED = "\033[31m"
+_COLOR_RESET = "\033[0m"
+
+
 def _fmt_path(path: str) -> str:
     if not os.path.isabs(path):
         return path
@@ -151,14 +155,12 @@ def _compare_export_to_fbx(
 
     _assert_compatible(label, motion_a, motion_b)
 
-    if label == "BonesOnlyGLB":
-        assert not motion_b.has_skinned_mesh, (
-            f"{label}: expected skeleton-only GLB without skinned mesh"
-        )
-    if label == "SkinnedGLB":
-        assert motion_b.has_skinned_mesh, (
-            f"{label}: expected exported GLB to include skinned mesh"
-        )
+    # Mesh presence checks
+    errors: list[str] = []
+    if label == "BonesOnlyGLB" and motion_b.has_skinned_mesh:
+        errors.append(f"{label}: expected skeleton-only GLB without skinned mesh")
+    if label == "SkinnedGLB" and not motion_b.has_skinned_mesh:
+        errors.append(f"{label}: expected exported GLB to include skinned mesh")
 
     motion_b_aligned, alignment = _detect_and_align(motion_a, motion_b)
     result = _compare_motions(motion_a, motion_b_aligned, alignment)
@@ -170,44 +172,72 @@ def _compare_export_to_fbx(
 
     pos_result = result["position"]
     rot_result = result["rotation"]
+    world_quat_result = result["world_quaternion"]
 
-    assert pos_result["max_error_pct_char"] <= pos_tolerance_pct_char, (
-        f"{label}: position max error {pos_result['max_error']:.6f} "
-        f"({pos_result['max_error_pct_char']:.4f}% char) exceeds "
-        f"{pos_tolerance_pct_char:.4f}% on bone={pos_result['worst_bone']} "
-        f"frame={pos_result['worst_frame']}"
-    )
-    assert rot_result["max_error_deg"] <= rot_tolerance_deg, (
-        f"{label}: rotation max error {rot_result['max_error_deg']:.6f} deg exceeds "
-        f"{rot_tolerance_deg:.6f} on bone={rot_result['worst_bone']} "
-        f"frame={rot_result['worst_frame']}"
-    )
+    # Position check
+    if pos_result["max_error_pct_char"] > pos_tolerance_pct_char:
+        errors.append(
+            f"{label}: position max error {pos_result['max_error']:.6f} "
+            f"({pos_result['max_error_pct_char']:.4f}% char) exceeds "
+            f"{pos_tolerance_pct_char:.4f}% on bone={pos_result['worst_bone']} "
+            f"frame={pos_result['worst_frame']}"
+        )
 
+    # Rotation check
+    if rot_result["max_error_deg"] > rot_tolerance_deg:
+        errors.append(
+            f"{label}: rotation max error {rot_result['max_error_deg']:.6f} deg exceeds "
+            f"{rot_tolerance_deg:.6f} on bone={rot_result['worst_bone']} "
+            f"frame={rot_result['worst_frame']}"
+        )
+
+    # World quaternion check
+    if world_quat_result["max_error_deg"] > rot_tolerance_deg:
+        errors.append(
+            f"{label}: world quaternion max error {world_quat_result['max_error_deg']:.6f} deg exceeds "
+            f"{rot_tolerance_deg:.6f} on bone={world_quat_result['worst_bone']} "
+            f"frame={world_quat_result['worst_frame']}"
+        )
+
+    # Mesh surface checks
     mesh_result = None
+    mesh_mean_pct_char = None
+    mesh_p99_pct_char = None
     if motion_a.has_skinned_mesh and motion_b.has_skinned_mesh:
         mesh_result = _compute_mesh_surface_error(motion_a, motion_b_aligned, alignment)
-        assert mesh_result is not None, f"{label}: expected mesh surface stats"
+        if mesh_result is None:
+            errors.append(f"{label}: expected mesh surface stats")
+        else:
+            char_size = max(float(pos_result["character_size"]), 1e-8)
+            mesh_mean_pct_char = mesh_result["mean"] / char_size * 100.0
+            mesh_p99_pct_char = mesh_result["p99"] / char_size * 100.0
 
-        char_size = max(float(pos_result["character_size"]), 1e-8)
-        mesh_mean_pct_char = mesh_result["mean"] / char_size * 100.0
-        mesh_p99_pct_char = mesh_result["p99"] / char_size * 100.0
+            if mesh_mean_pct_char > mesh_mean_tolerance_pct_char:
+                errors.append(
+                    f"{label}: mesh mean surface error {mesh_result['mean']:.6f} "
+                    f"({mesh_mean_pct_char:.4f}% char) exceeds {mesh_mean_tolerance_pct_char:.4f}%"
+                )
+            if mesh_p99_pct_char > mesh_p99_tolerance_pct_char:
+                errors.append(
+                    f"{label}: mesh p99 surface error {mesh_result['p99']:.6f} "
+                    f"({mesh_p99_pct_char:.4f}% char) exceeds {mesh_p99_tolerance_pct_char:.4f}%"
+                )
 
-        assert mesh_mean_pct_char <= mesh_mean_tolerance_pct_char, (
-            f"{label}: mesh mean surface error {mesh_result['mean']:.6f} "
-            f"({mesh_mean_pct_char:.4f}% char) exceeds {mesh_mean_tolerance_pct_char:.4f}%"
-        )
-        assert mesh_p99_pct_char <= mesh_p99_tolerance_pct_char, (
-            f"{label}: mesh p99 surface error {mesh_result['p99']:.6f} "
-            f"({mesh_p99_pct_char:.4f}% char) exceeds {mesh_p99_tolerance_pct_char:.4f}%"
-        )
+    # Print PASS/FAIL
+    passed = len(errors) == 0
+    status = "PASS" if passed else f"{_COLOR_RED}FAIL{_COLOR_RESET}"
+    if errors:
+        for err in errors:
+            print(f"\n  [{status}] {_COLOR_RED}{err}{_COLOR_RESET}")
     else:
-        mesh_mean_pct_char = None
-        mesh_p99_pct_char = None
+        print(f"\n  [{status}]")
 
     return {
         "path": os.path.abspath(exported_path),
         "format": motion_b.file_format,
         "has_skinned_mesh": bool(motion_b.has_skinned_mesh),
+        "passed": passed,
+        "errors": errors,
         "position_max_error": float(pos_result["max_error"]),
         "position_max_error_pct_char": float(pos_result["max_error_pct_char"]),
         "position_worst_bone": pos_result["worst_bone"],
@@ -215,6 +245,9 @@ def _compare_export_to_fbx(
         "rotation_max_error_deg": float(rot_result["max_error_deg"]),
         "rotation_worst_bone": rot_result["worst_bone"],
         "rotation_worst_frame": int(rot_result["worst_frame"]),
+        "world_quaternion_max_error_deg": float(world_quat_result["max_error_deg"]),
+        "world_quaternion_worst_bone": world_quat_result["worst_bone"],
+        "world_quaternion_worst_frame": int(world_quat_result["worst_frame"]),
         "mesh_mean_error_pct_char": mesh_mean_pct_char,
         "mesh_p99_error_pct_char": mesh_p99_pct_char,
     }
@@ -272,7 +305,12 @@ def test_exporter_compare_motions(
             ),
         }
 
-        print("\nPASS  exporter outputs all matched the source FBX within thresholds")
+        # Summary
+        all_passed = all(r["passed"] for r in results.values())
+        overall_status = "PASS" if all_passed else f"{_COLOR_RED}FAIL{_COLOR_RESET}"
+        print(f"\n{'=' * 78}")
+        print(f"[{overall_status}] exporter outputs vs source FBX")
+        print(f"{'=' * 78}")
         return {
             "source_fbx": os.path.abspath(fbx_path),
             "output_dir": os.path.abspath(work_dir),
