@@ -605,7 +605,13 @@ def _detect_and_align(
         aligned_positions = (
             scale * motion_b.world_positions + translation_offset[np.newaxis, np.newaxis, :]
         ) @ best_R.T
-        aligned_rotations = apply_rotation_to_quaternions_wxyz_np(motion_b.world_rotations, best_R)
+        if np.linalg.det(best_R) > 0.0:
+            aligned_rotations = apply_rotation_to_quaternions_wxyz_np(motion_b.world_rotations, best_R)
+        else:
+            # Bone-direction comparison is driven by aligned positions. A handedness
+            # flip can align coordinates, but it cannot be represented as a world-space
+            # quaternion rotation, so preserve the original quaternions here.
+            aligned_rotations = motion_b.world_rotations.copy()
 
     motion_b_aligned = MotionData(
         file_path=motion_b.file_path,

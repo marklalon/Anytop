@@ -486,6 +486,8 @@ class AnimationExporter:
             # 外部 mesh (FBX/GLB) 为 Y-up 坐标系，导出时需 yup=True 以保持一致
             yup = True
             if mesh_path_lower.endswith(".fbx"):
+                # Preserve the FBX import wrapper transform (+90deg X, 0.01 scale)
+                # so the re-imported GLB lands in the same object space.
                 import_fbx(mesh_path, ignore_leaf_bones=False)
             elif mesh_path_lower.endswith((".glb", ".gltf")):
                 bpy.ops.import_scene.gltf(filepath=mesh_path)
@@ -497,8 +499,6 @@ class AnimationExporter:
             armature = next((o for o in bpy.data.objects if o.type == "ARMATURE"), None)
             if armature is None:
                 raise RuntimeError(f"No armature found after importing mesh_path: {mesh_path}")
-            if mesh_path_lower.endswith(".fbx"):
-                _normalize_imported_armature_and_meshes(bpy, armature)
         else:
             armature = self._create_armature_from_skeleton(bpy, skeleton=export_skeleton)
 
