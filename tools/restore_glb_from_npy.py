@@ -29,19 +29,19 @@ Usage:
     # Using FBX T-pose
     python tools/restore_glb_from_npy.py \\
         --npy   "D:/AI/.../Horse___RunToStop_29.npy" \\
-        --tpose_fbx "D:/AI/.../HorseALL-TPOSE.fbx"  \\
+        --tpose_mesh "D:/AI/.../HorseALL-TPOSE.fbx"  \\
         --output_glb "outputs/Horse___RunToStop_29.glb"
 
     # Using GLB T-pose
     python tools/restore_glb_from_npy.py \\
         --npy   "D:/AI/.../Horse___RunToStop_29.npy" \\
-        --tpose_fbx "D:/AI/.../HorseALL-RunToStop.glb"  \\
+        --tpose_mesh "D:/AI/.../HorseALL-RunToStop.glb"  \\
         --output_glb "outputs/Horse___RunToStop_29.glb"
 
     # Override auto-detected values
     python tools/restore_glb_from_npy.py \\
         --npy   my_motion.npy \\
-        --tpose_fbx my_tpose.fbx \\
+        --tpose_mesh my_tpose.fbx \\
         --output_glb my_motion.glb \\
         --object_type Horse \\
         --fps 30 \\
@@ -161,7 +161,7 @@ def _compute_scale_factor(
 
 def restore_glb(
     npy_path: str,
-    tpose_fbx: str,
+    tpose_mesh: str,
     output_glb: str,
     cond_npy: str | None = None,
     object_type: str | None = None,
@@ -172,7 +172,7 @@ def restore_glb(
 
     Args:
         npy_path:            Path to the preprocessed .npy motion file.
-        tpose_fbx:           Path to the T-pose FBX (provides skin + armature).
+        tpose_mesh:          Path to the T-pose mesh (provides skin + armature).
         output_glb:          Path for the output .glb file.
         cond_npy:            Path to cond.npy; defaults to the dataset default.
         object_type:         Character type key (e.g. "Horse").  Auto-detected
@@ -238,20 +238,20 @@ def restore_glb(
     print("Loading T-pose mesh for scale computation...")
     from Anytop.utils._roundtrip_common import _load_fbx_skeleton_metadata, _load_glb_skeleton_metadata, _build_skeleton
 
-    tpose_lower = tpose_fbx.lower()
+    tpose_lower = tpose_mesh.lower()
     if tpose_lower.endswith(".fbx"):
         fbx_bone_names, _fbx_parents, fbx_offsets, _fbx_rest_rots = _load_fbx_skeleton_metadata(
-            tpose_fbx
+            tpose_mesh
         )
         print(f"FBX armature: {len(fbx_bone_names)} bones, root='{fbx_bone_names[0]}'")
     elif tpose_lower.endswith((".glb", ".gltf")):
         fbx_bone_names, _fbx_parents, fbx_offsets, _fbx_rest_rots = _load_glb_skeleton_metadata(
-            tpose_fbx
+            tpose_mesh
         )
         print(f"GLB armature: {len(fbx_bone_names)} bones, root='{fbx_bone_names[0]}'")
     else:
         raise ValueError(
-            f"Unsupported T-pose mesh format: {tpose_fbx} — expected .fbx, .glb, or .gltf"
+            f"Unsupported T-pose mesh format: {tpose_mesh} — expected .fbx, .glb, or .gltf"
         )
 
     # Verify all cond joint names exist in FBX armature
@@ -345,7 +345,7 @@ def restore_glb(
         root_translation,
         root_rotation,
         output_glb,
-        mesh_path=tpose_fbx,
+        mesh_path=tpose_mesh,
         bone_translations=bone_translations,
     )
 
@@ -378,7 +378,7 @@ def main() -> None:
         help="Path to the preprocessed .npy motion file.",
     )
     parser.add_argument(
-        "--tpose_fbx", required=True,
+        "--tpose_mesh", required=True,
         help="Path to the T-pose mesh (.fbx, .glb, or .gltf) that provides skin weights + armature.",
     )
     parser.add_argument(
@@ -430,8 +430,8 @@ def main() -> None:
 
     if not os.path.isfile(args.npy):
         parser.error(f"NPY file not found: {args.npy}")
-    if not os.path.isfile(args.tpose_fbx):
-        parser.error(f"T-pose mesh not found: {args.tpose_fbx}")
+    if not os.path.isfile(args.tpose_mesh):
+        parser.error(f"T-pose mesh not found: {args.tpose_mesh}")
 
     if args.output_glb is None:
         stem = os.path.splitext(os.path.basename(args.npy))[0]
@@ -449,7 +449,7 @@ def main() -> None:
     output_bvh = os.path.splitext(args.output_glb)[0] + ".bvh"
 
     print(f"NPY           : {args.npy}")
-    print(f"T-pose mesh   : {args.tpose_fbx}")
+    print(f"T-pose mesh   : {args.tpose_mesh}")
     print(f"Output GLB    : {args.output_glb}")
     print(f"Output BVH    : {output_bvh}")
     print(f"cond.npy      : {cond_npy_path}")
@@ -460,7 +460,7 @@ def main() -> None:
 
     out = restore_glb(
         npy_path=args.npy,
-        tpose_fbx=args.tpose_fbx,
+        tpose_mesh=args.tpose_mesh,
         output_glb=args.output_glb,
         cond_npy=cond_npy_path,
         object_type=args.object_type,

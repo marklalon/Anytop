@@ -74,6 +74,8 @@ class MotionData:
     num_frames: int
     num_joints: int
     has_skinned_mesh: bool = False
+    local_positions: np.ndarray | None = None  # (F, J, 3) Blender pose local translation (matrix_basis)
+    local_rotations: np.ndarray | None = None  # (F, J, 4) Blender pose local quaternions (matrix_basis)
 
 
 @dataclass
@@ -128,7 +130,8 @@ def _collect_armature_world_pose_data(armature, sample_frames: list[float],
     to ensure consistent indexing between skeleton metadata and pose data.
 
     Returns dict with keys:
-        bone_names, sample_frames, head_positions (F, J, 3), world_rotations (F, J, 4)
+        bone_names, sample_frames, head_positions (F, J, 3), world_rotations (F, J, 4),
+        local_positions (F, J, 3), local_rotations (F, J, 4)
     """
     import bpy
     from mathutils import Vector
@@ -138,6 +141,9 @@ def _collect_armature_world_pose_data(armature, sample_frames: list[float],
     num_joints = len(bone_names)
     head_positions = np.zeros((num_frames, num_joints, 3), dtype=np.float64)
     world_rotations = np.zeros((num_frames, num_joints, 4), dtype=np.float64)
+    local_positions = np.zeros((num_frames, num_joints, 3), dtype=np.float64)
+    local_rotations = np.zeros((num_frames, num_joints, 4), dtype=np.float64)
+    local_rotations[..., 0] = 1.0
 
     bpy.context.view_layer.objects.active = armature
     bpy.ops.object.mode_set(mode="OBJECT")
@@ -152,14 +158,19 @@ def _collect_armature_world_pose_data(armature, sample_frames: list[float],
             head_local = pose_bone.head
             head_world = armature.matrix_world @ Vector((head_local.x, head_local.y, head_local.z))
             world_quat = (armature.matrix_world @ pose_bone.matrix).to_quaternion()
+            basis_loc, basis_rot, _basis_scale = pose_bone.matrix_basis.decompose()
             head_positions[frame_idx, bone_idx] = (head_world.x, head_world.y, head_world.z)
             world_rotations[frame_idx, bone_idx] = (world_quat.w, world_quat.x, world_quat.y, world_quat.z)
+            local_positions[frame_idx, bone_idx] = (basis_loc.x, basis_loc.y, basis_loc.z)
+            local_rotations[frame_idx, bone_idx] = (basis_rot.w, basis_rot.x, basis_rot.y, basis_rot.z)
 
     return {
         "bone_names": bone_names,
         "sample_frames": np.asarray(sample_frames, dtype=np.float64),
         "head_positions": head_positions,
         "world_rotations": world_rotations,
+        "local_positions": local_positions,
+        "local_rotations": local_rotations,
     }
 
 
@@ -240,12 +251,14 @@ def _load_motion(file_path: str) -> MotionData:
         offsets=offsets,
         world_positions=pose_data["head_positions"],
         world_rotations=pose_data["world_rotations"],
-            sample_frames=[float(frame) for frame in sample_frames],
-            sample_times=sample_times,
+        sample_frames=[float(frame) for frame in sample_frames],
+        sample_times=sample_times,
         fps=fps,
         num_frames=num_frames,
         num_joints=num_joints,
         has_skinned_mesh=has_skinned_mesh,
+        local_positions=pose_data["local_positions"],
+        local_rotations=pose_data["local_rotations"],
     )
 
 
@@ -604,6 +617,8 @@ def _detect_and_align(
         num_frames=motion_b.num_frames,
         num_joints=motion_b.num_joints,
         has_skinned_mesh=motion_b.has_skinned_mesh,
+        local_positions=None if motion_b.local_positions is None else motion_b.local_positions.copy(),
+        local_rotations=None if motion_b.local_rotations is None else motion_b.local_rotations.copy(),
     )
 
     alignment = AlignmentResult(
@@ -616,6 +631,68 @@ def _detect_and_align(
     )
 
     return motion_b_aligned, alignment
+
+
+def _summarize_error_matrix(errors: np.ndarray, common_names: list[str]) -> dict[str, Any]:
+    """Summarize an (F, K) error matrix into scalar, per-bone, and per-frame stats."""
+    finite_mask = np.isfinite(errors)
+    valid_values = errors[finite_mask] if np.any(finite_mask) else np.zeros((0,), dtype=np.float64)
+
+    per_bone_max = np.full(len(common_names), np.nan, dtype=np.float64)
+    per_bone_mean = np.full(len(common_names), np.nan, dtype=np.float64)
+    for bone_idx in range(len(common_names)):
+        vals = errors[:, bone_idx]
+        mask = np.isfinite(vals)
+        if np.any(mask):
+            per_bone_max[bone_idx] = float(vals[mask].max())
+            per_bone_mean[bone_idx] = float(vals[mask].mean())
+
+    per_frame_max = np.full(errors.shape[0], np.nan, dtype=np.float64)
+    for frame_idx in range(errors.shape[0]):
+        vals = errors[frame_idx, :]
+        mask = np.isfinite(vals)
+        if np.any(mask):
+            per_frame_max[frame_idx] = float(vals[mask].max())
+
+    if np.any(finite_mask):
+        worst_flat_idx = int(np.nanargmax(errors))
+        worst_frame, worst_bone = np.unravel_index(worst_flat_idx, errors.shape)
+        max_error = float(np.nanmax(errors))
+        median_error = float(np.nanmedian(errors))
+    else:
+        worst_frame, worst_bone = 0, 0
+        max_error = 0.0
+        median_error = 0.0
+
+    mean_error = float(valid_values.mean()) if valid_values.size > 0 else 0.0
+    std_error = float(valid_values.std()) if valid_values.size > 0 else 0.0
+
+    worst_order = np.argsort(per_bone_max)[::-1]
+    worst_order = [bone_idx for bone_idx in worst_order if not np.isnan(per_bone_max[bone_idx])]
+    top1_bones = [
+        {
+            "name": common_names[bone_idx],
+            "max_error": float(per_bone_max[bone_idx]),
+            "mean_error": float(per_bone_mean[bone_idx]),
+        }
+        for bone_idx in worst_order[:1]
+    ]
+
+    return {
+        "valid_mask": finite_mask,
+        "max_error": max_error,
+        "mean_error": mean_error,
+        "median_error": median_error,
+        "std_error": std_error,
+        "worst_frame": int(worst_frame),
+        "worst_bone_idx": int(worst_bone),
+        "worst_value": float(errors[worst_frame, worst_bone]) if np.any(finite_mask) else 0.0,
+        "num_bones_with_data": int(finite_mask.any(axis=0).sum()),
+        "per_bone_max": per_bone_max,
+        "per_bone_mean": per_bone_mean,
+        "per_frame_max": per_frame_max,
+        "top1_worst_bones": top1_bones,
+    }
 
 
 # ── Comparison ────────────────────────────────────────────────────────────────
@@ -663,7 +740,6 @@ def _compare_motions(
             motion_a.parents,
         )
 
-    pos_errors_all = pos_errors.ravel()
     pos_max = float(pos_errors.max())
     pos_mean = float(pos_errors.mean())
     pos_median = float(np.median(pos_errors))
@@ -760,44 +836,73 @@ def _compare_motions(
 
         dir_errors[valid_frame, ci] = angles[valid_frame]
 
-    # Only compute stats over valid (non-NaN) entries
-    valid_mask = ~np.isnan(dir_errors)
-    valid_errors = dir_errors[valid_mask] if np.any(valid_mask) else np.zeros((0,))
+    dir_summary = _summarize_error_matrix(dir_errors, common_names)
 
-    rot_per_bone_max = np.full(num_common, np.nan, dtype=np.float64)
-    rot_per_bone_mean = np.full(num_common, np.nan, dtype=np.float64)
-    for ci in range(num_common):
-        vals = dir_errors[:, ci]
-        m = ~np.isnan(vals)
-        if np.any(m):
-            rot_per_bone_max[ci] = float(vals[m].max())
-            rot_per_bone_mean[ci] = float(vals[m].mean())
+    # ── Full world quaternion errors ──────────────────────────────────────
+    world_quat_errors = quaternion_angle_degrees_wxyz_np(rot_a, rot_b)
+    world_quat_summary = _summarize_error_matrix(world_quat_errors, common_names)
 
-    rot_per_frame_max = np.full(num_frames, np.nan, dtype=np.float64)
-    for fi in range(num_frames):
-        vals = dir_errors[fi, :]
-        m = ~np.isnan(vals)
-        if np.any(m):
-            rot_per_frame_max[fi] = float(vals[m].max())
+    # ── Local pose errors (matrix_basis diagnostic) ───────────────────────
+    local_pose_result: dict[str, Any] | None = None
+    if motion_a.local_positions is not None and motion_b.local_positions is not None \
+            and motion_a.local_rotations is not None and motion_b.local_rotations is not None:
+        local_pos_a = motion_a.local_positions[:, idx_a, :]
+        local_pos_b = motion_b.local_positions[:, idx_b, :]
+        local_rot_a = motion_a.local_rotations[:, idx_a, :]
+        local_rot_b = motion_b.local_rotations[:, idx_b, :]
 
-    rot_max = float(np.nanmax(dir_errors)) if np.any(valid_mask) else 0.0
-    rot_mean = float(valid_errors.mean()) if valid_errors.size > 0 else 0.0
-    rot_median = float(np.nanmedian(dir_errors)) if np.any(valid_mask) else 0.0
-    rot_std = float(valid_errors.std()) if valid_errors.size > 0 else 0.0
+        local_pos_errors = np.linalg.norm(local_pos_a - local_pos_b, axis=-1)
+        local_rot_errors = quaternion_angle_degrees_wxyz_np(local_rot_a, local_rot_b)
+        local_pos_summary = _summarize_error_matrix(local_pos_errors, common_names)
+        local_rot_summary = _summarize_error_matrix(local_rot_errors, common_names)
 
-    if np.any(valid_mask):
-        rot_worst_flat = int(np.nanargmax(dir_errors))
-        rot_worst_frame, rot_worst_bone = np.unravel_index(rot_worst_flat, dir_errors.shape)
-    else:
-        rot_worst_frame, rot_worst_bone = 0, 0
-
-    bone_worst_order_rot = np.argsort(rot_per_bone_max)[::-1]
-    # Filter out NaN from worst-bone ranking
-    bone_worst_order_rot = [bi for bi in bone_worst_order_rot if not np.isnan(rot_per_bone_max[bi])]
-    top1_bones_rot = [
-        {"name": common_names[bi], "max_error_deg": float(rot_per_bone_max[bi]), "mean_error_deg": float(rot_per_bone_mean[bi])}
-        for bi in bone_worst_order_rot[:1]
-    ]
+        local_pose_result = {
+            "note": (
+                "Direct Blender pose-bone local transform diagnostic derived from matrix_basis. "
+                "Useful for catching twist or channel mismatches even when parent-to-child bone directions still align."
+            ),
+            "position": {
+                "max_error": local_pos_summary["max_error"],
+                "mean_error": local_pos_summary["mean_error"],
+                "median_error": local_pos_summary["median_error"],
+                "std_error": local_pos_summary["std_error"],
+                "num_bones_with_data": local_pos_summary["num_bones_with_data"],
+                "worst_bone": common_names[local_pos_summary["worst_bone_idx"]] if local_pos_summary["num_bones_with_data"] > 0 else "N/A",
+                "worst_frame": local_pos_summary["worst_frame"],
+                "worst_value": local_pos_summary["worst_value"],
+                "per_bone": {
+                    "max": np.where(np.isnan(local_pos_summary["per_bone_max"]), 0.0, local_pos_summary["per_bone_max"]).tolist(),
+                    "mean": np.where(np.isnan(local_pos_summary["per_bone_mean"]), 0.0, local_pos_summary["per_bone_mean"]).tolist(),
+                    "names": common_names,
+                },
+                "per_frame_max": np.where(np.isnan(local_pos_summary["per_frame_max"]), 0.0, local_pos_summary["per_frame_max"]).tolist(),
+                "top1_worst_bones": local_pos_summary["top1_worst_bones"],
+            },
+            "rotation": {
+                "max_error_deg": local_rot_summary["max_error"],
+                "mean_error_deg": local_rot_summary["mean_error"],
+                "median_error_deg": local_rot_summary["median_error"],
+                "std_error_deg": local_rot_summary["std_error"],
+                "num_bones_with_data": local_rot_summary["num_bones_with_data"],
+                "worst_bone": common_names[local_rot_summary["worst_bone_idx"]] if local_rot_summary["num_bones_with_data"] > 0 else "N/A",
+                "worst_frame": local_rot_summary["worst_frame"],
+                "worst_value_deg": local_rot_summary["worst_value"],
+                "per_bone": {
+                    "max_deg": np.where(np.isnan(local_rot_summary["per_bone_max"]), 0.0, local_rot_summary["per_bone_max"]).tolist(),
+                    "mean_deg": np.where(np.isnan(local_rot_summary["per_bone_mean"]), 0.0, local_rot_summary["per_bone_mean"]).tolist(),
+                    "names": common_names,
+                },
+                "per_frame_max_deg": np.where(np.isnan(local_rot_summary["per_frame_max"]), 0.0, local_rot_summary["per_frame_max"]).tolist(),
+                "top1_worst_bones": [
+                    {
+                        "name": item["name"],
+                        "max_error_deg": item["max_error"],
+                        "mean_error_deg": item["mean_error"],
+                    }
+                    for item in local_rot_summary["top1_worst_bones"]
+                ],
+            },
+        }
 
     result = {
         "comparison": {
@@ -830,23 +935,62 @@ def _compare_motions(
             "top1_worst_bones": top1_bones_pos,
         },
         "rotation": {
-            "max_error_deg": rot_max,
-            "mean_error_deg": rot_mean,
-            "median_error_deg": rot_median,
-            "std_error_deg": rot_std,
-            "num_bones_with_parent": int(valid_mask.any(axis=0).sum()),
-            "worst_bone": common_names[rot_worst_bone] if np.any(valid_mask) and rot_worst_bone < len(common_names) else "N/A",
-            "worst_frame": int(rot_worst_frame),
-            "worst_value_deg": float(dir_errors[rot_worst_frame, rot_worst_bone]) if np.any(valid_mask) else 0.0,
+            "note": "Parent-to-child world-space bone direction angle. This does not measure twist around the bone axis.",
+            "max_error_deg": dir_summary["max_error"],
+            "mean_error_deg": dir_summary["mean_error"],
+            "median_error_deg": dir_summary["median_error"],
+            "std_error_deg": dir_summary["std_error"],
+            "num_bones_with_parent": dir_summary["num_bones_with_data"],
+            "worst_bone": common_names[dir_summary["worst_bone_idx"]] if dir_summary["num_bones_with_data"] > 0 else "N/A",
+            "worst_frame": dir_summary["worst_frame"],
+            "worst_value_deg": dir_summary["worst_value"],
             "per_bone": {
-                "max_deg": np.where(np.isnan(rot_per_bone_max), 0.0, rot_per_bone_max).tolist(),
-                "mean_deg": np.where(np.isnan(rot_per_bone_mean), 0.0, rot_per_bone_mean).tolist(),
+                "max_deg": np.where(np.isnan(dir_summary["per_bone_max"]), 0.0, dir_summary["per_bone_max"]).tolist(),
+                "mean_deg": np.where(np.isnan(dir_summary["per_bone_mean"]), 0.0, dir_summary["per_bone_mean"]).tolist(),
                 "names": common_names,
             },
-            "per_frame_max_deg": np.where(np.isnan(rot_per_frame_max), 0.0, rot_per_frame_max).tolist(),
-            "top1_worst_bones": top1_bones_rot,
+            "per_frame_max_deg": np.where(np.isnan(dir_summary["per_frame_max"]), 0.0, dir_summary["per_frame_max"]).tolist(),
+            "top1_worst_bones": [
+                {
+                    "name": item["name"],
+                    "max_error_deg": item["max_error"],
+                    "mean_error_deg": item["mean_error"],
+                }
+                for item in dir_summary["top1_worst_bones"]
+            ],
+        },
+        "world_quaternion": {
+            "note": (
+                "Full world-space quaternion angle after the rigid alignment step. "
+                "Unlike the bone-direction metric, this captures twist around the bone axis."
+            ),
+            "max_error_deg": world_quat_summary["max_error"],
+            "mean_error_deg": world_quat_summary["mean_error"],
+            "median_error_deg": world_quat_summary["median_error"],
+            "std_error_deg": world_quat_summary["std_error"],
+            "num_bones_with_data": world_quat_summary["num_bones_with_data"],
+            "worst_bone": common_names[world_quat_summary["worst_bone_idx"]] if world_quat_summary["num_bones_with_data"] > 0 else "N/A",
+            "worst_frame": world_quat_summary["worst_frame"],
+            "worst_value_deg": world_quat_summary["worst_value"],
+            "per_bone": {
+                "max_deg": np.where(np.isnan(world_quat_summary["per_bone_max"]), 0.0, world_quat_summary["per_bone_max"]).tolist(),
+                "mean_deg": np.where(np.isnan(world_quat_summary["per_bone_mean"]), 0.0, world_quat_summary["per_bone_mean"]).tolist(),
+                "names": common_names,
+            },
+            "per_frame_max_deg": np.where(np.isnan(world_quat_summary["per_frame_max"]), 0.0, world_quat_summary["per_frame_max"]).tolist(),
+            "top1_worst_bones": [
+                {
+                    "name": item["name"],
+                    "max_error_deg": item["max_error"],
+                    "mean_error_deg": item["mean_error"],
+                }
+                for item in world_quat_summary["top1_worst_bones"]
+            ],
         },
     }
+
+    if local_pose_result is not None:
+        result["local_pose"] = local_pose_result
 
     # ── Mesh surface comparison (only when both motions have skinning) ──
     if motion_a.has_skinned_mesh and motion_b.has_skinned_mesh:
@@ -875,6 +1019,8 @@ def _print_summary(
     cmp = result["comparison"]
     pos = result["position"]
     rot = result["rotation"]
+    world_quat = result.get("world_quaternion")
+    local_pose = result.get("local_pose")
 
     def _fmt_path(p: str) -> str:
         if not os.path.isabs(p):
@@ -933,6 +1079,29 @@ def _print_summary(
     print(f"    median = {rot['median_error_deg']:.6f} deg  std = {rot['std_error_deg']:.6f} deg")
     print(f"    worst_bone={rot['worst_bone']}  frame={rot['worst_frame']}  "
           f"value={rot['worst_value_deg']:.6f} deg")
+
+    if world_quat is not None:
+        print(f"  Full world quaternion error:")
+        print(f"    max  = {world_quat['max_error_deg']:.6f} deg")
+        print(f"    mean = {world_quat['mean_error_deg']:.6f} deg")
+        print(f"    median = {world_quat['median_error_deg']:.6f} deg  std = {world_quat['std_error_deg']:.6f} deg")
+        print(f"    worst_bone={world_quat['worst_bone']}  frame={world_quat['worst_frame']}  "
+              f"value={world_quat['worst_value_deg']:.6f} deg")
+
+    if local_pose is not None:
+        local_pos = local_pose["position"]
+        local_rot = local_pose["rotation"]
+        print(f"  Local pose error (matrix_basis diagnostic):")
+        print(f"    rotation max  = {local_rot['max_error_deg']:.6f} deg")
+        print(f"    rotation mean = {local_rot['mean_error_deg']:.6f} deg")
+        print(f"    rotation median = {local_rot['median_error_deg']:.6f} deg  std = {local_rot['std_error_deg']:.6f} deg")
+        print(f"    rotation worst_bone={local_rot['worst_bone']}  frame={local_rot['worst_frame']}  "
+              f"value={local_rot['worst_value_deg']:.6f} deg")
+        print(f"    position max  = {local_pos['max_error']:.6f}")
+        print(f"    position mean = {local_pos['mean_error']:.6f}")
+        print(f"    position median = {local_pos['median_error']:.6f}  std = {local_pos['std_error']:.6f}")
+        print(f"    position worst_bone={local_pos['worst_bone']}  frame={local_pos['worst_frame']}  "
+              f"value={local_pos['worst_value']:.6f}")
 
     if "mesh_surface" in result:
         mesh = result["mesh_surface"]
