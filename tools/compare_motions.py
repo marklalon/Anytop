@@ -62,6 +62,7 @@ class MotionData:
     fps: float
     num_frames: int
     num_joints: int
+    has_skinned_mesh: bool = False
 
 
 @dataclass
@@ -295,9 +296,11 @@ def _load_motion(file_path: str) -> MotionData:
             bpy.ops.import_anim.bvh(filepath=file_path)
     elif file_format == "fbx":
         from Anytop.utils.fbx import import_fbx
-        import_fbx(file_path)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            import_fbx(file_path)
     elif file_format == "glb":
-        bpy.ops.import_scene.gltf(filepath=file_path)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            bpy.ops.import_scene.gltf(filepath=file_path)
 
     _remove_lights_and_cameras()
 
@@ -332,6 +335,12 @@ def _load_motion(file_path: str) -> MotionData:
         f"{bone_names} vs {pose_data['bone_names']}"
     )
 
+    # Check for skinned mesh data (mesh with vertex groups)
+    has_skinned_mesh = any(
+        obj.type == "MESH" and obj.vertex_groups
+        for obj in bpy.data.objects
+    )
+
     return MotionData(
         file_path=file_path,
         file_format=file_format,
@@ -344,6 +353,7 @@ def _load_motion(file_path: str) -> MotionData:
         fps=fps,
         num_frames=num_frames,
         num_joints=num_joints,
+        has_skinned_mesh=has_skinned_mesh,
     )
 
 
@@ -389,6 +399,146 @@ def _quaternion_angle_degrees(q_a: np.ndarray, q_b: np.ndarray) -> np.ndarray:
     dots = np.sum(q_a_n * q_b_n, axis=-1)
     dots = np.clip(np.abs(dots), 0.0, 1.0)
     return np.degrees(2.0 * np.arccos(dots))
+
+
+# ── Mesh surface helpers ──────────────────────────────────────────────────────
+
+def _pick_primary_mesh():
+    """Return the mesh object with the most polygons in the current Blender scene,
+    or None if no mesh exists."""
+    import bpy
+    meshes = [obj for obj in bpy.data.objects if obj.type == "MESH"]
+    if not meshes:
+        return None
+    return max(meshes, key=lambda obj: len(obj.data.polygons))
+
+
+def _sample_world_mesh_points(mesh_obj, frame_idx: int) -> np.ndarray:
+    """Sample world-space vertex positions of a mesh at a given frame."""
+    import bpy
+    from mathutils import Vector
+
+    scene = bpy.context.scene
+    scene.frame_set(frame_idx)
+    bpy.context.view_layer.update()
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    obj_eval = mesh_obj.evaluated_get(depsgraph)
+    mesh_eval = obj_eval.to_mesh()
+    matrix_world = np.array(obj_eval.matrix_world, dtype=np.float64)
+    try:
+        points = np.array([
+            (matrix_world @ np.array([vertex.co[0], vertex.co[1], vertex.co[2], 1.0], dtype=np.float64))[:3]
+            for vertex in mesh_eval.vertices
+        ], dtype=np.float64)
+    finally:
+        obj_eval.to_mesh_clear()
+    return points
+
+
+def _nearest_surface_stats(points_a: np.ndarray, points_b: np.ndarray) -> dict[str, float]:
+    """Compute two-way nearest-surface distance statistics between two point clouds."""
+    from mathutils import kdtree
+
+    def _one_way(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
+        tree = kdtree.KDTree(len(dst))
+        for idx, point in enumerate(dst):
+            tree.insert(tuple(float(v) for v in point), idx)
+        tree.balance()
+
+        distances = np.empty((len(src),), dtype=np.float64)
+        for idx, point in enumerate(src):
+            _co, _dst_idx, dist = tree.find(tuple(float(v) for v in point))
+            distances[idx] = dist
+        return distances
+
+    a_to_b = _one_way(points_a, points_b)
+    b_to_a = _one_way(points_b, points_a)
+    both = np.concatenate([a_to_b, b_to_a], axis=0)
+    return {
+        "mean": float(both.mean()),
+        "max": float(both.max()),
+        "p99": float(np.quantile(both, 0.99)),
+    }
+
+
+def _compute_mesh_surface_error(
+    file_path_a: str,
+    file_path_b: str,
+    alignment: AlignmentResult,
+    num_frames: int,
+) -> dict[str, Any] | None:
+    """Compare mesh surfaces between two motion files.
+
+    Loads each file into a fresh Blender scene, samples mesh vertex positions
+    on a subset of frames, aligns B's vertices to A's coordinate space, and
+    computes two-way nearest-surface distance statistics.
+
+    Returns None if either file has no mesh with vertex groups.
+    """
+    import bpy
+
+    def _load_and_sample(file_path: str, sample_frames: list[int]) -> np.ndarray | None:
+        _clear_scene()
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext == ".bvh":
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                bpy.ops.import_anim.bvh(filepath=file_path)
+        elif ext == ".fbx":
+            from Anytop.utils.fbx import import_fbx
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                import_fbx(file_path)
+        elif ext in (".glb", ".gltf"):
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                bpy.ops.import_scene.gltf(filepath=file_path)
+        _remove_lights_and_cameras()
+
+        mesh_obj = _pick_primary_mesh()
+        if mesh_obj is None:
+            return None
+
+        vertices_by_frame = []
+        for frame in sample_frames:
+            pts = _sample_world_mesh_points(mesh_obj, frame)
+            vertices_by_frame.append(pts)
+        return np.stack(vertices_by_frame, axis=0)  # (S, V, 3)
+
+    # Pick 16 evenly-spaced sample frames (or all frames if fewer than 16).
+    # Always include the first and last frame.
+    target = min(16, num_frames)
+    if target <= 1:
+        sample_frames = list(range(num_frames))
+    else:
+        sample_frames = sorted({
+            min(max(round(i * (num_frames - 1) / (target - 1)), 0), num_frames - 1)
+            for i in range(target)
+        } | {0, num_frames - 1})
+
+    verts_a = _load_and_sample(file_path_a, sample_frames)
+    if verts_a is None:
+        return None
+    verts_b = _load_and_sample(file_path_b, sample_frames)
+    if verts_b is None:
+        return None
+
+    # Apply alignment to B's vertices
+    rotation = np.asarray(alignment.rotation_matrix, dtype=np.float64)
+    translation = np.asarray(alignment.translation_offset, dtype=np.float64)
+    scale = float(alignment.scale)
+
+    per_frame = []
+    for i, frame in enumerate(sample_frames):
+        aligned_b = (scale * verts_b[i] + translation[np.newaxis, :]) @ rotation.T
+        stats = _nearest_surface_stats(verts_a[i], aligned_b)
+        stats["frame"] = int(frame)
+        per_frame.append(stats)
+
+    return {
+        "per_frame": per_frame,
+        "mean": float(np.mean([item["mean"] for item in per_frame])),
+        "max": float(np.max([item["max"] for item in per_frame])),
+        "p99": float(np.max([item["p99"] for item in per_frame])),
+        "sample_frames": sample_frames,
+    }
 
 
 def _compute_mean_bone_length_from_rest(offsets: np.ndarray, parents: np.ndarray) -> float:
@@ -625,6 +775,7 @@ def _detect_and_align(
         fps=motion_b.fps,
         num_frames=motion_b.num_frames,
         num_joints=motion_b.num_joints,
+        has_skinned_mesh=motion_b.has_skinned_mesh,
     )
 
     alignment = AlignmentResult(
@@ -820,7 +971,7 @@ def _compare_motions(
         for bi in bone_worst_order_rot[:1]
     ]
 
-    return {
+    result = {
         "comparison": {
             "common_bones": num_common,
             "common_bone_names": common_names,
@@ -868,6 +1019,21 @@ def _compare_motions(
             "top1_worst_bones": top1_bones_rot,
         },
     }
+
+    # ── Mesh surface comparison (only when both motions have skinning) ──
+    if motion_a.has_skinned_mesh and motion_b.has_skinned_mesh:
+        mesh_result = _compute_mesh_surface_error(
+            motion_a.file_path,
+            motion_b.file_path,
+            alignment,
+            motion_a.num_frames,
+        )
+        if mesh_result is not None:
+            result["mesh_surface"] = mesh_result
+        else:
+            print("[Mesh] No mesh with vertex groups found — skipping surface comparison")
+
+    return result
 
 
 # ── Reporting ─────────────────────────────────────────────────────────────────
@@ -941,6 +1107,16 @@ def _print_summary(
     print(f"    worst_bone={rot['worst_bone']}  frame={rot['worst_frame']}  "
           f"value={rot['worst_value_deg']:.6f} deg")
 
+    if "mesh_surface" in result:
+        mesh = result["mesh_surface"]
+        char_size = max(pos.get("character_size", 1e-8), 1e-8)
+        mesh_mean_pct = mesh["mean"] / char_size * 100.0
+        mesh_p99_pct = mesh["p99"] / char_size * 100.0
+        print(f"  Mesh surface error (nearest-surface, sampled over {len(mesh['sample_frames'])} frames):")
+        print(f"    mean = {mesh['mean']:.6f}  ({mesh_mean_pct:.4f}%)")
+        print(f"    p99  = {mesh['p99']:.6f}  ({mesh_p99_pct:.4f}%)")
+        print(f"    max  = {mesh['max']:.6f}")
+
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -955,8 +1131,12 @@ def main() -> None:
 
     print(f"[Info] Loading {args.motion_a} ...")
     motion_a = _load_motion(args.motion_a)
+    print(f"           bones={motion_a.num_joints}  frames={motion_a.num_frames}  "
+          f"skinned_mesh={motion_a.has_skinned_mesh}")
     print(f"[Info] Loading {args.motion_b} ...")
     motion_b = _load_motion(args.motion_b)
+    print(f"           bones={motion_b.num_joints}  frames={motion_b.num_frames}  "
+          f"skinned_mesh={motion_b.has_skinned_mesh}")
     print()
 
     _validate_compatible(motion_a, motion_b)

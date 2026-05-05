@@ -6,6 +6,8 @@ environment. BVH export delegates to the Anytop motion_lib.
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 from typing import Optional
 
@@ -488,9 +490,11 @@ class AnimationExporter:
             if mesh_path_lower.endswith(".fbx"):
                 # Preserve the FBX import wrapper transform (+90deg X, 0.01 scale)
                 # so the re-imported GLB lands in the same object space.
-                import_fbx(mesh_path, ignore_leaf_bones=False)
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    import_fbx(mesh_path, ignore_leaf_bones=False)
             elif mesh_path_lower.endswith((".glb", ".gltf")):
-                bpy.ops.import_scene.gltf(filepath=mesh_path)
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    bpy.ops.import_scene.gltf(filepath=mesh_path)
             else:
                 raise ValueError(
                     f"Unsupported mesh source for GLB export: {mesh_path}"
@@ -799,16 +803,17 @@ class AnimationExporter:
                     kp.interpolation = "LINEAR"
 
         # ── Export GLB ────────────────────────────────────────────────
-        bpy.ops.export_scene.gltf(
-            filepath=output_path,
-            export_format='GLB',
-            export_animations=True,
-            export_animation_mode='ACTIVE_ACTIONS',
-            export_force_sampling=False,
-            export_frame_range=True,
-            export_apply=False,
-            export_yup=yup,
-        )
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            bpy.ops.export_scene.gltf(
+                filepath=output_path,
+                export_format='GLB',
+                export_animations=True,
+                export_animation_mode='ACTIVE_ACTIONS',
+                export_force_sampling=False,
+                export_frame_range=True,
+                export_apply=False,
+                export_yup=yup,
+            )
 
     def _create_armature_from_skeleton(self, bpy, skeleton=None):
         from mathutils import Quaternion, Vector

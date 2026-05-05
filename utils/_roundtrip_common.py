@@ -6,6 +6,8 @@ between NPY and BVH roundtrip tests.
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import math
 import os
 from collections import deque
@@ -101,7 +103,8 @@ def _load_fbx_scene(fbx_path: str):
     from Anytop.utils.fbx import clear_scene, import_fbx, remove_lights_and_cameras
 
     clear_scene()
-    import_fbx(fbx_path, ignore_leaf_bones=False)
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        import_fbx(fbx_path, ignore_leaf_bones=False)
     remove_lights_and_cameras()
 
     armature = next((obj for obj in bpy.data.objects if obj.type == "ARMATURE"), None)
@@ -123,7 +126,8 @@ def _load_glb_scene(glb_path: str):
     import bpy
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    bpy.ops.import_scene.gltf(filepath=glb_path)
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        bpy.ops.import_scene.gltf(filepath=glb_path)
 
     for obj in list(bpy.data.objects):
         if obj.type in {"LIGHT", "CAMERA"}:
