@@ -73,7 +73,12 @@ def run_preprocessing(objects_subset: str, object_workers: int, file_workers: in
     if raw_data_dir:
         cmd.extend(["--raw-data-dir", raw_data_dir])
     
-    result = subprocess.run(cmd, cwd=str(ANYTOP_DIR), capture_output=False)
+    # Add parent of Anytop/ to PYTHONPATH so `from Anytop.utils...` imports work
+    env = os.environ.copy()
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(ANYTOP_DIR.parent) + os.pathsep + existing_pythonpath
+    
+    result = subprocess.run(cmd, cwd=str(ANYTOP_DIR), capture_output=False, env=env)
     return result.returncode
 
 
@@ -108,6 +113,10 @@ def run_validation(
     print("\n" + "=" * 70)
     print("STEP 2: VALIDATION - Checking preprocessed dataset")
     print("=" * 70 + "\n")
+    
+    # Ensure parent of Anytop/ is on sys.path so `from Anytop.utils...` imports work
+    if str(ANYTOP_DIR.parent) not in sys.path:
+        sys.path.insert(0, str(ANYTOP_DIR.parent))
     
     # Import and call validate_anytop_dataset.py main() directly instead of subprocess
     sys.path.insert(0, str(ANYTOP_DIR / "utils"))

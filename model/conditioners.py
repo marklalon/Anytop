@@ -301,13 +301,15 @@ class T5Conditioner(TextConditioner):
     
     def __init__(self, name: str, finetune: bool, device: str,
                  autocast_dtype: tp.Optional[str] = None, word_dropout: float = 0.,
-                 normalize_text: bool = False):
+                 normalize_text: bool = False, local_files_only: bool = True,
+                 t5_path: tp.Optional[str] = None):
         assert name in self.MODELS, f"Unrecognized t5 model name (should in {self.MODELS})"
         super().__init__(self.MODELS_DIMS[name])
         self.device = device
         self.name = name
         self.finetune = finetune
         self.word_dropout = word_dropout
+        self.t5_path = t5_path  # local path override for model loading
         resolved_autocast_dtype = self.AUTOCAST_DTYPES.get(autocast_dtype)
         if autocast_dtype not in self.AUTOCAST_DTYPES:
             raise ValueError(f"Unsupported T5 autocast dtype: {autocast_dtype}")
@@ -320,11 +322,17 @@ class T5Conditioner(TextConditioner):
         # thanks https://gist.github.com/simon-weber/7853144
         previous_level = logging.root.manager.disable
         logging.disable(logging.ERROR)
+        # Use local path if provided, otherwise fall back to model name
+        model_path = t5_path if t5_path else name
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             try:
-                self.t5_tokenizer = T5Tokenizer.from_pretrained(name)
-                t5 = T5EncoderModel.from_pretrained(name).train(mode=finetune)
+                self.t5_tokenizer = T5Tokenizer.from_pretrained(
+                    model_path, local_files_only=local_files_only
+                )
+                t5 = T5EncoderModel.from_pretrained(
+                    model_path, local_files_only=local_files_only
+                ).train(mode=finetune)
             finally:
                 logging.disable(previous_level)
         if finetune:

@@ -300,6 +300,7 @@ def _attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base'):
         normalize_text=False,
         device=device,
         autocast_dtype=None,
+        local_files_only=True,
     )
 
     with torch.no_grad():
@@ -1142,6 +1143,7 @@ def _is_tpose_reference_path(file_path):
         or 'tpos' in compact
         or 'bindpose' in compact
         or 'restpose' in compact
+        or 'nosaddle' in compact
         or ('pose' in tokens and 't' in tokens)
     )
 
@@ -1170,6 +1172,121 @@ def find_orientation_reference_path(bvh_files):
                 return file_path, source_name
 
     return bvh_files[0], 'fallback'
+
+
+def _normalize_action_name(object_type: str, raw_action: str) -> str:
+    """Normalize an action name extracted from an FBX filename.
+
+    Steps:
+    1. Strip ``{object_type}ALL`` / ``{Species}All`` **prefixed across a
+       separator** so that ``HorseALL-RunToStop`` → ``RunToStop``.
+    2. Strip ``{object_type}`` **prefixed across a separator** so that
+       ``Hound-Attack`` → ``Attack``, ``Crab-Walk`` → ``Walk``.
+    3. Convert all-lowercase or space-separated action names to CamelCase
+       so that ``atk 1`` → ``Atk1``,  ``down loop`` → ``DownLoop``.
+    """
+    obj_lower = object_type.lower()
+    if not raw_action:
+        return raw_action
+
+    # Step 1 — strip {species}ALL{sep} (e.g. HorseALL-RunToStop → RunToStop)
+    all_prefix = re.compile(
+        rf'^{re.escape(obj_lower)}all[-_\s]', re.IGNORECASE
+    )
+    raw_action = all_prefix.sub('', raw_action)
+
+    if not raw_action:
+        return raw_action
+
+    # Step 2 — strip {species}{sep} (e.g. Hound-Attack → Attack)
+    species_prefix = re.compile(
+        rf'^{re.escape(obj_lower)}[-_\s]', re.IGNORECASE
+    )
+    raw_action = species_prefix.sub('', raw_action)
+
+    if not raw_action:
+        return raw_action
+
+    # Step 3 — CamelCase for all-lowercase or space-separated action names
+    # that start with a lowercase letter (indicating a raw action description).
+    # Well-formed names like ``Back Away`` (starts with uppercase) are
+    # left untouched.
+    has_spaces = ' ' in raw_action
+    is_all_lowercase = raw_action.islower()
+    starts_with_lower = raw_action[0].islower() if raw_action else False
+
+    if (has_spaces and starts_with_lower) or is_all_lowercase:
+        parts = re.split(r'[^a-zA-Z0-9]+', raw_action)
+        parts = [p for p in parts if p]
+        if not parts:
+            return raw_action
+        return ''.join(p[0].upper() + p[1:] for p in parts)
+
+    return raw_action
+
+
+def _should_skip_fbx(file_path: str, object_type: str) -> bool:
+    """Check whether an FBX file should be skipped during preprocessing.
+
+    Skips:
+    1. **All-in-one files** that bundle every animation clip into a single file
+       (e.g. ``CrabAll.fbx``, ``HorseALL.fbx``, ``Camel_ALL.fbx``, ``Cat-ALL.fbx``).
+    2. **Files without an inferable action name**:
+       - Standalone species-name files (``Fox.fbx``, ``Monkey.fbx``, …)
+       - Variant-code files (``FoxA_A02.fbx``, ``Monkey_B01.fbx``, …)
+    """
+    stem = os.path.splitext(os.path.basename(file_path))[0]
+    stem_lower = stem.lower()
+    obj_lower = object_type.lower()
+
+    # ── 1. All-in-one files ──────────────────────────────────────────────
+    for sep in ('', '_', '-'):
+        pattern = re.compile(
+            rf'^{re.escape(obj_lower)}{re.escape(sep)}all$', re.IGNORECASE
+        )
+        if pattern.match(stem):
+            print(
+                f'  [SKIP] {os.path.basename(file_path)}: '
+                f'all-in-one file (contains all animations)'
+            )
+            return True
+
+    # ── 2. NoSaddle variants (T-pose with no animation) ─────────────────
+    nosaddle_pattern = re.compile(
+        rf'^{re.escape(obj_lower)}[-_]\s*nosaddle$', re.IGNORECASE
+    )
+    if nosaddle_pattern.match(stem_lower):
+        print(
+            f'  [SKIP] {os.path.basename(file_path)}: '
+            f'NoSaddle T-pose file (no animation)'
+        )
+        return True
+
+    # ── 3. Standalone species name (no action component) ─────────────────
+    if stem_lower == obj_lower:
+        print(
+            f'  [SKIP] {os.path.basename(file_path)}: '
+            f'no inferable action name (species name only)'
+        )
+        return True
+
+    # ── 3. Variant codenames ─────────────────────────────────────────────
+    #   FoxA_A02, FoxA_A03     → {species}{letter}_{code}
+    #   Monkey_B01, Monkey_B02 → {species}_{letter}{digits}
+    variant1 = re.compile(
+        rf'^{re.escape(obj_lower)}[a-z]_\w+$', re.IGNORECASE
+    )
+    variant2 = re.compile(
+        rf'^{re.escape(obj_lower)}_[a-z]\d+$', re.IGNORECASE
+    )
+    if variant1.match(stem) or variant2.match(stem):
+        print(
+            f'  [SKIP] {os.path.basename(file_path)}: '
+            f'variant codename, no inferable action name'
+        )
+        return True
+
+    return False
 
 
 def _process_motion_file(file_path, object_type, max_joints, root_pose_init_xz, scale_factor,
@@ -1215,6 +1332,7 @@ def _process_motion_file(file_path, object_type, max_joints, root_pose_init_xz, 
 
         _, file_name = os.path.split(file_path)
         raw_action = file_name.split('.')[0]
+        raw_action = _normalize_action_name(object_type, raw_action)
         file_results.append({
             'action': raw_action,
             'motion': motion,
@@ -1255,6 +1373,12 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
         fbx_files.remove(t_pos_path)
     if max_files is not None:
         fbx_files = fbx_files[:max_files]
+
+    # Filter out files with no inferable action name or all-in-one animation bundles
+    fbx_files = [f for f in fbx_files if not _should_skip_fbx(f, object_type)]
+    if len(fbx_files) == 0:
+        print(f'skipping {object_type}: no valid FBX files after filtering')
+        return None
 
     squared_positions_error = dict()
     root_pose_init_xz, scale_factor, offsets, foot_indices, tpos_rots, names, tpos_anim, face_joints, orientation_quat, forward_joint_index, forward_base_joint_index, contact_joint_source = get_common_features_from_T_pose(t_pos_path, object_type, face_joints=face_joints)
