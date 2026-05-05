@@ -58,6 +58,7 @@ class MotionData:
     offsets: np.ndarray           # (J, 3) rest-pose offsets
     world_positions: np.ndarray   # (F, J, 3) world-space bone-head positions
     world_rotations: np.ndarray   # (F, J, 4) world-space quaternions (w, x, y, z)
+    sample_frames: list[float]    # (F,) Blender frame values used during sampling
     sample_times: list[float]     # (F,) sample times in seconds, relative to clip start
     fps: float
     num_frames: int
@@ -349,7 +350,8 @@ def _load_motion(file_path: str) -> MotionData:
         offsets=offsets,
         world_positions=pose_data["head_positions"],
         world_rotations=pose_data["world_rotations"],
-        sample_times=sample_times,
+            sample_frames=[float(frame) for frame in sample_frames],
+            sample_times=sample_times,
         fps=fps,
         num_frames=num_frames,
         num_joints=num_joints,
@@ -413,13 +415,12 @@ def _pick_primary_mesh():
     return max(meshes, key=lambda obj: len(obj.data.polygons))
 
 
-def _sample_world_mesh_points(mesh_obj, frame_idx: int) -> np.ndarray:
-    """Sample world-space vertex positions of a mesh at a given frame."""
+def _sample_world_mesh_points(mesh_obj, sample_frame: float) -> np.ndarray:
+    """Sample world-space vertex positions of a mesh at a given sampled frame."""
     import bpy
-    from mathutils import Vector
 
     scene = bpy.context.scene
-    scene.frame_set(frame_idx)
+    _set_scene_time(scene, float(sample_frame))
     bpy.context.view_layer.update()
     depsgraph = bpy.context.evaluated_depsgraph_get()
     obj_eval = mesh_obj.evaluated_get(depsgraph)
@@ -462,10 +463,9 @@ def _nearest_surface_stats(points_a: np.ndarray, points_b: np.ndarray) -> dict[s
 
 
 def _compute_mesh_surface_error(
-    file_path_a: str,
-    file_path_b: str,
+    motion_a: MotionData,
+    motion_b: MotionData,
     alignment: AlignmentResult,
-    num_frames: int,
 ) -> dict[str, Any] | None:
     """Compare mesh surfaces between two motion files.
 
@@ -477,7 +477,7 @@ def _compute_mesh_surface_error(
     """
     import bpy
 
-    def _load_and_sample(file_path: str, sample_frames: list[int]) -> np.ndarray | None:
+    def _load_and_sample(file_path: str, sample_frames: list[float]) -> np.ndarray | None:
         _clear_scene()
         ext = os.path.splitext(file_path)[1].lower()
         if ext == ".bvh":
@@ -497,26 +497,30 @@ def _compute_mesh_surface_error(
             return None
 
         vertices_by_frame = []
-        for frame in sample_frames:
-            pts = _sample_world_mesh_points(mesh_obj, frame)
+        for sample_frame in sample_frames:
+            pts = _sample_world_mesh_points(mesh_obj, sample_frame)
             vertices_by_frame.append(pts)
         return np.stack(vertices_by_frame, axis=0)  # (S, V, 3)
 
     # Pick 16 evenly-spaced sample frames (or all frames if fewer than 16).
     # Always include the first and last frame.
+    num_frames = motion_a.num_frames
     target = min(16, num_frames)
     if target <= 1:
-        sample_frames = list(range(num_frames))
+        sample_indices = list(range(num_frames))
     else:
-        sample_frames = sorted({
+        sample_indices = sorted({
             min(max(round(i * (num_frames - 1) / (target - 1)), 0), num_frames - 1)
             for i in range(target)
         } | {0, num_frames - 1})
 
-    verts_a = _load_and_sample(file_path_a, sample_frames)
+    sample_frames_a = [float(motion_a.sample_frames[idx]) for idx in sample_indices]
+    sample_frames_b = [float(motion_b.sample_frames[idx]) for idx in sample_indices]
+
+    verts_a = _load_and_sample(motion_a.file_path, sample_frames_a)
     if verts_a is None:
         return None
-    verts_b = _load_and_sample(file_path_b, sample_frames)
+    verts_b = _load_and_sample(motion_b.file_path, sample_frames_b)
     if verts_b is None:
         return None
 
@@ -526,10 +530,10 @@ def _compute_mesh_surface_error(
     scale = float(alignment.scale)
 
     per_frame = []
-    for i, frame in enumerate(sample_frames):
+    for i, frame_idx in enumerate(sample_indices):
         aligned_b = (scale * verts_b[i] + translation[np.newaxis, :]) @ rotation.T
         stats = _nearest_surface_stats(verts_a[i], aligned_b)
-        stats["frame"] = int(frame)
+        stats["frame"] = int(frame_idx)
         per_frame.append(stats)
 
     return {
@@ -537,7 +541,7 @@ def _compute_mesh_surface_error(
         "mean": float(np.mean([item["mean"] for item in per_frame])),
         "max": float(np.max([item["max"] for item in per_frame])),
         "p99": float(np.max([item["p99"] for item in per_frame])),
-        "sample_frames": sample_frames,
+        "sample_frames": sample_indices,
     }
 
 
@@ -759,7 +763,6 @@ def _detect_and_align(
             aligned_rotations = apply_rotation_to_quaternions_wxyz_np(motion_b.world_rotations, best_R)
         else:
             # Bone-direction comparison is driven by aligned positions. A handedness
-            # flip can align coordinates, but it cannot be represented as a world-space
             # quaternion rotation, so preserve the original quaternions here.
             aligned_rotations = motion_b.world_rotations.copy()
 
@@ -771,6 +774,7 @@ def _detect_and_align(
         offsets=motion_b.offsets.copy(),
         world_positions=aligned_positions,
         world_rotations=aligned_rotations,
+        sample_frames=list(motion_b.sample_frames),
         sample_times=motion_b.sample_times,
         fps=motion_b.fps,
         num_frames=motion_b.num_frames,
@@ -1023,10 +1027,9 @@ def _compare_motions(
     # ── Mesh surface comparison (only when both motions have skinning) ──
     if motion_a.has_skinned_mesh and motion_b.has_skinned_mesh:
         mesh_result = _compute_mesh_surface_error(
-            motion_a.file_path,
-            motion_b.file_path,
+            motion_a,
+            motion_b,
             alignment,
-            motion_a.num_frames,
         )
         if mesh_result is not None:
             result["mesh_surface"] = mesh_result

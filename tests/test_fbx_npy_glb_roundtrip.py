@@ -208,7 +208,7 @@ def test_fbx_npy_glb_roundtrip(
         mesh_result = None
         if motion_a.has_skinned_mesh and motion_b.has_skinned_mesh:
             mesh_result = _compute_mesh_surface_error(
-                anim_fbx, recovered_glb, _alignment, motion_a.num_frames,
+                motion_a, motion_b_aligned, _alignment,
             )
         if mesh_result is not None:
             char_size = max(float(result["position"]["character_size"]), 1e-8)
