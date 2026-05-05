@@ -146,6 +146,57 @@ def _batch_pose_fk_np(
     return world_pos, world_rot
 
 
+def _batch_internal_pose_fk_np(
+    joint_rotations: np.ndarray,
+    root_translation: np.ndarray,
+    root_rotation: np.ndarray,
+    pose_locations: np.ndarray | None,
+    parents: np.ndarray,
+    rest_offsets: np.ndarray,
+    rest_rotations: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute world pose with unified exporter semantics.
+
+    External caller semantics:
+      - ``joint_rotations`` carries animated local joint quaternions for all joints,
+        including the root joint.
+      - ``root_translation`` / ``root_rotation`` form an extra world-space wrapper
+        transform applied before the skeleton hierarchy.
+      - ``pose_locations`` carries optional Blender-style pose-bone location channels
+        for non-root joints. The root entry is ignored; root world translation always
+        comes from ``root_translation``.
+    """
+    F, J = joint_rotations.shape[:2]
+    world_pos = np.zeros((F, J, 3), dtype=np.float64)
+    world_rot = np.zeros((F, J, 4), dtype=np.float64)
+
+    zero_loc = np.zeros((F, 3), dtype=np.float64)
+
+    for j in range(J):
+        rest_q = np.repeat(rest_rotations[j:j+1], F, axis=0)
+        total_local_rot = quat_multiply_wxyz_np(rest_q, joint_rotations[:, j])
+
+        if pose_locations is None or parents[j] < 0:
+            pose_loc = zero_loc
+        else:
+            pose_loc = pose_locations[:, j]
+
+        local_pos = np.repeat(rest_offsets[j:j+1], F, axis=0) + quat_rotate_wxyz_np(
+            rest_q,
+            pose_loc,
+        )
+
+        p = parents[j]
+        if p < 0:
+            world_pos[:, j] = root_translation + quat_rotate_wxyz_np(root_rotation, local_pos)
+            world_rot[:, j] = quat_multiply_wxyz_np(root_rotation, total_local_rot)
+        else:
+            world_pos[:, j] = world_pos[:, p] + quat_rotate_wxyz_np(world_rot[:, p], local_pos)
+            world_rot[:, j] = quat_multiply_wxyz_np(world_rot[:, p], total_local_rot)
+
+    return world_pos, world_rot
+
+
 def _batch_internal_fk_np(
     joint_rotations: np.ndarray,
     root_translation: np.ndarray,
@@ -162,28 +213,15 @@ def _batch_internal_fk_np(
     animated local joint rotation. This differs from Blender pose-bone channel
     semantics and must be preserved before retargeting to an imported FBX rig.
     """
-    F, J = joint_rotations.shape[:2]
-    world_pos = np.zeros((F, J, 3), dtype=np.float64)
-    world_rot = np.zeros((F, J, 4), dtype=np.float64)
-
-    for j in range(J):
-        rest_q = np.repeat(rest_rotations[j:j+1], F, axis=0)
-        total_local_rot = quat_multiply_wxyz_np(rest_q, joint_rotations[:, j])
-
-        p = parents[j]
-        if p < 0:
-            offset_world = quat_rotate_wxyz_np(
-                root_rotation,
-                np.repeat(rest_offsets[j:j+1], F, axis=0),
-            )
-            world_pos[:, j] = root_translation + offset_world
-            world_rot[:, j] = quat_multiply_wxyz_np(root_rotation, total_local_rot)
-        else:
-            child_offset = np.repeat(rest_offsets[j:j+1], F, axis=0)
-            world_pos[:, j] = world_pos[:, p] + quat_rotate_wxyz_np(world_rot[:, p], child_offset)
-            world_rot[:, j] = quat_multiply_wxyz_np(world_rot[:, p], total_local_rot)
-
-    return world_pos, world_rot
+    return _batch_internal_pose_fk_np(
+        joint_rotations,
+        root_translation,
+        root_rotation,
+        pose_locations=None,
+        parents=parents,
+        rest_offsets=rest_offsets,
+        rest_rotations=rest_rotations,
+    )
 
 
 def _extract_fbx_skeleton_data(armature):
@@ -287,16 +325,20 @@ class AnimationExporter:
         """Export animation to the format inferred from *output_path* extension.
 
         Args:
-            joint_rotations:  [F, J, 4]  local quaternions for all joints
-            root_translation: [F, 3]     world translation for root joint
-            root_rotation:    [F, 4]     world rotation for root joint
+            joint_rotations:  [F, J, 4]  local quaternions for all joints,
+                              including the root joint's animated local rotation
+            root_translation: [F, 3]     world translation of an extra wrapper
+                              transform applied before the skeleton hierarchy
+            root_rotation:    [F, 4]     world rotation of that extra wrapper
+                              transform; use identity when the motion already
+                              lives entirely in joint_rotations
             output_path:      destination file (*.glb or *.bvh)
             mesh_path:        source mesh/rig for GLB export (e.g. T-pose GLB/FBX)
-            bone_translations: [F, J, 3] optional per-bone local translation.
-                               Needed when non-root bones have animated local
-                               positions (e.g. IK control bones in complex
-                               rigs like Horse).  If None, non-root bones
-                               keep their rest-pose local position.
+            bone_translations: [F, J, 3] optional Blender-style pose-bone local
+                               translations. Non-root entries match
+                               pose_bone.location semantics; the root entry is
+                               ignored because root world translation is always
+                               carried by root_translation.
         """
         ext = os.path.splitext(output_path)[1].lower()
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -319,10 +361,9 @@ class AnimationExporter:
     def _export_bvh(self, joint_rotations: Tensor, root_translation: Tensor,
                     root_rotation: Tensor, output_path: str,
                     bone_translations: Optional[Tensor] = None) -> None:
-        """Write a BVH file by constructing an Anytop Animation and calling BVH.save."""
+        """Write a BVH file using the unified exporter parameter semantics."""
         import numpy as np
         import sys
-        from Anytop.kinematics import forward_kinematics
         from Anytop.utils.quaternion import quat_multiply
         _cwd = os.getcwd()
         _anytop_root = os.path.dirname(os.path.dirname(__file__))
@@ -355,31 +396,45 @@ class AnimationExporter:
         )
         rotations = Quaternions(baked_quat.cpu().to(torch.float64).numpy())
 
-        # ── Build positions: root always carries translation; non-root
-        # ── bones get animated positions only when bone_translations is set ──
-        _, joint_positions = forward_kinematics(
-            joint_rotations.detach(),
-            root_translation.detach(),
-            root_rotation.detach(),
-            self.skeleton,
-        )
-        has_bone_positions = bone_translations is not None
-        if has_bone_positions:
-            bt_np = bone_translations.detach().cpu().to(torch.float64).numpy()
-            positions_np = bt_np.copy()
-            positions_np[:, 0, :] = joint_positions[:, 0, :].detach().cpu().to(torch.float64).numpy()
-        else:
-            positions_np = np.zeros((F, J, 3), dtype=np.float64)
-            positions_np[:, 0, :] = joint_positions[:, 0, :].detach().cpu().to(torch.float64).numpy()
-
         # ── Rest-pose attributes ────────────────────────────────────
         offsets_np = np.empty((J, 3), dtype=np.float64)
+        rest_rots_np = np.empty((J, 4), dtype=np.float64)
         orients_np = np.empty((J, 4), dtype=np.float64)
         parents_np = np.empty((J,), dtype=np.int32)
         for b in self.skeleton.bones:
             offsets_np[b.id] = b.rest_offset.detach().cpu().to(torch.float64).numpy()
+            rest_rots_np[b.id] = b.rest_rotation.detach().cpu().to(torch.float64).numpy()
             orients_np[b.id] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
             parents_np[b.id] = b.parent_id if b.parent_id is not None else -1
+
+        joint_rot_np = joint_rotations.detach().cpu().to(torch.float64).numpy()
+        root_translation_np = root_translation.detach().cpu().to(torch.float64).numpy()
+        root_rotation_np = root_rotation.detach().cpu().to(torch.float64).numpy()
+        if bone_translations is not None:
+            pose_locations_np = bone_translations.detach().cpu().to(torch.float64).numpy()
+        else:
+            pose_locations_np = None
+
+        joint_positions_np, _ = _batch_internal_pose_fk_np(
+            joint_rot_np,
+            root_translation_np,
+            root_rotation_np,
+            pose_locations_np,
+            parents_np,
+            offsets_np,
+            rest_rots_np,
+        )
+
+        has_bone_positions = pose_locations_np is not None
+        positions_np = np.zeros((F, J, 3), dtype=np.float64)
+        positions_np[:, 0, :] = joint_positions_np[:, 0, :]
+        if has_bone_positions:
+            for joint_idx in range(1, J):
+                rest_q = np.repeat(rest_rots_np[joint_idx:joint_idx + 1], F, axis=0)
+                positions_np[:, joint_idx, :] = (
+                    np.repeat(offsets_np[joint_idx:joint_idx + 1], F, axis=0)
+                    + quat_rotate_wxyz_np(rest_q, pose_locations_np[:, joint_idx, :])
+                )
 
         offsets_np[0] = 0.0  # root offset is always zero in BVH
         orients = Quaternions(orients_np)
@@ -442,6 +497,8 @@ class AnimationExporter:
             armature = next((o for o in bpy.data.objects if o.type == "ARMATURE"), None)
             if armature is None:
                 raise RuntimeError(f"No armature found after importing mesh_path: {mesh_path}")
+            if mesh_path_lower.endswith(".fbx"):
+                _normalize_imported_armature_and_meshes(bpy, armature)
         else:
             armature = self._create_armature_from_skeleton(bpy, skeleton=export_skeleton)
 
@@ -485,35 +542,20 @@ class AnimationExporter:
                 for b in self.skeleton.bones
             ])
 
-            if bt is None:
-                input_wpos, input_wrot = _batch_internal_fk_np(
-                    jr_np,
-                    rt_np,
-                    rr_np,
-                    parents_input,
-                    rest_offsets_input,
-                    rest_rot_input,
-                )
+            if bt is not None:
+                pose_locations_np = np.array(bt, dtype=np.float64)
             else:
-                input_local_rot_np = jr_np.copy()
-                for j in range(len(bone_names)):
-                    if self.skeleton.bones[j].parent_id is None:
-                        input_local_rot_np[:, j] = rr_np
+                pose_locations_np = None
 
-                local_pos_np = np.zeros((num_frames, len(bone_names), 3), dtype=np.float64)
-                for j in range(len(bone_names)):
-                    if self.skeleton.bones[j].parent_id is None:
-                        local_pos_np[:, j] = rt_np
-                    else:
-                        local_pos_np[:, j] = np.array([bt[f][j] for f in range(num_frames)], dtype=np.float64)
-
-                input_wpos, input_wrot = _batch_pose_fk_np(
-                    input_local_rot_np,
-                    local_pos_np,
-                    parents_input,
-                    rest_offsets_input,
-                    rest_rot_input,
-                )
+            input_wpos, input_wrot = _batch_internal_pose_fk_np(
+                jr_np,
+                rt_np,
+                rr_np,
+                pose_locations_np,
+                parents_input,
+                rest_offsets_input,
+                rest_rot_input,
+            )
 
             # ── E) Compute FBX rest-pose world-space ─────────────────
             # One-frame rest pose: identity pose rotations + zero pose translations
@@ -588,7 +630,17 @@ class AnimationExporter:
             t_align = pos_fbx_rest[0, root_in_common] - pos_input_rest[0, root_in_common] * scale
             pos_input_rest_st = pos_input_rest * scale + t_align[np.newaxis, np.newaxis, :]
 
-            candidates = _generate_coordinate_candidates_np()
+            # Imported GLB rigs already carry the glTF wrapper/object space that
+            # Blender will re-emit on export. Running the internal rest-pose
+            # coordinate search here can spuriously add an extra rigid basis
+            # rotation (Horse picked R_y(+90°), which re-imports as a visible
+            # whole-character Z rotation). Keep GLB/GTLF retargeting in the
+            # rig's existing basis and reserve the broader coordinate search
+            # for FBX sources.
+            if mesh_path_lower and mesh_path_lower.endswith((".glb", ".gltf")):
+                candidates = [("identity", np.eye(3, dtype=np.float64))]
+            else:
+                candidates = _generate_coordinate_candidates_np()
             best_R = np.eye(3, dtype=np.float64)
             best_label = "identity"
             best_err = float("inf")
@@ -691,6 +743,14 @@ class AnimationExporter:
 
         for f in range(num_frames):
             scene.frame_set(f)
+            if not mesh_path:
+                armature.location = (rt[f][0], rt[f][1], rt[f][2])
+                armature.rotation_mode = "QUATERNION"
+                armature.rotation_quaternion = (rr[f][0], rr[f][1], rr[f][2], rr[f][3])
+                armature.scale = (1.0, 1.0, 1.0)
+                armature.keyframe_insert(data_path="location", frame=f)
+                armature.keyframe_insert(data_path="rotation_quaternion", frame=f)
+                armature.keyframe_insert(data_path="scale", frame=f)
             for j, bname in enumerate(bone_names):
                 pbone = armature.pose.bones.get(bname)
                 if pbone is None:
@@ -702,14 +762,14 @@ class AnimationExporter:
                 else:
                     parent_id = self.skeleton.bones[j].parent_id if self.skeleton.bones[j].parent_id is not None else -1
                 is_root = parent_id < 0
-                if is_root:
+                if is_root and mesh_path:
                     loc_val = rt[f]
                     rot_val = rr[f]
                     pbone.location = (loc_val[0], loc_val[1], loc_val[2])
                 else:
                     rot_val = jr[f][j]
                     if bt is not None:
-                        loc_val = bt[f][j]
+                        loc_val = bt[f][j] if not is_root else (0.0, 0.0, 0.0)
                         pbone.location = (loc_val[0], loc_val[1], loc_val[2])
                     else:
                         pbone.location = (0.0, 0.0, 0.0)

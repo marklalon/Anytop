@@ -315,14 +315,23 @@ def restore_glb(
     # ── Common animation tensors ───────────────────────────────────────────
     joint_rotations = torch.from_numpy(recovered_anim.rotations.qs.astype(np.float32))
     root_translation = torch.from_numpy(recovered_anim.positions[:, 0, :].astype(np.float32))
-    root_rotation = torch.from_numpy(recovered_anim.rotations.qs[:, 0, :].astype(np.float32))
+    # Exporter semantics are format-independent: root_rotation is only an extra
+    # world-space wrapper transform applied before the hierarchy. The recovered
+    # root joint animation already lives in joint_rotations[:, 0], so use an
+    # identity wrapper for both GLB and BVH.
+    root_rotation = torch.zeros((F, 4), dtype=torch.float32)
+    root_rotation[:, 0] = 1.0
 
-    # Bone translations for BVH (total local position = rest_offset + displacement)
-    bone_translations_bvh = torch.from_numpy(recovered_anim.positions.astype(np.float32))
-
-    # Bone translations for GLB: pass raw positions when per-bone positions exist,
-    # otherwise None (exporter uses rest offsets for non-root bones)
-    bone_translations_glb = torch.from_numpy(recovered_anim.positions.astype(np.float32)) if has_animated_pos else None
+    # Exporter bone_translations use Blender-style pose-bone.location channels
+    # for non-root joints. The root entry is ignored because root_translation
+    # carries the world-space root motion.
+    if has_animated_pos:
+        pose_translations = recovered_anim.positions.astype(np.float32).copy()
+        pose_translations[:, 0, :] = 0.0
+        pose_translations[:, 1:, :] -= recovered_anim.offsets[None, 1:, :].astype(np.float32)
+        bone_translations = torch.from_numpy(pose_translations)
+    else:
+        bone_translations = None
 
     os.makedirs(os.path.dirname(os.path.abspath(output_glb)) or ".", exist_ok=True)
 
@@ -337,7 +346,7 @@ def restore_glb(
         root_rotation,
         output_glb,
         mesh_path=tpose_fbx,
-        bone_translations=bone_translations_glb,
+        bone_translations=bone_translations,
     )
 
     # ── Auto-export BVH alongside GLB ──────────────────────────────────────
@@ -347,7 +356,7 @@ def restore_glb(
         root_translation,
         root_rotation,
         output_bvh,
-        bone_translations=bone_translations_bvh,
+        bone_translations=bone_translations,
     )
 
     return os.path.abspath(output_glb)
