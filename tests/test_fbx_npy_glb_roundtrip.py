@@ -91,7 +91,7 @@ from utils.npy_roundtrip_utils import (
 from Anytop.utils.fbx import clear_scene, import_fbx, remove_lights_and_cameras
 
 
-from _roundtrip_common import (
+from Anytop.utils._roundtrip_common import (
     _build_skeleton,
     _fbx_to_animation,
     _export_animation_to_glb,

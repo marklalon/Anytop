@@ -927,12 +927,6 @@ def _print_summary(
     print(f"    median = {pos['median_error']:.6f}  std = {pos['std_error']:.6f}")
     print(f"    worst_bone={pos['worst_bone']}  frame={pos['worst_frame']}  "
           f"value={pos['worst_value']:.6f}")
-    if pos['max_error'] > 1e-8:
-        print()
-        print("    Top 1 bone (position):")
-        for b in pos["top1_worst_bones"]:
-            print(f"      {b['name']:<35} max={b['max_error']:.6f}  mean={b['mean_error']:.6f}")
-        print()
 
     print(f"  Rotation error (bone direction angle, parent→child):")
     print(f"    max  = {rot['max_error_deg']:.6f} deg")
@@ -940,11 +934,6 @@ def _print_summary(
     print(f"    median = {rot['median_error_deg']:.6f} deg  std = {rot['std_error_deg']:.6f} deg")
     print(f"    worst_bone={rot['worst_bone']}  frame={rot['worst_frame']}  "
           f"value={rot['worst_value_deg']:.6f} deg")
-    if rot['max_error_deg'] > 1e-8:
-        print()
-        print("    Top 1 bone (rotation):")
-        for b in rot["top1_worst_bones"]:
-            print(f"      {b['name']:<35} max={b['max_error_deg']:.6f} deg  mean={b['mean_error_deg']:.6f} deg")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -964,20 +953,11 @@ def main() -> None:
     motion_b = _load_motion(args.motion_b)
     print()
 
-    print("[Validate] Checking compatibility ...")
     _validate_compatible(motion_a, motion_b)
-    print("[Validate] OK — FPS and frame count match")
-    print()
 
-    print("[Align] Detecting and applying spatial alignment ...")
     motion_b_aligned, alignment = _detect_and_align(motion_a, motion_b)
-    print("[Align] Done")
-    print()
 
-    print("[Compare] Computing per-bone position and rotation errors ...")
     result = _compare_motions(motion_a, motion_b_aligned, alignment)
-    print("[Compare] Done")
-    print()
 
     _print_summary(motion_a, motion_b, alignment, result)
     print()

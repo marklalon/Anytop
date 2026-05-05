@@ -236,7 +236,7 @@ def restore_glb(
 
     # ── Load T-pose mesh (FBX or GLB) for bone-name verification and scale computation ──
     print("  Loading T-pose mesh for scale computation...")
-    from _roundtrip_common import _load_fbx_skeleton_metadata, _load_glb_skeleton_metadata, _build_skeleton
+    from Anytop.utils._roundtrip_common import _load_fbx_skeleton_metadata, _load_glb_skeleton_metadata, _build_skeleton
 
     tpose_lower = tpose_fbx.lower()
     if tpose_lower.endswith(".fbx"):
