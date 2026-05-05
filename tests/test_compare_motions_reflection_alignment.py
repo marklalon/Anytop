@@ -29,6 +29,7 @@ def _build_motion(world_positions: np.ndarray) -> MotionData:
         offsets=np.array([[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]], dtype=np.float64),
         world_positions=world_positions,
         world_rotations=identity_rotations,
+        sample_frames=[0.0, 1.0],
         sample_times=[0.0, 1.0 / 30.0],
         fps=30.0,
         num_frames=num_frames,

@@ -23,10 +23,8 @@ import argparse
 import contextlib
 import io
 import json
-import math
 import os
 import sys
-from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
@@ -43,7 +41,19 @@ for _p in [REPO_ROOT, ANYTOP_ROOT]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from Anytop.utils.rotation_numpy import apply_rotation_to_quaternions_wxyz_np
+from Anytop.utils.rotation_numpy import (
+    apply_rotation_to_quaternions_wxyz_np,
+    quaternion_angle_degrees_wxyz_np,
+)
+from Anytop.utils.fbx import clear_scene, remove_lights_and_cameras
+from Anytop.utils._roundtrip_common import (
+    _extract_armature_skeleton_data,
+    _iter_action_fcurves,
+    _set_scene_time,
+    _infer_sample_fps,
+    _get_action_sample_times,
+)
+from Anytop.utils.exporter import _canonical_bone_name, _generate_coordinate_candidates_np
 
 
 # ── Data structures ───────────────────────────────────────────────────────────
@@ -79,65 +89,6 @@ class AlignmentResult:
 
 # ── Blender helpers (inlined, no external dependency beyond bpy) ──────────────
 
-def _clear_scene() -> None:
-    import bpy
-    bpy.ops.wm.read_factory_settings(use_empty=True)
-
-
-def _remove_lights_and_cameras() -> None:
-    import bpy
-    for obj in list(bpy.data.objects):
-        if obj.type in {"LIGHT", "CAMERA"}:
-            bpy.data.objects.remove(obj, do_unlink=True)
-
-
-def _iter_action_fcurves(action):
-    """Iterate fcurves from an action (handles layered/stripped actions)."""
-    if action is None:
-        return []
-    if hasattr(action, "fcurves"):
-        return list(action.fcurves)
-    all_fcurves = []
-    if hasattr(action, "layers"):
-        for layer in action.layers:
-            for strip in layer.strips:
-                if hasattr(strip, "channelbags"):
-                    for channelbag in strip.channelbags:
-                        all_fcurves.extend(channelbag.fcurves)
-    return all_fcurves
-
-
-def _set_scene_time(scene, sample_time: float) -> None:
-    frame = math.floor(sample_time)
-    subframe = float(sample_time - frame)
-    scene.frame_set(frame, subframe=subframe)
-
-
-def _get_action_sample_frames(armature) -> list[float]:
-    """Extract sorted unique keyframe frame values from an armature's action."""
-    action = armature.animation_data.action if armature.animation_data else None
-    if action is None:
-        return [0.0]
-    key_times = sorted({
-        round(float(keyframe.co[0]), 6)
-        for fcurve in _iter_action_fcurves(action)
-        for keyframe in fcurve.keyframe_points
-    })
-    return key_times or [0.0]
-
-
-def _infer_sample_fps(scene, sample_times: list[float]) -> float:
-    """Infer effective FPS from scene FPS and median sample delta."""
-    scene_fps = scene.render.fps / scene.render.fps_base
-    if len(sample_times) < 2:
-        return float(scene_fps)
-    deltas = np.diff(np.asarray(sample_times, dtype=np.float64))
-    positive_deltas = deltas[deltas > 1e-6]
-    if positive_deltas.size == 0:
-        return float(scene_fps)
-    return float(scene_fps / np.median(positive_deltas))
-
-
 def _sample_frames_to_relative_seconds(sample_frames: list[float], fps: float) -> list[float]:
     """Convert Blender frame values to relative seconds from clip start."""
     if not sample_frames:
@@ -167,67 +118,6 @@ def _read_bvh_frame_rate(file_path: str) -> float:
     except Exception:
         pass
     return 30.0
-
-
-def _extract_armature_skeleton_data(armature):
-    """Extract bone names, parents, offsets, rest rotations via BFS traversal.
-
-    Returns
-    -------
-    bone_names : list[str]
-        BFS-ordered bone names.
-    parents : np.ndarray[int32, (J,)]
-        Parent index per bone (-1 = root).
-    offsets : np.ndarray[float64, (J, 3)]
-        Rest-pose local offsets.
-    rest_rotations : np.ndarray[float64, (J, 4)]
-        Rest-pose local quaternions (w, x, y, z).
-    """
-    armature_bones = armature.data.bones
-    all_roots = [bone for bone in armature_bones if bone.parent is None]
-    if not all_roots:
-        raise RuntimeError("No root bone found in armature")
-
-    # Pick the root with the largest subtree
-    def _subtree_size(root_bone) -> int:
-        count = 0
-        queue = deque([root_bone])
-        while queue:
-            bone = queue.popleft()
-            count += 1
-            queue.extend(bone.children)
-        return count
-
-    root_bone = max(all_roots, key=_subtree_size)
-
-    ordered_bones = []
-    queue = deque([root_bone])
-    while queue:
-        bone = queue.popleft()
-        ordered_bones.append(bone)
-        queue.extend(bone.children)
-
-    joint_count = len(ordered_bones)
-    bone_names = [bone.name for bone in ordered_bones]
-    parents = np.full(joint_count, -1, dtype=np.int32)
-    offsets = np.zeros((joint_count, 3), dtype=np.float64)
-    rest_rotations = np.zeros((joint_count, 4), dtype=np.float64)
-    name_to_idx = {name: idx for idx, name in enumerate(bone_names)}
-
-    for joint_idx, bone in enumerate(ordered_bones):
-        if bone.parent is not None and bone.parent.name in name_to_idx:
-            parent_idx = name_to_idx[bone.parent.name]
-            parents[joint_idx] = parent_idx
-            rest_local = bone.parent.matrix_local.inverted_safe() @ bone.matrix_local
-        else:
-            rest_local = bone.matrix_local.copy()
-
-        rest_translation = rest_local.translation
-        rest_quat = rest_local.to_quaternion()
-        offsets[joint_idx] = (rest_translation.x, rest_translation.y, rest_translation.z)
-        rest_rotations[joint_idx] = (rest_quat.w, rest_quat.x, rest_quat.y, rest_quat.z)
-
-    return bone_names, parents, offsets, rest_rotations
 
 
 def _collect_armature_world_pose_data(armature, sample_frames: list[float],
@@ -289,7 +179,7 @@ def _load_motion(file_path: str) -> MotionData:
     if file_format is None:
         raise ValueError(f"Unsupported format: {ext} (supported: .bvh, .glb, .gltf, .fbx)")
 
-    _clear_scene()
+    clear_scene()
 
     if file_format == "bvh":
         # Suppress Blender's verbose importer output (e.g. "zero length node found")
@@ -303,7 +193,7 @@ def _load_motion(file_path: str) -> MotionData:
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             bpy.ops.import_scene.gltf(filepath=file_path)
 
-    _remove_lights_and_cameras()
+    remove_lights_and_cameras()
 
     armature = next((obj for obj in bpy.data.objects if obj.type == "ARMATURE"), None)
     if armature is None:
@@ -314,7 +204,7 @@ def _load_motion(file_path: str) -> MotionData:
     num_joints = len(bone_names)
 
     # Determine sample times and FPS
-    sample_frames = _get_action_sample_frames(armature)
+    sample_frames = _get_action_sample_times(armature)
     scene = bpy.context.scene
 
     # For BVH, read FPS from the file header's "Frame Time" field directly,
@@ -376,31 +266,6 @@ def _validate_compatible(motion_a: MotionData, motion_b: MotionData) -> None:
 
     if not ok:
         sys.exit(1)
-
-
-# ── Alignment helpers ─────────────────────────────────────────────────────────
-
-def _canonical_bone_name(name: str) -> str:
-    """Normalize bone name for cross-format matching."""
-    return name.replace(" ", "_").lower()
-
-
-def _quaternion_angle_degrees(q_a: np.ndarray, q_b: np.ndarray) -> np.ndarray:
-    """Per-element quaternion angular difference in degrees.
-
-    Returns angle in [0, 180] for each (..., 4) pair.
-    Normalizes both quaternions before computing dot product to avoid
-    errors from non-unit quaternions (e.g., due to floating-point drift).
-    """
-    # Normalize to handle non-unit quaternions
-    norm_a = np.maximum(np.linalg.norm(q_a, axis=-1, keepdims=True), 1e-12)
-    norm_b = np.maximum(np.linalg.norm(q_b, axis=-1, keepdims=True), 1e-12)
-    q_a_n = q_a / norm_a
-    q_b_n = q_b / norm_b
-
-    dots = np.sum(q_a_n * q_b_n, axis=-1)
-    dots = np.clip(np.abs(dots), 0.0, 1.0)
-    return np.degrees(2.0 * np.arccos(dots))
 
 
 # ── Mesh surface helpers ──────────────────────────────────────────────────────
@@ -478,7 +343,7 @@ def _compute_mesh_surface_error(
     import bpy
 
     def _load_and_sample(file_path: str, sample_frames: list[float]) -> np.ndarray | None:
-        _clear_scene()
+        clear_scene()
         ext = os.path.splitext(file_path)[1].lower()
         if ext == ".bvh":
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -490,7 +355,7 @@ def _compute_mesh_surface_error(
         elif ext in (".glb", ".gltf"):
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 bpy.ops.import_scene.gltf(filepath=file_path)
-        _remove_lights_and_cameras()
+        remove_lights_and_cameras()
 
         mesh_obj = _pick_primary_mesh()
         if mesh_obj is None:
@@ -606,47 +471,6 @@ def _compute_common_bone_reindex(
     return common, idx_a, idx_b
 
 
-# ── Coordinate system candidates ──────────────────────────────────────────────
-
-def _generate_coordinate_candidates() -> list[tuple[str, np.ndarray]]:
-    """Generate candidate 3x3 rotation/reflection matrices for auto-detection.
-
-    Returns list of (label, matrix) pairs.
-    """
-    I = np.eye(3, dtype=np.float64)
-
-    def R_x(deg: float) -> np.ndarray:
-        rad = np.deg2rad(deg)
-        c, s = math.cos(rad), math.sin(rad)
-        return np.array([[1, 0, 0], [0, c, -s], [0, s, c]], dtype=np.float64)
-
-    def R_y(deg: float) -> np.ndarray:
-        rad = np.deg2rad(deg)
-        c, s = math.cos(rad), math.sin(rad)
-        return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]], dtype=np.float64)
-
-    def R_z(deg: float) -> np.ndarray:
-        rad = np.deg2rad(deg)
-        c, s = math.cos(rad), math.sin(rad)
-        return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float64)
-
-    candidates = [
-        ("identity", I),
-        ("R_x(+90°)", R_x(90)),
-        ("R_x(-90°)", R_x(-90)),
-        ("R_y(+90°)", R_y(90)),
-        ("R_y(-90°)", R_y(-90)),
-        ("R_z(+90°)", R_z(90)),
-        ("R_z(-90°)", R_z(-90)),
-        ("R_x(+180°)", R_x(180)),     # diag(1,-1,-1)
-        ("R_z(+180°)", R_z(180)),     # diag(-1,-1,1)
-        ("flip_X", np.diag([-1, 1, 1])),
-        ("flip_Y", np.diag([1, -1, 1])),
-        ("flip_Z", np.diag([1, 1, -1])),
-    ]
-    return candidates
-
-
 # ── Alignment detection ───────────────────────────────────────────────────────
 
 def _detect_and_align(
@@ -728,7 +552,7 @@ def _detect_and_align(
     pos_b_aligned = pos_b_scaled + translation_offset[np.newaxis, np.newaxis, :]
 
     # ── Step 5: Detect coordinate system ────────────────────────────────────
-    candidates = _generate_coordinate_candidates()
+    candidates = _generate_coordinate_candidates_np()
 
     best_label = "identity"
     best_R = np.eye(3, dtype=np.float64)

@@ -22,6 +22,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import os
 import sys
@@ -90,7 +92,8 @@ def _export_temp_motion_files(fbx_path: str, temp_dir: str) -> dict[str, str]:
     from utils.fbx import clear_scene, import_fbx, remove_lights_and_cameras
 
     clear_scene()
-    import_fbx(fbx_path)
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        import_fbx(fbx_path)
     remove_lights_and_cameras()
 
     armature = next((obj for obj in bpy.data.objects if obj.type == "ARMATURE"), None)
@@ -108,18 +111,19 @@ def _export_temp_motion_files(fbx_path: str, temp_dir: str) -> dict[str, str]:
     bvh_path = os.path.join(temp_dir, f"{base_name}.bvh")
 
     _select_armature_and_meshes(armature)
-    bpy.ops.export_scene.gltf(
-        filepath=glb_path,
-        export_format='GLB',
-        export_animations=True,
-        export_animation_mode='ACTIVE_ACTIONS',
-        # Bake each frame so the FBX->GLB test measures importer/exporter parity,
-        # not sparse glTF key reduction differences.
-        export_force_sampling=True,
-        export_frame_range=True,
-        export_apply=False,
-        export_yup=True,
-    )
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        bpy.ops.export_scene.gltf(
+            filepath=glb_path,
+            export_format='GLB',
+            export_animations=True,
+            export_animation_mode='ACTIVE_ACTIONS',
+            # Bake each frame so the FBX->GLB test measures importer/exporter parity,
+            # not sparse glTF key reduction differences.
+            export_force_sampling=True,
+            export_frame_range=True,
+            export_apply=False,
+            export_yup=True,
+        )
 
     for obj in bpy.data.objects:
         obj.select_set(False)

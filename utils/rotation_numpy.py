@@ -74,6 +74,26 @@ def matrix_to_quat_wxyz_np(matrices: np.ndarray) -> np.ndarray:
     return flat_wxyz.reshape(matrix_array.shape[:-2] + (4,)).astype(orig_dtype, copy=False)
 
 
+def quaternion_angle_degrees_wxyz_np(
+    q_a: np.ndarray,
+    q_b: np.ndarray,
+) -> np.ndarray:
+    """Per-element quaternion angular difference in degrees.
+
+    Returns angle in [0, 180] for each (..., 4) pair.
+    Normalizes both quaternions before computing dot product to avoid
+    errors from non-unit quaternions (e.g., due to floating-point drift).
+    """
+    norm_a = np.maximum(np.linalg.norm(q_a, axis=-1, keepdims=True), 1e-12)
+    norm_b = np.maximum(np.linalg.norm(q_b, axis=-1, keepdims=True), 1e-12)
+    q_a_n = q_a / norm_a
+    q_b_n = q_b / norm_b
+
+    dots = np.sum(q_a_n * q_b_n, axis=-1)
+    dots = np.clip(np.abs(dots), 0.0, 1.0)
+    return np.degrees(2.0 * np.arccos(dots))
+
+
 def apply_rotation_to_quaternions_wxyz_np(quaternions: np.ndarray, rotation_matrix: np.ndarray) -> np.ndarray:
     quat_array = np.asarray(quaternions)
     if quat_array.shape[-1] != 4:
