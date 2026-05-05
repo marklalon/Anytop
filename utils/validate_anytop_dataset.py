@@ -165,6 +165,8 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
         "kinematic_chains",
         "mean",
         "std",
+        "rest_rotations",
+        "rest_offsets",
     }
 
     for object_type in objects_to_validate:
@@ -231,6 +233,27 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
                 _print_warn(f"validation error: {msg}")
             if not (std > 0).any():
                 msg = f"{object_type} std is entirely non-positive"
+                _print_warn(f"validation error: {msg}")
+
+            # Validate FBX rest-pose fields (needed for skinned-animation reconstruction)
+            rest_rotations = np.asarray(object_cond["rest_rotations"])
+            rest_offsets_orig = np.asarray(object_cond["rest_offsets"])
+            if rest_rotations.shape != (n_joints, 4):
+                msg = f"{object_type} rest_rotations shape mismatch: {rest_rotations.shape}, expected ({n_joints}, 4)"
+                _print_warn(f"validation error: {msg}")
+            if rest_offsets_orig.shape != (n_joints, 3):
+                msg = f"{object_type} rest_offsets shape mismatch: {rest_offsets_orig.shape}, expected ({n_joints}, 3)"
+                _print_warn(f"validation error: {msg}")
+            if not np.isfinite(rest_rotations).all():
+                msg = f"{object_type} rest_rotations contain NaN/Inf"
+                _print_warn(f"validation error: {msg}")
+            if not np.isfinite(rest_offsets_orig).all():
+                msg = f"{object_type} rest_offsets contain NaN/Inf"
+                _print_warn(f"validation error: {msg}")
+            quat_norms = np.linalg.norm(rest_rotations, axis=1)
+            if not np.allclose(quat_norms, 1.0, atol=1e-3):
+                bad = np.sum(np.abs(quat_norms - 1.0) > 1e-3)
+                msg = f"{object_type} rest_rotations has {bad} non-unit quaternions"
                 _print_warn(f"validation error: {msg}")
 
             _validate_optional_semantic_metadata(object_type, object_cond, n_joints)

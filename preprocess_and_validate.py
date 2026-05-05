@@ -3,7 +3,7 @@
 Unified Preprocessing + Validation Workflow
 ============================================
 Automatically chains AnyTop dataset creation with validation:
-  1. Preprocessing: Creates motion tensors and conditioning files
+  1. Preprocessing: Creates motion tensors and conditioning files from FBX source files
   2. Validation: Validates the preprocessed dataset
 
 Usage:
@@ -13,15 +13,15 @@ Options:
     --validate-only                      Skip preprocessing, only validate existing dataset
     --re-encode-joint-names-only         Skip preprocessing and validation, only re-encode joint names into cond.npy
     --skip-validate                      Skip validation step (faster for CI)
-    --skip-orientation-check             Skip processed-BVH orientation validation
+    --skip-orientation-check             Skip processed-FBX orientation validation
     --objects-subset SUBSET              Object subset to process (default: all)
     --object-workers N                   Concurrent characters to preprocess (default: 16)
-    --file-workers N                     Worker threads per character for BVH processing (default: 8)
-    --sample-count N                     Limit file validation to first N motions/BVHs (0=all, default: 0)
+    --file-workers N                     Worker threads per character for FBX processing (default: 8, note: FBX loading is serialized per-character due to Blender's single-threaded bpy)
+    --sample-count N                     Limit file validation to first N motions/FBXs (0=all, default: 0)
     --orientation-threshold-deg DEG      Max allowed canonicalized first-frame facing error from +Z during validation (default: 15.0)
 
 Examples:
-    # Full workflow: preprocess → validate
+    # Full workflow: preprocess ->validate
     python preprocess_and_validate.py
 
     # Validate only (assumes preprocessing already done)
@@ -205,7 +205,7 @@ def check_and_clean_old_data(dataset_dir: str = "") -> bool:
     
     # Old data found, ask user
     print("\n" + "=" * 70)
-    print("⚠ WARNING: Old preprocessed data detected")
+    print("WARNING: Old preprocessed data detected")
     print("=" * 70)
     print(f"Dataset directory: {dataset_dir_path}")
     if motions_dir.exists() and any(motions_dir.iterdir()):
@@ -223,13 +223,13 @@ def check_and_clean_old_data(dataset_dir: str = "") -> bool:
             try:
                 if motions_dir.exists():
                     shutil.rmtree(motions_dir)
-                    print(f"  ✓ Deleted {motions_dir}")
+                    print(f"  [OK] Deleted {motions_dir}")
                 if bvhs_dir.exists():
                     shutil.rmtree(bvhs_dir)
-                    print(f"  ✓ Deleted {bvhs_dir}")
+                    print(f"  [OK] Deleted {bvhs_dir}")
                 if joint_name_inspection_dir.exists():
                     shutil.rmtree(joint_name_inspection_dir)
-                    print(f"  ✓ Deleted {joint_name_inspection_dir}")
+                    print(f"  [OK] Deleted {joint_name_inspection_dir}")
                 print("Old data cleaned successfully. Proceeding with preprocessing...\n")
                 return True
             except Exception as e:
@@ -267,7 +267,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--skip-orientation-check",
         action="store_true",
-        help="Skip processed-BVH orientation validation during dataset checks.",
+        help="Skip processed-FBX orientation validation during dataset checks.",
     )
     parser.add_argument(
         "--objects-subset",
@@ -284,7 +284,7 @@ def parse_args() -> argparse.Namespace:
         "--file-workers",
         default=8,
         type=int,
-        help="Worker threads per character for BVH file processing. Defaults to 8.",
+        help="Worker threads per character for FBX file processing. Defaults to 8. Note: FBX loading is serialized per-character (bpy is single-threaded); this value is accepted but not used for per-file parallelism.",
     )
     parser.add_argument(
         "--orientation-threshold-deg",
@@ -308,7 +308,7 @@ def parse_args() -> argparse.Namespace:
         "--raw-data-dir",
         default="",
         type=str,
-        help="Path to raw Truebones BVH folders. If not specified, uses default path.",
+        help="Path to raw Truebones FBX folders. If not specified, uses default path.",
     )
     parser.add_argument(
         "--dataset-dir",
@@ -366,10 +366,9 @@ def main() -> int:
     
     # Success
     print("\n" + "=" * 70)
-    workflow_desc = " → ".join(steps_completed) if steps_completed else "No steps executed"
-    print(f"✓ WORKFLOW COMPLETE: {workflow_desc} succeeded")
+    workflow_desc = " ->".join(steps_completed) if steps_completed else "No steps executed"
+    print(f"[OK] WORKFLOW COMPLETE: {workflow_desc} succeeded")
     print("=" * 70)
-    return 0
     return 0
 
 

@@ -90,9 +90,12 @@ from utils.npy_roundtrip_utils import (
 )
 from Anytop.utils._roundtrip_common import (
     _build_skeleton,
-    _fbx_to_animation,
-    _export_animation_to_glb,
     _load_fbx_skeleton_metadata,
+    _export_animation_to_glb,
+)
+from Anytop.motion_lib.FBX import (
+    _fbx_to_animation,
+    _extract_armature_skeleton_data,
 )
 
 from tools.compare_motions import (
@@ -111,10 +114,14 @@ _COLOR_RED = "\033[31m"
 _COLOR_RESET = "\033[0m"
 
 
-def test_fbx_npy_glb_roundtrip(
-    tpose_fbx: str,
-    anim_fbx: str,
-    object_type: str = "Alligator",
+_DEFAULT_FBX = os.path.join(_ANYTOP_ROOT, "dataset", "truebones", "zoo",
+                              "Truebone_Z-OO", "Horse", "HorseALL-RunToStop.fbx")
+
+
+def _run_test_fbx_npy_glb_roundtrip(
+    tpose_fbx: str | None = None,
+    anim_fbx: str | None = None,
+    object_type: str = "Horse",
     output_dir: str | None = None,
     tolerance: float = 0.01,
 ) -> dict[str, Any]:
@@ -127,6 +134,11 @@ def test_fbx_npy_glb_roundtrip(
         4. Export recovered animation as GLB
         5. Compare: recovered GLB vs source FBX
     """
+    if tpose_fbx is None:
+        tpose_fbx = _DEFAULT_FBX
+    if anim_fbx is None:
+        anim_fbx = _DEFAULT_FBX
+
     for file_path in [tpose_fbx, anim_fbx]:
         assert os.path.isfile(file_path), f"Missing required file: {file_path}"
 
@@ -274,6 +286,16 @@ def test_fbx_npy_glb_roundtrip(
         }
 
 
+# ── pytest entry point ────────────────────────────────────────────────────────
+
+def test_fbx_npy_glb_roundtrip() -> None:
+    """Pytest-compatible entry point. Asserts FBX->NPY->GLB roundtrip passes."""
+    result = _run_test_fbx_npy_glb_roundtrip()
+    assert result["recovered_error"] < 0.01, (
+        f"FBX->NPY->GLB roundtrip position error {result['recovered_error']:.6f} exceeds tolerance"
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="FBX -> NPY -> GLB roundtrip smoke test",
@@ -323,7 +345,7 @@ if __name__ == "__main__":
     print(f"Tolerance  : {args.tolerance}")
     print()
 
-    result = test_fbx_npy_glb_roundtrip(
+    result = _run_test_fbx_npy_glb_roundtrip(
         tpose_fbx=args.tpose_fbx,
         anim_fbx=args.fbx,
         object_type=args.object_type,

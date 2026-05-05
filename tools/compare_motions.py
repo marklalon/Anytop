@@ -68,8 +68,8 @@ from Anytop.utils.rotation_numpy import (
     apply_rotation_to_quaternions_wxyz_np,
     quaternion_angle_degrees_wxyz_np,
 )
-from Anytop.utils.fbx import clear_scene, remove_lights_and_cameras
-from Anytop.utils._roundtrip_common import (
+from Anytop.motion_lib.FBX import clear_scene, remove_lights_and_cameras
+from Anytop.motion_lib.FBX import (
     _extract_armature_skeleton_data,
     _iter_action_fcurves,
     _set_scene_time,
@@ -209,7 +209,7 @@ def _load_motion(file_path: str) -> MotionData:
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             bpy.ops.import_anim.bvh(filepath=file_path)
     elif file_format == "fbx":
-        from Anytop.utils.fbx import import_fbx
+        from Anytop.motion_lib.FBX import import_fbx
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             import_fbx(file_path)
     elif file_format == "glb":
@@ -372,7 +372,7 @@ def _compute_mesh_surface_error(
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 bpy.ops.import_anim.bvh(filepath=file_path)
         elif ext == ".fbx":
-            from Anytop.utils.fbx import import_fbx
+            from Anytop.motion_lib.FBX import import_fbx
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 import_fbx(file_path)
         elif ext in (".glb", ".gltf"):

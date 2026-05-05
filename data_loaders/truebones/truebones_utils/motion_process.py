@@ -1,4 +1,4 @@
-from motion_lib import BVH, Animation, Quaternions
+from motion_lib import BVH, FBX, Animation, Quaternions
 from motion_lib.Animation import positions_global, rotations_global, offsets_from_positions, offsets_global, offset_lengths
 from motion_lib import animation_from_positions
 from collections import Counter, defaultdict
@@ -17,7 +17,8 @@ import torch
 import bisect
 import re 
 from data_loaders.truebones.truebones_utils.param_utils import HML_AVG_BONELEN, FOOT_CONTACT_HEIGHT_THRESH, DEFAULT_DATASET_DIR, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir, SNAKES, CHAIN_FORWARD_JOINTS, FLYING, FISH, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
-from utils.rotation_conversions import rotation_6d_to_matrix_np
+from Anytop.utils.rotation_conversions import rotation_6d_to_matrix_np
+from Anytop.utils._roundtrip_common import _load_fbx_skeleton_metadata
 from .motion_labels import build_motion_labels, build_object_labels, write_motion_metadata
 from .physics_joint_annotation import (
     _infer_end_effector_joints,
@@ -662,9 +663,9 @@ def process_anim(anim, object_type, root_pose_init_xz=None, scale_factor=None, f
     scaled, scale_factor_ = scale(centered, scale_factor)
     return scaled, root_pose_init_xz_, scale_factor_
 
-""" get object_type common characteristics, extracted from Tsode bvh"""
+""" get object_type common characteristics, extracted from T-pose FBX"""
 def get_common_features_from_T_pose(t_pose_bvh, object_type, face_joints=None):
-    t_pose_anim, t_pos_names, t_pose_frame_time = BVH.load(t_pose_bvh)
+    t_pose_anim, t_pos_names, t_pose_frame_time = FBX.load(t_pose_bvh)
     face_joints = resolve_face_joints(object_type, t_pos_names, t_pose_anim.parents, face_joints=face_joints)
     forward_joint_index = _find_forward_reference_joint(t_pos_names, t_pose_anim.parents)
     forward_base_joint_index = _find_neck_reference_joint(t_pos_names, t_pose_anim.parents)
@@ -913,7 +914,7 @@ def get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, scale_factor,
         if preloaded is not None:
             raw_anim, names = preloaded
         else:
-            raw_anim, names, frame_time = BVH.load(bvh_path)
+            raw_anim, names, frame_time = FBX.load(bvh_path)
         if slice_inds:
             raw_anim = raw_anim[slice_inds[0]:slice_inds[1]]
         #print('frame time', frame_time )
@@ -1171,11 +1172,11 @@ def find_orientation_reference_path(bvh_files):
     return bvh_files[0], 'fallback'
 
 
-def _process_bvh_file(file_path, object_type, max_joints, root_pose_init_xz, scale_factor,
-                      offsets, foot_indices, tpos_rots, face_joints, orientation_quat, forward_joint_index, forward_base_joint_index):
+def _process_motion_file(file_path, object_type, max_joints, root_pose_init_xz, scale_factor,
+                         offsets, foot_indices, tpos_rots, face_joints, orientation_quat, forward_joint_index, forward_base_joint_index):
     local_errors = dict()
-    # Load the BVH file once; pass it as `preloaded` to every get_motion call so that
-    raw_anim, names, frame_time = BVH.load(file_path)
+    # Load the FBX file once; pass it as `preloaded` to every get_motion call so that
+    raw_anim, names, frame_time = FBX.load(file_path)
     anim_len = len(raw_anim)
     begin = 0
     file_max_joints = max_joints
@@ -1233,27 +1234,27 @@ def _process_bvh_file(file_path, object_type, max_joints, root_pose_init_xz, sca
     }
      
 """Prepare processed tensors for all the files of a given object without writing them to disk yet."""
-def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=None, t_pos_path=None, max_files=None, num_workers=1, raw_data_dir=None):
+def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, num_workers=1, raw_data_dir=None):
     object_cond = dict()
-    if bvhs_dir is None:
-        bvhs_dir = pjoin(get_raw_data_dir(raw_data_dir), object_type)
-    if not os.path.isdir(bvhs_dir):
-        print(f'skipping {object_type}: raw BVH directory not found at {bvhs_dir}')
+    if fbxs_dir is None:
+        fbxs_dir = pjoin(get_raw_data_dir(raw_data_dir), object_type)
+    if not os.path.isdir(fbxs_dir):
+        print(f'skipping {object_type}: raw FBX directory not found at {fbxs_dir}')
         return None
-    bvh_files = sorted([pjoin(bvhs_dir, f) for f in os.listdir(bvhs_dir) if f.lower().endswith('.bvh')])
-    if len(bvh_files) == 0:
-        print(f'skipping {object_type}: no BVH files found in {bvhs_dir}')
+    fbx_files = sorted([pjoin(fbxs_dir, f) for f in os.listdir(fbxs_dir) if f.lower().endswith('.fbx')])
+    if len(fbx_files) == 0:
+        print(f'skipping {object_type}: no FBX files found in {fbxs_dir}')
         return None
     ## get a character-level orientation reference clip
     if t_pos_path is None or t_pos_path == '':
-        t_pos_path, orientation_reference_source = find_orientation_reference_path(bvh_files)
-    else: 
+        t_pos_path, orientation_reference_source = find_orientation_reference_path(fbx_files)
+    else:
         orientation_reference_source = 'explicit'
-        # removes tpos bvh fron bvh_files, as it represents a static motion and should be used only for
+        # removes T-pose FBX from fbx_files, as it represents a static pose and should be used only for
         # extracting common characteristics. If this is not the case, disable this part
-        bvh_files.remove(t_pos_path)
+        fbx_files.remove(t_pos_path)
     if max_files is not None:
-        bvh_files = bvh_files[:max_files]
+        fbx_files = fbx_files[:max_files]
 
     squared_positions_error = dict()
     root_pose_init_xz, scale_factor, offsets, foot_indices, tpos_rots, names, tpos_anim, face_joints, orientation_quat, forward_joint_index, forward_base_joint_index, contact_joint_source = get_common_features_from_T_pose(t_pos_path, object_type, face_joints=face_joints)
@@ -1292,18 +1293,23 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=
     object_cond['orientation_reference_source'] = orientation_reference_source
     object_cond['orientation_reference_file'] = os.path.basename(t_pos_path)
     object_cond['orientation_quat'] = np.array(orientation_quat, dtype=np.float64)
+    # Original (pre-canonicalization) FBX rest pose, needed so reconstruction tools
+    # can map canonical-frame motion back to the original bind frame without Blender.
+    _, _, original_rest_offsets, original_rest_rotations = _load_fbx_skeleton_metadata(t_pos_path)
+    object_cond['rest_rotations'] = original_rest_rotations.astype(np.float64)  # (J, 4) wxyz
+    object_cond['rest_offsets'] = original_rest_offsets.astype(np.float64)      # (J, 3)
     kinematic_chains = parents2kinchains(parents, object_policy(object_type))
     object_cond['kinematic_chains'] = kinematic_chains
     object_cond.update(build_object_labels(object_type))
     all_tensors = list()
 
-    num_workers = min(len(bvh_files), max(1, int(num_workers)))
-    if num_workers > 1:
-        print(f'processing {len(bvh_files)} BVH files for {object_type} with {num_workers} worker threads', flush=True)
+    # FBX loading via bpy is single-threaded (clear_scene is a global side effect),
+    # so file-level parallelism is disabled regardless of the num_workers setting.
+    print(f'processing {len(fbx_files)} FBX files for {object_type} (serial — bpy is single-threaded)', flush=True)
 
     def process_file(file_path):
         print("processing file: " + file_path, flush=True)
-        return _process_bvh_file(
+        return _process_motion_file(
             file_path,
             object_type,
             max_joints,
@@ -1318,11 +1324,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, bvhs_dir=
             forward_base_joint_index,
         )
 
-    if num_workers == 1:
-        file_outputs = [process_file(file_path) for file_path in bvh_files]
-    else:
-        with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            file_outputs = list(executor.map(process_file, bvh_files))
+    file_outputs = [process_file(file_path) for file_path in fbx_files]
 
     files_counter = 0
     frames_counter = 0
@@ -1430,12 +1432,12 @@ def _prepare_object_outputs_worker(object_type, max_files, file_workers, raw_dat
 
 """ creates processed tensors for all the files of a given object. Returens statistics and the object condition,
 which includes tpos, relation/distances matrices, offsets, parents, joints names, kinematic chains, mean and std"""    
-def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, bvhs_dir=None, t_pos_path=None, max_files=None, num_workers=1, raw_data_dir=None):
+def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, num_workers=1, raw_data_dir=None, bvhs_dir=None):
     object_payload = _prepare_object_outputs(
         object_type,
         max_joints,
         face_joints=face_joints,
-        bvhs_dir=bvhs_dir,
+        fbxs_dir=fbxs_dir or bvhs_dir,  # bvhs_dir kept for backward compatibility
         t_pos_path=t_pos_path,
         max_files=max_files,
         num_workers=num_workers,
@@ -1879,7 +1881,7 @@ def process_single_object_type(object_type, save_dir, file_workers=8):
     )
     
     
-def process_skeleton(object_name, bvh_dir, face_joints, save_dir, tpos_bvh=None):
+def process_skeleton(object_name, bvh_dir, face_joints, save_dir, tpos_bvh=None, fbx_dir=None):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(save_dir, BVHS_DIR), exist_ok=True)
@@ -1893,12 +1895,12 @@ def process_skeleton(object_name, bvh_dir, face_joints, save_dir, tpos_bvh=None)
     cond = dict()
     motion_metadata = {}
     cur_counter = files_counter
-    files_counter, frames_counter, max_joints, object_cond, object_motion_metadata = process_object(object_name, files_counter, frames_counter, max_joints, squared_positions_error, save_dir=save_dir, bvhs_dir=bvh_dir, face_joints=face_joints, t_pos_path=tpos_bvh)
+    files_counter, frames_counter, max_joints, object_cond, object_motion_metadata = process_object(object_name, files_counter, frames_counter, max_joints, squared_positions_error, save_dir=save_dir, fbxs_dir=fbx_dir or bvh_dir, face_joints=face_joints, t_pos_path=tpos_bvh)
     # BUG4 (intentional): MP4 generation is omitted here to skip expensive video
     # generation during process_skeleton. Generating video previews is not
     # Note: MP4 generation has been removed - no save_animations parameter needed.
     if object_cond is None:
-        print(f"No valid BVH data found for '{object_name}', aborting.")
+        print(f"No valid FBX data found for '{object_name}', aborting.")
         return
     cond[object_name] = object_cond
     objects_counter[object_name] = files_counter - cur_counter 

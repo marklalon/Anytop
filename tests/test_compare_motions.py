@@ -30,6 +30,8 @@ import sys
 import tempfile
 from typing import Any
 
+import pytest
+
 
 # ANSI colors
 _COLOR_RED = "\033[31m"
@@ -48,7 +50,6 @@ _REPO_ROOT = os.path.dirname(_ANYTOP_ROOT)
 for _p in [_REPO_ROOT, _ANYTOP_ROOT]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
-
 
 # ── Import compare_motions module ─────────────────────────────────────────────
 from tools.compare_motions import (
@@ -98,7 +99,7 @@ def _select_armature_and_meshes(armature) -> None:
 
 def _export_temp_motion_files(fbx_path: str, temp_dir: str) -> dict[str, str]:
     import bpy
-    from utils.fbx import clear_scene, import_fbx, remove_lights_and_cameras
+    from motion_lib.FBX import clear_scene, import_fbx, remove_lights_and_cameras
 
     clear_scene()
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -201,22 +202,17 @@ _DEFAULT_FBX  = os.path.join(_ANYTOP_ROOT, "dataset", "truebones", "zoo",
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Test compare_motions.py by exporting temporary BVH/GLB from one FBX.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("--fbx", default=_DEFAULT_FBX, help="Path to FBX file")
-    parser.add_argument("--pos-tolerance", type=float, default=1.0,
-                        help="Max position error tolerance (%% of character size, default=1.0)")
-    parser.add_argument("--rot-tolerance", type=float, default=1.0,
-                        help="Max rotation error tolerance (degrees, default=1.0)")
-    parser.add_argument("--json-out", default=None,
-                        help="Optional path to write full JSON report")
-    args = parser.parse_args()
+def _run_test_compare_motions(
+    fbx_path: str | None = None,
+    pos_tolerance: float = 1.0,
+    rot_tolerance: float = 1.0,
+    json_out: str | None = None,
+) -> dict[str, Any]:
+    if fbx_path is None:
+        fbx_path = _DEFAULT_FBX
 
     with tempfile.TemporaryDirectory(prefix="compare_motions_") as temp_dir:
-        generated_paths = _export_temp_motion_files(args.fbx, temp_dir)
+        generated_paths = _export_temp_motion_files(fbx_path, temp_dir)
 
         print(f"[Source] FBX: {_fmt_path(generated_paths['FBX'])}")
         print(f"[Generated] BVH: {_fmt_path(generated_paths['BVH'])}")
@@ -233,7 +229,7 @@ def main() -> None:
             print(f"  {label}: frames={m.num_frames}, bones={m.num_joints}, "
                   f"fps={m.fps:.2f}, format={m.file_format.upper()}")
 
-        print(f"\n[Tolerances] position={args.pos_tolerance:.2f}% char  rotation={args.rot_tolerance:.4f}°  world_quaternion={args.rot_tolerance:.4f}°")
+        print(f"\n[Tolerances] position={pos_tolerance:.2f}% char  rotation={rot_tolerance:.4f}°  world_quaternion={rot_tolerance:.4f}°")
 
         # ── Self-comparisons (expect near-zero error) ──────────────────────
         print("\n\n### Self-comparisons (expect near-zero error) ###\n")
@@ -272,8 +268,8 @@ def main() -> None:
             if r is None:
                 print(f"  [SKIP] {a_label} vs {b_label} — incompatible, skipping")
                 continue
-            passed = _check_pass(r, pos_tol=args.pos_tolerance,
-                                 rot_tol=args.rot_tolerance,
+            passed = _check_pass(r, pos_tol=pos_tolerance,
+                                 rot_tol=rot_tolerance,
                                  label=f"{a_label} vs {b_label}")
             all_passed = all_passed and passed
 
@@ -284,7 +280,7 @@ def main() -> None:
         print(f"{'#'*70}\n")
 
         # ── JSON report ─────────────────────────────────────────────────────
-        if args.json_out:
+        if json_out:
             report = {
                 "files": {
                     label: {
@@ -297,8 +293,8 @@ def main() -> None:
                     for label, m in motions.items()
                 },
                 "tolerances": {
-                    "position": args.pos_tolerance,
-                    "rotation_deg": args.rot_tolerance,
+                    "position": pos_tolerance,
+                    "rotation_deg": rot_tolerance,
                 },
                 "results": {},
             }
@@ -316,13 +312,28 @@ def main() -> None:
                     "rotation_mean_error_deg": r["rotation"]["mean_error_deg"],
                 }
 
-            os.makedirs(os.path.dirname(args.json_out) or ".", exist_ok=True)
-            with open(args.json_out, "w", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(json_out) or ".", exist_ok=True)
+            with open(json_out, "w", encoding="utf-8") as f:
                 json.dump(report, f, indent=2)
-            print(f"[Report] JSON saved -> {args.json_out}")
+            print(f"[Report] JSON saved -> {json_out}")
 
-        sys.exit(0 if all_passed else 1)
+        return {
+            "all_passed": all_passed,
+            "results": results,
+        }
 
 
 if __name__ == "__main__":
-    main()
+    result = _run_test_compare_motions()
+    sys.exit(0 if result["all_passed"] else 1)
+
+
+# ── pytest entry point ────────────────────────────────────────────────────────
+
+
+def test_compare_motions() -> None:
+    """Pytest-compatible entry point. Asserts all cross-format comparisons pass."""
+    result = _run_test_compare_motions()
+    assert result["all_passed"], (
+        "compare_motions cross-format comparison failed"
+    )

@@ -42,7 +42,8 @@ for _path in [_REPO_ROOT, _ANYTOP_ROOT]:
         sys.path.insert(0, _path)
 
 
-from Anytop.utils._roundtrip_common import _build_skeleton, _fbx_to_animation, _load_fbx_skeleton_metadata
+from Anytop.utils._roundtrip_common import _build_skeleton, _load_fbx_skeleton_metadata
+from Anytop.motion_lib.FBX import _fbx_to_animation
 from Anytop.utils.exporter import AnimationExporter
 from tools.compare_motions import _compare_motions, _compute_mesh_surface_error, _detect_and_align, _load_motion, _print_summary
 
@@ -253,14 +254,16 @@ def _compare_export_to_fbx(
     }
 
 
-def test_exporter_compare_motions(
-    fbx_path: str,
+def _run_test_exporter_compare_motions(
+    fbx_path: str | None = None,
     output_dir: str | None = None,
     pos_tolerance_pct_char: float = 1.5,
     rot_tolerance_deg: float = 1.0,
     mesh_mean_tolerance_pct_char: float = 3.5,
     mesh_p99_tolerance_pct_char: float = 12.0,
 ) -> dict[str, Any]:
+    if fbx_path is None:
+        fbx_path = _DEFAULT_FBX
     assert os.path.isfile(fbx_path), f"Missing required FBX: {fbx_path}"
 
     temp_context = nullcontext(output_dir) if output_dir else tempfile.TemporaryDirectory(prefix="exporter_compare_")
@@ -327,6 +330,21 @@ def test_exporter_compare_motions(
         }
 
 
+# ── pytest entry point ────────────────────────────────────────────────────────
+
+def test_exporter_compare_motions() -> None:
+    """Pytest-compatible entry point. Asserts all exporter comparisons pass."""
+    report = _run_test_exporter_compare_motions()
+    assert all(r["passed"] for r in report["results"].values()), (
+        "Exporter comparison failed: "
+        + ", ".join(
+            f"{k}={v['errors']}"
+            for k, v in report["results"].items()
+            if not v["passed"]
+        )
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Export BVH / bones-only GLB / skinned GLB from one FBX and compare each output to the source FBX.",
@@ -375,7 +393,7 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    report = test_exporter_compare_motions(
+    report = _run_test_exporter_compare_motions(
         fbx_path=args.fbx,
         output_dir=args.output_dir,
         pos_tolerance_pct_char=args.pos_tolerance,

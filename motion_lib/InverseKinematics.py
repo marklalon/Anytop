@@ -3,9 +3,9 @@ import scipy.linalg as linalg
 import importlib
 
 # Import the Animation *module* (not the class that shadows it in __init__.py)
-Animation = importlib.import_module('motion_lib.Animation')
-from motion_lib import AnimationStructure
-from motion_lib.Quaternions import Quaternions
+Animation = importlib.import_module('.Animation', package=__package__)
+from . import AnimationStructure
+from .Quaternions import Quaternions
 
 
 class BasicInverseKinematics:

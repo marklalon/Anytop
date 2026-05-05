@@ -16,7 +16,7 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from Anytop.utils.fbx import import_fbx, remove_lights_and_cameras
+from Anytop.motion_lib.FBX import import_fbx, remove_lights_and_cameras
 from Anytop.utils.rotation_numpy import (
     apply_rotation_to_quaternions_wxyz_np,
     quat_conjugate_wxyz_np,

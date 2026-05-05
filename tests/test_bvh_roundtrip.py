@@ -298,5 +298,12 @@ def main() -> None:
     print("[BVH] round-trip smoke test passed")
 
 
+# ── pytest entry point ───────────────────────────────────────────────────────
+
+def test_bvh_roundtrip():
+    """Pytest-compatible entry point for the BVH round-trip smoke test."""
+    main()
+
+
 if __name__ == "__main__":
     main()
