@@ -235,12 +235,12 @@ def test_exporter_compare_motions(
         assert work_dir is not None
         os.makedirs(work_dir, exist_ok=True)
 
+        print(f"[Source] FBX: {_fmt_path(fbx_path)}")
         exports = _export_variants_from_fbx(fbx_path, work_dir)
 
-        print(f"[Source] FBX: {_fmt_path(exports['FBX'])}")
-        print(f"[Exported] BVH: {_fmt_path(exports['BVH'])}")
-        print(f"[Exported] Bones-only GLB: {_fmt_path(exports['BonesOnlyGLB'])}")
-        print(f"[Exported] Skinned GLB: {_fmt_path(exports['SkinnedGLB'])}")
+        print(f"  [Exported] BVH: {_fmt_path(exports['BVH'])}")
+        print(f"  [Exported] Bones-only GLB: {_fmt_path(exports['BonesOnlyGLB'])}")
+        print(f"  [Exported] Skinned GLB: {_fmt_path(exports['SkinnedGLB'])}")
 
         results = {
             "BVH": _compare_export_to_fbx(

@@ -317,6 +317,15 @@ class AnimationExporter:
         self.skeleton = skeleton
         self.fps      = fps
 
+        # Defensive: ensure skeleton.bones list index == bone.id
+        # (Silent index mismatch would cause completely wrong exports.)
+        for idx, b in enumerate(self.skeleton.bones):
+            assert b.id == idx, (
+                f"skeleton.bones[{idx}].id must equal {idx}, got {b.id}. "
+                "The exporter indexes by list position but reads bone.id — "
+                "a mismatch will produce silently corrupted output."
+            )
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
