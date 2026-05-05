@@ -24,7 +24,7 @@ Usage examples:
     python tests/test_fbx_npy_glb_roundtrip.py \
         --fbx outputs/fbx_npy_roundtrip/original.fbx \\
         --output-dir outputs/my_roundtrip \\
-        --tolerance 0.05
+        --tolerance 0.01
 """
 from __future__ import annotations
 
@@ -112,7 +112,7 @@ def test_fbx_npy_glb_roundtrip(
     anim_fbx: str,
     object_type: str = "Alligator",
     output_dir: str | None = None,
-    tolerance: float = 0.05,
+    tolerance: float = 0.01,
 ) -> dict[str, Any]:
     """FBX -> NPY -> GLB roundtrip test.
 
@@ -210,23 +210,19 @@ def test_fbx_npy_glb_roundtrip(
             mesh_result = _compute_mesh_surface_error(
                 motion_a, motion_b_aligned, _alignment,
             )
+        mesh_mean_pct_char = 0.0
+        mesh_p99_pct_char = 0.0
         if mesh_result is not None:
             char_size = max(float(result["position"]["character_size"]), 1e-8)
             mesh_mean_pct_char = mesh_result["mean"] / char_size * 100.0
             mesh_p99_pct_char = mesh_result["p99"] / char_size * 100.0
-            print(
-                "[Mesh] nearest-surface error: "
-                f"mean={mesh_result['mean']:.6f} ({mesh_mean_pct_char:.4f}%), "
-                f"p99={mesh_result['p99']:.6f} ({mesh_p99_pct_char:.4f}%), "
-                f"max={mesh_result['max']:.6f}"
-            )
-            assert mesh_mean_pct_char < 3.5, (
+            assert mesh_mean_pct_char < 0.2, (
                 f"FBX -> recovered GLB mesh mean surface error {mesh_result['mean']:.6f} "
-                f"({mesh_mean_pct_char:.4f}% of character size) exceeds 3.5%"
+                f"({mesh_mean_pct_char:.4f}% of character size) exceeds 0.2%"
             )
-            assert mesh_p99_pct_char < 12.0, (
+            assert mesh_p99_pct_char < 2.0, (
                 f"FBX -> recovered GLB mesh p99 surface error {mesh_result['p99']:.6f} "
-                f"({mesh_p99_pct_char:.4f}% of character size) exceeds 12.0%"
+                f"({mesh_p99_pct_char:.4f}% of character size) exceeds 2.0%"
             )
         else:
             print("[Mesh] Skipping mesh surface comparison (one or both motions lack skinning)")
@@ -255,6 +251,8 @@ def test_fbx_npy_glb_roundtrip(
             "recovered_worst_time": recovered_worst_time,
             "mesh_mean_error": float(mesh_result["mean"]) if mesh_result is not None else 0.0,
             "mesh_p99_error": float(mesh_result["p99"]) if mesh_result is not None else 0.0,
+            "mesh_mean_pct_char": mesh_mean_pct_char,
+            "mesh_p99_pct_char": mesh_p99_pct_char,
             "rot_max": float(result["rotation"]["max_error_deg"]),
             "rot_worst_bone": result["rotation"]["worst_bone"],
             "rot_worst_frame": int(result["rotation"]["worst_frame"]),
@@ -288,8 +286,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tolerance",
         type=float,
-        default=0.05,
-        help="Max allowed comparison error in meters (default: 0.05).",
+        default=0.01,
+        help="Max allowed comparison error in meters (default: 0.01).",
     )
     return parser.parse_args()
 
@@ -324,9 +322,10 @@ if __name__ == "__main__":
     print(f"  FBX -> recovered GLB : pos_max={result['recovered_error']:.6f} ({result['recovered_error_pct_char']:.4f}%) "
           f"(bone={result['recovered_worst_bone']}, frame={result['recovered_worst_frame']}, "
           f"time={result['recovered_worst_time']:.6f})")
-    if result.get("mesh_mean_error", 0.0) > 0:
-        print(f"  Mesh surface error   : mean={result['mesh_mean_error']:.6f}  p99={result['mesh_p99_error']:.6f}")
-    else:
-        print("  Mesh surface error   : skipped (no skinning in input)")
     print(f"  Rotation error       : max={result['rot_max']:.6f}°  "
           f"(bone={result['rot_worst_bone']}, frame={result['rot_worst_frame']})")
+    if result.get("mesh_mean_error", 0.0) > 0:
+        print(f"  Mesh surface error   : mean={result['mesh_mean_error']:.6f} ({result['mesh_mean_pct_char']:.4f}%)  "
+              f"p99={result['mesh_p99_error']:.6f} ({result['mesh_p99_pct_char']:.4f}%)")
+    else:
+        print("  Mesh surface error   : skipped (no skinning in input)")

@@ -2,7 +2,8 @@
 Animation export to GLB and BVH formats.
 
 GLB export requires Blender (bpy) to be available in the Python
-environment. BVH export delegates to the Anytop motion_lib.
+environment. BVH export is written through Anytop motion_lib so the
+round-trip path stays consistent with motion_lib.BVH.load.
 """
 from __future__ import annotations
 
@@ -357,9 +358,8 @@ class AnimationExporter:
             raise ValueError(f"Unsupported export format: {ext!r}")
 
     # ------------------------------------------------------------------
-    # BVH export  (delegates to Anytop's battle-tested BVH.save)
+    # BVH export (motion_lib.BVH.save)
     # ------------------------------------------------------------------
-
     def _export_bvh(self, joint_rotations: Tensor, root_translation: Tensor,
                     root_rotation: Tensor, output_path: str,
                     bone_translations: Optional[Tensor] = None) -> None:
@@ -367,7 +367,6 @@ class AnimationExporter:
         import numpy as np
         import sys
         from Anytop.utils.quaternion import quat_multiply
-        _cwd = os.getcwd()
         _anytop_root = os.path.dirname(os.path.dirname(__file__))
         if _anytop_root not in sys.path:
             sys.path.insert(0, _anytop_root)
@@ -383,20 +382,17 @@ class AnimationExporter:
         # that use \S+ regex can re-import the file.
         joint_names = [b.name.replace(" ", "_") for b in self.skeleton.bones]
 
-        base_quat = joint_rotations.detach().clone()
-        rest_quat = torch.stack([b.rest_rotation for b in self.skeleton.bones], dim=0).to(
-            device=base_quat.device,
-            dtype=base_quat.dtype,
-        )
-        baked_quat = quat_multiply(
-            rest_quat.unsqueeze(0).expand(F, -1, -1),
-            base_quat,
-        )
-        baked_quat[:, 0, :] = quat_multiply(
-            root_rotation.detach(),
-            baked_quat[:, 0, :],
-        )
-        rotations = Quaternions(baked_quat.cpu().to(torch.float64).numpy())
+        rotations_np = joint_rotations.detach().cpu().to(torch.float64).numpy().copy()
+        if J > 0:
+            root_quat = quat_multiply(
+                root_rotation.detach().to(
+                    device=joint_rotations.device,
+                    dtype=joint_rotations.dtype,
+                ),
+                joint_rotations[:, 0, :].detach(),
+            )
+            rotations_np[:, 0, :] = root_quat.cpu().to(torch.float64).numpy()
+        rotations = Quaternions(rotations_np)
 
         # ── Rest-pose attributes ────────────────────────────────────
         offsets_np = np.empty((J, 3), dtype=np.float64)
@@ -427,10 +423,9 @@ class AnimationExporter:
             rest_rots_np,
         )
 
-        has_bone_positions = pose_locations_np is not None
-        positions_np = np.zeros((F, J, 3), dtype=np.float64)
+        positions_np = np.repeat(offsets_np[np.newaxis, :, :], F, axis=0)
         positions_np[:, 0, :] = joint_positions_np[:, 0, :]
-        if has_bone_positions:
+        if pose_locations_np is not None and J > 1:
             for joint_idx in range(1, J):
                 rest_q = np.repeat(rest_rots_np[joint_idx:joint_idx + 1], F, axis=0)
                 positions_np[:, joint_idx, :] = (
@@ -444,7 +439,7 @@ class AnimationExporter:
         anim = Animation(rotations, positions_np, orients, offsets_np, parents_np)
         bvh_save(output_path, anim, names=joint_names,
                  frametime=1.0 / self.fps, order='xyz',
-                 positions=has_bone_positions,
+                 positions=True,
                  all_joints_as_names=True)
 
     # ------------------------------------------------------------------
@@ -809,7 +804,7 @@ class AnimationExporter:
                 export_format='GLB',
                 export_animations=True,
                 export_animation_mode='ACTIVE_ACTIONS',
-                export_force_sampling=False,
+                export_force_sampling=True,
                 export_frame_range=True,
                 export_apply=False,
                 export_yup=yup,
