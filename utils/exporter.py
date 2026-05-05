@@ -366,7 +366,6 @@ class AnimationExporter:
         """Write a BVH file using the unified exporter parameter semantics."""
         import numpy as np
         import sys
-        from Anytop.utils.quaternion import quat_multiply
         _anytop_root = os.path.dirname(os.path.dirname(__file__))
         if _anytop_root not in sys.path:
             sys.path.insert(0, _anytop_root)
@@ -381,18 +380,6 @@ class AnimationExporter:
         # Sanitize: replace whitespace with '_' so BVHView/Anytop loaders
         # that use \S+ regex can re-import the file.
         joint_names = [b.name.replace(" ", "_") for b in self.skeleton.bones]
-
-        rotations_np = joint_rotations.detach().cpu().to(torch.float64).numpy().copy()
-        if J > 0:
-            root_quat = quat_multiply(
-                root_rotation.detach().to(
-                    device=joint_rotations.device,
-                    dtype=joint_rotations.dtype,
-                ),
-                joint_rotations[:, 0, :].detach(),
-            )
-            rotations_np[:, 0, :] = root_quat.cpu().to(torch.float64).numpy()
-        rotations = Quaternions(rotations_np)
 
         # ── Rest-pose attributes ────────────────────────────────────
         offsets_np = np.empty((J, 3), dtype=np.float64)
@@ -413,6 +400,27 @@ class AnimationExporter:
         else:
             pose_locations_np = None
 
+        # ── Bake rest_rotation into per-frame channel rotations ─────
+        # BVH file format has no per-joint rest-rotation slot; the loader
+        # rebuilds the rest pose with identity local rotation on every joint.
+        # To make the loaded animation reproduce the original total local
+        # rotation (rest_q ⊗ pose_q), pre-multiply each channel by rest_q.
+        # The wrapper transform `root_rotation` has no BVH equivalent above
+        # the root joint, so it is folded into the root channel rotation
+        # (root_rotation ⊗ rest_q[0] ⊗ pose_q[0]).
+        rotations_np = np.empty_like(joint_rot_np)
+        for j in range(J):
+            rest_q_repeat = np.repeat(rest_rots_np[j:j + 1], F, axis=0)
+            rotations_np[:, j, :] = quat_multiply_wxyz_np(
+                rest_q_repeat, joint_rot_np[:, j, :],
+            )
+        if J > 0:
+            rotations_np[:, 0, :] = quat_multiply_wxyz_np(
+                root_rotation_np, rotations_np[:, 0, :],
+            )
+        rotations = Quaternions(rotations_np)
+
+        # ── World-space FK for root position channels ───────────────
         joint_positions_np, _ = _batch_internal_pose_fk_np(
             joint_rot_np,
             root_translation_np,
@@ -423,6 +431,12 @@ class AnimationExporter:
             rest_rots_np,
         )
 
+        # ── Per-frame position channels ─────────────────────────────
+        # For non-root j the BVH motion position channel must equal the bone
+        # head position in parent's local rest frame, since the loader applies
+        # `parent_world_rot @ pose_loc` to chain world positions and parent's
+        # world rest rot is already baked into the channel rotations above.
+        # That position is `rest_offset[j] + rest_q[j].rotate(pose_loc[j])`.
         positions_np = np.repeat(offsets_np[np.newaxis, :, :], F, axis=0)
         positions_np[:, 0, :] = joint_positions_np[:, 0, :]
         if pose_locations_np is not None and J > 1:
@@ -434,10 +448,52 @@ class AnimationExporter:
                 )
 
         offsets_np[0] = 0.0  # root offset is always zero in BVH
-        orients = Quaternions(orients_np)
 
-        anim = Animation(rotations, positions_np, orients, offsets_np, parents_np)
-        bvh_save(output_path, anim, names=joint_names,
+        # ── Reindex into DFS order before writing ───────────────────
+        # motion_lib.BVH.save writes the HIERARCHY block via DFS recursion
+        # but the MOTION block via `for j in range(n_joints)` (index order).
+        # Both BVH.load and the BVH spec require channels in HIERARCHY (DFS)
+        # order. When we feed it a BFS-indexed skeleton (the FBX path) the two
+        # orders disagree and per-joint channels land on the wrong bones.
+        # Remap every per-joint array into DFS order so index == DFS index.
+        children_lists = [[] for _ in range(J)]
+        for j in range(J):
+            p = int(parents_np[j])
+            if p >= 0:
+                children_lists[p].append(j)
+
+        dfs_order: list[int] = []
+        stack = [j for j in range(J) if int(parents_np[j]) < 0]
+        stack.reverse()  # so the first root is popped first
+        while stack:
+            node = stack.pop()
+            dfs_order.append(node)
+            stack.extend(reversed(children_lists[node]))
+
+        if len(dfs_order) != J:
+            raise RuntimeError(
+                f"DFS traversal covered {len(dfs_order)} of {J} joints; "
+                "skeleton has detached joints not reachable from any root."
+            )
+
+        old_to_new = np.empty(J, dtype=np.int64)
+        for new_id, old_id in enumerate(dfs_order):
+            old_to_new[old_id] = new_id
+        perm = np.array(dfs_order, dtype=np.int64)
+
+        joint_names_dfs = [joint_names[i] for i in dfs_order]
+        rotations_dfs = Quaternions(rotations_np[:, perm, :])
+        positions_dfs = positions_np[:, perm, :]
+        offsets_dfs = offsets_np[perm]
+        orients_dfs = Quaternions(orients_np[perm])
+        parents_dfs = np.array([
+            old_to_new[int(parents_np[old_id])] if int(parents_np[old_id]) >= 0 else -1
+            for old_id in dfs_order
+        ], dtype=np.int32)
+
+        anim = Animation(rotations_dfs, positions_dfs, orients_dfs,
+                         offsets_dfs, parents_dfs)
+        bvh_save(output_path, anim, names=joint_names_dfs,
                  frametime=1.0 / self.fps, order='xyz',
                  positions=True,
                  all_joints_as_names=True)

@@ -204,7 +204,7 @@ def restore_glb(
                 f"  Available: {list(cond.keys())}\n"
                 f"  Pass --object_type explicitly."
             )
-        print(f"  Auto-detected object_type: {object_type}")
+        print(f"Auto-detected object_type: {object_type}")
     elif object_type not in cond:
         raise ValueError(
             f"object_type '{object_type}' not found in cond.npy.\n"
@@ -216,7 +216,7 @@ def restore_glb(
     parents = np.array(obj_cond["parents"], dtype=np.int32)
     offsets_hml = np.array(obj_cond["offsets"], dtype=np.float64)  # HML scale
 
-    print(f"  Skeleton: {len(joints_names)} joints, root='{joints_names[0]}'")
+    print(f"Skeleton: {len(joints_names)} joints, root='{joints_names[0]}'")
 
     # ── Load NPY features ─────────────────────────────────────────────────────
     raw = np.load(npy_path, allow_pickle=True)
@@ -232,10 +232,10 @@ def restore_glb(
     if C != 13:
         raise ValueError(f"Expected 13 channels per joint, got {C}.")
 
-    print(f"  NPY: {F} frames, {J} joints, {C} channels")
+    print(f"NPY: {F} frames, {J} joints, {C} channels")
 
     # ── Load T-pose mesh (FBX or GLB) for bone-name verification and scale computation ──
-    print("  Loading T-pose mesh for scale computation...")
+    print("Loading T-pose mesh for scale computation...")
     from Anytop.utils._roundtrip_common import _load_fbx_skeleton_metadata, _load_glb_skeleton_metadata, _build_skeleton
 
     tpose_lower = tpose_fbx.lower()
@@ -243,12 +243,12 @@ def restore_glb(
         fbx_bone_names, _fbx_parents, fbx_offsets, _fbx_rest_rots = _load_fbx_skeleton_metadata(
             tpose_fbx
         )
-        print(f"  FBX armature: {len(fbx_bone_names)} bones, root='{fbx_bone_names[0]}'")
+        print(f"FBX armature: {len(fbx_bone_names)} bones, root='{fbx_bone_names[0]}'")
     elif tpose_lower.endswith((".glb", ".gltf")):
         fbx_bone_names, _fbx_parents, fbx_offsets, _fbx_rest_rots = _load_glb_skeleton_metadata(
             tpose_fbx
         )
-        print(f"  GLB armature: {len(fbx_bone_names)} bones, root='{fbx_bone_names[0]}'")
+        print(f"GLB armature: {len(fbx_bone_names)} bones, root='{fbx_bone_names[0]}'")
     else:
         raise ValueError(
             f"Unsupported T-pose mesh format: {tpose_fbx} — expected .fbx, .glb, or .gltf"
@@ -259,30 +259,30 @@ def restore_glb(
     missing = [n for n in joints_names if n not in fbx_name_set]
     if missing:
         print(
-            f"  WARNING: {len(missing)} cond.npy joints not found in FBX armature:\n"
-            f"    {missing[:10]}{'...' if len(missing) > 10 else ''}\n"
-            f"  These bones will be skipped during export (kept at FBX rest pose)."
+            f"WARNING: {len(missing)} cond.npy joints not found in FBX armature:\n"
+            f"  {missing[:10]}{'...' if len(missing) > 10 else ''}\n"
+            f"These bones will be skipped during export (kept at FBX rest pose)."
         )
     else:
-        print(f"  All {J} cond joints found in FBX armature.")
+        print(f"All {J} cond joints found in FBX armature.")
 
     # ── Compute scale factor ──────────────────────────────────────────────────
     scale_factor = _compute_scale_factor(joints_names, fbx_bone_names, fbx_offsets)
     if scale_factor is None:
-        print("  WARNING: Could not compute scale_factor from FBX offsets. Using 1.0.")
+        print("WARNING: Could not compute scale_factor from FBX offsets. Using 1.0.")
         scale_factor = 1.0
     else:
         print(
-            f"  Scale factor: {scale_factor:.6f}  "
+            f"Scale factor: {scale_factor:.6f}  "
             f"(HML_AVG={_get_hml_avg_bonelen():.4f} / mean_fbx_bonelen)"
         )
 
     # ── Recover Animation (in HML feature space) ──────────────────────────────
-    print("  Recovering animation from features...")
+    print("Recovering animation from features...")
     recovered_anim, has_animated_pos = recover_from_features(features, parents, offsets_hml)
-    print(f"  Recovered: {recovered_anim.shape[0]} frames")
+    print(f"Recovered: {recovered_anim.shape[0]} frames")
     if has_animated_pos:
-        print("  Note: non-root bone translations detected (unusual for BVH-sourced clips).")
+        print("Note: non-root bone translations detected (unusual for BVH-sourced clips).")
 
     # ── Unscale positions to original mesh scale ───────────────────────────────
     # Rotations are scale-invariant; only translations need unscaling.
@@ -299,9 +299,9 @@ def restore_glb(
             conj = -ori_q
             recovered_anim.rotations[:, 0] = conj * recovered_anim.rotations[:, 0]
             recovered_anim.positions[:, 0] = conj * recovered_anim.positions[:, 0]
-            print("  Orientation restored.")
+            print("Orientation restored.")
         else:
-            print("  WARNING: orientation_quat not found in cond.npy — orientation not restored.")
+            print("WARNING: orientation_quat not found in cond.npy — orientation not restored.")
 
     # ── Build skeleton (identity rest, HML offsets scaled to FBX size) ─────
     scaled_offsets = offsets_hml / scale_factor
@@ -339,7 +339,7 @@ def restore_glb(
     # The exporter handles retargeting: world-space alignment from HML skeleton
     # to FBX armature, followed by FBX-local conversion.
     exporter = AnimationExporter(skeleton, fps=fps)
-    print(f"  Exporting skinned GLB → {output_glb}  (mesh: {tpose_fbx})")
+    print(f"Exporting skinned GLB → {output_glb}")
     exporter.export(
         joint_rotations,
         root_translation,
