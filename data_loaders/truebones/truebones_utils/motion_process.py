@@ -1235,21 +1235,21 @@ def _is_walk_reference_path(file_path):
 
 
 """ find a character-level orientation reference clip with priority T Pose > Idle > Walk """
-def find_orientation_reference_path(bvh_files):
-    for file_path in bvh_files:
+def find_tpose_reference_path(fbx_files):
+    for file_path in fbx_files:
         if _is_tpose_reference_path(file_path):
-            bvh_files.remove(file_path)
-            return file_path, 'tpose'
+            fbx_files.remove(file_path)
+            return file_path
 
-    for matcher, source_name in (
+    for matcher, _source_name in (
         (_is_idle_reference_path, 'idle'),
         (_is_walk_reference_path, 'walk'),
     ):
-        for file_path in bvh_files:
+        for file_path in fbx_files:
             if matcher(file_path):
-                return file_path, source_name
+                return file_path
 
-    return bvh_files[0], 'fallback'
+    return fbx_files[0]
 
 
 def _normalize_action_name(object_type: str, raw_action: str) -> str:
@@ -1445,9 +1445,8 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
         return None
     ## get a character-level orientation reference clip
     if t_pos_path is None or t_pos_path == '':
-        t_pos_path, orientation_reference_source = find_orientation_reference_path(fbx_files)
+        t_pos_path = find_tpose_reference_path(fbx_files)
     else:
-        orientation_reference_source = 'explicit'
         # removes T-pose FBX from fbx_files, as it represents a static pose and should be used only for
         # extracting common characteristics. If this is not the case, disable this part
         fbx_files.remove(t_pos_path)
@@ -1494,9 +1493,6 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     object_cond['mirror_disabled_joint_names'] = semantic_metadata['mirror_disabled_joint_names']
     object_cond['mirror_disabled_warnings'] = semantic_metadata['mirror_disabled_warnings']
     object_cond['is_symmetric'] = semantic_metadata['is_symmetric']
-    object_cond['orientation_reference_source'] = orientation_reference_source
-    object_cond['orientation_reference_file'] = os.path.basename(t_pos_path)
-    object_cond['orientation_quat'] = np.array(orientation_quat, dtype=np.float64)
     object_cond['root_pose_init_xz'] = np.array(root_pose_init_xz, dtype=np.float64)
     object_cond['scale_factor'] = float(scale_factor)
     object_cond['kinematic_chains'] = parents2kinchains(parents, object_policy(object_type))

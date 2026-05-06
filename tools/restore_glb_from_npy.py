@@ -149,10 +149,20 @@ def _remap_joint_array(
     return np.asarray(reordered)
 
 
-def _warn_on_missing_mesh_joints(joint_names: list[str], tpose_mesh: str) -> None:
-    mesh_bone_names, _mesh_parents, _mesh_offsets, _mesh_rest_rots = _load_fbx_skeleton_metadata(
-        tpose_mesh
-    )
+def _warn_on_missing_mesh_joints(
+    joint_names: list[str],
+    tpose_mesh: str,
+    mesh_bone_names: list[str] | None = None,
+) -> None:
+    """Warn about recovered joints missing from the T-pose armature.
+
+    When *mesh_bone_names* is provided (from a previous FBX load), skip
+    re-loading the FBX.
+    """
+    if mesh_bone_names is None:
+        mesh_bone_names, _mesh_parents, _mesh_offsets, _mesh_rest_rots = _load_fbx_skeleton_metadata(
+            tpose_mesh
+        )
 
     mesh_name_set = set(mesh_bone_names)
     missing = [joint_name for joint_name in joint_names if joint_name not in mesh_name_set]
@@ -221,6 +231,7 @@ def _build_restore_context(
         "offsets": offsets,
         "tpose_rest_rotations": tpose_rest_rotations,
         "scale_factor": scale_factor,
+        "mesh_bone_names": list(tpose_meta["joint_names"]),
     }
 
 
@@ -349,7 +360,9 @@ def restore_glb(
     if restore_ctx["scale_factor"] is not None:
         print(f"T-pose preprocessing scale_factor: {restore_ctx['scale_factor']:.6f}")
 
-    _warn_on_missing_mesh_joints(joints_names, tpose_mesh)
+    _warn_on_missing_mesh_joints(
+        joints_names, tpose_mesh, mesh_bone_names=restore_ctx.get("mesh_bone_names")
+    )
 
     # ── Recover Animation (in HML feature space) ──────────────────────────────
     print("Recovering feature-space animation from NPY...")

@@ -46,7 +46,7 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     _find_translation_root,
     _xz_locomotion_extent,
     ROOT_XZ_STRIP_THRESHOLD,
-    find_orientation_reference_path,
+    find_tpose_reference_path,
 )
 from data_loaders.truebones.truebones_utils.param_utils import (
     FOOT_CONTACT_VEL_THRESH,
@@ -219,18 +219,13 @@ def process_animal(animal_dir: Path):
     print(f"{'='*60}")
 
     # --- Resolve T-pose reference ------------------------------------------
-    # Pass a copy so find_orientation_reference_path's internal remove() doesn't
+    # Pass a copy so find_tpose_reference_path's internal remove() doesn't
     # mutate bvh_file_strs (we need the full list for motion_files below).
-    ref_path, ref_source = find_orientation_reference_path(list(bvh_file_strs))
-    print(f"  Orientation reference: {os.path.basename(ref_path)}  (source: {ref_source})")
+    ref_path = find_tpose_reference_path(list(bvh_file_strs))
+    print(f"  Orientation reference: {os.path.basename(ref_path)}")
 
-    # Production code (_prepare_object_outputs) only removes a T-pose reference
-    # from the motion list (inside find_orientation_reference_path itself).
-    # idle / walk / fallback references are also processed as motion clips.
-    if ref_source == "tpose":
-        motion_files = [f for f in bvh_file_strs if f != ref_path]
-    else:
-        motion_files = list(bvh_file_strs)
+    # Production code only removes a T-pose reference from the motion list.
+    motion_files = [f for f in bvh_file_strs if f != ref_path]
 
     # --- Extract common features from T-pose BVH ---------------------------
     (
