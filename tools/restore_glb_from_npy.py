@@ -11,10 +11,26 @@ Pipeline:
         → animation_to_exporter_inputs(...)
         → AnimationExporter + T-pose FBX → skinned GLB
 
-If the NPY file contains the self-contained metadata payload produced by
-build_npy_metadata_payload(...), that metadata is used directly. For bare
-(F, J, 13) tensors, the script derives the same T-pose preprocessing metadata
-from the supplied T-pose FBX.
+If the NPY file contains a self-contained metadata payload with embedded
+skeleton metadata (joint_names, parents, offsets, etc.), that metadata is
+used directly. For bare (F, J, 13) tensors, the script derives the same
+T-pose preprocessing metadata from the supplied T-pose FBX.
+
+Metadata is resolved from three sources in descending priority:
+
+    1. NPY embedded payload  — self-contained dict with joint_names, parents,
+                               offsets, tpose_rest_rotations, fps, etc.
+    2. cond.npy entry        — dataset-wide metadata indexed by object_type
+                               (e.g. "Horse"), stores joints_names, parents,
+                               offsets, rest_rotations, orientation_quat, etc.
+    3. T-pose FBX fallback   — computed on demand via
+                               get_common_features_from_T_pose(); most
+                               expensive, only loaded when tiers 1–2 lack
+                               the needed fields.
+
+Within each tier, specific fields may come from different sources. For
+example, orientation_quat is available from cond.npy or T-pose FBX but
+is never embedded in the NPY payload.
 
 Note: locomotion XZ stripped during preprocessing cannot be recovered from a
 plain feature tensor alone. Metadata payloads preserve the initial translation
@@ -62,6 +78,7 @@ _load_utils_module("utils.rotation_conversions")
 _load_utils_module("utils.npy_roundtrip_utils")
 
 from utils.npy_roundtrip_utils import coerce_feature_payload, recover_from_features
+from Anytop.utils.roundtrip_common import identity_rest_rotations
 
 # ── Default cond.npy path ─────────────────────────────────────────────────────
 
@@ -91,12 +108,6 @@ def _auto_detect_object_type_from_filename(npy_path: str, cond: dict) -> str | N
             if candidate in cond:
                 return candidate
     return None
-
-
-def _identity_rest_rotations(joint_count: int) -> np.ndarray:
-    rest_rotations = np.zeros((joint_count, 4), dtype=np.float32)
-    rest_rotations[:, 0] = 1.0
-    return rest_rotations
 
 
 def _load_tpose_restore_metadata(tpose_mesh: str, object_type: str) -> dict[str, object]:
@@ -217,7 +228,7 @@ def _build_restore_context(
         parents = np.asarray(payload["parents"], dtype=np.int32)
         offsets = np.asarray(payload["offsets"], dtype=np.float32)
         skeleton_rest_rotations = np.asarray(
-            payload.get("rest_rotations", _identity_rest_rotations(len(joint_names))),
+            payload.get("rest_rotations", identity_rest_rotations(len(joint_names))),
             dtype=np.float32,
         )
     elif cond_has_skeleton:
@@ -225,14 +236,14 @@ def _build_restore_context(
         parents = np.asarray(cond_entry["parents"], dtype=np.int32)
         offsets = np.asarray(cond_entry["offsets"], dtype=np.float32)
         skeleton_rest_rotations = np.asarray(
-            cond_entry.get("rest_rotations", _identity_rest_rotations(len(joint_names))),
+            cond_entry.get("rest_rotations", identity_rest_rotations(len(joint_names))),
             dtype=np.float32,
         )
     else:
         joint_names = list(tpose_meta["joint_names"])
         parents = np.asarray(tpose_meta["parents"], dtype=np.int32)
         offsets = np.asarray(tpose_meta["offsets"], dtype=np.float32)
-        skeleton_rest_rotations = _identity_rest_rotations(len(joint_names))
+        skeleton_rest_rotations = identity_rest_rotations(len(joint_names))
 
     # ── T-pose rest rotations ───────────────────────────────────────────
     if has_payload_tpose:
@@ -418,7 +429,7 @@ def restore_glb(
         # Production bare tensors are exported against the feature skeleton with
         # identity rest rotations. Using cond/T-pose rest rotations here changes
         # the armature basis and introduces a spurious global wrapper rotation.
-        skeleton_rest_rotations = _identity_rest_rotations(len(joints_names))
+        skeleton_rest_rotations = identity_rest_rotations(len(joints_names))
         rotation_channel_mask = _bare_feature_rotation_channel_mask(parents)
 
     # ── Resolve FPS ─────────────────────────────────────────────────────
@@ -570,16 +581,6 @@ def main() -> None:
             "if not specified; falls back to 30."
         ),
     )
-    parser.add_argument(
-        "--no_orientation_restore",
-        action="store_true",
-        default=False,
-        help=(
-            "Skip orientation reversal.  The output GLB will face +Z "
-            "(canonical direction) rather than the original FBX facing."
-        ),
-    )
-
 
     args = parser.parse_args()
 
@@ -606,7 +607,6 @@ def main() -> None:
     print(f"Output GLB    : {args.output_glb}")
     print(f"cond.npy      : {cond_npy_path}")
     print(f"FPS           : {args.fps or '(auto)'}")
-    print(f"Restore ori   : {not args.no_orientation_restore}")
     print()
 
     restore_glb(
@@ -616,7 +616,6 @@ def main() -> None:
         cond_npy=cond_npy_path,
         object_type=args.object_type,
         fps=args.fps,
-        restore_orientation=not args.no_orientation_restore,
     )
 
 

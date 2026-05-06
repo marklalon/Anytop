@@ -101,14 +101,6 @@ _DEFAULT_FBX = os.path.join(
 _DEFAULT_TPOSE_FBX = os.path.join(
     _ANYTOP_ROOT, "dataset", "truebones", "zoo", "Truebone_Z-OO", "Horse", "HorseALL-TPOSE.fbx",
 )
-
-
-def _make_identity_rest_rotations(joint_count: int) -> np.ndarray:
-    rest_rotations = np.zeros((joint_count, 4), dtype=np.float32)
-    rest_rotations[:, 0] = 1.0
-    return rest_rotations
-
-
 def _infer_object_type_from_path(fbx_path: str) -> str:
     stem = os.path.splitext(os.path.basename(fbx_path))[0]
     if "___" in stem:

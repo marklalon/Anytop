@@ -200,33 +200,6 @@ def _batch_internal_pose_fk_np(
     return world_pos, world_rot
 
 
-def _batch_internal_fk_np(
-    joint_rotations: np.ndarray,
-    root_translation: np.ndarray,
-    root_rotation: np.ndarray,
-    parents: np.ndarray,
-    rest_offsets: np.ndarray,
-    rest_rotations: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Match Anytop forward_kinematics root semantics in numpy.
-
-    The pipeline skeleton uses a separate root world transform:
-        world_root = T(root_translation) * R(root_rotation)
-    and then applies each bone's parent-local rest transform followed by the
-    animated local joint rotation. This differs from Blender pose-bone channel
-    semantics and must be preserved before retargeting to an imported FBX rig.
-    """
-    return _batch_internal_pose_fk_np(
-        joint_rotations,
-        root_translation,
-        root_rotation,
-        pose_locations=None,
-        parents=parents,
-        rest_offsets=rest_offsets,
-        rest_rotations=rest_rotations,
-    )
-
-
 def animation_to_exporter_inputs(animation, skeleton) -> tuple[Tensor, Tensor, Tensor, Optional[Tensor]]:
     """Convert motion_lib Animation local transforms into exporter inputs.
 

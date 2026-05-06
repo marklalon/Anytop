@@ -6,12 +6,8 @@ between NPY and BVH roundtrip tests.
 """
 from __future__ import annotations
 
-import contextlib
-import io
-import math
-from collections import deque
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Optional
 
 import numpy as np
 import torch
@@ -103,57 +99,12 @@ def _load_fbx_skeleton_metadata(
     return _extract_armature_skeleton_data(armature)
 
 
-# ── GLB loading helpers ──────────────────────────────────────────────────────
+# ── Identity rest rotations ────────────────────────────────────────────────
 
-def _load_glb_scene(glb_path: str):
-    import bpy
-
-    bpy.ops.wm.read_factory_settings(use_empty=True)
-    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        bpy.ops.import_scene.gltf(filepath=glb_path)
-
-    for obj in list(bpy.data.objects):
-        if obj.type in {"LIGHT", "CAMERA"}:
-            bpy.data.objects.remove(obj, do_unlink=True)
-
-    armature = next((obj for obj in bpy.data.objects if obj.type == "ARMATURE"), None)
-    if armature is None:
-        raise RuntimeError(f"No armature found in {glb_path}")
-    return armature
-
-
-def _load_glb_skeleton_metadata(
-    glb_path: str,
-) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
-    """Load a GLB file and extract bone names, parents, offsets, and rest rotations."""
-    from ..motion_lib.FBX import _extract_armature_skeleton_data
-    armature = _load_glb_scene(glb_path)
-    return _extract_armature_skeleton_data(armature)
-
-
-# ── Animation → GLB export ──────────────────────────────────────────────────
-
-def _export_animation_to_glb(
-    animation,
-    skeleton,
-    output_glb: str,
-    mesh_path: str,
-    fps: float,
-) -> None:
-    from .exporter import AnimationExporter, animation_to_exporter_inputs
-
-    exporter = AnimationExporter(skeleton, fps=fps)
-    joint_rotations, root_translation, root_rotation, bone_translations = (
-        animation_to_exporter_inputs(animation, skeleton)
-    )
-    exporter.export_glb(
-        joint_rotations,
-        root_translation,
-        root_rotation,
-        output_glb,
-        mesh_path=mesh_path,
-        bone_translations=bone_translations,
-    )
-
+def identity_rest_rotations(joint_count: int) -> np.ndarray:
+    """Return (J, 4) identity quaternion array."""
+    rest_rotations = np.zeros((joint_count, 4), dtype=np.float32)
+    rest_rotations[:, 0] = 1.0
+    return rest_rotations
 
 
