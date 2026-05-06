@@ -4,7 +4,6 @@ from collections import Counter
 
 import numpy as np
 import re
-from .param_utils import SNAKES
 
 
 # End effector joint detection tokens
@@ -867,10 +866,7 @@ def _infer_contact_joints_from_geometry(joint_names, rest_positions, parents):
     return _expand_contact_chain_from_leaves(grounded_leaves, joint_names, parents, rest_positions)
 
 
-def _infer_contact_joints(object_type, joint_names, parents, rest_positions):
-    if object_type in SNAKES:
-        return list(range(len(joint_names))), 'full_body'
-
+def _infer_contact_joints(joint_names, parents, rest_positions):
     contact_joints = _infer_contact_joints_from_geometry(joint_names, rest_positions, parents)
     if contact_joints:
         return contact_joints, 'geometry'
@@ -1124,13 +1120,12 @@ def _infer_is_symmetric(symmetric_joint_pairs, joint_side_labels):
     return False
 
 
-def _build_semantic_metadata(object_type, joint_names, parents, offsets, rest_positions=None):
+def _build_semantic_metadata(joint_names, parents, offsets, rest_positions=None):
     parents = np.asarray(parents, dtype=np.int64)
     rest_positions = _rest_positions_from_offsets(offsets, parents) if rest_positions is None else np.asarray(rest_positions, dtype=np.float64)
     canonical_joint_names = [_canonicalize_joint_name(name) for name in joint_names]
     canonical_joint_names = _collapse_solitary_head_feature_indices(canonical_joint_names)
     contact_joints, contact_joint_source = _infer_contact_joints(
-        object_type,
         joint_names,
         parents,
         rest_positions,

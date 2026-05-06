@@ -18,7 +18,7 @@ import bisect
 import re 
 from data_loaders.truebones.truebones_utils.param_utils import HML_AVG_BONELEN, FOOT_CONTACT_HEIGHT_THRESH, DEFAULT_DATASET_DIR, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir, SNAKES, CHAIN_FORWARD_JOINTS, FLYING, FISH, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
 from Anytop.utils.rotation_conversions import rotation_6d_to_matrix_np
-from Anytop.utils._roundtrip_common import _load_fbx_skeleton_metadata
+from Anytop.utils.roundtrip_common import _load_fbx_skeleton_metadata
 from .motion_labels import build_motion_labels, build_object_labels, write_motion_metadata
 from .physics_joint_annotation import (
     _infer_end_effector_joints,
@@ -250,7 +250,6 @@ def _refresh_joint_metadata_in_object_cond(object_cond):
         return
 
     semantic_metadata = _build_semantic_metadata(
-        str(object_cond.get('object_type') or ''),
         joint_names,
         np.asarray(object_cond.get('parents'), dtype=np.int64),
         np.asarray(object_cond.get('offsets'), dtype=np.float64),
@@ -665,8 +664,8 @@ def process_anim(anim, object_type, root_pose_init_xz=None, scale_factor=None, f
     return scaled, root_pose_init_xz_, scale_factor_
 
 """ get object_type common characteristics, extracted from T-pose FBX"""
-def get_common_features_from_T_pose(t_pose_bvh, object_type, face_joints=None):
-    t_pose_anim, t_pos_names, t_pose_frame_time = FBX.load(t_pose_bvh)
+def get_common_features_from_T_pose(t_pose_fbx_path, object_type, face_joints=None):
+    t_pose_anim, t_pos_names, t_pose_frame_time = FBX.load(t_pose_fbx_path)
     face_joints = resolve_face_joints(object_type, t_pos_names, t_pose_anim.parents, face_joints=face_joints)
     forward_joint_index = _find_forward_reference_joint(t_pos_names, t_pose_anim.parents)
     forward_base_joint_index = _find_neck_reference_joint(t_pos_names, t_pose_anim.parents)
@@ -686,7 +685,6 @@ def get_common_features_from_T_pose(t_pose_bvh, object_type, face_joints=None):
     scaled_rest_positions = positions_global(scaled)[0]
     offsets = offsets_from_positions(positions_global(scaled), scaled.parents)[0]
     suspected_foot_indices, contact_joint_source = _infer_contact_joints(
-        object_type,
         t_pos_names,
         scaled.parents,
         scaled_rest_positions,
@@ -874,6 +872,98 @@ def compute_rots_from_tpos(tpos_quats, dest_quats, parents):
         new_rots[:, j] = cum_rots[:, p] * dest_quats[:, j] * -tpos_quats[:, j] * -cum_rots[:, p]
     return new_rots
 
+
+def _solve_local_positions_for_target_global(
+    rotations,
+    target_global_positions,
+    offsets,
+    parents,
+    orients,
+    initial_positions=None,
+    position_match_threshold=1e-5,
+    max_passes=2,
+):
+    frames_num = target_global_positions.shape[0]
+    if initial_positions is None:
+        local_positions = offsets.copy()[None, :].repeat(frames_num, axis=0)
+    else:
+        local_positions = initial_positions.copy()
+
+    for _ in range(max_passes):
+        temp_anim = Animation(rotations, local_positions, orients, offsets, parents)
+        temp_global_pos = positions_global(temp_anim)
+        per_joint_err = np.max(np.abs(target_global_positions - temp_global_pos), axis=(0, 2))
+        joints_to_fix = [
+            joint_idx
+            for joint_idx in range(len(parents))
+            if per_joint_err[joint_idx] > position_match_threshold
+        ]
+        if not joints_to_fix:
+            break
+
+        for joint_idx in joints_to_fix:
+            if joint_idx == 0 or parents[joint_idx] < 0:
+                local_positions[:, joint_idx] = target_global_positions[:, joint_idx]
+                continue
+
+            temp_anim = Animation(rotations, local_positions, orients, offsets, parents)
+            temp_global_rots = rotations_global(temp_anim)
+            temp_global_pos = positions_global(temp_anim)
+            parent_idx = parents[joint_idx]
+            local_positions[:, joint_idx] = (
+                -temp_global_rots[:, parent_idx]
+            ) * (target_global_positions[:, joint_idx] - temp_global_pos[:, parent_idx])
+
+    return local_positions
+
+
+def recover_processed_animation_from_feature_animation(
+    feature_anim,
+    tpose_rest_rotations,
+    position_match_threshold=1e-5,
+    max_passes=2,
+):
+    from motion_lib.Quaternions import Quaternions
+
+    frames_num = len(feature_anim)
+    parents = feature_anim.parents.copy()
+    offsets = feature_anim.offsets.copy()
+    tpose_rest_rotations = np.asarray(tpose_rest_rotations, dtype=np.float64)
+    tpose_quats = Quaternions(np.repeat(tpose_rest_rotations[None, :, :], frames_num, axis=0))
+
+    feature_rots = feature_anim.rotations.copy()
+    processed_rots = feature_rots.copy()
+    processed_rots[:, 0] = feature_rots[:, 0] * tpose_quats[:, 0]
+
+    cumulative_tpose = tpose_quats.copy()
+    for joint_idx, parent_idx in enumerate(parents[1:], start=1):
+        cumulative_tpose[:, joint_idx] = cumulative_tpose[:, parent_idx] * tpose_quats[:, joint_idx]
+        processed_rots[:, joint_idx] = (
+            -cumulative_tpose[:, parent_idx]
+        ) * feature_rots[:, joint_idx] * cumulative_tpose[:, parent_idx] * tpose_quats[:, joint_idx]
+
+    initial_positions = offsets.copy()[None, :].repeat(frames_num, axis=0)
+    initial_positions[:, 0] = feature_anim.positions[:, 0]
+    target_global_positions = positions_global(feature_anim)
+    processed_positions = _solve_local_positions_for_target_global(
+        processed_rots,
+        target_global_positions,
+        offsets,
+        parents,
+        feature_anim.orients.copy(),
+        initial_positions=initial_positions,
+        position_match_threshold=position_match_threshold,
+        max_passes=max_passes,
+    )
+
+    return Animation(
+        processed_rots,
+        processed_positions,
+        feature_anim.orients.copy(),
+        offsets,
+        parents,
+    )
+
 """ returns policy for extracting kinematic chains from parent array, 
 in attempt to divide the skeleton to meaningful kinchains. h_first mean the head joints are at the 
 beggining of the parent array"""
@@ -944,27 +1034,15 @@ def get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, scale_factor,
     rots = compute_rots_from_tpos(tpos_rots_correct_shape, processed_anim.rotations, processed_anim.parents)
     anim_positions = offsets.copy()[None, :].repeat(frames_num, axis = 0)
     anim_positions[:, 0] = processed_anim.positions[:, 0]
-    # Preserve position animation on intermediate bones that carry root motion
-    # (e.g. Bip01 for Horse, jt_Cog_C for Trex, NPC_Pelvis for Bear).
-    # The T-pose rotation reparameterization changes the parent rotation chain,
-    # so we cannot simply copy local positions from processed_anim — doing so
-    # produces wildly wrong global positions (e.g. Horse Bip01 loses 90% of its
-    # jump height).  Instead we solve for the local position that reproduces
-    # processed_anim's global position under the new parent rotations.
-    # Joints are processed in index order (parent-before-child) so that each
-    # solve sees the already-corrected ancestors.
-    animated_pos_joints = sorted(
-        j for j in range(1, processed_anim.positions.shape[1])
-        if np.any(np.ptp(processed_anim.positions[:, j], axis=0) > 1e-4)
+    processed_global_pos = positions_global(processed_anim)
+    anim_positions = _solve_local_positions_for_target_global(
+        rots,
+        processed_global_pos,
+        offsets,
+        processed_anim.parents,
+        processed_anim.orients,
+        initial_positions=anim_positions,
     )
-    if animated_pos_joints:
-        processed_global_pos = positions_global(processed_anim)
-        for j in animated_pos_joints:
-            temp_anim = Animation(rots, anim_positions, processed_anim.orients, offsets, processed_anim.parents)
-            temp_global_rots = rotations_global(temp_anim)
-            temp_global_pos = positions_global(temp_anim)
-            p = processed_anim.parents[j]
-            anim_positions[:, j] = (-temp_global_rots[:, p]) * (processed_global_pos[:, j] - temp_global_pos[:, p])
     # create animation object which is defined over correct tpos
     new_anim = Animation(rots, anim_positions  , processed_anim.orients, offsets, processed_anim.parents)
 
@@ -1342,6 +1420,8 @@ def _process_motion_file(file_path, object_type, max_joints, root_pose_init_xz, 
             'names': names,
             'frame_time': frame_time,
             'is_loop': is_loop,
+            'source_fbx_path': file_path,
+            'slice_range': (current_begin, slice_ind),
             'motion_labels': build_motion_labels(object_type, raw_action),
         })
 
@@ -1384,7 +1464,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     root_pose_init_xz, scale_factor, offsets, foot_indices, tpos_rots, names, tpos_anim, face_joints, orientation_quat, forward_joint_index, forward_base_joint_index, contact_joint_source = get_common_features_from_T_pose(t_pos_path, object_type, face_joints=face_joints)
     t_pos_motion, parents, max_joints, new_anim, _export_anim, _tpos_is_loop = get_motion(tpos_anim, FOOT_CONTACT_VEL_THRESH, object_type, max_joints, root_pose_init_xz, scale_factor, offsets, foot_indices, tpos_rots, squared_positions_error, face_joints=face_joints, orientation_quat=orientation_quat, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)
     rest_positions = _rest_positions_from_offsets(offsets, parents)
-    semantic_metadata = _build_semantic_metadata(object_type, names, parents, offsets, rest_positions=rest_positions)
+    semantic_metadata = _build_semantic_metadata(names, parents, offsets, rest_positions=rest_positions)
     object_cond['tpos_first_frame'] = t_pos_motion[0]
     # create topology conditions
     joint_relations, joints_graph_dist = create_topology_edge_relations(tpos_anim.parents, max_path_len = MAX_PATH_LEN)
@@ -1417,6 +1497,8 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     object_cond['orientation_reference_source'] = orientation_reference_source
     object_cond['orientation_reference_file'] = os.path.basename(t_pos_path)
     object_cond['orientation_quat'] = np.array(orientation_quat, dtype=np.float64)
+    object_cond['root_pose_init_xz'] = np.array(root_pose_init_xz, dtype=np.float64)
+    object_cond['scale_factor'] = float(scale_factor)
     # Original (pre-canonicalization) FBX rest pose, needed so reconstruction tools
     # can map canonical-frame motion back to the original bind frame without Blender.
     _, _, original_rest_offsets, original_rest_rotations = _load_fbx_skeleton_metadata(t_pos_path)
@@ -1483,15 +1565,17 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
         'face_joints': face_joints,
     }
 
+
 """Write a prepared object payload to disk with stable sequential clip naming."""
 def _write_object_outputs(save_dir, object_payload, files_counter):
+    import time as _time_mod
     object_type = object_payload['object_type']
     frames_counter = 0
     motion_metadata = {}
+    _t0 = _time_mod.time()
 
     for result in object_payload['results']:
         motion = result['motion']
-        parents = result['parents']
         files_counter += 1
         frames_counter += motion.shape[0]
         name = object_type + "_" + result['action'] + "_" + str(files_counter)
@@ -1502,16 +1586,21 @@ def _write_object_outputs(save_dir, object_payload, files_counter):
         # positions under this repo's FK but can look distorted in external BVH
         # viewers because its local position/offset decomposition is training-oriented.
         anim_obj = result['export_anim']
-        BVH.save(pjoin(save_dir, BVHS_DIR, name+".bvh"), anim_obj, result.get('canonical_names', result['names']),
-                 frametime=result.get('frame_time', 1.0/24.0),
-                 positions=needs_bvh_position_channels(anim_obj),
-                 all_joints_as_names=True)
+        BVH.save(
+            pjoin(save_dir, BVHS_DIR, name + '.bvh'),
+            anim_obj,
+            result.get('canonical_names', result['names']),
+            frametime=result.get('frame_time', 1.0 / 24.0),
+            positions=needs_bvh_position_channels(anim_obj),
+            all_joints_as_names=True,
+        )
 
         motion_labels = dict(result['motion_labels'])
         motion_labels['motion_name'] = motion_file_name
         motion_labels['is_loop'] = result.get('is_loop', False)
         motion_metadata[motion_file_name] = motion_labels
 
+    print(f'[TIME] {object_type}: _write_object_outputs = {_time_mod.time() - _t0:.2f}s ({files_counter} clips)')
     return files_counter, frames_counter, motion_metadata
 
 
@@ -1528,7 +1617,7 @@ def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, m
     text_file.close()
 
     error_file = open(pjoin(save_dir, 'positions_error_rate.txt'), "w")
-    n = error_file.write('Position squared error per bvh file:')
+    n = error_file.write('Position squared error per source clip:')
     for f in squared_positions_error.keys():
         error_file.write('%s: %f\n' %(f, squared_positions_error[f]))
     error_file.close()
@@ -1780,7 +1869,7 @@ Returns:
     has_animated_pos: bool — True when any non-root joint needed position fix
                       (caller should pass this as BVH.save(..., positions=...))
 """
-def recover_animation_from_motion_np(data, parents, offsets, pos_err_threshold=0.01):
+def recover_animation_from_motion_np(data, parents, offsets, anim_pos_threshold=0.01):
     translation_root_index = infer_translation_root_from_features(data)
     target_global        = recover_from_bvh_ric_np(data, translation_root_index=translation_root_index)              # (F, J, 3)
     _, anim_rot          = recover_from_bvh_rot_np(data, parents, offsets, translation_root_index=translation_root_index)
@@ -1789,7 +1878,7 @@ def recover_animation_from_motion_np(data, parents, offsets, pos_err_threshold=0
     # joints whose FK-predicted global position drifts from the RIC truth
     per_joint_err = np.abs(target_global - glob_rot).max(axis=(0, 2)) # (J,)
     animated_joints = sorted(
-        j for j in range(len(parents)) if per_joint_err[j] > pos_err_threshold
+        j for j in range(len(parents)) if per_joint_err[j] > anim_pos_threshold
     )
 
     if not animated_joints:

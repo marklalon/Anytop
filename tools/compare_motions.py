@@ -1,11 +1,11 @@
 """
 compare_motions.py — Cross-format motion comparison tool.
 
-Loads two motion files (BVH / GLB / FBX) via bpy, auto-detects
+Loads two motion files (BVH / GLB / FBX), auto-detects
 and aligns spatial differences (translation, coordinate system, scale, time
 offset), then reports per-bone world-space position and rotation errors.
 
-All formats go through bpy importers for a consistent world-space pipeline:
+BVH / GLB / FBX go through bpy importers for a consistent world-space pipeline:
   - .bvh  → bpy.ops.import_anim.bvh   (Blender's Z-up → Y-up conversion)
   - .glb  → bpy.ops.import_scene.gltf  (Y-up, right-handed)
   - .fbx  → bpy.ops.import_scene.fbx   (Y-up, right-handed)
@@ -59,7 +59,6 @@ def _color_angle_deg(value: float) -> str:
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ANYTOP_ROOT = os.path.realpath(os.path.join(SCRIPT_DIR, ".."))
 REPO_ROOT = os.path.dirname(ANYTOP_ROOT)
-
 for _p in [REPO_ROOT, ANYTOP_ROOT]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -76,7 +75,10 @@ from Anytop.motion_lib.FBX import (
     _infer_sample_fps,
     _get_action_sample_times,
 )
-from Anytop.utils.exporter import _canonical_bone_name, _generate_coordinate_candidates_np
+from Anytop.utils.exporter import (
+    _canonical_bone_name,
+    _generate_coordinate_candidates_np,
+)
 
 
 # ── Data structures ───────────────────────────────────────────────────────────
@@ -188,19 +190,20 @@ def _collect_armature_world_pose_data(armature, sample_frames: list[float],
 
 # ── Import dispatcher ─────────────────────────────────────────────────────────
 
-def _load_motion(file_path: str) -> MotionData:
-    """Load a motion file (BVH/GLB/FBX) and return MotionData.
-
-    All formats are imported via Blender (bpy) for consistent world-space output.
-    """
-    import bpy
-
+def _load_motion(
+    file_path: str,
+    *,
+    fps: float | None = None,
+) -> MotionData:
+    """Load a motion file (BVH/GLB/FBX) and return MotionData."""
     ext = os.path.splitext(file_path)[1].lower()
     ext_map = {".bvh": "bvh", ".glb": "glb", ".gltf": "glb", ".fbx": "fbx"}
 
     file_format = ext_map.get(ext)
     if file_format is None:
         raise ValueError(f"Unsupported format: {ext} (supported: .bvh, .glb, .gltf, .fbx)")
+
+    import bpy
 
     clear_scene()
 
@@ -240,7 +243,7 @@ def _load_motion(file_path: str) -> MotionData:
     sample_times = _sample_frames_to_relative_seconds(sample_frames, fps)
     num_frames = len(sample_frames)
 
-    # Collect world-space pose data (pass BFS-ordered bone names for consistency)
+    # Collect world-space pose data using the same DFS/pre-order bone indexing as FBX.load.
     pose_data = _collect_armature_world_pose_data(armature, sample_frames, bone_names)
 
     # Double-check bone name consistency
@@ -1050,14 +1053,32 @@ def main() -> None:
     parser.add_argument("--motion_a", required=True, help="Path to first motion file")
     parser.add_argument("--motion_b", required=True, help="Path to second motion file")
     parser.add_argument("--json-out", default=None, help="Optional path to write JSON report")
+    parser.add_argument(
+        "--fps-a",
+        type=float,
+        default=None,
+        help="Optional FPS override for motion A.",
+    )
+    parser.add_argument(
+        "--fps-b",
+        type=float,
+        default=None,
+        help="Optional FPS override for motion B.",
+    )
     args = parser.parse_args()
 
     print(f"[Info] Loading {args.motion_a} ...")
-    motion_a = _load_motion(args.motion_a)
+    motion_a = _load_motion(
+        args.motion_a,
+        fps=args.fps_a,
+    )
     print(f"           bones={motion_a.num_joints}  frames={motion_a.num_frames}  "
           f"skinned_mesh={motion_a.has_skinned_mesh}")
     print(f"[Info] Loading {args.motion_b} ...")
-    motion_b = _load_motion(args.motion_b)
+    motion_b = _load_motion(
+        args.motion_b,
+        fps=args.fps_b,
+    )
     print(f"           bones={motion_b.num_joints}  frames={motion_b.num_frames}  "
           f"skinned_mesh={motion_b.has_skinned_mesh}")
     print()

@@ -13,12 +13,12 @@ Options:
     --validate-only                      Skip preprocessing, only validate existing dataset
     --re-encode-joint-names-only         Skip preprocessing and validation, only re-encode joint names into cond.npy
     --skip-validate                      Skip validation step (faster for CI)
-    --skip-orientation-check             Skip processed-FBX orientation validation
+    --skip-orientation-check             Deprecated; preview orientation validation is disabled
     --objects-subset SUBSET              Object subset to process (default: all)
     --object-workers N                   Concurrent characters to preprocess (default: 16)
     --file-workers N                     Worker threads per character for FBX processing (default: 8, note: FBX loading is serialized per-character due to Blender's single-threaded bpy)
-    --sample-count N                     Limit file validation to first N motions/FBXs (0=all, default: 0)
-    --orientation-threshold-deg DEG      Max allowed canonicalized first-frame facing error from +Z during validation (default: 15.0)
+    --sample-count N                     Limit file validation to first N motions (0=all, default: 0)
+    --orientation-threshold-deg DEG      Deprecated; preview orientation validation is disabled
 
 Examples:
     # Full workflow: preprocess ->validate
@@ -57,7 +57,12 @@ import numpy as np
 ANYTOP_DIR = Path(__file__).resolve().parent
 
 
-def run_preprocessing(objects_subset: str, object_workers: int, file_workers: int, raw_data_dir: str = "") -> int:
+def run_preprocessing(
+    objects_subset: str,
+    object_workers: int,
+    file_workers: int,
+    raw_data_dir: str = "",
+) -> int:
     """Run the AnyTop dataset preprocessing."""
     print("\n" + "=" * 70)
     print("STEP 1: PREPROCESSING - Creating AnyTop dataset")
@@ -136,21 +141,16 @@ def run_validation(
         _validate_cond_file,
         _validate_motion_files,
         _validate_motion_metadata,
-        _validate_motion_orientation,
         _validate_positions_error_file,
     )
     
     try:
-        effective_filter_threshold_deg = 0.0
-        if not skip_orientation_check and filter_orientation_threshold_deg > 0:
-            effective_filter_threshold_deg = filter_orientation_threshold_deg
-
         _prepare_dataset_for_validation(
             dataset_dir,
             objects_subset,
             sample_count,
             skip_orientation_check,
-            effective_filter_threshold_deg,
+            0.0,
         )
 
         motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path = _read_required_artifacts(dataset_dir)
@@ -160,10 +160,7 @@ def run_validation(
         _validate_motion_metadata(dataset_dir, motion_files, cond)
         _validate_motion_files(motions_dir, bvhs_dir, cond, sample_count)
         
-        if skip_orientation_check:
-            _print_warn("skipping processed-BVH orientation validation by request")
-        else:
-            _validate_motion_orientation(bvhs_dir, cond, sample_count, orientation_threshold_deg)
+        _print_warn("preview orientation validation is disabled; validated motions only")
         
         _validate_positions_error_file(positions_error_path)
         
@@ -197,16 +194,18 @@ def check_and_clean_old_data(dataset_dir: str = "") -> bool:
     """
     # Import here to get the resolved dataset directory path
     sys.path.insert(0, str(ANYTOP_DIR / "data_loaders" / "truebones" / "truebones_utils"))
-    from param_utils import get_dataset_dir
+    from param_utils import BVHS_DIR, MOTION_DIR, get_dataset_dir
     
     dataset_dir_path = Path(get_dataset_dir(dataset_dir if dataset_dir else None))
-    motions_dir = dataset_dir_path / "motions"
-    bvhs_dir = dataset_dir_path / "bvhs"
+    motions_dir = dataset_dir_path / MOTION_DIR
+    bvhs_dir = dataset_dir_path / BVHS_DIR
+    legacy_glb_dir = dataset_dir_path / "glb" if BVHS_DIR != "glb" else None
     joint_name_inspection_dir = dataset_dir_path / "joint_name_inspection"
     
     # Check if any old data exists
     old_data_exists = (motions_dir.exists() and any(motions_dir.iterdir())) or \
                       (bvhs_dir.exists() and any(bvhs_dir.iterdir())) or \
+                      (legacy_glb_dir is not None and legacy_glb_dir.exists() and any(legacy_glb_dir.iterdir())) or \
                       (joint_name_inspection_dir.exists() and any(joint_name_inspection_dir.iterdir()))
     
     if not old_data_exists:
@@ -221,6 +220,8 @@ def check_and_clean_old_data(dataset_dir: str = "") -> bool:
         print(f"  - {motions_dir} contains existing data")
     if bvhs_dir.exists() and any(bvhs_dir.iterdir()):
         print(f"  - {bvhs_dir} contains existing data")
+    if legacy_glb_dir is not None and legacy_glb_dir.exists() and any(legacy_glb_dir.iterdir()):
+        print(f"  - {legacy_glb_dir} contains legacy preview data")
     if joint_name_inspection_dir.exists() and any(joint_name_inspection_dir.iterdir()):
         print(f"  - {joint_name_inspection_dir} contains existing data")
     print("\nDo you want to delete the old data and proceed with preprocessing?")
@@ -236,6 +237,9 @@ def check_and_clean_old_data(dataset_dir: str = "") -> bool:
                 if bvhs_dir.exists():
                     shutil.rmtree(bvhs_dir)
                     print(f"  [OK] Deleted {bvhs_dir}")
+                if legacy_glb_dir is not None and legacy_glb_dir.exists():
+                    shutil.rmtree(legacy_glb_dir)
+                    print(f"  [OK] Deleted {legacy_glb_dir}")
                 if joint_name_inspection_dir.exists():
                     shutil.rmtree(joint_name_inspection_dir)
                     print(f"  [OK] Deleted {joint_name_inspection_dir}")
@@ -299,19 +303,19 @@ def parse_args() -> argparse.Namespace:
         "--orientation-threshold-deg",
         default=15.0,
         type=float,
-        help="Maximum allowed first-frame facing error from +Z for processed validation.",
+        help="Deprecated. Preview orientation validation is disabled.",
     )
     parser.add_argument(
         "--filter-orientation-threshold-deg",
-        default=45.0,
+        default=0.0,
         type=float,
-        help="Delete motions with orientation deviation exceeding this threshold (default: 45.0). Set to 0 to disable filtering.",
+        help="Deprecated. Preview orientation filtering is disabled.",
     )
     parser.add_argument(
         "--sample-count",
         default=0,
         type=int,
-        help="Limit file validation to the first N motions/BVHs. Use 0 to validate all files.",
+        help="Limit file validation to the first N motions. Use 0 to validate all files.",
     )
     parser.add_argument(
         "--raw-data-dir",

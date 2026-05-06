@@ -48,6 +48,7 @@ def get_dataset_dir(dataset_dir=None):
 
 
 MOTION_DIR = "motions"
+GLB_DIR = "glb"
 BVHS_DIR = "bvhs"
 MOTION_METADATA_FILE = "motion_metadata.json"
 FOOT_CONTACT_HEIGHT_THRESH = 0.2

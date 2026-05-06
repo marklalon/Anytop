@@ -180,7 +180,7 @@ def main() -> None:
     tmp_dir = tempfile.mkdtemp(prefix="bvh_smoke_")
     try:
         output_path = os.path.join(tmp_dir, "smoke_roundtrip.bvh")
-        exporter.export(
+        exporter.export_bvh(
             joint_rotations,
             root_translation,
             root_rotation,

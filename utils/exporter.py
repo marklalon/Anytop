@@ -1,5 +1,5 @@
 """
-Animation export to GLB and BVH formats.
+Animation export to GLB and BVH motion formats.
 
 GLB export requires Blender (bpy) to be available in the Python
 environment. BVH export is written through Anytop motion_lib so the
@@ -16,7 +16,7 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from Anytop.motion_lib.FBX import import_fbx, remove_lights_and_cameras
+from Anytop.motion_lib.FBX import _extract_armature_skeleton_data, import_fbx, remove_lights_and_cameras
 from Anytop.utils.rotation_numpy import (
     apply_rotation_to_quaternions_wxyz_np,
     quat_conjugate_wxyz_np,
@@ -227,54 +227,67 @@ def _batch_internal_fk_np(
     )
 
 
-def _extract_fbx_skeleton_data(armature):
-    """Extract bone names, parents, offsets, rest rotations from a Blender armature.
+def animation_to_exporter_inputs(animation, skeleton) -> tuple[Tensor, Tensor, Tensor, Optional[Tensor]]:
+    """Convert motion_lib Animation local transforms into exporter inputs.
 
-    Uses BFS traversal (largest-root-subtree heuristic to find the primary
-    skeleton when multiple roots exist).
+    ``BVH.load`` and ``FBX.load`` both return per-joint total local transforms:
+        local_rot_total = animation.rotations
+        local_pos_total = animation.positions
+
+    ``AnimationExporter`` expects those same transforms split into:
+      - ``joint_rotations``: animated local rotation after removing each joint's
+        static ``rest_rotation``
+      - ``root_translation``: extra world-space wrapper translation applied
+        before the root joint's static rest offset
+      - ``bone_translations``: Blender pose-bone ``location`` channels for
+        non-root joints, expressed in the joint's rest-rotated local basis
     """
-    from collections import deque
-    armature_bones = armature.data.bones
-    all_roots = [b for b in armature_bones if b.parent is None]
-    if not all_roots:
-        raise RuntimeError("No root bone found in armature")
+    joint_count = len(skeleton.bones)
+    if animation.shape[1] != joint_count:
+        raise ValueError(
+            f"Animation joint count {animation.shape[1]} does not match skeleton joint count {joint_count}"
+        )
 
-    def _subtree_size(root_bone) -> int:
-        count = 0
-        queue = deque([root_bone])
-        while queue:
-            bone = queue.popleft()
-            count += 1
-            queue.extend(bone.children)
-        return count
+    total_rotations_np = np.asarray(animation.rotations.qs, dtype=np.float64)
+    total_positions_np = np.asarray(animation.positions, dtype=np.float64)
+    frame_count = total_rotations_np.shape[0]
 
-    root_bone = max(all_roots, key=_subtree_size)
-    ordered_bones = []
-    queue = deque([root_bone])
-    while queue:
-        bone = queue.popleft()
-        ordered_bones.append(bone)
-        queue.extend(bone.children)
+    rest_offsets_np = np.empty((joint_count, 3), dtype=np.float64)
+    rest_rotations_np = np.empty((joint_count, 4), dtype=np.float64)
+    for bone in skeleton.bones:
+        rest_offsets_np[bone.id] = bone.rest_offset.detach().cpu().to(torch.float64).numpy()
+        rest_rotations_np[bone.id] = bone.rest_rotation.detach().cpu().to(torch.float64).numpy()
 
-    J = len(ordered_bones)
-    bone_names = [b.name for b in ordered_bones]
-    parents = np.full(J, -1, dtype=np.int32)
-    offsets = np.zeros((J, 3), dtype=np.float64)
-    rest_rotations = np.zeros((J, 4), dtype=np.float64)
-    name_to_idx = {n: i for i, n in enumerate(bone_names)}
+    pose_rotations_np = np.empty_like(total_rotations_np)
+    pose_translations_np = np.zeros_like(total_positions_np)
+    for joint_idx in range(joint_count):
+        rest_q = np.repeat(rest_rotations_np[joint_idx:joint_idx + 1], frame_count, axis=0)
+        rest_q_conj = quat_conjugate_wxyz_np(rest_q)
+        pose_rotations_np[:, joint_idx, :] = quat_multiply_wxyz_np(
+            rest_q_conj,
+            total_rotations_np[:, joint_idx, :],
+        )
+        if joint_idx == 0:
+            continue
+        pose_translations_np[:, joint_idx, :] = quat_rotate_wxyz_np(
+            rest_q_conj,
+            total_positions_np[:, joint_idx, :] - rest_offsets_np[joint_idx:joint_idx + 1, :],
+        )
 
-    for joint_idx, bone in enumerate(ordered_bones):
-        if bone.parent is not None and bone.parent.name in name_to_idx:
-            parents[joint_idx] = name_to_idx[bone.parent.name]
-            rest_local = bone.parent.matrix_local.inverted_safe() @ bone.matrix_local
-        else:
-            rest_local = bone.matrix_local.copy()
-        t = rest_local.translation
-        q = rest_local.to_quaternion()
-        offsets[joint_idx] = (t.x, t.y, t.z)
-        rest_rotations[joint_idx] = (q.w, q.x, q.y, q.z)
+    root_translation_np = total_positions_np[:, 0, :] - rest_offsets_np[0:1, :]
+    root_rotation_np = np.zeros((frame_count, 4), dtype=np.float32)
+    root_rotation_np[:, 0] = 1.0
 
-    return bone_names, parents, offsets, rest_rotations
+    joint_rotations = torch.from_numpy(pose_rotations_np.astype(np.float32, copy=False))
+    root_translation = torch.from_numpy(root_translation_np.astype(np.float32, copy=False))
+    root_rotation = torch.from_numpy(root_rotation_np)
+
+    if joint_count > 1 and np.any(np.abs(pose_translations_np[:, 1:, :]) > 1e-6):
+        bone_translations = torch.from_numpy(pose_translations_np.astype(np.float32, copy=False))
+    else:
+        bone_translations = None
+
+    return joint_rotations, root_translation, root_rotation, bone_translations
 
 
 def _normalize_imported_armature_and_meshes(bpy, armature) -> None:
@@ -311,7 +324,7 @@ def _normalize_imported_armature_and_meshes(bpy, armature) -> None:
 
 
 class AnimationExporter:
-    """Export optimised joint rotations to GLB or BVH."""
+    """Export optimised joint rotations to GLB, BVH."""
 
     def __init__(self, skeleton, fps: float = 30.0):
         self.skeleton = skeleton
@@ -327,52 +340,29 @@ class AnimationExporter:
             )
 
     # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    def export(self, joint_rotations: Tensor, root_translation: Tensor,
-               root_rotation: Tensor, output_path: str,
-               mesh_path: Optional[str] = None,
-               bone_translations: Optional[Tensor] = None) -> None:
-        """Export animation to the format inferred from *output_path* extension.
-
-        Args:
-            joint_rotations:  [F, J, 4]  local quaternions for all joints,
-                              including the root joint's animated local rotation
-            root_translation: [F, 3]     world translation of an extra wrapper
-                              transform applied before the skeleton hierarchy
-            root_rotation:    [F, 4]     world rotation of that extra wrapper
-                              transform; use identity when the motion already
-                              lives entirely in joint_rotations
-            output_path:      destination file (*.glb or *.bvh)
-            mesh_path:        source mesh/rig for GLB export (e.g. T-pose GLB/FBX)
-            bone_translations: [F, J, 3] optional Blender-style pose-bone local
-                               translations. Non-root entries match
-                               pose_bone.location semantics; the root entry is
-                               ignored because root world translation is always
-                               carried by root_translation.
-        """
-        ext = os.path.splitext(output_path)[1].lower()
-        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-
-        if ext == ".bvh":
-            self._export_bvh(joint_rotations, root_translation,
-                             root_rotation, output_path,
-                             bone_translations=bone_translations)
-        elif ext == ".glb":
-            self._export_glb(joint_rotations, root_translation,
-                             root_rotation, output_path, mesh_path,
-                             bone_translations=bone_translations)
-        else:
-            raise ValueError(f"Unsupported export format: {ext!r}")
-
-    # ------------------------------------------------------------------
     # BVH export (motion_lib.BVH.save)
     # ------------------------------------------------------------------
-    def _export_bvh(self, joint_rotations: Tensor, root_translation: Tensor,
-                    root_rotation: Tensor, output_path: str,
-                    bone_translations: Optional[Tensor] = None) -> None:
-        """Write a BVH file using the unified exporter parameter semantics."""
+    def export_bvh(
+        self,
+        joint_rotations: Tensor,
+        root_translation: Tensor,
+        root_rotation: Tensor,
+        output_path: str,
+        bone_translations: Optional[Tensor] = None,
+    ) -> None:
+        """Write a BVH file using the unified exporter parameter semantics.
+
+        Args:
+            joint_rotations: Animated local joint quaternions with shape ``[F, J, 4]``.
+            root_translation: Extra wrapper world translation with shape ``[F, 3]``.
+            root_rotation: Extra wrapper world rotation with shape ``[F, 4]``.
+            output_path: Destination ``.bvh`` path.
+            bone_translations: Optional pose-bone local translations with shape
+                ``[F, J, 3]``. Non-root entries are exported as explicit BVH
+                position channels when provided.
+        """
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+
         import numpy as np
         import sys
         _anytop_root = os.path.dirname(os.path.dirname(__file__))
@@ -511,16 +501,38 @@ class AnimationExporter:
     # GLB export (via Blender glTF exporter)
     # ------------------------------------------------------------------
 
-    def _export_glb(self, joint_rotations: Tensor, root_translation: Tensor,
-                    root_rotation: Tensor, output_path: str,
-                    mesh_path: Optional[str],
-                    bone_translations: Optional[Tensor] = None) -> None:
+    def export_glb(
+        self,
+        joint_rotations: Tensor,
+        root_translation: Tensor,
+        root_rotation: Tensor,
+        output_path: str,
+        mesh_path: Optional[str] = None,
+        bone_translations: Optional[Tensor] = None,
+        rotation_channel_mask: Optional[Tensor | np.ndarray] = None,
+    ) -> None:
         """Export GLB directly through bpy in the current Python process.
 
         When *mesh_path* is provided, imports the external asset for its
         mesh + armature and keyframes animation on it.  When not provided,
         only the armature is exported (skeleton-only GLB, no mesh or skinning).
+
+        Args:
+            joint_rotations: Animated local joint quaternions with shape ``[F, J, 4]``.
+            root_translation: Extra wrapper world translation with shape ``[F, 3]``.
+            root_rotation: Extra wrapper world rotation with shape ``[F, 4]``.
+            output_path: Destination ``.glb`` path.
+            mesh_path: Optional source rig/mesh asset used for skinned export or
+                retargeting. When omitted, exports a skeleton-only GLB.
+            bone_translations: Optional pose-bone local translations with shape
+                ``[F, J, 3]``. Non-root entries follow Blender
+                ``pose_bone.location`` semantics.
+            rotation_channel_mask: Optional per-joint boolean mask. ``True`` keeps
+                writing animated rotation channels for that joint; ``False`` leaves
+                the imported/created rest rotation unkeyed for that joint.
         """
+        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+
         try:
             import bpy
         except ImportError as exc:
@@ -533,6 +545,17 @@ class AnimationExporter:
         jr = joint_rotations.detach().cpu().tolist()
         rt = root_translation.detach().cpu().tolist()
         rr = root_rotation.detach().cpu().tolist()
+        if rotation_channel_mask is not None:
+            if isinstance(rotation_channel_mask, torch.Tensor):
+                rotation_channel_mask_np = rotation_channel_mask.detach().cpu().numpy().astype(bool, copy=False)
+            else:
+                rotation_channel_mask_np = np.asarray(rotation_channel_mask, dtype=bool)
+            if rotation_channel_mask_np.shape != (len(bone_names),):
+                raise ValueError(
+                    f"rotation_channel_mask must have shape ({len(bone_names)},), got {rotation_channel_mask_np.shape}"
+                )
+        else:
+            rotation_channel_mask_np = None
         if bone_translations is not None:
             bt = bone_translations.detach().cpu().tolist()
         else:
@@ -551,7 +574,7 @@ class AnimationExporter:
                 # Preserve the FBX import wrapper transform (+90deg X, 0.01 scale)
                 # so the re-imported GLB lands in the same object space.
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                    import_fbx(mesh_path, ignore_leaf_bones=False)
+                    import_fbx(mesh_path)
             elif mesh_path_lower.endswith((".glb", ".gltf")):
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     bpy.ops.import_scene.gltf(filepath=mesh_path)
@@ -572,7 +595,7 @@ class AnimationExporter:
         # ────────────────────────────────────────────────────────────────
         if mesh_path:
             # ── A) Extract FBX skeleton metadata ───────────────────────
-            fbx_names, fbx_parents, fbx_offsets, fbx_rest_rots = _extract_fbx_skeleton_data(armature)
+            fbx_names, fbx_parents, fbx_offsets, fbx_rest_rots = _extract_armature_skeleton_data(armature)
             J_fbx = len(fbx_names)
             fbx_canon_to_idx = {_canonical_bone_name(n): i for i, n in enumerate(fbx_names)}
 
@@ -743,6 +766,15 @@ class AnimationExporter:
             root_indices = np.flatnonzero(root_mask)
             identity_q = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
 
+            if rotation_channel_mask_np is not None:
+                fbx_rotation_channel_mask = np.zeros((J_fbx,), dtype=bool)
+                for ii, fi in enumerate(input_to_fbx):
+                    if fi >= 0 and rotation_channel_mask_np[ii]:
+                        fbx_rotation_channel_mask[int(fi)] = True
+                if root_indices.size > 0:
+                    fbx_rotation_channel_mask[root_indices[0]] = True
+                rotation_channel_mask_np = fbx_rotation_channel_mask
+
             for j in range(J_fbx):
                 parent_j = int(fbx_parents[j])
                 if parent_j < 0:
@@ -838,11 +870,18 @@ class AnimationExporter:
                     else:
                         pbone.location = (0.0, 0.0, 0.0)
 
+                write_rotation_channel = (
+                    True if rotation_channel_mask_np is None else bool(rotation_channel_mask_np[j])
+                )
                 pbone.rotation_mode = "QUATERNION"
-                pbone.rotation_quaternion = (rot_val[0], rot_val[1], rot_val[2], rot_val[3])
+                if write_rotation_channel:
+                    pbone.rotation_quaternion = (rot_val[0], rot_val[1], rot_val[2], rot_val[3])
+                else:
+                    pbone.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
                 pbone.scale = (1.0, 1.0, 1.0)
                 pbone.keyframe_insert(data_path="location", frame=f)
-                pbone.keyframe_insert(data_path="rotation_quaternion", frame=f)
+                if write_rotation_channel:
+                    pbone.keyframe_insert(data_path="rotation_quaternion", frame=f)
                 pbone.keyframe_insert(data_path="scale", frame=f)
 
         bpy.ops.object.mode_set(mode="OBJECT")

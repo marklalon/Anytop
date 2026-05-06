@@ -50,16 +50,20 @@ def patch_fbx_light_import():
     mod.blen_read_light = _patched_blen_read_light
 
 
-def import_fbx(filepath: str, ignore_leaf_bones: bool = True) -> None:
-    """Import an FBX file into the current Blender scene."""
+def import_fbx(filepath: str) -> None:
+    """Import an FBX file into the current Blender scene.
+
+    Always imports with ``ignore_leaf_bones=False`` so that leaf bones carrying
+    animation (tail tips, hair, halter, etc.) are preserved.
+    """
     import bpy
 
     patch_fbx_light_import()
     bpy.ops.import_scene.fbx(
         filepath=filepath,
-        ignore_leaf_bones=ignore_leaf_bones,
+        ignore_leaf_bones=False,
         force_connect_children=False,
-        automatic_bone_orientation=True,
+        automatic_bone_orientation=False,
         bake_space_transform=False,
         use_custom_normals=False,
         use_image_search=False,
@@ -90,7 +94,7 @@ def _load_fbx_scene(fbx_path: str):
 
     clear_scene()
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        import_fbx(fbx_path, ignore_leaf_bones=False)
+        import_fbx(fbx_path)
     remove_lights_and_cameras()
 
     armature = next((obj for obj in bpy.data.objects if obj.type == "ARMATURE"), None)
@@ -98,11 +102,14 @@ def _load_fbx_scene(fbx_path: str):
         raise RuntimeError(f"No armature found in {fbx_path}")
     return armature
 
-
 def _extract_armature_skeleton_data(
     armature,
 ) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
-    """Extract bone names, parents, rest offsets, and rest rotations from an armature."""
+    """Extract bone names, parents, rest offsets, and rest rotations from an armature.
+
+    Bones are returned in depth-first pre-order so the joint indexing matches the
+    hierarchy order produced by BVH.save/BVH.load for the same skeleton.
+    """
     armature_bones = armature.data.bones
     all_roots = [bone for bone in armature_bones if bone.parent is None]
     if not all_roots:
@@ -120,11 +127,13 @@ def _extract_armature_skeleton_data(
     root_bone = max(all_roots, key=_subtree_size)
 
     ordered_bones = []
-    queue = deque([root_bone])
-    while queue:
-        bone = queue.popleft()
+    def _append_preorder(bone) -> None:
         ordered_bones.append(bone)
-        queue.extend(bone.children)
+
+        for child in bone.children:
+            _append_preorder(child)
+
+    _append_preorder(root_bone)
 
     joint_count = len(ordered_bones)
     bone_names = [bone.name for bone in ordered_bones]
@@ -203,7 +212,6 @@ def _fbx_to_animation(fbx_path: str) -> tuple[Any, list[str], float]:
     from motion_lib.Quaternions import Quaternions
 
     armature = _load_fbx_scene(fbx_path)
-
     bone_names, parents, offsets, _rest_rotations = _extract_armature_skeleton_data(armature)
 
     joint_count = len(bone_names)
@@ -223,6 +231,10 @@ def _fbx_to_animation(fbx_path: str) -> tuple[Any, list[str], float]:
     # Pre-build ordered pose_bone list to avoid repeated dict lookups
     pose_bones = armature.pose.bones
     ordered_pose_bones = [pose_bones.get(bone_name) for bone_name in bone_names]
+    ordered_parent_pose_bones = [
+        pose_bones.get(bone.parent.name) if (bone is not None and bone.parent is not None) else None
+        for bone in ordered_pose_bones
+    ]
 
     for frame_idx, sample_time in enumerate(sample_times):
         _set_scene_time(scene, sample_time)
@@ -234,10 +246,16 @@ def _fbx_to_animation(fbx_path: str) -> tuple[Any, list[str], float]:
                 pos_np[frame_idx, joint_idx] = offsets[joint_idx]
                 continue
 
-            rot = pose_bone.rotation_quaternion
-            rot_qs[frame_idx, joint_idx] = [rot.w, rot.x, rot.y, rot.z]
-            loc = pose_bone.location
-            pos_np[frame_idx, joint_idx] = [loc.x, loc.y, loc.z]
+            parent_pose = ordered_parent_pose_bones[joint_idx]
+            if parent_pose is None:
+                local_matrix = pose_bone.matrix
+            else:
+                local_matrix = parent_pose.matrix.inverted_safe() @ pose_bone.matrix
+
+            t = local_matrix.translation
+            q = local_matrix.to_quaternion()
+            pos_np[frame_idx, joint_idx] = [t.x, t.y, t.z]
+            rot_qs[frame_idx, joint_idx] = [q.w, q.x, q.y, q.z]
 
     bpy.ops.object.mode_set(mode="OBJECT")
 
@@ -270,7 +288,7 @@ def load(filepath, start=None, end=None, order=None, world=True):
         orientations (.orients), rest offsets (.offsets), and parent
         indices (.parents) — same structure as BVH.load output.
     joint_names : list[str]
-        BFS-ordered joint names extracted from the FBX armature.
+        Depth-first pre-order joint names extracted from the FBX armature.
     frametime : float
         Seconds per frame (1 / fps).
     """

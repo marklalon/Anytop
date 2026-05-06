@@ -6,16 +6,16 @@ exports three variants via Anytop.utils.exporter.AnimationExporter, then uses
 tools.compare_motions to compare each exported file back to the source FBX.
 
 Pass criteria:
-  - BVH vs FBX passes compare_motions thresholds
   - bones-only GLB vs FBX passes compare_motions thresholds
   - skinned GLB vs FBX passes compare_motions thresholds
   - bones-only GLB is verified to contain no skinned mesh
   - skinned GLB is verified to contain a skinned mesh and passes mesh checks
+  - BVH vs FBX passes compare_motions thresholds, if --no-skip-bvh is set
 
 Usage:
-    python tests/test_exporter_compare_motions.py
+        python tests/test_exporter.py
 
-    python tests/test_exporter_compare_motions.py \
+        python tests/test_exporter.py \
         --fbx dataset/truebones/zoo/Truebone_Z-OO/Horse/HorseALL-RunToStop.fbx \
         --output-dir outputs/exporter_compare_motions
 """
@@ -42,9 +42,9 @@ for _path in [_REPO_ROOT, _ANYTOP_ROOT]:
         sys.path.insert(0, _path)
 
 
-from Anytop.utils._roundtrip_common import _build_skeleton, _load_fbx_skeleton_metadata
+from Anytop.utils.roundtrip_common import _build_skeleton, _load_fbx_skeleton_metadata
 from Anytop.motion_lib.FBX import _fbx_to_animation
-from Anytop.utils.exporter import AnimationExporter
+from Anytop.utils.exporter import AnimationExporter, animation_to_exporter_inputs
 from tools.compare_motions import _compare_motions, _compute_mesh_surface_error, _detect_and_align, _load_motion, _print_summary
 
 
@@ -72,18 +72,6 @@ def _fmt_path(path: str) -> str:
         return path
 
 
-def _build_exporter_inputs(animation) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    joint_rotations = torch.from_numpy(np.asarray(animation.rotations.qs, dtype=np.float32))
-    root_translation = torch.from_numpy(np.asarray(animation.positions[:, 0, :], dtype=np.float32))
-    root_rotation = torch.zeros((animation.shape[0], 4), dtype=torch.float32)
-    root_rotation[:, 0] = 1.0
-
-    bone_translations_np = np.asarray(animation.positions, dtype=np.float32).copy()
-    bone_translations_np[:, 0, :] = 0.0
-    bone_translations = torch.from_numpy(bone_translations_np)
-    return joint_rotations, root_translation, root_rotation, bone_translations
-
-
 def _assert_compatible(label: str, motion_a, motion_b) -> None:
     fps_tol = 0.001 * max(motion_a.fps, motion_b.fps)
     assert abs(motion_a.fps - motion_b.fps) <= fps_tol, (
@@ -94,7 +82,7 @@ def _assert_compatible(label: str, motion_a, motion_b) -> None:
     )
 
 
-def _export_variants_from_fbx(fbx_path: str, work_dir: str) -> dict[str, Any]:
+def _export_variants_from_fbx(fbx_path: str, work_dir: str, skip_bvh: bool = False) -> dict[str, Any]:
     meta_bone_names, parents, offsets, rest_rotations = _load_fbx_skeleton_metadata(fbx_path)
     animation, anim_bone_names, fps = _fbx_to_animation(fbx_path)
     assert meta_bone_names == anim_bone_names, (
@@ -104,12 +92,13 @@ def _export_variants_from_fbx(fbx_path: str, work_dir: str) -> dict[str, Any]:
     skeleton = _build_skeleton(meta_bone_names, offsets, parents, rest_rotations)
     exporter = AnimationExporter(skeleton, fps=fps)
 
-    joint_rotations, root_translation, root_rotation, bone_translations = _build_exporter_inputs(animation)
+    joint_rotations, root_translation, root_rotation, bone_translations = (
+        animation_to_exporter_inputs(animation, skeleton)
+    )
 
     base_name = os.path.splitext(os.path.basename(fbx_path))[0]
     outputs = {
         "FBX": os.path.abspath(fbx_path),
-        "BVH": os.path.join(work_dir, f"{base_name}_exported.bvh"),
         "BonesOnlyGLB": os.path.join(work_dir, f"{base_name}_bones_only.glb"),
         "SkinnedGLB": os.path.join(work_dir, f"{base_name}_skinned.glb"),
         "fps": float(fps),
@@ -117,21 +106,23 @@ def _export_variants_from_fbx(fbx_path: str, work_dir: str) -> dict[str, Any]:
         "num_joints": int(animation.shape[1]),
     }
 
-    exporter.export(
-        joint_rotations,
-        root_translation,
-        root_rotation,
-        outputs["BVH"],
-        bone_translations=bone_translations,
-    )
-    exporter.export(
+    if not skip_bvh:
+        outputs["BVH"] = os.path.join(work_dir, f"{base_name}_exported.bvh")
+        exporter.export_bvh(
+            joint_rotations,
+            root_translation,
+            root_rotation,
+            outputs["BVH"],
+            bone_translations=bone_translations,
+        )
+    exporter.export_glb(
         joint_rotations,
         root_translation,
         root_rotation,
         outputs["BonesOnlyGLB"],
         bone_translations=bone_translations,
     )
-    exporter.export(
+    exporter.export_glb(
         joint_rotations,
         root_translation,
         root_rotation,
@@ -261,6 +252,7 @@ def _run_test_exporter_compare_motions(
     rot_tolerance_deg: float = 1.0,
     mesh_mean_tolerance_pct_char: float = 3.5,
     mesh_p99_tolerance_pct_char: float = 12.0,
+    skip_bvh: bool = True,
 ) -> dict[str, Any]:
     if fbx_path is None:
         fbx_path = _DEFAULT_FBX
@@ -272,14 +264,16 @@ def _run_test_exporter_compare_motions(
         os.makedirs(work_dir, exist_ok=True)
 
         print(f"[Source] FBX: {_fmt_path(fbx_path)}")
-        exports = _export_variants_from_fbx(fbx_path, work_dir)
+        exports = _export_variants_from_fbx(fbx_path, work_dir, skip_bvh=skip_bvh)
 
-        print(f"  [Exported] BVH: {_fmt_path(exports['BVH'])}")
+        if not skip_bvh:
+            print(f"  [Exported] BVH: {_fmt_path(exports['BVH'])}")
         print(f"  [Exported] Bones-only GLB: {_fmt_path(exports['BonesOnlyGLB'])}")
         print(f"  [Exported] Skinned GLB: {_fmt_path(exports['SkinnedGLB'])}")
 
-        results = {
-            "BVH": _compare_export_to_fbx(
+        results = {}
+        if not skip_bvh:
+            results["BVH"] = _compare_export_to_fbx(
                 exports["FBX"],
                 exports["BVH"],
                 "BVH",
@@ -287,26 +281,25 @@ def _run_test_exporter_compare_motions(
                 rot_tolerance_deg,
                 mesh_mean_tolerance_pct_char,
                 mesh_p99_tolerance_pct_char,
-            ),
-            "BonesOnlyGLB": _compare_export_to_fbx(
-                exports["FBX"],
-                exports["BonesOnlyGLB"],
-                "BonesOnlyGLB",
-                pos_tolerance_pct_char,
-                rot_tolerance_deg,
-                mesh_mean_tolerance_pct_char,
-                mesh_p99_tolerance_pct_char,
-            ),
-            "SkinnedGLB": _compare_export_to_fbx(
-                exports["FBX"],
-                exports["SkinnedGLB"],
-                "SkinnedGLB",
-                pos_tolerance_pct_char,
-                rot_tolerance_deg,
-                mesh_mean_tolerance_pct_char,
-                mesh_p99_tolerance_pct_char,
-            ),
-        }
+            )
+        results["BonesOnlyGLB"] = _compare_export_to_fbx(
+            exports["FBX"],
+            exports["BonesOnlyGLB"],
+            "BonesOnlyGLB",
+            pos_tolerance_pct_char,
+            rot_tolerance_deg,
+            mesh_mean_tolerance_pct_char,
+            mesh_p99_tolerance_pct_char,
+        )
+        results["SkinnedGLB"] = _compare_export_to_fbx(
+            exports["FBX"],
+            exports["SkinnedGLB"],
+            "SkinnedGLB",
+            pos_tolerance_pct_char,
+            rot_tolerance_deg,
+            mesh_mean_tolerance_pct_char,
+            mesh_p99_tolerance_pct_char,
+        )
 
         # Summary
         all_passed = all(r["passed"] for r in results.values())
@@ -384,6 +377,12 @@ def parse_args() -> argparse.Namespace:
         help="Max allowed mesh p99 nearest-surface error as percent of character size.",
     )
     parser.add_argument(
+        "--no-skip-bvh",
+        action="store_true",
+        default=False,
+        help="Include BVH export and comparison (default: skip BVH).",
+    )
+    parser.add_argument(
         "--json-out",
         default=None,
         help="Optional path to write a JSON report.",
@@ -393,6 +392,7 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
+    skip_bvh = not args.no_skip_bvh
     report = _run_test_exporter_compare_motions(
         fbx_path=args.fbx,
         output_dir=args.output_dir,
@@ -400,6 +400,7 @@ if __name__ == "__main__":
         rot_tolerance_deg=args.rot_tolerance,
         mesh_mean_tolerance_pct_char=args.mesh_mean_tolerance,
         mesh_p99_tolerance_pct_char=args.mesh_p99_tolerance,
+        skip_bvh=skip_bvh,
     )
 
     if args.json_out:

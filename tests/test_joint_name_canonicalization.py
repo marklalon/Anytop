@@ -18,7 +18,6 @@ from data_loaders.truebones.truebones_utils.physics_joint_annotation import _bui
 
 def test_tai_tokens_are_canonicalized_to_tail_bvh_names():
     metadata = _build_semantic_metadata(
-        object_type="Ant",
         joint_names=["Bip01_Pelvis", "BN_Tai01", "BN_Tai02"],
         parents=np.array([-1, 0, 1], dtype=np.int64),
         offsets=np.zeros((3, 3), dtype=np.float64),
@@ -33,7 +32,6 @@ def test_tai_tokens_are_canonicalized_to_tail_bvh_names():
 
 def test_solitary_ear_indices_are_removed_but_tail_chain_indices_remain():
     metadata = _build_semantic_metadata(
-        object_type="Horse",
         joint_names=["Bip01_Head", "Bip01_R_Ear_01", "Bip01__L_Ear_01", "BN_Tail_01", "BN_Tail_02"],
         parents=np.array([-1, 0, 0, 0, 3], dtype=np.int64),
         offsets=np.zeros((5, 3), dtype=np.float64),
@@ -52,7 +50,6 @@ def test_solitary_ear_indices_are_removed_but_tail_chain_indices_remain():
 
 def test_toe_root_indices_are_preserved_for_parallel_digits():
     metadata = _build_semantic_metadata(
-        object_type="Dragon",
         joint_names=["Bip01_Pelvis", "Bip01_L_Toe2", "Bip01_L_Toe1", "Bip01_L_Toe0"],
         parents=np.array([-1, 0, 0, 0], dtype=np.int64),
         offsets=np.zeros((4, 3), dtype=np.float64),

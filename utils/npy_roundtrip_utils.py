@@ -1,30 +1,15 @@
 """
 Production-ready NPY roundtrip utilities.
 
-Functions for encoding and recovering AnyTop's 13-channel NPY motion features
-with the translation-root XZ offset preserved for exact GLB roundtrip.
+Functions for encoding, recovering, and loading AnyTop's 13-channel NPY motion features.
 
-Usage::
-
-    from utils.npy_roundtrip_utils import build_roundtrip_feature_payload, recover_from_features
-
-    # Encode
-    payload = build_roundtrip_feature_payload(
-        anim, object_type="Horse", offsets=..., parents=..., bone_names=...,
-    )
-    np.save("roundtrip_features.npy", payload, allow_pickle=True)
-
-    # Decode the saved payload
-    loaded = np.load("roundtrip_features.npy", allow_pickle=True).item()
-    recovered_anim, has_animated_pos = recover_from_features(
-        loaded, parents, offsets,
-    )
 """
 from __future__ import annotations
 
 from typing import Any, Optional
 
 import numpy as np
+import torch
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -73,105 +58,10 @@ def compute_terminal_local_velocity(global_positions, r_rot, is_loop, prev_veloc
 
 # ── feature encoding ──────────────────────────────────────────────────────────
 
-def extract_raw_features(
-    anim: Any,
-    object_type: str,
-    offsets: np.ndarray,
-    parents: np.ndarray,
-    bone_names: list[str],
-    max_joints: int = 85,
-) -> np.ndarray:
-    """Extract the 13-channel NPY motion features (no HML transforms).
-
-    Uses ``anim.rotations[:, 0]`` as the root-facing quaternion *r_rot*.
-    No scaling, centering, or face-orientation transforms are applied.
-    """
-    from motion_lib.Animation import positions_global
-
-    from data_loaders.truebones.truebones_utils.motion_process import (
-        _find_translation_root,
-        get_contact_state,
-        get_motion_features,
-        get_rifke,
-        get_terminal_contact_state,
-    )
-    from data_loaders.truebones.truebones_utils.param_utils import FOOT_CONTACT_VEL_THRESH
-    from data_loaders.truebones.truebones_utils.physics_joint_annotation import _infer_contact_joints
-
-    global_pos = positions_global(anim)
-    r_rot = anim.rotations[:, 0].copy()
-    cont_6d_params = get_cont6d_params_own(anim, r_rot)
-
-    translation_root_index = _find_translation_root(anim)
-    positions = get_rifke(global_pos, r_rot, translation_root_index=translation_root_index)
-
-    rest_pos = compute_rest_positions(offsets, parents)
-    foot_indices, _contact_source = _infer_contact_joints(
-        object_type, bone_names, parents.tolist(), rest_pos,
-    )
-    foot_contact = get_contact_state(global_pos, foot_indices, FOOT_CONTACT_VEL_THRESH)
-
-    local_vel = r_rot[1:, None] * (global_pos[1:] - global_pos[:-1])
-    prev_velocity = local_vel[-1] if local_vel.shape[0] > 0 else None
-    is_loop = detect_motion_loop(positions)
-    terminal_local_vel = compute_terminal_local_velocity(
-        global_pos, r_rot, is_loop, prev_velocity=prev_velocity,
-    )
-    terminal_contact = get_terminal_contact_state(
-        global_pos, foot_indices, FOOT_CONTACT_VEL_THRESH, is_loop,
-    )
-
-    features, _max_joints = get_motion_features(
-        positions,
-        cont_6d_params,
-        foot_contact,
-        local_vel,
-        terminal_local_vel,
-        terminal_contact,
-        max_joints,
-    )
-    return features
-
-
-# ── payload ───────────────────────────────────────────────────────────────────
-
-def build_roundtrip_feature_payload(
-    anim: Any,
-    object_type: str,
-    offsets: np.ndarray,
-    parents: np.ndarray,
-    bone_names: list[str],
-) -> dict[str, Any]:
-    """Build a serializable NPY payload for exact GLB roundtrip recovery.
-
-    The 13-channel motion tensor does not preserve the translation root's
-    initial world-space XZ offset, so store it alongside the tensor in the
-    same .npy payload.
-
-    Returns a dict that can be saved via ``np.save(path, payload, allow_pickle=True)``
-    and loaded via ``np.load(path, allow_pickle=True).item()``.
-    """
-    from data_loaders.truebones.truebones_utils.motion_process import _find_translation_root
-    from motion_lib.Animation import positions_global
-
-    features = extract_raw_features(anim, object_type, offsets, parents, bone_names)
-    global_pos = positions_global(anim)
-    translation_root_index = int(_find_translation_root(anim))
-    initial_translation_root_xz = np.asarray(
-        global_pos[0, translation_root_index, [0, 2]], dtype=np.float64,
-    )
-    return {
-        "features": features,
-        "translation_root_index": translation_root_index,
-        "initial_translation_root_xz": initial_translation_root_xz,
-    }
-
-
 def coerce_feature_payload(features_or_payload: Any) -> tuple[np.ndarray, Optional[dict[str, Any]]]:
     """Unpack a roundtrip payload back into (features_tensor, payload_dict).
 
-    Accepts either the full dict (from ``build_roundtrip_feature_payload``) or
-    a plain (F, J, 13) ndarray for backward compatibility.
+    Accepts either a dict payload or a plain (F, J, 13) ndarray.
     """
     if isinstance(features_or_payload, dict):
         payload = features_or_payload
@@ -180,19 +70,100 @@ def coerce_feature_payload(features_or_payload: Any) -> tuple[np.ndarray, Option
     return np.asarray(features_or_payload), None
 
 
+def _recover_from_production_motion_features(
+    features_arr: np.ndarray,
+    parents: np.ndarray,
+    offsets: np.ndarray,
+    anim_pos_threshold: float,
+):
+    """Recover production bare `(F, J, 13)` features from get_motion_features().
+
+    The training/export pipeline stores the root-facing quaternion on joint row 0
+    and stores each non-root row's parent local rotation in its 6D slot. That is
+    different from the self-contained debug payload path, where every row stores
+    its own local rotation directly.
+
+    Bare dataset tensors therefore need a different inverse:
+      - recover global joint positions from the RIFKE channels
+      - reconstruct each non-leaf joint's local rotation from any child row that
+        encodes it
+      - solve local positions back from the recovered target global positions
+
+    Leaf/helper joint local rotations are not explicitly encoded in the bare
+    tensor, so they stay at identity here. This still preserves world-space bone
+    heads and the encoded non-leaf rotations exactly.
+    """
+    from motion_lib.Animation import Animation, positions_global, rotations_global
+    from motion_lib.Quaternions import Quaternions as Qcls
+
+    from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np
+    from utils.rotation_conversions import rotation_6d_to_matrix_np as _r6d_to_mat
+
+    frame_count, joint_count, channel_count = features_arr.shape
+    if channel_count != 13:
+        raise ValueError(f"Expected 13 channels, got {channel_count}")
+
+    # Production bare features store each parent's local rotation on its child row.
+    rot_mats = np.repeat(
+        np.eye(3, dtype=np.float64)[None, None, :, :],
+        frame_count,
+        axis=0,
+    )
+    rot_mats = np.repeat(rot_mats, joint_count, axis=1)
+    parent_rot_mats = _r6d_to_mat(np.asarray(features_arr[:, 1:, 3:9], dtype=np.float64))
+    for child_idx, parent_idx in enumerate(parents[1:], start=1):
+        rot_mats[:, parent_idx] = parent_rot_mats[:, child_idx - 1]
+
+    all_rots = Qcls.from_transforms(rot_mats)
+    target_global = recover_from_bvh_ric_np(features_arr)
+
+    positions = offsets[None].repeat(frame_count, axis=0).copy()
+    recovered_anim = Animation(all_rots, positions, Qcls.id(0), offsets, parents)
+    recovered_global = positions_global(recovered_anim)
+    per_joint_err = np.abs(target_global - recovered_global).max(axis=(0, 2))
+    animated_joints = sorted(
+        joint_idx for joint_idx in range(joint_count) if per_joint_err[joint_idx] > anim_pos_threshold
+    )
+
+    if animated_joints:
+        for joint_idx in animated_joints:
+            if joint_idx == 0 or parents[joint_idx] < 0:
+                positions[:, joint_idx] = target_global[:, joint_idx]
+                continue
+            temp_anim = Animation(all_rots, positions, Qcls.id(0), offsets, parents)
+            temp_global_rots = rotations_global(temp_anim)
+            temp_global_pos = positions_global(temp_anim)
+            parent_idx = parents[joint_idx]
+            positions[:, joint_idx] = (
+                -temp_global_rots[:, parent_idx]
+            ) * (target_global[:, joint_idx] - temp_global_pos[:, parent_idx])
+        recovered_anim = Animation(all_rots, positions, Qcls.id(0), offsets, parents)
+
+    has_animated_pos = bool(
+        animated_joints and any(joint_idx > 0 and parents[joint_idx] >= 0 for joint_idx in animated_joints)
+    ) or any(
+        np.any(np.ptp(recovered_anim.positions[:, joint_idx], axis=0) > 1e-4)
+        for joint_idx in range(1, joint_count)
+    )
+
+    return recovered_anim, has_animated_pos
+
+
 # ── recovery ──────────────────────────────────────────────────────────────────
 
 def recover_from_features(
     features: Any,
     parents: np.ndarray,
     offsets: np.ndarray,
-    pos_err_threshold: float = 0.01,
+    anim_pos_threshold: float = 0.01,
 ):
     """Recover an Animation from a 13-channel NPY feature tensor.
 
-    Accepts either:
-    - A dict payload produced by :func:`build_roundtrip_feature_payload`
-    - A plain (F, J, 13) ndarray
+    Accepts either a dict payload or a plain (F, J, 13) ndarray.
+
+    Dict payloads use the self-contained own-rotation roundtrip layout written
+    by build_npy_metadata_payload(...). Plain arrays are treated as production
+    dataset features written by get_motion_features(...).
 
     Returns:
         (anim, has_animated_pos) — the reconstructed Animation and a bool
@@ -206,6 +177,14 @@ def recover_from_features(
 
     frame_count, joint_count, channel_count = features_arr.shape
     assert channel_count == 13, f"Expected 13 channels, got {channel_count}"
+
+    if payload is None:
+        return _recover_from_production_motion_features(
+            features_arr,
+            parents,
+            offsets,
+            anim_pos_threshold,
+        )
 
     # ── 1. Translation root ─────────────────────────────────────────────
     if payload is not None and "translation_root_index" in payload:
@@ -268,7 +247,7 @@ def recover_from_features(
     recovered_global = positions_global(recovered_anim)
     per_joint_err = np.abs(target_global - recovered_global).max(axis=(0, 2))
     animated_joints = sorted(
-        joint_idx for joint_idx in range(joint_count) if per_joint_err[joint_idx] > pos_err_threshold
+        joint_idx for joint_idx in range(joint_count) if per_joint_err[joint_idx] > anim_pos_threshold
     )
 
     if animated_joints:
@@ -293,3 +272,67 @@ def recover_from_features(
     )
 
     return recovered_anim, has_animated_pos
+
+
+# ── exporter helpers (pose-channel animation & NPY metadata) ──────────────────
+
+def build_npy_metadata_payload(
+    skeleton,
+    fps: float,
+    animation,
+    features: np.ndarray,
+    joint_names: list[str],
+    parents_np: np.ndarray,
+    offsets_np: np.ndarray,
+    rest_rots_np: np.ndarray,
+    tpose_rest_rots_np: np.ndarray | None = None,
+) -> dict[str, object]:
+    """Build a self-contained NPY payload for compare_motions roundtrips.
+
+    ``rest_rots_np`` must match the static rest-rotation basis expected when
+    interpreting ``animation`` local channels during recovery/export.
+    ``tpose_rest_rots_np`` can optionally preserve the preprocessing-time
+    T-pose local rotations for diagnostics.
+    """
+    from motion_lib.Animation import positions_global
+
+    from data_loaders.truebones.truebones_utils.motion_process import _find_translation_root
+
+    translation_root_index = int(_find_translation_root(animation))
+    global_positions = np.asarray(positions_global(animation), dtype=np.float64)
+    if global_positions.shape[0] > 0:
+        initial_translation_root_xz = global_positions[0, translation_root_index, [0, 2]]
+    else:
+        initial_translation_root_xz = np.zeros((2,), dtype=np.float64)
+
+    features_np = np.asarray(features, dtype=np.float32)
+    offsets_f32 = np.asarray(offsets_np, dtype=np.float32)
+    rest_rots_f32 = np.asarray(rest_rots_np, dtype=np.float32)
+    parents_i32 = np.asarray(parents_np, dtype=np.int32)
+
+    if offsets_f32.shape != (len(joint_names), 3):
+        raise ValueError("offsets_np must have shape (J, 3)")
+    if rest_rots_f32.shape != (len(joint_names), 4):
+        raise ValueError("rest_rots_np must have shape (J, 4)")
+
+    payload = {
+        "features": features_np,
+        "fps": float(fps),
+        "joint_names": list(joint_names),
+        "parents": parents_i32,
+        "offsets": offsets_f32,
+        "rest_rotations": rest_rots_f32,
+        "translation_root_index": translation_root_index,
+        "initial_translation_root_xz": np.asarray(initial_translation_root_xz, dtype=np.float32),
+    }
+
+    if tpose_rest_rots_np is not None:
+        tpose_rest_rots_f32 = np.asarray(tpose_rest_rots_np, dtype=np.float32)
+        if tpose_rest_rots_f32.shape != (len(joint_names), 4):
+            raise ValueError("tpose_rest_rots_np must have shape (J, 4)")
+        payload["tpose_rest_rotations"] = tpose_rest_rots_f32
+
+    return payload
+
+
+# ── (end) ──────────────────────────────────────────────────────────────────────

@@ -1,10 +1,14 @@
 """
 FBX -> NPY -> GLB roundtrip test.
 
-Loads a source FBX animation through Blender, extracts AnyTop's 13-channel
-NPY motion features, recovers an Animation, exports `recovered.glb`, and
-compares the final GLB directly against the source FBX on every frame and
-every bone in Blender world space.
+Loads a source FBX animation, converts it into AnyTop's production preprocessed
+13-channel NPY feature space, saves the bare `(F, J, 13)` tensor exactly like
+the real generation pipeline, restores it through `tools/restore_glb_from_npy`,
+and compares the recovered GLB directly against the original source FBX.
+
+This keeps the test aligned with the real sample/generate environment instead
+of the self-contained own-rotation payload helpers used by narrower debugging
+roundtrips.
 
 Requires bpy (Blender as Python module) in the current Python environment.
 
@@ -41,70 +45,42 @@ import numpy as np
 # ── ensure parent of Anytop is on sys.path (so `import Anytop` works) ───────
 _ANYTOP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _REPO_ROOT = os.path.dirname(_ANYTOP_ROOT)
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
-if _ANYTOP_ROOT not in sys.path:
-    sys.path.insert(1, _ANYTOP_ROOT)
+for _p in [_REPO_ROOT, _ANYTOP_ROOT]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 # ── Resolve utils namespace conflict ────────────────────────────────────────
-import importlib.machinery
 import importlib.util
 
-_rotconv_path = os.path.join(_ANYTOP_ROOT, "utils", "rotation_conversions.py")
-if os.path.isfile(_rotconv_path) and "utils.rotation_conversions" not in sys.modules:
-    _loader = importlib.machinery.SourceFileLoader(
-        "utils.rotation_conversions", _rotconv_path,
-    )
-    _spec = importlib.util.spec_from_loader(
-        "utils.rotation_conversions", _loader, origin=_rotconv_path,
-    )
-    _mod = importlib.util.module_from_spec(_spec)
-    sys.modules["utils.rotation_conversions"] = _mod
-    _spec.loader.exec_module(_mod)
+def _load_utils_module(module_name: str) -> None:
+    """Load a utils submodule under its full dotted name to avoid namespace collision."""
+    _path = os.path.join(_ANYTOP_ROOT, "utils", f"{module_name.rsplit('.', 1)[-1]}.py")
+    if os.path.isfile(_path) and module_name not in sys.modules:
+        _spec = importlib.util.spec_from_file_location(module_name, _path)
+        _mod = importlib.util.module_from_spec(_spec)
+        sys.modules[module_name] = _mod
+        _spec.loader.exec_module(_mod)
 
-_npy_rt_path = os.path.join(_ANYTOP_ROOT, "utils", "npy_roundtrip_utils.py")
-if os.path.isfile(_npy_rt_path) and "utils.npy_roundtrip_utils" not in sys.modules:
-    _loader = importlib.machinery.SourceFileLoader(
-        "utils.npy_roundtrip_utils", _npy_rt_path,
-    )
-    _spec = importlib.util.spec_from_loader(
-        "utils.npy_roundtrip_utils", _loader, origin=_npy_rt_path,
-    )
-    _mod = importlib.util.module_from_spec(_spec)
-    sys.modules["utils.npy_roundtrip_utils"] = _mod
-    _spec.loader.exec_module(_mod)
-
-if _ANYTOP_ROOT not in sys.path:
-    sys.path.insert(1, _ANYTOP_ROOT)
+_load_utils_module("utils.rotation_conversions")
+_load_utils_module("utils.npy_roundtrip_utils")
 
 
-from utils.npy_roundtrip_utils import (
-    build_roundtrip_feature_payload,
-    coerce_feature_payload,
-    recover_from_features,
-    extract_raw_features,
-    compute_rest_positions,
-    get_cont6d_params_own,
-    detect_motion_loop,
-    compute_terminal_local_velocity,
+from Anytop.motion_lib import FBX
+from data_loaders.truebones.truebones_utils.motion_process import (
+    FOOT_CONTACT_VEL_THRESH,
+    get_common_features_from_T_pose,
+    get_motion,
 )
-from Anytop.utils._roundtrip_common import (
-    _build_skeleton,
-    _load_fbx_skeleton_metadata,
-    _export_animation_to_glb,
-)
-from Anytop.motion_lib.FBX import (
-    _fbx_to_animation,
-    _extract_armature_skeleton_data,
-)
+from tools.restore_glb_from_npy import restore_glb
 
 from tools.compare_motions import (
+    _canonical_bone_name,
+    _compute_mesh_surface_error,
     _load_motion,
     _validate_compatible,
     _detect_and_align,
     _compare_motions,
     _print_summary,
-    _compute_mesh_surface_error,
 )
 
 
@@ -113,9 +89,138 @@ from tools.compare_motions import (
 _COLOR_RED = "\033[31m"
 _COLOR_RESET = "\033[0m"
 
+_EXPORT_POS_TOLERANCE_PCT_CHAR = 1.5
+_EXPORT_ROT_TOLERANCE_DEG = 1.0
+_EXPORT_MESH_MEAN_TOLERANCE_PCT_CHAR = 3.5
+_EXPORT_MESH_P99_TOLERANCE_PCT_CHAR = 12.0
 
-_DEFAULT_FBX = os.path.join(_ANYTOP_ROOT, "dataset", "truebones", "zoo",
-                              "Truebone_Z-OO", "Horse", "HorseALL-RunToStop.fbx")
+
+_DEFAULT_FBX = os.path.join(
+    _ANYTOP_ROOT, "dataset", "truebones", "zoo", "Truebone_Z-OO", "Horse", "HorseALL-RunToStop.fbx",
+)
+_DEFAULT_TPOSE_FBX = os.path.join(
+    _ANYTOP_ROOT, "dataset", "truebones", "zoo", "Truebone_Z-OO", "Horse", "HorseALL-TPOSE.fbx",
+)
+
+
+def _make_identity_rest_rotations(joint_count: int) -> np.ndarray:
+    rest_rotations = np.zeros((joint_count, 4), dtype=np.float32)
+    rest_rotations[:, 0] = 1.0
+    return rest_rotations
+
+
+def _infer_object_type_from_path(fbx_path: str) -> str:
+    stem = os.path.splitext(os.path.basename(fbx_path))[0]
+    if "___" in stem:
+        return stem.split("___", 1)[0]
+    if "_" in stem:
+        prefix = stem.split("_", 1)[0]
+        if prefix:
+            return prefix
+    parent_name = os.path.basename(os.path.dirname(fbx_path))
+    return parent_name or stem
+
+
+def _compare_export_to_source(
+    source_fbx: str,
+    exported_path: str,
+    label: str,
+) -> dict[str, Any]:
+    motion_a = _load_motion(source_fbx)
+    motion_b = _load_motion(exported_path)
+    _validate_compatible(motion_a, motion_b)
+
+    motion_b_aligned, alignment = _detect_and_align(motion_a, motion_b)
+    result = _compare_motions(motion_a, motion_b_aligned, alignment)
+    print(f"{'Compare Motions':=^{70}}")
+    print(f"[Compare] {label}")
+    _print_summary(motion_a, motion_b, alignment, result)
+
+    errors: list[str] = []
+    pos_result = result["position"]
+    rot_result = result["rotation"]
+    world_quat_result = result["world_quaternion"]
+    common_names = list(result["comparison"]["common_bone_names"])
+
+    canon_to_orig_idx = {
+        _canonical_bone_name(name): index for index, name in enumerate(motion_a.bone_names)
+    }
+    child_counts = np.zeros(len(motion_a.parents), dtype=np.int32)
+    for parent_idx in motion_a.parents:
+        if parent_idx >= 0:
+            child_counts[int(parent_idx)] += 1
+    encoded_joint_mask = np.array(
+        [child_counts[canon_to_orig_idx[name]] > 0 for name in common_names],
+        dtype=bool,
+    )
+    encoded_world_quat_per_bone = np.asarray(
+        world_quat_result["per_bone"]["max_deg"],
+        dtype=np.float64,
+    )
+    encoded_world_quat_max = float(
+        encoded_world_quat_per_bone[encoded_joint_mask].max()
+        if np.any(encoded_joint_mask)
+        else 0.0
+    )
+
+    if pos_result["max_error_pct_char"] > _EXPORT_POS_TOLERANCE_PCT_CHAR:
+        errors.append(
+            f"{label}: position max error {pos_result['max_error']:.6f} "
+            f"({pos_result['max_error_pct_char']:.4f}% char) exceeds "
+            f"{_EXPORT_POS_TOLERANCE_PCT_CHAR:.4f}% "
+            f"(worst bone={pos_result['worst_bone']}, frame={pos_result['worst_frame']})"
+        )
+    if rot_result["max_error_deg"] > _EXPORT_ROT_TOLERANCE_DEG:
+        errors.append(
+            f"{label}: rotation max error {rot_result['max_error_deg']:.6f} deg exceeds "
+            f"{_EXPORT_ROT_TOLERANCE_DEG:.6f} "
+            f"(worst bone={rot_result['worst_bone']}, frame={rot_result['worst_frame']})"
+        )
+    if encoded_world_quat_max > _EXPORT_ROT_TOLERANCE_DEG:
+        errors.append(
+            f"{label}: encoded-joint world quaternion max error {encoded_world_quat_max:.6f} deg exceeds "
+            f"{_EXPORT_ROT_TOLERANCE_DEG:.6f}"
+        )
+
+    mesh_mean_pct_char = None
+    mesh_p99_pct_char = None
+    if motion_a.has_skinned_mesh and motion_b.has_skinned_mesh:
+        mesh_result = _compute_mesh_surface_error(motion_a, motion_b_aligned, alignment)
+        if mesh_result is None:
+            errors.append(f"{label}: expected mesh surface stats")
+        else:
+            char_size = max(float(pos_result["character_size"]), 1e-8)
+            mesh_mean_pct_char = mesh_result["mean"] / char_size * 100.0
+            mesh_p99_pct_char = mesh_result["p99"] / char_size * 100.0
+            if mesh_mean_pct_char > _EXPORT_MESH_MEAN_TOLERANCE_PCT_CHAR:
+                errors.append(
+                    f"{label}: mesh mean error {mesh_result['mean']:.6f} "
+                    f"({mesh_mean_pct_char:.4f}% char) exceeds {_EXPORT_MESH_MEAN_TOLERANCE_PCT_CHAR:.4f}%"
+                )
+            if mesh_p99_pct_char > _EXPORT_MESH_P99_TOLERANCE_PCT_CHAR:
+                errors.append(
+                    f"{label}: mesh p99 error {mesh_result['p99']:.6f} "
+                    f"({mesh_p99_pct_char:.4f}% char) exceeds {_EXPORT_MESH_P99_TOLERANCE_PCT_CHAR:.4f}%"
+                )
+
+    return {
+        "label": label,
+        "path": os.path.abspath(exported_path),
+        "errors": errors,
+        "position_max_error": float(pos_result["max_error"]),
+        "position_max_error_pct_char": float(pos_result["max_error_pct_char"]),
+        "position_worst_bone": pos_result["worst_bone"],
+        "position_worst_frame": int(pos_result["worst_frame"]),
+        "rotation_max_error_deg": float(rot_result["max_error_deg"]),
+        "rotation_worst_bone": rot_result["worst_bone"],
+        "rotation_worst_frame": int(rot_result["worst_frame"]),
+        "world_quaternion_max_error_deg": float(world_quat_result["max_error_deg"]),
+        "encoded_world_quaternion_max_error_deg": encoded_world_quat_max,
+        "world_quaternion_worst_bone": world_quat_result["worst_bone"],
+        "world_quaternion_worst_frame": int(world_quat_result["worst_frame"]),
+        "mesh_mean_error_pct_char": mesh_mean_pct_char,
+        "mesh_p99_error_pct_char": mesh_p99_pct_char,
+    }
 
 
 def _run_test_fbx_npy_glb_roundtrip(
@@ -128,14 +233,16 @@ def _run_test_fbx_npy_glb_roundtrip(
     """FBX -> NPY -> GLB roundtrip test.
 
     Pipeline:
-        1. Load source FBX, extract animation
-        2. Extract NPY features from the animation
-        3. Recover Animation from NPY features
-        4. Export recovered animation as GLB
-        5. Compare: recovered GLB vs source FBX
+        1. Load T-pose metadata and derive AnyTop preprocessing parameters
+        2. Convert the source FBX into the same preprocessed feature-space animation
+        3. Save a metadata payload with the 13-channel NPY features
+        4. Recover Animation from that payload
+        5. Invert T-pose reparameterization back to processed/source-rig semantics
+        6. Export baseline + recovered animations as GLB
+        7. Compare both exports against the original source FBX
     """
     if tpose_fbx is None:
-        tpose_fbx = _DEFAULT_FBX
+        tpose_fbx = _DEFAULT_TPOSE_FBX if os.path.isfile(_DEFAULT_TPOSE_FBX) else _DEFAULT_FBX
     if anim_fbx is None:
         anim_fbx = _DEFAULT_FBX
 
@@ -151,113 +258,88 @@ def _run_test_fbx_npy_glb_roundtrip(
         recovered_glb = os.path.join(work_dir, f"{base_name}_recovered.glb")
         npy_path = os.path.join(work_dir, f"{base_name}_features.npy")
 
-        # Phase A: Load T-pose FBX for skeleton metadata
-        print("[Phase A] Loading T-pose FBX for skeleton metadata...")
-        tpose_meta_bone_names, parents, offsets, rest_rotations = _load_fbx_skeleton_metadata(tpose_fbx)
-        tpose_anim, tpose_bone_names, tpose_fps = _fbx_to_animation(tpose_fbx)
-        print(f"Joints: {len(tpose_bone_names)}, FPS: {tpose_fps:.1f}")
-        if tpose_meta_bone_names != tpose_bone_names:
-            raise AssertionError("T-pose FBX animation bone order does not match extracted skeleton metadata")
+        # Phase A: Load T-pose metadata used by the production preprocessing path
+        print("[Phase A] Loading T-pose FBX preprocessing metadata...")
+        (
+            _root_pose_init_xz,
+            scale_factor,
+            offsets_hml,
+            _foot_indices,
+            tpose_rotations,
+            tpose_bone_names,
+            feature_tpose_anim,
+            face_joints,
+            orientation_quat,
+            forward_joint_index,
+            forward_base_joint_index,
+            _contact_joint_source,
+        ) = get_common_features_from_T_pose(tpose_fbx, object_type)
+        print(f"Joints: {len(tpose_bone_names)}, scale_factor: {scale_factor:.6f}")
 
-        tpose_skeleton = _build_skeleton(tpose_bone_names, offsets, parents, rest_rotations)
-
-        # Phase B: Load source FBX and extract motion
-        print("[Phase B] Loading source FBX and extracting motion...")
-        source_anim, source_bone_names, source_fps = _fbx_to_animation(anim_fbx)
+        # Phase B: Load source FBX and build the production preprocessed motion/features
+        print("[Phase B] Loading source FBX and building production preprocessed motion...")
+        source_anim, source_bone_names, source_frame_time = FBX.load(anim_fbx)
+        source_fps = 1.0 / source_frame_time if source_frame_time > 0 else 30.0
         print(f"Frames: {len(source_anim)}, Joints: {source_anim.shape[1]}, FPS: {source_fps:.1f}")
 
-        if source_bone_names != tpose_bone_names:
-            raise AssertionError(
-                "Source FBX and T-pose FBX do not share the same BFS bone order"
-            )
-
-        # Phase C: Extract raw NPY features
-        print("[Phase C] Extracting raw NPY features...")
-        feature_payload = build_roundtrip_feature_payload(
-            source_anim, object_type, offsets, parents, source_bone_names,
+        squared_positions_error: dict[str, float] = {}
+        features, feature_parents, _max_joints, feature_anim, _baseline_export_anim, _is_loop = get_motion(
+            anim_fbx,
+            FOOT_CONTACT_VEL_THRESH,
+            object_type,
+            len(tpose_bone_names),
+            _root_pose_init_xz,
+            scale_factor,
+            offsets_hml,
+            _foot_indices,
+            tpose_rotations,
+            squared_positions_error,
+            face_joints=face_joints,
+            orientation_quat=orientation_quat,
+            forward_joint_index=forward_joint_index,
+            forward_base_joint_index=forward_base_joint_index,
+            preloaded=(source_anim, source_bone_names),
         )
-        np.save(npy_path, feature_payload, allow_pickle=True)
-        print(f"  NPY shape: {feature_payload['features'].shape}")
+
+        if feature_anim is None or _baseline_export_anim is None:
+            raise AssertionError("Production preprocessing failed to build feature/export animations")
+        if feature_anim.shape[1] != len(tpose_bone_names):
+            raise AssertionError(
+                "Production preprocessing joint count does not match the T-pose feature skeleton"
+            )
+        if squared_positions_error:
+            worst_sq_error = max(squared_positions_error.values())
+            print(f"  T-pose reparameterization MSE: {worst_sq_error:.8f}")
+
+        # Phase C: Save the production bare NPY tensor exactly like sample/generate.py
+        print("[Phase C] Saving production bare NPY feature tensor...")
+        features = np.asarray(features, dtype=np.float32)
+        np.save(npy_path, features, allow_pickle=True)
+        print(f"  NPY shape: {features.shape}")
         print(f"Saved NPY features to {npy_path}")
 
-        # Phase D: Recover Animation from NPY features
-        print("[Phase D] Recovering Animation from NPY features...")
-        recovered_anim, has_animated_pos = recover_from_features(
-            feature_payload, parents, offsets,
-        )
-        print(f"  Recovered frames: {len(recovered_anim)}")
-        if has_animated_pos:
-            print("(has non-root animated position channels)")
-
-        from motion_lib.Animation import positions_global
-
-        source_global = positions_global(source_anim)
-        recovered_global = positions_global(recovered_anim)
-        npy_position_error = np.abs(source_global - recovered_global).max(axis=(0, 2))
-        npy_worst_idx = int(np.argmax(npy_position_error))
-        npy_worst_bone = source_bone_names[npy_worst_idx] if npy_worst_idx < len(source_bone_names) else "?"
-        print(
-            "[Diag] Animation-domain source-vs-recovered max per-joint error: "
-            f"{npy_position_error.max():.6f} ({npy_worst_bone})"
-        )
-
-        # Phase E: Export NPY-recovered animation -> recovered.glb
-        print(f"[Phase E] Exporting NPY-recovered animation -> {os.path.basename(recovered_glb)}...")
-        _export_animation_to_glb(
-            recovered_anim,
-            tpose_skeleton,
-            recovered_glb,
-            mesh_path=tpose_fbx,
+        # Phase D: Restore the production bare tensor through the real restore tool
+        print(f"[Phase D] Restoring production NPY via restore_glb_from_npy.py -> {os.path.basename(recovered_glb)}...")
+        restore_glb(
+            npy_path=npy_path,
+            tpose_mesh=tpose_fbx,
+            output_glb=recovered_glb,
+            object_type=object_type,
             fps=source_fps,
+            restore_orientation=True,
         )
 
-        # Phase F: Compare recovered GLB vs source FBX using compare_motions.py
-        motion_a = _load_motion(anim_fbx)
-        motion_b = _load_motion(recovered_glb)
-        _validate_compatible(motion_a, motion_b)
-        motion_b_aligned, _alignment = _detect_and_align(motion_a, motion_b)
-        result = _compare_motions(motion_a, motion_b_aligned, _alignment)
-        print(f"{'Compare Motions':=^{70}}")
-        _print_summary(motion_a, motion_b, _alignment, result)
+        # Phase E: Compare recovered GLB vs original source FBX using compare_motions.py
+        recovered_report = _compare_export_to_source(anim_fbx, recovered_glb, "RecoveredGLB")
 
-        # ── Mesh surface comparison (gated on both having skinning) ──
-        errors: list[str] = []
-        mesh_result = None
-        if motion_a.has_skinned_mesh and motion_b.has_skinned_mesh:
-            mesh_result = _compute_mesh_surface_error(
-                motion_a, motion_b_aligned, _alignment,
-            )
-        mesh_mean_pct_char = 0.0
-        mesh_p99_pct_char = 0.0
-        if mesh_result is not None:
-            char_size = max(float(result["position"]["character_size"]), 1e-8)
-            mesh_mean_pct_char = mesh_result["mean"] / char_size * 100.0
-            mesh_p99_pct_char = mesh_result["p99"] / char_size * 100.0
-            if mesh_mean_pct_char >= 0.2:
-                errors.append(
-                    f"FBX -> recovered GLB mesh mean surface error {mesh_result['mean']:.6f} "
-                    f"({mesh_mean_pct_char:.4f}% of character size) exceeds 0.2%"
-                )
-            if mesh_p99_pct_char >= 2.0:
-                errors.append(
-                    f"FBX -> recovered GLB mesh p99 surface error {mesh_result['p99']:.6f} "
-                    f"({mesh_p99_pct_char:.4f}% of character size) exceeds 2.0%"
-                )
-        else:
-            print("[Mesh] Skipping mesh surface comparison (one or both motions lack skinning)")
-
-        pos_result = result["position"]
-        if pos_result["max_error"] >= tolerance:
-            errors.append(
-                f"FBX -> recovered GLB max error {pos_result['max_error']:.6f} exceeds "
-                f"{tolerance} (worst bone={pos_result['worst_bone']}, "
-                f"frame={pos_result['worst_frame']})"
-            )
+        errors: list[str] = list()
+        errors.extend(recovered_report["errors"])
 
         # Map worst_frame to sample time for the return dict
-        worst_frame = pos_result["worst_frame"]
-        recovered_worst_time = float(motion_a.sample_times[worst_frame]) \
-            if worst_frame < len(motion_a.sample_times) else 0.0
+        worst_frame = recovered_report["position_worst_frame"]
+        source_motion = _load_motion(anim_fbx)
+        recovered_worst_time = float(source_motion.sample_times[worst_frame]) \
+            if worst_frame < len(source_motion.sample_times) else 0.0
 
         # Print PASS/FAIL
         passed = len(errors) == 0
@@ -268,21 +350,18 @@ def _run_test_fbx_npy_glb_roundtrip(
         else:
             print(f"\n  [{status}] FBX -> NPY -> GLB roundtrip checks passed")
         return {
-            "npy_error": float(npy_position_error.max()),
-            "npy_worst_bone": npy_worst_bone,
-            "npy_worst_frame": npy_worst_idx,
-            "recovered_error": float(pos_result["max_error"]),
-            "recovered_error_pct_char": float(pos_result["max_error_pct_char"]),
-            "recovered_worst_bone": pos_result["worst_bone"],
+            "passed": passed,
+            "errors": errors,
+            "recovered_error": float(recovered_report["position_max_error"]),
+            "recovered_error_pct_char": float(recovered_report["position_max_error_pct_char"]),
+            "recovered_worst_bone": recovered_report["position_worst_bone"],
             "recovered_worst_frame": int(worst_frame),
             "recovered_worst_time": recovered_worst_time,
-            "mesh_mean_error": float(mesh_result["mean"]) if mesh_result is not None else 0.0,
-            "mesh_p99_error": float(mesh_result["p99"]) if mesh_result is not None else 0.0,
-            "mesh_mean_pct_char": mesh_mean_pct_char,
-            "mesh_p99_pct_char": mesh_p99_pct_char,
-            "rot_max": float(result["rotation"]["max_error_deg"]),
-            "rot_worst_bone": result["rotation"]["worst_bone"],
-            "rot_worst_frame": int(result["rotation"]["worst_frame"]),
+            "rot_max": float(recovered_report["rotation_max_error_deg"]),
+            "rot_worst_bone": recovered_report["rotation_worst_bone"],
+            "rot_worst_frame": int(recovered_report["rotation_worst_frame"]),
+            "world_quat_max": float(recovered_report["world_quaternion_max_error_deg"]),
+            "encoded_world_quat_max": float(recovered_report["encoded_world_quaternion_max_error_deg"]),
         }
 
 
@@ -291,9 +370,7 @@ def _run_test_fbx_npy_glb_roundtrip(
 def test_fbx_npy_glb_roundtrip() -> None:
     """Pytest-compatible entry point. Asserts FBX->NPY->GLB roundtrip passes."""
     result = _run_test_fbx_npy_glb_roundtrip()
-    assert result["recovered_error"] < 0.01, (
-        f"FBX->NPY->GLB roundtrip position error {result['recovered_error']:.6f} exceeds tolerance"
-    )
+    assert result["passed"], "FBX->NPY->GLB roundtrip failed: " + "; ".join(result["errors"])
 
 
 def parse_args() -> argparse.Namespace:
@@ -302,8 +379,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--tpose-fbx",
-        default=None,
-        help="Path to T-pose FBX file used as skeleton metadata and export container. Defaults to --fbx if not specified.",
+        default=_DEFAULT_TPOSE_FBX,
+        help="Path to the T-pose FBX used for preprocessing metadata and as the export container.",
     )
     parser.add_argument(
         "--fbx",
@@ -333,10 +410,10 @@ if __name__ == "__main__":
     args = parse_args()
 
     if args.tpose_fbx is None:
-        args.tpose_fbx = args.fbx
+        args.tpose_fbx = _DEFAULT_TPOSE_FBX if os.path.isfile(_DEFAULT_TPOSE_FBX) else args.fbx
 
     if args.object_type is None:
-        args.object_type = os.path.splitext(os.path.basename(args.fbx))[0].split("_", 1)[0]
+        args.object_type = _infer_object_type_from_path(args.fbx)
 
     print(f"T-pose FBX : {args.tpose_fbx}")
     print(f"Anim FBX   : {args.fbx}")
@@ -354,15 +431,15 @@ if __name__ == "__main__":
     )
 
     print("\nSummary:")
-    print(f"  NPY encoding error   : {result['npy_error']:.6f}  "
-          f"(bone={result['npy_worst_bone']}, frame={result['npy_worst_frame']})")
-    print(f"  FBX -> recovered GLB : pos_max={result['recovered_error']:.6f} ({result['recovered_error_pct_char']:.4f}%) "
-          f"(bone={result['recovered_worst_bone']}, frame={result['recovered_worst_frame']}, "
-          f"time={result['recovered_worst_time']:.6f})")
-    print(f"  Rotation error       : max={result['rot_max']:.6f}°  "
-          f"(bone={result['rot_worst_bone']}, frame={result['rot_worst_frame']})")
-    if result.get("mesh_mean_error", 0.0) > 0:
-        print(f"  Mesh surface error   : mean={result['mesh_mean_error']:.6f} ({result['mesh_mean_pct_char']:.4f}%)  "
-              f"p99={result['mesh_p99_error']:.6f} ({result['mesh_p99_pct_char']:.4f}%)")
-    else:
-        print("  Mesh surface error   : skipped (no skinning in input)")
+    print(
+        f"  Recovered -> source   : pos_max={result['recovered_error']:.6f} "
+        f"({result['recovered_error_pct_char']:.4f}%) "
+        f"(bone={result['recovered_worst_bone']}, frame={result['recovered_worst_frame']}, "
+        f"time={result['recovered_worst_time']:.6f})"
+    )
+    print(
+        f"  Rotation / wquat      : max_rot={result['rot_max']:.6f}°  "
+        f"max_wquat_encoded={result['encoded_world_quat_max']:.6f}°  "
+        f"max_wquat_raw={result['world_quat_max']:.6f}°  "
+        f"(bone={result['rot_worst_bone']}, frame={result['rot_worst_frame']})"
+    )

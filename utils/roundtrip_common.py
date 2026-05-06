@@ -140,17 +140,13 @@ def _export_animation_to_glb(
     mesh_path: str,
     fps: float,
 ) -> None:
-    from .exporter import AnimationExporter
+    from .exporter import AnimationExporter, animation_to_exporter_inputs
 
     exporter = AnimationExporter(skeleton, fps=fps)
-    joint_rotations = torch.from_numpy(animation.rotations.qs.astype(np.float32))
-    root_translation = torch.from_numpy(animation.positions[:, 0, :].astype(np.float32))
-    root_rotation = torch.zeros((animation.shape[0], 4), dtype=torch.float32)
-    root_rotation[:, 0] = 1.0
-    bone_translations_np = animation.positions.astype(np.float32).copy()
-    bone_translations_np[:, 0, :] = 0.0
-    bone_translations = torch.from_numpy(bone_translations_np)
-    exporter.export(
+    joint_rotations, root_translation, root_rotation, bone_translations = (
+        animation_to_exporter_inputs(animation, skeleton)
+    )
+    exporter.export_glb(
         joint_rotations,
         root_translation,
         root_rotation,

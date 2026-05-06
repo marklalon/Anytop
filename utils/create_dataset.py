@@ -7,7 +7,7 @@ from data_loaders.truebones.truebones_utils.param_utils import OBJECT_SUBSETS_DI
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--raw-data-dir", default="", type=str,
-                        help="Path to raw Truebones BVH folders. If not specified, uses default path.")
+                        help="Path to raw Truebones FBX folders. If not specified, uses default path.")
     parser.add_argument("--dataset-dir", default="", type=str,
                         help="Output directory for processed dataset. If not specified, uses default path.")
     parser.add_argument("--objects-subset", default="all", choices=sorted(OBJECT_SUBSETS_DICT.keys()), type=str,
@@ -15,12 +15,12 @@ def main():
     parser.add_argument("--object-types", nargs='+', default=None,
                         help="Preprocess only the specified object types.")
     parser.add_argument("--max-files-per-object", default=None, type=int,
-                        help="Limit the number of BVH files processed per object for smoke tests.")
+                        help="Limit the number of FBX files processed per object for smoke tests.")
     # MP4 export removed - no --save-animations argument needed
     parser.add_argument("--object-workers", default=8, type=int,
                         help="Concurrent characters to preprocess. Defaults to 8.")
     parser.add_argument("--file-workers", default=8, type=int,
-                        help="Worker threads per character for BVH file processing. Defaults to 8.")
+                        help="Worker threads per character for FBX file processing. Defaults to 8.")
     args = parser.parse_args()
 
     objects = args.object_types
