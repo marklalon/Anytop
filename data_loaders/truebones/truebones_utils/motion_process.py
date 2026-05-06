@@ -1499,13 +1499,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     object_cond['orientation_quat'] = np.array(orientation_quat, dtype=np.float64)
     object_cond['root_pose_init_xz'] = np.array(root_pose_init_xz, dtype=np.float64)
     object_cond['scale_factor'] = float(scale_factor)
-    # Original (pre-canonicalization) FBX rest pose, needed so reconstruction tools
-    # can map canonical-frame motion back to the original bind frame without Blender.
-    _, _, original_rest_offsets, original_rest_rotations = _load_fbx_skeleton_metadata(t_pos_path)
-    object_cond['rest_rotations'] = original_rest_rotations.astype(np.float64)  # (J, 4) wxyz
-    object_cond['rest_offsets'] = original_rest_offsets.astype(np.float64)      # (J, 3)
-    kinematic_chains = parents2kinchains(parents, object_policy(object_type))
-    object_cond['kinematic_chains'] = kinematic_chains
+    object_cond['kinematic_chains'] = parents2kinchains(parents, object_policy(object_type))
     object_cond.update(build_object_labels(object_type))
     all_tensors = list()
 

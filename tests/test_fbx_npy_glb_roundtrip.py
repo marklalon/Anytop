@@ -129,6 +129,12 @@ def _compare_export_to_source(
     _print_summary(motion_a, motion_b, alignment, result)
 
     errors: list[str] = []
+    if alignment.rotation_label != "identity":
+        errors.append(
+            f"{label}: unexpected rigid coordinate alignment {alignment.rotation_label}; "
+            "export should preserve the source-facing world basis"
+        )
+
     pos_result = result["position"]
     rot_result = result["rotation"]
     world_quat_result = result["world_quaternion"]
@@ -306,7 +312,7 @@ def _run_test_fbx_npy_glb_roundtrip(
         # Phase C: Save the production bare NPY tensor exactly like sample/generate.py
         print("[Phase C] Saving production bare NPY feature tensor...")
         features = np.asarray(features, dtype=np.float32)
-        np.save(npy_path, features, allow_pickle=True)
+        np.save(npy_path, features, allow_pickle=False)
         print(f"  NPY shape: {features.shape}")
         print(f"Saved NPY features to {npy_path}")
 
@@ -318,7 +324,6 @@ def _run_test_fbx_npy_glb_roundtrip(
             output_glb=recovered_glb,
             object_type=object_type,
             fps=source_fps,
-            restore_orientation=True,
         )
 
         # Phase E: Compare recovered GLB vs original source FBX using compare_motions.py

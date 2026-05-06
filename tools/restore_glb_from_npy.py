@@ -5,36 +5,25 @@ Restore a preprocessed Anytop NPY motion file back to a skinned GLB,
 using a T-pose FBX as the mesh/rig source.
 
 Pipeline:
-    NPY payload/features
-        → recover_from_features(...)
-        → recover_processed_animation_from_feature_animation(...)
+    NPY features
+        → recover_from_features(...)                    — feature-space Animation
+        → recover_processed_animation_from_feature_animation(...)  — undo T-pose reparameterization
+        → _freeze_unencoded_bare_joint_rotations(...)   — freeze leaf/helper joint rotations
         → animation_to_exporter_inputs(...)
         → AnimationExporter + T-pose FBX → skinned GLB
 
-If the NPY file contains a self-contained metadata payload with embedded
-skeleton metadata (joint_names, parents, offsets, etc.), that metadata is
-used directly. For bare (F, J, 13) tensors, the script derives the same
-T-pose preprocessing metadata from the supplied T-pose FBX.
+Metadata is resolved from two sources in descending priority:
 
-Metadata is resolved from three sources in descending priority:
-
-    1. NPY embedded payload  — self-contained dict with joint_names, parents,
-                               offsets, tpose_rest_rotations, fps, etc.
-    2. cond.npy entry        — dataset-wide metadata indexed by object_type
-                               (e.g. "Horse"), stores joints_names, parents,
-                               offsets, rest_rotations, orientation_quat, etc.
-    3. T-pose FBX fallback   — computed on demand via
-                               get_common_features_from_T_pose(); most
-                               expensive, only loaded when tiers 1–2 lack
-                               the needed fields.
-
-Within each tier, specific fields may come from different sources. For
-example, orientation_quat is available from cond.npy or T-pose FBX but
-is never embedded in the NPY payload.
+    1. cond.npy entry  — dataset-wide metadata indexed by object_type
+                         (e.g. "Horse"), stores joints_names, parents,
+                         offsets, rest_rotations, etc.
+    2. T-pose FBX fallback — computed on demand via
+                              get_common_features_from_T_pose(); most
+                              expensive, only loaded when cond.npy lacks
+                              the needed fields.
 
 Note: locomotion XZ stripped during preprocessing cannot be recovered from a
-plain feature tensor alone. Metadata payloads preserve the initial translation
-root offset and therefore round-trip more faithfully.
+plain feature tensor alone.
 
 Usage:
         # Using FBX T-pose
@@ -77,8 +66,8 @@ def _load_utils_module(module_name: str) -> None:
 _load_utils_module("utils.rotation_conversions")
 _load_utils_module("utils.npy_roundtrip_utils")
 
-from utils.npy_roundtrip_utils import coerce_feature_payload, recover_from_features
-from Anytop.utils.roundtrip_common import identity_rest_rotations
+from utils.npy_roundtrip_utils import recover_from_features
+from Anytop.utils.roundtrip_common import identity_rest_rotations, _load_fbx_skeleton_metadata
 
 # ── Default cond.npy path ─────────────────────────────────────────────────────
 
@@ -126,7 +115,7 @@ def _load_tpose_restore_metadata(tpose_mesh: str, object_type: str) -> dict[str,
         tpose_bone_names,
         tpose_anim,
         _face_joints,
-        orientation_quat,
+        _orientation_quat,
         _forward_joint_index,
         _forward_base_joint_index,
         _contact_joint_source,
@@ -136,7 +125,6 @@ def _load_tpose_restore_metadata(tpose_mesh: str, object_type: str) -> dict[str,
         "parents": np.asarray(tpose_anim.parents, dtype=np.int32),
         "offsets": np.asarray(offsets_hml, dtype=np.float32),
         "tpose_rest_rotations": np.asarray(tpose_rotations[0], dtype=np.float32),
-        "orientation_quat": np.asarray(orientation_quat, dtype=np.float64),
         "scale_factor": float(scale_factor),
     }
 
@@ -162,8 +150,6 @@ def _remap_joint_array(
 
 
 def _warn_on_missing_mesh_joints(joint_names: list[str], tpose_mesh: str) -> None:
-    from Anytop.utils.roundtrip_common import _load_fbx_skeleton_metadata
-
     mesh_bone_names, _mesh_parents, _mesh_offsets, _mesh_rest_rots = _load_fbx_skeleton_metadata(
         tpose_mesh
     )
@@ -188,88 +174,38 @@ def _build_restore_context(
     object_type: str,
     tpose_mesh: str,
     cond_entry: dict | None = None,
-    *,
-    need_orientation_quat: bool,
 ) -> dict[str, object]:
-    features, payload = coerce_feature_payload(raw_npy)
+    features = np.asarray(raw_npy)
 
-    # ── Check availability across all three tiers ───────────────────────
-    #   Tier 1: npy payload (embedded metadata)
-    #   Tier 2: cond.npy entry (dataset-wide metadata)
-    #   Tier 3: T-pose FBX (fallback, most expensive)
-    has_payload_skeleton = payload is not None and all(
-        key in payload for key in ("joint_names", "parents", "offsets")
-    )
-    has_payload_tpose = payload is not None and "tpose_rest_rotations" in payload
-
+    # ── Check availability across two tiers ─────────────────────────────
+    #   Tier 1: cond.npy entry (dataset-wide metadata)
+    #   Tier 2: T-pose FBX (fallback, most expensive)
     cond_has_skeleton = cond_entry is not None and all(
         key in cond_entry for key in ("joints_names", "parents", "offsets")
     )
-    cond_has_tpose = cond_entry is not None and "tpose_rest_rotations" in cond_entry
-    cond_has_orientation = cond_entry is not None and "orientation_quat" in cond_entry
     cond_has_scale = cond_entry is not None and "scale_factor" in cond_entry
 
-    # Only load the T-pose FBX when embedded metadata is missing the pieces we
-    # need. cond.npy stores original bind-frame rest rotations under
-    # `rest_rotations`; those are not the same as the feature-space
-    # `tpose_rest_rotations` used to invert T-pose reparameterization.
-    need_tpose_skeleton = not has_payload_skeleton and not cond_has_skeleton
-    need_tpose_tpose = not has_payload_tpose and not cond_has_tpose
-    need_tpose_orientation = need_orientation_quat and not cond_has_orientation
-    need_tpose_scale = not cond_has_scale
-
-    tpose_meta = None
-    if need_tpose_skeleton or need_tpose_tpose or need_tpose_orientation or need_tpose_scale:
-        tpose_meta = _load_tpose_restore_metadata(tpose_mesh, object_type)
+    # T-pose FBX is always loaded: it provides `tpose_rest_rotations` (which
+    # cond.npy does not store), and may supply scale_factor when cond.npy lacks it.
+    tpose_meta = _load_tpose_restore_metadata(tpose_mesh, object_type)
 
     # ── Skeleton info (joint_names / parents / offsets) ─────────────────
-    if has_payload_skeleton:
-        joint_names = list(payload["joint_names"])
-        parents = np.asarray(payload["parents"], dtype=np.int32)
-        offsets = np.asarray(payload["offsets"], dtype=np.float32)
-        skeleton_rest_rotations = np.asarray(
-            payload.get("rest_rotations", identity_rest_rotations(len(joint_names))),
-            dtype=np.float32,
-        )
-    elif cond_has_skeleton:
+    if cond_has_skeleton:
         joint_names = list(cond_entry["joints_names"])
         parents = np.asarray(cond_entry["parents"], dtype=np.int32)
         offsets = np.asarray(cond_entry["offsets"], dtype=np.float32)
-        skeleton_rest_rotations = np.asarray(
-            cond_entry.get("rest_rotations", identity_rest_rotations(len(joint_names))),
-            dtype=np.float32,
-        )
     else:
         joint_names = list(tpose_meta["joint_names"])
         parents = np.asarray(tpose_meta["parents"], dtype=np.int32)
         offsets = np.asarray(tpose_meta["offsets"], dtype=np.float32)
-        skeleton_rest_rotations = identity_rest_rotations(len(joint_names))
 
-    # ── T-pose rest rotations ───────────────────────────────────────────
-    if has_payload_tpose:
-        tpose_rest_rotations = np.asarray(payload["tpose_rest_rotations"], dtype=np.float32)
-    elif cond_has_tpose:
-        tpose_rest_rotations = _remap_joint_array(
-            list(cond_entry["joints_names"]),
-            joint_names,
-            np.asarray(cond_entry["tpose_rest_rotations"], dtype=np.float32),
-            "feature-space",
-        )
-    else:
-        tpose_rest_rotations = _remap_joint_array(
-            tpose_meta["joint_names"],
-            joint_names,
-            np.asarray(tpose_meta["tpose_rest_rotations"], dtype=np.float32),
-            "feature-space",
-        )
-
-    # ── Orientation quat ────────────────────────────────────────────────
-    orientation_quat = None
-    if need_orientation_quat:
-        if cond_has_orientation:
-            orientation_quat = np.asarray(cond_entry["orientation_quat"], dtype=np.float64)
-        elif tpose_meta is not None and tpose_meta.get("orientation_quat") is not None:
-            orientation_quat = np.asarray(tpose_meta["orientation_quat"], dtype=np.float64)
+    # ── T-pose rest rotations (always from T-pose FBX) ─────────────────
+    tpose_rest_rotations = _remap_joint_array(
+        tpose_meta["joint_names"],
+        joint_names,
+        np.asarray(tpose_meta["tpose_rest_rotations"], dtype=np.float32),
+        "feature-space",
+    )
 
     # ── Scale factor ────────────────────────────────────────────────────
     scale_factor = None
@@ -280,34 +216,12 @@ def _build_restore_context(
 
     return {
         "features": features,
-        "payload": payload,
         "joint_names": joint_names,
         "parents": parents,
         "offsets": offsets,
-        "skeleton_rest_rotations": skeleton_rest_rotations,
         "tpose_rest_rotations": tpose_rest_rotations,
-        "orientation_quat": orientation_quat,
         "scale_factor": scale_factor,
     }
-
-
-def _restore_root_from_canonical_facing(animation, orientation_quat):
-    from motion_lib.Animation import Animation
-    from motion_lib.Quaternions import Quaternions
-
-    orientation = Quaternions(np.asarray(orientation_quat, dtype=np.float64))
-    inverse_orientation = -orientation
-    rotations = animation.rotations.copy()
-    positions = animation.positions.copy()
-    rotations[:, 0] = inverse_orientation * rotations[:, 0]
-    positions[:, 0] = inverse_orientation * positions[:, 0]
-    return Animation(
-        rotations,
-        positions,
-        animation.orients.copy(),
-        animation.offsets.copy(),
-        animation.parents.copy(),
-    )
 
 
 def _bare_feature_rotation_channel_mask(parents: np.ndarray) -> np.ndarray:
@@ -353,7 +267,6 @@ def restore_glb(
     cond_npy: str | None = None,
     object_type: str | None = None,
     fps: float | None = None,
-    restore_orientation: bool = True,
 ) -> str:
     """Restore a preprocessed NPY motion file to a skinned GLB.
 
@@ -364,10 +277,8 @@ def restore_glb(
         cond_npy:            Path to cond.npy; defaults to the dataset default.
         object_type:         Character type key (e.g. "Horse").  Auto-detected
                              from the NPY filename if None.
-        fps:                 Animation frame rate.  Auto-detected from the
-                             NPY metadata payload if None; falls back to 30.
-        restore_orientation: When True (default), reverse the +Z face-direction
-                             transform applied during preprocessing.
+        fps:                 Animation frame rate.  Defaults to 30 if not
+                             specified.
 
     Returns:
         The absolute path of the written GLB file.
@@ -403,41 +314,25 @@ def restore_glb(
         )
 
     # ── Load NPY features ─────────────────────────────────────────────────────
-    raw = np.load(npy_path, allow_pickle=True)
-    if getattr(raw, "dtype", None) == object:
-        raw = raw.item()
+    raw = np.load(npy_path)
     cond_entry = cond.get(object_type)
     restore_ctx = _build_restore_context(
         raw,
         object_type,
         tpose_mesh,
         cond_entry=cond_entry,
-        need_orientation_quat=restore_orientation,
     )
 
     features = restore_ctx["features"]
-    payload = restore_ctx["payload"]
     joints_names: list[str] = restore_ctx["joint_names"]
     parents = restore_ctx["parents"]
     offsets_hml = restore_ctx["offsets"]
-    skeleton_rest_rotations = restore_ctx["skeleton_rest_rotations"]
     tpose_rest_rotations = restore_ctx["tpose_rest_rotations"]
-    is_bare_feature_tensor = payload is None
-    rotation_channel_mask = None
-
-    if is_bare_feature_tensor:
-        # Production bare tensors are exported against the feature skeleton with
-        # identity rest rotations. Using cond/T-pose rest rotations here changes
-        # the armature basis and introduces a spurious global wrapper rotation.
-        skeleton_rest_rotations = identity_rest_rotations(len(joints_names))
-        rotation_channel_mask = _bare_feature_rotation_channel_mask(parents)
+    rotation_channel_mask = _bare_feature_rotation_channel_mask(parents)
 
     # ── Resolve FPS ─────────────────────────────────────────────────────
     if fps is None:
-        if payload is not None and "fps" in payload:
-            fps = float(payload["fps"])
-        else:
-            fps = 30.0
+        fps = 30.0
 
     print(f"Skeleton: {len(joints_names)} joints, root='{joints_names[0]}'")
 
@@ -450,11 +345,6 @@ def restore_glb(
         raise ValueError(f"Expected 13 channels per joint, got {C}.")
 
     print(f"NPY: {F} frames, {J} joints, {C} channels")
-
-    if restore_ctx["payload"] is None:
-        print("Input NPY has no metadata payload; deriving restore metadata from the T-pose mesh.")
-    else:
-        print("Using embedded NPY metadata for recovery.")
 
     if restore_ctx["scale_factor"] is not None:
         print(f"T-pose preprocessing scale_factor: {restore_ctx['scale_factor']:.6f}")
@@ -474,7 +364,7 @@ def restore_glb(
         tpose_rest_rotations,
     )
 
-    if is_bare_feature_tensor and rotation_channel_mask is not None:
+    if rotation_channel_mask is not None:
         export_anim, frozen_joint_indices = _freeze_unencoded_bare_joint_rotations(
             export_anim,
             rotation_channel_mask,
@@ -483,31 +373,15 @@ def restore_glb(
             preview = ", ".join(joints_names[index] for index in frozen_joint_indices[:10])
             suffix = "..." if len(frozen_joint_indices) > 10 else ""
             print(
-                f"Bare production features do not encode local rotations for {len(frozen_joint_indices)} "
+                f"Production features do not encode local rotations for {len(frozen_joint_indices)} "
                 f"leaf/helper joints; keeping rest rotation on export: {preview}{suffix}"
             )
-
-    if restore_orientation and not is_bare_feature_tensor:
-        orientation_quat = restore_ctx["orientation_quat"]
-        if orientation_quat is None:
-            print("WARNING: orientation metadata unavailable - output keeps canonical +Z facing.")
-        else:
-            export_anim = _restore_root_from_canonical_facing(export_anim, orientation_quat)
-            print("Restored original facing from preprocessing orientation metadata.")
-    elif restore_orientation and is_bare_feature_tensor:
-        print(
-            "Bare production features already decode in source-rig facing; "
-            "skipping explicit orientation restore."
-        )
-    else:
-        print("Orientation restore skipped; keeping canonical +Z facing.")
 
     # ── Build skeleton for exporter ─────────────────────────────────────────
     skeleton = _build_skeleton(
         joints_names,
         offsets_hml,
         parents,
-        rest_rotations=skeleton_rest_rotations,
     )
 
     joint_rotations, root_translation, root_rotation, bone_translations = (
@@ -576,10 +450,7 @@ def main() -> None:
         "--fps",
         type=float,
         default=None,
-        help=(
-            "Animation frame rate.  Auto-detected from the NPY metadata payload "
-            "if not specified; falls back to 30."
-        ),
+        help="Animation frame rate.  Defaults to 30 if not specified.",
     )
 
     args = parser.parse_args()
