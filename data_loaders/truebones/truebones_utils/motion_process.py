@@ -40,6 +40,15 @@ from .face_orientation import (
     _find_neck_reference_joint,
     _vector_angle_deg,
 )
+from .fbx_filename_rules import (
+    find_tpose_reference_path,
+    _compact_normalized_text,
+    _is_all_bundle_stem,
+    _matches_object_alias,
+    _normalize_action_name,
+    _should_skip_fbx,
+    _strip_leading_object_prefix,
+)
 
 
 ################## Data Generation #####################
@@ -242,7 +251,7 @@ def _write_joint_name_collision_report(cond, save_dir):
         if len(collision_groups) > 20:
             print(f'  ... {len(collision_groups) - 20} additional group(s) omitted from console output')
     else:
-        print(f'[PASS] canonical joint-name collision scan found no duplicate canonical names; report: {report_path}')
+        print(f'[PASS] canonical joint-name collision scan found no duplicate canonical names')
 
     return collision_groups
 
@@ -284,8 +293,39 @@ def _refresh_joint_metadata_in_object_cond(object_cond):
     object_cond['is_symmetric'] = semantic_metadata['is_symmetric']
 
 
-def _attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collision_report=True):
-    from model.conditioners import T5Conditioner
+def _joint_name_embeddings_are_current(object_cond, embedding_texts, t5_name):
+    joint_names = list(object_cond.get('joints_names') or [])
+    embs = object_cond.get('joints_names_embs')
+    meta = object_cond.get('joints_names_embs_meta')
+
+    if embs is None or not isinstance(meta, dict):
+        return False
+
+    embs = np.asarray(embs)
+    if embs.ndim != 2:
+        return False
+    if len(joint_names) != len(embedding_texts) or embs.shape[0] != len(joint_names):
+        return False
+
+    try:
+        schema_version = int(meta.get('schema_version'))
+        embedding_dim = int(meta.get('embedding_dim'))
+    except (TypeError, ValueError):
+        return False
+
+    if meta.get('t5_name') != t5_name:
+        return False
+    if schema_version != JOINT_NAME_EMBEDDING_SCHEMA_VERSION:
+        return False
+    if embedding_dim != int(embs.shape[1]):
+        return False
+    if list(meta.get('embedding_texts') or []) != list(embedding_texts):
+        return False
+
+    return True
+
+
+def _attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collision_report=True, force_reencode=True):
 
     if not cond:
         return
@@ -294,35 +334,52 @@ def _attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base', wri
     inspection_dir = pjoin(save_dir, 'joint_name_inspection')
     os.makedirs(inspection_dir, exist_ok=True)
 
-    print(f'Encoding joint names into cond.npy with {t5_name} on {device.upper()}')
-    t5_conditioner = T5Conditioner(
-        name=t5_name,
-        finetune=False,
-        word_dropout=0.0,
-        normalize_text=False,
-        device=device,
-        autocast_dtype=None,
-        local_files_only=True,
-    )
+    embedding_texts_by_object = {}
+    object_types_to_encode = []
+    for object_type in sorted(cond):
+        object_cond = cond[object_type]
+        _refresh_joint_metadata_in_object_cond(object_cond)
+        embedding_texts = build_joint_embedding_texts(object_cond)
+        embedding_texts_by_object[object_type] = embedding_texts
+        if force_reencode or not _joint_name_embeddings_are_current(object_cond, embedding_texts, t5_name):
+            object_types_to_encode.append(object_type)
 
-    with torch.no_grad():
-        for object_type in sorted(cond):
-            object_cond = cond[object_type]
-            _refresh_joint_metadata_in_object_cond(object_cond)
-            embedding_texts = build_joint_embedding_texts(object_cond)
-            names_tokens = t5_conditioner.tokenize_entries(embedding_texts)
-            embs = t5_conditioner(names_tokens).detach().cpu().numpy().astype(np.float32, copy=False)
-            object_cond['joints_names_embs'] = embs
-            object_cond['joints_names_embs_meta'] = {
-                't5_name': t5_name,
-                'schema_version': JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
-                'embedding_dim': int(embs.shape[1]) if embs.ndim == 2 else 0,
-                'embedding_texts': list(embedding_texts),
-            }
+    if object_types_to_encode:
+        from model.conditioners import T5Conditioner
 
-            inspection_path = pjoin(inspection_dir, f'{object_type}.json')
-            with open(inspection_path, 'w', encoding='utf-8') as inspection_file:
-                json.dump(_build_joint_name_inspection_rows(object_cond, embedding_texts), inspection_file, indent=2)
+        print(f'Encoding joint names into cond.npy with {t5_name} on {device.upper()}')
+        t5_conditioner = T5Conditioner(
+            name=t5_name,
+            finetune=False,
+            word_dropout=0.0,
+            normalize_text=False,
+            device=device,
+            autocast_dtype=None,
+            local_files_only=True,
+        )
+
+        with torch.no_grad():
+            for object_type in object_types_to_encode:
+                object_cond = cond[object_type]
+                embedding_texts = embedding_texts_by_object[object_type]
+                names_tokens = t5_conditioner.tokenize_entries(embedding_texts)
+                embs = t5_conditioner(names_tokens).detach().cpu().numpy().astype(np.float32, copy=False)
+                object_cond['joints_names_embs'] = embs
+                object_cond['joints_names_embs_meta'] = {
+                    't5_name': t5_name,
+                    'schema_version': JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
+                    'embedding_dim': int(embs.shape[1]) if embs.ndim == 2 else 0,
+                    'embedding_texts': list(embedding_texts),
+                }
+    else:
+        print(f'Reusing cached joint-name embeddings from cond.npy for {len(cond)} object types ({t5_name})')
+
+    for object_type in sorted(cond):
+        object_cond = cond[object_type]
+        embedding_texts = embedding_texts_by_object[object_type]
+        inspection_path = pjoin(inspection_dir, f'{object_type}.json')
+        with open(inspection_path, 'w', encoding='utf-8') as inspection_file:
+            json.dump(_build_joint_name_inspection_rows(object_cond, embedding_texts), inspection_file, indent=2)
 
     if write_collision_report:
         _write_joint_name_collision_report(cond, save_dir)
@@ -1240,183 +1297,6 @@ def create_topology_edge_relations(parents, max_path_len = 5): # joint j+1 conta
             
     topo_rel[topo_rel > max_path_len] = max_path_len
     return edge_rel, topo_rel
-
-def _reference_stem_tokens(file_path):
-    stem = os.path.splitext(os.path.basename(file_path))[0]
-    normalized = _normalize_joint_name(stem)
-    return normalized.split(), normalized.replace(' ', '')
-
-
-_IDLE_REFERENCE_TAIL_PATTERN = re.compile(
-    r'^idle(?:\d+)?(?:loop|cyc|cycle|repeat|repeating)?$'
-)
-_WALK_REFERENCE_TAIL_PATTERN = re.compile(
-    r'^walk(?:ing)?(?:\d+)?(?:loop|cyc|cycle|repeat|repeating|forward|forwards)?$'
-)
-
-
-def _reference_tail_candidates(file_path):
-    stem = os.path.splitext(os.path.basename(file_path))[0].lower()
-    segments = [segment for segment in re.split(r'[^a-z0-9]+', stem) if segment]
-    return [''.join(segments[index:]) for index in range(len(segments))]
-
-
-def _matches_reference_tail(file_path, tail_pattern):
-    return any(tail_pattern.fullmatch(candidate) for candidate in _reference_tail_candidates(file_path))
-
-
-def _is_tpose_reference_path(file_path):
-    tokens, compact = _reference_stem_tokens(file_path)
-    return (
-        'tpose' in compact
-        or 'tpos' in compact
-        or 'bindpose' in compact
-        or 'restpose' in compact
-        or 'nosaddle' in compact
-        or ('pose' in tokens and 't' in tokens)
-    )
-
-
-def _is_idle_reference_path(file_path):
-    return _matches_reference_tail(file_path, _IDLE_REFERENCE_TAIL_PATTERN)
-
-
-def _is_walk_reference_path(file_path):
-    return _matches_reference_tail(file_path, _WALK_REFERENCE_TAIL_PATTERN)
-
-
-""" find a character-level orientation reference clip with priority T Pose > Idle > Walk """
-def find_tpose_reference_path(fbx_files):
-    for file_path in fbx_files:
-        if _is_tpose_reference_path(file_path):
-            fbx_files.remove(file_path)
-            return file_path
-
-    for matcher, _source_name in (
-        (_is_idle_reference_path, 'idle'),
-        (_is_walk_reference_path, 'walk'),
-    ):
-        for file_path in fbx_files:
-            if matcher(file_path):
-                return file_path
-
-    return fbx_files[0]
-
-
-def _normalize_action_name(object_type: str, raw_action: str) -> str:
-    """Normalize an action name extracted from an FBX filename.
-
-    Steps:
-    1. Strip ``{object_type}ALL`` / ``{Species}All`` **prefixed across a
-       separator** so that ``HorseALL-RunToStop`` → ``RunToStop``.
-    2. Strip ``{object_type}`` **prefixed across a separator** so that
-       ``Hound-Attack`` → ``Attack``, ``Crab-Walk`` → ``Walk``.
-    3. Convert all-lowercase or space-separated action names to CamelCase
-       so that ``atk 1`` → ``Atk1``,  ``down loop`` → ``DownLoop``.
-    """
-    obj_lower = object_type.lower()
-    if not raw_action:
-        return raw_action
-
-    # Step 1 — strip {species}ALL{sep} (e.g. HorseALL-RunToStop → RunToStop)
-    all_prefix = re.compile(
-        rf'^{re.escape(obj_lower)}all[-_\s]', re.IGNORECASE
-    )
-    raw_action = all_prefix.sub('', raw_action)
-
-    if not raw_action:
-        return raw_action
-
-    # Step 2 — strip {species}{sep} (e.g. Hound-Attack → Attack)
-    species_prefix = re.compile(
-        rf'^{re.escape(obj_lower)}[-_\s]', re.IGNORECASE
-    )
-    raw_action = species_prefix.sub('', raw_action)
-
-    if not raw_action:
-        return raw_action
-
-    # Step 3 — CamelCase for all-lowercase or space-separated action names
-    # that start with a lowercase letter (indicating a raw action description).
-    # Well-formed names like ``Back Away`` (starts with uppercase) are
-    # left untouched.
-    has_spaces = ' ' in raw_action
-    is_all_lowercase = raw_action.islower()
-    starts_with_lower = raw_action[0].islower() if raw_action else False
-
-    if (has_spaces and starts_with_lower) or is_all_lowercase:
-        parts = re.split(r'[^a-zA-Z0-9]+', raw_action)
-        parts = [p for p in parts if p]
-        if not parts:
-            return raw_action
-        return ''.join(p[0].upper() + p[1:] for p in parts)
-
-    return raw_action
-
-
-def _should_skip_fbx(file_path: str, object_type: str) -> bool:
-    """Check whether an FBX file should be skipped during preprocessing.
-
-    Skips:
-    1. **All-in-one files** that bundle every animation clip into a single file
-       (e.g. ``CrabAll.fbx``, ``HorseALL.fbx``, ``Camel_ALL.fbx``, ``Cat-ALL.fbx``).
-    2. **Files without an inferable action name**:
-       - Standalone species-name files (``Fox.fbx``, ``Monkey.fbx``, …)
-       - Variant-code files (``FoxA_A02.fbx``, ``Monkey_B01.fbx``, …)
-    """
-    stem = os.path.splitext(os.path.basename(file_path))[0]
-    stem_lower = stem.lower()
-    obj_lower = object_type.lower()
-
-    # ── 1. All-in-one files ──────────────────────────────────────────────
-    for sep in ('', '_', '-'):
-        pattern = re.compile(
-            rf'^{re.escape(obj_lower)}{re.escape(sep)}all$', re.IGNORECASE
-        )
-        if pattern.match(stem):
-            print(
-                f'  [SKIP] {os.path.basename(file_path)}: '
-                f'all-in-one file (contains all animations)'
-            )
-            return True
-
-    # ── 2. NoSaddle variants (T-pose with no animation) ─────────────────
-    nosaddle_pattern = re.compile(
-        rf'^{re.escape(obj_lower)}[-_]\s*nosaddle$', re.IGNORECASE
-    )
-    if nosaddle_pattern.match(stem_lower):
-        print(
-            f'  [SKIP] {os.path.basename(file_path)}: '
-            f'NoSaddle T-pose file (no animation)'
-        )
-        return True
-
-    # ── 3. Standalone species name (no action component) ─────────────────
-    if stem_lower == obj_lower:
-        print(
-            f'  [SKIP] {os.path.basename(file_path)}: '
-            f'no inferable action name (species name only)'
-        )
-        return True
-
-    # ── 3. Variant codenames ─────────────────────────────────────────────
-    #   FoxA_A02, FoxA_A03     → {species}{letter}_{code}
-    #   Monkey_B01, Monkey_B02 → {species}_{letter}{digits}
-    variant1 = re.compile(
-        rf'^{re.escape(obj_lower)}[a-z]_\w+$', re.IGNORECASE
-    )
-    variant2 = re.compile(
-        rf'^{re.escape(obj_lower)}_[a-z]\d+$', re.IGNORECASE
-    )
-    if variant1.match(stem) or variant2.match(stem):
-        print(
-            f'  [SKIP] {os.path.basename(file_path)}: '
-            f'variant codename, no inferable action name'
-        )
-        return True
-
-    return False
-
 
 def _process_motion_file(file_path, object_type, max_joints, root_pose_init_xz, scale_factor,
                          offsets, foot_indices, tpos_rots, face_joints, orientation_quat, forward_joint_index, forward_base_joint_index):

@@ -1,59 +1,16 @@
-"""Quick verification tests for FBX filtering and action-name normalization."""
+"""Regression tests for FBX filtering and action-name normalization."""
 import os
-import re
 import sys
+from pathlib import Path
 
-# Copy of the two new functions from motion_process.py
-def _normalize_action_name(object_type, raw_action):
-    obj_lower = object_type.lower()
-    if not raw_action:
-        return raw_action
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-    # Step 1 — strip {species}ALL{sep}
-    all_prefix = re.compile(rf'^{re.escape(obj_lower)}all[-_\s]', re.IGNORECASE)
-    raw_action = all_prefix.sub('', raw_action)
-    if not raw_action:
-        return raw_action
-
-    # Step 2 — strip {species}{sep}
-    species_prefix = re.compile(rf'^{re.escape(obj_lower)}[-_\s]', re.IGNORECASE)
-    raw_action = species_prefix.sub('', raw_action)
-    if not raw_action:
-        return raw_action
-
-    has_spaces = ' ' in raw_action
-    is_all_lowercase = raw_action.islower()
-    starts_with_lower = raw_action[0].islower() if raw_action else False
-
-    if (has_spaces and starts_with_lower) or is_all_lowercase:
-        parts = re.split(r'[^a-zA-Z0-9]+', raw_action)
-        parts = [p for p in parts if p]
-        if not parts:
-            return raw_action
-        return ''.join(p[0].upper() + p[1:] for p in parts)
-    return raw_action
-
-def _should_skip_fbx(file_path, object_type):
-    stem = os.path.splitext(os.path.basename(file_path))[0]
-    stem_lower = stem.lower()
-    obj_lower = object_type.lower()
-    for sep in ('', '_', '-'):
-        pattern = re.compile(rf'^{re.escape(obj_lower)}{re.escape(sep)}all$', re.IGNORECASE)
-        if pattern.match(stem):
-            return True
-    # NoSaddle T-pose variants
-    nosaddle_pattern = re.compile(
-        rf'^{re.escape(obj_lower)}[-_]\s*nosaddle$', re.IGNORECASE
-    )
-    if nosaddle_pattern.match(stem_lower):
-        return True
-    if stem_lower == obj_lower:
-        return True
-    variant1 = re.compile(rf'^{re.escape(obj_lower)}[a-z]_\w+$', re.IGNORECASE)
-    variant2 = re.compile(rf'^{re.escape(obj_lower)}_[a-z]\d+$', re.IGNORECASE)
-    if variant1.match(stem) or variant2.match(stem):
-        return True
-    return False
+from data_loaders.truebones.truebones_utils.fbx_filename_rules import (  # noqa: E402
+    _normalize_action_name,
+    _should_skip_fbx,
+)
 
 # Test cases: (file, object_type, expected_skip, expected_normalized_action)
 tests = [
@@ -102,10 +59,9 @@ tests = [
     ('down in.fbx', 'Elephant', False, 'DownIn'),
     ('down out.fbx', 'Elephant', False, 'DownOut'),
     ('atk 1.fbx', 'Monkey', False, 'Atk1'),
-    # B01 die starts with uppercase → kept as-is (not a raw lowercase description)
-    ('B01 die.fbx', 'Monkey', False, 'B01 die'),
-    ('B01 idle.fbx', 'Monkey', False, 'B01 idle'),
-    ('B02 atk.fbx', 'Monkey', False, 'B02 atk'),
+    ('B01 die.fbx', 'Monkey', False, 'B01Die'),
+    ('B01 idle.fbx', 'Monkey', False, 'B01Idle'),
+    ('B02 atk.fbx', 'Monkey', False, 'B02Atk'),
     ('die2.fbx', 'Fox', False, 'Die2'),
     ('firing.fbx', 'Elephant', False, 'Firing'),
     # ── Filtering: NoSaddle T-pose variant ──
@@ -121,31 +77,42 @@ tests = [
     ('BEAR-Growl.fbx', 'Bear', False, 'Growl'),
     ('Cat-Walk.fbx', 'Cat', False, 'Walk'),
     ('scorpion-Attack1.fbx', 'Scorpion', False, 'Attack1'),
-    # Dog-Back Away: strip Dog- → "Back Away" (uppercase start + spaces, left untouched)
-    ('Dog-Back Away.fbx', 'Dog', False, 'Back Away'),
+    ('Dog-Back Away.fbx', 'Dog', False, 'BackAway'),
+    # ── Reported real-world regressions ──
+    ('T-Rex-bite 90 left.fbx', 'Trex', False, 'Bite90Left'),
+    ('T-Rex-Chase Roar.fbx', 'Trex', False, 'ChaseRoar'),
+    ('T-Rex-death short.fbx', 'Trex', False, 'DeathShort'),
+    ('T-Rex.fbx', 'Trex', True, None),
+    ('T-Rex-STILL.fbx', 'Trex', True, None),
+    ('BEAR-Attack.fbx', 'BrownBear', False, 'Attack'),
+    ('BEARALL.fbx', 'BrownBear', True, None),
+    ('Buffalo-Fall.fbx', 'Buffalo', False, 'Fall'),
+    ('Piranna-Biting.fbx', 'Pirrana', False, 'Biting'),
+    ('PirhannaALL.fbx', 'Pirrana', True, None),
+    ('CrabAll-Die.fbx', 'HermitCrab', False, 'Die'),
+    ('Parrot-ALL.fbx', 'Parrot2', True, None),
+    ('SandMouseA02.fbx', 'SandMouse', True, None),
 ]
 
-passed = 0
-failed = 0
-for file_path, obj_type, expected_skip, expected_action in tests:
-    skip_result = _should_skip_fbx(file_path, obj_type)
-    skip_ok = (skip_result == expected_skip)
 
-    norm_ok = True
-    if not expected_skip and expected_action is not None:
+def test_filter_and_normalize_cases():
+    for file_path, obj_type, expected_skip, expected_action in tests:
+        skip_result = _should_skip_fbx(file_path, obj_type)
+        assert skip_result == expected_skip, (
+            f'{file_path} ({obj_type}): skip={skip_result}, expected={expected_skip}'
+        )
+
+        if expected_skip or expected_action is None:
+            continue
+
         stem = os.path.splitext(file_path)[0]
         action_result = _normalize_action_name(obj_type, stem)
-        norm_ok = (action_result == expected_action)
-        if not norm_ok:
-            print(f'  [FAIL] {file_path} ({obj_type}): action="{action_result}", expected="{expected_action}"')
-    elif skip_result != expected_skip:
-        print(f'  [FAIL] {file_path} ({obj_type}): skip={skip_result}, expected={expected_skip}')
+        assert action_result == expected_action, (
+            f'{file_path} ({obj_type}): action={action_result}, expected={expected_action}'
+        )
 
-    if skip_ok and norm_ok:
-        passed += 1
-    else:
-        failed += 1
 
-print(f'{"="*50}')
-print(f'Results: {passed}/{passed+failed} passed, {failed} failed')
-sys.exit(0 if failed == 0 else 1)
+if __name__ == '__main__':
+    test_filter_and_normalize_cases()
+    print(f'{"="*50}')
+    print(f'Results: {len(tests)}/{len(tests)} passed, 0 failed')

@@ -328,6 +328,7 @@ def _prune_excess_joint_motions(motions_dir: Path, bvhs_dir: Path, cond: dict, s
             if motion.ndim != 3 or motion.shape[1] <= MAX_JOINTS:
                 continue
             object_type = _match_object_type(motion_path.stem, cond)
+            expected_joints = len(cond[object_type]["parents"])
             excess_joints_chars.add(object_type)
             _print_warn(f"{motion_path.name} exceeds MAX_JOINTS: {motion.shape[1]}")
         except Exception as exc:
@@ -382,13 +383,13 @@ def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample
             _require(motion.ndim == 3, f"{motion_path.name} must be rank-3, got {motion.ndim}")
             _require(motion.shape[0] > 0, f"{motion_path.name} has zero frames")
             _require(motion.shape[1] > 0, f"{motion_path.name} has zero joints")
-            _require(motion.shape[1] <= MAX_JOINTS, f"{motion_path.name} exceeds MAX_JOINTS: {motion.shape[1]}")
-
-            _require(motion.shape[2] == FEATS_LEN, f"{motion_path.name} feature dim mismatch: {motion.shape[2]}")
-            _require(np.isfinite(motion).all(), f"{motion_path.name} contains NaN/Inf")
 
             object_type = _match_object_type(motion_path.stem, cond)
             expected_joints = len(cond[object_type]["parents"])
+            _require(motion.shape[1] <= MAX_JOINTS, f"{motion_path.name} exceeds MAX_JOINTS: {motion.shape[1]} (original skeleton: {expected_joints})")
+
+            _require(motion.shape[2] == FEATS_LEN, f"{motion_path.name} feature dim mismatch: {motion.shape[2]}")
+            _require(np.isfinite(motion).all(), f"{motion_path.name} contains NaN/Inf")
             _require(motion.shape[1] == expected_joints, f"{motion_path.name} joints mismatch: {motion.shape[1]} vs {expected_joints}")
         except ValidationError as e:
             _print_warn(f"validation error: {motion_path.name}: {e}")

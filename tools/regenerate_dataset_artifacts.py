@@ -23,6 +23,7 @@ Examples:
 """
 
 import argparse
+import copy
 import shutil
 import sys
 from collections import Counter
@@ -55,6 +56,32 @@ def _normalize_identifier(value: str) -> str:
 def _resolve_dataset_dir_path(dataset_dir: str | Path | None) -> Path:
     raw_value = str(dataset_dir) if dataset_dir else None
     return Path(get_dataset_dir(raw_value)).resolve()
+
+
+def _select_active_cond_entries(
+    existing_cond: dict[str, dict[str, object]],
+    active_object_types: list[str],
+) -> tuple[dict[str, dict[str, object]], list[str]]:
+    active_set = set(active_object_types)
+    active_cond = {
+        object_type: existing_cond[object_type]
+        for object_type in active_object_types
+        if object_type in existing_cond
+    }
+    stale_object_types = sorted(object_type for object_type in existing_cond if object_type not in active_set)
+    return active_cond, stale_object_types
+
+
+def _build_rebuilt_cond_entries(
+    active_cond: dict[str, dict[str, object]],
+    rebuild_object_types: list[str],
+) -> dict[str, dict[str, object]]:
+    # Detach the rebuild subset before mutating sidecar-only fields so the final
+    # merge is the single place where refreshed entries overlay the active cond.
+    return {
+        object_type: copy.deepcopy(active_cond[object_type])
+        for object_type in rebuild_object_types
+    }
 
 
 def _write_metadata_summary(
@@ -104,6 +131,7 @@ def regenerate_dataset_artifacts(
     dataset_dir: str | Path | None = None,
     t5_model: str = "t5-base",
     object_types: list[str] | tuple[str, ...] | None = None,
+    force_reencode: bool = True,
 ) -> Path:
     dataset_dir_path = _resolve_dataset_dir_path(dataset_dir)
     motions_dir = dataset_dir_path / MOTION_DIR
@@ -132,6 +160,13 @@ def regenerate_dataset_artifacts(
             f"cond.npy is missing object entries required by current motions: {missing_object_types}"
         )
 
+    active_cond, stale_object_types = _select_active_cond_entries(existing_cond, active_object_types)
+    if stale_object_types:
+        print(
+            "[OK] pruned stale cond.npy object entries with no matching motions: "
+            + ", ".join(stale_object_types)
+        )
+
     if object_types is None:
         rebuild_object_types = active_object_types
     else:
@@ -139,7 +174,7 @@ def regenerate_dataset_artifacts(
         rebuild_object_types = [
             object_type
             for object_type in requested_object_types
-            if object_type in existing_cond and object_type in active_object_types
+            if object_type in active_cond and object_type in active_object_types
         ]
         skipped_object_types = [
             object_type
@@ -154,7 +189,7 @@ def regenerate_dataset_artifacts(
         if not rebuild_object_types:
             raise RuntimeError("no requested object types are present in the current dataset artifacts")
 
-    rebuilt_cond = {object_type: existing_cond[object_type] for object_type in rebuild_object_types}
+    rebuilt_cond = _build_rebuilt_cond_entries(active_cond, rebuild_object_types)
 
     inspection_dir = dataset_dir_path / "joint_name_inspection"
     if inspection_dir.exists():
@@ -178,8 +213,9 @@ def regenerate_dataset_artifacts(
         str(dataset_dir_path),
         t5_name=t5_model,
         write_collision_report=False,
+        force_reencode=force_reencode,
     )
-    merged_cond = dict(existing_cond)
+    merged_cond = dict(active_cond)
     merged_cond.update(rebuilt_cond)
     _write_joint_name_collision_report(merged_cond, str(dataset_dir_path))
     np.save(str(cond_path), merged_cond)
