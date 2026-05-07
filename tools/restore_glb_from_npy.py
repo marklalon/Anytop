@@ -29,8 +29,8 @@ Usage:
         # Using FBX T-pose
         python tools/restore_glb_from_npy.py \
                 --npy "D:/AI/.../Horse___RunToStop_29.npy" \
-                --tpose_mesh "D:/AI/.../HorseALL-TPOSE.fbx" \
-                --output_glb "outputs/Horse___RunToStop_29.glb"
+                --tpose-mesh "D:/AI/.../HorseALL-TPOSE.fbx" \
+                --output-glb "outputs/Horse___RunToStop_29.glb"
 
 """
 
@@ -282,7 +282,7 @@ def restore_glb(
             raise ValueError(
                 f"Cannot auto-detect object_type from '{os.path.basename(npy_path)}'.\n"
                 f"  Available: {list(cond.keys())}\n"
-                f"  Pass --object_type explicitly."
+                f"  Pass --object-type explicitly."
             )
         print(f"Auto-detected object_type: {object_type}")
     elif object_type not in cond:
@@ -402,11 +402,11 @@ def main() -> None:
         help="Path to the preprocessed .npy motion file.",
     )
     parser.add_argument(
-        "--tpose_mesh", required=True,
+        "--tpose-mesh", required=True,
         help="Path to the T-pose FBX that provides skin weights + armature.",
     )
     parser.add_argument(
-        "--output_glb",
+        "--output-glb",
         default=None,
         help=(
             "Output GLB path.  Defaults to outputs/restore_glb_from_npy/<stem>.glb "
@@ -414,12 +414,12 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--cond_npy",
+        "--cond-npy",
         default=None,
         help=f"Path to cond.npy.  Default: {_DEFAULT_COND_NPY}",
     )
     parser.add_argument(
-        "--object_type",
+        "--object-type",
         default=None,
         help=(
             "Character type key in cond.npy (e.g. 'Horse').  "
@@ -450,7 +450,7 @@ def main() -> None:
     if not os.path.isfile(cond_npy_path):
         parser.error(
             f"cond.npy not found: {cond_npy_path}\n"
-            "Use --cond_npy to specify a custom path."
+            "Use --cond-npy to specify a custom path."
         )
 
     print(f"NPY           : {args.npy}")
