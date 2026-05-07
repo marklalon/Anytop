@@ -23,6 +23,7 @@ for _path in (_REPO_ROOT, _ANYTOP_ROOT):
 from motion_lib import BVH  # noqa: E402
 from motion_lib import FBX  # noqa: E402
 from motion_lib.Animation import positions_global  # noqa: E402
+from data_loaders.truebones.offline_reference_dataset import load_cond_dict  # noqa: E402
 from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
     get_common_features_from_T_pose,
     process_anim,
@@ -48,12 +49,19 @@ def _processed_stats(clip_name: str) -> tuple[tuple[float, float, float], float,
         forward_joint_index,
         forward_base_joint_index,
         _contact_joint_source,
+        _unused_axial_avg_len,
     ) = get_common_features_from_T_pose(str(_TPOSE_FBX), "Horse")
+    _cond_entry = load_cond_dict().get("Horse")
+    if _cond_entry is None or "axial_avg_len" not in _cond_entry:
+        _axial_avg_len = float(_unused_axial_avg_len)
+    else:
+        _axial_avg_len = float(_cond_entry["axial_avg_len"])
 
     raw_anim, _raw_names, _frame_time = FBX.load(str(_HORSE_DIR / clip_name))
     processed_anim, _root_pose_init_xz, _scale_factor = process_anim(
         raw_anim,
         "Horse",
+        _axial_avg_len,
         root_pose_init_xz,
         scale_factor,
         face_joints=face_joints,

@@ -40,6 +40,7 @@ from pathlib import Path
 
 from motion_lib import BVH, Animation
 from motion_lib.Animation import positions_global
+from data_loaders.truebones.offline_reference_dataset import load_cond_dict
 from data_loaders.truebones.truebones_utils.motion_process import (
     get_common_features_from_T_pose,
     get_hml_aligned_anim,
@@ -241,7 +242,14 @@ def process_animal(animal_dir: Path):
         forward_joint_index,
         forward_base_joint_index,
         contact_joint_source,
+        _unused_axial_avg_len,
     ) = get_common_features_from_T_pose(ref_path, animal_name)
+    cond_entry = load_cond_dict().get(animal_name)
+    if cond_entry is None or "axial_avg_len" not in cond_entry:
+        print(f"[WARN] axial_avg_len missing from cond.npy for {animal_name}; falling back to T-pose metadata")
+        _axial_avg_len = float(_unused_axial_avg_len)
+    else:
+        _axial_avg_len = float(cond_entry["axial_avg_len"])
 
     print(f"  Scale factor  : {scale_factor:.6f}")
     print(f"  XZ centering  : ({root_pose_init_xz[0]:.4f}, {root_pose_init_xz[2]:.4f})")
@@ -271,15 +279,16 @@ def process_animal(animal_dir: Path):
                 bvh_path,
                 animal_name,
                 root_pose_init_xz,
-                scale_factor,
                 tpos_rots,
                 offsets,
                 errors,
-                foot_indices,
-                face_joints,
-                orientation_quat,
-                forward_joint_index,
-                forward_base_joint_index,
+                axial_avg_len=_axial_avg_len,
+                scale_factor=scale_factor,
+                foot_indices=foot_indices,
+                face_joints=face_joints,
+                orientation_quat=orientation_quat,
+                forward_joint_index=forward_joint_index,
+                forward_base_joint_index=forward_base_joint_index,
             )
         except Exception as exc:
             print(f"  ERROR during processing: {exc}")
@@ -296,11 +305,12 @@ def process_animal(animal_dir: Path):
             animal_name,
             max_joints=23,
             root_pose_init_xz=root_pose_init_xz,
-            scale_factor=scale_factor,
             offsets=offsets,
             foot_indices=foot_indices,
             tpos_rots=tpos_rots,
             squared_positions_error=local_errors,
+            axial_avg_len=_axial_avg_len,
+            scale_factor=scale_factor,
             face_joints=face_joints,
             orientation_quat=orientation_quat,
             forward_joint_index=forward_joint_index,

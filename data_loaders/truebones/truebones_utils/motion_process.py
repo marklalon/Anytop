@@ -1,5 +1,5 @@
 from motion_lib import BVH, FBX, Animation, Quaternions
-from motion_lib.Animation import positions_global, rotations_global, offsets_from_positions, offsets_global, offset_lengths
+from motion_lib.Animation import positions_global, rotations_global, offsets_from_positions, offsets_global
 from motion_lib import animation_from_positions
 from collections import Counter, defaultdict
 import json
@@ -11,13 +11,12 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import redirect_stdout, redirect_stderr
 import random
 import math
-import statistics
 import traceback
 import torch
 import bisect
 import re 
 import time 
-from data_loaders.truebones.truebones_utils.param_utils import HML_AVG_BONELEN, FOOT_CONTACT_HEIGHT_THRESH, DEFAULT_DATASET_DIR, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir, SNAKES, CHAIN_FORWARD_JOINTS, FLYING, FISH, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
+from data_loaders.truebones.truebones_utils.param_utils import HML_REF_AXIAL_BONE_LENGTH, FOOT_CONTACT_HEIGHT_THRESH, DEFAULT_DATASET_DIR, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir, SNAKES, CHAIN_FORWARD_JOINTS, FLYING, FISH, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
 from utils.rotation_conversions import rotation_6d_to_matrix_np
 from utils.roundtrip_common import _load_fbx_skeleton_metadata
 from .motion_labels import build_motion_labels, build_object_labels, write_motion_metadata
@@ -30,6 +29,7 @@ from .physics_joint_annotation import (
     _strip_joint_name_prefix,
     build_joint_embedding_texts,
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
+    _detect_joint_side,
 )
 from .face_orientation import (
     resolve_face_joints,
@@ -645,11 +645,41 @@ def needs_bvh_position_channels(anim, tol=1e-4):
     rest_offsets = np.asarray(anim.offsets[1:], dtype=np.float64)[None, :, :]
     return bool(np.any(np.abs(nonroot_positions - rest_offsets) > tol))
 
-def scale(anim, scale_factor=None):
+def _get_average_axial_bone_length(offsets, parents, joint_side_labels):
+    """Compute the mean bone length of axial (center-labeled) bones, excluding root.
+
+    Falls back to the mean bone length across *all* non-root bones when no
+    center-labeled bones exist, so the return value is always a positive float.
+    """
+    total_length = 0.0
+    axial_count = 0
+    for joint_index in range(1, len(parents)):  # skip root (no parent bone)
+        if joint_index < len(joint_side_labels) and joint_side_labels[joint_index] == 'center':
+            bone_length = float(np.linalg.norm(offsets[joint_index]))
+            total_length += bone_length
+            axial_count += 1
+    if axial_count > 0:
+        return total_length / axial_count
+    # Fallback: average bone length across all non-root bones.
+    print(f'[WARN] no center-labeled joints found; falling back to mean bone length across all {len(parents) - 1} non-root bones')
+    all_lengths = [float(np.linalg.norm(offsets[j])) for j in range(1, len(parents))]
+    if all_lengths:
+        return sum(all_lengths) / len(all_lengths)
+    return 1.0  # ultimate fallback for single-bone skeletons
+
+
+def scale(anim, axial_avg_len, scale_factor=None):
     if scale_factor is None:
-        lengths = offset_lengths(anim)
-        mean_len = statistics.mean(lengths)
-        scale_factor = HML_AVG_BONELEN / mean_len
+        # Non-linear scaling that dampens the influence of extreme outlier
+        # bones (e.g. long trunk/ear chains, control bones) which inflate
+        # the rest-pose max span beyond the meaningful body extent.
+        #
+        # Formula:  scale = pow(span * 0.01, 1/3) * HML_REF / span
+        # The cube-root term compresses the size range so very large
+        # skeletons (Elephant) aren't over-squashed and finely subdivided
+        # skeletons (Monkey) aren't over-magnified.
+        body_ref = _get_reference_body_length(anim)
+        scale_factor = math.pow(body_ref * 0.01, 0.33) * HML_REF_AXIAL_BONE_LENGTH / axial_avg_len
     new_anim = Animation(
         anim.rotations.copy(),
         anim.positions * scale_factor,
@@ -717,11 +747,11 @@ def get_6d_rep(qs):
     return qs_.rotation_matrix(cont6d=True)
 
 """" process anim object """
-def process_anim(anim, object_type, root_pose_init_xz=None, scale_factor=None, face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None):
+def process_anim(anim, object_type, axial_avg_len, root_pose_init_xz=None, scale_factor=None, face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None):
     rotated = rotate_to_hml_orientation(anim, object_type, face_joints, orientation_quat=orientation_quat, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)
     baked = _bake_descendant_y_into_translation_root(rotated)
     centered, root_pose_init_xz_ = move_xz_to_origin(baked, root_pose_init_xz)
-    scaled, scale_factor_ = scale(centered, scale_factor)
+    scaled, scale_factor_ = scale(centered, axial_avg_len, scale_factor)
     return scaled, root_pose_init_xz_, scale_factor_
 
 
@@ -765,9 +795,20 @@ def get_common_features_from_T_pose(t_pose_fbx_path, object_type, face_joints=No
 
     reference_positions = positions_global(reference_anim)
     t_pose_orientation_quat = get_root_quat(reference_positions, object_type, face_joint_indx=face_joints, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)[0]
+
+    # Pre-compute axial average bone length from the raw T-pose offsets
+    # (before scaling) so that scale() uses it directly instead of recomputing
+    # side labels on every motion-file call.
+    _tpose_side_labels = []
+    for name in t_pos_names:
+        detected = _detect_joint_side(name)
+        _tpose_side_labels.append(detected if detected in ('left', 'right') else 'center')
+    axial_avg_len = _get_average_axial_bone_length(reference_anim.offsets, reference_anim.parents, _tpose_side_labels)
+
     scaled, root_pose_init_xz, scale_factor = process_anim(
         reference_anim,
         object_type,
+        axial_avg_len,
         face_joints=face_joints,
         orientation_quat=t_pose_orientation_quat,
         forward_joint_index=forward_joint_index,
@@ -781,7 +822,7 @@ def get_common_features_from_T_pose(t_pose_fbx_path, object_type, face_joints=No
         scaled.parents,
         scaled_rest_positions,
     )
-    return root_pose_init_xz, scale_factor, offsets, suspected_foot_indices, scaled.rotations, t_pos_names, scaled, face_joints, t_pose_orientation_quat, forward_joint_index, forward_base_joint_index, contact_joint_source
+    return root_pose_init_xz, scale_factor, offsets, suspected_foot_indices, scaled.rotations, t_pos_names, scaled, face_joints, t_pose_orientation_quat, forward_joint_index, forward_base_joint_index, contact_joint_source, axial_avg_len
 
 def get_motion_features(ric_positions, rotations, foot_contact, velocity, terminal_velocity, terminal_contact, max_joints):
     # F = Frames# , J = joints# 
@@ -1108,7 +1149,7 @@ def get_bvh_cont6d_params(anim, object_type, face_joints=None, joint_names=None,
     return cont_6d_params_reordered, r_velocity, velocity, r_rot, positions
 
 """ processes animation, and returns a new animation that aligns with humanML3D in terms of orientation and scale"""
-def get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, scale_factor, tpos_rots, offsets, squared_positions_error, foot_indices=None, face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None, slice_inds=None, preloaded=None):
+def get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, tpos_rots, offsets, squared_positions_error, *, axial_avg_len, scale_factor=None, foot_indices=None, face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None, slice_inds=None, preloaded=None):
     if not isinstance(bvh_path, Animation):
         if preloaded is not None:
             raw_anim, names = preloaded
@@ -1123,6 +1164,7 @@ def get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, scale_factor,
         processed_anim, _xz, _sf = process_anim(
             raw_anim,
             object_type,
+            axial_avg_len,
             root_pose_init_xz,
             scale_factor,
             face_joints=face_joints,
@@ -1165,22 +1207,23 @@ def get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, scale_factor,
     return new_anim, processed_anim, names  
     
 """ get motion feature representation"""
-def get_motion(bvh_path, foot_contact_vel_thresh, object_type, max_joints, root_pose_init_xz, scale_factor, offsets, foot_indices, tpos_rots, squared_positions_error, face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None, slice_inds=None, preloaded=None):
+def get_motion(bvh_path, foot_contact_vel_thresh, object_type, max_joints, root_pose_init_xz, offsets, foot_indices, tpos_rots, squared_positions_error, *, axial_avg_len, scale_factor=None, face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None, slice_inds=None, preloaded=None):
     try:
         new_anim, export_anim, names = get_hml_aligned_anim(
             bvh_path,
             object_type,
             root_pose_init_xz,
-            scale_factor,
             tpos_rots,
             offsets,
             squared_positions_error,
-            foot_indices,
-            face_joints,
-            orientation_quat,
-            forward_joint_index,
-            forward_base_joint_index,
-            slice_inds,
+            axial_avg_len=axial_avg_len,
+            scale_factor=scale_factor,
+            foot_indices=foot_indices,
+            face_joints=face_joints,
+            orientation_quat=orientation_quat,
+            forward_joint_index=forward_joint_index,
+            forward_base_joint_index=forward_base_joint_index,
+            slice_inds=slice_inds,
             preloaded=preloaded,
         )
         translation_root_index = _find_translation_root(new_anim)
@@ -1298,8 +1341,9 @@ def create_topology_edge_relations(parents, max_path_len = 5): # joint j+1 conta
     topo_rel[topo_rel > max_path_len] = max_path_len
     return edge_rel, topo_rel
 
-def _process_motion_file(file_path, object_type, max_joints, root_pose_init_xz, scale_factor,
-                         offsets, foot_indices, tpos_rots, face_joints, orientation_quat, forward_joint_index, forward_base_joint_index):
+def _process_motion_file(file_path, object_type, max_joints, root_pose_init_xz,
+                         offsets, foot_indices, tpos_rots, axial_avg_len, scale_factor=None,
+                         face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None):
     local_errors = dict()
     # Load the FBX file once; pass it as `preloaded` to every get_motion call so that
     raw_anim, names, frame_time = FBX.load(file_path)
@@ -1320,11 +1364,12 @@ def _process_motion_file(file_path, object_type, max_joints, root_pose_init_xz, 
             object_type,
             file_max_joints,
             root_pose_init_xz,
-            scale_factor,
             offsets,
             foot_indices,
             tpos_rots,
             local_errors,
+            axial_avg_len=axial_avg_len,
+            scale_factor=scale_factor,
             face_joints=face_joints,
             orientation_quat=orientation_quat,
             forward_joint_index=forward_joint_index,
@@ -1508,8 +1553,8 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             return None
 
     squared_positions_error = dict()
-    root_pose_init_xz, scale_factor, offsets, foot_indices, tpos_rots, names, tpos_anim, face_joints, orientation_quat, forward_joint_index, forward_base_joint_index, contact_joint_source = get_common_features_from_T_pose(t_pos_path, object_type, face_joints=face_joints)
-    t_pos_motion, parents, max_joints, new_anim, _export_anim, _tpos_is_loop = get_motion(tpos_anim, FOOT_CONTACT_VEL_THRESH, object_type, max_joints, root_pose_init_xz, scale_factor, offsets, foot_indices, tpos_rots, squared_positions_error, face_joints=face_joints, orientation_quat=orientation_quat, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)
+    root_pose_init_xz, scale_factor, offsets, foot_indices, tpos_rots, names, tpos_anim, face_joints, orientation_quat, forward_joint_index, forward_base_joint_index, contact_joint_source, axial_avg_len = get_common_features_from_T_pose(t_pos_path, object_type, face_joints=face_joints)
+    t_pos_motion, parents, max_joints, new_anim, _export_anim, _tpos_is_loop = get_motion(tpos_anim, FOOT_CONTACT_VEL_THRESH, object_type, max_joints, root_pose_init_xz, offsets, foot_indices, tpos_rots, squared_positions_error, axial_avg_len=axial_avg_len, scale_factor=scale_factor, face_joints=face_joints, orientation_quat=orientation_quat, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)
     rest_positions = _rest_positions_from_offsets(offsets, parents)
     semantic_metadata = _build_semantic_metadata(names, parents, offsets, rest_positions=rest_positions)
     object_cond['tpos_first_frame'] = t_pos_motion[0]
@@ -1550,6 +1595,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     object_cond['is_symmetric'] = semantic_metadata['is_symmetric']
     object_cond['root_pose_init_xz'] = np.array(root_pose_init_xz, dtype=np.float64)
     object_cond['scale_factor'] = float(scale_factor)
+    object_cond['axial_avg_len'] = float(axial_avg_len)
     object_cond['kinematic_chains'] = parents2kinchains(parents, object_policy(object_type))
     object_cond.update(build_object_labels(object_type))
     all_tensors = list()
@@ -1565,14 +1611,15 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             object_type,
             max_joints,
             root_pose_init_xz,
-            scale_factor,
             offsets,
             foot_indices,
             tpos_rots,
-            face_joints,
-            orientation_quat,
-            forward_joint_index,
-            forward_base_joint_index,
+            axial_avg_len,
+            scale_factor=scale_factor,
+            face_joints=face_joints,
+            orientation_quat=orientation_quat,
+            forward_joint_index=forward_joint_index,
+            forward_base_joint_index=forward_base_joint_index,
         )
 
     file_outputs = [process_file(file_path) for file_path in fbx_files]

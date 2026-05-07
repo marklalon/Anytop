@@ -131,4 +131,13 @@ SMPL_OFFSETS = np.array([[ 0.0000,  0.0000,  0.0000],
         [ 0.0000, -0.2631,  0.0000],
         [ 0.0000, -0.2660,  0.0000],
         [ 0.0000, -0.2699,  0.0000]])
-HML_AVG_BONELEN = statistics.mean(np.linalg.norm(SMPL_OFFSETS[1:], axis=1))
+
+# Average bone length of axial (center/spine/neck/head) joints in the SMPL skeleton.
+# These are indices [3, 6, 9, 12, 15] — the central body chain that excludes all
+# left/right limb bones.  Used as the target for uniform skeletal scaling so that
+# scaling reflects trunk size rather than total max span (which is inflated by
+# long limb bones in some species).
+HML_REF_AXIAL_BONE_LENGTH = float(np.linalg.norm(
+    SMPL_OFFSETS[[3, 6, 9, 12, 15]],
+    axis=1,
+).mean())

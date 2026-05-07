@@ -99,6 +99,7 @@ def _load_tpose_restore_metadata(tpose_mesh: str, object_type: str) -> dict[str,
         _forward_joint_index,
         _forward_base_joint_index,
         _contact_joint_source,
+        _axial_avg_len,
     ) = get_common_features_from_T_pose(tpose_mesh, object_type)
     return {
         "joint_names": list(tpose_bone_names),
