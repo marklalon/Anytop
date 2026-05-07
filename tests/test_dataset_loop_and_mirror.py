@@ -20,9 +20,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data_loaders.truebones.data.dataset import Truebones
 
 
-LOOP_MOTION = "Ostrich___Run_531.npy"
+LOOP_MOTION = "Ostrich_Run_548.npy"
 LOOP_SUBSET = "bipeds_clean"
-MIRROR_MOTION = "Jaguar___Run_256.npy"
+MIRROR_MOTION = "Jaguar_Run_264.npy"
 MIRROR_SUBSET = "quadropeds_clean"
 NUM_FRAMES = 60
 

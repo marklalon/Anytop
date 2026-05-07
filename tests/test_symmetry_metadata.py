@@ -33,10 +33,18 @@ def test_horse_front_helper_bones_are_paired() -> None:
         'Bip01_R_Hand': ('Bip01_L_Hand', 'right', 'left'),
         'Bip01_R_Finger0': ('Bip01_L_Finger0', 'right', 'left'),
         'Bip01_Xtra02': ('Bip01_Xtra01', 'right', 'left'),
-        'Bip01_Xtra02Nub': ('Bip01_Xtra01Nub', 'right', 'left'),
     }
 
     index_by_name = {name: index for index, name in enumerate(joint_names)}
+
+    # Verify Xtra02Nub and Xtra01Nub are NOT paired (different signatures: "xtra02 nub" vs "xtra01 nub")
+    for nub_name in ['Bip01_Xtra02Nub', 'Bip01_Xtra01Nub']:
+        nub_index = index_by_name[nub_name]
+        assert symmetry_partner_indices[nub_index] == -1, (
+            f'{nub_name} should NOT be paired (different signature from its mirror counterpart), '
+            f'got {symmetry_partner_indices[nub_index]}'
+        )
+
     for source_name, (partner_name, source_side, partner_side) in expected_pairs.items():
         source_index = index_by_name[source_name]
         partner_index = index_by_name[partner_name]
