@@ -16,7 +16,6 @@ Options:
     --skip-orientation-check             Skip stored processed-orientation validation during dataset checks
     --objects-subset SUBSET              Object subset to process (default: all)
     --object-workers N                   Concurrent characters to preprocess (default: 16)
-    --file-workers N                     Worker threads per character for FBX processing (default: 8, note: FBX loading is serialized per-character due to Blender's single-threaded bpy)
     --sample-count N                     Limit file validation to first N motions (0=all, default: 0)
     --orientation-threshold-deg DEG      Maximum allowed first-frame facing error from +Z using stored processed-orientation metadata (default: 15.0)
 
@@ -37,7 +36,7 @@ Examples:
     python preprocess_and_validate.py --re-encode-joint-names-only
 
     # Preprocess specific object subset with custom settings
-    python preprocess_and_validate.py --objects-subset "Hound" --object-workers 4 --file-workers 8
+    python preprocess_and_validate.py --objects-subset "Hound" --object-workers 4
 
     # Validate only a specific object subset
     python preprocess_and_validate.py --validate-only --objects-subset "Monkey"
@@ -60,7 +59,6 @@ ANYTOP_DIR = Path(__file__).resolve().parent
 def run_preprocessing(
     objects_subset: str,
     object_workers: int,
-    file_workers: int,
     raw_data_dir: str = "",
 ) -> int:
     """Run the AnyTop dataset preprocessing."""
@@ -72,7 +70,6 @@ def run_preprocessing(
         sys.executable, "-m", "utils.create_dataset",
         "--objects-subset", objects_subset,
         "--object-workers", str(object_workers),
-        "--file-workers", str(file_workers),
     ]
     
     if raw_data_dir:
@@ -298,12 +295,6 @@ def parse_args() -> argparse.Namespace:
         help="Concurrent characters to preprocess. Defaults to 16.",
     )
     parser.add_argument(
-        "--file-workers",
-        default=8,
-        type=int,
-        help="Worker threads per character for FBX file processing. Defaults to 8. Note: FBX loading is serialized per-character (bpy is single-threaded); this value is accepted but not used for per-file parallelism.",
-    )
-    parser.add_argument(
         "--orientation-threshold-deg",
         default=15.0,
         type=float,
@@ -361,7 +352,6 @@ def main() -> int:
         ret = run_preprocessing(
             args.objects_subset,
             args.object_workers,
-            args.file_workers,
             args.raw_data_dir,
         )
         if ret != 0:

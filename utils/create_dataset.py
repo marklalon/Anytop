@@ -19,8 +19,6 @@ def main():
     # MP4 export removed - no --save-animations argument needed
     parser.add_argument("--object-workers", default=8, type=int,
                         help="Concurrent characters to preprocess. Defaults to 8.")
-    parser.add_argument("--file-workers", default=8, type=int,
-                        help="Worker threads per character for FBX file processing. Defaults to 8.")
     args = parser.parse_args()
 
     objects = args.object_types
@@ -35,7 +33,6 @@ def main():
         dataset_dir=args.dataset_dir or None,
         raw_data_dir=args.raw_data_dir or None,
         object_workers=args.object_workers,
-        file_workers=args.file_workers,
     )
 
 

@@ -7,7 +7,7 @@ import numpy as np
 import os 
 from os.path import join as pjoin
 import re
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import redirect_stdout, redirect_stderr
 import random
 import math
@@ -686,7 +686,6 @@ def _reference_clip_needs_local_position_rebuild(anim, tol=1e-4):
 
 """ get object_type common characteristics, extracted from T-pose FBX"""
 def get_common_features_from_T_pose(t_pose_fbx_path, object_type, face_joints=None):
-    _t0 = time.time()
     t_pose_anim, t_pos_names, _t_pose_frame_time = FBX.load(t_pose_fbx_path)
     reference_anim = t_pose_anim[:1] if len(t_pose_anim) > 1 else t_pose_anim
     face_joints = resolve_face_joints(object_type, t_pos_names, reference_anim.parents, face_joints=face_joints)
@@ -724,7 +723,6 @@ def get_common_features_from_T_pose(t_pose_fbx_path, object_type, face_joints=No
         scaled.parents,
         scaled_rest_positions,
     )
-    print(f'[TIME] {object_type}: get_common_features_from_T_pose = {time.time() - _t0:.2f}s')
     return root_pose_init_xz, scale_factor, offsets, suspected_foot_indices, scaled.rotations, t_pos_names, scaled, face_joints, t_pose_orientation_quat, forward_joint_index, forward_base_joint_index, contact_joint_source
 
 def get_motion_features(ric_positions, rotations, foot_contact, velocity, terminal_velocity, terminal_contact, max_joints):
@@ -1598,7 +1596,7 @@ def _build_motion_metadata_entry(result, motion_file_name):
     return motion_labels
      
 """Prepare processed tensors for all the files of a given object without writing them to disk yet."""
-def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, num_workers=1, raw_data_dir=None):
+def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None):
     object_cond = dict()
     if fbxs_dir is None:
         fbxs_dir = pjoin(get_raw_data_dir(raw_data_dir), object_type)
@@ -1672,8 +1670,8 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     object_cond.update(build_object_labels(object_type))
     all_tensors = list()
 
-    # FBX loading via bpy is single-threaded (clear_scene is a global side effect),
-    # so file-level parallelism is disabled regardless of the num_workers setting.
+    # FBX loading via bpy is single-threaded inside a process because clear_scene
+    # mutates global Blender state, so file-level parallelism is intentionally removed.
     print(f'processing {len(fbx_files)} FBX files for {object_type} (serial — bpy is single-threaded)', flush=True)
 
     def process_file(file_path):
@@ -1731,11 +1729,9 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
 
 """Write a prepared object payload to disk with stable sequential clip naming."""
 def _write_object_outputs(save_dir, object_payload, files_counter):
-    import time as _time_mod
     object_type = object_payload['object_type']
     frames_counter = 0
     motion_metadata = {}
-    _t0 = _time_mod.time()
 
     for result in object_payload['results']:
         motion = result['motion']
@@ -1761,7 +1757,6 @@ def _write_object_outputs(save_dir, object_payload, files_counter):
         motion_labels = _build_motion_metadata_entry(result, motion_file_name)
         motion_metadata[motion_file_name] = motion_labels
 
-    print(f'[TIME] {object_type}: _write_object_outputs = {_time_mod.time() - _t0:.2f}s ({files_counter} clips)')
     return files_counter, frames_counter, motion_metadata
 
 
@@ -1787,26 +1782,22 @@ def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, m
     np.save(pjoin(save_dir, "cond.npy"), cond)
     write_motion_metadata(save_dir, motion_metadata, files_counter)
 
-def _resolve_preprocessing_workers(objects, object_workers=8, file_workers=8):
+def _resolve_preprocessing_workers(objects, object_workers=8):
     object_count = max(1, len(objects))
-    object_workers = min(object_count, max(1, int(object_workers)))
-    file_workers = max(1, int(file_workers))
-    total_workers = object_workers * file_workers
-    return total_workers, object_workers, file_workers
+    return min(object_count, max(1, int(object_workers)))
 
 
-def _prepare_object_outputs_worker(object_type, max_files, file_workers, raw_data_dir=None):
+def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None):
     return _prepare_object_outputs(
         object_type,
         max_joints=23,
         max_files=max_files,
-        num_workers=file_workers,
         raw_data_dir=raw_data_dir,
     )
 
 """ creates processed tensors for all the files of a given object. Returens statistics and the object condition,
 which includes tpos, relation/distances matrices, offsets, parents, joints names, kinematic chains, mean and std"""    
-def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, num_workers=1, raw_data_dir=None, bvhs_dir=None):
+def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, bvhs_dir=None):
     object_payload = _prepare_object_outputs(
         object_type,
         max_joints,
@@ -1814,7 +1805,6 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
         fbxs_dir=fbxs_dir or bvhs_dir,  # bvhs_dir kept for backward compatibility
         t_pos_path=t_pos_path,
         max_files=max_files,
-        num_workers=num_workers,
         raw_data_dir=raw_data_dir,
     )
     if object_payload is None:
@@ -1832,7 +1822,7 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
     return files_counter, frames_counter, max_joints, object_payload['object_cond'], object_motion_metadata
 
 """ create dataset """
-def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, raw_data_dir=None, object_workers=8, file_workers=8):
+def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, raw_data_dir=None, object_workers=8):
     ## prepare
     target_dataset_dir = dataset_dir or DEFAULT_DATASET_DIR
     os.makedirs(pjoin(target_dataset_dir, MOTION_DIR), exist_ok=True)
@@ -1846,14 +1836,11 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
             if os.path.isdir(pjoin(resolved_raw_data_dir, obj))
         )
 
-    total_workers, obj_workers, fw = _resolve_preprocessing_workers(
+    obj_workers = _resolve_preprocessing_workers(
         objects,
         object_workers=object_workers,
-        file_workers=file_workers,
     )
-    print(f'Preprocessing {len(objects)} characters: '
-          f'{obj_workers} object workers x {fw} file workers '
-          f'(up to {total_workers} concurrent preprocess workers)')
+    print(f'Preprocessing {len(objects)} characters with {obj_workers} object workers')
 
     payloads = [None] * len(objects)
     if obj_workers <= 1:
@@ -1862,7 +1849,6 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
                 object_type,
                 max_joints=23,
                 max_files=max_files_per_object,
-                num_workers=fw,
                 raw_data_dir=raw_data_dir,
             )
     else:
@@ -1872,7 +1858,6 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
                     _prepare_object_outputs_worker,
                     object_type,
                     max_files_per_object,
-                    fw,
                     raw_data_dir,
                 ): idx
                 for idx, object_type in enumerate(objects)
@@ -2216,7 +2201,7 @@ def add_joint_augmentation(data, mean, std):
 ################################################################
 
 ########################### Tests ##############################
-def process_single_object_type(object_type, save_dir, file_workers=8):
+def process_single_object_type(object_type, save_dir):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(save_dir, BVHS_DIR), exist_ok=True)
@@ -2237,7 +2222,6 @@ def process_single_object_type(object_type, save_dir, file_workers=8):
         max_joints,
         squared_positions_error,
         save_dir=save_dir,
-        num_workers=file_workers,
     )
     cond[object_type] = object_cond
     objects_counter[object_type] = files_counter - cur_counter 
