@@ -668,10 +668,10 @@ def _validate_generated_artifacts_consistency(dataset_dir: Path, cond: dict, obj
 
     if objects_subset != "all":
         expected_subset = set(OBJECT_SUBSETS_DICT[objects_subset])
-        missing_subset_objects = sorted(object_types_in_motions - expected_subset)
+        missing_subset_objects = sorted(expected_subset - object_types_in_motions)
         if missing_subset_objects:
             _print_warn(
-                f"generated artifact consistency error: motions contain objects outside subset {objects_subset}: {missing_subset_objects}"
+                f"generated artifact consistency error: motions are missing objects from subset {objects_subset}: {missing_subset_objects}"
             )
             is_consistent = False
 
@@ -736,7 +736,7 @@ def _validate_positions_error_file(positions_error_path: Path) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate an AnyTop preprocessed dataset directory.")
     parser.add_argument("--dataset-dir", default=None, help="Dataset directory to validate. If not specified, uses default path.")
-    parser.add_argument("--objects-subset", default="all", choices=sorted(OBJECT_SUBSETS_DICT.keys()), help="Expected object subset for the dataset.")
+    parser.add_argument("--objects-subset", default="all", choices=sorted(OBJECT_SUBSETS_DICT.keys()), help="Subset that must be present in the dataset; incremental runs may still contain additional objects.")
     parser.add_argument("--sample-count", type=int, default=0, help="How many motion files to validate in detail. Use 0 to validate all files.")
     parser.add_argument("--orientation-threshold-deg", type=float, default=5.0, help="Maximum allowed first-frame facing error from +Z using stored processed-orientation metadata.")
     parser.add_argument("--filter-orientation-threshold-deg", type=float, default=0.0, help="Delete motion tensors whose stored processed-orientation deviation exceeds this threshold before validation. Use 0 to disable filtering.")

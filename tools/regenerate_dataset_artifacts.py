@@ -31,7 +31,9 @@ from pathlib import Path
 import numpy as np
 
 ANYTOP_DIR = Path(__file__).resolve().parent.parent
+_PARENT_DIR = ANYTOP_DIR.parent
 sys.path.insert(0, str(ANYTOP_DIR))
+sys.path.insert(0, str(_PARENT_DIR))
 sys.path.insert(0, str(ANYTOP_DIR / "data_loaders" / "truebones"))
 
 from truebones_utils.motion_labels import (  # noqa: E402

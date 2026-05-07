@@ -3,8 +3,8 @@
 Unified Preprocessing + Validation Workflow
 ============================================
 Automatically chains AnyTop dataset creation with validation:
-  1. Preprocessing: Creates motion tensors and conditioning files from FBX source files
-  2. Validation: Validates the preprocessed dataset
+    1. Preprocessing: Incrementally refreshes the selected objects-subset; `all` falls back to a full dataset refresh
+    2. Validation: Validates the preprocessed dataset
 
 Usage:
     python preprocess_and_validate.py [OPTIONS]
@@ -14,13 +14,13 @@ Options:
     --re-encode-joint-names-only         Skip preprocessing and validation, only re-encode joint names into cond.npy
     --skip-validate                      Skip validation step (faster for CI)
     --skip-orientation-check             Skip stored processed-orientation validation during dataset checks
-    --objects-subset SUBSET              Object subset to process (default: all)
+    --objects-subset SUBSET              Object subset to process incrementally; `all` uses full refresh (default: all)
     --object-workers N                   Concurrent characters to preprocess (default: 16)
     --sample-count N                     Limit file validation to first N motions (0=all, default: 0)
     --orientation-threshold-deg DEG      Maximum allowed first-frame facing error from +Z using stored processed-orientation metadata (default: 15.0)
 
 Examples:
-    # Full workflow: preprocess ->validate
+    # Full workflow: full refresh for objects-subset=all -> validate
     python preprocess_and_validate.py
 
     # Validate only (assumes preprocessing already done)
@@ -35,13 +35,13 @@ Examples:
     # Re-encode joint names only (fast, no motion re-export)
     python preprocess_and_validate.py --re-encode-joint-names-only
 
-    # Preprocess specific object subset with custom settings
-    python preprocess_and_validate.py --objects-subset "Hound" --object-workers 4
+    # Incrementally refresh a specific object subset with custom settings
+    python preprocess_and_validate.py --objects-subset "bipeds" --object-workers 4
 
     # Validate only a specific object subset
-    python preprocess_and_validate.py --validate-only --objects-subset "Monkey"
+    python preprocess_and_validate.py --validate-only --objects-subset "flying"
 
-    # Fast CI workflow (skip validation)
+    # Fast CI workflow (skip validation after subset/full refresh)
     python preprocess_and_validate.py --skip-validate
 """
 
@@ -50,47 +50,244 @@ import os
 import sys
 import subprocess
 import shutil
+from dataclasses import dataclass, field
 from pathlib import Path
 import numpy as np
 
 ANYTOP_DIR = Path(__file__).resolve().parent
+
+# Make the bundled truebones helpers importable directly (param_utils, truebones_utils.motion_labels).
+_TRUEBONES_DIR = ANYTOP_DIR / "data_loaders" / "truebones"
+for _path in (_TRUEBONES_DIR, _TRUEBONES_DIR / "truebones_utils"):
+    _path_str = str(_path)
+    if _path_str not in sys.path:
+        sys.path.insert(0, _path_str)
+
+from param_utils import BVHS_DIR, MOTION_DIR, OBJECT_SUBSETS_DICT, get_dataset_dir  # noqa: E402
+from truebones_utils.motion_labels import load_motion_metadata, write_motion_metadata  # noqa: E402
+
+
+@dataclass
+class PreservedSideArtifacts:
+    cond: dict[str, dict[str, object]] = field(default_factory=dict)
+    motion_metadata: dict[str, dict[str, object]] = field(default_factory=dict)
+
+
+def _resolve_dataset_paths(dataset_dir: str = "") -> tuple[Path, Path, Path, Path | None, Path]:
+    dataset_dir_path = Path(get_dataset_dir(dataset_dir or None))
+    return (
+        dataset_dir_path,
+        dataset_dir_path / MOTION_DIR,
+        dataset_dir_path / BVHS_DIR,
+        dataset_dir_path / "glb" if BVHS_DIR != "glb" else None,
+        dataset_dir_path / "joint_name_inspection",
+    )
+
+
+def _resolve_target_object_types(objects_subset: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(str(obj) for obj in OBJECT_SUBSETS_DICT[objects_subset]))
+
+
+def _path_targets_object_type(path: Path, target_object_types: tuple[str, ...]) -> bool:
+    stem = path.stem
+    return any(stem == t or stem.startswith(f"{t}_") for t in target_object_types)
+
+
+def _collect_targeted_files(directory: Path | None, target_object_types: tuple[str, ...]) -> list[Path]:
+    if directory is None or not directory.exists():
+        return []
+    return [
+        p for p in sorted(directory.iterdir())
+        if p.is_file() and _path_targets_object_type(p, target_object_types)
+    ]
+
+
+def _collect_nonempty_directories(*directories: Path | None) -> list[Path]:
+    return [d for d in directories if d is not None and d.exists() and any(d.iterdir())]
+
+
+def _capture_preserved_side_artifacts(
+    dataset_dir_path: Path,
+    target_object_types: tuple[str, ...],
+) -> PreservedSideArtifacts:
+    preserved = PreservedSideArtifacts()
+
+    cond_path = dataset_dir_path / "cond.npy"
+    if cond_path.exists():
+        current_cond = dict(np.load(cond_path, allow_pickle=True).item())
+        preserved.cond = {
+            str(obj): obj_cond
+            for obj, obj_cond in current_cond.items()
+            if str(obj) not in target_object_types
+        }
+
+    motions_dir = dataset_dir_path / MOTION_DIR
+    for motion_name, entry in load_motion_metadata(dataset_dir_path).items():
+        if not (motions_dir / motion_name).exists():
+            continue
+        object_type = str(entry.get("object_type") or Path(motion_name).stem.split("_", 1)[0])
+        if object_type in target_object_types:
+            continue
+        preserved.motion_metadata[motion_name] = dict(entry)
+
+    return preserved
+
+
+def _merge_preserved_side_artifacts(dataset_dir_path: Path, preserved: PreservedSideArtifacts) -> None:
+    if not preserved.cond and not preserved.motion_metadata:
+        return
+
+    cond_path = dataset_dir_path / "cond.npy"
+    current_cond: dict[str, dict[str, object]] = {}
+    if cond_path.exists():
+        current_cond = dict(np.load(cond_path, allow_pickle=True).item())
+    for obj, obj_cond in preserved.cond.items():
+        current_cond.setdefault(obj, obj_cond)
+    if current_cond:
+        np.save(cond_path, current_cond)
+
+    motions_dir = dataset_dir_path / MOTION_DIR
+    current_metadata = load_motion_metadata(dataset_dir_path)
+    for motion_name, entry in preserved.motion_metadata.items():
+        if motion_name in current_metadata:
+            continue
+        if not (motions_dir / motion_name).exists():
+            continue
+        current_metadata[motion_name] = dict(entry)
+    if current_metadata:
+        total_clips = sum(1 for _ in motions_dir.glob("*.npy"))
+        write_motion_metadata(dataset_dir_path, current_metadata, total_clips)
+
+
+def _confirm_yes_no(prompt: str) -> bool:
+    while True:
+        response = input(prompt).strip().lower()
+        if response in ("yes", "y"):
+            return True
+        if response in ("no", "n"):
+            return False
+        print("Invalid response. Please enter 'yes', 'y', 'no', or 'n'.")
+
+
+def _delete_paths(paths: list[Path]) -> bool:
+    try:
+        for path in paths:
+            if path.is_dir():
+                shutil.rmtree(path)
+            elif path.exists():
+                path.unlink()
+            print(f"  [OK] Deleted {path}")
+        return True
+    except Exception as e:
+        print(f"ERROR: Failed to delete old data: {e}")
+        return False
+
+
+def check_and_clean_old_data(objects_subset: str, dataset_dir: str = "") -> tuple[bool, PreservedSideArtifacts]:
+    """
+    Check for existing preprocessed data targeting the selected objects_subset.
+    For incremental subsets, capture artifacts for non-target objects so they can be merged back.
+
+    Returns (should_proceed, preserved_side_artifacts).
+    """
+    dataset_dir_path, motions_dir, bvhs_dir, legacy_glb_dir, joint_name_inspection_dir = _resolve_dataset_paths(dataset_dir)
+    is_full_refresh = objects_subset.strip().lower() == "all"
+
+    if is_full_refresh:
+        paths_to_delete = _collect_nonempty_directories(motions_dir, bvhs_dir, legacy_glb_dir, joint_name_inspection_dir)
+        preserved = PreservedSideArtifacts()
+        title = "WARNING: Old preprocessed data detected"
+        summary = [
+            f"Dataset directory: {dataset_dir_path}",
+            "objects-subset=all selected, using full dataset refresh",
+            *[f"  - {p} contains existing data" for p in paths_to_delete],
+        ]
+    else:
+        target_object_types = _resolve_target_object_types(objects_subset)
+        preserved = _capture_preserved_side_artifacts(dataset_dir_path, target_object_types)
+        targeted = [
+            ("motion file(s)", motions_dir, _collect_targeted_files(motions_dir, target_object_types)),
+            ("BVH file(s)", bvhs_dir, _collect_targeted_files(bvhs_dir, target_object_types)),
+            ("legacy preview file(s)", legacy_glb_dir, _collect_targeted_files(legacy_glb_dir, target_object_types)),
+            ("inspection file(s)", joint_name_inspection_dir, _collect_targeted_files(joint_name_inspection_dir, target_object_types)),
+        ]
+        paths_to_delete = [p for _, _, files in targeted for p in files]
+        title = "WARNING: Existing preprocessed files detected for selected object types"
+        summary = [
+            f"Dataset directory: {dataset_dir_path}",
+            f"Object types to refresh ({len(target_object_types)}): {', '.join(target_object_types)}",
+            *[f"  - {dir_path}: {len(files)} matching {label}" for label, dir_path, files in targeted if files],
+        ]
+
+    if not paths_to_delete:
+        return True, preserved
+
+    print("\n" + "=" * 70)
+    print(title)
+    print("=" * 70)
+    for line in summary:
+        print(line)
+    print("\nDo you want to delete the matching files and proceed with preprocessing?")
+
+    if not _confirm_yes_no("Enter 'yes' to delete and continue, or 'no' to abort: "):
+        print("\nPreprocessing aborted.")
+        return False, preserved
+
+    print("\nDeleting...")
+    if not _delete_paths(paths_to_delete):
+        print("Aborting preprocessing.")
+        return False, preserved
+    print("Done.\n")
+    return True, preserved
 
 
 def run_preprocessing(
     objects_subset: str,
     object_workers: int,
     raw_data_dir: str = "",
+    dataset_dir: str = "",
 ) -> int:
     """Run the AnyTop dataset preprocessing."""
     print("\n" + "=" * 70)
     print("STEP 1: PREPROCESSING - Creating AnyTop dataset")
     print("=" * 70 + "\n")
-    
+
     cmd = [
         sys.executable, "-m", "utils.create_dataset",
         "--objects-subset", objects_subset,
         "--object-workers", str(object_workers),
     ]
-    
+
     if raw_data_dir:
         cmd.extend(["--raw-data-dir", raw_data_dir])
-    
+    if dataset_dir:
+        cmd.extend(["--dataset-dir", dataset_dir])
+
     # Add parent of Anytop/ to PYTHONPATH so `from Anytop.utils...` imports work
     env = os.environ.copy()
     existing_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = str(ANYTOP_DIR.parent) + os.pathsep + existing_pythonpath
-    
+
     result = subprocess.run(cmd, cwd=str(ANYTOP_DIR), capture_output=False, env=env)
     return result.returncode
 
 
-def run_re_encode_joint_names_only(dataset_dir: str = "") -> int:
+def run_re_encode_joint_names_only(
+    dataset_dir: str = "",
+    preserved_side_artifacts: PreservedSideArtifacts | None = None,
+) -> int:
     """Regenerate non-motion dataset artifacts without re-preprocessing motions."""
     print("\n" + "=" * 70)
     print("Regenerating dataset sidecar artifacts")
     print("=" * 70 + "\n")
-    
+
     try:
+        if preserved_side_artifacts:
+            _merge_preserved_side_artifacts(
+                Path(get_dataset_dir(dataset_dir or None)),
+                preserved_side_artifacts,
+            )
+
         sys.path.insert(0, str(ANYTOP_DIR / "tools"))
         from regenerate_dataset_artifacts import regenerate_dataset_artifacts
 
@@ -110,27 +307,28 @@ def run_validation(
     orientation_threshold_deg: float,
     filter_orientation_threshold_deg: float,
     sample_count: int,
+    dataset_dir: str = "",
 ) -> int:
     """Run dataset validation."""
     print("\n" + "=" * 70)
     print("STEP 2: VALIDATION - Checking preprocessed dataset")
     print("=" * 70 + "\n")
-    
+
     # Ensure parent of Anytop/ is on sys.path so `from Anytop.utils...` imports work
     if str(ANYTOP_DIR.parent) not in sys.path:
         sys.path.insert(0, str(ANYTOP_DIR.parent))
-    
+
     # Import and call validate_anytop_dataset.py main() directly instead of subprocess
     sys.path.insert(0, str(ANYTOP_DIR / "utils"))
     from validate_anytop_dataset import _resolve_dataset_dir, _print_ok, _print_warn, _require, ValidationError
-    
+
     # Resolve dataset directory
-    dataset_dir = _resolve_dataset_dir(None)
-    
+    dataset_dir = _resolve_dataset_dir(dataset_dir or None)
+
     _print_ok(f"dataset_dir: {dataset_dir}")
     _print_ok(f"objects_subset: {objects_subset}")
     _print_ok(f"file_validation_scope: {'all files' if sample_count == 0 else f'first {sample_count} files'}")
-    
+
     from validate_anytop_dataset import (
         _prepare_dataset_for_validation,
         _read_required_artifacts,
@@ -140,7 +338,7 @@ def run_validation(
         _validate_motion_metadata,
         _validate_positions_error_file,
     )
-    
+
     try:
         _prepare_dataset_for_validation(
             dataset_dir,
@@ -156,15 +354,15 @@ def run_validation(
         _validate_metadata(metadata_path, motion_files, cond)
         _validate_motion_metadata(dataset_dir, motion_files, cond)
         _validate_motion_files(motions_dir, bvhs_dir, cond, sample_count)
-        
+
         if skip_orientation_check:
             _print_warn("skipping stored processed-orientation validation by request")
         else:
             from validate_anytop_dataset import _validate_motion_orientation
             _validate_motion_orientation(dataset_dir, cond, sample_count, orientation_threshold_deg)
-        
+
         _validate_positions_error_file(positions_error_path)
-        
+
         print("[PASS] dataset validation completed successfully")
         return 0
     except ValidationError as e:
@@ -182,79 +380,6 @@ def run_validation(
                     print(f"[OK] deleted {split_path.name} (will be regenerated on next training)")
         except Exception as e:
             print(f"[WARN] failed to delete split manifests: {e}")
-
-
-def check_and_clean_old_data(dataset_dir: str = "") -> bool:
-    """
-    Check if old preprocessed data exists in the target dataset directory.
-    If found, ask user whether to delete it.
-    
-    Returns:
-        True if user wants to proceed with preprocessing (either no old data found, or old data deleted).
-        False if user wants to abort.
-    """
-    # Import here to get the resolved dataset directory path
-    sys.path.insert(0, str(ANYTOP_DIR / "data_loaders" / "truebones" / "truebones_utils"))
-    from param_utils import BVHS_DIR, MOTION_DIR, get_dataset_dir
-    
-    dataset_dir_path = Path(get_dataset_dir(dataset_dir if dataset_dir else None))
-    motions_dir = dataset_dir_path / MOTION_DIR
-    bvhs_dir = dataset_dir_path / BVHS_DIR
-    legacy_glb_dir = dataset_dir_path / "glb" if BVHS_DIR != "glb" else None
-    joint_name_inspection_dir = dataset_dir_path / "joint_name_inspection"
-    
-    # Check if any old data exists
-    old_data_exists = (motions_dir.exists() and any(motions_dir.iterdir())) or \
-                      (bvhs_dir.exists() and any(bvhs_dir.iterdir())) or \
-                      (legacy_glb_dir is not None and legacy_glb_dir.exists() and any(legacy_glb_dir.iterdir())) or \
-                      (joint_name_inspection_dir.exists() and any(joint_name_inspection_dir.iterdir()))
-    
-    if not old_data_exists:
-        return True
-    
-    # Old data found, ask user
-    print("\n" + "=" * 70)
-    print("WARNING: Old preprocessed data detected")
-    print("=" * 70)
-    print(f"Dataset directory: {dataset_dir_path}")
-    if motions_dir.exists() and any(motions_dir.iterdir()):
-        print(f"  - {motions_dir} contains existing data")
-    if bvhs_dir.exists() and any(bvhs_dir.iterdir()):
-        print(f"  - {bvhs_dir} contains existing data")
-    if legacy_glb_dir is not None and legacy_glb_dir.exists() and any(legacy_glb_dir.iterdir()):
-        print(f"  - {legacy_glb_dir} contains legacy preview data")
-    if joint_name_inspection_dir.exists() and any(joint_name_inspection_dir.iterdir()):
-        print(f"  - {joint_name_inspection_dir} contains existing data")
-    print("\nDo you want to delete the old data and proceed with preprocessing?")
-    
-    while True:
-        response = input("Enter 'yes' to delete and continue, or 'no' to abort: ").strip().lower()
-        if response in ('yes', 'y'):
-            print("\nDeleting old data...")
-            try:
-                if motions_dir.exists():
-                    shutil.rmtree(motions_dir)
-                    print(f"  [OK] Deleted {motions_dir}")
-                if bvhs_dir.exists():
-                    shutil.rmtree(bvhs_dir)
-                    print(f"  [OK] Deleted {bvhs_dir}")
-                if legacy_glb_dir is not None and legacy_glb_dir.exists():
-                    shutil.rmtree(legacy_glb_dir)
-                    print(f"  [OK] Deleted {legacy_glb_dir}")
-                if joint_name_inspection_dir.exists():
-                    shutil.rmtree(joint_name_inspection_dir)
-                    print(f"  [OK] Deleted {joint_name_inspection_dir}")
-                print("Old data cleaned successfully. Proceeding with preprocessing...\n")
-                return True
-            except Exception as e:
-                print(f"ERROR: Failed to delete old data: {e}")
-                print("Aborting preprocessing.")
-                return False
-        elif response in ('no', 'n'):
-            print("\nPreprocessing aborted.")
-            return False
-        else:
-            print("Invalid response. Please enter 'yes', 'y', 'no', or 'n'.")
 
 
 def parse_args() -> argparse.Namespace:
@@ -286,7 +411,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--objects-subset",
         default="all",
-        help="Expected object subset for validation (default: all).",
+        choices=sorted(OBJECT_SUBSETS_DICT.keys()),
+        help="Object subset to preprocess incrementally; `all` falls back to full refresh.",
     )
     parser.add_argument(
         "--object-workers",
@@ -332,31 +458,43 @@ def main() -> int:
     if args.sample_count < 0:
         print("ERROR: --sample-count must be >= 0")
         return 1
-    
+
     # Handle re-encode joint names only mode
     if args.re_encode_joint_names_only:
         return run_re_encode_joint_names_only(args.dataset_dir)
-    
+
     steps_completed = []
-    
+    preserved_side_artifacts = PreservedSideArtifacts()
+
     # Check and clean old data before preprocessing
     if not args.validate_only:
-        if not check_and_clean_old_data(args.dataset_dir):
+        should_proceed, preserved_side_artifacts = check_and_clean_old_data(args.objects_subset, args.dataset_dir)
+        if not should_proceed:
             print("\n" + "=" * 70)
             print("Preprocessing skipped due to user abort")
             print("=" * 70)
             return 1
-    
+
     # Preprocess if not validate-only
     if not args.validate_only:
         ret = run_preprocessing(
             args.objects_subset,
             args.object_workers,
             args.raw_data_dir,
+            args.dataset_dir,
         )
         if ret != 0:
             print("\n[FAIL] Preprocessing failed, aborting workflow.")
             return ret
+
+        ret = run_re_encode_joint_names_only(
+            args.dataset_dir,
+            preserved_side_artifacts=preserved_side_artifacts,
+        )
+        if ret != 0:
+            print("\n[FAIL] Side artifact regeneration failed, aborting workflow.")
+            return ret
+
         steps_completed.append("Preprocess")
 
     # Validate
@@ -367,10 +505,11 @@ def main() -> int:
             args.orientation_threshold_deg,
             args.filter_orientation_threshold_deg,
             args.sample_count,
+            args.dataset_dir,
         )
-        # Don't return on validation failure - continue to next step        
+        # Don't return on validation failure - continue to next step
         steps_completed.append("Validate")
-    
+
     # Success
     print("\n" + "=" * 70)
     workflow_desc = " ->".join(steps_completed) if steps_completed else "No steps executed"
