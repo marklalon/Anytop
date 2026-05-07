@@ -101,6 +101,8 @@ _DEFAULT_FBX = os.path.join(
 _DEFAULT_TPOSE_FBX = os.path.join(
     _ANYTOP_ROOT, "dataset", "truebones", "zoo", "Truebone_Z-OO", "Horse", "HorseALL-TPOSE.fbx",
 )
+_DEFAULT_OBJECT_TYPE = "Horse"
+
 def _compare_export_to_source(
     source_fbx: str,
     exported_path: str,
@@ -364,18 +366,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--tpose-fbx",
-        default=_DEFAULT_TPOSE_FBX,
+        default=None,
         help="Path to the T-pose FBX used for preprocessing metadata and as the export container.",
     )
     parser.add_argument(
         "--fbx",
-        default=os.path.join(_ANYTOP_ROOT, "dataset", "truebones", "zoo", "Truebone_Z-OO", "Horse", "HorseALL-RunToStop.fbx"),
+        default=None,
         help="Path to source animation FBX file.",
     )
     parser.add_argument(
         "--object-type",
         default=None,
-        help="Character type for contact inference. Inferred from the FBX filename (first segment before '_') if not specified.",
+        help="Character type for contact inference. Inferred from the FBX filename if not specified.",
     )
     parser.add_argument(
         "--output-dir",
@@ -396,6 +398,7 @@ if __name__ == "__main__":
 
     if args.tpose_fbx is None:
         args.tpose_fbx = _DEFAULT_TPOSE_FBX if os.path.isfile(_DEFAULT_TPOSE_FBX) else args.fbx
+        args.object_type = _DEFAULT_OBJECT_TYPE
 
     if args.object_type is None:
         from utils.misc import infer_object_type_from_filename
