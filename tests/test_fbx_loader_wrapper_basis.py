@@ -26,6 +26,7 @@ from motion_lib.Animation import positions_global  # noqa: E402
 from data_loaders.truebones.offline_reference_dataset import load_cond_dict  # noqa: E402
 from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
     get_common_features_from_T_pose,
+    TPoseFeatures,
     process_anim,
 )
 
@@ -36,24 +37,10 @@ _IDLE_BVH = _HORSE_DIR / "__Idle.bvh"
 
 
 def _processed_stats(clip_name: str) -> tuple[tuple[float, float, float], float, float]:
-    (
-        root_pose_init_xz,
-        scale_factor,
-        _offsets,
-        foot_indices,
-        _tpos_rots,
-        _names,
-        _scaled_tpose,
-        face_joints,
-        orientation_quat,
-        forward_joint_index,
-        forward_base_joint_index,
-        _contact_joint_source,
-        _unused_axial_avg_len,
-    ) = get_common_features_from_T_pose(str(_TPOSE_FBX), "Horse")
+    tp: TPoseFeatures = get_common_features_from_T_pose(str(_TPOSE_FBX), "Horse")
     _cond_entry = load_cond_dict().get("Horse")
     if _cond_entry is None or "axial_avg_len" not in _cond_entry:
-        _axial_avg_len = float(_unused_axial_avg_len)
+        _axial_avg_len = float(tp.axial_avg_len)
     else:
         _axial_avg_len = float(_cond_entry["axial_avg_len"])
 
@@ -62,15 +49,15 @@ def _processed_stats(clip_name: str) -> tuple[tuple[float, float, float], float,
         raw_anim,
         "Horse",
         _axial_avg_len,
-        root_pose_init_xz,
-        scale_factor,
-        face_joints=face_joints,
-        orientation_quat=orientation_quat,
-        forward_joint_index=forward_joint_index,
-        forward_base_joint_index=forward_base_joint_index,
+        tp.root_pose_init_xz,
+        tp.scale_factor,
+        face_joints=tp.face_joints,
+        orientation_quat=tp.orientation_quat,
+        forward_joint_index=tp.forward_joint_index,
+        forward_base_joint_index=tp.forward_base_joint_index,
     )
     processed_global = positions_global(processed_anim)
-    foot_y = processed_global[:, foot_indices, 1]
+    foot_y = processed_global[:, tp.foot_indices, 1]
     frame0 = processed_global[0]
     spans = tuple(float(np.ptp(frame0[:, axis])) for axis in range(3))
     return spans, float(foot_y.min()), float(foot_y[0].min())

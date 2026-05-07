@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 from motion_lib import BVH, FBX, Animation, Quaternions
 from motion_lib.Animation import positions_global, rotations_global, offsets_from_positions, offsets_global
 from motion_lib import animation_from_positions
@@ -822,7 +824,40 @@ def get_common_features_from_T_pose(t_pose_fbx_path, object_type, face_joints=No
         scaled.parents,
         scaled_rest_positions,
     )
-    return root_pose_init_xz, scale_factor, offsets, suspected_foot_indices, scaled.rotations, t_pos_names, scaled, face_joints, t_pose_orientation_quat, forward_joint_index, forward_base_joint_index, contact_joint_source, axial_avg_len
+    return TPoseFeatures(
+        root_pose_init_xz=root_pose_init_xz,
+        scale_factor=scale_factor,
+        offsets=offsets,
+        foot_indices=suspected_foot_indices,
+        tpos_rots=scaled.rotations,
+        names=t_pos_names,
+        tpos_anim=scaled,
+        face_joints=face_joints,
+        orientation_quat=t_pose_orientation_quat,
+        forward_joint_index=forward_joint_index,
+        forward_base_joint_index=forward_base_joint_index,
+        contact_joint_source=contact_joint_source,
+        axial_avg_len=axial_avg_len,
+    )
+
+
+@dataclass
+class TPoseFeatures:
+    """Packaged return from get_common_features_from_T_pose."""
+    root_pose_init_xz: tuple
+    scale_factor: float
+    offsets: np.ndarray
+    foot_indices: list
+    tpos_rots: np.ndarray
+    names: list
+    tpos_anim: Animation
+    face_joints: list
+    orientation_quat: np.ndarray
+    forward_joint_index: int
+    forward_base_joint_index: int
+    contact_joint_source: str
+    axial_avg_len: float
+
 
 def get_motion_features(ric_positions, rotations, foot_contact, velocity, terminal_velocity, terminal_contact, max_joints):
     # F = Frames# , J = joints# 
@@ -1553,31 +1588,47 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             return None
 
     squared_positions_error = dict()
-    root_pose_init_xz, scale_factor, offsets, foot_indices, tpos_rots, names, tpos_anim, face_joints, orientation_quat, forward_joint_index, forward_base_joint_index, contact_joint_source, axial_avg_len = get_common_features_from_T_pose(t_pos_path, object_type, face_joints=face_joints)
-    t_pos_motion, parents, max_joints, new_anim, _export_anim, _tpos_is_loop = get_motion(tpos_anim, FOOT_CONTACT_VEL_THRESH, object_type, max_joints, root_pose_init_xz, offsets, foot_indices, tpos_rots, squared_positions_error, axial_avg_len=axial_avg_len, scale_factor=scale_factor, face_joints=face_joints, orientation_quat=orientation_quat, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)
-    rest_positions = _rest_positions_from_offsets(offsets, parents)
-    semantic_metadata = _build_semantic_metadata(names, parents, offsets, rest_positions=rest_positions)
+    tp = get_common_features_from_T_pose(t_pos_path, object_type, face_joints=face_joints)
+    t_pos_motion, parents, max_joints, new_anim, _export_anim, _tpos_is_loop = get_motion(
+        tp.tpos_anim,
+        FOOT_CONTACT_VEL_THRESH,
+        object_type,
+        max_joints,
+        tp.root_pose_init_xz,
+        tp.offsets,
+        tp.foot_indices,
+        tp.tpos_rots,
+        squared_positions_error,
+        axial_avg_len=tp.axial_avg_len,
+        scale_factor=tp.scale_factor,
+        face_joints=tp.face_joints,
+        orientation_quat=tp.orientation_quat,
+        forward_joint_index=tp.forward_joint_index,
+        forward_base_joint_index=tp.forward_base_joint_index,
+    )
+    rest_positions = _rest_positions_from_offsets(tp.offsets, parents)
+    semantic_metadata = _build_semantic_metadata(tp.names, parents, tp.offsets, rest_positions=rest_positions)
     object_cond['tpos_first_frame'] = t_pos_motion[0]
     # create topology conditions
-    joint_relations, joints_graph_dist = create_topology_edge_relations(tpos_anim.parents, max_path_len = MAX_PATH_LEN)
+    joint_relations, joints_graph_dist = create_topology_edge_relations(tp.tpos_anim.parents, max_path_len = MAX_PATH_LEN)
     object_cond['joint_relations'] = joint_relations
     object_cond['joints_graph_dist'] = joints_graph_dist
     object_cond['object_type'] = object_type
     object_cond['parents'] = parents
-    object_cond['offsets'] = offsets
-    object_cond['joints_names'] = names
+    object_cond['offsets'] = tp.offsets
+    object_cond['joints_names'] = tp.names
     object_cond['canonical_joint_names'] = semantic_metadata['canonical_joint_names']
     object_cond['canonical_bvh_joint_names'] = [
         _canonical_name_for_bvh(canonical_name, raw_name)
-        for canonical_name, raw_name in zip(semantic_metadata['canonical_joint_names'], names)
+        for canonical_name, raw_name in zip(semantic_metadata['canonical_joint_names'], tp.names)
     ]
-    object_cond['face_joints'] = list(face_joints)
-    object_cond['face_joint_names'] = [names[index] for index in face_joints]
+    object_cond['face_joints'] = list(tp.face_joints)
+    object_cond['face_joint_names'] = [tp.names[index] for index in tp.face_joints]
     _attach_orientation_reference_metadata(
         object_cond,
-        orientation_quat,
-        forward_joint_index,
-        forward_base_joint_index,
+        tp.orientation_quat,
+        tp.forward_joint_index,
+        tp.forward_base_joint_index,
         t_pos_path,
     )
     object_cond['end_effector_joints'] = semantic_metadata['end_effector_joints']
@@ -1593,9 +1644,9 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     object_cond['mirror_disabled_joint_names'] = semantic_metadata['mirror_disabled_joint_names']
     object_cond['mirror_disabled_warnings'] = semantic_metadata['mirror_disabled_warnings']
     object_cond['is_symmetric'] = semantic_metadata['is_symmetric']
-    object_cond['root_pose_init_xz'] = np.array(root_pose_init_xz, dtype=np.float64)
-    object_cond['scale_factor'] = float(scale_factor)
-    object_cond['axial_avg_len'] = float(axial_avg_len)
+    object_cond['root_pose_init_xz'] = np.array(tp.root_pose_init_xz, dtype=np.float64)
+    object_cond['scale_factor'] = float(tp.scale_factor)
+    object_cond['axial_avg_len'] = float(tp.axial_avg_len)
     object_cond['kinematic_chains'] = parents2kinchains(parents, object_policy(object_type))
     object_cond.update(build_object_labels(object_type))
     all_tensors = list()
@@ -1610,16 +1661,16 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             file_path,
             object_type,
             max_joints,
-            root_pose_init_xz,
-            offsets,
-            foot_indices,
-            tpos_rots,
-            axial_avg_len,
-            scale_factor=scale_factor,
-            face_joints=face_joints,
-            orientation_quat=orientation_quat,
-            forward_joint_index=forward_joint_index,
-            forward_base_joint_index=forward_base_joint_index,
+            tp.root_pose_init_xz,
+            tp.offsets,
+            tp.foot_indices,
+            tp.tpos_rots,
+            tp.axial_avg_len,
+            scale_factor=tp.scale_factor,
+            face_joints=tp.face_joints,
+            orientation_quat=tp.orientation_quat,
+            forward_joint_index=tp.forward_joint_index,
+            forward_base_joint_index=tp.forward_base_joint_index,
         )
 
     file_outputs = [process_file(file_path) for file_path in fbx_files]

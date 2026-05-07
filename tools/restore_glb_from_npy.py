@@ -80,33 +80,19 @@ _DEFAULT_COND_NPY = os.path.realpath(
 
 
 def _load_tpose_restore_metadata(tpose_mesh: str, object_type: str) -> dict[str, object]:
-    from data_loaders.truebones.truebones_utils.motion_process import get_common_features_from_T_pose
+    from data_loaders.truebones.truebones_utils.motion_process import get_common_features_from_T_pose, TPoseFeatures
 
     tpose_lower = tpose_mesh.lower()
     if not tpose_lower.endswith(".fbx"):
         raise ValueError(f"Unsupported T-pose mesh format: {tpose_mesh} - expected .fbx")
 
-    (
-        _root_pose_init_xz,
-        scale_factor,
-        offsets_hml,
-        _foot_indices,
-        tpose_rotations,
-        tpose_bone_names,
-        tpose_anim,
-        _face_joints,
-        _orientation_quat,
-        _forward_joint_index,
-        _forward_base_joint_index,
-        _contact_joint_source,
-        _axial_avg_len,
-    ) = get_common_features_from_T_pose(tpose_mesh, object_type)
+    tp: TPoseFeatures = get_common_features_from_T_pose(tpose_mesh, object_type)
     return {
-        "joint_names": list(tpose_bone_names),
-        "parents": np.asarray(tpose_anim.parents, dtype=np.int32),
-        "offsets": np.asarray(offsets_hml, dtype=np.float32),
-        "tpose_rest_rotations": np.asarray(tpose_rotations[0], dtype=np.float32),
-        "scale_factor": float(scale_factor),
+        "joint_names": list(tp.names),
+        "parents": np.asarray(tp.tpos_anim.parents, dtype=np.int32),
+        "offsets": np.asarray(tp.offsets, dtype=np.float32),
+        "tpose_rest_rotations": np.asarray(tp.tpos_rots[0], dtype=np.float32),
+        "scale_factor": float(tp.scale_factor),
     }
 
 

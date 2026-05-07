@@ -70,6 +70,7 @@ from data_loaders.truebones.offline_reference_dataset import load_cond_dict
 from data_loaders.truebones.truebones_utils.motion_process import (
     FOOT_CONTACT_VEL_THRESH,
     get_common_features_from_T_pose,
+    TPoseFeatures,
     get_motion,
 )
 from tools.restore_glb_from_npy import restore_glb
@@ -249,28 +250,14 @@ def _run_test_fbx_npy_glb_roundtrip(
 
         # Phase A: Load T-pose metadata used by the production preprocessing path
         print("[Phase A] Loading T-pose FBX preprocessing metadata...")
-        (
-            _root_pose_init_xz,
-            scale_factor,
-            offsets_hml,
-            _foot_indices,
-            tpose_rotations,
-            tpose_bone_names,
-            feature_tpose_anim,
-            face_joints,
-            orientation_quat,
-            forward_joint_index,
-            forward_base_joint_index,
-            _contact_joint_source,
-            _unused_axial_avg_len,
-        ) = get_common_features_from_T_pose(tpose_fbx, object_type)
+        tp: TPoseFeatures = get_common_features_from_T_pose(tpose_fbx, object_type)
         cond_entry = load_cond_dict().get(object_type)
         if cond_entry is None or "axial_avg_len" not in cond_entry:
             print(f"[WARN] axial_avg_len missing from cond.npy for {object_type}; falling back to T-pose metadata")
-            _axial_avg_len = float(_unused_axial_avg_len)
+            _axial_avg_len = float(tp.axial_avg_len)
         else:
             _axial_avg_len = float(cond_entry["axial_avg_len"])
-        print(f"Joints: {len(tpose_bone_names)}, scale_factor: {scale_factor:.6f}")
+        print(f"Joints: {len(tp.names)}, scale_factor: {tp.scale_factor:.6f}")
 
         # Phase B: Load source FBX and build the production preprocessed motion/features
         print("[Phase B] Loading source FBX and building production preprocessed motion...")
@@ -283,24 +270,24 @@ def _run_test_fbx_npy_glb_roundtrip(
             anim_fbx,
             FOOT_CONTACT_VEL_THRESH,
             object_type,
-            len(tpose_bone_names),
-            _root_pose_init_xz,
-            offsets_hml,
-            _foot_indices,
-            tpose_rotations,
+            len(tp.names),
+            tp.root_pose_init_xz,
+            tp.offsets,
+            tp.foot_indices,
+            tp.tpos_rots,
             squared_positions_error,
             axial_avg_len=_axial_avg_len,
-            scale_factor=scale_factor,
-            face_joints=face_joints,
-            orientation_quat=orientation_quat,
-            forward_joint_index=forward_joint_index,
-            forward_base_joint_index=forward_base_joint_index,
+            scale_factor=tp.scale_factor,
+            face_joints=tp.face_joints,
+            orientation_quat=tp.orientation_quat,
+            forward_joint_index=tp.forward_joint_index,
+            forward_base_joint_index=tp.forward_base_joint_index,
             preloaded=(source_anim, source_bone_names),
         )
 
         if feature_anim is None or _baseline_export_anim is None:
             raise AssertionError("Production preprocessing failed to build feature/export animations")
-        if feature_anim.shape[1] != len(tpose_bone_names):
+        if feature_anim.shape[1] != len(tp.names):
             raise AssertionError(
                 "Production preprocessing joint count does not match the T-pose feature skeleton"
             )

@@ -43,6 +43,7 @@ from motion_lib.Animation import positions_global
 from data_loaders.truebones.offline_reference_dataset import load_cond_dict
 from data_loaders.truebones.truebones_utils.motion_process import (
     get_common_features_from_T_pose,
+    TPoseFeatures,
     get_hml_aligned_anim,
     _find_translation_root,
     _xz_locomotion_extent,
@@ -229,34 +230,20 @@ def process_animal(animal_dir: Path):
     motion_files = [f for f in bvh_file_strs if f != ref_path]
 
     # --- Extract common features from T-pose BVH ---------------------------
-    (
-        root_pose_init_xz,
-        scale_factor,
-        offsets,
-        foot_indices,
-        tpos_rots,
-        names,
-        tpos_anim,
-        face_joints,
-        orientation_quat,
-        forward_joint_index,
-        forward_base_joint_index,
-        contact_joint_source,
-        _unused_axial_avg_len,
-    ) = get_common_features_from_T_pose(ref_path, animal_name)
+    tp: TPoseFeatures = get_common_features_from_T_pose(ref_path, animal_name)
     cond_entry = load_cond_dict().get(animal_name)
     if cond_entry is None or "axial_avg_len" not in cond_entry:
         print(f"[WARN] axial_avg_len missing from cond.npy for {animal_name}; falling back to T-pose metadata")
-        _axial_avg_len = float(_unused_axial_avg_len)
+        _axial_avg_len = float(tp.axial_avg_len)
     else:
         _axial_avg_len = float(cond_entry["axial_avg_len"])
 
-    print(f"  Scale factor  : {scale_factor:.6f}")
-    print(f"  XZ centering  : ({root_pose_init_xz[0]:.4f}, {root_pose_init_xz[2]:.4f})")
-    print(f"  Joints        : {len(names)}")
-    print(f"  Contact joints: {contact_joint_source}")
+    print(f"  Scale factor  : {tp.scale_factor:.6f}")
+    print(f"  XZ centering  : ({tp.root_pose_init_xz[0]:.4f}, {tp.root_pose_init_xz[2]:.4f})")
+    print(f"  Joints        : {len(tp.names)}")
+    print(f"  Contact joints: {tp.contact_joint_source}")
 
-    R = _rotation_matrix_from_quat(orientation_quat)
+    R = _rotation_matrix_from_quat(tp.orientation_quat)
 
     # --- Output directory ---------------------------------------------------
     out_dir = animal_dir / OUTPUT_SUBDIR
@@ -278,17 +265,17 @@ def process_animal(animal_dir: Path):
             new_anim, export_anim, _names = get_hml_aligned_anim(
                 bvh_path,
                 animal_name,
-                root_pose_init_xz,
-                tpos_rots,
-                offsets,
+                tp.root_pose_init_xz,
+                tp.tpos_rots,
+                tp.offsets,
                 errors,
                 axial_avg_len=_axial_avg_len,
-                scale_factor=scale_factor,
-                foot_indices=foot_indices,
-                face_joints=face_joints,
-                orientation_quat=orientation_quat,
-                forward_joint_index=forward_joint_index,
-                forward_base_joint_index=forward_base_joint_index,
+                scale_factor=tp.scale_factor,
+                foot_indices=tp.foot_indices,
+                face_joints=tp.face_joints,
+                orientation_quat=tp.orientation_quat,
+                forward_joint_index=tp.forward_joint_index,
+                forward_base_joint_index=tp.forward_base_joint_index,
             )
         except Exception as exc:
             print(f"  ERROR during processing: {exc}")
@@ -304,17 +291,17 @@ def process_animal(animal_dir: Path):
             FOOT_CONTACT_VEL_THRESH,
             animal_name,
             max_joints=23,
-            root_pose_init_xz=root_pose_init_xz,
-            offsets=offsets,
-            foot_indices=foot_indices,
-            tpos_rots=tpos_rots,
+            root_pose_init_xz=tp.root_pose_init_xz,
+            offsets=tp.offsets,
+            foot_indices=tp.foot_indices,
+            tpos_rots=tp.tpos_rots,
             squared_positions_error=local_errors,
             axial_avg_len=_axial_avg_len,
-            scale_factor=scale_factor,
-            face_joints=face_joints,
-            orientation_quat=orientation_quat,
-            forward_joint_index=forward_joint_index,
-            forward_base_joint_index=forward_base_joint_index,
+            scale_factor=tp.scale_factor,
+            face_joints=tp.face_joints,
+            orientation_quat=tp.orientation_quat,
+            forward_joint_index=tp.forward_joint_index,
+            forward_base_joint_index=tp.forward_base_joint_index,
         )
         if motion is not None:
             npy_path = motion_out / f"{animal_name}_{clip_name}.npy"
@@ -338,9 +325,9 @@ def process_animal(animal_dir: Path):
         # Roundtrip validation
         # -----------------------------------------------------------------
         stats = _validate_clip(
-            raw_anim, export_anim, R, scale_factor, root_pose_init_xz,
-            orientation_quat, face_joints, animal_name,
-            forward_joint_index, forward_base_joint_index,
+            raw_anim, export_anim, R, tp.scale_factor, tp.root_pose_init_xz,
+            tp.orientation_quat, tp.face_joints, animal_name,
+            tp.forward_joint_index, tp.forward_base_joint_index,
         )
         _print_validation(clip_name, xz_extent, stats)
 
