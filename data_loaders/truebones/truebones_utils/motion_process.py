@@ -35,8 +35,10 @@ from .face_orientation import (
     resolve_face_joints,
     get_root_quat,
     rotate_to_hml_orientation,
+    _get_facing_candidates,
     _find_forward_reference_joint,
     _find_neck_reference_joint,
+    _vector_angle_deg,
 )
 
 
@@ -1442,6 +1444,18 @@ def _process_motion_file(file_path, object_type, max_joints, root_pose_init_xz, 
             print(f'failed to process file: {file_path}, slice {current_begin}:{slice_ind}')
             continue
 
+        orientation_summary = None
+        try:
+            orientation_summary = _summarize_processed_orientation(
+                export_anim,
+                object_type,
+                face_joints,
+                forward_joint_index,
+                forward_base_joint_index,
+            )
+        except Exception as exc:
+            print(f'  [WARN] failed to summarize processed orientation for {file_path} [{current_begin}:{slice_ind}]: {exc}')
+
         _, file_name = os.path.split(file_path)
         raw_action = file_name.split('.')[0]
         raw_action = _normalize_action_name(object_type, raw_action)
@@ -1456,6 +1470,7 @@ def _process_motion_file(file_path, object_type, max_joints, root_pose_init_xz, 
             'is_loop': is_loop,
             'source_fbx_path': file_path,
             'slice_range': (current_begin, slice_ind),
+            'orientation_summary': orientation_summary,
             'motion_labels': build_motion_labels(object_type, raw_action),
         })
 
@@ -1464,6 +1479,107 @@ def _process_motion_file(file_path, object_type, max_joints, root_pose_init_xz, 
         'max_joints': file_max_joints,
         'results': file_results,
     }
+
+
+def _attach_orientation_reference_metadata(
+    object_cond,
+    orientation_quat,
+    forward_joint_index,
+    forward_base_joint_index,
+    orientation_reference_fbx_path,
+):
+    orientation_qs = getattr(orientation_quat, 'qs', orientation_quat)
+    orientation_qs = np.asarray(orientation_qs, dtype=np.float64)
+    if orientation_qs.ndim > 1:
+        orientation_qs = orientation_qs[0]
+    object_cond['orientation_quat'] = orientation_qs.reshape(4)
+    object_cond['forward_joint_index'] = int(forward_joint_index) if forward_joint_index is not None else None
+    object_cond['forward_base_joint_index'] = int(forward_base_joint_index) if forward_base_joint_index is not None else None
+    object_cond['orientation_reference_fbx_path'] = (
+        os.path.abspath(orientation_reference_fbx_path)
+        if orientation_reference_fbx_path
+        else None
+    )
+
+
+def _summarize_frame_orientation(frame_positions, object_type, face_joints, forward_joint_index, forward_base_joint_index):
+    raw_candidates = _get_facing_candidates(
+        frame_positions,
+        object_type,
+        face_joint_indx=face_joints,
+        forward_joint_index=forward_joint_index,
+        forward_base_joint_index=forward_base_joint_index,
+    )
+    target_forward = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    candidate_angles = {
+        name: _vector_angle_deg(forward[0], target_forward)
+        for name, forward in raw_candidates.items()
+        if forward is not None and np.isfinite(forward).all()
+    }
+    if not candidate_angles:
+        raise ValueError(f'{object_type} produced no valid orientation candidates')
+    best_candidate, best_angle_deg = min(candidate_angles.items(), key=lambda item: item[1])
+    return best_candidate, float(best_angle_deg)
+
+
+def _summarize_processed_orientation(export_anim, object_type, face_joints, forward_joint_index, forward_base_joint_index):
+    global_positions = positions_global(export_anim)
+    if global_positions.shape[0] <= 0:
+        raise ValueError(f'{object_type} processed animation has no frames for orientation summary')
+
+    first_candidate, first_angle_deg = _summarize_frame_orientation(
+        global_positions[0:1],
+        object_type,
+        face_joints,
+        forward_joint_index,
+        forward_base_joint_index,
+    )
+    if global_positions.shape[0] == 1:
+        last_candidate, last_angle_deg = first_candidate, first_angle_deg
+    else:
+        last_candidate, last_angle_deg = _summarize_frame_orientation(
+            global_positions[-1:],
+            object_type,
+            face_joints,
+            forward_joint_index,
+            forward_base_joint_index,
+        )
+
+    return {
+        'orientation_first_frame_best_candidate': first_candidate,
+        'orientation_first_frame_best_angle_deg': float(first_angle_deg),
+        'orientation_last_frame_best_candidate': last_candidate,
+        'orientation_last_frame_best_angle_deg': float(last_angle_deg),
+    }
+
+
+def _build_motion_metadata_entry(result, motion_file_name):
+    motion_labels = dict(result['motion_labels'])
+    motion_labels['motion_name'] = motion_file_name
+    motion_labels['is_loop'] = result.get('is_loop', False)
+
+    source_fbx_path = result.get('source_fbx_path')
+    if source_fbx_path:
+        motion_labels['source_fbx_path'] = os.path.abspath(source_fbx_path)
+
+    source_frame_range = result.get('slice_range')
+    if source_frame_range is not None:
+        motion_labels['source_frame_range'] = [
+            int(source_frame_range[0]),
+            int(source_frame_range[1]),
+        ]
+
+    orientation_summary = dict(result.get('orientation_summary') or {})
+    for key in (
+        'orientation_first_frame_best_candidate',
+        'orientation_first_frame_best_angle_deg',
+        'orientation_last_frame_best_candidate',
+        'orientation_last_frame_best_angle_deg',
+    ):
+        if key in orientation_summary:
+            motion_labels[key] = orientation_summary[key]
+
+    return motion_labels
      
 """Prepare processed tensors for all the files of a given object without writing them to disk yet."""
 def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, num_workers=1, raw_data_dir=None):
@@ -1514,6 +1630,13 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     ]
     object_cond['face_joints'] = list(face_joints)
     object_cond['face_joint_names'] = [names[index] for index in face_joints]
+    _attach_orientation_reference_metadata(
+        object_cond,
+        orientation_quat,
+        forward_joint_index,
+        forward_base_joint_index,
+        t_pos_path,
+    )
     object_cond['end_effector_joints'] = semantic_metadata['end_effector_joints']
     object_cond['end_effector_names'] = semantic_metadata['end_effector_names']
     object_cond['contact_joints'] = semantic_metadata['contact_joints']
@@ -1619,9 +1742,7 @@ def _write_object_outputs(save_dir, object_payload, files_counter):
             all_joints_as_names=True,
         )
 
-        motion_labels = dict(result['motion_labels'])
-        motion_labels['motion_name'] = motion_file_name
-        motion_labels['is_loop'] = result.get('is_loop', False)
+        motion_labels = _build_motion_metadata_entry(result, motion_file_name)
         motion_metadata[motion_file_name] = motion_labels
 
     print(f'[TIME] {object_type}: _write_object_outputs = {_time_mod.time() - _t0:.2f}s ({files_counter} clips)')

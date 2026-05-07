@@ -13,12 +13,12 @@ Options:
     --validate-only                      Skip preprocessing, only validate existing dataset
     --re-encode-joint-names-only         Skip preprocessing and validation, only re-encode joint names into cond.npy
     --skip-validate                      Skip validation step (faster for CI)
-    --skip-orientation-check             Deprecated; preview orientation validation is disabled
+    --skip-orientation-check             Skip stored processed-orientation validation during dataset checks
     --objects-subset SUBSET              Object subset to process (default: all)
     --object-workers N                   Concurrent characters to preprocess (default: 16)
     --file-workers N                     Worker threads per character for FBX processing (default: 8, note: FBX loading is serialized per-character due to Blender's single-threaded bpy)
     --sample-count N                     Limit file validation to first N motions (0=all, default: 0)
-    --orientation-threshold-deg DEG      Deprecated; preview orientation validation is disabled
+    --orientation-threshold-deg DEG      Maximum allowed first-frame facing error from +Z using stored processed-orientation metadata (default: 15.0)
 
 Examples:
     # Full workflow: preprocess ->validate
@@ -27,7 +27,7 @@ Examples:
     # Validate only (assumes preprocessing already done)
     python preprocess_and_validate.py --validate-only
 
-    # Validate only, but skip the orientation check
+    # Validate only, skipping orientation check
     python preprocess_and_validate.py --validate-only --skip-orientation-check
 
     # Preprocess without validation
@@ -150,7 +150,7 @@ def run_validation(
             objects_subset,
             sample_count,
             skip_orientation_check,
-            0.0,
+            filter_orientation_threshold_deg,
         )
 
         motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path = _read_required_artifacts(dataset_dir)
@@ -160,7 +160,11 @@ def run_validation(
         _validate_motion_metadata(dataset_dir, motion_files, cond)
         _validate_motion_files(motions_dir, bvhs_dir, cond, sample_count)
         
-        _print_warn("preview orientation validation is disabled; validated motions only")
+        if skip_orientation_check:
+            _print_warn("skipping stored processed-orientation validation by request")
+        else:
+            from validate_anytop_dataset import _validate_motion_orientation
+            _validate_motion_orientation(dataset_dir, cond, sample_count, orientation_threshold_deg)
         
         _validate_positions_error_file(positions_error_path)
         
@@ -280,7 +284,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--skip-orientation-check",
         action="store_true",
-        help="Skip processed-FBX orientation validation during dataset checks.",
+        help="Skip stored processed-orientation validation during dataset checks.",
     )
     parser.add_argument(
         "--objects-subset",
@@ -303,13 +307,13 @@ def parse_args() -> argparse.Namespace:
         "--orientation-threshold-deg",
         default=15.0,
         type=float,
-        help="Deprecated. Preview orientation validation is disabled.",
+        help="Maximum allowed first-frame facing error from +Z using stored processed-orientation metadata. Defaults to 15.0.",
     )
     parser.add_argument(
         "--filter-orientation-threshold-deg",
-        default=0.0,
+        default=45.0,
         type=float,
-        help="Deprecated. Preview orientation filtering is disabled.",
+        help="Threshold for deleting motion tensors whose stored processed-orientation deviation exceeds the limit before validation. 0 means no filtering. Defaults to 45.0.",
     )
     parser.add_argument(
         "--sample-count",

@@ -11,6 +11,7 @@ import numpy as np
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT.parent))
 sys.path.insert(0, str(REPO_ROOT))
 
 from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
@@ -22,17 +23,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     OBJECT_SUBSETS_DICT,
     get_dataset_dir,
 )
-from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
-    BVH,
-    positions_global,
-)
-from data_loaders.truebones.truebones_utils.face_orientation import (  # noqa: E402
-    _get_facing_candidates,
-    _find_forward_reference_joint,
-    _find_neck_reference_joint,
-    _get_head_forward,
-    resolve_face_joints,
-)
+from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata  # noqa: E402
 
 
 class ValidationError(RuntimeError):
@@ -69,7 +60,7 @@ def _read_required_artifacts(dataset_dir: Path, silent: bool = False) -> tuple[P
     metadata_path = dataset_dir / "metadata.txt"
     positions_error_path = dataset_dir / "positions_error_rate.txt"
 
-    for path in [dataset_dir, motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path]:
+    for path in [dataset_dir, motions_dir, cond_path, metadata_path, positions_error_path]:
         _require(path.exists(), f"missing required artifact: {path}")
 
     if not silent:
@@ -130,6 +121,34 @@ def _validate_optional_semantic_metadata(object_type: str, object_cond: dict, n_
     if is_symmetric is not None and not isinstance(is_symmetric, (bool, np.bool_)):
         _print_warn(f"validation error: {object_type} is_symmetric should be boolean, got {type(is_symmetric).__name__}")
 
+    orientation_quat = object_cond.get("orientation_quat")
+    if orientation_quat is not None:
+        orientation_quat = np.asarray(orientation_quat, dtype=np.float64)
+        if orientation_quat.ndim > 1:
+            orientation_quat = orientation_quat[0]
+        if orientation_quat.shape != (4,):
+            _print_warn(f"validation error: {object_type} orientation_quat shape mismatch: {orientation_quat.shape}")
+        elif not np.isfinite(orientation_quat).all():
+            _print_warn(f"validation error: {object_type} orientation_quat contains NaN/Inf")
+        else:
+            quat_norm = float(np.linalg.norm(orientation_quat))
+            if not np.isclose(quat_norm, 1.0, atol=1e-3):
+                _print_warn(f"validation error: {object_type} orientation_quat norm mismatch: {quat_norm:.6f}")
+
+    for key in ("forward_joint_index", "forward_base_joint_index"):
+        raw_index = object_cond.get(key)
+        if raw_index is None:
+            continue
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError):
+            _print_warn(f"validation error: {object_type} {key} is not an integer: {raw_index}")
+            continue
+        if index == -1:
+            continue
+        if index < 0 or index >= n_joints:
+            _print_warn(f"validation error: {object_type} {key} out of range: {index}")
+
 
 def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
     cond = np.load(cond_path, allow_pickle=True).item()
@@ -165,8 +184,6 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
         "kinematic_chains",
         "mean",
         "std",
-        "rest_rotations",
-        "rest_offsets",
     }
 
     for object_type in objects_to_validate:
@@ -235,27 +252,6 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
                 msg = f"{object_type} std is entirely non-positive"
                 _print_warn(f"validation error: {msg}")
 
-            # Validate FBX rest-pose fields (needed for skinned-animation reconstruction)
-            rest_rotations = np.asarray(object_cond["rest_rotations"])
-            rest_offsets_orig = np.asarray(object_cond["rest_offsets"])
-            if rest_rotations.shape != (n_joints, 4):
-                msg = f"{object_type} rest_rotations shape mismatch: {rest_rotations.shape}, expected ({n_joints}, 4)"
-                _print_warn(f"validation error: {msg}")
-            if rest_offsets_orig.shape != (n_joints, 3):
-                msg = f"{object_type} rest_offsets shape mismatch: {rest_offsets_orig.shape}, expected ({n_joints}, 3)"
-                _print_warn(f"validation error: {msg}")
-            if not np.isfinite(rest_rotations).all():
-                msg = f"{object_type} rest_rotations contain NaN/Inf"
-                _print_warn(f"validation error: {msg}")
-            if not np.isfinite(rest_offsets_orig).all():
-                msg = f"{object_type} rest_offsets contain NaN/Inf"
-                _print_warn(f"validation error: {msg}")
-            quat_norms = np.linalg.norm(rest_rotations, axis=1)
-            if not np.allclose(quat_norms, 1.0, atol=1e-3):
-                bad = np.sum(np.abs(quat_norms - 1.0) > 1e-3)
-                msg = f"{object_type} rest_rotations has {bad} non-unit quaternions"
-                _print_warn(f"validation error: {msg}")
-
             _validate_optional_semantic_metadata(object_type, object_cond, n_joints)
         except Exception as e:
             msg = f"{object_type}: {e}"
@@ -308,19 +304,19 @@ def _collect_motion_stats(motion_files: list[Path], cond: dict | None = None) ->
 
 def _prune_excess_joint_motions(motions_dir: Path, bvhs_dir: Path, cond: dict, sample_limit: int) -> set[str]:
     motion_files = sorted(motions_dir.glob("*.npy"))
-    bvh_files = sorted(bvhs_dir.glob("*.bvh"))
+    bvh_files = sorted(bvhs_dir.glob("*.bvh")) if bvhs_dir.exists() else []
 
     try:
         _require(len(motion_files) > 0, "motions directory is empty")
-        _require(len(bvh_files) > 0, "bvhs directory is empty")
-        _require(len(motion_files) == len(bvh_files), f"motions/bvhs count mismatch: {len(motion_files)} vs {len(bvh_files)}")
-
-        motion_stems = {path.stem for path in motion_files}
-        bvh_stems = {path.stem for path in bvh_files}
-        _require(motion_stems == bvh_stems, "motions and bvhs do not have matching stems")
     except ValidationError as e:
         _print_warn(f"directory/naming validation failed before pruning: {e}")
         return set()
+
+    if bvh_files:
+        motion_stems = {path.stem for path in motion_files}
+        bvh_stems = {path.stem for path in bvh_files}
+        if len(motion_files) != len(bvh_files) or motion_stems != bvh_stems:
+            _print_warn("optional BVH artifacts do not match motions; pruning will operate on motions only")
 
     files_to_scan = _select_validation_files(motion_files, sample_limit)
     excess_joints_chars: set[str] = set()
@@ -346,29 +342,38 @@ def _prune_excess_joint_motions(motions_dir: Path, bvhs_dir: Path, cond: dict, s
                 deleted_stems.add(path.stem)
             except OSError as exc:
                 _print_warn(f"failed to delete {path.name}: {exc}")
-        _print_warn(
-            f"deleted {len(char_motions)} motion(s) + {len(char_bvhs)} BVH(s) for {object_type} "
-            f"(joint count exceeds MAX_JOINTS={MAX_JOINTS})"
-        )
+        if char_bvhs:
+            _print_warn(
+                f"deleted {len(char_motions)} motion(s) + {len(char_bvhs)} optional BVH(s) for {object_type} "
+                f"(joint count exceeds MAX_JOINTS={MAX_JOINTS})"
+            )
+        else:
+            _print_warn(
+                f"deleted {len(char_motions)} motion(s) for {object_type} "
+                f"(joint count exceeds MAX_JOINTS={MAX_JOINTS})"
+            )
 
     return deleted_stems
 
 
 def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample_limit: int) -> None:
     motion_files = sorted(motions_dir.glob("*.npy"))
-    bvh_files = sorted(bvhs_dir.glob("*.bvh"))
+    bvh_files = sorted(bvhs_dir.glob("*.bvh")) if bvhs_dir.exists() else []
 
     try:
         _require(len(motion_files) > 0, "motions directory is empty")
-        _require(len(bvh_files) > 0, "bvhs directory is empty")
-        _require(len(motion_files) == len(bvh_files), f"motions/bvhs count mismatch: {len(motion_files)} vs {len(bvh_files)}")
-
-        motion_stems = {path.stem for path in motion_files}
-        bvh_stems = {path.stem for path in bvh_files}
-        _require(motion_stems == bvh_stems, "motions and bvhs do not have matching stems")
     except ValidationError as e:
         _print_warn(f"directory/naming validation failed: {e}")
         return
+
+    has_paired_bvhs = False
+    if bvh_files:
+        motion_stems = {path.stem for path in motion_files}
+        bvh_stems = {path.stem for path in bvh_files}
+        if len(motion_files) == len(bvh_files) and motion_stems == bvh_stems:
+            has_paired_bvhs = True
+        else:
+            _print_warn("optional BVH artifacts do not match motions; continuing with motion-only validation")
 
     files_to_validate = _select_validation_files(motion_files, sample_limit)
     for motion_path in files_to_validate:
@@ -389,174 +394,147 @@ def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample
             _print_warn(f"validation error: {motion_path.name}: {e}")
 
     scope = "all" if sample_limit <= 0 else str(len(files_to_validate))
-    _print_ok(f"validated {scope} motion tensors and {len(motion_files)} paired motion/BVH artifacts")
+    if has_paired_bvhs:
+        _print_ok(f"validated {scope} motion tensors and {len(motion_files)} paired optional BVH artifacts")
+    else:
+        _print_ok(f"validated {scope} motion tensors")
 
 
-def _vector_angle_deg(vector_a: np.ndarray, vector_b: np.ndarray) -> float:
-    a = np.asarray(vector_a, dtype=np.float64).reshape(-1)
-    b = np.asarray(vector_b, dtype=np.float64).reshape(-1)
-    a_norm = np.linalg.norm(a)
-    b_norm = np.linalg.norm(b)
-    _require(a_norm > 1e-8 and b_norm > 1e-8, "cannot compare zero-length orientation vectors")
-    cosine = float(np.dot(a / a_norm, b / b_norm))
-    cosine = float(np.clip(cosine, -1.0, 1.0))
-    return float(np.degrees(np.arccos(cosine)))
+def _load_orientation_validation_entries(dataset_dir: Path, sample_limit: int) -> tuple[Path, list[dict[str, object]]]:
+    motions_dir = dataset_dir / MOTION_DIR
+    motion_files = sorted(motions_dir.glob("*.npy"))
 
-
-def _format_candidate_angles(candidate_angles: dict[str, float]) -> str:
-    return ", ".join(f"{name}: {angle:.4f}" for name, angle in candidate_angles.items())
-
-
-def _get_frame_orientation_candidates(
-    processed_bvh_path: Path,
-    object_type: str,
-    object_cond: dict,
-    frame_index: int,
-) -> dict[str, np.ndarray]:
-    anim, joint_names, _ = BVH.load(str(processed_bvh_path))
-    global_positions = positions_global(anim)
-    resolved_frame_index = frame_index
-    if resolved_frame_index < 0:
-        resolved_frame_index = global_positions.shape[0] + resolved_frame_index
-    _require(0 <= resolved_frame_index < global_positions.shape[0], f"{processed_bvh_path.name} has no frame {frame_index}")
-    frame_positions = global_positions[resolved_frame_index:resolved_frame_index + 1]
-
-    face_joints = object_cond.get("face_joints")
-    if face_joints is None:
-        face_joints = resolve_face_joints(object_type, joint_names, anim.parents, face_joints=None)
-
-    forward_joint_index = _find_forward_reference_joint(joint_names, anim.parents)
-    forward_base_joint_index = _find_neck_reference_joint(joint_names, anim.parents)
-
-    raw = _get_facing_candidates(
-        frame_positions,
-        object_type,
-        face_joint_indx=face_joints,
-        forward_joint_index=forward_joint_index,
-        forward_base_joint_index=forward_base_joint_index,
-    )
-    candidates = {
-        name: np.asarray(fwd[0], dtype=np.float64)
-        for name, fwd in raw.items()
-        if fwd is not None and np.isfinite(fwd).all()
-    }
-
-    _require(candidates, f"{processed_bvh_path.name} produced no valid orientation candidates for frame {resolved_frame_index}")
-    return candidates
-
-
-def _validate_motion_orientation(bvhs_dir: Path, cond: dict, sample_limit: int, threshold_deg: float) -> None:
-    bvh_files = sorted(bvhs_dir.glob("*.bvh"))
-    
     try:
-        _require(len(bvh_files) > 0, "bvhs directory is empty")
+        _require(len(motion_files) > 0, "motions directory is empty")
     except ValidationError as e:
         _print_warn(f"directory validation failed: {e}")
+        return motions_dir, []
+
+    motion_metadata_lookup = load_motion_metadata(dataset_dir)
+    files_to_validate = _select_validation_files(motion_files, sample_limit)
+    entries = []
+    for motion_path in files_to_validate:
+        entries.append(
+            {
+                "motion_name": motion_path.name,
+                "motion_stem": motion_path.stem,
+                "motion_path": motion_path,
+                "motion_metadata": dict(motion_metadata_lookup.get(motion_path.name, {})),
+            }
+        )
+    return motions_dir, entries
+
+
+def _read_orientation_angle(motion_name: str, motion_metadata: dict[str, object], field_name: str) -> float:
+    raw_value = motion_metadata.get(field_name)
+    _require(raw_value is not None, f"{motion_name} missing {field_name} in motion metadata")
+    value = float(raw_value)
+    _require(np.isfinite(value), f"{motion_name} {field_name} is not finite")
+    _require(value >= 0.0, f"{motion_name} {field_name} must be >= 0")
+    return value
+
+
+def _get_motion_orientation_summary(motion_name: str, motion_metadata: dict[str, object]) -> tuple[float, float]:
+    first_best_angle_deg = _read_orientation_angle(
+        motion_name,
+        motion_metadata,
+        "orientation_first_frame_best_angle_deg",
+    )
+    last_best_angle_deg = _read_orientation_angle(
+        motion_name,
+        motion_metadata,
+        "orientation_last_frame_best_angle_deg",
+    )
+    return first_best_angle_deg, last_best_angle_deg
+
+
+def _validate_motion_orientation(dataset_dir: Path, cond: dict, sample_limit: int, threshold_deg: float) -> None:
+    _motions_dir, entries = _load_orientation_validation_entries(dataset_dir, sample_limit)
+    if not entries:
         return
 
-    files_to_validate = _select_validation_files(bvh_files, sample_limit)
-    target_forward = np.array([0.0, 0.0, 1.0], dtype=np.float64)
     errors = []
 
     _SKIP_ORIENTATION_KEYWORDS = {"left", "right", "die", "dead", "death", "lying"}
 
-    for bvh_path in files_to_validate:
-        action_name_lower = bvh_path.stem.lower()
+    for entry in entries:
+        motion_stem = str(entry["motion_stem"])
+        action_name_lower = motion_stem.lower()
         if any(kw in action_name_lower for kw in _SKIP_ORIENTATION_KEYWORDS):
             continue
         try:
-            object_type = _match_object_type(bvh_path.stem, cond)
-            first_candidates = _get_frame_orientation_candidates(bvh_path, object_type, cond[object_type], 0)
-            first_candidate_angles = {
-                name: _vector_angle_deg(forward, target_forward)
-                for name, forward in first_candidates.items()
-            }
-            first_best_name, first_best_angle_deg = min(first_candidate_angles.items(), key=lambda item: item[1])
+            _object_type = _match_object_type(motion_stem, cond)
+            first_best_angle_deg, last_best_angle_deg = _get_motion_orientation_summary(
+                str(entry["motion_name"]),
+                dict(entry["motion_metadata"]),
+            )
             if first_best_angle_deg <= threshold_deg:
                 continue
-
-            last_candidates = _get_frame_orientation_candidates(bvh_path, object_type, cond[object_type], -1)
-            last_candidate_angles = {
-                name: _vector_angle_deg(forward, target_forward)
-                for name, forward in last_candidates.items()
-            }
-            last_best_name, last_best_angle_deg = min(last_candidate_angles.items(), key=lambda item: item[1])
             _require(
                 last_best_angle_deg <= threshold_deg,
                 f"processed orientation exceeds threshold on both first and last frames: {first_best_angle_deg:.2f}|{last_best_angle_deg:.2f}, threshold={threshold_deg:.2f}",
             )
         except ValidationError as e:
-            _print_warn(f"validation warn: {bvh_path.name}: {e}")
+            _print_warn(f"validation warn: {entry['motion_name']}: {e}")
             errors.append(str(e))
 
     if errors:
         raise ValidationError(f"orientation validation warn: {len(errors)} file(s) exceeded threshold")
     
-    scope = "all" if sample_limit <= 0 else str(len(files_to_validate))
-    _print_ok(f"validated processed early-frame +Z orientation for {scope} processed BVHs (threshold={threshold_deg:.2f} deg)")
+    scope = "all" if sample_limit <= 0 else str(len(entries))
+    _print_ok(f"validated stored processed-orientation metadata for {scope} motions (threshold={threshold_deg:.2f} deg)")
 
 
 def _filter_motions_by_orientation(
-    bvhs_dir: Path,
-    motions_dir: Path,
+    dataset_dir: Path,
     cond: dict,
     sample_limit: int,
     threshold_deg: float,
 ) -> set[str]:
-    """Delete motion/BVH pairs whose orientation deviation exceeds threshold_deg.
+    """Delete motion tensors whose stored orientation deviation exceeds threshold_deg.
+
+    When an optional paired BVH exists for the same stem, delete it too.
 
     Returns the deleted motion stems.
     """
-    bvh_files = sorted(bvhs_dir.glob("*.bvh"))
-    if not bvh_files:
+    _motions_dir, entries = _load_orientation_validation_entries(dataset_dir, sample_limit)
+    if not entries:
         return set()
 
-    files_to_check = _select_validation_files(bvh_files, sample_limit)
-    target_forward = np.array([0.0, 0.0, 1.0], dtype=np.float64)
     _SKIP_ORIENTATION_KEYWORDS = {"left", "right", "die", "dead", "death", "lying"}
 
     deleted_stems: set[str] = set()
-    for bvh_path in files_to_check:
-        action_name_lower = bvh_path.stem.lower()
+    for entry in entries:
+        motion_stem = str(entry["motion_stem"])
+        action_name_lower = motion_stem.lower()
         if any(kw in action_name_lower for kw in _SKIP_ORIENTATION_KEYWORDS):
             continue
         try:
-            object_type = _match_object_type(bvh_path.stem, cond)
-            first_candidates = _get_frame_orientation_candidates(
-                bvh_path, object_type, cond[object_type], 0
+            _object_type = _match_object_type(motion_stem, cond)
+            first_best_angle_deg, last_best_angle_deg = _get_motion_orientation_summary(
+                str(entry["motion_name"]),
+                dict(entry["motion_metadata"]),
             )
-            first_candidate_angles = {
-                name: _vector_angle_deg(forward, target_forward)
-                for name, forward in first_candidates.items()
-            }
-            first_best_angle_deg = min(first_candidate_angles.values())
 
             if first_best_angle_deg <= threshold_deg:
                 continue
-
-            last_candidates = _get_frame_orientation_candidates(
-                bvh_path, object_type, cond[object_type], -1
-            )
-            last_candidate_angles = {
-                name: _vector_angle_deg(forward, target_forward)
-                for name, forward in last_candidates.items()
-            }
-            last_best_angle_deg = min(last_candidate_angles.values())
 
             if last_best_angle_deg <= threshold_deg:
                 continue
 
             # Both first and last frames exceed threshold — delete the motion.
-            motion_path = motions_dir / (bvh_path.stem + ".npy")
+            motion_path = Path(entry["motion_path"])
             if motion_path.exists():
                 motion_path.unlink()
                 print(f"  [DELETE] {motion_path.name}")
                 deleted_stems.add(motion_path.stem)
+
+            bvh_path = dataset_dir / BVHS_DIR / f"{motion_stem}.bvh"
             if bvh_path.exists():
                 bvh_path.unlink()
                 print(f"  [DELETE] {bvh_path.name}")
         except Exception as e:
-            print(f"  [WARN] orientation filter error for {bvh_path.name}: {e}")
+            print(f"  [WARN] orientation filter error for {entry['motion_name']}: {e}")
 
     return deleted_stems
 
@@ -622,6 +600,38 @@ def _validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond:
             _require(bool(motion_metadata.get("action_label")), f"action_label missing for {motion_name}")
             _require(bool(motion_metadata.get("action_category")), f"action_category missing for {motion_name}")
 
+            source_fbx_path = motion_metadata.get("source_fbx_path")
+            source_frame_range = motion_metadata.get("source_frame_range")
+            if source_fbx_path is not None:
+                _require(isinstance(source_fbx_path, str) and source_fbx_path.strip(), f"source_fbx_path invalid for {motion_name}")
+            if source_frame_range is not None:
+                _require(
+                    isinstance(source_frame_range, (list, tuple)) and len(source_frame_range) == 2,
+                    f"source_frame_range invalid for {motion_name}",
+                )
+                start = int(source_frame_range[0])
+                end = int(source_frame_range[1])
+                _require(0 <= start < end, f"source_frame_range invalid for {motion_name}: {source_frame_range}")
+            if (source_fbx_path is None) != (source_frame_range is None):
+                _print_warn(f"validation error: {motion_name} source FBX metadata is incomplete")
+
+            first_angle = motion_metadata.get("orientation_first_frame_best_angle_deg")
+            last_angle = motion_metadata.get("orientation_last_frame_best_angle_deg")
+            first_candidate = motion_metadata.get("orientation_first_frame_best_candidate")
+            last_candidate = motion_metadata.get("orientation_last_frame_best_candidate")
+            if (first_angle is None) != (last_angle is None):
+                _print_warn(f"validation error: {motion_name} processed orientation metadata is incomplete")
+            if first_angle is not None:
+                _require(np.isfinite(float(first_angle)), f"orientation_first_frame_best_angle_deg invalid for {motion_name}")
+                _require(float(first_angle) >= 0.0, f"orientation_first_frame_best_angle_deg must be >= 0 for {motion_name}")
+            if last_angle is not None:
+                _require(np.isfinite(float(last_angle)), f"orientation_last_frame_best_angle_deg invalid for {motion_name}")
+                _require(float(last_angle) >= 0.0, f"orientation_last_frame_best_angle_deg must be >= 0 for {motion_name}")
+            if first_candidate is not None:
+                _require(isinstance(first_candidate, str) and first_candidate.strip(), f"orientation_first_frame_best_candidate invalid for {motion_name}")
+            if last_candidate is not None:
+                _require(isinstance(last_candidate, str) and last_candidate.strip(), f"orientation_last_frame_best_candidate invalid for {motion_name}")
+
         total_clips = payload.get("total_clips")
         if total_clips is not None:
             _require(int(total_clips) == len(motion_files), f"{MOTION_METADATA_FILE} total_clips mismatch: {total_clips} vs {len(motion_files)}")
@@ -636,19 +646,12 @@ def _validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond:
 
 def _validate_generated_artifacts_consistency(dataset_dir: Path, cond: dict, objects_subset: str, silent: bool = False) -> bool:
     motions_dir = dataset_dir / MOTION_DIR
-    bvhs_dir = dataset_dir / BVHS_DIR
     motion_files = sorted(motions_dir.glob("*.npy"))
-    bvh_files = sorted(bvhs_dir.glob("*.bvh"))
-    if not motion_files or not bvh_files:
-        _print_warn("generated artifact consistency check skipped: motions/bvhs missing")
+    if not motion_files:
+        _print_warn("generated artifact consistency check skipped: motions missing")
         return False
 
     is_consistent = True
-    motion_stems = {path.stem for path in motion_files}
-    bvh_stems = {path.stem for path in bvh_files}
-    if motion_stems != bvh_stems:
-        _print_warn("generated artifact consistency error: motions and bvhs do not have matching stems")
-        is_consistent = False
 
     try:
         _, _, _, object_types_in_motions = _collect_motion_stats(motion_files, cond)
@@ -697,8 +700,7 @@ def _prepare_dataset_for_validation(
     if filter_orientation_threshold_deg > 0 and not skip_orientation_check:
         _print_ok(f"filtering motions with orientation deviation > {filter_orientation_threshold_deg:.2f} deg")
         deleted_orientation_stems = _filter_motions_by_orientation(
-            bvhs_dir,
-            motions_dir,
+            dataset_dir,
             cond,
             sample_count,
             filter_orientation_threshold_deg,
@@ -721,7 +723,7 @@ def _prepare_dataset_for_validation(
 def _validate_positions_error_file(positions_error_path: Path) -> None:
     try:
         content = positions_error_path.read_text(encoding="utf-8").strip()
-        _require(content.startswith("Position squared error per bvh file:"), "positions_error_rate.txt has unexpected header")
+        _require(content.startswith("Position squared error per source clip:"), "positions_error_rate.txt has unexpected header")
         if len(content.splitlines()) == 1:
             _print_warn("positions_error_rate.txt has no per-file entries")
         else:
@@ -735,9 +737,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate an AnyTop preprocessed dataset directory.")
     parser.add_argument("--dataset-dir", default=None, help="Dataset directory to validate. If not specified, uses default path.")
     parser.add_argument("--objects-subset", default="all", choices=sorted(OBJECT_SUBSETS_DICT.keys()), help="Expected object subset for the dataset.")
-    parser.add_argument("--sample-count", type=int, default=0, help="How many motion/BVH files to validate in detail. Use 0 to validate all files.")
-    parser.add_argument("--orientation-threshold-deg", type=float, default=5.0, help="Maximum allowed first-frame facing error from +Z for validated processed BVHs.")
-    parser.add_argument("--skip-orientation-check", action="store_true", help="Skip processed-BVH orientation validation.")
+    parser.add_argument("--sample-count", type=int, default=0, help="How many motion files to validate in detail. Use 0 to validate all files.")
+    parser.add_argument("--orientation-threshold-deg", type=float, default=5.0, help="Maximum allowed first-frame facing error from +Z using stored processed-orientation metadata.")
+    parser.add_argument("--filter-orientation-threshold-deg", type=float, default=0.0, help="Delete motion tensors whose stored processed-orientation deviation exceeds this threshold before validation. Use 0 to disable filtering.")
+    parser.add_argument("--skip-orientation-check", action="store_true", help="Skip stored processed-orientation validation.")
     return parser.parse_args()
 
 
@@ -756,7 +759,7 @@ def main() -> int:
         args.objects_subset,
         args.sample_count,
         args.skip_orientation_check,
-        args.orientation_threshold_deg,
+        args.filter_orientation_threshold_deg,
     )
 
     motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path = _read_required_artifacts(dataset_dir)
@@ -769,9 +772,9 @@ def main() -> int:
     _validate_motion_files(motions_dir, bvhs_dir, cond, args.sample_count)
     
     if args.skip_orientation_check:
-        _print_warn("skipping processed-BVH orientation validation by request")
+        _print_warn("skipping stored processed-orientation validation by request")
     else:
-        _validate_motion_orientation(bvhs_dir, cond, args.sample_count, args.orientation_threshold_deg)
+        _validate_motion_orientation(dataset_dir, cond, args.sample_count, args.orientation_threshold_deg)
     
     _validate_positions_error_file(positions_error_path)
 

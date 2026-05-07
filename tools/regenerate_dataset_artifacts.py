@@ -88,7 +88,7 @@ def _rewrite_positions_error_file(dataset_dir_path: Path, motion_entries: dict[s
         if any(obj and obj in normalized_line and (not action or action in normalized_line) for obj, action in motion_signatures):
             filtered_lines.append(line)
 
-    output_lines = ["Position squared error per bvh file:__artifact_regenerated__: 0.000000"]
+    output_lines = ["Position squared error per source clip:__artifact_regenerated__: 0.000000"]
     output_lines.extend(filtered_lines)
     if len(output_lines) == 1:
         output_lines.append("__artifact_regenerated_placeholder__: 0.000000")
