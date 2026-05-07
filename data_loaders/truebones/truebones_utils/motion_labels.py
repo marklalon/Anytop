@@ -158,17 +158,16 @@ def infer_motion_labels_from_motion_name(
     object_type: str | None = None,
     object_types: Iterable[str] | None = None,
 ) -> dict[str, object]:
+    from utils.misc import infer_object_type_from_filename
+
     stem = Path(motion_name).stem
     resolved_object_type = object_type
     if resolved_object_type is None:
-        if object_types is None:
+        resolved_object_type = infer_object_type_from_filename(
+            motion_name, valid_types=set(object_types) if object_types is not None else None
+        )
+        if resolved_object_type is None:
             resolved_object_type = stem.split("_", 1)[0]
-        else:
-            matches = [candidate for candidate in object_types if stem.startswith(f"{candidate}_")]
-            if not matches:
-                resolved_object_type = stem.split("_", 1)[0]
-            else:
-                resolved_object_type = max(matches, key=len)
 
     action_stem = stem
     prefix = f"{resolved_object_type}_"

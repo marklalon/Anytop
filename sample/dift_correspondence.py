@@ -62,7 +62,8 @@ def create_batch_from_motion_paths(motion_paths, cond_dict, temporal_window, max
     motions = list()
     cond_dicts = list()
     for motion_path in motion_paths:
-        object_type = os.path.basename(motion_path).split('_')[0]
+        from utils.misc import infer_object_type_from_filename
+        object_type = infer_object_type_from_filename(motion_path) or os.path.basename(motion_path).split('_')[0]
         motion, cond_dict_object_type = process_object_type(motion_path=motion_path, object_type=object_type, cond=cond_dict)
         batches.append(create_sample_in_batch(motion, object_type, cond_dict_object_type, temporal_window, max_joints))
         motions.append(motion)

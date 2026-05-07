@@ -101,18 +101,6 @@ _DEFAULT_FBX = os.path.join(
 _DEFAULT_TPOSE_FBX = os.path.join(
     _ANYTOP_ROOT, "dataset", "truebones", "zoo", "Truebone_Z-OO", "Horse", "HorseALL-TPOSE.fbx",
 )
-def _infer_object_type_from_path(fbx_path: str) -> str:
-    stem = os.path.splitext(os.path.basename(fbx_path))[0]
-    if "___" in stem:
-        return stem.split("___", 1)[0]
-    if "_" in stem:
-        prefix = stem.split("_", 1)[0]
-        if prefix:
-            return prefix
-    parent_name = os.path.basename(os.path.dirname(fbx_path))
-    return parent_name or stem
-
-
 def _compare_export_to_source(
     source_fbx: str,
     exported_path: str,
@@ -410,7 +398,8 @@ if __name__ == "__main__":
         args.tpose_fbx = _DEFAULT_TPOSE_FBX if os.path.isfile(_DEFAULT_TPOSE_FBX) else args.fbx
 
     if args.object_type is None:
-        args.object_type = _infer_object_type_from_path(args.fbx)
+        from utils.misc import infer_object_type_from_filename
+        args.object_type = infer_object_type_from_filename(args.fbx) or os.path.basename(args.fbx)
 
     print(f"T-pose FBX : {args.tpose_fbx}")
     print(f"Anim FBX   : {args.fbx}")

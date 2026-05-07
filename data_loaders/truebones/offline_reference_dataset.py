@@ -22,13 +22,6 @@ def get_motion_dir(dataset_dir: str | Path | None = None) -> Path:
     return resolve_dataset_root(dataset_dir) / MOTION_DIR
 
 
-def infer_object_type(file_name: str, object_types: Iterable[str]) -> str:
-    for object_type in sorted(object_types, key=len, reverse=True):
-        if file_name.startswith(f"{object_type}_"):
-            return object_type
-    raise KeyError(f"Could not infer object type from motion file '{file_name}'")
-
-
 def _matches_object_subset(file_name: str, object_types: set[str]) -> bool:
     return any(file_name.startswith(f"{object_type}_") for object_type in object_types)
 

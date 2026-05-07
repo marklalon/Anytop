@@ -1477,7 +1477,7 @@ def _build_motion_metadata_entry(result, motion_file_name):
     return motion_labels
      
 """Prepare processed tensors for all the files of a given object without writing them to disk yet."""
-def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None):
+def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, allow_skeleton_only=False):
     object_cond = dict()
     if fbxs_dir is None:
         fbxs_dir = pjoin(get_raw_data_dir(raw_data_dir), object_type)
@@ -1501,8 +1501,11 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     # Filter out files with no inferable action name or all-in-one animation bundles
     fbx_files = [f for f in fbx_files if not _should_skip_fbx(f, object_type)]
     if len(fbx_files) == 0:
-        print(f'skipping {object_type}: no valid FBX files after filtering')
-        return None
+        if allow_skeleton_only:
+            print(f'processing {object_type} in skeleton-only mode using T-pose reference {os.path.basename(t_pos_path)}')
+        else:
+            print(f'skipping {object_type}: no valid FBX files after filtering')
+            return None
 
     squared_positions_error = dict()
     root_pose_init_xz, scale_factor, offsets, foot_indices, tpos_rots, names, tpos_anim, face_joints, orientation_quat, forward_joint_index, forward_base_joint_index, contact_joint_source = get_common_features_from_T_pose(t_pos_path, object_type, face_joints=face_joints)
@@ -1589,10 +1592,17 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             prepared_results.append(result)
 
     if len(all_tensors) == 0:
-        print(f'skipping {object_type}: no valid motion tensors were produced')
-        return None
-    all_tensors = np.concatenate(all_tensors, axis=0)
-    mean, std = get_mean_std(all_tensors)
+        if not allow_skeleton_only:
+            print(f'skipping {object_type}: no valid motion tensors were produced')
+            return None
+        print(f'no motion clips were produced for {object_type}; using the T-pose features to populate cond statistics only')
+        stats_tensors = np.asarray(t_pos_motion, dtype=np.float32)
+        if stats_tensors.ndim == 2:
+            stats_tensors = stats_tensors[None, ...]
+    else:
+        stats_tensors = np.concatenate(all_tensors, axis=0)
+
+    mean, std = get_mean_std(stats_tensors)
     object_cond["mean"] = mean
     object_cond["std"] = std
 
@@ -1678,7 +1688,7 @@ def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None):
 
 """ creates processed tensors for all the files of a given object. Returens statistics and the object condition,
 which includes tpos, relation/distances matrices, offsets, parents, joints names, kinematic chains, mean and std"""    
-def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, bvhs_dir=None):
+def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, bvhs_dir=None, allow_skeleton_only=False):
     object_payload = _prepare_object_outputs(
         object_type,
         max_joints,
@@ -1687,6 +1697,7 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
         t_pos_path=t_pos_path,
         max_files=max_files,
         raw_data_dir=raw_data_dir,
+        allow_skeleton_only=allow_skeleton_only,
     )
     if object_payload is None:
         return files_counter, frames_counter, max_joints, None, {}
@@ -2134,7 +2145,7 @@ def process_skeleton(object_name, bvh_dir, face_joints, save_dir, tpos_bvh=None,
     cond = dict()
     motion_metadata = {}
     cur_counter = files_counter
-    files_counter, frames_counter, max_joints, object_cond, object_motion_metadata = process_object(object_name, files_counter, frames_counter, max_joints, squared_positions_error, save_dir=save_dir, fbxs_dir=fbx_dir or bvh_dir, face_joints=face_joints, t_pos_path=tpos_bvh)
+    files_counter, frames_counter, max_joints, object_cond, object_motion_metadata = process_object(object_name, files_counter, frames_counter, max_joints, squared_positions_error, save_dir=save_dir, fbxs_dir=fbx_dir or bvh_dir, face_joints=face_joints, t_pos_path=tpos_bvh, allow_skeleton_only=True)
     # BUG4 (intentional): MP4 generation is omitted here to skip expensive video
     # generation during process_skeleton. Generating video previews is not
     # Note: MP4 generation has been removed - no save_animations parameter needed.

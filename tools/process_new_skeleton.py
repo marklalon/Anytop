@@ -6,7 +6,7 @@ and specific velocity/height thresholds for foot contact detection. However, we 
 files from Mixamo and other sources to ensure its generalizability.
 
 Input Arguments:
-object_type - A character's species/type name (e.g., "Dog").
+object_type - A character's species/type name (e.g., "Dog"). Optional — inferred from FBX filenames when omitted.
 fbx-dir - Directory containing FBX files of the skeleton. More files improve statistical accuracy for motion denormalization.
 face-joints-names - Optional manual override for four joints defining skeleton orientation ([right hip, left hip, right shoulder, left shoulder] or equivalent). 
             When omitted, preprocessing tries to infer them from semantic joint names in the FBX. If inference is ambiguous,
@@ -31,11 +31,21 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_loaders.truebones.truebones_utils.motion_process import process_skeleton
+from utils.misc import infer_object_type_from_fbx_dir
 from utils.parser_util import process_new_skeleton_args
+
 
 def main():
     args = process_new_skeleton_args()
-    process_skeleton(args.object_type, args.fbx_dir, args.face_joints_names, args.save_dir, tpos_bvh=args.tpos_fbx)
+    object_type = args.object_type
+    if object_type is None:
+        object_type = infer_object_type_from_fbx_dir(args.fbx_dir)
+        if object_type is None:
+            raise FileNotFoundError(
+                f"No FBX files found in '{args.fbx_dir}' or cannot infer object-type."
+            )
+        print(f"Auto-detected object_type: {object_type}")
+    process_skeleton(object_type, args.fbx_dir, args.face_joints_names, args.save_dir, tpos_bvh=args.tpos_fbx)
     
 if __name__ == '__main__':
         main()

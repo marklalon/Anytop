@@ -66,6 +66,7 @@ def _load_utils_module(module_name: str) -> None:
 _load_utils_module("utils.rotation_conversions")
 _load_utils_module("utils.npy_roundtrip_utils")
 
+from utils.misc import infer_object_type_from_filename
 from utils.npy_roundtrip_utils import recover_from_features
 from Anytop.utils.roundtrip_common import identity_rest_rotations, _load_fbx_skeleton_metadata
 
@@ -76,27 +77,6 @@ _DEFAULT_COND_NPY = os.path.realpath(
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _auto_detect_object_type_from_filename(npy_path: str, cond: dict) -> str | None:
-    """Auto-detect object_type from NPY filename.
-
-    Filenames follow the pattern: {ObjectType}___{Action}_{ClipID}.npy
-    e.g. Horse___RunToStop_29.npy, Sea_Lion___Swim_42.npy
-    """
-    basename = os.path.splitext(os.path.basename(npy_path))[0]
-    sep = "___"
-    if sep in basename:
-        candidate = basename.split(sep)[0]
-        if candidate in cond:
-            return candidate
-    # Fallback: progressively longer prefixes (handles "Sea_Lion" etc.)
-    if "_" in basename:
-        parts = basename.split("_")
-        for i in range(1, len(parts)):
-            candidate = "_".join(parts[:i])
-            if candidate in cond:
-                return candidate
-    return None
 
 
 def _load_tpose_restore_metadata(tpose_mesh: str, object_type: str) -> dict[str, object]:
@@ -310,7 +290,7 @@ def restore_glb(
 
     # ── Detect object_type ────────────────────────────────────────────────────
     if object_type is None:
-        object_type = _auto_detect_object_type_from_filename(npy_path, cond)
+        object_type = infer_object_type_from_filename(npy_path, valid_types=cond.keys())
         if object_type is None:
             raise ValueError(
                 f"Cannot auto-detect object_type from '{os.path.basename(npy_path)}'.\n"

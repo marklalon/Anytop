@@ -262,9 +262,11 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
 
 
 def _match_object_type(file_stem: str, cond: dict) -> str:
-    matches = [object_type for object_type in cond.keys() if file_stem.startswith(f"{object_type}_")]
-    _require(len(matches) > 0, f"could not match motion file to object type: {file_stem}")
-    return max(matches, key=len)
+    from utils.misc import infer_object_type_from_filename
+
+    result = infer_object_type_from_filename(file_stem, valid_types=cond.keys())
+    _require(result is not None, f"could not match motion file to object type: {file_stem}")
+    return result
 
 
 def _select_validation_files(files: list[Path], sample_limit: int) -> list[Path]:

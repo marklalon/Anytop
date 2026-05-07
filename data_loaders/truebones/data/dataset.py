@@ -93,9 +93,6 @@ def _list_motion_files(motion_dir: str) -> list[str]:
     return sorted(path.name for path in Path(motion_dir).glob("*.npy"))
 
 
-def _infer_object_type_from_motion_name(name: str) -> str:
-    return name.split("_", 1)[0]
-
 
 def _build_symmetry_permutation(symmetry_partner_indices) -> np.ndarray:
     spi = np.asarray(symmetry_partner_indices, dtype=np.int64)
@@ -172,8 +169,9 @@ def ensure_split_manifests(data_root: str, motion_dir: str) -> dict[str, Path]:
 
     # Group motion names by object_type (animal character)
     grouped_motion_names: dict[str, list[str]] = defaultdict(list)
+    from utils.misc import infer_object_type_from_filename
     for motion_name in _list_motion_files(motion_dir):
-        grouped_motion_names[_infer_object_type_from_motion_name(motion_name)].append(motion_name)
+        grouped_motion_names[infer_object_type_from_filename(motion_name)].append(motion_name)
 
     # Shuffle object types and assign all their motions to the same split
     manifests = {split: [] for split in SUPPORTED_SPLITS}
@@ -233,6 +231,8 @@ def load_motion_names_for_split_with_action_tags(
     if split == ALL_SPLIT_NAME:
         return filtered_motion_names
 
+    from utils.misc import infer_object_type_from_filename
+
     grouped_motion_names: dict[str, list[str]] = defaultdict(list)
     for motion_name in sorted(filtered_motion_names):
         motion_metadata = motion_metadata_lookup.get(motion_name)
@@ -241,7 +241,7 @@ def load_motion_names_for_split_with_action_tags(
                 motion_name,
                 object_types=object_types,
             )
-        object_type = str(motion_metadata.get('object_type') or _infer_object_type_from_motion_name(motion_name))
+        object_type = str(motion_metadata.get('object_type') or infer_object_type_from_filename(motion_name))
         grouped_motion_names[object_type].append(motion_name)
 
     # Shuffle object types and assign all their motions to the same split

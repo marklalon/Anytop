@@ -45,8 +45,9 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     mirror_features_with_safeguards,
     recover_animation_from_motion_np,
 )
+from utils.misc import infer_object_type_from_filename
+
 from data_loaders.truebones.offline_reference_dataset import (
-    infer_object_type,
     list_motion_files,
     load_cond_dict,
     get_motion_dir,
@@ -92,9 +93,8 @@ def main() -> int:
     by_object: dict[str, list[str]] = {}
     skipped_asymmetric: set[str] = set()
     for motion_file in all_motion_files:
-        try:
-            obj = infer_object_type(motion_file, cond_dict.keys())
-        except KeyError:
+        obj = infer_object_type_from_filename(motion_file, valid_types=cond_dict.keys())
+        if obj is None:
             continue
         spi = cond_dict[obj].get('symmetry_partner_indices')
         if spi is None or all(int(p) == -1 for p in spi):

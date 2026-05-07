@@ -278,8 +278,9 @@ def generate_args():
 def process_new_skeleton_args():
     parser = ArgumentParser()
     group = parser.add_argument_group('process_new_skeleton')
-    group.add_argument("--object-type", required=True, type=str,
-                       help="A character's species/type name (e.g. \"Dragon\")")
+    group.add_argument("--object-type", default=None, type=str,
+                       help="A character's species/type name (e.g. \"Dragon\"). "
+                            "When omitted, inferred from the first FBX filename in --fbx-dir.")
     group.add_argument("--fbx-dir", required=True, type=str,
                        help="Path to a directory containing FBX files of the skeleton. More files improve statistical accuracy for \
                            motion denormalization.")
