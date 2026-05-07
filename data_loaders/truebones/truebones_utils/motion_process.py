@@ -284,7 +284,7 @@ def _refresh_joint_metadata_in_object_cond(object_cond):
     object_cond['is_symmetric'] = semantic_metadata['is_symmetric']
 
 
-def _attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base'):
+def _attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collision_report=True):
     from model.conditioners import T5Conditioner
 
     if not cond:
@@ -324,7 +324,8 @@ def _attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base'):
             with open(inspection_path, 'w', encoding='utf-8') as inspection_file:
                 json.dump(_build_joint_name_inspection_rows(object_cond, embedding_texts), inspection_file, indent=2)
 
-    _write_joint_name_collision_report(cond, save_dir)
+    if write_collision_report:
+        _write_joint_name_collision_report(cond, save_dir)
 
 
 def _detect_motion_loop(positions):

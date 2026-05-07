@@ -41,7 +41,10 @@ from truebones_utils.motion_labels import (  # noqa: E402
     load_motion_metadata,
     write_motion_metadata,
 )
-from truebones_utils.motion_process import _attach_joint_name_embeddings_to_cond  # noqa: E402
+from truebones_utils.motion_process import (  # noqa: E402
+    _attach_joint_name_embeddings_to_cond,
+    _write_joint_name_collision_report,
+)
 from truebones_utils.param_utils import MOTION_DIR, get_dataset_dir  # noqa: E402
 
 
@@ -97,7 +100,11 @@ def _rewrite_positions_error_file(dataset_dir_path: Path, motion_entries: dict[s
     positions_error_path.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
 
 
-def regenerate_dataset_artifacts(dataset_dir: str | Path | None = None, t5_model: str = "t5-base") -> Path:
+def regenerate_dataset_artifacts(
+    dataset_dir: str | Path | None = None,
+    t5_model: str = "t5-base",
+    object_types: list[str] | tuple[str, ...] | None = None,
+) -> Path:
     dataset_dir_path = _resolve_dataset_dir_path(dataset_dir)
     motions_dir = dataset_dir_path / MOTION_DIR
     cond_path = dataset_dir_path / "cond.npy"
@@ -125,17 +132,57 @@ def regenerate_dataset_artifacts(dataset_dir: str | Path | None = None, t5_model
             f"cond.npy is missing object entries required by current motions: {missing_object_types}"
         )
 
-    rebuilt_cond = {object_type: existing_cond[object_type] for object_type in active_object_types}
+    if object_types is None:
+        rebuild_object_types = active_object_types
+    else:
+        requested_object_types = list(dict.fromkeys(str(object_type) for object_type in object_types))
+        rebuild_object_types = [
+            object_type
+            for object_type in requested_object_types
+            if object_type in existing_cond and object_type in active_object_types
+        ]
+        skipped_object_types = [
+            object_type
+            for object_type in requested_object_types
+            if object_type not in rebuild_object_types
+        ]
+        if skipped_object_types:
+            print(
+                "[WARN] skipping sidecar regeneration for object types not present in current cond/motions: "
+                + ", ".join(skipped_object_types)
+            )
+        if not rebuild_object_types:
+            raise RuntimeError("no requested object types are present in the current dataset artifacts")
+
+    rebuilt_cond = {object_type: existing_cond[object_type] for object_type in rebuild_object_types}
 
     inspection_dir = dataset_dir_path / "joint_name_inspection"
     if inspection_dir.exists():
-        shutil.rmtree(inspection_dir)
+        active_set = set(rebuild_object_types)
+        existing_files = {p.stem for p in inspection_dir.glob("*.json")}
+        if existing_files and existing_files <= active_set:
+            # All existing inspection files will be regenerated — single rmdir is fastest
+            shutil.rmtree(inspection_dir)
+        else:
+            # Incremental: only remove files for object types being refreshed
+            for object_type in rebuild_object_types:
+                inspection_path = inspection_dir / f"{object_type}.json"
+                if inspection_path.exists():
+                    inspection_path.unlink()
     collision_report_path = dataset_dir_path / "joint_name_collision_report.json"
     if collision_report_path.exists():
         collision_report_path.unlink()
 
-    _attach_joint_name_embeddings_to_cond(rebuilt_cond, str(dataset_dir_path), t5_name=t5_model)
-    np.save(str(cond_path), rebuilt_cond)
+    _attach_joint_name_embeddings_to_cond(
+        rebuilt_cond,
+        str(dataset_dir_path),
+        t5_name=t5_model,
+        write_collision_report=False,
+    )
+    merged_cond = dict(existing_cond)
+    merged_cond.update(rebuilt_cond)
+    _write_joint_name_collision_report(merged_cond, str(dataset_dir_path))
+    np.save(str(cond_path), merged_cond)
 
     existing_motion_metadata = load_motion_metadata(dataset_dir_path)
     rebuilt_motion_metadata: dict[str, dict[str, object]] = {}
@@ -149,7 +196,7 @@ def regenerate_dataset_artifacts(dataset_dir: str | Path | None = None, t5_model
 
         motion_entry = dict(existing_motion_metadata.get(motion_path.name, {}))
         motion_entry.update(
-            infer_motion_labels_from_motion_name(motion_path.name, object_types=tuple(rebuilt_cond.keys()))
+            infer_motion_labels_from_motion_name(motion_path.name, object_types=tuple(merged_cond.keys()))
         )
         motion_entry["motion_name"] = motion_path.name
         motion_entry.setdefault("is_loop", False)

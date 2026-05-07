@@ -275,6 +275,7 @@ def run_preprocessing(
 def run_re_encode_joint_names_only(
     dataset_dir: str = "",
     preserved_side_artifacts: PreservedSideArtifacts | None = None,
+    object_types: tuple[str, ...] | None = None,
 ) -> int:
     """Regenerate non-motion dataset artifacts without re-preprocessing motions."""
     print("\n" + "=" * 70)
@@ -291,7 +292,10 @@ def run_re_encode_joint_names_only(
         sys.path.insert(0, str(ANYTOP_DIR / "tools"))
         from regenerate_dataset_artifacts import regenerate_dataset_artifacts
 
-        dataset_dir_path = regenerate_dataset_artifacts(dataset_dir or None)
+        dataset_dir_path = regenerate_dataset_artifacts(
+            dataset_dir or None,
+            object_types=object_types,
+        )
         print(f"[PASS] Dataset sidecar regeneration completed successfully: {dataset_dir_path}")
         return 0
     except Exception as e:
@@ -461,7 +465,13 @@ def main() -> int:
 
     # Handle re-encode joint names only mode
     if args.re_encode_joint_names_only:
-        return run_re_encode_joint_names_only(args.dataset_dir)
+        target_object_types = None
+        if args.objects_subset.strip().lower() != "all":
+            target_object_types = _resolve_target_object_types(args.objects_subset)
+        return run_re_encode_joint_names_only(
+            args.dataset_dir,
+            object_types=target_object_types,
+        )
 
     steps_completed = []
     preserved_side_artifacts = PreservedSideArtifacts()
@@ -490,6 +500,11 @@ def main() -> int:
         ret = run_re_encode_joint_names_only(
             args.dataset_dir,
             preserved_side_artifacts=preserved_side_artifacts,
+            object_types=(
+                None
+                if args.objects_subset.strip().lower() == "all"
+                else _resolve_target_object_types(args.objects_subset)
+            ),
         )
         if ret != 0:
             print("\n[FAIL] Side artifact regeneration failed, aborting workflow.")
