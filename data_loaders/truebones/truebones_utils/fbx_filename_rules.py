@@ -184,14 +184,17 @@ def _is_all_bundle_stem(stem: str, object_type: str) -> bool:
         return False
 
     if len(segments) == 1:
+        # CamelCase "All" or uppercase "ALL" suffix → unambiguous bundle marker.
+        if stem.endswith('ALL') or stem.endswith('All'):
+            return True
         compact_segment = _compact_normalized_text(segments[0])
         return compact_segment.endswith('all') and _matches_object_alias(compact_segment[:-3], object_type)
 
     if _compact_normalized_text(segments[-1]) != 'all':
         return False
 
-    prefix_compact = _compact_normalized_text(' '.join(segments[:-1]))
-    return _matches_object_alias(prefix_compact, object_type)
+    # Multi-segment with trailing "all" → always a bundle, regardless of prefix.
+    return True
 
 
 def _camel_case_action_name(raw_action: str) -> str:
