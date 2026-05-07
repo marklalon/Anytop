@@ -278,19 +278,19 @@ def generate_args():
 def process_new_skeleton_args():
     parser = ArgumentParser()
     group = parser.add_argument_group('process_new_skeleton')
-    group.add_argument("--object_name", required=True, type=str,
-                       help="A character's indicative name")
-    group.add_argument("--bvh_dir", required=True, type=str,
-                       help="Path to a directory containing BVH files of the skeleton. More files improve statistical accuracy for \
+    group.add_argument("--object-type", required=True, type=str,
+                       help="A character's species/type name (e.g. \"Dragon\")")
+    group.add_argument("--fbx-dir", required=True, type=str,
+                       help="Path to a directory containing FBX files of the skeleton. More files improve statistical accuracy for \
                            motion denormalization.")
-    group.add_argument("--save_dir", required=True, type=str,
+    group.add_argument("--save-dir", required=True, type=str,
                        help="Output directory.")
-    group.add_argument("--face_joints_names", default=None, type=str, nargs=4,
+    group.add_argument("--face-joints-names", default=None, type=str, nargs=4,
                        help="Optional manual override for the four orientation joints ([right hip, left hip, right shoulder, left shoulder] or equivalent). \
                            When omitted, preprocessing tries to infer them from semantic joint names.")
-    group.add_argument("--tpos_bvh", default='', type=str,
-                       help="A BVH file of the character's natural rest pose for meaningful rotation learning. \
-                            If missing, the code selects a pose from the provided BVH files.")
+    group.add_argument("--tpos-fbx", default='', type=str,
+                       help="An FBX file of the character's natural rest pose for meaningful rotation learning. \
+                            If missing, the code selects a pose from the provided FBX files.")
     args = parser.parse_args()
     return args
 

@@ -411,7 +411,7 @@ def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints
             return [hip_pair[0], hip_pair[1], hip_pair[0], hip_pair[1]]
 
     raise ValueError(
-        f"Could not resolve face joints for '{object_type}'. Provide --face_joints_names explicitly or add naming rules."
+        f"Could not resolve face joints for '{object_type}'. Provide --face-joints-names explicitly or add naming rules."
     )
 
 
