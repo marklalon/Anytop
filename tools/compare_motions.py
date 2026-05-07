@@ -53,6 +53,14 @@ def _color_angle_deg(value: float) -> str:
         return f"{_COLOR_YELLOW}{value:.6f} deg{_COLOR_RESET}"
     return f"{value:.6f} deg"
 
+def _color_mesh_pct(value: float) -> str:
+    """Colorize mesh surface error percentage: <2% plain, 2-3% yellow, >3% red."""
+    if value > 3.0:
+        return f"{_COLOR_RED}{value:.4f}%{_COLOR_RESET}"
+    if value > 2.0:
+        return f"{_COLOR_YELLOW}{value:.4f}%{_COLOR_RESET}"
+    return f"{value:.4f}%"
+
 
 # ── Path setup (must come before Anytop imports) ──────────────────────────────
 
@@ -1039,8 +1047,8 @@ def _print_summary(
         mesh_mean_pct = mesh["mean"] / char_size * 100.0
         mesh_p99_pct = mesh["p99"] / char_size * 100.0
         print(f"  Mesh surface error (nearest-surface, sampled over {len(mesh['sample_frames'])} frames):")
-        print(f"    mean = {mesh['mean']:.6f}  ({mesh_mean_pct:.4f}%)")
-        print(f"    p99  = {mesh['p99']:.6f}  ({mesh_p99_pct:.4f}%)")
+        print(f"    mean = {mesh['mean']:.6f}  ({_color_mesh_pct(mesh_mean_pct)})")
+        print(f"    p99  = {mesh['p99']:.6f}  ({_color_mesh_pct(mesh_p99_pct)})")
         print(f"    max  = {mesh['max']:.6f}")
 
 

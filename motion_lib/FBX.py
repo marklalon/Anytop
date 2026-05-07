@@ -231,14 +231,21 @@ def _fbx_to_animation(fbx_path: str) -> tuple[Any, list[str], float]:
     # Pre-build ordered pose_bone list to avoid repeated dict lookups
     pose_bones = armature.pose.bones
     ordered_pose_bones = [pose_bones.get(bone_name) for bone_name in bone_names]
-    ordered_parent_pose_bones = [
-        pose_bones.get(bone.parent.name) if (bone is not None and bone.parent is not None) else None
-        for bone in ordered_pose_bones
-    ]
+    ordered_parent_indices = parents.tolist()
 
     for frame_idx, sample_time in enumerate(sample_times):
         _set_scene_time(scene, sample_time)
-        bpy.context.view_layer.update()
+
+        pose_matrices = [
+            pose_bone.matrix.copy() if pose_bone is not None else None
+            for pose_bone in ordered_pose_bones
+        ]
+        parent_inverse_matrices = [
+            pose_matrices[parent_idx].inverted_safe()
+            if parent_idx >= 0 and pose_matrices[parent_idx] is not None
+            else None
+            for parent_idx in ordered_parent_indices
+        ]
 
         for joint_idx, pose_bone in enumerate(ordered_pose_bones):
             if pose_bone is None:
@@ -246,11 +253,12 @@ def _fbx_to_animation(fbx_path: str) -> tuple[Any, list[str], float]:
                 pos_np[frame_idx, joint_idx] = offsets[joint_idx]
                 continue
 
-            parent_pose = ordered_parent_pose_bones[joint_idx]
-            if parent_pose is None:
-                local_matrix = pose_bone.matrix
+            pose_matrix = pose_matrices[joint_idx]
+            parent_inverse = parent_inverse_matrices[joint_idx]
+            if parent_inverse is None:
+                local_matrix = pose_matrix
             else:
-                local_matrix = parent_pose.matrix.inverted_safe() @ pose_bone.matrix
+                local_matrix = parent_inverse @ pose_matrix
 
             t = local_matrix.translation
             q = local_matrix.to_quaternion()
@@ -258,6 +266,34 @@ def _fbx_to_animation(fbx_path: str) -> tuple[Any, list[str], float]:
             rot_qs[frame_idx, joint_idx] = [q.w, q.x, q.y, q.z]
 
     bpy.ops.object.mode_set(mode="OBJECT")
+
+    # ── Redundant root joint handling (mirrors BVH.load) ──────────────
+    if bone_names and np.isclose(offsets[1], 0).all():
+        quat_rotations = Quaternions(rot_qs)
+        if len(parents[parents == 1]) == 0:  # redundant joint #1, just remove
+            offsets[1] = offsets[0]
+            offsets = offsets[1:]
+            quat_rotations[:, 1] = quat_rotations[:, 0]
+            quat_rotations = quat_rotations[:, 1:]
+            pos_np[:, 1] = pos_np[:, 0]
+            pos_np = pos_np[:, 1:]
+            orients = orients[1:]
+            parents = parents[1:] - 1
+            parents[1:][parents[1:] < 0] = 0
+            bone_names[1] = bone_names[0]
+            bone_names = bone_names[1:]
+        elif len(parents[parents == 0]) == 1:  # remove root joint by composing rots
+            parent_rots = quat_rotations[:, 0]
+            offsets[1] = offsets[0] + (parent_rots[0:1] * offsets[1:2])[0]
+            offsets = offsets[1:]
+            quat_rotations[:, 1] = quat_rotations[:, 0] * quat_rotations[:, 1]
+            quat_rotations = quat_rotations[:, 1:]
+            pos_np[:, 1] = pos_np[:, 0] + parent_rots * pos_np[:, 1]
+            pos_np = pos_np[:, 1:]
+            orients = orients[1:]
+            parents = parents[1:] - 1
+            bone_names = bone_names[1:]
+        rot_qs = quat_rotations.qs
 
     anim = ATopAnim(Quaternions(rot_qs), pos_np, orients, offsets, parents)
     return anim, bone_names, fps

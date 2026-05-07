@@ -16,6 +16,7 @@ import traceback
 import torch
 import bisect
 import re 
+import time 
 from data_loaders.truebones.truebones_utils.param_utils import HML_AVG_BONELEN, FOOT_CONTACT_HEIGHT_THRESH, DEFAULT_DATASET_DIR, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir, SNAKES, CHAIN_FORWARD_JOINTS, FLYING, FISH, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
 from Anytop.utils.rotation_conversions import rotation_6d_to_matrix_np
 from Anytop.utils.roundtrip_common import _load_fbx_skeleton_metadata
@@ -663,32 +664,65 @@ def process_anim(anim, object_type, root_pose_init_xz=None, scale_factor=None, f
     scaled, scale_factor_ = scale(centered, scale_factor)
     return scaled, root_pose_init_xz_, scale_factor_
 
+
+def _reference_clip_needs_local_position_rebuild(anim, tol=1e-4):
+    """Return True when the reference clip's first frame is not already rest-offset-aligned."""
+    if len(anim) == 0 or anim.positions.shape[1] <= 1:
+        return False
+
+    root_candidates = np.where(np.asarray(anim.parents) < 0)[0]
+    if root_candidates.size == 0:
+        return False
+
+    nonroot_indices = np.delete(np.arange(anim.positions.shape[1]), int(root_candidates[0]))
+    if nonroot_indices.size == 0:
+        return False
+
+    local_positions = np.asarray(anim.positions[0, nonroot_indices], dtype=np.float64)
+    rest_offsets = np.asarray(anim.offsets[nonroot_indices], dtype=np.float64)
+    return bool(np.max(np.abs(local_positions - rest_offsets)) > tol)
+
 """ get object_type common characteristics, extracted from T-pose FBX"""
 def get_common_features_from_T_pose(t_pose_fbx_path, object_type, face_joints=None):
-    t_pose_anim, t_pos_names, t_pose_frame_time = FBX.load(t_pose_fbx_path)
-    face_joints = resolve_face_joints(object_type, t_pos_names, t_pose_anim.parents, face_joints=face_joints)
-    forward_joint_index = _find_forward_reference_joint(t_pos_names, t_pose_anim.parents)
-    forward_base_joint_index = _find_neck_reference_joint(t_pos_names, t_pose_anim.parents)
-    # first recover global positions, and then create a brand new non-damaged animation, with position consistent to the offsets 
-    t_pose_positions = positions_global(t_pose_anim)
-    with open(os.devnull, 'w') as devnull, redirect_stdout(devnull), redirect_stderr(devnull):
-        t_pose_anim, _1, _2 = animation_from_positions(positions=t_pose_positions, parents=t_pose_anim.parents, offsets=t_pose_anim.offsets, iterations=100, silent=True)
-    t_pose_orientation_quat = get_root_quat(positions_global(t_pose_anim), object_type, face_joint_indx=face_joints, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)[0]
+    _t0 = time.time()
+    t_pose_anim, t_pos_names, _t_pose_frame_time = FBX.load(t_pose_fbx_path)
+    reference_anim = t_pose_anim[:1] if len(t_pose_anim) > 1 else t_pose_anim
+    face_joints = resolve_face_joints(object_type, t_pos_names, reference_anim.parents, face_joints=face_joints)
+    forward_joint_index = _find_forward_reference_joint(t_pos_names, reference_anim.parents)
+    forward_base_joint_index = _find_neck_reference_joint(t_pos_names, reference_anim.parents)
+
+    # This function only consumes reference-pose metadata from frame 0, so avoid
+    # repairing every frame of long T-pose clips unless the first frame is malformed.
+    if _reference_clip_needs_local_position_rebuild(reference_anim):
+        reference_positions = positions_global(reference_anim)
+        with open(os.devnull, 'w') as devnull, redirect_stdout(devnull), redirect_stderr(devnull):
+            reference_anim, _1, _2 = animation_from_positions(
+                positions=reference_positions,
+                parents=reference_anim.parents,
+                offsets=reference_anim.offsets,
+                iterations=100,
+                silent=True,
+            )
+
+    reference_positions = positions_global(reference_anim)
+    t_pose_orientation_quat = get_root_quat(reference_positions, object_type, face_joint_indx=face_joints, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)[0]
     scaled, root_pose_init_xz, scale_factor = process_anim(
-        t_pose_anim,
+        reference_anim,
         object_type,
         face_joints=face_joints,
         orientation_quat=t_pose_orientation_quat,
         forward_joint_index=forward_joint_index,
         forward_base_joint_index=forward_base_joint_index,
     )
-    scaled_rest_positions = positions_global(scaled)[0]
-    offsets = offsets_from_positions(positions_global(scaled), scaled.parents)[0]
+    scaled_positions = positions_global(scaled)
+    scaled_rest_positions = scaled_positions[0]
+    offsets = offsets_from_positions(scaled_rest_positions, scaled.parents)
     suspected_foot_indices, contact_joint_source = _infer_contact_joints(
         t_pos_names,
         scaled.parents,
         scaled_rest_positions,
     )
+    print(f'[TIME] {object_type}: get_common_features_from_T_pose = {time.time() - _t0:.2f}s')
     return root_pose_init_xz, scale_factor, offsets, suspected_foot_indices, scaled.rotations, t_pos_names, scaled, face_joints, t_pose_orientation_quat, forward_joint_index, forward_base_joint_index, contact_joint_source
 
 def get_motion_features(ric_positions, rotations, foot_contact, velocity, terminal_velocity, terminal_contact, max_joints):
