@@ -12,10 +12,10 @@ BVH / GLB / FBX go through bpy importers for a consistent world-space pipeline:
   - .gltf → bpy.ops.import_scene.gltf
 
 Usage (requires bpy installed in your Python environment):
-    python Anytop/tools/compare_motions.py --motion_a path/to/a.bvh --motion_b path/to/b.glb
+    python Anytop/tools/compare_motions.py --motion-a path/to/a.bvh --motion-b path/to/b.glb
 
     With optional JSON report:
-    python Anytop/tools/compare_motions.py --motion_a path/to/a.bvh --motion_b path/to/b.glb --json-out report.json
+    python Anytop/tools/compare_motions.py --motion-a path/to/a.bvh --motion-b path/to/b.glb --json-out report.json
 """
 from __future__ import annotations
 
@@ -1058,8 +1058,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Compare two motion files (BVH/GLB/FBX) and report per-bone differences.",
     )
-    parser.add_argument("--motion_a", required=True, help="Path to first motion file")
-    parser.add_argument("--motion_b", required=True, help="Path to second motion file")
+    parser.add_argument("--motion-a", required=True, help="Path to first motion file")
+    parser.add_argument("--motion-b", required=True, help="Path to second motion file")
     parser.add_argument("--json-out", default=None, help="Optional path to write JSON report")
     parser.add_argument(
         "--fps-a",
