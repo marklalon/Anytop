@@ -925,6 +925,25 @@ def _solve_local_positions_for_target_global(
     else:
         local_positions = initial_positions.copy()
 
+    # Local translations can be recovered directly from the target parent/child
+    # global positions because global joint rotations depend only on `rotations`
+    # and the hierarchy, not on the local translations we are solving for.
+    global_rots = rotations_global(Animation(rotations, local_positions, orients, offsets, parents))
+    for joint_idx, parent_idx in enumerate(parents):
+        if parent_idx < 0:
+            local_positions[:, joint_idx] = target_global_positions[:, joint_idx]
+            continue
+
+        local_positions[:, joint_idx] = (
+            -global_rots[:, parent_idx]
+        ) * (target_global_positions[:, joint_idx] - target_global_positions[:, parent_idx])
+
+    direct_anim = Animation(rotations, local_positions, orients, offsets, parents)
+    direct_global_pos = positions_global(direct_anim)
+    direct_error = np.max(np.abs(target_global_positions - direct_global_pos))
+    if direct_error <= position_match_threshold:
+        return local_positions
+
     for _ in range(max_passes):
         temp_anim = Animation(rotations, local_positions, orients, offsets, parents)
         temp_global_pos = positions_global(temp_anim)
@@ -938,16 +957,13 @@ def _solve_local_positions_for_target_global(
             break
 
         for joint_idx in joints_to_fix:
-            if joint_idx == 0 or parents[joint_idx] < 0:
+            if parents[joint_idx] < 0:
                 local_positions[:, joint_idx] = target_global_positions[:, joint_idx]
                 continue
 
-            temp_anim = Animation(rotations, local_positions, orients, offsets, parents)
-            temp_global_rots = rotations_global(temp_anim)
-            temp_global_pos = positions_global(temp_anim)
             parent_idx = parents[joint_idx]
             local_positions[:, joint_idx] = (
-                -temp_global_rots[:, parent_idx]
+                -global_rots[:, parent_idx]
             ) * (target_global_positions[:, joint_idx] - temp_global_pos[:, parent_idx])
 
     return local_positions
