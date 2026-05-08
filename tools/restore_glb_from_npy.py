@@ -26,10 +26,15 @@ Note: locomotion XZ stripped during preprocessing cannot be recovered from a
 plain feature tensor alone.
 
 Usage:
-        # Using FBX T-pose
+        # Using FBX T-pose (explicit)
         python tools/restore_glb_from_npy.py \
                 --npy "D:/AI/.../Horse___RunToStop_29.npy" \
                 --tpose-mesh "D:/AI/.../HorseALL-TPOSE.fbx" \
+                --output-glb "outputs/Horse___RunToStop_29.glb"
+
+        # Using T-pose path saved in cond.npy (no --tpose-mesh needed)
+        python tools/restore_glb_from_npy.py \
+                --npy "D:/AI/.../Horse___RunToStop_29.npy" \
                 --output-glb "outputs/Horse___RunToStop_29.glb"
 
 """
@@ -240,8 +245,8 @@ def _freeze_unencoded_bare_joint_rotations(animation, rotation_channel_mask: np.
 
 def restore_glb(
     npy_path: str,
-    tpose_mesh: str,
     output_glb: str,
+    tpose_mesh: str | None = None,
     cond_npy: str | None = None,
     object_type: str | None = None,
     fps: float | None = None,
@@ -250,8 +255,8 @@ def restore_glb(
 
     Args:
         npy_path:            Path to the preprocessed .npy motion file.
-        tpose_mesh:          Path to the T-pose FBX (provides skin + armature).
         output_glb:          Path for the output .glb file.
+        tpose_mesh:          Path to the T-pose FBX (provides skin + armature).
         cond_npy:            Path to cond.npy; defaults to the dataset default.
         object_type:         Character type key (e.g. "Horse").  Auto-detected
                              from the NPY filename if None.
@@ -291,9 +296,20 @@ def restore_glb(
             f"  Available: {list(cond.keys())}"
         )
 
+    # ── Resolve T-pose mesh ───────────────────────────────────────────────────
+    cond_entry = cond.get(object_type)
+    if tpose_mesh is None:
+        if cond_entry is not None and isinstance(cond_entry.get('orientation_reference_fbx_path'), str):
+            tpose_mesh = cond_entry['orientation_reference_fbx_path']
+            print(f"Resolved T-pose mesh from cond.npy: {tpose_mesh}")
+        else:
+            raise ValueError(
+                f"No --tpose-mesh provided and cond.npy entry for '{object_type}' "
+                f"does not contain 'orientation_reference_fbx_path'."
+            )
+
     # ── Load NPY features ─────────────────────────────────────────────────────
     raw = np.load(npy_path)
-    cond_entry = cond.get(object_type)
     restore_ctx = _build_restore_context(
         raw,
         object_type,
@@ -402,8 +418,13 @@ def main() -> None:
         help="Path to the preprocessed .npy motion file.",
     )
     parser.add_argument(
-        "--tpose-mesh", required=True,
-        help="Path to the T-pose FBX that provides skin weights + armature.",
+        "--tpose-mesh",
+        default=None,
+        help=(
+            "Path to the T-pose FBX that provides skin weights + armature. "
+            "If not specified, the path is read from cond.npy "
+            "(orientation_reference_fbx_path)."
+        ),
     )
     parser.add_argument(
         "--output-glb",
@@ -437,7 +458,12 @@ def main() -> None:
 
     if not os.path.isfile(args.npy):
         parser.error(f"NPY file not found: {args.npy}")
-    if not os.path.isfile(args.tpose_mesh):
+    if not args.npy.lower().endswith('.npy'):
+        parser.error(
+            f"Expected a .npy file, got: {args.npy}\n"
+            f"  This tool restores preprocessed NPY motion features, not raw BVH/FBX files."
+        )
+    if args.tpose_mesh is not None and not os.path.isfile(args.tpose_mesh):
         parser.error(f"T-pose mesh not found: {args.tpose_mesh}")
 
     if args.output_glb is None:
@@ -462,8 +488,8 @@ def main() -> None:
 
     restore_glb(
         npy_path=args.npy,
-        tpose_mesh=args.tpose_mesh,
         output_glb=args.output_glb,
+        tpose_mesh=args.tpose_mesh,
         cond_npy=cond_npy_path,
         object_type=args.object_type,
         fps=args.fps,

@@ -1196,12 +1196,12 @@ def get_bvh_cont6d_params(anim, object_type, orientation_quat, translation_root_
     return cont_6d_params_reordered, r_velocity, velocity, r_rot, positions
 
 """ processes animation, and returns a new animation that aligns with humanML3D in terms of orientation and scale"""
-def get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, tpos_rots, offsets, squared_positions_error, *, scale_factor, foot_indices=None, orientation_quat, slice_inds=None, preloaded=None):
-    if not isinstance(bvh_path, Animation):
+def get_hml_aligned_anim(fbx_path_or_anim, object_type, root_pose_init_xz, tpos_rots, offsets, squared_positions_error, *, scale_factor, foot_indices=None, orientation_quat, slice_inds=None, preloaded=None):
+    if not isinstance(fbx_path_or_anim, Animation):
         if preloaded is not None:
             raw_anim, names = preloaded
         else:
-            raw_anim, names, frame_time = FBX.load(bvh_path)
+            raw_anim, names, frame_time = FBX.load(fbx_path_or_anim)
         if slice_inds:
             raw_anim = raw_anim[slice_inds[0]:slice_inds[1]]
         #print('frame time', frame_time )
@@ -1219,7 +1219,7 @@ def get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, tpos_rots, of
         processed_anim = _clamp_vertical_trajectory(processed_anim, object_type)
     else:
         names = list()
-        processed_anim = bvh_path
+        processed_anim = fbx_path_or_anim
         frames_num = len(processed_anim)
 
     ## create new animation object in which the rotations are w.r.t the actual Tpos
@@ -1242,18 +1242,18 @@ def get_hml_aligned_anim(bvh_path, object_type, root_pose_init_xz, tpos_rots, of
     processed_global_pos = positions_global(processed_anim)
     new_global_pos = positions_global(new_anim)
     squared_error = np.mean((processed_global_pos - new_global_pos) ** 2)
-    error_key = bvh_path if isinstance(bvh_path, str) else '__animation__'
-    if slice_inds is not None and not isinstance(bvh_path, Animation):
-        error_key = f'{bvh_path}[{slice_inds[0]}:{slice_inds[1]}]'
+    error_key = fbx_path_or_anim if isinstance(fbx_path_or_anim, str) else '__animation__'
+    if slice_inds is not None and not isinstance(fbx_path_or_anim, Animation):
+        error_key = f'{fbx_path_or_anim}[{slice_inds[0]}:{slice_inds[1]}]'
     squared_positions_error[error_key] = float(squared_error)
 
     return new_anim, processed_anim, names  
     
 """ get motion feature representation"""
-def get_motion(bvh_path, foot_contact_vel_thresh, object_type, max_joints, root_pose_init_xz, offsets, foot_indices, tpos_rots, squared_positions_error, *, scale_factor, orientation_quat, slice_inds=None, preloaded=None):
+def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joints, root_pose_init_xz, offsets, foot_indices, tpos_rots, squared_positions_error, *, scale_factor, orientation_quat, slice_inds=None, preloaded=None):
     try:
         new_anim, export_anim, names = get_hml_aligned_anim(
-            bvh_path,
+            fbx_path_or_anim,
             object_type,
             root_pose_init_xz,
             tpos_rots,
