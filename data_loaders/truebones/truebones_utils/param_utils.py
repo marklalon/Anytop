@@ -70,7 +70,7 @@ SNAKES = ["Anaconda", "KingCobra"]
 # 2-tuple (neck, head)        -> forward = head - neck
 # 3-tuple (base, neck, head)  -> forward = (head - neck) + (neck - base)
 CHAIN_FORWARD_JOINTS = {
-    'Anaconda': (20, 21),
+    'Anaconda': (22, 24),
     'KingCobra': (4, 8),
     'Pirrana': (9, 2, 3),   # kosi → mune → atama (tail to head)
 }
@@ -81,7 +81,7 @@ BIPEDS = ["Ostrich", "Flamingo", "Raptor", "Raptor2", "Raptor3", "Trex", "Chicke
 QUADROPEDS = ["Horse", "Hippopotamus", "Comodoa", "Camel", "Bear", "Buffalo", "Cat", "BrownBear", "Coyote", "Crocodile", "Elephant", "Deer", "Fox", "Gazelle", 
            "Goat", "Jaguar","Lynx", "Tricera", "Stego" , "SandMouse", "Raindeer", "Puppy", "PolarBear", "Monkey", "Mammoth", "Alligator", "Hamster", 
            "Hound", "Leapord", "Lion", "PolarBearB", "Rat", "Rhino", "SabreToothTiger", "Skunk", "Turtle"]
-QUADROPEDS_TEST = ["Scorpion", "Crab"]
+QUADROPEDS_TEST = ["Horse"]
 OBJECT_SUBSETS_DICT = {"all" : QUADROPEDS + BIPEDS + MILLIPEDS + SNAKES + FISH + FLYING,
                        "quadropeds": QUADROPEDS,
                        "quadropeds_test": QUADROPEDS_TEST,

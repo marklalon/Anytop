@@ -1387,6 +1387,7 @@ def _process_motion_file(file_path, object_type, max_joints, root_pose_init_xz,
     begin = 0
     file_max_joints = max_joints
     file_results = []
+    file_motion_errors = []
 
     while begin < anim_len:
         if anim_len - begin > 240:
@@ -1413,10 +1414,9 @@ def _process_motion_file(file_path, object_type, max_joints, root_pose_init_xz,
         begin = slice_ind
 
         if motion is None:
-            raise RuntimeError(
-                f"Failed to process file: {file_path}, slice {current_begin}:{slice_ind}. "
-                f"Aborting preprocessing to prevent data corruption."
-            )
+            err_msg = f"[FAIL] Object '{object_type}', file: {file_path}, slice {current_begin}:{slice_ind}"
+            file_motion_errors.append(err_msg)
+            continue
 
         _, file_name = os.path.split(file_path)
         raw_action = file_name.split('.')[0]
@@ -1439,6 +1439,7 @@ def _process_motion_file(file_path, object_type, max_joints, root_pose_init_xz,
         'errors': local_errors,
         'max_joints': file_max_joints,
         'results': file_results,
+        'motion_errors': file_motion_errors,
     }
 
 
@@ -1593,9 +1594,11 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     files_counter = 0
     frames_counter = 0
     prepared_results = []
+    all_motion_errors = []
     for file_output in file_outputs:
         squared_positions_error.update(file_output['errors'])
         max_joints = max(max_joints, file_output['max_joints'])
+        all_motion_errors.extend(file_output.get('motion_errors', []))
         for result in file_output['results']:
             motion = result['motion']
             all_tensors.append(motion)
@@ -1628,6 +1631,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
         'files_counter': files_counter,
         'frames_counter': frames_counter,
         'face_joints': face_joints,
+        'motion_errors': all_motion_errors,
     }
 
 
@@ -1779,12 +1783,14 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
     cond = dict()
     motion_metadata = {}
 
+    all_motion_errors = []
     for idx, object_type in enumerate(objects):
         payload = payloads[idx]
         if payload is None:
             continue
         squared_positions_error.update(payload['errors'])
         max_joints = max(max_joints, payload['max_joints'])
+        all_motion_errors.extend(payload.get('motion_errors', []))
         cur_counter = files_counter
         files_counter, object_frames, object_motion_metadata = _write_object_outputs(
             target_dataset_dir,
@@ -1795,6 +1801,14 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
         cond[object_type] = payload['object_cond']
         objects_counter[object_type] = files_counter - cur_counter
         motion_metadata.update(object_motion_metadata)
+
+    if all_motion_errors:
+        print(f"\n{'=' * 70}")
+        print(f"MOTION PROCESSING ERRORS ({len(all_motion_errors)} total)")
+        print('=' * 70)
+        for err in all_motion_errors:
+            print(err)
+        print(f"{'=' * 70}\n")
 
     _write_dataset_artifacts(
         target_dataset_dir,

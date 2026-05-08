@@ -45,7 +45,7 @@ def _print_ok(message: str) -> None:
 
 
 def _print_warn(message: str) -> None:
-    print(f"[WARN] {message}")
+    print(f"\033[33m[WARN] {message}\033[0m")
 
 
 def _require(condition: bool, message: str) -> None:
@@ -478,8 +478,6 @@ def _validate_tpose_orientation(cond: dict, threshold_deg: float) -> None:
         f"validated T-pose face-orientation alignment for {checked_count} object types "
         f"(threshold={threshold_deg:.2f} deg)"
     )
-    if warned_count:
-        _print_warn(f"T-pose face-orientation warnings: {warned_count} object type(s) exceeded threshold")
 
 
 def _validate_metadata(metadata_path: Path, motion_files: list[Path], cond: dict, silent: bool = False) -> bool:
