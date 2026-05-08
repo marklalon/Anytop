@@ -58,32 +58,6 @@ def _resolve_dataset_dir_path(dataset_dir: str | Path | None) -> Path:
     return Path(get_dataset_dir(raw_value)).resolve()
 
 
-def _select_active_cond_entries(
-    existing_cond: dict[str, dict[str, object]],
-    active_object_types: list[str],
-) -> tuple[dict[str, dict[str, object]], list[str]]:
-    active_set = set(active_object_types)
-    active_cond = {
-        object_type: existing_cond[object_type]
-        for object_type in active_object_types
-        if object_type in existing_cond
-    }
-    stale_object_types = sorted(object_type for object_type in existing_cond if object_type not in active_set)
-    return active_cond, stale_object_types
-
-
-def _build_rebuilt_cond_entries(
-    active_cond: dict[str, dict[str, object]],
-    rebuild_object_types: list[str],
-) -> dict[str, dict[str, object]]:
-    # Detach the rebuild subset before mutating sidecar-only fields so the final
-    # merge is the single place where refreshed entries overlay the active cond.
-    return {
-        object_type: copy.deepcopy(active_cond[object_type])
-        for object_type in rebuild_object_types
-    }
-
-
 def _write_metadata_summary(
     dataset_dir_path: Path,
     object_counts: Counter[str],
@@ -130,7 +104,6 @@ def _rewrite_positions_error_file(dataset_dir_path: Path, motion_entries: dict[s
 def regenerate_dataset_artifacts(
     dataset_dir: str | Path | None = None,
     t5_model: str = "t5-base",
-    object_types: list[str] | tuple[str, ...] | None = None,
     force_reencode: bool = True,
 ) -> Path:
     dataset_dir_path = _resolve_dataset_dir_path(dataset_dir)
@@ -160,50 +133,25 @@ def regenerate_dataset_artifacts(
             f"cond.npy is missing object entries required by current motions: {missing_object_types}"
         )
 
-    active_cond, stale_object_types = _select_active_cond_entries(existing_cond, active_object_types)
+    active_cond = {
+        object_type: existing_cond[object_type]
+        for object_type in active_object_types
+    }
+    stale_object_types = sorted(object_type for object_type in existing_cond if object_type not in active_cond)
     if stale_object_types:
         print(
             "[OK] pruned stale cond.npy object entries with no matching motions: "
             + ", ".join(stale_object_types)
         )
 
-    if object_types is None:
-        rebuild_object_types = active_object_types
-    else:
-        requested_object_types = list(dict.fromkeys(str(object_type) for object_type in object_types))
-        rebuild_object_types = [
-            object_type
-            for object_type in requested_object_types
-            if object_type in active_cond and object_type in active_object_types
-        ]
-        skipped_object_types = [
-            object_type
-            for object_type in requested_object_types
-            if object_type not in rebuild_object_types
-        ]
-        if skipped_object_types:
-            print(
-                "[WARN] skipping sidecar regeneration for object types not present in current cond/motions: "
-                + ", ".join(skipped_object_types)
-            )
-        if not rebuild_object_types:
-            raise RuntimeError("no requested object types are present in the current dataset artifacts")
-
-    rebuilt_cond = _build_rebuilt_cond_entries(active_cond, rebuild_object_types)
+    rebuilt_cond = {
+        object_type: copy.deepcopy(object_cond)
+        for object_type, object_cond in active_cond.items()
+    }
 
     inspection_dir = dataset_dir_path / "joint_name_inspection"
     if inspection_dir.exists():
-        active_set = set(rebuild_object_types)
-        existing_files = {p.stem for p in inspection_dir.glob("*.json")}
-        if existing_files and existing_files <= active_set:
-            # All existing inspection files will be regenerated — single rmdir is fastest
-            shutil.rmtree(inspection_dir)
-        else:
-            # Incremental: only remove files for object types being refreshed
-            for object_type in rebuild_object_types:
-                inspection_path = inspection_dir / f"{object_type}.json"
-                if inspection_path.exists():
-                    inspection_path.unlink()
+        shutil.rmtree(inspection_dir)
     collision_report_path = dataset_dir_path / "joint_name_collision_report.json"
     if collision_report_path.exists():
         collision_report_path.unlink()
@@ -215,10 +163,8 @@ def regenerate_dataset_artifacts(
         write_collision_report=False,
         force_reencode=force_reencode,
     )
-    merged_cond = dict(active_cond)
-    merged_cond.update(rebuilt_cond)
-    _write_joint_name_collision_report(merged_cond, str(dataset_dir_path))
-    np.save(str(cond_path), merged_cond)
+    _write_joint_name_collision_report(rebuilt_cond, str(dataset_dir_path))
+    np.save(str(cond_path), rebuilt_cond)
 
     existing_motion_metadata = load_motion_metadata(dataset_dir_path)
     rebuilt_motion_metadata: dict[str, dict[str, object]] = {}
@@ -232,7 +178,7 @@ def regenerate_dataset_artifacts(
 
         motion_entry = dict(existing_motion_metadata.get(motion_path.name, {}))
         motion_entry.update(
-            infer_motion_labels_from_motion_name(motion_path.name, object_types=tuple(merged_cond.keys()))
+            infer_motion_labels_from_motion_name(motion_path.name, object_types=tuple(rebuilt_cond.keys()))
         )
         motion_entry["motion_name"] = motion_path.name
         motion_entry.setdefault("is_loop", False)

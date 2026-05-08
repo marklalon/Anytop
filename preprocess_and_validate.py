@@ -275,8 +275,7 @@ def run_preprocessing(
 def run_re_encode_joint_names_only(
     dataset_dir: str = "",
     preserved_side_artifacts: PreservedSideArtifacts | None = None,
-    object_types: tuple[str, ...] | None = None,
-    force_joint_name_reencode: bool = True,
+    t5_model: str = "t5-base",
 ) -> int:
     """Regenerate non-motion dataset artifacts without re-preprocessing motions."""
     print("\n" + "=" * 70)
@@ -284,20 +283,30 @@ def run_re_encode_joint_names_only(
     print("=" * 70 + "\n")
 
     try:
+        dataset_dir_path = Path(get_dataset_dir(dataset_dir or None))
         if preserved_side_artifacts:
             _merge_preserved_side_artifacts(
-                Path(get_dataset_dir(dataset_dir or None)),
+                dataset_dir_path,
                 preserved_side_artifacts,
             )
 
-        sys.path.insert(0, str(ANYTOP_DIR / "tools"))
-        from regenerate_dataset_artifacts import regenerate_dataset_artifacts
+        cmd = [
+            sys.executable,
+            str(ANYTOP_DIR / "tools" / "regenerate_dataset_artifacts.py"),
+            "--dataset-dir",
+            str(dataset_dir_path),
+            "--t5-model",
+            t5_model,
+        ]
 
-        dataset_dir_path = regenerate_dataset_artifacts(
-            dataset_dir or None,
-            object_types=object_types,
-            force_reencode=force_joint_name_reencode,
-        )
+        env = os.environ.copy()
+        existing_pythonpath = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = str(ANYTOP_DIR.parent) + os.pathsep + existing_pythonpath
+
+        result = subprocess.run(cmd, cwd=str(ANYTOP_DIR), capture_output=False, env=env)
+        if result.returncode != 0:
+            return result.returncode
+
         print(f"[PASS] Dataset sidecar regeneration completed successfully: {dataset_dir_path}")
         return 0
     except Exception as e:
@@ -461,13 +470,8 @@ def main() -> int:
 
     # Handle re-encode joint names only mode
     if args.re_encode_joint_names_only:
-        target_object_types = None
-        if args.objects_subset.strip().lower() != "all":
-            target_object_types = _resolve_target_object_types(args.objects_subset)
         return run_re_encode_joint_names_only(
             args.dataset_dir,
-            object_types=target_object_types,
-            force_joint_name_reencode=True,
         )
 
     steps_completed = []
@@ -497,12 +501,6 @@ def main() -> int:
         ret = run_re_encode_joint_names_only(
             args.dataset_dir,
             preserved_side_artifacts=preserved_side_artifacts,
-            object_types=(
-                None
-                if args.objects_subset.strip().lower() == "all"
-                else _resolve_target_object_types(args.objects_subset)
-            ),
-            force_joint_name_reencode=False,
         )
         if ret != 0:
             print("\n[FAIL] Side artifact regeneration failed, aborting workflow.")
