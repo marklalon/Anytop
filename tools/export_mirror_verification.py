@@ -55,7 +55,13 @@ from data_loaders.truebones.offline_reference_dataset import (
 )
 
 
-def export_bvh(save_path: Path, motion: np.ndarray, parents: list[int], offsets: np.ndarray, joints_names: list[str]) -> bool:
+def export_bvh(
+    save_path: Path,
+    motion: np.ndarray,
+    parents: list[int],
+    offsets: np.ndarray,
+    joints_names: list[str],
+) -> bool:
     anim, has_animated_pos = recover_animation_from_motion_np(motion, parents, offsets)
     if anim is None:
         return False

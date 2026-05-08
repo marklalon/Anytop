@@ -144,6 +144,39 @@ def test_explicit_window_start_respects_requested_crop() -> None:
     assert_close("explicit crop window", motion, expected)
 
 
+def test_prepare_sample_aug_info_reports_actual_loop_fill() -> None:
+    dataset = Truebones(
+        split="train",
+        temporal_window=31,
+        num_frames=NUM_FRAMES,
+        balanced=False,
+        objects_subset=LOOP_SUBSET,
+        motion_cache_size=2,
+    )
+
+    motion_dataset = dataset.motion_dataset
+    motion_dataset.opt.aug_mirror_prob = 0.0
+    motion_dataset.opt.aug_speed_range = 0.0
+
+    sample = motion_dataset._prepare_sample(
+        LOOP_MOTION,
+        motion_dataset.data_dict[LOOP_MOTION],
+        target_num_frames=NUM_FRAMES,
+        loop_offset=0,
+        return_aug_info=True,
+    )
+    motion, m_length, *_rest, motion_metadata, name, aug_info = sample
+
+    assert name == LOOP_MOTION, f"unexpected sample: {name}"
+    assert bool(motion_metadata.get("is_loop", False)), "loop regression sample is no longer marked loop"
+    assert motion.shape[0] == NUM_FRAMES, f"expected loop-filled motion to have {NUM_FRAMES} frames"
+    assert m_length == NUM_FRAMES, f"expected effective length {NUM_FRAMES}, got {m_length}"
+    assert aug_info["loop_applied"] is True, f"expected loop_applied=True, got {aug_info}"
+    assert aug_info["crop_start"] == 0, f"expected crop_start=0, got {aug_info}"
+    assert aug_info["mirror_applied"] is False, f"expected mirror_applied=False, got {aug_info}"
+    assert np.isclose(float(aug_info["speed_factor"]), 1.0), f"expected speed_factor=1.0, got {aug_info}"
+
+
 def test_mirror_augmentation_runs_before_normalization() -> None:
     dataset = Truebones(
         split="train",
@@ -225,6 +258,9 @@ def main() -> None:
 
     test_explicit_window_start_respects_requested_crop()
     print("explicit crop regression: ok")
+
+    test_prepare_sample_aug_info_reports_actual_loop_fill()
+    print("loop aug-info regression: ok")
 
     test_mirror_augmentation_runs_before_normalization()
     print("mirror normalization regression: ok")

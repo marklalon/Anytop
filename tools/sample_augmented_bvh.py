@@ -57,7 +57,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from motion_lib import BVH
-from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
+from data_loaders.truebones.truebones_utils.motion_process import (
+    recover_animation_from_motion_np,
+)
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.param_utils import OBJECT_SUBSETS_DICT
 from data_loaders.truebones.truebones_utils.motion_labels import (
@@ -149,7 +151,7 @@ def parse_args() -> argparse.Namespace:
                    help="Comma-separated action tags to filter (e.g. 'locomotion,jump').")
     p.add_argument("--split", default="train",
                    help="Dataset split: train / test / all.")
-    p.add_argument("--seed", type=int, default=0,
+    p.add_argument("--seed", type=int, default=1234,
                    help="RNG seed for reproducible sampling.")
     p.add_argument("--dataset-dir", default="",
                    help="Processed dataset root (auto-detected if omitted).")
@@ -169,10 +171,11 @@ def main() -> int:
         return 1
 
     # -----------------------------------------------------------------------
-    # Setup
+    # Setup — seed ALL random sources for reproducibility
     # -----------------------------------------------------------------------
-    rng_py = random.Random(args.seed)
-    np.random.seed(args.seed)
+    random.seed(args.seed)      # global random module (used by dataset augmentations)
+    np.random.seed(args.seed)   # numpy RNG
+    rng_py = random.Random(args.seed)  # independent RNG for name sampling
 
     device = None
     opt = get_opt(device)
@@ -258,13 +261,14 @@ def main() -> int:
                 _joints_relations,
                 object_type,
                 _joints_names_embs,
-                crop_start,
+                _crop_start,
                 mean,         # (J, 13) normalization mean
                 std,          # (J, 13) normalization std (std_safe)
                 _max_joints,
                 motion_metadata,
                 _name,
-            ) = dataset._prepare_sample(name, dataset.data_dict[name])
+                aug_info,     # dict: mirror_applied, speed_factor, crop_start, loop_applied
+            ) = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
 
             # ----------------------------------------------------------------
             # Denormalize: undo the (x - mean) / std applied in augment()
@@ -285,22 +289,27 @@ def main() -> int:
             stem = Path(name).stem
             tags: list[str] = []
 
-            # We can't know post-hoc if mirror fired (it's stochastic), but we
-            # CAN detect it: mirrored motions have negated x-components of root
-            # velocity compared to the canonical sign convention, but the simplest
-            # proxy is to embed augmentation params in the name and rely on the
-            # operator to visually verify.
-            tags.append(f"spd{args.aug_speed_range}")
-            tags.append(f"mir{args.aug_mirror_prob}")
-            if motion_metadata.get("is_loop"):
+            # aug_info contains actual augmentation results (not just parameters)
+            if aug_info.get("mirror_applied"):
+                tags.append("mir")
+            if aug_info.get("speed_factor", 1.0) != 1.0:
+                tags.append(f"spd{int(round(aug_info['speed_factor'] * 100))}")
+            if aug_info.get("loop_applied"):
                 tags.append("loop")
-            if crop_start > 0:
-                tags.append(f"crop{crop_start}")
+            actual_crop = aug_info.get("crop_start", 0)
+            if actual_crop > 0:
+                tags.append(f"crop{actual_crop}")
 
             fname = f"{stem}__{'+'.join(tags)}.bvh"
             save_path = output_dir / fname
 
-            ok = _export_bvh(save_path, motion_raw, list(parents), np.asarray(offsets, dtype=np.float32), joints_names)
+            ok = _export_bvh(
+                save_path,
+                motion_raw,
+                list(parents),
+                np.asarray(offsets, dtype=np.float32),
+                joints_names,
+            )
             if ok:
                 print(f"OK  → {save_path.name}  [{m_length}f, {object_type}]")
                 exported += 1

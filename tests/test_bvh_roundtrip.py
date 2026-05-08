@@ -208,8 +208,7 @@ def main() -> None:
         from motion_lib.BVH import load as bvh_load
 
         anim, loaded_names, frametime = bvh_load(output_path)
-        # The exporter uses motion_lib.BVH.save(all_joints_as_names=True), so all
-        # joints (including leaves) are written as named JOINTs — no End Site.
+        # The exporter always writes all joints as named JOINTs — no End Site.
         # Keep the _end_site filter as a safety net for future exporter changes.
         loaded_names_filtered = [n for n in loaded_names if not n.endswith("_end_site")]
         assert loaded_names_filtered == ["root", "mid", "tip"], (

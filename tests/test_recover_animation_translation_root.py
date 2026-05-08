@@ -5,10 +5,13 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_process import (
     infer_translation_root_from_features,
+    mirror_features_with_safeguards,
     positions_global,
     recover_animation_from_motion_np,
+    recover_from_bvh_ric_np,
 )
 
 
@@ -55,4 +58,23 @@ def test_recover_animation_uses_effective_translation_root_feature_row():
         np.array([[0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [2.0, 1.0, 0.0], [3.0, 1.0, 0.0]], dtype=np.float32),
         atol=1e-5,
     )
+    assert has_animated_pos is True
+
+
+def test_recover_animation_matches_safeguarded_horse_target_globals():
+    opt = get_opt(None)
+    cond = np.load(opt.cond_file, allow_pickle=True).item()['Horse']
+
+    motion_dir = opt.motion_dir
+    if not os.path.isabs(motion_dir):
+        motion_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), motion_dir)
+
+    raw = np.load(os.path.join(motion_dir, 'Horse_RunLoop_28.npy')).astype(np.float32, copy=False)
+    mirrored, mirrored_offsets = mirror_features_with_safeguards(raw, cond)
+    target_global = recover_from_bvh_ric_np(mirrored)
+
+    anim, has_animated_pos = recover_animation_from_motion_np(mirrored, cond['parents'], mirrored_offsets)
+    recovered_global = positions_global(anim)
+
+    np.testing.assert_allclose(recovered_global, target_global, atol=1e-4)
     assert has_animated_pos is True

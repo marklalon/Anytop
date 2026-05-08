@@ -470,17 +470,22 @@ class MotionDataset(data.Dataset):
             loop_offset=loop_offset,
         )
 
-    def _prepare_sample(self, name, data, target_num_frames=None, crop_start=None, loop_offset=None):
+    def _prepare_sample(self, name, data, target_num_frames=None, crop_start=None, loop_offset=None, return_aug_info=False):
         if target_num_frames is None:
             target_num_frames = self.max_motion_length
         target_num_frames = int(target_num_frames)
         if target_num_frames <= 0:
             raise ValueError(f"target_num_frames must be positive, got {target_num_frames}.")
 
-        motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std = self.augment(data)
+        result = self.augment(data, return_aug_info=return_aug_info)
+        if return_aug_info:
+            motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std, aug_info = result
+        else:
+            motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std = result
         motion_metadata = dict(data.get('motion_metadata') or infer_motion_labels_from_motion_name(name, object_type=object_type, object_types=self.cond_dict.keys()))
         motion_metadata.setdefault('motion_name', name)
         ind = 0
+        loop_applied = False
         if m_length > target_num_frames:
             max_start = m_length - target_num_frames
             if crop_start is None:
@@ -497,6 +502,7 @@ class MotionDataset(data.Dataset):
         if m_length < target_num_frames:
             pad_frames = target_num_frames - m_length
             if motion_metadata.get('is_loop') and m_length > 0:
+                loop_applied = True
                 if loop_offset is None:
                     offset = random.randint(0, m_length - 1)
                 else:
@@ -515,9 +521,22 @@ class MotionDataset(data.Dataset):
                                          ], axis=0)
 
         temporal_mask = self._get_temporal_mask(target_num_frames)
+
+        if return_aug_info:
+            aug_info = dict(aug_info)
+            aug_info.update({
+                'crop_start': int(ind),
+                'loop_applied': bool(loop_applied),
+            })
+            return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {
+                'mirror_applied': bool(aug_info['mirror_applied']),
+                'speed_factor': float(aug_info['speed_factor']),
+                'crop_start': int(aug_info['crop_start']),
+                'loop_applied': bool(aug_info['loop_applied']),
+            }
         return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name
     
-    def augment(self, data):
+    def augment(self, data, return_aug_info=False):
         object_type = data['object_type']
         cond = self.cond_dict[object_type]
         motion_path = data['motion_path']
@@ -555,12 +574,13 @@ class MotionDataset(data.Dataset):
                         while len(self.motion_cache) > self.motion_cache_size:
                             self.motion_cache.popitem(last=False)
 
+        speed_factor = 1.0
         if speed_range > 0.0:
             # Resample time axis: alpha<1 speeds up (fewer frames), alpha>1 slows down (more frames).
             # The existing random-start-offset logic in _prepare_sample handles length mismatch.
-            alpha = 1.0 + random.uniform(-speed_range, speed_range)
+            speed_factor = 1.0 + random.uniform(-speed_range, speed_range)
             orig_len = motion.shape[0]
-            new_len = max(1, int(round(orig_len * alpha)))
+            new_len = max(1, int(round(orig_len * speed_factor)))
             if new_len != orig_len:
                 src = np.linspace(0, orig_len - 1, new_len)
                 lo = np.floor(src).astype(np.int32).clip(0, orig_len - 1)
@@ -583,7 +603,10 @@ class MotionDataset(data.Dataset):
         else:
             tpos_first_frame = cond['tpos_first_frame_normalized']
             offsets = cond['offsets']
-        return motion, m_length, object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], tpos_first_frame, offsets, cond['joints_names_embs'], cond['kinematic_chains'], mean, std
+        sample = (motion, m_length, object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], tpos_first_frame, offsets, cond['joints_names_embs'], cond['kinematic_chains'], mean, std)
+        if return_aug_info:
+            return sample + ({'mirror_applied': bool(mirror_applied), 'speed_factor': float(speed_factor)},)
+        return sample
         
     def __len__(self):
         return len(self.name_list) - self.pointer

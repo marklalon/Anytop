@@ -54,7 +54,6 @@ def _export_motion(task):
             joint_names,
             frametime=1.0 / fps,
             positions=has_animated_pos,
-            all_joints_as_names=True,
         )
     return npy_name
 

@@ -930,6 +930,35 @@ def _warn_mirror_disabled_subtrees(object_cond):
         print(f'[WARN] {object_type}: {message}')
 
 
+def neutralize_animation_subtrees(anim, joint_indices):
+    disabled_joint_indices = sorted({
+        int(index)
+        for index in joint_indices
+        if int(index) > 0
+    })
+    if not disabled_joint_indices:
+        return Animation(
+            anim.rotations.copy(),
+            anim.positions.copy(),
+            anim.orients.copy(),
+            anim.offsets.copy(),
+            anim.parents.copy(),
+        )
+
+    neutral_positions = anim.positions.copy()
+    neutral_rotations = anim.rotations.copy()
+    neutral_positions[:, disabled_joint_indices] = np.asarray(anim.offsets, dtype=np.float64)[disabled_joint_indices][None, :, :]
+    neutral_rotations[:, disabled_joint_indices] = Quaternions.id((len(anim), len(disabled_joint_indices)))
+
+    return Animation(
+        neutral_rotations,
+        neutral_positions,
+        anim.orients.copy(),
+        anim.offsets.copy(),
+        anim.parents.copy(),
+    )
+
+
 def _neutralize_mirror_disabled_subtrees(features, object_cond, mirrored_offsets):
     disabled_joint_indices = sorted({
         int(index)
@@ -954,18 +983,7 @@ def _neutralize_mirror_disabled_subtrees(features, object_cond, mirrored_offsets
         neutralized = motion.copy()
         return neutralized[0] if squeeze_frame else neutralized
 
-    neutral_positions = anim.positions.copy()
-    neutral_rotations = anim.rotations.copy()
-    neutral_positions[:, disabled_joint_indices] = offsets[disabled_joint_indices][None, :, :]
-    neutral_rotations[:, disabled_joint_indices] = Quaternions.id((motion.shape[0], len(disabled_joint_indices)))
-
-    neutral_anim = Animation(
-        neutral_rotations,
-        neutral_positions,
-        anim.orients.copy(),
-        offsets.copy(),
-        parents.copy(),
-    )
+    neutral_anim = neutralize_animation_subtrees(anim, disabled_joint_indices)
     translation_root_index = _find_translation_root(neutral_anim)
     contact_joint_indices = list(object_cond['contact_joints'])
     face_joints = list(object_cond['face_joints']) or None
@@ -1010,6 +1028,14 @@ def mirror_features_with_safeguards(features, object_cond):
 
     if object_cond['mirror_disabled_joint_indices']:
         _warn_mirror_disabled_subtrees(object_cond)
+        # Unpaired joints have no mirror partner so they can't be reflected meaningfully.
+        # Restore their original x offsets so that when they are neutralized to rest pose,
+        # they retain their original rest orientation rather than the x-flipped version
+        # produced by the global mirror pass above.
+        disabled_indices = [int(i) for i in object_cond['mirror_disabled_joint_indices'] if int(i) > 0]
+        if disabled_indices:
+            orig_offsets = np.asarray(object_cond['offsets'], dtype=np.float32)
+            mirrored_offsets[disabled_indices, 0] = orig_offsets[disabled_indices, 0]
         mirrored = _neutralize_mirror_disabled_subtrees(mirrored, object_cond, mirrored_offsets)
 
     return mirrored, mirrored_offsets
@@ -1659,7 +1685,6 @@ def _write_object_outputs(save_dir, object_payload, files_counter):
             result.get('canonical_names', result['names']),
             frametime=result.get('frame_time', 1.0 / 24.0),
             positions=needs_bvh_position_channels(anim_obj),
-            all_joints_as_names=True,
         )
 
         motion_labels = _build_motion_metadata_entry(result, motion_file_name)
@@ -1949,18 +1974,16 @@ def recover_animation_from_motion_np(data, parents, offsets, anim_pos_threshold=
     if not animated_joints:
         return anim_rot, needs_bvh_position_channels(anim_rot)
 
-    # solve for the local position that reproduces target_global under the new rots
-    new_pos = anim_rot.positions.copy()
-    for j in animated_joints:
-        if j == 0 or parents[j] < 0:
-            new_pos[:, j] = target_global[:, j]
-            continue
-        temp      = Animation(anim_rot.rotations, new_pos, anim_rot.orients,
-                              anim_rot.offsets, anim_rot.parents)
-        tg_rots   = rotations_global(temp)
-        tg_pos    = positions_global(temp)
-        p         = parents[j]
-        new_pos[:, j] = (-tg_rots[:, p]) * (target_global[:, j] - tg_pos[:, p])
+    new_pos = _solve_local_positions_for_target_global(
+        anim_rot.rotations,
+        target_global,
+        anim_rot.offsets,
+        anim_rot.parents,
+        anim_rot.orients,
+        initial_positions=anim_rot.positions.copy(),
+        position_match_threshold=1e-5,
+        max_passes=2,
+    )
 
     anim_fixed = Animation(anim_rot.rotations, new_pos, anim_rot.orients,
                            anim_rot.offsets, anim_rot.parents)

@@ -467,8 +467,7 @@ class AnimationExporter:
                          offsets_dfs, parents_dfs)
         bvh_save(output_path, anim, names=joint_names_dfs,
                  frametime=1.0 / self.fps, order='xyz',
-                 positions=True,
-                 all_joints_as_names=True)
+                 positions=True)
 
     # ------------------------------------------------------------------
     # GLB export (via Blender glTF exporter)
