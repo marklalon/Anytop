@@ -970,7 +970,7 @@ def _passes_conservative_child_mirror_check(left_index, right_index, left_parent
         right_parent,
         rest_positions,
     )
-    tolerance = max(1e-3, local_scale * 0.35)
+    tolerance = max(1e-3, local_scale * 0.6)
     return mirror_error <= tolerance and yz_error <= tolerance
 
 
