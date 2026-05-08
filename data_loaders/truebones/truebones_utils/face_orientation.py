@@ -591,19 +591,8 @@ def calculate_root_quat(joints, object_type, face_joint_indx=None, forward_joint
     return root_quat
 
 
-def _get_hml_orientation_quat(anim, object_type, face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None):
-    return orientation_quat
-
-
-def rotate_to_hml_orientation(anim, object_type, face_joints=None, orientation_quat=None, forward_joint_index=None, forward_base_joint_index=None):
-    qs_rot = _get_hml_orientation_quat(
-        anim,
-        object_type,
-        face_joints=face_joints,
-        orientation_quat=orientation_quat,
-        forward_joint_index=forward_joint_index,
-        forward_base_joint_index=forward_base_joint_index,
-    )
+def rotate_to_hml_orientation(anim, orientation_quat):
+    qs_rot = orientation_quat
     new_rots = anim.rotations.copy()
     new_rots[:, 0] = qs_rot.repeat(new_rots.shape[0], axis=0) * new_rots[:, 0]
     new_pos = anim.positions.copy()

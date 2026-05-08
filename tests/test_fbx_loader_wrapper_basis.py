@@ -39,22 +39,18 @@ _IDLE_BVH = _HORSE_DIR / "__Idle.bvh"
 def _processed_stats(clip_name: str) -> tuple[tuple[float, float, float], float, float]:
     tp: TPoseFeatures = get_common_features_from_T_pose(str(_TPOSE_FBX), "Horse")
     _cond_entry = load_cond_dict().get("Horse")
-    if _cond_entry is None or "axial_avg_len" not in _cond_entry:
-        _axial_avg_len = float(tp.axial_avg_len)
+    if _cond_entry is None or "scale_factor" not in _cond_entry:
+        _scale_factor = float(tp.scale_factor)
     else:
-        _axial_avg_len = float(_cond_entry["axial_avg_len"])
+        _scale_factor = float(_cond_entry["scale_factor"])
 
     raw_anim, _raw_names, _frame_time = FBX.load(str(_HORSE_DIR / clip_name))
     processed_anim, _root_pose_init_xz, _scale_factor = process_anim(
         raw_anim,
         "Horse",
-        _axial_avg_len,
-        tp.root_pose_init_xz,
-        tp.scale_factor,
-        face_joints=tp.face_joints,
-        orientation_quat=tp.orientation_quat,
-        forward_joint_index=tp.forward_joint_index,
-        forward_base_joint_index=tp.forward_base_joint_index,
+        tp.orientation_quat,
+        root_pose_init_xz=tp.root_pose_init_xz,
+        scale_factor=_scale_factor,
     )
     processed_global = positions_global(processed_anim)
     foot_y = processed_global[:, tp.foot_indices, 1]

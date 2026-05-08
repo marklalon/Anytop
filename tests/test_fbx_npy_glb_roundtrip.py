@@ -252,12 +252,12 @@ def _run_test_fbx_npy_glb_roundtrip(
         print("[Phase A] Loading T-pose FBX preprocessing metadata...")
         tp: TPoseFeatures = get_common_features_from_T_pose(tpose_fbx, object_type)
         cond_entry = load_cond_dict().get(object_type)
-        if cond_entry is None or "axial_avg_len" not in cond_entry:
-            print(f"[WARN] axial_avg_len missing from cond.npy for {object_type}; falling back to T-pose metadata")
-            _axial_avg_len = float(tp.axial_avg_len)
+        if cond_entry is None or "scale_factor" not in cond_entry:
+            print(f"[WARN] scale_factor missing from cond.npy for {object_type}; falling back to T-pose metadata")
+            scale_factor = float(tp.scale_factor)
         else:
-            _axial_avg_len = float(cond_entry["axial_avg_len"])
-        print(f"Joints: {len(tp.names)}, scale_factor: {tp.scale_factor:.6f}")
+            scale_factor = float(cond_entry["scale_factor"])
+        print(f"Joints: {len(tp.names)}, scale_factor: {scale_factor:.6f}")
 
         # Phase B: Load source FBX and build the production preprocessed motion/features
         print("[Phase B] Loading source FBX and building production preprocessed motion...")
@@ -276,12 +276,8 @@ def _run_test_fbx_npy_glb_roundtrip(
             tp.foot_indices,
             tp.tpos_rots,
             squared_positions_error,
-            axial_avg_len=_axial_avg_len,
-            scale_factor=tp.scale_factor,
-            face_joints=tp.face_joints,
+            scale_factor=scale_factor,
             orientation_quat=tp.orientation_quat,
-            forward_joint_index=tp.forward_joint_index,
-            forward_base_joint_index=tp.forward_base_joint_index,
             preloaded=(source_anim, source_bone_names),
         )
 
