@@ -660,28 +660,18 @@ def _get_average_axial_bone_length(offsets, parents, joint_side_labels):
             bone_length = float(np.linalg.norm(offsets[joint_index]))
             total_length += bone_length
             axial_count += 1
-    if axial_count > 0:
+    if axial_count >= 10:
         return total_length / axial_count
     # Fallback: average bone length across all non-root bones.
-    print(f'[WARN] no center-labeled joints found; falling back to mean bone length across all {len(parents) - 1} non-root bones')
     all_lengths = [float(np.linalg.norm(offsets[j])) for j in range(1, len(parents))]
     if all_lengths:
         return sum(all_lengths) / len(all_lengths)
-    return 1.0  # ultimate fallback for single-bone skeletons
+    return 0.1  # ultimate fallback for single-bone skeletons
 
 
 def scale(anim, axial_avg_len, scale_factor=None):
     if scale_factor is None:
-        # Non-linear scaling that dampens the influence of extreme outlier
-        # bones (e.g. long trunk/ear chains, control bones) which inflate
-        # the rest-pose max span beyond the meaningful body extent.
-        #
-        # Formula:  scale = pow(span * 0.01, 1/3) * HML_REF / span
-        # The cube-root term compresses the size range so very large
-        # skeletons (Elephant) aren't over-squashed and finely subdivided
-        # skeletons (Monkey) aren't over-magnified.
-        body_ref = _get_reference_body_length(anim)
-        scale_factor = math.pow(body_ref * 0.01, 0.33) * HML_REF_AXIAL_BONE_LENGTH / axial_avg_len
+        scale_factor = HML_REF_AXIAL_BONE_LENGTH / axial_avg_len
     new_anim = Animation(
         anim.rotations.copy(),
         anim.positions * scale_factor,
