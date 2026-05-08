@@ -9,13 +9,13 @@ Description:
 Usage (from Anytop directory with venv active):
     python tools/extract_loop_motions.py \\
         --num-samples 10 \\
-        --output-dir ./loop_motion_previews \\
+        --output-dir ./outputs/loop_motion_previews \\
         --objects-subset all \\
         --random-seed 42
 
 Arguments:
     --num-samples      : Number of loop motions to extract and export (default: 10).
-    --output-dir       : Directory to write BVH files (default: ./loop_motion_previews).
+    --output-dir       : Directory to write BVH files (default: ./outputs/loop_motion_previews).
     --objects-subset   : Object subset to filter ('all' or a named subset, default: 'all').
     --split            : Dataset split ('train', 'val', 'test', 'all', default: 'train').
     --random-seed      : Seed for reproducible sampling (default: 42).
@@ -68,7 +68,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-dir",
-        default="loop_motion_previews",
+        default="./outputs/loop_motion_previews",
         help="Output directory for BVH files.",
     )
     parser.add_argument(

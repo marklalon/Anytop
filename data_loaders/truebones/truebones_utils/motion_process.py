@@ -35,12 +35,9 @@ from .physics_joint_annotation import (
 )
 from .face_orientation import (
     resolve_face_joints,
-    get_root_quat,
+    calculate_root_quat,
     rotate_to_hml_orientation,
-    _get_facing_candidates,
-    _find_forward_reference_joint,
-    _find_neck_reference_joint,
-    _vector_angle_deg,
+    resolve_forward_reference_joints,
 )
 from .fbx_filename_rules import (
     find_tpose_reference_path,
@@ -769,8 +766,11 @@ def get_common_features_from_T_pose(t_pose_fbx_path, object_type, face_joints=No
     t_pose_anim, t_pos_names, _t_pose_frame_time = FBX.load(t_pose_fbx_path)
     reference_anim = t_pose_anim[:1] if len(t_pose_anim) > 1 else t_pose_anim
     face_joints = resolve_face_joints(object_type, t_pos_names, reference_anim.parents, face_joints=face_joints)
-    forward_joint_index = _find_forward_reference_joint(t_pos_names, reference_anim.parents)
-    forward_base_joint_index = _find_neck_reference_joint(t_pos_names, reference_anim.parents)
+    forward_joint_index, forward_base_joint_index = resolve_forward_reference_joints(
+        t_pos_names,
+        reference_anim.parents,
+        object_type=object_type,
+    )
 
     # This function only consumes reference-pose metadata from frame 0, so avoid
     # repairing every frame of long T-pose clips unless the first frame is malformed.
@@ -786,7 +786,7 @@ def get_common_features_from_T_pose(t_pose_fbx_path, object_type, face_joints=No
             )
 
     reference_positions = positions_global(reference_anim)
-    t_pose_orientation_quat = get_root_quat(reference_positions, object_type, face_joint_indx=face_joints, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)[0]
+    t_pose_orientation_quat = calculate_root_quat(reference_positions, object_type, face_joint_indx=face_joints, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)[0]
 
     # Pre-compute axial average bone length from the raw T-pose offsets
     # (before scaling) so that scale() uses it directly instead of recomputing
@@ -874,6 +874,19 @@ def get_motion_features(ric_positions, rotations, foot_contact, velocity, termin
     return features, max_joints
 
 
+def _coerce_single_orientation_quat(orientation_quat):
+    if orientation_quat is None:
+        raise ValueError(
+            "orientation_quat must be precomputed from the reference T-pose and provided to downstream motion processing"
+        )
+
+    orientation_qs = getattr(orientation_quat, 'qs', orientation_quat)
+    orientation_qs = np.asarray(orientation_qs, dtype=np.float64)
+    if orientation_qs.ndim > 1:
+        orientation_qs = orientation_qs[0]
+    return Quaternions(orientation_qs.reshape(1, 4)).normalized()
+
+
 def infer_translation_root_from_features(data, tol=1e-5):
     """Infer which joint row carries the effective translation-root trajectory.
 
@@ -924,11 +937,19 @@ def _neutralize_mirror_disabled_subtrees(features, object_cond, mirrored_offsets
         return np.asarray(features).copy()
 
     motion = np.asarray(features, dtype=np.float32)
+    squeeze_frame = False
+    if motion.ndim == 2:
+        motion = motion[None, ...]
+        squeeze_frame = True
+    elif motion.ndim != 3:
+        raise ValueError(f"Expected motion features with shape (F, J, C) or (J, C), got {motion.shape}.")
+
     parents = np.asarray(object_cond['parents'], dtype=np.int64)
     offsets = np.asarray(mirrored_offsets, dtype=np.float64)
     anim, _has_animated_pos = recover_animation_from_motion_np(motion, parents, offsets)
     if anim is None:
-        return motion.copy()
+        neutralized = motion.copy()
+        return neutralized[0] if squeeze_frame else neutralized
 
     neutral_positions = anim.positions.copy()
     neutral_rotations = anim.rotations.copy()
@@ -949,8 +970,7 @@ def _neutralize_mirror_disabled_subtrees(features, object_cond, mirrored_offsets
     cont_6d_params, _r_velocity, _velocity, r_rot, global_positions = get_bvh_cont6d_params(
         neutral_anim,
         str(object_cond['object_type']),
-        face_joints=face_joints,
-        joint_names=list(object_cond['joints_names']),
+        object_cond['orientation_quat'],
         translation_root_index=translation_root_index,
     )
     positions = get_rifke(global_positions, r_rot, translation_root_index=translation_root_index)
@@ -969,7 +989,8 @@ def _neutralize_mirror_disabled_subtrees(features, object_cond, mirrored_offsets
         terminal_contact,
         motion.shape[1],
     )
-    return neutralized.astype(motion.dtype, copy=False)
+    neutralized = neutralized.astype(motion.dtype, copy=False)
+    return neutralized[0] if squeeze_frame else neutralized
 
 
 def mirror_features_with_safeguards(features, object_cond):
@@ -1147,15 +1168,13 @@ def object_policy(obj):
     else:
         return "h_first"
 
-""" returns cont6d params, including joints rotations, root rotation and rotational velocity, 
-linear velocity and positions. Unlike BVH (and accordingly, Animation object) in which the parent holds the rotagtion of the child joint, 
+""" returns cont6d params, including joints rotations, root rotation and rotational velocity,
+linear velocity and positions. Unlike BVH (and accordingly, Animation object) in which the parent holds the rotagtion of the child joint,
 in our data structure each joints holds it's own rotation (similar to humanML3D data structure and FK model)"""
-def get_bvh_cont6d_params(anim, object_type, face_joints=None, joint_names=None, forward_joint_index=None, forward_base_joint_index=None, translation_root_index=0):
+def get_bvh_cont6d_params(anim, object_type, orientation_quat, translation_root_index=0):
     positions = positions_global(anim)
-    if face_joints is None:
-        face_joints = resolve_face_joints(object_type, joint_names=joint_names, parents=anim.parents)
     quat_params = anim.rotations
-    r_rot = get_root_quat(positions, object_type, face_joints, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)
+    r_rot = _coerce_single_orientation_quat(orientation_quat).repeat(positions.shape[0], axis=0)
     '''Quaternion to continuous 6D'''
     cont_6d_params = get_6d_rep(quat_params)
     cont_6d_params_reordered = np.zeros_like(cont_6d_params)
@@ -1263,10 +1282,7 @@ def get_motion(bvh_path, foot_contact_vel_thresh, object_type, max_joints, root_
         cont_6d_params, r_velocity, velocity, r_rot, global_positions = get_bvh_cont6d_params(
             new_anim,
             object_type,
-            face_joints=face_joints,
-            joint_names=names,
-            forward_joint_index=forward_joint_index,
-            forward_base_joint_index=forward_base_joint_index,
+            orientation_quat,
             translation_root_index=translation_root_index,
         )
         foot_contact = get_contact_state(global_positions, foot_indices, foot_contact_vel_thresh)
@@ -1409,18 +1425,6 @@ def _process_motion_file(file_path, object_type, max_joints, root_pose_init_xz,
             print(f'failed to process file: {file_path}, slice {current_begin}:{slice_ind}')
             continue
 
-        orientation_summary = None
-        try:
-            orientation_summary = _summarize_processed_orientation(
-                export_anim,
-                object_type,
-                face_joints,
-                forward_joint_index,
-                forward_base_joint_index,
-            )
-        except Exception as exc:
-            print(f'  [WARN] failed to summarize processed orientation for {file_path} [{current_begin}:{slice_ind}]: {exc}')
-
         _, file_name = os.path.split(file_path)
         raw_action = file_name.split('.')[0]
         raw_action = _normalize_action_name(object_type, raw_action)
@@ -1435,7 +1439,6 @@ def _process_motion_file(file_path, object_type, max_joints, root_pose_init_xz,
             'is_loop': is_loop,
             'source_fbx_path': file_path,
             'slice_range': (current_begin, slice_ind),
-            'orientation_summary': orientation_summary,
             'motion_labels': build_motion_labels(object_type, raw_action),
         })
 
@@ -1453,10 +1456,7 @@ def _attach_orientation_reference_metadata(
     forward_base_joint_index,
     orientation_reference_fbx_path,
 ):
-    orientation_qs = getattr(orientation_quat, 'qs', orientation_quat)
-    orientation_qs = np.asarray(orientation_qs, dtype=np.float64)
-    if orientation_qs.ndim > 1:
-        orientation_qs = orientation_qs[0]
+    orientation_qs = _coerce_single_orientation_quat(orientation_quat).qs[0]
     object_cond['orientation_quat'] = orientation_qs.reshape(4)
     object_cond['forward_joint_index'] = int(forward_joint_index) if forward_joint_index is not None else None
     object_cond['forward_base_joint_index'] = int(forward_base_joint_index) if forward_base_joint_index is not None else None
@@ -1465,57 +1465,6 @@ def _attach_orientation_reference_metadata(
         if orientation_reference_fbx_path
         else None
     )
-
-
-def _summarize_frame_orientation(frame_positions, object_type, face_joints, forward_joint_index, forward_base_joint_index):
-    raw_candidates = _get_facing_candidates(
-        frame_positions,
-        object_type,
-        face_joint_indx=face_joints,
-        forward_joint_index=forward_joint_index,
-        forward_base_joint_index=forward_base_joint_index,
-    )
-    target_forward = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-    candidate_angles = {
-        name: _vector_angle_deg(forward[0], target_forward)
-        for name, forward in raw_candidates.items()
-        if forward is not None and np.isfinite(forward).all()
-    }
-    if not candidate_angles:
-        raise ValueError(f'{object_type} produced no valid orientation candidates')
-    best_candidate, best_angle_deg = min(candidate_angles.items(), key=lambda item: item[1])
-    return best_candidate, float(best_angle_deg)
-
-
-def _summarize_processed_orientation(export_anim, object_type, face_joints, forward_joint_index, forward_base_joint_index):
-    global_positions = positions_global(export_anim)
-    if global_positions.shape[0] <= 0:
-        raise ValueError(f'{object_type} processed animation has no frames for orientation summary')
-
-    first_candidate, first_angle_deg = _summarize_frame_orientation(
-        global_positions[0:1],
-        object_type,
-        face_joints,
-        forward_joint_index,
-        forward_base_joint_index,
-    )
-    if global_positions.shape[0] == 1:
-        last_candidate, last_angle_deg = first_candidate, first_angle_deg
-    else:
-        last_candidate, last_angle_deg = _summarize_frame_orientation(
-            global_positions[-1:],
-            object_type,
-            face_joints,
-            forward_joint_index,
-            forward_base_joint_index,
-        )
-
-    return {
-        'orientation_first_frame_best_candidate': first_candidate,
-        'orientation_first_frame_best_angle_deg': float(first_angle_deg),
-        'orientation_last_frame_best_candidate': last_candidate,
-        'orientation_last_frame_best_angle_deg': float(last_angle_deg),
-    }
 
 
 def _build_motion_metadata_entry(result, motion_file_name):
@@ -1533,16 +1482,6 @@ def _build_motion_metadata_entry(result, motion_file_name):
             int(source_frame_range[0]),
             int(source_frame_range[1]),
         ]
-
-    orientation_summary = dict(result.get('orientation_summary') or {})
-    for key in (
-        'orientation_first_frame_best_candidate',
-        'orientation_first_frame_best_angle_deg',
-        'orientation_last_frame_best_candidate',
-        'orientation_last_frame_best_angle_deg',
-    ):
-        if key in orientation_summary:
-            motion_labels[key] = orientation_summary[key]
 
     return motion_labels
      

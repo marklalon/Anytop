@@ -540,14 +540,14 @@ def build_joint_embedding_texts(object_cond):
 def _joint_signature(name):
     signature_tokens = [
         token for token in _canonicalize_joint_name(name).lower().split()
-        if token not in ('left', 'right')
+        if token not in ('left', 'right', 'lf', 'rf')
     ]
     if signature_tokens:
         return ' '.join(signature_tokens)
 
     fallback_tokens = [
         token for token in _normalize_joint_name(name).split()
-        if token not in ('left', 'right', 'l', 'r')
+        if token not in ('left', 'right', 'l', 'r', 'lf', 'rf')
     ]
     return ' '.join(fallback_tokens)
 
@@ -890,6 +890,7 @@ def _joint_depths(parents):
 def _detect_joint_side(name):
     normalized = _normalize_joint_name(name)
     compact = normalized.replace(' ', '')
+    tokens = normalized.split()
     right_markers = (
         ' right ',
         ' npc r',
@@ -926,6 +927,13 @@ def _detect_joint_side(name):
     if any(marker in padded for marker in right_markers) or compact.startswith(('r_', 'rleg', 'rarm', 'rthigh', 'rmomo', 'rkata', 'rhiji')):
         return 'right'
     if any(marker in padded for marker in left_markers) or compact.startswith(('l_', 'lleg', 'larm', 'lthigh', 'lmomo', 'lkata', 'lhiji')):
+        return 'left'
+
+    has_rf = 'rf' in tokens
+    has_lf = 'lf' in tokens
+    if has_rf and not has_lf:
+        return 'right'
+    if has_lf and not has_rf:
         return 'left'
     return None
 

@@ -9,7 +9,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
+    _detect_joint_side,
     _infer_symmetry_metadata,
+    _joint_signature,
     _rest_positions_from_offsets,
 )
 
@@ -120,10 +122,62 @@ def test_conservative_fallback_disables_ambiguous_child_subtrees() -> None:
     assert details['mirror_disabled_warnings'], 'expected warning for ambiguous child subtrees'
 
 
+def test_lf_rf_suffixes_drive_side_detection_and_signature_normalization() -> None:
+    assert _detect_joint_side('Sabrecat_Finger4_LF04_') == 'left'
+    assert _detect_joint_side('Sabrecat_Finger4_RF04_') == 'right'
+    assert _detect_joint_side('Sabrecat_LeftFinger3_RF30_') == 'left'
+    assert _detect_joint_side('Sabrecat_RightFinger3_LF30_') == 'right'
+
+    assert _joint_signature('Sabrecat_LeftFinger1_LF10_') == _joint_signature('Sabrecat_RightFinger1_RF10_')
+    assert _joint_signature('Sabrecat_Finger4_LF04_') == _joint_signature('Sabrecat_Finger4_RF04_')
+
+
+def test_lf_rf_suffix_children_are_paired() -> None:
+    joint_names = [
+        'Root',
+        'LeftHand',
+        'RightHand',
+        'Sabrecat_Finger4_LF04_',
+        'Sabrecat_Finger4_RF04_',
+        'Sabrecat_LeftFinger3_RF30_',
+        'Sabrecat_RightFinger3_RF30_',
+    ]
+    parents = np.asarray([-1, 0, 0, 1, 2, 1, 2], dtype=np.int64)
+    rest_positions = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [-1.3, -0.1, 0.1],
+            [1.3, -0.1, 0.1],
+            [-1.6, -0.2, 0.2],
+            [1.6, -0.2, 0.2],
+        ],
+        dtype=np.float64,
+    )
+
+    joint_side_labels, symmetry_partner_indices, _pairs = _infer_symmetry_metadata(
+        joint_names,
+        parents,
+        rest_positions,
+    )
+
+    assert symmetry_partner_indices[3] == 4, f'unexpected LF/RF pair for Finger4: {symmetry_partner_indices[3]}'
+    assert symmetry_partner_indices[4] == 3, f'unexpected LF/RF pair for Finger4 mirror: {symmetry_partner_indices[4]}'
+    assert symmetry_partner_indices[5] == 6, f'unexpected mixed-token pair for Finger3: {symmetry_partner_indices[5]}'
+    assert symmetry_partner_indices[6] == 5, f'unexpected mixed-token pair for Finger3 mirror: {symmetry_partner_indices[6]}'
+    assert joint_side_labels[3] == 'left'
+    assert joint_side_labels[4] == 'right'
+    assert joint_side_labels[5] == 'left'
+    assert joint_side_labels[6] == 'right'
+
+
 def main() -> None:
     test_horse_front_helper_bones_are_paired()
     test_conservative_fallback_rejects_non_mirrored_unique_children()
     test_conservative_fallback_disables_ambiguous_child_subtrees()
+    test_lf_rf_suffixes_drive_side_detection_and_signature_normalization()
+    test_lf_rf_suffix_children_are_paired()
     print('horse symmetry metadata regression: ok')
 
 

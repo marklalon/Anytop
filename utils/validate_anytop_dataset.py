@@ -8,6 +8,7 @@ from collections import Counter
 from pathlib import Path
 
 import numpy as np
+from motion_lib.Quaternions import Quaternions
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +29,15 @@ from data_loaders.truebones.truebones_utils.motion_labels import load_motion_met
 
 class ValidationError(RuntimeError):
     pass
+
+
+_CARDINAL_XZ_AXES = (
+    ("+x", np.array([1.0, 0.0, 0.0], dtype=np.float64)),
+    ("-x", np.array([-1.0, 0.0, 0.0], dtype=np.float64)),
+    ("+z", np.array([0.0, 0.0, 1.0], dtype=np.float64)),
+    ("-z", np.array([0.0, 0.0, -1.0], dtype=np.float64)),
+)
+_CANONICAL_FORWARD_VECTOR = np.array([[0.0, 0.0, 1.0]], dtype=np.float64)
 
 
 def _print_ok(message: str) -> None:
@@ -275,6 +285,46 @@ def _select_validation_files(files: list[Path], sample_limit: int) -> list[Path]
     return files[: min(sample_limit, len(files))]
 
 
+def _normalize_xz_vector(vector: np.ndarray) -> np.ndarray:
+    normalized = np.asarray(vector, dtype=np.float64).reshape(-1).copy()
+    _require(normalized.shape == (3,), f"expected 3D vector, got shape {normalized.shape}")
+    normalized[1] = 0.0
+    norm = float(np.linalg.norm(normalized))
+    _require(norm > 1e-8, "XZ-projected vector is degenerate")
+    return normalized / norm
+
+
+def _vector_angle_xz_deg(vector_a: np.ndarray, vector_b: np.ndarray) -> float:
+    a = _normalize_xz_vector(vector_a)
+    b = _normalize_xz_vector(vector_b)
+    cosine = float(np.clip(np.dot(a, b), -1.0, 1.0))
+    return float(np.degrees(np.arccos(cosine)))
+
+
+def _summarize_tpose_orientation_axis_alignment(object_type: str, object_cond: dict[str, object]) -> tuple[str, float]:
+    raw_orientation_quat = object_cond.get("orientation_quat")
+    _require(raw_orientation_quat is not None, f"{object_type} is missing orientation_quat")
+
+    orientation_quat = np.asarray(raw_orientation_quat, dtype=np.float64)
+    if orientation_quat.ndim > 1:
+        orientation_quat = orientation_quat[0]
+    _require(orientation_quat.shape == (4,), f"{object_type} orientation_quat shape mismatch: {orientation_quat.shape}")
+    _require(np.isfinite(orientation_quat).all(), f"{object_type} orientation_quat contains NaN/Inf")
+
+    reference_forward = ((-Quaternions(orientation_quat)) * _CANONICAL_FORWARD_VECTOR)[0]
+
+    best_axis_label = None
+    best_delta_deg = None
+    for axis_label, axis_vector in _CARDINAL_XZ_AXES:
+        delta_deg = _vector_angle_xz_deg(reference_forward, axis_vector)
+        if best_delta_deg is None or delta_deg < best_delta_deg:
+            best_axis_label = axis_label
+            best_delta_deg = delta_deg
+
+    _require(best_axis_label is not None and best_delta_deg is not None, f"{object_type} produced no valid XZ axis comparison")
+    return best_axis_label, float(best_delta_deg)
+
+
 def _normalize_identifier(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", value.lower())
 
@@ -403,143 +453,33 @@ def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample
         _print_ok(f"validated {scope} motion tensors")
 
 
-def _load_orientation_validation_entries(dataset_dir: Path, sample_limit: int) -> tuple[Path, list[dict[str, object]]]:
-    motions_dir = dataset_dir / MOTION_DIR
-    motion_files = sorted(motions_dir.glob("*.npy"))
+def _validate_tpose_orientation(cond: dict, threshold_deg: float) -> None:
+    checked_count = 0
+    warned_count = 0
 
-    try:
-        _require(len(motion_files) > 0, "motions directory is empty")
-    except ValidationError as e:
-        _print_warn(f"directory validation failed: {e}")
-        return motions_dir, []
-
-    motion_metadata_lookup = load_motion_metadata(dataset_dir)
-    files_to_validate = _select_validation_files(motion_files, sample_limit)
-    entries = []
-    for motion_path in files_to_validate:
-        entries.append(
-            {
-                "motion_name": motion_path.name,
-                "motion_stem": motion_path.stem,
-                "motion_path": motion_path,
-                "motion_metadata": dict(motion_metadata_lookup.get(motion_path.name, {})),
-            }
-        )
-    return motions_dir, entries
-
-
-def _read_orientation_angle(motion_name: str, motion_metadata: dict[str, object], field_name: str) -> float:
-    raw_value = motion_metadata.get(field_name)
-    _require(raw_value is not None, f"{motion_name} missing {field_name} in motion metadata")
-    value = float(raw_value)
-    _require(np.isfinite(value), f"{motion_name} {field_name} is not finite")
-    _require(value >= 0.0, f"{motion_name} {field_name} must be >= 0")
-    return value
-
-
-def _get_motion_orientation_summary(motion_name: str, motion_metadata: dict[str, object]) -> tuple[float, float]:
-    first_best_angle_deg = _read_orientation_angle(
-        motion_name,
-        motion_metadata,
-        "orientation_first_frame_best_angle_deg",
-    )
-    last_best_angle_deg = _read_orientation_angle(
-        motion_name,
-        motion_metadata,
-        "orientation_last_frame_best_angle_deg",
-    )
-    return first_best_angle_deg, last_best_angle_deg
-
-
-def _validate_motion_orientation(dataset_dir: Path, cond: dict, sample_limit: int, threshold_deg: float) -> None:
-    _motions_dir, entries = _load_orientation_validation_entries(dataset_dir, sample_limit)
-    if not entries:
-        return
-
-    errors = []
-
-    _SKIP_ORIENTATION_KEYWORDS = {"left", "right", "die", "dead", "death", "lying"}
-
-    for entry in entries:
-        motion_stem = str(entry["motion_stem"])
-        action_name_lower = motion_stem.lower()
-        if any(kw in action_name_lower for kw in _SKIP_ORIENTATION_KEYWORDS):
-            continue
+    for object_type in sorted(str(name) for name in cond.keys()):
         try:
-            _object_type = _match_object_type(motion_stem, cond)
-            first_best_angle_deg, last_best_angle_deg = _get_motion_orientation_summary(
-                str(entry["motion_name"]),
-                dict(entry["motion_metadata"]),
-            )
-            if first_best_angle_deg <= threshold_deg:
+            best_axis_label, best_delta_deg = _summarize_tpose_orientation_axis_alignment(object_type, cond[object_type])
+            checked_count += 1
+            if best_delta_deg <= threshold_deg:
                 continue
-            _require(
-                last_best_angle_deg <= threshold_deg,
-                f"processed orientation exceeds threshold on both first and last frames: {first_best_angle_deg:.2f}|{last_best_angle_deg:.2f}, threshold={threshold_deg:.2f}",
+
+            reference_path = cond[object_type].get("orientation_reference_fbx_path")
+            reference_label = Path(reference_path).name if isinstance(reference_path, str) and reference_path.strip() else "orientation reference"
+            _print_warn(
+                f"{object_type} T-pose face orientation is {best_delta_deg:.2f} deg away from the nearest cardinal XZ axis "
+                f"({best_axis_label}) using {reference_label}"
             )
+            warned_count += 1
         except ValidationError as e:
-            _print_warn(f"validation warn: {entry['motion_name']}: {e}")
-            errors.append(str(e))
+            _print_warn(f"validation warn: {object_type}: {e}")
 
-    if errors:
-        raise ValidationError(f"orientation validation warn: {len(errors)} file(s) exceeded threshold")
-    
-    scope = "all" if sample_limit <= 0 else str(len(entries))
-    _print_ok(f"validated stored processed-orientation metadata for {scope} motions (threshold={threshold_deg:.2f} deg)")
-
-
-def _filter_motions_by_orientation(
-    dataset_dir: Path,
-    cond: dict,
-    sample_limit: int,
-    threshold_deg: float,
-) -> set[str]:
-    """Delete motion tensors whose stored orientation deviation exceeds threshold_deg.
-
-    When an optional paired BVH exists for the same stem, delete it too.
-
-    Returns the deleted motion stems.
-    """
-    _motions_dir, entries = _load_orientation_validation_entries(dataset_dir, sample_limit)
-    if not entries:
-        return set()
-
-    _SKIP_ORIENTATION_KEYWORDS = {"left", "right", "die", "dead", "death", "lying"}
-
-    deleted_stems: set[str] = set()
-    for entry in entries:
-        motion_stem = str(entry["motion_stem"])
-        action_name_lower = motion_stem.lower()
-        if any(kw in action_name_lower for kw in _SKIP_ORIENTATION_KEYWORDS):
-            continue
-        try:
-            _object_type = _match_object_type(motion_stem, cond)
-            first_best_angle_deg, last_best_angle_deg = _get_motion_orientation_summary(
-                str(entry["motion_name"]),
-                dict(entry["motion_metadata"]),
-            )
-
-            if first_best_angle_deg <= threshold_deg:
-                continue
-
-            if last_best_angle_deg <= threshold_deg:
-                continue
-
-            # Both first and last frames exceed threshold — delete the motion.
-            motion_path = Path(entry["motion_path"])
-            if motion_path.exists():
-                motion_path.unlink()
-                print(f"  [DELETE] {motion_path.name}")
-                deleted_stems.add(motion_path.stem)
-
-            bvh_path = dataset_dir / BVHS_DIR / f"{motion_stem}.bvh"
-            if bvh_path.exists():
-                bvh_path.unlink()
-                print(f"  [DELETE] {bvh_path.name}")
-        except Exception as e:
-            print(f"  [WARN] orientation filter error for {entry['motion_name']}: {e}")
-
-    return deleted_stems
+    _print_ok(
+        f"validated T-pose face-orientation alignment for {checked_count} object types "
+        f"(threshold={threshold_deg:.2f} deg)"
+    )
+    if warned_count:
+        _print_warn(f"T-pose face-orientation warnings: {warned_count} object type(s) exceeded threshold")
 
 
 def _validate_metadata(metadata_path: Path, motion_files: list[Path], cond: dict, silent: bool = False) -> bool:
@@ -618,23 +558,6 @@ def _validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond:
             if (source_fbx_path is None) != (source_frame_range is None):
                 _print_warn(f"validation error: {motion_name} source FBX metadata is incomplete")
 
-            first_angle = motion_metadata.get("orientation_first_frame_best_angle_deg")
-            last_angle = motion_metadata.get("orientation_last_frame_best_angle_deg")
-            first_candidate = motion_metadata.get("orientation_first_frame_best_candidate")
-            last_candidate = motion_metadata.get("orientation_last_frame_best_candidate")
-            if (first_angle is None) != (last_angle is None):
-                _print_warn(f"validation error: {motion_name} processed orientation metadata is incomplete")
-            if first_angle is not None:
-                _require(np.isfinite(float(first_angle)), f"orientation_first_frame_best_angle_deg invalid for {motion_name}")
-                _require(float(first_angle) >= 0.0, f"orientation_first_frame_best_angle_deg must be >= 0 for {motion_name}")
-            if last_angle is not None:
-                _require(np.isfinite(float(last_angle)), f"orientation_last_frame_best_angle_deg invalid for {motion_name}")
-                _require(float(last_angle) >= 0.0, f"orientation_last_frame_best_angle_deg must be >= 0 for {motion_name}")
-            if first_candidate is not None:
-                _require(isinstance(first_candidate, str) and first_candidate.strip(), f"orientation_first_frame_best_candidate invalid for {motion_name}")
-            if last_candidate is not None:
-                _require(isinstance(last_candidate, str) and last_candidate.strip(), f"orientation_last_frame_best_candidate invalid for {motion_name}")
-
         total_clips = payload.get("total_clips")
         if total_clips is not None:
             _require(int(total_clips) == len(motion_files), f"{MOTION_METADATA_FILE} total_clips mismatch: {total_clips} vs {len(motion_files)}")
@@ -692,26 +615,12 @@ def _prepare_dataset_for_validation(
     dataset_dir: Path,
     objects_subset: str,
     sample_count: int,
-    skip_orientation_check: bool,
-    filter_orientation_threshold_deg: float,
 ) -> None:
     motions_dir, bvhs_dir, cond_path, _metadata_path, _positions_error_path = _read_required_artifacts(dataset_dir, silent=True)
     cond = dict(np.load(cond_path, allow_pickle=True).item())
 
     deleted_joint_stems = _prune_excess_joint_motions(motions_dir, bvhs_dir, cond, sample_count)
-    deleted_orientation_stems: set[str] = set()
-    if filter_orientation_threshold_deg > 0 and not skip_orientation_check:
-        _print_ok(f"filtering motions with orientation deviation > {filter_orientation_threshold_deg:.2f} deg")
-        deleted_orientation_stems = _filter_motions_by_orientation(
-            dataset_dir,
-            cond,
-            sample_count,
-            filter_orientation_threshold_deg,
-        )
-        if deleted_orientation_stems:
-            _print_ok(f"deleted {len(deleted_orientation_stems)} motion(s) exceeding orientation threshold")
-
-    needs_regeneration = bool(deleted_joint_stems or deleted_orientation_stems)
+    needs_regeneration = bool(deleted_joint_stems)
     if not needs_regeneration:
         needs_regeneration = not _validate_generated_artifacts_consistency(dataset_dir, cond, objects_subset, silent=True)
 
@@ -741,9 +650,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-dir", default=None, help="Dataset directory to validate. If not specified, uses default path.")
     parser.add_argument("--objects-subset", default="all", choices=sorted(OBJECT_SUBSETS_DICT.keys()), help="Subset that must be present in the dataset; incremental runs may still contain additional objects.")
     parser.add_argument("--sample-count", type=int, default=0, help="How many motion files to validate in detail. Use 0 to validate all files.")
-    parser.add_argument("--orientation-threshold-deg", type=float, default=5.0, help="Maximum allowed first-frame facing error from +Z using stored processed-orientation metadata.")
-    parser.add_argument("--filter-orientation-threshold-deg", type=float, default=0.0, help="Delete motion tensors whose stored processed-orientation deviation exceeds this threshold before validation. Use 0 to disable filtering.")
-    parser.add_argument("--skip-orientation-check", action="store_true", help="Skip stored processed-orientation validation.")
+    parser.add_argument("--orientation-threshold-deg", type=float, default=5.0, help="Maximum allowed T-pose face-orientation delta from the nearest cardinal XZ axis (+x/-x/+z/-z) before warning.")
+    parser.add_argument("--skip-orientation-check", action="store_true", help="Skip T-pose face-orientation validation.")
     return parser.parse_args()
 
 
@@ -751,6 +659,7 @@ def main() -> int:
     args = parse_args()
     dataset_dir = _resolve_dataset_dir(args.dataset_dir)
     _require(args.sample_count >= 0, "sample-count must be >= 0")
+    _require(args.orientation_threshold_deg >= 0, "orientation-threshold-deg must be >= 0")
 
     print("=== AnyTop Dataset Validation ===")
     print(f"dataset_dir: {dataset_dir}")
@@ -761,8 +670,6 @@ def main() -> int:
         dataset_dir,
         args.objects_subset,
         args.sample_count,
-        args.skip_orientation_check,
-        args.filter_orientation_threshold_deg,
     )
 
     motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path = _read_required_artifacts(dataset_dir)
@@ -775,9 +682,9 @@ def main() -> int:
     _validate_motion_files(motions_dir, bvhs_dir, cond, args.sample_count)
     
     if args.skip_orientation_check:
-        _print_warn("skipping stored processed-orientation validation by request")
+        _print_warn("skipping T-pose face-orientation validation by request")
     else:
-        _validate_motion_orientation(dataset_dir, cond, args.sample_count, args.orientation_threshold_deg)
+        _validate_tpose_orientation(cond, args.orientation_threshold_deg)
     
     _validate_positions_error_file(positions_error_path)
 

@@ -13,11 +13,11 @@ Options:
     --validate-only                      Skip preprocessing, only validate existing dataset
     --re-encode-joint-names-only         Skip preprocessing and validation, only re-encode joint names into cond.npy
     --skip-validate                      Skip validation step (faster for CI)
-    --skip-orientation-check             Skip stored processed-orientation validation during dataset checks
+    --skip-orientation-check             Skip T-pose face-orientation validation during dataset checks
     --objects-subset SUBSET              Object subset to process incrementally; `all` uses full refresh (default: all)
     --object-workers N                   Concurrent characters to preprocess (default: 16)
     --sample-count N                     Limit file validation to first N motions (0=all, default: 0)
-    --orientation-threshold-deg DEG      Maximum allowed first-frame facing error from +Z using stored processed-orientation metadata (default: 15.0)
+    --orientation-threshold-deg DEG      Maximum allowed T-pose face-orientation delta from the nearest cardinal XZ axis (+x/-x/+z/-z) before warning (default: 15.0)
 
 Examples:
     # Full workflow: full refresh for objects-subset=all -> validate
@@ -311,7 +311,6 @@ def run_validation(
     objects_subset: str,
     skip_orientation_check: bool,
     orientation_threshold_deg: float,
-    filter_orientation_threshold_deg: float,
     sample_count: int,
     dataset_dir: str = "",
 ) -> int:
@@ -350,8 +349,6 @@ def run_validation(
             dataset_dir,
             objects_subset,
             sample_count,
-            skip_orientation_check,
-            filter_orientation_threshold_deg,
         )
 
         motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path = _read_required_artifacts(dataset_dir)
@@ -362,10 +359,10 @@ def run_validation(
         _validate_motion_files(motions_dir, bvhs_dir, cond, sample_count)
 
         if skip_orientation_check:
-            _print_warn("skipping stored processed-orientation validation by request")
+            _print_warn("skipping T-pose face-orientation validation by request")
         else:
-            from validate_anytop_dataset import _validate_motion_orientation
-            _validate_motion_orientation(dataset_dir, cond, sample_count, orientation_threshold_deg)
+            from validate_anytop_dataset import _validate_tpose_orientation
+            _validate_tpose_orientation(cond, orientation_threshold_deg)
 
         _validate_positions_error_file(positions_error_path)
 
@@ -412,7 +409,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--skip-orientation-check",
         action="store_true",
-        help="Skip stored processed-orientation validation during dataset checks.",
+        help="Skip T-pose face-orientation validation during dataset checks.",
     )
     parser.add_argument(
         "--objects-subset",
@@ -430,13 +427,7 @@ def parse_args() -> argparse.Namespace:
         "--orientation-threshold-deg",
         default=15.0,
         type=float,
-        help="Maximum allowed first-frame facing error from +Z using stored processed-orientation metadata. Defaults to 15.0.",
-    )
-    parser.add_argument(
-        "--filter-orientation-threshold-deg",
-        default=45.0,
-        type=float,
-        help="Threshold for deleting motion tensors whose stored processed-orientation deviation exceeds the limit before validation. 0 means no filtering. Defaults to 45.0.",
+        help="Maximum allowed T-pose face-orientation delta from the nearest cardinal XZ axis (+x/-x/+z/-z) before warning. Defaults to 15.0.",
     )
     parser.add_argument(
         "--sample-count",
@@ -463,6 +454,9 @@ def main() -> int:
     args = parse_args()
     if args.sample_count < 0:
         print("ERROR: --sample-count must be >= 0")
+        return 1
+    if args.orientation_threshold_deg < 0:
+        print("ERROR: --orientation-threshold-deg must be >= 0")
         return 1
 
     # Handle re-encode joint names only mode
@@ -522,7 +516,6 @@ def main() -> int:
             args.objects_subset,
             args.skip_orientation_check,
             args.orientation_threshold_deg,
-            args.filter_orientation_threshold_deg,
             args.sample_count,
             args.dataset_dir,
         )

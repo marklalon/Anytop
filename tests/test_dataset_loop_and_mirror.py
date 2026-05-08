@@ -24,12 +24,26 @@ LOOP_MOTION = "Ostrich_Run_548.npy"
 LOOP_SUBSET = "bipeds_clean"
 MIRROR_MOTION = "Jaguar_Run_264.npy"
 MIRROR_SUBSET = "quadropeds_clean"
+MIRROR_SAFEGUARD_SUBSET = "all"
 NUM_FRAMES = 60
 
 
 def assert_close(name: str, actual: np.ndarray, expected: np.ndarray, atol: float = 1e-6) -> None:
     max_diff = float(np.max(np.abs(actual - expected))) if actual.size else 0.0
     assert np.allclose(actual, expected, atol=atol), f"{name} mismatch: max_diff={max_diff}"
+
+
+def find_mirror_safeguard_sample(motion_dataset):
+    for name in motion_dataset.name_list:
+        data = motion_dataset.data_dict[name]
+        cond = motion_dataset.cond_dict[data["object_type"]]
+        if cond["mirror_disabled_joint_indices"]:
+            return name, data, cond
+
+    raise AssertionError(
+        "no current dataset sample exercises mirror safeguards; "
+        "pick a new regression object or replace this test with synthetic coverage"
+    )
 
 
 def test_loop_padding_updates_effective_length() -> None:
@@ -173,6 +187,35 @@ def test_mirror_augmentation_runs_before_normalization() -> None:
     assert_close("mirrored offsets", offsets, manual_offsets)
 
 
+def test_mirror_safeguards_handle_single_frame_tpose() -> None:
+    dataset = Truebones(
+        split="train",
+        temporal_window=31,
+        num_frames=NUM_FRAMES,
+        balanced=False,
+        objects_subset=MIRROR_SAFEGUARD_SUBSET,
+        motion_cache_size=4,
+    )
+
+    motion_dataset = dataset.motion_dataset
+    motion_dataset.opt.aug_mirror_prob = 1.0
+    motion_dataset.opt.aug_speed_range = 0.0
+
+    sample_name, data, cond = find_mirror_safeguard_sample(motion_dataset)
+    motion, m_length, object_type, _parents, _graph_dist, _joint_relations, tpos_first_frame, offsets, *_ = motion_dataset.augment(data)
+
+    assert cond["mirror_disabled_joint_indices"], f"selected sample {sample_name} no longer exercises mirror safeguards"
+    assert motion.ndim == 3, f"expected mirrored motion to keep frame axis, got {motion.shape}"
+    assert tpos_first_frame.ndim == 2, f"expected mirrored t-pose to remain (J, C), got {tpos_first_frame.shape}"
+    assert m_length == motion.shape[0], f"expected mirrored motion length to match frame axis, got {m_length} vs {motion.shape[0]}"
+    assert tpos_first_frame.shape == np.asarray(cond["mean"]).shape, (
+        f"expected mirrored t-pose shape {np.asarray(cond['mean']).shape}, got {tpos_first_frame.shape}"
+    )
+    assert np.asarray(offsets).shape == np.asarray(cond["offsets"]).shape, (
+        f"expected mirrored offsets shape {np.asarray(cond['offsets']).shape}, got {np.asarray(offsets).shape}"
+    )
+
+
 def main() -> None:
     test_loop_padding_updates_effective_length()
     print("loop padding regression: ok")
@@ -185,6 +228,9 @@ def main() -> None:
 
     test_mirror_augmentation_runs_before_normalization()
     print("mirror normalization regression: ok")
+
+    test_mirror_safeguards_handle_single_frame_tpose()
+    print("mirror safeguard tpose regression: ok")
 
     print("all regression checks passed")
 
