@@ -233,7 +233,7 @@ def load(filename, start=None, end=None, order=None, world=True):
     return (Animation(quat_rotations, positions, orients, offsets, parents), names, frametime)
 
     
-def save(filename, anim, names=None, frametime=1.0/24.0, order='xyz', positions=False, orients=True):
+def save(filename, anim, names=None, frametime=1.0/30.0, order='xyz', positions=False, orients=True):
     """
     Saves an Animation to file as BVH
     
