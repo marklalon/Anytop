@@ -104,7 +104,7 @@ def _rewrite_positions_error_file(dataset_dir_path: Path, motion_entries: dict[s
 def regenerate_dataset_artifacts(
     dataset_dir: str | Path | None = None,
     t5_model: str = "t5-base",
-    force_reencode: bool = True,
+    force_reencode: bool = False,
 ) -> Path:
     dataset_dir_path = _resolve_dataset_dir_path(dataset_dir)
     motions_dir = dataset_dir_path / MOTION_DIR

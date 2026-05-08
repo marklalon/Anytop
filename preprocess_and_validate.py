@@ -278,9 +278,6 @@ def run_re_encode_joint_names_only(
     t5_model: str = "t5-base",
 ) -> int:
     """Regenerate non-motion dataset artifacts without re-preprocessing motions."""
-    print("\n" + "=" * 70)
-    print("Regenerating dataset sidecar artifacts")
-    print("=" * 70 + "\n")
 
     try:
         dataset_dir_path = Path(get_dataset_dir(dataset_dir or None))
@@ -307,7 +304,6 @@ def run_re_encode_joint_names_only(
         if result.returncode != 0:
             return result.returncode
 
-        print(f"[PASS] Dataset sidecar regeneration completed successfully: {dataset_dir_path}")
         return 0
     except Exception as e:
         print(f"ERROR: Failed to regenerate dataset artifacts: {e}")

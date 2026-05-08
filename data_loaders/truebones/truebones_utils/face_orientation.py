@@ -176,6 +176,21 @@ def _canonicalize_joint_name(name):
     return ' '.join(canonical_parts) if canonical_parts else name.strip()
 
 
+def _joint_signature(name):
+    signature_tokens = [
+        token for token in _canonicalize_joint_name(name).lower().split()
+        if token not in ('left', 'right', 'lf', 'rf')
+    ]
+    if signature_tokens:
+        return ' '.join(signature_tokens)
+
+    fallback_tokens = [
+        token for token in _normalize_joint_name(name).split()
+        if token not in ('left', 'right', 'l', 'r', 'lf', 'rf')
+    ]
+    return ' '.join(fallback_tokens)
+
+
 def _face_joint_name_allowed(name):
     normalized = _normalize_joint_name(name)
     if any(token in normalized for token in _FACE_JOINT_EXCLUDE_TOKENS):
@@ -186,11 +201,12 @@ def _face_joint_name_allowed(name):
 def _find_semantic_joint_pair(joint_names, parents, priorities, *, exclude_near_root=True):
     depths = _joint_depths(parents)
     candidates = {'right': [], 'left': []}
+    paired_candidates = {}
 
     for joint_index, joint_name in enumerate(joint_names):
         if not _face_joint_name_allowed(joint_name):
             continue
-        normalized = _normalize_joint_name(joint_name)
+        normalized = _normalize_joint_name(_canonicalize_joint_name(joint_name))
         if exclude_near_root and any(token in normalized for token in _FACE_JOINT_NEAR_ROOT_EXCLUDE_TOKENS):
             continue
 
@@ -206,10 +222,40 @@ def _find_semantic_joint_pair(joint_names, parents, priorities, *, exclude_near_
         if priority_index is None:
             continue
 
-        candidates[side].append((priority_index, depths[joint_index], joint_index))
+        candidate = (priority_index, depths[joint_index], joint_index)
+        candidates[side].append(candidate)
+
+        signature = _joint_signature(joint_name)
+        if signature:
+            if signature not in paired_candidates:
+                paired_candidates[signature] = {'right': [], 'left': []}
+            paired_candidates[signature][side].append(candidate)
 
     if not candidates['right'] or not candidates['left']:
         return None
+
+    signature_pairs = []
+    for signature, signature_candidates in paired_candidates.items():
+        if not signature_candidates['right'] or not signature_candidates['left']:
+            continue
+
+        right_candidate = min(signature_candidates['right'])
+        left_candidate = min(signature_candidates['left'])
+        signature_pairs.append(
+            (
+                max(right_candidate[0], left_candidate[0]),
+                max(right_candidate[1], left_candidate[1]),
+                min(right_candidate[2], left_candidate[2]),
+                max(right_candidate[2], left_candidate[2]),
+                signature,
+                right_candidate[2],
+                left_candidate[2],
+            )
+        )
+
+    if signature_pairs:
+        _priority, _depth, _min_index, _max_index, _signature, right_index, left_index = min(signature_pairs)
+        return right_index, left_index
 
     right_index = min(candidates['right'])[2]
     left_index = min(candidates['left'])[2]
@@ -221,7 +267,7 @@ def _find_forward_reference_joint(joint_names, parents):
     candidates = []
 
     for joint_index, joint_name in enumerate(joint_names):
-        normalized = _normalize_joint_name(joint_name)
+        normalized = _normalize_joint_name(_canonicalize_joint_name(joint_name))
         if 'nub' in normalized:
             continue
         priority_index = None
@@ -431,15 +477,16 @@ def _get_facing_candidates_with_diagnostics(
             return {}, {}
         return {'chain': chain_forward}, {'chain': chain_near_y}
 
-    torso_head, torso_head_near_y = _get_head_forward(
-        joints,
-        face_joint_indx,
-        forward_joint_index,
-        forward_base_joint_index=None,
-    )
-    if torso_head is not None:
-        candidates['torso_head'] = torso_head
-        near_y_candidates['torso_head'] = torso_head_near_y
+    if forward_base_joint_index is None:
+        torso_head, torso_head_near_y = _get_head_forward(
+            joints,
+            face_joint_indx,
+            forward_joint_index,
+            forward_base_joint_index=None,
+        )
+        if torso_head is not None:
+            candidates['torso_head'] = torso_head
+            near_y_candidates['torso_head'] = torso_head_near_y
 
     tail_spine, tail_spine_near_y = _get_head_forward(
         joints,

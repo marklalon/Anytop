@@ -19,6 +19,7 @@ from data_loaders.truebones.truebones_utils import face_orientation
 from data_loaders.truebones.truebones_utils.face_orientation import (
     _choose_facing_forward,
     _get_facing_candidates,
+    resolve_face_joints,
     resolve_forward_reference_joints,
 )
 
@@ -72,6 +73,25 @@ class FaceOrientationChainForwardTest(unittest.TestCase):
         expected = np.array([[1.0, 0.0, 1.0]], dtype=np.float64)
         expected /= np.linalg.norm(expected, axis=-1, keepdims=True)
         np.testing.assert_allclose(candidates['tail_spine'], expected, atol=1e-8)
+
+    def test_tail_spine_fallback_does_not_emit_torso_head_candidate(self):
+        joints = np.zeros((1, 9, 3), dtype=np.float64)
+        joints[:, 3] = np.array([0.0, 0.0, 0.0], dtype=np.float64)
+        joints[:, 1] = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        joints[:, 5] = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+        joints[:, 6] = np.array([-1.0, 0.0, 0.0], dtype=np.float64)
+        joints[:, 7] = np.array([1.0, 1.0, 0.0], dtype=np.float64)
+        joints[:, 8] = np.array([-1.0, 1.0, 0.0], dtype=np.float64)
+
+        candidates = _get_facing_candidates(
+            joints,
+            'FallbackBug',
+            face_joint_indx=[5, 6, 7, 8],
+            forward_joint_index=1,
+            forward_base_joint_index=3,
+        )
+
+        self.assertEqual(set(candidates.keys()), {'tail_spine', 'across'})
 
     def test_priority_prefers_torso_head_over_tail_spine_and_across(self):
         torso_head = np.array([[0.0, 0.0, 1.0]], dtype=np.float64)
@@ -164,6 +184,43 @@ class FaceOrientationChainForwardTest(unittest.TestCase):
         mock_print.assert_called_once_with(
             '[WARN] FallbackBug: orientation calculation fell back to the across-vector heuristic because higher-priority forward references were unavailable or near-parallel to the Y axis.'
         )
+
+    def test_resolve_face_joints_prefers_homologous_crab_pairs(self):
+        joint_names = [
+            'Hips',
+            'BN_Bip01_Pelvis',
+            'BN_leg_R_01',
+            'BN_leg_R_06',
+            'BN_Leg_R_11',
+            'BN_Leg_L_11',
+            'BN_leg_L_06',
+            'BN_leg_L_01',
+            'BN_Arm_L_01',
+            'BN_Arm_R_01',
+        ]
+        parents = np.array([-1, 0, 1, 1, 1, 1, 1, 1, 1, 1], dtype=np.int64)
+
+        face_joints = resolve_face_joints('CrabLike', joint_names, parents)
+
+        self.assertEqual(face_joints, [2, 7, 9, 8])
+
+    def test_homologous_crab_pairs_keep_across_aligned_with_heading(self):
+        joints = np.zeros((1, 10, 3), dtype=np.float64)
+        joints[:, 2] = np.array([8.997085, 22.944474, -3.344254], dtype=np.float64)
+        joints[:, 7] = np.array([-6.384427, 22.558812, -6.23502], dtype=np.float64)
+        joints[:, 8] = np.array([-5.843798, 25.862572, -10.677262], dtype=np.float64)
+        joints[:, 9] = np.array([8.728792, 24.642908, -8.238453], dtype=np.float64)
+
+        candidates = _get_facing_candidates(
+            joints,
+            'CrabLike',
+            face_joint_indx=[2, 7, 9, 8],
+            forward_joint_index=None,
+            forward_base_joint_index=None,
+        )
+
+        self.assertGreater(candidates['across'][0, 0], 0.0)
+        self.assertLess(candidates['across'][0, 2], 0.0)
 
 
 if __name__ == '__main__':

@@ -1413,8 +1413,10 @@ def _process_motion_file(file_path, object_type, max_joints, root_pose_init_xz,
         begin = slice_ind
 
         if motion is None:
-            print(f'failed to process file: {file_path}, slice {current_begin}:{slice_ind}')
-            continue
+            raise RuntimeError(
+                f"Failed to process file: {file_path}, slice {current_begin}:{slice_ind}. "
+                f"Aborting preprocessing to prevent data corruption."
+            )
 
         _, file_name = os.path.split(file_path)
         raw_action = file_name.split('.')[0]
