@@ -71,6 +71,7 @@ def _load_utils_module(module_name: str) -> None:
 
 _load_utils_module("utils.rotation_conversions")
 _load_utils_module("utils.npy_roundtrip_utils")
+_load_utils_module("utils.misc")
 
 from utils.misc import infer_object_type_from_filename
 from utils.npy_roundtrip_utils import recover_from_features
@@ -83,6 +84,7 @@ _DEFAULT_COND_NPY = os.path.realpath(
 )
 
 _FULLBODY_IK_ITERATIONS = 2
+_LOCALBODY_IK_FRAME0_DRIFT_THRESHOLD = 0.10
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -293,6 +295,59 @@ def _bare_feature_rotation_channel_mask(parents: np.ndarray) -> np.ndarray:
     return rotation_channel_mask
 
 
+def _localbody_ik_excluded_joint_indices(
+    parents: np.ndarray,
+    preserved_position_indices: np.ndarray | list[int] | None,
+) -> np.ndarray:
+    parents = np.asarray(parents, dtype=np.int32)
+    excluded_joint_indices = _normalize_joint_index_selection(
+        preserved_position_indices,
+        len(parents),
+        label="preserved_position_indices",
+    )
+    unobservable_leaf_indices = np.flatnonzero(~_bare_feature_rotation_channel_mask(parents))
+    if unobservable_leaf_indices.size == 0:
+        return excluded_joint_indices
+    if excluded_joint_indices.size == 0:
+        return unobservable_leaf_indices.astype(np.int32, copy=False)
+    return np.unique(
+        np.concatenate((excluded_joint_indices, unobservable_leaf_indices.astype(np.int32, copy=False)))
+    )
+
+
+def _clamp_unobservable_joint_positions_to_rest(
+    animation,
+    *,
+    rest_offsets: np.ndarray,
+    rotation_channel_mask: np.ndarray,
+):
+    from motion_lib.Animation import Animation
+
+    rest_offsets = np.asarray(rest_offsets, dtype=np.float64)
+    rotation_channel_mask = np.asarray(rotation_channel_mask, dtype=bool)
+
+    if rest_offsets.shape != (animation.shape[1], 3):
+        raise ValueError(
+            f"rest_offsets must have shape ({animation.shape[1]}, 3), got {rest_offsets.shape}"
+        )
+    if rotation_channel_mask.shape != (animation.shape[1],):
+        raise ValueError(
+            f"rotation_channel_mask must have shape ({animation.shape[1]},), got {rotation_channel_mask.shape}"
+        )
+    if np.all(rotation_channel_mask):
+        return animation
+
+    clamped_positions = np.asarray(animation.positions, dtype=np.float64).copy()
+    clamped_positions[:, ~rotation_channel_mask, :] = rest_offsets[~rotation_channel_mask][None, :, :]
+    return Animation(
+        animation.rotations.copy(),
+        clamped_positions,
+        animation.orients.copy(),
+        animation.offsets.copy(),
+        animation.parents.copy(),
+    )
+
+
 def _coerce_root_pose_offset(root_pose_init_xz: np.ndarray) -> np.ndarray:
     root_pose_init_xz = np.asarray(root_pose_init_xz, dtype=np.float64).reshape(-1)
     if root_pose_init_xz.size == 3:
@@ -319,98 +374,27 @@ def _normalize_joint_index_selection(
     return np.unique(normalized)
 
 
-def _run_basic_inverse_kinematics_with_constraints(
-    animation,
-    target_global_positions: np.ndarray,
-    *,
-    frozen_rotation_indices: np.ndarray | list[int] | None = None,
-    iterations: int = _FULLBODY_IK_ITERATIONS,
-):
-    import importlib
-
-    from motion_lib.Quaternions import Quaternions
-
-    animation_module = importlib.import_module("motion_lib.Animation")
-    animation_structure = importlib.import_module("motion_lib.AnimationStructure")
-
-    frozen_rotation_indices = _normalize_joint_index_selection(
-        frozen_rotation_indices,
-        animation.shape[1],
-        label="frozen_rotation_indices",
-    )
-    frozen_rotation_lookup = {int(index) for index in frozen_rotation_indices.tolist()}
-    children = animation_structure.children_list(animation.parents)
-
-    for _iteration in range(iterations):
-        for joint_index in animation_structure.joints(animation.parents):
-            if joint_index in frozen_rotation_lookup:
-                continue
-
-            child_indices = np.asarray(children[joint_index], dtype=np.int32)
-            if child_indices.size == 0:
-                continue
-
-            anim_transforms = animation_module.transforms_global(animation)
-            anim_positions = anim_transforms[:, :, :3, 3]
-            anim_rotations = Quaternions.from_transforms(anim_transforms)
-
-            joint_dirs = anim_positions[:, child_indices] - anim_positions[:, np.newaxis, joint_index]
-            target_dirs = (
-                target_global_positions[:, child_indices]
-                - target_global_positions[:, np.newaxis, joint_index]
-            )
-
-            if child_indices.size > 1 and (joint_dirs == 0).all() and (target_dirs == 0).all():
-                continue
-
-            joint_lengths = np.sqrt(np.sum(joint_dirs ** 2.0, axis=-1)) + 1e-20
-            target_lengths = np.sqrt(np.sum(target_dirs ** 2.0, axis=-1)) + 1e-20
-
-            joint_dirs = joint_dirs / joint_lengths[:, :, np.newaxis]
-            target_dirs = target_dirs / target_lengths[:, :, np.newaxis]
-
-            angles = np.arccos(np.sum(joint_dirs * target_dirs, axis=2).clip(-1, 1))
-            axes = np.cross(joint_dirs, target_dirs)
-            axes = -anim_rotations[:, joint_index, np.newaxis] * axes
-
-            valid_directions = (joint_lengths > 1e-4)[0]
-            if not np.any(valid_directions):
-                continue
-
-            rotations = Quaternions.from_angle_axis(angles, axes)
-            if rotations.shape[1] == 1:
-                averaged_rotation = rotations[:, 0]
-            else:
-                averaged_rotation = Quaternions.exp(
-                    rotations[:, valid_directions].log().mean(axis=-2)
-                )
-
-            animation.rotations[:, joint_index] = (
-                animation.rotations[:, joint_index] * averaged_rotation
-            )
-
-    return animation
+def _compute_min_measurable_length(lengths: np.ndarray) -> float:
+    lengths = np.asarray(lengths, dtype=np.float64).reshape(-1)
+    positive_lengths = lengths[np.isfinite(lengths) & (lengths > 1e-8)]
+    if positive_lengths.size == 0:
+        return 1e-8
+    return float(max(np.mean(positive_lengths) * 0.1, 1e-8))
 
 
-def _rebuild_fullbody_animation_with_ik(
+def _validate_ik_mode_selection(fullbody_ik: bool, localbody_ik: bool) -> None:
+    if fullbody_ik and localbody_ik:
+        raise ValueError("fullbody_ik and localbody_ik are mutually exclusive")
+
+
+def _resolve_ik_rebuild_inputs(
     target_anim,
     *,
-    rigid_offsets: np.ndarray | None = None,
-    rigid_parents: np.ndarray | None = None,
-    preserved_position_indices: np.ndarray | list[int] | None = None,
-    preserved_rotation_indices: np.ndarray | list[int] | None = None,
-    iterations: int = _FULLBODY_IK_ITERATIONS,
-) -> tuple[object, float, float]:
-    """Force a full-body IK rebuild against the current world-space motion.
-
-    The restore path intentionally discards all non-root local translations and
-    reconstructs the entire pose as a rigid skeleton animation on the requested
-    skeleton definition. This lets restore target the raw export skeleton
-    directly instead of rigidizing the intermediate processed skeleton, while
-    optionally preserving trusted local pose channels on selected joints.
-    """
-    from motion_lib.Animation import Animation, positions_global
-
+    rigid_offsets: np.ndarray | None,
+    rigid_parents: np.ndarray | None,
+    preserved_position_indices: np.ndarray | list[int] | None,
+    preserved_rotation_indices: np.ndarray | list[int] | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
     parents = np.asarray(
         target_anim.parents if rigid_parents is None else rigid_parents,
         dtype=np.int32,
@@ -442,15 +426,262 @@ def _rebuild_fullbody_animation_with_ik(
     root_indices = np.flatnonzero(parents < 0)
     if root_indices.size != 1:
         raise ValueError(f"Expected exactly one root joint, got {root_indices.size}")
-    root_index = int(root_indices[0])
 
-    rigid_positions = np.repeat(rest_offsets[None, :, :], target_anim.shape[0], axis=0)
-    rigid_positions[:, root_index, :] = np.asarray(target_anim.positions[:, root_index, :], dtype=np.float64)
-    if preserved_position_indices.size > 0:
-        rigid_positions[:, preserved_position_indices, :] = np.asarray(
-            target_anim.positions[:, preserved_position_indices, :],
-            dtype=np.float64,
+    return (
+        parents,
+        rest_offsets,
+        preserved_position_indices,
+        preserved_rotation_indices,
+        int(root_indices[0]),
+    )
+
+
+def _build_selective_ik_seed_positions(
+    target_anim,
+    *,
+    rest_offsets: np.ndarray,
+    root_index: int,
+    rigidize_joint_mask: np.ndarray,
+    preserved_position_indices: np.ndarray,
+) -> np.ndarray:
+    target_positions = np.asarray(target_anim.positions, dtype=np.float64)
+    rigidize_joint_mask = np.asarray(rigidize_joint_mask, dtype=bool)
+    if rigidize_joint_mask.shape != target_positions.shape[:2]:
+        raise ValueError(
+            f"rigidize_joint_mask must have shape {target_positions.shape[:2]}, got {rigidize_joint_mask.shape}"
         )
+
+    seed_positions = target_positions.copy()
+    if np.any(rigidize_joint_mask):
+        rigid_template = np.broadcast_to(rest_offsets[None, :, :], target_positions.shape)
+        seed_positions[rigidize_joint_mask] = rigid_template[rigidize_joint_mask]
+
+    seed_positions[:, root_index, :] = target_positions[:, root_index, :]
+    if preserved_position_indices.size > 0:
+        seed_positions[:, preserved_position_indices, :] = target_positions[:, preserved_position_indices, :]
+    return seed_positions
+
+
+def _compute_localbody_ik_active_child_mask(
+    local_positions: np.ndarray,
+    *,
+    parents: np.ndarray,
+    frame0_drift_threshold: float = _LOCALBODY_IK_FRAME0_DRIFT_THRESHOLD,
+    excluded_joint_indices: np.ndarray | list[int] | None = None,
+) -> np.ndarray:
+    if frame0_drift_threshold < 0.0:
+        raise ValueError("frame0_drift_threshold must be non-negative")
+
+    local_positions = np.asarray(local_positions, dtype=np.float64)
+    parents = np.asarray(parents, dtype=np.int32)
+
+    if local_positions.ndim != 3 or local_positions.shape[-1] != 3:
+        raise ValueError(f"local_positions must have shape (F, J, 3), got {local_positions.shape}")
+    frame_count, joint_count, _coord_count = local_positions.shape
+    if parents.shape != (joint_count,):
+        raise ValueError(f"parents must have shape ({joint_count},), got {parents.shape}")
+
+    current_lengths = np.linalg.norm(local_positions, axis=-1)
+    frame0_lengths = np.asarray(current_lengths[0], dtype=np.float64)
+    active_child_mask = np.zeros((frame_count, joint_count), dtype=bool)
+
+    min_measurable_frame0_length = _compute_min_measurable_length(frame0_lengths[parents >= 0])
+    measurable_frame0_joints = (parents >= 0) & (frame0_lengths > min_measurable_frame0_length)
+    if np.any(measurable_frame0_joints):
+        active_child_mask[:, measurable_frame0_joints] = (
+            np.abs(current_lengths[:, measurable_frame0_joints] - frame0_lengths[measurable_frame0_joints][None, :])
+            / frame0_lengths[measurable_frame0_joints][None, :]
+        ) > float(frame0_drift_threshold)
+
+    excluded_joint_indices = _normalize_joint_index_selection(
+        excluded_joint_indices,
+        joint_count,
+        label="excluded_joint_indices",
+    )
+    if excluded_joint_indices.size > 0:
+        active_child_mask[:, excluded_joint_indices] = False
+
+    return active_child_mask
+
+
+def _promote_localbody_ik_active_child_mask_to_clip_scope(
+    active_child_mask: np.ndarray,
+) -> np.ndarray:
+    active_child_mask = np.asarray(active_child_mask, dtype=bool)
+    if active_child_mask.ndim != 2:
+        raise ValueError(f"active_child_mask must have shape (F, J), got {active_child_mask.shape}")
+    clip_active_joints = np.any(active_child_mask, axis=0)
+    if not np.any(clip_active_joints):
+        return np.zeros_like(active_child_mask, dtype=bool)
+    return np.broadcast_to(clip_active_joints[None, :], active_child_mask.shape).copy()
+
+
+def _plan_localbody_ik_masks(
+    local_positions: np.ndarray,
+    *,
+    parents: np.ndarray,
+    preserved_position_indices: np.ndarray | list[int] | None,
+    frame0_drift_threshold: float = _LOCALBODY_IK_FRAME0_DRIFT_THRESHOLD,
+) -> tuple[np.ndarray, np.ndarray]:
+    parents = np.asarray(parents, dtype=np.int32)
+    excluded_joint_indices = _localbody_ik_excluded_joint_indices(
+        parents,
+        preserved_position_indices,
+    )
+    frame_active_child_mask = _compute_localbody_ik_active_child_mask(
+        local_positions,
+        parents=parents,
+        frame0_drift_threshold=frame0_drift_threshold,
+        excluded_joint_indices=excluded_joint_indices,
+    )
+    clip_active_child_mask = _promote_localbody_ik_active_child_mask_to_clip_scope(frame_active_child_mask)
+    return frame_active_child_mask, clip_active_child_mask
+
+
+def _run_basic_inverse_kinematics_with_constraints(
+    animation,
+    target_global_positions: np.ndarray,
+    *,
+    frozen_rotation_indices: np.ndarray | list[int] | None = None,
+    active_child_mask: np.ndarray | None = None,
+    iterations: int = _FULLBODY_IK_ITERATIONS,
+):
+    import importlib
+
+    from motion_lib.Quaternions import Quaternions
+
+    animation_module = importlib.import_module("motion_lib.Animation")
+    animation_structure = importlib.import_module("motion_lib.AnimationStructure")
+
+    frozen_rotation_indices = _normalize_joint_index_selection(
+        frozen_rotation_indices,
+        animation.shape[1],
+        label="frozen_rotation_indices",
+    )
+    if active_child_mask is not None:
+        active_child_mask = np.asarray(active_child_mask, dtype=bool)
+        if active_child_mask.shape != (animation.shape[0], animation.shape[1]):
+            raise ValueError(
+                f"active_child_mask must have shape {(animation.shape[0], animation.shape[1])}, got {active_child_mask.shape}"
+            )
+
+    frozen_rotation_lookup = {int(index) for index in frozen_rotation_indices.tolist()}
+    children = animation_structure.children_list(animation.parents)
+
+    for _iteration in range(iterations):
+        for joint_index in animation_structure.joints(animation.parents):
+            if joint_index in frozen_rotation_lookup:
+                continue
+
+            child_indices = np.asarray(children[joint_index], dtype=np.int32)
+            if child_indices.size == 0:
+                continue
+
+            joint_active_child_mask = None
+            if active_child_mask is not None:
+                joint_active_child_mask = active_child_mask[:, child_indices]
+                if not np.any(joint_active_child_mask):
+                    continue
+
+            anim_transforms = animation_module.transforms_global(animation)
+            anim_positions = anim_transforms[:, :, :3, 3]
+            anim_rotations = Quaternions.from_transforms(anim_transforms)
+
+            joint_dirs = anim_positions[:, child_indices] - anim_positions[:, np.newaxis, joint_index]
+            target_dirs = (
+                target_global_positions[:, child_indices]
+                - target_global_positions[:, np.newaxis, joint_index]
+            )
+
+            if child_indices.size > 1 and (joint_dirs == 0).all() and (target_dirs == 0).all():
+                continue
+
+            joint_lengths = np.sqrt(np.sum(joint_dirs ** 2.0, axis=-1)) + 1e-20
+            target_lengths = np.sqrt(np.sum(target_dirs ** 2.0, axis=-1)) + 1e-20
+
+            joint_dirs = joint_dirs / joint_lengths[:, :, np.newaxis]
+            target_dirs = target_dirs / target_lengths[:, :, np.newaxis]
+
+            angles = np.arccos(np.sum(joint_dirs * target_dirs, axis=2).clip(-1, 1))
+            axes = np.cross(joint_dirs, target_dirs)
+            axes = -anim_rotations[:, joint_index, np.newaxis] * axes
+
+            valid_directions = (joint_lengths > 1e-4)[0]
+            if not np.any(valid_directions):
+                continue
+
+            rotations = Quaternions.from_angle_axis(angles, axes)
+            if joint_active_child_mask is None:
+                if rotations.shape[1] == 1:
+                    averaged_rotation = rotations[:, 0]
+                else:
+                    averaged_rotation = Quaternions.exp(
+                        rotations[:, valid_directions].log().mean(axis=-2)
+                    )
+
+                animation.rotations[:, joint_index] = (
+                    animation.rotations[:, joint_index] * averaged_rotation
+                )
+                continue
+
+            active_frames = np.flatnonzero(np.any(joint_active_child_mask, axis=1))
+            for frame_index in active_frames.tolist():
+                frame_child_mask = (
+                    joint_active_child_mask[frame_index]
+                    & (joint_lengths[frame_index] > 1e-4)
+                    & (target_lengths[frame_index] > 1e-4)
+                )
+                if not np.any(frame_child_mask):
+                    continue
+
+                frame_slice = slice(frame_index, frame_index + 1)
+                if np.count_nonzero(frame_child_mask) == 1:
+                    child_slot = int(np.flatnonzero(frame_child_mask)[0])
+                    averaged_rotation = rotations[frame_slice, child_slot]
+                else:
+                    averaged_rotation = Quaternions.exp(
+                        rotations[frame_index, frame_child_mask].log().mean(axis=0, keepdims=True)
+                    )
+
+                animation.rotations[frame_slice, joint_index] = (
+                    animation.rotations[frame_slice, joint_index] * averaged_rotation
+                )
+
+    return animation
+
+
+def _rebuild_animation_with_ik(
+    target_anim,
+    *,
+    rigid_offsets: np.ndarray | None = None,
+    rigid_parents: np.ndarray | None = None,
+    preserved_position_indices: np.ndarray | list[int] | None = None,
+    preserved_rotation_indices: np.ndarray | list[int] | None = None,
+    rigidize_joint_mask: np.ndarray | None = None,
+    active_child_mask: np.ndarray | None = None,
+    iterations: int = _FULLBODY_IK_ITERATIONS,
+) -> tuple[object, float, float]:
+    from motion_lib.Animation import Animation, positions_global
+
+    parents, rest_offsets, preserved_position_indices, preserved_rotation_indices, root_index = (
+        _resolve_ik_rebuild_inputs(
+            target_anim,
+            rigid_offsets=rigid_offsets,
+            rigid_parents=rigid_parents,
+            preserved_position_indices=preserved_position_indices,
+            preserved_rotation_indices=preserved_rotation_indices,
+        )
+    )
+    if rigidize_joint_mask is None:
+        rigidize_joint_mask = np.zeros(target_anim.shape[:2], dtype=bool)
+
+    rigid_positions = _build_selective_ik_seed_positions(
+        target_anim,
+        rest_offsets=rest_offsets,
+        root_index=root_index,
+        rigidize_joint_mask=rigidize_joint_mask,
+        preserved_position_indices=preserved_position_indices,
+    )
 
     ik_seed = Animation(
         target_anim.rotations.copy(),
@@ -465,11 +696,73 @@ def _rebuild_fullbody_animation_with_ik(
         ik_seed,
         target_global_positions,
         frozen_rotation_indices=preserved_rotation_indices,
+        active_child_mask=active_child_mask,
         iterations=iterations,
     )
     rebuilt_global_positions = positions_global(rebuilt_anim).astype(np.float64, copy=False)
     per_joint_error = np.linalg.norm(rebuilt_global_positions - target_global_positions, axis=-1)
     return rebuilt_anim, float(per_joint_error.mean()), float(per_joint_error.max())
+
+
+def _rebuild_fullbody_animation_with_ik(
+    target_anim,
+    *,
+    rigid_offsets: np.ndarray | None = None,
+    rigid_parents: np.ndarray | None = None,
+    preserved_position_indices: np.ndarray | list[int] | None = None,
+    preserved_rotation_indices: np.ndarray | list[int] | None = None,
+    iterations: int = _FULLBODY_IK_ITERATIONS,
+) -> tuple[object, float, float]:
+    """Force a full-body IK rebuild against the current world-space motion.
+
+    The restore path intentionally discards all non-root local translations and
+    reconstructs the entire pose as a rigid skeleton animation on the requested
+    skeleton definition. This lets restore target the raw export skeleton
+    directly instead of rigidizing the intermediate processed skeleton, while
+    optionally preserving trusted local pose channels on selected joints.
+    """
+    fullbody_rigidize_mask = np.ones(target_anim.shape[:2], dtype=bool)
+    return _rebuild_animation_with_ik(
+        target_anim,
+        rigid_offsets=rigid_offsets,
+        rigid_parents=rigid_parents,
+        preserved_position_indices=preserved_position_indices,
+        preserved_rotation_indices=preserved_rotation_indices,
+        rigidize_joint_mask=fullbody_rigidize_mask,
+        iterations=iterations,
+    )
+
+
+def _rebuild_localbody_animation_with_ik(
+    target_anim,
+    *,
+    rigid_offsets: np.ndarray | None = None,
+    rigid_parents: np.ndarray | None = None,
+    preserved_position_indices: np.ndarray | list[int] | None = None,
+    preserved_rotation_indices: np.ndarray | list[int] | None = None,
+    frame0_drift_threshold: float = _LOCALBODY_IK_FRAME0_DRIFT_THRESHOLD,
+    iterations: int = _FULLBODY_IK_ITERATIONS,
+) -> tuple[object, float, float]:
+    parents = np.asarray(
+        target_anim.parents if rigid_parents is None else rigid_parents,
+        dtype=np.int32,
+    )
+    _frame_active_child_mask, clip_active_child_mask = _plan_localbody_ik_masks(
+        target_anim.positions,
+        parents=parents,
+        preserved_position_indices=preserved_position_indices,
+        frame0_drift_threshold=frame0_drift_threshold,
+    )
+    return _rebuild_animation_with_ik(
+        target_anim,
+        rigid_offsets=rigid_offsets,
+        rigid_parents=rigid_parents,
+        preserved_position_indices=preserved_position_indices,
+        preserved_rotation_indices=preserved_rotation_indices,
+        rigidize_joint_mask=clip_active_child_mask,
+        active_child_mask=clip_active_child_mask,
+        iterations=iterations,
+    )
 
 
 def _invert_preprocess_transform(
@@ -530,6 +823,7 @@ def restore_glb(
     object_type: str | None = None,
     fps: float | None = None,
     fullbody_ik: bool = False,
+    localbody_ik: bool = False,
 ) -> str:
     """Restore a preprocessed NPY motion file to a skinned GLB.
 
@@ -546,6 +840,12 @@ def restore_glb(
                              on the raw export skeleton after recovering the
                              animation.  Default is False (skip IK, use
                              recovered pose directly).
+        localbody_ik:         If True, detect observable joints whose
+                             drift exceeds 10% relative to animation frame 0,
+                             then keep those joints in local IK across the clip
+                             to avoid threshold-boundary snaps. Leaf joints
+                             without encoded local rotations are skipped.
+                             Mutually exclusive with fullbody_ik.
 
     Returns:
         The absolute path of the written GLB file.
@@ -558,6 +858,7 @@ def restore_glb(
     )
 
     output_glb = os.path.abspath(output_glb)
+    _validate_ik_mode_selection(fullbody_ik, localbody_ik)
 
     # ── Load cond.npy ─────────────────────────────────────────────────────────
     cond_npy_path = cond_npy or _DEFAULT_COND_NPY
@@ -674,8 +975,54 @@ def restore_glb(
             f"Preserving translation-root local pose during IK: "
             f"{joints_names[translation_root_index]} (index {translation_root_index})"
         )
+    elif localbody_ik:
+        local_ik_frame_active_child_mask, local_ik_active_child_mask = _plan_localbody_ik_masks(
+            export_anim.positions,
+            parents=raw_export_parents,
+            preserved_position_indices=[translation_root_index],
+            frame0_drift_threshold=_LOCALBODY_IK_FRAME0_DRIFT_THRESHOLD,
+        )
+        active_joint_indices = np.flatnonzero(np.any(local_ik_frame_active_child_mask, axis=0))
+        active_frame_joint_count = int(np.count_nonzero(local_ik_frame_active_child_mask))
+        if active_frame_joint_count == 0:
+            print(
+                "Skipping local-body IK: no frame-joint samples exceeded "
+                f"{_LOCALBODY_IK_FRAME0_DRIFT_THRESHOLD * 100.0:.0f}% frame-0 drift."
+            )
+        else:
+            continuous_frame_joint_count = int(np.count_nonzero(local_ik_active_child_mask))
+            preview = ", ".join(joints_names[index] for index in active_joint_indices[:10])
+            suffix = "..." if active_joint_indices.size > 10 else ""
+            print(
+                f"Apply local-body IK on joints whose frame-0 drift exceeds {_LOCALBODY_IK_FRAME0_DRIFT_THRESHOLD * 100.0:.0f}%; "
+                "once triggered, those joints stay in IK across the clip."
+            )
+            print(
+                f"Local-body IK triggers: {active_frame_joint_count} frame-joint samples across "
+                f"{active_joint_indices.size} joints: {preview}{suffix}"
+            )
+            print(
+                f"Continuous local-body IK scope: {continuous_frame_joint_count} frame-joint samples "
+                f"across the same {active_joint_indices.size} joints."
+            )
+            export_anim, ik_mean_error, ik_max_error = _rebuild_localbody_animation_with_ik(
+                export_anim,
+                rigid_offsets=raw_export_offsets,
+                rigid_parents=raw_export_parents,
+                preserved_position_indices=[translation_root_index],
+                preserved_rotation_indices=[translation_root_index],
+                frame0_drift_threshold=_LOCALBODY_IK_FRAME0_DRIFT_THRESHOLD,
+            )
+            print(
+                "Local-body IK residual joint error: "
+                f"mean={ik_mean_error:.6f}, max={ik_max_error:.6f}"
+            )
+            print(
+                f"Preserving translation-root local pose during IK: "
+                f"{joints_names[translation_root_index]} (index {translation_root_index})"
+            )
     else:
-        print("Skipping full-body IK (use --fullbody-ik to enable).")
+        print("Skipping IK (use --fullbody-ik or --localbody-ik to enable).")
 
     if rotation_channel_mask is not None:
         frozen_joint_indices = np.flatnonzero(~rotation_channel_mask).tolist()
@@ -683,8 +1030,17 @@ def restore_glb(
             preview = ", ".join(joints_names[index] for index in frozen_joint_indices[:10])
             suffix = "..." if len(frozen_joint_indices) > 10 else ""
             print(
-                f"\x1b[33mProduction features do not encode local rotations for {len(frozen_joint_indices)} "
-                f"leaf/helper joints; exporting them at rest: {preview}{suffix}\x1b[0m"
+                f"\x1b[33m[WARN] Production features do not encode local rotations for {len(frozen_joint_indices)} "
+                f"leaf joints; exporting them at rest: {preview}{suffix}\x1b[0m"
+            )
+            export_anim = _clamp_unobservable_joint_positions_to_rest(
+                export_anim,
+                rest_offsets=raw_export_offsets,
+                rotation_channel_mask=rotation_channel_mask,
+            )
+            print(
+                f"Clamped local translations to rest offsets for the same {len(frozen_joint_indices)} "
+                "unobservable leaf joints before export."
             )
 
     # ── Build skeleton for exporter ─────────────────────────────────────────
@@ -768,13 +1124,25 @@ def main() -> None:
         default=None,
         help="Animation frame rate.  Defaults to 30 if not specified.",
     )
-    parser.add_argument(
+    ik_mode_group = parser.add_mutually_exclusive_group()
+    ik_mode_group.add_argument(
         "--fullbody-ik",
         action="store_true",
         default=False,
         help=(
             "Perform full-body IK reconstruction on the raw export skeleton "
             "after recovering the animation.  Disabled by default."
+        ),
+    )
+    ik_mode_group.add_argument(
+        "--localbody-ik",
+        action="store_true",
+        default=False,
+        help=(
+            "Promote joints whose drift exceeds 10%% relative to animation frame 0 "
+            "into continuous local IK across the clip; "
+            "other joints keep FK. "
+            "Disabled by default."
         ),
     )
     parser.add_argument(
@@ -827,6 +1195,7 @@ def main() -> None:
         object_type=args.object_type,
         fps=args.fps,
         fullbody_ik=args.fullbody_ik,
+        localbody_ik=args.localbody_ik,
     )
 
     if args.check_bone_length:
