@@ -42,6 +42,7 @@ Usage:
 import argparse
 import importlib.util
 import os
+import subprocess
 import sys
 
 import numpy as np
@@ -776,6 +777,15 @@ def main() -> None:
             "after recovering the animation.  Disabled by default."
         ),
     )
+    parser.add_argument(
+        "--check-bone-length",
+        action="store_true",
+        default=False,
+        help=(
+            "After restoring the GLB, automatically run check_bone_length_drift.py "
+            "on the output GLB to report per-bone length drift.  Disabled by default."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -818,6 +828,30 @@ def main() -> None:
         fps=args.fps,
         fullbody_ik=args.fullbody_ik,
     )
+
+    if args.check_bone_length:
+        _run_bone_length_check(args.output_glb)
+
+
+def _run_bone_length_check(glb_path: str) -> None:
+    """Run check_bone_length_drift.py on the restored GLB."""
+    check_script = os.path.join(os.path.dirname(__file__), "check_bone_length_drift.py")
+    if not os.path.isfile(check_script):
+        print(f"\n[check-bone-length] Script not found: {check_script}")
+        return
+
+    print(f"\n{'='*60}")
+    print(f"[check-bone-length] Running bone length drift check on: {glb_path}")
+    print(f"{'='*60}\n")
+
+    # Execute the check script in the current Python environment
+    python_exe = sys.executable
+    result = subprocess.run(
+        [python_exe, check_script, "--input", glb_path],
+        cwd=os.path.dirname(check_script),
+    )
+    if result.returncode != 0:
+        print(f"\n[check-bone-length] check_bone_length_drift exited with code {result.returncode}")
 
 
 if __name__ == "__main__":

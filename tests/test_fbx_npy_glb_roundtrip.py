@@ -216,7 +216,7 @@ def _compare_export_to_source(
 def _run_test_fbx_npy_glb_roundtrip(
     tpose_fbx: str | None = None,
     anim_fbx: str | None = None,
-    object_type: str = "Horse",
+    object_type: str = _DEFAULT_OBJECT_TYPE,
     output_dir: str | None = None,
     tolerance: float = 0.01,
 ) -> dict[str, Any]:
