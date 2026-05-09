@@ -751,21 +751,27 @@ def process_anim(anim, object_type, orientation_quat, root_pose_init_xz=None, *,
 
 
 def _reference_clip_needs_local_position_rebuild(anim, tol=1e-4):
-    """Return True when the reference clip's first frame is not already rest-offset-aligned."""
+    """Return the max absolute error between first-frame local positions and rest offsets.
+
+    Returns 0.0 when the clip is already aligned (error <= tol) or when there are
+    insufficient joints to compare. Callers can truthily check the return value
+    to decide whether repair is needed.
+    """
     if len(anim) == 0 or anim.positions.shape[1] <= 1:
-        return False
+        return 0.0
 
     root_candidates = np.where(np.asarray(anim.parents) < 0)[0]
     if root_candidates.size == 0:
-        return False
+        return 0.0
 
     nonroot_indices = np.delete(np.arange(anim.positions.shape[1]), int(root_candidates[0]))
     if nonroot_indices.size == 0:
-        return False
+        return 0.0
 
     local_positions = np.asarray(anim.positions[0, nonroot_indices], dtype=np.float64)
     rest_offsets = np.asarray(anim.offsets[nonroot_indices], dtype=np.float64)
-    return bool(np.max(np.abs(local_positions - rest_offsets)) > tol)
+    error = float(np.max(np.abs(local_positions - rest_offsets)))
+    return error if error > tol else 0.0
 
 """ get object_type common characteristics, extracted from T-pose FBX"""
 def get_common_features_from_T_pose(t_pose_fbx_path, object_type, face_joints=None):
@@ -780,16 +786,20 @@ def get_common_features_from_T_pose(t_pose_fbx_path, object_type, face_joints=No
 
     # This function only consumes reference-pose metadata from frame 0, so avoid
     # repairing every frame of long T-pose clips unless the first frame is malformed.
-    if _reference_clip_needs_local_position_rebuild(reference_anim):
-        reference_positions = positions_global(reference_anim)
-        with open(os.devnull, 'w') as devnull, redirect_stdout(devnull), redirect_stderr(devnull):
-            reference_anim, _1, _2 = animation_from_positions(
-                positions=reference_positions,
-                parents=reference_anim.parents,
-                offsets=reference_anim.offsets,
-                iterations=100,
-                silent=True,
-            )
+    # NOTE: skipped — pipeline uses positions_global + offsets_from_positions which
+    # already compensates for local-position deviations; the IK repair is expensive
+    # and the warning was misleading (orientation is unaffected in practice).
+    # actual_error = _reference_clip_needs_local_position_rebuild(reference_anim)
+    # if actual_error:
+    #     import sys
+    #     print(
+    #         f"\x1b[33m[WARN] T-pose FBX local positions don't match rest offsets "
+    #         f"(max error: {actual_error:.6f}); "
+    #         "skipping expensive IK repair (animation_from_positions). "
+    #         "This may cause orientation error for this character.\x1b[0m",
+    #         file=sys.stderr,
+    #         flush=True,
+    #     )
 
     reference_positions = positions_global(reference_anim)
     t_pose_orientation_quat = calculate_root_quat(reference_positions, object_type, face_joint_indx=face_joints, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)[0]

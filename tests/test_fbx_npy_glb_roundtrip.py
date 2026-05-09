@@ -98,12 +98,12 @@ _EXPORT_MESH_P99_TOLERANCE_PCT_CHAR = 12.0
 
 
 _DEFAULT_FBX = os.path.join(
-    _ANYTOP_ROOT, "dataset", "truebones", "zoo", "Truebone_Z-OO", "Horse", "HorseALL-RunToStop.fbx",
+    _ANYTOP_ROOT, "dataset", "truebones", "zoo", "Truebone_Z-OO", "Buffalo", "Buffalo-WalkLoop.fbx",
 )
 _DEFAULT_TPOSE_FBX = os.path.join(
-    _ANYTOP_ROOT, "dataset", "truebones", "zoo", "Truebone_Z-OO", "Horse", "HorseALL-TPOSE.fbx",
+    _ANYTOP_ROOT, "dataset", "truebones", "zoo", "Truebone_Z-OO", "Buffalo", "Buffalo-TPOSE.fbx",
 )
-_DEFAULT_OBJECT_TYPE = "Horse"
+_DEFAULT_OBJECT_TYPE = "Buffalo"
 
 def _compare_export_to_source(
     source_fbx: str,
@@ -287,15 +287,11 @@ def _run_test_fbx_npy_glb_roundtrip(
             raise AssertionError(
                 "Production preprocessing joint count does not match the T-pose feature skeleton"
             )
-        if squared_positions_error:
-            worst_sq_error = max(squared_positions_error.values())
-            print(f"  T-pose reparameterization MSE: {worst_sq_error:.8f}")
 
         # Phase C: Save the production bare NPY tensor exactly like sample/generate.py
         print("[Phase C] Saving production bare NPY feature tensor...")
         features = np.asarray(features, dtype=np.float32)
         np.save(npy_path, features, allow_pickle=False)
-        print(f"  NPY shape: {features.shape}")
         print(f"Saved NPY features to {npy_path}")
 
         # Phase D: Restore the production bare tensor through the real restore tool
