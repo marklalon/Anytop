@@ -8,7 +8,7 @@ Pipeline:
     NPY features
         → recover_from_features(...)                    — feature-space Animation
         → recover_processed_animation_from_feature_animation(...)  — undo T-pose reparameterization
-        → _freeze_unencoded_bare_joint_rotations(...)   — freeze leaf/helper joint rotations
+        → invert preprocess transform back to raw FBX rig space
         → animation_to_exporter_inputs(...)
         → AnimationExporter + T-pose FBX → skinned GLB
 
@@ -73,7 +73,7 @@ _load_utils_module("utils.npy_roundtrip_utils")
 
 from utils.misc import infer_object_type_from_filename
 from utils.npy_roundtrip_utils import recover_from_features
-from Anytop.utils.roundtrip_common import identity_rest_rotations, _load_fbx_skeleton_metadata
+from Anytop.utils.roundtrip_common import _load_fbx_skeleton_metadata
 
 # ── Default cond.npy path ─────────────────────────────────────────────────────
 
@@ -92,12 +92,19 @@ def _load_tpose_restore_metadata(tpose_mesh: str, object_type: str) -> dict[str,
         raise ValueError(f"Unsupported T-pose mesh format: {tpose_mesh} - expected .fbx")
 
     tp: TPoseFeatures = get_common_features_from_T_pose(tpose_mesh, object_type)
+    raw_joint_names, raw_parents, raw_offsets, raw_rest_rotations = _load_fbx_skeleton_metadata(tpose_mesh)
     return {
         "joint_names": list(tp.names),
         "parents": np.asarray(tp.tpos_anim.parents, dtype=np.int32),
         "offsets": np.asarray(tp.offsets, dtype=np.float32),
         "tpose_rest_rotations": np.asarray(tp.tpos_rots[0], dtype=np.float32),
+        "root_pose_init_xz": np.asarray(tp.root_pose_init_xz, dtype=np.float64),
+        "orientation_quat": np.asarray(tp.orientation_quat, dtype=np.float64),
         "scale_factor": float(tp.scale_factor),
+        "raw_joint_names": list(raw_joint_names),
+        "raw_parents": np.asarray(raw_parents, dtype=np.int32),
+        "raw_offsets": np.asarray(raw_offsets, dtype=np.float32),
+        "raw_rest_rotations": np.asarray(raw_rest_rotations, dtype=np.float32),
     }
 
 
@@ -151,6 +158,45 @@ def _warn_on_missing_mesh_joints(
     print(f"All {len(joint_names)} recovered joints found in the T-pose armature.")
 
 
+def _remap_skeleton_metadata(
+    source_names: list[str],
+    source_parents: np.ndarray,
+    source_offsets: np.ndarray,
+    source_rest_rotations: np.ndarray,
+    target_names: list[str],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if list(source_names) == list(target_names):
+        return (
+            np.asarray(source_parents, dtype=np.int32),
+            np.asarray(source_offsets),
+            np.asarray(source_rest_rotations),
+        )
+
+    source_index = {name: index for index, name in enumerate(source_names)}
+    target_index = {name: index for index, name in enumerate(target_names)}
+    missing = [name for name in target_names if name not in source_index]
+    if missing:
+        preview = missing[:10]
+        suffix = "..." if len(missing) > 10 else ""
+        raise ValueError(f"T-pose mesh is missing export skeleton joints: {preview}{suffix}")
+
+    parents = np.full((len(target_names),), -1, dtype=np.int32)
+    offsets = np.zeros((len(target_names), 3), dtype=np.float32)
+    rest_rotations = np.zeros((len(target_names), 4), dtype=np.float32)
+    for target_joint_idx, joint_name in enumerate(target_names):
+        source_joint_idx = source_index[joint_name]
+        offsets[target_joint_idx] = source_offsets[source_joint_idx]
+        rest_rotations[target_joint_idx] = source_rest_rotations[source_joint_idx]
+        parent_idx = int(source_parents[source_joint_idx])
+        if parent_idx >= 0:
+            parent_name = source_names[parent_idx]
+            if parent_name not in target_index:
+                raise ValueError(f"T-pose mesh parent '{parent_name}' for joint '{joint_name}' is missing")
+            parents[target_joint_idx] = target_index[parent_name]
+
+    return parents, offsets, rest_rotations
+
+
 def _build_restore_context(
     raw_npy,
     object_type: str,
@@ -196,14 +242,39 @@ def _build_restore_context(
     elif tpose_meta is not None and tpose_meta.get("scale_factor") is not None:
         scale_factor = float(tpose_meta["scale_factor"])
 
+    root_pose_init_xz = None
+    if cond_entry is not None and cond_entry.get("root_pose_init_xz") is not None:
+        root_pose_init_xz = np.asarray(cond_entry["root_pose_init_xz"], dtype=np.float64)
+    elif tpose_meta.get("root_pose_init_xz") is not None:
+        root_pose_init_xz = np.asarray(tpose_meta["root_pose_init_xz"], dtype=np.float64)
+
+    orientation_quat = None
+    if cond_entry is not None and cond_entry.get("orientation_quat") is not None:
+        orientation_quat = np.asarray(cond_entry["orientation_quat"], dtype=np.float64)
+    elif tpose_meta.get("orientation_quat") is not None:
+        orientation_quat = np.asarray(tpose_meta["orientation_quat"], dtype=np.float64)
+
+    raw_export_parents, raw_export_offsets, raw_export_rest_rotations = _remap_skeleton_metadata(
+        tpose_meta["raw_joint_names"],
+        np.asarray(tpose_meta["raw_parents"], dtype=np.int32),
+        np.asarray(tpose_meta["raw_offsets"], dtype=np.float32),
+        np.asarray(tpose_meta["raw_rest_rotations"], dtype=np.float32),
+        joint_names,
+    )
+
     return {
         "features": features,
         "joint_names": joint_names,
         "parents": parents,
         "offsets": offsets,
         "tpose_rest_rotations": tpose_rest_rotations,
+        "root_pose_init_xz": root_pose_init_xz,
+        "orientation_quat": orientation_quat,
         "scale_factor": scale_factor,
-        "mesh_bone_names": list(tpose_meta["joint_names"]),
+        "mesh_bone_names": list(tpose_meta["raw_joint_names"]),
+        "raw_export_parents": raw_export_parents,
+        "raw_export_offsets": raw_export_offsets,
+        "raw_export_rest_rotations": raw_export_rest_rotations,
     }
 
 
@@ -219,26 +290,61 @@ def _bare_feature_rotation_channel_mask(parents: np.ndarray) -> np.ndarray:
     return rotation_channel_mask
 
 
-def _freeze_unencoded_bare_joint_rotations(animation, rotation_channel_mask: np.ndarray):
+def _coerce_root_pose_offset(root_pose_init_xz: np.ndarray) -> np.ndarray:
+    root_pose_init_xz = np.asarray(root_pose_init_xz, dtype=np.float64).reshape(-1)
+    if root_pose_init_xz.size == 3:
+        return root_pose_init_xz
+    if root_pose_init_xz.size == 2:
+        return np.array([root_pose_init_xz[0], 0.0, root_pose_init_xz[1]], dtype=np.float64)
+    raise ValueError(f"root_pose_init_xz must have shape (2,) or (3,), got {root_pose_init_xz.shape}")
+
+
+def _invert_preprocess_transform(
+    processed_anim,
+    *,
+    scale_factor: float | None,
+    root_pose_init_xz: np.ndarray | None,
+    orientation_quat: np.ndarray | None,
+):
     from motion_lib.Animation import Animation
     from motion_lib.Quaternions import Quaternions
 
-    frozen_joint_indices = np.flatnonzero(~np.asarray(rotation_channel_mask, dtype=bool))
-    if frozen_joint_indices.size == 0:
-        return animation, []
+    positions = processed_anim.positions.copy().astype(np.float64, copy=False)
+    offsets = processed_anim.offsets.copy().astype(np.float64, copy=False)
+    rotations = processed_anim.rotations.copy()
 
-    rotations = animation.rotations.copy()
-    rotations[:, frozen_joint_indices.tolist()] = Quaternions.id(
-        (animation.shape[0], int(frozen_joint_indices.size))
-    )
-    frozen_animation = Animation(
+    if scale_factor is not None:
+        scale_factor = float(scale_factor)
+        if scale_factor <= 0.0:
+            raise ValueError(f"scale_factor must be positive, got {scale_factor}")
+        if abs(scale_factor - 1.0) > 1e-8:
+            inv_scale = 1.0 / scale_factor
+            positions *= inv_scale
+            offsets *= inv_scale
+
+    if root_pose_init_xz is not None:
+        root_offset = _coerce_root_pose_offset(root_pose_init_xz)
+        positions[:, 0] += root_offset
+        offsets[0] += root_offset
+
+    if orientation_quat is not None:
+        orientation_quat = np.asarray(orientation_quat, dtype=np.float64)
+        if orientation_quat.ndim > 1:
+            orientation_quat = orientation_quat[0]
+        if orientation_quat.shape != (4,):
+            raise ValueError(f"orientation_quat must have shape (4,), got {orientation_quat.shape}")
+        inverse_orientation = -Quaternions(orientation_quat[None, :])
+        inverse_orientation = inverse_orientation.repeat(processed_anim.shape[0], axis=0)
+        rotations[:, 0] = inverse_orientation * rotations[:, 0]
+        positions[:, 0] = inverse_orientation * positions[:, 0]
+
+    return Animation(
         rotations,
-        animation.positions.copy(),
-        animation.orients.copy(),
-        animation.offsets.copy(),
-        animation.parents.copy(),
+        positions,
+        processed_anim.orients.copy(),
+        offsets,
+        processed_anim.parents.copy(),
     )
-    return frozen_animation, frozen_joint_indices.tolist()
 
 
 # ── Main restore function ─────────────────────────────────────────────────────
@@ -322,6 +428,9 @@ def restore_glb(
     parents = restore_ctx["parents"]
     offsets_hml = restore_ctx["offsets"]
     tpose_rest_rotations = restore_ctx["tpose_rest_rotations"]
+    raw_export_parents = np.asarray(restore_ctx["raw_export_parents"], dtype=np.int32)
+    raw_export_offsets = np.asarray(restore_ctx["raw_export_offsets"], dtype=np.float32)
+    raw_export_rest_rotations = np.asarray(restore_ctx["raw_export_rest_rotations"], dtype=np.float32)
     rotation_channel_mask = _bare_feature_rotation_channel_mask(parents)
 
     # ── Resolve FPS ─────────────────────────────────────────────────────
@@ -360,24 +469,32 @@ def restore_glb(
         tpose_rest_rotations,
     )
 
+    if not np.array_equal(raw_export_parents, parents):
+        raise ValueError("Raw T-pose FBX hierarchy does not match recovered feature hierarchy")
+
+    export_anim = _invert_preprocess_transform(
+        export_anim,
+        scale_factor=restore_ctx.get("scale_factor"),
+        root_pose_init_xz=restore_ctx.get("root_pose_init_xz"),
+        orientation_quat=restore_ctx.get("orientation_quat"),
+    )
+
     if rotation_channel_mask is not None:
-        export_anim, frozen_joint_indices = _freeze_unencoded_bare_joint_rotations(
-            export_anim,
-            rotation_channel_mask,
-        )
+        frozen_joint_indices = np.flatnonzero(~rotation_channel_mask).tolist()
         if frozen_joint_indices:
             preview = ", ".join(joints_names[index] for index in frozen_joint_indices[:10])
             suffix = "..." if len(frozen_joint_indices) > 10 else ""
             print(
                 f"Production features do not encode local rotations for {len(frozen_joint_indices)} "
-                f"leaf/helper joints; keeping rest rotation on export: {preview}{suffix}"
+                f"leaf/helper joints; exporting them at rest: {preview}{suffix}"
             )
 
     # ── Build skeleton for exporter ─────────────────────────────────────────
     skeleton = _build_skeleton(
         joints_names,
-        offsets_hml,
-        parents,
+        raw_export_offsets,
+        raw_export_parents,
+        raw_export_rest_rotations,
     )
 
     joint_rotations, root_translation, root_rotation, bone_translations = (
