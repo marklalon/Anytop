@@ -43,7 +43,7 @@ if str(REPO_ROOT) not in sys.path:
 from motion_lib import BVH
 from data_loaders.truebones.truebones_utils.motion_process import (
     mirror_features_with_safeguards,
-    recover_animation_from_motion_np,
+    recover_bvh_export_animation_from_motion_np,
 )
 from utils.misc import infer_object_type_from_filename
 
@@ -62,7 +62,12 @@ def export_bvh(
     offsets: np.ndarray,
     joints_names: list[str],
 ) -> bool:
-    anim, has_animated_pos = recover_animation_from_motion_np(motion, parents, offsets)
+    anim, joints_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
+        motion,
+        parents,
+        offsets,
+        joints_names,
+    )
     if anim is None:
         return False
     BVH.save(str(save_path), anim, joints_names, positions=has_animated_pos)

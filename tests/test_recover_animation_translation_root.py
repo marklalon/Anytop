@@ -3,6 +3,8 @@ import sys
 
 import numpy as np
 
+from motion_lib.Quaternions import Quaternions
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
@@ -78,3 +80,46 @@ def test_recover_animation_matches_safeguarded_horse_target_globals():
 
     np.testing.assert_allclose(recovered_global, target_global, atol=1e-4)
     assert has_animated_pos is True
+
+
+def test_from_transforms_preserves_positive_trace_ninety_degree_yaw():
+    matrix = np.array(
+        [[[-5.2504788e-08, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, -5.2504788e-08]]],
+        dtype=np.float32,
+    )
+
+    quat = Quaternions.from_transforms(matrix)
+
+    np.testing.assert_allclose(quat.transforms(), matrix.astype(np.float64), atol=1e-6)
+
+
+def test_recover_animation_hound_mirror_matches_world_x_reflection():
+    opt = get_opt(None)
+    cond = np.load(opt.cond_file, allow_pickle=True).item()['Hound']
+
+    motion_dir = opt.motion_dir
+    if not os.path.isabs(motion_dir):
+        motion_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), motion_dir)
+
+    raw = np.load(os.path.join(motion_dir, 'Hound_Attack_402.npy')).astype(np.float32, copy=False)
+    mirrored, mirrored_offsets = mirror_features_with_safeguards(raw, cond)
+
+    clean_anim, _ = recover_animation_from_motion_np(raw, cond['parents'], cond['offsets'])
+    mirror_anim, _ = recover_animation_from_motion_np(mirrored, cond['parents'], mirrored_offsets)
+    clean_global = positions_global(clean_anim)
+    mirror_global = positions_global(mirror_anim)
+
+    spi = np.asarray(cond['symmetry_partner_indices'], dtype=np.int64)
+    perm = np.arange(len(spi), dtype=np.int64)
+    perm[spi >= 0] = spi[spi >= 0]
+
+    expected_x = clean_global[:, perm].copy()
+    expected_x[..., 0] *= -1.0
+    reflected_z = clean_global[:, perm].copy()
+    reflected_z[..., 2] *= -1.0
+
+    x_error = float(np.abs(expected_x - mirror_global).mean())
+    z_error = float(np.abs(reflected_z - mirror_global).mean())
+
+    assert x_error < 1e-5
+    assert x_error * 1000.0 < z_error

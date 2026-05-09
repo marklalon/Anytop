@@ -287,29 +287,9 @@ class Quaternions:
         
     
     def transforms(self):
-        
-        qw = self.qs[...,0]
-        qx = self.qs[...,1]
-        qy = self.qs[...,2]
-        qz = self.qs[...,3]
-        
-        x2 = qx + qx; y2 = qy + qy; z2 = qz + qz;
-        xx = qx * x2; yy = qy * y2; wx = qw * x2;
-        xy = qx * y2; yz = qy * z2; wy = qw * y2;
-        xz = qx * z2; zz = qz * z2; wz = qw * z2;
-        
-        m = np.empty(self.shape + (3,3))
-        m[...,0,0] = 1.0 - (yy + zz)
-        m[...,0,1] = xy - wz
-        m[...,0,2] = xz + wy        
-        m[...,1,0] = xy + wz
-        m[...,1,1] = 1.0 - (xx + zz)
-        m[...,1,2] = yz - wx        
-        m[...,2,0] = xz - wy
-        m[...,2,1] = yz + wx
-        m[...,2,2] = 1.0 - (xx + yy)
-        
-        return m
+        from utils.rotation_numpy import quat_to_matrix_wxyz_np
+
+        return quat_to_matrix_wxyz_np(self.qs)
     
     def ravel(self):
         return self.qs.ravel()
@@ -324,28 +304,7 @@ class Quaternions:
         Returns:
             Rotation matrices as tensor of shape (..., 6) or (..., 3, 3) depending on cont6d arg
         """
-        qs = self.qs
-        r = qs[..., 0]
-        i = qs[..., 1]
-        j = qs[..., 2]
-        k = qs[..., 3]
-        two_s = 2.0 / (qs * qs).sum(-1)
-
-        o = np.stack(
-            (
-                1 - two_s * (j * j + k * k),
-                two_s * (i * j - k * r),
-                two_s * (i * k + j * r),
-                two_s * (i * j + k * r),
-                1 - two_s * (i * i + k * k),
-                two_s * (j * k - i * r),
-                two_s * (i * k - j * r),
-                two_s * (j * k + i * r),
-                1 - two_s * (i * i + j * j),
-            ),
-            -1,
-        )
-        rotations = o.reshape(qs.shape[:-1] + (3, 3))
+        rotations = self.transforms()
         if cont6d:
             rotations = np.concatenate([rotations[..., 0], rotations[..., 1]], axis=-1)
         return rotations
@@ -445,47 +404,11 @@ class Quaternions:
     
     @classmethod
     def from_transforms(cls, ts):
-        
-        d0, d1, d2 = ts[...,0,0], ts[...,1,1], ts[...,2,2]
-        
-        q0 = ( d0 + d1 + d2 + 1.0) / 4.0
-        q1 = ( d0 - d1 - d2 + 1.0) / 4.0
-        q2 = (-d0 + d1 - d2 + 1.0) / 4.0
-        q3 = (-d0 - d1 + d2 + 1.0) / 4.0
-        
-        q0 = np.sqrt(q0.clip(0,None))
-        q1 = np.sqrt(q1.clip(0,None))
-        q2 = np.sqrt(q2.clip(0,None))
-        q3 = np.sqrt(q3.clip(0,None))
-        
-        c0 = (q0 >= q1) & (q0 >= q2) & (q0 >= q3)
-        c1 = (q1 >= q0) & (q1 >= q2) & (q1 >= q3)
-        c2 = (q2 >= q0) & (q2 >= q1) & (q2 >= q3)
-        c3 = (q3 >= q0) & (q3 >= q1) & (q3 >= q2)
-        
-        q1[c0] *= np.sign(ts[c0,2,1] - ts[c0,1,2])
-        q2[c0] *= np.sign(ts[c0,0,2] - ts[c0,2,0])
-        q3[c0] *= np.sign(ts[c0,1,0] - ts[c0,0,1])
-        
-        q0[c1] *= np.sign(ts[c1,2,1] - ts[c1,1,2])
-        q2[c1] *= np.sign(ts[c1,1,0] + ts[c1,0,1])
-        q3[c1] *= np.sign(ts[c1,0,2] + ts[c1,2,0])  
-        
-        q0[c2] *= np.sign(ts[c2,0,2] - ts[c2,2,0])
-        q1[c2] *= np.sign(ts[c2,1,0] + ts[c2,0,1])
-        q3[c2] *= np.sign(ts[c2,2,1] + ts[c2,1,2])  
-        
-        q0[c3] *= np.sign(ts[c3,1,0] - ts[c3,0,1])
-        q1[c3] *= np.sign(ts[c3,2,0] + ts[c3,0,2])
-        q2[c3] *= np.sign(ts[c3,2,1] + ts[c3,1,2])  
-        
-        qs = np.empty(ts.shape[:-2] + (4,))
-        qs[...,0] = q0
-        qs[...,1] = q1
-        qs[...,2] = q2
-        qs[...,3] = q3
-        
-        return cls(qs)
+        from utils.rotation_numpy import matrix_to_quat_wxyz_np
+
+        # Reuse the SciPy-backed converter already validated in utils/rotation_numpy.py
+        # instead of maintaining a second matrix->quaternion implementation here.
+        return cls(matrix_to_quat_wxyz_np(np.asarray(ts, dtype=np.float64)))
         
     
     

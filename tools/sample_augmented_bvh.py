@@ -58,7 +58,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from motion_lib import BVH
 from data_loaders.truebones.truebones_utils.motion_process import (
-    recover_animation_from_motion_np,
+    recover_bvh_export_animation_from_motion_np,
+    refresh_joint_metadata_in_cond_dict,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.param_utils import OBJECT_SUBSETS_DICT
@@ -84,6 +85,7 @@ def _build_cond_dict(opt, objects_subset: str) -> dict:
     large language model just for BVH export.
     """
     cond_dict_raw: dict = np.load(opt.cond_file, allow_pickle=True).item()
+    cond_dict_raw = refresh_joint_metadata_in_cond_dict(cond_dict_raw)
 
     if objects_subset in OBJECT_SUBSETS_DICT:
         species_list = OBJECT_SUBSETS_DICT[objects_subset]
@@ -123,7 +125,12 @@ def _export_bvh(
     joints_names: list[str],
 ) -> bool:
     """Denormalized (F, J, 13) → BVH file.  Returns True on success."""
-    anim, has_animated_pos = recover_animation_from_motion_np(motion_raw, parents, offsets)
+    anim, joints_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
+        motion_raw,
+        parents,
+        offsets,
+        joints_names,
+    )
     if anim is None:
         return False
     BVH.save(str(save_path), anim, joints_names, positions=has_animated_pos)

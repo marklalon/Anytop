@@ -22,7 +22,9 @@ from data_loaders.truebones.data.dataset import (
     ensure_joint_name_embeddings,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
-from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
+from data_loaders.truebones.truebones_utils.motion_process import (
+    recover_bvh_export_animation_from_motion_np,
+)
 from diffusion.resample import create_named_schedule_sampler
 from motion_lib import BVH
 from os.path import join as pjoin
@@ -43,8 +45,11 @@ def _move_batch_to_device(batch, device):
 
 def _export_motion(task):
     motion_np, parents_np, offsets, npy_name, joint_names, out_path, fps = task
-    out_anim, has_animated_pos = recover_animation_from_motion_np(
-        motion_np, parents_np, offsets
+    out_anim, joint_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
+        motion_np,
+        parents_np,
+        offsets,
+        joint_names,
     )
     np.save(pjoin(out_path, npy_name), motion_np)
     if out_anim is not None:

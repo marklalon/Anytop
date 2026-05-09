@@ -18,7 +18,7 @@ import torch
 import bisect
 import re 
 import time 
-from data_loaders.truebones.truebones_utils.param_utils import HML_REF_AXIAL_BONE_LENGTH, FOOT_CONTACT_HEIGHT_THRESH, DEFAULT_DATASET_DIR, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir, SNAKES, CHAIN_FORWARD_JOINTS, FLYING, FISH, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
+from data_loaders.truebones.truebones_utils.param_utils import HML_REF_AXIAL_BONE_LENGTH, FOOT_CONTACT_HEIGHT_THRESH, DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir, SNAKES, CHAIN_FORWARD_JOINTS, FLYING, FISH, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
 from utils.rotation_conversions import rotation_6d_to_matrix_np
 from utils.roundtrip_common import _load_fbx_skeleton_metadata
 from .motion_labels import build_motion_labels, build_object_labels, write_motion_metadata
@@ -61,6 +61,8 @@ ROOT_XZ_STRIP_THRESHOLD = 1
 # Mean L2 distance (per joint, in HML-normalised units) between first and last
 # frame poses below which a clip is classified as looping.
 LOOP_DETECTION_POS_THRESHOLD = 0.10
+
+LEAF_ROTATION_HELPER_SUFFIX = '__leafrot_helper'
 
 
 _EMITTED_MIRROR_SAFEGUARD_WARNINGS = set()
@@ -260,11 +262,50 @@ def _refresh_joint_metadata_in_object_cond(object_cond):
     if not joint_names:
         return
 
-    semantic_metadata = _build_semantic_metadata(
-        joint_names,
-        np.asarray(object_cond.get('parents'), dtype=np.int64),
-        np.asarray(object_cond.get('offsets'), dtype=np.float64),
-    )
+    parents = np.asarray(object_cond.get('parents'), dtype=np.int64)
+    offsets = np.asarray(object_cond.get('offsets'), dtype=np.float64)
+    original_joint_count = object_cond.get('original_joint_count')
+    helper_joint_indices = [
+        int(joint_index)
+        for joint_index in list(object_cond.get('helper_joint_indices') or [])
+    ]
+    helper_source_leaf_indices = [
+        int(joint_index)
+        for joint_index in list(object_cond.get('helper_source_leaf_indices') or [])
+    ]
+
+    if (
+        original_joint_count is not None
+        and helper_joint_indices
+        and len(helper_joint_indices) == len(helper_source_leaf_indices)
+    ):
+        original_joint_count = int(original_joint_count)
+        if 0 < original_joint_count <= len(joint_names) and original_joint_count <= len(parents):
+            base_semantic_metadata = _build_semantic_metadata(
+                joint_names[:original_joint_count],
+                parents[:original_joint_count],
+                offsets[:original_joint_count],
+            )
+            semantic_metadata = _extend_semantic_metadata_with_leaf_helpers(
+                base_semantic_metadata,
+                joint_names,
+                {
+                    'helper_joint_indices': helper_joint_indices,
+                    'helper_source_leaf_indices': helper_source_leaf_indices,
+                },
+            )
+        else:
+            semantic_metadata = _build_semantic_metadata(
+                joint_names,
+                parents,
+                offsets,
+            )
+    else:
+        semantic_metadata = _build_semantic_metadata(
+            joint_names,
+            parents,
+            offsets,
+        )
     object_cond['canonical_joint_names'] = _disambiguate_duplicate_canonical_names(
         joint_names,
         semantic_metadata['canonical_joint_names'],
@@ -290,6 +331,16 @@ def _refresh_joint_metadata_in_object_cond(object_cond):
     object_cond['mirror_disabled_joint_names'] = semantic_metadata['mirror_disabled_joint_names']
     object_cond['mirror_disabled_warnings'] = semantic_metadata['mirror_disabled_warnings']
     object_cond['is_symmetric'] = semantic_metadata['is_symmetric']
+
+
+def refresh_joint_metadata_in_cond_dict(cond_dict):
+    if not isinstance(cond_dict, dict):
+        return cond_dict
+
+    for object_cond in cond_dict.values():
+        if isinstance(object_cond, dict):
+            _refresh_joint_metadata_in_object_cond(object_cond)
+    return cond_dict
 
 
 def _joint_name_embeddings_are_current(object_cond, embedding_texts, t5_name):
@@ -644,6 +695,82 @@ def needs_bvh_position_channels(anim, tol=1e-4):
     rest_offsets = np.asarray(anim.offsets[1:], dtype=np.float64)[None, :, :]
     return bool(np.any(np.abs(nonroot_positions - rest_offsets) > tol))
 
+
+def reorder_animation_to_dfs(anim, names):
+    """Reindex an Animation into true DFS order for BVH export.
+
+    Helper joints are appended at the tail of the joint arrays during
+    preprocessing, which keeps parent-before-child ordering but no longer matches
+    the BVH hierarchy traversal order. ``motion_lib.BVH.save`` writes its
+    HIERARCHY recursively in DFS order while the MOTION block is emitted in array
+    index order, so helper-augmented animations must be remapped so both orders
+    agree.
+    """
+    parents = np.asarray(anim.parents, dtype=np.int32)
+    joint_count = int(parents.shape[0])
+    names = list(names)
+    if len(names) != joint_count:
+        raise ValueError(
+            f"Expected {joint_count} joint names for BVH export, got {len(names)}"
+        )
+    if joint_count <= 1:
+        return anim, names
+
+    children = [[] for _ in range(joint_count)]
+    for joint_index, parent_index in enumerate(parents):
+        if parent_index < 0:
+            continue
+        if parent_index >= joint_count:
+            raise ValueError(
+                f"Joint {joint_index} has invalid parent {parent_index} for {joint_count} joints"
+            )
+        children[int(parent_index)].append(joint_index)
+
+    roots = np.flatnonzero(parents < 0).tolist()
+    if not roots:
+        raise ValueError("BVH export requires at least one root joint")
+
+    dfs_order = []
+    stack = list(reversed(roots))
+    while stack:
+        joint_index = stack.pop()
+        dfs_order.append(joint_index)
+        stack.extend(reversed(children[joint_index]))
+
+    if len(dfs_order) != joint_count:
+        raise ValueError(
+            f"DFS traversal covered {len(dfs_order)} of {joint_count} joints during BVH export"
+        )
+
+    if dfs_order == list(range(joint_count)):
+        return anim, names
+
+    old_to_new = np.empty((joint_count,), dtype=np.int32)
+    for new_index, old_index in enumerate(dfs_order):
+        old_to_new[old_index] = new_index
+
+    reordered_parents = np.array([
+        old_to_new[parent_index] if parent_index >= 0 else -1
+        for parent_index in parents[dfs_order]
+    ], dtype=np.int32)
+
+    orient_count = len(anim.orients)
+    if orient_count not in (0, joint_count):
+        raise ValueError(
+            f"Expected 0 or {joint_count} joint orients for BVH export, got {orient_count}"
+        )
+    reordered_orients = anim.orients.copy() if orient_count == 0 else anim.orients[dfs_order].copy()
+
+    reordered_anim = Animation(
+        anim.rotations[:, dfs_order].copy(),
+        anim.positions[:, dfs_order].copy(),
+        reordered_orients,
+        anim.offsets[dfs_order].copy(),
+        reordered_parents,
+    )
+    reordered_names = [names[joint_index] for joint_index in dfs_order]
+    return reordered_anim, reordered_names
+
 def _get_average_axial_bone_length(offsets, parents, joint_side_labels):
     """Compute the mean bone length of axial (center-labeled) bones, excluding root.
 
@@ -773,8 +900,159 @@ def _reference_clip_needs_local_position_rebuild(anim, tol=1e-4):
     error = float(np.max(np.abs(local_positions - rest_offsets)))
     return error if error > tol else 0.0
 
+
+def _leaf_rotation_helper_name(source_name, source_index):
+    return f'{source_name}{LEAF_ROTATION_HELPER_SUFFIX}_{int(source_index)}'
+
+
+def _dfs_leaf_joint_indices(parents):
+    parents = np.asarray(parents, dtype=np.int32)
+    if parents.size == 0:
+        return []
+
+    child_counts = np.bincount(parents[parents >= 0], minlength=len(parents))
+    return [
+        int(joint_index)
+        for joint_index in range(len(parents))
+        if parents[joint_index] >= 0 and child_counts[joint_index] == 0
+    ]
+
+
+def _build_leaf_rotation_helper_metadata(joint_names, parents, *, max_joints=MAX_JOINTS):
+    parents = np.asarray(parents, dtype=np.int32)
+    original_joint_count = int(len(parents))
+    original_leaf_joint_indices = _dfs_leaf_joint_indices(parents)
+    helper_budget = max(int(max_joints) - original_joint_count, 0)
+    helper_source_leaf_indices = original_leaf_joint_indices[:helper_budget]
+    helper_joint_indices = list(
+        range(original_joint_count, original_joint_count + len(helper_source_leaf_indices))
+    )
+    helper_joint_names = [
+        _leaf_rotation_helper_name(joint_names[source_index], source_index)
+        for source_index in helper_source_leaf_indices
+    ]
+    return {
+        'original_joint_count': original_joint_count,
+        'original_leaf_joint_indices': list(original_leaf_joint_indices),
+        'helper_joint_indices': list(helper_joint_indices),
+        'helper_joint_names': list(helper_joint_names),
+        'helper_joint_count': int(len(helper_joint_indices)),
+        'helper_source_leaf_indices': list(helper_source_leaf_indices),
+        'unaugmented_leaf_indices': list(original_leaf_joint_indices[len(helper_source_leaf_indices):]),
+        'leaf_rotation_helper_suffix': LEAF_ROTATION_HELPER_SUFFIX,
+        'max_joints_budget': int(max_joints),
+    }
+
+
+def _append_leaf_rotation_helpers_to_animation(anim, joint_names, helper_metadata):
+    helper_joint_indices = list(helper_metadata.get('helper_joint_indices') or [])
+    if len(helper_joint_indices) == 0:
+        return anim.copy(), list(joint_names)
+
+    original_joint_count = int(helper_metadata.get('original_joint_count', anim.shape[1]))
+    expected_joint_count = original_joint_count + len(helper_joint_indices)
+    if anim.shape[1] == expected_joint_count:
+        return anim.copy(), list(joint_names)
+    if anim.shape[1] != original_joint_count:
+        raise ValueError(
+            f'Animation joint count {anim.shape[1]} does not match helper source skeleton '
+            f'count {original_joint_count}'
+        )
+    if len(joint_names) != original_joint_count:
+        raise ValueError(
+            f'Joint-name count {len(joint_names)} does not match helper source skeleton '
+            f'count {original_joint_count}'
+        )
+
+    helper_source_leaf_indices = np.asarray(
+        helper_metadata.get('helper_source_leaf_indices') or [],
+        dtype=np.int32,
+    )
+    helper_joint_names = list(helper_metadata.get('helper_joint_names') or [])
+    if helper_source_leaf_indices.shape != (len(helper_joint_indices),):
+        raise ValueError('helper_source_leaf_indices must align with helper_joint_indices')
+    if len(helper_joint_names) != len(helper_joint_indices):
+        raise ValueError('helper_joint_names must align with helper_joint_indices')
+
+    frame_count = anim.shape[0]
+    helper_count = len(helper_joint_indices)
+    helper_rotations = Quaternions.id((frame_count, helper_count)).qs.astype(anim.rotations.qs.dtype, copy=False)
+    helper_positions = np.zeros((frame_count, helper_count, 3), dtype=anim.positions.dtype)
+    helper_orients = Quaternions.id(helper_count).qs.astype(anim.orients.qs.dtype, copy=False)
+    helper_offsets = np.zeros((helper_count, 3), dtype=anim.offsets.dtype)
+
+    return Animation(
+        Quaternions(np.concatenate([anim.rotations.qs.copy(), helper_rotations], axis=1)),
+        np.concatenate([anim.positions.copy(), helper_positions], axis=1),
+        Quaternions(np.concatenate([anim.orients.qs.copy(), helper_orients], axis=0)),
+        np.concatenate([anim.offsets.copy(), helper_offsets], axis=0),
+        np.concatenate([anim.parents.copy(), helper_source_leaf_indices], axis=0),
+    ), list(joint_names) + helper_joint_names
+
+
+def _extend_semantic_metadata_with_leaf_helpers(base_semantic_metadata, joint_names, helper_metadata):
+    helper_joint_indices = list(helper_metadata.get('helper_joint_indices') or [])
+    helper_source_leaf_indices = list(helper_metadata.get('helper_source_leaf_indices') or [])
+    if len(helper_joint_indices) == 0:
+        return dict(base_semantic_metadata)
+
+    helper_joint_index_by_source = {
+        int(source_index): int(helper_index)
+        for source_index, helper_index in zip(helper_source_leaf_indices, helper_joint_indices)
+    }
+
+    canonical_joint_names = list(base_semantic_metadata['canonical_joint_names'])
+    joint_side_labels = list(base_semantic_metadata['joint_side_labels'])
+    symmetry_partner_indices = list(base_semantic_metadata['symmetry_partner_indices'])
+    symmetric_joint_pairs = [list(pair) for pair in base_semantic_metadata['symmetric_joint_pairs']]
+    symmetric_joint_pair_names = [list(pair) for pair in base_semantic_metadata['symmetric_joint_pair_names']]
+    base_symmetry_partner_indices = list(base_semantic_metadata['symmetry_partner_indices'])
+
+    for source_index in helper_source_leaf_indices:
+        source_canonical_name = canonical_joint_names[int(source_index)]
+        canonical_joint_names.append(f'{source_canonical_name} Helper')
+        joint_side_labels.append(joint_side_labels[int(source_index)])
+        symmetry_partner_indices.append(-1)
+
+    for source_index, helper_index in zip(helper_source_leaf_indices, helper_joint_indices):
+        partner_index = int(base_symmetry_partner_indices[int(source_index)])
+        partner_helper_index = helper_joint_index_by_source.get(partner_index)
+        if partner_helper_index is None:
+            continue
+        symmetry_partner_indices[int(helper_index)] = int(partner_helper_index)
+        if int(helper_index) < int(partner_helper_index):
+            symmetric_joint_pairs.append([int(helper_index), int(partner_helper_index)])
+            symmetric_joint_pair_names.append([
+                joint_names[int(helper_index)],
+                joint_names[int(partner_helper_index)],
+            ])
+
+    return {
+        'canonical_joint_names': canonical_joint_names,
+        'end_effector_joints': list(base_semantic_metadata['end_effector_joints']),
+        'end_effector_names': list(base_semantic_metadata['end_effector_names']),
+        'contact_joints': list(base_semantic_metadata['contact_joints']),
+        'contact_joint_names': list(base_semantic_metadata['contact_joint_names']),
+        'contact_joint_source': base_semantic_metadata['contact_joint_source'],
+        'joint_side_labels': joint_side_labels,
+        'symmetry_partner_indices': symmetry_partner_indices,
+        'symmetric_joint_pairs': symmetric_joint_pairs,
+        'symmetric_joint_pair_names': symmetric_joint_pair_names,
+        'mirror_disabled_joint_indices': list(base_semantic_metadata['mirror_disabled_joint_indices']),
+        'mirror_disabled_joint_names': list(base_semantic_metadata['mirror_disabled_joint_names']),
+        'mirror_disabled_warnings': list(base_semantic_metadata['mirror_disabled_warnings']),
+        'is_symmetric': bool(base_semantic_metadata['is_symmetric']),
+    }
+
 """ get object_type common characteristics, extracted from T-pose FBX"""
-def get_common_features_from_T_pose(t_pose_fbx_path, object_type, face_joints=None):
+def get_common_features_from_T_pose(
+    t_pose_fbx_path,
+    object_type,
+    face_joints=None,
+    *,
+    augment_leaf_rotation_helpers=False,
+    max_joints=MAX_JOINTS,
+):
     t_pose_anim, t_pos_names, _t_pose_frame_time = FBX.load(t_pose_fbx_path)
     reference_anim = t_pose_anim[:1] if len(t_pose_anim) > 1 else t_pose_anim
     face_joints = resolve_face_joints(object_type, t_pos_names, reference_anim.parents, face_joints=face_joints)
@@ -819,6 +1097,17 @@ def get_common_features_from_T_pose(t_pose_fbx_path, object_type, face_joints=No
         t_pose_orientation_quat,
         scale_factor=scale_factor,
     )
+    helper_metadata = _build_leaf_rotation_helper_metadata(
+        t_pos_names,
+        scaled.parents,
+        max_joints=max_joints if augment_leaf_rotation_helpers else len(scaled.parents),
+    )
+    if augment_leaf_rotation_helpers and helper_metadata['helper_joint_count'] > 0:
+        scaled, t_pos_names = _append_leaf_rotation_helpers_to_animation(
+            scaled,
+            t_pos_names,
+            helper_metadata,
+        )
     scaled_positions = positions_global(scaled)
     scaled_rest_positions = scaled_positions[0]
     offsets = offsets_from_positions(scaled_rest_positions, scaled.parents)
@@ -841,6 +1130,7 @@ def get_common_features_from_T_pose(t_pose_fbx_path, object_type, face_joints=No
         forward_base_joint_index=forward_base_joint_index,
         contact_joint_source=contact_joint_source,
         axial_avg_len=axial_avg_len,
+        helper_metadata=helper_metadata,
     )
 
 
@@ -860,6 +1150,7 @@ class TPoseFeatures:
     forward_base_joint_index: int
     contact_joint_source: str
     axial_avg_len: float
+    helper_metadata: dict[str, object]
 
 
 def get_motion_features(ric_positions, rotations, foot_contact, velocity, terminal_velocity, terminal_contact, max_joints):
@@ -1232,7 +1523,7 @@ def get_bvh_cont6d_params(anim, object_type, orientation_quat, translation_root_
     return cont_6d_params_reordered, r_velocity, velocity, r_rot, positions
 
 """ processes animation, and returns a new animation that aligns with humanML3D in terms of orientation and scale"""
-def get_hml_aligned_anim(fbx_path_or_anim, object_type, root_pose_init_xz, tpos_rots, offsets, squared_positions_error, *, scale_factor, foot_indices=None, orientation_quat, slice_inds=None, preloaded=None):
+def get_hml_aligned_anim(fbx_path_or_anim, object_type, root_pose_init_xz, tpos_rots, offsets, squared_positions_error, *, scale_factor, foot_indices=None, orientation_quat, slice_inds=None, preloaded=None, helper_metadata=None):
     if not isinstance(fbx_path_or_anim, Animation):
         if preloaded is not None:
             raw_anim, names = preloaded
@@ -1256,6 +1547,21 @@ def get_hml_aligned_anim(fbx_path_or_anim, object_type, root_pose_init_xz, tpos_
     else:
         names = list()
         processed_anim = fbx_path_or_anim
+        frames_num = len(processed_anim)
+
+    if processed_anim.positions.shape[1] != offsets.shape[0]:
+        if helper_metadata is None:
+            raise ValueError(
+                f'Processed animation joint count {processed_anim.positions.shape[1]} does not match '
+                f'offset count {offsets.shape[0]} without helper metadata'
+            )
+        if not names:
+            raise ValueError('Cannot append helper joints to an Animation input without joint names')
+        processed_anim, names = _append_leaf_rotation_helpers_to_animation(
+            processed_anim,
+            names,
+            helper_metadata,
+        )
         frames_num = len(processed_anim)
 
     ## create new animation object in which the rotations are w.r.t the actual Tpos
@@ -1286,7 +1592,7 @@ def get_hml_aligned_anim(fbx_path_or_anim, object_type, root_pose_init_xz, tpos_
     return new_anim, processed_anim, names  
     
 """ get motion feature representation"""
-def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joints, root_pose_init_xz, offsets, foot_indices, tpos_rots, squared_positions_error, *, scale_factor, orientation_quat, slice_inds=None, preloaded=None):
+def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joints, root_pose_init_xz, offsets, foot_indices, tpos_rots, squared_positions_error, *, scale_factor, orientation_quat, slice_inds=None, preloaded=None, helper_metadata=None):
     try:
         new_anim, export_anim, names = get_hml_aligned_anim(
             fbx_path_or_anim,
@@ -1300,6 +1606,7 @@ def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joint
             orientation_quat=orientation_quat,
             slice_inds=slice_inds,
             preloaded=preloaded,
+            helper_metadata=helper_metadata,
         )
         translation_root_index = _find_translation_root(new_anim)
         export_translation_root_index = _find_translation_root(export_anim)
@@ -1415,7 +1722,7 @@ def create_topology_edge_relations(parents, max_path_len = 5): # joint j+1 conta
 
 def _process_motion_file(file_path, object_type, max_joints, root_pose_init_xz,
                          offsets, foot_indices, tpos_rots, scale_factor,
-                         orientation_quat):
+                         helper_metadata, orientation_quat):
     local_errors = dict()
     # Load the FBX file once; pass it as `preloaded` to every get_motion call so that
     raw_anim, names, frame_time = FBX.load(file_path)
@@ -1445,6 +1752,7 @@ def _process_motion_file(file_path, object_type, max_joints, root_pose_init_xz,
             orientation_quat=orientation_quat,
             slice_inds=[begin, slice_ind],
             preloaded=(raw_anim, names),
+            helper_metadata=helper_metadata,
         )
         current_begin = begin
         begin = slice_ind
@@ -1547,7 +1855,13 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             return None
 
     squared_positions_error = dict()
-    tp = get_common_features_from_T_pose(t_pos_path, object_type, face_joints=face_joints)
+    tp = get_common_features_from_T_pose(
+        t_pos_path,
+        object_type,
+        face_joints=face_joints,
+        augment_leaf_rotation_helpers=True,
+        max_joints=MAX_JOINTS,
+    )
     character_scale_factor = float(tp.scale_factor)
     t_pos_motion, parents, max_joints, new_anim, _export_anim, _tpos_is_loop = get_motion(
         tp.tpos_anim,
@@ -1561,9 +1875,21 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
         squared_positions_error,
         scale_factor=character_scale_factor,
         orientation_quat=tp.orientation_quat,
+        helper_metadata=tp.helper_metadata,
     )
     rest_positions = _rest_positions_from_offsets(tp.offsets, parents)
-    semantic_metadata = _build_semantic_metadata(tp.names, parents, tp.offsets, rest_positions=rest_positions)
+    original_joint_count = int(tp.helper_metadata['original_joint_count'])
+    base_semantic_metadata = _build_semantic_metadata(
+        tp.names[:original_joint_count],
+        parents[:original_joint_count],
+        tp.offsets[:original_joint_count],
+        rest_positions=rest_positions[:original_joint_count],
+    )
+    semantic_metadata = _extend_semantic_metadata_with_leaf_helpers(
+        base_semantic_metadata,
+        tp.names,
+        tp.helper_metadata,
+    )
     object_cond['tpos_first_frame'] = t_pos_motion[0]
     # create topology conditions
     joint_relations, joints_graph_dist = create_topology_edge_relations(tp.tpos_anim.parents, max_path_len = MAX_PATH_LEN)
@@ -1600,6 +1926,14 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     object_cond['mirror_disabled_joint_names'] = semantic_metadata['mirror_disabled_joint_names']
     object_cond['mirror_disabled_warnings'] = semantic_metadata['mirror_disabled_warnings']
     object_cond['is_symmetric'] = semantic_metadata['is_symmetric']
+    object_cond['original_joint_count'] = int(tp.helper_metadata['original_joint_count'])
+    object_cond['original_leaf_joint_indices'] = list(tp.helper_metadata['original_leaf_joint_indices'])
+    object_cond['helper_joint_indices'] = list(tp.helper_metadata['helper_joint_indices'])
+    object_cond['helper_joint_names'] = list(tp.helper_metadata['helper_joint_names'])
+    object_cond['helper_joint_count'] = int(tp.helper_metadata['helper_joint_count'])
+    object_cond['helper_source_leaf_indices'] = list(tp.helper_metadata['helper_source_leaf_indices'])
+    object_cond['unaugmented_leaf_indices'] = list(tp.helper_metadata['unaugmented_leaf_indices'])
+    object_cond['leaf_rotation_helper_suffix'] = tp.helper_metadata['leaf_rotation_helper_suffix']
     object_cond['root_pose_init_xz'] = np.array(tp.root_pose_init_xz, dtype=np.float64)
     object_cond['scale_factor'] = character_scale_factor
     object_cond['axial_avg_len'] = float(tp.axial_avg_len)
@@ -1622,6 +1956,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             tp.foot_indices,
             tp.tpos_rots,
             character_scale_factor,
+            tp.helper_metadata,
             orientation_quat=tp.orientation_quat,
         )
 
@@ -1689,10 +2024,12 @@ def _write_object_outputs(save_dir, object_payload, files_counter):
         # positions under this repo's FK but can look distorted in external BVH
         # viewers because its local position/offset decomposition is training-oriented.
         anim_obj = result['export_anim']
+        bvh_names = list(result.get('canonical_names', result['names']))
+        anim_obj, bvh_names = reorder_animation_to_dfs(anim_obj, bvh_names)
         BVH.save(
             pjoin(save_dir, BVHS_DIR, name + '.bvh'),
             anim_obj,
-            result.get('canonical_names', result['names']),
+            bvh_names,
             frametime=result.get('frame_time', 1.0 / 24.0),
             positions=needs_bvh_position_channels(anim_obj),
         )
@@ -1998,6 +2335,34 @@ def recover_animation_from_motion_np(data, parents, offsets, anim_pos_threshold=
     anim_fixed = Animation(anim_rot.rotations, new_pos, anim_rot.orients,
                            anim_rot.offsets, anim_rot.parents)
     return anim_fixed, needs_bvh_position_channels(anim_fixed)
+
+
+def recover_bvh_export_animation_from_motion_np(
+    data,
+    parents,
+    offsets,
+    joint_names,
+    anim_pos_threshold=0.01,
+):
+    """Recover a motion tensor and remap it into BVH-safe DFS order.
+
+    ``recover_animation_from_motion_np`` intentionally preserves the input joint
+    indexing because non-export callers still address joints by the original cond
+    metadata indices. BVH export has the additional requirement that joint arrays
+    must match hierarchy DFS order, so this helper layers the DFS remap on top of
+    recovery without changing the base function's semantics.
+    """
+    anim, has_animated_pos = recover_animation_from_motion_np(
+        data,
+        parents,
+        offsets,
+        anim_pos_threshold=anim_pos_threshold,
+    )
+    if anim is None:
+        return None, list(joint_names), has_animated_pos
+
+    anim, joint_names = reorder_animation_to_dfs(anim, joint_names)
+    return anim, joint_names, has_animated_pos
 
 ################################################################
 

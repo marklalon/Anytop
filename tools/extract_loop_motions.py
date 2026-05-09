@@ -39,7 +39,10 @@ if str(REPO_ROOT) not in sys.path:
 from motion_lib import Animation, BVH, Quaternions
 from data_loaders.truebones.data.dataset import Truebones
 from data_loaders.truebones.offline_reference_dataset import resolve_dataset_root
-from data_loaders.truebones.truebones_utils.motion_process import needs_bvh_position_channels
+from data_loaders.truebones.truebones_utils.motion_process import (
+    needs_bvh_position_channels,
+    reorder_animation_to_dfs,
+)
 
 
 def export_animation_bvh(
@@ -49,6 +52,7 @@ def export_animation_bvh(
 ) -> bool:
     """Export an Animation object as BVH, preserving required non-root positions."""
     try:
+        anim, joints_names = reorder_animation_to_dfs(anim, joints_names)
         BVH.save(save_path, anim, joints_names, positions=needs_bvh_position_channels(anim))
         return True
     except Exception as e:

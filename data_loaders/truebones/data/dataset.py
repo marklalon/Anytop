@@ -17,6 +17,7 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     add_joint_augmentation,
     mirror_features_with_safeguards,
     remove_joints_augmentation,
+    refresh_joint_metadata_in_cond_dict,
 )
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import JOINT_NAME_EMBEDDING_SCHEMA_VERSION
 
@@ -665,6 +666,7 @@ class Truebones(data.Dataset):
         self.motion_cache_size = kwargs.get('motion_cache_size', 0)
         self.opt.motion_cache_size = self.motion_cache_size
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
+        cond_dict = refresh_joint_metadata_in_cond_dict(cond_dict)
         # Support both predefined subsets and single species names
         if self.objects_subset in opt.subsets_dict:
             subset = opt.subsets_dict[self.objects_subset]

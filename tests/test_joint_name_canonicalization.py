@@ -95,6 +95,39 @@ def test_refresh_joint_metadata_disambiguates_duplicate_canonical_names():
     assert object_cond["canonical_bvh_joint_names"] == ["Hips", "HipsJoint", "Tail01", "Tail01Copy"]
 
 
+def test_refresh_joint_metadata_preserves_helper_aware_mirror_metadata():
+    object_cond = {
+        "object_type": "SabreToothTiger",
+        "joints_names": [
+            "Root",
+            "Sabrecat_LeftFinger1_LF11_",
+            "Sabrecat_RightFinger1_RF11_",
+            "Sabrecat_RightFinger1_RF11___leafrot_helper_2",
+        ],
+        "parents": np.array([-1, 0, 0, 2], dtype=np.int64),
+        "offsets": np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [-1.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        "original_joint_count": 3,
+        "helper_joint_indices": [3],
+        "helper_source_leaf_indices": [2],
+        "helper_joint_names": ["Sabrecat_RightFinger1_RF11___leafrot_helper_2"],
+    }
+
+    _refresh_joint_metadata_in_object_cond(object_cond)
+
+    assert object_cond["symmetry_partner_indices"][:3] == [-1, 2, 1]
+    assert object_cond["symmetry_partner_indices"][3] == -1
+    assert object_cond["mirror_disabled_joint_indices"] == []
+    assert object_cond["mirror_disabled_warnings"] == []
+
+
 def test_joint_name_collision_report_is_empty_after_disambiguation():
     object_cond = {
         "object_type": "Scorpion-2",
@@ -125,6 +158,7 @@ if __name__ == "__main__":
         test_toe_root_indices_are_preserved_for_parallel_digits,
         test_refresh_joint_metadata_rewrites_stale_canonical_names,
         test_refresh_joint_metadata_disambiguates_duplicate_canonical_names,
+        test_refresh_joint_metadata_preserves_helper_aware_mirror_metadata,
         test_joint_name_collision_report_is_empty_after_disambiguation,
     ]
 

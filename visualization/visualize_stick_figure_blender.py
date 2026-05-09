@@ -1,8 +1,8 @@
 import numpy as np
-from scipy.spatial.transform import Rotation as R
 from typing import Dict, List, Tuple
 from multiprocessing import current_process
 from tqdm import tqdm
+from utils.rotation_numpy import matrix_to_quat_wxyz_np
 if current_process().name == 'MainProcess':  # enables multiprocessing 
     import bpy
 
@@ -87,7 +87,9 @@ class CylinderBone:
         v_tgt = head_loc - tail_loc
         v_tgt = v_tgt / np.linalg.norm(v_tgt)
         cyl.rotation_mode = 'QUATERNION'
-        ix, iy, iz, w = tuple(R.from_matrix(get_rotation_matrix_between_vectors(v_src, v_tgt)).as_quat())
+        w, ix, iy, iz = tuple(
+            matrix_to_quat_wxyz_np(get_rotation_matrix_between_vectors(v_src, v_tgt)[None])[0]
+        )
         cyl.rotation_quaternion[0] = w
         cyl.rotation_quaternion[1] = ix
         cyl.rotation_quaternion[2] = iy

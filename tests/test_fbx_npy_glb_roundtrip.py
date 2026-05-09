@@ -67,6 +67,7 @@ _load_utils_module("utils.npy_roundtrip_utils")
 
 from Anytop.motion_lib import FBX
 from data_loaders.truebones.offline_reference_dataset import load_cond_dict
+from data_loaders.truebones.truebones_utils.param_utils import MAX_JOINTS
 from data_loaders.truebones.truebones_utils.motion_process import (
     FOOT_CONTACT_VEL_THRESH,
     get_common_features_from_T_pose,
@@ -250,8 +251,18 @@ def _run_test_fbx_npy_glb_roundtrip(
 
         # Phase A: Load T-pose metadata used by the production preprocessing path
         print("[Phase A] Loading T-pose FBX preprocessing metadata...")
-        tp: TPoseFeatures = get_common_features_from_T_pose(tpose_fbx, object_type)
         cond_entry = load_cond_dict().get(object_type)
+        preprocess_max_joints = (
+            len(cond_entry["parents"])
+            if cond_entry is not None and cond_entry.get("parents") is not None
+            else MAX_JOINTS
+        )
+        tp: TPoseFeatures = get_common_features_from_T_pose(
+            tpose_fbx,
+            object_type,
+            augment_leaf_rotation_helpers=True,
+            max_joints=preprocess_max_joints,
+        )
         if cond_entry is None or "scale_factor" not in cond_entry:
             print(f"[WARN] scale_factor missing from cond.npy for {object_type}; falling back to T-pose metadata")
             scale_factor = float(tp.scale_factor)
@@ -270,7 +281,7 @@ def _run_test_fbx_npy_glb_roundtrip(
             anim_fbx,
             FOOT_CONTACT_VEL_THRESH,
             object_type,
-            len(tp.names),
+            preprocess_max_joints,
             tp.root_pose_init_xz,
             tp.offsets,
             tp.foot_indices,
@@ -278,6 +289,7 @@ def _run_test_fbx_npy_glb_roundtrip(
             squared_positions_error,
             scale_factor=scale_factor,
             orientation_quat=tp.orientation_quat,
+            helper_metadata=tp.helper_metadata,
             preloaded=(source_anim, source_bone_names),
         )
 
@@ -291,6 +303,10 @@ def _run_test_fbx_npy_glb_roundtrip(
         # Phase C: Save the production bare NPY tensor exactly like sample/generate.py
         print("[Phase C] Saving production bare NPY feature tensor...")
         features = np.asarray(features, dtype=np.float32)
+        if features.shape[1] != len(tp.names):
+            raise AssertionError(
+                "Production bare NPY joint count does not match the helper-aware T-pose feature skeleton"
+            )
         np.save(npy_path, features, allow_pickle=False)
         print(f"Saved NPY features to {npy_path}")
 
