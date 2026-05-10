@@ -20,6 +20,115 @@ from typing import Any
 
 import numpy as np
 
+from utils.rotation_numpy import quat_multiply_wxyz_np, quat_rotate_wxyz_np
+
+
+# Common root joint names — when the root already carries a semantic name
+# like these, it is a real skeleton root and should NOT be collapsed.
+_COMMON_ROOT_NAMES = frozenset(
+    n.lower()
+    for n in (
+        "hips", "hip", "pelvis", "root", "cog",
+        "spine", "spine1", "body",
+        "bip", "bip01",
+        "koshi",  # Japanese for hips
+    )
+)
+
+
+def _collapse_root_skeleton(
+    joint_names: list[str],
+    parents: np.ndarray,
+    offsets: np.ndarray,
+    local_rotations: np.ndarray,
+    local_positions: np.ndarray,
+    orients: Any | None = None,
+    *,
+    warn_path: str | None = None,
+) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray, np.ndarray, Any | None]:
+    """Collapse redundant/wrapper roots using the FBX loader's production rules.
+
+    The same structural rules apply to both sampled animation channels and a
+    one-frame rest pose represented as local rotations/positions.
+    """
+    collapsed_names = list(joint_names)
+    collapsed_parents = np.asarray(parents, dtype=np.int32).copy()
+    collapsed_offsets = np.asarray(offsets).copy()
+    collapsed_local_rotations = np.asarray(local_rotations).copy()
+    collapsed_local_positions = np.asarray(local_positions).copy()
+    collapsed_orients = orients
+
+    def _drop_redundant_joint_one() -> None:
+        nonlocal collapsed_names, collapsed_parents, collapsed_offsets
+        nonlocal collapsed_local_rotations, collapsed_local_positions, collapsed_orients
+
+        collapsed_offsets[1] = collapsed_offsets[0]
+        collapsed_offsets = collapsed_offsets[1:]
+        collapsed_local_rotations[:, 1] = collapsed_local_rotations[:, 0]
+        collapsed_local_rotations = collapsed_local_rotations[:, 1:]
+        collapsed_local_positions[:, 1] = collapsed_local_positions[:, 0]
+        collapsed_local_positions = collapsed_local_positions[:, 1:]
+        if collapsed_orients is not None:
+            collapsed_orients = collapsed_orients[1:]
+        collapsed_parents = collapsed_parents[1:] - 1
+        collapsed_parents[1:][collapsed_parents[1:] < 0] = 0
+        collapsed_names[1] = collapsed_names[0]
+        collapsed_names = collapsed_names[1:]
+
+    def _promote_child_root(*, emit_warning: bool) -> None:
+        nonlocal collapsed_names, collapsed_parents, collapsed_offsets
+        nonlocal collapsed_local_rotations, collapsed_local_positions, collapsed_orients
+
+        if emit_warning and warn_path is not None:
+            print(
+                f"\033[33m[WARN] {Path(warn_path).name}: collapsing root joint "
+                f"'{collapsed_names[0]}' (all-zero offset, single child) → promoting child '{collapsed_names[1]}'\033[0m"
+            )
+
+        parent_rots = collapsed_local_rotations[:, 0]
+        collapsed_offsets[1] = collapsed_offsets[0] + quat_rotate_wxyz_np(
+            parent_rots[0:1],
+            collapsed_offsets[1:2],
+        )[0]
+        collapsed_offsets = collapsed_offsets[1:]
+        collapsed_local_rotations[:, 1] = quat_multiply_wxyz_np(
+            collapsed_local_rotations[:, 0],
+            collapsed_local_rotations[:, 1],
+        )
+        collapsed_local_rotations = collapsed_local_rotations[:, 1:]
+        collapsed_local_positions[:, 1] = collapsed_local_positions[:, 0] + quat_rotate_wxyz_np(
+            parent_rots,
+            collapsed_local_positions[:, 1],
+        )
+        collapsed_local_positions = collapsed_local_positions[:, 1:]
+        if collapsed_orients is not None:
+            collapsed_orients = collapsed_orients[1:]
+        collapsed_parents = collapsed_parents[1:] - 1
+        collapsed_names = collapsed_names[1:]
+
+    if len(collapsed_names) > 1 and np.isclose(collapsed_offsets[1], 0).all():
+        if len(collapsed_parents[collapsed_parents == 1]) == 0:
+            _drop_redundant_joint_one()
+        elif len(collapsed_parents[collapsed_parents == 0]) == 1:
+            _promote_child_root(emit_warning=False)
+
+    while (
+        len(collapsed_names) > 1
+        and np.isclose(collapsed_offsets[0], 0).all()
+        and len(collapsed_parents[collapsed_parents == 0]) == 1
+        and collapsed_names[0].lower() not in _COMMON_ROOT_NAMES
+    ):
+        _promote_child_root(emit_warning=False)
+
+    return (
+        collapsed_names,
+        collapsed_parents,
+        collapsed_offsets,
+        collapsed_local_rotations,
+        collapsed_local_positions,
+        collapsed_orients,
+    )
+
 
 # ── FBX import utilities (merged from utils/fbx.py) ─────────────────────────
 
@@ -219,8 +328,16 @@ def _set_scene_time(scene, sample_time: float) -> None:
 
 # ── FBX → Animation ─────────────────────────────────────────────────────────
 
-def _fbx_to_animation(fbx_path: str) -> tuple[Any, list[str], float]:
-    """Load FBX via Blender and return (Animation, joint_names, fps)."""
+def _fbx_to_animation(fbx_path: str, collapse_root: bool = True) -> tuple[Any, list[str], float]:
+    """Load FBX via Blender and return (Animation, joint_names, fps).
+
+    Parameters
+    ----------
+    collapse_root : bool, default True
+        When True (default), redundant root joints and zero-offset wrapper
+        roots are collapsed.  Set to False for exporter/restore paths where
+        the skeleton hierarchy must remain exactly as-is.
+    """
     import bpy
     from motion_lib.Animation import Animation as ATopAnim
     from motion_lib.Quaternions import Quaternions
@@ -281,33 +398,16 @@ def _fbx_to_animation(fbx_path: str) -> tuple[Any, list[str], float]:
 
     bpy.ops.object.mode_set(mode="OBJECT")
 
-    # ── Redundant root joint handling (mirrors BVH.load) ──────────────
-    if bone_names and np.isclose(offsets[1], 0).all():
-        quat_rotations = Quaternions(rot_qs)
-        if len(parents[parents == 1]) == 0:  # redundant joint #1, just remove
-            offsets[1] = offsets[0]
-            offsets = offsets[1:]
-            quat_rotations[:, 1] = quat_rotations[:, 0]
-            quat_rotations = quat_rotations[:, 1:]
-            pos_np[:, 1] = pos_np[:, 0]
-            pos_np = pos_np[:, 1:]
-            orients = orients[1:]
-            parents = parents[1:] - 1
-            parents[1:][parents[1:] < 0] = 0
-            bone_names[1] = bone_names[0]
-            bone_names = bone_names[1:]
-        elif len(parents[parents == 0]) == 1:  # remove root joint by composing rots
-            parent_rots = quat_rotations[:, 0]
-            offsets[1] = offsets[0] + (parent_rots[0:1] * offsets[1:2])[0]
-            offsets = offsets[1:]
-            quat_rotations[:, 1] = quat_rotations[:, 0] * quat_rotations[:, 1]
-            quat_rotations = quat_rotations[:, 1:]
-            pos_np[:, 1] = pos_np[:, 0] + parent_rots * pos_np[:, 1]
-            pos_np = pos_np[:, 1:]
-            orients = orients[1:]
-            parents = parents[1:] - 1
-            bone_names = bone_names[1:]
-        rot_qs = quat_rotations.qs
+    if collapse_root:
+        bone_names, parents, offsets, rot_qs, pos_np, orients = _collapse_root_skeleton(
+            bone_names,
+            parents,
+            offsets,
+            rot_qs,
+            pos_np,
+            orients,
+            warn_path=fbx_path,
+        )
 
     anim = ATopAnim(Quaternions(rot_qs), pos_np, orients, offsets, parents)
     return anim, bone_names, fps
@@ -315,7 +415,7 @@ def _fbx_to_animation(fbx_path: str) -> tuple[Any, list[str], float]:
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
-def load(filepath, start=None, end=None, order=None, world=True):
+def load(filepath, start=None, end=None, order=None, world=True, collapse_root=True):
     """Load an FBX file and return (Animation, joint_names, frametime).
 
     Parameters
@@ -330,6 +430,10 @@ def load(filepath, start=None, end=None, order=None, world=True):
         Accepted for signature compatibility with BVH.load; has no effect.
     world : ignored
         Accepted for signature compatibility with BVH.load; has no effect.
+    collapse_root : bool, default True
+        When False, skips both the redundant root joint removal and the
+        post-processing root collapse.  Use ``False`` for exporter/restore
+        workflows where the skeleton hierarchy must remain unchanged.
 
     Returns
     -------
@@ -342,7 +446,7 @@ def load(filepath, start=None, end=None, order=None, world=True):
     frametime : float
         Seconds per frame (1 / fps).
     """
-    anim, names, fps = _fbx_to_animation(str(filepath))
+    anim, names, fps = _fbx_to_animation(str(filepath), collapse_root=collapse_root)
 
     frametime = 1.0 / fps if fps > 0 else (1.0 / 30.0)
 

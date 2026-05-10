@@ -78,6 +78,7 @@ _load_utils_module("utils.misc")
 from utils.misc import infer_object_type_from_filename
 from utils.npy_roundtrip_utils import recover_from_features
 from Anytop.utils.roundtrip_common import _load_fbx_skeleton_metadata
+from Anytop.motion_lib.FBX import _collapse_root_skeleton
 
 # ── Default cond.npy path ─────────────────────────────────────────────────────
 
@@ -87,9 +88,6 @@ _DEFAULT_COND_NPY = os.path.realpath(
 
 _FULLBODY_IK_ITERATIONS = 2
 _LOCALBODY_IK_FRAME0_DRIFT_THRESHOLD = 0.10
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
 
 def _load_tpose_restore_metadata(
     tpose_mesh: str,
@@ -113,6 +111,18 @@ def _load_tpose_restore_metadata(
 
     tp: TPoseFeatures = get_common_features_from_T_pose(tpose_mesh, object_type, **tp_kwargs)
     raw_joint_names, raw_parents, raw_offsets, raw_rest_rotations = _load_fbx_skeleton_metadata(tpose_mesh)
+    raw_parents = np.asarray(raw_parents, dtype=np.int32)
+    raw_offsets = np.asarray(raw_offsets, dtype=np.float32)
+    raw_rest_rotations = np.asarray(raw_rest_rotations, dtype=np.float32)
+    collapsed_joint_names, collapsed_parents, collapsed_offsets, collapsed_rest_rotations = (
+        _collapse_root_skeleton(
+            raw_joint_names,
+            raw_parents,
+            raw_offsets,
+            raw_rest_rotations[None, ...],
+            raw_offsets[None, ...],
+        )
+    )[:4]
     return {
         "joint_names": list(tp.names),
         "parents": np.asarray(tp.tpos_anim.parents, dtype=np.int32),
@@ -121,9 +131,13 @@ def _load_tpose_restore_metadata(
         "orientation_quat": np.asarray(tp.orientation_quat, dtype=np.float64),
         "scale_factor": float(tp.scale_factor),
         "raw_joint_names": list(raw_joint_names),
-        "raw_parents": np.asarray(raw_parents, dtype=np.int32),
-        "raw_offsets": np.asarray(raw_offsets, dtype=np.float32),
-        "raw_rest_rotations": np.asarray(raw_rest_rotations, dtype=np.float32),
+        "raw_parents": raw_parents,
+        "raw_offsets": raw_offsets,
+        "raw_rest_rotations": raw_rest_rotations,
+        "collapsed_joint_names": list(collapsed_joint_names),
+        "collapsed_parents": np.asarray(collapsed_parents, dtype=np.int32),
+        "collapsed_offsets": np.asarray(collapsed_offsets, dtype=np.float32),
+        "collapsed_rest_rotations": np.asarray(collapsed_rest_rotations[0], dtype=np.float32),
         "helper_metadata": dict(tp.helper_metadata),
     }
 
@@ -302,11 +316,11 @@ def _build_restore_context(
         dtype=bool,
     )
 
-    raw_export_parents, raw_export_offsets, raw_export_rest_rotations = _remap_skeleton_metadata(
-        tpose_meta["raw_joint_names"],
-        np.asarray(tpose_meta["raw_parents"], dtype=np.int32),
-        np.asarray(tpose_meta["raw_offsets"], dtype=np.float32),
-        np.asarray(tpose_meta["raw_rest_rotations"], dtype=np.float32),
+    export_parents, export_offsets, export_rest_rotations = _remap_skeleton_metadata(
+        list(tpose_meta["collapsed_joint_names"]),
+        np.asarray(tpose_meta["collapsed_parents"], dtype=np.int32),
+        np.asarray(tpose_meta["collapsed_offsets"], dtype=np.float32),
+        np.asarray(tpose_meta["collapsed_rest_rotations"], dtype=np.float32),
         export_joint_names,
     )
 
@@ -324,9 +338,9 @@ def _build_restore_context(
         "helper_source_leaf_indices": helper_source_leaf_indices,
         "rotation_channel_mask": export_rotation_channel_mask,
         "mesh_bone_names": list(tpose_meta["raw_joint_names"]),
-        "raw_export_parents": raw_export_parents,
-        "raw_export_offsets": raw_export_offsets,
-        "raw_export_rest_rotations": raw_export_rest_rotations,
+        "export_parents": export_parents,
+        "export_offsets": export_offsets,
+        "export_rest_rotations": export_rest_rotations,
     }
 
 
@@ -1001,9 +1015,9 @@ def restore_glb(
     parents = restore_ctx["parents"]
     offsets_hml = restore_ctx["offsets"]
     tpose_rest_rotations = restore_ctx["tpose_rest_rotations"]
-    raw_export_parents = np.asarray(restore_ctx["raw_export_parents"], dtype=np.int32)
-    raw_export_offsets = np.asarray(restore_ctx["raw_export_offsets"], dtype=np.float32)
-    raw_export_rest_rotations = np.asarray(restore_ctx["raw_export_rest_rotations"], dtype=np.float32)
+    export_parents = np.asarray(restore_ctx["export_parents"], dtype=np.int32)
+    export_offsets = np.asarray(restore_ctx["export_offsets"], dtype=np.float32)
+    export_rest_rotations = np.asarray(restore_ctx["export_rest_rotations"], dtype=np.float32)
     rotation_channel_mask = np.asarray(restore_ctx["rotation_channel_mask"], dtype=bool)
     original_joint_count = int(restore_ctx["original_joint_count"])
     translation_root_index = None
@@ -1064,9 +1078,6 @@ def restore_glb(
         tpose_rest_rotations,
     )
 
-    if not np.array_equal(raw_export_parents, np.asarray(parents[:original_joint_count], dtype=np.int32)):
-        raise ValueError("Raw T-pose FBX hierarchy does not match recovered feature hierarchy")
-
     export_anim = _invert_preprocess_transform(
         export_anim,
         scale_factor=restore_ctx.get("scale_factor"),
@@ -1079,11 +1090,11 @@ def restore_glb(
     )
 
     if fullbody_ik:
-        print("Force full-body IK reconstruction on raw export skeleton...")
+        print("Force full-body IK reconstruction on export skeleton...")
         export_anim, ik_mean_error, ik_max_error = _rebuild_fullbody_animation_with_ik(
             export_anim,
-            rigid_offsets=raw_export_offsets,
-            rigid_parents=raw_export_parents,
+            rigid_offsets=export_offsets,
+            rigid_parents=export_parents,
             preserved_position_indices=[translation_root_index],
             preserved_rotation_indices=[translation_root_index],
         )
@@ -1098,7 +1109,7 @@ def restore_glb(
     elif localbody_ik:
         local_ik_frame_active_child_mask, local_ik_active_child_mask = _plan_localbody_ik_masks(
             export_anim.positions,
-            parents=raw_export_parents,
+            parents=export_parents,
             preserved_position_indices=[translation_root_index],
             rotation_channel_mask=rotation_channel_mask,
             frame0_drift_threshold=_LOCALBODY_IK_FRAME0_DRIFT_THRESHOLD,
@@ -1128,8 +1139,8 @@ def restore_glb(
             )
             export_anim, ik_mean_error, ik_max_error = _rebuild_localbody_animation_with_ik(
                 export_anim,
-                rigid_offsets=raw_export_offsets,
-                rigid_parents=raw_export_parents,
+                rigid_offsets=export_offsets,
+                rigid_parents=export_parents,
                 preserved_position_indices=[translation_root_index],
                 preserved_rotation_indices=[translation_root_index],
                 rotation_channel_mask=rotation_channel_mask,
@@ -1157,7 +1168,7 @@ def restore_glb(
             )
             export_anim = _clamp_unobservable_joint_positions_to_rest(
                 export_anim,
-                rest_offsets=raw_export_offsets,
+                rest_offsets=export_offsets,
                 rotation_channel_mask=rotation_channel_mask,
             )
             print(
@@ -1168,9 +1179,9 @@ def restore_glb(
     # ── Build skeleton for exporter ─────────────────────────────────────────
     skeleton = _build_skeleton(
         export_joint_names,
-        raw_export_offsets,
-        raw_export_parents,
-        raw_export_rest_rotations,
+        export_offsets,
+        export_parents,
+        export_rest_rotations,
     )
 
     joint_rotations, root_translation, root_rotation, bone_translations = (
