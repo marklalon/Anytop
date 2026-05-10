@@ -41,6 +41,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from motion_lib import BVH
+from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
 from data_loaders.truebones.truebones_utils.motion_process import (
     mirror_features_with_safeguards,
     recover_bvh_export_animation_from_motion_np,
@@ -61,12 +62,14 @@ def export_bvh(
     parents: list[int],
     offsets: np.ndarray,
     joints_names: list[str],
+    motion_metadata: dict[str, object],
 ) -> bool:
     anim, joints_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
         motion,
         parents,
         offsets,
         joints_names,
+        motion_metadata=motion_metadata,
     )
     if anim is None:
         return False
@@ -89,6 +92,7 @@ def main() -> int:
     dataset_root = resolve_dataset_root(args.dataset_dir or None)
     motion_dir = get_motion_dir(dataset_root)
     cond_dict = load_cond_dict(dataset_root)
+    motion_metadata_lookup = load_motion_metadata(dataset_root)
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -145,13 +149,20 @@ def main() -> int:
         for motion_file in selected:
             stem = Path(motion_file).stem
             motion = np.load(motion_dir / motion_file).astype(np.float32)
-            mirrored, mirrored_offsets = mirror_features_with_safeguards(motion, object_cond)
+            motion_metadata = motion_metadata_lookup.get(motion_file)
+            if not isinstance(motion_metadata, dict):
+                raise KeyError(f"Motion '{motion_file}' is missing explicit motion metadata.")
+            mirrored, mirrored_offsets = mirror_features_with_safeguards(
+                motion,
+                object_cond,
+                motion_metadata=motion_metadata,
+            )
 
             clean_path = obj_dir / f"{stem}_clean.bvh"
             mirror_path = obj_dir / f"{stem}_mirror.bvh"
 
-            ok_clean = export_bvh(clean_path, motion, parents, offsets, joints_names)
-            ok_mirror = export_bvh(mirror_path, mirrored, parents, mirrored_offsets, joints_names)
+            ok_clean = export_bvh(clean_path, motion, parents, offsets, joints_names, motion_metadata)
+            ok_mirror = export_bvh(mirror_path, mirrored, parents, mirrored_offsets, joints_names, motion_metadata)
 
             status = []
             if ok_clean:

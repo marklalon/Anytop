@@ -123,6 +123,7 @@ def _export_bvh(
     parents: list[int],
     offsets: np.ndarray,
     joints_names: list[str],
+    motion_metadata: dict[str, object],
 ) -> bool:
     """Denormalized (F, J, 13) → BVH file.  Returns True on success."""
     anim, joints_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
@@ -130,6 +131,7 @@ def _export_bvh(
         parents,
         offsets,
         joints_names,
+        motion_metadata=motion_metadata,
     )
     if anim is None:
         return False
@@ -324,6 +326,7 @@ def main() -> int:
                 list(parents),
                 np.asarray(offsets, dtype=np.float32),
                 joints_names,
+                motion_metadata,
             )
             if ok:
                 print(f"OK  → {save_path.name}  [{m_length}f, {object_type}]")

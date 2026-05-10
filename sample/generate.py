@@ -50,6 +50,7 @@ def _export_motion(task):
         parents_np,
         offsets,
         joint_names,
+        allow_infer=True,
     )
     np.save(pjoin(out_path, npy_name), motion_np)
     if out_anim is not None:

@@ -12,12 +12,17 @@ from __future__ import annotations
 
 import os
 import sys
+from unittest.mock import patch
 
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import data_loaders.truebones.data.dataset as dataset_module
+from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import Truebones
+from data_loaders.truebones.truebones_utils.get_opt import get_opt
+from data_loaders.truebones.truebones_utils.motion_process import infer_translation_root_index_from_features
 
 
 LOOP_MOTION = "Ostrich_Run_548.npy"
@@ -26,11 +31,50 @@ MIRROR_MOTION = "Jaguar_Run_264.npy"
 MIRROR_SUBSET = "quadropeds_clean"
 MIRROR_SAFEGUARD_SUBSET = "all"
 NUM_FRAMES = 60
+_ENRICHED_MOTION_METADATA_LOOKUP = None
 
 
 def assert_close(name: str, actual: np.ndarray, expected: np.ndarray, atol: float = 1e-6) -> None:
     max_diff = float(np.max(np.abs(actual - expected))) if actual.size else 0.0
     assert np.allclose(actual, expected, atol=atol), f"{name} mismatch: max_diff={max_diff}"
+
+
+def _get_enriched_motion_metadata_lookup() -> dict[str, dict[str, object]]:
+    global _ENRICHED_MOTION_METADATA_LOOKUP
+    if _ENRICHED_MOTION_METADATA_LOOKUP is not None:
+        return {name: dict(metadata) for name, metadata in _ENRICHED_MOTION_METADATA_LOOKUP.items()}
+
+    opt = get_opt(None)
+    data_root = opt.data_root
+    motion_dir = opt.motion_dir
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if not os.path.isabs(data_root):
+        data_root = os.path.join(repo_root, data_root)
+    if not os.path.isabs(motion_dir):
+        motion_dir = os.path.join(repo_root, motion_dir)
+
+    cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
+    motion_metadata_lookup = dataset_module.load_motion_metadata(data_root)
+    enriched_lookup = {name: dict(metadata) for name, metadata in motion_metadata_lookup.items()}
+    for motion_name, motion_metadata in enriched_lookup.items():
+        if 'translation_root_index' in motion_metadata:
+            continue
+        object_type = str(motion_metadata['object_type'])
+        motion = np.load(os.path.join(motion_dir, motion_name)).astype(np.float32, copy=False)
+        motion_metadata['translation_root_index'] = infer_translation_root_index_from_features(
+            motion,
+            cond_dict[object_type]['parents'],
+            cond_dict[object_type]['offsets'],
+        )
+
+    _ENRICHED_MOTION_METADATA_LOOKUP = enriched_lookup
+    return {name: dict(metadata) for name, metadata in enriched_lookup.items()}
+
+
+def _build_truebones(**kwargs) -> Truebones:
+    enriched_lookup = _get_enriched_motion_metadata_lookup()
+    with patch.object(dataset_module, 'load_motion_metadata', return_value=enriched_lookup):
+        return Truebones(**kwargs)
 
 
 def find_mirror_safeguard_sample(motion_dataset):
@@ -47,7 +91,7 @@ def find_mirror_safeguard_sample(motion_dataset):
 
 
 def test_loop_padding_updates_effective_length() -> None:
-    dataset = Truebones(
+    dataset = _build_truebones(
         split="train",
         temporal_window=31,
         num_frames=NUM_FRAMES,
@@ -80,7 +124,7 @@ def test_loop_padding_updates_effective_length() -> None:
 
 
 def test_loop_padding_random_offset_wraps_without_truncation() -> None:
-    dataset = Truebones(
+    dataset = _build_truebones(
         split="train",
         temporal_window=31,
         num_frames=NUM_FRAMES,
@@ -110,7 +154,7 @@ def test_loop_padding_random_offset_wraps_without_truncation() -> None:
 
 
 def test_explicit_window_start_respects_requested_crop() -> None:
-    dataset = Truebones(
+    dataset = _build_truebones(
         split="train",
         temporal_window=31,
         num_frames=NUM_FRAMES,
@@ -145,7 +189,7 @@ def test_explicit_window_start_respects_requested_crop() -> None:
 
 
 def test_prepare_sample_aug_info_reports_actual_loop_fill() -> None:
-    dataset = Truebones(
+    dataset = _build_truebones(
         split="train",
         temporal_window=31,
         num_frames=NUM_FRAMES,
@@ -178,7 +222,7 @@ def test_prepare_sample_aug_info_reports_actual_loop_fill() -> None:
 
 
 def test_mirror_augmentation_runs_before_normalization() -> None:
-    dataset = Truebones(
+    dataset = _build_truebones(
         split="train",
         temporal_window=31,
         num_frames=NUM_FRAMES,
@@ -220,8 +264,63 @@ def test_mirror_augmentation_runs_before_normalization() -> None:
     assert_close("mirrored offsets", offsets, manual_offsets)
 
 
+def test_mirror_augmentation_passes_motion_translation_root_index(monkeypatch) -> None:
+    dataset = _build_truebones(
+        split="train",
+        temporal_window=31,
+        num_frames=NUM_FRAMES,
+        balanced=False,
+        objects_subset=MIRROR_SUBSET,
+        motion_cache_size=4,
+    )
+
+    motion_dataset = dataset.motion_dataset
+    motion_dataset.opt.aug_mirror_prob = 1.0
+    motion_dataset.opt.aug_speed_range = 0.0
+
+    data = motion_dataset.data_dict[MIRROR_MOTION]
+    data["motion_metadata"] = dict(data.get("motion_metadata") or {})
+    data["motion_metadata"]["translation_root_index"] = 0
+
+    seen = []
+
+    def fake_mirror(features, object_cond, *, translation_root_index=None, motion_metadata=None, anim_pos_threshold=0.01):
+        seen.append((translation_root_index, dict(motion_metadata or {})))
+        return np.asarray(features).copy(), np.asarray(object_cond["offsets"], dtype=np.float32).copy()
+
+    monkeypatch.setattr(dataset_module, "mirror_features_with_safeguards", fake_mirror)
+
+    motion_dataset.augment(data)
+
+    assert seen, "mirror augmentation never called mirror_features_with_safeguards"
+    assert [entry[0] for entry in seen] == [None, None]
+    assert all(entry[1].get("translation_root_index") == 0 for entry in seen)
+
+
+def test_batch_collate_preserves_translation_root_index() -> None:
+    dataset = _build_truebones(
+        split="train",
+        temporal_window=31,
+        num_frames=NUM_FRAMES,
+        balanced=False,
+        objects_subset=MIRROR_SUBSET,
+        motion_cache_size=2,
+    )
+
+    motion_dataset = dataset.motion_dataset
+    motion_dataset.data_dict[MIRROR_MOTION]["motion_metadata"] = dict(
+        motion_dataset.data_dict[MIRROR_MOTION].get("motion_metadata") or {}
+    )
+    motion_dataset.data_dict[MIRROR_MOTION]["motion_metadata"]["translation_root_index"] = 0
+
+    sample = motion_dataset.prepare_sample_by_name(MIRROR_MOTION, target_num_frames=NUM_FRAMES)
+    _motion, cond = truebones_batch_collate([sample])
+
+    assert int(cond["y"]["translation_root_index"][0]) == 0
+
+
 def test_mirror_safeguards_handle_single_frame_tpose() -> None:
-    dataset = Truebones(
+    dataset = _build_truebones(
         split="train",
         temporal_window=31,
         num_frames=NUM_FRAMES,

@@ -176,6 +176,7 @@ def recover_from_features(
     offsets: np.ndarray,
     translation_root_index: Optional[int] = None,
     anim_pos_threshold: float = 0.01,
+    motion_metadata: Optional[dict[str, object]] = None,
 ):
     """Recover an Animation from a 13-channel NPY feature tensor.
 
@@ -185,8 +186,10 @@ def recover_from_features(
     by build_npy_metadata_payload(...). Plain arrays are treated as production
     dataset features written by get_motion_features(...).
 
-    Bare dataset tensors can infer translation_root_index per motion when it is
-    not provided explicitly. Dict payloads still prefer the stored payload field.
+    Bare dataset tensors can read ``translation_root_index`` from
+    ``motion_metadata`` when it is available, avoiding expensive inference.
+    When neither ``translation_root_index`` nor ``motion_metadata`` is provided,
+    falls back to ``infer_translation_root_index_from_features``.
 
     Returns:
         (anim, has_animated_pos) — the reconstructed Animation and a bool
@@ -203,14 +206,18 @@ def recover_from_features(
 
     if payload is None:
         if translation_root_index is None:
-            from data_loaders.truebones.truebones_utils.motion_process import infer_translation_root_index_from_features
+            # Prefer metadata cache to avoid expensive inference.
+            if motion_metadata is not None and "translation_root_index" in motion_metadata:
+                trans_root = int(motion_metadata["translation_root_index"])
+            else:
+                from data_loaders.truebones.truebones_utils.motion_process import infer_translation_root_index_from_features
 
-            trans_root = infer_translation_root_index_from_features(
-                features_arr,
-                parents,
-                offsets,
-                anim_pos_threshold=anim_pos_threshold,
-            )
+                trans_root = infer_translation_root_index_from_features(
+                    features_arr,
+                    parents,
+                    offsets,
+                    anim_pos_threshold=anim_pos_threshold,
+                )
         else:
             trans_root = _require_translation_root_index(
                 translation_root_index,

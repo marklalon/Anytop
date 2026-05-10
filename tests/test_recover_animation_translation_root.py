@@ -10,9 +10,11 @@ from motion_lib.Animation import Animation
 from motion_lib.Quaternions import Quaternions
 
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
+from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
 from data_loaders.truebones.truebones_utils.motion_process import (
     ROOT_XZ_STRIP_THRESHOLD,
     _xz_locomotion_extent,
+    infer_translation_root_index_from_features,
     mirror_features_with_safeguards,
     move_xz_to_origin,
     positions_global,
@@ -23,6 +25,28 @@ from data_loaders.truebones.truebones_utils.motion_process import (
 
 def _identity_cont6d() -> np.ndarray:
     return np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32)
+
+
+def _load_motion_metadata_entry(opt, motion_name: str) -> dict[str, object]:
+    data_root = opt.data_root
+    if not os.path.isabs(data_root):
+        data_root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), data_root)
+    motion_metadata = load_motion_metadata(data_root).get(motion_name)
+    if not isinstance(motion_metadata, dict):
+        raise AssertionError(f"missing motion metadata for {motion_name}")
+    return motion_metadata
+
+
+def _with_translation_root_index(motion_metadata, motion: np.ndarray, cond) -> dict[str, object]:
+    if 'translation_root_index' in motion_metadata:
+        return motion_metadata
+    updated_motion_metadata = dict(motion_metadata)
+    updated_motion_metadata['translation_root_index'] = infer_translation_root_index_from_features(
+        motion,
+        cond['parents'],
+        cond['offsets'],
+    )
+    return updated_motion_metadata
 
 
 def test_recover_animation_uses_effective_translation_root_feature_row():
@@ -56,6 +80,7 @@ def test_recover_animation_uses_effective_translation_root_feature_row():
         features,
         parents,
         offsets,
+        translation_root_index=2,
     )
     global_pos = positions_global(anim)
 
@@ -117,17 +142,24 @@ def test_recover_animation_matches_safeguarded_horse_target_globals():
         motion_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), motion_dir)
 
     raw = np.load(os.path.join(motion_dir, 'Horse_RunLoop_28.npy')).astype(np.float32, copy=False)
-    mirrored, mirrored_offsets = mirror_features_with_safeguards(raw, cond)
+    motion_metadata = _with_translation_root_index(
+        _load_motion_metadata_entry(opt, 'Horse_RunLoop_28.npy'),
+        raw,
+        cond,
+    )
+    mirrored, mirrored_offsets = mirror_features_with_safeguards(raw, cond, motion_metadata=motion_metadata)
     target_global = recover_from_bvh_ric_np(
         mirrored,
         parents=cond['parents'],
         offsets=mirrored_offsets,
+        motion_metadata=motion_metadata,
     )
 
     anim, has_animated_pos = recover_animation_from_motion_np(
         mirrored,
         cond['parents'],
         mirrored_offsets,
+        motion_metadata=motion_metadata,
     )
     recovered_global = positions_global(anim)
 
@@ -155,17 +187,24 @@ def test_recover_animation_hound_mirror_matches_world_x_reflection():
         motion_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), motion_dir)
 
     raw = np.load(os.path.join(motion_dir, 'Hound_Attack_402.npy')).astype(np.float32, copy=False)
-    mirrored, mirrored_offsets = mirror_features_with_safeguards(raw, cond)
+    motion_metadata = _with_translation_root_index(
+        _load_motion_metadata_entry(opt, 'Hound_Attack_402.npy'),
+        raw,
+        cond,
+    )
+    mirrored, mirrored_offsets = mirror_features_with_safeguards(raw, cond, motion_metadata=motion_metadata)
 
     clean_anim, _ = recover_animation_from_motion_np(
         raw,
         cond['parents'],
         cond['offsets'],
+        motion_metadata=motion_metadata,
     )
     mirror_anim, _ = recover_animation_from_motion_np(
         mirrored,
         cond['parents'],
         mirrored_offsets,
+        motion_metadata=motion_metadata,
     )
     clean_global = positions_global(clean_anim)
     mirror_global = positions_global(mirror_anim)

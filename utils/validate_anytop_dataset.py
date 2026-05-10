@@ -27,8 +27,6 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
 from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata  # noqa: E402
 from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
     ROOT_XZ_STRIP_THRESHOLD,
-    _find_translation_root,
-    _xz_locomotion_extent,
 )
 
 
@@ -415,29 +413,33 @@ def _prune_excess_joint_motions(motions_dir: Path, bvhs_dir: Path, cond: dict, s
 
 
 def _validate_root_motion_extent(
-    bvh_path: Path,
+    motion: np.ndarray,
+    object_type: str,
     motion_name: str,
     threshold: float,
+    translation_root_index: int,
 ) -> None:
-    """Warn if the motion's translation-root XZ distance from origin exceeds the threshold."""
-    if not bvh_path.exists():
-        return
+    """Warn if the motion's translation-root XZ distance from origin exceeds the threshold.
 
+    Uses the stored per-motion ``translation_root_index`` from motion metadata.
+    """
     try:
-        from motion_lib import BVH
-
-        anim, _, _ = BVH.load(str(bvh_path))
-        trans_root_idx = _find_translation_root(anim)
-        effective_root_index = trans_root_idx if trans_root_idx >= 0 else 0
-        extent = _xz_locomotion_extent(anim, effective_root_index)
+        from data_loaders.truebones.truebones_utils.motion_process import (
+            recover_root_quat_and_pos_np,
+        )
+        _, r_pos = recover_root_quat_and_pos_np(
+            motion, translation_root_index=translation_root_index
+        )
+        root_xz = r_pos[:, [0, 2]]
+        extent = float(np.linalg.norm(root_xz, axis=1).max())
     except Exception as exc:
-        _print_warn(f"{motion_name}: failed to inspect paired BVH root motion extent: {exc}")
+        _print_warn(f"{motion_name}: failed to inspect root motion extent from NPy: {exc}")
         return
 
     if extent > threshold:
         _print_warn(
             f"{motion_name}: root XZ distance from centred origin ({extent:.3f}) exceeds "
-            f"strip threshold ({threshold:.1f}) — translation root index {effective_root_index}"
+            f"strip threshold ({threshold:.1f}) — translation root index {translation_root_index}"
         )
 
 
@@ -461,6 +463,12 @@ def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample
             _print_warn("optional BVH artifacts do not match motions; continuing with motion-only validation")
 
     files_to_validate = _select_validation_files(motion_files, sample_limit)
+    try:
+        motion_metadata_lookup = load_motion_metadata(motions_dir.parent)
+    except Exception as exc:
+        _print_warn(f"failed to load {MOTION_METADATA_FILE}: {exc}")
+        return
+
     for motion_path in files_to_validate:
         try:
             motion = np.load(motion_path)
@@ -471,16 +479,24 @@ def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample
             object_type = _match_object_type(motion_path.stem, cond)
             expected_joints = len(cond[object_type]["parents"])
             _require(motion.shape[1] <= MAX_JOINTS, f"{motion_path.name} exceeds MAX_JOINTS: {motion.shape[1]} (original skeleton: {expected_joints})")
+            motion_metadata = motion_metadata_lookup.get(motion_path.name)
+            _require(isinstance(motion_metadata, dict), f"{motion_path.name} missing metadata entry in {MOTION_METADATA_FILE}")
+            translation_root_index = motion_metadata.get("translation_root_index")
+            _require(
+                isinstance(translation_root_index, int) and 0 <= translation_root_index < expected_joints,
+                f"{motion_path.name} invalid translation_root_index in {MOTION_METADATA_FILE}: {translation_root_index}",
+            )
 
             _require(motion.shape[2] == FEATS_LEN, f"{motion_path.name} feature dim mismatch: {motion.shape[2]}")
             _require(np.isfinite(motion).all(), f"{motion_path.name} contains NaN/Inf")
             _require(motion.shape[1] == expected_joints, f"{motion_path.name} joints mismatch: {motion.shape[1]} vs {expected_joints}")
 
-            paired_bvh_path = bvhs_dir / f"{motion_path.stem}.bvh"
             _validate_root_motion_extent(
-                paired_bvh_path,
+                motion,
+                object_type,
                 motion_path.name,
                 root_motion_threshold,
+                translation_root_index,
             )
         except ValidationError as e:
             _print_warn(f"validation error: {motion_path.name}: {e}")
@@ -579,6 +595,14 @@ def _validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond:
             _require(bool(motion_metadata.get("species_label")), f"species_label missing for {motion_name}")
             _require(bool(motion_metadata.get("action_label")), f"action_label missing for {motion_name}")
             _require(bool(motion_metadata.get("action_category")), f"action_category missing for {motion_name}")
+
+            _require("translation_root_index" in motion_metadata, f"translation_root_index missing for {motion_name}")
+            translation_root_index = motion_metadata.get("translation_root_index")
+            joint_count = len(cond[object_type]["parents"])
+            _require(
+                isinstance(translation_root_index, int) and 0 <= translation_root_index < joint_count,
+                f"translation_root_index {translation_root_index} invalid for {motion_name} ({joint_count} joints)",
+            )
 
             source_fbx_path = motion_metadata.get("source_fbx_path")
             source_frame_range = motion_metadata.get("source_frame_range")

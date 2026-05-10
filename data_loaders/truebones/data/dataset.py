@@ -12,7 +12,7 @@ import warnings
 from torch.utils.data._utils.collate import default_collate
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.param_utils import parse_action_tags
-from data_loaders.truebones.truebones_utils.motion_labels import infer_motion_labels_from_motion_name, load_motion_metadata
+from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
 from data_loaders.truebones.truebones_utils.motion_process import (
     add_joint_augmentation,
     mirror_features_with_safeguards,
@@ -42,6 +42,23 @@ def _normalize_motion_action_tags(raw_action_tags) -> set[str]:
     }
 
 
+def _copy_required_motion_metadata(motion_name: str, motion_metadata) -> dict[str, object]:
+    if not isinstance(motion_metadata, dict):
+        raise KeyError(f"Motion '{motion_name}' is missing explicit motion metadata.")
+    if 'translation_root_index' not in motion_metadata:
+        raise KeyError(f"Motion '{motion_name}' metadata is missing translation_root_index.")
+    copied_motion_metadata = dict(motion_metadata)
+    copied_motion_metadata.setdefault('motion_name', motion_name)
+    return copied_motion_metadata
+
+
+def _require_motion_metadata_entry(
+    motion_name: str,
+    motion_metadata_lookup: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    return _copy_required_motion_metadata(motion_name, motion_metadata_lookup.get(motion_name))
+
+
 def filter_motion_names_by_action_tags(
     motion_names,
     raw_action_tags,
@@ -54,12 +71,7 @@ def filter_motion_names_by_action_tags(
 
     filtered = set()
     for motion_name in motion_names:
-        motion_metadata = motion_metadata_lookup.get(motion_name)
-        if motion_metadata is None:
-            motion_metadata = infer_motion_labels_from_motion_name(
-                motion_name,
-                object_types=object_types,
-            )
+        motion_metadata = _require_motion_metadata_entry(motion_name, motion_metadata_lookup)
         motion_action_tags = _normalize_motion_action_tags(motion_metadata.get('action_tags'))
         if motion_action_tags.intersection(requested_action_tags):
             filtered.add(motion_name)
@@ -232,17 +244,10 @@ def load_motion_names_for_split_with_action_tags(
     if split == ALL_SPLIT_NAME:
         return filtered_motion_names
 
-    from utils.misc import infer_object_type_from_filename
-
     grouped_motion_names: dict[str, list[str]] = defaultdict(list)
     for motion_name in sorted(filtered_motion_names):
-        motion_metadata = motion_metadata_lookup.get(motion_name)
-        if motion_metadata is None:
-            motion_metadata = infer_motion_labels_from_motion_name(
-                motion_name,
-                object_types=object_types,
-            )
-        object_type = str(motion_metadata.get('object_type') or infer_object_type_from_filename(motion_name))
+        motion_metadata = _require_motion_metadata_entry(motion_name, motion_metadata_lookup)
+        object_type = str(motion_metadata.get('object_type'))
         grouped_motion_names[object_type].append(motion_name)
 
     # Shuffle object types and assign all their motions to the same split
@@ -382,6 +387,7 @@ class MotionDataset(data.Dataset):
             object_motions = [name for name in all_motion_files if name.startswith(f'{object_type}_')]
             
             for name in object_motions:
+                motion_metadata = _require_motion_metadata_entry(name, motion_metadata_lookup)
                 try:
                     motion_path = pjoin(opt.motion_dir, name)
                     stat = os.stat(motion_path)
@@ -400,7 +406,7 @@ class MotionDataset(data.Dataset):
                                         'motion_path': motion_path,
                                         'length': motion_length,
                                         'object_type': object_type,
-                                        'motion_metadata': motion_metadata_lookup.get(name) or infer_motion_labels_from_motion_name(name, object_type=object_type, object_types=all_object_types),
+                                        'motion_metadata': motion_metadata,
                                        }
                                        
                     new_name_list.append(name)
@@ -483,8 +489,7 @@ class MotionDataset(data.Dataset):
             motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std, aug_info = result
         else:
             motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std = result
-        motion_metadata = dict(data.get('motion_metadata') or infer_motion_labels_from_motion_name(name, object_type=object_type, object_types=self.cond_dict.keys()))
-        motion_metadata.setdefault('motion_name', name)
+        motion_metadata = _copy_required_motion_metadata(name, data.get('motion_metadata'))
         ind = 0
         loop_applied = False
         if m_length > target_num_frames:
@@ -541,6 +546,7 @@ class MotionDataset(data.Dataset):
         object_type = data['object_type']
         cond = self.cond_dict[object_type]
         motion_path = data['motion_path']
+        motion_metadata = _copy_required_motion_metadata(Path(motion_path).name, data.get('motion_metadata'))
         mirror_applied = False
         mirrored_offsets = None
         if self.motion_cache_size > 0:
@@ -568,7 +574,11 @@ class MotionDataset(data.Dataset):
                     motion, mirrored_offsets = self.motion_cache[mirrored_cache_key]
                     self.motion_cache.move_to_end(mirrored_cache_key)
                 else:
-                    motion, mirrored_offsets = mirror_features_with_safeguards(motion, cond)
+                    motion, mirrored_offsets = mirror_features_with_safeguards(
+                        motion,
+                        cond,
+                        motion_metadata=motion_metadata,
+                    )
                     if self.motion_cache_size > 0:
                         self.motion_cache[mirrored_cache_key] = (motion, mirrored_offsets)
                         self.motion_cache.move_to_end(mirrored_cache_key)
@@ -598,6 +608,7 @@ class MotionDataset(data.Dataset):
             mirrored_tpose_raw, _mirrored_tpose_offsets = mirror_features_with_safeguards(
                 np.asarray(cond['tpos_first_frame'], dtype=np.float32),
                 cond,
+                motion_metadata=motion_metadata,
             )
             tpos_first_frame = np.nan_to_num((mirrored_tpose_raw - mean) / std).astype(np.float32, copy=False)
             offsets = mirrored_offsets

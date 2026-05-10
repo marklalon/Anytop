@@ -252,7 +252,7 @@ def _write_joint_name_collision_report(cond, save_dir):
         if len(collision_groups) > 20:
             print(f'  ... {len(collision_groups) - 20} additional group(s) omitted from console output')
     else:
-        print(f'[PASS] canonical joint-name collision scan found no duplicate canonical names')
+        print(f'[OK] canonical joint-name collision scan found no duplicate canonical names')
 
     return collision_groups
 
@@ -422,7 +422,8 @@ def _attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base', wri
                     'embedding_texts': list(embedding_texts),
                 }
     else:
-        print(f'Reusing cached joint-name embeddings from cond.npy for {len(cond)} object types ({t5_name})')
+        #print(f'Reusing cached joint-name embeddings from cond.npy for {len(cond)} object types ({t5_name})')
+        pass
 
     for object_type in sorted(cond):
         object_cond = cond[object_type]
@@ -1283,15 +1284,83 @@ def _coerce_translation_root_index(translation_root_index, joint_count=None, con
     return index
 
 
-def get_object_translation_root_index(object_cond):
-    parents = np.asarray(object_cond['parents'])
-    object_type = str(object_cond.get('object_type', '<unknown>'))
-    if object_cond.get('translation_root_index') is None:
+def _translation_root_index_from_motion_metadata(motion_metadata, joint_count=None, context='motion metadata'):
+    if not isinstance(motion_metadata, dict) or 'translation_root_index' not in motion_metadata:
         return None
     return _coerce_translation_root_index(
-        object_cond.get('translation_root_index'),
-        joint_count=len(parents),
-        context=f"{object_type} object_cond",
+        motion_metadata.get('translation_root_index'),
+        joint_count=joint_count,
+        context=context,
+    )
+
+
+def _require_translation_root_index_from_motion_metadata(motion_metadata, joint_count=None, context='motion metadata'):
+    translation_root_index = _translation_root_index_from_motion_metadata(
+        motion_metadata,
+        joint_count=joint_count,
+        context=context,
+    )
+    if translation_root_index is None:
+        raise ValueError(f"{context} requires motion_metadata['translation_root_index']")
+    return int(translation_root_index)
+
+
+def resolve_feature_translation_root_index(
+    data,
+    *,
+    parents=None,
+    offsets=None,
+    translation_root_index=None,
+    motion_metadata=None,
+    allow_infer=False,
+    anim_pos_threshold=0.01,
+    context='motion feature tensor',
+):
+    motion = np.asarray(data)
+    if motion.ndim == 2:
+        if translation_root_index is not None:
+            return _coerce_translation_root_index(translation_root_index, context=context)
+        return _require_translation_root_index_from_motion_metadata(
+            motion_metadata,
+            context=f'{context} metadata',
+        )
+
+    if motion.ndim != 3:
+        raise ValueError(f"Expected feature tensor with shape (F, C) or (F, J, C), got {motion.shape}.")
+
+    joint_count = int(motion.shape[1])
+    if translation_root_index is not None:
+        return _coerce_translation_root_index(
+            translation_root_index,
+            joint_count=joint_count,
+            context=context,
+        )
+
+    if not allow_infer:
+        return _require_translation_root_index_from_motion_metadata(
+            motion_metadata,
+            joint_count=joint_count,
+            context=f'{context} metadata',
+        )
+
+    meta_index = _translation_root_index_from_motion_metadata(
+        motion_metadata,
+        joint_count=joint_count,
+        context=f'{context} metadata',
+    )
+    if meta_index is not None:
+        return int(meta_index)
+
+    if parents is None or offsets is None:
+        raise ValueError(
+            f'{context} requires translation_root_index, motion_metadata, or parents/offsets to infer it'
+        )
+
+    return infer_translation_root_index_from_features(
+        motion,
+        parents,
+        offsets,
+        anim_pos_threshold=anim_pos_threshold,
     )
 
 
@@ -1382,7 +1451,16 @@ def neutralize_animation_subtrees(anim, joint_indices):
     )
 
 
-def _neutralize_mirror_disabled_subtrees(features, object_cond, mirrored_offsets):
+def _neutralize_mirror_disabled_subtrees(
+    features,
+    object_cond,
+    mirrored_offsets,
+    *,
+    translation_root_index=None,
+    motion_metadata=None,
+    allow_infer=False,
+    anim_pos_threshold=0.01,
+):
     disabled_joint_indices = sorted({
         int(index)
         for index in object_cond['mirror_disabled_joint_indices']
@@ -1401,29 +1479,36 @@ def _neutralize_mirror_disabled_subtrees(features, object_cond, mirrored_offsets
 
     parents = np.asarray(object_cond['parents'], dtype=np.int64)
     offsets = np.asarray(mirrored_offsets, dtype=np.float64)
+    resolved_translation_root_index = resolve_feature_translation_root_index(
+        motion,
+        parents=parents,
+        offsets=offsets,
+        translation_root_index=translation_root_index,
+        motion_metadata=motion_metadata,
+        allow_infer=allow_infer,
+        anim_pos_threshold=anim_pos_threshold,
+        context=f"{object_cond['object_type']} mirrored motion",
+    )
     anim, _has_animated_pos = recover_animation_from_motion_np(
         motion,
         parents,
         offsets,
-        translation_root_index=get_object_translation_root_index(object_cond),
+        translation_root_index=resolved_translation_root_index,
+        anim_pos_threshold=anim_pos_threshold,
     )
     if anim is None:
         neutralized = motion.copy()
         return neutralized[0] if squeeze_frame else neutralized
 
-    translation_root_index = _find_translation_root(anim)
-
     neutral_anim = neutralize_animation_subtrees(anim, disabled_joint_indices)
     contact_joint_indices = list(object_cond['contact_joints'])
-    face_joints = list(object_cond['face_joints']) or None
-
     cont_6d_params, _r_velocity, _velocity, r_rot, global_positions = get_bvh_cont6d_params(
         neutral_anim,
         str(object_cond['object_type']),
         object_cond['orientation_quat'],
-        translation_root_index=translation_root_index,
+        translation_root_index=resolved_translation_root_index,
     )
-    positions = get_rifke(global_positions, r_rot, translation_root_index=translation_root_index)
+    positions = get_rifke(global_positions, r_rot, translation_root_index=resolved_translation_root_index)
     is_loop = _detect_motion_loop(positions)
     local_vel = np.repeat(r_rot[1:, None], global_positions.shape[1], axis=1) * (global_positions[1:] - global_positions[:-1])
     prev_velocity = local_vel[-1] if local_vel.shape[0] > 0 else None
@@ -1443,7 +1528,15 @@ def _neutralize_mirror_disabled_subtrees(features, object_cond, mirrored_offsets
     return neutralized[0] if squeeze_frame else neutralized
 
 
-def mirror_features_with_safeguards(features, object_cond):
+def mirror_features_with_safeguards(
+    features,
+    object_cond,
+    *,
+    translation_root_index=None,
+    motion_metadata=None,
+    allow_infer=False,
+    anim_pos_threshold=0.01,
+):
     spi = np.asarray(object_cond['symmetry_partner_indices'], dtype=np.int64)
     perm = np.arange(len(spi), dtype=np.int64)
     valid = spi >= 0
@@ -1465,7 +1558,15 @@ def mirror_features_with_safeguards(features, object_cond):
         if disabled_indices:
             orig_offsets = np.asarray(object_cond['offsets'], dtype=np.float32)
             mirrored_offsets[disabled_indices, 0] = orig_offsets[disabled_indices, 0]
-        mirrored = _neutralize_mirror_disabled_subtrees(mirrored, object_cond, mirrored_offsets)
+        mirrored = _neutralize_mirror_disabled_subtrees(
+            mirrored,
+            object_cond,
+            mirrored_offsets,
+            translation_root_index=translation_root_index,
+            motion_metadata=motion_metadata,
+            allow_infer=allow_infer,
+            anim_pos_threshold=anim_pos_threshold,
+        )
 
     return mirrored, mirrored_offsets
 
@@ -1904,6 +2005,10 @@ def _build_motion_metadata_entry(result, motion_file_name):
     motion_labels['motion_name'] = motion_file_name
     motion_labels['is_loop'] = result.get('is_loop', False)
 
+    translation_root_index = result.get('translation_root_index')
+    if translation_root_index is not None:
+        motion_labels['translation_root_index'] = int(translation_root_index)
+
     source_fbx_path = result.get('source_fbx_path')
     if source_fbx_path:
         motion_labels['source_fbx_path'] = os.path.abspath(source_fbx_path)
@@ -2285,24 +2390,28 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
 ##################################################################
 
 ############ Recover animation from motion features ##############
-def recover_root_quat_and_pos_np(data, translation_root_index=None, parents=None, offsets=None, anim_pos_threshold=0.01):
+def recover_root_quat_and_pos_np(
+    data,
+    translation_root_index=None,
+    parents=None,
+    offsets=None,
+    anim_pos_threshold=0.01,
+    motion_metadata=None,
+    allow_infer=False,
+):
     motion = np.asarray(data)
     if motion.ndim == 2:
         root_features = motion
         translation_features = motion
     elif motion.ndim == 3:
-        if translation_root_index is None:
-            if parents is None or offsets is None:
-                raise ValueError('motion feature tensor requires translation_root_index or parents/offsets to infer it')
-            translation_root_index = infer_translation_root_index_from_features(
-                motion,
-                parents,
-                offsets,
-                anim_pos_threshold=anim_pos_threshold,
-            )
-        translation_root_index = _coerce_translation_root_index(
-            translation_root_index,
-            joint_count=motion.shape[1],
+        translation_root_index = resolve_feature_translation_root_index(
+            motion,
+            parents=parents,
+            offsets=offsets,
+            translation_root_index=translation_root_index,
+            motion_metadata=motion_metadata,
+            allow_infer=allow_infer,
+            anim_pos_threshold=anim_pos_threshold,
             context='motion feature tensor',
         )
         root_features = motion[:, 0, :]
@@ -2347,20 +2456,24 @@ def recover_root_quat_and_pos(data):
     return r_rot_quat, r_pos
 
 """ recover xyz positions from ric (root relative positions) torch """
-def recover_from_bvh_ric_np(data, translation_root_index=None, parents=None, offsets=None, anim_pos_threshold=0.01):
+def recover_from_bvh_ric_np(
+    data,
+    translation_root_index=None,
+    parents=None,
+    offsets=None,
+    anim_pos_threshold=0.01,
+    motion_metadata=None,
+    allow_infer=False,
+):
     motion = np.asarray(data)
-    if motion.ndim == 3 and translation_root_index is None:
-        if parents is None or offsets is None:
-            raise ValueError('motion feature tensor requires translation_root_index or parents/offsets to infer it')
-        translation_root_index = infer_translation_root_index_from_features(
-            motion,
-            parents,
-            offsets,
-            anim_pos_threshold=anim_pos_threshold,
-        )
-    translation_root_index = _coerce_translation_root_index(
-        translation_root_index,
-        joint_count=motion.shape[-2],
+    translation_root_index = resolve_feature_translation_root_index(
+        motion,
+        parents=parents,
+        offsets=offsets,
+        translation_root_index=translation_root_index,
+        motion_metadata=motion_metadata,
+        allow_infer=allow_infer,
+        anim_pos_threshold=anim_pos_threshold,
         context='motion feature tensor',
     )
     r_rot_quat, r_pos = recover_root_quat_and_pos_np(
@@ -2369,6 +2482,8 @@ def recover_from_bvh_ric_np(data, translation_root_index=None, parents=None, off
         parents=parents,
         offsets=offsets,
         anim_pos_threshold=anim_pos_threshold,
+        motion_metadata=motion_metadata,
+        allow_infer=allow_infer,
     )
     positions = np.asarray(data[..., :3], dtype=np.float32).copy()
     positions = np.repeat(-r_rot_quat[..., None, :], positions.shape[-2], axis=-2) * positions
@@ -2378,17 +2493,23 @@ def recover_from_bvh_ric_np(data, translation_root_index=None, parents=None, off
     return positions
 
 """ recover xyz positions from rot (root relative positions) torch """
-def recover_from_bvh_rot_np(data, parents, offsets, translation_root_index=None, anim_pos_threshold=0.01):
-    if translation_root_index is None:
-        translation_root_index = infer_translation_root_index_from_features(
-            data,
-            parents,
-            offsets,
-            anim_pos_threshold=anim_pos_threshold,
-        )
-    translation_root_index = _coerce_translation_root_index(
-        translation_root_index,
-        joint_count=len(parents),
+def recover_from_bvh_rot_np(
+    data,
+    parents,
+    offsets,
+    translation_root_index=None,
+    anim_pos_threshold=0.01,
+    motion_metadata=None,
+    allow_infer=False,
+):
+    translation_root_index = resolve_feature_translation_root_index(
+        data,
+        parents=parents,
+        offsets=offsets,
+        translation_root_index=translation_root_index,
+        motion_metadata=motion_metadata,
+        allow_infer=allow_infer,
+        anim_pos_threshold=anim_pos_threshold,
         context='motion feature tensor',
     )
     r_rot_quat, r_pos = recover_root_quat_and_pos_np(
@@ -2397,6 +2518,8 @@ def recover_from_bvh_rot_np(data, parents, offsets, translation_root_index=None,
         parents=parents,
         offsets=offsets,
         anim_pos_threshold=anim_pos_threshold,
+        motion_metadata=motion_metadata,
+        allow_infer=allow_infer,
     )
     r_rot_cont6d = get_6d_rep(r_rot_quat)
     start_indx = 3
@@ -2441,17 +2564,23 @@ Returns:
     has_animated_pos: bool — True when any non-root joint needed position fix
                       (caller should pass this as BVH.save(..., positions=...))
 """
-def recover_animation_from_motion_np(data, parents, offsets, translation_root_index=None, anim_pos_threshold=0.01):
-    if translation_root_index is None:
-        translation_root_index = infer_translation_root_index_from_features(
-            data,
-            parents,
-            offsets,
-            anim_pos_threshold=anim_pos_threshold,
-        )
-    translation_root_index = _coerce_translation_root_index(
-        translation_root_index,
-        joint_count=len(parents),
+def recover_animation_from_motion_np(
+    data,
+    parents,
+    offsets,
+    translation_root_index=None,
+    anim_pos_threshold=0.01,
+    motion_metadata=None,
+    allow_infer=False,
+):
+    translation_root_index = resolve_feature_translation_root_index(
+        data,
+        parents=parents,
+        offsets=offsets,
+        translation_root_index=translation_root_index,
+        motion_metadata=motion_metadata,
+        allow_infer=allow_infer,
+        anim_pos_threshold=anim_pos_threshold,
         context='motion feature tensor',
     )
     target_global        = recover_from_bvh_ric_np(
@@ -2460,6 +2589,8 @@ def recover_animation_from_motion_np(data, parents, offsets, translation_root_in
         parents=parents,
         offsets=offsets,
         anim_pos_threshold=anim_pos_threshold,
+        motion_metadata=motion_metadata,
+        allow_infer=allow_infer,
     )              # (F, J, 3)
     _, anim_rot          = recover_from_bvh_rot_np(
         data,
@@ -2467,6 +2598,8 @@ def recover_animation_from_motion_np(data, parents, offsets, translation_root_in
         offsets,
         translation_root_index=translation_root_index,
         anim_pos_threshold=anim_pos_threshold,
+        motion_metadata=motion_metadata,
+        allow_infer=allow_infer,
     )
     glob_rot             = positions_global(anim_rot)                  # (F, J, 3)
 
@@ -2502,6 +2635,8 @@ def recover_bvh_export_animation_from_motion_np(
     joint_names,
     translation_root_index=None,
     anim_pos_threshold=0.01,
+    motion_metadata=None,
+    allow_infer=False,
 ):
     """Recover a motion tensor and remap it into BVH-safe DFS order.
 
@@ -2517,6 +2652,8 @@ def recover_bvh_export_animation_from_motion_np(
         offsets,
         translation_root_index=translation_root_index,
         anim_pos_threshold=anim_pos_threshold,
+        motion_metadata=motion_metadata,
+        allow_infer=allow_infer,
     )
     if anim is None:
         return None, list(joint_names), has_animated_pos

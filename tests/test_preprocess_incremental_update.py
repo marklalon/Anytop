@@ -48,8 +48,8 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
     write_motion_metadata(
         dataset_dir,
         {
-            "Cat_Run_001.npy": {"object_type": "Cat", "action_label": "legacy cat", "is_loop": True},
-            "Dog_Jump_002.npy": {"object_type": "Dog", "action_label": "legacy dog"},
+            "Cat_Run_001.npy": {"object_type": "Cat", "action_label": "legacy cat", "is_loop": True, "translation_root_index": 1},
+            "Dog_Jump_002.npy": {"object_type": "Dog", "action_label": "legacy dog", "translation_root_index": 0},
             "Stale_Idle_003.npy": {"object_type": "Stale", "action_label": "legacy stale"},
         },
         total_clips=3,
@@ -113,9 +113,11 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
     assert motion_metadata["Cat_Run_001.npy"]["object_type"] == "Cat"
     assert motion_metadata["Cat_Run_001.npy"]["motion_name"] == "Cat_Run_001.npy"
     assert motion_metadata["Cat_Run_001.npy"]["is_loop"] is True
+    assert motion_metadata["Cat_Run_001.npy"]["translation_root_index"] == 1
     assert motion_metadata["Dog_Jump_002.npy"]["object_type"] == "Dog"
     assert motion_metadata["Dog_Jump_002.npy"]["motion_name"] == "Dog_Jump_002.npy"
     assert motion_metadata["Dog_Jump_002.npy"]["is_loop"] is False
+    assert motion_metadata["Dog_Jump_002.npy"]["translation_root_index"] == 0
 
     assert sorted(path.stem for path in inspection_dir.glob("*.json")) == ["Cat", "Dog"]
     collision_report = json.loads((dataset_dir / "joint_name_collision_report.json").read_text(encoding="utf-8"))
