@@ -95,7 +95,7 @@ def test_refresh_joint_metadata_disambiguates_duplicate_canonical_names():
     assert object_cond["canonical_bvh_joint_names"] == ["Hips", "HipsJoint", "Tail01", "Tail01Copy"]
 
 
-def test_refresh_joint_metadata_preserves_helper_aware_mirror_metadata():
+def test_refresh_joint_metadata_disables_unpaired_truncated_helper_mirroring():
     object_cond = {
         "object_type": "SabreToothTiger",
         "joints_names": [
@@ -124,8 +124,9 @@ def test_refresh_joint_metadata_preserves_helper_aware_mirror_metadata():
 
     assert object_cond["symmetry_partner_indices"][:3] == [-1, 2, 1]
     assert object_cond["symmetry_partner_indices"][3] == -1
-    assert object_cond["mirror_disabled_joint_indices"] == []
-    assert object_cond["mirror_disabled_warnings"] == []
+    assert object_cond["mirror_disabled_joint_indices"] == [3]
+    assert object_cond["mirror_disabled_joint_names"] == ["Sabrecat_RightFinger1_RF11___rot_helper_2"]
+    assert object_cond["mirror_disabled_warnings"]
 
 
 def test_joint_name_collision_report_is_empty_after_disambiguation():
@@ -158,7 +159,7 @@ if __name__ == "__main__":
         test_toe_root_indices_are_preserved_for_parallel_digits,
         test_refresh_joint_metadata_rewrites_stale_canonical_names,
         test_refresh_joint_metadata_disambiguates_duplicate_canonical_names,
-        test_refresh_joint_metadata_preserves_helper_aware_mirror_metadata,
+        test_refresh_joint_metadata_disables_unpaired_truncated_helper_mirroring,
         test_joint_name_collision_report_is_empty_after_disambiguation,
     ]
 

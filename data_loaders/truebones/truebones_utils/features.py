@@ -540,9 +540,11 @@ def get_common_features_from_T_pose(
         t_pose_orientation_quat,
         scale_factor=scale_factor,
     )
+    scaled_rest_offsets = offsets_from_positions(positions_global(scaled)[0], scaled.parents)
     helper_metadata = _build_leaf_rotation_helper_metadata(
         t_pos_names,
         scaled.parents,
+        offsets=scaled_rest_offsets,
         max_joints=max_joints if augment_leaf_rotation_helpers else len(scaled.parents),
     )
     if augment_leaf_rotation_helpers and helper_metadata['helper_joint_count'] > 0:
@@ -608,7 +610,6 @@ def _extract_motion_features_from_aligned_anims(
     has_locomotion = False
     motion_anim = new_anim
     motion_export_anim = export_anim
-
     xz_extent = _xz_locomotion_extent(export_anim, feature_translation_root_index)
     has_locomotion = xz_extent > ROOT_XZ_STRIP_THRESHOLD
     if has_locomotion:

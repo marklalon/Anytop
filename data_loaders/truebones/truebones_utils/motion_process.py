@@ -75,6 +75,7 @@ from .animation_utils import (
     _build_leaf_rotation_helper_metadata,
     _append_leaf_rotation_helpers_to_animation,
     _extend_semantic_metadata_with_leaf_helpers,
+    resolve_mirrored_export_skeleton_metadata,
     # Mirror & neutralization
     _warn_mirror_disabled_subtrees,
     neutralize_animation_subtrees,

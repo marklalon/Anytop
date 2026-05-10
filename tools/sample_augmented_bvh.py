@@ -60,6 +60,7 @@ from motion_lib import BVH
 from data_loaders.truebones.truebones_utils.motion_process import (
     recover_bvh_export_animation_from_motion_np,
     refresh_joint_metadata_in_cond_dict,
+    resolve_mirrored_export_skeleton_metadata,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.param_utils import OBJECT_SUBSETS_DICT
@@ -124,13 +125,27 @@ def _export_bvh(
     offsets: np.ndarray,
     joints_names: list[str],
     motion_metadata: dict[str, object],
+    *,
+    object_cond: dict[str, object] | None = None,
+    mirror_export_compat: bool = False,
 ) -> bool:
     """Denormalized (F, J, 13) → BVH file.  Returns True on success."""
+    export_parents = list(parents)
+    export_offsets = np.asarray(offsets)
+    export_joint_names = list(joints_names)
+    if mirror_export_compat and object_cond is not None:
+        export_parents, export_offsets, export_joint_names = resolve_mirrored_export_skeleton_metadata(
+            object_cond,
+            export_parents,
+            export_offsets,
+            export_joint_names,
+        )
+
     anim, joints_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
         motion_raw,
-        parents,
-        offsets,
-        joints_names,
+        export_parents,
+        export_offsets,
+        export_joint_names,
         motion_metadata=motion_metadata,
     )
     if anim is None:
@@ -327,6 +342,8 @@ def main() -> int:
                 np.asarray(offsets, dtype=np.float32),
                 joints_names,
                 motion_metadata,
+                object_cond=cond_dict[object_type],
+                mirror_export_compat=bool(aug_info.get("mirror_applied")),
             )
             if ok:
                 print(f"OK  → {save_path.name}  [{m_length}f, {object_type}]")
