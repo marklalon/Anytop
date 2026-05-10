@@ -20,7 +20,7 @@ from typing import Any
 
 import numpy as np
 
-from utils.rotation_numpy import quat_conjugate_wxyz_np, quat_multiply_wxyz_np, quat_rotate_wxyz_np
+from utils.rotation_numpy import quat_multiply_wxyz_np, quat_rotate_wxyz_np
 
 
 # Common root joint names — when the root already carries a semantic name
@@ -328,79 +328,6 @@ def _set_scene_time(scene, sample_time: float) -> None:
 
 # ── FBX → Animation ─────────────────────────────────────────────────────────
 
-def _neutralize_constant_carrier_deformations(
-    rot_qs: np.ndarray,
-    rest_rotations: np.ndarray,
-    offsets: np.ndarray,
-    bone_names: list[str],
-    *,
-    offset_atol: float = 1e-5,
-    deformation_std_atol: float = 1e-3,
-    deformation_angle_min_deg: float = 1.0,
-    warn_path: str | None = None,
-) -> None:
-    """Reset carrier joints (near-zero offset, child-of-root passthroughs) whose
-    pose deformation is constant and non-identity throughout the take to their
-    rest pose.
-
-    Some FBX takes (e.g. 3DS Max Biped exports) bake a fixed rotation onto a
-    zero-offset carrier joint such as ``Bip01_Pelvis``. Because the offset is
-    effectively zero the joint contributes no translation, but the constant
-    rotation manifests downstream as a permanent body roll/tilt. We treat such
-    constant non-identity deformations on carrier joints as export artifacts
-    and zero them so the take aligns with the character's rest pose.
-
-    ``rot_qs`` is modified in place. Only joints with ``parents[joint] == 0``
-    (direct children of the skeleton root) are considered, matching the
-    redundant-root-collapse rules used elsewhere in this module.
-    """
-    num_frames, num_joints = rot_qs.shape[:2]
-    if num_frames == 0 or num_joints < 2:
-        return
-
-    for joint_idx in range(1, num_joints):
-        if not np.all(np.abs(offsets[joint_idx]) < offset_atol):
-            continue
-
-        rest_quat = np.asarray(rest_rotations[joint_idx], dtype=np.float64)
-        rest_norm = float(np.linalg.norm(rest_quat))
-        if rest_norm < 1e-6:
-            continue
-        rest_quat = rest_quat / rest_norm
-        rest_inv = quat_conjugate_wxyz_np(rest_quat)
-
-        loaded = rot_qs[:, joint_idx]
-        rest_inv_broadcast = np.broadcast_to(rest_inv, loaded.shape)
-        deformations = quat_multiply_wxyz_np(rest_inv_broadcast, loaded)
-
-        # q and -q represent the same rotation; align signs before measuring spread.
-        sign = np.where(deformations[:, 0:1] < 0, -1.0, 1.0)
-        deformations = deformations * sign
-
-        if float(deformations.std(axis=0).max()) > deformation_std_atol:
-            continue
-
-        deformation_const = deformations.mean(axis=0)
-        norm = float(np.linalg.norm(deformation_const))
-        if norm < 1e-6:
-            continue
-        deformation_const = deformation_const / norm
-
-        cos_half_angle = min(abs(float(deformation_const[0])), 1.0)
-        angle_deg = math.degrees(2.0 * math.acos(cos_half_angle))
-        if angle_deg < deformation_angle_min_deg:
-            continue
-
-        rot_qs[:, joint_idx] = rest_quat
-
-        if warn_path is not None:
-            print(
-                f"\033[33m[WARN] {Path(warn_path).name}: neutralized constant "
-                f"{angle_deg:.1f}° deformation on carrier joint "
-                f"'{bone_names[joint_idx]}' (idx={joint_idx})\033[0m"
-            )
-
-
 def _fbx_to_animation(fbx_path: str, collapse_root: bool = True) -> tuple[Any, list[str], float]:
     """Load FBX via Blender and return (Animation, joint_names, fps).
 
@@ -416,7 +343,7 @@ def _fbx_to_animation(fbx_path: str, collapse_root: bool = True) -> tuple[Any, l
     from motion_lib.Quaternions import Quaternions
 
     armature = _load_fbx_scene(fbx_path)
-    bone_names, parents, offsets, rest_rotations = _extract_armature_skeleton_data(armature)
+    bone_names, parents, offsets, _rest_rotations = _extract_armature_skeleton_data(armature)
 
     joint_count = len(bone_names)
     orients = Quaternions.id(joint_count)
@@ -472,13 +399,6 @@ def _fbx_to_animation(fbx_path: str, collapse_root: bool = True) -> tuple[Any, l
     bpy.ops.object.mode_set(mode="OBJECT")
 
     if collapse_root:
-        _neutralize_constant_carrier_deformations(
-            rot_qs,
-            rest_rotations,
-            offsets,
-            bone_names,
-            warn_path=fbx_path,
-        )
         bone_names, parents, offsets, rot_qs, pos_np, orients = _collapse_root_skeleton(
             bone_names,
             parents,
