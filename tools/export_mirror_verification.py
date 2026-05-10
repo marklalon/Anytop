@@ -102,7 +102,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default="outputs/mirror_verification", help="Output directory for BVH files.")
     parser.add_argument("--objects-subset", default="all", help="Object subset to sample from.")
     parser.add_argument("--sample-count", default=1, type=int, help="Motions to export per symmetric object type.")
-    parser.add_argument("--random-seed", default=0, type=int, help="RNG seed for reproducible sampling.")
+    parser.add_argument("--random-seed", default=1234, type=int, help="RNG seed for reproducible sampling.")
     return parser.parse_args()
 
 
