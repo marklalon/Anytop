@@ -32,9 +32,13 @@ Arguments:
 import argparse
 import random
 import sys
+import os
 from pathlib import Path
 
 import numpy as np
+
+# ANSI colors (safe on Windows 10+)
+os.system("")  # enables VT100 on Windows
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -97,7 +101,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-dir", default="", help="Processed dataset root directory.")
     parser.add_argument("--output-dir", default="outputs/mirror_verification", help="Output directory for BVH files.")
     parser.add_argument("--objects-subset", default="all", help="Object subset to sample from.")
-    parser.add_argument("--sample-count", default=8, type=int, help="Motions to export per symmetric object type.")
+    parser.add_argument("--sample-count", default=1, type=int, help="Motions to export per symmetric object type.")
     parser.add_argument("--random-seed", default=0, type=int, help="RNG seed for reproducible sampling.")
     return parser.parse_args()
 
@@ -151,13 +155,8 @@ def main() -> int:
         )
         spi = np.asarray(object_cond['symmetry_partner_indices'])
 
-        obj_dir = output_dir / obj
-        obj_dir.mkdir(parents=True, exist_ok=True)
-
         symmetric_pairs = [(i, int(spi[i])) for i in range(len(spi)) if spi[i] != -1]
-        print(f"\n[{obj}] {len(symmetric_pairs)} symmetric joint pairs:")
-        for left, right in symmetric_pairs:
-            print(f"  {joints_names[left]} <-> {joints_names[right]}")
+        print(f"[{obj}] {len(symmetric_pairs)} symmetric pairs, exporting {len(selected)} motions…")
 
         for motion_file in selected:
             stem = Path(motion_file).stem
@@ -171,8 +170,8 @@ def main() -> int:
                 motion_metadata=motion_metadata,
             )
 
-            clean_path = obj_dir / f"{stem}_clean.bvh"
-            mirror_path = obj_dir / f"{stem}_mirror.bvh"
+            clean_path = output_dir / f"{obj}_{stem}_clean.bvh"
+            mirror_path = output_dir / f"{obj}_{stem}_mirror.bvh"
 
             ok_clean = export_bvh(clean_path, motion, parents, offsets, joints_names, motion_metadata)
             ok_mirror = export_bvh(
@@ -186,16 +185,12 @@ def main() -> int:
                 mirror_export_compat=True,
             )
 
-            status = []
-            if ok_clean:
-                status.append(f"clean -> {clean_path.name}")
-            else:
-                status.append("clean FAILED")
-            if ok_mirror:
-                status.append(f"mirror -> {mirror_path.name}")
-            else:
-                status.append("mirror FAILED")
-            print(f"  {stem}: {' | '.join(status)}")
+            if not ok_clean or not ok_mirror:
+                fail = "\033[91mFAILED\033[0m"
+                status = []
+                status.append(f"clean: {'OK' if ok_clean else fail}")
+                status.append(f"mirror: {'OK' if ok_mirror else fail}")
+                print(f"  {stem}: {' | '.join(status)}")
             if ok_clean and ok_mirror:
                 exported_total += 1
 
