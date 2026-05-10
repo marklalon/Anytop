@@ -106,7 +106,7 @@ def parse_action_tags(raw_action_tags):
                 tokens = raw_action_tags
         return tuple(token.strip().lower() for token in tokens if str(token).strip())
 
-MAX_JOINTS=86
+MAX_JOINTS=100
 FPS=30
 FEATS_LEN=13
 SMPL_OFFSETS = np.array([[ 0.0000,  0.0000,  0.0000],
