@@ -70,10 +70,29 @@ def coerce_feature_payload(features_or_payload: Any) -> tuple[np.ndarray, Option
     return np.asarray(features_or_payload), None
 
 
+def _require_translation_root_index(
+    translation_root_index: Optional[int],
+    joint_count: int,
+    context: str,
+) -> int:
+    if translation_root_index is None:
+        raise ValueError(f"{context} requires translation_root_index to be provided explicitly")
+    try:
+        index = int(translation_root_index)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{context} has invalid translation_root_index: {translation_root_index}") from exc
+    if index < 0 or index >= int(joint_count):
+        raise ValueError(
+            f"{context} translation_root_index out of range: {index} for {joint_count} joints"
+        )
+    return index
+
+
 def _recover_from_production_motion_features(
     features_arr: np.ndarray,
     parents: np.ndarray,
     offsets: np.ndarray,
+    translation_root_index: int,
     anim_pos_threshold: float,
 ):
     """Recover production bare `(F, J, 13)` features from get_motion_features().
@@ -115,7 +134,7 @@ def _recover_from_production_motion_features(
         rot_mats[:, parent_idx] = parent_rot_mats[:, child_idx - 1]
 
     all_rots = Qcls.from_transforms(rot_mats)
-    target_global = recover_from_bvh_ric_np(features_arr)
+    target_global = recover_from_bvh_ric_np(features_arr, translation_root_index=translation_root_index)
 
     positions = offsets[None].repeat(frame_count, axis=0).copy()
     recovered_anim = Animation(all_rots, positions, Qcls.id(0), offsets, parents)
@@ -155,6 +174,7 @@ def recover_from_features(
     features: Any,
     parents: np.ndarray,
     offsets: np.ndarray,
+    translation_root_index: Optional[int] = None,
     anim_pos_threshold: float = 0.01,
 ):
     """Recover an Animation from a 13-channel NPY feature tensor.
@@ -164,6 +184,9 @@ def recover_from_features(
     Dict payloads use the self-contained own-rotation roundtrip layout written
     by build_npy_metadata_payload(...). Plain arrays are treated as production
     dataset features written by get_motion_features(...).
+
+    Bare dataset tensors can infer translation_root_index per motion when it is
+    not provided explicitly. Dict payloads still prefer the stored payload field.
 
     Returns:
         (anim, has_animated_pos) — the reconstructed Animation and a bool
@@ -179,20 +202,37 @@ def recover_from_features(
     assert channel_count == 13, f"Expected 13 channels, got {channel_count}"
 
     if payload is None:
+        if translation_root_index is None:
+            from data_loaders.truebones.truebones_utils.motion_process import infer_translation_root_index_from_features
+
+            trans_root = infer_translation_root_index_from_features(
+                features_arr,
+                parents,
+                offsets,
+                anim_pos_threshold=anim_pos_threshold,
+            )
+        else:
+            trans_root = _require_translation_root_index(
+                translation_root_index,
+                joint_count,
+                context="production motion features",
+            )
         return _recover_from_production_motion_features(
             features_arr,
             parents,
             offsets,
+            trans_root,
             anim_pos_threshold,
         )
 
     # ── 1. Translation root ─────────────────────────────────────────────
-    if payload is not None and "translation_root_index" in payload:
-        trans_root = int(payload["translation_root_index"])
-    else:
-        xz_abs_max = np.max(np.abs(features_arr[:, :, [0, 2]]), axis=(0, 2))
-        zero_xz = np.flatnonzero(xz_abs_max <= 1e-5)
-        trans_root = int(zero_xz[0]) if zero_xz.size > 0 else int(np.argmin(xz_abs_max))
+    if translation_root_index is None and payload is not None:
+        translation_root_index = payload.get("translation_root_index")
+    trans_root = _require_translation_root_index(
+        translation_root_index,
+        joint_count,
+        context="roundtrip payload",
+    )
 
     # ── 2. Restore initial XZ offset ─────────────────────────────────---
     initial_translation_root_xz = np.zeros(2, dtype=np.float64)

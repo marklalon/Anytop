@@ -45,11 +45,10 @@ def _processed_stats(clip_name: str) -> tuple[tuple[float, float, float], float,
         _scale_factor = float(_cond_entry["scale_factor"])
 
     raw_anim, _raw_names, _frame_time = FBX.load(str(_HORSE_DIR / clip_name))
-    processed_anim, _root_pose_init_xz, _scale_factor = process_anim(
+    processed_anim, _root_xz_center, _scale_factor = process_anim(
         raw_anim,
         "Horse",
         tp.orientation_quat,
-        root_pose_init_xz=tp.root_pose_init_xz,
         scale_factor=_scale_factor,
     )
     processed_global = positions_global(processed_anim)

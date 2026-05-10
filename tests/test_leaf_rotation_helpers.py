@@ -90,7 +90,7 @@ def test_append_leaf_rotation_helpers_appends_helpers_at_end() -> None:
 
     assert augmented_anim.shape == (2, 4)
     assert augmented_names[:3] == joint_names
-    assert augmented_names[3].startswith("Leaf__leafrot_helper_")
+    assert augmented_names[3].startswith("Leaf__rot_helper_")
     assert np.array_equal(augmented_anim.parents, np.array([-1, 0, 1, 2], dtype=np.int32))
     assert np.allclose(augmented_anim.offsets[3], np.zeros(3, dtype=np.float64))
     assert np.allclose(augmented_anim.positions[:, 3, :], 0.0)
@@ -281,6 +281,7 @@ def test_helper_covered_leaf_rotation_roundtrips_through_bare_features() -> None
         features,
         augmented_anim.parents,
         augmented_anim.offsets,
+        translation_root_index=0,
     )
 
     assert np.allclose(

@@ -102,7 +102,7 @@ def test_refresh_joint_metadata_preserves_helper_aware_mirror_metadata():
             "Root",
             "Sabrecat_LeftFinger1_LF11_",
             "Sabrecat_RightFinger1_RF11_",
-            "Sabrecat_RightFinger1_RF11___leafrot_helper_2",
+            "Sabrecat_RightFinger1_RF11___rot_helper_2",
         ],
         "parents": np.array([-1, 0, 0, 2], dtype=np.int64),
         "offsets": np.array(
@@ -117,7 +117,7 @@ def test_refresh_joint_metadata_preserves_helper_aware_mirror_metadata():
         "original_joint_count": 3,
         "helper_joint_indices": [3],
         "helper_source_leaf_indices": [2],
-        "helper_joint_names": ["Sabrecat_RightFinger1_RF11___leafrot_helper_2"],
+        "helper_joint_names": ["Sabrecat_RightFinger1_RF11___rot_helper_2"],
     }
 
     _refresh_joint_metadata_in_object_cond(object_cond)

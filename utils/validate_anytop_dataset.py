@@ -414,18 +414,12 @@ def _prune_excess_joint_motions(motions_dir: Path, bvhs_dir: Path, cond: dict, s
     return deleted_stems
 
 
-def _validate_root_motion_extent(bvh_path: Path, motion_name: str, threshold: float) -> None:
-    """Warn if the motion's XZ displacement exceeds the strip-root-motion threshold.
-
-    During preprocessing, clips whose translation-root XZ span exceeds
-    `ROOT_XZ_STRIP_THRESHOLD` are classified as locomotion and have their root
-    XZ stripped.  This check verifies that no in-place clip has leaked through
-    with unexpectedly large XZ drift.
-
-    Uses the same logic as preprocessing (`_find_translation_root` +
-    `_xz_locomotion_extent`) to avoid mismatches between feature-tensor
-    inference and the actual Animation-based detection.
-    """
+def _validate_root_motion_extent(
+    bvh_path: Path,
+    motion_name: str,
+    threshold: float,
+) -> None:
+    """Warn if the motion's translation-root XZ distance from origin exceeds the threshold."""
     if not bvh_path.exists():
         return
 
@@ -434,15 +428,16 @@ def _validate_root_motion_extent(bvh_path: Path, motion_name: str, threshold: fl
 
         anim, _, _ = BVH.load(str(bvh_path))
         trans_root_idx = _find_translation_root(anim)
-        extent = _xz_locomotion_extent(anim, trans_root_idx)
+        effective_root_index = trans_root_idx if trans_root_idx >= 0 else 0
+        extent = _xz_locomotion_extent(anim, effective_root_index)
     except Exception as exc:
         _print_warn(f"{motion_name}: failed to inspect paired BVH root motion extent: {exc}")
         return
 
     if extent > threshold:
         _print_warn(
-            f"{motion_name}: root XZ displacement ({extent:.3f}) exceeds "
-            f"strip threshold ({threshold:.1f}) — translation root index {trans_root_idx}"
+            f"{motion_name}: root XZ distance from centred origin ({extent:.3f}) exceeds "
+            f"strip threshold ({threshold:.1f}) — translation root index {effective_root_index}"
         )
 
 
@@ -482,7 +477,11 @@ def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample
             _require(motion.shape[1] == expected_joints, f"{motion_path.name} joints mismatch: {motion.shape[1]} vs {expected_joints}")
 
             paired_bvh_path = bvhs_dir / f"{motion_path.stem}.bvh"
-            _validate_root_motion_extent(paired_bvh_path, motion_path.name, root_motion_threshold)
+            _validate_root_motion_extent(
+                paired_bvh_path,
+                motion_path.name,
+                root_motion_threshold,
+            )
         except ValidationError as e:
             _print_warn(f"validation error: {motion_path.name}: {e}")
 
@@ -668,9 +667,13 @@ def _prepare_dataset_for_validation(
         from regenerate_dataset_artifacts import regenerate_dataset_artifacts
 
         regenerate_dataset_artifacts(str(dataset_dir))
+        cond = dict(np.load(cond_path, allow_pickle=True).item())
+
+    _validate_positions_error_file(_positions_error_path)
 
 
 def _validate_positions_error_file(positions_error_path: Path) -> None:
+    """Validate that positions_error_rate.txt exists and has the expected format."""
     try:
         content = positions_error_path.read_text(encoding="utf-8").strip()
         _require(content.startswith("Position squared error per source clip:"), "positions_error_rate.txt has unexpected header")
@@ -690,7 +693,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-count", type=int, default=0, help="How many motion files to validate in detail. Use 0 to validate all files.")
     parser.add_argument("--orientation-threshold-deg", type=float, default=5.0, help="Maximum allowed T-pose face-orientation delta from the nearest cardinal XZ axis (+x/-x/+z/-z) before warning.")
     parser.add_argument("--skip-orientation-check", action="store_true", help="Skip T-pose face-orientation validation.")
-    parser.add_argument("--root-motion-threshold", type=float, default=ROOT_XZ_STRIP_THRESHOLD, help=f"Maximum allowed cumulative root XZ displacement (default={ROOT_XZ_STRIP_THRESHOLD}).")
+    parser.add_argument("--root-motion-threshold", type=float, default=ROOT_XZ_STRIP_THRESHOLD, help=f"Maximum allowed root XZ distance from the centred origin (default={ROOT_XZ_STRIP_THRESHOLD}).")
     return parser.parse_args()
 
 

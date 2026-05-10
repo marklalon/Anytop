@@ -115,6 +115,20 @@ def _extract_armature_skeleton_data(
     if not all_roots:
         raise RuntimeError("No root bone found in armature")
 
+    # Some FBX exports wrap the real skeleton in a synthetic "null" root.
+    # Skip that wrapper bone itself, but promote its child chains as root
+    # candidates so we still import the actual skeleton.
+    candidate_roots = []
+    for bone in all_roots:
+        if bone.name.lower() == "null":
+            candidate_roots.extend(bone.children)
+        else:
+            candidate_roots.append(bone)
+    if not candidate_roots:
+        raise RuntimeError(
+            "No valid root bone found in armature after skipping 'null' roots"
+        )
+
     def _subtree_size(root_bone) -> int:
         count = 0
         queue = deque([root_bone])
@@ -124,7 +138,7 @@ def _extract_armature_skeleton_data(
             queue.extend(bone.children)
         return count
 
-    root_bone = max(all_roots, key=_subtree_size)
+    root_bone = max(candidate_roots, key=_subtree_size)
 
     ordered_bones = []
     def _append_preorder(bone) -> None:

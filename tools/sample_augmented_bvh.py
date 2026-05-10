@@ -284,8 +284,16 @@ def main() -> int:
 
             # ----------------------------------------------------------------
             # Retrieve joint names from cond_dict for BVH hierarchy
+            # Use canonical_bvh_joint_names (anatomical names) so the exported
+            # BVH matches the naming convention used by sample/generate.py and
+            # the preprocessing pipeline.
             # ----------------------------------------------------------------
-            joints_names = list(cond_dict[object_type].get("joints_names", []))
+            joints_names = list(
+                cond_dict[object_type].get(
+                    "canonical_bvh_joint_names",
+                    cond_dict[object_type].get("joints_names", []),
+                )
+            )
             n_joints = np.asarray(parents).shape[0]
             if not joints_names:
                 joints_names = [f"joint_{j}" for j in range(n_joints)]

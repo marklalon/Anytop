@@ -23,7 +23,9 @@ Metadata is resolved from two sources in descending priority:
                               the needed fields.
 
 Note: locomotion XZ stripped during preprocessing cannot be recovered from a
-plain feature tensor alone.
+plain feature tensor alone. Non-locomotion clips also stay in their centred
+preprocessed space unless an explicit root-translation XZ override is passed
+during restore.
 
 Usage:
         # Using FBX T-pose (explicit)
@@ -116,7 +118,6 @@ def _load_tpose_restore_metadata(
         "parents": np.asarray(tp.tpos_anim.parents, dtype=np.int32),
         "offsets": np.asarray(tp.offsets, dtype=np.float32),
         "tpose_rest_rotations": np.asarray(tp.tpos_rots[0], dtype=np.float32),
-        "root_pose_init_xz": np.asarray(tp.root_pose_init_xz, dtype=np.float64),
         "orientation_quat": np.asarray(tp.orientation_quat, dtype=np.float64),
         "scale_factor": float(tp.scale_factor),
         "raw_joint_names": list(raw_joint_names),
@@ -288,12 +289,6 @@ def _build_restore_context(
     elif tpose_meta is not None and tpose_meta.get("scale_factor") is not None:
         scale_factor = float(tpose_meta["scale_factor"])
 
-    root_pose_init_xz = None
-    if cond_entry is not None and cond_entry.get("root_pose_init_xz") is not None:
-        root_pose_init_xz = np.asarray(cond_entry["root_pose_init_xz"], dtype=np.float64)
-    elif tpose_meta.get("root_pose_init_xz") is not None:
-        root_pose_init_xz = np.asarray(tpose_meta["root_pose_init_xz"], dtype=np.float64)
-
     orientation_quat = None
     if cond_entry is not None and cond_entry.get("orientation_quat") is not None:
         orientation_quat = np.asarray(cond_entry["orientation_quat"], dtype=np.float64)
@@ -322,7 +317,6 @@ def _build_restore_context(
         "parents": parents,
         "offsets": offsets,
         "tpose_rest_rotations": tpose_rest_rotations,
-        "root_pose_init_xz": root_pose_init_xz,
         "orientation_quat": orientation_quat,
         "scale_factor": scale_factor,
         "original_joint_count": original_joint_count,
@@ -435,13 +429,15 @@ def _clamp_unobservable_joint_positions_to_rest(
     )
 
 
-def _coerce_root_pose_offset(root_pose_init_xz: np.ndarray) -> np.ndarray:
-    root_pose_init_xz = np.asarray(root_pose_init_xz, dtype=np.float64).reshape(-1)
-    if root_pose_init_xz.size == 3:
-        return root_pose_init_xz
-    if root_pose_init_xz.size == 2:
-        return np.array([root_pose_init_xz[0], 0.0, root_pose_init_xz[1]], dtype=np.float64)
-    raise ValueError(f"root_pose_init_xz must have shape (2,) or (3,), got {root_pose_init_xz.shape}")
+def _coerce_root_translation_xz(root_translation_xz: np.ndarray) -> np.ndarray:
+    root_translation_xz = np.asarray(root_translation_xz, dtype=np.float64).reshape(-1)
+    if root_translation_xz.size == 3:
+        return root_translation_xz
+    if root_translation_xz.size == 2:
+        return np.array([root_translation_xz[0], 0.0, root_translation_xz[1]], dtype=np.float64)
+    raise ValueError(
+        f"root_translation_xz must have shape (2,) or (3,), got {root_translation_xz.shape}"
+    )
 
 
 def _normalize_joint_index_selection(
@@ -674,7 +670,7 @@ def _run_basic_inverse_kinematics_with_constraints(
 
             anim_transforms = animation_module.transforms_global(animation)
             anim_positions = anim_transforms[:, :, :3, 3]
-            anim_rotations = Quaternions.from_transforms(anim_transforms)
+            anim_rotations = Quaternions.from_transforms(anim_transforms[:, :, :3, :3])
 
             joint_dirs = anim_positions[:, child_indices] - anim_positions[:, np.newaxis, joint_index]
             target_dirs = (
@@ -860,7 +856,7 @@ def _invert_preprocess_transform(
     processed_anim,
     *,
     scale_factor: float | None,
-    root_pose_init_xz: np.ndarray | None,
+    root_translation_xz: np.ndarray | None,
     orientation_quat: np.ndarray | None,
 ):
     from motion_lib.Animation import Animation
@@ -879,8 +875,8 @@ def _invert_preprocess_transform(
             positions *= inv_scale
             offsets *= inv_scale
 
-    if root_pose_init_xz is not None:
-        root_offset = _coerce_root_pose_offset(root_pose_init_xz)
+    if root_translation_xz is not None:
+        root_offset = _coerce_root_translation_xz(root_translation_xz)
         positions[:, 0] += root_offset
         offsets[0] += root_offset
 
@@ -913,6 +909,7 @@ def restore_glb(
     cond_npy: str | None = None,
     object_type: str | None = None,
     fps: float | None = None,
+    root_translation_xz: np.ndarray | None = None,
     fullbody_ik: bool = False,
     localbody_ik: bool = False,
 ) -> str:
@@ -927,6 +924,10 @@ def restore_glb(
                              from the NPY filename if None.
         fps:                 Animation frame rate.  Defaults to 30 if not
                              specified.
+        root_translation_xz: Optional explicit XZ translation to add back after
+                     inverse scale and before inverse orientation. When
+                     omitted, restore keeps the clip in centred
+                     preprocessed space.
         fullbody_ik:          If True, perform a full-body IK reconstruction
                              on the raw export skeleton after recovering the
                              animation.  Default is False (skip IK, use
@@ -944,7 +945,7 @@ def restore_glb(
     from Anytop.utils.exporter import AnimationExporter, animation_to_exporter_inputs
     from Anytop.utils.roundtrip_common import _build_skeleton
     from data_loaders.truebones.truebones_utils.motion_process import (
-        infer_translation_root_from_features,
+        _find_translation_root,
         recover_processed_animation_from_feature_animation,
     )
 
@@ -1005,7 +1006,7 @@ def restore_glb(
     raw_export_rest_rotations = np.asarray(restore_ctx["raw_export_rest_rotations"], dtype=np.float32)
     rotation_channel_mask = np.asarray(restore_ctx["rotation_channel_mask"], dtype=bool)
     original_joint_count = int(restore_ctx["original_joint_count"])
-    translation_root_index = int(infer_translation_root_from_features(features))
+    translation_root_index = None
 
     # ── Resolve FPS ─────────────────────────────────────────────────────
     if fps is None:
@@ -1032,6 +1033,15 @@ def restore_glb(
 
     if restore_ctx["scale_factor"] is not None:
         print(f"T-pose preprocessing scale_factor: {restore_ctx['scale_factor']:.6f}")
+    if root_translation_xz is None:
+        print("Root translation XZ: keeping centred preprocessed placement")
+    else:
+        coerced_root_translation_xz = _coerce_root_translation_xz(root_translation_xz)
+        print(
+            "Root translation XZ override: "
+            f"[{coerced_root_translation_xz[0]:.6f}, {coerced_root_translation_xz[2]:.6f}]"
+        )
+        root_translation_xz = coerced_root_translation_xz
 
     _warn_on_missing_mesh_joints(
         export_joint_names, tpose_mesh, mesh_bone_names=restore_ctx.get("mesh_bone_names")
@@ -1039,8 +1049,14 @@ def restore_glb(
 
     # ── Recover Animation (in HML feature space) ──────────────────────────────
     print("Recovering feature-space animation from NPY...")
-    recovered_feature_anim, has_animated_pos = recover_from_features(raw, parents, offsets_hml)
+    recovered_feature_anim, has_animated_pos = recover_from_features(
+        raw,
+        parents,
+        offsets_hml,
+        translation_root_index=translation_root_index,
+    )
     print(f"Recovered: {recovered_feature_anim.shape[0]} frames")
+    translation_root_index = _find_translation_root(recovered_feature_anim)
 
     print("Recovering processed animation channels for export...")
     export_anim = recover_processed_animation_from_feature_animation(
@@ -1054,7 +1070,7 @@ def restore_glb(
     export_anim = _invert_preprocess_transform(
         export_anim,
         scale_factor=restore_ctx.get("scale_factor"),
-        root_pose_init_xz=restore_ctx.get("root_pose_init_xz"),
+        root_translation_xz=root_translation_xz,
         orientation_quat=restore_ctx.get("orientation_quat"),
     )
     export_anim = _strip_appended_helper_joints(
@@ -1230,6 +1246,17 @@ def main() -> None:
         default=None,
         help="Animation frame rate.  Defaults to 30 if not specified.",
     )
+    parser.add_argument(
+        "--root-translation-xz",
+        type=float,
+        nargs=2,
+        metavar=("X", "Z"),
+        default=None,
+        help=(
+            "Explicit XZ translation to add back during restore. When omitted, "
+            "the restored clip stays in centred preprocessed space."
+        ),
+    )
     ik_mode_group = parser.add_mutually_exclusive_group()
     ik_mode_group.add_argument(
         "--fullbody-ik",
@@ -1291,6 +1318,7 @@ def main() -> None:
     print(f"Output GLB    : {args.output_glb}")
     print(f"cond.npy      : {cond_npy_path}")
     print(f"FPS           : {args.fps or '(auto)'}")
+    print(f"Root XZ       : {args.root_translation_xz or '(centered default)'}")
     print()
 
     restore_glb(
@@ -1300,6 +1328,7 @@ def main() -> None:
         cond_npy=cond_npy_path,
         object_type=args.object_type,
         fps=args.fps,
+        root_translation_xz=args.root_translation_xz,
         fullbody_ik=args.fullbody_ik,
         localbody_ik=args.localbody_ik,
     )

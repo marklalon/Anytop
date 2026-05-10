@@ -285,7 +285,17 @@ def _load_npy_motion(npy_path: str, reference: ReferenceSkeleton) -> MotionWorld
             f"[Info] NPY skeleton fallback: {fallback_note}; using {len(bone_names)} joints to match the motion tensor"
         )
 
-    recovered_anim, _has_animated_pos = recover_from_features(raw, parents, offsets)
+    _features_arr, payload = coerce_feature_payload(raw)
+    translation_root_index = payload.get("translation_root_index") if payload is not None else None
+    if translation_root_index is not None:
+        translation_root_index = int(translation_root_index)
+
+    recovered_anim, _has_animated_pos = recover_from_features(
+        raw,
+        parents,
+        offsets,
+        translation_root_index=translation_root_index,
+    )
     world_positions = np.asarray(positions_global(recovered_anim), dtype=np.float64)
 
     if world_positions.shape[:2] != features.shape[:2]:

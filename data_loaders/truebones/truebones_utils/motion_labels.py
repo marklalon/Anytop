@@ -16,7 +16,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (
 )
 
 
-MOTION_METADATA_SCHEMA_VERSION = 1
+MOTION_METADATA_SCHEMA_VERSION = 2
 
 _TOKEN_PATTERN = re.compile(r"[A-Z]+(?=[A-Z][a-z]|\d|$)|[A-Z]?[a-z]+|\d+")
 _ACTION_CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (

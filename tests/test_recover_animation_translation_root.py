@@ -2,15 +2,19 @@ import os
 import sys
 
 import numpy as np
-
-from motion_lib.Quaternions import Quaternions
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from motion_lib.Animation import Animation
+from motion_lib.Quaternions import Quaternions
+
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_process import (
-    infer_translation_root_from_features,
+    ROOT_XZ_STRIP_THRESHOLD,
+    _xz_locomotion_extent,
     mirror_features_with_safeguards,
+    move_xz_to_origin,
     positions_global,
     recover_animation_from_motion_np,
     recover_from_bvh_ric_np,
@@ -48,9 +52,11 @@ def test_recover_animation_uses_effective_translation_root_feature_row():
     features[:, 2, 1] = 1.0
     features[:-1, 2, 9] = 1.0
 
-    assert infer_translation_root_from_features(features) == 2
-
-    anim, has_animated_pos = recover_animation_from_motion_np(features, parents, offsets)
+    anim, has_animated_pos = recover_animation_from_motion_np(
+        features,
+        parents,
+        offsets,
+    )
     global_pos = positions_global(anim)
 
     np.testing.assert_allclose(global_pos[:, 0], np.array([[0.0, 0.0, 1.0]] * frames, dtype=np.float32), atol=1e-5)
@@ -63,6 +69,45 @@ def test_recover_animation_uses_effective_translation_root_feature_row():
     assert has_animated_pos is True
 
 
+def test_xz_locomotion_extent_ignores_static_origin_offset_after_initial_root_centering():
+    parents = np.array([-1, 0], dtype=np.int64)
+    offsets = np.zeros((2, 3), dtype=np.float64)
+    rotations = Quaternions(
+        np.tile(
+            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+            (3, len(parents), 1),
+        )
+    )
+    positions = np.zeros((3, 2, 3), dtype=np.float64)
+    positions[:, 1, 0] = np.array([10.0, 11.0, 10.0], dtype=np.float64)
+
+    anim = Animation(rotations, positions, Quaternions.id(len(parents)), offsets, parents)
+    centered_anim, root_translation_xz = move_xz_to_origin(anim)
+
+    np.testing.assert_allclose(root_translation_xz, np.array([10.0, 0.0, 0.0], dtype=np.float64), atol=1e-8)
+    assert _xz_locomotion_extent(centered_anim, 1) == pytest.approx(1.0)
+
+
+def test_xz_locomotion_extent_still_detects_true_locomotion_after_initial_root_centering():
+    parents = np.array([-1, 0], dtype=np.int64)
+    offsets = np.zeros((2, 3), dtype=np.float64)
+    rotations = Quaternions(
+        np.tile(
+            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+            (3, len(parents), 1),
+        )
+    )
+    positions = np.zeros((3, 2, 3), dtype=np.float64)
+    positions[:, 1, 0] = np.array([0.0, 2.0, 4.0], dtype=np.float64)
+
+    anim = Animation(rotations, positions, Quaternions.id(len(parents)), offsets, parents)
+    centered_anim, root_translation_xz = move_xz_to_origin(anim)
+
+    np.testing.assert_allclose(root_translation_xz, np.array([0.0, 0.0, 0.0], dtype=np.float64), atol=1e-8)
+    assert _xz_locomotion_extent(centered_anim, 1) == pytest.approx(4.0)
+    assert _xz_locomotion_extent(centered_anim, 1) > ROOT_XZ_STRIP_THRESHOLD
+
+
 def test_recover_animation_matches_safeguarded_horse_target_globals():
     opt = get_opt(None)
     cond = np.load(opt.cond_file, allow_pickle=True).item()['Horse']
@@ -73,9 +118,17 @@ def test_recover_animation_matches_safeguarded_horse_target_globals():
 
     raw = np.load(os.path.join(motion_dir, 'Horse_RunLoop_28.npy')).astype(np.float32, copy=False)
     mirrored, mirrored_offsets = mirror_features_with_safeguards(raw, cond)
-    target_global = recover_from_bvh_ric_np(mirrored)
+    target_global = recover_from_bvh_ric_np(
+        mirrored,
+        parents=cond['parents'],
+        offsets=mirrored_offsets,
+    )
 
-    anim, has_animated_pos = recover_animation_from_motion_np(mirrored, cond['parents'], mirrored_offsets)
+    anim, has_animated_pos = recover_animation_from_motion_np(
+        mirrored,
+        cond['parents'],
+        mirrored_offsets,
+    )
     recovered_global = positions_global(anim)
 
     np.testing.assert_allclose(recovered_global, target_global, atol=1e-4)
@@ -104,8 +157,16 @@ def test_recover_animation_hound_mirror_matches_world_x_reflection():
     raw = np.load(os.path.join(motion_dir, 'Hound_Attack_402.npy')).astype(np.float32, copy=False)
     mirrored, mirrored_offsets = mirror_features_with_safeguards(raw, cond)
 
-    clean_anim, _ = recover_animation_from_motion_np(raw, cond['parents'], cond['offsets'])
-    mirror_anim, _ = recover_animation_from_motion_np(mirrored, cond['parents'], mirrored_offsets)
+    clean_anim, _ = recover_animation_from_motion_np(
+        raw,
+        cond['parents'],
+        cond['offsets'],
+    )
+    mirror_anim, _ = recover_animation_from_motion_np(
+        mirrored,
+        cond['parents'],
+        mirrored_offsets,
+    )
     clean_global = positions_global(clean_anim)
     mirror_global = positions_global(mirror_anim)
 

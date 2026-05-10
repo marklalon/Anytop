@@ -129,7 +129,9 @@ def main() -> int:
         object_cond = cond_dict[obj]
         parents = [int(p) for p in object_cond['parents']]
         offsets = object_cond['offsets']
-        joints_names = list(object_cond['joints_names'])
+        joints_names = list(
+            object_cond.get('canonical_bvh_joint_names', object_cond['joints_names'])
+        )
         spi = np.asarray(object_cond['symmetry_partner_indices'])
 
         obj_dir = output_dir / obj

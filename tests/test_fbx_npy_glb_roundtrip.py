@@ -40,6 +40,7 @@ from contextlib import nullcontext
 from typing import Any
 
 import numpy as np
+import pytest
 
 
 # ── ensure parent of Anytop is on sys.path (so `import Anytop` works) ───────
@@ -105,6 +106,15 @@ _DEFAULT_TPOSE_FBX = os.path.join(
     _ANYTOP_ROOT, "dataset", "truebones", "zoo", "Truebone_Z-OO", "Buffalo", "Buffalo-TPOSE.fbx",
 )
 _DEFAULT_OBJECT_TYPE = "Buffalo"
+
+
+def _require_dataset_cond_entry_or_skip(cond_entry: dict[str, Any] | None, object_type: str) -> dict[str, Any]:
+    if cond_entry is None:
+        message = f"cond.npy is missing an entry for {object_type}; regenerate or point the test at a matching dataset"
+        if "PYTEST_CURRENT_TEST" in os.environ:
+            pytest.skip(message)
+        raise AssertionError(message)
+    return cond_entry
 
 def _compare_export_to_source(
     source_fbx: str,
@@ -252,6 +262,7 @@ def _run_test_fbx_npy_glb_roundtrip(
         # Phase A: Load T-pose metadata used by the production preprocessing path
         print("[Phase A] Loading T-pose FBX preprocessing metadata...")
         cond_entry = load_cond_dict().get(object_type)
+        cond_entry = _require_dataset_cond_entry_or_skip(cond_entry, object_type)
         preprocess_max_joints = (
             len(cond_entry["parents"])
             if cond_entry is not None and cond_entry.get("parents") is not None
@@ -277,12 +288,11 @@ def _run_test_fbx_npy_glb_roundtrip(
         print(f"Frames: {len(source_anim)}, Joints: {source_anim.shape[1]}, FPS: {source_fps:.1f}")
 
         squared_positions_error: dict[str, float] = {}
-        features, feature_parents, _max_joints, feature_anim, _baseline_export_anim, _is_loop = get_motion(
+        features, feature_parents, _max_joints, feature_anim, _baseline_export_anim, _is_loop, _motion_translation_root_index, motion_root_translation_xz = get_motion(
             anim_fbx,
             FOOT_CONTACT_VEL_THRESH,
             object_type,
             preprocess_max_joints,
-            tp.root_pose_init_xz,
             tp.offsets,
             tp.foot_indices,
             tp.tpos_rots,
@@ -295,6 +305,8 @@ def _run_test_fbx_npy_glb_roundtrip(
 
         if feature_anim is None or _baseline_export_anim is None:
             raise AssertionError("Production preprocessing failed to build feature/export animations")
+        if motion_root_translation_xz is None:
+            raise AssertionError("Production preprocessing did not report a per-clip root_translation_xz")
         if feature_anim.shape[1] != len(tp.names):
             raise AssertionError(
                 "Production preprocessing joint count does not match the T-pose feature skeleton"
@@ -318,6 +330,7 @@ def _run_test_fbx_npy_glb_roundtrip(
             output_glb=recovered_glb,
             object_type=object_type,
             fps=source_fps,
+            root_translation_xz=motion_root_translation_xz,
         )
 
         # Phase E: Compare recovered GLB vs original source FBX using compare_motions.py

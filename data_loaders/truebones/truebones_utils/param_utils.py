@@ -58,8 +58,8 @@ MAX_PATH_LEN = 5.
 # body length (measured from the processed skeleton's rest-pose joint span).
 # Motion within VERTICAL_CLAMP_MIN_RATIO is left unchanged; only the excess is
 # compressed into the [min, max] band.
-VERTICAL_CLAMP_MIN_RATIO = 0.5
-VERTICAL_CLAMP_MAX_RATIO = 1.0
+VERTICAL_CLAMP_MIN_RATIO = 0.4
+VERTICAL_CLAMP_MAX_RATIO = 0.8
 
 COSMETICS = ["PolarBearB", "KingCobra", "Hamster", "Skunk", "Comodoa", "Hippopotamus", "Leapord", "Rhino", "Hound"]
 NO_HANDS = ["Raptor", "Anaconda"]
@@ -81,7 +81,7 @@ BIPEDS = ["Ostrich", "Flamingo", "Raptor", "Raptor2", "Raptor3", "Trex", "Chicke
 QUADROPEDS = ["Horse", "Hippopotamus", "Comodoa", "Camel", "Bear", "Buffalo", "Cat", "BrownBear", "Coyote", "Crocodile", "Elephant", "Deer", "Fox", "Gazelle", 
            "Goat", "Jaguar","Lynx", "Tricera", "Stego" , "SandMouse", "Raindeer", "Puppy", "PolarBear", "Monkey", "Mammoth", "Alligator", "Hamster", 
            "Hound", "Leapord", "Lion", "PolarBearB", "Rat", "Rhino", "SabreToothTiger", "Skunk", "Turtle"]
-QUADROPEDS_TEST = ["Horse"]
+QUADROPEDS_TEST = ["Alligator", "Anaconda"]
 OBJECT_SUBSETS_DICT = {"all" : QUADROPEDS + BIPEDS + MILLIPEDS + SNAKES + FISH + FLYING,
                        "quadropeds": QUADROPEDS,
                        "quadropeds_test": QUADROPEDS_TEST,
