@@ -106,14 +106,11 @@ def _print_report(report: DistributionEvalReport, use_color: bool) -> None:
     print()
 
     rows = [
-        ("Macro distribution fidelity", report.macro_fidelity_score, "w=0.50"),
-        ("Local joint naturalness", report.local_naturalness_score, "w=0.50"),
+        ("Joint naturalness", report.naturalness_score, ""),
     ]
     for label, score, note in rows:
         print(f"  {label:<32s} {clr(score, f'{score:.4f}')}  {_bar(score)}  {note}")
 
-    print()
-    print(f"  {'OVERALL SCORE':<32s} {clr(report.overall_score, f'{report.overall_score:.4f}')}  {_bar(report.overall_score)}")
     print()
     print("  Reference species:")
     for species in report.reference_species:
@@ -123,14 +120,12 @@ def _print_report(report: DistributionEvalReport, use_color: bool) -> None:
             f"distance={species['cosine_distance']:.4f} clips={species['clip_count']} frames={species['total_frames']}"
         )
     print()
-    print(f"  Macro feature groups : {json.dumps(_round4_dict(report.macro_feature_group_scores), sort_keys=True)}")
-    print(f"  Macro joint groups   : {json.dumps(_round4_dict(report.macro_joint_group_scores), sort_keys=True)}")
-    local_component_scores = report.raw.get("local_component_scores")
-    if local_component_scores:
-        print(f"  Local metric scores  : {json.dumps(_round4_dict(local_component_scores))}")
-    local_joint_group_scores = report.raw.get("local_joint_group_scores")
-    if local_joint_group_scores:
-        print(f"  Local joint groups   : {json.dumps(_round4_dict(local_joint_group_scores), sort_keys=True)}")
+    component_scores = report.raw.get("component_scores")
+    if component_scores:
+        print(f"  Metric scores  : {json.dumps(_round4_dict(component_scores))}")
+    joint_group_scores = report.raw.get("joint_group_scores")
+    if joint_group_scores:
+        print(f"  Joint groups   : {json.dumps(_round4_dict(joint_group_scores), sort_keys=True)}")
     print()
 
 
@@ -151,19 +146,13 @@ def _print_per_file_summary(
             name = os.path.basename(path)
             print(
                 f"{name:<50s} "
-                f"overall={_color(report.overall_score, f'{report.overall_score:.4f}', use_color)}  "
-                f"macro={report.macro_fidelity_score:.4f}  "
-                f"local={report.local_naturalness_score:.4f}"
+                f"score={_color(report.naturalness_score, f'{report.naturalness_score:.4f}', use_color)}"
             )
         if len(results) > 1:
-            avg_overall = np.mean([r.overall_score for _, r in results])
-            avg_macro = np.mean([r.macro_fidelity_score for _, r in results])
-            avg_local = np.mean([r.local_naturalness_score for _, r in results])
+            avg_score = np.mean([r.naturalness_score for _, r in results])
             print(
                 f"{'AVERAGE':<50s} "
-                f"overall={_color(avg_overall, f'{avg_overall:.4f}', use_color)}  "
-                f"macro={avg_macro:.4f}  "
-                f"local={avg_local:.4f}"
+                f"score={_color(avg_score, f'{avg_score:.4f}', use_color)}"
             )
         return
 
@@ -200,40 +189,22 @@ def _print_per_file_summary(
             # Multi-file: only score line per file
             print(
                 f"  {name:<50s} "
-                f"overall={clr(report.overall_score, f'{report.overall_score:.4f}')}  "
-                f"macro={report.macro_fidelity_score:.4f}  "
-                f"local={report.local_naturalness_score:.4f}"
+                f"score={clr(report.naturalness_score, f'{report.naturalness_score:.4f}')}",
             )
         else:
             # Single file: full detailed report
             print(f"  {name}")
             print(
-                f"    {'Macro fidelity':<32s} "
-                f"{clr(report.macro_fidelity_score, f'{report.macro_fidelity_score:.4f}')}  "
-                f"{_bar(report.macro_fidelity_score)}"
+                f"    {'Naturalness':<32s} "
+                f"{clr(report.naturalness_score, f'{report.naturalness_score:.4f}')}  "
+                f"{_bar(report.naturalness_score)}"
             )
-            print(
-                f"    {'Local naturalness':<32s} "
-                f"{clr(report.local_naturalness_score, f'{report.local_naturalness_score:.4f}')}  "
-                f"{_bar(report.local_naturalness_score)}"
-            )
-            print(
-                f"    {'OVERALL':<32s} "
-                f"{clr(report.overall_score, f'{report.overall_score:.4f}')}  "
-                f"{_bar(report.overall_score)}"
-            )
-            print(
-                f"    Macro feature groups : {json.dumps(_round4_dict(report.macro_feature_group_scores), sort_keys=True)}"
-            )
-            print(
-                f"    Macro joint groups   : {json.dumps(_round4_dict(report.macro_joint_group_scores), sort_keys=True)}"
-            )
-            local_component_scores = report.raw.get("local_component_scores")
-            if local_component_scores:
-                print(f"    Local metric scores  : {json.dumps(_round4_dict(local_component_scores))}")
-            local_joint_group_scores = report.raw.get("local_joint_group_scores")
-            if local_joint_group_scores:
-                print(f"    Local joint groups   : {json.dumps(_round4_dict(local_joint_group_scores), sort_keys=True)}")
+            component_scores = report.raw.get("component_scores")
+            if component_scores:
+                print(f"    Metric scores  : {json.dumps(_round4_dict(component_scores))}")
+            joint_group_scores = report.raw.get("joint_group_scores")
+            if joint_group_scores:
+                print(f"    Joint groups   : {json.dumps(_round4_dict(joint_group_scores), sort_keys=True)}")
             bone_length_drift_stats = report.raw.get("bone_length_drift_stats")
             if bone_length_drift_stats:
                 print(f"    Bone length drift    : max_abs={bone_length_drift_stats['max_abs_drift_pct']:.2f}%  mean_abs={bone_length_drift_stats['mean_abs_drift_pct']:.2f}%  median_abs={bone_length_drift_stats['median_abs_drift_pct']:.2f}%")
@@ -241,48 +212,27 @@ def _print_per_file_summary(
 
     if is_multi:
         # ── Average summary with full detail ──────────────────────────────
-        avg_overall = np.mean([r.overall_score for _, r in results])
-        avg_macro = np.mean([r.macro_fidelity_score for _, r in results])
-        avg_local = np.mean([r.local_naturalness_score for _, r in results])
-
-        avg_macro_feature = _avg_dict([r.macro_feature_group_scores for _, r in results])
-        avg_macro_joint = _avg_dict([r.macro_joint_group_scores for _, r in results])
+        avg_score = np.mean([r.naturalness_score for _, r in results])
 
         raw_list = [r.raw for _, r in results]
-        local_comp = raw_list[0].get("local_component_scores") if raw_list else None
-        local_jg = raw_list[0].get("local_joint_group_scores") if raw_list else None
-        avg_local_comp = _avg_dict([r.raw.get("local_component_scores", {}) for _, r in results]) if local_comp else None
-        avg_local_jg = _avg_dict([r.raw.get("local_joint_group_scores", {}) for _, r in results]) if local_jg else None
+        comp = raw_list[0].get("component_scores") if raw_list else None
+        jg = raw_list[0].get("joint_group_scores") if raw_list else None
+        avg_comp = _avg_dict([r.raw.get("component_scores", {}) for _, r in results]) if comp else None
+        avg_jg = _avg_dict([r.raw.get("joint_group_scores", {}) for _, r in results]) if jg else None
 
         print()
         print(f"{'─' * 74}")
         print(f"  AVERAGE ({len(results)} files)")
         print()
         print(
-            f"    {'Macro fidelity':<32s} "
-            f"{clr(avg_macro, f'{avg_macro:.4f}')}  "
-            f"{_bar(avg_macro)}"
+            f"    {'Naturalness':<32s} "
+            f"{clr(avg_score, f'{avg_score:.4f}')}  "
+            f"{_bar(avg_score)}"
         )
-        print(
-            f"    {'Local naturalness':<32s} "
-            f"{clr(avg_local, f'{avg_local:.4f}')}  "
-            f"{_bar(avg_local)}"
-        )
-        print(
-            f"    {'OVERALL':<32s} "
-            f"{clr(avg_overall, f'{avg_overall:.4f}')}  "
-            f"{_bar(avg_overall)}"
-        )
-        print(
-            f"    Macro feature groups : {json.dumps(avg_macro_feature, sort_keys=True)}"
-        )
-        print(
-            f"    Macro joint groups   : {json.dumps(avg_macro_joint, sort_keys=True)}"
-        )
-        if avg_local_comp:
-            print(f"    Local metric scores  : {json.dumps(avg_local_comp)}")
-        if avg_local_jg:
-            print(f"    Local joint groups   : {json.dumps(avg_local_jg, sort_keys=True)}")
+        if avg_comp:
+            print(f"    Metric scores  : {json.dumps(avg_comp)}")
+        if avg_jg:
+            print(f"    Joint groups   : {json.dumps(avg_jg, sort_keys=True)}")
 
         # Average bone length drift across files
         drift_stats_list = [r.raw.get("bone_length_drift_stats") for _, r in results
@@ -327,8 +277,7 @@ def build_parser() -> argparse.ArgumentParser:
               • dataset motions filtered by action_tags (supports comma/semicolon separation)
               • species weights distributed across reference clips by frame count
 
-            Scores two dimensions:
-              • Macro distribution fidelity  — robust deviation of kinematic clip features
+            Scores:
               • Local joint naturalness      — robust deviation of spectral/smoothness summaries
 
             Score range: 0.0 (worst) → 1.0 (best match to the weighted reference prior).
@@ -460,9 +409,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 for path, report in results
             ],
             "average": {
-                "overall_score": round(float(np.mean([r.overall_score for _, r in results])), 4),
-                "macro_fidelity_score": round(float(np.mean([r.macro_fidelity_score for _, r in results])), 4),
-                "local_naturalness_score": round(float(np.mean([r.local_naturalness_score for _, r in results])), 4),
+                "naturalness_score": round(float(np.mean([r.naturalness_score for _, r in results])), 4),
             },
         }
         with open(args.output_json, "w", encoding="utf-8") as handle:

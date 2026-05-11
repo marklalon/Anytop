@@ -557,8 +557,7 @@ class TrainLoop:
             tqdm.write('Validation skipped: eval split returned no samples.')
             return
 
-        macro_scores = []
-        local_scores = []
+        scores = []
         score_weights = []
         for (object_type, action_tags), motions in motion_groups.items():
             try:
@@ -570,19 +569,16 @@ class TrainLoop:
             except Exception as exc:
                 tqdm.write(f"[eval] Scoring failed for {object_type} ({','.join(action_tags)}): {exc}")
                 continue
-            macro_scores.append(report.macro_fidelity_score)
-            local_scores.append(report.local_naturalness_score)
+            scores.append(report.naturalness_score)
             score_weights.append(len(motions))
 
-        if not macro_scores:
+        if not scores:
             return
 
-        avg_macro = float(np.average(macro_scores, weights=score_weights))
-        avg_local = float(np.average(local_scores, weights=score_weights))
+        avg_score = float(np.average(scores, weights=score_weights))
         completed_step = self.total_step() + 1
-        tqdm.write('val_step[{}]: Macro[{:.4f}] Local[{:.4f}]'.format(completed_step, avg_macro, avg_local))
-        self.train_platform.report_scalar(name='Macro', value=avg_macro, iteration=completed_step, group_name='Val')
-        self.train_platform.report_scalar(name='Local', value=avg_local, iteration=completed_step, group_name='Val')
+        tqdm.write('val_step[{}]: Score[{:.4f}]'.format(completed_step, avg_score))
+        self.train_platform.report_scalar(name='Score', value=avg_score, iteration=completed_step, group_name='Val')
 
 
 

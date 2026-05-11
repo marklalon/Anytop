@@ -16,9 +16,6 @@ Reference construction
 
 Scoring dimensions
 ------------------
-- Macro distribution fidelity
-    Per-clip kinematic feature vectors are compared to weighted reference
-    medians and weighted robust scales.
 - Local joint naturalness
     Per-group spectral and smoothness summaries are compared to weighted
     reference priors using the same robust-deviation scheme.
@@ -47,7 +44,7 @@ from .reference_bank import ReferenceClip, WeightedReferenceBank, build_weighted
 from .reference_stats import CH_POS, CH_ROT
 
 _MIN_CLIP_FRAMES = 8
-_LOCAL_GROUP_ORDER = ("root", "axial", "limbs")
+_GROUP_ORDER = ("root", "axial", "limbs")
 
 
 @dataclass
@@ -64,48 +61,24 @@ class DistributionEvalReport:
     top_k_species: int
     reference_species: List[Dict[str, Any]]
 
-    macro_fidelity_score: float
-    macro_feature_group_scores: Dict[str, float]
-    macro_joint_group_scores: Dict[str, float]
-    macro_joint_group_sizes: Dict[str, int]
-    macro_top_deviating_features: List[Tuple[str, float]]
+    naturalness_score: float
+    spectral_flatness_score: float
+    jerk_score: float
+    snap_score: float
+    bone_length_score: float
+    bone_rotation_score: float
 
-    local_naturalness_score: float
-    local_spectral_flatness_score: float
-    local_jerk_score: float
-    local_snap_score: float
-    local_bone_length_score: float
-    local_bone_rotation_score: float
-
-    overall_score: float
     raw: Dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return {
-            "overall_score": round(self.overall_score, 4),
-            "macro_fidelity_score": round(self.macro_fidelity_score, 4),
-            "local_naturalness_score": round(self.local_naturalness_score, 4),
-            "macro": {
-                "feature_group_scores": {
-                    key: round(value, 4)
-                    for key, value in self.macro_feature_group_scores.items()
-                },
-                "joint_group_scores": {
-                    key: round(value, 4)
-                    for key, value in self.macro_joint_group_scores.items()
-                },
-                "joint_group_sizes": dict(self.macro_joint_group_sizes),
-                "top_deviating_features": [
-                    {"feature": name, "normalized_deviation": round(value, 4)}
-                    for name, value in self.macro_top_deviating_features
-                ],
-            },
-            "local": {
-                "jerk_score (w=0.328)": round(self.local_jerk_score, 4),
-                "snap_score (w=0.228)": round(self.local_snap_score, 4),
-                "spectral_flatness_score (w=0.228)": round(self.local_spectral_flatness_score, 4),
-                "bone_length_score (w=0.168)": round(self.local_bone_length_score, 4),
-                "bone_rotation_score (w=0.06)": round(self.local_bone_rotation_score, 4),
+            "naturalness_score": round(self.naturalness_score, 4),
+            "detail": {
+                "jerk_score (w=0.328)": round(self.jerk_score, 4),
+                "snap_score (w=0.228)": round(self.snap_score, 4),
+                "spectral_flatness_score (w=0.228)": round(self.spectral_flatness_score, 4),
+                "bone_length_score (w=0.168)": round(self.bone_length_score, 4),
+                "bone_rotation_score (w=0.06)": round(self.bone_rotation_score, 4),
             },
             "reference": {
                 "scoring_mode": self.scoring_mode,
@@ -135,22 +108,11 @@ class DistributionEvalReport:
             f"  +{'-' * width}+--------+",
             f"  | {'Dimension':<{width}}| Score  |",
             f"  +{'-' * width}+--------+",
-            f"  | {'Macro distribution fidelity  (w=0.50)':<{width}}| {self.macro_fidelity_score:6.4f} |",
-            f"  +{'-' * width}+--------+",
-            f"  | {'Local joint naturalness      (w=0.50)':<{width}}| {self.local_naturalness_score:6.4f} |",
-            f"  +{'-' * width}+--------+",
-            f"  | {'OVERALL SCORE':<{width}}| {self.overall_score:6.4f} |",
+            f"  | {'Joint naturalness':<{width}}| {self.naturalness_score:6.4f} |",
             f"  +{'-' * width}+--------+",
             "",
             f"  Reference species : {self.reference_species}",
-            f"  Macro feature groups : {self.macro_feature_group_scores}",
-            f"  Macro joint groups   : {self.macro_joint_group_scores}",
-            f"  Macro joint sizes    : {self.macro_joint_group_sizes}",
-            "",
-            "  Top macro-feature deviations (query vs weighted reference):",
         ]
-        for name, value in self.macro_top_deviating_features:
-            lines.append(f"    {name:<50s}  ND = {value:.4f}")
         return "\n".join(lines)
 
 
@@ -196,7 +158,7 @@ def _weighted_iqr(values: np.ndarray, weights: np.ndarray) -> float:
     return float(q75 - q25)
 
 
-def _local_metric_abs_floor(name: str) -> float:
+def _metric_abs_floor(name) -> float:
     if name == "psd_bin":
         return 0.01
     if name in {"spectral_flatness", "acf_peak"}:
@@ -210,39 +172,11 @@ def _local_metric_abs_floor(name: str) -> float:
     return 0.02
 
 
-def _macro_feature_group(name: str) -> str:
-    if name.startswith("pos_"):
-        return "pos"
-    if name.startswith("rot_"):
-        return "rot"
-    return "freq"
-
-
-def _macro_joint_bucket(name: str) -> str:
-    if "_axial_" in name:
-        return "axial"
-    if "_limbs_" in name:
-        return "limbs"
-    return "root"
-
-
-def _macro_feature_abs_floor(name: str) -> float:
-    if "_lag1_" in name:
-        return 0.10
-    if name.startswith("freq_dom_ratio_"):
-        return 0.03
-    if name.startswith("spectral_centroid_"):
-        return 0.02
-    if name.startswith("pos_") or name.startswith("rot_"):
-        return 0.01
-    return 0.01
-
-
-def _macro_distance_to_score(distance: float) -> float:
+def _distance_to_score(distance: float) -> float:
     return float(1.0 / (1.0 + distance * distance))
 
 
-_MACRO_LIMB_KEYWORDS = (
+_LIMB_KEYWORDS = (
     "thigh",
     "calf",
     "leg",
@@ -260,7 +194,7 @@ _MACRO_LIMB_KEYWORDS = (
     "wing",
     "flipper",
 )
-_MACRO_AXIAL_KEYWORDS = (
+_AXIAL_KEYWORDS = (
     "spine",
     "pelvis",
     "neck",
@@ -289,11 +223,11 @@ def _normalise_joint_label(value: object) -> str:
 
 
 def _looks_like_limb_joint(label: str) -> bool:
-    return any(keyword in label for keyword in _MACRO_LIMB_KEYWORDS)
+    return any(keyword in label for keyword in _LIMB_KEYWORDS)
 
 
 def _looks_like_axial_joint(label: str) -> bool:
-    return any(keyword in label for keyword in _MACRO_AXIAL_KEYWORDS)
+    return any(keyword in label for keyword in _AXIAL_KEYWORDS)
 
 
 def _coerce_index_array(indices: Sequence[int] | np.ndarray | None, n_joints: int) -> np.ndarray:
@@ -305,7 +239,7 @@ def _coerce_index_array(indices: Sequence[int] | np.ndarray | None, n_joints: in
     return np.unique(arr[(arr >= 0) & (arr < n_joints)])
 
 
-def _build_macro_joint_groups_from_cond(
+def _build_joint_groups_from_cond(
     object_cond: Mapping[str, object],
     n_joints: int,
 ) -> Tuple[Dict[str, np.ndarray], str]:
@@ -360,56 +294,6 @@ def _build_macro_joint_groups_from_cond(
     return groups, "cond_semantics"
 
 
-def _append_joint_group_vector_features(
-    feats: List[float],
-    names: List[str],
-    prefix: str,
-    values: np.ndarray,
-    joint_groups: Mapping[str, np.ndarray],
-) -> None:
-    root_index = int(joint_groups["root"][0])
-    aggregates: list[tuple[str, np.ndarray]] = [("root", np.asarray(values[root_index], dtype=np.float64))]
-    for group_name in ("axial", "limbs"):
-        group_indices = joint_groups[group_name]
-        if len(group_indices) == 0:
-            zero = np.zeros(values.shape[1], dtype=np.float64)
-            aggregates.append((f"{group_name}_mean", zero))
-            aggregates.append((f"{group_name}_std", zero))
-        else:
-            group_values = np.asarray(values[group_indices], dtype=np.float64)
-            aggregates.append((f"{group_name}_mean", group_values.mean(axis=0)))
-            aggregates.append((f"{group_name}_std", group_values.std(axis=0)))
-    for aggregate_name, aggregate_values in aggregates:
-        for channel_index in range(aggregate_values.shape[0]):
-            feats.append(float(aggregate_values[channel_index]))
-            names.append(f"{prefix}_{aggregate_name}_{channel_index}")
-
-
-def _append_joint_group_scalar_features(
-    feats: List[float],
-    names: List[str],
-    prefix: str,
-    values: np.ndarray,
-    joint_groups: Mapping[str, np.ndarray],
-) -> None:
-    root_index = int(joint_groups["root"][0])
-    feats.append(float(values[root_index]))
-    names.append(f"{prefix}_root")
-    for group_name in ("axial", "limbs"):
-        group_indices = joint_groups[group_name]
-        if len(group_indices) == 0:
-            feats.append(0.0)
-            names.append(f"{prefix}_{group_name}_mean")
-            feats.append(0.0)
-            names.append(f"{prefix}_{group_name}_std")
-        else:
-            group_values = np.asarray(values[group_indices], dtype=np.float64)
-            feats.append(float(group_values.mean()))
-            names.append(f"{prefix}_{group_name}_mean")
-            feats.append(float(group_values.std()))
-            names.append(f"{prefix}_{group_name}_std")
-
-
 def _welch_psd(sig: np.ndarray, nperseg: int) -> Tuple[np.ndarray, np.ndarray]:
     n = len(sig)
     nps = min(nperseg, n)
@@ -419,56 +303,7 @@ def _welch_psd(sig: np.ndarray, nperseg: int) -> Tuple[np.ndarray, np.ndarray]:
     return freqs, psd + 1e-30
 
 
-def _compute_macro_features(
-    motion: np.ndarray,
-    nperseg: int,
-    joint_groups: Mapping[str, np.ndarray],
-) -> Tuple[np.ndarray, List[str]]:
-    t_len, joint_count, _ = motion.shape
-    feats: List[float] = []
-    names: List[str] = []
-
-    for ch_name, ch in [("pos", CH_POS), ("rot", CH_ROT)]:
-        x = motion[:, :, ch].astype(np.float64)
-
-        mu = x.mean(axis=0)
-        _append_joint_group_vector_features(feats, names, f"{ch_name}_mu", mu, joint_groups)
-
-        sigma = x.std(axis=0)
-        _append_joint_group_vector_features(feats, names, f"{ch_name}_sig", sigma, joint_groups)
-
-        if t_len > 1:
-            x0, x1 = x[:-1], x[1:]
-            mu0, mu1 = x0.mean(0), x1.mean(0)
-            num = ((x0 - mu0) * (x1 - mu1)).mean(0)
-            denom = x0.std(0) * x1.std(0) + 1e-10
-            acorr = (num / denom).mean(-1)
-        else:
-            acorr = np.zeros(joint_count)
-        _append_joint_group_scalar_features(feats, names, f"{ch_name}_lag1", acorr, joint_groups)
-
-    pos = motion[:, :, CH_POS].astype(np.float64)
-    dom_ratios = np.zeros(joint_count)
-    centroids = np.zeros(joint_count)
-
-    for joint_index in range(joint_count):
-        ratio_values = []
-        centroid_values = []
-        for channel_index in range(3):
-            freqs_j, psd = _welch_psd(pos[:, joint_index, channel_index], nperseg)
-            total = psd.sum()
-            top3 = np.sort(psd)[::-1][: min(3, len(psd))].sum()
-            ratio_values.append(float(top3 / total))
-            centroid_values.append(float((freqs_j * psd).sum() / total))
-        dom_ratios[joint_index] = float(np.mean(ratio_values))
-        centroids[joint_index] = float(np.mean(centroid_values))
-
-    _append_joint_group_scalar_features(feats, names, "freq_dom_ratio", dom_ratios, joint_groups)
-    _append_joint_group_scalar_features(feats, names, "spectral_centroid", centroids, joint_groups)
-    return np.array(feats, dtype=np.float64), names
-
-
-def _compute_local_features(motion: np.ndarray, nperseg: int) -> Dict[str, np.ndarray]:
+def _compute_features(motion: np.ndarray, nperseg: int) -> Dict[str, np.ndarray]:
     t_len, joint_count, _ = motion.shape
     pos = motion[:, :, CH_POS].astype(np.float64)
 
@@ -504,33 +339,9 @@ def _compute_local_features(motion: np.ndarray, nperseg: int) -> Dict[str, np.nd
     }
 
 
-def _compute_joint_psd(motion: np.ndarray, nperseg: int) -> np.ndarray:
-    _, joint_count, _ = motion.shape
-    pos = motion[:, :, CH_POS].astype(np.float64)
-    n_freq = nperseg // 2 + 1
-    out = np.zeros((joint_count, n_freq), dtype=np.float64)
-
-    for joint_index in range(joint_count):
-        for channel_index in range(3):
-            _, psd = _welch_psd(pos[:, joint_index, channel_index], nperseg)
-            if len(psd) == n_freq:
-                out[joint_index] += psd
-            else:
-                out[joint_index] += np.interp(
-                    np.linspace(0, 1, n_freq),
-                    np.linspace(0, 1, len(psd)),
-                    psd,
-                )
-        out[joint_index] /= 3.0
-        total = out[joint_index].sum()
-        if total > 1e-30:
-            out[joint_index] /= total
-    return out
-
-
 def _active_joint_groups(joint_groups: Mapping[str, np.ndarray]) -> List[Tuple[str, np.ndarray]]:
     groups: List[Tuple[str, np.ndarray]] = []
-    for name in _LOCAL_GROUP_ORDER:
+    for name in _GROUP_ORDER:
         indices = np.asarray(joint_groups.get(name, np.zeros(0, dtype=np.int64)), dtype=np.int64)
         if indices.size:
             groups.append((name, indices))
@@ -622,7 +433,7 @@ def _score_query_against_reference(
     reference_median = _weighted_quantile(reference_values, reference_weights, 0.5)
     scale = max(_weighted_iqr(reference_values, reference_weights), abs_floor)
     normalized_deviation = np.abs(np.asarray(query_values, dtype=np.float64) - reference_median) / scale
-    scores = np.asarray([_macro_distance_to_score(value) for value in normalized_deviation], dtype=np.float64)
+    scores = np.asarray([_distance_to_score(value) for value in normalized_deviation], dtype=np.float64)
     return {
         "reference_median": float(reference_median),
         "scale": float(scale),
@@ -825,10 +636,10 @@ def _score_bone_length_from_drift(
     score_mean = _sigmoid_score(mean_abs)
     score_max = _sigmoid_score(max_abs)
 
-    overall_score = (score_median + score_mean + score_max) / 3.0
+    score = (score_median + score_mean + score_max) / 3.0
 
     return {
-        "score": float(np.clip(overall_score, 0.0, 1.0)),
+        "score": float(np.clip(score, 0.0, 1.0)),
         "median_abs_drift_pct": median_abs,
         "mean_abs_drift_pct": mean_abs,
         "max_abs_drift_pct": max_abs,
@@ -869,13 +680,6 @@ class DistributionMotionQualityScorer:
     def __init__(self, fps: int = 30, dataset_root: Optional[str] = None):
         self.fps = fps
         self.dataset_root = dataset_root
-        self.macro_cell_weights = {}
-        for feature in ["pos", "rot", "freq"]:
-            for joint in ["root", "axial", "limbs"]:
-                feature_weight = 1.5 if feature in ["pos", "rot"] else 1.0
-                joint_weight = 1.5 if joint == "axial" else 1.0
-                self.macro_cell_weights[(feature, joint)] = feature_weight * joint_weight
-
         self._cond_lookup = load_cond_dict(dataset_root)
         self._joint_group_cache: Dict[Tuple[str, int], Tuple[Dict[str, np.ndarray], str]] = {}
 
@@ -899,7 +703,7 @@ class DistributionMotionQualityScorer:
             raise ValueError("All input motions must share the same joint count")
 
         object_key = self._resolve_object_type_key(object_type)
-        query_joint_groups, joint_group_source = self._resolve_macro_joint_groups(object_key, next(iter(query_joint_counts)))
+        query_joint_groups, joint_group_source = self._resolve_joint_groups(object_key, next(iter(query_joint_counts)))
         reference_bank = build_weighted_reference_bank(
             object_type=object_key,
             action_tags=action_tags,
@@ -916,15 +720,7 @@ class DistributionMotionQualityScorer:
         query_weights = _normalize_weights(np.asarray([motion.shape[0] for motion in query_motions], dtype=np.float64))
         reference_weights = reference_bank.clip_weights
 
-        macro = self._compute_macro_low_shot(
-            query_motions,
-            query_weights,
-            reference_bank.clips,
-            reference_weights,
-            nperseg,
-            query_joint_groups,
-        )
-        local = self._compute_local_low_shot(
+        local = self._compute_low_shot(
             query_motions,
             query_weights,
             reference_bank.clips,
@@ -934,7 +730,6 @@ class DistributionMotionQualityScorer:
             object_key,
         )
 
-        overall = float(np.clip(0.5 * macro["score"] + 0.5 * local["score"], 0.0, 1.0))
         return DistributionEvalReport(
             object_type=object_key,
             action_tags=str(action_tags or "").strip(),
@@ -954,23 +749,16 @@ class DistributionMotionQualityScorer:
                 }
                 for species in reference_bank.species
             ],
-            macro_fidelity_score=macro["score"],
-            macro_feature_group_scores=macro["feature_group_scores"],
-            macro_joint_group_scores=macro["joint_group_scores"],
-            macro_joint_group_sizes={name: int(len(indices)) for name, indices in query_joint_groups.items()},
-            macro_top_deviating_features=macro["top_features"],
-            local_naturalness_score=local["score"],
-            local_spectral_flatness_score=local["component_scores"]["spectral_flatness"],
-            local_jerk_score=local["component_scores"]["jerk_norm"],
-            local_snap_score=local["component_scores"]["snap_norm"],
-            local_bone_length_score=local["component_scores"]["bone_length"],
-            local_bone_rotation_score=local["component_scores"]["bone_rotation"],
-            overall_score=overall,
+            naturalness_score=local["score"],
+            spectral_flatness_score=local["component_scores"]["spectral_flatness"],
+            jerk_score=local["component_scores"]["jerk_norm"],
+            snap_score=local["component_scores"]["snap_norm"],
+            bone_length_score=local["component_scores"]["bone_length"],
+            bone_rotation_score=local["component_scores"]["bone_rotation"],
             raw={
                 "nperseg": nperseg,
-                "macro_joint_group_source": joint_group_source,
+                "joint_group_source": joint_group_source,
                 "effective_reference_mass": reference_bank.effective_reference_mass,
-                **macro.get("raw", {}),
                 **local.get("raw", {}),
             },
         )
@@ -984,7 +772,7 @@ class DistributionMotionQualityScorer:
                 return str(key)
         raise KeyError(f"Unknown object_type {object_type!r} in cond.npy")
 
-    def _resolve_macro_joint_groups(self, object_type: str, n_joints: int) -> Tuple[Dict[str, np.ndarray], str]:
+    def _resolve_joint_groups(self, object_type: str, n_joints: int) -> Tuple[Dict[str, np.ndarray], str]:
         cache_key = (object_type, n_joints)
         if cache_key in self._joint_group_cache:
             return self._joint_group_cache[cache_key]
@@ -1001,103 +789,11 @@ class DistributionMotionQualityScorer:
                 f"Joint group resolution requires a matching skeleton definition."
             )
 
-        result = _build_macro_joint_groups_from_cond(cond, n_joints)
+        result = _build_joint_groups_from_cond(cond, n_joints)
         self._joint_group_cache[cache_key] = result
         return result
 
-    def _compute_macro_low_shot(
-        self,
-        query_motions: List[np.ndarray],
-        query_weights: np.ndarray,
-        reference_clips: List[ReferenceClip],
-        reference_weights: np.ndarray,
-        nperseg: int,
-        query_joint_groups: Mapping[str, np.ndarray],
-    ) -> dict:
-        query_features = []
-        feature_names: Optional[List[str]] = None
-        for motion in query_motions:
-            features, names = _compute_macro_features(motion, nperseg, query_joint_groups)
-            query_features.append(features)
-            if feature_names is None:
-                feature_names = names
-
-        reference_features = []
-        for clip in reference_clips:
-            clip_joint_groups, _ = self._resolve_macro_joint_groups(clip.object_type, clip.motion.shape[1])
-            features, _ = _compute_macro_features(clip.motion, nperseg, clip_joint_groups)
-            reference_features.append(features)
-
-        if feature_names is None:
-            raise ValueError("Macro feature extraction produced no feature names")
-
-        query_matrix = np.stack(query_features, axis=0)
-        reference_matrix = np.stack(reference_features, axis=0)
-        per_feature_deviation: Dict[str, float] = {}
-        per_feature_scale: Dict[str, float] = {}
-        per_feature_reference_median: Dict[str, float] = {}
-        feature_group_values: Dict[str, List[float]] = {}
-        joint_group_values: Dict[str, List[float]] = {}
-        cell_values: Dict[Tuple[str, str], List[float]] = {}
-
-        for feat_index, name in enumerate(feature_names):
-            detail = _score_query_against_reference(
-                query_matrix[:, feat_index],
-                query_weights,
-                reference_matrix[:, feat_index],
-                reference_weights,
-                _macro_feature_abs_floor(name),
-            )
-            feature_group = _macro_feature_group(name)
-            joint_bucket = _macro_joint_bucket(name)
-            per_feature_deviation[name] = detail["normalized_deviation"]
-            per_feature_scale[name] = detail["scale"]
-            per_feature_reference_median[name] = detail["reference_median"]
-            feature_group_values.setdefault(feature_group, []).append(detail["score"])
-            joint_group_values.setdefault(joint_bucket, []).append(detail["score"])
-            cell_values.setdefault((feature_group, joint_bucket), []).append(detail["score"])
-
-        macro_feature_group_scores = {
-            group: float(np.mean(scores))
-            for group, scores in feature_group_values.items()
-        }
-        macro_joint_group_scores = {
-            group: float(np.mean(scores))
-            for group, scores in joint_group_values.items()
-        }
-        macro_cell_scores = {
-            f"{feature_group}:{joint_bucket}": float(np.mean(scores))
-            for (feature_group, joint_bucket), scores in cell_values.items()
-        }
-        cell_weights = {
-            f"{feature_group}:{joint_bucket}": self.macro_cell_weights.get((feature_group, joint_bucket), 1.0)
-            for feature_group, joint_bucket in cell_values.keys()
-        }
-        weighted_scores = [
-            macro_cell_scores[cell_key] * cell_weights[cell_key]
-            for cell_key in macro_cell_scores
-        ]
-        total_weight = float(sum(cell_weights.values()))
-        macro_score = float(np.sum(weighted_scores) / total_weight) if total_weight > 0.0 else 0.0
-        top_features = sorted(per_feature_deviation.items(), key=lambda item: -item[1])[:5]
-
-        return {
-            "score": float(np.clip(macro_score, 0.0, 1.0)),
-            "feature_group_scores": macro_feature_group_scores,
-            "joint_group_scores": macro_joint_group_scores,
-            "top_features": top_features,
-            "raw": {
-                "macro_feature_group_scores": macro_feature_group_scores,
-                "macro_joint_group_scores": macro_joint_group_scores,
-                "macro_cell_scores": macro_cell_scores,
-                "macro_cell_weights": cell_weights,
-                "macro_per_feature_reference_median": per_feature_reference_median,
-                "macro_per_feature_scale": per_feature_scale,
-                "macro_per_feature_normalized_deviation": per_feature_deviation,
-            },
-        }
-
-    def _compute_local_low_shot(
+    def _compute_low_shot(
         self,
         query_motions: List[np.ndarray],
         query_weights: np.ndarray,
@@ -1112,10 +808,10 @@ class DistributionMotionQualityScorer:
         query_local = []
         query_bone_rotations = []
         for motion in query_motions:
-            local_features = _compute_local_features(motion, nperseg)
+            features = _compute_features(motion, nperseg)
             query_local.append({
                 key: _group_scalar_means(values, query_joint_groups)
-                for key, values in local_features.items()
+                for key, values in features.items()
             })
             query_bone_rotations.append(
                 _group_bone_time_series(_compute_bone_rotation_angle(motion, np.zeros(0, dtype=np.int64)), query_joint_groups)
@@ -1124,11 +820,11 @@ class DistributionMotionQualityScorer:
         reference_local = []
         reference_bone_rotations = []
         for clip in reference_clips:
-            clip_joint_groups, _ = self._resolve_macro_joint_groups(clip.object_type, clip.motion.shape[1])
-            local_features = _compute_local_features(clip.motion, nperseg)
+            clip_joint_groups, _ = self._resolve_joint_groups(clip.object_type, clip.motion.shape[1])
+            features = _compute_features(clip.motion, nperseg)
             reference_local.append({
                 key: _group_scalar_means(values, clip_joint_groups)
-                for key, values in local_features.items()
+                for key, values in features.items()
             })
             reference_bone_rotations.append(
                 _group_bone_time_series(_compute_bone_rotation_angle(clip.motion, np.zeros(0, dtype=np.int64)), clip_joint_groups)
@@ -1177,7 +873,7 @@ class DistributionMotionQualityScorer:
                     query_weights,
                     reference_values,
                     reference_group_weights,
-                    _local_metric_abs_floor(metric_name),
+                    _metric_abs_floor(metric_name),
                 )
                 metric_group_scores[metric_name][group_name] = detail["score"]
                 metric_group_dev[metric_name][group_name] = detail["normalized_deviation"]
@@ -1217,7 +913,7 @@ class DistributionMotionQualityScorer:
                 query_values,
                 query_value_weights,
                 reference_series_with_weights,
-                abs_floor=_local_metric_abs_floor("bone_rotation"),
+                abs_floor=_metric_abs_floor("bone_rotation"),
             )
             metric_group_scores["bone_rotation"][group_name] = detail["score"]
             metric_group_dev["bone_rotation"][group_name] = detail["normalized_excess"]
@@ -1247,7 +943,7 @@ class DistributionMotionQualityScorer:
             float(np.mean(list(metric_group_scores["bone_rotation"].values())))
             if metric_group_scores["bone_rotation"] else 0.0
         )
-        local_group_scores = {
+        group_scores = {
             group_name: float(np.mean([
                 metric_group_scores[metric_name][group_name]
                 for metric_name in metric_weights
@@ -1256,20 +952,20 @@ class DistributionMotionQualityScorer:
             for group_name in query_active_groups
             if any(group_name in metric_group_scores.get(metric_name, {}) for metric_name in metric_weights)
         }
-        local_score = float(sum(metric_weights[name] * component_scores[name] for name in metric_weights))
+        score = float(sum(metric_weights[name] * component_scores[name] for name in metric_weights))
 
         return {
-            "score": float(np.clip(local_score, 0.0, 1.0)),
+            "score": float(np.clip(score, 0.0, 1.0)),
             "component_scores": component_scores,
             "raw": {
-                "local_component_scores": component_scores,
-                "local_joint_group_scores": local_group_scores,
-                "local_metric_group_scores": metric_group_scores,
-                "local_metric_group_normalized_deviation": metric_group_dev,
-                "local_metric_group_scale": metric_group_scale,
-                "local_metric_group_tolerance": metric_group_tolerance,
-                "local_metric_group_penalty": metric_group_penalty,
-                "local_active_joint_groups": query_active_groups,
+                "component_scores": component_scores,
+                "joint_group_scores": group_scores,
+                "metric_group_scores": metric_group_scores,
+                "metric_group_normalized_deviation": metric_group_dev,
+                "metric_group_scale": metric_group_scale,
+                "metric_group_tolerance": metric_group_tolerance,
+                "metric_group_penalty": metric_group_penalty,
+                "active_joint_groups": query_active_groups,
                 "bone_length_drift_stats": {
                     "median_abs_drift_pct": round(bone_length_result.get("median_abs_drift_pct", 0.0), 4),
                     "mean_abs_drift_pct": round(bone_length_result.get("mean_abs_drift_pct", 0.0), 4),

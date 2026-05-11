@@ -86,7 +86,7 @@ def test_bone_rotation_excess_uses_filtered_reference_weights() -> None:
     assert result["normalized_excess"] == pytest.approx(1.0)
 
 
-def test_local_low_shot_bone_length_is_global_but_contributes_to_score(
+def test_low_shot_bone_length_is_global_but_contributes_to_score(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scorer = object.__new__(scorer_mod.DistributionMotionQualityScorer)
@@ -102,7 +102,7 @@ def test_local_low_shot_bone_length_is_global_but_contributes_to_score(
             ),
         }
     }
-    scorer._resolve_macro_joint_groups = lambda _object_type, _n_joints: (
+    scorer._resolve_joint_groups = lambda _object_type, _n_joints: (
         {
             "root": np.array([0], dtype=np.int64),
             "limbs": np.array([1], dtype=np.int64),
@@ -112,7 +112,7 @@ def test_local_low_shot_bone_length_is_global_but_contributes_to_score(
 
     monkeypatch.setattr(
         scorer_mod,
-        "_compute_local_features",
+        "_compute_features",
         lambda _motion, _nperseg: {
             "spectral_flatness": np.zeros(2, dtype=np.float64),
             "jerk_norm": np.zeros(2, dtype=np.float64),
@@ -174,7 +174,7 @@ def test_local_low_shot_bone_length_is_global_but_contributes_to_score(
         )
     ]
 
-    result = scorer._compute_local_low_shot(
+    result = scorer._compute_low_shot(
         query_motions,
         np.array([1.0], dtype=np.float64),
         reference_clips,
@@ -186,5 +186,5 @@ def test_local_low_shot_bone_length_is_global_but_contributes_to_score(
 
     assert result["component_scores"]["bone_length"] == pytest.approx(0.5)
     assert result["score"] == pytest.approx(0.168 * 0.5)
-    assert result["raw"]["local_joint_group_scores"]["root"] == pytest.approx(0.0)
-    assert result["raw"]["local_joint_group_scores"]["limbs"] == pytest.approx(0.0)
+    assert result["raw"]["joint_group_scores"]["root"] == pytest.approx(0.0)
+    assert result["raw"]["joint_group_scores"]["limbs"] == pytest.approx(0.0)
