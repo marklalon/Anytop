@@ -61,7 +61,7 @@ class DistributionEvalReport:
     top_k_species: int
     reference_species: List[Dict[str, Any]]
 
-    naturalness_score: float
+    overall_score: float
     spectral_flatness_score: float
     jerk_score: float
     snap_score: float
@@ -72,7 +72,7 @@ class DistributionEvalReport:
 
     def as_dict(self) -> dict:
         return {
-            "naturalness_score": round(self.naturalness_score, 4),
+            "overall_score": round(self.overall_score, 4),
             "detail": {
                 "jerk_score (w=0.328)": round(self.jerk_score, 4),
                 "snap_score (w=0.228)": round(self.snap_score, 4),
@@ -108,7 +108,7 @@ class DistributionEvalReport:
             f"  +{'-' * width}+--------+",
             f"  | {'Dimension':<{width}}| Score  |",
             f"  +{'-' * width}+--------+",
-            f"  | {'Joint naturalness':<{width}}| {self.naturalness_score:6.4f} |",
+            f"  | {'Joint naturalness':<{width}}| {self.overall_score:6.4f} |",
             f"  +{'-' * width}+--------+",
             "",
             f"  Reference species : {self.reference_species}",
@@ -304,28 +304,33 @@ def _welch_psd(sig: np.ndarray, nperseg: int) -> Tuple[np.ndarray, np.ndarray]:
 
 
 def _compute_features(motion: np.ndarray, nperseg: int) -> Dict[str, np.ndarray]:
+    """Compute per-joint features for a single motion (T, J, 13)."""
     t_len, joint_count, _ = motion.shape
     pos = motion[:, :, CH_POS].astype(np.float64)
 
+    # Spectral flatness — batched Welch PSD over all joints×channels at once
     spectral_flatness = np.zeros(joint_count)
+    nps = min(nperseg, t_len)
+    if nps >= 2:
+        pos_flat = pos.reshape(t_len, -1)  # (T, J*3)
+        _, psd_all = scipy.signal.welch(pos_flat, nperseg=nps, axis=0)  # (n_freq, J*3)
+        psd_all = psd_all + 1e-30
+        psd_all = psd_all.reshape(-1, joint_count, 3)  # (n_freq, J, 3)
+        log_mean = np.mean(np.log(psd_all), axis=0)       # (J, 3)
+        arith_mean = np.mean(psd_all, axis=0)             # (J, 3)
+        spectral_flatness = np.exp(log_mean) / np.maximum(arith_mean, 1e-30)  # (J, 3)
+        spectral_flatness = spectral_flatness.mean(axis=-1)  # (J,)
+
+    # Jerk (3rd derivative) — already vectorized
     jerk_norm = np.zeros(joint_count)
-    snap_norm = np.zeros(joint_count)
-
-    for joint_index in range(joint_count):
-        flatness_values = []
-        for channel_index in range(3):
-            freqs_j, psd = _welch_psd(pos[:, joint_index, channel_index], nperseg)
-            log_mean = float(np.mean(np.log(psd)))
-            arith_mean = float(np.mean(psd))
-            flatness_values.append(math.exp(log_mean) / max(arith_mean, 1e-30))
-        spectral_flatness[joint_index] = float(np.mean(flatness_values))
-
     if t_len >= 4:
         jerk3 = np.diff(np.diff(np.diff(pos, axis=0), axis=0), axis=0)
         per_joint_jerk = (jerk3 ** 2).mean(axis=(0, 2))
         per_joint_var = pos.var(axis=0).mean(axis=-1)
         jerk_norm = per_joint_jerk / (per_joint_var + 1e-10)
 
+    # Snap (4th derivative) — already vectorized
+    snap_norm = np.zeros(joint_count)
     if t_len >= 5:
         snap = np.diff(np.diff(np.diff(np.diff(pos, axis=0), axis=0), axis=0), axis=0)
         snap_rms = np.sqrt((snap ** 2).mean(axis=(0, 2)))
@@ -337,6 +342,69 @@ def _compute_features(motion: np.ndarray, nperseg: int) -> Dict[str, np.ndarray]
         "jerk_norm": jerk_norm,
         "snap_norm": snap_norm,
     }
+
+
+def _compute_features_batch(motions: List[np.ndarray], nperseg: int) -> List[Dict[str, np.ndarray]]:
+    """Compute per-joint features for multiple motions, batching by frame count.
+
+    Groups motions with the same T together so Welch PSD can process them
+    in a single call instead of one-per-motion. Large groups are further
+    split into chunks of at most 32 to bound peak memory.
+    """
+    # Group by (T, J) so we can stack
+    groups: Dict[Tuple[int, int], List[int]] = {}
+    for idx, m in enumerate(motions):
+        key = (m.shape[0], m.shape[1])
+        groups.setdefault(key, []).append(idx)
+
+    results: List[Optional[Dict[str, np.ndarray]]] = [None] * len(motions)
+
+    for (t_len, joint_count), indices in groups.items():
+        # Chunk into batches of at most 32 to bound memory
+        chunk_size = 32
+        for chunk_start in range(0, len(indices), chunk_size):
+            chunk_indices = indices[chunk_start : chunk_start + chunk_size]
+            n_chunk = len(chunk_indices)
+
+            # Stack to (N, T, J, 3) — float32 is sufficient; Welch promotes internally
+            pos = np.stack([motions[i][:, :, CH_POS] for i in chunk_indices], axis=0).astype(np.float32)
+
+            # Spectral flatness — batched Welch PSD over all motions×joints×channels
+            sf = np.zeros((n_chunk, joint_count), dtype=np.float64)
+            nps = min(nperseg, t_len)
+            if nps >= 2:
+                pos_flat = np.transpose(pos, (1, 0, 2, 3)).reshape(t_len, -1)  # (T, N*J*3)
+                _, psd_all = scipy.signal.welch(pos_flat, nperseg=nps, axis=0)  # (n_freq, N*J*3)
+                psd_all = psd_all + 1e-30
+                psd_all = psd_all.reshape(-1, n_chunk, joint_count, 3)  # (n_freq, N, J, 3)
+                log_mean = np.mean(np.log(psd_all), axis=0)       # (N, J, 3)
+                arith_mean = np.mean(psd_all, axis=0)             # (N, J, 3)
+                sf = (np.exp(log_mean) / np.maximum(arith_mean, 1e-30)).mean(axis=-1)
+
+            # Jerk — fully vectorized over batch
+            jerk = np.zeros((n_chunk, joint_count), dtype=np.float64)
+            if t_len >= 4:
+                jerk3 = np.diff(np.diff(np.diff(pos, axis=1), axis=1), axis=1)  # (N, T-3, J, 3)
+                per_joint_jerk = (jerk3 ** 2).mean(axis=(1, 3))                 # (N, J)
+                per_joint_var = pos.var(axis=1).mean(axis=-1)                   # (N, J)
+                jerk = per_joint_jerk / (per_joint_var + 1e-10)
+
+            # Snap — fully vectorized over batch
+            snap = np.zeros((n_chunk, joint_count), dtype=np.float64)
+            if t_len >= 5:
+                snap4 = np.diff(np.diff(np.diff(np.diff(pos, axis=1), axis=1), axis=1), axis=1)  # (N, T-4, J, 3)
+                snap_rms = np.sqrt((snap4 ** 2).mean(axis=(1, 3)))                               # (N, J)
+                pos_rms = np.sqrt((pos ** 2).mean(axis=(1, 3))) + 1e-10                          # (N, J)
+                snap = snap_rms / pos_rms
+
+            for k, idx in enumerate(chunk_indices):
+                results[idx] = {
+                    "spectral_flatness": sf[k],
+                    "jerk_norm": jerk[k],
+                    "snap_norm": snap[k],
+                }
+
+    return results  # type: ignore[return-value]
 
 
 def _active_joint_groups(joint_groups: Mapping[str, np.ndarray]) -> List[Tuple[str, np.ndarray]]:
@@ -749,7 +817,7 @@ class DistributionMotionQualityScorer:
                 }
                 for species in reference_bank.species
             ],
-            naturalness_score=local["score"],
+            overall_score=local["score"],
             spectral_flatness_score=local["component_scores"]["spectral_flatness"],
             jerk_score=local["component_scores"]["jerk_norm"],
             snap_score=local["component_scores"]["snap_norm"],
@@ -805,10 +873,12 @@ class DistributionMotionQualityScorer:
     ) -> dict:
         query_active_groups = [name for name, _ in _active_joint_groups(query_joint_groups)]
         query_bone_groups = [name for name in query_active_groups if name != "root"]
+
+        # Batch feature extraction for query motions
+        query_features_list = _compute_features_batch(query_motions, nperseg)
         query_local = []
         query_bone_rotations = []
-        for motion in query_motions:
-            features = _compute_features(motion, nperseg)
+        for motion, features in zip(query_motions, query_features_list):
             query_local.append({
                 key: _group_scalar_means(values, query_joint_groups)
                 for key, values in features.items()
@@ -817,11 +887,13 @@ class DistributionMotionQualityScorer:
                 _group_bone_time_series(_compute_bone_rotation_angle(motion, np.zeros(0, dtype=np.int64)), query_joint_groups)
             )
 
+        # Batch feature extraction for reference clips
+        ref_motions = [clip.motion for clip in reference_clips]
+        ref_features_list = _compute_features_batch(ref_motions, nperseg)
         reference_local = []
         reference_bone_rotations = []
-        for clip in reference_clips:
+        for clip, features in zip(reference_clips, ref_features_list):
             clip_joint_groups, _ = self._resolve_joint_groups(clip.object_type, clip.motion.shape[1])
-            features = _compute_features(clip.motion, nperseg)
             reference_local.append({
                 key: _group_scalar_means(values, clip_joint_groups)
                 for key, values in features.items()

@@ -14,6 +14,49 @@ import torch
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+def _compute_global_rotations(all_rots, parents, joint_count):
+    """Compute global rotations in a single O(J) pass (no Animation wrapper)."""
+    from motion_lib.Quaternions import Quaternions as Qcls
+    frame_count = all_rots.shape[0]
+    global_rots = Qcls.id((frame_count, joint_count))
+    global_rots[:, 0] = all_rots[:, 0]
+    for i in range(1, joint_count):
+        global_rots[:, i] = global_rots[:, parents[i]] * all_rots[:, i]
+    return global_rots
+
+
+def _compute_global_positions(global_rots, positions, parents, joint_count):
+    """Compute global positions via FK in a single O(J) pass."""
+    frame_count = positions.shape[0]
+    global_pos = np.zeros((frame_count, joint_count, 3), dtype=np.float64)
+    for i in range(joint_count):
+        p = parents[i]
+        if p >= 0:
+            global_pos[:, i] = global_pos[:, p] + global_rots[:, p] * positions[:, i]
+        else:
+            global_pos[:, i] = positions[:, i]
+    return global_pos
+
+
+def _apply_animated_joint_positions(
+    positions: np.ndarray,
+    target_global: np.ndarray,
+    global_rots: Any,
+    parents: np.ndarray,
+    animated_joints: list[int],
+) -> np.ndarray:
+    """Solve animated local translations directly from target global parent/child positions."""
+    for joint_idx in animated_joints:
+        parent_idx = parents[joint_idx]
+        if joint_idx == 0 or parent_idx < 0:
+            positions[:, joint_idx] = target_global[:, joint_idx]
+            continue
+        positions[:, joint_idx] = (
+            -global_rots[:, parent_idx]
+        ) * (target_global[:, joint_idx] - target_global[:, parent_idx])
+    return positions
+
+
 def compute_rest_positions(offsets: np.ndarray, parents: np.ndarray) -> np.ndarray:
     """Forward-kinematics on the rest pose -> (J, 3) global positions."""
     joint_count = len(parents)
@@ -112,7 +155,7 @@ def _recover_from_production_motion_features(
     tensor, so they stay at identity here. This still preserves world-space bone
     heads and the encoded non-leaf rotations exactly.
     """
-    from motion_lib.Animation import Animation, positions_global, rotations_global
+    from motion_lib.Animation import Animation
     from motion_lib.Quaternions import Quaternions as Qcls
 
     from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np
@@ -137,25 +180,27 @@ def _recover_from_production_motion_features(
     target_global = recover_from_bvh_ric_np(features_arr, translation_root_index=translation_root_index)
 
     positions = offsets[None].repeat(frame_count, axis=0).copy()
-    recovered_anim = Animation(all_rots, positions, Qcls.id(0), offsets, parents)
-    recovered_global = positions_global(recovered_anim)
+
+    # Precompute global rotations once (O(J) instead of O(J²) in the loop).
+    global_rots = _compute_global_rotations(all_rots, parents, joint_count)
+
+    # Compute initial global positions from FK (single pass, O(J)).
+    recovered_global = _compute_global_positions(global_rots, positions, parents, joint_count)
     per_joint_err = np.abs(target_global - recovered_global).max(axis=(0, 2))
     animated_joints = sorted(
         joint_idx for joint_idx in range(joint_count) if per_joint_err[joint_idx] > anim_pos_threshold
     )
 
     if animated_joints:
-        for joint_idx in animated_joints:
-            if joint_idx == 0 or parents[joint_idx] < 0:
-                positions[:, joint_idx] = target_global[:, joint_idx]
-                continue
-            temp_anim = Animation(all_rots, positions, Qcls.id(0), offsets, parents)
-            temp_global_rots = rotations_global(temp_anim)
-            temp_global_pos = positions_global(temp_anim)
-            parent_idx = parents[joint_idx]
-            positions[:, joint_idx] = (
-                -temp_global_rots[:, parent_idx]
-            ) * (target_global[:, joint_idx] - temp_global_pos[:, parent_idx])
+        positions = _apply_animated_joint_positions(
+            positions,
+            target_global,
+            global_rots,
+            parents,
+            animated_joints,
+        )
+        recovered_anim = Animation(all_rots, positions, Qcls.id(0), offsets, parents)
+    else:
         recovered_anim = Animation(all_rots, positions, Qcls.id(0), offsets, parents)
 
     has_animated_pos = bool(
@@ -195,7 +240,7 @@ def recover_from_features(
         (anim, has_animated_pos) — the reconstructed Animation and a bool
         indicating whether non-root position channels are animated.
     """
-    from motion_lib.Animation import Animation, positions_global, rotations_global
+    from motion_lib.Animation import Animation
     from motion_lib.Quaternions import Quaternions
     from utils.rotation_conversions import rotation_6d_to_matrix_np as _r6d_to_mat
 
@@ -268,6 +313,7 @@ def recover_from_features(
     own_rot_6d = features_arr[..., 3:9]
     rot_mats = _r6d_to_mat(own_rot_6d)
     all_rots = Qcls.from_transforms(rot_mats)
+    global_rots = _compute_global_rotations(all_rots, parents, joint_count)
 
     # ── 6. Positions — non-root = rest offsets; root from RIFKE ─────────
     positions = offsets[None].repeat(frame_count, axis=0).copy()
@@ -279,9 +325,7 @@ def recover_from_features(
 
     # ── 7. Handle non-root translation root ─────────────────────────────
     if trans_root != 0 and parents[trans_root] >= 0:
-        anim = Animation(all_rots, positions, Qcls.id(0), offsets, parents)
-        global_rots = rotations_global(anim)
-        global_pos = positions_global(anim)
+        global_pos = _compute_global_positions(global_rots, positions, parents, joint_count)
         parent_idx = parents[trans_root]
         positions[:, trans_root] = (-global_rots[:, parent_idx]) * (r_pos - global_pos[:, parent_idx])
 
@@ -291,24 +335,20 @@ def recover_from_features(
     target_global[..., 2] += r_pos[:, 2:3]
 
     recovered_anim = Animation(all_rots, positions, Qcls.id(0), offsets, parents)
-    recovered_global = positions_global(recovered_anim)
+    recovered_global = _compute_global_positions(global_rots, positions, parents, joint_count)
     per_joint_err = np.abs(target_global - recovered_global).max(axis=(0, 2))
     animated_joints = sorted(
         joint_idx for joint_idx in range(joint_count) if per_joint_err[joint_idx] > anim_pos_threshold
     )
 
     if animated_joints:
-        for joint_idx in animated_joints:
-            if joint_idx == 0 or parents[joint_idx] < 0:
-                positions[:, joint_idx] = target_global[:, joint_idx]
-                continue
-            temp_anim = Animation(all_rots, positions, Qcls.id(0), offsets, parents)
-            temp_global_rots = rotations_global(temp_anim)
-            temp_global_pos = positions_global(temp_anim)
-            parent_idx = parents[joint_idx]
-            positions[:, joint_idx] = (
-                -temp_global_rots[:, parent_idx]
-            ) * (target_global[:, joint_idx] - temp_global_pos[:, parent_idx])
+        positions = _apply_animated_joint_positions(
+            positions,
+            target_global,
+            global_rots,
+            parents,
+            animated_joints,
+        )
         recovered_anim = Animation(all_rots, positions, Qcls.id(0), offsets, parents)
 
     has_animated_pos = bool(

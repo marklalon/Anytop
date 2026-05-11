@@ -20,6 +20,11 @@ import eval.motion_quality.scorer as scorer_mod
 from eval.motion_quality.reference_bank import ReferenceClip
 
 
+def _make_random_motion(seed: int, t_len: int, joint_count: int) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    return rng.standard_normal((t_len, joint_count, 13), dtype=np.float32)
+
+
 def test_bone_length_score_keeps_valid_zero_drift_clips(monkeypatch: pytest.MonkeyPatch) -> None:
     motions = [np.zeros((2, 1, 13), dtype=np.float32) for _ in range(2)]
     drifts = [
@@ -86,6 +91,37 @@ def test_bone_rotation_excess_uses_filtered_reference_weights() -> None:
     assert result["normalized_excess"] == pytest.approx(1.0)
 
 
+def test_compute_features_batch_matches_single_for_same_shape() -> None:
+    motions = [
+        _make_random_motion(0, 12, 5),
+        _make_random_motion(1, 12, 5),
+        _make_random_motion(2, 12, 5),
+    ]
+
+    batch_results = scorer_mod._compute_features_batch(motions, nperseg=8)
+
+    for motion, batch_features in zip(motions, batch_results):
+        single_features = scorer_mod._compute_features(motion, nperseg=8)
+        for key in ["spectral_flatness", "jerk_norm", "snap_norm"]:
+            np.testing.assert_allclose(batch_features[key], single_features[key], rtol=1e-5, atol=1e-7)
+
+
+def test_compute_features_batch_matches_single_for_mixed_shapes() -> None:
+    motions = [
+        _make_random_motion(10, 4, 2),
+        _make_random_motion(11, 5, 2),
+        _make_random_motion(12, 8, 3),
+        _make_random_motion(13, 8, 3),
+    ]
+
+    batch_results = scorer_mod._compute_features_batch(motions, nperseg=8)
+
+    for motion, batch_features in zip(motions, batch_results):
+        single_features = scorer_mod._compute_features(motion, nperseg=8)
+        for key in ["spectral_flatness", "jerk_norm", "snap_norm"]:
+            np.testing.assert_allclose(batch_features[key], single_features[key], rtol=1e-5, atol=1e-7)
+
+
 def test_low_shot_bone_length_is_global_but_contributes_to_score(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -112,12 +148,15 @@ def test_low_shot_bone_length_is_global_but_contributes_to_score(
 
     monkeypatch.setattr(
         scorer_mod,
-        "_compute_features",
-        lambda _motion, _nperseg: {
-            "spectral_flatness": np.zeros(2, dtype=np.float64),
-            "jerk_norm": np.zeros(2, dtype=np.float64),
-            "snap_norm": np.zeros(2, dtype=np.float64),
-        },
+        "_compute_features_batch",
+        lambda motions, _nperseg: [
+            {
+                "spectral_flatness": np.zeros(motions[0].shape[1], dtype=np.float64),
+                "jerk_norm": np.zeros(motions[0].shape[1], dtype=np.float64),
+                "snap_norm": np.zeros(motions[0].shape[1], dtype=np.float64),
+            }
+            for _ in motions
+        ],
     )
     monkeypatch.setattr(
         scorer_mod,

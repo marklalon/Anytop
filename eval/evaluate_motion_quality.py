@@ -106,7 +106,7 @@ def _print_report(report: DistributionEvalReport, use_color: bool) -> None:
     print()
 
     rows = [
-        ("Joint naturalness", report.naturalness_score, ""),
+        ("Joint naturalness", report.overall_score, ""),
     ]
     for label, score, note in rows:
         print(f"  {label:<32s} {clr(score, f'{score:.4f}')}  {_bar(score)}  {note}")
@@ -146,10 +146,10 @@ def _print_per_file_summary(
             name = os.path.basename(path)
             print(
                 f"{name:<50s} "
-                f"score={_color(report.naturalness_score, f'{report.naturalness_score:.4f}', use_color)}"
+                f"score={_color(report.overall_score, f'{report.overall_score:.4f}', use_color)}"
             )
         if len(results) > 1:
-            avg_score = np.mean([r.naturalness_score for _, r in results])
+            avg_score = np.mean([r.overall_score for _, r in results])
             print(
                 f"{'AVERAGE':<50s} "
                 f"score={_color(avg_score, f'{avg_score:.4f}', use_color)}"
@@ -189,15 +189,15 @@ def _print_per_file_summary(
             # Multi-file: only score line per file
             print(
                 f"  {name:<50s} "
-                f"score={clr(report.naturalness_score, f'{report.naturalness_score:.4f}')}",
+                f"score={clr(report.overall_score, f'{report.overall_score:.4f}')}",
             )
         else:
             # Single file: full detailed report
             print(f"  {name}")
             print(
                 f"    {'Naturalness':<32s} "
-                f"{clr(report.naturalness_score, f'{report.naturalness_score:.4f}')}  "
-                f"{_bar(report.naturalness_score)}"
+                f"{clr(report.overall_score, f'{report.overall_score:.4f}')}  "
+                f"{_bar(report.overall_score)}"
             )
             component_scores = report.raw.get("component_scores")
             if component_scores:
@@ -212,7 +212,7 @@ def _print_per_file_summary(
 
     if is_multi:
         # ── Average summary with full detail ──────────────────────────────
-        avg_score = np.mean([r.naturalness_score for _, r in results])
+        avg_score = np.mean([r.overall_score for _, r in results])
 
         raw_list = [r.raw for _, r in results]
         comp = raw_list[0].get("component_scores") if raw_list else None
@@ -409,7 +409,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 for path, report in results
             ],
             "average": {
-                "naturalness_score": round(float(np.mean([r.naturalness_score for _, r in results])), 4),
+                "overall_score": round(float(np.mean([r.overall_score for _, r in results])), 4),
             },
         }
         with open(args.output_json, "w", encoding="utf-8") as handle:
