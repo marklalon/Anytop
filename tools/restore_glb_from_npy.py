@@ -87,7 +87,7 @@ _DEFAULT_COND_NPY = os.path.realpath(
 )
 
 _FULLBODY_IK_ITERATIONS = 2
-_LOCALBODY_IK_FRAME0_DRIFT_THRESHOLD = 0.10
+_LOCALBODY_IK_FRAME0_DRIFT_THRESHOLD = 0.15
 
 def _load_tpose_restore_metadata(
     tpose_mesh: str,

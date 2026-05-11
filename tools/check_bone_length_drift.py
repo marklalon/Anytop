@@ -1,18 +1,15 @@
 """
 check_bone_length_drift.py
 
-Measure per-bone frame-to-frame bone-length drift relative to animation frame 0,
-while also reporting a separate reference-only comparison between the character
-T-pose stored in cond.npy and the animation's first frame.
+Measure per-bone frame-to-frame bone-length drift relative to animation frame 0.
 
 Supported inputs:
     - .npy  : AnyTop motion features
     - .glb  : skinned GLB/GLTF animation sampled through Blender
 
-The main drift report uses each bone's length in the animation's first frame as
-its baseline and measures how much later frames stretch or shrink relative to
-that baseline. A separate T-pose reference section keeps the old cond.npy
-comparison as context only.
+The drift report uses each bone's length in the animation's first frame as its
+baseline and measures how much later frames stretch or shrink relative to that
+baseline.
 
 Examples:
     python Anytop/tools/check_bone_length_drift.py \
@@ -332,15 +329,17 @@ def _collect_armature_world_positions(armature, sample_frames: list[float], bone
     bpy.context.view_layer.objects.active = armature
     bpy.ops.object.mode_set(mode="OBJECT")
 
+    ordered_pose_bones = [armature.pose.bones.get(name) for name in bone_names]
+    armature_world = armature.matrix_world.copy()
+
     for frame_idx, sample_frame in enumerate(sample_frames):
         _set_scene_time(scene, float(sample_frame))
         bpy.context.view_layer.update()
-        for bone_idx, bone_name in enumerate(bone_names):
-            pose_bone = armature.pose.bones.get(bone_name)
+        for bone_idx, pose_bone in enumerate(ordered_pose_bones):
             if pose_bone is None:
                 continue
             head_local = pose_bone.head
-            head_world = armature.matrix_world @ Vector((head_local.x, head_local.y, head_local.z))
+            head_world = armature_world @ Vector((head_local.x, head_local.y, head_local.z))
             world_positions[frame_idx, bone_idx] = (head_world.x, head_world.y, head_world.z)
 
     return world_positions
@@ -402,7 +401,7 @@ def _compute_reference_rest_positions(offsets: np.ndarray, parents: np.ndarray) 
 def _resolve_comparison_edges(
     reference: ReferenceSkeleton,
     motion: MotionWorldData,
-) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[list[str], np.ndarray, np.ndarray]:
     """Resolve comparison edges between reference skeleton and motion.
 
     Uses canonical bone name matching to align reference edges to motion joints.
@@ -419,7 +418,6 @@ def _resolve_comparison_edges(
     edge_names: list[str] = []
     motion_parent_indices: list[int] = []
     motion_child_indices: list[int] = []
-    reference_lengths: list[float] = []
 
     for edge_idx in range(len(ref_parent_arr)):
         child_idx = int(ref_child_arr[edge_idx])
@@ -435,7 +433,6 @@ def _resolve_comparison_edges(
         edge_names.append(reference.bone_names[child_idx])
         motion_parent_indices.append(motion_parent_idx)
         motion_child_indices.append(motion_child_idx)
-        reference_lengths.append(float(np.linalg.norm(reference.offsets[child_idx])))
 
     if not edge_names:
         raise RuntimeError("No common parent-child bones found between the input motion and the cond.npy reference")
@@ -444,25 +441,7 @@ def _resolve_comparison_edges(
         edge_names,
         np.asarray(motion_parent_indices, dtype=np.int32),
         np.asarray(motion_child_indices, dtype=np.int32),
-        np.asarray(reference_lengths, dtype=np.float64),
     )
-
-
-def _estimate_global_scale(motion_lengths: np.ndarray, reference_lengths: np.ndarray) -> float:
-    per_bone_mean = np.asarray(np.mean(motion_lengths, axis=0), dtype=np.float64)
-    valid_mask = np.isfinite(per_bone_mean) & np.isfinite(reference_lengths) & (per_bone_mean > 1e-8) & (reference_lengths > 1e-8)
-    if not np.any(valid_mask):
-        return 1.0
-
-    mean_motion = float(np.mean(per_bone_mean[valid_mask]))
-    mean_reference = float(np.mean(reference_lengths[valid_mask]))
-    if mean_motion <= 1e-8 or mean_reference <= 1e-8:
-        return 1.0
-
-    scale = mean_reference / mean_motion
-    if not np.isfinite(scale) or scale <= 0.0:
-        return 1.0
-    return float(scale)
 
 
 def _summarize_length_drift(
@@ -574,7 +553,7 @@ def _summarize_length_drift(
 
 
 def _compute_drift_report(reference: ReferenceSkeleton, motion: MotionWorldData) -> dict[str, Any]:
-    edge_names, motion_parent_idx, motion_child_idx, tpose_lengths = _resolve_comparison_edges(reference, motion)
+    edge_names, motion_parent_idx, motion_child_idx = _resolve_comparison_edges(reference, motion)
 
     motion_lengths = np.linalg.norm(
         motion.world_positions[:, motion_child_idx, :] - motion.world_positions[:, motion_parent_idx, :],
@@ -594,7 +573,6 @@ def _compute_drift_report(reference: ReferenceSkeleton, motion: MotionWorldData)
         valid_indices = np.flatnonzero(valid_mask)
         edge_names = [edge_names[int(index)] for index in valid_indices]
         motion_lengths = motion_lengths[:, valid_mask]
-        tpose_lengths = tpose_lengths[valid_mask]
         first_frame_lengths = first_frame_lengths[valid_mask]
 
     drift = _summarize_length_drift(
@@ -611,30 +589,6 @@ def _compute_drift_report(reference: ReferenceSkeleton, motion: MotionWorldData)
     drift["baseline_frame_index"] = 0
     drift["baseline_frame_value"] = float(motion.sample_frames[0])
 
-    first_frame_scale = _estimate_global_scale(first_frame_lengths[np.newaxis, :], tpose_lengths)
-    first_frame_lengths_aligned = first_frame_lengths * first_frame_scale
-    tpose_reference = _summarize_length_drift(
-        edge_names,
-        tpose_lengths,
-        first_frame_lengths_aligned[np.newaxis, :],
-        [motion.sample_frames[0]],
-        note=(
-            "Reference-only comparison between cond.npy T-pose lengths and animation frame 0 "
-            "after a single global scale alignment."
-        ),
-    )
-    tpose_reference["reference_basis"] = "cond_tpose"
-    tpose_reference["measured_basis"] = "animation_first_frame"
-    tpose_reference["frame_index"] = 0
-    tpose_reference["frame_value"] = float(motion.sample_frames[0])
-    tpose_reference["global_scale"] = float(first_frame_scale)
-    tpose_reference["mean_tpose_length"] = float(np.mean(tpose_lengths))
-    tpose_reference["mean_first_frame_length_before"] = float(np.mean(first_frame_lengths))
-    tpose_reference["mean_first_frame_length_after"] = float(np.mean(first_frame_lengths_aligned))
-    tpose_reference["per_bone"]["tpose_length"] = tpose_lengths.tolist()
-    tpose_reference["per_bone"]["first_frame_length_before_scale"] = first_frame_lengths.tolist()
-    tpose_reference["per_bone"]["first_frame_length_after_scale"] = first_frame_lengths_aligned.tolist()
-
     return {
         "comparison": {
             "object_type": reference.object_type,
@@ -650,7 +604,6 @@ def _compute_drift_report(reference: ReferenceSkeleton, motion: MotionWorldData)
             "mean_bone_length": float(np.mean(first_frame_lengths)),
         },
         "drift": drift,
-        "tpose_reference": tpose_reference,
     }
 
 
@@ -667,7 +620,6 @@ def _print_summary(motion: MotionWorldData, report: dict[str, Any], top_k: int) 
     comparison = report["comparison"]
     first_frame_reference = report["first_frame_reference"]
     drift = report["drift"]
-    tpose_reference = report["tpose_reference"]
 
     print(f"[Input] {_format_path(motion.file_path)}")
     print(
@@ -680,15 +632,6 @@ def _print_summary(motion: MotionWorldData, report: dict[str, Any], top_k: int) 
         )
     print()
 
-    print("[T-pose vs First Frame Reference]")
-    print(f"  max_abs                  = {tpose_reference['max_abs_drift_pct']:.2f}%")
-    print(f"  mean_abs                 = {tpose_reference['mean_abs_drift_pct']:.2f}%")
-    print(
-        f"  worst                    = bone={tpose_reference['worst_bone']}  "
-        f"drift={tpose_reference['worst_value_pct']:.2f}%"
-    )
-
-    print()
     print("[Frame-to-Frame Bone Length Drift]")
     print(f"  max_abs    = {drift['max_abs_drift_pct']:.2f}%")
     print(f"  mean_abs   = {drift['mean_abs_drift_pct']:.2f}%")
@@ -716,8 +659,7 @@ def _print_summary(motion: MotionWorldData, report: dict[str, Any], top_k: int) 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Measure per-bone frame-to-frame bone-length drift using animation frame 0 as baseline, "
-            "with a separate cond.npy T-pose reference-only comparison for NPY or GLB inputs."
+            "Measure per-bone frame-to-frame bone-length drift using animation frame 0 as baseline."
         ),
     )
     parser.add_argument("--input", required=True, help="Path to the input motion (.npy or .glb/.gltf)")
