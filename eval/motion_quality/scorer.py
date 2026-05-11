@@ -47,8 +47,8 @@ from .reference_stats import CH_POS, CH_ROT
 
 _MIN_CLIP_FRAMES = 8
 _LOCAL_GROUP_ORDER = ("root", "axial", "limbs")
-_DEFAULT_TOLERANCE_SIGMA = 1.0
-_TOLERANCE_PENALTY_SCALE = 6.0
+_DEFAULT_TOLERANCE_SIGMA = 0.5
+_TOLERANCE_PENALTY_SCALE = 10.0
 
 
 @dataclass
