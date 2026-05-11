@@ -107,26 +107,8 @@ def infer_object_type_from_filename(
             if valid_types is None or first_token in valid_types:
                 return first_token
 
+    # 5. Fallback: bare stem (e.g. "dragon.fbx" → "dragon")
+    if valid_types is None:
+        return stem if stem else None
+
     return None
-
-
-def infer_object_type_from_fbx_dir(
-    directory: str,
-    valid_types: _Container[str] | None = None,
-) -> str | None:
-    """Infer object type from the first FBX file found in *directory*.
-
-    Args:
-        directory:   Path to a directory containing ``.fbx`` / ``.FBX`` files.
-        valid_types: Optional set/container of known object types for validation.
-
-    Returns:
-        The inferred object type, or ``None`` if the directory is empty or
-        inference fails.
-    """
-    fbxs = sorted(
-        _glob.glob(_os.path.join(directory, "*.[Ff][Bb][Xx]"))
-    )
-    if not fbxs:
-        return None
-    return infer_object_type_from_filename(fbxs[0], valid_types=valid_types)

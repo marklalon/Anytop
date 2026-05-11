@@ -281,17 +281,16 @@ def process_new_skeleton_args():
     group.add_argument("--object-type", default=None, type=str,
                        help="A character's species/type name (e.g. \"Dragon\"). "
                             "When omitted, inferred from the first FBX filename in --fbx-dir.")
-    group.add_argument("--fbx-dir", required=True, type=str,
+    group.add_argument("--fbx-dir", default=None, type=str,
                        help="Path to a directory containing FBX files of the skeleton. More files improve statistical accuracy for \
-                           motion denormalization.")
+                           motion denormalization. If omitted, defaults to the parent directory of --tpos-fbx.")
     group.add_argument("--save-dir", required=True, type=str,
                        help="Output directory.")
     group.add_argument("--face-joints-names", default=None, type=str, nargs=4,
                        help="Optional manual override for the four orientation joints ([right hip, left hip, right shoulder, left shoulder] or equivalent). \
                            When omitted, preprocessing tries to infer them from semantic joint names.")
-    group.add_argument("--tpos-fbx", default='', type=str,
-                       help="An FBX file of the character's natural rest pose for meaningful rotation learning. \
-                            If missing, the code selects a pose from the provided FBX files.")
+    group.add_argument("--tpos-fbx", required=True, type=str,
+                       help="An FBX file of the character's natural rest pose for meaningful rotation learning.")
     args = parser.parse_args()
     return args
 

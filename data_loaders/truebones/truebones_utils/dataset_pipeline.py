@@ -458,37 +458,8 @@ def _build_motion_metadata_entry(result, motion_file_name):
     return motion_labels
 
 
-"""Prepare processed tensors for all the files of a given object without writing them to disk yet."""
-def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, allow_skeleton_only=False):
-    object_cond = dict()
-    if fbxs_dir is None:
-        fbxs_dir = pjoin(get_raw_data_dir(raw_data_dir), object_type)
-    if not os.path.isdir(fbxs_dir):
-        print(f'skipping {object_type}: raw FBX directory not found at {fbxs_dir}')
-        return None
-    fbx_files = sorted([pjoin(fbxs_dir, f) for f in os.listdir(fbxs_dir) if f.lower().endswith('.fbx')])
-    if len(fbx_files) == 0:
-        print(f'skipping {object_type}: no FBX files found in {fbxs_dir}')
-        return None
-    ## get a character-level orientation reference clip
-    if t_pos_path is None or t_pos_path == '':
-        t_pos_path = find_tpose_reference_path(fbx_files)
-    else:
-        # removes T-pose FBX from fbx_files, as it represents a static pose and should be used only for
-        # extracting common characteristics. If this is not the case, disable this part
-        fbx_files.remove(t_pos_path)
-    if max_files is not None:
-        fbx_files = fbx_files[:max_files]
-
-    # Filter out files with no inferable action name or all-in-one animation bundles
-    fbx_files = [f for f in fbx_files if not _should_skip_fbx(f, object_type)]
-    if len(fbx_files) == 0:
-        if allow_skeleton_only:
-            print(f'skipping {object_type}: no valid motion FBX files after filtering')
-        else:
-            print(f'skipping {object_type}: no valid FBX files after filtering')
-        return None
-
+"""Load T-pose FBX, build the shared cond dict, and return all values callers need."""
+def _build_tpose_cond(object_type, t_pos_path, face_joints, max_joints=MAX_JOINTS):
     squared_positions_error = dict()
     tp = get_common_features_from_T_pose(
         t_pos_path,
@@ -524,9 +495,9 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
         tp.names,
         tp.helper_metadata,
     )
+    object_cond = dict()
     object_cond['tpos_first_frame'] = t_pos_motion[0]
-    # create topology conditions
-    joint_relations, joints_graph_dist = create_topology_edge_relations(tp.tpos_anim.parents, max_path_len = MAX_PATH_LEN)
+    joint_relations, joints_graph_dist = create_topology_edge_relations(tp.tpos_anim.parents, max_path_len=MAX_PATH_LEN)
     object_cond['joint_relations'] = joint_relations
     object_cond['joints_graph_dist'] = joints_graph_dist
     object_cond['object_type'] = object_type
@@ -572,6 +543,52 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     object_cond['axial_avg_len'] = float(tp.axial_avg_len)
     object_cond['kinematic_chains'] = parents2kinchains(parents, object_policy(object_type))
     object_cond.update(build_object_labels(object_type))
+    return object_cond, tp, t_pos_motion, parents, semantic_metadata, character_scale_factor, squared_positions_error, max_joints
+
+
+"""Build the T-pose cond dict from a single FBX file (no motion files needed)."""
+def _build_tpose_only_cond(object_type, t_pos_path, face_joints):
+    object_cond, tp, t_pos_motion, parents, semantic_metadata, character_scale_factor, _, max_joints = _build_tpose_cond(
+        object_type, t_pos_path, face_joints,
+    )
+    num_joints = len(parents)
+    object_cond['mean'] = t_pos_motion[0:1].repeat(num_joints, axis=0)
+    object_cond['std'] = np.ones_like(object_cond['mean'])
+    return object_cond, max_joints
+
+
+"""Prepare processed tensors for all the files of a given object without writing them to disk yet."""
+def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None):
+    object_cond = dict()
+    if fbxs_dir is None:
+        fbxs_dir = pjoin(get_raw_data_dir(raw_data_dir), object_type)
+    if not os.path.isdir(fbxs_dir):
+        print(f'skipping {object_type}: raw FBX directory not found at {fbxs_dir}')
+        return None
+    fbx_files = sorted([pjoin(fbxs_dir, f) for f in os.listdir(fbxs_dir) if f.lower().endswith('.fbx')])
+    if len(fbx_files) == 0:
+        print(f'skipping {object_type}: no FBX files found in {fbxs_dir}')
+        return None
+    ## get a character-level orientation reference clip
+    if t_pos_path is None or t_pos_path == '':
+        t_pos_path = find_tpose_reference_path(fbx_files)
+    else:
+        # removes T-pose FBX from fbx_files, as it represents a static pose and should be used only for
+        # extracting common characteristics. If this is not the case, disable this part
+        fbx_files.remove(t_pos_path)
+    if max_files is not None:
+        fbx_files = fbx_files[:max_files]
+
+    # Filter out files with no inferable action name or all-in-one animation bundles
+    fbx_files = [f for f in fbx_files if not _should_skip_fbx(f, object_type)]
+    if len(fbx_files) == 0:
+        print(f'skipping {object_type}: no valid FBX files after filtering')
+        return None
+
+    squared_positions_error = dict()
+    object_cond, tp, t_pos_motion, parents, semantic_metadata, character_scale_factor, _, max_joints = _build_tpose_cond(
+        object_type, t_pos_path, face_joints, max_joints=max_joints,
+    )
     all_tensors = list()
 
     # FBX loading via bpy is single-threaded inside a process because clear_scene
@@ -710,16 +727,15 @@ def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None):
 
 """ creates processed tensors for all the files of a given object. Returens statistics and the object condition,
 which includes tpos, relation/distances matrices, offsets, parents, joints names, kinematic chains, mean and std"""    
-def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, bvhs_dir=None, allow_skeleton_only=False):
+def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None):
     object_payload = _prepare_object_outputs(
         object_type,
         max_joints,
         face_joints=face_joints,
-        fbxs_dir=fbxs_dir or bvhs_dir,  # bvhs_dir kept for backward compatibility
+        fbxs_dir=fbxs_dir,
         t_pos_path=t_pos_path,
         max_files=max_files,
         raw_data_dir=raw_data_dir,
-        allow_skeleton_only=allow_skeleton_only,
     )
     if object_payload is None:
         return files_counter, frames_counter, max_joints, None, {}
@@ -867,7 +883,7 @@ def process_single_object_type(object_type, save_dir):
     )
 
 
-def process_skeleton(object_name, bvh_dir, face_joints, save_dir, tpos_bvh=None, fbx_dir=None):
+def process_skeleton(object_name, face_joints, save_dir, tpos_fbx, fbx_dir=None):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(save_dir, BVHS_DIR), exist_ok=True)
@@ -880,11 +896,25 @@ def process_skeleton(object_name, bvh_dir, face_joints, save_dir, tpos_bvh=None,
     squared_positions_error = dict()
     cond = dict()
     motion_metadata = {}
+
+    if fbx_dir is None:
+        # T-pose only: generate cond.npy without motion file processing
+        object_cond, max_joints = _build_tpose_only_cond(object_name, tpos_fbx, face_joints)
+        cond[object_name] = object_cond
+        _write_dataset_artifacts(
+            save_dir,
+            cond,
+            motion_metadata,
+            objects_counter,
+            max_joints,
+            files_counter,
+            frames_counter,
+            squared_positions_error,
+        )
+        return
+
     cur_counter = files_counter
-    files_counter, frames_counter, max_joints, object_cond, object_motion_metadata = process_object(object_name, files_counter, frames_counter, max_joints, squared_positions_error, save_dir=save_dir, fbxs_dir=fbx_dir or bvh_dir, face_joints=face_joints, t_pos_path=tpos_bvh, allow_skeleton_only=True)
-    # BUG4 (intentional): MP4 generation is omitted here to skip expensive video
-    # generation during process_skeleton. Generating video previews is not
-    # Note: MP4 generation has been removed - no save_animations parameter needed.
+    files_counter, frames_counter, max_joints, object_cond, object_motion_metadata = process_object(object_name, files_counter, frames_counter, max_joints, squared_positions_error, save_dir=save_dir, fbxs_dir=fbx_dir, face_joints=face_joints, t_pos_path=tpos_fbx)
     if object_cond is None:
         print(f"No valid FBX data found for '{object_name}', aborting.")
         return
