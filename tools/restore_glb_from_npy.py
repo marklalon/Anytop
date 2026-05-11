@@ -1289,15 +1289,6 @@ def main() -> None:
             "Disabled by default."
         ),
     )
-    parser.add_argument(
-        "--check-bone-length",
-        action="store_true",
-        default=False,
-        help=(
-            "After restoring the GLB, automatically run check_bone_length_drift.py "
-            "on the output GLB to report per-bone length drift.  Disabled by default."
-        ),
-    )
 
     args = parser.parse_args()
 
@@ -1344,8 +1335,7 @@ def main() -> None:
         localbody_ik=args.localbody_ik,
     )
 
-    if args.check_bone_length:
-        _run_bone_length_check(args.output_glb)
+    _run_bone_length_check(args.output_glb)
 
 
 def _run_bone_length_check(glb_path: str) -> None:

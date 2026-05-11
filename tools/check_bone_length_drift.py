@@ -652,6 +652,15 @@ def _print_summary(motion: MotionWorldData, report: dict[str, Any], top_k: int) 
         )
     print()
 
+    print("[T-pose vs First Frame Reference]")
+    print(f"  max_abs                  = {tpose_reference['max_abs_drift_pct']:.2f}%")
+    print(f"  mean_abs                 = {tpose_reference['mean_abs_drift_pct']:.2f}%")
+    print(
+        f"  worst                    = bone={tpose_reference['worst_bone']}  "
+        f"drift={tpose_reference['worst_value_pct']:.2f}%"
+    )
+
+    print()
     print("[Frame-to-Frame Bone Length Drift]")
     print(f"  max_abs    = {drift['max_abs_drift_pct']:.2f}%")
     print(f"  mean_abs   = {drift['mean_abs_drift_pct']:.2f}%")
@@ -662,15 +671,6 @@ def _print_summary(motion: MotionWorldData, report: dict[str, Any], top_k: int) 
     print(
         f"  worst      = bone={drift['worst_bone']}  frame_index={drift['worst_frame_index']}  "
         f"frame_value={drift['worst_frame_value']:.2f}  drift={drift['worst_value_pct']:.2f}%"
-    )
-
-    print()
-    print("[T-pose vs First Frame Reference]")
-    print(f"  max_abs                  = {tpose_reference['max_abs_drift_pct']:.2f}%")
-    print(f"  mean_abs                 = {tpose_reference['mean_abs_drift_pct']:.2f}%")
-    print(
-        f"  worst                    = bone={tpose_reference['worst_bone']}  "
-        f"drift={tpose_reference['worst_value_pct']:.2f}%"
     )
 
     top_bones = drift.get("top_worst_bones", [])
