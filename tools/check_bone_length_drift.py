@@ -73,6 +73,12 @@ from Anytop.motion_lib.FBX import (
 )
 from Anytop.utils.exporter import _canonical_bone_name
 
+# Shared bone-length drift utilities (pure numpy, no Blender/torch dependency)
+from eval.motion_quality.bone_length_drift import (
+    compute_bone_length_drift,
+    resolve_comparison_edges,
+)
+
 
 _DEFAULT_COND_NPY = os.path.realpath(
     os.path.join(ANYTOP_ROOT, "dataset", "truebones", "zoo", "truebones_processed", "cond.npy")
@@ -397,31 +403,27 @@ def _resolve_comparison_edges(
     reference: ReferenceSkeleton,
     motion: MotionWorldData,
 ) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
+    """Resolve comparison edges between reference skeleton and motion.
+
+    Uses canonical bone name matching to align reference edges to motion joints.
+    """
     motion_index = _build_canonical_index(motion.bone_names)
     reference_canon = [_canonical_bone_name(name) for name in reference.bone_names]
-    positive_reference_lengths = np.linalg.norm(
-        reference.offsets[np.asarray(reference.parents) >= 0],
-        axis=-1,
+
+    # Use shared edge resolution for the reference skeleton
+    ref_parent_arr, ref_child_arr = resolve_comparison_edges(
+        np.asarray(reference.parents, dtype=np.int32),
+        np.asarray(reference.offsets, dtype=np.float64),
     )
-    positive_reference_lengths = positive_reference_lengths[np.isfinite(positive_reference_lengths)]
-    if positive_reference_lengths.size > 0:
-        mean_reference_length = float(np.mean(positive_reference_lengths))
-        min_reference_length = max(mean_reference_length * 0.1, 1e-8)
-    else:
-        min_reference_length = 1e-8
 
     edge_names: list[str] = []
     motion_parent_indices: list[int] = []
     motion_child_indices: list[int] = []
     reference_lengths: list[float] = []
 
-    for child_idx, parent_idx in enumerate(reference.parents):
-        if parent_idx < 0:
-            continue
-
-        ref_length = float(np.linalg.norm(reference.offsets[child_idx]))
-        if not np.isfinite(ref_length) or ref_length <= min_reference_length:
-            continue
+    for edge_idx in range(len(ref_parent_arr)):
+        child_idx = int(ref_child_arr[edge_idx])
+        parent_idx = int(ref_parent_arr[edge_idx])
 
         child_canon = reference_canon[child_idx]
         parent_canon = reference_canon[parent_idx]
@@ -431,9 +433,9 @@ def _resolve_comparison_edges(
             continue
 
         edge_names.append(reference.bone_names[child_idx])
-        motion_parent_indices.append(int(motion_parent_idx))
-        motion_child_indices.append(int(motion_child_idx))
-        reference_lengths.append(ref_length)
+        motion_parent_indices.append(motion_parent_idx)
+        motion_child_indices.append(motion_child_idx)
+        reference_lengths.append(float(np.linalg.norm(reference.offsets[child_idx])))
 
     if not edge_names:
         raise RuntimeError("No common parent-child bones found between the input motion and the cond.npy reference")
@@ -471,6 +473,10 @@ def _summarize_length_drift(
     *,
     note: str,
 ) -> dict[str, Any]:
+    """Summarize bone length drift with detailed per-bone breakdown.
+
+    Computes core stats inline, then adds per-bone details and top-worst-bones ranking.
+    """
     baseline_lengths = np.asarray(baseline_lengths, dtype=np.float64)
     measured_lengths = np.asarray(measured_lengths, dtype=np.float64)
 
@@ -487,7 +493,34 @@ def _summarize_length_drift(
             f"sample_frames length mismatch: expected {measured_lengths.shape[0]}, got {len(sample_frames)}"
         )
 
+    # Compute drift array (fraction, not percentage)
     drift_ratio = measured_lengths / baseline_lengths[np.newaxis, :] - 1.0
+
+    # Core stats (same logic as shared summarize_length_drift)
+    abs_drift_pct = np.abs(drift_ratio * 100.0)
+    abs_drift_pct_finite = abs_drift_pct[np.isfinite(abs_drift_pct)]
+
+    if abs_drift_pct_finite.size == 0:
+        stats = {
+            "median_abs_drift_pct": 0.0,
+            "mean_abs_drift_pct": 0.0,
+            "max_abs_drift_pct": 0.0,
+            "p95_abs_drift_pct": 0.0,
+            "max_stretch_pct": 0.0,
+            "max_compress_pct": 0.0,
+        }
+    else:
+        drift_pct_finite = drift_ratio[np.isfinite(drift_ratio)] * 100.0
+        stats = {
+            "median_abs_drift_pct": float(np.median(abs_drift_pct_finite)),
+            "mean_abs_drift_pct": float(np.mean(abs_drift_pct_finite)),
+            "max_abs_drift_pct": float(np.max(abs_drift_pct_finite)),
+            "p95_abs_drift_pct": float(np.quantile(abs_drift_pct_finite, 0.95)),
+            "max_stretch_pct": float(np.max(drift_pct_finite)),
+            "max_compress_pct": float(np.min(drift_pct_finite)),
+        }
+
+    # Extended details: per-bone breakdown and worst-bone ranking
     drift_pct = drift_ratio * 100.0
     abs_drift_pct = np.abs(drift_pct)
 
@@ -519,13 +552,8 @@ def _summarize_length_drift(
         )
 
     return {
+        **stats,
         "note": note,
-        "max_abs_drift_pct": float(np.max(abs_drift_pct)),
-        "mean_abs_drift_pct": float(np.mean(abs_drift_pct)),
-        "median_abs_drift_pct": float(np.median(abs_drift_pct)),
-        "p95_abs_drift_pct": float(np.quantile(abs_drift_pct, 0.95)),
-        "max_stretch_pct": float(np.max(drift_pct)),
-        "max_compress_pct": float(np.min(drift_pct)),
         "worst_bone": edge_names[worst_bone_idx],
         "worst_frame_index": int(worst_frame_idx),
         "worst_frame_value": float(sample_frames[worst_frame_idx]),

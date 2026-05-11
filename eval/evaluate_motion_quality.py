@@ -234,6 +234,9 @@ def _print_per_file_summary(
             local_joint_group_scores = report.raw.get("local_joint_group_scores")
             if local_joint_group_scores:
                 print(f"    Local joint groups   : {json.dumps(_round4_dict(local_joint_group_scores), sort_keys=True)}")
+            bone_length_drift_stats = report.raw.get("bone_length_drift_stats")
+            if bone_length_drift_stats:
+                print(f"    Bone length drift    : max_abs={bone_length_drift_stats['max_abs_drift_pct']:.2f}%  mean_abs={bone_length_drift_stats['mean_abs_drift_pct']:.2f}%  median_abs={bone_length_drift_stats['median_abs_drift_pct']:.2f}%")
             print()
 
     if is_multi:
@@ -280,6 +283,19 @@ def _print_per_file_summary(
             print(f"    Local metric scores  : {json.dumps(avg_local_comp)}")
         if avg_local_jg:
             print(f"    Local joint groups   : {json.dumps(avg_local_jg, sort_keys=True)}")
+
+        # Average bone length drift across files
+        drift_stats_list = [r.raw.get("bone_length_drift_stats") for _, r in results
+                            if r.raw.get("bone_length_drift_stats")]
+        if drift_stats_list:
+            avg_max = np.mean([s["max_abs_drift_pct"] for s in drift_stats_list])
+            avg_mean = np.mean([s["mean_abs_drift_pct"] for s in drift_stats_list])
+            avg_median = np.mean([s["median_abs_drift_pct"] for s in drift_stats_list])
+            print(
+                f"    Bone length drift    : max_abs={avg_max:.2f}%  "
+                f"mean_abs={avg_mean:.2f}%  "
+                f"median_abs={avg_median:.2f}%"
+            )
         print()
 
     # Print reference species from the first report
