@@ -66,7 +66,6 @@ class DistributionEvalReport:
     jerk_score: float
     snap_score: float
     bone_length_score: float
-    bone_rotation_score: float
 
     raw: Dict[str, Any] = field(default_factory=dict)
 
@@ -77,8 +76,7 @@ class DistributionEvalReport:
                 "jerk_score (w=0.328)": round(self.jerk_score, 4),
                 "snap_score (w=0.228)": round(self.snap_score, 4),
                 "spectral_flatness_score (w=0.228)": round(self.spectral_flatness_score, 4),
-                "bone_length_score (w=0.168)": round(self.bone_length_score, 4),
-                "bone_rotation_score (w=0.06)": round(self.bone_rotation_score, 4),
+                "bone_length_score (w=0.228)": round(self.bone_length_score, 4),
             },
             "reference": {
                 "scoring_mode": self.scoring_mode,
@@ -167,8 +165,6 @@ def _metric_abs_floor(name) -> float:
         return 0.015
     if name in {"jerk_norm", "snap_norm"}:
         return 0.05
-    if name == "bone_rotation":
-        return 0.02
     return 0.02
 
 
@@ -510,67 +506,6 @@ def _score_query_against_reference(
     }
 
 
-# ---------------------------------------------------------------------------
-# Bone rotation excess scoring
-# ---------------------------------------------------------------------------
-_BONE_ROTATION_PENALTY_K = 5.0
-
-
-def _score_bone_rotation_excess(
-    query_values: np.ndarray,
-    query_weights: np.ndarray,
-    reference_series_with_weights: Sequence[Tuple[np.ndarray, float]],
-    abs_floor: float = 1e-6,
-    penalty_k: float = _BONE_ROTATION_PENALTY_K,
-) -> Dict[str, float]:
-    """Score bone rotation by measuring how much query exceeds a reference max threshold.
-
-    1. Build ``max_ref`` = weighted median of per-clip maximum rotation angles.
-    2. For each query sample, excess = max(0, value - max_ref).
-    3. Normalise excess by max_ref (or abs_floor) and apply logistic-style penalty.
-
-    Returns score in [0, 1] where 1 means no excess at all.
-    """
-    # Step 1: per-clip max → weighted median
-    clip_maxes: List[float] = []
-    clip_max_weights: List[float] = []
-    for series, clip_weight in reference_series_with_weights:
-        s = np.asarray(series, dtype=np.float64).reshape(-1)
-        finite = s[np.isfinite(s)]
-        if finite.size == 0:
-            continue
-        clip_maxes.append(float(np.max(finite)))
-        clip_max_weights.append(float(clip_weight))
-
-    if not clip_maxes:
-        return {
-            "max_ref": 0.0,
-            "score": 0.0,
-            "normalized_excess": 0.0,
-            "penalty": 1.0,
-        }
-
-    max_ref = _weighted_quantile(
-        np.asarray(clip_maxes, dtype=np.float64),
-        np.asarray(clip_max_weights, dtype=np.float64),
-        0.5,
-    )
-    normalizer = max(max_ref, abs_floor)
-
-    # Step 2 & 3: per-sample excess → score
-    query_arr = np.asarray(query_values, dtype=np.float64).reshape(-1)
-    weight_arr = _normalize_weights(np.asarray(query_weights, dtype=np.float64).reshape(-1))
-
-    excess = np.maximum(0.0, query_arr - max_ref)
-    excess_norm = excess / normalizer
-    scores = 1.0 / (1.0 + excess_norm * penalty_k)
-
-    return {
-        "max_ref": float(max_ref),
-        "normalized_excess": float(_weighted_average(excess_norm, weight_arr)),
-        "penalty": float(_weighted_average(1.0 - scores, weight_arr)),
-        "score": float(_weighted_average(scores, weight_arr)),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -717,30 +652,6 @@ def _score_bone_length_from_drift(
     }
 
 
-def _compute_bone_rotation_angle(
-    motion: np.ndarray,
-    parents: np.ndarray,
-) -> np.ndarray:
-    """Return per-frame bone rotation angle (change in direction)  (T-1, J_bones).
-
-    For each non-root joint, the bone direction is the normalised local position
-    vector.  We measure the angle between consecutive-frame direction vectors.
-    """
-    pos = motion[:, :, CH_POS].astype(np.float64)  # (T, J, 3)
-    t_len, j_count, _ = pos.shape
-    if t_len < 2:
-        return np.zeros((0, j_count - 1), dtype=np.float64)
-
-    norms = np.linalg.norm(pos, axis=-1, keepdims=True)
-    directions = pos / (norms + 1e-10)  # (T, J, 3)
-
-    bone_indices = np.arange(1, j_count, dtype=np.int64)
-    dir_bones = directions[:, bone_indices, :]  # (T, B, 3)
-
-    dot = np.sum(dir_bones[:-1] * dir_bones[1:], axis=-1).clip(-1.0, 1.0)
-    angles = np.arccos(dot)  # (T-1, B)  radians
-    return angles
-
 
 class DistributionMotionQualityScorer:
     """Low-shot weighted-reference motion quality scorer."""
@@ -822,7 +733,6 @@ class DistributionMotionQualityScorer:
             jerk_score=local["component_scores"]["jerk_norm"],
             snap_score=local["component_scores"]["snap_norm"],
             bone_length_score=local["component_scores"]["bone_length"],
-            bone_rotation_score=local["component_scores"]["bone_rotation"],
             raw={
                 "nperseg": nperseg,
                 "joint_group_source": joint_group_source,
@@ -872,35 +782,26 @@ class DistributionMotionQualityScorer:
         object_key: str,
     ) -> dict:
         query_active_groups = [name for name, _ in _active_joint_groups(query_joint_groups)]
-        query_bone_groups = [name for name in query_active_groups if name != "root"]
 
         # Batch feature extraction for query motions
         query_features_list = _compute_features_batch(query_motions, nperseg)
         query_local = []
-        query_bone_rotations = []
         for motion, features in zip(query_motions, query_features_list):
             query_local.append({
                 key: _group_scalar_means(values, query_joint_groups)
                 for key, values in features.items()
             })
-            query_bone_rotations.append(
-                _group_bone_time_series(_compute_bone_rotation_angle(motion, np.zeros(0, dtype=np.int64)), query_joint_groups)
-            )
 
         # Batch feature extraction for reference clips
         ref_motions = [clip.motion for clip in reference_clips]
         ref_features_list = _compute_features_batch(ref_motions, nperseg)
         reference_local = []
-        reference_bone_rotations = []
         for clip, features in zip(reference_clips, ref_features_list):
             clip_joint_groups, _ = self._resolve_joint_groups(clip.object_type, clip.motion.shape[1])
             reference_local.append({
                 key: _group_scalar_means(values, clip_joint_groups)
                 for key, values in features.items()
             })
-            reference_bone_rotations.append(
-                _group_bone_time_series(_compute_bone_rotation_angle(clip.motion, np.zeros(0, dtype=np.int64)), clip_joint_groups)
-            )
 
         # Bone length scoring: use FK-based drift directly (no reference comparison)
         query_cond = self._cond_lookup.get(object_key)
@@ -954,45 +855,6 @@ class DistributionMotionQualityScorer:
 
 
 
-        # Bone rotation: excess-based scoring (how much rotation exceeds reference max)
-        metric_group_scores["bone_rotation"] = {}
-        metric_group_dev["bone_rotation"] = {}
-        metric_group_scale["bone_rotation"] = {}
-        metric_group_tolerance["bone_rotation"] = {}
-        metric_group_penalty["bone_rotation"] = {}
-        for group_name in query_bone_groups:
-            query_values, query_value_weights = _flatten_group_series_samples(
-                query_bone_rotations,
-                query_weights,
-                group_name,
-            )
-            if query_values.size == 0:
-                continue
-            # Gather per-clip series with their original clip weights.
-            reference_series_with_weights: List[Tuple[np.ndarray, float]] = []
-            for clip_index, clip_sample in enumerate(reference_bone_rotations):
-                if clip_index >= reference_weights.size or group_name not in clip_sample:
-                    continue
-                reference_series_with_weights.append(
-                    (
-                        np.asarray(clip_sample[group_name], dtype=np.float64),
-                        float(reference_weights[clip_index]),
-                    )
-                )
-            if not reference_series_with_weights:
-                continue
-            detail = _score_bone_rotation_excess(
-                query_values,
-                query_value_weights,
-                reference_series_with_weights,
-                abs_floor=_metric_abs_floor("bone_rotation"),
-            )
-            metric_group_scores["bone_rotation"][group_name] = detail["score"]
-            metric_group_dev["bone_rotation"][group_name] = detail["normalized_excess"]
-            metric_group_scale["bone_rotation"][group_name] = detail["max_ref"]
-            metric_group_tolerance["bone_rotation"][group_name] = detail["max_ref"]
-            metric_group_penalty["bone_rotation"][group_name] = detail["penalty"]
-
         # Bone length: single overall score (no per-group breakdown)
         bone_length_score = bone_length_result["score"]
 
@@ -1000,8 +862,7 @@ class DistributionMotionQualityScorer:
             "jerk_norm": 0.328,
             "snap_norm": 0.228,
             "spectral_flatness": 0.228,
-            "bone_length": 0.168,
-            "bone_rotation": 0.06,
+            "bone_length": 0.228,
         }
         # Build component_scores in weight-descending order (Python 3.7+ preserves dict insertion order)
         component_scores = {}
@@ -1011,10 +872,6 @@ class DistributionMotionQualityScorer:
                 if metric_group_scores[metric_name] else 0.0
             )
         component_scores["bone_length"] = bone_length_score
-        component_scores["bone_rotation"] = (
-            float(np.mean(list(metric_group_scores["bone_rotation"].values())))
-            if metric_group_scores["bone_rotation"] else 0.0
-        )
         group_scores = {
             group_name: float(np.mean([
                 metric_group_scores[metric_name][group_name]

@@ -195,7 +195,7 @@ def _print_per_file_summary(
             # Single file: full detailed report
             print(f"  {name}")
             print(
-                f"    {'Naturalness':<32s} "
+                f"    {'Overall Score':<32s} "
                 f"{clr(report.overall_score, f'{report.overall_score:.4f}')}  "
                 f"{_bar(report.overall_score)}"
             )
@@ -225,7 +225,7 @@ def _print_per_file_summary(
         print(f"  AVERAGE ({len(results)} files)")
         print()
         print(
-            f"    {'Naturalness':<32s} "
+            f"    {'Overall Score':<32s} "
             f"{clr(avg_score, f'{avg_score:.4f}')}  "
             f"{_bar(avg_score)}"
         )

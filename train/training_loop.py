@@ -563,7 +563,6 @@ class TrainLoop:
         snap_scores = []
         sf_scores = []
         bl_scores = []
-        br_scores = []
         for (object_type, action_tags), motions in motion_groups.items():
             try:
                 report = self.scorer.evaluate(
@@ -579,7 +578,6 @@ class TrainLoop:
             snap_scores.append(report.snap_score)
             sf_scores.append(report.spectral_flatness_score)
             bl_scores.append(report.bone_length_score)
-            br_scores.append(report.bone_rotation_score)
             score_weights.append(len(motions))
 
         if not scores:
@@ -592,15 +590,13 @@ class TrainLoop:
         avg_snap = float(np.average(snap_scores, weights=w))
         avg_sf = float(np.average(sf_scores, weights=w))
         avg_bl = float(np.average(bl_scores, weights=w))
-        avg_br = float(np.average(br_scores, weights=w))
-        tqdm.write('val_step[{}]: Score[{:.4f}] Jerk[{:.4f}] Snap[{:.4f}] SF[{:.4f}] BL[{:.4f}] BR[{:.4f}]'.format(
-            completed_step, avg_score, avg_jerk, avg_snap, avg_sf, avg_bl, avg_br))
+        tqdm.write('val_step[{}]: Score[{:.4f}] Jerk[{:.4f}] Snap[{:.4f}] SF[{:.4f}] BL[{:.4f}]'.format(
+            completed_step, avg_score, avg_jerk, avg_snap, avg_sf, avg_bl))
         self.train_platform.report_scalar(name='Score', value=avg_score, iteration=completed_step, group_name='Val')
         self.train_platform.report_scalar(name='Jerk', value=avg_jerk, iteration=completed_step, group_name='Val')
         self.train_platform.report_scalar(name='Snap', value=avg_snap, iteration=completed_step, group_name='Val')
         self.train_platform.report_scalar(name='SpectralFlatness', value=avg_sf, iteration=completed_step, group_name='Val')
         self.train_platform.report_scalar(name='BoneLength', value=avg_bl, iteration=completed_step, group_name='Val')
-        self.train_platform.report_scalar(name='BoneRotation', value=avg_br, iteration=completed_step, group_name='Val')
 
 
 

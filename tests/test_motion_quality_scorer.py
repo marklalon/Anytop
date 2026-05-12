@@ -76,21 +76,6 @@ def test_bone_length_score_uses_surviving_clip_weights(monkeypatch: pytest.Monke
     assert result["max_abs_drift_pct"] == pytest.approx(30.0)
 
 
-def test_bone_rotation_excess_uses_filtered_reference_weights() -> None:
-    result = scorer_mod._score_bone_rotation_excess(
-        query_values=np.array([2.0], dtype=np.float64),
-        query_weights=np.array([1.0], dtype=np.float64),
-        reference_series_with_weights=[
-            (np.array([1.0], dtype=np.float64), 0.8),
-            (np.array([10.0], dtype=np.float64), 0.1),
-        ],
-    )
-
-    assert result["max_ref"] == pytest.approx(1.0)
-    assert result["score"] == pytest.approx(1.0 / 6.0)
-    assert result["normalized_excess"] == pytest.approx(1.0)
-
-
 def test_compute_features_batch_matches_single_for_same_shape() -> None:
     motions = [
         _make_random_motion(0, 12, 5),
@@ -160,26 +145,11 @@ def test_low_shot_bone_length_is_global_but_contributes_to_score(
     )
     monkeypatch.setattr(
         scorer_mod,
-        "_compute_bone_rotation_angle",
-        lambda motion, _parents: np.zeros((motion.shape[0], 1), dtype=np.float64),
-    )
-    monkeypatch.setattr(
-        scorer_mod,
         "_score_query_against_reference",
         lambda *_args, **_kwargs: {
             "reference_median": 0.0,
             "scale": 1.0,
             "normalized_deviation": 0.0,
-            "score": 0.0,
-        },
-    )
-    monkeypatch.setattr(
-        scorer_mod,
-        "_score_bone_rotation_excess",
-        lambda *_args, **_kwargs: {
-            "max_ref": 0.0,
-            "normalized_excess": 0.0,
-            "penalty": 1.0,
             "score": 0.0,
         },
     )
@@ -224,6 +194,6 @@ def test_low_shot_bone_length_is_global_but_contributes_to_score(
     )
 
     assert result["component_scores"]["bone_length"] == pytest.approx(0.5)
-    assert result["score"] == pytest.approx(0.168 * 0.5)
+    assert result["score"] == pytest.approx(0.228 * 0.5)
     assert result["raw"]["joint_group_scores"]["root"] == pytest.approx(0.0)
     assert result["raw"]["joint_group_scores"]["limbs"] == pytest.approx(0.0)
