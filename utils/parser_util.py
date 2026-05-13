@@ -207,14 +207,18 @@ def add_generate_options(parser):
     group.add_argument("--motion_length", default=2.0, type=float,
                        help="The length of the sampled motion [in seconds]. "
                             "Maximum is 9.8 for HumanML3D (text-to-motion), and 2.0 for HumanAct12 (action-to-motion)")
-    group.add_argument("--object_type", default=['Flamingo'], type=str, nargs='+',
-                       help="An object type to be generated. If empty, will generate flamingo :).")
+    group.add_argument("--object_type", default='Flamingo', type=str,
+                       help="A single object type to be generated. Default: Flamingo.")
     group.add_argument("--sampling_method", default="ddim", choices=["p", "ddpm", "ddim", "plms"],
                        help="Diffusion sampler to use. 'p'/'ddpm' = DDPM (slow, high quality). 'ddim' = DDIM (fast, recommended). 'plms' = PLMS (medium speed). Default: ddim.")
     group.add_argument("--sampling_steps", default=100, type=int,
                        help="Number of respaced diffusion steps. 0 = use checkpoint's full diffusion_steps. Default: 100.")
     group.add_argument("--ddim_eta", default=0.0, type=float,
                        help="DDIM eta parameter. 0.0 = deterministic. Default: 0.0.")
+    group.add_argument("--reference_motion", default=None, type=str,
+                       help="Path to a reference motion .npy file. When provided, the reference motion is noised to an intermediate timestep and denoising starts from there (img2img-style). The reference must match the target object_type skeleton. Omit for pure random generation.")
+    group.add_argument("--skip_timesteps", default=80, type=int,
+                       help="Number of timesteps to skip when using --reference_motion. Higher = more faithful to reference. Range: 0~sampling_steps. Default: 80.")
 
 def add_dift_options(parser):
     # bvhs_dir, sample_bvh, face_joints, save_dir=None, tpos_bvh=None

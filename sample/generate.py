@@ -12,10 +12,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import torch
-import torch.nn as nn
 from tqdm import tqdm
 
-from data_loaders.get_data import get_dataset, get_dataset_loader
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import (
     create_temporal_mask_for_window,
@@ -25,7 +23,6 @@ from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_process import (
     recover_bvh_export_animation_from_motion_np,
 )
-from diffusion.resample import create_named_schedule_sampler
 from motion_lib import BVH
 from os.path import join as pjoin
 from utils import dist_util
@@ -36,11 +33,7 @@ from utils.model_util import (
     resolve_t5_out_dim,
 )
 from utils.parser_util import generate_args
-from eval.motion_quality import DistributionMotionQualityScorer
-
-
-def _move_batch_to_device(batch, device):
-    return batch.to(device, non_blocking=True)
+from utils.misc import infer_object_type_from_filename
 
 
 def _export_motion(task):
@@ -64,7 +57,7 @@ def _export_motion(task):
     return npy_name
 
 
-def _sample_object_type_batch(
+def _sample_batch(
     diffusion,
     model,
     model_kwargs,
@@ -73,10 +66,25 @@ def _sample_object_type_batch(
     ddim_eta,
     seed,
     device,
+    reference_motion=None,
+    skip_timesteps=0,
 ):
     fixseed(seed)
-    init_image = None
-    noise = torch.randn(sample_shape, device=device)
+
+    # If reference motion is provided, use it as init_image with skip_timesteps.
+    # skip_timesteps: how many of the noisiest timesteps to skip.
+    # Higher = start from less noisy state = more faithful to reference.
+    # e.g., skip_timesteps=80 with 100 total steps means:
+    #   - reference is noised to t=19 (light noise)
+    #   - only 20 denoising steps performed
+    if reference_motion is not None and skip_timesteps > 0:
+        init_image = reference_motion.to(device, non_blocking=True)
+        noise = torch.randn(sample_shape, device=device)
+    else:
+        init_image = None
+        noise = torch.randn(sample_shape, device=device)
+        skip_timesteps = 0  # No reference => full denoising from pure noise
+
     common_kwargs = dict(
         model=model,
         shape=sample_shape,
@@ -85,6 +93,7 @@ def _sample_object_type_batch(
         model_kwargs=model_kwargs,
         device=device,
         init_image=init_image,
+        skip_timesteps=skip_timesteps,
     )
 
     if sampling_method == 'ddim':
@@ -101,7 +110,7 @@ def _sample_object_type_batch(
     if sampling_method in ('p', 'ddpm'):
         return diffusion.p_sample_loop(
             progress=True,
-            skip_timesteps=0,
+            skip_timesteps=skip_timesteps,
             dump_steps=None,
             const_noise=False,
             **common_kwargs,
@@ -132,7 +141,7 @@ def main(args=None, cond_dict=None):
     n_frames = int(args.motion_length * fps)
     max_joints = opt.max_joints
     dist_util.setup_dist(args.device)
-    object_types = args.object_type
+    object_type = args.object_type
     if out_path == '':
         out_path = os.path.join(
             os.path.dirname(args.model_path),
@@ -172,126 +181,159 @@ def main(args=None, cond_dict=None):
     )
     model.to(dist_util.dev())
     model.eval()
-    action_tags = getattr(args, 'action_tags', None) or None
 
     ddim_eta = float(getattr(args, 'ddim_eta', 0.0))
+    reference_motion_path = getattr(args, 'reference_motion', None)
+    skip_timesteps = int(getattr(args, 'skip_timesteps', 80))
 
-    # Create thread pool ONCE to minimize overhead across all object_types.
+    # If reference motion is provided, infer object_type from filename
+    if reference_motion_path:
+        inferred_type = infer_object_type_from_filename(
+            reference_motion_path, valid_types=cond_dict.keys()
+        )
+
+        if inferred_type is None:
+            available = ', '.join(sorted(cond_dict.keys()))
+            print(f"ERROR: Cannot infer object_type from reference motion filename: {reference_motion_path}")
+            print(f"Available object types: {available}")
+            print("Please rename the file to follow the naming convention (e.g., 'ObjectType___action_id.npy') "
+                  "or specify --object_type explicitly.")
+            sys.exit(1)
+
+        # Validate against explicitly specified object_type
+        if object_type != inferred_type:
+            print(f"ERROR: Reference motion infers object_type '{inferred_type}' "
+                  f"but --object_type specifies '{object_type}'.")
+            print("Cross-species reference is not supported. "
+                  "Use a reference motion matching the target skeleton.")
+            sys.exit(1)
+
+        print(f"Reference motion inferred object_type: {inferred_type}")
+
+    # Create thread pool for export.
     # Threads still benefit from GIL release inside np.save / np.savetxt (C code),
     # and recover_animation_from_motion_np uses numpy ops that often release the GIL.
     num_workers = 8
     export_pool = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
     try:
-        # Generate samples per object_type sequentially, with one batch per object_type.
-        for object_idx, object_type in enumerate(object_types):
-            print(f'\n### Sampling object_type: {object_type}')
-            print(f'    method={sampling_method} steps={sampling_steps or "full"} batch_size={args.batch_size}')
+        print(f'\n### Sampling object_type: {object_type}')
+        print(f'    method={sampling_method} steps={sampling_steps or "full"} batch_size={args.batch_size}')
 
-            # Create condition for batch_size samples of the same object_type
-            obj_batch = [object_type] * args.batch_size
-            _, model_kwargs = create_condition(
-                obj_batch,
-                cond_dict,
-                n_frames,
-                args.temporal_window,
-                max_joints=opt.max_joints,
-                feature_len=opt.feature_len
-            )
-            sample = _sample_object_type_batch(
-                diffusion=diffusion,
-                model=model,
-                model_kwargs=model_kwargs,
-                sampling_method=sampling_method,
-                sample_shape=(args.batch_size, max_joints, model.feature_len, n_frames),
-                ddim_eta=ddim_eta,
-                seed=args.seed + object_idx,
-                device=dist_util.dev(),
-            )
+        # Prepare reference motion (normalize + reshape)
+        ref_motion = None
+        effective_n_frames = n_frames  # May be overridden by reference motion
 
-            # Pre-compute filenames with a single directory scan
-            existing_npy_files = [
-                f for f in os.listdir(out_path)
-                if f.startswith(object_type) and f.endswith('.npy')
-            ]
-            base_index = len(existing_npy_files)
+        if reference_motion_path:
+            ref_raw = np.load(reference_motion_path).astype(np.float32)
+            # ref_raw shape: [frames, joints, features]
+            ref_frames = ref_raw.shape[0]
+            ref_joints = ref_raw.shape[1]
 
-            # Collect export tasks (in-process, no pickling needed)
-            joint_names = cond_dict[object_type].get(
-                'canonical_bvh_joint_names',
-                cond_dict[object_type]['joints_names'],
-            )
-            export_tasks = []
-            for sample_idx, motion in enumerate(sample):
-                n_joints = model_kwargs['y']['n_joints'][sample_idx].item()
-                motion = motion[:n_joints]
-                parents = model_kwargs['y']['parents'][sample_idx]
-                mean = cond_dict[object_type]['mean'][None, :]
-                std = cond_dict[object_type]['std'][None, :]
-                motion_np = motion.cpu().permute(2, 0, 1).numpy() * std + mean
-                offsets = cond_dict[object_type]['offsets']
+            # Use reference motion's frame count (truncated to model's max frames)
+            effective_n_frames = min(ref_frames, n_frames)
+            if effective_n_frames != n_frames:
+                print(f'  Reference motion overrides frame count: {n_frames} -> {effective_n_frames}')
 
-                npy_name = f'{object_type}_#{base_index + sample_idx}.npy'
-                export_tasks.append((
-                    motion_np,
-                    parents,  # already np.ndarray, shared in-process
-                    offsets,
-                    npy_name,
-                    joint_names,
-                    out_path,
-                    fps,
-                ))
+            # Truncate reference if longer than max output
+            if ref_frames > effective_n_frames:
+                ref_raw = ref_raw[:effective_n_frames]
 
-            # Parallel export using ThreadPoolExecutor.
-            # np.save / np.savetxt release the GIL (C-level I/O), so threads
-            # can overlap I/O with each other and with the host sampler loop.
-            results = list(
-                tqdm(export_pool.map(_export_motion, export_tasks),
-                      total=len(export_tasks),
-                      desc=f'{object_type} export')
-            )
-            for npy_name in results:
-                print(f'    Created motion: {npy_name}')
+            # Normalize using the same object_type's stats (same-skeleton only)
+            obj_mean = cond_dict[object_type]['mean']
+            obj_std = np.asarray(cond_dict[object_type]['std'], dtype=np.float32) + 1e-6
+
+            # Normalize using same stats as training data
+            ref_norm = np.nan_to_num((ref_raw - obj_mean[None, :]) / obj_std[None, :], copy=True).astype(np.float32)
+
+            # Pad joints to max_joints if needed
+            if ref_joints < max_joints:
+                pad = np.zeros((effective_n_frames, max_joints - ref_joints, ref_norm.shape[2]), dtype=np.float32)
+                ref_norm = np.concatenate([ref_norm, pad], axis=1)
+
+            # Convert to model input shape: [batch, joints, features, frames]
+            ref_tensor = torch.from_numpy(ref_norm).permute(1, 2, 0)  # [joints, features, frames]
+            # Ensure feature dim matches model expectation
+            ref_feat = ref_tensor.shape[1]
+            target_feat = model.feature_len
+            if ref_feat < target_feat:
+                pad = torch.zeros((max_joints, target_feat - ref_feat, effective_n_frames), dtype=torch.float32)
+                ref_tensor = torch.cat([ref_tensor, pad], dim=1)
+            elif ref_feat > target_feat:
+                ref_tensor = ref_tensor[:, :target_feat, :]
+            ref_tensor = ref_tensor.unsqueeze(0).expand(args.batch_size, -1, -1, -1)
+            ref_motion = ref_tensor
+            print(f'  Reference motion loaded: {reference_motion_path}')
+            print(f'    Original: [{ref_frames} frames, {ref_joints} joints] -> Target: [{effective_n_frames} frames, {max_joints} joints]')
+            print(f'    skip_timesteps: {skip_timesteps} (higher = more faithful to reference)')
+
+        # Create condition with effective frame count
+        obj_batch = [object_type] * args.batch_size
+        _, model_kwargs = create_condition(
+            obj_batch,
+            cond_dict,
+            effective_n_frames,
+            args.temporal_window,
+            max_joints=opt.max_joints,
+            feature_len=opt.feature_len
+        )
+        sample = _sample_batch(
+            diffusion=diffusion,
+            model=model,
+            model_kwargs=model_kwargs,
+            sampling_method=sampling_method,
+            sample_shape=(args.batch_size, max_joints, model.feature_len, effective_n_frames),
+            ddim_eta=ddim_eta,
+            seed=args.seed,
+            device=dist_util.dev(),
+            reference_motion=ref_motion,
+            skip_timesteps=skip_timesteps,
+        )
+
+        # Pre-compute filenames with a single directory scan
+        existing_npy_files = [
+            f for f in os.listdir(out_path)
+            if f.startswith(object_type) and f.endswith('.npy')
+        ]
+        base_index = len(existing_npy_files)
+
+        # Collect export tasks (in-process, no pickling needed)
+        joint_names = cond_dict[object_type].get(
+            'canonical_bvh_joint_names',
+            cond_dict[object_type]['joints_names'],
+        )
+        export_tasks = []
+        for sample_idx, motion in enumerate(sample):
+            n_joints = model_kwargs['y']['n_joints'][sample_idx].item()
+            motion = motion[:n_joints]
+            parents = model_kwargs['y']['parents'][sample_idx]
+            mean = cond_dict[object_type]['mean'][None, :]
+            std = cond_dict[object_type]['std'][None, :]
+            motion_np = motion.cpu().permute(2, 0, 1).numpy() * std + mean
+            offsets = cond_dict[object_type]['offsets']
+
+            npy_name = f'{object_type}_#{base_index + sample_idx}.npy'
+            export_tasks.append((
+                motion_np,
+                parents,  # already np.ndarray, shared in-process
+                offsets,
+                npy_name,
+                joint_names,
+                out_path,
+                fps,
+            ))
+
+        # Parallel export using ThreadPoolExecutor.
+        # np.save / np.savetxt release the GIL (C-level I/O), so threads
+        # can overlap I/O with each other and with the host sampler loop.
+        results = list(
+            tqdm(export_pool.map(_export_motion, export_tasks),
+                  total=len(export_tasks),
+                  desc=f'{object_type} export')
+        )
+        for npy_name in results:
+            print(f'    Created motion: {npy_name}')
     finally:
         export_pool.shutdown(wait=True)
-
-    # Evaluate generated motions using DistributionMotionQualityScorer
-    if action_tags:
-        print('\n### Evaluating motion quality with DistributionMotionQualityScorer...')
-        try:
-            scorer = DistributionMotionQualityScorer(fps=fps)
-
-            # Group generated motions by object_type
-            for object_type in object_types:
-                # Find all .npy files for this object type
-                npy_files = [
-                    f for f in os.listdir(out_path)
-                    if f.startswith(f'{object_type}_#') and f.endswith('.npy')
-                ]
-
-                if not npy_files:
-                    print(f'  {object_type}: no generated motions found')
-                    continue
-
-                # Load motions
-                motions = []
-                for npy_file in npy_files:
-                    motion = np.load(pjoin(out_path, npy_file))
-                    motions.append(motion)
-
-                # Evaluate
-                try:
-                    report = scorer.evaluate(
-                        motions=motions,
-                        object_type=object_type,
-                        action_tags=action_tags,
-                    )
-                    print(f'  {object_type}: {report.overall_score:.3f}')
-                except Exception as e:
-                    print(f'  {object_type}: evaluation failed - {e}')
-        except Exception as e:
-            print(f'  Quality evaluation skipped: {e}')
-    else:
-        print('\n### Skipping motion quality evaluation: no action_tags were provided.')
 
     return out_path
 

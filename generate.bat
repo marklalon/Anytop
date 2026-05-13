@@ -1,11 +1,10 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=quadropeds_locomotion_v3
-REM 多个类型用空格分隔（直接传给 --object_type nargs='+'）。支持指定训练时模型没见过的Object Type来实现0样本泛化推理
-set OBJECT_TYPE=Buffalo
-set BATCH_SIZE=16
-set ACTION_TAGS=locomotion
+set RUN_NAME=quadropeds_locomotion_v4
+REM 仅支持单个类型。支持指定训练时模型没见过的Object Type来实现0样本泛化推理
+REM set OBJECT_TYPE=Horse
+set BATCH_SIZE=8
 
 rem set MODEL_FILE=model000002000.pt
 
@@ -40,17 +39,13 @@ if exist %OUTPUT_DIR% (
 )
 mkdir %OUTPUT_DIR% 2>nul
 
-echo Object types: %OBJECT_TYPE%
 echo Output dir: %OUTPUT_DIR%
 if not "%*"=="" echo Extra args: %*
 
-REM 一次调用 generate.py；脚本会按 object_type 逐个生成，每个 object_type 内一次性生成 BATCH_SIZE 个样本
 %PYTHON_EXE% sample/generate.py ^
     --model_path "%MODEL_PATH%" ^
     --output_dir %OUTPUT_DIR% ^
-    --object_type %OBJECT_TYPE% ^
     --batch_size %BATCH_SIZE% ^
-    --action_tags %ACTION_TAGS% ^
     --motion_length 2.0 ^
     --sampling_method ddim ^
     --sampling_steps 100 %*
