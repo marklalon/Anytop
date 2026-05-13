@@ -207,8 +207,11 @@ def add_generate_options(parser):
     group.add_argument("--motion_length", default=2.0, type=float,
                        help="The length of the sampled motion [in seconds]. "
                             "Maximum is 9.8 for HumanML3D (text-to-motion), and 2.0 for HumanAct12 (action-to-motion)")
-    group.add_argument("--object_type", default='Flamingo', type=str,
-                       help="A single object type to be generated. Default: Flamingo.")
+    group.add_argument("--object_type", default=None, type=str,
+                       help="Target object type. Optional if --reference_motion is provided "
+                            "(inferred from filename). Required for pure-random generation. "
+                            "When both flags are provided and the inferred type differs from "
+                            "this value, the reference motion is auto-retargeted to this skeleton.")
     group.add_argument("--sampling_method", default="ddim", choices=["p", "ddpm", "ddim", "plms"],
                        help="Diffusion sampler to use. 'p'/'ddpm' = DDPM (slow, high quality). 'ddim' = DDIM (fast, recommended). 'plms' = PLMS (medium speed). Default: ddim.")
     group.add_argument("--sampling_steps", default=100, type=int,
@@ -216,7 +219,12 @@ def add_generate_options(parser):
     group.add_argument("--ddim_eta", default=0.0, type=float,
                        help="DDIM eta parameter. 0.0 = deterministic. Default: 0.0.")
     group.add_argument("--reference_motion", default=None, type=str,
-                       help="Path to a reference motion .npy file. When provided, the reference motion is noised to an intermediate timestep and denoising starts from there (img2img-style). The reference must match the target object_type skeleton. Omit for pure random generation.")
+                       help="Path to a reference motion .npy file. When provided, the reference motion is noised "
+                            "to an intermediate timestep and denoising starts from there (img2img-style). "
+                            "If --object_type is not given, it is inferred from the reference filename. "
+                            "If --object_type is given and differs from the reference's inferred type, the "
+                            "reference is auto-retargeted to the requested skeleton before noising. "
+                            "Omit for pure random generation.")
     group.add_argument("--skip_timesteps", default=80, type=int,
                        help="Number of timesteps to skip when using --reference_motion. Higher = more faithful to reference. Range: 0~sampling_steps. Default: 80.")
 

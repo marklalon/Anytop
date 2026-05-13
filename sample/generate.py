@@ -7,8 +7,14 @@ import concurrent.futures
 import os
 import sys
 
-# Ensure parent directory is in path for local imports when running as a script.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Ensure both the Anytop dir (for bare ``utils.*`` / ``data_loaders.*`` imports)
+# and its parent (for ``Anytop.utils.*`` imports made by submodules like
+# ``utils/retarget.py``) are on sys.path when running as a script. Insert
+# repo-root first then Anytop second so Anytop's ``utils/`` wins over the
+# unrelated ``<repo_root>/utils/`` directory for bare imports.
+_ANYTOP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(_ANYTOP_ROOT))
+sys.path.insert(0, _ANYTOP_ROOT)
 
 import numpy as np
 import torch
@@ -34,6 +40,190 @@ from utils.model_util import (
 )
 from utils.parser_util import generate_args
 from utils.misc import infer_object_type_from_filename
+
+
+def _retarget_reference_motion(
+    ref_motion_path,
+    source_type,
+    target_type,
+    cond_dict,
+    opt,
+    output_dir,
+    fps,
+):
+    """Retarget a reference motion .npy from ``source_type`` to ``target_type``.
+
+    Reuses the world-space alignment math in ``Anytop.utils.retarget`` (shared
+    with ``AnimationExporter.export_glb``) and re-encodes the result back into
+    the target skeleton's motion-feature .npy format via ``get_motion``. The
+    retargeted file (and a sibling .bvh for inspection) is written under
+    ``output_dir`` and the .npy path is returned.
+    """
+    from Anytop.utils.retarget import retarget_world_space_np
+    from Anytop.utils.exporter import animation_to_exporter_inputs
+    from Anytop.utils.roundtrip_common import _build_skeleton
+    from Anytop.utils.rotation_numpy import (
+        quat_conjugate_wxyz_np,
+        quat_multiply_wxyz_np,
+        quat_rotate_wxyz_np,
+    )
+    from data_loaders.truebones.truebones_utils.features import (
+        get_common_features_from_T_pose,
+        get_motion,
+        recover_animation_from_motion_np,
+    )
+    from data_loaders.truebones.truebones_utils.param_utils import FOOT_CONTACT_VEL_THRESH
+    from motion_lib.Animation import Animation
+    from motion_lib.Quaternions import Quaternions
+
+    src_cond = cond_dict[source_type]
+    tgt_cond = cond_dict[target_type]
+
+    src_tpose_fbx = src_cond.get('orientation_reference_fbx_path')
+    tgt_tpose_fbx = tgt_cond.get('orientation_reference_fbx_path')
+    for label, path in (('source', src_tpose_fbx), ('target', tgt_tpose_fbx)):
+        if not path or not os.path.isfile(path):
+            raise FileNotFoundError(
+                f"Cross-species retarget requires {label} T-pose FBX "
+                f"(cond_dict['{source_type if label == 'source' else target_type}']"
+                f"['orientation_reference_fbx_path']), not found: {path!r}"
+            )
+
+    print(f"\n### Cross-species retarget: {source_type} → {target_type}")
+
+    # ── 1. Decode source npy → source Animation ────────────────────────────
+    ref_raw = np.load(ref_motion_path).astype(np.float32)
+    print(f"  Source motion shape: {ref_raw.shape}")
+    src_anim, _has_pos = recover_animation_from_motion_np(
+        ref_raw,
+        np.asarray(src_cond['parents'], dtype=np.int32),
+        np.asarray(src_cond['offsets'], dtype=np.float32),
+        translation_root_index=None,
+        allow_infer=True,
+    )
+
+    # ── 2. Load source / target T-pose metadata ────────────────────────────
+    src_tp = get_common_features_from_T_pose(
+        src_tpose_fbx, source_type,
+        augment_leaf_rotation_helpers=True,
+        max_joints=opt.max_joints,
+    )
+    tgt_tp = get_common_features_from_T_pose(
+        tgt_tpose_fbx, target_type,
+        augment_leaf_rotation_helpers=True,
+        max_joints=opt.max_joints,
+    )
+
+    src_skeleton = _build_skeleton(
+        src_tp.names,
+        np.asarray(src_tp.offsets, dtype=np.float32),
+        np.asarray(src_tp.tpos_anim.parents, dtype=np.int32),
+        rest_rotations=np.asarray(src_tp.tpos_rots[0], dtype=np.float32),
+    )
+
+    # ── 3. Source Animation → exporter inputs ──────────────────────────────
+    src_jr, src_rt, src_rr, src_bt = animation_to_exporter_inputs(src_anim, src_skeleton)
+
+    # ── 4. World-space retarget ───────────────────────────────────────────
+    retarget_result = retarget_world_space_np(
+        src_bone_names=list(src_tp.names),
+        src_parents=np.asarray(src_tp.tpos_anim.parents, dtype=np.int32),
+        src_rest_offsets=np.asarray(src_tp.offsets, dtype=np.float64),
+        src_rest_rotations=np.asarray(src_tp.tpos_rots[0], dtype=np.float64),
+        tgt_bone_names=list(tgt_tp.names),
+        tgt_parents=np.asarray(tgt_tp.tpos_anim.parents, dtype=np.int32),
+        tgt_rest_offsets=np.asarray(tgt_tp.offsets, dtype=np.float64),
+        tgt_rest_rotations=np.asarray(tgt_tp.tpos_rots[0], dtype=np.float64),
+        src_joint_rotations=src_jr.numpy().astype(np.float64),
+        src_root_translation=src_rt.numpy().astype(np.float64),
+        src_root_rotation=src_rr.numpy().astype(np.float64),
+        src_bone_translations=src_bt.numpy().astype(np.float64) if src_bt is not None else None,
+        coordinate_search=False,
+        verbose=True,
+    )
+
+    # ── 5. Build target Animation from world-space pose ────────────────────
+    world_pos = retarget_result['target_world_positions']        # (F, J_tgt, 3)
+    world_rot = retarget_result['target_world_rotations']        # (F, J_tgt, 4)
+    tgt_parents_np = np.asarray(tgt_tp.tpos_anim.parents, dtype=np.int32)
+    F, J_tgt = world_pos.shape[:2]
+
+    local_rot = np.zeros_like(world_rot)
+    local_pos = np.zeros_like(world_pos)
+    for j in range(J_tgt):
+        p = int(tgt_parents_np[j])
+        if p < 0:
+            local_rot[:, j] = world_rot[:, j]
+            local_pos[:, j] = world_pos[:, j]
+        else:
+            local_rot[:, j] = quat_multiply_wxyz_np(
+                quat_conjugate_wxyz_np(world_rot[:, p]),
+                world_rot[:, j],
+            )
+            local_pos[:, j] = quat_rotate_wxyz_np(
+                quat_conjugate_wxyz_np(world_rot[:, p]),
+                world_pos[:, j] - world_pos[:, p],
+            )
+
+    tgt_orients = np.zeros((J_tgt, 4), dtype=np.float64)
+    tgt_orients[:, 0] = 1.0
+    tgt_anim = Animation(
+        Quaternions(local_rot.astype(np.float64)),
+        local_pos.astype(np.float64),
+        Quaternions(tgt_orients),
+        np.asarray(tgt_tp.offsets, dtype=np.float64),
+        tgt_parents_np,
+    )
+
+    # ── 6. Re-encode target Animation → motion features ────────────────────
+    squared_positions_error = {}
+    target_features, target_parents, _max_j, target_motion_anim, target_export_anim, _is_loop, _trans_root_idx, _root_xz = get_motion(
+        tgt_anim,
+        FOOT_CONTACT_VEL_THRESH,
+        target_type,
+        opt.max_joints,
+        np.asarray(tgt_tp.offsets, dtype=np.float64),
+        tgt_tp.foot_indices,
+        tgt_tp.tpos_rots,
+        squared_positions_error,
+        scale_factor=float(tgt_tp.scale_factor),
+        orientation_quat=tgt_tp.orientation_quat,
+        helper_metadata=tgt_tp.helper_metadata,
+    )
+
+    if target_features is None:
+        raise RuntimeError(
+            f"get_motion() returned no features when re-encoding retargeted motion "
+            f"({source_type} → {target_type}). Squared position errors: {squared_positions_error}"
+        )
+    target_features = np.asarray(target_features, dtype=np.float32)
+
+    # ── 7. Save artifacts ──────────────────────────────────────────────────
+    base = os.path.splitext(os.path.basename(ref_motion_path))[0]
+    out_npy = os.path.join(output_dir, f"_retargeted_{source_type}_to_{target_type}__{base}.npy")
+    np.save(out_npy, target_features)
+    print(f"  Retargeted features {target_features.shape} → {out_npy}")
+
+    # Inspection-friendly BVH sibling
+    try:
+        out_bvh = out_npy.replace('.npy', '.bvh')
+        out_anim, joint_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
+            target_features,
+            np.asarray(tgt_cond['parents'], dtype=np.int32),
+            np.asarray(tgt_cond['offsets'], dtype=np.float32),
+            list(tgt_cond.get('canonical_bvh_joint_names', tgt_cond['joints_names'])),
+            allow_infer=True,
+        )
+        if out_anim is not None:
+            BVH.save(
+                out_bvh, out_anim, joint_names,
+                frametime=1.0 / fps, positions=has_animated_pos,
+            )
+            print(f"  Retargeted BVH (for inspection) → {out_bvh}")
+    except Exception as e:
+        print(f"  [WARN] Failed to write inspection BVH: {e}")
+
+    return out_npy
 
 
 def _export_motion(task):
@@ -186,29 +376,62 @@ def main(args=None, cond_dict=None):
     reference_motion_path = getattr(args, 'reference_motion', None)
     skip_timesteps = int(getattr(args, 'skip_timesteps', 80))
 
-    # If reference motion is provided, infer object_type from filename
+    # ── Resolve --object_type / --reference_motion combinations ─────────────
+    # 1) reference only      → infer object_type from filename
+    # 2) object_type only    → pure-random generation
+    # 3) neither             → error
+    # 4) both, types match   → existing same-skeleton reference path
+    # 4.2) both, mismatched  → retarget reference into target skeleton first
+    explicit_object_type = args.object_type
+    inferred_type = None
     if reference_motion_path:
         inferred_type = infer_object_type_from_filename(
             reference_motion_path, valid_types=cond_dict.keys()
         )
 
-        if inferred_type is None:
-            available = ', '.join(sorted(cond_dict.keys()))
-            print(f"ERROR: Cannot infer object_type from reference motion filename: {reference_motion_path}")
-            print(f"Available object types: {available}")
-            print("Please rename the file to follow the naming convention (e.g., 'ObjectType___action_id.npy') "
-                  "or specify --object_type explicitly.")
-            sys.exit(1)
+    if not reference_motion_path and not explicit_object_type:
+        sys.exit(
+            "ERROR: must supply at least one of --reference_motion or --object_type. "
+            "Pass --object_type for pure-random generation, --reference_motion for "
+            "reference-guided generation (object_type auto-inferred from filename), "
+            "or both to retarget the reference into a different target skeleton."
+        )
 
-        # Validate against explicitly specified object_type
-        if object_type != inferred_type:
-            print(f"ERROR: Reference motion infers object_type '{inferred_type}' "
-                  f"but --object_type specifies '{object_type}'.")
-            print("Cross-species reference is not supported. "
-                  "Use a reference motion matching the target skeleton.")
-            sys.exit(1)
+    if reference_motion_path and inferred_type is None:
+        available = ', '.join(sorted(cond_dict.keys()))
+        sys.exit(
+            f"ERROR: Cannot infer object_type from reference motion filename: "
+            f"{reference_motion_path}\nAvailable object types: {available}\n"
+            "Rename the file to follow the naming convention "
+            "(e.g., 'ObjectType___action_id.npy') or pass --object_type explicitly."
+        )
 
-        print(f"Reference motion inferred object_type: {inferred_type}")
+    needs_retarget = False
+    source_type = None
+    if explicit_object_type and inferred_type and explicit_object_type != inferred_type:
+        # case 4.2: cross-species — retarget the reference into target skeleton.
+        target_type = explicit_object_type
+        source_type = inferred_type
+        needs_retarget = True
+    elif explicit_object_type:
+        target_type = explicit_object_type
+    else:
+        target_type = inferred_type
+
+    if target_type not in cond_dict:
+        available = ', '.join(sorted(cond_dict.keys()))
+        sys.exit(
+            f"ERROR: target object_type '{target_type}' not in cond file. "
+            f"Available: {available}"
+        )
+
+    object_type = target_type  # downstream code keeps reading `object_type`
+    if reference_motion_path:
+        if needs_retarget:
+            print(f"Reference motion inferred object_type: {inferred_type} "
+                  f"(will retarget to {target_type})")
+        else:
+            print(f"Reference motion inferred object_type: {inferred_type}")
 
     # Create thread pool for export.
     # Threads still benefit from GIL release inside np.save / np.savetxt (C code),
@@ -223,8 +446,20 @@ def main(args=None, cond_dict=None):
         ref_motion = None
         effective_n_frames = n_frames  # May be overridden by reference motion
 
-        if reference_motion_path:
-            ref_raw = np.load(reference_motion_path).astype(np.float32)
+        effective_reference_path = reference_motion_path
+        if needs_retarget:
+            effective_reference_path = _retarget_reference_motion(
+                reference_motion_path,
+                source_type=source_type,
+                target_type=target_type,
+                cond_dict=cond_dict,
+                opt=opt,
+                output_dir=out_path,
+                fps=fps,
+            )
+
+        if effective_reference_path:
+            ref_raw = np.load(effective_reference_path).astype(np.float32)
             # ref_raw shape: [frames, joints, features]
             ref_frames = ref_raw.shape[0]
             ref_joints = ref_raw.shape[1]
@@ -262,7 +497,9 @@ def main(args=None, cond_dict=None):
                 ref_tensor = ref_tensor[:, :target_feat, :]
             ref_tensor = ref_tensor.unsqueeze(0).expand(args.batch_size, -1, -1, -1)
             ref_motion = ref_tensor
-            print(f'  Reference motion loaded: {reference_motion_path}')
+            print(f'  Reference motion loaded: {effective_reference_path}')
+            if effective_reference_path != reference_motion_path:
+                print(f'    (retargeted from original: {reference_motion_path})')
             print(f'    Original: [{ref_frames} frames, {ref_joints} joints] -> Target: [{effective_n_frames} frames, {max_joints} joints]')
             print(f'    skip_timesteps: {skip_timesteps} (higher = more faithful to reference)')
 

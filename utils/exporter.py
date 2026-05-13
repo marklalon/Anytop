@@ -18,186 +18,33 @@ from torch import Tensor
 
 from Anytop.motion_lib.FBX import _extract_armature_skeleton_data, import_fbx, remove_lights_and_cameras
 from Anytop.utils.rotation_numpy import (
-    apply_rotation_to_quaternions_wxyz_np,
     quat_conjugate_wxyz_np,
     quat_multiply_wxyz_np,
     quat_rotate_wxyz_np,
 )
+from Anytop.utils.retarget import (
+    _batch_forward_kinematics_np,
+    _batch_internal_pose_fk_np,
+    _batch_pose_fk_np,
+    _canonical_bone_name,
+    _generate_coordinate_candidates_np,
+    retarget_world_space_np,
+)
 
 
-# ---------------------------------------------------------------------------
-# Retargeting helpers (numpy-based, for world-space alignment & FBX-local
-# conversion in the mesh_path GLB export path)
-# ---------------------------------------------------------------------------
-
-def _canonical_bone_name(name: str) -> str:
-    """Normalize bone name for cross-format matching."""
-    return name.replace(" ", "_").lower()
-
-
-def _generate_coordinate_candidates_np():
-    """Generate candidate 3x3 rotation/flip matrices for auto-detection."""
-    I = np.eye(3, dtype=np.float64)
-
-    def R_x(deg):
-        c, s = np.cos(np.deg2rad(deg)), np.sin(np.deg2rad(deg))
-        return np.array([[1, 0, 0], [0, c, -s], [0, s, c]], dtype=np.float64)
-
-    def R_y(deg):
-        c, s = np.cos(np.deg2rad(deg)), np.sin(np.deg2rad(deg))
-        return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]], dtype=np.float64)
-
-    def R_z(deg):
-        c, s = np.cos(np.deg2rad(deg)), np.sin(np.deg2rad(deg))
-        return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float64)
-
-    return [
-        ("identity", I),
-        ("R_x(+90°)", R_x(90)),
-        ("R_x(-90°)", R_x(-90)),
-        ("R_y(+90°)", R_y(90)),
-        ("R_y(-90°)", R_y(-90)),
-        ("R_z(+90°)", R_z(90)),
-        ("R_z(-90°)", R_z(-90)),
-        ("R_x(+180°)", R_x(180)),
-        ("R_z(+180°)", R_z(180)),
-        ("flip_X", np.diag([-1, 1, 1])),
-        ("flip_Y", np.diag([1, -1, 1])),
-        ("flip_Z", np.diag([1, 1, -1])),
-    ]
-
-
-def _batch_forward_kinematics_np(
-    local_rotations: np.ndarray,
-    local_positions: np.ndarray,
-    parents: np.ndarray,
-    rest_rotations: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Compute world-space positions & rotations from local data.
-
-    Args:
-        local_rotations: (F, J, 4)  animated local quaternions
-        local_positions: (F, J, 3)  local (parent-relative) translations
-        parents:         (J,) int32 parent indices (-1 = root)
-        rest_rotations:  (J, 4) or None — total local rot = rest_rot ⊗ local_rot
-
-    Returns:
-        world_positions: (F, J, 3)
-        world_rotations: (F, J, 4)
-    """
-    F, J = local_rotations.shape[:2]
-
-    # Compose total local rotation
-    if rest_rotations is not None:
-        total_local = np.zeros((F, J, 4), dtype=np.float64)
-        for j in range(J):
-            total_local[:, j] = quat_multiply_wxyz_np(
-                rest_rotations[j:j+1], local_rotations[:, j]
-            )
-    else:
-        total_local = local_rotations.copy()
-
-    world_pos = np.zeros((F, J, 3), dtype=np.float64)
-    world_rot = np.zeros((F, J, 4), dtype=np.float64)
-
-    for j in range(J):
-        p = parents[j]
-        if p < 0:
-            world_pos[:, j] = local_positions[:, j]
-            world_rot[:, j] = total_local[:, j]
-        else:
-            world_pos[:, j] = world_pos[:, p] + quat_rotate_wxyz_np(
-                world_rot[:, p], local_positions[:, j]
-            )
-            world_rot[:, j] = quat_multiply_wxyz_np(world_rot[:, p], total_local[:, j])
-
-    return world_pos, world_rot
-
-
-def _batch_pose_fk_np(
-    pose_rotations: np.ndarray,
-    pose_locations: np.ndarray,
-    parents: np.ndarray,
-    rest_offsets: np.ndarray,
-    rest_rotations: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Compute world transforms using Blender pose-bone semantics.
-
-    Local bone transform is modeled as:
-        T_local = T(rest_offset) * R(rest_rotation) * T(pose_location) * R(pose_rotation)
-
-    This matches how the exporter drives external FBX/GLB armatures through
-    pose bone `location` and `rotation_quaternion` channels.
-    """
-    F, J = pose_rotations.shape[:2]
-    world_pos = np.zeros((F, J, 3), dtype=np.float64)
-    world_rot = np.zeros((F, J, 4), dtype=np.float64)
-
-    for j in range(J):
-        rest_q = np.repeat(rest_rotations[j:j+1], F, axis=0)
-        total_local_rot = quat_multiply_wxyz_np(rest_q, pose_rotations[:, j])
-        pose_loc_in_parent = rest_offsets[j:j+1] + quat_rotate_wxyz_np(rest_q, pose_locations[:, j])
-
-        p = parents[j]
-        if p < 0:
-            world_pos[:, j] = pose_loc_in_parent
-            world_rot[:, j] = total_local_rot
-        else:
-            world_pos[:, j] = world_pos[:, p] + quat_rotate_wxyz_np(world_rot[:, p], pose_loc_in_parent)
-            world_rot[:, j] = quat_multiply_wxyz_np(world_rot[:, p], total_local_rot)
-
-    return world_pos, world_rot
-
-
-def _batch_internal_pose_fk_np(
-    joint_rotations: np.ndarray,
-    root_translation: np.ndarray,
-    root_rotation: np.ndarray,
-    pose_locations: np.ndarray | None,
-    parents: np.ndarray,
-    rest_offsets: np.ndarray,
-    rest_rotations: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Compute world pose with unified exporter semantics.
-
-    External caller semantics:
-      - ``joint_rotations`` carries animated local joint quaternions for all joints,
-        including the root joint.
-      - ``root_translation`` / ``root_rotation`` form an extra world-space wrapper
-        transform applied before the skeleton hierarchy.
-      - ``pose_locations`` carries optional Blender-style pose-bone location channels
-        for non-root joints. The root entry is ignored; root world translation always
-        comes from ``root_translation``.
-    """
-    F, J = joint_rotations.shape[:2]
-    world_pos = np.zeros((F, J, 3), dtype=np.float64)
-    world_rot = np.zeros((F, J, 4), dtype=np.float64)
-
-    zero_loc = np.zeros((F, 3), dtype=np.float64)
-
-    for j in range(J):
-        rest_q = np.repeat(rest_rotations[j:j+1], F, axis=0)
-        total_local_rot = quat_multiply_wxyz_np(rest_q, joint_rotations[:, j])
-
-        if pose_locations is None or parents[j] < 0:
-            pose_loc = zero_loc
-        else:
-            pose_loc = pose_locations[:, j]
-
-        local_pos = np.repeat(rest_offsets[j:j+1], F, axis=0) + quat_rotate_wxyz_np(
-            rest_q,
-            pose_loc,
-        )
-
-        p = parents[j]
-        if p < 0:
-            world_pos[:, j] = root_translation + quat_rotate_wxyz_np(root_rotation, local_pos)
-            world_rot[:, j] = quat_multiply_wxyz_np(root_rotation, total_local_rot)
-        else:
-            world_pos[:, j] = world_pos[:, p] + quat_rotate_wxyz_np(world_rot[:, p], local_pos)
-            world_rot[:, j] = quat_multiply_wxyz_np(world_rot[:, p], total_local_rot)
-
-    return world_pos, world_rot
+# Re-exported for backward compatibility with callers that import these
+# helpers from ``Anytop.utils.exporter`` (compare_motions.py,
+# check_bone_length_drift.py, test_bvh_roundtrip.py, etc.). The canonical
+# implementations live in ``Anytop.utils.retarget``.
+__all__ = [
+    "_batch_forward_kinematics_np",
+    "_batch_internal_pose_fk_np",
+    "_batch_pose_fk_np",
+    "_canonical_bone_name",
+    "_generate_coordinate_candidates_np",
+    "animation_to_exporter_inputs",
+    "AnimationExporter",
+]
 
 
 def animation_to_exporter_inputs(animation, skeleton) -> tuple[Tensor, Tensor, Tensor, Optional[Tensor]]:
@@ -563,180 +410,60 @@ class AnimationExporter:
 
         # ────────────────────────────────────────────────────────────────
         # Retargeting: convert input-skeleton animation to FBX armature
-        # local space via world-space alignment.
+        # local space via world-space alignment. The numpy core lives in
+        # ``Anytop.utils.retarget`` so non-Blender callers can share it.
         # ────────────────────────────────────────────────────────────────
         if mesh_path:
-            # ── A) Extract FBX skeleton metadata ───────────────────────
             fbx_names, fbx_parents, fbx_offsets, fbx_rest_rots = _extract_armature_skeleton_data(armature)
             J_fbx = len(fbx_names)
-            fbx_canon_to_idx = {_canonical_bone_name(n): i for i, n in enumerate(fbx_names)}
 
-            # ── B) Map input→FBX bone indices ─────────────────────────
-            input_to_fbx = np.full(len(bone_names), -1, dtype=np.int32)
-            for i, name in enumerate(bone_names):
-                canon = _canonical_bone_name(name)
-                if canon in fbx_canon_to_idx:
-                    input_to_fbx[i] = fbx_canon_to_idx[canon]
-
-            # ── C) Build numpy arrays for FK ──────────────────────────
-            jr_np = np.array(jr, dtype=np.float64)           # (F, J, 4)
-            rt_np = np.array(rt, dtype=np.float64)           # (F, 3)
-            rr_np = np.array(rr, dtype=np.float64)           # (F, 4)
-
-            # Rest rotations from input skeleton
             rest_rot_input = np.array([
                 b.rest_rotation.detach().cpu().numpy().astype(np.float64)
                 for b in self.skeleton.bones
             ])
-
-            # Parents from input skeleton
             parents_input = np.array([
                 b.parent_id if b.parent_id is not None else -1
                 for b in self.skeleton.bones
             ], dtype=np.int32)
-
-            # ── D) Compute input world-space (FK) ─────────────────────
             rest_offsets_input = np.array([
                 b.rest_offset.detach().cpu().numpy().astype(np.float64)
                 for b in self.skeleton.bones
             ])
 
-            if bt is not None:
-                pose_locations_np = np.array(bt, dtype=np.float64)
-            else:
-                pose_locations_np = None
-
-            input_wpos, input_wrot = _batch_internal_pose_fk_np(
-                jr_np,
-                rt_np,
-                rr_np,
-                pose_locations_np,
-                parents_input,
-                rest_offsets_input,
-                rest_rot_input,
-            )
-
-            # ── E) Compute FBX rest-pose world-space ─────────────────
-            # One-frame rest pose: identity pose rotations + zero pose translations
-            identity_rot = np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64)
-            fbx_rest_local_rot = np.tile(identity_rot, (J_fbx, 1))  # (J_fbx, 4)
-            fbx_rest_local_pos = np.zeros((1, J_fbx, 3), dtype=np.float64)
-
-            fbx_rest_wpos, fbx_rest_wrot = _batch_pose_fk_np(
-                fbx_rest_local_rot[None],          # (1, J, 4)
-                fbx_rest_local_pos,                # (1, J, 3)
-                fbx_parents,
-                fbx_offsets,
-                fbx_rest_rots,
-            )
-
-            # ── F) Auto-detect alignment on common bones ─────────────────
-            # Use the INPUT REST POSE (identity rotations) — NOT frame 0 of
-            # the animation, which may be in a running pose.
-            input_rest_local_rot = np.tile(
-                np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64), (len(bone_names), 1)
-            )
-            input_rest_local_pos = np.zeros((1, len(bone_names), 3), dtype=np.float64)
-
-            input_rest_wpos, _ = _batch_pose_fk_np(
-                input_rest_local_rot[None], input_rest_local_pos,
-                parents_input, rest_offsets_input, rest_rot_input,
-            )
-
-            common_input_idx = [i for i in range(len(bone_names)) if input_to_fbx[i] >= 0]
-            common_fbx_idx = [int(input_to_fbx[i]) for i in common_input_idx]
-
-            if not common_input_idx:
-                raise RuntimeError(
-                    "No common bones between input skeleton and FBX armature.\n"
-                    f"  Input bones: {bone_names[:10]}...\n"
-                    f"  FBX bones:   {fbx_names[:10]}..."
-                )
-
-            pos_input_rest = input_rest_wpos[:, common_input_idx, :]  # (1, K, 3)
-            pos_fbx_rest = fbx_rest_wpos[:, common_fbx_idx, :]         # (1, K, 3)
-
-            def _mean_bone_len_on_common(pos, local_fbx_idx):
-                """Compute mean parent→child length using FBX parent structure."""
-                lengths = []
-                for ci, fi in enumerate(local_fbx_idx):
-                    p = fbx_parents[fi]
-                    if p < 0:
-                        continue
-                    for ci2, fi2 in enumerate(local_fbx_idx):
-                        if fi2 == p:
-                            diff = pos[0, ci] - pos[0, ci2]
-                            lengths.append(float(np.linalg.norm(diff)))
-                            break
-                return float(np.mean(lengths)) if lengths else 1.0
-
-            mean_len_input = _mean_bone_len_on_common(pos_input_rest, common_fbx_idx)
-            mean_len_fbx = _mean_bone_len_on_common(pos_fbx_rest, common_fbx_idx)
-
-            scale = mean_len_fbx / mean_len_input if mean_len_input > 1e-8 else 1.0
-            if abs(scale - 1.0) < 0.001:
-                scale = 1.0
-
-            root_fbx_idx = int(np.flatnonzero(fbx_parents == -1)[0])
-            root_in_common = None
-            for ci, fi in enumerate(common_fbx_idx):
-                if fi == root_fbx_idx:
-                    root_in_common = ci
-                    break
-            if root_in_common is None:
-                root_in_common = 0
-
-            t_align = pos_fbx_rest[0, root_in_common] - pos_input_rest[0, root_in_common] * scale
-            pos_input_rest_st = pos_input_rest * scale + t_align[np.newaxis, np.newaxis, :]
-
             # Imported GLB rigs already carry the glTF wrapper/object space that
             # Blender will re-emit on export. Running the internal rest-pose
-            # coordinate search here can spuriously add an extra rigid basis
+            # coordinate search there can spuriously add an extra rigid basis
             # rotation (Horse picked R_y(+90°), which re-imports as a visible
             # whole-character Z rotation). Keep GLB/GTLF retargeting in the
             # rig's existing basis and reserve the broader coordinate search
             # for FBX sources.
-            if mesh_path_lower and mesh_path_lower.endswith((".glb", ".gltf")):
-                candidates = [("identity", np.eye(3, dtype=np.float64))]
-            else:
-                candidates = _generate_coordinate_candidates_np()
-            best_R = np.eye(3, dtype=np.float64)
-            best_label = "identity"
-            best_err = float("inf")
+            coordinate_search = not (
+                mesh_path_lower and mesh_path_lower.endswith((".glb", ".gltf"))
+            )
 
-            for label, R in candidates:
-                pos_candidate = pos_input_rest_st @ R.T
-                err = float(np.mean(np.linalg.norm(pos_fbx_rest - pos_candidate, axis=-1)))
-                if err < best_err:
-                    best_err = err
-                    best_label = label
-                    best_R = R
+            retarget_result = retarget_world_space_np(
+                src_bone_names=bone_names,
+                src_parents=parents_input,
+                src_rest_offsets=rest_offsets_input,
+                src_rest_rotations=rest_rot_input,
+                tgt_bone_names=fbx_names,
+                tgt_parents=fbx_parents,
+                tgt_rest_offsets=fbx_offsets,
+                tgt_rest_rotations=fbx_rest_rots,
+                src_joint_rotations=np.array(jr, dtype=np.float64),
+                src_root_translation=np.array(rt, dtype=np.float64),
+                src_root_rotation=np.array(rr, dtype=np.float64),
+                src_bone_translations=np.array(bt, dtype=np.float64) if bt is not None else None,
+                coordinate_search=coordinate_search,
+                verbose=True,
+            )
 
-            print(f"  [Retarget] common={len(common_input_idx)}/{len(bone_names)}, "
-                  f"FBX={J_fbx} bones, alignment error={best_err:.6f}")
-            print(f"  [Retarget] alignment: scale={scale:.6f}, "
-                  f"rot={best_label}, "
-                  f"trans=({t_align[0]:.4f}, {t_align[1]:.4f}, {t_align[2]:.4f})")
-
-            target_wpos = np.repeat(fbx_rest_wpos, num_frames, axis=0)
-            target_wrot = np.repeat(fbx_rest_wrot, num_frames, axis=0)
-            aligned_input_wpos = (
-                input_wpos * scale + t_align[np.newaxis, np.newaxis, :]
-            ) @ best_R.T
-            aligned_input_wrot = apply_rotation_to_quaternions_wxyz_np(input_wrot, best_R)
-
-            for ii, fi in enumerate(input_to_fbx):
-                if fi >= 0:
-                    target_wpos[:, fi] = aligned_input_wpos[:, ii]
-                    target_wrot[:, fi] = aligned_input_wrot[:, ii]
-
-            fbx_pose_rot = np.zeros((num_frames, J_fbx, 4), dtype=np.float64)
-            fbx_pose_rot[:] = np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64)
-            fbx_pose_loc = np.zeros((num_frames, J_fbx, 3), dtype=np.float64)
+            fbx_pose_rot = retarget_result["joint_rotations"]
+            fbx_pose_loc = retarget_result["bone_translations"]
+            input_to_fbx = retarget_result["src_to_tgt"]
 
             root_mask = fbx_parents < 0
             root_indices = np.flatnonzero(root_mask)
-            identity_q = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
 
             if rotation_channel_mask_np is not None:
                 fbx_rotation_channel_mask = np.zeros((J_fbx,), dtype=bool)
@@ -747,45 +474,11 @@ class AnimationExporter:
                     fbx_rotation_channel_mask[root_indices[0]] = True
                 rotation_channel_mask_np = fbx_rotation_channel_mask
 
-            for j in range(J_fbx):
-                parent_j = int(fbx_parents[j])
-                if parent_j < 0:
-                    parent_world_rot = np.repeat(identity_q[np.newaxis], num_frames, axis=0)
-                    parent_world_pos = np.zeros((num_frames, 3), dtype=np.float64)
-                else:
-                    parent_world_rot = target_wrot[:, parent_j]
-                    parent_world_pos = target_wpos[:, parent_j]
-
-                rel_world_rot = quat_multiply_wxyz_np(
-                    quat_conjugate_wxyz_np(parent_world_rot),
-                    target_wrot[:, j],
-                )
-                fbx_pose_rot[:, j] = quat_multiply_wxyz_np(
-                    quat_conjugate_wxyz_np(np.repeat(fbx_rest_rots[j:j+1], num_frames, axis=0)),
-                    rel_world_rot,
-                )
-
-                rel_world_pos = target_wpos[:, j] - parent_world_pos
-                rel_parent_pos = quat_rotate_wxyz_np(
-                    quat_conjugate_wxyz_np(parent_world_rot),
-                    rel_world_pos,
-                )
-                fbx_pose_loc[:, j] = quat_rotate_wxyz_np(
-                    quat_conjugate_wxyz_np(np.repeat(fbx_rest_rots[j:j+1], num_frames, axis=0)),
-                    rel_parent_pos - np.repeat(fbx_offsets[j:j+1], num_frames, axis=0),
-                )
-
             jr = fbx_pose_rot.tolist()
-            rr = fbx_pose_rot[:, root_indices[0], :].tolist() if len(root_indices) > 0 else rr
-            rt = fbx_pose_loc[:, root_indices[0], :].tolist() if len(root_indices) > 0 else rt
+            rr = retarget_result["root_rotation"].tolist()
+            rt = retarget_result["root_translation"].tolist()
             bone_names = fbx_names
-
-            if bt is not None or np.any(np.abs(fbx_pose_loc[:, ~root_mask, :]) > 1e-6):
-                bt = fbx_pose_loc.tolist()
-            else:
-                bt = None
-
-            print(f"  [Retarget] Conversion complete: {num_frames} frames, {J_fbx} bones")
+            bt = fbx_pose_loc.tolist() if fbx_pose_loc is not None else None
 
         # ── Clear existing animation, create fresh action ─────────────
         if armature.animation_data:

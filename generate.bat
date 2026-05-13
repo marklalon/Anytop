@@ -2,8 +2,16 @@
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
 set RUN_NAME=quadropeds_locomotion_v4
-REM 仅支持单个类型。支持指定训练时模型没见过的Object Type来实现0样本泛化推理
-REM set OBJECT_TYPE=Horse
+REM ----------------------------------------------------------------------
+REM Combination rules for target skeleton + reference motion (passed via %* to sample/generate.py):
+REM   1) --object_type Horse only                          : random generation for Horse
+REM   2) --reference_motion path\Horse___Run.npy only      : infer "Horse" from filename, reference-guided generation
+REM   3) --reference_motion path\Flamingo___Walk.npy --object_type Horse
+REM      : inferred "Flamingo" differs from target "Horse" -> auto retarget Flamingo motion to Horse skeleton,
+REM        then use as reference in diffusion process (intermediate _retargeted_*.npy / .bvh written to OUTPUT_DIR)
+REM   4) neither provided -> error and exit
+REM Supports zero-shot inference on object types not seen during training.
+REM ----------------------------------------------------------------------
 set BATCH_SIZE=8
 
 rem set MODEL_FILE=model000002000.pt
