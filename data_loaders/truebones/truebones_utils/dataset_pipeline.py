@@ -552,7 +552,7 @@ def _build_tpose_only_cond(object_type, t_pos_path, face_joints):
         object_type, t_pos_path, face_joints,
     )
     num_joints = len(parents)
-    object_cond['mean'] = t_pos_motion[0:1].repeat(num_joints, axis=0)
+    object_cond['mean'] = t_pos_motion[0].astype(np.float32)  # (J, 13)
     object_cond['std'] = np.ones_like(object_cond['mean'])
     return object_cond, max_joints
 
