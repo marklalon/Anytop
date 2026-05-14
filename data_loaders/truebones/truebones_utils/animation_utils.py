@@ -904,7 +904,7 @@ def _is_terminal_leaf_name(name):
     already semantic end-effectors (end sites, helpers, nubs, etc.).
     """
     upper = name.upper()
-    for keyword in ('END', 'HELPER', 'NUB', 'ENDSITE', 'END_SITE'):
+    for keyword in ('END', 'HELPER'):
         if keyword in upper:
             return True
     return False

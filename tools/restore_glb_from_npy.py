@@ -248,8 +248,9 @@ def _build_restore_context(
     )
     cond_has_scale = cond_entry is not None and "scale_factor" in cond_entry
 
-    # T-pose FBX is always loaded: it provides `tpose_rest_rotations` (which
-    # cond.npy does not store), and may supply scale_factor when cond.npy lacks it.
+    # Determine the effective joint count from the NPY and align all
+    # metadata (cond entry, T-pose) to that count.  Helpers are always
+    # appended at the end of the joint array.
     tpose_meta = _load_tpose_restore_metadata(tpose_mesh, object_type, cond_entry=cond_entry)
 
     # ── Skeleton info (joint_names / parents / offsets) ─────────────────
@@ -276,25 +277,47 @@ def _build_restore_context(
             f"original_joint_count must be within [1, {len(joint_names)}], got {original_joint_count}"
         )
 
+    # Align feature joint count with available metadata.
+    # Helpers are appended at the end, so we can safely trim.
     if feature_joint_count == original_joint_count and len(joint_names) != original_joint_count:
+        # NPY has no helpers — trim everything to original skeleton.
         joint_names = list(joint_names[:original_joint_count])
         parents = np.asarray(parents[:original_joint_count], dtype=np.int32)
         offsets = np.asarray(offsets[:original_joint_count], dtype=np.float32)
         helper_joint_indices = []
         helper_source_leaf_indices = []
+    elif original_joint_count < feature_joint_count <= len(joint_names):
+        # NPY has some helpers (possibly fewer than cond.npy).
+        # Trim cond metadata to match the NPY's joint count.
+        joint_names = list(joint_names[:feature_joint_count])
+        parents = np.asarray(parents[:feature_joint_count], dtype=np.int32)
+        offsets = np.asarray(offsets[:feature_joint_count], dtype=np.float32)
+        helper_joint_indices = [
+            i for i in helper_joint_indices if i < feature_joint_count
+        ]
+        helper_source_leaf_indices = [
+            i for i in helper_source_leaf_indices if i < feature_joint_count
+        ]
     elif feature_joint_count not in (0, len(joint_names)):
         raise ValueError(
             f"NPY has J={feature_joint_count} joints but restore metadata resolves to {len(joint_names)} "
             f"joints for '{object_type}' (original_joint_count={original_joint_count})."
         )
 
-    # ── T-pose rest rotations (always from T-pose FBX) ─────────────────
-    tpose_rest_rotations = _remap_joint_array(
-        tpose_meta["joint_names"],
-        joint_names,
-        np.asarray(tpose_meta["tpose_rest_rotations"], dtype=np.float32),
-        "feature-space",
-    )
+    # ── T-pose rest rotations ───────────────────────────────────────────
+    # The T-pose may have a different helper budget than the NPY (e.g., the
+    # cond.npy was built with a different _is_terminal_leaf_name filter or
+    # max_joints budget).  Build rest rotations by matching what the T-pose
+    # provides and filling identity quaternions for any helper joints the
+    # T-pose doesn't know about (helpers are zero-offset, identity-rotation dummies).
+    tpose_joint_names = list(tpose_meta["joint_names"])
+    tpose_rest_src = np.asarray(tpose_meta["tpose_rest_rotations"], dtype=np.float32)
+    tpose_name_index = {name: idx for idx, name in enumerate(tpose_joint_names)}
+    tpose_rest_rotations = np.zeros((len(joint_names), 4), dtype=np.float32)
+    tpose_rest_rotations[:, 0] = 1.0  # default identity quaternion
+    for j, name in enumerate(joint_names):
+        if name in tpose_name_index:
+            tpose_rest_rotations[j] = tpose_rest_src[tpose_name_index[name]]
 
     # ── Scale factor ────────────────────────────────────────────────────
     scale_factor = None
