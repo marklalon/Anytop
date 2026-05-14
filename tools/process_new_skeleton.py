@@ -27,7 +27,7 @@ This is useful in case you would like to use this data for training.
 3. cond.npy contains the skeletons representation, including joints names embeddings and graph conditions,
 which is given as input to AnyTop during inference. Please follow sampling instructions in README. 
 """
-import sys, os
+import sys, os, shutil
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_loaders.truebones.truebones_utils.motion_process import process_skeleton
@@ -38,6 +38,19 @@ from utils.parser_util import process_new_skeleton_args
 
 def main():
     args = process_new_skeleton_args()
+
+    # Clear old files in the target directory before processing
+    save_dir = args.save_dir
+    if os.path.exists(save_dir):
+        for entry in os.listdir(save_dir):
+            entry_path = os.path.join(save_dir, entry)
+            if os.path.isdir(entry_path):
+                shutil.rmtree(entry_path)
+            else:
+                os.remove(entry_path)
+        print(f"Cleared existing files in {save_dir}")
+    else:
+        os.makedirs(save_dir, exist_ok=True)
 
     # Resolve tpos_fbx: auto-select from fbx_dir when not provided
     tpos_fbx = args.tpos_fbx
