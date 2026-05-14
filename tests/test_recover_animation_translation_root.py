@@ -1,3 +1,4 @@
+import glob
 import os
 import sys
 
@@ -14,6 +15,8 @@ from data_loaders.truebones.truebones_utils.motion_labels import load_motion_met
 from data_loaders.truebones.truebones_utils.motion_process import (
     ROOT_XZ_STRIP_THRESHOLD,
     _xz_locomotion_extent,
+    get_common_features_from_T_pose,
+    get_hml_aligned_anim,
     infer_translation_root_index_from_features,
     mirror_features_with_safeguards,
     move_xz_to_origin,
@@ -133,6 +136,46 @@ def test_xz_locomotion_extent_still_detects_true_locomotion_after_initial_root_c
     assert _xz_locomotion_extent(centered_anim, 1) > ROOT_XZ_STRIP_THRESHOLD
 
 
+def test_raw_tpose_animation_input_reapplies_tpose_normalization():
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    tpose_fbx = os.path.join(
+        repo_root,
+        'dataset',
+        'truebones',
+        'zoo',
+        'Truebone_Z-OO',
+        'Buffalo',
+        'Buffalo-TPOSE.fbx',
+    )
+    if not os.path.isfile(tpose_fbx):
+        pytest.skip(f'missing T-pose FBX: {tpose_fbx}')
+
+    tp = get_common_features_from_T_pose(
+        tpose_fbx,
+        'Buffalo',
+        augment_leaf_rotation_helpers=True,
+        max_joints=53,
+    )
+
+    squared_positions_error: dict[str, float] = {}
+    aligned_anim, _export_anim, _names, _root_translation_xz = get_hml_aligned_anim(
+        tp.tpos_anim,
+        'Buffalo',
+        tp.tpos_rots,
+        tp.offsets,
+        squared_positions_error,
+        scale_factor=float(tp.scale_factor),
+        foot_indices=tp.foot_indices,
+        orientation_quat=np.asarray(tp.orientation_quat, dtype=np.float64),
+        helper_metadata=tp.helper_metadata,
+        animation_input_is_tpose_aligned=False,
+    )
+
+    expected_identity = np.zeros((len(tp.names), 4), dtype=np.float64)
+    expected_identity[:, 0] = 1.0
+    np.testing.assert_allclose(aligned_anim.rotations.qs[0], expected_identity, atol=1e-5)
+
+
 def test_recover_animation_matches_safeguarded_horse_target_globals():
     opt = get_opt(None)
     cond = np.load(opt.cond_file, allow_pickle=True).item()['Horse']
@@ -141,9 +184,10 @@ def test_recover_animation_matches_safeguarded_horse_target_globals():
     if not os.path.isabs(motion_dir):
         motion_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), motion_dir)
 
-    raw = np.load(os.path.join(motion_dir, 'Horse_RunLoop_28.npy')).astype(np.float32, copy=False)
+    motion_path, motion_name = _find_motion_file(motion_dir, 'Horse_RunLoop_*.npy')
+    raw = np.load(motion_path).astype(np.float32, copy=False)
     motion_metadata = _with_translation_root_index(
-        _load_motion_metadata_entry(opt, 'Horse_RunLoop_28.npy'),
+        _load_motion_metadata_entry(opt, motion_name),
         raw,
         cond,
     )
@@ -167,6 +211,13 @@ def test_recover_animation_matches_safeguarded_horse_target_globals():
     assert has_animated_pos is True
 
 
+def _find_motion_file(motion_dir: str, pattern: str) -> tuple[str, str]:
+    """Find a motion file by glob pattern, returning (full_path, basename)."""
+    files = sorted(glob.glob(os.path.join(motion_dir, pattern)))
+    assert files, f"No files matching '{pattern}' in {motion_dir}"
+    return files[0], os.path.basename(files[0])
+
+
 def test_from_transforms_preserves_positive_trace_ninety_degree_yaw():
     matrix = np.array(
         [[[-5.2504788e-08, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, -5.2504788e-08]]],
@@ -186,9 +237,10 @@ def test_recover_animation_hound_mirror_matches_world_x_reflection():
     if not os.path.isabs(motion_dir):
         motion_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), motion_dir)
 
-    raw = np.load(os.path.join(motion_dir, 'Hound_Attack_402.npy')).astype(np.float32, copy=False)
+    motion_path, motion_name = _find_motion_file(motion_dir, 'Hound_Attack_*.npy')
+    raw = np.load(motion_path).astype(np.float32, copy=False)
     motion_metadata = _with_translation_root_index(
-        _load_motion_metadata_entry(opt, 'Hound_Attack_402.npy'),
+        _load_motion_metadata_entry(opt, motion_name),
         raw,
         cond,
     )

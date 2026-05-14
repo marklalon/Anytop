@@ -650,7 +650,7 @@ def _extract_motion_features_from_aligned_anims(
 
 
 """ processes animation, and returns a new animation that aligns with humanML3D in terms of orientation and scale"""
-def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squared_positions_error, *, scale_factor, foot_indices=None, orientation_quat, slice_inds=None, preloaded=None, helper_metadata=None):
+def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squared_positions_error, *, scale_factor, foot_indices=None, orientation_quat, slice_inds=None, preloaded=None, helper_metadata=None, animation_input_is_tpose_aligned=True):
     if not isinstance(fbx_path_or_anim, Animation):
         if preloaded is not None:
             raw_anim, names = preloaded
@@ -693,7 +693,15 @@ def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squa
 
     ## create new animation object in which the rotations are w.r.t the actual Tpos
     tpos_rots_correct_shape  = tpos_rots[None, 0].repeat(frames_num, axis = 0)
-    rots = compute_rots_from_tpos(tpos_rots_correct_shape, processed_anim.rotations, processed_anim.parents)
+    if isinstance(fbx_path_or_anim, Animation) and animation_input_is_tpose_aligned:
+        # Recovered / retargeted feature animations are already expressed in the
+        # T-pose-relative local frame. Re-applying the T-pose transform would
+        # double-transform them.
+        rots = processed_anim.rotations.copy()
+    else:
+        # FBX input and raw T-pose Animation inputs still carry FBX-local rest
+        # rotations and must be reparameterized against the character T-pose.
+        rots = compute_rots_from_tpos(tpos_rots_correct_shape, processed_anim.rotations, processed_anim.parents)
     anim_positions = offsets.copy()[None, :].repeat(frames_num, axis = 0)
     anim_positions[:, 0] = processed_anim.positions[:, 0]
     processed_global_pos = positions_global(processed_anim)
@@ -706,9 +714,8 @@ def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squa
         initial_positions=anim_positions,
     )
     # create animation object which is defined over correct tpos
-    new_anim = Animation(rots, anim_positions  , processed_anim.orients, offsets, processed_anim.parents)
+    new_anim = Animation(rots, anim_positions, processed_anim.orients, offsets, processed_anim.parents)
 
-    processed_global_pos = positions_global(processed_anim)
     new_global_pos = positions_global(new_anim)
     squared_error = np.mean((processed_global_pos - new_global_pos) ** 2)
     error_key = fbx_path_or_anim if isinstance(fbx_path_or_anim, str) else '__animation__'
@@ -720,7 +727,7 @@ def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squa
 
 
 """ get motion feature representation"""
-def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joints, offsets, foot_indices, tpos_rots, squared_positions_error, *, scale_factor, orientation_quat, slice_inds=None, preloaded=None, helper_metadata=None):
+def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joints, offsets, foot_indices, tpos_rots, squared_positions_error, *, scale_factor, orientation_quat, slice_inds=None, preloaded=None, helper_metadata=None, animation_input_is_tpose_aligned=True):
     try:
         new_anim, export_anim, names, root_translation_xz = get_hml_aligned_anim(
             fbx_path_or_anim,
@@ -734,6 +741,7 @@ def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joint
             slice_inds=slice_inds,
             preloaded=preloaded,
             helper_metadata=helper_metadata,
+            animation_input_is_tpose_aligned=animation_input_is_tpose_aligned,
         )
         translation_root_index = _resolve_detected_translation_root_index(
             _find_translation_root(new_anim),
@@ -837,6 +845,13 @@ def recover_root_quat_and_pos_np(
 
     # joint row 0 stores the root-facing rotation used by the representation.
     r_rot_quat = Quaternions.from_transforms(rotation_6d_to_matrix_np(root_features[:, 3:9]))
+
+    # Normalize sign: ensure w >= 0 for each frame.
+    # SciPy Rotation.from_matrix may return q or -q arbitrarily;
+    # a consistent sign is required for the downstream ``-r_rot_quat * ...``
+    # adjustment in ``recover_from_bvh_rot_np``.
+    mask = r_rot_quat.qs[..., 0:1] < 0
+    r_rot_quat.qs = np.where(mask, -r_rot_quat.qs, r_rot_quat.qs)
 
     r_pos = np.zeros(root_features.shape[:-1] + (3,))
     r_pos[..., 1:, [0, 2]] = translation_features[..., :-1, [9, 11]]

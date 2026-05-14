@@ -305,6 +305,18 @@ def process_new_skeleton_args():
                        help="An FBX file of the character's natural rest pose for meaningful rotation learning. "
                             "If omitted, the code will auto-select one from --fbx-dir using filename heuristics "
                             "(T-pose > idle > walk > first file).")
+    group.add_argument("--retarget-top-k", default=None, type=int,
+                       help="Auto-select the top-k most similar training skeletons as motion donors, "
+                            "retarget all their motions to the new skeleton, and use those coarse motions "
+                            "to compute proper mean/std for cond.npy. Mutually exclusive with --fbx-dir.")
+    group.add_argument("--training-cond-path",
+                       default="dataset/truebones/zoo/truebones_processed/cond.npy",
+                       type=str,
+                       help="Path to the training dataset's cond.npy, used for donor selection when "
+                            "--retarget-top-k is set. Default: dataset/truebones/zoo/truebones_processed/cond.npy")
+    group.add_argument("--donor-skeletons", default=None, type=str,
+                       help="Comma-separated donor skeleton names to use instead of auto-selection, "
+                            "e.g. 'Bison,Cow,Horse'. Only effective with --retarget-top-k.")
     args = parser.parse_args()
     return args
 

@@ -53,28 +53,12 @@ def _retarget_reference_motion(
 ):
     """Retarget a reference motion .npy from ``source_type`` to ``target_type``.
 
-    Reuses the world-space alignment math in ``Anytop.utils.retarget`` (shared
-    with ``AnimationExporter.export_glb``) and re-encodes the result back into
-    the target skeleton's motion-feature .npy format via ``get_motion``. The
-    retargeted file (and a sibling .bvh for inspection) is written under
-    ``output_dir`` and the .npy path is returned.
+    Thin wrapper around ``utils.auto_retarget.retarget_features_npy_to_target``.
+    Loads source features, builds target TPoseFeatures, delegates the math, then
+    writes the retargeted .npy and an inspection .bvh under ``output_dir``.
     """
-    from Anytop.utils.retarget import retarget_world_space_np
-    from Anytop.utils.exporter import animation_to_exporter_inputs
-    from Anytop.utils.roundtrip_common import _build_skeleton
-    from Anytop.utils.rotation_numpy import (
-        quat_conjugate_wxyz_np,
-        quat_multiply_wxyz_np,
-        quat_rotate_wxyz_np,
-    )
-    from data_loaders.truebones.truebones_utils.features import (
-        get_common_features_from_T_pose,
-        get_motion,
-        recover_animation_from_motion_np,
-    )
-    from data_loaders.truebones.truebones_utils.param_utils import FOOT_CONTACT_VEL_THRESH
-    from motion_lib.Animation import Animation
-    from motion_lib.Quaternions import Quaternions
+    from Anytop.utils.auto_retarget import retarget_features_npy_to_target
+    from data_loaders.truebones.truebones_utils.features import get_common_features_from_T_pose
 
     src_cond = cond_dict[source_type]
     tgt_cond = cond_dict[target_type]
@@ -91,114 +75,32 @@ def _retarget_reference_motion(
 
     print(f"\n### Cross-species retarget: {source_type} → {target_type}")
 
-    # ── 1. Decode source npy → source Animation ────────────────────────────
     ref_raw = np.load(ref_motion_path).astype(np.float32)
     print(f"  Source motion shape: {ref_raw.shape}")
-    src_anim, _has_pos = recover_animation_from_motion_np(
-        ref_raw,
-        np.asarray(src_cond['parents'], dtype=np.int32),
-        np.asarray(src_cond['offsets'], dtype=np.float32),
-        translation_root_index=None,
-        allow_infer=True,
-    )
 
-    # ── 2. Load source / target T-pose metadata ────────────────────────────
-    src_tp = get_common_features_from_T_pose(
-        src_tpose_fbx, source_type,
-        augment_leaf_rotation_helpers=True,
-        max_joints=opt.max_joints,
-    )
     tgt_tp = get_common_features_from_T_pose(
         tgt_tpose_fbx, target_type,
         augment_leaf_rotation_helpers=True,
         max_joints=opt.max_joints,
     )
 
-    src_skeleton = _build_skeleton(
-        src_tp.names,
-        np.asarray(src_tp.offsets, dtype=np.float32),
-        np.asarray(src_tp.tpos_anim.parents, dtype=np.int32),
-        rest_rotations=np.asarray(src_tp.tpos_rots[0], dtype=np.float32),
-    )
-
-    # ── 3. Source Animation → exporter inputs ──────────────────────────────
-    src_jr, src_rt, src_rr, src_bt = animation_to_exporter_inputs(src_anim, src_skeleton)
-
-    # ── 4. World-space retarget ───────────────────────────────────────────
-    retarget_result = retarget_world_space_np(
-        src_bone_names=list(src_tp.names),
-        src_parents=np.asarray(src_tp.tpos_anim.parents, dtype=np.int32),
-        src_rest_offsets=np.asarray(src_tp.offsets, dtype=np.float64),
-        src_rest_rotations=np.asarray(src_tp.tpos_rots[0], dtype=np.float64),
-        tgt_bone_names=list(tgt_tp.names),
-        tgt_parents=np.asarray(tgt_tp.tpos_anim.parents, dtype=np.int32),
-        tgt_rest_offsets=np.asarray(tgt_tp.offsets, dtype=np.float64),
-        tgt_rest_rotations=np.asarray(tgt_tp.tpos_rots[0], dtype=np.float64),
-        src_joint_rotations=src_jr.numpy().astype(np.float64),
-        src_root_translation=src_rt.numpy().astype(np.float64),
-        src_root_rotation=src_rr.numpy().astype(np.float64),
-        src_bone_translations=src_bt.numpy().astype(np.float64) if src_bt is not None else None,
-        coordinate_search=False,
-        verbose=True,
-    )
-
-    # ── 5. Build target Animation from world-space pose ────────────────────
-    world_pos = retarget_result['target_world_positions']        # (F, J_tgt, 3)
-    world_rot = retarget_result['target_world_rotations']        # (F, J_tgt, 4)
-    tgt_parents_np = np.asarray(tgt_tp.tpos_anim.parents, dtype=np.int32)
-    F, J_tgt = world_pos.shape[:2]
-
-    local_rot = np.zeros_like(world_rot)
-    local_pos = np.zeros_like(world_pos)
-    for j in range(J_tgt):
-        p = int(tgt_parents_np[j])
-        if p < 0:
-            local_rot[:, j] = world_rot[:, j]
-            local_pos[:, j] = world_pos[:, j]
-        else:
-            local_rot[:, j] = quat_multiply_wxyz_np(
-                quat_conjugate_wxyz_np(world_rot[:, p]),
-                world_rot[:, j],
-            )
-            local_pos[:, j] = quat_rotate_wxyz_np(
-                quat_conjugate_wxyz_np(world_rot[:, p]),
-                world_pos[:, j] - world_pos[:, p],
-            )
-
-    tgt_orients = np.zeros((J_tgt, 4), dtype=np.float64)
-    tgt_orients[:, 0] = 1.0
-    tgt_anim = Animation(
-        Quaternions(local_rot.astype(np.float64)),
-        local_pos.astype(np.float64),
-        Quaternions(tgt_orients),
-        np.asarray(tgt_tp.offsets, dtype=np.float64),
-        tgt_parents_np,
-    )
-
-    # ── 6. Re-encode target Animation → motion features ────────────────────
-    squared_positions_error = {}
-    target_features, target_parents, _max_j, target_motion_anim, target_export_anim, _is_loop, _trans_root_idx, _root_xz = get_motion(
-        tgt_anim,
-        FOOT_CONTACT_VEL_THRESH,
+    target_features = retarget_features_npy_to_target(
+        ref_raw,
+        src_cond,
+        source_type,
+        tgt_tp,
         target_type,
         opt.max_joints,
-        np.asarray(tgt_tp.offsets, dtype=np.float64),
-        tgt_tp.foot_indices,
-        tgt_tp.tpos_rots,
-        squared_positions_error,
-        scale_factor=float(tgt_tp.scale_factor),
-        orientation_quat=tgt_tp.orientation_quat,
-        helper_metadata=tgt_tp.helper_metadata,
+        source_tp=None,  # loaded lazily from src_cond['orientation_reference_fbx_path']
     )
 
     if target_features is None:
         raise RuntimeError(
-            f"get_motion() returned no features when re-encoding retargeted motion "
-            f"({source_type} → {target_type}). Squared position errors: {squared_positions_error}"
+            f"retarget_features_npy_to_target returned None "
+            f"({source_type} → {target_type}). Check source T-pose FBX and joint overlap."
         )
-    target_features = np.asarray(target_features, dtype=np.float32)
 
-    # ── 7. Save artifacts ──────────────────────────────────────────────────
+    # Save retargeted .npy
     base = os.path.splitext(os.path.basename(ref_motion_path))[0]
     out_npy = os.path.join(output_dir, f"_retargeted_{source_type}_to_{target_type}__{base}.npy")
     np.save(out_npy, target_features)

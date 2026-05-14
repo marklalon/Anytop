@@ -16,13 +16,13 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from Anytop.motion_lib.FBX import _extract_armature_skeleton_data, import_fbx, remove_lights_and_cameras
-from Anytop.utils.rotation_numpy import (
+from motion_lib.FBX import _extract_armature_skeleton_data, import_fbx, remove_lights_and_cameras
+from .rotation_numpy import (
     quat_conjugate_wxyz_np,
     quat_multiply_wxyz_np,
     quat_rotate_wxyz_np,
 )
-from Anytop.utils.retarget import (
+from .retarget import (
     _batch_forward_kinematics_np,
     _batch_internal_pose_fk_np,
     _batch_pose_fk_np,

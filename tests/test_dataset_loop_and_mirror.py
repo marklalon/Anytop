@@ -10,6 +10,7 @@ This script covers two previously broken behaviors:
 
 from __future__ import annotations
 
+import glob
 import os
 import sys
 from unittest.mock import patch
@@ -25,9 +26,21 @@ from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_process import infer_translation_root_index_from_features
 
 
-LOOP_MOTION = "Ostrich_Run_548.npy"
+def _find_motion(pattern: str) -> str:
+    """Find a motion file by glob pattern (avoids hard-coded index)."""
+    opt = get_opt(None)
+    motion_dir = opt.motion_dir
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if not os.path.isabs(motion_dir):
+        motion_dir = os.path.join(repo_root, motion_dir)
+    files = sorted(glob.glob(os.path.join(motion_dir, pattern)))
+    assert files, f"No files matching '{pattern}' in {motion_dir}"
+    return os.path.basename(files[0])
+
+
+LOOP_MOTION = _find_motion("Ostrich_Run_*.npy")
 LOOP_SUBSET = "bipeds_clean"
-MIRROR_MOTION = "Jaguar_Run_264.npy"
+MIRROR_MOTION = _find_motion("Jaguar_Run_*.npy")
 MIRROR_SUBSET = "quadropeds_clean"
 MIRROR_SAFEGUARD_SUBSET = "all"
 NUM_FRAMES = 60

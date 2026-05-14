@@ -481,6 +481,7 @@ def _build_tpose_cond(object_type, t_pos_path, face_joints, max_joints=MAX_JOINT
         scale_factor=character_scale_factor,
         orientation_quat=tp.orientation_quat,
         helper_metadata=tp.helper_metadata,
+        animation_input_is_tpose_aligned=False,
     )
     rest_positions = _rest_positions_from_offsets(tp.offsets, parents)
     original_joint_count = int(tp.helper_metadata['original_joint_count'])
@@ -890,11 +891,39 @@ def process_single_object_type(object_type, save_dir):
     )
 
 
-def process_skeleton(object_name, face_joints, save_dir, tpos_fbx, fbx_dir=None):
+def process_skeleton(object_name, face_joints, save_dir, tpos_fbx, fbx_dir=None,
+                     motions_from_npys=None, target_cond_partial=None):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(save_dir, BVHS_DIR), exist_ok=True)
-    
+
+    if motions_from_npys is not None:
+        # Retarget branch: motions already written to save_dir/motions/ by auto_retarget_pipeline.
+        # Load them, compute mean/std, then write cond.npy.
+        assert target_cond_partial is not None, "target_cond_partial required with motions_from_npys"
+        all_motions = [np.load(p).astype(np.float32) for p in motions_from_npys]
+        if not all_motions:
+            print(f"[process_skeleton] no retargeted motions available; cond.npy not written")
+            return
+        stats_tensors = np.concatenate(all_motions, axis=0)  # (total_frames, J, 13)
+        mean, std = get_mean_std(stats_tensors)
+        object_cond = dict(target_cond_partial)
+        object_cond['mean'] = mean
+        object_cond['std'] = std
+        n_joints = len(object_cond['parents'])
+        cond = {object_name: object_cond}
+        _write_dataset_artifacts(
+            save_dir,
+            cond,
+            {},                                           # motion_metadata
+            {object_name: len(all_motions)},             # objects_counter
+            n_joints,                                     # max_joints
+            len(all_motions),                             # files_counter
+            sum(m.shape[0] for m in all_motions),         # frames_counter
+            {},                                           # squared_positions_error
+        )
+        return
+
     ## process
     files_counter = 0
     frames_counter = 0
@@ -940,7 +969,7 @@ def process_skeleton(object_name, face_joints, save_dir, tpos_fbx, fbx_dir=None)
         print(f"No valid FBX data found for '{object_name}', aborting.")
         return
     cond[object_name] = object_cond
-    objects_counter[object_name] = files_counter - cur_counter 
+    objects_counter[object_name] = files_counter - cur_counter
     motion_metadata.update(object_motion_metadata)
 
     _write_dataset_artifacts(

@@ -13,7 +13,7 @@ from typing import Optional, TypedDict
 
 import numpy as np
 
-from Anytop.utils.rotation_numpy import (
+from .rotation_numpy import (
     apply_rotation_to_quaternions_wxyz_np,
     quat_conjugate_wxyz_np,
     quat_multiply_wxyz_np,

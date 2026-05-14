@@ -61,7 +61,7 @@ def test_drift_report_uses_animation_first_frame_as_main_baseline() -> None:
     np.testing.assert_allclose(drift["per_bone"]["mean_length"], [1.25])
 
 
-def test_drift_report_keeps_tpose_reference_as_separate_stat_item() -> None:
+def test_drift_report_includes_first_frame_reference_stats() -> None:
     reference = ReferenceSkeleton(
         object_type="Unit",
         bone_names=["Root", "BoneA", "BoneB"],
@@ -91,23 +91,9 @@ def test_drift_report_keeps_tpose_reference_as_separate_stat_item() -> None:
     )
 
     report = _compute_drift_report(reference, motion)
-    tpose_reference = report["tpose_reference"]
+    first_frame_reference = report["first_frame_reference"]
 
-    assert tpose_reference["reference_basis"] == "cond_tpose"
-    assert tpose_reference["measured_basis"] == "animation_first_frame"
-    assert tpose_reference["frame_index"] == 0
-    assert tpose_reference["global_scale"] == pytest.approx(2.0)
-    assert tpose_reference["max_abs_drift_pct"] == pytest.approx(100.0)
-    assert tpose_reference["worst_bone"] == "BoneA"
-    np.testing.assert_allclose(
-        tpose_reference["per_bone"]["tpose_length"],
-        [1.0, 3.0],
-    )
-    np.testing.assert_allclose(
-        tpose_reference["per_bone"]["first_frame_length_before_scale"],
-        [1.0, 1.0],
-    )
-    np.testing.assert_allclose(
-        tpose_reference["per_bone"]["first_frame_length_after_scale"],
-        [2.0, 2.0],
-    )
+    assert first_frame_reference["frame_index"] == 0
+    assert first_frame_reference["frame_value"] == pytest.approx(0.0)
+    # BoneA length = 1.0, BoneB length = 1.0 (world distance from Root at frame 0)
+    assert first_frame_reference["mean_bone_length"] == pytest.approx(1.0)

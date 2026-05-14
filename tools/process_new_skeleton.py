@@ -68,14 +68,52 @@ def main():
                 f"Cannot infer object-type from T-pose FBX '{tpos_fbx}'."
             )
         print(f"Auto-detected object_type: {object_type}")
-    process_skeleton(
-        object_type,
-        args.face_joints_names,
-        args.save_dir,
-        tpos_fbx,
-        args.fbx_dir,
-    )
-    
+
+    # If --tpos-fbx is given without --retarget-top-k, default to retarget-top-k 1
+    # (prefer retarget over T-pose-only mode with no motions)
+    retarget_top_k = args.retarget_top_k
+    auto_defaulted_retarget = False
+    if retarget_top_k is None and args.fbx_dir is None:
+        retarget_top_k = 1
+        auto_defaulted_retarget = True
+        print(f"[process_new_skeleton] No --retarget-top-k specified, defaulting to 1")
+
+    if retarget_top_k:
+        if args.fbx_dir:
+            raise SystemExit(
+                "Error: --retarget-top-k and --fbx-dir are mutually exclusive. "
+                "--retarget-top-k auto-generates motion data from retargeted donors."
+            )
+        from utils.auto_retarget import auto_retarget_pipeline
+        result = auto_retarget_pipeline(
+            target_object_type=object_type,
+            target_tpose_fbx=tpos_fbx,
+            save_dir=args.save_dir,
+            top_k=retarget_top_k,
+            training_cond_path=args.training_cond_path,
+            face_joints_names=args.face_joints_names,
+            donor_skeletons_override=(
+                [s.strip() for s in args.donor_skeletons.split(',')]
+                if args.donor_skeletons else None
+            ),
+        )
+        process_skeleton(
+            object_type,
+            args.face_joints_names,
+            args.save_dir,
+            tpos_fbx,
+            motions_from_npys=result['retargeted_npys'],
+            target_cond_partial=result['target_cond'],
+        )
+    else:
+        process_skeleton(
+            object_type,
+            args.face_joints_names,
+            args.save_dir,
+            tpos_fbx,
+            args.fbx_dir,
+        )
+
 if __name__ == '__main__':
         main()
     
