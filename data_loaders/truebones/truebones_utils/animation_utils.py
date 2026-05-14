@@ -897,6 +897,19 @@ def _dfs_leaf_joint_indices(parents):
     ]
 
 
+def _is_terminal_leaf_name(name):
+    """Return True if the joint name already looks like a terminal / non-rotating leaf.
+
+    These typically do not need an extra rotation helper because they are
+    already semantic end-effectors (end sites, helpers, nubs, etc.).
+    """
+    upper = name.upper()
+    for keyword in ('END', 'HELPER', 'NUB', 'ENDSITE', 'END_SITE'):
+        if keyword in upper:
+            return True
+    return False
+
+
 def _select_leaf_rotation_helper_source_indices(
     joint_names,
     parents,
@@ -966,13 +979,19 @@ def _build_leaf_rotation_helper_metadata(joint_names, parents, *, max_joints=MAX
     parents = np.asarray(parents, dtype=np.int32)
     original_joint_count = int(len(parents))
     original_leaf_joint_indices = _dfs_leaf_joint_indices(parents)
+    # Skip leaves that already have terminal names (End, Helper, Nub, etc.) —
+    # they don't need an extra rotation helper.
+    candidate_leaf_indices = [
+        idx for idx in original_leaf_joint_indices
+        if not _is_terminal_leaf_name(joint_names[idx])
+    ]
     helper_budget = max(int(max_joints) - original_joint_count, 0)
     # Under a tight joint budget, prefer complete left/right helper pairs so a
     # mirrored export never carries a single-sided helper across the body.
     helper_source_leaf_indices = _select_leaf_rotation_helper_source_indices(
         joint_names,
         parents,
-        original_leaf_joint_indices,
+        candidate_leaf_indices,
         helper_budget,
         offsets=offsets,
     )
