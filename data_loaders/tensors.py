@@ -97,7 +97,7 @@ def truebones_collate(batch):
     if 'graph_dist' in notnone_batches[0]:
         graphdistbatch = [b['graph_dist'] for b in notnone_batches]
 
-    cond['y'].update({'joints_mask': jointsmaskbatchTensor})
+    cond['y'].update({'joints_padding_mask': jointsmaskbatchTensor})
     cond['y'].update({'n_joints': jointsnumbatchTensor})
     cond['y'].update({'joints_relations': torch.stack(jointsrelationsbatch)})
     cond['y'].update({'graph_dist': torch.stack(graphdistbatch)})

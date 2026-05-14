@@ -1517,7 +1517,7 @@ class GaussianDiffusion:
         mask = model_kwargs['y']['lengths_mask']
         lengths = model_kwargs['y']['lengths']
         actual_joints = model_kwargs['y']['n_joints']
-        joints_mask = model_kwargs['y']['joints_mask'][:, :, :, 1, 1:]
+        joints_padding_mask = model_kwargs['y']['joints_padding_mask'][:, :, :, 1, 1:]
         mean = model_kwargs['y']['mean'][..., None]
         std = model_kwargs['y']['std'][..., None]
 
@@ -1601,14 +1601,14 @@ class GaussianDiffusion:
                 target_fp32 = target.float()
                 model_output_fp32 = model_output.float()
                 mask_fp32 = mask.float()
-                joints_mask_fp32 = joints_mask.float()
+                joints_padding_mask_fp32 = joints_padding_mask.float()
                 lengths_fp32 = lengths.float()
                 actual_joints_fp32 = actual_joints.float()
                 mean_fp32 = mean.float()
                 std_fp32 = std.float()
 
                 terms["l_simple"] = self.temporal_spatial_masked_l2(
-                    target_fp32, model_output_fp32, mask_fp32, joints_mask_fp32, lengths_fp32, actual_joints_fp32
+                    target_fp32, model_output_fp32, mask_fp32, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
                 )
                 terms["loss"] = terms["l_simple"].clone()
 
@@ -1617,13 +1617,13 @@ class GaussianDiffusion:
 
                 if self.lambda_geo > 0.:
                     terms["geodesic_loss"] = self.geodesic_loss(
-                        target_denorm, model_output_denorm, mask_fp32, joints_mask_fp32, lengths_fp32, actual_joints_fp32
+                        target_denorm, model_output_denorm, mask_fp32, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
                     )
                     terms["loss"] = terms["loss"] + self.lambda_geo * terms["geodesic_loss"]
 
                 if self.lambda_vel > 0.:
                     terms["vel_loss"] = self.velocity_consistency_loss(
-                        model_output_denorm, mask_fp32, joints_mask_fp32, lengths_fp32, actual_joints_fp32
+                        model_output_denorm, mask_fp32, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
                     )
                     terms["loss"] = terms["loss"] + self.lambda_vel * terms["vel_loss"]
 

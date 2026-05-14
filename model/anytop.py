@@ -64,7 +64,7 @@ class AnyTop(nn.Module):
         timesteps: [batch_size] (int)
         """
 
-        joints_mask = y['joints_mask'].to(x.device)
+        joints_padding_mask = y['joints_padding_mask'].to(x.device)
         temp_mask = y['mask'].to(x.device)
         tpos_first_frame = y['tpos_first_frame'].to(x.device).unsqueeze(0)
 
@@ -72,7 +72,7 @@ class AnyTop(nn.Module):
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
 
         x = self.input_process(x, tpos_first_frame, y['joints_names_embs']) # applies linear layer on each frame to convert it to latent dim
-        spatial_mask = 1.0 - joints_mask[:, 0, 0, 1:, 1:]
+        spatial_mask = 1.0 - joints_padding_mask[:, 0, 0, 1:, 1:]
         spatial_mask = spatial_mask.unsqueeze(1).unsqueeze(1).repeat(1, nframes + 1, self.num_heads, 1, 1).reshape(-1,self.num_heads, njoints, njoints)
         temporal_mask = 1.0 - temp_mask.repeat(1, njoints, self.num_heads, 1, 1).reshape(-1, nframes + 1, nframes + 1).float()
         spatial_mask[spatial_mask == 1.0] = -1e4

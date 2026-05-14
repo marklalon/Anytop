@@ -214,7 +214,7 @@ def mask(parents, filter):
     for i,f in enumerate(fltr): m[i,:] = np.any(jnts[:,np.newaxis] == f[np.newaxis,:], axis=1)
     return m
 
-def joints_mask(parents): return np.eye(len(parents)).astype(bool)
+def joints_padding_mask(parents): return np.eye(len(parents)).astype(bool)
 def children_mask(parents): return mask(parents, children_list)
 def parents_mask(parents): return mask(parents, parents_list)
 def descendants_mask(parents): return mask(parents, descendants_list)
