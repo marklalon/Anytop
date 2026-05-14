@@ -301,8 +301,10 @@ def process_new_skeleton_args():
     group.add_argument("--face-joints-names", default=None, type=str, nargs=4,
                        help="Optional manual override for the four orientation joints ([right hip, left hip, right shoulder, left shoulder] or equivalent). \
                            When omitted, preprocessing tries to infer them from semantic joint names.")
-    group.add_argument("--tpos-fbx", required=True, type=str,
-                       help="An FBX file of the character's natural rest pose for meaningful rotation learning.")
+    group.add_argument("--tpos-fbx", default=None, type=str,
+                       help="An FBX file of the character's natural rest pose for meaningful rotation learning. "
+                            "If omitted, the code will auto-select one from --fbx-dir using filename heuristics "
+                            "(T-pose > idle > walk > first file).")
     args = parser.parse_args()
     return args
 

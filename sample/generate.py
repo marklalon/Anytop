@@ -324,6 +324,17 @@ def main(args=None, cond_dict=None):
     else:
         actual_cond_file = opt.cond_file
 
+    n_joints_in_cond = max(
+        len(np.asarray(cond_dict[object_key]['parents']))
+        for object_key in cond_dict
+    )
+    if n_joints_in_cond > opt.max_joints:
+        print(
+            f'[generate] detected cond max joints {n_joints_in_cond} > '
+            f'opt.max_joints={opt.max_joints}; raising to {n_joints_in_cond}'
+        )
+        opt.max_joints = n_joints_in_cond
+
     out_path = args.output_dir
     name = os.path.basename(os.path.dirname(args.model_path))
     niter = os.path.basename(args.model_path).replace('model', '').replace('.pt', '')

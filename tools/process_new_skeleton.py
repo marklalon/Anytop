@@ -13,7 +13,7 @@ face-joints-names - Optional manual override for four joints defining skeleton o
             pass the four joint names explicitly. 
 save-dir - Output directory.
 tpos-fbx - An FBX file of the character's natural rest pose for meaningful rotation learning. 
-        If missing, the code selects a pose from the provided FBX files. 
+        If missing, the code selects a pose from the provided FBX files.
         
 Output:
 The code will create the following under save_dir:
@@ -31,6 +31,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_loaders.truebones.truebones_utils.motion_process import process_skeleton
+from data_loaders.truebones.truebones_utils.fbx_filename_rules import find_tpose_reference_path
 from utils.misc import infer_object_type_from_filename
 from utils.parser_util import process_new_skeleton_args
 
@@ -38,15 +39,42 @@ from utils.parser_util import process_new_skeleton_args
 def main():
     args = process_new_skeleton_args()
 
+    # Resolve tpos_fbx: auto-select from fbx_dir when not provided
+    tpos_fbx = args.tpos_fbx
+    if tpos_fbx is None or tpos_fbx == '':
+        if args.fbx_dir is None:
+            raise FileNotFoundError(
+                "Either --tpos-fbx or --fbx-dir must be provided. "
+                "--tpos-fbx is required for T-pose-only mode, and --fbx-dir "
+                "is required to auto-select a T-pose reference."
+            )
+        fbx_files = sorted([
+            os.path.join(args.fbx_dir, f)
+            for f in os.listdir(args.fbx_dir)
+            if f.lower().endswith('.fbx')
+        ])
+        if len(fbx_files) == 0:
+            raise FileNotFoundError(
+                f"No FBX files found in --fbx-dir '{args.fbx_dir}'."
+            )
+        tpos_fbx = find_tpose_reference_path(fbx_files)
+        print(f"Auto-selected T-pose reference: {tpos_fbx}")
+
     object_type = args.object_type
     if object_type is None:
-        object_type = infer_object_type_from_filename(args.tpos_fbx)
+        object_type = infer_object_type_from_filename(tpos_fbx)
         if object_type is None:
             raise FileNotFoundError(
-                f"Cannot infer object-type from --tpos-fbx '{args.tpos_fbx}'."
+                f"Cannot infer object-type from T-pose FBX '{tpos_fbx}'."
             )
         print(f"Auto-detected object_type: {object_type}")
-    process_skeleton(object_type, args.face_joints_names, args.save_dir, args.tpos_fbx, args.fbx_dir)
+    process_skeleton(
+        object_type,
+        args.face_joints_names,
+        args.save_dir,
+        tpos_fbx,
+        args.fbx_dir,
+    )
     
 if __name__ == '__main__':
         main()

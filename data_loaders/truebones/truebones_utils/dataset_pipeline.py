@@ -552,8 +552,15 @@ def _build_tpose_only_cond(object_type, t_pos_path, face_joints):
         object_type, t_pos_path, face_joints,
     )
     num_joints = len(parents)
-    object_cond['mean'] = t_pos_motion[0].astype(np.float32)  # (J, 13)
-    object_cond['std'] = np.ones_like(object_cond['mean'])
+
+    # mean: T-pose feature vector with velocity channels (9:12) explicitly zeroed
+    # to make rest-pose semantics unambiguous.
+    mean = t_pos_motion[0].astype(np.float32).copy()  # (J, 13)
+    mean[:, 9:12] = 0.0
+    object_cond['mean'] = mean
+
+    object_cond['std'] = np.ones_like(mean)
+
     return object_cond, max_joints
 
 
@@ -899,7 +906,11 @@ def process_skeleton(object_name, face_joints, save_dir, tpos_fbx, fbx_dir=None)
 
     if fbx_dir is None:
         # T-pose only: generate cond.npy without motion file processing
-        object_cond, max_joints = _build_tpose_only_cond(object_name, tpos_fbx, face_joints)
+        object_cond, max_joints = _build_tpose_only_cond(
+            object_name,
+            tpos_fbx,
+            face_joints,
+        )
         cond[object_name] = object_cond
         _write_dataset_artifacts(
             save_dir,
@@ -914,7 +925,17 @@ def process_skeleton(object_name, face_joints, save_dir, tpos_fbx, fbx_dir=None)
         return
 
     cur_counter = files_counter
-    files_counter, frames_counter, max_joints, object_cond, object_motion_metadata = process_object(object_name, files_counter, frames_counter, max_joints, squared_positions_error, save_dir=save_dir, fbxs_dir=fbx_dir, face_joints=face_joints, t_pos_path=tpos_fbx)
+    files_counter, frames_counter, max_joints, object_cond, object_motion_metadata = process_object(
+        object_name,
+        files_counter,
+        frames_counter,
+        max_joints,
+        squared_positions_error,
+        save_dir=save_dir,
+        fbxs_dir=fbx_dir,
+        face_joints=face_joints,
+        t_pos_path=tpos_fbx,
+    )
     if object_cond is None:
         print(f"No valid FBX data found for '{object_name}', aborting.")
         return
