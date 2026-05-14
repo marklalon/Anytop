@@ -77,8 +77,10 @@ def retarget_features_npy_to_target(
     from utils.retarget import retarget_world_space_np
     from utils.exporter import animation_to_exporter_inputs
     from utils.roundtrip_common import _build_skeleton
-    from data_loaders.truebones.truebones_utils.animation_utils import (
-        _solve_local_positions_for_target_global,
+    from utils.rotation_numpy import (
+        quat_conjugate_wxyz_np,
+        quat_multiply_wxyz_np,
+        quat_rotate_wxyz_np,
     )
     from data_loaders.truebones.truebones_utils.features import (
         get_common_features_from_T_pose,
@@ -182,35 +184,35 @@ def retarget_features_npy_to_target(
     )
 
     # 6. Build target Animation from world-space pose
-    world_pos = np.asarray(retarget_result['target_world_positions'], dtype=np.float64)  # (F, J_tgt, 3)
-    pose_rot = np.asarray(retarget_result['joint_rotations'], dtype=np.float64)          # (F, J_tgt, 4)
+    world_pos = retarget_result['target_world_positions']   # (F, J_tgt, 3)
+    world_rot = retarget_result['target_world_rotations']   # (F, J_tgt, 4)
     tgt_parents_np = np.asarray(target_tp.tpos_anim.parents, dtype=np.int32)
     F, J_tgt = world_pos.shape[:2]
-    target_offsets = np.asarray(target_tp.offsets, dtype=np.float64)
 
-    # `retarget_world_space_np()` already returns target-local pose rotations
-    # with the target rest rotations factored out. Reconstructing local
-    # rotations from `target_world_rotations` bakes the target T-pose joint
-    # orientation back into the motion channels, which makes unmatched bones
-    # like dragon wings export with constant non-rest BVH rotations.
-    pose_rot_quats = Quaternions(pose_rot)
-    tgt_orients = Quaternions.id(J_tgt)
-    initial_local_pos = np.repeat(target_offsets[None, :, :], F, axis=0)
-    initial_local_pos[:, 0] = world_pos[:, 0]
-    local_pos = _solve_local_positions_for_target_global(
-        pose_rot_quats,
-        world_pos,
-        target_offsets,
-        tgt_parents_np,
-        tgt_orients,
-        initial_positions=initial_local_pos,
-    )
+    local_rot = np.zeros_like(world_rot)
+    local_pos = np.zeros_like(world_pos)
+    for j in range(J_tgt):
+        p = int(tgt_parents_np[j])
+        if p < 0:
+            local_rot[:, j] = world_rot[:, j]
+            local_pos[:, j] = world_pos[:, j]
+        else:
+            local_rot[:, j] = quat_multiply_wxyz_np(
+                quat_conjugate_wxyz_np(world_rot[:, p]),
+                world_rot[:, j],
+            )
+            local_pos[:, j] = quat_rotate_wxyz_np(
+                quat_conjugate_wxyz_np(world_rot[:, p]),
+                world_pos[:, j] - world_pos[:, p],
+            )
 
+    tgt_orients = np.zeros((J_tgt, 4), dtype=np.float64)
+    tgt_orients[:, 0] = 1.0
     tgt_anim = Animation(
-        pose_rot_quats,
+        Quaternions(local_rot.astype(np.float64)),
         local_pos.astype(np.float64),
-        tgt_orients,
-        target_offsets,
+        Quaternions(tgt_orients),
+        np.asarray(target_tp.offsets, dtype=np.float64),
         tgt_parents_np,
     )
 
