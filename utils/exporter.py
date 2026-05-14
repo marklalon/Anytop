@@ -17,6 +17,7 @@ import torch
 from torch import Tensor
 
 from motion_lib.FBX import _extract_armature_skeleton_data, import_fbx, remove_lights_and_cameras
+from data_loaders.truebones.truebones_utils.animation_utils import _refresh_joint_metadata_in_object_cond
 from .rotation_numpy import (
     quat_conjugate_wxyz_np,
     quat_multiply_wxyz_np,
@@ -26,25 +27,55 @@ from .retarget import (
     _batch_forward_kinematics_np,
     _batch_internal_pose_fk_np,
     _batch_pose_fk_np,
-    _canonical_bone_name,
     _generate_coordinate_candidates_np,
     retarget_world_space_np,
 )
 
 
 # Re-exported for backward compatibility with callers that import these
-# helpers from ``Anytop.utils.exporter`` (compare_motions.py,
-# check_bone_length_drift.py, test_bvh_roundtrip.py, etc.). The canonical
-# implementations live in ``Anytop.utils.retarget``.
+# helpers from ``Anytop.utils.exporter``. The canonical implementations live
+# in ``Anytop.utils.retarget``.
 __all__ = [
     "_batch_forward_kinematics_np",
     "_batch_internal_pose_fk_np",
     "_batch_pose_fk_np",
-    "_canonical_bone_name",
     "_generate_coordinate_candidates_np",
     "animation_to_exporter_inputs",
     "AnimationExporter",
 ]
+
+
+def _build_canonical_match_names(
+    joint_names: list[str],
+    parents: np.ndarray,
+    offsets: np.ndarray,
+    *,
+    log_hint: str,
+) -> list[str]:
+    """Derive canonical joint names from raw skeleton data.
+
+    *log_hint* is only used in error messages to identify which skeleton
+    failed to canonicalize; it does not affect the matching logic.
+    """
+    object_cond = {
+        "object_type": log_hint,
+        "joints_names": list(joint_names),
+        "parents": np.asarray(parents, dtype=np.int32),
+        "offsets": np.asarray(offsets, dtype=np.float64),
+    }
+    _refresh_joint_metadata_in_object_cond(object_cond)
+    canonical_joint_names = object_cond.get("canonical_joint_names")
+    if canonical_joint_names is None:
+        raise ValueError(
+            f"Unable to derive canonical_joint_names ({log_hint})"
+        )
+    canonical_joint_names = list(canonical_joint_names)
+    if len(canonical_joint_names) != len(joint_names):
+        raise ValueError(
+            f"Derived canonical_joint_names length mismatch ({log_hint}): "
+            f"{len(canonical_joint_names)} vs {len(joint_names)}"
+        )
+    return canonical_joint_names
 
 
 def animation_to_exporter_inputs(animation, skeleton) -> tuple[Tensor, Tensor, Tensor, Optional[Tensor]]:
@@ -440,19 +471,31 @@ class AnimationExporter:
             coordinate_search = not (
                 mesh_path_lower and mesh_path_lower.endswith((".glb", ".gltf"))
             )
+            src_match_names = _build_canonical_match_names(
+                bone_names,
+                parents_input,
+                rest_offsets_input,
+                log_hint="export source skeleton",
+            )
+            tgt_match_names = _build_canonical_match_names(
+                fbx_names,
+                fbx_parents,
+                fbx_offsets,
+                log_hint=os.path.basename(mesh_path) if mesh_path else "export target armature",
+            )
 
             retarget_result = retarget_world_space_np(
-                src_bone_names=bone_names,
                 src_parents=parents_input,
                 src_rest_offsets=rest_offsets_input,
                 src_rest_rotations=rest_rot_input,
-                tgt_bone_names=fbx_names,
                 tgt_parents=fbx_parents,
                 tgt_rest_offsets=fbx_offsets,
                 tgt_rest_rotations=fbx_rest_rots,
                 src_joint_rotations=np.array(jr, dtype=np.float64),
                 src_root_translation=np.array(rt, dtype=np.float64),
                 src_root_rotation=np.array(rr, dtype=np.float64),
+                src_match_names=src_match_names,
+                tgt_match_names=tgt_match_names,
                 src_bone_translations=np.array(bt, dtype=np.float64) if bt is not None else None,
                 coordinate_search=coordinate_search,
                 verbose=True,

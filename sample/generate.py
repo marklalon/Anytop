@@ -92,6 +92,7 @@ def _retarget_reference_motion(
         target_type,
         opt.max_joints,
         source_tp=None,  # loaded lazily from src_cond['orientation_reference_fbx_path']
+        target_cond=tgt_cond,
     )
 
     if target_features is None:

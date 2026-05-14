@@ -78,7 +78,6 @@ from data_loaders.truebones.truebones_utils.motion_process import (
 from tools.restore_glb_from_npy import restore_glb
 
 from tools.compare_motions import (
-    _canonical_bone_name,
     _compute_mesh_surface_error,
     _load_motion,
     _validate_compatible,
@@ -106,6 +105,10 @@ _DEFAULT_TPOSE_FBX = os.path.join(
     _ANYTOP_ROOT, "dataset", "truebones", "zoo", "Truebone_Z-OO", "Buffalo", "Buffalo-TPOSE.fbx",
 )
 _DEFAULT_OBJECT_TYPE = "Buffalo"
+
+
+def _normalize_bone_key(name: str) -> str:
+    return name.replace(" ", "_").lower()
 
 
 def _require_dataset_cond_entry_or_skip(cond_entry: dict[str, Any] | None, object_type: str) -> dict[str, Any]:
@@ -144,7 +147,7 @@ def _compare_export_to_source(
     common_names = list(result["comparison"]["common_bone_names"])
 
     canon_to_orig_idx = {
-        _canonical_bone_name(name): index for index, name in enumerate(motion_a.bone_names)
+        _normalize_bone_key(name): index for index, name in enumerate(motion_a.bone_names)
     }
     child_counts = np.zeros(len(motion_a.parents), dtype=np.int32)
     for parent_idx in motion_a.parents:

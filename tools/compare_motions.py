@@ -84,9 +84,12 @@ from Anytop.motion_lib.FBX import (
     _get_action_sample_times,
 )
 from Anytop.utils.exporter import (
-    _canonical_bone_name,
     _generate_coordinate_candidates_np,
 )
+
+
+def _normalize_bone_key(name: str) -> str:
+    return name.replace(" ", "_").lower()
 
 
 # ── Data structures ───────────────────────────────────────────────────────────
@@ -497,8 +500,8 @@ def _compute_common_bone_reindex(
     idx_b : list[int]
         Indices into B's original arrays for each common bone.
     """
-    canon_a = {_canonical_bone_name(n): i for i, n in enumerate(names_a)}
-    canon_b = {_canonical_bone_name(n): i for i, n in enumerate(names_b)}
+    canon_a = {_normalize_bone_key(n): i for i, n in enumerate(names_a)}
+    canon_b = {_normalize_bone_key(n): i for i, n in enumerate(names_b)}
     common = sorted(set(canon_a) & set(canon_b))
     idx_a = [canon_a[c] for c in common]
     idx_b = [canon_b[c] for c in common]
@@ -534,9 +537,9 @@ def _detect_and_align(
     # Use world-position bone lengths for only the parent→child pairs where
     # both bones are in the common set (shared by A and B). This ensures the
     # bone length comparison is valid regardless of differing hierarchies.
-    ref_canonical_a = [_canonical_bone_name(motion_a.bone_names[i]) for i in idx_a]
+    ref_canonical_a = [_normalize_bone_key(motion_a.bone_names[i]) for i in idx_a]
     reindexed_bone_names_a = [motion_a.bone_names[i] for i in idx_a]
-    reindexed_canonical_a = {_canonical_bone_name(n): i for i, n in enumerate(reindexed_bone_names_a)}
+    reindexed_canonical_a = {_normalize_bone_key(n): i for i, n in enumerate(reindexed_bone_names_a)}
 
     # Map A's parent indices from its original index space to the common-bone
     # index space (0..K-1).  A parent that is not in the common set is set to
@@ -754,8 +757,8 @@ def _compare_motions(
     if mean_bone_len_a <= 0.0:
         mean_bone_len_a = _compute_mean_bone_length_from_positions(
             motion_a.world_positions, motion_a.parents,
-            {_canonical_bone_name(n): i for i, n in enumerate(motion_a.bone_names)},
-            [_canonical_bone_name(n) for n in motion_a.bone_names],
+            {_normalize_bone_key(n): i for i, n in enumerate(motion_a.bone_names)},
+            [_normalize_bone_key(n) for n in motion_a.bone_names],
             motion_a.parents,
         )
 
@@ -812,7 +815,7 @@ def _compare_motions(
     # Build: original index A → common bone index
     orig_a_to_common = {oi: ci for ci, oi in enumerate(idx_a)}
     # Build: canonical name → common bone index (for A's bones)
-    common_canon_to_ci = {_canonical_bone_name(motion_a.bone_names[oi]): ci
+    common_canon_to_ci = {_normalize_bone_key(motion_a.bone_names[oi]): ci
                           for ci, oi in enumerate(idx_a)}
 
     dir_errors = np.full((num_frames, num_common), np.nan, dtype=np.float64)  # (F, K)
@@ -824,7 +827,7 @@ def _compare_motions(
             continue  # root bone, skip
 
         # Is A's parent also in the common bone set?
-        parent_canon = _canonical_bone_name(motion_a.bone_names[parent_orig_a])
+        parent_canon = _normalize_bone_key(motion_a.bone_names[parent_orig_a])
         if parent_canon not in common_canon_to_ci:
             continue
         parent_ci = common_canon_to_ci[parent_canon]

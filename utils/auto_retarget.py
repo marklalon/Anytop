@@ -18,11 +18,30 @@ from data_loaders.truebones.truebones_utils.param_utils import (
     MAX_JOINTS,
     MOTION_DIR,
 )
+from data_loaders.truebones.truebones_utils.animation_utils import (
+    LEAF_ROTATION_HELPER_SUFFIX,
+)
 
 
 # ---------------------------------------------------------------------------
 # Core retarget helper (shared between pipeline and generate.py wrapper)
 # ---------------------------------------------------------------------------
+
+
+def _require_canonical_joint_names(object_cond: dict, *, object_type_hint: str, joint_count: int | None = None) -> list[str]:
+    canonical_joint_names = object_cond.get('canonical_joint_names')
+    if canonical_joint_names is None:
+        raise ValueError(
+            f"Retarget requires canonical_joint_names for {object_type_hint}"
+        )
+
+    canonical_joint_names = list(canonical_joint_names)
+    if joint_count is not None and len(canonical_joint_names) < int(joint_count):
+        raise ValueError(
+            f"Retarget canonical_joint_names for {object_type_hint} has length {len(canonical_joint_names)} "
+            f"but joint count requires at least {int(joint_count)}"
+        )
+    return canonical_joint_names
 
 def retarget_features_npy_to_target(
     source_features: np.ndarray,
@@ -32,6 +51,7 @@ def retarget_features_npy_to_target(
     target_object_type: str,
     max_joints: int,
     source_tp=None,
+    target_cond: Optional[dict] = None,
 ) -> Optional[np.ndarray]:
     """Retarget source skeleton's motion features to target skeleton's space.
 
@@ -48,6 +68,8 @@ def retarget_features_npy_to_target(
         source_tp:          Optional pre-loaded TPoseFeatures for the source donor.
                             If None, loaded lazily from
                             source_cond['orientation_reference_fbx_path'].
+        target_cond:        Optional target cond entry carrying semantic
+                    ``canonical_joint_names`` for name matching.
 
     Returns:
         (F, J_tgt, 13) retargeted feature array, or None if the retarget failed.
@@ -55,10 +77,8 @@ def retarget_features_npy_to_target(
     from utils.retarget import retarget_world_space_np
     from utils.exporter import animation_to_exporter_inputs
     from utils.roundtrip_common import _build_skeleton
-    from utils.rotation_numpy import (
-        quat_conjugate_wxyz_np,
-        quat_multiply_wxyz_np,
-        quat_rotate_wxyz_np,
+    from data_loaders.truebones.truebones_utils.animation_utils import (
+        _solve_local_positions_for_target_global,
     )
     from data_loaders.truebones.truebones_utils.features import (
         get_common_features_from_T_pose,
@@ -68,16 +88,29 @@ def retarget_features_npy_to_target(
     from motion_lib.Animation import Animation
     from motion_lib.Quaternions import Quaternions
 
-    # 1. Decode source features → Animation
-    src_anim, _has_pos = recover_animation_from_motion_np(
-        source_features,
-        np.asarray(source_cond['parents'], dtype=np.int32),
-        np.asarray(source_cond['offsets'], dtype=np.float32),
-        translation_root_index=None,
-        allow_infer=True,
-    )
+    def _resolve_match_names(raw_names, object_cond=None, joint_count=None):
+        if object_cond is None:
+            raise ValueError("Retarget matching requires object_cond with canonical_joint_names")
+        resolved_count = len(raw_names) if joint_count is None else int(joint_count)
+        canonical_joint_names = _require_canonical_joint_names(
+            object_cond,
+            object_type_hint=str(object_cond.get('object_type') or '<unknown>'),
+            joint_count=resolved_count,
+        )
+        return list(canonical_joint_names[:resolved_count])
 
-    # 2. Load source T-pose metadata (once per donor via source_tp)
+    # Retarget against the donor's original skeleton only. Leaf helpers are a
+    # training-time augmentation whose count varies with the joint budget, so
+    # carrying them into retarget can desynchronize motion features from the
+    # runtime T-pose skeleton.
+    source_features = np.asarray(source_features, dtype=np.float32)
+    source_joint_count = int(source_cond.get('original_joint_count') or source_features.shape[1])
+    if source_joint_count <= 0 or source_joint_count > source_features.shape[1]:
+        source_joint_count = int(source_features.shape[1])
+    if source_joint_count < source_features.shape[1]:
+        source_features = source_features[:, :source_joint_count, :]
+
+    # 1. Load source T-pose metadata (once per donor via source_tp)
     if source_tp is None:
         src_tpose_fbx = source_cond.get('orientation_reference_fbx_path')
         if not src_tpose_fbx or not os.path.isfile(src_tpose_fbx):
@@ -86,15 +119,44 @@ def retarget_features_npy_to_target(
         source_tp = get_common_features_from_T_pose(
             src_tpose_fbx,
             source_object_type,
-            augment_leaf_rotation_helpers=True,
+            augment_leaf_rotation_helpers=False,
             max_joints=max_joints,
         )
+    elif len(source_tp.names) != source_joint_count:
+        src_tpose_fbx = source_cond.get('orientation_reference_fbx_path')
+        if not src_tpose_fbx or not os.path.isfile(src_tpose_fbx):
+            print(f"  [WARN] source T-pose FBX not found: {src_tpose_fbx!r}")
+            return None
+        source_tp = get_common_features_from_T_pose(
+            src_tpose_fbx,
+            source_object_type,
+            augment_leaf_rotation_helpers=False,
+            max_joints=max_joints,
+        )
+
+    if len(source_tp.names) != source_joint_count:
+        raise ValueError(
+            f"Retarget source joint count {source_joint_count} does not match "
+            f"source T-pose joint count {len(source_tp.names)}"
+        )
+
+    src_parents = np.asarray(source_tp.tpos_anim.parents, dtype=np.int32)
+    src_offsets = np.asarray(source_tp.offsets, dtype=np.float32)
+
+    # 2. Decode source features → Animation
+    src_anim, _has_pos = recover_animation_from_motion_np(
+        source_features,
+        src_parents,
+        src_offsets,
+        translation_root_index=None,
+        allow_infer=True,
+    )
 
     # 3. Build source skeleton
     src_skeleton = _build_skeleton(
         source_tp.names,
-        np.asarray(source_tp.offsets, dtype=np.float32),
-        np.asarray(source_tp.tpos_anim.parents, dtype=np.int32),
+        src_offsets,
+        src_parents,
         rest_rotations=np.asarray(source_tp.tpos_rots[0], dtype=np.float32),
     )
 
@@ -103,11 +165,9 @@ def retarget_features_npy_to_target(
 
     # 5. World-space retarget
     retarget_result = retarget_world_space_np(
-        src_bone_names=list(source_tp.names),
-        src_parents=np.asarray(source_tp.tpos_anim.parents, dtype=np.int32),
-        src_rest_offsets=np.asarray(source_tp.offsets, dtype=np.float64),
+        src_parents=src_parents,
+        src_rest_offsets=src_offsets.astype(np.float64),
         src_rest_rotations=np.asarray(source_tp.tpos_rots[0], dtype=np.float64),
-        tgt_bone_names=list(target_tp.names),
         tgt_parents=np.asarray(target_tp.tpos_anim.parents, dtype=np.int32),
         tgt_rest_offsets=np.asarray(target_tp.offsets, dtype=np.float64),
         tgt_rest_rotations=np.asarray(target_tp.tpos_rots[0], dtype=np.float64),
@@ -115,40 +175,42 @@ def retarget_features_npy_to_target(
         src_root_translation=src_rt.numpy().astype(np.float64),
         src_root_rotation=src_rr.numpy().astype(np.float64),
         src_bone_translations=src_bt.numpy().astype(np.float64) if src_bt is not None else None,
+        src_match_names=_resolve_match_names(source_tp.names, source_cond, source_joint_count),
+        tgt_match_names=_resolve_match_names(target_tp.names, target_cond),
         coordinate_search=False,
         verbose=False,
     )
 
     # 6. Build target Animation from world-space pose
-    world_pos = retarget_result['target_world_positions']   # (F, J_tgt, 3)
-    world_rot = retarget_result['target_world_rotations']   # (F, J_tgt, 4)
+    world_pos = np.asarray(retarget_result['target_world_positions'], dtype=np.float64)  # (F, J_tgt, 3)
+    pose_rot = np.asarray(retarget_result['joint_rotations'], dtype=np.float64)          # (F, J_tgt, 4)
     tgt_parents_np = np.asarray(target_tp.tpos_anim.parents, dtype=np.int32)
     F, J_tgt = world_pos.shape[:2]
+    target_offsets = np.asarray(target_tp.offsets, dtype=np.float64)
 
-    local_rot = np.zeros_like(world_rot)
-    local_pos = np.zeros_like(world_pos)
-    for j in range(J_tgt):
-        p = int(tgt_parents_np[j])
-        if p < 0:
-            local_rot[:, j] = world_rot[:, j]
-            local_pos[:, j] = world_pos[:, j]
-        else:
-            local_rot[:, j] = quat_multiply_wxyz_np(
-                quat_conjugate_wxyz_np(world_rot[:, p]),
-                world_rot[:, j],
-            )
-            local_pos[:, j] = quat_rotate_wxyz_np(
-                quat_conjugate_wxyz_np(world_rot[:, p]),
-                world_pos[:, j] - world_pos[:, p],
-            )
+    # `retarget_world_space_np()` already returns target-local pose rotations
+    # with the target rest rotations factored out. Reconstructing local
+    # rotations from `target_world_rotations` bakes the target T-pose joint
+    # orientation back into the motion channels, which makes unmatched bones
+    # like dragon wings export with constant non-rest BVH rotations.
+    pose_rot_quats = Quaternions(pose_rot)
+    tgt_orients = Quaternions.id(J_tgt)
+    initial_local_pos = np.repeat(target_offsets[None, :, :], F, axis=0)
+    initial_local_pos[:, 0] = world_pos[:, 0]
+    local_pos = _solve_local_positions_for_target_global(
+        pose_rot_quats,
+        world_pos,
+        target_offsets,
+        tgt_parents_np,
+        tgt_orients,
+        initial_positions=initial_local_pos,
+    )
 
-    tgt_orients = np.zeros((J_tgt, 4), dtype=np.float64)
-    tgt_orients[:, 0] = 1.0
     tgt_anim = Animation(
-        Quaternions(local_rot.astype(np.float64)),
+        pose_rot_quats,
         local_pos.astype(np.float64),
-        Quaternions(tgt_orients),
-        np.asarray(target_tp.offsets, dtype=np.float64),
+        tgt_orients,
+        target_offsets,
         tgt_parents_np,
     )
 
@@ -177,6 +239,16 @@ def retarget_features_npy_to_target(
 # Donor ranking
 # ---------------------------------------------------------------------------
 
+def _strip_helper_names(names: list) -> set:
+    """Return a set of canonical joint names excluding leaf rotation helpers.
+
+    Leaf helpers are training-time augmentation joints whose count varies
+    with the max_joints budget.  They should never participate in skeleton
+    mapping or similarity scoring.
+    """
+    return {n for n in names if not str(n).endswith(LEAF_ROTATION_HELPER_SUFFIX) and ' Helper' not in str(n)}
+
+
 def rank_donors(
     target_cond: dict,
     training_cond_dict: dict,
@@ -184,31 +256,47 @@ def rank_donors(
 ) -> List[Tuple[str, float]]:
     """Rank all training skeletons by similarity to the target.
 
-    Score = 100 * jaccard(joint_names) + 30 * species_match
-            - 1 * |Δjoints| - 3 * |Δchains|
+    Score = 100 * jaccard(normalized_joint_names) + 30 * species_match
+            - 0.2 * |Δjoints| - 0.5 * |Δchains|
+
+    The Jaccard index is computed on synonym-normalized names so that
+    skeletons with different naming conventions (e.g. "Leg 1" vs "Thigh")
+    still get credit for semantically matching joints.
 
     Returns list of (donor_name, score) sorted by descending score.
+
+    Leaf rotation helpers are excluded from the Jaccard comparison so that
+    budget-dependent augmentation joints do not inflate or distort scores.
     """
-    t_names = set(
-        target_cond.get('canonical_joint_names')
-        or target_cond.get('joints_names', [])
+    from utils.retarget import _normalize_match_name
+
+    t_names = _strip_helper_names(
+        _require_canonical_joint_names(
+            target_cond,
+            object_type_hint=target_object_type,
+        )
     )
-    t_n_joints = len(target_cond['parents'])
+    t_norm_names = {_normalize_match_name(n) for n in t_names}
+    t_n_joints = int(target_cond.get('original_joint_count') or len(target_cond['parents']))
     t_n_chains = len(target_cond.get('kinematic_chains', []))
     t_species = target_cond.get('species_group') or ''
 
     scored = []
     for donor_name, donor_cond in training_cond_dict.items():
-        d_names = set(
-            donor_cond.get('canonical_joint_names')
-            or donor_cond.get('joints_names', [])
+        d_names = _strip_helper_names(
+            _require_canonical_joint_names(
+                donor_cond,
+                object_type_hint=donor_name,
+            )
         )
-        union = len(t_names | d_names)
-        jaccard = len(t_names & d_names) / max(1, union)
-        joint_penalty = abs(t_n_joints - len(donor_cond['parents']))
+        d_norm_names = {_normalize_match_name(n) for n in d_names}
+        union = len(t_norm_names | d_norm_names)
+        jaccard = len(t_norm_names & d_norm_names) / max(1, union)
+        d_n_joints = int(donor_cond.get('original_joint_count') or len(donor_cond['parents']))
+        joint_penalty = abs(t_n_joints - d_n_joints)
         chain_penalty = abs(t_n_chains - len(donor_cond.get('kinematic_chains', [])))
         species_bonus = 30.0 if t_species and t_species == donor_cond.get('species_group') else 0.0
-        score = 100.0 * jaccard + species_bonus - 1.0 * joint_penalty - 3.0 * chain_penalty
+        score = 100.0 * jaccard + species_bonus - 0.2 * joint_penalty - 0.5 * chain_penalty
         scored.append((donor_name, score))
 
     scored.sort(key=lambda x: -x[1])
@@ -279,7 +367,7 @@ def auto_retarget_pipeline(
     ) = _build_tpose_cond(target_object_type, target_tpose_fbx, face_joints_names)
     max_joints = max(max_joints, max_joints_tgt)
 
-    n_joints = len(target_parents)
+    n_joints = int(target_cond.get('original_joint_count') or len(target_parents))
     t_species = target_cond.get('species_group') or 'unknown'
     n_chains = len(target_cond.get('kinematic_chains', []))
     print(
@@ -304,16 +392,28 @@ def auto_retarget_pipeline(
         selected_donors = scored_all[:top_k]
 
     print(f"[auto_retarget] Top-{len(selected_donors)} donors selected:")
-    t_names = set(target_cond.get('canonical_joint_names') or target_cond.get('joints_names', []))
+    from utils.retarget import _normalize_match_name
+
+    t_names = _strip_helper_names(
+        _require_canonical_joint_names(
+            target_cond,
+            object_type_hint=target_object_type,
+        )
+    )
     for rank, (donor_name, score) in enumerate(selected_donors, 1):
         donor_cond = training_cond_dict[donor_name]
-        d_names = set(
-            donor_cond.get('canonical_joint_names') or donor_cond.get('joints_names', [])
+        d_names = _strip_helper_names(
+            _require_canonical_joint_names(
+                donor_cond,
+                object_type_hint=donor_name,
+            )
         )
-        union = max(1, len(t_names | d_names))
-        jaccard = len(t_names & d_names) / union
+        t_norm = {_normalize_match_name(n) for n in t_names}
+        d_norm = {_normalize_match_name(n) for n in d_names}
+        union = max(1, len(t_norm | d_norm))
+        jaccard = len(t_norm & d_norm) / union
         species_match = t_species != 'unknown' and t_species == donor_cond.get('species_group')
-        d_joints = len(donor_cond['parents'])
+        d_joints = int(donor_cond.get('original_joint_count') or len(donor_cond['parents']))
         d_chains = len(donor_cond.get('kinematic_chains', []))
         print(
             f"  {rank}. {donor_name:<22} score={score:.1f}  "
@@ -350,7 +450,7 @@ def auto_retarget_pipeline(
         source_tp = get_common_features_from_T_pose(
             donor_fbx,
             donor_name,
-            augment_leaf_rotation_helpers=True,
+            augment_leaf_rotation_helpers=False,
             max_joints=max_joints,
         )
 
@@ -375,6 +475,7 @@ def auto_retarget_pipeline(
                     target_object_type,
                     max_joints,
                     source_tp=source_tp,
+                    target_cond=target_cond,
                 )
                 if tgt_features is None:
                     print(f"  ✗ {src_base} (retarget returned None, skipped)")

@@ -15,6 +15,15 @@ from data_loaders.truebones.truebones_utils.param_utils import (
     SNAKES,
 )
 
+# Pre-built lower-case lookup sets for case-insensitive species inference.
+# These are built once at import time so that infer_species_group is O(1).
+_BIPEDS_LOWER = {t.lower() for t in BIPEDS}
+_QUADROPEDS_LOWER = {t.lower() for t in QUADROPEDS}
+_MILLIPEDS_LOWER = {t.lower() for t in MILLIPEDS}
+_SNAKES_LOWER = {t.lower() for t in SNAKES}
+_FISH_LOWER = {t.lower() for t in FISH}
+_FLYING_LOWER = {t.lower() for t in FLYING}
+
 
 MOTION_METADATA_SCHEMA_VERSION = 2
 
@@ -71,17 +80,25 @@ def _collect_action_category_matches(tokens: list[str]) -> list[tuple[str, int, 
 
 
 def infer_species_group(object_type: str) -> str:
-    if object_type in BIPEDS:
+    """Infer species group from object_type (case-insensitive).
+
+    The object_type may come from filenames (e.g. "BEAR-TPOSE.fbx" → "BEAR"),
+    user CLI flags, or training data keys — none guarantee consistent casing.
+    The canonical lists (QUADROPEDS, BIPEDS, ...) use title-case entries like
+    "Bear", so we compare case-insensitively.
+    """
+    lower = object_type.lower()
+    if lower in _BIPEDS_LOWER:
         return "biped"
-    if object_type in QUADROPEDS:
+    if lower in _QUADROPEDS_LOWER:
         return "quadruped"
-    if object_type in MILLIPEDS:
+    if lower in _MILLIPEDS_LOWER:
         return "millipede"
-    if object_type in SNAKES:
+    if lower in _SNAKES_LOWER:
         return "snake"
-    if object_type in FISH:
+    if lower in _FISH_LOWER:
         return "fish"
-    if object_type in FLYING:
+    if lower in _FLYING_LOWER:
         return "flying"
     return "other"
 

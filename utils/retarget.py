@@ -1,7 +1,7 @@
 """
 Pure-numpy cross-skeleton retargeting.
 
-This module hosts the world-space alignment + canonical-bone-name remap +
+This module hosts the world-space alignment + semantic match-name remap +
 inverse-FK math originally embedded inside ``AnimationExporter.export_glb``.
 Lifting it out means callers other than the GLB export pipeline — e.g. the
 cross-species reference-motion path in ``sample/generate.py`` — can run the
@@ -22,12 +22,101 @@ from .rotation_numpy import (
 
 
 # ---------------------------------------------------------------------------
-# Shared helpers (moved from exporter.py — re-exported there for back compat)
+# Canonical joint-name synonym map
 # ---------------------------------------------------------------------------
+# Maps common variant names to a single canonical form so that skeletons
+# from different naming conventions (e.g. Truebone "Thigh" vs "Leg 1") can
+# still match during retarget.  All keys and values are lower-cased.
+#
+# Important: keys that already contain digits (like "leg 1") are matched
+# exactly.  Keys without digits (like "index") are matched as a prefix —
+# the digit suffix is preserved on the canonical form.
 
-def _canonical_bone_name(name: str) -> str:
-    """Normalize bone name for cross-format matching."""
-    return name.replace(" ", "_").lower()
+_CANONICAL_SYNONYMS: dict[str, str] = {
+    # --- Leg chain ---
+    "leg 1": "thigh",
+    "leg 2": "calf",
+    "leg ankle": "foot",
+    "leg ball 1": "toe 0",
+    # --- Arm chain ---
+    "arm collarbone": "clavicle",
+    "arm 1": "upper arm",
+    "arm 2": "forearm",
+    "arm palm": "hand",
+    "arm ball 1": "wrist",
+    # --- Finger aliases (no-digit keys — matched as prefix) ---
+    "index": "finger 0",
+    "middle": "finger 1",
+    "ring": "finger 2",
+    "pinky": "finger 3",
+    # --- Spine / neck ---
+    "spine 1": "spine",
+    "spine 2": "spine 1",
+    "spine 3": "spine 2",
+    "spine 4": "spine 3",
+    "neck 1": "neck",
+    "neck 2": "neck 1",
+    # --- Face ---
+    "jaw": "chin",
+}
+
+# Pre-compute which keys have digits (exact match only) vs no digits (prefix match).
+_SYNONYM_EXACT = {k: v for k, v in _CANONICAL_SYNONYMS.items() if any(c.isdigit() for c in k)}
+_SYNONYM_PREFIX = {k: v for k, v in _CANONICAL_SYNONYMS.items() if not any(c.isdigit() for c in k)}
+
+
+def _normalize_match_name(name: str) -> str:
+    """Return a normalized form of *name* for synonym-aware matching.
+
+    Lookup strategy (three tiers):
+      1. Exact lower-case match in the synonym map (e.g. "Leg 1" → "thigh").
+      2. If the name starts with "left " or "right ", strip the side prefix,
+         normalize the remainder, then re-prefix (e.g. "Right Leg 1" → "right thigh").
+      3. Prefix match for digit-less keys — extracts trailing digit and preserves
+         it on the canonical form (e.g. "Index 01" → "finger 1", "Middle 2" → "finger 2").
+    If none match, returns the lower-cased name unchanged.
+    """
+    lower = name.lower().strip()
+    # Exact match first
+    if lower in _SYNONYM_EXACT:
+        return _SYNONYM_EXACT[lower]
+    # Strip side prefix and try again
+    for side in ("left ", "right "):
+        if lower.startswith(side):
+            remainder = lower[len(side):]
+            normalized_remainder = _normalize_match_name(remainder)
+            return side + normalized_remainder
+    # Prefix match for keys without digits (e.g. "Index 01" starts with "index")
+    # Extract trailing digit and preserve it on the canonical form
+    # so that "Index 02" → "finger 2", "Middle 1" → "finger 1", etc.
+    for key, value in _SYNONYM_PREFIX.items():
+        if lower == key or lower.startswith(key + " "):
+            suffix = lower[len(key):].strip()
+            if suffix:
+                # Extract trailing digit(s) from the suffix
+                digit = ""
+                for ch in reversed(suffix):
+                    if ch.isdigit():
+                        digit = ch + digit
+                    elif ch == " ":
+                        continue
+                    else:
+                        break
+                if digit:
+                    # Replace the trailing digit in the canonical value
+                    # e.g. "finger 0" + digit "02" → "finger 2"
+                    digit_int = str(int(digit))
+                    parts = value.rsplit(" ", 1)
+                    if parts[-1].isdigit():
+                        return parts[0] + " " + digit_int
+                    return value + " " + digit_int
+            return value
+    return lower
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers used by the retarget/exporter numpy path.
+# ---------------------------------------------------------------------------
 
 
 def _generate_coordinate_candidates_np():
@@ -215,17 +304,17 @@ class RetargetResult(TypedDict):
 
 def retarget_world_space_np(
     *,
-    src_bone_names: list[str],
     src_parents: np.ndarray,
     src_rest_offsets: np.ndarray,
     src_rest_rotations: np.ndarray,
-    tgt_bone_names: list[str],
     tgt_parents: np.ndarray,
     tgt_rest_offsets: np.ndarray,
     tgt_rest_rotations: np.ndarray,
     src_joint_rotations: np.ndarray,
     src_root_translation: np.ndarray,
     src_root_rotation: np.ndarray,
+    src_match_names: list[str],
+    tgt_match_names: list[str],
     src_bone_translations: Optional[np.ndarray] = None,
     coordinate_search: bool = True,
     verbose: bool = True,
@@ -238,11 +327,9 @@ def retarget_world_space_np(
     to target local pose channels.
 
     Args:
-        src_bone_names: ordered list of source bone names (len == J_src).
         src_parents: (J_src,) int32 parent indices, -1 for root.
         src_rest_offsets: (J_src, 3) parent-relative rest offsets.
         src_rest_rotations: (J_src, 4) WXYZ rest rotations.
-        tgt_bone_names: ordered list of target bone names (len == J_tgt).
         tgt_parents: (J_tgt,) int32 parent indices.
         tgt_rest_offsets: (J_tgt, 3) parent-relative rest offsets.
         tgt_rest_rotations: (J_tgt, 4) WXYZ rest rotations.
@@ -251,6 +338,8 @@ def retarget_world_space_np(
         src_root_rotation: (F, 4) wrapper rotation applied above root.
         src_bone_translations: optional (F, J_src, 3) pose-bone locations for
             non-root joints. Root entry is ignored.
+        src_match_names: semantic match names for source joints.
+        tgt_match_names: semantic match names for target joints.
         coordinate_search: when ``True``, sweep 12 rigid rotation/flip candidates
             to find the best alignment of rest poses. Set ``False`` when the
             source and target are known to share the same world basis (e.g.
@@ -279,16 +368,49 @@ def retarget_world_space_np(
     )
 
     F = jr_np.shape[0]
-    J_src = len(src_bone_names)
-    J_tgt = len(tgt_bone_names)
+    src_match_names = list(src_match_names)
+    tgt_match_names = list(tgt_match_names)
+    J_src = len(src_match_names)
+    J_tgt = len(tgt_match_names)
+    if len(src_match_names) != J_src:
+        raise ValueError(
+            f"Source match-name count {len(src_match_names)} does not match source joint count {J_src}"
+        )
+    if len(tgt_match_names) != J_tgt:
+        raise ValueError(
+            f"Target match-name count {len(tgt_match_names)} does not match target joint count {J_tgt}"
+        )
 
-    # ── B) Map source → target indices by canonical bone name ─────────────
-    tgt_canon_to_idx = {_canonical_bone_name(n): i for i, n in enumerate(tgt_bone_names)}
+    # ── B) Map source → target indices by semantic match name ─────────────
+    # Two-pass matching:
+    #   1. Exact canonical-name match (original behavior).
+    #   2. Synonym-aware fuzzy match for remaining unmatched joints.
+    tgt_match_to_idx = {name: i for i, name in enumerate(tgt_match_names)}
     src_to_tgt = np.full(J_src, -1, dtype=np.int32)
-    for i, name in enumerate(src_bone_names):
-        canon = _canonical_bone_name(name)
-        if canon in tgt_canon_to_idx:
-            src_to_tgt[i] = tgt_canon_to_idx[canon]
+    matched_tgt = np.zeros(J_tgt, dtype=bool)
+
+    # Pass 1: exact match
+    for i, name in enumerate(src_match_names):
+        target_index = tgt_match_to_idx.get(name)
+        if target_index is not None and not matched_tgt[target_index]:
+            src_to_tgt[i] = target_index
+            matched_tgt[target_index] = True
+
+    # Pass 2: synonym-aware fuzzy match
+    # Build a normalized-name → target index map for unmatched targets.
+    tgt_norm_to_idx = {
+        _normalize_match_name(tgt_match_names[j]): j
+        for j in range(J_tgt)
+        if not matched_tgt[j]
+    }
+    for i in range(J_src):
+        if src_to_tgt[i] >= 0:
+            continue  # already matched
+        norm = _normalize_match_name(src_match_names[i])
+        target_index = tgt_norm_to_idx.get(norm)
+        if target_index is not None:
+            src_to_tgt[i] = target_index
+            matched_tgt[target_index] = True
 
     # ── D) Source animation in world space ────────────────────────────────
     src_wpos, src_wrot = _batch_internal_pose_fk_np(
@@ -323,9 +445,9 @@ def retarget_world_space_np(
 
     if not common_src_idx:
         raise RuntimeError(
-            "No common bones between source and target skeletons.\n"
-            f"  Source bones: {src_bone_names[:10]}...\n"
-            f"  Target bones: {tgt_bone_names[:10]}..."
+            "No common joints between source and target semantic match names.\n"
+            f"  Source match names: {src_match_names[:10]}...\n"
+            f"  Target match names: {tgt_match_names[:10]}..."
         )
 
     pos_src_rest = src_rest_wpos[:, common_src_idx, :]   # (1, K, 3)
@@ -405,13 +527,14 @@ def retarget_world_space_np(
             target_wrot[:, fi] = aligned_src_wrot[:, ii]
             mapped_mask[fi] = True
 
-    # Helpers (leaf rotation helpers appended by augment_leaf_rotation_helpers)
-    # are named `{parent}_helper_{src_index}` and never canonical-match across
-    # species, so they keep their rest world transforms while parents move with
-    # the animation — appearing frozen at the rest pose origin. Propagate FK
-    # for every unmatched target joint from its (already updated) parent using
-    # the target's rest local offset and rotation. tgt_parents is in topological
-    # order (parent index < child index), so a single forward pass suffices.
+    # Propagate FK for every unmatched target joint from its (already updated)
+    # parent.  In practice these are leaf rotation helpers — joints appended by
+    # ``augment_leaf_rotation_helpers`` whose names end with ``__rot_helper`` —
+    # which never canonical-match across species.  They should follow their
+    # real leaf parent's animated world transform while keeping their rest
+    # local offset and rotation (identity for helpers).  tgt_parents is in
+    # topological order (parent index < child index), so a single forward pass
+    # suffices.
     F_q = aligned_src_wrot.shape[0]
     for j in range(J_tgt):
         if mapped_mask[j]:

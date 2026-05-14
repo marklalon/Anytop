@@ -68,13 +68,15 @@ from Anytop.motion_lib.FBX import (
     clear_scene,
     remove_lights_and_cameras,
 )
-from Anytop.utils.exporter import _canonical_bone_name
-
 # Shared bone-length drift utilities (pure numpy, no Blender/torch dependency)
 from eval.motion_quality.bone_length_drift import (
     compute_bone_length_drift,
     resolve_comparison_edges,
 )
+
+
+def _normalize_bone_key(name: str) -> str:
+    return name.replace(" ", "_").lower()
 
 
 _DEFAULT_COND_NPY = os.path.realpath(
@@ -385,7 +387,7 @@ def _load_motion(input_path: str, reference: ReferenceSkeleton) -> MotionWorldDa
 
 
 def _build_canonical_index(names: list[str]) -> dict[str, int]:
-    return {_canonical_bone_name(name): idx for idx, name in enumerate(names)}
+    return {_normalize_bone_key(name): idx for idx, name in enumerate(names)}
 
 
 def _compute_reference_rest_positions(offsets: np.ndarray, parents: np.ndarray) -> np.ndarray:
@@ -407,7 +409,7 @@ def _resolve_comparison_edges(
     Uses canonical bone name matching to align reference edges to motion joints.
     """
     motion_index = _build_canonical_index(motion.bone_names)
-    reference_canon = [_canonical_bone_name(name) for name in reference.bone_names]
+    reference_canon = [_normalize_bone_key(name) for name in reference.bone_names]
 
     # Use shared edge resolution for the reference skeleton
     ref_parent_arr, ref_child_arr = resolve_comparison_edges(
