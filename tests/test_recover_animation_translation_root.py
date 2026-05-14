@@ -13,17 +13,22 @@ from motion_lib.Quaternions import Quaternions
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
 from data_loaders.truebones.truebones_utils.motion_process import (
+    FOOT_CONTACT_VEL_THRESH,
     ROOT_XZ_STRIP_THRESHOLD,
     _xz_locomotion_extent,
+    get_6d_rep,
     get_common_features_from_T_pose,
     get_hml_aligned_anim,
+    get_motion,
     infer_translation_root_index_from_features,
     mirror_features_with_safeguards,
     move_xz_to_origin,
     positions_global,
     recover_animation_from_motion_np,
     recover_from_bvh_ric_np,
+    recover_root_quat_and_pos_np,
 )
+from utils.rotation_conversions import rotation_6d_to_matrix_np
 
 
 def _identity_cont6d() -> np.ndarray:
@@ -218,6 +223,86 @@ def _find_motion_file(motion_dir: str, pattern: str) -> tuple[str, str]:
     return files[0], os.path.basename(files[0])
 
 
+def _recover_pre_normalized_bvh_rotations(raw: np.ndarray, cond, motion_metadata) -> Quaternions:
+    parents = np.asarray(cond['parents'], dtype=np.int64)
+    offsets = np.asarray(cond['offsets'], dtype=np.float64)
+    r_rot_quat, _r_pos = recover_root_quat_and_pos_np(
+        raw,
+        parents=parents,
+        offsets=offsets,
+        motion_metadata=motion_metadata,
+    )
+
+    r_rot_cont6d = get_6d_rep(r_rot_quat)
+    cont6d_params = np.asarray(raw[..., 1:, 3:9], dtype=np.float64)
+    cont6d_params = np.concatenate([r_rot_cont6d[:, None, :], cont6d_params], axis=-2)
+    cont6d_params_hml_order = rotation_6d_to_matrix_np(cont6d_params)
+
+    joint_matrices = np.broadcast_to(
+        np.eye(3, dtype=np.float64),
+        (cont6d_params.shape[0], cont6d_params.shape[1], 3, 3),
+    ).copy()
+    for joint_idx, parent_idx in enumerate(parents[1:], start=1):
+        joint_matrices[:, parent_idx] = cont6d_params_hml_order[:, joint_idx]
+
+    return Quaternions.from_transforms(joint_matrices)
+
+
+@pytest.mark.parametrize(
+    ("object_type", "motion_pattern"),
+    [
+        ("Buffalo", "Buffalo_AlertIdle_*.npy"),
+        ("Horse", "Horse_GetUp_*.npy"),
+    ],
+)
+def test_feature_roundtrip_preserves_dataset_motion_features(object_type: str, motion_pattern: str):
+    opt = get_opt(None)
+    cond = np.load(opt.cond_file, allow_pickle=True).item()[object_type]
+
+    motion_dir = opt.motion_dir
+    if not os.path.isabs(motion_dir):
+        motion_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), motion_dir)
+
+    motion_path, motion_name = _find_motion_file(motion_dir, motion_pattern)
+
+    raw = np.load(motion_path).astype(np.float32, copy=False)
+    motion_metadata = _with_translation_root_index(
+        _load_motion_metadata_entry(opt, motion_name),
+        raw,
+        cond,
+    )
+    anim, _has_animated_pos = recover_animation_from_motion_np(
+        raw,
+        cond['parents'],
+        cond['offsets'],
+        motion_metadata=motion_metadata,
+    )
+
+    tp = get_common_features_from_T_pose(
+        cond['orientation_reference_fbx_path'],
+        object_type,
+        augment_leaf_rotation_helpers=True,
+        max_joints=len(cond['parents']),
+    )
+    squared_positions_error: dict[str, float] = {}
+    rebuilt, _parents, _max_joints, _feature_anim, _export_anim, _is_loop, _translation_root_index, _root_translation_xz = get_motion(
+        anim,
+        FOOT_CONTACT_VEL_THRESH,
+        object_type,
+        len(cond['parents']),
+        tp.offsets,
+        tp.foot_indices,
+        tp.tpos_rots,
+        squared_positions_error,
+        scale_factor=float(cond['scale_factor']),
+        orientation_quat=np.asarray(cond['orientation_quat'], dtype=np.float64),
+        helper_metadata=tp.helper_metadata,
+    )
+
+    assert rebuilt is not None
+    np.testing.assert_allclose(np.asarray(rebuilt, dtype=np.float32), raw, atol=1e-5)
+
+
 def test_from_transforms_preserves_positive_trace_ninety_degree_yaw():
     matrix = np.array(
         [[[-5.2504788e-08, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, -5.2504788e-08]]],
@@ -227,6 +312,97 @@ def test_from_transforms_preserves_positive_trace_ninety_degree_yaw():
     quat = Quaternions.from_transforms(matrix)
 
     np.testing.assert_allclose(quat.transforms(), matrix.astype(np.float64), atol=1e-6)
+
+
+def test_recover_bvh_rot_np_root_rotation_consistency():
+    """Verify recover_from_bvh_rot_np produces smooth, sign-consistent root rotations.
+
+    This tests the replacement of ``rotations[:, 0] = -r_rot_quat * rotations[:, 0]``
+    with ``_normalize_quaternion_signs`` to ensure the root rotation semantics
+    remain correct for BVH export.
+    """
+    from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_rot_np
+
+    opt = get_opt(None)
+    cond = np.load(opt.cond_file, allow_pickle=True).item()['Horse']
+
+    motion_dir = opt.motion_dir
+    if not os.path.isabs(motion_dir):
+        motion_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), motion_dir)
+
+    motion_path, motion_name = _find_motion_file(motion_dir, 'Horse_RunLoop_*.npy')
+    raw = np.load(motion_path).astype(np.float32, copy=False)
+    motion_metadata = _with_translation_root_index(
+        _load_motion_metadata_entry(opt, motion_name),
+        raw,
+        cond,
+    )
+
+    global_pos, anim = recover_from_bvh_rot_np(
+        raw,
+        cond['parents'],
+        cond['offsets'],
+        motion_metadata=motion_metadata,
+    )
+
+    root_quats = anim.rotations.qs[:, 0]  # (F, 4)
+
+    # 1. First-frame root quaternion w >= 0 (normalization invariant)
+    assert root_quats[0, 0] >= 0, "First-frame root quaternion w should be >= 0"
+
+    # 2. Temporal sign consistency: dot product with previous frame should be >= 0
+    dots = np.sum(root_quats[1:] * root_quats[:-1], axis=1)
+    assert np.all(dots >= -1e-6), (
+        f"Root quaternion sign flips detected: min dot={np.min(dots):.6f}"
+    )
+
+    # 3. Root global positions are smooth (no large jumps)
+    root_pos = global_pos[:, 0]  # (F, 3)
+    root_deltas = np.linalg.norm(root_pos[1:] - root_pos[:-1], axis=1)
+    assert np.all(root_deltas < 1.0), (
+        f"Root position has large jumps: max delta={np.max(root_deltas):.4f}"
+    )
+
+
+def test_recover_bvh_rot_np_normalizes_non_root_quaternion_sign_flips():
+    from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_rot_np
+
+    opt = get_opt(None)
+    cond = np.load(opt.cond_file, allow_pickle=True).item()['Alligator']
+
+    motion_dir = opt.motion_dir
+    if not os.path.isabs(motion_dir):
+        motion_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), motion_dir)
+
+    motion_path, motion_name = _find_motion_file(motion_dir, 'Alligator_Bite1_*.npy')
+    raw = np.load(motion_path).astype(np.float32, copy=False)
+    motion_metadata = _with_translation_root_index(
+        _load_motion_metadata_entry(opt, motion_name),
+        raw,
+        cond,
+    )
+
+    raw_rotations = _recover_pre_normalized_bvh_rotations(raw, cond, motion_metadata)
+    raw_dots = np.sum(raw_rotations.qs[1:] * raw_rotations.qs[:-1], axis=-1)
+    assert np.any(raw_dots[:, 1:] < 0.0), 'fixture should exercise non-root quaternion sign flips'
+
+    _global_pos, anim = recover_from_bvh_rot_np(
+        raw,
+        cond['parents'],
+        cond['offsets'],
+        motion_metadata=motion_metadata,
+    )
+
+    fixed_dots = np.sum(anim.rotations.qs[1:] * anim.rotations.qs[:-1], axis=-1)
+    assert np.all(fixed_dots[:, 1:] >= -1e-6), (
+        f"Non-root quaternion sign flips remain after normalization: min dot={np.min(fixed_dots[:, 1:]):.6f}"
+    )
+
+    np.testing.assert_allclose(
+        raw_rotations.transforms(),
+        anim.rotations.transforms(),
+        atol=1e-6,
+    )
 
 
 def test_recover_animation_hound_mirror_matches_world_x_reflection():

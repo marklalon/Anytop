@@ -927,6 +927,43 @@ def recover_from_bvh_ric_np(
 
 
 """ recover xyz positions from rot (root relative positions) torch """
+def _normalize_quaternion_signs(qs, parents):
+    """Normalize quaternion signs for temporal consistency.
+
+    ``Quaternions.from_transforms`` (via SciPy ``Rotation.from_matrix``) has no
+    guarantee on the sign of the recovered quaternions.  Both ``q`` and ``-q``
+    represent the same rotation, but downstream operations like
+    ``compute_rots_from_tpos`` are sensitive to sign flips.
+
+    Strategy:
+      1. For each joint, ensure the first frame has ``w >= 0``.
+      2. For each subsequent frame, flip sign if the dot product with the
+         previous frame is negative (temporal consistency).
+
+    Args:
+        qs: (F, J, 4) quaternion array (WXYZ).
+        parents: (J,) parent indices, -1 for root.
+
+    Returns:
+        (F, J, 4) sign-normalized quaternion array.
+    """
+    qs = np.asarray(qs, dtype=np.float64)
+    F, J = qs.shape[:2]
+
+    # Step 1: ensure first frame has w >= 0 for each joint
+    for j in range(J):
+        if qs[0, j, 0] < 0:
+            qs[0, j] = -qs[0, j]
+
+    # Step 2: temporal consistency — flip if dot product with previous frame < 0
+    for f in range(1, F):
+        dots = np.sum(qs[f] * qs[f - 1], axis=1)  # (J,)
+        flip = dots < 0
+        qs[f, flip] = -qs[f, flip]
+
+    return qs
+
+
 def recover_from_bvh_rot_np(
     data,
     parents,
@@ -965,7 +1002,12 @@ def recover_from_bvh_rot_np(
     for j, p in enumerate(parents[1:], 1):
         cont6d_params[:, p] = cont6d_params_hml_order[:, j]
     rotations = Quaternions.from_transforms(cont6d_params)
-    rotations[:, 0] = -r_rot_quat * rotations[:, 0]
+
+    # Normalize quaternion signs for roundtrip stability.
+    # Without this, SciPy's Rotation.from_matrix may return q or -q
+    # arbitrarily, causing 6D rotation features to diverge after
+    # a features → Animation → features roundtrip.
+    rotations.qs = _normalize_quaternion_signs(rotations.qs, parents)
     positions = offsets[None].repeat(data.shape[0], axis=0)
     root_global = (-r_rot_quat) * np.asarray(data[:, 0, :3], dtype=np.float32)
     root_global[:, 0] += r_pos[:, 0]
