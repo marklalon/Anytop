@@ -9,6 +9,9 @@ same retargeting without depending on ``bpy``.
 """
 from __future__ import annotations
 
+import json
+import os
+import warnings
 from typing import Optional, TypedDict
 
 import numpy as np
@@ -22,73 +25,30 @@ from .rotation_numpy import (
 
 
 # ---------------------------------------------------------------------------
-# Canonical joint-name synonym map
+# Canonical joint-name synonym map (used by auto_retarget for Jaccard scoring)
 # ---------------------------------------------------------------------------
-# Maps common variant names to a single canonical form so that skeletons
-# from different naming conventions (e.g. Truebone "Thigh" vs "Leg 1") can
-# still match during retarget.  All keys and values are lower-cased.
-#
-# Important: keys that already contain digits (like "leg 1") are matched
-# exactly.  Keys without digits (like "index") are matched as a prefix —
-# the digit suffix is preserved on the canonical form.
 
 _CANONICAL_SYNONYMS: dict[str, str] = {
-    # --- Leg chain ---
-    "leg 1": "thigh",
-    "leg 2": "calf",
-    "leg ankle": "foot",
-    "leg ball 1": "toe 0",
-    # --- Arm chain ---
-    "arm collarbone": "clavicle",
-    "arm 1": "upper arm",
-    "arm 2": "forearm",
-    "arm palm": "hand",
-    "arm ball 1": "wrist",
-    # --- Finger aliases (no-digit keys — matched as prefix) ---
-    "index": "finger 0",
-    "middle": "finger 1",
-    "ring": "finger 2",
-    "pinky": "finger 3",
-    # --- Spine / neck ---
-    "spine 1": "spine",
-    "spine 2": "spine 1",
-    "spine 3": "spine 2",
-    "spine 4": "spine 3",
-    "neck 1": "neck",
-    "neck 2": "neck 1",
-    # --- Face ---
+    "leg 1": "thigh", "leg 2": "calf", "leg ankle": "foot", "leg ball 1": "toe 0",
+    "arm collarbone": "clavicle", "arm 1": "upper arm", "arm 2": "forearm",
+    "arm palm": "hand", "arm ball 1": "wrist",
+    "index": "finger 0", "middle": "finger 1", "ring": "finger 2", "pinky": "finger 3",
+    "spine 1": "spine", "spine 2": "spine 1", "spine 3": "spine 2", "spine 4": "spine 3",
+    "neck 1": "neck", "neck 2": "neck 1",
     "jaw": "chin",
 }
-
-# Pre-compute which keys have digits (exact match only) vs no digits (prefix match).
 _SYNONYM_EXACT = {k: v for k, v in _CANONICAL_SYNONYMS.items() if any(c.isdigit() for c in k)}
 _SYNONYM_PREFIX = {k: v for k, v in _CANONICAL_SYNONYMS.items() if not any(c.isdigit() for c in k)}
 
 
 def _normalize_match_name(name: str) -> str:
-    """Return a normalized form of *name* for synonym-aware matching.
-
-    Lookup strategy (three tiers):
-      1. Exact lower-case match in the synonym map (e.g. "Leg 1" → "thigh").
-      2. If the name starts with "left " or "right ", strip the side prefix,
-         normalize the remainder, then re-prefix (e.g. "Right Leg 1" → "right thigh").
-      3. Prefix match for digit-less keys — extracts trailing digit and preserves
-         it on the canonical form (e.g. "Index 01" → "finger 1", "Middle 2" → "finger 2").
-    If none match, returns the lower-cased name unchanged.
-    """
+    """Normalize a joint name via the canonical synonym map (for Jaccard scoring)."""
     lower = name.lower().strip()
-    # Exact match first
     if lower in _SYNONYM_EXACT:
         return _SYNONYM_EXACT[lower]
-    # Strip side prefix and try again
     for side in ("left ", "right "):
         if lower.startswith(side):
-            remainder = lower[len(side):]
-            normalized_remainder = _normalize_match_name(remainder)
-            return side + normalized_remainder
-    # Prefix match for keys without digits (e.g. "Index 01" starts with "index")
-    # Extract trailing digit and preserve it on the canonical form
-    # so that "Index 02" → "finger 2", "Middle 1" → "finger 1", etc.
+            return side + _normalize_match_name(lower[len(side):])
     for key, value in _SYNONYM_PREFIX.items():
         if lower == key or lower.startswith(key + " "):
             suffix = lower[len(key):].strip()
@@ -112,6 +72,239 @@ def _normalize_match_name(name: str) -> str:
                     return value + " " + digit_int
             return value
     return lower
+
+
+# ---------------------------------------------------------------------------
+# LLM-based joint mapping
+# ---------------------------------------------------------------------------
+
+_LLM_CACHE: dict[tuple[tuple[str, ...], tuple[str, ...]], dict[str, str | None]] = {}
+_LLM_CLIENT = None   # openai.OpenAI instance, created on first use
+_LLM_MODEL: str | None = None  # resolved on first use
+
+
+def _get_llm_client_and_model() -> tuple:
+    """Return (client, model_name), initialising lazily on first call."""
+    global _LLM_CLIENT, _LLM_MODEL
+    if _LLM_CLIENT is not None:
+        return _LLM_CLIENT, _LLM_MODEL
+
+    try:
+        from openai import OpenAI
+    except ImportError:
+        raise ImportError(
+            "The 'openai' package is required for LLM joint mapping. "
+            "Install it with: pip install openai"
+        )
+
+    base_url = os.environ.get("RETARGET_LLM_BASE_URL", "http://127.0.0.1:8066/v1")
+    api_key = os.environ.get("RETARGET_LLM_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
+    _LLM_CLIENT = OpenAI(base_url=base_url, api_key=api_key or "sk-dummy")
+
+    model_override = os.environ.get("RETARGET_LLM_MODEL", "")
+    if model_override:
+        _LLM_MODEL = model_override
+        print(f"[retarget] LLM model set from env: {_LLM_MODEL}  endpoint: {base_url}")
+    else:
+        models = list(_LLM_CLIENT.models.list())
+        if not models:
+            raise RuntimeError(
+                f"LLM endpoint {base_url} returned no models. "
+                "Set RETARGET_LLM_MODEL to specify a model explicitly."
+            )
+        _LLM_MODEL = models[0].id
+        print(f"[retarget] LLM model auto-discovered: {_LLM_MODEL}  endpoint: {base_url}")
+
+    return _LLM_CLIENT, _LLM_MODEL
+
+
+def _build_skeleton_text(
+    names: list[str],
+    parents: np.ndarray,
+    rest_offsets: np.ndarray | None = None,
+) -> str:
+    """Format a skeleton as a flat list with parent, normalized bone length, children count.
+
+    bone_len is the parent-relative offset magnitude normalized by the skeleton's
+    max bone length (so values are in [0, 1] and comparable across skeletons of
+    different units/scale).
+    """
+    J = len(names)
+    children_count = np.zeros(J, dtype=np.int32)
+    for p in parents:
+        if p >= 0:
+            children_count[int(p)] += 1
+
+    bone_len_norm: np.ndarray | None = None
+    if rest_offsets is not None:
+        raw = np.linalg.norm(rest_offsets, axis=-1)
+        max_len = float(raw.max()) if raw.size else 0.0
+        bone_len_norm = raw / max_len if max_len > 1e-8 else raw
+
+    lines = []
+    for i, name in enumerate(names):
+        p = int(parents[i])
+        parent_name = "root" if p < 0 else names[p]
+        extras = []
+        if bone_len_norm is not None and p >= 0:
+            extras.append(f"bone_len: {bone_len_norm[i]:.2f}")
+        extras.append(f"children: {int(children_count[i])}")
+        lines.append(f"- {name} (parent: {parent_name}, {', '.join(extras)})")
+    return "\n".join(lines)
+
+
+def _llm_joint_mapping(
+    src_names: list[str],
+    tgt_names: list[str],
+    src_parents: np.ndarray,
+    tgt_parents: np.ndarray,
+    src_rest_offsets: np.ndarray | None = None,
+    tgt_rest_offsets: np.ndarray | None = None,
+) -> dict[str, str | None]:
+    """Call LLM to map every src joint name to a tgt joint name (or None).
+
+    Results are cached by (src_names, tgt_names) tuple pair so repeated
+    calls for the same skeleton pair skip the API entirely.
+    """
+    cache_key = (tuple(src_names), tuple(tgt_names))
+    if cache_key in _LLM_CACHE:
+        return _LLM_CACHE[cache_key]
+
+    client, model = _get_llm_client_and_model()
+
+    tgt_name_set = set(tgt_names)
+    src_text = _build_skeleton_text(src_names, src_parents, src_rest_offsets)
+    tgt_text = _build_skeleton_text(tgt_names, tgt_parents, tgt_rest_offsets)
+
+    has_geom = src_rest_offsets is not None and tgt_rest_offsets is not None
+    geom_note = (
+        "Each joint shows `bone_len` (parent-relative offset magnitude, normalized "
+        "to [0, 1] by each skeleton's longest bone — so it is scale-invariant and "
+        "comparable across skeletons) and `children` (number of direct child joints; "
+        "0 = leaf/end-effector). Use these to distinguish long limbs from short "
+        "fingers, and internal junctions (e.g. hip with 3 children for legs+spine) "
+        "from chain joints.\n\n"
+    ) if has_geom else ""
+
+    system_msg = (
+        "You are a skeleton joint mapping expert. "
+        "Given a source skeleton and a target skeleton, return a JSON object "
+        "mapping each source joint name to the best-matching target joint name, "
+        "or null if no suitable match exists. "
+        "Use anatomical knowledge, hierarchy, and rest-pose geometry. "
+        "Return ONLY valid JSON — no explanation, no markdown fences."
+    )
+    user_msg = (
+        f"{geom_note}"
+        f"Source skeleton:\n{src_text}\n\n"
+        f"Target skeleton:\n{tgt_text}\n\n"
+        'Return JSON: {"src_joint_name": "tgt_joint_name_or_null", ...}'
+    )
+
+    messages: list[dict] = [
+        {"role": "system", "content": system_msg},
+        {"role": "user", "content": user_msg},
+    ]
+
+    print(f"[retarget] Calling LLM for joint mapping  "
+          f"model={model}  src={len(src_names)} joints  tgt={len(tgt_names)} joints")
+
+    _MAX_RETRIES = 2
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_RETRIES + 1):
+        if attempt > 0:
+            print(f"[retarget] LLM retry {attempt}/{_MAX_RETRIES} after parse error")
+
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            stream=False,
+            temperature=0,
+            top_p=0.95,
+            max_tokens=8192,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+        raw = response.choices[0].message.content or ""
+
+        # Strip optional markdown fences the model may emit despite instructions
+        stripped = raw.strip()
+        if stripped.startswith("```"):
+            stripped = stripped.split("\n", 1)[-1]
+            stripped = stripped.rsplit("```", 1)[0]
+
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            last_exc = exc
+            if attempt < _MAX_RETRIES:
+                print(f"[retarget] LLM response parse error (attempt {attempt}): {exc}")
+                # Feed parse error back so the model can self-correct
+                messages.append({"role": "assistant", "content": raw})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"Your response could not be parsed as JSON. "
+                        f"Error: {exc}. "
+                        "Please return ONLY valid JSON, nothing else."
+                    ),
+                })
+                continue
+            raise RuntimeError(
+                f"LLM returned unparseable JSON after {_MAX_RETRIES + 1} attempts. "
+                f"Last error: {exc}\nLast response:\n{raw}"
+            ) from exc
+
+        if not isinstance(parsed, dict):
+            # LLM returned valid JSON but wrong type (e.g. array) — treat as parse error
+            type_err = f"expected JSON object, got {type(parsed).__name__}"
+            last_exc = ValueError(type_err)
+            if attempt < _MAX_RETRIES:
+                print(f"[retarget] LLM response wrong type (attempt {attempt}): {type_err}")
+                messages.append({"role": "assistant", "content": raw})
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"Your response was valid JSON but had the wrong structure: {type_err}. "
+                        "Return a JSON object {{src_name: tgt_name_or_null, ...}}, nothing else."
+                    ),
+                })
+                continue
+            raise RuntimeError(
+                f"LLM returned wrong JSON type after {_MAX_RETRIES + 1} attempts: {type_err}\n"
+                f"Last response:\n{raw}"
+            ) from last_exc
+
+        # Validate and clean the parsed mapping
+        result: dict[str, str | None] = {}
+        invalid_mappings: list[str] = []
+        for src_name in src_names:
+            val = parsed.get(src_name)
+            if val is None or val not in tgt_name_set:
+                if val is not None:
+                    invalid_mappings.append(f"'{src_name}' → '{val}'")
+                result[src_name] = None
+            else:
+                result[src_name] = val
+
+        if invalid_mappings:
+            warnings.warn(
+                f"[retarget] LLM returned {len(invalid_mappings)} invalid target joint(s) "
+                f"(not in target skeleton), ignored: {', '.join(invalid_mappings[:5])}"
+                + (" ..." if len(invalid_mappings) > 5 else ""),
+                stacklevel=2,
+            )
+
+        matched_count = sum(1 for v in result.values() if v is not None)
+        print(f"[retarget] LLM mapping result: {matched_count}/{len(src_names)} src joints matched")
+        for src_name, tgt_name in result.items():
+            status = f"→ {tgt_name}" if tgt_name else "→ (no match)"
+            print(f"[retarget]   {src_name}  {status}")
+
+        _LLM_CACHE[cache_key] = result
+        return result
+
+    # Unreachable: every iteration either returns or raises inside the loop.
+    raise RuntimeError(f"LLM joint mapping failed: {last_exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -383,8 +576,9 @@ def retarget_world_space_np(
 
     # ── B) Map source → target indices by semantic match name ─────────────
     # Two-pass matching:
-    #   1. Exact canonical-name match (original behavior).
-    #   2. Synonym-aware fuzzy match for remaining unmatched joints.
+    #   1. Exact name match.
+    #   2. LLM-based mapping for remaining unmatched joints (skipped when
+    #      src is a subset of tgt names or tgt is fully covered by src).
     tgt_match_to_idx = {name: i for i, name in enumerate(tgt_match_names)}
     src_to_tgt = np.full(J_src, -1, dtype=np.int32)
     matched_tgt = np.zeros(J_tgt, dtype=bool)
@@ -396,21 +590,34 @@ def retarget_world_space_np(
             src_to_tgt[i] = target_index
             matched_tgt[target_index] = True
 
-    # Pass 2: synonym-aware fuzzy match
-    # Build a normalized-name → target index map for unmatched targets.
-    tgt_norm_to_idx = {
-        _normalize_match_name(tgt_match_names[j]): j
-        for j in range(J_tgt)
-        if not matched_tgt[j]
-    }
-    for i in range(J_src):
-        if src_to_tgt[i] >= 0:
-            continue  # already matched
-        norm = _normalize_match_name(src_match_names[i])
-        target_index = tgt_norm_to_idx.get(norm)
-        if target_index is not None:
-            src_to_tgt[i] = target_index
-            matched_tgt[target_index] = True
+    # Pass 2: LLM-based mapping for remaining unmatched joints.
+    # Subset/superset short-circuit: if all src joints are already mapped,
+    # or all tgt joints are already covered, there is nothing left to do.
+    unmatched_src_idx = [i for i in range(J_src) if src_to_tgt[i] < 0]
+    unmatched_tgt_idx = [j for j in range(J_tgt) if not matched_tgt[j]]
+
+    if not unmatched_src_idx:
+        pass
+    elif not unmatched_tgt_idx:
+        print(f"[retarget] Pass 2 skipped: all tgt joints covered by exact names "
+              f"(tgt ⊆ src, {len(unmatched_src_idx)} src joints unmatched/ignored)")
+    else:
+        tgt_name_to_unmatched_idx = {tgt_match_names[j]: j for j in unmatched_tgt_idx}
+
+        llm_result = _llm_joint_mapping(
+            src_match_names, tgt_match_names,
+            src_parents, tgt_parents,
+            src_rest_offsets, tgt_rest_offsets,
+        )
+
+        for i in unmatched_src_idx:
+            tgt_name = llm_result.get(src_match_names[i])
+            if tgt_name is not None:
+                j = tgt_name_to_unmatched_idx.get(tgt_name)
+                if j is not None and not matched_tgt[j]:
+                    src_to_tgt[i] = j
+                    matched_tgt[j] = True
+
 
     # ── D) Source animation in world space ────────────────────────────────
     src_wpos, src_wrot = _batch_internal_pose_fk_np(
