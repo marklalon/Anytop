@@ -7,9 +7,7 @@ augmentation, and skeleton-processing entry points.
 Depends on: features.py, animation_utils.py
 """
 
-from motion_lib import BVH, FBX, Animation, Quaternions
-from motion_lib.Animation import positions_global, rotations_global, offsets_from_positions, offsets_global
-from collections import Counter, defaultdict
+from motion_lib import BVH, FBX
 import numpy as np
 import os
 from os.path import join as pjoin
@@ -17,108 +15,30 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import random
 import math
 import bisect
-from data_loaders.truebones.truebones_utils.param_utils import HML_REF_AXIAL_BONE_LENGTH, FOOT_CONTACT_HEIGHT_THRESH, DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir, SNAKES, CHAIN_FORWARD_JOINTS, FLYING, FISH, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
+from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, get_raw_data_dir, SNAKES
 from .motion_labels import build_motion_labels, build_object_labels, write_motion_metadata
 from .physics_joint_annotation import (
-    _infer_end_effector_joints,
-    _infer_contact_joints,
     _build_semantic_metadata,
     _rest_positions_from_offsets,
-    _normalize_joint_name,
-    _strip_joint_name_prefix,
-    build_joint_embedding_texts,
-    JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
-    _detect_joint_side,
 )
 from .fbx_filename_rules import (
     find_tpose_reference_path,
-    _compact_normalized_text,
-    _is_all_bundle_stem,
-    _matches_object_alias,
     _normalize_action_name,
     _should_skip_fbx,
-    _strip_leading_object_prefix,
 )
 
-# Re-exported from animation_utils
 from .animation_utils import (
-    ROOT_XZ_STRIP_THRESHOLD,
-    LOOP_DETECTION_POS_THRESHOLD,
-    LEAF_ROTATION_HELPER_SUFFIX,
     _canonical_name_for_bvh,
-    _build_joint_name_inspection_rows,
-    _remove_token_counts,
-    _joint_disambiguation_tokens,
-    _display_disambiguation_tokens,
-    _disambiguate_duplicate_canonical_names,
-    _collect_joint_name_collision_groups,
-    _write_joint_name_collision_report,
-    _refresh_joint_metadata_in_object_cond,
-    refresh_joint_metadata_in_cond_dict,
-    _joint_name_embeddings_are_current,
     _attach_joint_name_embeddings_to_cond,
-    _detect_motion_loop,
-    _find_translation_root,
-    _find_descendant_transport_chain,
-    _bake_descendant_y_into_translation_root,
-    _get_reference_body_length,
-    _compress_positive_excursion,
-    _compress_negative_excursion,
-    _clamp_vertical_trajectory,
-    _coerce_root_xz_center,
-    _get_translation_root_initial_xz,
-    move_xz_to_origin,
-    _xz_locomotion_extent,
-    strip_translation_root_xz,
-    _resolve_detected_translation_root_index,
+    _extend_semantic_metadata_with_leaf_helpers,
     needs_bvh_position_channels,
     reorder_animation_to_dfs,
-    _get_average_axial_bone_length,
-    compute_scale_factor,
-    scale,
-    _reference_clip_needs_local_position_rebuild,
-    _leaf_rotation_helper_name,
-    _dfs_leaf_joint_indices,
-    _build_leaf_rotation_helper_metadata,
-    _append_leaf_rotation_helpers_to_animation,
-    _extend_semantic_metadata_with_leaf_helpers,
-    _warn_mirror_disabled_subtrees,
-    neutralize_animation_subtrees,
     _coerce_single_orientation_quat,
-    compute_rots_from_tpos,
-    _solve_local_positions_for_target_global,
 )
 
-# Re-exported from features
 from .features import (
-    get_contact_state,
-    get_terminal_contact_state,
-    get_foot_contact,
-    get_6d_rep,
-    get_rifke,
-    get_motion_features,
-    get_bvh_cont6d_params,
-    process_anim,
-    _compute_terminal_local_velocity,
-    _coerce_translation_root_index,
-    _translation_root_index_from_motion_metadata,
-    _require_translation_root_index_from_motion_metadata,
-    resolve_feature_translation_root_index,
-    infer_translation_root_index_from_features,
-    _neutralize_mirror_disabled_subtrees,
-    mirror_features_with_safeguards,
     get_common_features_from_T_pose,
-    TPoseFeatures,
-    _extract_motion_features_from_aligned_anims,
-    get_hml_aligned_anim,
     get_motion,
-    recover_processed_animation_from_feature_animation,
-    recover_root_quat_and_pos_np,
-    recover_root_quat_and_pos,
-    recover_from_bvh_ric_np,
-    recover_from_bvh_rot_np,
-    recover_animation_from_motion_np,
-    recover_bvh_export_animation_from_motion_np,
 )
 
 

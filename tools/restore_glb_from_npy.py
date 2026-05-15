@@ -1358,10 +1358,10 @@ def main() -> None:
         localbody_ik=args.localbody_ik,
     )
 
-    _run_bone_length_check(args.output_glb)
+    _run_bone_length_check(args.output_glb, cond_npy_path, args.object_type)
 
 
-def _run_bone_length_check(glb_path: str) -> None:
+def _run_bone_length_check(glb_path: str, cond_npy: str, object_type: str | None) -> None:
     """Run check_bone_length_drift.py on the restored GLB."""
     check_script = os.path.join(os.path.dirname(__file__), "check_bone_length_drift.py")
     if not os.path.isfile(check_script):
@@ -1374,8 +1374,11 @@ def _run_bone_length_check(glb_path: str) -> None:
 
     # Execute the check script in the current Python environment
     python_exe = sys.executable
+    cmd = [python_exe, check_script, "--input", glb_path, "--cond-npy", cond_npy]
+    if object_type is not None:
+        cmd.extend(["--object-type", object_type])
     result = subprocess.run(
-        [python_exe, check_script, "--input", glb_path],
+        cmd,
         cwd=os.path.dirname(check_script),
     )
     if result.returncode != 0:

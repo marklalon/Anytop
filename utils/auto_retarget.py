@@ -354,8 +354,7 @@ def rank_donors(
 ) -> List[Tuple[str, float]]:
     """Rank all training skeletons by similarity to the target.
 
-    Score = 100 * jaccard(normalized_joint_names) + 30 * species_match
-            - 0.2 * |Δjoints| - 0.5 * |Δchains|
+    Score = 100 * jaccard(normalized_joint_names) - 0.2 * |Δjoints| - 0.5 * |Δchains|
 
     The Jaccard index is computed on synonym-normalized names so that
     skeletons with different naming conventions (e.g. "Leg 1" vs "Thigh")
@@ -391,8 +390,7 @@ def rank_donors(
         d_n_joints = int(donor_cond.get('original_joint_count') or len(donor_cond['parents']))
         joint_penalty = abs(t_n_joints - d_n_joints)
         chain_penalty = abs(t_n_chains - len(donor_cond.get('kinematic_chains', [])))
-        species_bonus = 30.0 if t_species and t_species == donor_cond.get('species_group') else 0.0
-        score = 100.0 * jaccard + species_bonus - 0.2 * joint_penalty - 0.5 * chain_penalty
+        score = 100.0 * jaccard - 0.2 * joint_penalty - 0.5 * chain_penalty
         scored.append((donor_name, score))
 
     scored.sort(key=lambda x: -x[1])
@@ -433,6 +431,7 @@ def auto_retarget_pipeline(
     from data_loaders.truebones.truebones_utils.features import get_common_features_from_T_pose
     from data_loaders.truebones.truebones_utils.motion_process import (
         recover_bvh_export_animation_from_motion_np,
+        recover_processed_animation_from_feature_animation,
     )
     from data_loaders.truebones.truebones_utils.animation_utils import (
         needs_bvh_position_channels,
@@ -506,12 +505,11 @@ def auto_retarget_pipeline(
         d_norm = {_normalize_match_name(n) for n in d_names}
         union = max(1, len(t_norm | d_norm))
         jaccard = len(t_norm & d_norm) / union
-        species_match = t_species != 'unknown' and t_species == donor_cond.get('species_group')
         d_joints = int(donor_cond.get('original_joint_count') or len(donor_cond['parents']))
         d_chains = len(donor_cond.get('kinematic_chains', []))
         print(
             f"  {rank}. {donor_name:<22} score={score:.1f}  "
-            f"(jaccard={jaccard:.2f}, species_bonus={'30' if species_match else '0'}, "
+            f"(jaccard={jaccard:.2f}, "
             f"Δjoints={abs(n_joints - d_joints)}, Δchains={abs(n_chains - d_chains)})"
         )
 
