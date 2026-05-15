@@ -290,18 +290,11 @@ def main(args=None, cond_dict=None):
     reference_motion_path = getattr(args, 'reference_motion', None)
     skip_timesteps = int(getattr(args, 'skip_timesteps', 80))
 
-    # ── Resolve --object_type / --reference_motion combinations ─────────────
-    # 1) reference only      → infer object_type from filename
-    # 2) object_type only    → pure-random generation
-    # 3) neither             → error
-    # 4) both, types match   → existing same-skeleton reference path
-    # 4.2) both, mismatched  → retarget reference into target skeleton first
+    # ── Resolve --object_type ───────────────────────────────────────────────
+    # --object_type: look up directly in cond (user-provided first, then default).
+    # --reference_motion: infer source type from filename, look up in cond the same way.
+    # If source != target → retarget.
     explicit_object_type = args.object_type
-    inferred_type = None
-    if reference_motion_path:
-        inferred_type = infer_object_type_from_filename(
-            reference_motion_path, valid_types=cond_dict.keys()
-        )
 
     if not reference_motion_path and not explicit_object_type:
         sys.exit(
@@ -311,41 +304,89 @@ def main(args=None, cond_dict=None):
             "or both to retarget the reference into a different target skeleton."
         )
 
-    if reference_motion_path and inferred_type is None:
-        available = ', '.join(sorted(cond_dict.keys()))
-        sys.exit(
-            f"ERROR: Cannot infer object_type from reference motion filename: "
-            f"{reference_motion_path}\nAvailable object types: {available}\n"
-            "Rename the file to follow the naming convention "
-            "(e.g., 'ObjectType___action_id.npy') or pass --object_type explicitly."
+    # 1) Resolve target object_type
+    if explicit_object_type:
+        # Case A: explicit --object_type provided.
+        # Look up case-insensitively in cond_dict.
+        target_type = next(
+            (k for k in cond_dict if k.upper() == explicit_object_type.upper()),
+            None,
         )
-
-    needs_retarget = False
-    source_type = None
-    if explicit_object_type and inferred_type and explicit_object_type != inferred_type:
-        # case 4.2: cross-species — retarget the reference into target skeleton.
-        target_type = explicit_object_type
-        source_type = inferred_type
-        needs_retarget = True
-    elif explicit_object_type:
-        target_type = explicit_object_type
+        if target_type is None:
+            available = ', '.join(sorted(cond_dict.keys()))
+            sys.exit(
+                f"ERROR: object_type '{explicit_object_type}' not found in cond file. "
+                f"Available: {available}"
+            )
+    elif reference_motion_path:
+        # Case B: no --object_type, infer from reference motion filename.
+        target_type = infer_object_type_from_filename(
+            reference_motion_path, valid_types=cond_dict.keys()
+        )
+        if target_type is None:
+            available = ', '.join(sorted(cond_dict.keys()))
+            sys.exit(
+                f"ERROR: Cannot infer object_type from reference motion filename: "
+                f"{reference_motion_path}\nAvailable object types: {available}\n"
+                "Rename the file to follow the naming convention "
+                "(e.g., 'ObjectType___action_id.npy') or pass --object_type explicitly."
+            )
     else:
-        target_type = inferred_type
+        target_type = None  # unreachable
 
-    if target_type not in cond_dict:
-        available = ', '.join(sorted(cond_dict.keys()))
-        sys.exit(
-            f"ERROR: target object_type '{target_type}' not in cond file. "
-            f"Available: {available}"
+    # 2) Resolve reference source type (for retarget decision)
+    source_type = None
+    needs_retarget = False
+    _default_cond_cache = None
+
+    if reference_motion_path:
+        # Blind inference from filename, then look up in cond.
+        blind_type = infer_object_type_from_filename(
+            reference_motion_path, valid_types=None
         )
+        if blind_type:
+            # Look up case-insensitively in user-provided cond_dict first.
+            source_type = next(
+                (k for k in cond_dict if k.upper() == blind_type.upper()),
+                None,
+            )
+            if source_type is None:
+                # Not in user-provided cond — try default cond.
+                default_cond_file = getattr(opt, 'cond_file', None)
+                if default_cond_file and not os.path.samefile(
+                    os.path.realpath(default_cond_file),
+                    os.path.realpath(actual_cond_file),
+                ):
+                    _default_cond_cache = np.load(default_cond_file, allow_pickle=True).item()
+                    source_type = next(
+                        (k for k in _default_cond_cache if k.upper() == blind_type.upper()),
+                        None,
+                    )
+            if source_type is None:
+                available = ', '.join(sorted(cond_dict.keys()))
+                if _default_cond_cache:
+                    default_available = ', '.join(sorted(_default_cond_cache.keys()))
+                    sys.exit(
+                        f"ERROR: source type '{blind_type}' (inferred from reference motion "
+                        f"{reference_motion_path}) not found in any cond file. "
+                        f"Available in user cond: {available}\n"
+                        f"Available in default cond: {default_available}"
+                    )
+                sys.exit(
+                    f"ERROR: source type '{blind_type}' (inferred from reference motion "
+                    f"{reference_motion_path}) not found in cond file. "
+                    f"Available: {available}"
+                )
+    if source_type and target_type and source_type.upper() != target_type.upper():
+        needs_retarget = True
 
     object_type = target_type  # downstream code keeps reading `object_type`
     if reference_motion_path:
         if needs_retarget:
-            print(f"Reference motion inferred object_type: {inferred_type} "
-                  f"(will retarget to {target_type})")
+            print(f"Reference motion object_type: {source_type} (will retarget to {target_type})")
         else:
-            print(f"Reference motion inferred object_type: {inferred_type}")
+            inferred_display = source_type if source_type else target_type
+            print(f"Reference motion object_type: {inferred_display}")
 
     # Create thread pool for export.
     # Threads still benefit from GIL release inside np.save / np.savetxt (C code),
@@ -362,11 +403,25 @@ def main(args=None, cond_dict=None):
 
         effective_reference_path = reference_motion_path
         if needs_retarget:
+            # Build a cond_dict that contains both source and target.
+            retarget_cond_dict = dict(cond_dict)
+            if source_type not in cond_dict:
+                # Source type not in user-provided cond — use cached default cond.
+                if _default_cond_cache:
+                    for k, v in _default_cond_cache.items():
+                        if k not in retarget_cond_dict:
+                            retarget_cond_dict[k] = v
+                else:
+                    sys.exit(
+                        f"ERROR: source type '{source_type}' not found in cond file "
+                        f"and no default cond available for retarget."
+                    )
+
             effective_reference_path = _retarget_reference_motion(
                 reference_motion_path,
                 source_type=source_type,
                 target_type=target_type,
-                cond_dict=cond_dict,
+                cond_dict=retarget_cond_dict,
                 opt=opt,
                 output_dir=out_path,
                 fps=fps,
