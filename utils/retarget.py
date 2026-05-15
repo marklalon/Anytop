@@ -22,13 +22,18 @@ from .rotation_numpy import (
     quat_multiply_wxyz_np,
     quat_rotate_wxyz_np,
 )
+from .retarget_cache import (
+    get_from_memory,
+    set_in_memory,
+    load_from_disk,
+    save_to_disk,
+)
 
 
 # ---------------------------------------------------------------------------
 # LLM-based joint mapping
 # ---------------------------------------------------------------------------
 
-_LLM_CACHE: dict[tuple[tuple[str, ...], tuple[str, ...]], dict[str, str | None]] = {}
 _LLM_CLIENT = None   # openai.OpenAI instance, created on first use
 _LLM_MODEL: str | None = None  # resolved on first use
 
@@ -113,19 +118,13 @@ def _llm_joint_mapping(
 ) -> dict[str, str | None]:
     """Call LLM to map every src joint name to a tgt joint name (or None).
 
-    Results are cached by (src_names, tgt_names) tuple pair so repeated
-    calls for the same skeleton pair skip the API entirely.
+    Results are cached (in-memory + on-disk) by a SHA-256 hash of the
+    prompt content so repeated calls for the same skeleton pair skip
+    the API entirely.
     """
-    cache_key = (tuple(src_names), tuple(tgt_names))
-    if cache_key in _LLM_CACHE:
-        return _LLM_CACHE[cache_key]
-
-    client, model = _get_llm_client_and_model()
-
-    tgt_name_set = set(tgt_names)
+    # --- Build messages (needed for cache lookup and LLM call) ---
     src_text = _build_skeleton_text(src_names, src_parents, src_rest_offsets)
     tgt_text = _build_skeleton_text(tgt_names, tgt_parents, tgt_rest_offsets)
-
     has_geom = src_rest_offsets is not None and tgt_rest_offsets is not None
     geom_note = (
         "Each joint shows `bone_len` (parent-relative offset magnitude, normalized "
@@ -177,6 +176,23 @@ def _llm_joint_mapping(
         f"Target skeleton:\n{tgt_text}\n\n"
         'Return JSON: {"src_joint_name": "tgt_joint_name_or_null", ...}'
     )
+
+    # --- Try in-memory cache (fast, process-local) ---
+    mem_result = get_from_memory(system_msg, user_msg)
+    if mem_result is not None:
+        return mem_result
+
+    # --- Try disk cache (persistent, cross-process) ---
+    disk_result = load_from_disk(system_msg, user_msg)
+    if disk_result is not None:
+        set_in_memory(system_msg, user_msg, disk_result)
+        print(f"[retarget] Disk cache hit for skeleton pair "
+              f"src={len(src_names)} joints  tgt={len(tgt_names)} joints")
+        return disk_result
+
+    client, model = _get_llm_client_and_model()
+
+    tgt_name_set = set(tgt_names)
 
     messages: list[dict] = [
         {"role": "system", "content": system_msg},
@@ -277,7 +293,8 @@ def _llm_joint_mapping(
             status = f"→ {tgt_name}" if tgt_name else "→ (no match)"
             print(f"[retarget]   {src_name}  {status}")
 
-        _LLM_CACHE[cache_key] = result
+        set_in_memory(system_msg, user_msg, result)
+        save_to_disk(system_msg, user_msg, result)
         return result
 
     # Unreachable: every iteration either returns or raises inside the loop.
