@@ -141,7 +141,34 @@ def _llm_joint_mapping(
         "Given a source skeleton and a target skeleton, return a JSON object "
         "mapping each source joint name to the best-matching target joint name, "
         "or null if no suitable match exists. "
-        "Use anatomical knowledge, hierarchy, and rest-pose geometry. "
+        "Use anatomical knowledge, hierarchy, and rest-pose geometry.\n"
+        "\n"
+        "CRITICAL RULES — name similarity alone is NEVER sufficient:\n"
+        "1. STRUCTURE OVER NAME. Two joints sharing a name (e.g. both called "
+        "`Tail 06`) can have completely different topology. Always verify the "
+        "candidate's parent (and chain ancestry) matches the source joint's role. "
+        "If the parents differ structurally, do NOT map them together just because "
+        "the names match.\n"
+        "2. NUMBERED CHAINS (Tail/Spine/Neck/Finger/etc., joints with numeric "
+        "suffixes). The parent of joint N in a chain MUST be joint N-1 of the "
+        "same chain. Before mapping `<Chain> N_src` → `<Chain> M_tgt`, confirm "
+        "the target's parent is the previous joint of the same chain. If the "
+        "target's same-named joint is actually a sibling/helper hanging off an "
+        "earlier joint (e.g. target `Tail 06`.parent == `Tail 02` instead of "
+        "`Tail 05`), it is NOT a chain continuation — return null, or map to "
+        "the structurally-correct position further down the chain.\n"
+        "3. HELPER / SIBLING BONES — a joint that shares a parent with a chain "
+        "joint but is not itself in the chain (typically children=0, attached "
+        "mid-chain). These map only to similarly-positioned siblings, never to "
+        "a sequential chain slot. If no sibling exists on the other side, return "
+        "null.\n"
+        "4. CHAIN LENGTH MISMATCH. If src chain has N joints and tgt chain has "
+        "M with N != M, distribute proportionally along the chain (e.g. "
+        "src[i] → tgt[round(i * (M-1) / (N-1))]). Do not blindly pair by index "
+        "when chain shapes differ.\n"
+        "5. Use bone_len and children count as tiebreakers — a leaf (children=0) "
+        "should not map to a junction with multiple children, and vice versa.\n"
+        "\n"
         "Return ONLY valid JSON — no explanation, no markdown fences."
     )
     user_msg = (
@@ -525,48 +552,89 @@ def retarget_world_space_np(
         )
 
     # ── B) Map source → target indices by semantic match name ─────────────
-    # Two-pass matching:
-    #   1. Exact name match.
-    #   2. LLM-based mapping for remaining unmatched joints (skipped when
-    #      src is a subset of tgt names or tgt is fully covered by src).
+    # Strategy:
+    #   1. First try exact same-name matching.
+    #   2. If all non-leaf joints match and only leaf joints differ, use it directly.
+    #   3. Otherwise discard the exact-match result and fall through to LLM mapping.
+    #
+    # The LLM call sees the full source and target skeletons (names + parent
+    # + normalized bone length + children count) and is authoritative: its
+    # answer for each src joint — including explicit null — is taken as final,
+    # because the LLM is the only step that reasons over topology and can
+    # reject a coincidental same-name match (e.g. a helper joint sharing a
+    # name with an unrelated chain joint on the other skeleton).
     tgt_match_to_idx = {name: i for i, name in enumerate(tgt_match_names)}
     src_to_tgt = np.full(J_src, -1, dtype=np.int32)
+
+    # -- Step 1: try exact same-name matching --
+    # Two skeletons are considered "the same" if every src joint finds a same-name
+    # tgt joint, and any unmatched joints on either side are only leaf joints
+    # (no children).  This allows skeletons that differ only in the number of
+    # leaf helpers / end-site joints to skip the LLM call.
+    exact_mapping: dict[int, int] = {}
     matched_tgt = np.zeros(J_tgt, dtype=bool)
 
-    # Pass 1: exact match
-    for i, name in enumerate(src_match_names):
-        target_index = tgt_match_to_idx.get(name)
-        if target_index is not None and not matched_tgt[target_index]:
-            src_to_tgt[i] = target_index
-            matched_tgt[target_index] = True
+    for i, src_name in enumerate(src_match_names):
+        j = tgt_match_to_idx.get(src_name)
+        if j is not None and not matched_tgt[j]:
+            exact_mapping[i] = j
+            matched_tgt[j] = True
 
-    # Pass 2: LLM-based mapping for remaining unmatched joints.
-    # Subset/superset short-circuit: if all src joints are already mapped,
-    # or all tgt joints are already covered, there is nothing left to do.
-    unmatched_src_idx = [i for i in range(J_src) if src_to_tgt[i] < 0]
-    unmatched_tgt_idx = [j for j in range(J_tgt) if not matched_tgt[j]]
+    # Build children count for both skeletons
+    src_children_count = np.zeros(J_src, dtype=np.int32)
+    for p in src_parents:
+        if p >= 0:
+            src_children_count[int(p)] += 1
+    tgt_children_count = np.zeros(J_tgt, dtype=np.int32)
+    for p in tgt_parents:
+        if p >= 0:
+            tgt_children_count[int(p)] += 1
 
-    if not unmatched_src_idx:
-        pass
-    elif not unmatched_tgt_idx:
-        print(f"[retarget] Pass 2 skipped: all tgt joints covered by exact names "
-              f"(tgt ⊆ src, {len(unmatched_src_idx)} src joints unmatched/ignored)")
+    # Unmatched src joints are leaves?
+    all_src_unmatched_are_leaves = all(
+        src_children_count[i] == 0 for i in range(J_src) if i not in exact_mapping
+    )
+    # Unmatched tgt joints are leaves?
+    all_tgt_unmatched_are_leaves = all(
+        tgt_children_count[j] == 0 for j in range(J_tgt) if not matched_tgt[j]
+    )
+
+    is_exact_match = (
+        len(exact_mapping) > 0
+        and all_src_unmatched_are_leaves
+        and all_tgt_unmatched_are_leaves
+    )
+
+    if is_exact_match:
+        # Exact match (possibly with leaf-only differences) — use it directly
+        unmatched_src_count = J_src - len(exact_mapping)
+        unmatched_tgt_count = int((~matched_tgt).sum())
+        if verbose:
+            leaf_note = ""
+            if unmatched_src_count or unmatched_tgt_count:
+                leaf_note = f" ({unmatched_src_count} src leaves, {unmatched_tgt_count} tgt leaves skipped)"
+            print(f"[retarget] Exact same-name matching: {len(exact_mapping)}/{J_src} joints matched{leaf_note}")
+        for i, j in exact_mapping.items():
+            src_to_tgt[i] = j
     else:
-        tgt_name_to_unmatched_idx = {tgt_match_names[j]: j for j in unmatched_tgt_idx}
-
+        # Partial match — discard and use LLM instead
+        if verbose:
+            print(f"[retarget] Exact same-name matching: {len(exact_mapping)}/{J_src} matched, "
+                  f"switching to LLM mapping")
+        matched_tgt = np.zeros(J_tgt, dtype=bool)
         llm_result = _llm_joint_mapping(
             src_match_names, tgt_match_names,
             src_parents, tgt_parents,
             src_rest_offsets, tgt_rest_offsets,
         )
-
-        for i in unmatched_src_idx:
-            tgt_name = llm_result.get(src_match_names[i])
-            if tgt_name is not None:
-                j = tgt_name_to_unmatched_idx.get(tgt_name)
-                if j is not None and not matched_tgt[j]:
-                    src_to_tgt[i] = j
-                    matched_tgt[j] = True
+        for i, src_name in enumerate(src_match_names):
+            tgt_name = llm_result.get(src_name)
+            if tgt_name is None:
+                continue
+            j = tgt_match_to_idx.get(tgt_name)
+            if j is not None and not matched_tgt[j]:
+                src_to_tgt[i] = j
+                matched_tgt[j] = True
 
 
     # ── D) Source animation in world space ────────────────────────────────
