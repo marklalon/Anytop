@@ -24,6 +24,56 @@ from data_loaders.truebones.truebones_utils.animation_utils import (
 
 
 # ---------------------------------------------------------------------------
+# Canonical joint-name synonym map (for Jaccard scoring in donor ranking)
+# ---------------------------------------------------------------------------
+
+_CANONICAL_SYNONYMS: dict[str, str] = {
+    "leg 1": "thigh", "leg 2": "calf", "leg ankle": "foot", "leg ball 1": "toe 0",
+    "arm collarbone": "clavicle", "arm 1": "upper arm", "arm 2": "forearm",
+    "arm palm": "hand", "arm ball 1": "wrist",
+    "index": "finger 0", "middle": "finger 1", "ring": "finger 2", "pinky": "finger 3",
+    "spine 1": "spine", "spine 2": "spine 1", "spine 3": "spine 2", "spine 4": "spine 3",
+    "neck 1": "neck", "neck 2": "neck 1",
+    "jaw": "chin",
+}
+_SYNONYM_EXACT = {k: v for k, v in _CANONICAL_SYNONYMS.items() if any(c.isdigit() for c in k)}
+_SYNONYM_PREFIX = {k: v for k, v in _CANONICAL_SYNONYMS.items() if not any(c.isdigit() for c in k)}
+
+
+def _normalize_match_name(name: str) -> str:
+    """Normalize a joint name via the canonical synonym map (for Jaccard scoring)."""
+    lower = name.lower().strip()
+    if lower in _SYNONYM_EXACT:
+        return _SYNONYM_EXACT[lower]
+    for side in ("left ", "right "):
+        if lower.startswith(side):
+            return side + _normalize_match_name(lower[len(side):])
+    for key, value in _SYNONYM_PREFIX.items():
+        if lower == key or lower.startswith(key + " "):
+            suffix = lower[len(key):].strip()
+            if suffix:
+                # Extract trailing digit(s) from the suffix
+                digit = ""
+                for ch in reversed(suffix):
+                    if ch.isdigit():
+                        digit = ch + digit
+                    elif ch == " ":
+                        continue
+                    else:
+                        break
+                if digit:
+                    # Replace the trailing digit in the canonical value
+                    # e.g. "finger 0" + digit "02" → "finger 2"
+                    digit_int = str(int(digit))
+                    parts = value.rsplit(" ", 1)
+                    if parts[-1].isdigit():
+                        return parts[0] + " " + digit_int
+                    return value + " " + digit_int
+            return value
+    return lower
+
+
+# ---------------------------------------------------------------------------
 # Core retarget helper (shared between pipeline and generate.py wrapper)
 # ---------------------------------------------------------------------------
 
@@ -183,13 +233,31 @@ def retarget_features_npy_to_target(
         verbose=False,
     )
 
-    # 6. Build target Animation from world-space pose
+    # 6. Build target Animation from world-space pose.
+    #
+    # Unmapped target joints have ``world_rot[j] = world_rot[parent] *
+    # tgt_rest_rotations[j]`` from ``retarget_world_space_np``'s propagation
+    # pass. A cumulative-product decomposition (``parent_world.conj *
+    # world_rot[j]``) would bake ``tgt_rest_rotations[j]`` into the BVH local
+    # channel — visibly rotating the bone away from rest for any target FBX
+    # whose rest rotations are non-trivial. Force identity for unmapped joints
+    # so they sit at the target's BVH rest pose; mapped joints keep the
+    # cumulative-product decomposition (≈ source's own rest-local rotation at
+    # the source rest, ≈ identity once ``best_R`` aligns the two T-poses).
     world_pos = retarget_result['target_world_positions']   # (F, J_tgt, 3)
     world_rot = retarget_result['target_world_rotations']   # (F, J_tgt, 4)
     tgt_parents_np = np.asarray(target_tp.tpos_anim.parents, dtype=np.int32)
     F, J_tgt = world_pos.shape[:2]
 
-    local_rot = np.zeros_like(world_rot)
+    src_to_tgt = retarget_result['src_to_tgt']
+    mapped_tgt_mask = np.zeros(J_tgt, dtype=bool)
+    for src_i in range(len(src_to_tgt)):
+        tgt_j = int(src_to_tgt[src_i])
+        if tgt_j >= 0:
+            mapped_tgt_mask[tgt_j] = True
+
+    identity_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    local_rot = np.broadcast_to(identity_quat, (F, J_tgt, 4)).copy()
     local_pos = np.zeros_like(world_pos)
     for j in range(J_tgt):
         p = int(tgt_parents_np[j])
@@ -197,10 +265,12 @@ def retarget_features_npy_to_target(
             local_rot[:, j] = world_rot[:, j]
             local_pos[:, j] = world_pos[:, j]
         else:
-            local_rot[:, j] = quat_multiply_wxyz_np(
-                quat_conjugate_wxyz_np(world_rot[:, p]),
-                world_rot[:, j],
-            )
+            if mapped_tgt_mask[j]:
+                local_rot[:, j] = quat_multiply_wxyz_np(
+                    quat_conjugate_wxyz_np(world_rot[:, p]),
+                    world_rot[:, j],
+                )
+            # else: unmapped → leave as identity (rest pose relative to parent)
             local_pos[:, j] = quat_rotate_wxyz_np(
                 quat_conjugate_wxyz_np(world_rot[:, p]),
                 world_pos[:, j] - world_pos[:, p],
@@ -270,8 +340,6 @@ def rank_donors(
     Leaf rotation helpers are excluded from the Jaccard comparison so that
     budget-dependent augmentation joints do not inflate or distort scores.
     """
-    from utils.retarget import _normalize_match_name
-
     t_names = _strip_helper_names(
         _require_canonical_joint_names(
             target_cond,
@@ -394,8 +462,6 @@ def auto_retarget_pipeline(
         selected_donors = scored_all[:top_k]
 
     print(f"[auto_retarget] Top-{len(selected_donors)} donors selected:")
-    from utils.retarget import _normalize_match_name
-
     t_names = _strip_helper_names(
         _require_canonical_joint_names(
             target_cond,

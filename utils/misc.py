@@ -47,6 +47,16 @@ import os as _os
 from collections.abc import Container as _Container
 
 
+def _strip_common_suffixes(candidate: str) -> str:
+    """Strip common Truebones filename suffixes like 'All' from a candidate object type."""
+    for suffix in ("All", "Tpose", "T-Pose", "TPose"):
+        if candidate.endswith(suffix):
+            stripped = candidate[: -len(suffix)]
+            if stripped:
+                return stripped
+    return candidate
+
+
 def infer_object_type_from_filename(
     filename: str,
     valid_types: _Container[str] | None = None,
@@ -63,6 +73,10 @@ def infer_object_type_from_filename(
     against that container.  Multi-word types (e.g. ``Sea_Lion``) are handled
     via progressive prefix matching.
 
+    Common Truebones suffixes (e.g. ``All`` in ``LionAll-Walk.fbx``) are
+    stripped from candidates so that the inferred type matches the
+    preprocessing convention.
+
     Args:
         filename:   A file path or plain filename.
         valid_types: Optional set/container of known object types for validation.
@@ -77,7 +91,7 @@ def infer_object_type_from_filename(
     # 1. Triple-underscore separator  (highest priority)
     sep_triple = "___"
     if sep_triple in stem:
-        candidate = stem.split(sep_triple, 1)[0]
+        candidate = _strip_common_suffixes(stem.split(sep_triple, 1)[0])
         if valid_types is None or candidate in valid_types:
             return candidate
 
@@ -87,7 +101,7 @@ def infer_object_type_from_filename(
         parts = stem.split("_")
         best: str | None = None
         for i in range(1, len(parts)):
-            candidate = "_".join(parts[:i])
+            candidate = _strip_common_suffixes("_".join(parts[:i]))
             if candidate in valid_types:
                 best = candidate  # keep going for a longer match
         if best is not None:
@@ -95,20 +109,21 @@ def infer_object_type_from_filename(
 
     # 3. Single underscore — first token (blind, when no valid_types)
     if "_" in stem:
-        first_token = stem.split("_", 1)[0]
+        first_token = _strip_common_suffixes(stem.split("_", 1)[0])
         if first_token:
             if valid_types is None or first_token in valid_types:
                 return first_token
 
     # 4. Hyphen separator (for FBX stems like "Wyvern-Tpose")
     if "-" in stem:
-        first_token = stem.split("-", 1)[0]
+        first_token = _strip_common_suffixes(stem.split("-", 1)[0])
         if first_token:
             if valid_types is None or first_token in valid_types:
                 return first_token
 
     # 5. Fallback: bare stem (e.g. "dragon.fbx" → "dragon")
     if valid_types is None:
-        return stem if stem else None
+        stripped = _strip_common_suffixes(stem)
+        return stripped if stripped else None
 
     return None

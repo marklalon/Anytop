@@ -25,56 +25,6 @@ from .rotation_numpy import (
 
 
 # ---------------------------------------------------------------------------
-# Canonical joint-name synonym map (used by auto_retarget for Jaccard scoring)
-# ---------------------------------------------------------------------------
-
-_CANONICAL_SYNONYMS: dict[str, str] = {
-    "leg 1": "thigh", "leg 2": "calf", "leg ankle": "foot", "leg ball 1": "toe 0",
-    "arm collarbone": "clavicle", "arm 1": "upper arm", "arm 2": "forearm",
-    "arm palm": "hand", "arm ball 1": "wrist",
-    "index": "finger 0", "middle": "finger 1", "ring": "finger 2", "pinky": "finger 3",
-    "spine 1": "spine", "spine 2": "spine 1", "spine 3": "spine 2", "spine 4": "spine 3",
-    "neck 1": "neck", "neck 2": "neck 1",
-    "jaw": "chin",
-}
-_SYNONYM_EXACT = {k: v for k, v in _CANONICAL_SYNONYMS.items() if any(c.isdigit() for c in k)}
-_SYNONYM_PREFIX = {k: v for k, v in _CANONICAL_SYNONYMS.items() if not any(c.isdigit() for c in k)}
-
-
-def _normalize_match_name(name: str) -> str:
-    """Normalize a joint name via the canonical synonym map (for Jaccard scoring)."""
-    lower = name.lower().strip()
-    if lower in _SYNONYM_EXACT:
-        return _SYNONYM_EXACT[lower]
-    for side in ("left ", "right "):
-        if lower.startswith(side):
-            return side + _normalize_match_name(lower[len(side):])
-    for key, value in _SYNONYM_PREFIX.items():
-        if lower == key or lower.startswith(key + " "):
-            suffix = lower[len(key):].strip()
-            if suffix:
-                # Extract trailing digit(s) from the suffix
-                digit = ""
-                for ch in reversed(suffix):
-                    if ch.isdigit():
-                        digit = ch + digit
-                    elif ch == " ":
-                        continue
-                    else:
-                        break
-                if digit:
-                    # Replace the trailing digit in the canonical value
-                    # e.g. "finger 0" + digit "02" → "finger 2"
-                    digit_int = str(int(digit))
-                    parts = value.rsplit(" ", 1)
-                    if parts[-1].isdigit():
-                        return parts[0] + " " + digit_int
-                    return value + " " + digit_int
-            return value
-    return lower
-
-
-# ---------------------------------------------------------------------------
 # LLM-based joint mapping
 # ---------------------------------------------------------------------------
 
