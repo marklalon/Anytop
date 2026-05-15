@@ -491,10 +491,15 @@ def retarget_world_space_np(
 ) -> RetargetResult:
     """Retarget an exporter-style animation from a source skeleton to a target.
 
-    The math is identical to what ``AnimationExporter.export_glb`` performs when
-    a ``mesh_path`` is supplied: canonical bone-name matching → world-space
-    alignment (scale + translation + 1-of-12 rigid rotation) → inverse FK back
-    to target local pose channels.
+    Rotation-only retargeting with rigid target skeleton: mapped joints
+    inherit the source's animated world rotation (aligned by a 1-of-12
+    rigid coordinate match + scale); unmapped target joints sit at rest
+    relative to their parent; target world positions are FK-derived from
+    ``tgt_rest_offsets`` so bone lengths are preserved exactly. Only the
+    root joint carries source translation (scaled), so global locomotion
+    transfers without distorting the rest of the skeleton. This avoids
+    the chain-skip position discontinuity that arises when source and
+    target chains have different joint counts.
 
     Args:
         src_parents: (J_src,) int32 parent indices, -1 for root.
@@ -737,42 +742,64 @@ def retarget_world_space_np(
               f"rot={best_label}, "
               f"trans=({t_align[0]:.4f}, {t_align[1]:.4f}, {t_align[2]:.4f})")
 
-    # ── G) Apply alignment and remap to target world-space ────────────────
-    target_wpos = np.repeat(tgt_rest_wpos, F, axis=0)
-    target_wrot = np.repeat(tgt_rest_wrot, F, axis=0)
+    # ── G) Rotation-only retargeting with rigid target skeleton ───────────
+    #
+    # Mapped joints take the source's animated world rotation (aligned to the
+    # target's coord basis). Unmapped joints inherit
+    # ``parent_world_rot * tgt_rest_rotations[j]`` so they sit at rest
+    # relative to their parent. World positions are then recomputed by
+    # rigid-skeleton FK from ``tgt_rest_offsets`` — never copied from the
+    # source — so target bone lengths are preserved exactly. The root joint
+    # is the sole exception: if mapped, its world translation comes from the
+    # source (already scaled + axis-aligned) so global locomotion transfers.
+    #
+    # This eliminates the "mapped → unmapped span → mapped" position
+    # discontinuity that arises whenever a chain has different joint counts
+    # on either side (e.g. Parrot 2-joint neck vs Dragon 5-joint neck):
+    # the source's world position would otherwise force a stretch/jump at
+    # the seam between an unmapped rest-propagated segment and the next
+    # mapped joint downstream.
     aligned_src_wpos = (
         src_wpos * scale + t_align[np.newaxis, np.newaxis, :]
     ) @ best_R.T
     aligned_src_wrot = apply_rotation_to_quaternions_wxyz_np(src_wrot, best_R)
-
-    mapped_mask = np.zeros(J_tgt, dtype=bool)
-    for ii, fi in enumerate(src_to_tgt):
-        if fi >= 0:
-            target_wpos[:, fi] = aligned_src_wpos[:, ii]
-            target_wrot[:, fi] = aligned_src_wrot[:, ii]
-            mapped_mask[fi] = True
-
-    # Propagate FK for every unmatched target joint from its (already updated)
-    # parent.  In practice these are leaf rotation helpers — joints appended by
-    # ``augment_leaf_rotation_helpers`` whose names end with ``__rot_helper`` —
-    # which never canonical-match across species.  They should follow their
-    # real leaf parent's animated world transform while keeping their rest
-    # local offset and rotation (identity for helpers).  tgt_parents is in
-    # topological order (parent index < child index), so a single forward pass
-    # suffices.
     F_q = aligned_src_wrot.shape[0]
+
+    src_for_tgt = np.full(J_tgt, -1, dtype=np.int32)
+    for ii in range(J_src):
+        fi = int(src_to_tgt[ii])
+        if fi >= 0:
+            src_for_tgt[fi] = ii
+    mapped_mask = src_for_tgt >= 0
+
+    target_wrot = np.zeros((F_q, J_tgt, 4), dtype=np.float64)
+    target_wpos = np.zeros((F_q, J_tgt, 3), dtype=np.float64)
+
+    # tgt_parents is topologically ordered (parent index < child index), so a
+    # single forward pass populates rotations and positions consistently.
     for j in range(J_tgt):
-        if mapped_mask[j]:
-            continue
         p = int(tgt_parents[j])
+
+        if mapped_mask[j]:
+            target_wrot[:, j] = aligned_src_wrot[:, int(src_for_tgt[j])]
+        elif p < 0:
+            target_wrot[:, j] = tgt_rest_wrot[0, j]
+        else:
+            target_wrot[:, j] = quat_multiply_wxyz_np(
+                target_wrot[:, p],
+                np.repeat(tgt_rest_rotations[j:j+1], F_q, axis=0),
+            )
+
         if p < 0:
-            continue
-        rest_q_j = np.repeat(tgt_rest_rotations[j:j+1], F_q, axis=0)
-        rest_off_j = np.repeat(tgt_rest_offsets[j:j+1], F_q, axis=0)
-        target_wpos[:, j] = target_wpos[:, p] + quat_rotate_wxyz_np(
-            target_wrot[:, p], rest_off_j,
-        )
-        target_wrot[:, j] = quat_multiply_wxyz_np(target_wrot[:, p], rest_q_j)
+            if mapped_mask[j]:
+                target_wpos[:, j] = aligned_src_wpos[:, int(src_for_tgt[j])]
+            else:
+                target_wpos[:, j] = tgt_rest_wpos[0, j]
+        else:
+            rest_off_j = np.repeat(tgt_rest_offsets[j:j+1], F_q, axis=0)
+            target_wpos[:, j] = target_wpos[:, p] + quat_rotate_wxyz_np(
+                target_wrot[:, p], rest_off_j,
+            )
 
     # ── H) Inverse FK back to target local pose channels ──────────────────
     tgt_pose_rot = np.zeros((F, J_tgt, 4), dtype=np.float64)
@@ -819,9 +846,12 @@ def retarget_world_space_np(
         out_root_rotation = rr_np.copy()
         out_root_translation = rt_np.copy()
 
-    has_nonzero_bone_translations = (
-        pose_locations_np is not None
-        or np.any(np.abs(tgt_pose_loc[:, ~root_mask, :]) > 1e-6)
+    # Rotation-only retargeting: non-root pose_loc is rigid (== rest) by
+    # construction, so drop the per-bone translation channel. Source-side
+    # ``pose_locations_np`` (squash/stretch / IK offset) is intentionally not
+    # carried through — the target keeps its own bone lengths.
+    has_nonzero_bone_translations = bool(
+        np.any(np.abs(tgt_pose_loc[:, ~root_mask, :]) > 1e-6)
     )
     out_bone_translations = tgt_pose_loc if has_nonzero_bone_translations else None
 

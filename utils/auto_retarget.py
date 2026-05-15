@@ -93,6 +93,87 @@ def _require_canonical_joint_names(object_cond: dict, *, object_type_hint: str, 
         )
     return canonical_joint_names
 
+
+def _build_tpose_aligned_target_animation(retarget_result: dict, target_tp):
+    """Convert a retarget result into the Animation form expected by get_motion.
+
+    The motion-feature path stores total local joint rotations, not pose-space
+     rotations with a separate rest-orient channel. Mapped joints therefore keep
+     the local rotation recovered from ``target_world_rotations``. Unmapped
+     joints split into two cases:
+        1. gap joints on a path to a mapped descendant must also keep that local
+            rotation, or downstream mapped joints (for example dragon Head below
+            Neck2/3/4) lose the necessary rest delta.
+        2. pure unmapped side branches must stay at local identity, otherwise a
+            large FBX rest quaternion (for example dragon clavicles) gets baked
+            into the motion channels and folds the whole branch in BVH playback.
+    """
+    from motion_lib.Animation import Animation
+    from motion_lib.Quaternions import Quaternions
+    from utils.rotation_numpy import (
+        quat_conjugate_wxyz_np,
+        quat_multiply_wxyz_np,
+        quat_rotate_wxyz_np,
+    )
+
+    target_world_positions = np.asarray(
+        retarget_result['target_world_positions'],
+        dtype=np.float64,
+    )
+    target_world_rotations = np.asarray(
+        retarget_result['target_world_rotations'],
+        dtype=np.float64,
+    )
+    target_offsets = np.asarray(target_tp.offsets, dtype=np.float64)
+    target_parents = np.asarray(target_tp.tpos_anim.parents, dtype=np.int32)
+    src_to_tgt = np.asarray(retarget_result['src_to_tgt'], dtype=np.int32)
+
+    frame_count, joint_count = target_world_positions.shape[:2]
+    identity_orients = np.zeros((joint_count, 4), dtype=np.float64)
+    identity_orients[:, 0] = 1.0
+    orient_quats = Quaternions(identity_orients)
+    mapped_target_mask = np.zeros(joint_count, dtype=bool)
+    for target_idx in src_to_tgt:
+        if int(target_idx) >= 0:
+            mapped_target_mask[int(target_idx)] = True
+
+    has_mapped_descendant = np.zeros(joint_count, dtype=bool)
+    for joint_idx in range(joint_count - 1, -1, -1):
+        parent_idx = int(target_parents[joint_idx])
+        if parent_idx >= 0 and (mapped_target_mask[joint_idx] or has_mapped_descendant[joint_idx]):
+            has_mapped_descendant[parent_idx] = True
+
+    local_rotations = np.zeros((frame_count, joint_count, 4), dtype=np.float64)
+    local_positions = np.zeros_like(target_world_positions)
+    local_rotations[:, :, 0] = 1.0
+
+    for joint_idx in range(joint_count):
+        parent_idx = int(target_parents[joint_idx])
+        if parent_idx < 0:
+            local_rotations[:, joint_idx] = target_world_rotations[:, joint_idx]
+            local_positions[:, joint_idx] = target_world_positions[:, joint_idx]
+            continue
+
+        if mapped_target_mask[joint_idx] or has_mapped_descendant[joint_idx]:
+            local_rotations[:, joint_idx] = quat_multiply_wxyz_np(
+                quat_conjugate_wxyz_np(target_world_rotations[:, parent_idx]),
+                target_world_rotations[:, joint_idx],
+            )
+        local_positions[:, joint_idx] = quat_rotate_wxyz_np(
+            quat_conjugate_wxyz_np(target_world_rotations[:, parent_idx]),
+            target_world_positions[:, joint_idx] - target_world_positions[:, parent_idx],
+        )
+
+    rotation_quats = Quaternions(local_rotations)
+
+    return Animation(
+        rotation_quats,
+        local_positions.astype(np.float64),
+        orient_quats,
+        target_offsets,
+        target_parents,
+    )
+
 def retarget_features_npy_to_target(
     source_features: np.ndarray,
     source_cond: dict,
@@ -127,18 +208,11 @@ def retarget_features_npy_to_target(
     from utils.retarget import retarget_world_space_np
     from utils.exporter import animation_to_exporter_inputs
     from utils.roundtrip_common import _build_skeleton
-    from utils.rotation_numpy import (
-        quat_conjugate_wxyz_np,
-        quat_multiply_wxyz_np,
-        quat_rotate_wxyz_np,
-    )
     from data_loaders.truebones.truebones_utils.features import (
         get_common_features_from_T_pose,
         get_motion,
         recover_animation_from_motion_np,
     )
-    from motion_lib.Animation import Animation
-    from motion_lib.Quaternions import Quaternions
 
     def _resolve_match_names(raw_names, object_cond=None, joint_count=None):
         if object_cond is None:
@@ -233,58 +307,9 @@ def retarget_features_npy_to_target(
         verbose=False,
     )
 
-    # 6. Build target Animation from world-space pose.
-    #
-    # Unmapped target joints have ``world_rot[j] = world_rot[parent] *
-    # tgt_rest_rotations[j]`` from ``retarget_world_space_np``'s propagation
-    # pass. A cumulative-product decomposition (``parent_world.conj *
-    # world_rot[j]``) would bake ``tgt_rest_rotations[j]`` into the BVH local
-    # channel — visibly rotating the bone away from rest for any target FBX
-    # whose rest rotations are non-trivial. Force identity for unmapped joints
-    # so they sit at the target's BVH rest pose; mapped joints keep the
-    # cumulative-product decomposition (≈ source's own rest-local rotation at
-    # the source rest, ≈ identity once ``best_R`` aligns the two T-poses).
-    world_pos = retarget_result['target_world_positions']   # (F, J_tgt, 3)
-    world_rot = retarget_result['target_world_rotations']   # (F, J_tgt, 4)
-    tgt_parents_np = np.asarray(target_tp.tpos_anim.parents, dtype=np.int32)
-    F, J_tgt = world_pos.shape[:2]
-
-    src_to_tgt = retarget_result['src_to_tgt']
-    mapped_tgt_mask = np.zeros(J_tgt, dtype=bool)
-    for src_i in range(len(src_to_tgt)):
-        tgt_j = int(src_to_tgt[src_i])
-        if tgt_j >= 0:
-            mapped_tgt_mask[tgt_j] = True
-
-    identity_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
-    local_rot = np.broadcast_to(identity_quat, (F, J_tgt, 4)).copy()
-    local_pos = np.zeros_like(world_pos)
-    for j in range(J_tgt):
-        p = int(tgt_parents_np[j])
-        if p < 0:
-            local_rot[:, j] = world_rot[:, j]
-            local_pos[:, j] = world_pos[:, j]
-        else:
-            if mapped_tgt_mask[j]:
-                local_rot[:, j] = quat_multiply_wxyz_np(
-                    quat_conjugate_wxyz_np(world_rot[:, p]),
-                    world_rot[:, j],
-                )
-            # else: unmapped → leave as identity (rest pose relative to parent)
-            local_pos[:, j] = quat_rotate_wxyz_np(
-                quat_conjugate_wxyz_np(world_rot[:, p]),
-                world_pos[:, j] - world_pos[:, p],
-            )
-
-    tgt_orients = np.zeros((J_tgt, 4), dtype=np.float64)
-    tgt_orients[:, 0] = 1.0
-    tgt_anim = Animation(
-        Quaternions(local_rot.astype(np.float64)),
-        local_pos.astype(np.float64),
-        Quaternions(tgt_orients),
-        np.asarray(target_tp.offsets, dtype=np.float64),
-        tgt_parents_np,
-    )
+    # 6. Build the target Animation from pose-space local channels. This keeps
+    # mapped joints in the target T-pose-relative basis expected by get_motion.
+    tgt_anim = _build_tpose_aligned_target_animation(retarget_result, target_tp)
 
     # 7. Re-encode target Animation → motion features
     squared_positions_error = {}
@@ -300,6 +325,7 @@ def retarget_features_npy_to_target(
         scale_factor=float(target_tp.scale_factor),
         orientation_quat=target_tp.orientation_quat,
         helper_metadata=target_tp.helper_metadata,
+        animation_input_is_tpose_aligned=True,
     )
 
     if target_features is None:
