@@ -10,6 +10,7 @@ Depends on: features.py, animation_utils.py
 from motion_lib import BVH, FBX
 import numpy as np
 import os
+import sys
 from os.path import join as pjoin
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import random
@@ -755,11 +756,12 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
 
     if all_motion_errors:
         print(f"\n{'=' * 70}")
-        print(f"MOTION PROCESSING ERRORS ({len(all_motion_errors)} total)")
+        print(f"\x1b[31mMOTION PROCESSING ERRORS ({len(all_motion_errors)} total)\x1b[0m")
         print('=' * 70)
         for err in all_motion_errors:
             print(err)
         print(f"{'=' * 70}\n")
+        sys.exit(1)
 
     _write_dataset_artifacts(
         target_dataset_dir,

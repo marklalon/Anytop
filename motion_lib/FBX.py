@@ -276,6 +276,11 @@ def _extract_armature_skeleton_data(
         ordered_bones.append(bone)
 
         for child in bone.children:
+            # Skip mesh-binding bones (e.g. "Mesh") that some Truebones rigs
+            # attach as a sibling of the skeleton chain under the root.
+            # These carry the character mesh, not skeletal animation.
+            if "mesh" in child.name.lower():
+                continue
             _append_preorder(child)
 
     _append_preorder(root_bone)

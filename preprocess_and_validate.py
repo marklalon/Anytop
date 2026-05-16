@@ -378,6 +378,7 @@ def run_validation(
 
         _validate_positions_error_file(positions_error_path)
 
+        print(f"[OK] total motions: {len(motion_files)}")
         print("[PASS] dataset validation completed successfully")
         return 0
     except ValidationError as e:
