@@ -508,15 +508,30 @@ def retarget_world_space_np(
 ) -> RetargetResult:
     """Retarget an exporter-style animation from a source skeleton to a target.
 
-    Rotation-only retargeting with rigid target skeleton: mapped joints
-    inherit the source's animated world rotation (aligned by a 1-of-12
-    rigid coordinate match + scale); unmapped target joints sit at rest
-    relative to their parent; target world positions are FK-derived from
-    ``tgt_rest_offsets`` so bone lengths are preserved exactly. Only the
-    root joint carries source translation (scaled), so global locomotion
-    transfers without distorting the rest of the skeleton. This avoids
-    the chain-skip position discontinuity that arises when source and
-    target chains have different joint counts.
+    Bone-vector direction-transfer with rigid target skeleton: each mapped
+    bone is placed at ``K2 = P2 + L · dir(K − P1)`` where ``dir`` is the
+    source bone's unit world direction (aligned by a 1-of-12 rigid coordinate
+    match + scale), ``P2`` is the target-skeleton parent's world position, and
+    ``L = ‖tgt_rest_offsets[j]‖ · (src_anim_len / src_rest_len)`` is the
+    target rest bone length modulated by the source bone's *relative*
+    squash/stretch — so the target keeps its own proportions while the
+    source's stretch carries through (the ratio is 1 when the source has no
+    bone-translation channel, making pure-rotation behavior unchanged and
+    self-retarget exactly idempotent). Unmapped target joints stay rigid
+    relative to a
+    transport frame (rest-composed, source-aligned at mapped ancestors). Only
+    the root joint carries source translation (scaled), so global locomotion
+    transfers. Target world rotation is the source's aligned world rotation
+    for mapped joints (rest-composed off the parent for unmapped ones): the
+    bone-vector transfer carries position, so self-retarget reproduces the
+    source rotation exactly (twist included) with no skeleton-equality
+    shortcut. The rotation is intentionally NOT re-fit to the realized
+    positions — those carry the source's per-bone translation channel
+    (squash/stretch / IK), a translation that a position-derived rotation
+    would chase and thereby break rotation idempotency; that position vs.
+    rest-rotation residual is represented exactly by the inverse-FK
+    pose-location channel instead. This also avoids the chain-skip position
+    discontinuity that arises when source and target chains differ in length.
 
     Args:
         src_parents: (J_src,) int32 parent indices, -1 for root.
@@ -759,23 +774,32 @@ def retarget_world_space_np(
               f"rot={best_label}, "
               f"trans=({t_align[0]:.4f}, {t_align[1]:.4f}, {t_align[2]:.4f})")
 
-    # ── G) Rotation-only retargeting with rigid target skeleton ───────────
+    # ── G) Bone-vector direction-transfer with rigid target skeleton ──────
     #
-    # Mapped joints take the source's animated world rotation (aligned to the
-    # target's coord basis). Unmapped joints inherit
-    # ``parent_world_rot * tgt_rest_rotations[j]`` so they sit at rest
-    # relative to their parent. World positions are then recomputed by
-    # rigid-skeleton FK from ``tgt_rest_offsets`` — never copied from the
-    # source — so target bone lengths are preserved exactly. The root joint
-    # is the sole exception: if mapped, its world translation comes from the
-    # source (already scaled + axis-aligned) so global locomotion transfers.
+    # For a mapped bone K (target joint j) whose source-skeleton parent is P1
+    # and target-skeleton parent is P2, the source's world-space bone
+    # direction is transferred:
     #
-    # This eliminates the "mapped → unmapped span → mapped" position
-    # discontinuity that arises whenever a chain has different joint counts
-    # on either side (e.g. Parrot 2-joint neck vs Dragon 5-joint neck):
-    # the source's world position would otherwise force a stretch/jump at
-    # the seam between an unmapped rest-propagated segment and the next
-    # mapped joint downstream.
+    #     K2 = P2 + L · dir(K − P1)
+    #
+    # where ``dir`` is the unit world direction of the source bone in the
+    # aligned (target) coordinate basis and ``L = ‖tgt_rest_offsets[j]‖ ·
+    # (src_anim_len / src_rest_len)`` — the target's own rest bone length
+    # scaled by the source bone's relative squash/stretch. So the target keeps
+    # its own proportions while the source's stretch carries through; with no
+    # source bone-translation channel the ratio is 1 and behavior is
+    # unchanged, and self-retarget stays exactly idempotent. The root joint, if
+    # mapped, takes the source's (scaled + axis-aligned) world translation so
+    # global locomotion transfers. Unmapped joints stay rigid relative to a
+    # transport frame (rest-composed, source-aligned at mapped ancestors),
+    # which keeps the old gap/side-branch behavior and avoids the
+    # "mapped → unmapped span → mapped" discontinuity across chains with
+    # different joint counts (e.g. Parrot 2-joint neck vs Dragon 5-joint neck).
+    #
+    # A bone vector fixes position but not twist; Pass G2 takes the rotation
+    # directly from the source's aligned world rotation (rest-composed for
+    # unmapped joints) — exact for self-retarget, with the position vs.
+    # rest-rotation residual absorbed by the Pass-H pose-location channel.
     aligned_src_wpos = (
         src_wpos * scale + t_align[np.newaxis, np.newaxis, :]
     ) @ best_R.T
@@ -792,30 +816,98 @@ def retarget_world_space_np(
     target_wrot = np.zeros((F_q, J_tgt, 4), dtype=np.float64)
     target_wpos = np.zeros((F_q, J_tgt, 3), dtype=np.float64)
 
+    _EPS = 1e-8
+
+    # ── Pass G1: world positions + a transport frame for unmapped joints ──
     # tgt_parents is topologically ordered (parent index < child index), so a
-    # single forward pass populates rotations and positions consistently.
+    # single forward pass places every joint after its parent. ``transport``
+    # carries unmapped (gap / side-branch) joints rigidly; it equals the old
+    # rotation-only ``target_wrot`` and is NOT the final target rotation.
+    transport = np.zeros((F_q, J_tgt, 4), dtype=np.float64)
     for j in range(J_tgt):
         p = int(tgt_parents[j])
-
-        if mapped_mask[j]:
-            target_wrot[:, j] = aligned_src_wrot[:, int(src_for_tgt[j])]
-        elif p < 0:
-            target_wrot[:, j] = tgt_rest_wrot[0, j]
-        else:
-            target_wrot[:, j] = quat_multiply_wxyz_np(
-                target_wrot[:, p],
-                np.repeat(tgt_rest_rotations[j:j+1], F_q, axis=0),
-            )
+        ii = int(src_for_tgt[j])
 
         if p < 0:
-            if mapped_mask[j]:
-                target_wpos[:, j] = aligned_src_wpos[:, int(src_for_tgt[j])]
+            if ii >= 0:
+                target_wpos[:, j] = aligned_src_wpos[:, ii]
+                transport[:, j] = aligned_src_wrot[:, ii]
             else:
                 target_wpos[:, j] = tgt_rest_wpos[0, j]
+                transport[:, j] = tgt_rest_wrot[0, j]
+            continue
+
+        rest_off_j = np.repeat(tgt_rest_offsets[j:j + 1], F_q, axis=0)
+
+        if ii >= 0:
+            # Mapped non-root: bone-vector direction transfer. The bone length
+            # is the target's own rest length modulated by the source bone's
+            # *relative* squash/stretch (animated length ÷ source rest length),
+            # so target proportions are preserved while source stretch carries
+            # through — and self-retarget stays idempotent even with a
+            # bone-translation channel (ratio ≡ 1 when there is none).
+            tgt_rest_len = float(np.linalg.norm(tgt_rest_offsets[j]))
+            p1 = int(src_parents[ii])
+            used_dir = False
+            if p1 >= 0:
+                bv_aligned = aligned_src_wpos[:, ii] - aligned_src_wpos[:, p1]
+                bn = np.linalg.norm(bv_aligned, axis=-1)
+                if np.all(bn > _EPS):
+                    d = bv_aligned / bn[:, None]
+                    src_rest_len = float(np.linalg.norm(src_rest_offsets[ii]))
+                    if src_rest_len > _EPS:
+                        src_anim_len = np.linalg.norm(
+                            src_wpos[:, ii] - src_wpos[:, p1], axis=-1,
+                        )
+                        stretch = src_anim_len / src_rest_len      # (F,)
+                    else:
+                        stretch = np.ones(d.shape[0], dtype=np.float64)
+                    L = tgt_rest_len * stretch                     # (F,)
+                    target_wpos[:, j] = target_wpos[:, p] + L[:, None] * d
+                    used_dir = True
+            if not used_dir:
+                # Source bone is the root edge or degenerate: rest fallback.
+                target_wpos[:, j] = target_wpos[:, p] + quat_rotate_wxyz_np(
+                    transport[:, p], rest_off_j,
+                )
+            transport[:, j] = aligned_src_wrot[:, ii]
         else:
-            rest_off_j = np.repeat(tgt_rest_offsets[j:j+1], F_q, axis=0)
+            # Unmapped non-root: rigid rest relative to the transport frame.
             target_wpos[:, j] = target_wpos[:, p] + quat_rotate_wxyz_np(
-                target_wrot[:, p], rest_off_j,
+                transport[:, p], rest_off_j,
+            )
+            transport[:, j] = quat_multiply_wxyz_np(
+                transport[:, p],
+                np.repeat(tgt_rest_rotations[j:j + 1], F_q, axis=0),
+            )
+
+    # ── Pass G2: target world rotation = source world rotation ────────────
+    # Pass G1 already places every joint by the bone-vector transfer. The
+    # rotation is simply the source's aligned world rotation for mapped
+    # joints, and the rest-composed rotation off the finalized parent for
+    # unmapped (gap / side-branch) joints. This is exact for a self-retarget
+    # — target_wrot == source world rotation, twist included — with no
+    # skeleton-equality shortcut.
+    #
+    # It deliberately does NOT re-fit the rotation to the realized positions:
+    # those positions carry the source's per-bone translation channel
+    # (squash/stretch / IK offset), which is a translation, not a rotation —
+    # any position-derived rotation would chase it and break rotation
+    # idempotency. The position vs. rest-rotation residual is instead
+    # represented exactly by the inverse-FK pose-location channel (Pass H).
+    for p_idx in range(J_tgt):
+        p_par = int(tgt_parents[p_idx])
+        ii = int(src_for_tgt[p_idx])
+        if ii >= 0:
+            target_wrot[:, p_idx] = aligned_src_wrot[:, ii]
+        elif p_par < 0:
+            target_wrot[:, p_idx] = np.repeat(
+                tgt_rest_wrot[0, p_idx][None], F_q, axis=0
+            )
+        else:
+            target_wrot[:, p_idx] = quat_multiply_wxyz_np(
+                target_wrot[:, p_par],
+                np.repeat(tgt_rest_rotations[p_idx:p_idx + 1], F_q, axis=0),
             )
 
     # ── H) Inverse FK back to target local pose channels ──────────────────
@@ -863,10 +955,13 @@ def retarget_world_space_np(
         out_root_rotation = rr_np.copy()
         out_root_translation = rt_np.copy()
 
-    # Rotation-only retargeting: non-root pose_loc is rigid (== rest) by
-    # construction, so drop the per-bone translation channel. Source-side
-    # ``pose_locations_np`` (squash/stretch / IK offset) is intentionally not
-    # carried through — the target keeps its own bone lengths.
+    # Bone-vector transfer: the position a fitted world rotation cannot
+    # reproduce from rest offsets falls into the per-bone translation channel,
+    # so ``tgt_pose_loc`` is generally non-zero and is kept when so. This now
+    # also carries the source's *relative* squash/stretch (folded into the
+    # transferred bone length L), so a stretched source bone reproduces a
+    # proportionally stretched target bone — and self-retarget round-trips the
+    # bone-translation channel exactly.
     has_nonzero_bone_translations = bool(
         np.any(np.abs(tgt_pose_loc[:, ~root_mask, :]) > 1e-6)
     )
