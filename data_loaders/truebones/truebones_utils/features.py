@@ -218,7 +218,19 @@ in our data structure each joints holds it's own rotation (similar to humanML3D 
 def get_bvh_cont6d_params(anim, object_type, orientation_quat, translation_root_index=0):
     positions = positions_global(anim)
     quat_params = anim.rotations
-    r_rot = _coerce_single_orientation_quat(orientation_quat).repeat(positions.shape[0], axis=0)
+    # ``anim`` is ALREADY canonicalized: process_anim/rotate_to_hml_orientation
+    # rotated it by ``orientation_quat`` so the skeleton faces the canonical
+    # +Z direction (this single application is yaw-invariant w.r.t. the source
+    # FBX authoring). The root-facing used here for RIC de-rotation / the root
+    # rotation channel / velocity frame must therefore be IDENTITY. Re-using
+    # ``orientation_quat`` a second time applied q twice (canonical = q²·native),
+    # which is only self-consistent when every skeleton shares the same q
+    # (true for the Truebones family, q≈-90°, but NOT for arbitrary skeletons
+    # such as a +Z-authored dragon, q≈identity) and made the stored feature
+    # frame skeleton-orientation-dependent instead of normalized. ``orientation_quat``
+    # is retained as a parameter for call-site/signature compatibility and is
+    # still stored separately in cond for metadata/retarget consumers.
+    r_rot = Quaternions.id(positions.shape[0])
     '''Quaternion to continuous 6D'''
     cont_6d_params = get_6d_rep(quat_params)
     cont_6d_params_reordered = np.zeros_like(cont_6d_params)
