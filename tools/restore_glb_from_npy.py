@@ -87,6 +87,7 @@ _DEFAULT_COND_NPY = os.path.realpath(
 )
 
 _FULLBODY_IK_ITERATIONS = 2
+_DEFAULT_IK_STRETCH_FACTOR = 0.1  # ±10 % bone-length elasticity during IK
 
 def _load_tpose_restore_metadata(
     tpose_mesh: str,
@@ -543,6 +544,56 @@ def _build_selective_ik_seed_positions(
     return seed_positions
 
 
+def _apply_bone_stretch_correction(
+    animation,
+    target_global_positions: np.ndarray,
+    parents: np.ndarray,
+    stretch_factor: float,
+) -> None:
+    """Apply per-edge local-translation stretch/compression after IK rotation.
+
+    For each parent→child edge, compute the ratio of target global distance to
+    current global distance, clamp to [1-stretch_factor, 1+stretch_factor], and
+    scale the child's local translation by the clamped ratio.
+
+    This allows the skeleton to elastically reach targets that are slightly
+    out of reach of the rigid skeleton, reducing IK residual error.
+    """
+    from motion_lib.Animation import positions_global
+
+    if abs(stretch_factor) < 1e-9:
+        return
+
+    current_positions = positions_global(animation)
+    F, J, _ = current_positions.shape
+
+    # Skip root (parent=-1)
+    edge_mask = parents >= 0
+
+    for j in range(J):
+        if not edge_mask[j]:
+            continue
+        p = int(parents[j])
+
+        # Current global edge length
+        edge_vec = current_positions[:, j] - current_positions[:, p]  # (F, 3)
+        edge_len = np.linalg.norm(edge_vec, axis=-1, keepdims=True) + 1e-20
+
+        # Target global edge length (magnitude only)
+        target_edge_vec = target_global_positions[:, j] - target_global_positions[:, p]
+        target_len = np.linalg.norm(target_edge_vec, axis=-1, keepdims=True) + 1e-20
+
+        # Ratio clamped to [1-stretch, 1+stretch]
+        ratio = target_len / edge_len
+        lo = 1.0 - stretch_factor
+        hi = 1.0 + stretch_factor
+        ratio = np.clip(ratio, lo, hi)
+
+        # Scale local translation by the ratio
+        # animation.positions[:, j] is the parent-relative offset (local space)
+        animation.positions[:, j] *= ratio
+
+
 def _run_basic_inverse_kinematics_with_constraints(
     animation,
     target_global_positions: np.ndarray,
@@ -550,6 +601,7 @@ def _run_basic_inverse_kinematics_with_constraints(
     frozen_rotation_indices: np.ndarray | list[int] | None = None,
     active_child_mask: np.ndarray | None = None,
     iterations: int = _FULLBODY_IK_ITERATIONS,
+    stretch_factor: float = 0.0,
 ):
     import importlib
 
@@ -652,6 +704,12 @@ def _run_basic_inverse_kinematics_with_constraints(
                     animation.rotations[frame_slice, joint_index] * averaged_rotation
                 )
 
+    # Post-rotation: apply bone stretch correction
+    if abs(stretch_factor) > 1e-9:
+        _apply_bone_stretch_correction(
+            animation, target_global_positions, animation.parents, stretch_factor
+        )
+
     return animation
 
 
@@ -665,6 +723,7 @@ def _rebuild_animation_with_ik(
     rigidize_joint_mask: np.ndarray | None = None,
     active_child_mask: np.ndarray | None = None,
     iterations: int = _FULLBODY_IK_ITERATIONS,
+    stretch_factor: float = 0.0,
 ) -> tuple[object, float, float]:
     from motion_lib.Animation import Animation, positions_global
 
@@ -703,6 +762,7 @@ def _rebuild_animation_with_ik(
         frozen_rotation_indices=preserved_rotation_indices,
         active_child_mask=active_child_mask,
         iterations=iterations,
+        stretch_factor=stretch_factor,
     )
     rebuilt_global_positions = positions_global(rebuilt_anim).astype(np.float64, copy=False)
     per_joint_error = np.linalg.norm(rebuilt_global_positions - target_global_positions, axis=-1)
@@ -717,6 +777,7 @@ def _rebuild_fullbody_animation_with_ik(
     preserved_position_indices: np.ndarray | list[int] | None = None,
     preserved_rotation_indices: np.ndarray | list[int] | None = None,
     iterations: int = _FULLBODY_IK_ITERATIONS,
+    stretch_factor: float = _DEFAULT_IK_STRETCH_FACTOR,
 ) -> tuple[object, float, float]:
     """Force a full-body IK rebuild against the current world-space motion.
 
@@ -725,6 +786,13 @@ def _rebuild_fullbody_animation_with_ik(
     skeleton definition. This lets restore target the raw export skeleton
     directly instead of rigidizing the intermediate processed skeleton, while
     optionally preserving trusted local pose channels on selected joints.
+
+    Parameters
+    ----------
+    stretch_factor : float
+        Allowed bone-length elasticity ratio.  A value of 0.1 means each edge
+        may stretch or compress by up to ±10 % to better reach IK targets.
+        Default is {_DEFAULT_IK_STRETCH_FACTOR}.
     """
     fullbody_rigidize_mask = np.ones(target_anim.shape[:2], dtype=bool)
     return _rebuild_animation_with_ik(
@@ -735,6 +803,7 @@ def _rebuild_fullbody_animation_with_ik(
         preserved_rotation_indices=preserved_rotation_indices,
         rigidize_joint_mask=fullbody_rigidize_mask,
         iterations=iterations,
+        stretch_factor=stretch_factor,
     )
 
 
@@ -797,6 +866,7 @@ def restore_glb(
     fps: float | None = None,
     root_translation_xz: np.ndarray | None = None,
     fullbody_ik: bool = False,
+    stretch_factor: float = _DEFAULT_IK_STRETCH_FACTOR,
 ) -> str:
     """Restore a preprocessed NPY motion file to a skinned GLB.
 
@@ -817,6 +887,10 @@ def restore_glb(
                              on the raw export skeleton after recovering the
                              animation.  Default is False (skip IK, use
                              recovered pose directly).
+        stretch_factor:       Allowed bone-length elasticity ratio for IK.
+                             Each edge may stretch/compress by ±stretch_factor
+                             (e.g. 0.1 = ±10 %).  Default is {_DEFAULT_IK_STRETCH_FACTOR}.
+                             Only effective when fullbody_ik is True.
 
     Returns:
         The absolute path of the written GLB file.
@@ -830,6 +904,8 @@ def restore_glb(
 
     output_glb = os.path.abspath(output_glb)
     _validate_ik_mode_selection(fullbody_ik)
+    if stretch_factor < 0 or stretch_factor > 1.0:
+        raise ValueError(f"stretch_factor must be in [0, 1], got {stretch_factor}")
 
     # ── Load cond.npy ─────────────────────────────────────────────────────────
     cond_npy_path = cond_npy or _DEFAULT_COND_NPY
@@ -955,13 +1031,14 @@ def restore_glb(
     )
 
     if fullbody_ik:
-        print("Force full-body IK reconstruction on export skeleton...")
+        print(f"Force full-body IK reconstruction on export skeleton (stretch_factor={stretch_factor:.2f})...")
         export_anim, ik_mean_error, ik_max_error = _rebuild_fullbody_animation_with_ik(
             export_anim,
             rigid_offsets=export_offsets,
             rigid_parents=export_parents,
             preserved_position_indices=[translation_root_index],
             preserved_rotation_indices=[translation_root_index],
+            stretch_factor=stretch_factor,
         )
         print(
             "Full-body IK residual joint error: "
@@ -1095,6 +1172,16 @@ def main() -> None:
             "after recovering the animation.  Disabled by default."
         ),
     )
+    parser.add_argument(
+        "--stretch-factor",
+        type=float,
+        default=_DEFAULT_IK_STRETCH_FACTOR,
+        help=(
+            "Allowed bone-length elasticity ratio for IK.  Each edge may "
+            f"stretch/compress by ±stretch_factor (default: {_DEFAULT_IK_STRETCH_FACTOR}, "
+            "i.e. ±10 %).  Only effective when --fullbody-ik is enabled."
+        ),
+    )
 
 
     args = parser.parse_args()
@@ -1128,6 +1215,7 @@ def main() -> None:
     print(f"cond.npy      : {cond_npy_path}")
     print(f"FPS           : {args.fps or '(auto)'}")
     print(f"Root XZ       : {args.root_translation_xz or '(centered default)'}")
+    print(f"Stretch factor: {args.stretch_factor}")
     print()
 
     restore_glb(
@@ -1139,6 +1227,7 @@ def main() -> None:
         fps=args.fps,
         root_translation_xz=args.root_translation_xz,
         fullbody_ik=args.fullbody_ik,
+        stretch_factor=args.stretch_factor,
     )
 
     _run_bone_length_check(args.output_glb, cond_npy_path, args.object_type)
