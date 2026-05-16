@@ -20,6 +20,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (
 )
 from data_loaders.truebones.truebones_utils.animation_utils import (
     LEAF_ROTATION_HELPER_SUFFIX,
+    _find_translation_root,
 )
 
 
@@ -277,6 +278,7 @@ def retarget_features_npy_to_target(
         translation_root_index=None,
         allow_infer=True,
     )
+    source_effective_root_index = int(_find_translation_root(src_anim))
 
     # 3. Build source skeleton
     src_skeleton = _build_skeleton(
@@ -300,6 +302,7 @@ def retarget_features_npy_to_target(
         src_joint_rotations=src_jr.numpy().astype(np.float64),
         src_root_translation=src_rt.numpy().astype(np.float64),
         src_root_rotation=src_rr.numpy().astype(np.float64),
+        src_effective_root_index=source_effective_root_index,
         src_bone_translations=src_bt.numpy().astype(np.float64) if src_bt is not None else None,
         src_match_names=_resolve_match_names(source_tp.names, source_cond, source_joint_count),
         tgt_match_names=_resolve_match_names(target_tp.names, target_cond),

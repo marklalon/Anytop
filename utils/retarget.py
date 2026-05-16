@@ -569,6 +569,7 @@ def retarget_world_space_np(
     src_root_rotation: np.ndarray,
     src_match_names: list[str],
     tgt_match_names: list[str],
+    src_effective_root_index: int | None = None,
     src_bone_translations: Optional[np.ndarray] = None,
     coordinate_search: bool = True,
     verbose: bool = True,
@@ -614,6 +615,11 @@ def retarget_world_space_np(
             non-root joints. Root entry is ignored.
         src_match_names: semantic match names for source joints.
         tgt_match_names: semantic match names for target joints.
+        src_effective_root_index: optional source joint index that carries the
+            locomotion translation in local position channels (for example Horse
+            ``Bip01`` beneath a static wrapper root). When that joint is left
+            unmatched by semantic mapping, it may replace a mapped wrapper root
+            as the target root anchor.
         coordinate_search: when ``True``, sweep 12 rigid rotation/flip candidates
             to find the best alignment of rest poses. Set ``False`` when the
             source and target are known to share the same world basis (e.g.
@@ -654,6 +660,14 @@ def retarget_world_space_np(
         raise ValueError(
             f"Target match-name count {len(tgt_match_names)} does not match target joint count {J_tgt}"
         )
+
+    def _is_source_ancestor(ancestor_idx: int, descendant_idx: int) -> bool:
+        current_idx = int(descendant_idx)
+        while current_idx >= 0:
+            if current_idx == int(ancestor_idx):
+                return True
+            current_idx = int(src_parents[current_idx])
+        return False
 
     # ── B) Map source → target indices by semantic match name ─────────────
     # Strategy:
@@ -740,6 +754,35 @@ def retarget_world_space_np(
                 src_to_tgt[i] = j
                 matched_tgt[j] = True
 
+    root_tgt_indices = np.flatnonzero(tgt_parents < 0)
+    root_tgt_idx = int(root_tgt_indices[0]) if root_tgt_indices.size > 0 else -1
+    if (
+        src_effective_root_index is not None
+        and root_tgt_idx >= 0
+    ):
+        src_effective_root_index = int(src_effective_root_index)
+        if 0 <= src_effective_root_index < J_src and int(src_to_tgt[src_effective_root_index]) < 0:
+            current_root_src = np.flatnonzero(src_to_tgt == root_tgt_idx)
+            current_root_src_idx = int(current_root_src[0]) if current_root_src.size > 0 else -1
+            should_promote_effective_root = (
+                current_root_src_idx < 0
+                or _is_source_ancestor(current_root_src_idx, src_effective_root_index)
+            )
+            if should_promote_effective_root:
+                if current_root_src_idx >= 0:
+                    src_to_tgt[current_root_src_idx] = -1
+                src_to_tgt[src_effective_root_index] = root_tgt_idx
+                if verbose:
+                    replaced_name = (
+                        src_match_names[current_root_src_idx]
+                        if current_root_src_idx >= 0 else '<none>'
+                    )
+                    print(
+                        f"[retarget] Promoting unmapped source effective root "
+                        f"{src_match_names[src_effective_root_index]!r} to target root "
+                        f"(replacing {replaced_name!r})"
+                    )
+
 
     # ── D) Source animation in world space ────────────────────────────────
     src_wpos, src_wrot = _batch_internal_pose_fk_np(
@@ -802,7 +845,6 @@ def retarget_world_space_np(
     if abs(scale - 1.0) < 0.001:
         scale = 1.0
 
-    root_tgt_idx = int(np.flatnonzero(tgt_parents == -1)[0])
     root_in_common = None
     for ci, fi in enumerate(common_tgt_idx):
         if fi == root_tgt_idx:

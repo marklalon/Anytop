@@ -10,6 +10,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata, write_motion_metadata
+from data_loaders.truebones.truebones_utils import dataset_pipeline as dataset_pipeline_mod
 
 
 _MODULE_PATH = Path(__file__).resolve().parents[1] / "tools" / "regenerate_dataset_artifacts.py"
@@ -135,3 +136,59 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
     assert "~~~~ objects_counts - Total: 2 ~~~~" in metadata_summary
     assert "Cat: 1" in metadata_summary
     assert "Dog: 1" in metadata_summary
+
+
+def test_process_skeleton_retarget_branch_writes_translation_root_metadata(monkeypatch, tmp_path):
+    motion = np.zeros((4, 3, 13), dtype=np.float32)
+    motion[:, :, 3:9] = np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32)
+    trajectory_x = np.arange(4, dtype=np.float32)
+    motion[:, 0, 0] = -trajectory_x
+    motion[:, 0, 2] = 1.0
+    motion[:, 1, 0] = -trajectory_x
+    motion[:, 1, 1] = 1.0
+    motion[:, 1, 2] = 1.0
+    motion[:, 2, 1] = 1.0
+    motion[:-1, 2, 9] = 1.0
+
+    motion_path = tmp_path / 'Dragon_RunLoop_001.npy'
+    np.save(motion_path, motion)
+
+    captured: dict[str, object] = {}
+
+    def fake_write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, max_joints, files_counter, frames_counter, squared_positions_error):
+        captured['save_dir'] = save_dir
+        captured['cond'] = cond
+        captured['motion_metadata'] = motion_metadata
+        captured['objects_counter'] = objects_counter
+        captured['max_joints'] = max_joints
+        captured['files_counter'] = files_counter
+        captured['frames_counter'] = frames_counter
+
+    monkeypatch.setattr(dataset_pipeline_mod, '_write_dataset_artifacts', fake_write_dataset_artifacts)
+
+    dataset_pipeline_mod.process_skeleton(
+        'Dragon',
+        None,
+        str(tmp_path / 'out'),
+        'unused',
+        motions_from_npys=[str(motion_path)],
+        target_cond_partial={
+            'object_type': 'Dragon',
+            'joints_names': ['Root', 'Mid', 'Tip'],
+            'parents': np.array([-1, 0, 1], dtype=np.int64),
+            'offsets': np.array(
+                [
+                    [0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0, -1.0],
+                ],
+                dtype=np.float32,
+            ),
+        },
+    )
+
+    motion_metadata = captured['motion_metadata']
+    assert 'Dragon_RunLoop_001.npy' in motion_metadata
+    assert motion_metadata['Dragon_RunLoop_001.npy']['motion_name'] == 'Dragon_RunLoop_001.npy'
+    assert motion_metadata['Dragon_RunLoop_001.npy']['object_type'] == 'Dragon'
+    assert motion_metadata['Dragon_RunLoop_001.npy']['translation_root_index'] == 2

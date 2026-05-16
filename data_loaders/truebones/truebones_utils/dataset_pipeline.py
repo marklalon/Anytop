@@ -16,7 +16,7 @@ import random
 import math
 import bisect
 from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, get_raw_data_dir, SNAKES
-from .motion_labels import build_motion_labels, build_object_labels, write_motion_metadata
+from .motion_labels import build_motion_labels, build_object_labels, infer_motion_labels_from_motion_name, write_motion_metadata
 from .physics_joint_annotation import (
     _build_semantic_metadata,
     _rest_positions_from_offsets,
@@ -39,6 +39,7 @@ from .animation_utils import (
 from .features import (
     get_common_features_from_T_pose,
     get_motion,
+    infer_translation_root_index_from_features,
 )
 
 
@@ -830,12 +831,29 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
         object_cond = dict(target_cond_partial)
         object_cond['mean'] = mean
         object_cond['std'] = std
+        motion_metadata = {}
+        parents = np.asarray(object_cond['parents'], dtype=np.int64)
+        offsets = np.asarray(object_cond['offsets'], dtype=np.float64)
+        for motion_path, motion in zip(motions_from_npys, all_motions):
+            motion_name = os.path.basename(motion_path)
+            motion_labels = infer_motion_labels_from_motion_name(
+                motion_name,
+                object_type=object_name,
+            )
+            motion_labels['translation_root_index'] = int(
+                infer_translation_root_index_from_features(
+                    motion,
+                    parents,
+                    offsets,
+                )
+            )
+            motion_metadata[motion_name] = motion_labels
         n_joints = len(object_cond['parents'])
         cond = {object_name: object_cond}
         _write_dataset_artifacts(
             save_dir,
             cond,
-            {},                                           # motion_metadata
+            motion_metadata,
             {object_name: len(all_motions)},             # objects_counter
             n_joints,                                     # max_joints
             len(all_motions),                             # files_counter

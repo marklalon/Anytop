@@ -590,6 +590,7 @@ def test_retarget_features_npy_to_target_uses_tpose_aligned_motion_path(monkeypa
             None,
         ),
     )
+    monkeypatch.setattr(auto_retarget_mod, '_find_translation_root', lambda anim: 0)
     monkeypatch.setattr(retarget_mod, 'retarget_world_space_np', lambda **kwargs: {'src_to_tgt': np.array([0, 1], dtype=np.int32)})
     monkeypatch.setattr(auto_retarget_mod, '_build_tpose_aligned_target_animation', lambda *args, **kwargs: sentinel_anim)
 
@@ -616,3 +617,86 @@ def test_retarget_features_npy_to_target_uses_tpose_aligned_motion_path(monkeypa
     assert result is not None
     assert captured['anim'] is sentinel_anim
     assert captured['kwargs']['animation_input_is_tpose_aligned'] is True
+
+
+def test_retarget_promotes_unmapped_effective_root_to_target_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        retarget_mod,
+        '_llm_joint_mapping',
+        lambda *_args, **_kwargs: {
+            'Hips': 'Cg',
+            'Ctrl': None,
+            'Bip01': None,
+            'Pelvis': 'Pelvis',
+        },
+    )
+
+    src_parents = np.array([-1, 0, 1, 2], dtype=np.int32)
+    src_rest_offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    tgt_parents = np.array([-1, 0], dtype=np.int32)
+    tgt_rest_offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+
+    joint_rotations = np.tile(_identity_quat(4)[None, :, :], (2, 1, 1))
+    root_translation = np.zeros((2, 3), dtype=np.float64)
+    root_rotation = np.tile(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64), (2, 1))
+    bone_translations = np.zeros((2, 4, 3), dtype=np.float64)
+    bone_translations[1, 2, 0] = 1.0
+
+    result = retarget_mod.retarget_world_space_np(
+        src_parents=src_parents,
+        src_rest_offsets=src_rest_offsets,
+        src_rest_rotations=_identity_quat(4),
+        tgt_parents=tgt_parents,
+        tgt_rest_offsets=tgt_rest_offsets,
+        tgt_rest_rotations=_identity_quat(2),
+        src_joint_rotations=joint_rotations,
+        src_root_translation=root_translation,
+        src_root_rotation=root_rotation,
+        src_effective_root_index=2,
+        src_bone_translations=bone_translations,
+        src_match_names=['Hips', 'Ctrl', 'Bip01', 'Pelvis'],
+        tgt_match_names=['Cg', 'Pelvis'],
+        coordinate_search=False,
+        verbose=False,
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(result['target_world_positions'], dtype=np.float64)[:, 0],
+        np.array(
+            [
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        np.asarray(result['target_world_positions'], dtype=np.float64)[:, 1],
+        np.array(
+            [
+                [0.0, 2.0, 0.0],
+                [1.0, 2.0, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        atol=1e-6,
+    )
+    assert int(result['src_to_tgt'][2]) == 0
+    assert int(result['src_to_tgt'][0]) == -1
