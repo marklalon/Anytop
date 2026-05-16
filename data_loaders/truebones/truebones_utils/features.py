@@ -41,7 +41,7 @@ from .fbx_filename_rules import (
     _is_all_bundle_stem,
     _matches_object_alias,
     _normalize_action_name,
-    _should_skip_fbx,
+    _should_skip_anim,
     _strip_leading_object_prefix,
 )
 
@@ -506,14 +506,14 @@ def mirror_features_with_safeguards(
 
 """ get object_type common characteristics, extracted from T-pose FBX"""
 def get_common_features_from_T_pose(
-    t_pose_fbx_path,
+    t_pose_path,
     object_type,
     face_joints=None,
     *,
     augment_leaf_rotation_helpers=False,
     max_joints=MAX_JOINTS,
 ):
-    t_pose_anim, t_pos_names, _t_pose_frame_time = FBX.load(t_pose_fbx_path)
+    t_pose_anim, t_pos_names, _t_pose_frame_time = FBX.load(t_pose_path)
     reference_anim = t_pose_anim[:1] if len(t_pose_anim) > 1 else t_pose_anim
     face_joints = resolve_face_joints(object_type, t_pos_names, reference_anim.parents, face_joints=face_joints)
     forward_joint_index, forward_base_joint_index = resolve_forward_reference_joints(
@@ -1136,3 +1136,4 @@ def recover_bvh_export_animation_from_motion_np(
 
     anim, joint_names = reorder_animation_to_dfs(anim, joint_names)
     return anim, joint_names, has_animated_pos
+

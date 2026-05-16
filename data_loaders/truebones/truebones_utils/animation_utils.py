@@ -41,7 +41,7 @@ from .fbx_filename_rules import (
     _is_all_bundle_stem,
     _matches_object_alias,
     _normalize_action_name,
-    _should_skip_fbx,
+    _should_skip_anim,
     _strip_leading_object_prefix,
 )
 
@@ -1348,3 +1348,4 @@ def _solve_local_positions_for_target_global(
             ) * (target_global_positions[:, joint_idx] - temp_global_pos[:, parent_idx])
 
     return local_positions
+

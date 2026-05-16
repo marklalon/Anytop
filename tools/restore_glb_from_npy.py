@@ -97,8 +97,8 @@ def _load_tpose_restore_metadata(
     from data_loaders.truebones.truebones_utils.motion_process import get_common_features_from_T_pose, TPoseFeatures
 
     tpose_lower = tpose_mesh.lower()
-    if not tpose_lower.endswith(".fbx"):
-        raise ValueError(f"Unsupported T-pose mesh format: {tpose_mesh} - expected .fbx")
+    if not tpose_lower.endswith(('.fbx', '.glb', '.gltf')):
+        raise ValueError(f"Unsupported T-pose mesh format: {tpose_mesh} - expected .fbx, .glb, or .gltf")
 
     helper_joint_indices = []
     if cond_entry is not None:
@@ -1248,7 +1248,7 @@ def main() -> None:
         "--tpose-mesh",
         default=None,
         help=(
-            "Path to the T-pose FBX that provides skin weights + armature. "
+            "Path to the T-pose FBX/GLB/GLTF that provides skin weights + armature. "
             "If not specified, the path is read from cond.npy "
             "(orientation_reference_fbx_path)."
         ),

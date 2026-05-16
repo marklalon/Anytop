@@ -292,23 +292,24 @@ def process_new_skeleton_args():
     group = parser.add_argument_group('process_new_skeleton')
     group.add_argument("--object-type", default=None, type=str,
                        help="A character's species/type name (e.g. \"Dragon\"). "
-                            "When omitted, inferred from the first FBX filename in --fbx-dir.")
-    group.add_argument("--fbx-dir", default=None, type=str,
-                       help="Path to a directory containing FBX files of the skeleton. More files improve statistical accuracy for \
-                           motion denormalization. If omitted, defaults to the parent directory of --tpos-fbx.")
+                            "When omitted, inferred from the first filename in --anim-dir.")
+    group.add_argument("--anim-dir", default=None, type=str,
+                       help="Path to a directory containing animation files (FBX/GLB/GLTF) of the skeleton. "
+                            "More files improve statistical accuracy for motion denormalization. "
+                            "If omitted, defaults to the parent directory of --tpos-path.")
     group.add_argument("--save-dir", required=True, type=str,
                        help="Output directory.")
     group.add_argument("--face-joints-names", default=None, type=str, nargs=4,
                        help="Optional manual override for the four orientation joints ([right hip, left hip, right shoulder, left shoulder] or equivalent). \
                            When omitted, preprocessing tries to infer them from semantic joint names.")
-    group.add_argument("--tpos-fbx", default=None, type=str,
-                       help="An FBX file of the character's natural rest pose for meaningful rotation learning. "
-                            "If omitted, the code will auto-select one from --fbx-dir using filename heuristics "
+    group.add_argument("--tpos-path", default=None, type=str,
+                       help="An FBX/GLB/GLTF file of the character's natural rest pose for meaningful rotation learning. "
+                            "If omitted, the code will auto-select one from --anim-dir using filename heuristics "
                             "(T-pose > idle > walk > first file).")
     group.add_argument("--retarget-top-k", default=None, type=int,
                        help="Auto-select the top-k most similar training skeletons as motion donors, "
                             "retarget all their motions to the new skeleton, and use those coarse motions "
-                            "to compute proper mean/std for cond.npy. Mutually exclusive with --fbx-dir.")
+                            "to compute proper mean/std for cond.npy. Mutually exclusive with --anim-dir.")
     group.add_argument("--training-cond-path",
                        default="dataset/truebones/zoo/truebones_processed/cond.npy",
                        type=str,

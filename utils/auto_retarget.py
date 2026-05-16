@@ -403,7 +403,7 @@ def rank_donors(
 
 def auto_retarget_pipeline(
     target_object_type: str,
-    target_tpose_fbx: str,
+    target_tpose_path: str,
     save_dir: str,
     top_k: int,
     training_cond_path: str,
@@ -459,7 +459,7 @@ def auto_retarget_pipeline(
         _scale,
         _sq_err,
         max_joints_tgt,
-    ) = _build_tpose_cond(target_object_type, target_tpose_fbx, face_joints_names)
+    ) = _build_tpose_cond(target_object_type, target_tpose_path, face_joints_names)
     max_joints = max(max_joints, max_joints_tgt)
 
     n_joints = int(target_cond.get('original_joint_count') or len(target_parents))

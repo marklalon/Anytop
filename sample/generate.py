@@ -63,12 +63,12 @@ def _retarget_reference_motion(
     src_cond = cond_dict[source_type]
     tgt_cond = cond_dict[target_type]
 
-    src_tpose_fbx = src_cond.get('orientation_reference_fbx_path')
-    tgt_tpose_fbx = tgt_cond.get('orientation_reference_fbx_path')
-    for label, path in (('source', src_tpose_fbx), ('target', tgt_tpose_fbx)):
+    src_tpose_path = src_cond.get('orientation_reference_fbx_path')
+    tgt_tpose_path = tgt_cond.get('orientation_reference_fbx_path')
+    for label, path in (('source', src_tpose_path), ('target', tgt_tpose_path)):
         if not path or not os.path.isfile(path):
             raise FileNotFoundError(
-                f"Cross-species retarget requires {label} T-pose FBX "
+                f"Cross-species retarget requires {label} T-pose file "
                 f"(cond_dict['{source_type if label == 'source' else target_type}']"
                 f"['orientation_reference_fbx_path']), not found: {path!r}"
             )
@@ -79,7 +79,7 @@ def _retarget_reference_motion(
     print(f"  Source motion shape: {ref_raw.shape}")
 
     tgt_tp = get_common_features_from_T_pose(
-        tgt_tpose_fbx, target_type,
+        tgt_tpose_path, target_type,
         augment_leaf_rotation_helpers=True,
         max_joints=opt.max_joints,
     )

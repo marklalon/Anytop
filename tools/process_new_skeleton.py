@@ -6,14 +6,14 @@ and specific velocity/height thresholds for foot contact detection. However, we 
 files from Mixamo and other sources to ensure its generalizability.
 
 Input Arguments:
-object_type - A character's species/type name (e.g., "Dog"). Optional — inferred from FBX filenames when omitted.
-fbx-dir - Directory containing FBX files of the skeleton. More files improve statistical accuracy for motion denormalization.
+object_type - A character's species/type name (e.g., "Dog"). Optional — inferred from filenames when omitted.
+anim-dir - Directory containing animation files (FBX/GLB/GLTF) of the skeleton. More files improve statistical accuracy for motion denormalization.
 face-joints-names - Optional manual override for four joints defining skeleton orientation ([right hip, left hip, right shoulder, left shoulder] or equivalent). 
-            When omitted, preprocessing tries to infer them from semantic joint names in the FBX. If inference is ambiguous,
+            When omitted, preprocessing tries to infer them from semantic joint names. If inference is ambiguous,
             pass the four joint names explicitly. 
 save-dir - Output directory.
-tpos-fbx - An FBX file of the character's natural rest pose for meaningful rotation learning. 
-        If missing, the code selects a pose from the provided FBX files.
+tpos-path - An FBX/GLB/GLTF file of the character's natural rest pose for meaningful rotation learning. 
+        If missing, the code selects a pose from the provided files in --anim-dir.
         
 Output:
 The code will create the following under save_dir:
@@ -52,55 +52,55 @@ def main():
     else:
         os.makedirs(save_dir, exist_ok=True)
 
-    # Resolve tpos_fbx: auto-select from fbx_dir when not provided
-    tpos_fbx = args.tpos_fbx
-    if tpos_fbx is None or tpos_fbx == '':
-        if args.fbx_dir is None:
+    # Resolve tpose_path: auto-select from anim_dir when not provided
+    tpose_path = args.tpos_path
+    if tpose_path is None or tpose_path == '':
+        if args.anim_dir is None:
             raise FileNotFoundError(
-                "Either --tpos-fbx or --fbx-dir must be provided. "
-                "--tpos-fbx is required for T-pose-only mode, and --fbx-dir "
+                "Either --tpos-path or --anim-dir must be provided. "
+                "--tpos-path is required for T-pose-only mode, and --anim-dir "
                 "is required to auto-select a T-pose reference."
             )
-        fbx_files = sorted([
-            os.path.join(args.fbx_dir, f)
-            for f in os.listdir(args.fbx_dir)
-            if f.lower().endswith('.fbx')
+        anim_files = sorted([
+            os.path.join(args.anim_dir, f)
+            for f in os.listdir(args.anim_dir)
+            if f.lower().endswith(('.fbx', '.glb', '.gltf'))
         ])
-        if len(fbx_files) == 0:
+        if len(anim_files) == 0:
             raise FileNotFoundError(
-                f"No FBX files found in --fbx-dir '{args.fbx_dir}'."
+                f"No animation files (.fbx/.glb/.gltf) found in --anim-dir '{args.anim_dir}'."
             )
-        tpos_fbx = find_tpose_reference_path(fbx_files)
-        print(f"Auto-selected T-pose reference: {tpos_fbx}")
+        tpose_path = find_tpose_reference_path(anim_files)
+        print(f"Auto-selected T-pose reference: {tpose_path}")
 
     object_type = args.object_type
     if object_type is None:
-        object_type = infer_object_type_from_filename(tpos_fbx)
+        object_type = infer_object_type_from_filename(tpose_path)
         if object_type is None:
             raise FileNotFoundError(
-                f"Cannot infer object-type from T-pose FBX '{tpos_fbx}'."
+                f"Cannot infer object-type from T-pose file '{tpose_path}'."
             )
         print(f"Auto-detected object_type: {object_type}")
 
-    # If --tpos-fbx is given without --retarget-top-k, default to retarget-top-k 1
+    # If --tpos-path is given without --retarget-top-k, default to retarget-top-k 1
     # (prefer retarget over T-pose-only mode with no motions)
     retarget_top_k = args.retarget_top_k
     auto_defaulted_retarget = False
-    if retarget_top_k is None and args.fbx_dir is None:
+    if retarget_top_k is None and args.anim_dir is None:
         retarget_top_k = 1
         auto_defaulted_retarget = True
         print(f"[process_new_skeleton] No --retarget-top-k specified, defaulting to 1")
 
     if retarget_top_k:
-        if args.fbx_dir:
+        if args.anim_dir:
             raise SystemExit(
-                "Error: --retarget-top-k and --fbx-dir are mutually exclusive. "
+                "Error: --retarget-top-k and --anim-dir are mutually exclusive. "
                 "--retarget-top-k auto-generates motion data from retargeted donors."
             )
         from utils.auto_retarget import auto_retarget_pipeline
         result = auto_retarget_pipeline(
             target_object_type=object_type,
-            target_tpose_fbx=tpos_fbx,
+            target_tpose_path=tpose_path,
             save_dir=args.save_dir,
             top_k=retarget_top_k,
             training_cond_path=args.training_cond_path,
@@ -114,7 +114,7 @@ def main():
             object_type,
             args.face_joints_names,
             args.save_dir,
-            tpos_fbx,
+            tpose_path,
             motions_from_npys=result['retargeted_npys'],
             target_cond_partial=result['target_cond'],
         )
@@ -123,8 +123,8 @@ def main():
             object_type,
             args.face_joints_names,
             args.save_dir,
-            tpos_fbx,
-            args.fbx_dir,
+            tpose_path,
+            args.anim_dir,
         )
 
 if __name__ == '__main__':

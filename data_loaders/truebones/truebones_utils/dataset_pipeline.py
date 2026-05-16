@@ -24,7 +24,7 @@ from .physics_joint_annotation import (
 from .fbx_filename_rules import (
     find_tpose_reference_path,
     _normalize_action_name,
-    _should_skip_fbx,
+    _should_skip_anim,
 )
 
 from .animation_utils import (
@@ -273,7 +273,7 @@ def _process_motion_file(file_path, object_type, max_joints,
                          offsets, foot_indices, tpos_rots, scale_factor,
                          helper_metadata, orientation_quat):
     local_errors = dict()
-    # Load the FBX file once; pass it as `preloaded` to every get_motion call so that
+    # Load the animation file (FBX/GLB/GLTF) once; pass it as `preloaded` to every get_motion call so that
     raw_anim, names, frame_time = FBX.load(file_path)
     anim_len = len(raw_anim)
     begin = 0
@@ -491,26 +491,26 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     if fbxs_dir is None:
         fbxs_dir = pjoin(get_raw_data_dir(raw_data_dir), object_type)
     if not os.path.isdir(fbxs_dir):
-        print(f'skipping {object_type}: raw FBX directory not found at {fbxs_dir}')
+        print(f'skipping {object_type}: raw animation directory not found at {fbxs_dir}')
         return None
-    fbx_files = sorted([pjoin(fbxs_dir, f) for f in os.listdir(fbxs_dir) if f.lower().endswith('.fbx')])
-    if len(fbx_files) == 0:
-        print(f'skipping {object_type}: no FBX files found in {fbxs_dir}')
+    anim_files = sorted([pjoin(fbxs_dir, f) for f in os.listdir(fbxs_dir) if f.lower().endswith(('.fbx', '.glb', '.gltf'))])
+    if len(anim_files) == 0:
+        print(f'skipping {object_type}: no animation files (.fbx/.glb/.gltf) found in {fbxs_dir}')
         return None
     ## get a character-level orientation reference clip
     if t_pos_path is None or t_pos_path == '':
-        t_pos_path = find_tpose_reference_path(fbx_files)
+        t_pos_path = find_tpose_reference_path(anim_files)
     else:
-        # removes T-pose FBX from fbx_files, as it represents a static pose and should be used only for
+        # removes T-pose file from anim_files, as it represents a static pose and should be used only for
         # extracting common characteristics. If this is not the case, disable this part
-        fbx_files.remove(t_pos_path)
+        anim_files.remove(t_pos_path)
     if max_files is not None:
-        fbx_files = fbx_files[:max_files]
+        anim_files = anim_files[:max_files]
 
     # Filter out files with no inferable action name or all-in-one animation bundles
-    fbx_files = [f for f in fbx_files if not _should_skip_fbx(f, object_type)]
-    if len(fbx_files) == 0:
-        print(f'skipping {object_type}: no valid FBX files after filtering')
+    anim_files = [f for f in anim_files if not _should_skip_anim(f, object_type)]
+    if len(anim_files) == 0:
+        print(f'skipping {object_type}: no valid animation files after filtering')
         return None
 
     squared_positions_error = dict()
@@ -519,9 +519,9 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     )
     all_tensors = list()
 
-    # FBX loading via bpy is single-threaded inside a process because clear_scene
+    # Animation loading via bpy is single-threaded inside a process because clear_scene
     # mutates global Blender state, so file-level parallelism is intentionally removed.
-    print(f'processing {len(fbx_files)} FBX files for {object_type} (serial — bpy is single-threaded)', flush=True)
+    print(f'processing {len(anim_files)} animation files for {object_type} (serial — bpy is single-threaded)', flush=True)
 
     def process_file(file_path):
         print("processing file: " + file_path, flush=True)
@@ -537,7 +537,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             orientation_quat=tp.orientation_quat,
         )
 
-    file_outputs = [process_file(file_path) for file_path in fbx_files]
+    file_outputs = [process_file(file_path) for file_path in anim_files]
 
     files_counter = 0
     frames_counter = 0
@@ -811,7 +811,7 @@ def process_single_object_type(object_type, save_dir):
     )
 
 
-def process_skeleton(object_name, face_joints, save_dir, tpos_fbx, fbx_dir=None,
+def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=None,
                      motions_from_npys=None, target_cond_partial=None):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
@@ -853,11 +853,11 @@ def process_skeleton(object_name, face_joints, save_dir, tpos_fbx, fbx_dir=None,
     cond = dict()
     motion_metadata = {}
 
-    if fbx_dir is None:
+    if anim_dir is None:
         # T-pose only: generate cond.npy without motion file processing
         object_cond, max_joints = _build_tpose_only_cond(
             object_name,
-            tpos_fbx,
+            tpose_path,
             face_joints,
         )
         cond[object_name] = object_cond
@@ -881,12 +881,12 @@ def process_skeleton(object_name, face_joints, save_dir, tpos_fbx, fbx_dir=None,
         max_joints,
         squared_positions_error,
         save_dir=save_dir,
-        fbxs_dir=fbx_dir,
+        fbxs_dir=anim_dir,
         face_joints=face_joints,
-        t_pos_path=tpos_fbx,
+        t_pos_path=tpose_path,
     )
     if object_cond is None:
-        print(f"No valid FBX data found for '{object_name}', aborting.")
+        print(f"No valid animation data found for '{object_name}', aborting.")
         return
     cond[object_name] = object_cond
     objects_counter[object_name] = files_counter - cur_counter
@@ -902,3 +902,4 @@ def process_skeleton(object_name, face_joints, save_dir, tpos_fbx, fbx_dir=None,
         frames_counter,
         squared_positions_error,
     )
+

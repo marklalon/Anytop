@@ -1,10 +1,11 @@
-"""Filename-based FBX preprocessing rules.
+"""Filename-based animation preprocessing rules.
 
-This module isolates the rules that infer meaning from FBX filenames:
+This module isolates the rules that infer meaning from animation filenames
+(FBX/GLB/GLTF):
 - selecting a reference clip by filename
 - stripping duplicated object prefixes from action names
 - normalizing action names for exported dataset filenames
-- filtering non-motion or aggregate FBX files before preprocessing
+- filtering non-motion or aggregate files before preprocessing
 """
 
 import os
@@ -57,22 +58,22 @@ def _is_walk_reference_path(file_path):
     return _matches_reference_tail(file_path, _WALK_REFERENCE_TAIL_PATTERN)
 
 
-def find_tpose_reference_path(fbx_files):
+def find_tpose_reference_path(anim_files):
     """Find a character-level orientation reference clip with priority T-pose > idle > walk."""
-    for file_path in fbx_files:
+    for file_path in anim_files:
         if _is_tpose_reference_path(file_path):
-            fbx_files.remove(file_path)
+            anim_files.remove(file_path)
             return file_path
 
     for matcher, _source_name in (
         (_is_idle_reference_path, 'idle'),
         (_is_walk_reference_path, 'walk'),
     ):
-        for file_path in fbx_files:
+        for file_path in anim_files:
             if matcher(file_path):
                 return file_path
 
-    return fbx_files[0]
+    return anim_files[0]
 
 
 def _compact_normalized_text(value: str) -> str:
@@ -222,8 +223,8 @@ def _normalize_action_name(object_type: str, raw_action: str) -> str:
     return _camel_case_action_name(raw_action)
 
 
-def _should_skip_fbx(file_path: str, object_type: str) -> bool:
-    """Check whether an FBX file should be skipped during preprocessing."""
+def _should_skip_anim(file_path: str, object_type: str) -> bool:
+    """Check whether an animation file should be skipped during preprocessing."""
     stem = os.path.splitext(os.path.basename(file_path))[0]
     compact_stem = _compact_normalized_text(stem)
 
