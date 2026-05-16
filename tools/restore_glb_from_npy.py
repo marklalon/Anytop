@@ -87,7 +87,6 @@ _DEFAULT_COND_NPY = os.path.realpath(
 )
 
 _FULLBODY_IK_ITERATIONS = 2
-_LOCALBODY_IK_FRAME0_DRIFT_THRESHOLD = 0.15
 
 def _load_tpose_restore_metadata(
     tpose_mesh: str,
@@ -404,35 +403,6 @@ def _bare_feature_rotation_channel_mask(parents: np.ndarray) -> np.ndarray:
     return rotation_channel_mask
 
 
-def _localbody_ik_excluded_joint_indices(
-    parents: np.ndarray,
-    preserved_position_indices: np.ndarray | list[int] | None,
-    rotation_channel_mask: np.ndarray | None = None,
-) -> np.ndarray:
-    parents = np.asarray(parents, dtype=np.int32)
-    excluded_joint_indices = _normalize_joint_index_selection(
-        preserved_position_indices,
-        len(parents),
-        label="preserved_position_indices",
-    )
-    if rotation_channel_mask is None:
-        unobservable_joint_indices = np.flatnonzero(~_bare_feature_rotation_channel_mask(parents))
-    else:
-        rotation_channel_mask = np.asarray(rotation_channel_mask, dtype=bool)
-        if rotation_channel_mask.shape != (len(parents),):
-            raise ValueError(
-                f"rotation_channel_mask must have shape ({len(parents)},), got {rotation_channel_mask.shape}"
-            )
-        unobservable_joint_indices = np.flatnonzero(~rotation_channel_mask)
-    if unobservable_joint_indices.size == 0:
-        return excluded_joint_indices
-    if excluded_joint_indices.size == 0:
-        return unobservable_joint_indices.astype(np.int32, copy=False)
-    return np.unique(
-        np.concatenate((excluded_joint_indices, unobservable_joint_indices.astype(np.int32, copy=False)))
-    )
-
-
 def _clamp_unobservable_joint_positions_to_rest(
     animation,
     *,
@@ -494,17 +464,8 @@ def _normalize_joint_index_selection(
     return np.unique(normalized)
 
 
-def _compute_min_measurable_length(lengths: np.ndarray) -> float:
-    lengths = np.asarray(lengths, dtype=np.float64).reshape(-1)
-    positive_lengths = lengths[np.isfinite(lengths) & (lengths > 1e-8)]
-    if positive_lengths.size == 0:
-        return 1e-8
-    return float(max(np.mean(positive_lengths) * 0.1, 1e-8))
-
-
-def _validate_ik_mode_selection(fullbody_ik: bool, localbody_ik: bool) -> None:
-    if fullbody_ik and localbody_ik:
-        raise ValueError("fullbody_ik and localbody_ik are mutually exclusive")
+def _validate_ik_mode_selection(fullbody_ik: bool) -> None:
+    pass
 
 
 def _resolve_ik_rebuild_inputs(
@@ -580,84 +541,6 @@ def _build_selective_ik_seed_positions(
     if preserved_position_indices.size > 0:
         seed_positions[:, preserved_position_indices, :] = target_positions[:, preserved_position_indices, :]
     return seed_positions
-
-
-def _compute_localbody_ik_active_child_mask(
-    local_positions: np.ndarray,
-    *,
-    parents: np.ndarray,
-    frame0_drift_threshold: float = _LOCALBODY_IK_FRAME0_DRIFT_THRESHOLD,
-    excluded_joint_indices: np.ndarray | list[int] | None = None,
-) -> np.ndarray:
-    if frame0_drift_threshold < 0.0:
-        raise ValueError("frame0_drift_threshold must be non-negative")
-
-    local_positions = np.asarray(local_positions, dtype=np.float64)
-    parents = np.asarray(parents, dtype=np.int32)
-
-    if local_positions.ndim != 3 or local_positions.shape[-1] != 3:
-        raise ValueError(f"local_positions must have shape (F, J, 3), got {local_positions.shape}")
-    frame_count, joint_count, _coord_count = local_positions.shape
-    if parents.shape != (joint_count,):
-        raise ValueError(f"parents must have shape ({joint_count},), got {parents.shape}")
-
-    current_lengths = np.linalg.norm(local_positions, axis=-1)
-    frame0_lengths = np.asarray(current_lengths[0], dtype=np.float64)
-    active_child_mask = np.zeros((frame_count, joint_count), dtype=bool)
-
-    min_measurable_frame0_length = _compute_min_measurable_length(frame0_lengths[parents >= 0])
-    measurable_frame0_joints = (parents >= 0) & (frame0_lengths > min_measurable_frame0_length)
-    if np.any(measurable_frame0_joints):
-        active_child_mask[:, measurable_frame0_joints] = (
-            np.abs(current_lengths[:, measurable_frame0_joints] - frame0_lengths[measurable_frame0_joints][None, :])
-            / frame0_lengths[measurable_frame0_joints][None, :]
-        ) > float(frame0_drift_threshold)
-
-    excluded_joint_indices = _normalize_joint_index_selection(
-        excluded_joint_indices,
-        joint_count,
-        label="excluded_joint_indices",
-    )
-    if excluded_joint_indices.size > 0:
-        active_child_mask[:, excluded_joint_indices] = False
-
-    return active_child_mask
-
-
-def _promote_localbody_ik_active_child_mask_to_clip_scope(
-    active_child_mask: np.ndarray,
-) -> np.ndarray:
-    active_child_mask = np.asarray(active_child_mask, dtype=bool)
-    if active_child_mask.ndim != 2:
-        raise ValueError(f"active_child_mask must have shape (F, J), got {active_child_mask.shape}")
-    clip_active_joints = np.any(active_child_mask, axis=0)
-    if not np.any(clip_active_joints):
-        return np.zeros_like(active_child_mask, dtype=bool)
-    return np.broadcast_to(clip_active_joints[None, :], active_child_mask.shape).copy()
-
-
-def _plan_localbody_ik_masks(
-    local_positions: np.ndarray,
-    *,
-    parents: np.ndarray,
-    preserved_position_indices: np.ndarray | list[int] | None,
-    rotation_channel_mask: np.ndarray | None = None,
-    frame0_drift_threshold: float = _LOCALBODY_IK_FRAME0_DRIFT_THRESHOLD,
-) -> tuple[np.ndarray, np.ndarray]:
-    parents = np.asarray(parents, dtype=np.int32)
-    excluded_joint_indices = _localbody_ik_excluded_joint_indices(
-        parents,
-        preserved_position_indices,
-        rotation_channel_mask=rotation_channel_mask,
-    )
-    frame_active_child_mask = _compute_localbody_ik_active_child_mask(
-        local_positions,
-        parents=parents,
-        frame0_drift_threshold=frame0_drift_threshold,
-        excluded_joint_indices=excluded_joint_indices,
-    )
-    clip_active_child_mask = _promote_localbody_ik_active_child_mask_to_clip_scope(frame_active_child_mask)
-    return frame_active_child_mask, clip_active_child_mask
 
 
 def _run_basic_inverse_kinematics_with_constraints(
@@ -855,40 +738,6 @@ def _rebuild_fullbody_animation_with_ik(
     )
 
 
-def _rebuild_localbody_animation_with_ik(
-    target_anim,
-    *,
-    rigid_offsets: np.ndarray | None = None,
-    rigid_parents: np.ndarray | None = None,
-    preserved_position_indices: np.ndarray | list[int] | None = None,
-    preserved_rotation_indices: np.ndarray | list[int] | None = None,
-    rotation_channel_mask: np.ndarray | None = None,
-    frame0_drift_threshold: float = _LOCALBODY_IK_FRAME0_DRIFT_THRESHOLD,
-    iterations: int = _FULLBODY_IK_ITERATIONS,
-) -> tuple[object, float, float]:
-    parents = np.asarray(
-        target_anim.parents if rigid_parents is None else rigid_parents,
-        dtype=np.int32,
-    )
-    _frame_active_child_mask, clip_active_child_mask = _plan_localbody_ik_masks(
-        target_anim.positions,
-        parents=parents,
-        preserved_position_indices=preserved_position_indices,
-        rotation_channel_mask=rotation_channel_mask,
-        frame0_drift_threshold=frame0_drift_threshold,
-    )
-    return _rebuild_animation_with_ik(
-        target_anim,
-        rigid_offsets=rigid_offsets,
-        rigid_parents=rigid_parents,
-        preserved_position_indices=preserved_position_indices,
-        preserved_rotation_indices=preserved_rotation_indices,
-        rigidize_joint_mask=clip_active_child_mask,
-        active_child_mask=clip_active_child_mask,
-        iterations=iterations,
-    )
-
-
 def _invert_preprocess_transform(
     processed_anim,
     *,
@@ -948,7 +797,6 @@ def restore_glb(
     fps: float | None = None,
     root_translation_xz: np.ndarray | None = None,
     fullbody_ik: bool = False,
-    localbody_ik: bool = False,
 ) -> str:
     """Restore a preprocessed NPY motion file to a skinned GLB.
 
@@ -969,12 +817,6 @@ def restore_glb(
                              on the raw export skeleton after recovering the
                              animation.  Default is False (skip IK, use
                              recovered pose directly).
-        localbody_ik:         If True, detect observable joints whose
-                             drift exceeds 10% relative to animation frame 0,
-                             then keep those joints in local IK across the clip
-                             to avoid threshold-boundary snaps. Leaf joints
-                             without encoded local rotations are skipped.
-                             Mutually exclusive with fullbody_ik.
 
     Returns:
         The absolute path of the written GLB file.
@@ -987,7 +829,7 @@ def restore_glb(
     )
 
     output_glb = os.path.abspath(output_glb)
-    _validate_ik_mode_selection(fullbody_ik, localbody_ik)
+    _validate_ik_mode_selection(fullbody_ik)
 
     # ── Load cond.npy ─────────────────────────────────────────────────────────
     cond_npy_path = cond_npy or _DEFAULT_COND_NPY
@@ -1129,56 +971,8 @@ def restore_glb(
             f"Preserving translation-root local pose during IK: "
             f"{export_joint_names[translation_root_index]} (index {translation_root_index})"
         )
-    elif localbody_ik:
-        local_ik_frame_active_child_mask, local_ik_active_child_mask = _plan_localbody_ik_masks(
-            export_anim.positions,
-            parents=export_parents,
-            preserved_position_indices=[translation_root_index],
-            rotation_channel_mask=rotation_channel_mask,
-            frame0_drift_threshold=_LOCALBODY_IK_FRAME0_DRIFT_THRESHOLD,
-        )
-        active_joint_indices = np.flatnonzero(np.any(local_ik_frame_active_child_mask, axis=0))
-        active_frame_joint_count = int(np.count_nonzero(local_ik_frame_active_child_mask))
-        if active_frame_joint_count == 0:
-            print(
-                "Skipping local-body IK: no frame-joint samples exceeded "
-                f"{_LOCALBODY_IK_FRAME0_DRIFT_THRESHOLD * 100.0:.0f}% frame-0 drift."
-            )
-        else:
-            continuous_frame_joint_count = int(np.count_nonzero(local_ik_active_child_mask))
-            preview = ", ".join(export_joint_names[index] for index in active_joint_indices[:10])
-            suffix = "..." if active_joint_indices.size > 10 else ""
-            print(
-                f"Apply local-body IK on joints whose frame-0 drift exceeds {_LOCALBODY_IK_FRAME0_DRIFT_THRESHOLD * 100.0:.0f}%; "
-                "once triggered, those joints stay in IK across the clip."
-            )
-            print(
-                f"Local-body IK triggers: {active_frame_joint_count} frame-joint samples across "
-                f"{active_joint_indices.size} joints: {preview}{suffix}"
-            )
-            print(
-                f"Continuous local-body IK scope: {continuous_frame_joint_count} frame-joint samples "
-                f"across the same {active_joint_indices.size} joints."
-            )
-            export_anim, ik_mean_error, ik_max_error = _rebuild_localbody_animation_with_ik(
-                export_anim,
-                rigid_offsets=export_offsets,
-                rigid_parents=export_parents,
-                preserved_position_indices=[translation_root_index],
-                preserved_rotation_indices=[translation_root_index],
-                rotation_channel_mask=rotation_channel_mask,
-                frame0_drift_threshold=_LOCALBODY_IK_FRAME0_DRIFT_THRESHOLD,
-            )
-            print(
-                "Local-body IK residual joint error: "
-                f"mean={ik_mean_error:.6f}, max={ik_max_error:.6f}"
-            )
-            print(
-                f"Preserving translation-root local pose during IK: "
-                f"{export_joint_names[translation_root_index]} (index {translation_root_index})"
-            )
     else:
-        print("Skipping IK (use --fullbody-ik or --localbody-ik to enable).")
+        print("Skipping IK (use --fullbody-ik to enable).")
 
     if rotation_channel_mask is not None:
         frozen_joint_indices = np.flatnonzero(~rotation_channel_mask).tolist()
@@ -1301,17 +1095,7 @@ def main() -> None:
             "after recovering the animation.  Disabled by default."
         ),
     )
-    ik_mode_group.add_argument(
-        "--localbody-ik",
-        action="store_true",
-        default=False,
-        help=(
-            "Promote joints whose drift exceeds 10%% relative to animation frame 0 "
-            "into continuous local IK across the clip; "
-            "other joints keep FK. "
-            "Disabled by default."
-        ),
-    )
+
 
     args = parser.parse_args()
 
@@ -1355,7 +1139,6 @@ def main() -> None:
         fps=args.fps,
         root_translation_xz=args.root_translation_xz,
         fullbody_ik=args.fullbody_ik,
-        localbody_ik=args.localbody_ik,
     )
 
     _run_bone_length_check(args.output_glb, cond_npy_path, args.object_type)
