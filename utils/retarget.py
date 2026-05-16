@@ -818,6 +818,13 @@ def retarget_world_space_np(
 
     _EPS = 1e-8
 
+    # Pre-compute source-side bone vectors and animated lengths (vectorized)
+    # For root joints (parent < 0) these stay zero — they won't be used.
+    parent_idx = np.where(src_parents >= 0, src_parents, 0)  # safe index
+    src_bv = src_wpos - src_wpos[:, parent_idx]               # (F, J_src, 3)  child - parent
+    src_bv_aligned = aligned_src_wpos - aligned_src_wpos[:, parent_idx]
+    src_anim_len = np.linalg.norm(src_bv, axis=-1)           # (F, J_src)
+
     # ── Pass G1: world positions + a transport frame for unmapped joints ──
     # tgt_parents is topologically ordered (parent index < child index), so a
     # single forward pass places every joint after its parent. ``transport``
@@ -837,36 +844,32 @@ def retarget_world_space_np(
                 transport[:, j] = tgt_rest_wrot[0, j]
             continue
 
-        rest_off_j = np.repeat(tgt_rest_offsets[j:j + 1], F_q, axis=0)
+        rest_off_j = tgt_rest_offsets[j]  # (3,) — broadcast, no repeat needed
 
         if ii >= 0:
-            # Mapped non-root: bone-vector direction transfer. The bone length
-            # is the target's own rest length modulated by the source bone's
-            # *relative* squash/stretch (animated length ÷ source rest length),
-            # so target proportions are preserved while source stretch carries
-            # through — and self-retarget stays idempotent even with a
-            # bone-translation channel (ratio ≡ 1 when there is none).
+            # Mapped non-root: bone-vector direction transfer.
             tgt_rest_len = float(np.linalg.norm(tgt_rest_offsets[j]))
             p1 = int(src_parents[ii])
-            used_dir = False
             if p1 >= 0:
-                bv_aligned = aligned_src_wpos[:, ii] - aligned_src_wpos[:, p1]
-                bn = np.linalg.norm(bv_aligned, axis=-1)
-                if np.all(bn > _EPS):
-                    d = bv_aligned / bn[:, None]
-                    src_rest_len = float(np.linalg.norm(src_rest_offsets[ii]))
-                    if src_rest_len > _EPS:
-                        src_anim_len = np.linalg.norm(
-                            src_wpos[:, ii] - src_wpos[:, p1], axis=-1,
-                        )
-                        stretch = src_anim_len / src_rest_len      # (F,)
-                    else:
-                        stretch = np.ones(d.shape[0], dtype=np.float64)
-                    L = tgt_rest_len * stretch                     # (F,)
-                    target_wpos[:, j] = target_wpos[:, p] + L[:, None] * d
-                    used_dir = True
-            if not used_dir:
-                # Source bone is the root edge or degenerate: rest fallback.
+                bn = np.linalg.norm(src_bv_aligned[:, ii], axis=-1)  # (F,)
+                valid = bn > _EPS
+                d = src_bv_aligned[:, ii] / np.where(valid, bn, 1.0)[:, None]
+
+                src_rest_len = float(np.linalg.norm(src_rest_offsets[ii]))
+                if src_rest_len > _EPS:
+                    stretch = src_anim_len[:, ii] / src_rest_len      # (F,)
+                else:
+                    stretch = np.ones(F_q, dtype=np.float64)
+                L = tgt_rest_len * stretch                     # (F,)
+
+                # Per-frame: use direction transfer where valid, rest fallback where degenerate
+                dir_pos = target_wpos[:, p] + L[:, None] * d
+                rest_pos = target_wpos[:, p] + quat_rotate_wxyz_np(
+                    transport[:, p], rest_off_j,
+                )
+                target_wpos[:, j] = np.where(valid[:, None], dir_pos, rest_pos)
+            if p1 < 0:
+                # Source bone is the root edge: no parent to form a bone vector.
                 target_wpos[:, j] = target_wpos[:, p] + quat_rotate_wxyz_np(
                     transport[:, p], rest_off_j,
                 )
