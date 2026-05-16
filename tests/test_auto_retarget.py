@@ -39,6 +39,7 @@ from data_loaders.truebones.truebones_utils.features import (
     get_motion,
     recover_animation_from_motion_np,
 )
+import Anytop.utils.retarget as retarget_mod
 from Anytop.utils.auto_retarget import _build_tpose_aligned_target_animation
 from Anytop.utils.auto_retarget import retarget_features_npy_to_target
 from Anytop.utils.rotation_numpy import quat_multiply_wxyz_np, quat_rotate_wxyz_np
@@ -47,6 +48,11 @@ from Anytop.utils.rotation_numpy import quat_multiply_wxyz_np, quat_rotate_wxyz_
 def _quat_x(angle_deg: float) -> np.ndarray:
     angle_rad = np.deg2rad(angle_deg) * 0.5
     return np.array([np.cos(angle_rad), np.sin(angle_rad), 0.0, 0.0], dtype=np.float64)
+
+
+def _quat_y(angle_deg: float) -> np.ndarray:
+    angle_rad = np.deg2rad(angle_deg) * 0.5
+    return np.array([np.cos(angle_rad), 0.0, np.sin(angle_rad), 0.0], dtype=np.float64)
 
 
 def _quat_z(angle_deg: float) -> np.ndarray:
@@ -73,6 +79,79 @@ class _TensorLike:
 
     def numpy(self) -> np.ndarray:
         return self._array
+
+
+def test_retarget_distributes_short_source_bone_across_longer_target_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        retarget_mod,
+        '_llm_joint_mapping',
+        lambda *_args, **_kwargs: {
+            'Root': 'Root',
+            'Neck': 'Neck',
+            'Neck 1': 'Neck 1',
+            'Head': 'Head',
+        },
+    )
+
+    src_parents = np.array([-1, 0, 1, 2], dtype=np.int32)
+    src_rest_offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    src_rest_rotations = _identity_quat(4)
+    # Twist around the source bone axis keeps the donor head direction on the
+    # Y axis, but the old transport-frame walk rotated the target's Z-bearing
+    # gap offsets out into X.
+    src_rest_rotations[2] = _quat_y(55.0)
+
+    tgt_parents = np.array([-1, 0, 1, 2, 3, 4, 5], dtype=np.int32)
+    tgt_rest_offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.8, 0.2],
+            [0.0, 0.7, 0.3],
+            [0.0, 0.6, 0.4],
+            [0.0, 0.5, 0.1],
+        ],
+        dtype=np.float64,
+    )
+
+    result = retarget_mod.retarget_world_space_np(
+        src_parents=src_parents,
+        src_rest_offsets=src_rest_offsets,
+        src_rest_rotations=src_rest_rotations,
+        tgt_parents=tgt_parents,
+        tgt_rest_offsets=tgt_rest_offsets,
+        tgt_rest_rotations=_identity_quat(7),
+        src_joint_rotations=_identity_quat(4)[None, :, :],
+        src_root_translation=np.zeros((1, 3), dtype=np.float64),
+        src_root_rotation=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64),
+        src_match_names=['Root', 'Neck', 'Neck 1', 'Head'],
+        tgt_match_names=['Root', 'Neck', 'Neck 1', 'Neck 2', 'Neck 3', 'Neck 4', 'Head'],
+        coordinate_search=False,
+        verbose=False,
+    )
+
+    target_world_positions = np.asarray(result['target_world_positions'], dtype=np.float64)[0]
+    expected_positions = np.zeros((7, 3), dtype=np.float64)
+    expected_positions[1] = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    expected_positions[2] = np.array([0.0, 2.0, 0.0], dtype=np.float64)
+
+    cursor = expected_positions[2].copy()
+    for joint_idx in (3, 4, 5, 6):
+        cursor = cursor + np.array([0.0, np.linalg.norm(tgt_rest_offsets[joint_idx]), 0.0], dtype=np.float64)
+        expected_positions[joint_idx] = cursor
+
+    np.testing.assert_allclose(target_world_positions, expected_positions, atol=1e-6)
 
 
 def test_build_target_animation_preserves_world_rotations_across_gap() -> None:

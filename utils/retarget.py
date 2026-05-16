@@ -338,6 +338,73 @@ def _generate_coordinate_candidates_np():
     ]
 
 
+def _build_target_bridge_source_indices(
+    src_for_tgt: np.ndarray,
+    src_to_tgt: np.ndarray,
+    src_parents: np.ndarray,
+    tgt_parents: np.ndarray,
+    tgt_children_count: np.ndarray,
+) -> np.ndarray:
+    """Return source-bone indices for target chains that subdivide one source bone.
+
+    When a mapped source joint's parent also maps to the target, but lands on a
+    non-parent target ancestor, the target joints in between represent extra
+    segments inserted into a single source bone. Distribute that one source-bone
+    direction across the whole target span instead of letting the intermediate
+    joints drift with the transport frame.
+    """
+    bridge_src_for_tgt = np.full(len(tgt_parents), -1, dtype=np.int32)
+    mapped_mask = src_for_tgt >= 0
+
+    for tgt_joint_idx in range(len(tgt_parents)):
+        src_joint_idx = int(src_for_tgt[tgt_joint_idx])
+        if src_joint_idx < 0:
+            continue
+
+        src_parent_idx = int(src_parents[src_joint_idx])
+        if src_parent_idx < 0:
+            continue
+
+        anchor_tgt_idx = int(src_to_tgt[src_parent_idx])
+        if anchor_tgt_idx < 0:
+            continue
+
+        direct_parent_idx = int(tgt_parents[tgt_joint_idx])
+        if anchor_tgt_idx == direct_parent_idx:
+            continue
+
+        path_to_anchor: list[int] = []
+        cursor = tgt_joint_idx
+        valid_path = True
+        while cursor != anchor_tgt_idx:
+            path_to_anchor.append(cursor)
+            cursor_parent = int(tgt_parents[cursor])
+            if cursor_parent < 0:
+                valid_path = False
+                break
+            if cursor != tgt_joint_idx and mapped_mask[cursor]:
+                valid_path = False
+                break
+            cursor = cursor_parent
+
+        if not valid_path or cursor != anchor_tgt_idx or len(path_to_anchor) <= 1:
+            continue
+
+        path_to_anchor.reverse()
+        intermediate_joints = path_to_anchor[:-1]
+        if any(mapped_mask[joint_idx] for joint_idx in intermediate_joints):
+            continue
+        if any(int(tgt_children_count[joint_idx]) != 1 for joint_idx in intermediate_joints):
+            continue
+        if any(int(bridge_src_for_tgt[joint_idx]) >= 0 for joint_idx in path_to_anchor):
+            continue
+
+        for joint_idx in path_to_anchor:
+            bridge_src_for_tgt[joint_idx] = src_joint_idx
+
+    return bridge_src_for_tgt
+
+
 def _batch_forward_kinematics_np(
     local_rotations: np.ndarray,
     local_positions: np.ndarray,
@@ -812,6 +879,13 @@ def retarget_world_space_np(
         if fi >= 0:
             src_for_tgt[fi] = ii
     mapped_mask = src_for_tgt >= 0
+    bridge_src_for_tgt = _build_target_bridge_source_indices(
+        src_for_tgt,
+        src_to_tgt,
+        src_parents,
+        tgt_parents,
+        tgt_children_count,
+    )
 
     target_wrot = np.zeros((F_q, J_tgt, 4), dtype=np.float64)
     target_wpos = np.zeros((F_q, J_tgt, 3), dtype=np.float64)
@@ -834,6 +908,7 @@ def retarget_world_space_np(
     for j in range(J_tgt):
         p = int(tgt_parents[j])
         ii = int(src_for_tgt[j])
+        bridge_src_idx = int(bridge_src_for_tgt[j])
 
         if p < 0:
             if ii >= 0:
@@ -845,6 +920,38 @@ def retarget_world_space_np(
             continue
 
         rest_off_j = tgt_rest_offsets[j]  # (3,) — broadcast, no repeat needed
+
+        if bridge_src_idx >= 0:
+            # Chain-length mismatch: one source bone spans several target joints
+            # (e.g. Parrot Neck1 -> Head vs Dragon Neck2/3/4 -> Head). Spread
+            # that source-bone direction across the whole target chain so the
+            # inserted gap joints do not peel sideways with the transport frame.
+            tgt_rest_len = float(np.linalg.norm(tgt_rest_offsets[j]))
+            bn = np.linalg.norm(src_bv_aligned[:, bridge_src_idx], axis=-1)
+            valid = bn > _EPS
+            d = src_bv_aligned[:, bridge_src_idx] / np.where(valid, bn, 1.0)[:, None]
+
+            src_rest_len = float(np.linalg.norm(src_rest_offsets[bridge_src_idx]))
+            if src_rest_len > _EPS:
+                stretch = src_anim_len[:, bridge_src_idx] / src_rest_len
+            else:
+                stretch = np.ones(F_q, dtype=np.float64)
+            L = tgt_rest_len * stretch
+
+            dir_pos = target_wpos[:, p] + L[:, None] * d
+            rest_pos = target_wpos[:, p] + quat_rotate_wxyz_np(
+                transport[:, p], rest_off_j,
+            )
+            target_wpos[:, j] = np.where(valid[:, None], dir_pos, rest_pos)
+
+            if ii >= 0:
+                transport[:, j] = aligned_src_wrot[:, ii]
+            else:
+                transport[:, j] = quat_multiply_wxyz_np(
+                    transport[:, p],
+                    np.repeat(tgt_rest_rotations[j:j + 1], F_q, axis=0),
+                )
+            continue
 
         if ii >= 0:
             # Mapped non-root: bone-vector direction transfer.
