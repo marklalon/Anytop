@@ -754,6 +754,19 @@ def retarget_world_space_np(
                 src_to_tgt[i] = j
                 matched_tgt[j] = True
 
+    # ── C) Promote effective translation root to target root ──────────────
+    #
+    # Some source skeletons have a static wrapper root (e.g. Horse ``Hips``)
+    # above the actual locomotion joint (e.g. ``Bip01``).  Semantic mapping
+    # will match ``Hips`` → target root, leaving ``Bip01`` unmapped.  But the
+    # animated translation lives in ``Bip01``'s local position channel, not
+    # in the wrapper root.  If we leave the wrapper root mapped, the target
+    # will receive zero translation (the wrapper never moves).
+    #
+    # When ``src_effective_root_index`` is provided and is currently unmapped,
+    # we promote it to the target root, demoting the previously-mapped wrapper
+    # root (only if it is an ancestor of the effective root, so we don't
+    # accidentally swap unrelated joints).
     root_tgt_indices = np.flatnonzero(tgt_parents < 0)
     root_tgt_idx = int(root_tgt_indices[0]) if root_tgt_indices.size > 0 else -1
     if (
