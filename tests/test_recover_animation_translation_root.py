@@ -160,11 +160,11 @@ def test_xz_locomotion_extent_ignores_static_origin_offset_after_initial_root_ce
     rotations = Quaternions(
         np.tile(
             np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
-            (3, len(parents), 1),
+            (30, len(parents), 1),
         )
     )
-    positions = np.zeros((3, 2, 3), dtype=np.float64)
-    positions[:, 1, 0] = np.array([10.0, 11.0, 10.0], dtype=np.float64)
+    positions = np.zeros((30, 2, 3), dtype=np.float64)
+    positions[:, 1, 0] = np.linspace(10.0, 11.0, num=30, dtype=np.float64)
 
     anim = Animation(rotations, positions, Quaternions.id(len(parents)), offsets, parents)
     centered_anim, root_translation_xz = move_xz_to_origin(anim)
@@ -179,11 +179,11 @@ def test_xz_locomotion_extent_still_detects_true_locomotion_after_initial_root_c
     rotations = Quaternions(
         np.tile(
             np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
-            (3, len(parents), 1),
+            (30, len(parents), 1),
         )
     )
-    positions = np.zeros((3, 2, 3), dtype=np.float64)
-    positions[:, 1, 0] = np.array([0.0, 2.0, 4.0], dtype=np.float64)
+    positions = np.zeros((30, 2, 3), dtype=np.float64)
+    positions[:, 1, 0] = np.linspace(0.0, 4.0, num=30, dtype=np.float64)
 
     anim = Animation(rotations, positions, Quaternions.id(len(parents)), offsets, parents)
     centered_anim, root_translation_xz = move_xz_to_origin(anim)

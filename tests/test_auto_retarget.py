@@ -87,7 +87,7 @@ def test_find_translation_root_ignores_sparse_wrapper_motion() -> None:
     positions[[6, 7], 0, 0] = np.array([0.0015, 0.0045], dtype=np.float64)
     positions[1:, 1, 1] = np.linspace(0.0, 0.18, 9, dtype=np.float64)
 
-    anim = SimpleNamespace(positions=positions)
+    anim = SimpleNamespace(positions=positions, parents=np.array([-1, 0, 1], dtype=np.int64))
 
     assert int(_find_translation_root(anim)) == 1
 

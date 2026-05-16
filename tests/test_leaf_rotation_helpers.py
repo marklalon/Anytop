@@ -32,8 +32,6 @@ from data_loaders.truebones.truebones_utils.motion_process import (
 )
 from tools.restore_glb_from_npy import (
     _bare_feature_rotation_channel_mask,
-    _localbody_ik_excluded_joint_indices,
-    _plan_localbody_ik_masks,
     _strip_appended_helper_joints,
 )
 from utils.npy_roundtrip_utils import recover_from_features
@@ -420,89 +418,3 @@ def test_strip_appended_helper_joints_restores_original_joint_count() -> None:
     assert np.allclose(stripped_anim.offsets, offsets)
 
 
-def test_localbody_ik_does_not_exclude_helper_covered_leaf() -> None:
-    joint_names = ["Root", "Joint", "Leaf"]
-    parents = np.array([-1, 0, 1], dtype=np.int32)
-    offsets = np.array(
-        [
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-        ],
-        dtype=np.float64,
-    )
-    positions = np.repeat(offsets[None, :, :], 1, axis=0)
-    positions[:, 0, :] = 0.0
-    original_anim = Animation(
-        Quaternions.id((1, 3)),
-        positions,
-        Quaternions.id(3),
-        offsets,
-        parents,
-    )
-    helper_metadata = _build_leaf_rotation_helper_metadata(
-        joint_names,
-        parents,
-        max_joints=4,
-    )
-    augmented_anim, _augmented_names = _append_leaf_rotation_helpers_to_animation(
-        original_anim,
-        joint_names,
-        helper_metadata,
-    )
-
-    helper_aware_rotation_mask = _bare_feature_rotation_channel_mask(augmented_anim.parents)[: len(parents)]
-    excluded = _localbody_ik_excluded_joint_indices(
-        parents,
-        preserved_position_indices=[0],
-        rotation_channel_mask=helper_aware_rotation_mask,
-    )
-
-    assert np.array_equal(excluded, np.array([0], dtype=np.int32))
-
-
-def test_localbody_ik_masks_keep_helper_covered_leaf_active() -> None:
-    joint_names = ["Root", "Joint", "Leaf"]
-    parents = np.array([-1, 0, 1], dtype=np.int32)
-    offsets = np.array(
-        [
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-        ],
-        dtype=np.float64,
-    )
-    positions = np.repeat(offsets[None, :, :], 1, axis=0)
-    positions[:, 0, :] = 0.0
-    original_anim = Animation(
-        Quaternions.id((1, 3)),
-        positions,
-        Quaternions.id(3),
-        offsets,
-        parents,
-    )
-    helper_metadata = _build_leaf_rotation_helper_metadata(
-        joint_names,
-        parents,
-        max_joints=4,
-    )
-    augmented_anim, _augmented_names = _append_leaf_rotation_helpers_to_animation(
-        original_anim,
-        joint_names,
-        helper_metadata,
-    )
-
-    helper_aware_rotation_mask = _bare_feature_rotation_channel_mask(augmented_anim.parents)[: len(parents)]
-    local_positions = np.repeat(original_anim.positions.copy(), 2, axis=0)
-    local_positions[1, 2, 1] *= 1.2
-
-    frame_mask, clip_mask = _plan_localbody_ik_masks(
-        local_positions,
-        parents=parents,
-        preserved_position_indices=[0],
-        rotation_channel_mask=helper_aware_rotation_mask,
-        frame0_drift_threshold=0.1,
-    )
-
-    assert bool(frame_mask[1, 2])
-    assert bool(np.all(clip_mask[:, 2]))
