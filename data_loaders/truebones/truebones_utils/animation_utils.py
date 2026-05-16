@@ -463,11 +463,25 @@ def _find_translation_root(anim):
 
     Returns 0 when no joint carries significant local position animation.
     """
+    frame_count = int(anim.positions.shape[0]) if anim.positions.ndim >= 3 else 0
+    min_active_frames = max(3, int(np.ceil(frame_count * 0.2))) if frame_count > 0 else 0
+    fallback_joint = 0
+
     for j in range(anim.positions.shape[1]):
-        ptp = np.ptp(anim.positions[:, j], axis=0)
-        if np.any(ptp > 1e-3):
+        joint_positions = np.asarray(anim.positions[:, j], dtype=np.float64)
+        ptp = np.ptp(joint_positions, axis=0)
+        if not np.any(ptp > 5e-3):
+            continue
+
+        if fallback_joint == 0 and j != 0:
+            fallback_joint = j
+
+        delta_from_first = np.linalg.norm(joint_positions - joint_positions[0:1], axis=-1)
+        active_frames = int(np.count_nonzero(delta_from_first > 5e-3))
+        if active_frames >= min_active_frames:
             return j
-    return 0
+
+    return int(fallback_joint)
 
 
 def _find_descendant_transport_chain(parents, trans_root, max_depth=2):

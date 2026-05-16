@@ -669,6 +669,211 @@ def retarget_world_space_np(
             current_idx = int(src_parents[current_idx])
         return False
 
+    def _chain_root(name: str) -> str:
+        normalized = str(name).replace('_', ' ').strip().lower()
+        for prefix in ('left ', 'right ', 'l ', 'r '):
+            if normalized.startswith(prefix):
+                normalized = normalized[len(prefix):]
+                break
+        tokens = normalized.split()
+        while tokens and tokens[-1].isdigit():
+            tokens.pop()
+        return ' '.join(tokens)
+
+    def _path_from_ancestor_to_descendant(parents: np.ndarray, ancestor_idx: int, descendant_idx: int) -> list[int]:
+        current_idx = int(descendant_idx)
+        reversed_path: list[int] = []
+        while current_idx >= 0 and current_idx != int(ancestor_idx):
+            reversed_path.append(current_idx)
+            current_idx = int(parents[current_idx])
+        if current_idx != int(ancestor_idx):
+            return []
+        reversed_path.reverse()
+        return reversed_path
+
+    def _fill_target_gap_from_descendant_mapping(current_src_idx: int, gap_tgt_idx: int) -> bool:
+        search_queue = np.flatnonzero(tgt_parents == int(gap_tgt_idx)).tolist()
+        best_alignment: tuple[list[int], list[int]] | None = None
+        best_target_path_len: int | None = None
+
+        while search_queue:
+            descendant_tgt_idx = int(search_queue.pop(0))
+            search_queue.extend(np.flatnonzero(tgt_parents == descendant_tgt_idx).tolist())
+
+            descendant_src_candidates = np.flatnonzero(src_to_tgt == descendant_tgt_idx)
+            if descendant_src_candidates.size != 1:
+                continue
+
+            descendant_src_idx = int(descendant_src_candidates[0])
+            if descendant_src_idx == int(current_src_idx):
+                continue
+            if not _is_source_ancestor(current_src_idx, descendant_src_idx):
+                continue
+            if _chain_root(src_match_names[descendant_src_idx]) != _chain_root(tgt_match_names[descendant_tgt_idx]):
+                continue
+
+            target_path = [int(gap_tgt_idx)] + _path_from_ancestor_to_descendant(
+                tgt_parents,
+                gap_tgt_idx,
+                descendant_tgt_idx,
+            )
+            source_path = _path_from_ancestor_to_descendant(src_parents, current_src_idx, descendant_src_idx)
+            if not target_path or not source_path:
+                continue
+            if len(source_path) < len(target_path):
+                continue
+
+            aligned_source_nodes = source_path[-len(target_path):]
+            target_path_len = len(target_path)
+            if best_target_path_len is None or target_path_len < best_target_path_len:
+                best_alignment = (target_path, aligned_source_nodes)
+                best_target_path_len = target_path_len
+
+        if best_alignment is None:
+            return False
+
+        target_path, aligned_source_nodes = best_alignment
+        for target_idx, source_idx in zip(target_path, aligned_source_nodes):
+            previous_target_idx = int(src_to_tgt[source_idx])
+            if previous_target_idx >= 0 and previous_target_idx != int(target_idx):
+                src_to_tgt[source_idx] = -1
+
+            existing_source = np.flatnonzero(src_to_tgt == int(target_idx))
+            if existing_source.size == 1 and int(existing_source[0]) != int(source_idx):
+                src_to_tgt[int(existing_source[0])] = -1
+
+            src_to_tgt[source_idx] = int(target_idx)
+
+        return True
+
+    def _redistribute_mapped_path_along_longer_target_chain(anchor_src_idx: int, anchor_tgt_idx: int) -> None:
+        search_queue = np.flatnonzero(tgt_parents == int(anchor_tgt_idx)).tolist()
+        best_candidate: tuple[list[int], list[int]] | None = None
+        best_target_path_len = -1
+
+        while search_queue:
+            descendant_tgt_idx = int(search_queue.pop(0))
+            search_queue.extend(np.flatnonzero(tgt_parents == descendant_tgt_idx).tolist())
+
+            descendant_src_candidates = np.flatnonzero(src_to_tgt == descendant_tgt_idx)
+            if descendant_src_candidates.size != 1:
+                continue
+
+            descendant_src_idx = int(descendant_src_candidates[0])
+            if descendant_src_idx == int(anchor_src_idx):
+                continue
+            if not _is_source_ancestor(anchor_src_idx, descendant_src_idx):
+                continue
+
+            target_path = [int(anchor_tgt_idx)] + _path_from_ancestor_to_descendant(
+                tgt_parents,
+                anchor_tgt_idx,
+                descendant_tgt_idx,
+            )
+            source_path = [int(anchor_src_idx)] + _path_from_ancestor_to_descendant(
+                src_parents,
+                anchor_src_idx,
+                descendant_src_idx,
+            )
+            if len(target_path) <= len(source_path):
+                continue
+            if not target_path or not source_path:
+                continue
+            if any(int(tgt_children_count[joint_idx]) != 1 for joint_idx in target_path[1:-1]):
+                continue
+
+            current_target_indices = []
+            mapped_source_nodes: list[int] = []
+            for source_idx in source_path:
+                target_idx = int(src_to_tgt[source_idx])
+                if target_idx < 0:
+                    continue
+                if target_idx not in target_path:
+                    current_target_indices = []
+                    mapped_source_nodes = []
+                    break
+                current_target_indices.append(target_path.index(target_idx))
+                mapped_source_nodes.append(int(source_idx))
+
+            if len(mapped_source_nodes) < 2:
+                continue
+            if current_target_indices != sorted(current_target_indices):
+                continue
+            if current_target_indices[0] != 0 or current_target_indices[-1] != len(target_path) - 1:
+                continue
+
+            if len(target_path) > best_target_path_len:
+                best_candidate = (target_path, mapped_source_nodes)
+                best_target_path_len = len(target_path)
+
+        if best_candidate is None:
+            return
+
+        target_path, mapped_source_nodes = best_candidate
+        if len(mapped_source_nodes) < 2:
+            return
+
+        desired_target_indices = [
+            int(round(src_idx * (len(target_path) - 1) / (len(mapped_source_nodes) - 1)))
+            for src_idx in range(len(mapped_source_nodes))
+        ]
+        desired_targets = [int(target_path[target_idx]) for target_idx in desired_target_indices]
+        current_targets = [int(src_to_tgt[source_idx]) for source_idx in mapped_source_nodes]
+        if desired_targets == current_targets:
+            return
+
+        for source_idx, target_idx in zip(mapped_source_nodes, desired_targets):
+            existing_source = np.flatnonzero(src_to_tgt == int(target_idx))
+            if existing_source.size == 1 and int(existing_source[0]) != int(source_idx):
+                src_to_tgt[int(existing_source[0])] = -1
+
+        for source_idx, target_idx in zip(mapped_source_nodes, desired_targets):
+            src_to_tgt[int(source_idx)] = int(target_idx)
+
+    def _shift_descendant_chain_after_root_promotion(current_src_idx: int, displaced_tgt_idx: int) -> None:
+        target_cursor = int(displaced_tgt_idx)
+        source_cursor = int(current_src_idx)
+        while target_cursor >= 0:
+            child_tgt_candidates = np.flatnonzero(tgt_parents == target_cursor)
+            if child_tgt_candidates.size == 0:
+                break
+
+            matching_pairs: list[tuple[int, int]] = []
+            for child_tgt_idx in child_tgt_candidates.tolist():
+                child_src_candidates = np.flatnonzero(src_to_tgt == int(child_tgt_idx))
+                if child_src_candidates.size != 1:
+                    continue
+                child_src_idx = int(child_src_candidates[0])
+                if int(src_parents[child_src_idx]) != source_cursor:
+                    continue
+                matching_pairs.append((int(child_tgt_idx), child_src_idx))
+
+            if len(matching_pairs) > 1:
+                semantic_pairs = [
+                    (child_tgt_idx, child_src_idx)
+                    for child_tgt_idx, child_src_idx in matching_pairs
+                    if _chain_root(src_match_names[child_src_idx]) == _chain_root(tgt_match_names[child_tgt_idx])
+                ]
+                if len(semantic_pairs) == 1:
+                    matching_pairs = semantic_pairs
+
+            if len(matching_pairs) != 1:
+                if _fill_target_gap_from_descendant_mapping(source_cursor, target_cursor):
+                    mapped_source_after_fill = np.flatnonzero(src_to_tgt == target_cursor)
+                    if mapped_source_after_fill.size == 1:
+                        _redistribute_mapped_path_along_longer_target_chain(
+                            int(mapped_source_after_fill[0]),
+                            target_cursor,
+                        )
+                    break
+                break
+
+            child_tgt_idx, child_src_idx = matching_pairs[0]
+
+            src_to_tgt[child_src_idx] = target_cursor
+            source_cursor = child_src_idx
+            target_cursor = child_tgt_idx
+
     # ── B) Map source → target indices by semantic match name ─────────────
     # Strategy:
     #   1. First try exact same-name matching.
@@ -774,26 +979,38 @@ def retarget_world_space_np(
         and root_tgt_idx >= 0
     ):
         src_effective_root_index = int(src_effective_root_index)
-        if 0 <= src_effective_root_index < J_src and int(src_to_tgt[src_effective_root_index]) < 0:
+        if 0 <= src_effective_root_index < J_src:
             current_root_src = np.flatnonzero(src_to_tgt == root_tgt_idx)
             current_root_src_idx = int(current_root_src[0]) if current_root_src.size > 0 else -1
             should_promote_effective_root = (
                 current_root_src_idx < 0
                 or _is_source_ancestor(current_root_src_idx, src_effective_root_index)
             )
-            if should_promote_effective_root:
+            if should_promote_effective_root and current_root_src_idx != src_effective_root_index:
+                previous_tgt_for_effective = int(src_to_tgt[src_effective_root_index])
                 if current_root_src_idx >= 0:
                     src_to_tgt[current_root_src_idx] = -1
+                if previous_tgt_for_effective >= 0 and previous_tgt_for_effective != root_tgt_idx:
+                    src_to_tgt[src_effective_root_index] = -1
                 src_to_tgt[src_effective_root_index] = root_tgt_idx
+                if previous_tgt_for_effective >= 0 and previous_tgt_for_effective != root_tgt_idx:
+                    _shift_descendant_chain_after_root_promotion(
+                        src_effective_root_index,
+                        previous_tgt_for_effective,
+                    )
                 if verbose:
                     replaced_name = (
                         src_match_names[current_root_src_idx]
                         if current_root_src_idx >= 0 else '<none>'
                     )
+                    displaced_name = (
+                        tgt_match_names[previous_tgt_for_effective]
+                        if previous_tgt_for_effective >= 0 and previous_tgt_for_effective != root_tgt_idx else '<none>'
+                    )
                     print(
                         f"[retarget] Promoting unmapped source effective root "
                         f"{src_match_names[src_effective_root_index]!r} to target root "
-                        f"(replacing {replaced_name!r})"
+                        f"(replacing {replaced_name!r}, displaced target match {displaced_name!r})"
                     )
 
 
@@ -942,6 +1159,12 @@ def retarget_world_space_np(
         tgt_children_count,
     )
 
+    def _bridge_parent_world_rotation(bridge_src_idx: int) -> np.ndarray | None:
+        src_parent_idx = int(src_parents[bridge_src_idx])
+        if src_parent_idx < 0:
+            return None
+        return aligned_src_wrot[:, src_parent_idx]
+
     target_wrot = np.zeros((F_q, J_tgt, 4), dtype=np.float64)
     target_wpos = np.zeros((F_q, J_tgt, 3), dtype=np.float64)
 
@@ -1002,10 +1225,14 @@ def retarget_world_space_np(
             if ii >= 0:
                 transport[:, j] = aligned_src_wrot[:, ii]
             else:
-                transport[:, j] = quat_multiply_wxyz_np(
-                    transport[:, p],
-                    np.repeat(tgt_rest_rotations[j:j + 1], F_q, axis=0),
-                )
+                bridge_parent_rot = _bridge_parent_world_rotation(bridge_src_idx)
+                if bridge_parent_rot is not None:
+                    transport[:, j] = bridge_parent_rot
+                else:
+                    transport[:, j] = quat_multiply_wxyz_np(
+                        transport[:, p],
+                        np.repeat(tgt_rest_rotations[j:j + 1], F_q, axis=0),
+                    )
             continue
 
         if ii >= 0:
@@ -1063,8 +1290,22 @@ def retarget_world_space_np(
     for p_idx in range(J_tgt):
         p_par = int(tgt_parents[p_idx])
         ii = int(src_for_tgt[p_idx])
+        bridge_src_idx = int(bridge_src_for_tgt[p_idx])
         if ii >= 0:
             target_wrot[:, p_idx] = aligned_src_wrot[:, ii]
+        elif bridge_src_idx >= 0:
+            bridge_parent_rot = _bridge_parent_world_rotation(bridge_src_idx)
+            if bridge_parent_rot is not None:
+                target_wrot[:, p_idx] = bridge_parent_rot
+            elif p_par < 0:
+                target_wrot[:, p_idx] = np.repeat(
+                    tgt_rest_wrot[0, p_idx][None], F_q, axis=0
+                )
+            else:
+                target_wrot[:, p_idx] = quat_multiply_wxyz_np(
+                    target_wrot[:, p_par],
+                    np.repeat(tgt_rest_rotations[p_idx:p_idx + 1], F_q, axis=0),
+                )
         elif p_par < 0:
             target_wrot[:, p_idx] = np.repeat(
                 tgt_rest_wrot[0, p_idx][None], F_q, axis=0
@@ -1110,6 +1351,33 @@ def retarget_world_space_np(
             rel_parent_pos - np.repeat(tgt_rest_offsets[j:j+1], F, axis=0),
         )
 
+    # Inverse-FK can emit synthetic pose-location residuals on both mapped and
+    # bridge joints when the target skeleton needs extra segments or different
+    # proportions to realize the transferred world-space pose. Preserve only
+    # source-driven local translations: if the controlling source bone has no
+    # animated local translation, keep the target joint rigid and let rotation
+    # carry the motion instead of baking the residual into pose translation.
+    _POSE_LOCATION_EPS = 1e-5
+    for j in range(J_tgt):
+        if int(tgt_parents[j]) < 0:
+            continue
+
+        controller_src_idx = int(src_for_tgt[j])
+        if controller_src_idx < 0:
+            controller_src_idx = int(bridge_src_for_tgt[j])
+        if controller_src_idx < 0:
+            continue
+
+        if pose_locations_np is None:
+            tgt_pose_loc[:, j] = 0.0
+            continue
+
+        source_pose_loc = np.asarray(pose_locations_np[:, controller_src_idx], dtype=np.float64)
+        if np.max(np.linalg.norm(source_pose_loc, axis=-1)) > _POSE_LOCATION_EPS:
+            continue
+
+        tgt_pose_loc[:, j] = 0.0
+
     root_mask = tgt_parents < 0
     root_indices = np.flatnonzero(root_mask)
 
@@ -1130,7 +1398,10 @@ def retarget_world_space_np(
     has_nonzero_bone_translations = bool(
         np.any(np.abs(tgt_pose_loc[:, ~root_mask, :]) > 1e-6)
     )
-    out_bone_translations = tgt_pose_loc if has_nonzero_bone_translations else None
+    if pose_locations_np is not None:
+        out_bone_translations = tgt_pose_loc
+    else:
+        out_bone_translations = tgt_pose_loc if has_nonzero_bone_translations else None
 
     if verbose:
         print(f"  [Retarget] Conversion complete: {F} frames, {J_tgt} bones")

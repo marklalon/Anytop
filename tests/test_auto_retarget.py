@@ -39,6 +39,7 @@ from data_loaders.truebones.truebones_utils.features import (
     get_motion,
     recover_animation_from_motion_np,
 )
+from data_loaders.truebones.truebones_utils.animation_utils import _find_translation_root
 import Anytop.utils.retarget as retarget_mod
 from Anytop.utils.auto_retarget import _build_tpose_aligned_target_animation
 from Anytop.utils.auto_retarget import retarget_features_npy_to_target
@@ -79,6 +80,16 @@ class _TensorLike:
 
     def numpy(self) -> np.ndarray:
         return self._array
+
+
+def test_find_translation_root_ignores_sparse_wrapper_motion() -> None:
+    positions = np.zeros((10, 3, 3), dtype=np.float64)
+    positions[[6, 7], 0, 0] = np.array([0.0015, 0.0045], dtype=np.float64)
+    positions[1:, 1, 1] = np.linspace(0.0, 0.18, 9, dtype=np.float64)
+
+    anim = SimpleNamespace(positions=positions)
+
+    assert int(_find_translation_root(anim)) == 1
 
 
 def test_retarget_distributes_short_source_bone_across_longer_target_chain(
@@ -154,6 +165,75 @@ def test_retarget_distributes_short_source_bone_across_longer_target_chain(
     np.testing.assert_allclose(target_world_positions, expected_positions, atol=1e-6)
 
 
+def test_retarget_preserves_zero_pose_locations_for_rigid_longer_target_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        retarget_mod,
+        '_llm_joint_mapping',
+        lambda *_args, **_kwargs: {
+            'Root': 'Root',
+            'Neck': 'Neck',
+            'Neck 1': 'Neck 1',
+            'Head': 'Head',
+        },
+    )
+
+    src_parents = np.array([-1, 0, 1, 2], dtype=np.int32)
+    src_rest_offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+
+    tgt_parents = np.array([-1, 0, 1, 2, 3, 4, 5], dtype=np.int32)
+    tgt_rest_offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.8, 0.2],
+            [0.0, 0.7, 0.3],
+            [0.0, 0.6, 0.4],
+            [0.0, 0.5, 0.1],
+        ],
+        dtype=np.float64,
+    )
+
+    joint_rotations = np.tile(_identity_quat(4)[None, :, :], (2, 1, 1))
+    joint_rotations[1, 1] = _quat_z(35.0)
+    joint_rotations[1, 2] = _quat_x(-25.0)
+    joint_rotations[1, 3] = _quat_y(15.0)
+
+    result = retarget_mod.retarget_world_space_np(
+        src_parents=src_parents,
+        src_rest_offsets=src_rest_offsets,
+        src_rest_rotations=_identity_quat(4),
+        tgt_parents=tgt_parents,
+        tgt_rest_offsets=tgt_rest_offsets,
+        tgt_rest_rotations=_identity_quat(7),
+        src_joint_rotations=joint_rotations,
+        src_root_translation=np.zeros((2, 3), dtype=np.float64),
+        src_root_rotation=np.tile(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64), (2, 1)),
+        src_bone_translations=np.zeros((2, 4, 3), dtype=np.float64),
+        src_match_names=['Root', 'Neck', 'Neck 1', 'Head'],
+        tgt_match_names=['Root', 'Neck', 'Neck 1', 'Neck 2', 'Neck 3', 'Neck 4', 'Head'],
+        coordinate_search=False,
+        verbose=False,
+    )
+
+    assert result['bone_translations'] is not None
+    np.testing.assert_allclose(
+        np.asarray(result['bone_translations'], dtype=np.float64)[:, 1:, :],
+        0.0,
+        atol=1e-6,
+    )
+
+
 def test_build_target_animation_preserves_world_rotations_across_gap() -> None:
     parents = np.array([-1, 0, 1], dtype=np.int32)
     offsets = np.array(
@@ -193,6 +273,7 @@ def test_build_target_animation_preserves_world_rotations_across_gap() -> None:
     target_tp = SimpleNamespace(
         offsets=offsets,
         tpos_anim=SimpleNamespace(parents=parents),
+        tpos_rots=_identity_quat(3)[None, :, :],
     )
 
     anim = _build_tpose_aligned_target_animation(retarget_result, target_tp)
@@ -245,6 +326,7 @@ def test_build_target_animation_keeps_pure_unmapped_branch_at_identity() -> None
     target_tp = SimpleNamespace(
         offsets=offsets,
         tpos_anim=SimpleNamespace(parents=parents),
+        tpos_rots=_identity_quat(3)[None, :, :],
     )
 
     anim = _build_tpose_aligned_target_animation(retarget_result, target_tp)
@@ -700,3 +782,297 @@ def test_retarget_promotes_unmapped_effective_root_to_target_root(
     )
     assert int(result['src_to_tgt'][2]) == 0
     assert int(result['src_to_tgt'][0]) == -1
+
+
+def test_retarget_promotes_matched_effective_root_over_wrapper_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        retarget_mod,
+        '_llm_joint_mapping',
+        lambda *_args, **_kwargs: {
+            'Hips': 'Cg',
+            'Pelvis': 'Pelvis',
+            'Spine': 'Spine',
+        },
+    )
+
+    src_parents = np.array([-1, 0, 1, 2], dtype=np.int32)
+    src_rest_offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.5, 0.0],
+            [0.0, 0.5, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    tgt_parents = np.array([-1, 0, 1], dtype=np.int32)
+    tgt_rest_offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.5, 0.0],
+        ],
+        dtype=np.float64,
+    )
+
+    joint_rotations = np.tile(_identity_quat(4)[None, :, :], (2, 1, 1))
+    root_translation = np.zeros((2, 3), dtype=np.float64)
+    root_rotation = np.tile(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64), (2, 1))
+    bone_translations = np.zeros((2, 4, 3), dtype=np.float64)
+    bone_translations[:, 1, 1] = np.array([1.0, 1.2], dtype=np.float64)
+
+    result = retarget_mod.retarget_world_space_np(
+        src_parents=src_parents,
+        src_rest_offsets=src_rest_offsets,
+        src_rest_rotations=_identity_quat(4),
+        tgt_parents=tgt_parents,
+        tgt_rest_offsets=tgt_rest_offsets,
+        tgt_rest_rotations=_identity_quat(3),
+        src_joint_rotations=joint_rotations,
+        src_root_translation=root_translation,
+        src_root_rotation=root_rotation,
+        src_effective_root_index=1,
+        src_bone_translations=bone_translations,
+        src_match_names=['Hips', 'Pelvis', 'Spine', 'Head'],
+        tgt_match_names=['Cg', 'Pelvis', 'Spine'],
+        coordinate_search=False,
+        verbose=False,
+    )
+
+    target_world_positions = np.asarray(result['target_world_positions'], dtype=np.float64)
+    assert target_world_positions[1, 0, 1] > target_world_positions[0, 0, 1]
+    assert int(result['src_to_tgt'][1]) == 0
+    assert int(result['src_to_tgt'][0]) == -1
+
+
+def test_bridge_gap_joint_uses_source_anchor_rotation_to_avoid_spine_translation_jitter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        retarget_mod,
+        '_llm_joint_mapping',
+        lambda *_args, **_kwargs: {
+            'Hips': 'Cg',
+            'Pelvis': 'Pelvis',
+            'Spine': 'Spine',
+        },
+    )
+
+    src_parents = np.array([-1, 0, 1], dtype=np.int32)
+    src_rest_offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.5, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    src_rest_rotations = _identity_quat(3)
+    src_rest_rotations[1] = _quat_z(35.0)
+
+    tgt_parents = np.array([-1, 0, 1], dtype=np.int32)
+    tgt_rest_offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.7, 0.0],
+            [0.0, 0.8, 0.0],
+        ],
+        dtype=np.float64,
+    )
+
+    result = retarget_mod.retarget_world_space_np(
+        src_parents=src_parents,
+        src_rest_offsets=src_rest_offsets,
+        src_rest_rotations=src_rest_rotations,
+        tgt_parents=tgt_parents,
+        tgt_rest_offsets=tgt_rest_offsets,
+        tgt_rest_rotations=_identity_quat(3),
+        src_joint_rotations=_identity_quat(3)[None, :, :],
+        src_root_translation=np.zeros((1, 3), dtype=np.float64),
+        src_root_rotation=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64),
+        src_effective_root_index=1,
+        src_bone_translations=None,
+        src_match_names=['Hips', 'Pelvis', 'Spine'],
+        tgt_match_names=['Cg', 'Pelvis', 'Spine'],
+        coordinate_search=False,
+        verbose=False,
+    )
+
+    target_tp = SimpleNamespace(
+        offsets=tgt_rest_offsets,
+        tpos_anim=SimpleNamespace(parents=tgt_parents),
+        tpos_rots=_identity_quat(3)[None, :, :],
+    )
+    anim = _build_tpose_aligned_target_animation(result, target_tp)
+
+    np.testing.assert_allclose(
+        anim.positions[0, 2],
+        tgt_rest_offsets[2],
+        atol=1e-6,
+    )
+
+
+def test_root_promotion_shifts_descendant_chain_up_one_target_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        retarget_mod,
+        '_llm_joint_mapping',
+        lambda *_args, **_kwargs: {
+            'Hips': 'Cg',
+            'Pelvis': 'Pelvis',
+            'Spine 1': 'Spine',
+            'Spine 2': 'Spine 1',
+        },
+    )
+
+    result = retarget_mod.retarget_world_space_np(
+        src_parents=np.array([-1, 0, 1, 2], dtype=np.int32),
+        src_rest_offsets=np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.5, 0.0],
+                [0.0, 0.5, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        src_rest_rotations=_identity_quat(4),
+        tgt_parents=np.array([-1, 0, 1, 2], dtype=np.int32),
+        tgt_rest_offsets=np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 0.7, 0.0],
+                [0.0, 0.6, 0.0],
+                [0.0, 0.5, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        tgt_rest_rotations=_identity_quat(4),
+        src_joint_rotations=_identity_quat(4)[None, :, :],
+        src_root_translation=np.zeros((1, 3), dtype=np.float64),
+        src_root_rotation=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64),
+        src_effective_root_index=1,
+        src_bone_translations=None,
+        src_match_names=['Hips', 'Pelvis', 'Spine 1', 'Spine 2'],
+        tgt_match_names=['Cg', 'Pelvis', 'Spine', 'Spine 1'],
+        coordinate_search=False,
+        verbose=False,
+    )
+
+    assert int(result['src_to_tgt'][0]) == -1
+    assert int(result['src_to_tgt'][1]) == 0
+    assert int(result['src_to_tgt'][2]) == 1
+    assert int(result['src_to_tgt'][3]) == 2
+
+
+def test_root_promotion_redistributes_short_neck_chain_across_longer_target_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        retarget_mod,
+        '_llm_joint_mapping',
+        lambda *_args, **_kwargs: {
+            'Hips': 'Cg',
+            'Pelvis': 'Pelvis',
+            'Spine 1': 'Spine',
+            'Spine 2': 'Spine 1',
+            'Spine 3': 'Spine 2',
+            'Neck 1': 'Neck',
+            'Neck 2': 'Neck 1',
+            'Head': 'Head',
+        },
+    )
+
+    result = retarget_mod.retarget_world_space_np(
+        src_parents=np.array([-1, 0, 1, 2, 3, 4, 5, 6, 7], dtype=np.int32),
+        src_rest_offsets=np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.8, 0.0],
+                [0.0, 0.7, 0.0],
+                [0.0, 0.6, 0.0],
+                [0.0, 0.5, 0.0],
+                [0.0, 0.4, 0.0],
+                [0.0, 0.3, 0.0],
+                [0.0, 0.2, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        src_rest_rotations=_identity_quat(9),
+        tgt_parents=np.array([-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9], dtype=np.int32),
+        tgt_rest_offsets=np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 0.9, 0.0],
+                [0.0, 0.8, 0.0],
+                [0.0, 0.7, 0.0],
+                [0.0, 0.6, 0.0],
+                [0.0, 0.5, 0.0],
+                [0.0, 0.4, 0.0],
+                [0.0, 0.3, 0.0],
+                [0.0, 0.2, 0.0],
+                [0.0, 0.15, 0.0],
+                [0.0, 0.1, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        tgt_rest_rotations=_identity_quat(11),
+        src_joint_rotations=_identity_quat(9)[None, :, :],
+        src_root_translation=np.zeros((1, 3), dtype=np.float64),
+        src_root_rotation=np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64),
+        src_effective_root_index=1,
+        src_bone_translations=None,
+        src_match_names=['Hips', 'Pelvis', 'Spine 1', 'Spine 2', 'Spine 3', 'Ribcage', 'Neck 1', 'Neck 2', 'Head'],
+        tgt_match_names=['Cg', 'Pelvis', 'Spine', 'Spine 1', 'Spine 2', 'Neck', 'Neck 1', 'Neck 2', 'Neck 3', 'Neck 4', 'Head'],
+        coordinate_search=False,
+        verbose=False,
+    )
+
+    assert int(result['src_to_tgt'][0]) == -1
+    assert int(result['src_to_tgt'][1]) == 0
+    assert int(result['src_to_tgt'][2]) == 1
+    assert int(result['src_to_tgt'][3]) == 2
+    assert int(result['src_to_tgt'][4]) == 3
+    assert int(result['src_to_tgt'][5]) == 4
+    assert int(result['src_to_tgt'][6]) == 6
+    assert int(result['src_to_tgt'][7]) == 8
+    assert int(result['src_to_tgt'][8]) == 10
+
+
+def test_build_target_animation_prefers_retarget_bone_translations() -> None:
+    target_tp = SimpleNamespace(
+        offsets=np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.5, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        tpos_anim=SimpleNamespace(parents=np.array([-1, 0, 1], dtype=np.int32)),
+        tpos_rots=np.array([_identity_quat(3)], dtype=np.float64),
+    )
+
+    retarget_result = {
+        'target_world_positions': np.array(
+            [[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [2.0, 0.0, 0.0],
+            ]],
+            dtype=np.float64,
+        ),
+        'target_world_rotations': np.array([_identity_quat(3)], dtype=np.float64),
+        'src_to_tgt': np.array([0, 1, 2], dtype=np.int32),
+        'bone_translations': np.zeros((1, 3, 3), dtype=np.float64),
+    }
+
+    anim = _build_tpose_aligned_target_animation(retarget_result, target_tp)
+
+    np.testing.assert_allclose(anim.positions[0, 0], np.array([0.0, 0.0, 0.0], dtype=np.float64), atol=1e-6)
+    np.testing.assert_allclose(anim.positions[0, 1], np.array([0.0, 1.0, 0.0], dtype=np.float64), atol=1e-6)
+    np.testing.assert_allclose(anim.positions[0, 2], np.array([0.0, 0.5, 0.0], dtype=np.float64), atol=1e-6)

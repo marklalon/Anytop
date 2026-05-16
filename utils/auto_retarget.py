@@ -125,11 +125,15 @@ def _build_tpose_aligned_target_animation(retarget_result: dict, target_tp):
         retarget_result['target_world_rotations'],
         dtype=np.float64,
     )
+    target_bone_translations = retarget_result.get('bone_translations')
+    if target_bone_translations is not None:
+        target_bone_translations = np.asarray(target_bone_translations, dtype=np.float64)
     target_offsets = np.asarray(target_tp.offsets, dtype=np.float64)
     target_parents = np.asarray(target_tp.tpos_anim.parents, dtype=np.int32)
     src_to_tgt = np.asarray(retarget_result['src_to_tgt'], dtype=np.int32)
 
     frame_count, joint_count = target_world_positions.shape[:2]
+    target_rest_rotations = np.asarray(target_tp.tpos_rots[0], dtype=np.float64)
     identity_orients = np.zeros((joint_count, 4), dtype=np.float64)
     identity_orients[:, 0] = 1.0
     orient_quats = Quaternions(identity_orients)
@@ -160,10 +164,17 @@ def _build_tpose_aligned_target_animation(retarget_result: dict, target_tp):
                 quat_conjugate_wxyz_np(target_world_rotations[:, parent_idx]),
                 target_world_rotations[:, joint_idx],
             )
-        local_positions[:, joint_idx] = quat_rotate_wxyz_np(
-            quat_conjugate_wxyz_np(target_world_rotations[:, parent_idx]),
-            target_world_positions[:, joint_idx] - target_world_positions[:, parent_idx],
-        )
+
+        if target_bone_translations is not None:
+            local_positions[:, joint_idx] = target_offsets[joint_idx] + quat_rotate_wxyz_np(
+                np.repeat(target_rest_rotations[joint_idx:joint_idx + 1], frame_count, axis=0),
+                target_bone_translations[:, joint_idx],
+            )
+        else:
+            local_positions[:, joint_idx] = quat_rotate_wxyz_np(
+                quat_conjugate_wxyz_np(target_world_rotations[:, parent_idx]),
+                target_world_positions[:, joint_idx] - target_world_positions[:, parent_idx],
+            )
 
     rotation_quats = Quaternions(local_rotations)
 
