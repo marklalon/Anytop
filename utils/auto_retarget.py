@@ -431,7 +431,6 @@ def auto_retarget_pipeline(
     from data_loaders.truebones.truebones_utils.features import get_common_features_from_T_pose
     from data_loaders.truebones.truebones_utils.motion_process import (
         recover_bvh_export_animation_from_motion_np,
-        recover_processed_animation_from_feature_animation,
     )
     from data_loaders.truebones.truebones_utils.animation_utils import (
         needs_bvh_position_channels,
@@ -590,6 +589,7 @@ def auto_retarget_pipeline(
                         np.asarray(target_cond['offsets'], dtype=np.float32),
                         bvh_joint_names,
                         allow_infer=True,
+                        tpose_rest_rotations=target_tp.tpos_rots[0],
                     )
                     if out_anim is not None:
                         out_anim, bvh_joint_names = reorder_animation_to_dfs(out_anim, bvh_joint_names)

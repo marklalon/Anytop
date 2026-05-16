@@ -1113,6 +1113,7 @@ def recover_bvh_export_animation_from_motion_np(
     anim_pos_threshold=0.01,
     motion_metadata=None,
     allow_infer=False,
+    tpose_rest_rotations=None,
 ):
     """Recover a motion tensor and remap it into BVH-safe DFS order.
 
@@ -1121,6 +1122,11 @@ def recover_bvh_export_animation_from_motion_np(
     metadata indices. BVH export has the additional requirement that joint arrays
     must match hierarchy DFS order, so this helper layers the DFS remap on top of
     recovery without changing the base function's semantics.
+
+    When *tpose_rest_rotations* is provided (``(J, 4)`` quaternion array in
+    ``[w, x, y, z]`` order), the recovered T-pose-relative rotations are baked
+    back into total local rotations (rest ⊗ pose) so the BVH displays correctly
+    for skeletons with non-identity rest rotations (e.g. GLB-derived skeletons).
     """
     anim, has_animated_pos = recover_animation_from_motion_np(
         data,
@@ -1133,6 +1139,11 @@ def recover_bvh_export_animation_from_motion_np(
     )
     if anim is None:
         return None, list(joint_names), has_animated_pos
+
+    if tpose_rest_rotations is not None:
+        anim = recover_processed_animation_from_feature_animation(
+            anim, tpose_rest_rotations,
+        )
 
     anim, joint_names = reorder_animation_to_dfs(anim, joint_names)
     return anim, joint_names, has_animated_pos

@@ -116,6 +116,7 @@ def _retarget_reference_motion(
             np.asarray(tgt_cond['offsets'], dtype=np.float32),
             list(tgt_cond.get('canonical_bvh_joint_names', tgt_cond['joints_names'])),
             allow_infer=True,
+            tpose_rest_rotations=target_tp.tpos_rots[0],
         )
         if out_anim is not None:
             BVH.save(
@@ -130,13 +131,14 @@ def _retarget_reference_motion(
 
 
 def _export_motion(task):
-    motion_np, parents_np, offsets, npy_name, joint_names, out_path, fps = task
+    motion_np, parents_np, offsets, npy_name, joint_names, out_path, fps, tpose_rest_rotations = task
     out_anim, joint_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
         motion_np,
         parents_np,
         offsets,
         joint_names,
         allow_infer=True,
+        tpose_rest_rotations=tpose_rest_rotations,
     )
     np.save(pjoin(out_path, npy_name), motion_np)
     if out_anim is not None:
@@ -502,6 +504,17 @@ def main(args=None, cond_dict=None):
         ]
         base_index = len(existing_npy_files)
 
+        # Extract T-pose rest rotations (6D → quaternion)
+        _tff = cond_dict[object_type].get('tpos_first_frame')
+        _tpose_rest_rotations = None
+        if _tff is not None:
+            from utils.rotation_conversions import rotation_6d_to_matrix_np
+            from motion_lib.Quaternions import Quaternions
+            _rot6d = np.asarray(_tff[:, 3:9], dtype=np.float64)
+            _tpose_rest_rotations = Quaternions.from_transforms(
+                rotation_6d_to_matrix_np(_rot6d)
+            ).qs
+
         # Collect export tasks (in-process, no pickling needed)
         joint_names = cond_dict[object_type].get(
             'canonical_bvh_joint_names',
@@ -526,6 +539,7 @@ def main(args=None, cond_dict=None):
                 joint_names,
                 out_path,
                 fps,
+                _tpose_rest_rotations,
             ))
 
         # Parallel export using ThreadPoolExecutor.
