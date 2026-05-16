@@ -89,13 +89,6 @@ def add_model_options(parser):
     group.add_argument("--aug_mirror_prob", default=0.0, type=float,
                        help="Probability of applying left-right mirror augmentation (0.0=off, 0.5=half)."
                             " Swaps symmetric joint pairs and negates X-axis components of pos/rot/vel.")
-    group.add_argument("--joint_mask_prob", default=0.0, type=float,
-                       help="Per-sample probability of applying joint masking during training (0.0=off)."
-                            " When triggered, a random subset of non-root joints in x_t are replaced"
-                            " with fresh Gaussian noise, forcing the model to reconstruct them from context.")
-    group.add_argument("--joint_mask_max_frac", default=0.3, type=float,
-                       help="Fraction of non-root valid joints to mask when joint masking fires (default 0.3)."
-                            " E.g. 0.3 masks up to 30%% of non-root joints per masked sample.")
     group.add_argument("--lambda_vel", default=0.0, type=float,
                        help="Weight for velocity-position consistency loss (0.0=off)."
                             " Penalizes |pos[t+1]-pos[t] - vel[t]|^2 on denormalized outputs."

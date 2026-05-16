@@ -111,7 +111,5 @@ def create_gaussian_diffusion(args):
         loss_type=loss_type,
         rescale_timesteps=rescale_timesteps,
         lambda_geo=args.lambda_geo,
-        joint_mask_prob=getattr(args, 'joint_mask_prob', 0.0),
-        joint_mask_max_frac=getattr(args, 'joint_mask_max_frac', 0.3),
         lambda_vel=getattr(args, 'lambda_vel', 0.0),
     )
