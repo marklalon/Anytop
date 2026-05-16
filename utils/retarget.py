@@ -1008,7 +1008,7 @@ def retarget_world_space_np(
                         if previous_tgt_for_effective >= 0 and previous_tgt_for_effective != root_tgt_idx else '<none>'
                     )
                     print(
-                        f"[retarget] Promoting unmapped source effective root "
+                        f"[retarget] Promoting source effective root "
                         f"{src_match_names[src_effective_root_index]!r} to target root "
                         f"(replacing {replaced_name!r}, displaced target match {displaced_name!r})"
                     )
