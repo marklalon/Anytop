@@ -453,33 +453,64 @@ def _detect_motion_loop(positions):
     return bool(np.mean(per_joint_dist) < LOOP_DETECTION_POS_THRESHOLD)
 
 
-def _find_translation_root(anim):
-    """Return the index of the first joint (from root) with significant position animation.
+def _translation_root_candidate_chain(parents, max_depth=5):
+    parents = np.asarray(parents, dtype=np.int32).reshape(-1)
+    if parents.size == 0:
+        return [0]
+
+    root_candidates = np.flatnonzero(parents < 0)
+    if root_candidates.size == 0:
+        return [0]
+
+    current = int(root_candidates[0])
+    chain = [current]
+    for _depth in range(max(int(max_depth), 0)):
+        children = np.flatnonzero(parents == current)
+        if children.size != 1:
+            break
+        current = int(children[0])
+        chain.append(current)
+
+    return chain
+
+
+def _find_translation_root(anim, max_depth=5):
+    """Return the first near-root joint with significant local position animation.
 
     Most skeletons carry root motion on joint 0, but some Truebones rigs
     (Horse, Bear, Camel, Trex, etc.) use intermediate bones like Bip01 or
-    jt_Cog_C.  Detecting this allows the rest of the pipeline to centre,
+    jt_Cog_C. Detecting this allows the rest of the pipeline to centre,
     strip trajectory, and export BVH correctly.
 
-    Returns 0 when no joint carries significant local position animation.
+    Detection is intentionally limited to the unbranched chain directly below
+    the hierarchy root. Once the chain branches, deeper descendants are treated
+    as limb / local motion rather than transport candidates. Search also stops
+    after ``max_depth`` descendants to avoid latching onto deep noisy joints.
+
+    Returns the hierarchy root (normally joint 0) when no candidate carries
+    significant local position animation.
     """
     frame_count = int(anim.positions.shape[0]) if anim.positions.ndim >= 3 else 0
     min_active_frames = max(3, int(np.ceil(frame_count * 0.2))) if frame_count > 0 else 0
-    fallback_joint = 0
+    candidate_chain = _translation_root_candidate_chain(anim.parents, max_depth=max_depth)
+    fallback_joint = int(candidate_chain[0]) if candidate_chain else 0
 
-    for j in range(anim.positions.shape[1]):
+    for j in candidate_chain:
         joint_positions = np.asarray(anim.positions[:, j], dtype=np.float64)
         ptp = np.ptp(joint_positions, axis=0)
         if not np.any(ptp > 5e-3):
             continue
 
-        if fallback_joint == 0 and j != 0:
-            fallback_joint = j
-
         delta_from_first = np.linalg.norm(joint_positions - joint_positions[0:1], axis=-1)
         active_frames = int(np.count_nonzero(delta_from_first > 5e-3))
+
         if active_frames >= min_active_frames:
             return j
+
+        # Only consider as fallback if there are genuinely active frames,
+        # not just a single-frame PTP spike from numerical noise.
+        if fallback_joint == candidate_chain[0] and j != candidate_chain[0] and active_frames >= 2:
+            fallback_joint = j
 
     return int(fallback_joint)
 

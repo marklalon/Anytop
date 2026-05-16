@@ -15,6 +15,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import load_motion_met
 from data_loaders.truebones.truebones_utils.motion_process import (
     FOOT_CONTACT_VEL_THRESH,
     ROOT_XZ_STRIP_THRESHOLD,
+    _find_translation_root,
     _xz_locomotion_extent,
     get_6d_rep,
     get_common_features_from_T_pose,
@@ -100,6 +101,57 @@ def test_recover_animation_uses_effective_translation_root_feature_row():
         atol=1e-5,
     )
     assert has_animated_pos is True
+
+
+def test_find_translation_root_detects_single_chain_descendant():
+    parents = np.array([-1, 0, 1], dtype=np.int64)
+    offsets = np.zeros((3, 3), dtype=np.float64)
+    rotations = Quaternions(
+        np.tile(
+            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+            (6, len(parents), 1),
+        )
+    )
+    positions = np.zeros((6, 3, 3), dtype=np.float64)
+    positions[:, 2, 0] = np.linspace(0.0, 5.0, num=6, dtype=np.float64)
+
+    anim = Animation(rotations, positions, Quaternions.id(len(parents)), offsets, parents)
+
+    assert _find_translation_root(anim) == 2
+
+
+def test_find_translation_root_ignores_descendants_after_branch():
+    parents = np.array([-1, 0, 1, 1, 3], dtype=np.int64)
+    offsets = np.zeros((5, 3), dtype=np.float64)
+    rotations = Quaternions(
+        np.tile(
+            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+            (6, len(parents), 1),
+        )
+    )
+    positions = np.zeros((6, 5, 3), dtype=np.float64)
+    positions[:, 4, 0] = np.linspace(0.0, 5.0, num=6, dtype=np.float64)
+
+    anim = Animation(rotations, positions, Quaternions.id(len(parents)), offsets, parents)
+
+    assert _find_translation_root(anim) == 0
+
+
+def test_find_translation_root_limits_search_depth_to_five_descendants():
+    parents = np.array([-1, 0, 1, 2, 3, 4, 5], dtype=np.int64)
+    offsets = np.zeros((7, 3), dtype=np.float64)
+    rotations = Quaternions(
+        np.tile(
+            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+            (6, len(parents), 1),
+        )
+    )
+    positions = np.zeros((6, 7, 3), dtype=np.float64)
+    positions[:, 6, 0] = np.linspace(0.0, 5.0, num=6, dtype=np.float64)
+
+    anim = Animation(rotations, positions, Quaternions.id(len(parents)), offsets, parents)
+
+    assert _find_translation_root(anim) == 0
 
 
 def test_xz_locomotion_extent_ignores_static_origin_offset_after_initial_root_centering():
