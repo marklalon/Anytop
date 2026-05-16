@@ -43,6 +43,7 @@ for _path in [_REPO_ROOT, _ANYTOP_ROOT]:
 
 
 from Anytop.utils.roundtrip_common import _build_skeleton, _load_fbx_skeleton_metadata
+from Anytop.motion_lib import FBX
 from Anytop.motion_lib.FBX import _fbx_to_animation
 from Anytop.utils.exporter import AnimationExporter, animation_to_exporter_inputs
 from tools.compare_motions import _compare_motions, _compute_mesh_surface_error, _detect_and_align, _load_motion, _print_summary
@@ -131,6 +132,88 @@ def _export_variants_from_fbx(fbx_path: str, work_dir: str, skip_bvh: bool = Fal
         bone_translations=bone_translations,
     )
     return outputs
+
+
+def _assert_loaded_animation_matches(
+    source_path: str,
+    converted_path: str,
+    *,
+    offset_atol_pct: float = 0.01,
+    position_atol_pct: float = 0.01,
+    rotation_dot_atol: float = 1e-4,
+    frame_time_atol: float = 1e-4,
+) -> None:
+    """Assert FBX.load returns identical data for the same animation in different formats.
+
+    Compares raw return values of FBX.load (offsets, rest rotations, pose rotations,
+    local positions) to verify that loading the same animation from FBX vs GLB
+    produces consistent results.
+
+    Does NOT compute world-space FK, because the goal is to verify that the
+    FBX.load loader itself is format-agnostic, not to verify FK correctness.
+
+    Args:
+        offset_atol_pct: max allowed offset error as a percentage of the source offset magnitude.
+        position_atol_pct: max allowed position error as a percentage of the source position magnitude.
+        rotation_dot_atol: max allowed deviation from 1.0 for quaternion dot products
+            (both rest rotations and pose rotations).
+        frame_time_atol: max allowed absolute error for frame time (seconds per frame).
+    """
+    source_anim, source_names, source_frame_time = FBX.load(source_path)
+    converted_anim, converted_names, converted_frame_time = FBX.load(converted_path)
+
+    assert source_names == converted_names
+    assert source_anim.parents.tolist() == converted_anim.parents.tolist()
+    assert source_anim.shape == converted_anim.shape
+    assert abs(float(source_frame_time) - float(converted_frame_time)) < frame_time_atol
+
+    # ── Rest offsets (relative error) ──
+    source_offsets = np.asarray(source_anim.offsets, dtype=np.float64)
+    converted_offsets = np.asarray(converted_anim.offsets, dtype=np.float64)
+    offset_diff = np.abs(source_offsets - converted_offsets)
+    offset_magnitude = np.max(np.abs(source_offsets))
+    if offset_magnitude > 0:
+        offset_pct = np.max(offset_diff) / offset_magnitude * 100.0
+    else:
+        offset_pct = 0.0 if np.max(offset_diff) == 0 else float("inf")
+    assert offset_pct <= offset_atol_pct, (
+        f"Rest offset mismatch: max_abs_diff={np.max(offset_diff):.6e}, "
+        f"source_magnitude={offset_magnitude:.6e}, "
+        f"error={offset_pct:.4f}%, atol={offset_atol_pct:.4f}%"
+    )
+
+    # ── Rest rotations (orient) ──
+    source_orients = np.asarray(source_anim.orients.qs, dtype=np.float64)
+    converted_orients = np.asarray(converted_anim.orients.qs, dtype=np.float64)
+    orient_dots = np.abs(np.sum(source_orients * converted_orients, axis=-1))
+    orient_min = np.min(orient_dots)
+    assert orient_min >= 1.0 - rotation_dot_atol, (
+        f"Rest rotation mismatch: min_quat_dot={orient_min:.10f}, atol={rotation_dot_atol:.6e}"
+    )
+
+    # ── Pose rotations (local quaternion per frame) ──
+    source_rots = np.asarray(source_anim.rotations.qs, dtype=np.float64)
+    converted_rots = np.asarray(converted_anim.rotations.qs, dtype=np.float64)
+    rot_dots = np.abs(np.sum(source_rots * converted_rots, axis=-1))
+    rot_min = np.min(rot_dots)
+    assert rot_min >= 1.0 - rotation_dot_atol, (
+        f"Pose rotation mismatch: min_quat_dot={rot_min:.10f}, atol={rotation_dot_atol:.6e}"
+    )
+
+    # ── Local positions (relative error) ──
+    source_positions = np.asarray(source_anim.positions, dtype=np.float64)
+    converted_positions = np.asarray(converted_anim.positions, dtype=np.float64)
+    pos_diff = np.abs(source_positions - converted_positions)
+    pos_magnitude = np.max(np.abs(source_positions))
+    if pos_magnitude > 0:
+        pos_pct = np.max(pos_diff) / pos_magnitude * 100.0
+    else:
+        pos_pct = 0.0 if np.max(pos_diff) == 0 else float("inf")
+    assert pos_pct <= position_atol_pct, (
+        f"Local position mismatch: max_abs_diff={np.max(pos_diff):.6e}, "
+        f"source_magnitude={pos_magnitude:.6e}, "
+        f"error={pos_pct:.4f}%, atol={position_atol_pct:.4f}%"
+    )
 
 
 def _compare_export_to_fbx(
@@ -245,13 +328,18 @@ def _compare_export_to_fbx(
     }
 
 
+def test_fbx_load_matches_skinned_glb_local_channels(tmp_path) -> None:
+    outputs = _export_variants_from_fbx(_DEFAULT_FBX, str(tmp_path), skip_bvh=True)
+    _assert_loaded_animation_matches(_DEFAULT_FBX, outputs["SkinnedGLB"])
+
+
 def _run_test_exporter_compare_motions(
     fbx_path: str | None = None,
     output_dir: str | None = None,
-    pos_tolerance_pct_char: float = 1.5,
-    rot_tolerance_deg: float = 1.0,
-    mesh_mean_tolerance_pct_char: float = 3.5,
-    mesh_p99_tolerance_pct_char: float = 12.0,
+    pos_tolerance_pct_char: float = 0.1,
+    rot_tolerance_deg: float = 0.1,
+    mesh_mean_tolerance_pct_char: float = 0.1,
+    mesh_p99_tolerance_pct_char: float = 1.0,
     skip_bvh: bool = True,
 ) -> dict[str, Any]:
     if fbx_path is None:
@@ -355,25 +443,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pos-tolerance",
         type=float,
-        default=1.5,
+        default=0.1,
         help="Max allowed position error as percent of character size.",
     )
     parser.add_argument(
         "--rot-tolerance",
         type=float,
-        default=1.0,
+        default=0.1,
         help="Max allowed rotation error in degrees.",
     )
     parser.add_argument(
         "--mesh-mean-tolerance",
         type=float,
-        default=3.5,
+        default=0.1,
         help="Max allowed mesh mean nearest-surface error as percent of character size.",
     )
     parser.add_argument(
         "--mesh-p99-tolerance",
         type=float,
-        default=12.0,
+        default=1.0,
         help="Max allowed mesh p99 nearest-surface error as percent of character size.",
     )
     parser.add_argument(

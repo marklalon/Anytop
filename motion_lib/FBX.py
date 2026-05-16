@@ -1,8 +1,8 @@
 """
-FBX.load — drop-in replacement for BVH.load that sources animation from an FBX file
-loaded through Blender (bpy).  The public interface is intentionally identical to
-BVH.load so that all downstream call sites in motion_process.py can swap the two
-with a one-line change.
+FBX.load — drop-in replacement for BVH.load that sources animation from an FBX
+or GLB/GLTF file loaded through Blender (bpy).  The public interface is
+intentionally identical to BVH.load so that all downstream call sites in
+motion_process.py can swap the two with a one-line change.
 
 Note: loading requires a live Blender (bpy) session.  Because bpy is single-threaded
 and stateful (clear_scene affects the whole process), callers must NOT invoke
@@ -179,6 +179,13 @@ def import_fbx(filepath: str) -> None:
     )
 
 
+def import_gltf(filepath: str) -> None:
+    """Import a GLB/GLTF file into the current Blender scene."""
+    import bpy
+
+    bpy.ops.import_scene.gltf(filepath=filepath)
+
+
 def clear_scene() -> None:
     """Reset Blender to a fresh empty scene."""
     import bpy
@@ -195,21 +202,36 @@ def remove_lights_and_cameras() -> None:
             bpy.data.objects.remove(obj, do_unlink=True)
 
 
-# ── FBX loading helpers ──────────────────────────────────────────────────────
+# ── FBX/GLB loading helpers ──────────────────────────────────────────────────
 
-def _load_fbx_scene(fbx_path: str):
-    """Import an FBX file into a fresh Blender scene and return the armature."""
+def _load_scene(filepath: str):
+    """Import an FBX/GLB/GLTF file into a fresh Blender scene and return the armature."""
     import bpy
+
+    path = str(filepath)
+    suffix = Path(path).suffix.lower()
 
     clear_scene()
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        import_fbx(fbx_path)
+        if suffix == ".fbx":
+            import_fbx(path)
+        elif suffix in {".glb", ".gltf"}:
+            import_gltf(path)
+        else:
+            raise ValueError(
+                f"Unsupported animation format: {suffix} (supported: .fbx, .glb, .gltf)"
+            )
     remove_lights_and_cameras()
 
     armature = next((obj for obj in bpy.data.objects if obj.type == "ARMATURE"), None)
     if armature is None:
-        raise RuntimeError(f"No armature found in {fbx_path}")
+        raise RuntimeError(f"No armature found in {path}")
     return armature
+
+
+def _load_fbx_scene(fbx_path: str):
+    """Import an FBX file into a fresh Blender scene and return the armature."""
+    return _load_scene(fbx_path)
 
 def _extract_armature_skeleton_data(
     armature,
@@ -326,10 +348,10 @@ def _set_scene_time(scene, sample_time: float) -> None:
     scene.frame_set(frame, subframe=subframe)
 
 
-# ── FBX → Animation ─────────────────────────────────────────────────────────
+# ── FBX/GLB → Animation ─────────────────────────────────────────────────────
 
-def _fbx_to_animation(fbx_path: str, collapse_root: bool = True) -> tuple[Any, list[str], float]:
-    """Load FBX via Blender and return (Animation, joint_names, fps).
+def _scene_to_animation(scene_path: str, collapse_root: bool = True) -> tuple[Any, list[str], float]:
+    """Load FBX/GLB/GLTF via Blender and return (Animation, joint_names, fps).
 
     Parameters
     ----------
@@ -342,7 +364,7 @@ def _fbx_to_animation(fbx_path: str, collapse_root: bool = True) -> tuple[Any, l
     from motion_lib.Animation import Animation as ATopAnim
     from motion_lib.Quaternions import Quaternions
 
-    armature = _load_fbx_scene(fbx_path)
+    armature = _load_scene(scene_path)
     bone_names, parents, offsets, _rest_rotations = _extract_armature_skeleton_data(armature)
 
     joint_count = len(bone_names)
@@ -406,22 +428,27 @@ def _fbx_to_animation(fbx_path: str, collapse_root: bool = True) -> tuple[Any, l
             rot_qs,
             pos_np,
             orients,
-            warn_path=fbx_path,
+            warn_path=scene_path,
         )
 
     anim = ATopAnim(Quaternions(rot_qs), pos_np, orients, offsets, parents)
     return anim, bone_names, fps
 
 
+def _fbx_to_animation(fbx_path: str, collapse_root: bool = True) -> tuple[Any, list[str], float]:
+    """Load FBX via Blender and return (Animation, joint_names, fps)."""
+    return _scene_to_animation(fbx_path, collapse_root=collapse_root)
+
+
 # ── Public API ───────────────────────────────────────────────────────────────
 
 def load(filepath, start=None, end=None, order=None, world=True, collapse_root=True):
-    """Load an FBX file and return (Animation, joint_names, frametime).
+    """Load an FBX/GLB/GLTF file and return (Animation, joint_names, frametime).
 
     Parameters
     ----------
     filepath : str | Path
-        Path to the FBX file.
+        Path to the FBX/GLB/GLTF file.
     start : int, optional
         First frame index to include (0-based).  ``None`` means beginning.
     end : int, optional
@@ -442,11 +469,11 @@ def load(filepath, start=None, end=None, order=None, world=True, collapse_root=T
         orientations (.orients), rest offsets (.offsets), and parent
         indices (.parents) — same structure as BVH.load output.
     joint_names : list[str]
-        Depth-first pre-order joint names extracted from the FBX armature.
+        Depth-first pre-order joint names extracted from the imported armature.
     frametime : float
         Seconds per frame (1 / fps).
     """
-    anim, names, fps = _fbx_to_animation(str(filepath), collapse_root=collapse_root)
+    anim, names, fps = _scene_to_animation(str(filepath), collapse_root=collapse_root)
 
     frametime = 1.0 / fps if fps > 0 else (1.0 / 30.0)
 
