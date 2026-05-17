@@ -503,13 +503,6 @@ def _get_facing_candidates_with_diagnostics(
         candidates['across'] = across_forward
         near_y_candidates['across'] = False
 
-    if not candidates and emit_warnings:
-        _emit_degenerate_facing_warning(
-            object_type,
-            'no_candidates',
-            f"{object_type}: orientation calculation produced no valid facing candidates; falling back to +Z.",
-        )
-
     return candidates, near_y_candidates
 
 
@@ -615,9 +608,17 @@ def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints
         if hip_pair is not None:
             return [hip_pair[0], hip_pair[1], hip_pair[0], hip_pair[1]]
 
-    raise ValueError(
-        f"Could not resolve face joints for '{object_type}'. Provide --face-joints-names explicitly or add naming rules."
+    # Asymmetric or incomplete skeletons (e.g., legs-only procedural test
+    # rigs) have no left-right pairs at all.  Fall back to an empty list so
+    # that _get_facing_candidates skips across/torso_head heuristics and
+    # calculate_root_quat uses the default +Z forward direction.
+    _emit_degenerate_facing_warning(
+        object_type,
+        'no_pairs',
+        f"{object_type}: no left-right joint pairs found; using default +Z orientation. "
+        "Provide --face-joints-names explicitly if a different orientation is needed.",
     )
+    return []
 
 
 def calculate_root_quat(joints, object_type, face_joint_indx=None, forward_joint_index=None, forward_base_joint_index=None, emit_warnings=True):
