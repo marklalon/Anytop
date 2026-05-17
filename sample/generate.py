@@ -445,8 +445,8 @@ def main(args=None, cond_dict=None):
                 ref_raw = ref_raw[:effective_n_frames]
 
             # Normalize using the same object_type's stats (same-skeleton only)
-            obj_mean = cond_dict[object_type]['mean']
-            obj_std = np.asarray(cond_dict[object_type]['std'], dtype=np.float32) + 1e-6
+            obj_mean = cond_dict[object_type]['norm_mean']
+            obj_std = np.asarray(cond_dict[object_type]['norm_std'], dtype=np.float32) + 1e-6
 
             # Normalize using same stats as training data
             ref_norm = np.nan_to_num((ref_raw - obj_mean[None, :]) / obj_std[None, :], copy=True).astype(np.float32)
@@ -525,9 +525,9 @@ def main(args=None, cond_dict=None):
             n_joints = model_kwargs['y']['n_joints'][sample_idx].item()
             motion = motion[:n_joints]
             parents = model_kwargs['y']['parents'][sample_idx]
-            mean = cond_dict[object_type]['mean'][None, :]
-            std = cond_dict[object_type]['std'][None, :]
-            motion_np = motion.cpu().permute(2, 0, 1).numpy() * std + mean
+            norm_mean = cond_dict[object_type]['norm_mean'][None, :]
+            norm_std = cond_dict[object_type]['norm_std'][None, :]
+            motion_np = motion.cpu().permute(2, 0, 1).numpy() * norm_std + norm_mean
             offsets = cond_dict[object_type]['offsets']
 
             npy_name = f'{object_type}_#{base_index + sample_idx}.npy'
@@ -571,11 +571,9 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joi
         batch = list()
         parents = cond_dict[object_type]['parents']
         n_joints = len(parents)
-        mean = cond_dict[object_type]['mean']
-        std = cond_dict[object_type]['std']
-        tpos_first_frame = cond_dict[object_type]['tpos_first_frame']
-        tpos_first_frame = (tpos_first_frame - mean) / (std + 1e-6)
-        tpos_first_frame = np.nan_to_num(tpos_first_frame)
+        norm_mean = cond_dict[object_type]['norm_mean']
+        norm_std = cond_dict[object_type]['norm_std']
+        tpos_first_frame = np.asarray(cond_dict[object_type]['tpos_first_frame'], dtype=np.float32)
         joint_relations = cond_dict[object_type]['joint_relations']
         joints_graph_dist = cond_dict[object_type]['joints_graph_dist']
         offsets = cond_dict[object_type]['offsets']
@@ -591,8 +589,8 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joi
         batch.append(object_type)
         batch.append(joints_names_embs)
         batch.append(0)
-        batch.append(mean)
-        batch.append(std)
+        batch.append(norm_mean)
+        batch.append(norm_std)
         batch.append(max_joints)
         batch.append(object_type)
         batches.append(batch)

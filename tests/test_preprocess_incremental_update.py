@@ -1,3 +1,4 @@
+import argparse
 import importlib.util
 import json
 import os
@@ -155,7 +156,7 @@ def test_process_skeleton_retarget_branch_writes_translation_root_metadata(monke
 
     captured: dict[str, object] = {}
 
-    def fake_write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, max_joints, files_counter, frames_counter, squared_positions_error):
+    def fake_write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, max_joints, files_counter, frames_counter, squared_positions_error, structural_prior_bank=None):
         captured['save_dir'] = save_dir
         captured['cond'] = cond
         captured['motion_metadata'] = motion_metadata
@@ -184,6 +185,7 @@ def test_process_skeleton_retarget_branch_writes_translation_root_metadata(monke
                 ],
                 dtype=np.float32,
             ),
+            'tpos_first_frame': np.zeros((3, 13), dtype=np.float32),
         },
     )
 
@@ -192,3 +194,248 @@ def test_process_skeleton_retarget_branch_writes_translation_root_metadata(monke
     assert motion_metadata['Dragon_RunLoop_001.npy']['motion_name'] == 'Dragon_RunLoop_001.npy'
     assert motion_metadata['Dragon_RunLoop_001.npy']['object_type'] == 'Dragon'
     assert motion_metadata['Dragon_RunLoop_001.npy']['translation_root_index'] == 2
+
+
+# ---------------------------------------------------------------------------
+# structural_norm_priors.npy rebuild from on-disk data
+# ---------------------------------------------------------------------------
+
+_MODULE_PREPROCESS_PATH = Path(__file__).resolve().parents[1] / "preprocess_and_validate.py"
+_SPEC_PREPROCESS = importlib.util.spec_from_file_location("preprocess_and_validate_module", _MODULE_PREPROCESS_PATH)
+assert _SPEC_PREPROCESS is not None and _SPEC_PREPROCESS.loader is not None
+preprocess_module = importlib.util.module_from_spec(_SPEC_PREPROCESS)
+_SPEC_PREPROCESS.loader.exec_module(preprocess_module)
+PRIORS_FILE = preprocess_module.STRUCTURAL_NORM_PRIORS_FILE
+
+
+def _dummy_subprocess_run(*args, **kwargs):
+    """Fake subprocess.run that does nothing but succeed."""
+    import subprocess
+    return subprocess.CompletedProcess(args=[], returncode=0)
+
+
+def test_rebuild_structural_prior_bank_normal(monkeypatch, tmp_path):
+    """_rebuild_structural_prior_bank loads all motions from disk, builds the
+    prior bank from scratch, saves it, and re-applies to all cond objects."""
+    dataset_dir = tmp_path / "dataset"
+    motions_dir = dataset_dir / "motions"
+    motions_dir.mkdir(parents=True)
+
+    # Write cond.npy with two objects.
+    cond = {
+        'Cat': {
+            'joints_names': ['Root', 'Tail'],
+            'parents': np.array([-1, 0], dtype=np.int64),
+            'offsets': np.zeros((2, 3), dtype=np.float32),
+            'tpos_first_frame': np.zeros((2, 13), dtype=np.float32),
+        },
+        'Dog': {
+            'joints_names': ['Root', 'Spine', 'Head'],
+            'parents': np.array([-1, 0, 1], dtype=np.int64),
+            'offsets': np.zeros((3, 3), dtype=np.float32),
+            'tpos_first_frame': np.zeros((3, 13), dtype=np.float32),
+        },
+    }
+    np.save(str(dataset_dir / "cond.npy"), cond)
+
+    # Write some motion .npy files.
+    np.save(str(motions_dir / "Cat_Run_001.npy"), np.zeros((3, 2, 13), dtype=np.float32))
+    np.save(str(motions_dir / "Cat_Jump_002.npy"), np.zeros((5, 2, 13), dtype=np.float32))
+    np.save(str(motions_dir / "Dog_Walk_003.npy"), np.zeros((4, 3, 13), dtype=np.float32))
+
+    # Monkeypatch _build_structural_prior_bank to capture inputs.
+    captured_payloads: list[dict] = []
+
+    def fake_build(payloads):
+        captured_payloads.extend(payloads)
+        # Return a realistic-looking bank.
+        return {
+            'schema_version': 3, 'feature_len': 13,
+            'global_scales': {'pos': 0.5, 'rot': 0.3, 'vel': 0.2},
+            'by_role': {}, 'by_semantic_group': {}, 'by_canonical_name': {},
+            'variance_calibration': {'pos': 1.0, 'rot': 1.0, 'vel': 1.0},
+            'metadata': {'object_count': 2, 'joint_examples': 5},
+        }
+
+    monkeypatch.setattr(dataset_pipeline_mod, '_build_structural_prior_bank', fake_build)
+
+    # Monkeypatch _apply_structural_stats_to_object_cond to set a marker.
+    def fake_apply(object_cond, prior_bank):
+        object_cond['norm_mean'] = np.zeros_like(
+            np.asarray(object_cond['tpos_first_frame'], dtype=np.float32))
+        object_cond['norm_std'] = np.ones_like(object_cond['norm_mean'])
+        object_cond['norm_schema_version'] = 3
+        object_cond['norm_mean_source'] = 'tpose_anchor_v1'
+
+    monkeypatch.setattr(dataset_pipeline_mod, '_apply_structural_stats_to_object_cond', fake_apply)
+
+    preprocess_module._rebuild_structural_prior_bank(str(dataset_dir))
+
+    # Verify payloads: 2 payloads (Cat, Dog).
+    assert len(captured_payloads) == 2
+    payload_types = sorted(p['object_cond']['joints_names'][0]
+                           for p in captured_payloads)
+    # 2 Cat motions, 1 Dog motion.
+    cat_payload = next(p for p in captured_payloads
+                       if len(p['object_cond']['joints_names']) == 2)
+    dog_payload = next(p for p in captured_payloads
+                       if len(p['object_cond']['joints_names']) == 3)
+    assert len(cat_payload['results']) == 2  # Cat_Run + Cat_Jump
+    assert len(dog_payload['results']) == 1  # Dog_Walk
+
+    # Verify prior bank was saved.
+    prior_bank_path = dataset_dir / PRIORS_FILE
+    assert prior_bank_path.exists()
+    bank = dict(np.load(str(prior_bank_path), allow_pickle=True).item())
+    assert bank['metadata']['object_count'] == 2
+
+    # Verify cond.npy was updated with structural stats for both objects.
+    updated = dict(np.load(str(dataset_dir / "cond.npy"), allow_pickle=True).item())
+    assert updated['Cat']['norm_mean_source'] == 'tpose_anchor_v1'
+    assert updated['Cat']['norm_schema_version'] == 3
+    assert updated['Dog']['norm_mean_source'] == 'tpose_anchor_v1'
+    assert updated['Dog']['norm_schema_version'] == 3
+
+
+def test_rebuild_structural_prior_bank_rejects_unknown_object_type(tmp_path):
+    """_rebuild_structural_prior_bank must skip motion files whose object_type
+    is not in cond.npy (e.g. stale files from a previous object type)."""
+    dataset_dir = tmp_path / "dataset"
+    motions_dir = dataset_dir / "motions"
+    motions_dir.mkdir(parents=True)
+
+    cond = {
+        'Cat': {
+            'joints_names': ['Root'],
+            'parents': np.array([-1], dtype=np.int64),
+            'offsets': np.zeros((1, 3), dtype=np.float32),
+            'tpos_first_frame': np.zeros((1, 13), dtype=np.float32),
+        },
+    }
+    np.save(str(dataset_dir / "cond.npy"), cond)
+    # A known motion and an unidentifiable one.
+    np.save(str(motions_dir / "Cat_Run_001.npy"), np.zeros((2, 1, 13), dtype=np.float32))
+    np.save(str(motions_dir / "random_garbage.npy"), np.zeros((2, 1, 13), dtype=np.float32))
+
+    captured: list[dict] = []
+
+    def fake_build(payloads):
+        captured.extend(payloads)
+        return {
+            'schema_version': 3, 'feature_len': 13,
+            'global_scales': {'pos': 0.5, 'rot': 0.3, 'vel': 0.2},
+            'by_role': {}, 'by_semantic_group': {}, 'by_canonical_name': {},
+            'variance_calibration': {'pos': 1.0, 'rot': 1.0, 'vel': 1.0},
+            'metadata': {'object_count': 1, 'joint_examples': 1},
+        }
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(dataset_pipeline_mod, '_build_structural_prior_bank', fake_build)
+
+    preprocess_module._rebuild_structural_prior_bank(str(dataset_dir))
+
+    assert len(captured) == 1  # Only Cat payload
+    monkeypatch.undo()
+
+
+def test_rebuild_structural_prior_bank_skips_objects_missing_tpose(monkeypatch, tmp_path):
+    """Objects without tpos_first_frame must be skipped during payload build
+    instead of crashing the whole rebuild."""
+    dataset_dir = tmp_path / "dataset"
+    motions_dir = dataset_dir / "motions"
+    motions_dir.mkdir(parents=True)
+
+    cond = {
+        'Cat': {
+            'joints_names': ['Root'],
+            'parents': np.array([-1], dtype=np.int64),
+            'offsets': np.zeros((1, 3), dtype=np.float32),
+            'tpos_first_frame': np.zeros((1, 13), dtype=np.float32),
+        },
+        'Dog': {
+            'joints_names': ['Root'],
+            'parents': np.array([-1], dtype=np.int64),
+            'offsets': np.zeros((1, 3), dtype=np.float32),
+        },
+    }
+    np.save(str(dataset_dir / "cond.npy"), cond)
+    np.save(str(motions_dir / "Cat_Run_001.npy"), np.zeros((2, 1, 13), dtype=np.float32))
+    np.save(str(motions_dir / "Dog_Run_001.npy"), np.zeros((2, 1, 13), dtype=np.float32))
+
+    captured_payloads: list[dict] = []
+
+    def fake_build(payloads):
+        captured_payloads.extend(payloads)
+        return {
+            'schema_version': 3, 'feature_len': 13,
+            'global_scales': {'pos': 0.5, 'rot': 0.3, 'vel': 0.2},
+            'by_role': {}, 'by_semantic_group': {}, 'by_canonical_name': {},
+            'variance_calibration': {'pos': 1.0, 'rot': 1.0, 'vel': 1.0},
+            'metadata': {'object_count': 1, 'joint_examples': 1},
+        }
+
+    def fake_apply(object_cond, prior_bank):
+        object_cond['norm_mean'] = np.zeros_like(
+            np.asarray(object_cond['tpos_first_frame'], dtype=np.float32)
+        )
+        object_cond['norm_std'] = np.ones_like(object_cond['norm_mean'])
+
+    monkeypatch.setattr(dataset_pipeline_mod, '_build_structural_prior_bank', fake_build)
+    monkeypatch.setattr(dataset_pipeline_mod, '_apply_structural_stats_to_object_cond', fake_apply)
+
+    preprocess_module._rebuild_structural_prior_bank(str(dataset_dir))
+
+    assert len(captured_payloads) == 1
+    assert captured_payloads[0]['object_cond']['joints_names'] == ['Root']
+
+    updated = dict(np.load(str(dataset_dir / "cond.npy"), allow_pickle=True).item())
+    assert 'norm_mean' in updated['Cat']
+    assert 'norm_mean' not in updated['Dog']
+
+
+def test_rebuild_structural_prior_bank_skips_when_no_motions(tmp_path):
+    """_rebuild_structural_prior_bank must silently skip if motions/
+    does not exist or is empty."""
+    dataset_dir = tmp_path / "dataset_not_exists"
+    preprocess_module._rebuild_structural_prior_bank(str(dataset_dir))
+    # No exception.
+
+    dataset_dir2 = tmp_path / "dataset"
+    dataset_dir2.mkdir()
+    np.save(str(dataset_dir2 / "cond.npy"), {'Fake': {}})
+    # No motions/ dir → skip.
+    preprocess_module._rebuild_structural_prior_bank(str(dataset_dir2))
+    # No exception.
+
+
+def test_main_returns_sidecar_failure_code(monkeypatch, tmp_path):
+    """Preprocess workflow must stop when sidecar regeneration fails."""
+    monkeypatch.setattr(
+        preprocess_module,
+        'parse_args',
+        lambda: argparse.Namespace(
+            sample_count=0,
+            orientation_threshold_deg=15.0,
+            re_encode_joint_names_only=False,
+            validate_only=False,
+            objects_subset='all',
+            object_workers=1,
+            raw_data_dir='',
+            dataset_dir=str(tmp_path),
+            skip_validate=False,
+            skip_orientation_check=False,
+        ),
+    )
+    monkeypatch.setattr(preprocess_module, 'check_and_clean_old_data', lambda *args, **kwargs: (True, preprocess_module.PreservedSideArtifacts()))
+    monkeypatch.setattr(preprocess_module, 'run_preprocessing', lambda *args, **kwargs: 0)
+    monkeypatch.setattr(preprocess_module, 'get_dataset_dir', lambda raw_value=None: str(tmp_path))
+    monkeypatch.setattr(preprocess_module, '_merge_preserved_side_artifacts', lambda *args, **kwargs: None)
+    monkeypatch.setattr(preprocess_module, '_rebuild_structural_prior_bank', lambda *args, **kwargs: None)
+    monkeypatch.setattr(preprocess_module, 'run_re_encode_joint_names_only', lambda *args, **kwargs: 7)
+
+    def unexpected_validation(*args, **kwargs):
+        raise AssertionError('validation should not run after sidecar failure')
+
+    monkeypatch.setattr(preprocess_module, 'run_validation', unexpected_validation)
+
+    assert preprocess_module.main() == 7

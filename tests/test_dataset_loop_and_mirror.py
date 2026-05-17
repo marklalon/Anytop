@@ -125,7 +125,7 @@ def test_loop_padding_updates_effective_length() -> None:
     data = motion_dataset.data_dict[LOOP_MOTION]
     cond = motion_dataset.cond_dict[data["object_type"]]
     raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
-    raw_norm = np.nan_to_num((raw - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
+    raw_norm = np.nan_to_num((raw - cond["norm_mean"][None, :]) / cond["norm_std_safe"][None, :]).astype(np.float32, copy=False)
     raw_len = raw_norm.shape[0]
     assert raw_len < NUM_FRAMES, "loop regression sample no longer needs padding"
 
@@ -150,7 +150,7 @@ def test_loop_padding_random_offset_wraps_without_truncation() -> None:
     data = motion_dataset.data_dict[LOOP_MOTION]
     cond = motion_dataset.cond_dict[data["object_type"]]
     raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
-    raw_norm = np.nan_to_num((raw - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
+    raw_norm = np.nan_to_num((raw - cond["norm_mean"][None, :]) / cond["norm_std_safe"][None, :]).astype(np.float32, copy=False)
     raw_len = raw_norm.shape[0]
     offset = raw_len - 4
 
@@ -193,7 +193,7 @@ def test_explicit_window_start_respects_requested_crop() -> None:
     data = motion_dataset.data_dict[long_motion_name]
     cond = motion_dataset.cond_dict[data["object_type"]]
     raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
-    raw_norm = np.nan_to_num((raw - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
+    raw_norm = np.nan_to_num((raw - cond["norm_mean"][None, :]) / cond["norm_std_safe"][None, :]).astype(np.float32, copy=False)
     expected = raw_norm[window_start:window_start + NUM_FRAMES]
 
     assert name == long_motion_name, f"unexpected cropped sample: {name}"
@@ -262,11 +262,12 @@ def test_mirror_augmentation_runs_before_normalization() -> None:
 
     manual = raw[:, perm, :].copy()
     manual[:, :, [0, 4, 5, 6, 9]] *= -1
-    manual = np.nan_to_num((manual - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
+    manual = np.nan_to_num((manual - cond["norm_mean"][None, :]) / cond["norm_std_safe"][None, :]).astype(np.float32, copy=False)
 
+    # augment() now returns the raw (un-normalized) mirrored t-pose; norm_mean is
+    # itself the t-pose anchor, so the conditioning t-pose is fed to the model raw.
     manual_tpose = np.asarray(cond["tpos_first_frame"], dtype=np.float32)[perm].copy()
     manual_tpose[:, [0, 4, 5, 6, 9]] *= -1
-    manual_tpose = np.nan_to_num((manual_tpose - cond["mean"]) / cond["std_safe"]).astype(np.float32, copy=False)
 
     manual_offsets = np.asarray(cond["offsets"], dtype=np.float32)[perm].copy()
     manual_offsets[:, 0] *= -1
@@ -353,8 +354,8 @@ def test_mirror_safeguards_handle_single_frame_tpose() -> None:
     assert motion.ndim == 3, f"expected mirrored motion to keep frame axis, got {motion.shape}"
     assert tpos_first_frame.ndim == 2, f"expected mirrored t-pose to remain (J, C), got {tpos_first_frame.shape}"
     assert m_length == motion.shape[0], f"expected mirrored motion length to match frame axis, got {m_length} vs {motion.shape[0]}"
-    assert tpos_first_frame.shape == np.asarray(cond["mean"]).shape, (
-        f"expected mirrored t-pose shape {np.asarray(cond['mean']).shape}, got {tpos_first_frame.shape}"
+    assert tpos_first_frame.shape == np.asarray(cond["norm_mean"]).shape, (
+        f"expected mirrored t-pose shape {np.asarray(cond['norm_mean']).shape}, got {tpos_first_frame.shape}"
     )
     assert np.asarray(offsets).shape == np.asarray(cond["offsets"]).shape, (
         f"expected mirrored offsets shape {np.asarray(cond['offsets']).shape}, got {np.asarray(offsets).shape}"

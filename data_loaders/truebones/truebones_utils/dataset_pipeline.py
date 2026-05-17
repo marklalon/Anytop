@@ -44,6 +44,47 @@ from .features import (
 )
 
 
+# Schema v2 (Tier 1): each prior-bank leaf additionally carries a unitless,
+# mean-normalized per-channel anisotropy *profile* alongside the v1 scalar
+# *magnitude*. Reconstructed per-channel std = magnitude * profile, so a leaf
+# whose profile is all-ones reproduces v1 isotropic behavior exactly.
+#
+# Schema v3 (variance calibration / optimization "a"): the borrowed structural
+# magnitudes systematically under/over-estimate true motion scale, so the
+# normalized training data was NOT ~unit-variance and the diffusion cosine
+# schedule's SNR assumption was violated (inflated, ill-conditioned loss). The
+# bank now stores a per-feature-group multiplicative factor measured ONCE on
+# the training set so that (motion - norm_mean) / norm_std has unit RMS. The
+# factor is baked into the shared bank and applied uniformly to every skeleton
+# (training and motion-free new ones alike), so the scheme stays
+# motion-prior-free. Identity calibration {1,1,1} reproduces v2 exactly.
+STRUCTURAL_NORM_SCHEMA_VERSION = 3
+STRUCTURAL_NORM_PRIORS_FILE = "structural_norm_priors.npy"
+_MIN_STRUCTURAL_SCALE = 1e-3
+_STRUCTURAL_CONTACT_SCALE = 1.0
+# Calibration is a std multiplier; clamp generously to bound pathological
+# training-set RMS measurements without distorting the typical ~1-20x range.
+_MIN_VARIANCE_CALIBRATION = 1e-2
+_MAX_VARIANCE_CALIBRATION = 1e3
+# Anisotropy ratios are clamped before mean-normalization so a near-static axis
+# cannot collapse a channel's std toward zero (which would explode the
+# normalized residual) or dominate the group.
+_MIN_PROFILE_RATIO = 0.2
+_MAX_PROFILE_RATIO = 5.0
+# (key, start, stop) for the contiguous motion-feature groups that get an
+# anisotropy profile. Contact (channel 12) stays a single scalar.
+_PROFILE_GROUPS = (('pos', 0, 3), ('rot', 3, 9), ('vel', 9, 12))
+_GROUP_WIDTHS = {'pos': 3, 'rot': 6, 'vel': 3}
+_SEMANTIC_GROUP_KEYWORDS = (
+    ('axial', ('pelvis', 'hip', 'spine', 'chest', 'torso', 'neck', 'head')),
+    ('arm', ('shoulder', 'arm', 'forearm', 'elbow', 'hand', 'wrist', 'finger', 'thumb')),
+    ('leg', ('thigh', 'leg', 'calf', 'shin', 'knee', 'foot', 'toe', 'ankle', 'hoof')),
+    ('tail', ('tail', 'tip')),
+    ('wing', ('wing', 'feather')),
+    ('face', ('jaw', 'mouth', 'eye', 'ear', 'nose', 'snout', 'horn', 'brow')),
+)
+
+
 ################## Statistics & Topology #####################
 
 """ computes mean and std for a list of motions """
@@ -63,6 +104,477 @@ def get_mean_std(data):
         Std[:, 12][Std[:, 12]==0] = 1.0 # replace zeros with ones
         
         return Mean, Std
+
+
+def _sanitize_profile(profile, width):
+    """Coerce a raw per-channel ratio vector into a clean, unitless anisotropy
+    profile: non-finite/non-positive entries -> 1, clamped to
+    [_MIN_PROFILE_RATIO, _MAX_PROFILE_RATIO], then rescaled so the mean is
+    exactly 1.0 (magnitude is carried by the scalar, shape by the profile).
+    Returns a plain ``list[float]`` so the bank stays pickle/.item() clean.
+    A length mismatch or empty input degrades to an isotropic ones-profile."""
+    ones = [1.0] * int(width)
+    if profile is None:
+        return ones
+    arr = np.asarray(profile, dtype=np.float64).reshape(-1)
+    if arr.size != int(width):
+        return ones
+    arr = np.where(np.isfinite(arr) & (arr > 0.0), arr, 1.0)
+    arr = np.clip(arr, _MIN_PROFILE_RATIO, _MAX_PROFILE_RATIO)
+    mean = float(np.mean(arr))
+    if not np.isfinite(mean) or mean <= 0.0:
+        return ones
+    return [float(v) for v in (arr / mean)]
+
+
+def _structural_scale_dict(pos=1.0, rot=1.0, vel=1.0, contact=_STRUCTURAL_CONTACT_SCALE,
+                           pos_profile=None, rot_profile=None, vel_profile=None):
+    return {
+        'pos': float(max(pos, _MIN_STRUCTURAL_SCALE)),
+        'rot': float(max(rot, _MIN_STRUCTURAL_SCALE)),
+        'vel': float(max(vel, _MIN_STRUCTURAL_SCALE)),
+        'contact': float(max(contact, _MIN_STRUCTURAL_SCALE)),
+        'pos_profile': _sanitize_profile(pos_profile, _GROUP_WIDTHS['pos']),
+        'rot_profile': _sanitize_profile(rot_profile, _GROUP_WIDTHS['rot']),
+        'vel_profile': _sanitize_profile(vel_profile, _GROUP_WIDTHS['vel']),
+    }
+
+
+def _identity_variance_calibration():
+    return {'pos': 1.0, 'rot': 1.0, 'vel': 1.0}
+
+
+def _default_structural_prior_bank():
+    default_scales = _structural_scale_dict()
+    return {
+        'schema_version': STRUCTURAL_NORM_SCHEMA_VERSION,
+        'feature_len': 13,
+        'global_scales': dict(default_scales),
+        'by_canonical_name': {},
+        'by_semantic_group': {},
+        'by_role': {
+            'root': dict(default_scales),
+            'nonroot': dict(default_scales),
+        },
+        # Identity until measured on a real training set -> default / single
+        # object / no-data paths behave exactly like uncalibrated v2.
+        'variance_calibration': _identity_variance_calibration(),
+        'metadata': {
+            'default_bank': True,
+            'object_count': 0,
+            'joint_examples': 0,
+        },
+    }
+
+
+def _load_structural_prior_bank(priors_path=None):
+    if priors_path is None:
+        return _default_structural_prior_bank()
+    if not os.path.isfile(priors_path):
+        raise FileNotFoundError(
+            f"Structural prior bank not found at {priors_path}. A new skeleton with no "
+            f"motion priors requires the shared structural_norm_priors.npy that is written "
+            f"next to the training dataset's cond.npy. Re-run dataset preprocessing on the "
+            f"training set first so it emits {STRUCTURAL_NORM_PRIORS_FILE}, then rerun "
+            f"tools/process_new_skeleton.py. Falling back to unit scales would silently "
+            f"degrade the generated motion."
+        )
+    bank = np.load(priors_path, allow_pickle=True).item()
+    if not isinstance(bank, dict):
+        raise RuntimeError(f"Invalid structural prior bank: {priors_path}")
+    if int(bank.get('schema_version', 0)) != STRUCTURAL_NORM_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"Structural prior bank schema mismatch at {priors_path}: "
+            f"expected {STRUCTURAL_NORM_SCHEMA_VERSION}, got {bank.get('schema_version')}. "
+            f"Re-run training-set preprocessing to regenerate {STRUCTURAL_NORM_PRIORS_FILE} "
+            f"with the current schema."
+        )
+    return bank
+
+
+def _save_structural_prior_bank(save_dir, prior_bank):
+    if prior_bank is None:
+        return
+    np.save(pjoin(save_dir, STRUCTURAL_NORM_PRIORS_FILE), prior_bank)
+
+
+def _build_structural_norm_mean(tpos_first_frame):
+    norm_mean = np.asarray(tpos_first_frame, dtype=np.float32).copy()
+    norm_mean[:, 9:12] = 0.0
+    norm_mean[:, 12] = 0.0
+    return norm_mean
+
+
+def _robust_scalar_scale(values):
+    flat = np.asarray(values, dtype=np.float32).reshape(-1)
+    flat = flat[np.isfinite(flat)]
+    if flat.size == 0:
+        return _MIN_STRUCTURAL_SCALE
+    median = np.median(flat)
+    centered = flat - median
+    mad = np.median(np.abs(centered))
+    scale = float(mad * 1.4826)
+    if not np.isfinite(scale) or scale < _MIN_STRUCTURAL_SCALE:
+        scale = float(np.sqrt(np.mean(centered ** 2))) if centered.size else _MIN_STRUCTURAL_SCALE
+    return max(scale, _MIN_STRUCTURAL_SCALE)
+
+
+def _robust_per_channel_scale(values_2d):
+    """Per-column robust scale of a (frames, channels) residual block, reusing
+    the same MAD-based estimator as the pooled scalar path."""
+    block = np.asarray(values_2d, dtype=np.float32)
+    if block.ndim == 1:
+        block = block[:, None]
+    return np.asarray(
+        [_robust_scalar_scale(block[:, c]) for c in range(block.shape[1])],
+        dtype=np.float64,
+    )
+
+
+def _group_magnitude_and_profile(residual_block):
+    """Split a residual block into (pooled magnitude, per-channel profile).
+
+    The pooled magnitude is exactly the v1 scalar (``_robust_scalar_scale`` over
+    the whole block), so magnitude transfer/fallback behavior is unchanged. The
+    profile is the per-channel robust scale divided by that magnitude, i.e. the
+    unitless *shape* of the joint's motion within the group."""
+    magnitude = _robust_scalar_scale(residual_block)
+    per_channel = _robust_per_channel_scale(residual_block)
+    safe_mag = max(float(magnitude), _MIN_STRUCTURAL_SCALE)
+    return magnitude, (per_channel / safe_mag)
+
+
+def _joint_structural_scales(joint_motion, joint_anchor):
+    residual = np.asarray(joint_motion, dtype=np.float32) - np.asarray(joint_anchor, dtype=np.float32)[None, :]
+    pos_mag, pos_profile = _group_magnitude_and_profile(residual[:, 0:3])
+    rot_mag, rot_profile = _group_magnitude_and_profile(residual[:, 3:9])
+    vel_mag, vel_profile = _group_magnitude_and_profile(residual[:, 9:12])
+    return _structural_scale_dict(
+        pos=pos_mag,
+        rot=rot_mag,
+        vel=vel_mag,
+        contact=_STRUCTURAL_CONTACT_SCALE,
+        pos_profile=pos_profile,
+        rot_profile=rot_profile,
+        vel_profile=vel_profile,
+    )
+
+
+def _coarse_semantic_group(object_cond, joint_index):
+    helper_joint_indices = {int(idx) for idx in object_cond.get('helper_joint_indices', [])}
+    if int(joint_index) == 0:
+        return 'root'
+    if int(joint_index) in helper_joint_indices:
+        return 'helper'
+
+    contact_indices = {int(idx) for idx in object_cond.get('contact_joints', [])}
+    end_effector_indices = {int(idx) for idx in object_cond.get('end_effector_joints', [])}
+    if int(joint_index) in contact_indices and int(joint_index) in end_effector_indices:
+        return 'distal_contact'
+    if int(joint_index) in end_effector_indices:
+        return 'distal'
+    if int(joint_index) in contact_indices:
+        return 'contact'
+
+    canonical_names = object_cond.get('canonical_joint_names') or object_cond.get('joints_names') or []
+    canonical_name = str(canonical_names[joint_index] if joint_index < len(canonical_names) else '').lower()
+    for group_name, keywords in _SEMANTIC_GROUP_KEYWORDS:
+        if any(keyword in canonical_name for keyword in keywords):
+            return group_name
+    return 'nonroot'
+
+
+def _is_helper_like_joint(object_cond, joint_index):
+    if int(joint_index) == 0:
+        return False
+
+    helper_joint_indices = {int(idx) for idx in object_cond.get('helper_joint_indices', [])}
+    if int(joint_index) in helper_joint_indices:
+        return True
+
+    helper_joint_names = {
+        str(name).strip().lower()
+        for name in object_cond.get('helper_joint_names', [])
+        if str(name).strip()
+    }
+    raw_names = object_cond.get('joints_names') or []
+    canonical_names = object_cond.get('canonical_joint_names') or raw_names or []
+    candidate_names = []
+    if joint_index < len(raw_names):
+        candidate_names.append(str(raw_names[joint_index]).strip().lower())
+    if joint_index < len(canonical_names):
+        candidate_names.append(str(canonical_names[joint_index]).strip().lower())
+
+    for name in candidate_names:
+        if not name:
+            continue
+        if name in helper_joint_names:
+            return True
+    return False
+
+
+def _empty_scale_samples():
+    return {
+        'pos': [], 'rot': [], 'vel': [],
+        'pos_profile': [], 'rot_profile': [], 'vel_profile': [],
+    }
+
+
+def _append_scale_sample(sample_dict, key, scales):
+    bucket = sample_dict.setdefault(str(key), _empty_scale_samples())
+    for group_name in ('pos', 'rot', 'vel'):
+        bucket[group_name].append(float(scales[group_name]))
+        bucket[f'{group_name}_profile'].append(
+            _sanitize_profile(scales.get(f'{group_name}_profile'), _GROUP_WIDTHS[group_name])
+        )
+
+
+def _finalize_scale_bucket(bucket, fallback_scales):
+    finalized = {}
+    for group_name in ('pos', 'rot', 'vel'):
+        samples = np.asarray(bucket.get(group_name, []), dtype=np.float32)
+        samples = samples[np.isfinite(samples) & (samples > 0)]
+        if samples.size == 0:
+            finalized[group_name] = float(fallback_scales[group_name])
+        else:
+            finalized[group_name] = float(max(np.median(samples), _MIN_STRUCTURAL_SCALE))
+
+        width = _GROUP_WIDTHS[group_name]
+        profile_samples = bucket.get(f'{group_name}_profile', [])
+        if profile_samples:
+            stacked = np.asarray(profile_samples, dtype=np.float64)
+            if stacked.ndim == 2 and stacked.shape[1] == width:
+                finalized[f'{group_name}_profile'] = _sanitize_profile(
+                    np.median(stacked, axis=0), width
+                )
+            else:
+                finalized[f'{group_name}_profile'] = _sanitize_profile(
+                    fallback_scales.get(f'{group_name}_profile'), width
+                )
+        else:
+            finalized[f'{group_name}_profile'] = _sanitize_profile(
+                fallback_scales.get(f'{group_name}_profile'), width
+            )
+    finalized['contact'] = float(fallback_scales.get('contact', _STRUCTURAL_CONTACT_SCALE))
+    return finalized
+
+
+def _build_structural_prior_bank(payloads):
+    name_samples = {}
+    semantic_samples = {}
+    role_samples = {
+        'root': _empty_scale_samples(),
+        'nonroot': _empty_scale_samples(),
+    }
+    global_samples = _empty_scale_samples()
+    object_count = 0
+    joint_examples = 0
+
+    for payload in payloads:
+        if payload is None:
+            continue
+        object_cond = payload['object_cond']
+        results = payload.get('results') or []
+        if not results:
+            continue
+
+        motion_tensor = np.concatenate(
+            [np.asarray(result['motion'], dtype=np.float32) for result in results],
+            axis=0,
+        )
+        norm_mean = _build_structural_norm_mean(object_cond['tpos_first_frame'])
+        canonical_names = object_cond.get('canonical_joint_names') or object_cond.get('joints_names') or []
+
+        object_count += 1
+        for joint_index in range(motion_tensor.shape[1]):
+            scales = _joint_structural_scales(motion_tensor[:, joint_index, :], norm_mean[joint_index])
+            canonical_name = str(canonical_names[joint_index] if joint_index < len(canonical_names) else '').strip().lower() or '__unknown__'
+            semantic_group = _coarse_semantic_group(object_cond, joint_index)
+            role_key = 'root' if int(joint_index) == 0 else 'nonroot'
+            _append_scale_sample(name_samples, canonical_name, scales)
+            _append_scale_sample(semantic_samples, semantic_group, scales)
+            _append_scale_sample(role_samples, role_key, scales)
+            global_samples['pos'].append(float(scales['pos']))
+            global_samples['rot'].append(float(scales['rot']))
+            global_samples['vel'].append(float(scales['vel']))
+            joint_examples += 1
+
+    default_bank = _default_structural_prior_bank()
+    global_scales = _finalize_scale_bucket(global_samples, default_bank['global_scales'])
+    by_role = {
+        role_key: _finalize_scale_bucket(role_samples.get(role_key, _empty_scale_samples()), global_scales)
+        for role_key in ('root', 'nonroot')
+    }
+
+    bank = {
+        'schema_version': STRUCTURAL_NORM_SCHEMA_VERSION,
+        'feature_len': 13,
+        'global_scales': global_scales,
+        'by_canonical_name': {
+            key: _finalize_scale_bucket(bucket, global_scales)
+            for key, bucket in name_samples.items()
+        },
+        'by_semantic_group': {
+            key: _finalize_scale_bucket(bucket, by_role['root'] if key == 'root' else by_role['nonroot'])
+            for key, bucket in semantic_samples.items()
+        },
+        'by_role': by_role,
+        # Identity placeholder; measured below against the just-built bank.
+        'variance_calibration': _identity_variance_calibration(),
+        'metadata': {
+            'default_bank': False,
+            'object_count': int(object_count),
+            'joint_examples': int(joint_examples),
+        },
+    }
+    # Second pass: with magnitudes+profiles fixed, measure the residual RMS the
+    # diffusion model would actually see and bake in the correction so it sees
+    # ~unit variance instead.
+    bank['variance_calibration'] = _measure_variance_calibration(payloads, bank)
+    return bank
+
+
+def _resolve_joint_structural_scales(object_cond, joint_index, prior_bank):
+    canonical_names = object_cond.get('canonical_joint_names') or object_cond.get('joints_names') or []
+    canonical_name = str(canonical_names[joint_index] if joint_index < len(canonical_names) else '').strip().lower() or '__unknown__'
+    semantic_group = _coarse_semantic_group(object_cond, joint_index)
+    role_key = 'root' if int(joint_index) == 0 else 'nonroot'
+    helper_like = _is_helper_like_joint(object_cond, joint_index)
+
+    by_name = prior_bank.get('by_canonical_name', {})
+    if not helper_like and canonical_name in by_name:
+        return by_name[canonical_name], f'canonical:{canonical_name}'
+
+    by_semantic = prior_bank.get('by_semantic_group', {})
+    if semantic_group in by_semantic and not (helper_like and semantic_group == 'helper'):
+        return by_semantic[semantic_group], f'semantic:{semantic_group}'
+
+    by_role = prior_bank.get('by_role', {})
+    if role_key in by_role:
+        return by_role[role_key], f'role:{role_key}'
+
+    return prior_bank.get('global_scales', _default_structural_prior_bank()['global_scales']), 'global'
+
+
+def _resolve_variance_calibration(prior_bank):
+    """Per-feature-group std multiplier; missing/identity -> no-op (== v2)."""
+    raw = prior_bank.get('variance_calibration') if isinstance(prior_bank, dict) else None
+    calibration = {}
+    for group_name in ('pos', 'rot', 'vel'):
+        value = 1.0
+        if isinstance(raw, dict) and group_name in raw:
+            try:
+                value = float(raw[group_name])
+            except (TypeError, ValueError):
+                value = 1.0
+        if not np.isfinite(value) or value <= 0.0:
+            value = 1.0
+        calibration[group_name] = float(
+            np.clip(value, _MIN_VARIANCE_CALIBRATION, _MAX_VARIANCE_CALIBRATION)
+        )
+    return calibration
+
+
+def _compute_object_norm_std(object_cond, prior_bank, apply_calibration=True):
+    """Resolve the (J, 13) structural norm_std for one object.
+
+    With ``apply_calibration=False`` this returns the raw v2 magnitude*profile
+    std (used to *measure* the training-set RMS before the calibration factor
+    exists); the apply path uses ``True`` so every skeleton, including
+    motion-free ones, inherits the shared per-group calibration."""
+    norm_mean = _build_structural_norm_mean(object_cond['tpos_first_frame'])
+    norm_std = np.ones_like(norm_mean, dtype=np.float32)
+    calibration = _resolve_variance_calibration(prior_bank) if apply_calibration else None
+    joint_sources = []
+    for joint_index in range(norm_mean.shape[0]):
+        scales, source = _resolve_joint_structural_scales(object_cond, joint_index, prior_bank)
+        for group_name, start, stop in _PROFILE_GROUPS:
+            magnitude = float(scales[group_name])
+            # A v1 leaf (or default bank) has no *_profile -> isotropic ones,
+            # so this reduces exactly to the previous scalar broadcast.
+            profile = np.asarray(
+                _sanitize_profile(scales.get(f'{group_name}_profile'), _GROUP_WIDTHS[group_name]),
+                dtype=np.float32,
+            )
+            channel_std = magnitude * profile
+            if calibration is not None:
+                channel_std = channel_std * calibration[group_name]
+            norm_std[joint_index, start:stop] = np.maximum(channel_std, _MIN_STRUCTURAL_SCALE)
+        norm_std[joint_index, 12] = float(scales.get('contact', _STRUCTURAL_CONTACT_SCALE))
+        joint_sources.append(source)
+    return norm_mean, norm_std, joint_sources
+
+
+def _measure_variance_calibration(payloads, prior_bank):
+    """Pooled per-feature-group RMS of the *uncalibrated* normalized residual
+    over the whole training set. Calibrating norm_std by this factor makes
+    (motion - norm_mean) / norm_std unit-RMS, restoring the diffusion cosine
+    schedule's variance assumption."""
+    sumsq = {g: 0.0 for g, _, _ in _PROFILE_GROUPS}
+    count = {g: 0 for g, _, _ in _PROFILE_GROUPS}
+    for payload in payloads:
+        if payload is None:
+            continue
+        object_cond = payload['object_cond']
+        results = payload.get('results') or []
+        if not results:
+            continue
+        norm_mean, norm_std, _ = _compute_object_norm_std(
+            object_cond, prior_bank, apply_calibration=False
+        )
+        norm_mean64 = norm_mean.astype(np.float64, copy=False)
+        norm_std64 = norm_std.astype(np.float64, copy=False)
+        # Stream each motion clip to avoid a second dataset-scale concatenate.
+        for result in results:
+            motion_tensor = np.asarray(result['motion'], dtype=np.float64)
+            residual = motion_tensor - norm_mean64[None, :, :]
+            normalized = residual / norm_std64[None, :, :]
+            for group_name, start, stop in _PROFILE_GROUPS:
+                block = normalized[:, :, start:stop]
+                block = block[np.isfinite(block)]
+                if block.size:
+                    sumsq[group_name] += float(np.sum(block ** 2))
+                    count[group_name] += int(block.size)
+
+    calibration = {}
+    for group_name in ('pos', 'rot', 'vel'):
+        if count[group_name] > 0:
+            rms = float(np.sqrt(sumsq[group_name] / count[group_name]))
+        else:
+            rms = 1.0
+        if not np.isfinite(rms) or rms <= 0.0:
+            rms = 1.0
+        calibration[group_name] = float(
+            np.clip(rms, _MIN_VARIANCE_CALIBRATION, _MAX_VARIANCE_CALIBRATION)
+        )
+    print(
+        "[structural_stats] variance calibration (pre-cal training RMS): "
+        f"pos={calibration['pos']:.4f} rot={calibration['rot']:.4f} "
+        f"vel={calibration['vel']:.4f}"
+    )
+    return calibration
+
+
+def _apply_structural_stats_to_object_cond(object_cond, prior_bank):
+    norm_mean, norm_std, joint_sources = _compute_object_norm_std(
+        object_cond, prior_bank, apply_calibration=True
+    )
+    object_cond['tpos_first_frame'] = np.asarray(object_cond['tpos_first_frame'], dtype=np.float32)
+    object_cond['norm_mean'] = norm_mean.astype(np.float32, copy=False)
+    object_cond['norm_std'] = norm_std.astype(np.float32, copy=False)
+    object_cond['norm_schema_version'] = int(STRUCTURAL_NORM_SCHEMA_VERSION)
+    object_cond['norm_mean_source'] = 'tpose_anchor_v1'
+    object_cond['norm_std_source'] = 'structural_prior_bank_v3_anisotropic_varcal'
+    object_cond['norm_std_variance_calibration'] = _resolve_variance_calibration(prior_bank)
+    object_cond['norm_std_joint_sources'] = joint_sources
+    return object_cond
+
+
+def _apply_structural_stats_to_payloads(payloads, prior_bank):
+    for payload in payloads:
+        if payload is None:
+            continue
+        _apply_structural_stats_to_object_cond(payload['object_cond'], prior_bank)
 
 
 """ compures Relations and Distance marices"""
@@ -470,20 +982,14 @@ def _build_tpose_cond(object_type, t_pos_path, face_joints, max_joints=MAX_JOINT
 
 
 """Build the T-pose cond dict from a single FBX file (no motion files needed)."""
-def _build_tpose_only_cond(object_type, t_pos_path, face_joints):
-    object_cond, tp, t_pos_motion, parents, semantic_metadata, character_scale_factor, _, max_joints = _build_tpose_cond(
+def _build_tpose_only_cond(object_type, t_pos_path, face_joints, structural_prior_bank=None):
+    object_cond, *_unused, max_joints = _build_tpose_cond(
         object_type, t_pos_path, face_joints,
     )
-    num_joints = len(parents)
-
-    # mean: T-pose feature vector with velocity channels (9:12) explicitly zeroed
-    # to make rest-pose semantics unambiguous.
-    mean = t_pos_motion[0].astype(np.float32).copy()  # (J, 13)
-    mean[:, 9:12] = 0.0
-    object_cond['mean'] = mean
-
-    object_cond['std'] = np.ones_like(mean)
-
+    _apply_structural_stats_to_object_cond(
+        object_cond,
+        structural_prior_bank or _default_structural_prior_bank(),
+    )
     return object_cond, max_joints
 
 
@@ -565,12 +1071,6 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
         files_counter += 1
         frames_counter += motion.shape[0]
 
-    stats_tensors = np.concatenate(all_tensors, axis=0)
-
-    mean, std = get_mean_std(stats_tensors)
-    object_cond["mean"] = mean
-    object_cond["std"] = std
-
     return {
         'object_type': object_type,
         'object_cond': object_cond,
@@ -618,7 +1118,7 @@ def _write_object_outputs(save_dir, object_payload, files_counter):
     return files_counter, frames_counter, motion_metadata
 
 
-def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, max_joints, files_counter, frames_counter, squared_positions_error):
+def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, max_joints, files_counter, frames_counter, squared_positions_error, structural_prior_bank=None):
     print('Total clips: %d, Frames: %d, Duration: %fm' %(files_counter, frames_counter, frames_counter / 12.5 / 60))
     print('max joints: %d' %(max_joints))
     text_file = open(pjoin(save_dir, 'metadata.txt'), "w")
@@ -638,6 +1138,7 @@ def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, m
 
     _attach_joint_name_embeddings_to_cond(cond, save_dir)
     np.save(pjoin(save_dir, "cond.npy"), cond)
+    _save_structural_prior_bank(save_dir, structural_prior_bank)
     write_motion_metadata(save_dir, motion_metadata, files_counter)
 
 
@@ -657,7 +1158,7 @@ def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None):
 
 """ creates processed tensors for all the files of a given object. Returens statistics and the object condition,
 which includes tpos, relation/distances matrices, offsets, parents, joints names, kinematic chains, mean and std"""    
-def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None):
+def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, structural_prior_bank=None):
     object_payload = _prepare_object_outputs(
         object_type,
         max_joints,
@@ -669,6 +1170,10 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
     )
     if object_payload is None:
         return files_counter, frames_counter, max_joints, None, {}
+
+    if structural_prior_bank is None:
+        structural_prior_bank = _build_structural_prior_bank([object_payload])
+    _apply_structural_stats_to_payloads([object_payload], structural_prior_bank)
 
     squared_positions_error.update(object_payload['errors'])
     max_joints = max(max_joints, object_payload['max_joints'])
@@ -763,16 +1268,11 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
         print(f"{'=' * 70}\n")
         sys.exit(1)
 
-    _write_dataset_artifacts(
-        target_dataset_dir,
-        cond,
-        motion_metadata,
-        objects_counter,
-        max_joints,
-        files_counter,
-        frames_counter,
-        squared_positions_error,
-    )
+    # Write bare cond.npy with structural info only (no prior bank, norm stats,
+    # T5 embeddings, or metadata).  The parent process (preprocess_and_validate.py)
+    # will rebuild the prior bank from all on-disk motions and regenerate all
+    # side artifacts, so this subprocess only needs to produce the raw data.
+    np.save(pjoin(target_dataset_dir, "cond.npy"), cond)
 
 
 ########################### Tests ##############################
@@ -781,24 +1281,31 @@ def process_single_object_type(object_type, save_dir):
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(save_dir, BVHS_DIR), exist_ok=True)
     
-    ## process
+    payload = _prepare_object_outputs(
+        object_type,
+        max_joints=23,
+    )
+    if payload is None:
+        return
+
+    structural_prior_bank = _build_structural_prior_bank([payload])
+    _apply_structural_stats_to_payloads([payload], structural_prior_bank)
+
     files_counter = 0
     frames_counter = 0
-    max_joints = 23
+    max_joints = payload['max_joints']
     objects_counter = dict()
-    squared_positions_error = dict()
+    squared_positions_error = dict(payload['errors'])
     cond = dict()
     motion_metadata = {}
     cur_counter = files_counter
-    files_counter, frames_counter, max_joints, object_cond, object_motion_metadata = process_object(
-        object_type,
+    files_counter, object_frames_counter, object_motion_metadata = _write_object_outputs(
+        save_dir,
+        payload,
         files_counter,
-        frames_counter,
-        max_joints,
-        squared_positions_error,
-        save_dir=save_dir,
     )
-    cond[object_type] = object_cond
+    frames_counter += object_frames_counter
+    cond[object_type] = payload['object_cond']
     objects_counter[object_type] = files_counter - cur_counter 
     motion_metadata.update(object_motion_metadata)
 
@@ -811,28 +1318,27 @@ def process_single_object_type(object_type, save_dir):
         files_counter,
         frames_counter,
         squared_positions_error,
+        structural_prior_bank=structural_prior_bank,
     )
 
 
 def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=None,
-                     motions_from_npys=None, target_cond_partial=None):
+                     motions_from_npys=None, target_cond_partial=None, structural_prior_bank_path=None):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(save_dir, BVHS_DIR), exist_ok=True)
+    structural_prior_bank = _load_structural_prior_bank(structural_prior_bank_path)
 
     if motions_from_npys is not None:
         # Retarget branch: motions already written to save_dir/motions/ by auto_retarget_pipeline.
-        # Load them, compute mean/std, then write cond.npy.
+        # Structural stats still come from the shared prior bank.
         assert target_cond_partial is not None, "target_cond_partial required with motions_from_npys"
         all_motions = [np.load(p).astype(np.float32) for p in motions_from_npys]
         if not all_motions:
             print(f"[process_skeleton] no retargeted motions available; cond.npy not written")
             return
-        stats_tensors = np.concatenate(all_motions, axis=0)  # (total_frames, J, 13)
-        mean, std = get_mean_std(stats_tensors)
         object_cond = dict(target_cond_partial)
-        object_cond['mean'] = mean
-        object_cond['std'] = std
+        _apply_structural_stats_to_object_cond(object_cond, structural_prior_bank)
         motion_metadata = {}
         parents = np.asarray(object_cond['parents'], dtype=np.int64)
         offsets = np.asarray(object_cond['offsets'], dtype=np.float64)
@@ -861,6 +1367,7 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
             len(all_motions),                             # files_counter
             sum(m.shape[0] for m in all_motions),         # frames_counter
             {},                                           # squared_positions_error
+            structural_prior_bank=structural_prior_bank,
         )
         return
 
@@ -879,6 +1386,7 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
             object_name,
             tpose_path,
             face_joints,
+            structural_prior_bank=structural_prior_bank,
         )
         cond[object_name] = object_cond
         _write_dataset_artifacts(
@@ -890,6 +1398,7 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
             files_counter,
             frames_counter,
             squared_positions_error,
+            structural_prior_bank=structural_prior_bank,
         )
         return
 
@@ -904,6 +1413,7 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
         fbxs_dir=anim_dir,
         face_joints=face_joints,
         t_pos_path=tpose_path,
+        structural_prior_bank=structural_prior_bank,
     )
     if object_cond is None:
         print(f"No valid animation data found for '{object_name}', aborting.")
@@ -921,5 +1431,6 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
         files_counter,
         frames_counter,
         squared_positions_error,
+        structural_prior_bank=structural_prior_bank,
     )
 

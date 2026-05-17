@@ -457,9 +457,9 @@ class MotionDataset(data.Dataset):
         self.min_length = length
     
     def inv_transform(self, x, y):
-        mean = self.cond_dict[y['object_type']]['mean']
-        std = self.cond_dict[y['object_type']]['std']
-        return x * std + mean
+        norm_mean = self.cond_dict[y['object_type']]['norm_mean']
+        norm_std = self.cond_dict[y['object_type']]['norm_std']
+        return x * norm_std + norm_mean
 
     def _get_temporal_mask(self, target_num_frames):
         if int(target_num_frames) == int(self.max_motion_length):
@@ -486,9 +486,9 @@ class MotionDataset(data.Dataset):
 
         result = self.augment(data, return_aug_info=return_aug_info)
         if return_aug_info:
-            motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std, aug_info = result
+            motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, norm_mean, norm_std, aug_info = result
         else:
-            motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std = result
+            motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, norm_mean, norm_std = result
         motion_metadata = _copy_required_motion_metadata(name, data.get('motion_metadata'))
         ind = 0
         loop_applied = False
@@ -534,13 +534,13 @@ class MotionDataset(data.Dataset):
                 'crop_start': int(ind),
                 'loop_applied': bool(loop_applied),
             })
-            return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {
+            return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, norm_mean, norm_std, self.opt.max_joints, motion_metadata, name, {
                 'mirror_applied': bool(aug_info['mirror_applied']),
                 'speed_factor': float(aug_info['speed_factor']),
                 'crop_start': int(aug_info['crop_start']),
                 'loop_applied': bool(aug_info['loop_applied']),
             }
-        return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name
+        return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, norm_mean, norm_std, self.opt.max_joints, motion_metadata, name
     
     def augment(self, data, return_aug_info=False):
         object_type = data['object_type']
@@ -599,23 +599,23 @@ class MotionDataset(data.Dataset):
                 w = (src - lo)[:, None, None]
                 motion = motion[lo] * (1.0 - w) + motion[hi] * w
 
-        motion = np.nan_to_num((motion - cond['mean'][None, :]) / cond['std_safe'][None, :]).astype(np.float32, copy=False)
+        motion = np.nan_to_num((motion - cond['norm_mean'][None, :]) / cond['norm_std_safe'][None, :]).astype(np.float32, copy=False)
 
         m_length = motion.shape[0]
-        mean = self.cond_dict[object_type]['mean']
-        std = self.cond_dict[object_type]['std_safe']
+        norm_mean = self.cond_dict[object_type]['norm_mean']
+        norm_std = self.cond_dict[object_type]['norm_std_safe']
         if mirror_applied:
             mirrored_tpose_raw, _mirrored_tpose_offsets = mirror_features_with_safeguards(
                 np.asarray(cond['tpos_first_frame'], dtype=np.float32),
                 cond,
                 motion_metadata=motion_metadata,
             )
-            tpos_first_frame = np.nan_to_num((mirrored_tpose_raw - mean) / std).astype(np.float32, copy=False)
+            tpos_first_frame = np.nan_to_num(np.asarray(mirrored_tpose_raw, dtype=np.float32))
             offsets = mirrored_offsets
         else:
-            tpos_first_frame = cond['tpos_first_frame_normalized']
+            tpos_first_frame = cond['tpos_first_frame']
             offsets = cond['offsets']
-        sample = (motion, m_length, object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], tpos_first_frame, offsets, cond['joints_names_embs'], cond['kinematic_chains'], mean, std)
+        sample = (motion, m_length, object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], tpos_first_frame, offsets, cond['joints_names_embs'], cond['kinematic_chains'], norm_mean, norm_std)
         if return_aug_info:
             return sample + ({'mirror_applied': bool(mirror_applied), 'speed_factor': float(speed_factor)},)
         return sample
@@ -687,12 +687,12 @@ class Truebones(data.Dataset):
         cond_dict = {k:cond_dict[k] for k in subset if k in cond_dict}
         cond_dict = ensure_joint_name_embeddings(cond_dict, cond_source=opt.cond_file)
         for object_type, cond in cond_dict.items():
-            mean = np.asarray(cond['mean'], dtype=np.float32)
-            std_safe = np.asarray(cond['std'], dtype=np.float32) + 1e-6
-            cond['mean'] = mean
-            cond['std'] = np.asarray(cond['std'], dtype=np.float32)
-            cond['std_safe'] = std_safe
-            cond['tpos_first_frame_normalized'] = np.nan_to_num((np.asarray(cond['tpos_first_frame'], dtype=np.float32) - mean) / std_safe).astype(np.float32, copy=False)
+            norm_mean = np.asarray(cond['norm_mean'], dtype=np.float32)
+            norm_std = np.asarray(cond['norm_std'], dtype=np.float32)
+            cond['norm_mean'] = norm_mean
+            cond['norm_std'] = norm_std
+            cond['norm_std_safe'] = norm_std + 1e-6
+            cond['tpos_first_frame'] = np.asarray(cond['tpos_first_frame'], dtype=np.float32)
             
         motion_metadata_lookup = load_motion_metadata(opt.data_root)
         self.split_file = pjoin(opt.data_root, f'{split}.txt') if split != ALL_SPLIT_NAME else ''

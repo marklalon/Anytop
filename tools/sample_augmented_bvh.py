@@ -101,15 +101,12 @@ def _build_cond_dict(opt, objects_subset: str) -> dict:
         )
 
     for object_type, cond in cond_dict.items():
-        mean = np.asarray(cond["mean"], dtype=np.float32)
-        std = np.asarray(cond["std"], dtype=np.float32)
-        std_safe = std + 1e-6
-        cond["mean"] = mean
-        cond["std"] = std
-        cond["std_safe"] = std_safe
-        cond["tpos_first_frame_normalized"] = np.nan_to_num(
-            (np.asarray(cond["tpos_first_frame"], dtype=np.float32) - mean) / std_safe
-        ).astype(np.float32, copy=False)
+        norm_mean = np.asarray(cond["norm_mean"], dtype=np.float32)
+        norm_std = np.asarray(cond["norm_std"], dtype=np.float32)
+        cond["norm_mean"] = norm_mean
+        cond["norm_std"] = norm_std
+        cond["norm_std_safe"] = norm_std + 1e-6
+        cond["tpos_first_frame"] = np.asarray(cond["tpos_first_frame"], dtype=np.float32)
         # Stub T5 embeddings — only used by the model, not needed for BVH export.
         n_joints = np.asarray(cond["parents"]).shape[0]
         if "joints_names_embs" not in cond:
@@ -286,8 +283,8 @@ def main() -> int:
                 object_type,
                 _joints_names_embs,
                 _crop_start,
-                mean,         # (J, 13) normalization mean
-                std,          # (J, 13) normalization std (std_safe)
+                norm_mean,    # (J, 13) normalization mean
+                norm_std,     # (J, 13) normalization std (std_safe)
                 _max_joints,
                 motion_metadata,
                 _name,
@@ -297,7 +294,7 @@ def main() -> int:
             # ----------------------------------------------------------------
             # Denormalize: undo the (x - mean) / std applied in augment()
             # ----------------------------------------------------------------
-            motion_raw = (motion_norm[:m_length] * std[None, :, :] + mean[None, :, :]).astype(np.float32)
+            motion_raw = (motion_norm[:m_length] * norm_std[None, :, :] + norm_mean[None, :, :]).astype(np.float32)
 
             # ----------------------------------------------------------------
             # Retrieve joint names from cond_dict for BVH hierarchy

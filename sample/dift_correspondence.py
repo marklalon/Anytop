@@ -30,13 +30,11 @@ def create_sample_in_batch(motion, object_type, cond_dict_for_object, temporal_w
     parents = cond_dict_for_object['parents']
     n_joints = len(parents)
     n_frames = motion.shape[0]
-    mean = cond_dict_for_object['mean']
-    std = cond_dict_for_object['std']
-    motion = (motion - mean[None]) / (std[None] + 1e-6)
+    norm_mean = cond_dict_for_object['norm_mean']
+    norm_std = cond_dict_for_object['norm_std']
+    motion = (motion - norm_mean[None]) / (norm_std[None] + 1e-6)
     motion = np.nan_to_num(motion)
-    tpos_first_frame = cond_dict_for_object['tpos_first_frame']
-    tpos_first_frame =  (tpos_first_frame - mean) / (std + 1e-6)
-    tpos_first_frame = np.nan_to_num(tpos_first_frame)
+    tpos_first_frame = np.asarray(cond_dict_for_object['tpos_first_frame'], dtype=np.float32)
     joint_relations = cond_dict_for_object['joint_relations']
     joints_graph_dist = cond_dict_for_object['joints_graph_dist']
     offsets = cond_dict_for_object['offsets']
@@ -52,8 +50,8 @@ def create_sample_in_batch(motion, object_type, cond_dict_for_object, temporal_w
     batch.append(object_type)
     batch.append(joints_names_embs)
     batch.append(0)
-    batch.append(mean)
-    batch.append(std)
+    batch.append(norm_mean)
+    batch.append(norm_std)
     batch.append(max_joints)
     return batch
 

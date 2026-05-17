@@ -538,9 +538,9 @@ class TrainLoop:
                         continue
                     n_joints = cond['y']['n_joints'][i].item()
                     motion_sample = sample[i][:n_joints]
-                    mean = cond_dict[object_type]['mean'][None, :]
-                    std = cond_dict[object_type]['std'][None, :]
-                    motion_np = motion_sample.cpu().permute(2, 0, 1).numpy() * std + mean
+                    norm_mean = cond_dict[object_type]['norm_mean'][None, :]
+                    norm_std = cond_dict[object_type]['norm_std'][None, :]
+                    motion_np = motion_sample.cpu().permute(2, 0, 1).numpy() * norm_std + norm_mean
                     group_key = (object_type, action_tags)
                     motion_groups.setdefault(group_key, []).append(motion_np.astype(np.float32))
 

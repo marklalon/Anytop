@@ -66,6 +66,10 @@ for _path in (_TRUEBONES_DIR, _TRUEBONES_DIR / "truebones_utils"):
 from param_utils import BVHS_DIR, MOTION_DIR, OBJECT_SUBSETS_DICT, get_dataset_dir  # noqa: E402
 from truebones_utils.motion_labels import load_motion_metadata, write_motion_metadata  # noqa: E402
 
+# Shared prior bank file written next to cond.npy.  Rebuilt from all on-disk
+# motions after every preprocessing run (incremental or full).
+STRUCTURAL_NORM_PRIORS_FILE = "structural_norm_priors.npy"
+
 
 @dataclass
 class PreservedSideArtifacts:
@@ -269,7 +273,86 @@ def run_preprocessing(
     env["PYTHONPATH"] = str(ANYTOP_DIR.parent) + os.pathsep + existing_pythonpath
 
     result = subprocess.run(cmd, cwd=str(ANYTOP_DIR), capture_output=False, env=env)
+
     return result.returncode
+
+
+def _rebuild_structural_prior_bank(dataset_dir: str) -> None:
+    """Rebuild structural_norm_priors.npy from ALL on-disk motions and cond,
+    then re-apply it to every cond object.
+
+    After incremental (subset) preprocessing, the prior bank written by
+    create_data_samples only covers the subset objects.  This function loads
+    every motion .npy in motions/, groups them by object_type using cond.npy,
+    rebuilds the full prior bank, saves it, and recomputes norm_mean/norm_std
+    for every object in cond.npy."""
+
+    dataset_dir_path = Path(get_dataset_dir(dataset_dir or None))
+    cond_path = dataset_dir_path / "cond.npy"
+    motions_dir = dataset_dir_path / MOTION_DIR
+    if not cond_path.exists() or not motions_dir.exists():
+        print("[WARN] cond.npy or motions/ not found, skipping prior bank rebuild")
+        return
+
+    from data_loaders.truebones.truebones_utils.dataset_pipeline import (  # noqa: E402
+        _apply_structural_stats_to_object_cond,
+        _build_structural_prior_bank,
+    )
+    from truebones_utils.motion_labels import infer_motion_labels_from_motion_name  # noqa: E402
+
+    cond = dict(np.load(str(cond_path), allow_pickle=True).item())
+    known_object_types = tuple(cond.keys())
+
+    motion_files = sorted(motions_dir.glob("*.npy"))
+    if not motion_files:
+        print("[WARN] no motion files found, skipping prior bank rebuild")
+        return
+
+    # Group motion files by object_type.
+    type_to_motions: dict[str, list[np.ndarray]] = {}
+    for motion_path in motion_files:
+        labels = infer_motion_labels_from_motion_name(
+            motion_path.name, object_types=known_object_types,
+        )
+        object_type = str(labels.get("object_type", ""))
+        if not object_type or object_type not in cond:
+            print(f"  [SKIP] {motion_path.name}: unknown object_type '{object_type}'")
+            continue
+        motion = np.load(str(motion_path), mmap_mode="r")
+        type_to_motions.setdefault(object_type, []).append(motion)
+
+    # Build payloads for _build_structural_prior_bank.
+    payloads: list[dict] = []
+    for object_type, motions in type_to_motions.items():
+        object_cond = cond[object_type]
+        if 'tpos_first_frame' not in object_cond:
+            print(f"  [SKIP] {object_type}: missing tpos_first_frame")
+            continue
+        payload = {
+            'object_cond': object_cond,
+            'results': [{'motion': m} for m in motions],
+        }
+        payloads.append(payload)
+
+    if not payloads:
+        print("[WARN] no valid payloads for prior bank rebuild")
+        return
+
+    prior_bank = _build_structural_prior_bank(payloads)
+    prior_bank_path = dataset_dir_path / STRUCTURAL_NORM_PRIORS_FILE
+    np.save(str(prior_bank_path), prior_bank)
+    print(f"[INFO] Rebuilt {STRUCTURAL_NORM_PRIORS_FILE} from {len(payloads)} object(s) "
+          f"({sum(len(p['results']) for p in payloads)} total motions)")
+
+    # Re-apply to all cond objects so norm_mean/norm_std reflect the full set.
+    for object_type, object_cond in cond.items():
+        if 'tpos_first_frame' not in object_cond:
+            print(f"  [SKIP] {object_type}: missing tpos_first_frame")
+            continue
+        _apply_structural_stats_to_object_cond(object_cond, prior_bank)
+
+    np.save(str(cond_path), cond)
+    print(f"[INFO] Re-applied structural stats to {len(cond)} object(s) in cond.npy")
 
 
 def run_re_encode_joint_names_only(
@@ -363,7 +446,7 @@ def run_validation(
             sample_count,
         )
 
-        motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path = _read_required_artifacts(dataset_dir)
+        motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path, _structural_prior_bank_path = _read_required_artifacts(dataset_dir)
         cond = _validate_cond_file(cond_path, objects_subset)
         motion_files = sorted(motions_dir.glob("*.npy"))
         _validate_metadata(metadata_path, motion_files, cond)
@@ -502,12 +585,16 @@ def main() -> int:
             print("\n[FAIL] Preprocessing failed, aborting workflow.")
             return ret
 
-        ret = run_re_encode_joint_names_only(
-            args.dataset_dir,
-            preserved_side_artifacts=preserved_side_artifacts,
-        )
+        # The subprocess only writes motions + bare cond.npy (structural info).
+        # Merge back preserved non-subset cond entries (incremental only; a no-op
+        # for full refresh since preserved_side_artifacts will be empty), then
+        # rebuild the prior bank and regenerate all side artifacts unconditionally.
+        dataset_dir_path = Path(get_dataset_dir(args.dataset_dir or None))
+        _merge_preserved_side_artifacts(dataset_dir_path, preserved_side_artifacts)
+        _rebuild_structural_prior_bank(args.dataset_dir)
+        ret = run_re_encode_joint_names_only(args.dataset_dir)
         if ret != 0:
-            print("\n[FAIL] Side artifact regeneration failed, aborting workflow.")
+            print("\n[FAIL] Dataset artifact regeneration failed, aborting workflow.")
             return ret
 
         steps_completed.append("Preprocess")

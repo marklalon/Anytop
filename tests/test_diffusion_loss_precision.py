@@ -49,6 +49,8 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
                 "joints_padding_mask": torch.ones(batch_size, 1, 1, n_joints + 1, n_joints + 1, dtype=torch.float32),
                 "mean": torch.zeros(batch_size, n_joints, n_feats, dtype=torch.float32),
                 "std": torch.ones(batch_size, n_joints, n_feats, dtype=torch.float32),
+                "norm_mean": torch.zeros(batch_size, n_joints, n_feats, dtype=torch.float32),
+                "norm_std": torch.ones(batch_size, n_joints, n_feats, dtype=torch.float32),
             }
         }
 

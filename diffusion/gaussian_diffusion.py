@@ -1514,8 +1514,8 @@ class GaussianDiffusion:
         lengths = model_kwargs['y']['lengths']
         actual_joints = model_kwargs['y']['n_joints']
         joints_padding_mask = model_kwargs['y']['joints_padding_mask'][:, :, :, 1, 1:]
-        mean = model_kwargs['y']['mean'][..., None]
-        std = model_kwargs['y']['std'][..., None]
+        norm_mean = model_kwargs['y']['norm_mean'][..., None]
+        norm_std = model_kwargs['y']['norm_std'][..., None]
 
         if model_kwargs is None:
             model_kwargs = {}
@@ -1570,23 +1570,23 @@ class GaussianDiffusion:
                 ModelMeanType.EPSILON: noise,
             }[self.model_mean_type]
             assert model_output.shape == target.shape == x_start.shape  # [bs, njoints, nfeats, nframes]
-            with self._fp32_math_context(model_output, target, mean, std):
+            with self._fp32_math_context(model_output, target, norm_mean, norm_std):
                 target_fp32 = target.float()
                 model_output_fp32 = model_output.float()
                 mask_fp32 = mask.float()
                 joints_padding_mask_fp32 = joints_padding_mask.float()
                 lengths_fp32 = lengths.float()
                 actual_joints_fp32 = actual_joints.float()
-                mean_fp32 = mean.float()
-                std_fp32 = std.float()
+                norm_mean_fp32 = norm_mean.float()
+                norm_std_fp32 = norm_std.float()
 
                 terms["l_simple"] = self.temporal_spatial_masked_l2(
                     target_fp32, model_output_fp32, mask_fp32, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
                 )
                 terms["loss"] = terms["l_simple"].clone()
 
-                target_denorm = (target_fp32 * std_fp32) + mean_fp32
-                model_output_denorm = (model_output_fp32 * std_fp32) + mean_fp32
+                target_denorm = (target_fp32 * norm_std_fp32) + norm_mean_fp32
+                model_output_denorm = (model_output_fp32 * norm_std_fp32) + norm_mean_fp32
 
                 if self.lambda_geo > 0.:
                     terms["geodesic_loss"] = self.geodesic_loss(

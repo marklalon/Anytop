@@ -39,8 +39,8 @@ def truebones_collate(batch):
     notnone_batches = [b for b in batch if b is not None]
     databatch = [b['inp'] for b in notnone_batches]
     tposfirstframebatch = [b['tpos_first_frame'] for b in notnone_batches]
-    meanbatch = [b['mean'] for b in notnone_batches]
-    stdbatch = [b['std'] for b in notnone_batches]
+    norm_meanbatch = [b['norm_mean'] for b in notnone_batches]
+    norm_stdbatch = [b['norm_std'] for b in notnone_batches]
     if 'lengths' in notnone_batches[0]:
         lenbatch = [b['lengths'] for b in notnone_batches]
     else:
@@ -57,8 +57,8 @@ def truebones_collate(batch):
     
     databatchTensor = collate_tensors(databatch)
     tposfirstframebatchTensor = collate_tensors(tposfirstframebatch)
-    meanbatchTensor = collate_tensors(meanbatch)
-    stdbatchTensor = collate_tensors(stdbatch)
+    norm_meanbatchTensor = collate_tensors(norm_meanbatch)
+    norm_stdbatchTensor = collate_tensors(norm_stdbatch)
     lenbatchTensor = torch.as_tensor(lenbatch)
     lengthsmaskbatchTensor = lengths_to_mask(lenbatchTensor, databatchTensor.shape[-1]).unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
     jointsnumbatchTensor = torch.as_tensor(jointsnumbatch)
@@ -68,7 +68,7 @@ def truebones_collate(batch):
     maskbatchTensor = length_to_temp_mask(collated_temporalmasksbatch, lenbatchTensor, collated_temporalmasksbatch[0].size(0) - 1).unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
 
     motion = databatchTensor
-    cond = {'y': {'mask': maskbatchTensor, 'lengths': lenbatchTensor, 'lengths_mask': lengthsmaskbatchTensor, 'tpos_first_frame': tposfirstframebatchTensor, 'mean': meanbatchTensor, 'std':stdbatchTensor}}
+    cond = {'y': {'mask': maskbatchTensor, 'lengths': lenbatchTensor, 'lengths_mask': lengthsmaskbatchTensor, 'tpos_first_frame': tposfirstframebatchTensor, 'norm_mean': norm_meanbatchTensor, 'norm_std':norm_stdbatchTensor}}
 
     if 'object_type' in notnone_batches[0]:
         objecttypebatch = [b['object_type'] for b in notnone_batches]
@@ -105,7 +105,7 @@ def truebones_collate(batch):
     return motion, cond
 
 """ recieves list of tuples of the form: 
- motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, max_joints
+ motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, norm_mean, norm_std, max_joints
 """
 def truebones_batch_collate(batch):
     max_joints = batch[0][13]
@@ -118,10 +118,10 @@ def truebones_batch_collate(batch):
         motion[:, :b[0].shape[1], :] = torch.from_numpy(np.asarray(b[0], dtype=np.float32))
         joints_names_embs = torch.zeros((max_joints, b[9].shape[1]))
         joints_names_embs[:n_joints] = torch.from_numpy(np.asarray(b[9], dtype=np.float32))
-        mean = torch.zeros((max_joints, n_feats))
-        mean[:n_joints] = torch.from_numpy(np.asarray(b[11], dtype=np.float32))
-        std = torch.ones((max_joints, n_feats))
-        std[:n_joints] = torch.from_numpy(np.asarray(b[12], dtype=np.float32))
+        norm_mean = torch.zeros((max_joints, n_feats))
+        norm_mean[:n_joints] = torch.from_numpy(np.asarray(b[11], dtype=np.float32))
+        norm_std = torch.ones((max_joints, n_feats))
+        norm_std[:n_joints] = torch.from_numpy(np.asarray(b[12], dtype=np.float32))
         n_joints = b[0].shape[1]
         temporal_mask = torch.as_tensor(b[5][:max_len + 1, :max_len + 1])
         padded_joints_relations =  create_padded_relation(b[7], max_joints, n_joints)
@@ -142,8 +142,8 @@ def truebones_batch_collate(batch):
             'object_type': object_type,
             'joints_names_embs': joints_names_embs,
             'tpos_first_frame': tpos_first_frame,
-            'mean': mean,
-            'std': std
+            'norm_mean': norm_mean,
+            'norm_std': norm_std
         }
         if motion_metadata is not None:
             for key in ('species_label', 'species_group', 'action_tags', 'translation_root_index'):

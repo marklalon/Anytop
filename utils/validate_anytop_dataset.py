@@ -66,19 +66,30 @@ def _resolve_dataset_dir(raw_value: str | None) -> Path:
     return path.resolve()
 
 
-def _read_required_artifacts(dataset_dir: Path, silent: bool = False) -> tuple[Path, Path, Path, Path, Path]:
+STRUCTURAL_NORM_PRIORS_FILE = "structural_norm_priors.npy"
+
+
+def _read_required_artifacts(dataset_dir: Path, silent: bool = False) -> tuple[Path, Path, Path, Path, Path, Path]:
     motions_dir = dataset_dir / MOTION_DIR
     bvhs_dir = dataset_dir / BVHS_DIR
     cond_path = dataset_dir / "cond.npy"
     metadata_path = dataset_dir / "metadata.txt"
     positions_error_path = dataset_dir / "positions_error_rate.txt"
+    structural_prior_bank_path = dataset_dir / STRUCTURAL_NORM_PRIORS_FILE
 
-    for path in [dataset_dir, motions_dir, cond_path, metadata_path, positions_error_path]:
+    for path in [
+        dataset_dir,
+        motions_dir,
+        cond_path,
+        metadata_path,
+        positions_error_path,
+        structural_prior_bank_path,
+    ]:
         _require(path.exists(), f"missing required artifact: {path}")
 
     if not silent:
         _print_ok(f"required artifacts found under {dataset_dir}")
-    return motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path
+    return motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path, structural_prior_bank_path
 
 
 def _validate_optional_semantic_metadata(object_type: str, object_cond: dict, n_joints: int) -> None:
@@ -195,8 +206,8 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
         "joints_names",
         "joints_names_embs",
         "kinematic_chains",
-        "mean",
-        "std",
+        "norm_mean",
+        "norm_std",
     }
 
     for object_type in objects_to_validate:
@@ -211,8 +222,8 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
             parents = np.asarray(object_cond["parents"])
             offsets = np.asarray(object_cond["offsets"])
             tpos_first_frame = np.asarray(object_cond["tpos_first_frame"])
-            mean = np.asarray(object_cond["mean"])
-            std = np.asarray(object_cond["std"])
+            norm_mean = np.asarray(object_cond["norm_mean"])
+            norm_std = np.asarray(object_cond["norm_std"])
             joint_relations = np.asarray(object_cond["joint_relations"])
             joints_graph_dist = np.asarray(object_cond["joints_graph_dist"])
             joints_names = object_cond["joints_names"]
@@ -228,11 +239,11 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
             if tpos_first_frame.shape != (n_joints, FEATS_LEN):
                 msg = f"{object_type} tpos_first_frame shape mismatch: {tpos_first_frame.shape}"
                 _print_warn(f"validation error: {msg}")
-            if mean.shape != (n_joints, FEATS_LEN):
-                msg = f"{object_type} mean shape mismatch: {mean.shape}"
+            if norm_mean.shape != (n_joints, FEATS_LEN):
+                msg = f"{object_type} norm_mean shape mismatch: {norm_mean.shape}"
                 _print_warn(f"validation error: {msg}")
-            if std.shape != (n_joints, FEATS_LEN):
-                msg = f"{object_type} std shape mismatch: {std.shape}"
+            if norm_std.shape != (n_joints, FEATS_LEN):
+                msg = f"{object_type} norm_std shape mismatch: {norm_std.shape}"
                 _print_warn(f"validation error: {msg}")
             if joint_relations.shape != (n_joints, n_joints):
                 msg = f"{object_type} joint_relations shape mismatch: {joint_relations.shape}"
@@ -252,17 +263,17 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
             if not np.isfinite(tpos_first_frame).all():
                 msg = f"{object_type} tpos_first_frame contains NaN/Inf"
                 _print_warn(f"validation error: {msg}")
-            if not np.isfinite(mean).all():
-                msg = f"{object_type} mean contains NaN/Inf"
+            if not np.isfinite(norm_mean).all():
+                msg = f"{object_type} norm_mean contains NaN/Inf"
                 _print_warn(f"validation error: {msg}")
-            if not np.isfinite(std).all():
-                msg = f"{object_type} std contains NaN/Inf"
+            if not np.isfinite(norm_std).all():
+                msg = f"{object_type} norm_std contains NaN/Inf"
                 _print_warn(f"validation error: {msg}")
             if not np.isfinite(joints_names_embs).all():
                 msg = f"{object_type} joints_names_embs contain NaN/Inf"
                 _print_warn(f"validation error: {msg}")
-            if not (std > 0).any():
-                msg = f"{object_type} std is entirely non-positive"
+            if not (norm_std > 0).any():
+                msg = f"{object_type} norm_std is entirely non-positive"
                 _print_warn(f"validation error: {msg}")
 
             _validate_optional_semantic_metadata(object_type, object_cond, n_joints)
@@ -677,7 +688,7 @@ def _prepare_dataset_for_validation(
     objects_subset: str,
     sample_count: int,
 ) -> None:
-    motions_dir, bvhs_dir, cond_path, _metadata_path, _positions_error_path = _read_required_artifacts(dataset_dir, silent=True)
+    motions_dir, bvhs_dir, cond_path, _metadata_path, _positions_error_path, _structural_prior_bank_path = _read_required_artifacts(dataset_dir, silent=True)
     cond = dict(np.load(cond_path, allow_pickle=True).item())
 
     deleted_joint_stems = _prune_excess_joint_motions(motions_dir, bvhs_dir, cond, sample_count)
@@ -738,7 +749,7 @@ def main() -> int:
         args.sample_count,
     )
 
-    motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path = _read_required_artifacts(dataset_dir)
+    motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path, _structural_prior_bank_path = _read_required_artifacts(dataset_dir)
     cond = _validate_cond_file(cond_path, args.objects_subset)
 
     motion_files = sorted(motions_dir.glob("*.npy"))
