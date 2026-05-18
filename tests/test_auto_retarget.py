@@ -234,6 +234,106 @@ def test_retarget_preserves_zero_pose_locations_for_rigid_longer_target_chain(
     )
 
 
+def test_retarget_skips_llm_and_preserves_root_motion_under_target_root_wrappers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _should_not_call_llm(*_args, **_kwargs):
+        raise AssertionError("LLM mapping should not run for exact same-name self-retarget with root wrappers")
+
+    monkeypatch.setattr(retarget_mod, '_llm_joint_mapping', _should_not_call_llm)
+
+    src_parents = np.array([-1, 0], dtype=np.int32)
+    src_rest_offsets = np.array(
+        [
+            [0.0, 5.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    tgt_parents = np.array([-1, 0, 1, 2], dtype=np.int32)
+    tgt_rest_offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 5.0],
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    tgt_rest_rotations = _identity_quat(4)
+    tgt_rest_rotations[0] = _quat_x(-90.0)
+
+    result = retarget_mod.retarget_world_space_np(
+        src_parents=src_parents,
+        src_rest_offsets=src_rest_offsets,
+        src_rest_rotations=_identity_quat(2),
+        tgt_parents=tgt_parents,
+        tgt_rest_offsets=tgt_rest_offsets,
+        tgt_rest_rotations=tgt_rest_rotations,
+        src_joint_rotations=np.tile(_identity_quat(2)[None, :, :], (2, 1, 1)),
+        src_root_translation=np.array(
+            [
+                [0.0, 1.0, 0.0],
+                [0.0, 2.0, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        src_root_rotation=np.tile(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64), (2, 1)),
+        src_bone_translations=None,
+        src_match_names=['locator2', 'koshi'],
+        tgt_match_names=['EAL1_2', 'N_ALL', 'locator2', 'koshi'],
+        coordinate_search=False,
+        verbose=False,
+    )
+
+    np.testing.assert_array_equal(
+        np.asarray(result['src_to_tgt'], dtype=np.int32),
+        np.array([2, 3], dtype=np.int32),
+    )
+    np.testing.assert_allclose(
+        np.asarray(result['target_world_positions'], dtype=np.float64)[:, 2, :],
+        np.array(
+            [
+                [0.0, 6.0, 0.0],
+                [0.0, 7.0, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        np.asarray(result['target_world_positions'], dtype=np.float64)[:, 3, :],
+        np.array(
+            [
+                [0.0, 7.0, 0.0],
+                [0.0, 8.0, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        atol=1e-6,
+    )
+
+    pose_rotations = np.asarray(result['joint_rotations'], dtype=np.float64).copy()
+    pose_locations = np.zeros((pose_rotations.shape[0], pose_rotations.shape[1], 3), dtype=np.float64)
+    if result['bone_translations'] is not None:
+        pose_locations[:] = np.asarray(result['bone_translations'], dtype=np.float64)
+    pose_rotations[:, 0, :] = np.asarray(result['root_rotation'], dtype=np.float64)
+    pose_locations[:, 0, :] = np.asarray(result['root_translation'], dtype=np.float64)
+
+    reconstructed_world_positions, _ = retarget_mod._batch_pose_fk_np(
+        pose_rotations,
+        pose_locations,
+        tgt_parents,
+        tgt_rest_offsets,
+        tgt_rest_rotations,
+    )
+    np.testing.assert_allclose(
+        reconstructed_world_positions,
+        np.asarray(result['target_world_positions'], dtype=np.float64),
+        atol=1e-6,
+    )
+
+
 def test_build_target_animation_preserves_world_rotations_across_gap() -> None:
     parents = np.array([-1, 0, 1], dtype=np.int32)
     offsets = np.array(
