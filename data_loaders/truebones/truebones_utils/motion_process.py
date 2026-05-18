@@ -56,6 +56,7 @@ from .features import (
 
 # ── dataset_pipeline (dataset building) ─────────────────────────────────
 from .dataset_pipeline import (
+    DatasetPreprocessingError,
     create_data_samples,
     process_skeleton,
 )

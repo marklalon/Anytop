@@ -275,7 +275,7 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
 
 
 def _match_object_type(file_stem: str, cond: dict) -> str:
-    from utils.misc import infer_object_type_from_filename
+    from Anytop.utils.misc import infer_object_type_from_filename
 
     result = infer_object_type_from_filename(file_stem, valid_types=cond.keys())
     _require(result is not None, f"could not match motion file to object type: {file_stem}")

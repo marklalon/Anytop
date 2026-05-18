@@ -1,4 +1,3 @@
-import importlib.util
 import json
 import os
 import sys
@@ -11,13 +10,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata, write_motion_metadata
 from data_loaders.truebones.truebones_utils import dataset_pipeline as dataset_pipeline_mod
+from data_loaders.truebones.truebones_utils import motion_process as motion_process_mod
 
-
-_MODULE_PATH = Path(__file__).resolve().parents[1] / "tools" / "regenerate_dataset_artifacts.py"
-_SPEC = importlib.util.spec_from_file_location("regenerate_dataset_artifacts_module", _MODULE_PATH)
-assert _SPEC is not None and _SPEC.loader is not None
-regenerate_dataset_artifacts_module = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(regenerate_dataset_artifacts_module)
+from tools import regenerate_dataset_artifacts as regenerate_dataset_artifacts_module
+import preprocess_and_validate as preprocess_and_validate_module
 
 
 def _make_cond_entry(object_type: str) -> dict[str, object]:
@@ -136,6 +132,109 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
     assert "~~~~ objects_counts - Total: 2 ~~~~" in metadata_summary
     assert "Cat: 1" in metadata_summary
     assert "Dog: 1" in metadata_summary
+
+
+def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch, tmp_path):
+    dataset_dir = tmp_path / "dataset"
+
+    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None):
+        return {
+            'object_type': object_type,
+            'object_cond': _make_cond_entry(object_type),
+            'errors': {'Cat run clip': 0.010000},
+            'max_joints': 2,
+            'results': [],
+            'files_counter': 0,
+            'frames_counter': 0,
+            'face_joints': face_joints,
+            'motion_errors': [],
+        }
+
+    def fake_write_object_outputs(save_dir, object_payload, files_counter):
+        motions_dir = Path(save_dir) / 'motions'
+        motion_name = f"{object_payload['object_type']}_Run_001.npy"
+        np.save(motions_dir / motion_name, np.zeros((3, 2, 3), dtype=np.float32))
+        return files_counter + 1, 3, {
+            motion_name: {
+                'object_type': object_payload['object_type'],
+                'action_label': 'Run',
+                'motion_name': motion_name,
+                'translation_root_index': 1,
+            }
+        }
+
+    monkeypatch.setattr(dataset_pipeline_mod, '_prepare_object_outputs', fake_prepare_object_outputs)
+    monkeypatch.setattr(dataset_pipeline_mod, '_write_object_outputs', fake_write_object_outputs)
+
+    dataset_pipeline_mod.create_data_samples(
+        objects=['Cat'],
+        dataset_dir=str(dataset_dir),
+        object_workers=1,
+    )
+
+    seed_cond = dict(np.load(dataset_dir / 'cond.npy', allow_pickle=True).item())
+    assert sorted(seed_cond) == ['Cat']
+    assert 'joints_names_embs' not in seed_cond['Cat']
+
+    motion_metadata = load_motion_metadata(dataset_dir)
+    assert motion_metadata['Cat_Run_001.npy']['translation_root_index'] == 1
+
+    positions_error_lines = (dataset_dir / 'positions_error_rate.txt').read_text(encoding='utf-8').splitlines()
+    assert positions_error_lines[0] == 'Position squared error per source clip:'
+    assert 'Cat run clip: 0.010000' in positions_error_lines
+
+    assert not (dataset_dir / 'metadata.txt').exists()
+    assert not (dataset_dir / 'joint_name_inspection').exists()
+
+
+def test_create_data_samples_raises_preprocess_error_instead_of_exit(monkeypatch, tmp_path):
+    dataset_dir = tmp_path / 'dataset'
+
+    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None):
+        return {
+            'object_type': object_type,
+            'object_cond': _make_cond_entry(object_type),
+            'errors': {},
+            'max_joints': 2,
+            'results': [],
+            'files_counter': 0,
+            'frames_counter': 0,
+            'face_joints': face_joints,
+            'motion_errors': ['boom'],
+        }
+
+    monkeypatch.setattr(dataset_pipeline_mod, '_prepare_object_outputs', fake_prepare_object_outputs)
+
+    with pytest.raises(dataset_pipeline_mod.DatasetPreprocessingError) as exc_info:
+        dataset_pipeline_mod.create_data_samples(
+            objects=['Cat'],
+            dataset_dir=str(dataset_dir),
+            object_workers=1,
+        )
+
+    assert exc_info.value.motion_errors == ('boom',)
+
+
+def test_run_preprocessing_calls_create_data_samples_directly(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_create_data_samples(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(motion_process_mod, 'create_data_samples', fake_create_data_samples)
+
+    ret = preprocess_and_validate_module.run_preprocessing(
+        'all',
+        4,
+        raw_data_dir='raw_dir',
+        dataset_dir='dataset_dir',
+    )
+
+    assert ret == 0
+    assert captured['objects'] == list(preprocess_and_validate_module.OBJECT_SUBSETS_DICT['all'])
+    assert captured['dataset_dir'] == 'dataset_dir'
+    assert captured['raw_data_dir'] == 'raw_dir'
+    assert captured['object_workers'] == 4
 
 
 def test_process_skeleton_retarget_branch_writes_translation_root_metadata(monkeypatch, tmp_path):

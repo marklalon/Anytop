@@ -43,6 +43,12 @@ from .features import (
 )
 
 
+class DatasetPreprocessingError(RuntimeError):
+    def __init__(self, motion_errors):
+        self.motion_errors = tuple(str(err) for err in motion_errors)
+        super().__init__(f"{len(self.motion_errors)} motion processing error(s)")
+
+
 ################## Statistics & Topology #####################
 
 """ computes mean and std for a list of motions """
@@ -518,23 +524,38 @@ def _write_object_outputs(save_dir, object_payload, files_counter):
     return files_counter, frames_counter, motion_metadata
 
 
-def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, max_joints, files_counter, frames_counter, squared_positions_error):
+def _print_dataset_summary(max_joints, files_counter, frames_counter):
     print('Total clips: %d, Frames: %d, Duration: %fm' %(files_counter, frames_counter, frames_counter / 12.5 / 60))
     print('max joints: %d' %(max_joints))
-    text_file = open(pjoin(save_dir, 'metadata.txt'), "w")
-    n = text_file.write('max joints: %d\n' %(max_joints))
-    n = text_file.write('total frames: %d\n' %(frames_counter))
-    n = text_file.write('duration: %d\n' %(frames_counter / 12.5 / 60))
-    n = text_file.write('~~~~ objects_counts - Total: %d ~~~~\n' %(files_counter) )
-    for obj in objects_counter:
-        text_file.write('%s: %d\n' %(obj, objects_counter[obj]))
-    text_file.close()
 
-    error_file = open(pjoin(save_dir, 'positions_error_rate.txt'), "w")
-    n = error_file.write('Position squared error per source clip:')
-    for f in squared_positions_error.keys():
-        error_file.write('%s: %f\n' %(f, squared_positions_error[f]))
-    error_file.close()
+
+def _write_positions_error_file(save_dir, squared_positions_error):
+    with open(pjoin(save_dir, 'positions_error_rate.txt'), 'w', encoding='utf-8') as error_file:
+        error_file.write('Position squared error per source clip:\n')
+        for source_clip, squared_error in squared_positions_error.items():
+            error_file.write('%s: %f\n' %(source_clip, squared_error))
+
+
+def _write_preprocess_seed_artifacts(save_dir, cond, motion_metadata, max_joints, files_counter, frames_counter, squared_positions_error):
+    # Seed artifacts are the minimum inputs regeneration needs to rebuild the
+    # full side-artifact set after motion export completes.
+    _print_dataset_summary(max_joints, files_counter, frames_counter)
+    _write_positions_error_file(save_dir, squared_positions_error)
+    np.save(pjoin(save_dir, 'cond.npy'), cond)
+    write_motion_metadata(save_dir, motion_metadata, files_counter)
+
+
+def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, max_joints, files_counter, frames_counter, squared_positions_error):
+    _print_dataset_summary(max_joints, files_counter, frames_counter)
+    with open(pjoin(save_dir, 'metadata.txt'), 'w', encoding='utf-8') as text_file:
+        text_file.write('max joints: %d\n' %(max_joints))
+        text_file.write('total frames: %d\n' %(frames_counter))
+        text_file.write('duration: %d\n' %(frames_counter / 12.5 / 60))
+        text_file.write('~~~~ objects_counts - Total: %d ~~~~\n' %(files_counter) )
+        for obj in objects_counter:
+            text_file.write('%s: %d\n' %(obj, objects_counter[obj]))
+
+    _write_positions_error_file(save_dir, squared_positions_error)
 
     attach_joint_name_embeddings_to_cond(cond, save_dir)
     np.save(pjoin(save_dir, "cond.npy"), cond)
@@ -661,52 +682,12 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
         for err in all_motion_errors:
             print(err)
         print(f"{'=' * 70}\n")
-        sys.exit(1)
+        raise DatasetPreprocessingError(all_motion_errors)
 
-    _write_dataset_artifacts(
+    _write_preprocess_seed_artifacts(
         target_dataset_dir,
         cond,
         motion_metadata,
-        objects_counter,
-        max_joints,
-        files_counter,
-        frames_counter,
-        squared_positions_error,
-    )
-
-
-########################### Tests ##############################
-def process_single_object_type(object_type, save_dir):
-    ## prepare
-    os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
-    os.makedirs(pjoin(save_dir, BVHS_DIR), exist_ok=True)
-    
-    ## process
-    files_counter = 0
-    frames_counter = 0
-    max_joints = 23
-    objects_counter = dict()
-    squared_positions_error = dict()
-    cond = dict()
-    motion_metadata = {}
-    cur_counter = files_counter
-    files_counter, frames_counter, max_joints, object_cond, object_motion_metadata = process_object(
-        object_type,
-        files_counter,
-        frames_counter,
-        max_joints,
-        squared_positions_error,
-        save_dir=save_dir,
-    )
-    cond[object_type] = object_cond
-    objects_counter[object_type] = files_counter - cur_counter 
-    motion_metadata.update(object_motion_metadata)
-
-    _write_dataset_artifacts(
-        save_dir,
-        cond,
-        motion_metadata,
-        objects_counter,
         max_joints,
         files_counter,
         frames_counter,

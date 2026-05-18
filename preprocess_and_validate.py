@@ -247,29 +247,34 @@ def run_preprocessing(
     raw_data_dir: str = "",
     dataset_dir: str = "",
 ) -> int:
-    """Run the AnyTop dataset preprocessing."""
+    """Run the AnyTop dataset preprocessing in-process."""
     print("\n" + "=" * 70)
     print("STEP 1: PREPROCESSING - Creating AnyTop dataset")
     print("=" * 70 + "\n")
 
-    cmd = [
-        sys.executable, "-m", "utils.create_dataset",
-        "--objects-subset", objects_subset,
-        "--object-workers", str(object_workers),
-    ]
+    if str(ANYTOP_DIR.parent) not in sys.path:
+        sys.path.insert(0, str(ANYTOP_DIR.parent))
 
-    if raw_data_dir:
-        cmd.extend(["--raw-data-dir", raw_data_dir])
-    if dataset_dir:
-        cmd.extend(["--dataset-dir", dataset_dir])
+    from data_loaders.truebones.truebones_utils.motion_process import (
+        DatasetPreprocessingError,
+        create_data_samples,
+    )
 
-    # Add parent of Anytop/ to PYTHONPATH so `from Anytop.utils...` imports work
-    env = os.environ.copy()
-    existing_pythonpath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = str(ANYTOP_DIR.parent) + os.pathsep + existing_pythonpath
-
-    result = subprocess.run(cmd, cwd=str(ANYTOP_DIR), capture_output=False, env=env)
-    return result.returncode
+    try:
+        create_data_samples(
+            objects=list(OBJECT_SUBSETS_DICT[objects_subset]),
+            dataset_dir=dataset_dir or None,
+            raw_data_dir=raw_data_dir or None,
+            object_workers=object_workers,
+        )
+        return 0
+    except DatasetPreprocessingError:
+        return 1
+    except Exception as e:
+        print(f"ERROR: Failed to preprocess dataset: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
 
 
 def run_re_encode_joint_names_only(

@@ -80,6 +80,16 @@ def _rewrite_positions_error_file(dataset_dir_path: Path, motion_entries: dict[s
     if positions_error_path.exists():
         existing_lines = positions_error_path.read_text(encoding="utf-8").splitlines()
 
+    header = "Position squared error per source clip:"
+    existing_entries: list[str] = []
+    if existing_lines:
+        first_line = existing_lines[0].strip()
+        if first_line.startswith(header):
+            trailing_entry = first_line[len(header):].strip()
+            if trailing_entry:
+                existing_entries.append(trailing_entry)
+        existing_entries.extend(line.strip() for line in existing_lines[1:] if line.strip())
+
     motion_signatures = [
         (
             _normalize_identifier(str(entry.get("object_type", ""))),
@@ -88,7 +98,7 @@ def _rewrite_positions_error_file(dataset_dir_path: Path, motion_entries: dict[s
         for entry in motion_entries.values()
     ]
     filtered_lines: list[str] = []
-    for line in existing_lines[1:]:
+    for line in existing_entries:
         normalized_line = _normalize_identifier(line)
         if any(obj and obj in normalized_line and (not action or action in normalized_line) for obj, action in motion_signatures):
             filtered_lines.append(line)

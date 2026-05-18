@@ -1,5 +1,5 @@
 import argparse
-import os
+import sys
 
 from data_loaders.truebones.truebones_utils.param_utils import OBJECT_SUBSETS_DICT
 
@@ -25,16 +25,30 @@ def main():
     if objects is None:
         objects = list(OBJECT_SUBSETS_DICT[args.objects_subset])
 
-    from data_loaders.truebones.truebones_utils.motion_process import create_data_samples
-
-    create_data_samples(
-        objects=objects,
-        max_files_per_object=args.max_files_per_object,
-        dataset_dir=args.dataset_dir or None,
-        raw_data_dir=args.raw_data_dir or None,
-        object_workers=args.object_workers,
+    from data_loaders.truebones.truebones_utils.motion_process import (
+        DatasetPreprocessingError,
+        create_data_samples,
     )
+
+    try:
+        create_data_samples(
+            objects=objects,
+            max_files_per_object=args.max_files_per_object,
+            dataset_dir=args.dataset_dir or None,
+            raw_data_dir=args.raw_data_dir or None,
+            object_workers=args.object_workers,
+        )
+    except DatasetPreprocessingError:
+        return 1
+
+    # Preprocessing writes the seed artifacts regenerate needs (cond.npy,
+    # motion_metadata.json, positions_error_rate.txt). Regeneration then
+    # rebuilds the full side-artifact set from that seed state.
+    from tools.regenerate_dataset_artifacts import regenerate_dataset_artifacts
+    regenerate_dataset_artifacts(dataset_dir=args.dataset_dir or None)
+
+    return 0
 
 
 if __name__=="__main__":
-    main()
+    sys.exit(main())
