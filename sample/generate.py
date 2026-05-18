@@ -27,6 +27,9 @@ from data_loaders.truebones.data.dataset import (
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_process import (
+    FOOT_CONTACT_VEL_THRESH,
+    get_common_features_from_T_pose,
+    get_motion,
     recover_bvh_export_animation_from_motion_np,
 )
 from motion_lib import BVH
@@ -40,6 +43,136 @@ from utils.model_util import (
 )
 from utils.parser_util import generate_args
 from utils.misc import infer_object_type_from_filename
+
+
+_REFERENCE_MOTION_PREPROCESS_SUFFIXES = {'.fbx', '.glb', '.gltf'}
+
+
+def _lookup_object_type_case_insensitive(object_types, requested_type):
+    if requested_type is None:
+        return None
+    return next(
+        (object_type for object_type in object_types if object_type.upper() == requested_type.upper()),
+        None,
+    )
+
+
+def _load_default_cond_cache(default_cond_file, actual_cond_file):
+    if not default_cond_file:
+        return None
+
+    default_real = os.path.realpath(default_cond_file)
+    actual_real = os.path.realpath(actual_cond_file)
+    try:
+        if os.path.samefile(default_real, actual_real):
+            return None
+    except FileNotFoundError:
+        if default_real == actual_real:
+            return None
+
+    return np.load(default_cond_file, allow_pickle=True).item()
+
+
+def _resolve_reference_source_type(
+    reference_motion_path,
+    cond_dict,
+    *,
+    target_type=None,
+    default_cond_file=None,
+    actual_cond_file=None,
+):
+    blind_type = infer_object_type_from_filename(
+        reference_motion_path,
+        valid_types=None,
+    )
+    source_type = _lookup_object_type_case_insensitive(cond_dict.keys(), blind_type)
+    default_cond_cache = None
+
+    if source_type is None and blind_type and default_cond_file and actual_cond_file:
+        default_cond_cache = _load_default_cond_cache(default_cond_file, actual_cond_file)
+        if default_cond_cache:
+            source_type = _lookup_object_type_case_insensitive(default_cond_cache.keys(), blind_type)
+
+    used_target_fallback = False
+    if source_type is None and target_type is not None:
+        source_type = target_type
+        used_target_fallback = True
+
+    return source_type, default_cond_cache, blind_type, used_target_fallback
+
+
+def _prepare_reference_motion_path(
+    reference_motion_path,
+    source_type,
+    source_cond,
+    opt,
+    output_dir,
+):
+    suffix = os.path.splitext(reference_motion_path)[1].lower()
+    if suffix == '.npy':
+        return reference_motion_path
+
+    if suffix not in _REFERENCE_MOTION_PREPROCESS_SUFFIXES:
+        raise ValueError(
+            f"Unsupported reference motion format: {suffix or '<no extension>'}. "
+            "Supported formats: .npy, .fbx, .glb, .gltf"
+        )
+
+    if source_cond is None:
+        raise KeyError(
+            f"Missing cond entry for reference motion object_type '{source_type}'. "
+            "Cannot preprocess non-NPY reference motion."
+        )
+
+    tpose_path = source_cond.get('orientation_reference_fbx_path')
+    if not tpose_path or not os.path.isfile(tpose_path):
+        raise FileNotFoundError(
+            f"Reference motion preprocessing requires a valid orientation_reference_fbx_path "
+            f"for '{source_type}', not found: {tpose_path!r}"
+        )
+
+    cond_parents = source_cond.get('parents')
+    preprocess_max_joints = len(cond_parents) if cond_parents is not None else int(opt.max_joints)
+
+    print(f"  Preprocessing reference motion {suffix} -> .npy using object_type={source_type}")
+    source_tp = get_common_features_from_T_pose(
+        tpose_path,
+        source_type,
+        augment_leaf_rotation_helpers=True,
+        max_joints=preprocess_max_joints,
+    )
+    scale_factor = float(source_cond.get('scale_factor', source_tp.scale_factor))
+    squared_positions_error = {}
+    source_features, *_ = get_motion(
+        reference_motion_path,
+        FOOT_CONTACT_VEL_THRESH,
+        source_type,
+        preprocess_max_joints,
+        source_tp.offsets,
+        source_tp.foot_indices,
+        source_tp.tpos_rots,
+        squared_positions_error,
+        scale_factor=scale_factor,
+        orientation_quat=source_tp.orientation_quat,
+        helper_metadata=source_tp.helper_metadata,
+    )
+    if source_features is None:
+        raise RuntimeError(
+            f"Failed to preprocess reference motion '{reference_motion_path}' into feature-space NPY"
+        )
+
+    source_features = np.asarray(source_features, dtype=np.float32)
+    if source_features.shape[1] != len(source_tp.names):
+        raise RuntimeError(
+            "Reference motion preprocessing produced a joint count that does not match "
+            "the helper-aware T-pose feature skeleton"
+        )
+
+    base = os.path.splitext(os.path.basename(reference_motion_path))[0]
+    out_npy = os.path.join(output_dir, f"_reference_features_{source_type}__{base}.npy")
+    np.save(out_npy, source_features, allow_pickle=False)
+    print(f"  Converted reference motion -> {out_npy}")
+    return out_npy
 
 
 def _retarget_reference_motion(
@@ -310,10 +443,7 @@ def main(args=None, cond_dict=None):
     if explicit_object_type:
         # Case A: explicit --object_type provided.
         # Look up case-insensitively in cond_dict.
-        target_type = next(
-            (k for k in cond_dict if k.upper() == explicit_object_type.upper()),
-            None,
-        )
+        target_type = _lookup_object_type_case_insensitive(cond_dict.keys(), explicit_object_type)
         if target_type is None:
             available = ', '.join(sorted(cond_dict.keys()))
             sys.exit(
@@ -340,50 +470,42 @@ def main(args=None, cond_dict=None):
     source_type = None
     needs_retarget = False
     _default_cond_cache = None
+    source_type_used_target_fallback = False
+    blind_type = None
 
     if reference_motion_path:
-        # Blind inference from filename, then look up in cond.
-        blind_type = infer_object_type_from_filename(
-            reference_motion_path, valid_types=None
+        source_type, _default_cond_cache, blind_type, source_type_used_target_fallback = _resolve_reference_source_type(
+            reference_motion_path,
+            cond_dict,
+            target_type=target_type,
+            default_cond_file=getattr(opt, 'cond_file', None),
+            actual_cond_file=actual_cond_file,
         )
-        if blind_type:
-            # Look up case-insensitively in user-provided cond_dict first.
-            source_type = next(
-                (k for k in cond_dict if k.upper() == blind_type.upper()),
-                None,
-            )
-            if source_type is None:
-                # Not in user-provided cond — try default cond.
-                default_cond_file = getattr(opt, 'cond_file', None)
-                if default_cond_file and not os.path.samefile(
-                    os.path.realpath(default_cond_file),
-                    os.path.realpath(actual_cond_file),
-                ):
-                    _default_cond_cache = np.load(default_cond_file, allow_pickle=True).item()
-                    source_type = next(
-                        (k for k in _default_cond_cache if k.upper() == blind_type.upper()),
-                        None,
-                    )
-            if source_type is None:
-                available = ', '.join(sorted(cond_dict.keys()))
-                if _default_cond_cache:
-                    default_available = ', '.join(sorted(_default_cond_cache.keys()))
-                    sys.exit(
-                        f"ERROR: source type '{blind_type}' (inferred from reference motion "
-                        f"{reference_motion_path}) not found in any cond file. "
-                        f"Available in user cond: {available}\n"
-                        f"Available in default cond: {default_available}"
-                    )
+        if source_type is None and blind_type:
+            available = ', '.join(sorted(cond_dict.keys()))
+            if _default_cond_cache:
+                default_available = ', '.join(sorted(_default_cond_cache.keys()))
                 sys.exit(
                     f"ERROR: source type '{blind_type}' (inferred from reference motion "
-                    f"{reference_motion_path}) not found in cond file. "
-                    f"Available: {available}"
+                    f"{reference_motion_path}) not found in any cond file. "
+                    f"Available in user cond: {available}\n"
+                    f"Available in default cond: {default_available}"
                 )
+            sys.exit(
+                f"ERROR: source type '{blind_type}' (inferred from reference motion "
+                f"{reference_motion_path}) not found in cond file. "
+                f"Available: {available}"
+            )
     if source_type and target_type and source_type.upper() != target_type.upper():
         needs_retarget = True
 
     object_type = target_type  # downstream code keeps reading `object_type`
     if reference_motion_path:
+        if source_type_used_target_fallback:
+            print(
+                f"Reference motion object_type inference was invalid"
+                f" ({blind_type or 'no match'}); falling back to target object_type: {target_type}"
+            )
         if needs_retarget:
             print(f"Reference motion object_type: {source_type} (will retarget to {target_type})")
         else:
@@ -403,7 +525,23 @@ def main(args=None, cond_dict=None):
         ref_motion = None
         effective_n_frames = n_frames  # May be overridden by reference motion
 
-        effective_reference_path = reference_motion_path
+        source_cond_entry = None
+        if source_type:
+            source_cond_entry = cond_dict.get(source_type)
+            if source_cond_entry is None and _default_cond_cache:
+                source_cond_entry = _default_cond_cache.get(source_type)
+
+        prepared_reference_path = reference_motion_path
+        if reference_motion_path:
+            prepared_reference_path = _prepare_reference_motion_path(
+                reference_motion_path,
+                source_type,
+                source_cond_entry,
+                opt,
+                out_path,
+            )
+
+        effective_reference_path = prepared_reference_path
         if needs_retarget:
             # Build a cond_dict that contains both source and target.
             retarget_cond_dict = dict(cond_dict)
@@ -420,7 +558,7 @@ def main(args=None, cond_dict=None):
                     )
 
             effective_reference_path = _retarget_reference_motion(
-                reference_motion_path,
+                prepared_reference_path,
                 source_type=source_type,
                 target_type=target_type,
                 cond_dict=retarget_cond_dict,
@@ -469,8 +607,10 @@ def main(args=None, cond_dict=None):
             ref_tensor = ref_tensor.unsqueeze(0).expand(args.batch_size, -1, -1, -1)
             ref_motion = ref_tensor
             print(f'  Reference motion loaded: {effective_reference_path}')
-            if effective_reference_path != reference_motion_path:
-                print(f'    (retargeted from original: {reference_motion_path})')
+            if prepared_reference_path != reference_motion_path:
+                print(f'    (preprocessed from original: {reference_motion_path})')
+            if effective_reference_path != prepared_reference_path:
+                print(f'    (retargeted from preprocessed: {prepared_reference_path})')
             print(f'    Original: [{ref_frames} frames, {ref_joints} joints] -> Target: [{effective_n_frames} frames, {max_joints} joints]')
             print(f'    skip_timesteps: {skip_timesteps} (higher = more faithful to reference)')
 

@@ -212,11 +212,13 @@ def add_generate_options(parser):
     group.add_argument("--ddim_eta", default=0.0, type=float,
                        help="DDIM eta parameter. 0.0 = deterministic. Default: 0.0.")
     group.add_argument("--reference_motion", default=None, type=str,
-                       help="Path to a reference motion .npy file. When provided, the reference motion is noised "
-                            "to an intermediate timestep and denoising starts from there (img2img-style). "
-                            "If --object_type is not given, it is inferred from the reference filename. "
-                            "If --object_type is given and differs from the reference's inferred type, the "
-                            "reference is auto-retargeted to the requested skeleton before noising. "
+                       help="Path to a reference motion .npy/.fbx/.glb/.gltf file. Non-NPY inputs are "
+                           "preprocessed into the same 13-channel feature-space NPY used by training, then "
+                           "noised to an intermediate timestep (img2img-style). If --object_type is not given, "
+                           "it is inferred from the reference filename. If --object_type is given and differs "
+                           "from the reference's inferred type, the reference is auto-retargeted to the requested "
+                           "skeleton before noising. When filename inference is invalid, the target object_type "
+                           "is used as a fallback. "
                             "Omit for pure random generation.")
     group.add_argument("--skip_timesteps", default=80, type=int,
                        help="Number of timesteps to skip when using --reference_motion. Higher = more faithful to reference. Range: 0~sampling_steps. Default: 80.")
