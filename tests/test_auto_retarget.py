@@ -1,6 +1,7 @@
 import os
 import sys
 import importlib.util
+import pathlib
 from types import SimpleNamespace
 
 import numpy as np
@@ -801,6 +802,101 @@ def test_retarget_features_npy_to_target_uses_tpose_aligned_motion_path(monkeypa
     assert captured['kwargs']['animation_input_is_tpose_aligned'] is True
 
 
+def test_retarget_features_npy_to_target_uses_effective_root_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import data_loaders.truebones.truebones_utils.features as features_mod
+    import utils.exporter as exporter_mod
+    import utils.roundtrip_common as roundtrip_common_mod
+    import Anytop.utils.auto_retarget as auto_retarget_mod
+
+    sentinel_anim = Animation(
+        Quaternions(np.tile(_identity_quat(2)[None, :, :], (1, 1, 1))),
+        np.zeros((1, 2, 3), dtype=np.float64),
+        Quaternions(_identity_quat(2)),
+        np.zeros((2, 3), dtype=np.float64),
+        np.array([-1, 0], dtype=np.int32),
+    )
+    source_tp = SimpleNamespace(
+        names=['Root', 'Head'],
+        offsets=np.zeros((2, 3), dtype=np.float32),
+        tpos_anim=SimpleNamespace(parents=np.array([-1, 0], dtype=np.int32)),
+        tpos_rots=_identity_quat(2)[None, :, :].astype(np.float32),
+    )
+    target_tp = SimpleNamespace(
+        names=['Root', 'Head'],
+        offsets=np.zeros((2, 3), dtype=np.float64),
+        tpos_anim=SimpleNamespace(parents=np.array([-1, 0], dtype=np.int32)),
+        tpos_rots=_identity_quat(2)[None, :, :].astype(np.float64),
+        foot_indices=[],
+        scale_factor=1.0,
+        orientation_quat=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+        helper_metadata=None,
+    )
+    source_cond = {
+        'object_type': 'Parrot',
+        'original_joint_count': 2,
+        'canonical_joint_names': ['Root', 'Head'],
+        'orientation_reference_fbx_path': 'unused',
+    }
+    target_cond = {
+        'object_type': 'Dragon',
+        'canonical_joint_names': ['Root', 'Head'],
+    }
+
+    monkeypatch.setattr(features_mod, 'recover_animation_from_motion_np', lambda *args, **kwargs: (object(), False))
+    monkeypatch.setattr(roundtrip_common_mod, '_build_skeleton', lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        exporter_mod,
+        'animation_to_exporter_inputs',
+        lambda *args, **kwargs: (
+            _TensorLike(np.zeros((1, 2, 4), dtype=np.float32)),
+            _TensorLike(np.zeros((1, 3), dtype=np.float32)),
+            _TensorLike(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32)),
+            None,
+        ),
+    )
+    monkeypatch.setattr(auto_retarget_mod, 'find_translation_root', lambda anim: 0)
+    monkeypatch.setattr(auto_retarget_mod, '_build_tpose_aligned_target_animation', lambda *args, **kwargs: sentinel_anim)
+
+    captured: dict[str, object] = {}
+
+    def _fake_retarget_world_space_np(**kwargs):
+        captured['src_effective_root_index'] = kwargs['src_effective_root_index']
+        return {'src_to_tgt': np.array([0, 1], dtype=np.int32)}
+
+    monkeypatch.setattr(retarget_mod, 'retarget_world_space_np', _fake_retarget_world_space_np)
+    monkeypatch.setattr(
+        features_mod,
+        'get_motion',
+        lambda *args, **kwargs: (
+            np.zeros((1, 2, 13), dtype=np.float32),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+    )
+
+    result = retarget_features_npy_to_target(
+        np.zeros((1, 2, 13), dtype=np.float32),
+        source_cond,
+        'Parrot',
+        target_tp,
+        'Dragon',
+        max_joints=2,
+        source_tp=source_tp,
+        target_cond=target_cond,
+        source_effective_root_index_override=2,
+    )
+
+    assert result is not None
+    assert captured['src_effective_root_index'] == 2
+
+
 def test_retarget_promotes_unmapped_effective_root_to_target_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1176,4 +1272,122 @@ def test_build_target_animation_prefers_retarget_bone_translations() -> None:
     np.testing.assert_allclose(anim.positions[0, 0], np.array([0.0, 0.0, 0.0], dtype=np.float64), atol=1e-6)
     np.testing.assert_allclose(anim.positions[0, 1], np.array([0.0, 1.0, 0.0], dtype=np.float64), atol=1e-6)
     np.testing.assert_allclose(anim.positions[0, 2], np.array([0.0, 0.5, 0.0], dtype=np.float64), atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# _infer_donor_consensus_effective_root_index
+# ---------------------------------------------------------------------------
+
+
+def test_infer_donor_consensus_effective_root_index_majority_vote(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Majority vote: 3 files with root=2, 2 files with root=5 => returns 2."""
+    import Anytop.utils.auto_retarget as auto_retarget_mod
+    import data_loaders.truebones.truebones_utils.features as features_mod
+
+    npy_dir = tmp_path / "npys"
+    npy_dir.mkdir()
+    parents = np.array([-1, 0, 1], dtype=np.int32)
+    offsets = np.array([[0, 0, 0], [0, 1, 0], [0, 1, 0]], dtype=np.float64)
+    donor_cond = {'parents': parents, 'offsets': offsets}
+
+    paths: list[str] = []
+    for i in range(5):
+        p = npy_dir / f"motion_{i}.npy"
+        np.save(str(p), np.zeros((1, 3, 13), dtype=np.float32))
+        paths.append(str(p))
+
+    # 3 files → root 2,  2 files → root 5
+    call_count: list[int] = [0]
+    def _mock_infer(data, parents_, offsets_, **_kw):  # type: ignore
+        idx = call_count[0]
+        call_count[0] += 1
+        return 2 if idx < 3 else 5
+
+    monkeypatch.setattr(features_mod, 'infer_translation_root_index_from_features', _mock_infer)
+
+    result = auto_retarget_mod._infer_donor_consensus_effective_root_index(paths, donor_cond)
+    assert result == 2
+
+
+def test_infer_donor_consensus_effective_root_index_empty_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty npy list => None."""
+    import Anytop.utils.auto_retarget as auto_retarget_mod
+
+    donor_cond = {
+        'parents': np.array([-1, 0], dtype=np.int32),
+        'offsets': np.array([[0, 0, 0], [0, 1, 0]], dtype=np.float64),
+    }
+    result = auto_retarget_mod._infer_donor_consensus_effective_root_index([], donor_cond)
+    assert result is None
+
+
+def test_infer_donor_consensus_effective_root_index_single(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Single file => returns that file's root index."""
+    import Anytop.utils.auto_retarget as auto_retarget_mod
+    import data_loaders.truebones.truebones_utils.features as features_mod
+
+    npy_dir = tmp_path / "npys_single"
+    npy_dir.mkdir()
+    donor_cond = {
+        'parents': np.array([-1, 0], dtype=np.int32),
+        'offsets': np.array([[0, 0, 0], [0, 1, 0]], dtype=np.float64),
+    }
+    p = npy_dir / "only.npy"
+    np.save(str(p), np.zeros((1, 2, 13), dtype=np.float32))
+
+    monkeypatch.setattr(
+        features_mod,
+        'infer_translation_root_index_from_features',
+        lambda *a, **kw: 7,
+    )
+
+    result = auto_retarget_mod._infer_donor_consensus_effective_root_index([str(p)], donor_cond)
+    assert result == 7
+
+
+def test_infer_donor_consensus_effective_root_index_skip_corrupted(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Corrupted .npy files are skipped; returns consensus of valid ones."""
+    import Anytop.utils.auto_retarget as auto_retarget_mod
+    import data_loaders.truebones.truebones_utils.features as features_mod
+
+    npy_dir = tmp_path / "npys_corrupt"
+    npy_dir.mkdir()
+    donor_cond = {
+        'parents': np.array([-1, 0], dtype=np.int32),
+        'offsets': np.array([[0, 0, 0], [0, 1, 0]], dtype=np.float64),
+    }
+
+    # Valid file
+    good = npy_dir / "good.npy"
+    np.save(str(good), np.zeros((1, 2, 13), dtype=np.float32))
+
+    # Corrupted file (not a valid .npy)
+    bad = npy_dir / "bad.npy"
+    bad.write_bytes(b"not a numpy file")
+
+    call_log: list[int] = []
+    def _mock_infer(data, parents_, offsets_, **_kw):  # type: ignore
+        call_log.append(1)
+        return 3
+
+    monkeypatch.setattr(features_mod, 'infer_translation_root_index_from_features', _mock_infer)
+
+    result = auto_retarget_mod._infer_donor_consensus_effective_root_index(
+        [str(good), str(bad)],
+        donor_cond,
+    )
+    # Only the valid file should be counted
+    assert result == 3
+    assert len(call_log) == 1
 

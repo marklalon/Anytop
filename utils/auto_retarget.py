@@ -6,6 +6,7 @@ Used by:
 """
 import glob
 import os
+from collections import Counter
 from os.path import join as pjoin
 from typing import List, Optional, Tuple
 
@@ -72,6 +73,31 @@ def _normalize_match_name(name: str) -> str:
                     return value + " " + digit_int
             return value
     return lower
+
+
+def _infer_donor_consensus_effective_root_index(
+    donor_npys: List[str],
+    donor_cond: dict,
+) -> Optional[int]:
+    from data_loaders.truebones.truebones_utils.features import (
+        infer_translation_root_index_from_features,
+    )
+
+    parents = np.asarray(donor_cond['parents'], dtype=np.int32)
+    offsets = np.asarray(donor_cond['offsets'], dtype=np.float64)
+    counts: Counter[int] = Counter()
+
+    for donor_npy_path in donor_npys:
+        try:
+            donor_features = np.load(donor_npy_path).astype(np.float32)
+            counts[int(infer_translation_root_index_from_features(donor_features, parents, offsets))] += 1
+        except Exception:
+            continue
+
+    if not counts:
+        return None
+
+    return int(counts.most_common(1)[0][0])
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +221,7 @@ def retarget_features_npy_to_target(
     max_joints: int,
     source_tp=None,
     target_cond: Optional[dict] = None,
+    source_effective_root_index_override: Optional[int] = None,
 ) -> Optional[np.ndarray]:
     """Retarget source skeleton's motion features to target skeleton's space.
 
@@ -289,7 +316,10 @@ def retarget_features_npy_to_target(
         translation_root_index=None,
         allow_infer=True,
     )
-    source_effective_root_index = int(find_translation_root(src_anim))
+    if source_effective_root_index_override is None:
+        source_effective_root_index = int(find_translation_root(src_anim))
+    else:
+        source_effective_root_index = int(source_effective_root_index_override)
 
     # 3. Build source skeleton
     src_skeleton = _build_skeleton(
@@ -558,6 +588,15 @@ def auto_retarget_pipeline(
             augment_leaf_rotation_helpers=False,
             max_joints=max_joints,
         )
+        donor_effective_root_index = _infer_donor_consensus_effective_root_index(
+            donor_npys,
+            donor_cond,
+        )
+        if donor_effective_root_index is not None:
+            print(
+                f"[auto_retarget] {donor_name}: using donor effective root "
+                f"{donor_effective_root_index} for retarget mapping"
+            )
 
         n_success = 0
         for src_npy_path in donor_npys:
@@ -581,6 +620,7 @@ def auto_retarget_pipeline(
                     max_joints,
                     source_tp=source_tp,
                     target_cond=target_cond,
+                    source_effective_root_index_override=donor_effective_root_index,
                 )
                 if tgt_features is None:
                     print(f"  ✗ {src_base} (retarget returned None, skipped)")
