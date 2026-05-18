@@ -97,8 +97,8 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
         )
         return []
 
-    monkeypatch.setattr(regenerate_dataset_artifacts_module, "_attach_joint_name_embeddings_to_cond", fake_attach)
-    monkeypatch.setattr(regenerate_dataset_artifacts_module, "_write_joint_name_collision_report", fake_write_collision_report)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
 
     dataset_dir_path = regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
 

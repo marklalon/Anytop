@@ -76,14 +76,6 @@ def get_cont6d_params_own(anim: Any, r_rot: Any) -> np.ndarray:
     return quat_params.rotation_matrix(cont6d=True)
 
 
-def detect_motion_loop(positions: np.ndarray) -> bool:
-    """Return True if the last frame's root-relative pose ≈ first frame's."""
-    if positions.shape[0] < 2:
-        return False
-    per_joint_dist = np.linalg.norm(positions[-1] - positions[0], axis=-1)
-    return bool(np.mean(per_joint_dist) < 0.05)
-
-
 def compute_terminal_local_velocity(global_positions, r_rot, is_loop, prev_velocity=None):
     """Terminal-frame local velocity for feature export."""
     joints_num = global_positions.shape[1]

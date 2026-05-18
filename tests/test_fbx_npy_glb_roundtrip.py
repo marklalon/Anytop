@@ -107,8 +107,7 @@ _DEFAULT_TPOSE_FBX = os.path.join(
 _DEFAULT_OBJECT_TYPE = "Buffalo"
 
 
-def _normalize_bone_key(name: str) -> str:
-    return name.replace(" ", "_").lower()
+from Anytop.utils.misc import normalize_bone_key as _normalize_bone_key
 
 
 def _require_dataset_cond_entry_or_skip(cond_entry: dict[str, Any] | None, object_type: str) -> dict[str, Any]:

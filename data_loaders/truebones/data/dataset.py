@@ -14,9 +14,7 @@ from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.param_utils import parse_action_tags
 from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
 from data_loaders.truebones.truebones_utils.motion_process import (
-    add_joint_augmentation,
     mirror_features_with_safeguards,
-    remove_joints_augmentation,
     refresh_joint_metadata_in_cond_dict,
 )
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import JOINT_NAME_EMBEDDING_SCHEMA_VERSION

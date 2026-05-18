@@ -83,13 +83,12 @@ from Anytop.motion_lib.FBX import (
     _infer_sample_fps,
     _get_action_sample_times,
 )
-from Anytop.utils.exporter import (
+from Anytop.utils.retarget import (
     _generate_coordinate_candidates_np,
 )
 
 
-def _normalize_bone_key(name: str) -> str:
-    return name.replace(" ", "_").lower()
+from Anytop.utils.misc import normalize_bone_key as _normalize_bone_key
 
 
 # ── Data structures ───────────────────────────────────────────────────────────

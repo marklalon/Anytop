@@ -127,3 +127,16 @@ def infer_object_type_from_filename(
         return stripped if stripped else None
 
     return None
+
+
+# ── String normalisation helpers (shared across tools) ───────────────────
+
+def normalize_bone_key(name: str) -> str:
+    """Normalise a bone/joint name for dictionary-key or comparison use."""
+    return name.replace(" ", "_").lower()
+
+
+def normalize_identifier(value: str) -> str:
+    """Strip all non-alphanumeric characters and lower-case."""
+    import re
+    return re.sub(r"[^a-z0-9]+", "", value.lower())

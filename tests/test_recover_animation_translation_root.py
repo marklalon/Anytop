@@ -15,8 +15,8 @@ from data_loaders.truebones.truebones_utils.motion_labels import load_motion_met
 from data_loaders.truebones.truebones_utils.motion_process import (
     FOOT_CONTACT_VEL_THRESH,
     ROOT_XZ_STRIP_THRESHOLD,
-    _find_translation_root,
-    _xz_locomotion_extent,
+    find_translation_root,
+    xz_locomotion_extent,
     get_6d_rep,
     get_common_features_from_T_pose,
     get_hml_aligned_anim,
@@ -117,7 +117,7 @@ def test_find_translation_root_detects_single_chain_descendant():
 
     anim = Animation(rotations, positions, Quaternions.id(len(parents)), offsets, parents)
 
-    assert _find_translation_root(anim) == 2
+    assert find_translation_root(anim) == 2
 
 
 def test_find_translation_root_ignores_descendants_after_branch():
@@ -134,7 +134,7 @@ def test_find_translation_root_ignores_descendants_after_branch():
 
     anim = Animation(rotations, positions, Quaternions.id(len(parents)), offsets, parents)
 
-    assert _find_translation_root(anim) == 0
+    assert find_translation_root(anim) == 0
 
 
 def test_find_translation_root_limits_search_depth_to_five_descendants():
@@ -151,7 +151,7 @@ def test_find_translation_root_limits_search_depth_to_five_descendants():
 
     anim = Animation(rotations, positions, Quaternions.id(len(parents)), offsets, parents)
 
-    assert _find_translation_root(anim) == 0
+    assert find_translation_root(anim) == 0
 
 
 def test_xz_locomotion_extent_ignores_static_origin_offset_after_initial_root_centering():
@@ -170,7 +170,7 @@ def test_xz_locomotion_extent_ignores_static_origin_offset_after_initial_root_ce
     centered_anim, root_translation_xz = move_xz_to_origin(anim)
 
     np.testing.assert_allclose(root_translation_xz, np.array([10.0, 0.0, 0.0], dtype=np.float64), atol=1e-8)
-    assert _xz_locomotion_extent(centered_anim, 1) == pytest.approx(1.0)
+    assert xz_locomotion_extent(centered_anim, 1) == pytest.approx(1.0)
 
 
 def test_xz_locomotion_extent_still_detects_true_locomotion_after_initial_root_centering():
@@ -189,8 +189,8 @@ def test_xz_locomotion_extent_still_detects_true_locomotion_after_initial_root_c
     centered_anim, root_translation_xz = move_xz_to_origin(anim)
 
     np.testing.assert_allclose(root_translation_xz, np.array([0.0, 0.0, 0.0], dtype=np.float64), atol=1e-8)
-    assert _xz_locomotion_extent(centered_anim, 1) == pytest.approx(4.0)
-    assert _xz_locomotion_extent(centered_anim, 1) > ROOT_XZ_STRIP_THRESHOLD
+    assert xz_locomotion_extent(centered_anim, 1) == pytest.approx(4.0)
+    assert xz_locomotion_extent(centered_anim, 1) > ROOT_XZ_STRIP_THRESHOLD
 
 
 def test_raw_tpose_animation_input_reapplies_tpose_normalization():

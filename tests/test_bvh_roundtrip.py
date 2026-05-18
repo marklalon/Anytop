@@ -158,7 +158,8 @@ def _parse_motion_width(bvh_path: str) -> tuple[int, list[int]]:
 def main() -> None:
     import numpy as np
 
-    from Anytop.utils.exporter import AnimationExporter, _batch_forward_kinematics_np
+    from Anytop.utils.exporter import AnimationExporter
+    from Anytop.utils.retarget import _batch_forward_kinematics_np
     from Anytop.utils.rotation_numpy import quat_rotate_wxyz_np
 
     device = torch.device("cpu")

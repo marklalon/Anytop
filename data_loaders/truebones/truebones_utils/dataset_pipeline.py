@@ -14,27 +14,26 @@ import sys
 from os.path import join as pjoin
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import random
-import math
 import bisect
-from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, get_raw_data_dir, SNAKES
+from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, get_raw_data_dir
 from .motion_labels import build_motion_labels, build_object_labels, infer_motion_labels_from_motion_name, write_motion_metadata
 from .physics_joint_annotation import (
-    _build_semantic_metadata,
-    _rest_positions_from_offsets,
+    build_semantic_metadata,
+    rest_positions_from_offsets,
 )
 from .fbx_filename_rules import (
     find_tpose_reference_path,
-    _normalize_action_name,
-    _should_skip_anim,
+    normalize_action_name,
+    should_skip_anim,
 )
 
 from .animation_utils import (
-    _canonical_name_for_bvh,
-    _attach_joint_name_embeddings_to_cond,
-    _extend_semantic_metadata_with_leaf_helpers,
+    canonical_name_for_bvh,
+    attach_joint_name_embeddings_to_cond,
+    extend_semantic_metadata_with_leaf_helpers,
     needs_bvh_position_channels,
     reorder_animation_to_dfs,
-    _coerce_single_orientation_quat,
+    coerce_single_orientation_quat,
 )
 
 from .features import (
@@ -170,106 +169,7 @@ def object_policy(obj):
         return "h_first"
 
 
-################## Augmentations ##########################
-def remove_joints_augmentation(data, removal_rate, mean, std):
-    motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains = data['motion'], data['length'], data['object_type'], data['parents'], data['joints_graph_dist'], data['joints_relations'], data['tpos_first_frame'], data['offsets'], data['joints_names_embs'], data['kinematic_chains']
-    ee = [chain[-1] for chain in kinematic_chains]
-    possible_feet = np.unique(np.where(motion[..., -1] > 0)[1])
-    if object_type in SNAKES:
-        possible_feet=[]
-    removal_options = [j for j in ee if j not in possible_feet]
-    # removal_rate = min(1.0, (removal_rate*len(parents)) / len(removal_options))
-    remove_joints = sorted(random.sample(removal_options, math.floor(len(removal_options) * removal_rate)), reverse=True)
-    motion = np.delete(motion, remove_joints, axis=1)
-    new_ee = [parents[j] for j in remove_joints if np.count_nonzero(parents == parents[j]) == 1]
-    for el in new_ee:
-        joints_relations[el, el] = 5    
-    parents = np.delete(parents, remove_joints, axis=0)
-    joints_relations = np.delete(np.delete(joints_relations, remove_joints, axis=0), remove_joints, axis=1)
-        
-    for rj in remove_joints:
-        parents[parents > rj] -= 1
-    joints_graph_dist = np.delete(np.delete(joints_graph_dist, remove_joints, axis=0), remove_joints, axis=1)
-    tpos_first_frame = np.delete(tpos_first_frame, remove_joints, axis=0)
-    offsets = np.delete(offsets, remove_joints, axis=0)
-    joints_names_embs = np.delete(joints_names_embs, remove_joints, axis=0)
-    mean = np.delete(mean, remove_joints, axis=0)
-    std = np.delete(std, remove_joints, axis=0)
-    object_type = f'{object_type}__remove{remove_joints}'
-    return motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std
-
-
-def add_joint_augmentation(data, mean, std):
-    motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains = data['motion'], data['length'], data['object_type'], data['parents'], data['joints_graph_dist'], data['joints_relations'], data['tpos_first_frame'], data['offsets'], data['joints_names_embs'], data['kinematic_chains']
-    n_joints = motion.shape[1]
-    n_frames = motion.shape[0]
-    # added joint mut follow:
-    # j has exactly 1 child 
-    # j parent is not the root joint
-    # j is not the root joint
-    possible_joints_to_add = [j for j in range(1, n_joints) if np.count_nonzero(joints_relations[j] == 2) == 1 and joints_relations[j,0] != 1]
-    if len(possible_joints_to_add) == 0:
-        return motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std
-    add_j = random.choice(possible_joints_to_add)
-    # motion features
-    j_feats = motion[:, add_j].copy()
-    p_feats = motion[:, parents[add_j]]
-    new_feats = ((j_feats + p_feats)/2).copy()
-    new_feats[..., 3:9] = j_feats[..., 3:9].copy() # rotations
-    new_feats[..., 12] = j_feats[..., 12].copy() # feet 
-    j_feats[..., 3:9] = np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])[None].repeat(n_frames, axis=0)
-    
-    # tpos features
-    tpos_j_feats = tpos_first_frame[add_j].copy()
-    tpos_p_feats = tpos_first_frame[parents[add_j]]
-    tpos_new_feats = ((tpos_j_feats + tpos_p_feats)/2)
-    tpos_new_feats[3:9] = tpos_j_feats[3:9].copy() # rotations
-    tpos_new_feats[12] = tpos_j_feats[12] # feet 
-    tpos_j_feats[3:9] = np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
-    
-    # mean features
-    mean_j_feats = mean[add_j].copy()
-    mean_p_feats = mean[parents[add_j]]
-    mean_new_feats = ((mean_j_feats + mean_p_feats)/2).copy()
-    mean_new_feats[3:9] = mean_j_feats[3:9].copy() # rotations
-    mean_new_feats[12] = mean_j_feats[12] # feet 
-    mean_j_feats[3:9] = np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
-    
-    # std features
-    std_new_feats = std[add_j].copy()
-    
-    # joints names embs features 
-    emb_j_feats = joints_names_embs[add_j]
-    emb_p_feats = joints_names_embs[parents[add_j]]
-    emb_new_feats = (emb_j_feats + emb_p_feats)/2
-    
-    # apply augmentation
-    #motion
-    augmented = np.concatenate([motion[:, :add_j], new_feats[:, None], j_feats[:, None], motion[:, add_j+1:]], axis=1).copy()
-    #tpos_first_frame
-    tpos_first_frame_augmented = np.vstack([tpos_first_frame[:add_j], tpos_new_feats[None], tpos_j_feats[None], tpos_first_frame[add_j+1:]]).copy()
-    #mean TODO: AUGMENT LIKE MOTION AND TPOS 
-    mean_augmented = np.vstack([mean[:add_j], mean_new_feats[None], mean_j_feats[None], mean[add_j+1:]]).copy()
-    #std TODO: AUGMENT LIKE MOTION AND TPOS 
-    std_augmented = np.vstack([std[:add_j], std_new_feats[None], std[add_j:]]).copy()
-    #joints_names_embs
-    joints_names_embs_augmented = np.vstack([joints_names_embs[:add_j], emb_new_feats[None], joints_names_embs[add_j:]]).copy()
-    # parents 
-    augmented_parents = parents.copy()
-    augmented_parents[augmented_parents >= add_j] += 1
-    augmented_parents = augmented_parents.tolist()
-    augmented_parents = np.array(augmented_parents[:add_j] + [add_j] + augmented_parents[add_j:])
-
-    # topology conditions 
-    relations, graph_dist = create_topology_edge_relations(augmented_parents.tolist(), max_path_len = MAX_PATH_LEN)
-    
-    # all others 
-    offsets = np.vstack([offsets[:add_j], offsets[add_j]/2, offsets[add_j]/2, offsets[add_j+1:]])
-    object_type = f'{object_type}__add{add_j}'
-    return augmented, m_length, object_type, augmented_parents, graph_dist, relations, tpos_first_frame_augmented, offsets, joints_names_embs_augmented, kinematic_chains, mean_augmented, std_augmented
-
-
-################## Dataset Pipeline #####################
+################## Dataset Pipeline ####################
 
 def _process_motion_file(file_path, object_type, max_joints,
                          offsets, foot_indices, tpos_rots, scale_factor,
@@ -314,7 +214,7 @@ def _process_motion_file(file_path, object_type, max_joints,
 
         _, file_name = os.path.split(file_path)
         raw_action = file_name.split('.')[0]
-        raw_action = _normalize_action_name(object_type, raw_action)
+        raw_action = normalize_action_name(object_type, raw_action)
         file_results.append({
             'action': raw_action,
             'motion': motion,
@@ -346,7 +246,7 @@ def _attach_orientation_reference_metadata(
     forward_base_joint_index,
     orientation_reference_fbx_path,
 ):
-    orientation_qs = _coerce_single_orientation_quat(orientation_quat).qs[0]
+    orientation_qs = coerce_single_orientation_quat(orientation_quat).qs[0]
     object_cond['orientation_quat'] = orientation_qs.reshape(4)
     object_cond['forward_joint_index'] = int(forward_joint_index) if forward_joint_index is not None else None
     object_cond['forward_base_joint_index'] = int(forward_base_joint_index) if forward_base_joint_index is not None else None
@@ -405,15 +305,15 @@ def _build_tpose_cond(object_type, t_pos_path, face_joints, max_joints=MAX_JOINT
         helper_metadata=tp.helper_metadata,
         animation_input_is_tpose_aligned=False,
     )
-    rest_positions = _rest_positions_from_offsets(tp.offsets, parents)
+    rest_positions = rest_positions_from_offsets(tp.offsets, parents)
     original_joint_count = int(tp.helper_metadata['original_joint_count'])
-    base_semantic_metadata = _build_semantic_metadata(
+    base_semantic_metadata = build_semantic_metadata(
         tp.names[:original_joint_count],
         parents[:original_joint_count],
         tp.offsets[:original_joint_count],
         rest_positions=rest_positions[:original_joint_count],
     )
-    semantic_metadata = _extend_semantic_metadata_with_leaf_helpers(
+    semantic_metadata = extend_semantic_metadata_with_leaf_helpers(
         base_semantic_metadata,
         tp.names,
         tp.helper_metadata,
@@ -429,7 +329,7 @@ def _build_tpose_cond(object_type, t_pos_path, face_joints, max_joints=MAX_JOINT
     object_cond['joints_names'] = tp.names
     object_cond['canonical_joint_names'] = semantic_metadata['canonical_joint_names']
     object_cond['canonical_bvh_joint_names'] = [
-        _canonical_name_for_bvh(canonical_name, raw_name)
+        canonical_name_for_bvh(canonical_name, raw_name)
         for canonical_name, raw_name in zip(semantic_metadata['canonical_joint_names'], tp.names)
     ]
     object_cond['face_joints'] = list(tp.face_joints)
@@ -510,7 +410,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
         anim_files = anim_files[:max_files]
 
     # Filter out files with no inferable action name or all-in-one animation bundles
-    anim_files = [f for f in anim_files if not _should_skip_anim(f, object_type)]
+    anim_files = [f for f in anim_files if not should_skip_anim(f, object_type)]
     if len(anim_files) == 0:
         print(f'skipping {object_type}: no valid animation files after filtering')
         return None
@@ -636,7 +536,7 @@ def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, m
         error_file.write('%s: %f\n' %(f, squared_positions_error[f]))
     error_file.close()
 
-    _attach_joint_name_embeddings_to_cond(cond, save_dir)
+    attach_joint_name_embeddings_to_cond(cond, save_dir)
     np.save(pjoin(save_dir, "cond.npy"), cond)
     write_motion_metadata(save_dir, motion_metadata, files_counter)
 
@@ -922,4 +822,6 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
         frames_counter,
         squared_positions_error,
     )
+
+
 

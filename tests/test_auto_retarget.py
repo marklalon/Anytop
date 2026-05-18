@@ -39,7 +39,7 @@ from data_loaders.truebones.truebones_utils.features import (
     get_motion,
     recover_animation_from_motion_np,
 )
-from data_loaders.truebones.truebones_utils.animation_utils import _find_translation_root
+from data_loaders.truebones.truebones_utils.animation_utils import find_translation_root
 import Anytop.utils.retarget as retarget_mod
 from Anytop.utils.auto_retarget import _build_tpose_aligned_target_animation
 from Anytop.utils.auto_retarget import retarget_features_npy_to_target
@@ -89,7 +89,7 @@ def test_find_translation_root_ignores_sparse_wrapper_motion() -> None:
 
     anim = SimpleNamespace(positions=positions, parents=np.array([-1, 0, 1], dtype=np.int64))
 
-    assert int(_find_translation_root(anim)) == 1
+    assert int(find_translation_root(anim)) == 1
 
 
 def test_retarget_distributes_short_source_bone_across_longer_target_chain(
@@ -672,7 +672,7 @@ def test_retarget_features_npy_to_target_uses_tpose_aligned_motion_path(monkeypa
             None,
         ),
     )
-    monkeypatch.setattr(auto_retarget_mod, '_find_translation_root', lambda anim: 0)
+    monkeypatch.setattr(auto_retarget_mod, 'find_translation_root', lambda anim: 0)
     monkeypatch.setattr(retarget_mod, 'retarget_world_space_np', lambda **kwargs: {'src_to_tgt': np.array([0, 1], dtype=np.int32)})
     monkeypatch.setattr(auto_retarget_mod, '_build_tpose_aligned_target_animation', lambda *args, **kwargs: sentinel_anim)
 
@@ -1076,3 +1076,4 @@ def test_build_target_animation_prefers_retarget_bone_translations() -> None:
     np.testing.assert_allclose(anim.positions[0, 0], np.array([0.0, 0.0, 0.0], dtype=np.float64), atol=1e-6)
     np.testing.assert_allclose(anim.positions[0, 1], np.array([0.0, 1.0, 0.0], dtype=np.float64), atol=1e-6)
     np.testing.assert_allclose(anim.positions[0, 2], np.array([0.0, 0.5, 0.0], dtype=np.float64), atol=1e-6)
+

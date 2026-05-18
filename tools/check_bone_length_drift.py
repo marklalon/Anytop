@@ -75,8 +75,7 @@ from eval.motion_quality.bone_length_drift import (
 )
 
 
-def _normalize_bone_key(name: str) -> str:
-    return name.replace(" ", "_").lower()
+from Anytop.utils.misc import normalize_bone_key as _normalize_bone_key
 
 
 _DEFAULT_COND_NPY = os.path.realpath(

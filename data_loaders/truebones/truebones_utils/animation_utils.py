@@ -5,11 +5,8 @@ coordinate normalization, scaling, BVH export preparation, joint-name
 canonicalization, leaf rotation helpers, and mirror augmentation.
 """
 
-from dataclasses import dataclass
-
-from motion_lib import BVH, FBX, Animation, Quaternions
-from motion_lib.Animation import positions_global, rotations_global, offsets_from_positions, offsets_global
-from motion_lib import animation_from_positions
+from motion_lib import Animation, Quaternions
+from motion_lib.Animation import positions_global, rotations_global
 from collections import Counter, defaultdict
 import json
 import numpy as np
@@ -17,32 +14,13 @@ import os
 from os.path import join as pjoin
 import re
 import torch
-from data_loaders.truebones.truebones_utils.param_utils import HML_REF_AXIAL_BONE_LENGTH, FOOT_CONTACT_HEIGHT_THRESH, DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir, SNAKES, CHAIN_FORWARD_JOINTS, FLYING, FISH, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
+from data_loaders.truebones.truebones_utils.param_utils import HML_REF_AXIAL_BONE_LENGTH, MAX_JOINTS, FLYING, FISH, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
 from .physics_joint_annotation import (
-    _infer_end_effector_joints,
-    _infer_contact_joints,
-    _build_semantic_metadata,
-    _rest_positions_from_offsets,
-    _normalize_joint_name,
-    _strip_joint_name_prefix,
+    build_semantic_metadata,
+    normalize_joint_name,
+    strip_joint_name_prefix,
     build_joint_embedding_texts,
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
-    _detect_joint_side,
-)
-from .face_orientation import (
-    resolve_face_joints,
-    calculate_root_quat,
-    rotate_to_hml_orientation,
-    resolve_forward_reference_joints,
-)
-from .fbx_filename_rules import (
-    find_tpose_reference_path,
-    _compact_normalized_text,
-    _is_all_bundle_stem,
-    _matches_object_alias,
-    _normalize_action_name,
-    _should_skip_anim,
-    _strip_leading_object_prefix,
 )
 
 
@@ -75,7 +53,7 @@ _EMITTED_MIRROR_SAFEGUARD_WARNINGS = set()
 
 ################## Joint Name Canonicalization #####################
 
-def _canonical_name_for_bvh(name, fallback_name):
+def canonical_name_for_bvh(name, fallback_name):
     compact_name = re.sub(r'[^0-9A-Za-z_]+', '', str(name or ''))
     if compact_name:
         return compact_name
@@ -122,9 +100,9 @@ def _remove_token_counts(tokens, counts_to_remove):
 
 def _joint_disambiguation_tokens(raw_name, canonical_name):
     raw_value = str(raw_name or '')
-    stripped_raw = _strip_joint_name_prefix(raw_value)
-    raw_tokens = _normalize_joint_name(stripped_raw).split()
-    canonical_tokens = _normalize_joint_name(canonical_name).split()
+    stripped_raw = strip_joint_name_prefix(raw_value)
+    raw_tokens = normalize_joint_name(stripped_raw).split()
+    canonical_tokens = normalize_joint_name(canonical_name).split()
     residual_tokens = _remove_token_counts(raw_tokens, Counter(canonical_tokens))
     if raw_value.lower().startswith('jt'):
         residual_tokens.append('joint')
@@ -212,7 +190,7 @@ def _disambiguate_duplicate_canonical_names(raw_names, canonical_names):
     return updated_names
 
 
-def _collect_joint_name_collision_groups(cond):
+def collect_joint_name_collision_groups(cond):
     collision_groups = []
     for object_type in sorted(cond):
         object_cond = cond[object_type]
@@ -240,8 +218,8 @@ def _collect_joint_name_collision_groups(cond):
     return collision_groups
 
 
-def _write_joint_name_collision_report(cond, save_dir):
-    collision_groups = _collect_joint_name_collision_groups(cond)
+def write_joint_name_collision_report(cond, save_dir):
+    collision_groups = collect_joint_name_collision_groups(cond)
     report = {
         'num_objects': int(len(cond)),
         'num_collision_groups': int(len(collision_groups)),
@@ -264,7 +242,7 @@ def _write_joint_name_collision_report(cond, save_dir):
     return collision_groups
 
 
-def _refresh_joint_metadata_in_object_cond(object_cond):
+def refresh_joint_metadata_in_object_cond(object_cond):
     joint_names = list(object_cond.get('joints_names') or [])
     if not joint_names:
         return
@@ -288,12 +266,12 @@ def _refresh_joint_metadata_in_object_cond(object_cond):
     ):
         original_joint_count = int(original_joint_count)
         if 0 < original_joint_count <= len(joint_names) and original_joint_count <= len(parents):
-            base_semantic_metadata = _build_semantic_metadata(
+            base_semantic_metadata = build_semantic_metadata(
                 joint_names[:original_joint_count],
                 parents[:original_joint_count],
                 offsets[:original_joint_count],
             )
-            semantic_metadata = _extend_semantic_metadata_with_leaf_helpers(
+            semantic_metadata = extend_semantic_metadata_with_leaf_helpers(
                 base_semantic_metadata,
                 joint_names,
                 {
@@ -302,13 +280,13 @@ def _refresh_joint_metadata_in_object_cond(object_cond):
                 },
             )
         else:
-            semantic_metadata = _build_semantic_metadata(
+            semantic_metadata = build_semantic_metadata(
                 joint_names,
                 parents,
                 offsets,
             )
     else:
-        semantic_metadata = _build_semantic_metadata(
+        semantic_metadata = build_semantic_metadata(
             joint_names,
             parents,
             offsets,
@@ -318,11 +296,11 @@ def _refresh_joint_metadata_in_object_cond(object_cond):
         semantic_metadata['canonical_joint_names'],
     )
     object_cond['canonical_bvh_joint_names'] = [
-        _canonical_name_for_bvh(canonical_name, raw_name)
+        canonical_name_for_bvh(canonical_name, raw_name)
         for canonical_name, raw_name in zip(semantic_metadata['canonical_joint_names'], joint_names)
     ]
     object_cond['canonical_bvh_joint_names'] = [
-        _canonical_name_for_bvh(canonical_name, raw_name)
+        canonical_name_for_bvh(canonical_name, raw_name)
         for canonical_name, raw_name in zip(object_cond['canonical_joint_names'], joint_names)
     ]
     object_cond['end_effector_joints'] = semantic_metadata['end_effector_joints']
@@ -346,7 +324,7 @@ def refresh_joint_metadata_in_cond_dict(cond_dict):
 
     for object_cond in cond_dict.values():
         if isinstance(object_cond, dict):
-            _refresh_joint_metadata_in_object_cond(object_cond)
+            refresh_joint_metadata_in_object_cond(object_cond)
     return cond_dict
 
 
@@ -382,7 +360,7 @@ def _joint_name_embeddings_are_current(object_cond, embedding_texts, t5_name):
     return True
 
 
-def _attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collision_report=True, force_reencode=True):
+def attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collision_report=True, force_reencode=True):
 
     if not cond:
         return
@@ -395,7 +373,7 @@ def _attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base', wri
     object_types_to_encode = []
     for object_type in sorted(cond):
         object_cond = cond[object_type]
-        _refresh_joint_metadata_in_object_cond(object_cond)
+        refresh_joint_metadata_in_object_cond(object_cond)
         embedding_texts = build_joint_embedding_texts(object_cond)
         embedding_texts_by_object[object_type] = embedding_texts
         if force_reencode or not _joint_name_embeddings_are_current(object_cond, embedding_texts, t5_name):
@@ -440,12 +418,12 @@ def _attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base', wri
             json.dump(_build_joint_name_inspection_rows(object_cond, embedding_texts), inspection_file, indent=2)
 
     if write_collision_report:
-        _write_joint_name_collision_report(cond, save_dir)
+        write_joint_name_collision_report(cond, save_dir)
 
 
 ################## Animation Transform Utilities #####################
 
-def _detect_motion_loop(positions):
+def detect_motion_loop(positions):
     """Return True if the last frame's root-relative pose is close to the first frame's."""
     if positions.shape[0] < 2:
         return False
@@ -474,7 +452,7 @@ def _translation_root_candidate_chain(parents, max_depth=5):
     return chain
 
 
-def _find_translation_root(anim, max_depth=5):
+def find_translation_root(anim, max_depth=5):
     """Return the first near-root joint with significant local position animation.
 
     Most skeletons carry root motion on joint 0, but some Truebones rigs
@@ -527,14 +505,14 @@ def _find_descendant_transport_chain(parents, trans_root, max_depth=2):
     return chain
 
 
-def _bake_descendant_y_into_translation_root(anim, max_depth=2):
+def bake_descendant_y_into_translation_root(anim, max_depth=2):
     """Bake near-root locator-style Y transport back onto the translation root.
 
     The heuristic is intentionally narrow: follow a single chain at most two levels
     below the effective translation root, allow one dummy node in the middle, and
     bake only joints in that chain that carry animated local Y.
     """
-    trans_root = _find_translation_root(anim)
+    trans_root = find_translation_root(anim)
     chain = _find_descendant_transport_chain(anim.parents, trans_root, max_depth=max_depth)
     bake_joints = [joint_index for joint_index in chain if np.ptp(anim.positions[:, joint_index, 1]) > 1e-4]
     if not bake_joints:
@@ -614,7 +592,7 @@ def _compress_negative_excursion(values, min_h, max_h):
     return compressed, True
 
 
-def _clamp_vertical_trajectory(
+def clamp_vertical_trajectory(
     processed_anim,
     object_type,
     min_ratio=VERTICAL_CLAMP_MIN_RATIO,
@@ -629,7 +607,7 @@ def _clamp_vertical_trajectory(
     if object_type not in FLYING and object_type not in FISH:
         return processed_anim
 
-    trans_root = _find_translation_root(processed_anim)
+    trans_root = find_translation_root(processed_anim)
     global_pos = positions_global(processed_anim)
     world_y = global_pos[:, trans_root, 1]
     body_length = _get_reference_body_length(processed_anim)
@@ -680,7 +658,7 @@ def _coerce_root_xz_center(root_xz_center):
 def _get_translation_root_initial_xz(anim, translation_root_index=None):
     """Return the effective translation root's initial XZ position in global space."""
     if translation_root_index is None:
-        translation_root_index = _find_translation_root(anim)
+        translation_root_index = find_translation_root(anim)
 
     global_pos = positions_global(anim)
     root_xz = np.asarray(global_pos[0, translation_root_index, [0, 2]], dtype=np.float64)
@@ -707,7 +685,7 @@ def move_xz_to_origin(anim, root_xz_center=None):
     return new_anim, root_xz_center
 
 
-def _xz_locomotion_extent(anim, translation_root_index):
+def xz_locomotion_extent(anim, translation_root_index):
     """Return the maximum translation-root XZ distance from the current origin."""
     global_pos = positions_global(anim)
     root_xz = global_pos[:, translation_root_index, [0, 2]]
@@ -750,7 +728,7 @@ def strip_translation_root_xz(anim, translation_root_index):
     )
 
 
-def _resolve_detected_translation_root_index(aligned_index, export_index, object_type):
+def resolve_detected_translation_root_index(aligned_index, export_index, object_type):
     valid_indices = sorted({int(index) for index in (aligned_index, export_index) if int(index) >= 0})
     if len(valid_indices) > 1:
         raise ValueError(
@@ -858,7 +836,7 @@ def reorder_animation_to_dfs(anim, names):
 
 ################## Scaling Utilities #####################
 
-def _get_average_axial_bone_length(offsets, parents, joint_side_labels):
+def get_average_axial_bone_length(offsets, parents, joint_side_labels):
     """Compute the mean bone length of axial (center-labeled) bones, excluding root.
 
     Falls back to the mean bone length across *all* non-root bones when no
@@ -886,7 +864,7 @@ def compute_scale_factor(axial_avg_len):
     return float(HML_REF_AXIAL_BONE_LENGTH / axial_avg_len)
 
 
-def scale(anim, scale_factor):
+def scale_anim(anim, scale_factor):
     if scale_factor is None:
         raise ValueError("scale_factor must be precomputed once per character and passed explicitly.")
     new_anim = Animation(
@@ -973,7 +951,7 @@ def _select_leaf_rotation_helper_source_indices(
     if offsets.shape[0] != len(parents):
         return original_leaf_joint_indices[:helper_budget]
 
-    semantic_metadata = _build_semantic_metadata(joint_names, parents, offsets)
+    semantic_metadata = build_semantic_metadata(joint_names, parents, offsets)
     symmetry_partner_indices = [
         int(partner_index)
         for partner_index in list(semantic_metadata.get('symmetry_partner_indices') or [])
@@ -1020,7 +998,7 @@ def _select_leaf_rotation_helper_source_indices(
     return sorted(selected_leaf_indices, key=lambda joint_index: leaf_order[joint_index])
 
 
-def _build_leaf_rotation_helper_metadata(joint_names, parents, *, max_joints=MAX_JOINTS, offsets=None):
+def build_leaf_rotation_helper_metadata(joint_names, parents, *, max_joints=MAX_JOINTS, offsets=None):
     parents = np.asarray(parents, dtype=np.int32)
     original_joint_count = int(len(parents))
     original_leaf_joint_indices = _dfs_leaf_joint_indices(parents)
@@ -1065,7 +1043,7 @@ def _build_leaf_rotation_helper_metadata(joint_names, parents, *, max_joints=MAX
     }
 
 
-def _append_leaf_rotation_helpers_to_animation(anim, joint_names, helper_metadata):
+def append_leaf_rotation_helpers_to_animation(anim, joint_names, helper_metadata):
     helper_joint_indices = list(helper_metadata.get('helper_joint_indices') or [])
     if len(helper_joint_indices) == 0:
         return anim.copy(), list(joint_names)
@@ -1111,7 +1089,7 @@ def _append_leaf_rotation_helpers_to_animation(anim, joint_names, helper_metadat
     ), list(joint_names) + helper_joint_names
 
 
-def _extend_semantic_metadata_with_leaf_helpers(base_semantic_metadata, joint_names, helper_metadata):
+def extend_semantic_metadata_with_leaf_helpers(base_semantic_metadata, joint_names, helper_metadata):
     helper_joint_indices = list(helper_metadata.get('helper_joint_indices') or [])
     helper_source_leaf_indices = list(helper_metadata.get('helper_source_leaf_indices') or [])
     if len(helper_joint_indices) == 0:
@@ -1251,7 +1229,7 @@ def resolve_mirrored_export_skeleton_metadata(object_cond, parents, offsets, joi
         if helper_index < len(mirrored_joint_names) and mirrored_source_index < len(mirrored_joint_names):
             mirrored_source_name = str(mirrored_joint_names[mirrored_source_index] or '')
             if mirrored_source_name:
-                mirrored_joint_names[helper_index] = _canonical_name_for_bvh(
+                mirrored_joint_names[helper_index] = canonical_name_for_bvh(
                     f'{mirrored_source_name}Helper',
                     mirrored_joint_names[helper_index],
                 )
@@ -1261,7 +1239,7 @@ def resolve_mirrored_export_skeleton_metadata(object_cond, parents, offsets, joi
 
 ################## Mirror & Neutralization #####################
 
-def _warn_mirror_disabled_subtrees(object_cond):
+def warn_mirror_disabled_subtrees(object_cond):
     disabled_joint_indices = tuple(int(index) for index in object_cond['mirror_disabled_joint_indices'])
     if not disabled_joint_indices:
         return
@@ -1312,7 +1290,7 @@ def neutralize_animation_subtrees(anim, joint_indices):
 
 ################## FK Helpers #####################
 
-def _coerce_single_orientation_quat(orientation_quat):
+def coerce_single_orientation_quat(orientation_quat):
     if orientation_quat is None:
         raise ValueError(
             "orientation_quat must be precomputed from the reference T-pose and provided to downstream motion processing"
@@ -1335,7 +1313,7 @@ def compute_rots_from_tpos(tpos_quats, dest_quats, parents):
     return new_rots
 
 
-def _solve_local_positions_for_target_global(
+def solve_local_positions_for_target_global(
     rotations,
     target_global_positions,
     offsets,

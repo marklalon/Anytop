@@ -20,7 +20,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (
 )
 from data_loaders.truebones.truebones_utils.animation_utils import (
     LEAF_ROTATION_HELPER_SUFFIX,
-    _find_translation_root,
+    find_translation_root,
 )
 
 
@@ -289,7 +289,7 @@ def retarget_features_npy_to_target(
         translation_root_index=None,
         allow_infer=True,
     )
-    source_effective_root_index = int(_find_translation_root(src_anim))
+    source_effective_root_index = int(find_translation_root(src_anim))
 
     # 3. Build source skeleton
     src_skeleton = _build_skeleton(
@@ -639,3 +639,4 @@ def auto_retarget_pipeline(
         'retargeted_npys': retargeted_npys,
         'donors_used': donors_used,
     }
+

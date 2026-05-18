@@ -1,6 +1,12 @@
 # This code is based on https://github.com/Mathux/ACTOR.git
 # Copyright (c) Facebook, Inc. and its affiliates. All rights reserved.
 # Check PYTORCH3D_LICENCE before use
+#
+# NOTE: Many general-purpose rotation conversion functions here overlap with
+#       Anytop/utils/quaternion.py.  The quaternion.py module is the preferred
+#       source for most quaternion operations (PyTorch, wxyz convention).
+#       This file's primary value is the rotation_6d_to_matrix* family and the
+#       pytorch3d-compatible Euler-angle routines.
 
 import functools
 from typing import Optional

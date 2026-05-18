@@ -9,25 +9,21 @@ Depends on: animation_utils.py
 
 from dataclasses import dataclass
 
-from motion_lib import BVH, FBX, Animation, Quaternions
-from motion_lib.Animation import positions_global, rotations_global, offsets_from_positions, offsets_global
-from motion_lib import animation_from_positions
+from motion_lib import FBX, Animation, Quaternions
+from motion_lib.Animation import positions_global, rotations_global, offsets_from_positions
 import numpy as np
 import os
 from os.path import join as pjoin
 import torch
-from data_loaders.truebones.truebones_utils.param_utils import HML_REF_AXIAL_BONE_LENGTH, FOOT_CONTACT_HEIGHT_THRESH, DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, OBJECT_SUBSETS_DICT, get_raw_data_dir, SNAKES, CHAIN_FORWARD_JOINTS, FLYING, FISH, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
+from data_loaders.truebones.truebones_utils.param_utils import (
+    FOOT_CONTACT_HEIGHT_THRESH,
+    MAX_JOINTS,
+    FOOT_CONTACT_VEL_THRESH,
+)
 from Anytop.utils.rotation_conversions import rotation_6d_to_matrix_np
 from .physics_joint_annotation import (
-    _infer_end_effector_joints,
-    _infer_contact_joints,
-    _build_semantic_metadata,
-    _rest_positions_from_offsets,
-    _normalize_joint_name,
-    _strip_joint_name_prefix,
-    build_joint_embedding_texts,
-    JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
-    _detect_joint_side,
+    infer_contact_joints,
+    detect_joint_side,
 )
 from .face_orientation import (
     resolve_face_joints,
@@ -35,63 +31,28 @@ from .face_orientation import (
     rotate_to_hml_orientation,
     resolve_forward_reference_joints,
 )
-from .fbx_filename_rules import (
-    find_tpose_reference_path,
-    _compact_normalized_text,
-    _is_all_bundle_stem,
-    _matches_object_alias,
-    _normalize_action_name,
-    _should_skip_anim,
-    _strip_leading_object_prefix,
-)
 
-# Re-exported from animation_utils (same module-level constants needed here)
 from .animation_utils import (
     ROOT_XZ_STRIP_THRESHOLD,
-    LOOP_DETECTION_POS_THRESHOLD,
-    LEAF_ROTATION_HELPER_SUFFIX,
-    _canonical_name_for_bvh,
-    _detect_motion_loop,
-    _find_translation_root,
-    _find_descendant_transport_chain,
-    _bake_descendant_y_into_translation_root,
-    _get_reference_body_length,
-    _compress_positive_excursion,
-    _compress_negative_excursion,
-    _clamp_vertical_trajectory,
-    _coerce_root_xz_center,
-    _get_translation_root_initial_xz,
+    detect_motion_loop,
+    find_translation_root,
+    bake_descendant_y_into_translation_root,
+    clamp_vertical_trajectory,
     move_xz_to_origin,
-    _xz_locomotion_extent,
+    xz_locomotion_extent,
     strip_translation_root_xz,
-    _resolve_detected_translation_root_index,
+    resolve_detected_translation_root_index,
     needs_bvh_position_channels,
     reorder_animation_to_dfs,
-    _get_average_axial_bone_length,
+    get_average_axial_bone_length,
     compute_scale_factor,
-    scale,
-    _reference_clip_needs_local_position_rebuild,
-    _leaf_rotation_helper_name,
-    _dfs_leaf_joint_indices,
-    _build_leaf_rotation_helper_metadata,
-    _append_leaf_rotation_helpers_to_animation,
-    _extend_semantic_metadata_with_leaf_helpers,
-    _coerce_single_orientation_quat,
+    scale_anim,
+    build_leaf_rotation_helper_metadata,
+    append_leaf_rotation_helpers_to_animation,
     compute_rots_from_tpos,
-    _solve_local_positions_for_target_global,
-    _warn_mirror_disabled_subtrees,
+    solve_local_positions_for_target_global,
+    warn_mirror_disabled_subtrees,
     neutralize_animation_subtrees,
-    refresh_joint_metadata_in_cond_dict,
-    _refresh_joint_metadata_in_object_cond,
-    _joint_name_embeddings_are_current,
-    _attach_joint_name_embeddings_to_cond,
-    _collect_joint_name_collision_groups,
-    _write_joint_name_collision_report,
-    _build_joint_name_inspection_rows,
-    _remove_token_counts,
-    _joint_disambiguation_tokens,
-    _display_disambiguation_tokens,
-    _disambiguate_duplicate_canonical_names,
 )
 
 
@@ -252,9 +213,9 @@ def get_bvh_cont6d_params(anim, object_type, orientation_quat, translation_root_
 """" process anim object """
 def process_anim(anim, object_type, orientation_quat, root_xz_center=None, *, scale_factor):
     rotated = rotate_to_hml_orientation(anim, orientation_quat)
-    baked = _bake_descendant_y_into_translation_root(rotated)
+    baked = bake_descendant_y_into_translation_root(rotated)
     centered, root_xz_center_ = move_xz_to_origin(baked, root_xz_center)
-    scaled = scale(centered, scale_factor)
+    scaled = scale_anim(centered, scale_factor)
     return scaled, root_xz_center_, scale_factor
 
 
@@ -373,7 +334,7 @@ def infer_translation_root_index_from_features(data, parents, offsets, anim_pos_
                 translation_root_index=int(candidate),
                 anim_pos_threshold=anim_pos_threshold,
             )
-            detected = _find_translation_root(anim)
+            detected = find_translation_root(anim)
         except Exception:
             continue
 
@@ -452,7 +413,7 @@ def _neutralize_mirror_disabled_subtrees(
         translation_root_index=resolved_translation_root_index,
     )
     positions = get_rifke(global_positions, r_rot, translation_root_index=resolved_translation_root_index)
-    is_loop = _detect_motion_loop(positions)
+    is_loop = detect_motion_loop(positions)
     local_vel = np.repeat(r_rot[1:, None], global_positions.shape[1], axis=1) * (global_positions[1:] - global_positions[:-1])
     prev_velocity = local_vel[-1] if local_vel.shape[0] > 0 else None
     terminal_local_vel = _compute_terminal_local_velocity(global_positions, r_rot, is_loop, prev_frame_velocity=prev_velocity)
@@ -492,7 +453,7 @@ def mirror_features_with_safeguards(
     mirrored_offsets[:, 0] *= -1
 
     if object_cond['mirror_disabled_joint_indices']:
-        _warn_mirror_disabled_subtrees(object_cond)
+        warn_mirror_disabled_subtrees(object_cond)
         # Unpaired joints have no mirror partner so they can't be reflected meaningfully.
         # Restore their original x offsets so that when they are neutralized to rest pose,
         # they retain their original rest orientation rather than the x-flipped version
@@ -541,9 +502,9 @@ def get_common_features_from_T_pose(
     # offsets and reuse it for every motion clip of the same character.
     _tpose_side_labels = []
     for name in t_pos_names:
-        detected = _detect_joint_side(name)
+        detected = detect_joint_side(name)
         _tpose_side_labels.append(detected if detected in ('left', 'right') else 'center')
-    axial_avg_len = _get_average_axial_bone_length(reference_anim.offsets, reference_anim.parents, _tpose_side_labels)
+    axial_avg_len = get_average_axial_bone_length(reference_anim.offsets, reference_anim.parents, _tpose_side_labels)
     scale_factor = compute_scale_factor(axial_avg_len)
 
     scaled, _root_xz_center, scale_factor = process_anim(
@@ -553,14 +514,14 @@ def get_common_features_from_T_pose(
         scale_factor=scale_factor,
     )
     scaled_rest_offsets = offsets_from_positions(positions_global(scaled)[0], scaled.parents)
-    helper_metadata = _build_leaf_rotation_helper_metadata(
+    helper_metadata = build_leaf_rotation_helper_metadata(
         t_pos_names,
         scaled.parents,
         offsets=scaled_rest_offsets,
         max_joints=max_joints if augment_leaf_rotation_helpers else len(scaled.parents),
     )
     if augment_leaf_rotation_helpers and helper_metadata['helper_joint_count'] > 0:
-        scaled, t_pos_names = _append_leaf_rotation_helpers_to_animation(
+        scaled, t_pos_names = append_leaf_rotation_helpers_to_animation(
             scaled,
             t_pos_names,
             helper_metadata,
@@ -568,7 +529,7 @@ def get_common_features_from_T_pose(
     scaled_positions = positions_global(scaled)
     scaled_rest_positions = scaled_positions[0]
     offsets = offsets_from_positions(scaled_rest_positions, scaled.parents)
-    suspected_foot_indices, contact_joint_source = _infer_contact_joints(
+    suspected_foot_indices, contact_joint_source = infer_contact_joints(
         t_pos_names,
         scaled.parents,
         scaled_rest_positions,
@@ -622,7 +583,7 @@ def _extract_motion_features_from_aligned_anims(
     has_locomotion = False
     motion_anim = new_anim
     motion_export_anim = export_anim
-    xz_extent = _xz_locomotion_extent(export_anim, feature_translation_root_index)
+    xz_extent = xz_locomotion_extent(export_anim, feature_translation_root_index)
     has_locomotion = xz_extent > ROOT_XZ_STRIP_THRESHOLD
     if has_locomotion:
         motion_anim = strip_translation_root_xz(new_anim, feature_translation_root_index)
@@ -636,7 +597,7 @@ def _extract_motion_features_from_aligned_anims(
     )
     foot_contact = get_contact_state(global_positions, foot_indices, foot_contact_vel_thresh)
     positions = get_rifke(global_positions, r_rot, translation_root_index=feature_translation_root_index)
-    is_loop = _detect_motion_loop(positions)
+    is_loop = detect_motion_loop(positions)
     local_vel = np.repeat(r_rot[1:, None], global_positions.shape[1], axis=1) * (global_positions[1:] - global_positions[:-1])
     prev_velocity = local_vel[-1] if local_vel.shape[0] > 0 else None
     terminal_local_vel = _compute_terminal_local_velocity(global_positions, r_rot, is_loop, prev_frame_velocity=prev_velocity)
@@ -681,7 +642,7 @@ def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squa
             scale_factor=scale_factor,
         )
         ## clamp vertical trajectory for flying/fish creatures (after scale, in HML units)
-        processed_anim = _clamp_vertical_trajectory(processed_anim, object_type)
+        processed_anim = clamp_vertical_trajectory(processed_anim, object_type)
     else:
         names = list()
         processed_anim = fbx_path_or_anim
@@ -696,7 +657,7 @@ def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squa
             )
         if not names:
             raise ValueError('Cannot append helper joints to an Animation input without joint names')
-        processed_anim, names = _append_leaf_rotation_helpers_to_animation(
+        processed_anim, names = append_leaf_rotation_helpers_to_animation(
             processed_anim,
             names,
             helper_metadata,
@@ -717,7 +678,7 @@ def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squa
     anim_positions = offsets.copy()[None, :].repeat(frames_num, axis = 0)
     anim_positions[:, 0] = processed_anim.positions[:, 0]
     processed_global_pos = positions_global(processed_anim)
-    anim_positions = _solve_local_positions_for_target_global(
+    anim_positions = solve_local_positions_for_target_global(
         rots,
         processed_global_pos,
         offsets,
@@ -755,9 +716,9 @@ def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joint
             helper_metadata=helper_metadata,
             animation_input_is_tpose_aligned=animation_input_is_tpose_aligned,
         )
-        translation_root_index = _resolve_detected_translation_root_index(
-            _find_translation_root(new_anim),
-            _find_translation_root(export_anim),
+        translation_root_index = resolve_detected_translation_root_index(
+            find_translation_root(new_anim),
+            find_translation_root(export_anim),
             object_type,
         )
         features, max_joints, motion_anim, motion_export_anim, is_loop = _extract_motion_features_from_aligned_anims(
@@ -806,7 +767,7 @@ def recover_processed_animation_from_feature_animation(
     initial_positions = offsets.copy()[None, :].repeat(frames_num, axis=0)
     initial_positions[:, 0] = feature_anim.positions[:, 0]
     target_global_positions = positions_global(feature_anim)
-    processed_positions = _solve_local_positions_for_target_global(
+    processed_positions = solve_local_positions_for_target_global(
         processed_rots,
         target_global_positions,
         offsets,
@@ -1100,7 +1061,7 @@ def recover_animation_from_motion_np(
     if not animated_joints:
         return anim_rot, needs_bvh_position_channels(anim_rot)
 
-    new_pos = _solve_local_positions_for_target_global(
+    new_pos = solve_local_positions_for_target_global(
         anim_rot.rotations,
         target_global,
         anim_rot.offsets,

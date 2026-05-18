@@ -5,6 +5,7 @@ import re
 from motion_lib.Quaternions import Quaternions
 from motion_lib.Animation import Animation
 from .param_utils import CHAIN_FORWARD_JOINTS
+from .physics_joint_annotation import normalize_joint_name, detect_joint_side, _joint_depths, strip_joint_name_prefix
 
 
 _EMITTED_DEGENERATE_FACING_WARNINGS = set()
@@ -63,101 +64,20 @@ _BODY_AXIS_BASE_PRIORITIES = (
     ('tail',),
 )
 
-# Shared utilities from end_effector_symmetry
-def _normalize_joint_name(name):
-    split_name = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', name)
-    split_name = re.sub(r'([A-Z])([A-Z][a-z])', r'\1 \2', split_name)
-    return re.sub(r'[^a-z0-9]+', ' ', split_name.lower()).strip()
-
-
-def _joint_depths(parents):
-    depths = [0] * len(parents)
-    for joint_index in range(1, len(parents)):
-        parent_index = parents[joint_index]
-        if parent_index >= 0:
-            depths[joint_index] = depths[parent_index] + 1
-    return depths
-
-
-def _detect_joint_side(name):
-    normalized = _normalize_joint_name(name)
-    compact = normalized.replace(' ', '')
-    right_markers = (
-        ' right ',
-        ' npc r',
-        ' bip01 r',
-        ' bn r',
-        ' r ',
-        ' r_',
-        ' rleg',
-        ' rarm',
-        ' rthigh',
-        ' rclavicle',
-        ' rupperarm',
-        ' r momo',
-        ' r kata',
-        ' r hiji',
-    )
-    left_markers = (
-        ' left ',
-        ' npc l',
-        ' bip01 l',
-        ' bn l',
-        ' l ',
-        ' l_',
-        ' lleg',
-        ' larm',
-        ' lthigh',
-        ' lclavicle',
-        ' lupperarm',
-        ' l momo',
-        ' l kata',
-        ' l hiji',
-    )
-    padded = f' {normalized} '
-    if any(marker in padded for marker in right_markers) or compact.startswith(('r_', 'rleg', 'rarm', 'rthigh', 'rmomo', 'rkata', 'rhiji')):
-        return 'right'
-    if any(marker in padded for marker in left_markers) or compact.startswith(('l_', 'lleg', 'larm', 'lthigh', 'lmomo', 'lkata', 'lhiji')):
-        return 'left'
-    return None
-
-
 def _canonicalize_joint_name(name):
-    _CANONICAL_NAME_PREFIXES = (
-        'BN_Bip01',
-        'Bip01',
-        'Sabrecat',
-        'NPC',
-        'BN',
-        'jt',
-        'Elk',
-    )
-    _CANONICAL_NAME_REPLACEMENTS = {
-        'momo': 'Thigh',
-        'sippo': 'Tail',
-        'mune': 'Chest',
-        'hiza': 'Knee',
-        'hara': 'Stomach',
-        'ashi': 'Leg',
-        'hiji': 'Elbow',
-        'koshi': 'Hips',
-        'te': 'Hand',
-        'kubi': 'Neck',
-        'atama': 'Head',
-        'ago': 'Jaw',
-        'kata': 'Shoulder',
-        'tai': 'Tail',
-    }
+    """Canonicalize a joint name using shared constants from physics_joint_annotation.
+
+    Note: drops single-character tokens (including isolated digits), unlike the
+    sibling implementation in physics_joint_annotation which preserves digits.
+    This preserves existing face-orientation matching behavior.
+    """
+    from .physics_joint_annotation import _CANONICAL_NAME_PREFIXES, _CANONICAL_NAME_REPLACEMENTS
     
-    # Strip prefix
-    stripped = name
-    for prefix in sorted(_CANONICAL_NAME_PREFIXES, key=len, reverse=True):
-        if stripped.startswith(prefix):
-            stripped = stripped[len(prefix):]
-            break
+    # Strip prefix using the shared utility
+    stripped = strip_joint_name_prefix(name)
     
     # Normalize and canonicalize
-    split_name = _normalize_joint_name(stripped)
+    split_name = normalize_joint_name(stripped)
     canonical_parts = []
     for part in split_name.split():
         clean_part = re.sub(r'[^a-z0-9]+', '', part)
@@ -185,14 +105,14 @@ def _joint_signature(name):
         return ' '.join(signature_tokens)
 
     fallback_tokens = [
-        token for token in _normalize_joint_name(name).split()
+        token for token in normalize_joint_name(name).split()
         if token not in ('left', 'right', 'l', 'r', 'lf', 'rf')
     ]
     return ' '.join(fallback_tokens)
 
 
 def _face_joint_name_allowed(name):
-    normalized = _normalize_joint_name(name)
+    normalized = normalize_joint_name(name)
     if any(token in normalized for token in _FACE_JOINT_EXCLUDE_TOKENS):
         return False
     return True
@@ -206,11 +126,11 @@ def _find_semantic_joint_pair(joint_names, parents, priorities, *, exclude_near_
     for joint_index, joint_name in enumerate(joint_names):
         if not _face_joint_name_allowed(joint_name):
             continue
-        normalized = _normalize_joint_name(_canonicalize_joint_name(joint_name))
+        normalized = normalize_joint_name(_canonicalize_joint_name(joint_name))
         if exclude_near_root and any(token in normalized for token in _FACE_JOINT_NEAR_ROOT_EXCLUDE_TOKENS):
             continue
 
-        side = _detect_joint_side(joint_name)
+        side = detect_joint_side(joint_name)
         if side is None:
             continue
 
@@ -267,7 +187,7 @@ def _find_forward_reference_joint(joint_names, parents):
     candidates = []
 
     for joint_index, joint_name in enumerate(joint_names):
-        normalized = _normalize_joint_name(_canonicalize_joint_name(joint_name))
+        normalized = normalize_joint_name(_canonicalize_joint_name(joint_name))
         if 'nub' in normalized:
             continue
         priority_index = None
@@ -290,10 +210,10 @@ def _find_centerline_reference_joint(joint_names, parents, priorities, *, prefer
     candidates = []
 
     for joint_index, joint_name in enumerate(joint_names):
-        if _detect_joint_side(joint_name) is not None:
+        if detect_joint_side(joint_name) is not None:
             continue
 
-        normalized = _normalize_joint_name(_canonicalize_joint_name(joint_name))
+        normalized = normalize_joint_name(_canonicalize_joint_name(joint_name))
         normalized_tokens = set(normalized.split())
         priority_index = None
         for current_priority, keyword_group in enumerate(priorities):

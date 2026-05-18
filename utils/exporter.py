@@ -17,29 +17,19 @@ import torch
 from torch import Tensor
 
 from motion_lib.FBX import _extract_armature_skeleton_data, import_fbx, remove_lights_and_cameras
-from data_loaders.truebones.truebones_utils.animation_utils import _refresh_joint_metadata_in_object_cond
+from data_loaders.truebones.truebones_utils.animation_utils import refresh_joint_metadata_in_object_cond
 from .rotation_numpy import (
     quat_conjugate_wxyz_np,
     quat_multiply_wxyz_np,
     quat_rotate_wxyz_np,
 )
 from .retarget import (
-    _batch_forward_kinematics_np,
     _batch_internal_pose_fk_np,
-    _batch_pose_fk_np,
-    _generate_coordinate_candidates_np,
     retarget_world_space_np,
 )
 
 
-# Re-exported for backward compatibility with callers that import these
-# helpers from ``Anytop.utils.exporter``. The canonical implementations live
-# in ``Anytop.utils.retarget``.
 __all__ = [
-    "_batch_forward_kinematics_np",
-    "_batch_internal_pose_fk_np",
-    "_batch_pose_fk_np",
-    "_generate_coordinate_candidates_np",
     "animation_to_exporter_inputs",
     "AnimationExporter",
 ]
@@ -63,7 +53,7 @@ def _build_canonical_match_names(
         "parents": np.asarray(parents, dtype=np.int32),
         "offsets": np.asarray(offsets, dtype=np.float64),
     }
-    _refresh_joint_metadata_in_object_cond(object_cond)
+    refresh_joint_metadata_in_object_cond(object_cond)
     canonical_joint_names = object_cond.get("canonical_joint_names")
     if canonical_joint_names is None:
         raise ValueError(
@@ -684,3 +674,4 @@ class AnimationExporter:
 
         bpy.ops.object.mode_set(mode="OBJECT")
         return armature_obj
+

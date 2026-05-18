@@ -305,7 +305,7 @@ _SPECIES_LINEAGE_TAGS = {
 }
 
 
-def _normalize_joint_name(name):
+def normalize_joint_name(name):
     # Split on lowercase→UPPER (e.g. "ElkRFemur" → "Elk RFemur")
     split_name = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', name)
     # Also split on UPPER→UPPER+lower (e.g. "RFemur" → "R Femur")
@@ -315,7 +315,7 @@ def _normalize_joint_name(name):
     return re.sub(r'[^a-z0-9]+', ' ', split_name.lower()).strip()
 
 
-def _strip_joint_name_prefix(name):
+def strip_joint_name_prefix(name):
     stripped = name
     for prefix in sorted(_CANONICAL_NAME_PREFIXES, key=len, reverse=True):
         if stripped.startswith(prefix):
@@ -325,7 +325,7 @@ def _strip_joint_name_prefix(name):
 
 
 def _canonicalize_joint_name(name):
-    split_name = _normalize_joint_name(_strip_joint_name_prefix(name))
+    split_name = normalize_joint_name(strip_joint_name_prefix(name))
     canonical_parts = []
     for part in split_name.split():
         clean_part = re.sub(r'[^a-z0-9]+', '', part)
@@ -348,14 +348,14 @@ def _canonicalize_joint_name(name):
 
 
 def _titlecase_identifier_tokens(value):
-    normalized = _normalize_joint_name(str(value))
+    normalized = normalize_joint_name(str(value))
     if not normalized:
         return []
     return [token.capitalize() for token in normalized.split() if token]
 
 
 def _collapse_solitary_head_feature_indices(canonical_joint_names):
-    normalized_tokens = [_normalize_joint_name(name).split() for name in canonical_joint_names]
+    normalized_tokens = [normalize_joint_name(name).split() for name in canonical_joint_names]
     base_counts = Counter(
         tuple(tokens[:-1])
         for tokens in normalized_tokens
@@ -546,7 +546,7 @@ def _joint_signature(name):
         return ' '.join(signature_tokens)
 
     fallback_tokens = [
-        token for token in _normalize_joint_name(name).split()
+        token for token in normalize_joint_name(name).split()
         if token not in ('left', 'right', 'l', 'r', 'lf', 'rf')
     ]
     return ' '.join(fallback_tokens)
@@ -560,7 +560,7 @@ def _fallback_child_signature(name):
 
 
 def _joint_semantic_text(name):
-    normalized = _normalize_joint_name(name)
+    normalized = normalize_joint_name(name)
     canonical = _canonicalize_joint_name(name).lower()
     return f'{normalized} {canonical}'.strip()
 
@@ -581,7 +581,7 @@ def _joint_family_semantic_text(joint_index, joint_names, parents, max_depth=3):
 
 
 def _is_informative_joint_name(name):
-    normalized = _normalize_joint_name(name)
+    normalized = normalize_joint_name(name)
     if not normalized:
         return False
     tokens = [token for token in normalized.split() if token]
@@ -757,7 +757,7 @@ def _infer_contact_leaf_candidates(parents, joint_names, rest_positions):
     ]
 
 
-def _rest_positions_from_offsets(offsets, parents):
+def rest_positions_from_offsets(offsets, parents):
     offsets = np.asarray(offsets, dtype=np.float64)
     rest_positions = np.zeros_like(offsets, dtype=np.float64)
     for joint_index, parent_index in enumerate(parents):
@@ -866,7 +866,7 @@ def _infer_contact_joints_from_geometry(joint_names, rest_positions, parents):
     return _expand_contact_chain_from_leaves(grounded_leaves, joint_names, parents, rest_positions)
 
 
-def _infer_contact_joints(joint_names, parents, rest_positions):
+def infer_contact_joints(joint_names, parents, rest_positions):
     contact_joints = _infer_contact_joints_from_geometry(joint_names, rest_positions, parents)
     if contact_joints:
         return contact_joints, 'geometry'
@@ -887,8 +887,8 @@ def _joint_depths(parents):
     return depths
 
 
-def _detect_joint_side(name):
-    normalized = _normalize_joint_name(name)
+def detect_joint_side(name):
+    normalized = normalize_joint_name(name)
     compact = normalized.replace(' ', '')
     tokens = normalized.split()
     right_markers = (
@@ -996,9 +996,9 @@ def _infer_symmetry_metadata(joint_names, parents, rest_positions, return_detail
     grouped_indices = {}
 
     for joint_index, joint_name in enumerate(joint_names):
-        side = _detect_joint_side(joint_name)
+        side = detect_joint_side(joint_name)
         if side is None:
-            side = _detect_joint_side(_canonicalize_joint_name(joint_name))
+            side = detect_joint_side(_canonicalize_joint_name(joint_name))
         side = side if side in ('left', 'right') else 'center'
         joint_side_labels.append(side)
 
@@ -1128,12 +1128,12 @@ def _infer_is_symmetric(symmetric_joint_pairs, joint_side_labels):
     return False
 
 
-def _build_semantic_metadata(joint_names, parents, offsets, rest_positions=None):
+def build_semantic_metadata(joint_names, parents, offsets, rest_positions=None):
     parents = np.asarray(parents, dtype=np.int64)
-    rest_positions = _rest_positions_from_offsets(offsets, parents) if rest_positions is None else np.asarray(rest_positions, dtype=np.float64)
+    rest_positions = rest_positions_from_offsets(offsets, parents) if rest_positions is None else np.asarray(rest_positions, dtype=np.float64)
     canonical_joint_names = [_canonicalize_joint_name(name) for name in joint_names]
     canonical_joint_names = _collapse_solitary_head_feature_indices(canonical_joint_names)
-    contact_joints, contact_joint_source = _infer_contact_joints(
+    contact_joints, contact_joint_source = infer_contact_joints(
         joint_names,
         parents,
         rest_positions,

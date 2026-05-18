@@ -328,10 +328,6 @@ def _summarize_tpose_orientation_axis_alignment(object_type: str, object_cond: d
     return best_axis_label, float(best_delta_deg)
 
 
-def _normalize_identifier(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", value.lower())
-
-
 def _collect_motion_stats(motion_files: list[Path], cond: dict | None = None) -> tuple[int, int, Counter[str], set[str]]:
     total_frames = 0
     max_joints = 0

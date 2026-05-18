@@ -9,10 +9,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
-    _detect_joint_side,
+    detect_joint_side,
     _infer_symmetry_metadata,
     _joint_signature,
-    _rest_positions_from_offsets,
+    rest_positions_from_offsets,
 )
 
 
@@ -23,7 +23,7 @@ def test_horse_front_helper_bones_are_paired() -> None:
     joint_names = list(cond['joints_names'])
     parents = np.asarray(cond['parents'], dtype=np.int64)
     offsets = np.asarray(cond['offsets'], dtype=np.float64)
-    rest_positions = _rest_positions_from_offsets(offsets, parents)
+    rest_positions = rest_positions_from_offsets(offsets, parents)
 
     joint_side_labels, symmetry_partner_indices, _pairs = _infer_symmetry_metadata(
         joint_names,
@@ -119,10 +119,10 @@ def test_conservative_fallback_disables_ambiguous_child_subtrees() -> None:
 
 
 def test_lf_rf_suffixes_drive_side_detection_and_signature_normalization() -> None:
-    assert _detect_joint_side('Sabrecat_Finger4_LF04_') == 'left'
-    assert _detect_joint_side('Sabrecat_Finger4_RF04_') == 'right'
-    assert _detect_joint_side('Sabrecat_LeftFinger3_RF30_') == 'left'
-    assert _detect_joint_side('Sabrecat_RightFinger3_LF30_') == 'right'
+    assert detect_joint_side('Sabrecat_Finger4_LF04_') == 'left'
+    assert detect_joint_side('Sabrecat_Finger4_RF04_') == 'right'
+    assert detect_joint_side('Sabrecat_LeftFinger3_RF30_') == 'left'
+    assert detect_joint_side('Sabrecat_RightFinger3_LF30_') == 'right'
 
     assert _joint_signature('Sabrecat_LeftFinger1_LF10_') == _joint_signature('Sabrecat_RightFinger1_RF10_')
     assert _joint_signature('Sabrecat_Finger4_LF04_') == _joint_signature('Sabrecat_Finger4_RF04_')

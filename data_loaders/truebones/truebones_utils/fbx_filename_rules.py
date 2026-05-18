@@ -11,12 +11,12 @@ This module isolates the rules that infer meaning from animation filenames
 import os
 import re
 
-from .physics_joint_annotation import _normalize_joint_name
+from .physics_joint_annotation import normalize_joint_name
 
 
 def _reference_stem_tokens(file_path):
     stem = os.path.splitext(os.path.basename(file_path))[0]
-    normalized = _normalize_joint_name(stem)
+    normalized = normalize_joint_name(stem)
     return normalized.split(), normalized.replace(' ', '')
 
 
@@ -77,7 +77,7 @@ def find_tpose_reference_path(anim_files):
 
 
 def _compact_normalized_text(value: str) -> str:
-    normalized = _normalize_joint_name(str(value or ''))
+    normalized = normalize_joint_name(str(value or ''))
     return normalized.replace(' ', '')
 
 
@@ -89,7 +89,7 @@ def _object_type_tokens(object_type: str) -> list[str]:
     object_text = re.sub(r'(?<=[A-Za-z])(?=[0-9])', ' ', object_text)
     object_text = re.sub(r'(?<=[0-9])(?=[A-Za-z])', ' ', object_text)
     object_text = re.sub(r'[^0-9A-Za-z]+', ' ', object_text)
-    normalized = _normalize_joint_name(object_text)
+    normalized = normalize_joint_name(object_text)
     return [token for token in normalized.split() if token]
 
 
@@ -211,7 +211,7 @@ def _camel_case_action_name(raw_action: str) -> str:
     return ''.join(normalized_parts)
 
 
-def _normalize_action_name(object_type: str, raw_action: str) -> str:
+def normalize_action_name(object_type: str, raw_action: str) -> str:
     """Normalize an action name extracted from an FBX filename."""
     if not raw_action:
         return raw_action
@@ -223,7 +223,7 @@ def _normalize_action_name(object_type: str, raw_action: str) -> str:
     return _camel_case_action_name(raw_action)
 
 
-def _should_skip_anim(file_path: str, object_type: str) -> bool:
+def should_skip_anim(file_path: str, object_type: str) -> bool:
     """Check whether an animation file should be skipped during preprocessing."""
     stem = os.path.splitext(os.path.basename(file_path))[0]
     compact_stem = _compact_normalized_text(stem)
@@ -294,7 +294,7 @@ __all__ = [
     '_compact_normalized_text',
     '_is_all_bundle_stem',
     '_matches_object_alias',
-    '_normalize_action_name',
+    'normalize_action_name',
     '_should_skip_fbx',
     '_strip_leading_object_prefix',
 ]

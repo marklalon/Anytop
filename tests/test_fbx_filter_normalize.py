@@ -8,8 +8,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from data_loaders.truebones.truebones_utils.fbx_filename_rules import (  # noqa: E402
-    _normalize_action_name,
-    _should_skip_anim,
+    normalize_action_name,
+    should_skip_anim,
 )
 
 # Test cases: (file, object_type, expected_skip, expected_normalized_action)
@@ -97,7 +97,7 @@ tests = [
 
 def test_filter_and_normalize_cases():
     for file_path, obj_type, expected_skip, expected_action in tests:
-        skip_result = _should_skip_anim(file_path, obj_type)
+        skip_result = should_skip_anim(file_path, obj_type)
         assert skip_result == expected_skip, (
             f'{file_path} ({obj_type}): skip={skip_result}, expected={expected_skip}'
         )
@@ -106,7 +106,7 @@ def test_filter_and_normalize_cases():
             continue
 
         stem = os.path.splitext(file_path)[0]
-        action_result = _normalize_action_name(obj_type, stem)
+        action_result = normalize_action_name(obj_type, stem)
         assert action_result == expected_action, (
             f'{file_path} ({obj_type}): action={action_result}, expected={expected_action}'
         )

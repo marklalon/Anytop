@@ -898,7 +898,7 @@ def restore_glb(
     from Anytop.utils.exporter import AnimationExporter, animation_to_exporter_inputs
     from Anytop.utils.roundtrip_common import _build_skeleton
     from data_loaders.truebones.truebones_utils.motion_process import (
-        _find_translation_root,
+        find_translation_root,
         recover_processed_animation_from_feature_animation,
     )
 
@@ -1011,7 +1011,7 @@ def restore_glb(
         translation_root_index=translation_root_index,
     )
     print(f"Recovered: {recovered_feature_anim.shape[0]} frames")
-    translation_root_index = _find_translation_root(recovered_feature_anim)
+    translation_root_index = find_translation_root(recovered_feature_anim)
 
     print("Recovering processed animation channels for export...")
     export_anim = recover_processed_animation_from_feature_animation(
@@ -1259,3 +1259,4 @@ def _run_bone_length_check(glb_path: str, cond_npy: str, object_type: str | None
 
 if __name__ == "__main__":
     main()
+
