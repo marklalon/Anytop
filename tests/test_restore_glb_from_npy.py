@@ -18,12 +18,94 @@ for _path in [_REPO_ROOT, _ANYTOP_ROOT]:
 
 from motion_lib.Animation import Animation, positions_global
 from motion_lib.Quaternions import Quaternions
+from data_loaders.truebones.truebones_utils.motion_process import (
+    FOOT_CONTACT_VEL_THRESH,
+    get_motion,
+    recover_processed_animation_from_feature_animation,
+)
 from tools.restore_glb_from_npy import (
+    _recover_feature_animation_for_restore,
     _clamp_unobservable_joint_positions_to_rest,
+    _invert_preprocess_transform,
     _rebuild_fullbody_animation_with_ik,
 )
 from Anytop.utils.exporter import animation_to_exporter_inputs
 from Anytop.utils.roundtrip_common import _build_skeleton
+
+
+def test_restore_internal_path_rebuilds_locomotion_from_root_velocity() -> None:
+    parents = np.array([-1, 0], dtype=np.int32)
+    offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    rest_quat = np.array(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    rotations = Quaternions(np.tile(rest_quat[None, :, :], (3, 1, 1)))
+    positions = np.zeros((3, 2, 3), dtype=np.float64)
+    positions[:, 0] = np.array(
+        [
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [2.0, 1.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    positions[:, 1] = np.array([[0.0, 1.0, 0.0]] * 3, dtype=np.float64)
+    processed_anim = Animation(rotations, positions, Quaternions.id(0), offsets, parents)
+
+    features, _feature_parents, _max_joints, _feature_anim, export_anim, _is_loop, translation_root_index, root_translation_xz = get_motion(
+        processed_anim,
+        FOOT_CONTACT_VEL_THRESH,
+        'Synthetic',
+        max_joints=2,
+        offsets=offsets,
+        foot_indices=[],
+        tpos_rots=Quaternions(rest_quat[None, :, :]),
+        squared_positions_error={},
+        scale_factor=1.0,
+        orientation_quat=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+        helper_metadata=None,
+        animation_input_is_tpose_aligned=True,
+        canon_joint_rot=rest_quat,
+        norm_schema_version=4,
+    )
+
+    assert features is not None
+    assert root_translation_xz is None
+
+    recovered_feature_anim, _has_animated_pos = _recover_feature_animation_for_restore(
+        features,
+        parents,
+        offsets,
+        translation_root_index=translation_root_index,
+        canon_joint_rot=rest_quat,
+        norm_schema_version=4,
+    )
+    restored_processed_anim = recover_processed_animation_from_feature_animation(
+        recovered_feature_anim,
+        rest_quat,
+    )
+    restored_export_anim = _invert_preprocess_transform(
+        restored_processed_anim,
+        scale_factor=1.0,
+        root_translation_xz=root_translation_xz,
+        orientation_quat=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+    )
+
+    np.testing.assert_allclose(
+        positions_global(restored_export_anim),
+        positions_global(export_anim),
+        atol=1e-5,
+    )
 
 
 def test_fullbody_ik_rebuild_restores_rigid_local_positions() -> None:

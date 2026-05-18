@@ -25,9 +25,6 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     get_dataset_dir,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata  # noqa: E402
-from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
-    ROOT_XZ_STRIP_THRESHOLD,
-)
 
 
 class ValidationError(RuntimeError):
@@ -203,11 +200,14 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
         "object_type",
         "parents",
         "offsets",
+        "rest_rotations",
+        "canon_joint_rot",
         "joints_names",
         "joints_names_embs",
         "kinematic_chains",
         "norm_mean",
         "norm_std",
+        "norm_schema_version",
     }
 
     for object_type in objects_to_validate:
@@ -221,6 +221,8 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
 
             parents = np.asarray(object_cond["parents"])
             offsets = np.asarray(object_cond["offsets"])
+            rest_rotations = np.asarray(object_cond["rest_rotations"])
+            canon_joint_rot = np.asarray(object_cond["canon_joint_rot"])
             tpos_first_frame = np.asarray(object_cond["tpos_first_frame"])
             norm_mean = np.asarray(object_cond["norm_mean"])
             norm_std = np.asarray(object_cond["norm_std"])
@@ -228,6 +230,7 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
             joints_graph_dist = np.asarray(object_cond["joints_graph_dist"])
             joints_names = object_cond["joints_names"]
             joints_names_embs = np.asarray(object_cond["joints_names_embs"])
+            norm_schema_version = int(object_cond.get("norm_schema_version", 0) or 0)
 
             n_joints = len(parents)
             if n_joints <= 0:
@@ -235,6 +238,12 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
                 _print_warn(f"validation error: {msg}")
             if offsets.shape != (n_joints, 3):
                 msg = f"{object_type} offsets shape mismatch: {offsets.shape}"
+                _print_warn(f"validation error: {msg}")
+            if rest_rotations.shape != (n_joints, 4):
+                msg = f"{object_type} rest_rotations shape mismatch: {rest_rotations.shape}"
+                _print_warn(f"validation error: {msg}")
+            if canon_joint_rot.shape != (n_joints, 4):
+                msg = f"{object_type} canon_joint_rot shape mismatch: {canon_joint_rot.shape}"
                 _print_warn(f"validation error: {msg}")
             if tpos_first_frame.shape != (n_joints, FEATS_LEN):
                 msg = f"{object_type} tpos_first_frame shape mismatch: {tpos_first_frame.shape}"
@@ -260,6 +269,12 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
             if not np.isfinite(offsets).all():
                 msg = f"{object_type} offsets contain NaN/Inf"
                 _print_warn(f"validation error: {msg}")
+            if not np.isfinite(rest_rotations).all():
+                msg = f"{object_type} rest_rotations contain NaN/Inf"
+                _print_warn(f"validation error: {msg}")
+            if not np.isfinite(canon_joint_rot).all():
+                msg = f"{object_type} canon_joint_rot contain NaN/Inf"
+                _print_warn(f"validation error: {msg}")
             if not np.isfinite(tpos_first_frame).all():
                 msg = f"{object_type} tpos_first_frame contains NaN/Inf"
                 _print_warn(f"validation error: {msg}")
@@ -274,6 +289,9 @@ def _validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
                 _print_warn(f"validation error: {msg}")
             if not (norm_std > 0).any():
                 msg = f"{object_type} norm_std is entirely non-positive"
+                _print_warn(f"validation error: {msg}")
+            if norm_schema_version != 4:
+                msg = f"{object_type} norm_schema_version mismatch: expected 4, got {norm_schema_version}"
                 _print_warn(f"validation error: {msg}")
 
             _validate_optional_semantic_metadata(object_type, object_cond, n_joints)
@@ -423,38 +441,7 @@ def _prune_excess_joint_motions(motions_dir: Path, bvhs_dir: Path, cond: dict, s
     return deleted_stems
 
 
-def _validate_root_motion_extent(
-    motion: np.ndarray,
-    object_type: str,
-    motion_name: str,
-    threshold: float,
-    translation_root_index: int,
-) -> None:
-    """Warn if the motion's translation-root XZ distance from origin exceeds the threshold.
-
-    Uses the stored per-motion ``translation_root_index`` from motion metadata.
-    """
-    try:
-        from data_loaders.truebones.truebones_utils.motion_process import (
-            recover_root_quat_and_pos_np,
-        )
-        _, r_pos = recover_root_quat_and_pos_np(
-            motion, translation_root_index=translation_root_index
-        )
-        root_xz = r_pos[:, [0, 2]]
-        extent = float(np.linalg.norm(root_xz, axis=1).max())
-    except Exception as exc:
-        _print_warn(f"{motion_name}: failed to inspect root motion extent from NPy: {exc}")
-        return
-
-    if extent > threshold:
-        _print_warn(
-            f"{motion_name}: root XZ distance from centred origin ({extent:.3f}) exceeds "
-            f"strip threshold ({threshold:.1f}) — translation root index {translation_root_index}"
-        )
-
-
-def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample_limit: int, root_motion_threshold: float) -> None:
+def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample_limit: int) -> None:
     motion_files = sorted(motions_dir.glob("*.npy"))
     bvh_files = sorted(bvhs_dir.glob("*.bvh")) if bvhs_dir.exists() else []
 
@@ -472,6 +459,8 @@ def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample
             has_paired_bvhs = True
         else:
             _print_warn("optional BVH artifacts do not match motions; continuing with motion-only validation")
+    if not has_paired_bvhs:
+        _print_warn("skipping root-motion extent validation because paired processed BVHs are unavailable")
 
     files_to_validate = _select_validation_files(motion_files, sample_limit)
     try:
@@ -501,20 +490,12 @@ def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample
             _require(motion.shape[2] == FEATS_LEN, f"{motion_path.name} feature dim mismatch: {motion.shape[2]}")
             _require(np.isfinite(motion).all(), f"{motion_path.name} contains NaN/Inf")
             _require(motion.shape[1] == expected_joints, f"{motion_path.name} joints mismatch: {motion.shape[1]} vs {expected_joints}")
-
-            _validate_root_motion_extent(
-                motion,
-                object_type,
-                motion_path.name,
-                root_motion_threshold,
-                translation_root_index,
-            )
         except ValidationError as e:
             _print_warn(f"validation error: {motion_path.name}: {e}")
 
     scope = "all" if sample_limit <= 0 else str(len(files_to_validate))
     if has_paired_bvhs:
-        _print_ok(f"validated {scope} motion tensors and {len(motion_files)} paired optional BVH artifacts")
+        _print_ok(f"validated {scope} motion tensors and matched {len(motion_files)} paired optional BVH artifacts")
     else:
         _print_ok(f"validated {scope} motion tensors")
 
@@ -728,7 +709,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-count", type=int, default=0, help="How many motion files to validate in detail. Use 0 to validate all files.")
     parser.add_argument("--orientation-threshold-deg", type=float, default=5.0, help="Maximum allowed T-pose face-orientation delta from the nearest cardinal XZ axis (+x/-x/+z/-z) before warning.")
     parser.add_argument("--skip-orientation-check", action="store_true", help="Skip T-pose face-orientation validation.")
-    parser.add_argument("--root-motion-threshold", type=float, default=ROOT_XZ_STRIP_THRESHOLD, help=f"Maximum allowed root XZ distance from the centred origin (default={ROOT_XZ_STRIP_THRESHOLD}).")
     return parser.parse_args()
 
 
@@ -756,7 +736,7 @@ def main() -> int:
     _validate_metadata(metadata_path, motion_files, cond)
     _validate_motion_metadata(dataset_dir, motion_files, cond)
     
-    _validate_motion_files(motions_dir, bvhs_dir, cond, args.sample_count, args.root_motion_threshold)
+    _validate_motion_files(motions_dir, bvhs_dir, cond, args.sample_count)
     
     if args.skip_orientation_check:
         _print_warn("skipping T-pose face-orientation validation by request")

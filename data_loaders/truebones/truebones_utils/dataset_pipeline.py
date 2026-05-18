@@ -29,8 +29,8 @@ from .fbx_filename_rules import (
 )
 
 from .animation_utils import (
-    _canonical_name_for_bvh,
-    _attach_joint_name_embeddings_to_cond,
+    canonical_name_for_bvh,
+    attach_joint_name_embeddings_to_cond,
     _extend_semantic_metadata_with_leaf_helpers,
     needs_bvh_position_channels,
     reorder_animation_to_dfs,
@@ -58,7 +58,7 @@ from .features import (
 # factor is baked into the shared bank and applied uniformly to every skeleton
 # (training and motion-free new ones alike), so the scheme stays
 # motion-prior-free. Identity calibration {1,1,1} reproduces v2 exactly.
-STRUCTURAL_NORM_SCHEMA_VERSION = 3
+STRUCTURAL_NORM_SCHEMA_VERSION = 4
 STRUCTURAL_NORM_PRIORS_FILE = "structural_norm_priors.npy"
 _MIN_STRUCTURAL_SCALE = 1e-3
 _STRUCTURAL_CONTACT_SCALE = 1.0
@@ -73,8 +73,10 @@ _MIN_PROFILE_RATIO = 0.2
 _MAX_PROFILE_RATIO = 5.0
 # (key, start, stop) for the contiguous motion-feature groups that get an
 # anisotropy profile. Contact (channel 12) stays a single scalar.
-_PROFILE_GROUPS = (('pos', 0, 3), ('rot', 3, 9), ('vel', 9, 12))
-_GROUP_WIDTHS = {'pos': 3, 'rot': 6, 'vel': 3}
+_ROOT_PROFILE_GROUPS = (('pos', 0, 3), ('rot', 3, 9), ('vel', 9, 12))
+_NONROOT_PROFILE_GROUPS = (('rot', 3, 9), ('stretch', 9, 10))
+_PROFILE_GROUPS = _ROOT_PROFILE_GROUPS
+_GROUP_WIDTHS = {'pos': 3, 'rot': 6, 'vel': 3, 'stretch': 1}
 _SEMANTIC_GROUP_KEYWORDS = (
     ('axial', ('pelvis', 'hip', 'spine', 'chest', 'torso', 'neck', 'head')),
     ('arm', ('shoulder', 'arm', 'forearm', 'elbow', 'hand', 'wrist', 'finger', 'thumb')),
@@ -127,21 +129,27 @@ def _sanitize_profile(profile, width):
     return [float(v) for v in (arr / mean)]
 
 
-def _structural_scale_dict(pos=1.0, rot=1.0, vel=1.0, contact=_STRUCTURAL_CONTACT_SCALE,
-                           pos_profile=None, rot_profile=None, vel_profile=None):
+def _joint_feature_groups(joint_index):
+    return _ROOT_PROFILE_GROUPS if int(joint_index) == 0 else _NONROOT_PROFILE_GROUPS
+
+
+def _structural_scale_dict(pos=1.0, rot=1.0, vel=1.0, stretch=1.0, contact=_STRUCTURAL_CONTACT_SCALE,
+                           pos_profile=None, rot_profile=None, vel_profile=None, stretch_profile=None):
     return {
         'pos': float(max(pos, _MIN_STRUCTURAL_SCALE)),
         'rot': float(max(rot, _MIN_STRUCTURAL_SCALE)),
         'vel': float(max(vel, _MIN_STRUCTURAL_SCALE)),
+        'stretch': float(max(stretch, _MIN_STRUCTURAL_SCALE)),
         'contact': float(max(contact, _MIN_STRUCTURAL_SCALE)),
         'pos_profile': _sanitize_profile(pos_profile, _GROUP_WIDTHS['pos']),
         'rot_profile': _sanitize_profile(rot_profile, _GROUP_WIDTHS['rot']),
         'vel_profile': _sanitize_profile(vel_profile, _GROUP_WIDTHS['vel']),
+        'stretch_profile': _sanitize_profile(stretch_profile, _GROUP_WIDTHS['stretch']),
     }
 
 
 def _identity_variance_calibration():
-    return {'pos': 1.0, 'rot': 1.0, 'vel': 1.0}
+    return {'pos': 1.0, 'rot': 1.0, 'vel': 1.0, 'stretch': 1.0}
 
 
 def _default_structural_prior_bank():
@@ -199,9 +207,14 @@ def _save_structural_prior_bank(save_dir, prior_bank):
 
 
 def _build_structural_norm_mean(tpos_first_frame):
-    norm_mean = np.asarray(tpos_first_frame, dtype=np.float32).copy()
-    norm_mean[:, 9:12] = 0.0
-    norm_mean[:, 12] = 0.0
+    tpos_first_frame = np.asarray(tpos_first_frame, dtype=np.float32)
+    norm_mean = np.zeros_like(tpos_first_frame, dtype=np.float32)
+    if norm_mean.shape[0] == 0:
+        return norm_mean
+    norm_mean[0, :3] = tpos_first_frame[0, :3]
+    norm_mean[0, 3:9] = tpos_first_frame[0, 3:9]
+    norm_mean[1:, 3:9] = np.asarray([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32)
+    norm_mean[1:, 9] = 1.0
     return norm_mean
 
 
@@ -244,19 +257,27 @@ def _group_magnitude_and_profile(residual_block):
     return magnitude, (per_channel / safe_mag)
 
 
-def _joint_structural_scales(joint_motion, joint_anchor):
+def _joint_structural_scales(joint_motion, joint_anchor, *, is_root):
     residual = np.asarray(joint_motion, dtype=np.float32) - np.asarray(joint_anchor, dtype=np.float32)[None, :]
-    pos_mag, pos_profile = _group_magnitude_and_profile(residual[:, 0:3])
     rot_mag, rot_profile = _group_magnitude_and_profile(residual[:, 3:9])
-    vel_mag, vel_profile = _group_magnitude_and_profile(residual[:, 9:12])
+    if is_root:
+        pos_mag, pos_profile = _group_magnitude_and_profile(residual[:, 0:3])
+        vel_mag, vel_profile = _group_magnitude_and_profile(residual[:, 9:12])
+        stretch_mag, stretch_profile = 1.0, [1.0]
+    else:
+        pos_mag, pos_profile = 1.0, [1.0, 1.0, 1.0]
+        vel_mag, vel_profile = 1.0, [1.0, 1.0, 1.0]
+        stretch_mag, stretch_profile = _group_magnitude_and_profile(residual[:, 9:10])
     return _structural_scale_dict(
         pos=pos_mag,
         rot=rot_mag,
         vel=vel_mag,
+        stretch=stretch_mag,
         contact=_STRUCTURAL_CONTACT_SCALE,
         pos_profile=pos_profile,
         rot_profile=rot_profile,
         vel_profile=vel_profile,
+        stretch_profile=stretch_profile,
     )
 
 
@@ -315,23 +336,27 @@ def _is_helper_like_joint(object_cond, joint_index):
 
 def _empty_scale_samples():
     return {
-        'pos': [], 'rot': [], 'vel': [],
-        'pos_profile': [], 'rot_profile': [], 'vel_profile': [],
+        'pos': [], 'rot': [], 'vel': [], 'stretch': [],
+        'pos_profile': [], 'rot_profile': [], 'vel_profile': [], 'stretch_profile': [],
     }
 
 
-def _append_scale_sample(sample_dict, key, scales):
+def _append_scale_sample(sample_dict, key, scales, group_names=None):
     bucket = sample_dict.setdefault(str(key), _empty_scale_samples())
-    for group_name in ('pos', 'rot', 'vel'):
+    if group_names is None:
+        group_names = ('pos', 'rot', 'vel', 'stretch')
+    for group_name in group_names:
         bucket[group_name].append(float(scales[group_name]))
         bucket[f'{group_name}_profile'].append(
             _sanitize_profile(scales.get(f'{group_name}_profile'), _GROUP_WIDTHS[group_name])
         )
 
 
-def _finalize_scale_bucket(bucket, fallback_scales):
-    finalized = {}
-    for group_name in ('pos', 'rot', 'vel'):
+def _finalize_scale_bucket(bucket, fallback_scales, group_names=None):
+    finalized = dict(fallback_scales)
+    if group_names is None:
+        group_names = ('pos', 'rot', 'vel', 'stretch')
+    for group_name in group_names:
         samples = np.asarray(bucket.get(group_name, []), dtype=np.float32)
         samples = samples[np.isfinite(samples) & (samples > 0)]
         if samples.size == 0:
@@ -387,23 +412,36 @@ def _build_structural_prior_bank(payloads):
 
         object_count += 1
         for joint_index in range(motion_tensor.shape[1]):
-            scales = _joint_structural_scales(motion_tensor[:, joint_index, :], norm_mean[joint_index])
+            is_root = int(joint_index) == 0
+            group_names = tuple(group_name for group_name, _start, _stop in _joint_feature_groups(joint_index))
+            scales = _joint_structural_scales(
+                motion_tensor[:, joint_index, :],
+                norm_mean[joint_index],
+                is_root=is_root,
+            )
             canonical_name = str(canonical_names[joint_index] if joint_index < len(canonical_names) else '').strip().lower() or '__unknown__'
             semantic_group = _coarse_semantic_group(object_cond, joint_index)
-            role_key = 'root' if int(joint_index) == 0 else 'nonroot'
-            _append_scale_sample(name_samples, canonical_name, scales)
-            _append_scale_sample(semantic_samples, semantic_group, scales)
-            _append_scale_sample(role_samples, role_key, scales)
-            global_samples['pos'].append(float(scales['pos']))
-            global_samples['rot'].append(float(scales['rot']))
-            global_samples['vel'].append(float(scales['vel']))
+            role_key = 'root' if is_root else 'nonroot'
+            _append_scale_sample(name_samples, canonical_name, scales, group_names)
+            _append_scale_sample(semantic_samples, semantic_group, scales, group_names)
+            _append_scale_sample(role_samples, role_key, scales, group_names)
+            for group_name in group_names:
+                global_samples[group_name].append(float(scales[group_name]))
             joint_examples += 1
 
     default_bank = _default_structural_prior_bank()
     global_scales = _finalize_scale_bucket(global_samples, default_bank['global_scales'])
     by_role = {
-        role_key: _finalize_scale_bucket(role_samples.get(role_key, _empty_scale_samples()), global_scales)
-        for role_key in ('root', 'nonroot')
+        'root': _finalize_scale_bucket(
+            role_samples.get('root', _empty_scale_samples()),
+            global_scales,
+            ('pos', 'rot', 'vel'),
+        ),
+        'nonroot': _finalize_scale_bucket(
+            role_samples.get('nonroot', _empty_scale_samples()),
+            global_scales,
+            ('rot', 'stretch'),
+        ),
     }
 
     bank = {
@@ -460,7 +498,7 @@ def _resolve_variance_calibration(prior_bank):
     """Per-feature-group std multiplier; missing/identity -> no-op (== v2)."""
     raw = prior_bank.get('variance_calibration') if isinstance(prior_bank, dict) else None
     calibration = {}
-    for group_name in ('pos', 'rot', 'vel'):
+    for group_name in ('pos', 'rot', 'vel', 'stretch'):
         value = 1.0
         if isinstance(raw, dict) and group_name in raw:
             try:
@@ -488,7 +526,7 @@ def _compute_object_norm_std(object_cond, prior_bank, apply_calibration=True):
     joint_sources = []
     for joint_index in range(norm_mean.shape[0]):
         scales, source = _resolve_joint_structural_scales(object_cond, joint_index, prior_bank)
-        for group_name, start, stop in _PROFILE_GROUPS:
+        for group_name, start, stop in _joint_feature_groups(joint_index):
             magnitude = float(scales[group_name])
             # A v1 leaf (or default bank) has no *_profile -> isotropic ones,
             # so this reduces exactly to the previous scalar broadcast.
@@ -510,8 +548,8 @@ def _measure_variance_calibration(payloads, prior_bank):
     over the whole training set. Calibrating norm_std by this factor makes
     (motion - norm_mean) / norm_std unit-RMS, restoring the diffusion cosine
     schedule's variance assumption."""
-    sumsq = {g: 0.0 for g, _, _ in _PROFILE_GROUPS}
-    count = {g: 0 for g, _, _ in _PROFILE_GROUPS}
+    sumsq = {group_name: 0.0 for group_name in ('pos', 'rot', 'vel', 'stretch')}
+    count = {group_name: 0 for group_name in ('pos', 'rot', 'vel', 'stretch')}
     for payload in payloads:
         if payload is None:
             continue
@@ -529,15 +567,16 @@ def _measure_variance_calibration(payloads, prior_bank):
             motion_tensor = np.asarray(result['motion'], dtype=np.float64)
             residual = motion_tensor - norm_mean64[None, :, :]
             normalized = residual / norm_std64[None, :, :]
-            for group_name, start, stop in _PROFILE_GROUPS:
-                block = normalized[:, :, start:stop]
-                block = block[np.isfinite(block)]
-                if block.size:
-                    sumsq[group_name] += float(np.sum(block ** 2))
-                    count[group_name] += int(block.size)
+            for joint_index in range(normalized.shape[1]):
+                for group_name, start, stop in _joint_feature_groups(joint_index):
+                    block = normalized[:, joint_index, start:stop]
+                    block = block[np.isfinite(block)]
+                    if block.size:
+                        sumsq[group_name] += float(np.sum(block ** 2))
+                        count[group_name] += int(block.size)
 
     calibration = {}
-    for group_name in ('pos', 'rot', 'vel'):
+    for group_name in ('pos', 'rot', 'vel', 'stretch'):
         if count[group_name] > 0:
             rms = float(np.sqrt(sumsq[group_name] / count[group_name]))
         else:
@@ -550,21 +589,48 @@ def _measure_variance_calibration(payloads, prior_bank):
     print(
         "[structural_stats] variance calibration (pre-cal training RMS): "
         f"pos={calibration['pos']:.4f} rot={calibration['rot']:.4f} "
-        f"vel={calibration['vel']:.4f}"
+        f"vel={calibration['vel']:.4f} stretch={calibration['stretch']:.4f}"
     )
     return calibration
 
 
 def _apply_structural_stats_to_object_cond(object_cond, prior_bank):
+    object_type = str(object_cond.get('object_type') or '__unknown__')
+    object_cond['tpos_first_frame'] = np.asarray(object_cond['tpos_first_frame'], dtype=np.float32)
+    joint_count = int(object_cond['tpos_first_frame'].shape[0])
+
+    required_fields = ('offsets', 'rest_rotations', 'canon_joint_rot')
+    missing_fields = [field_name for field_name in required_fields if field_name not in object_cond]
+    if missing_fields:
+        raise ValueError(
+            f"object_cond for '{object_type}' is missing required v4 fields: {missing_fields}"
+        )
+
+    object_cond['offsets'] = np.asarray(object_cond['offsets'], dtype=np.float32)
+    object_cond['rest_rotations'] = np.asarray(object_cond['rest_rotations'], dtype=np.float32)
+    object_cond['canon_joint_rot'] = np.asarray(object_cond['canon_joint_rot'], dtype=np.float32)
+
+    if object_cond['offsets'].shape != (joint_count, 3):
+        raise ValueError(
+            f"object_cond for '{object_type}' has offsets shape {object_cond['offsets'].shape}; expected {(joint_count, 3)}"
+        )
+    if object_cond['rest_rotations'].shape != (joint_count, 4):
+        raise ValueError(
+            f"object_cond for '{object_type}' has rest_rotations shape {object_cond['rest_rotations'].shape}; expected {(joint_count, 4)}"
+        )
+    if object_cond['canon_joint_rot'].shape != (joint_count, 4):
+        raise ValueError(
+            f"object_cond for '{object_type}' has canon_joint_rot shape {object_cond['canon_joint_rot'].shape}; expected {(joint_count, 4)}"
+        )
+
     norm_mean, norm_std, joint_sources = _compute_object_norm_std(
         object_cond, prior_bank, apply_calibration=True
     )
-    object_cond['tpos_first_frame'] = np.asarray(object_cond['tpos_first_frame'], dtype=np.float32)
     object_cond['norm_mean'] = norm_mean.astype(np.float32, copy=False)
     object_cond['norm_std'] = norm_std.astype(np.float32, copy=False)
     object_cond['norm_schema_version'] = int(STRUCTURAL_NORM_SCHEMA_VERSION)
-    object_cond['norm_mean_source'] = 'tpose_anchor_v1'
-    object_cond['norm_std_source'] = 'structural_prior_bank_v3_anisotropic_varcal'
+    object_cond['norm_mean_source'] = 'v4_target_anchor'
+    object_cond['norm_std_source'] = 'structural_prior_bank_v4_role_aware_varcal'
     object_cond['norm_std_variance_calibration'] = _resolve_variance_calibration(prior_bank)
     object_cond['norm_std_joint_sources'] = joint_sources
     return object_cond
@@ -682,110 +748,11 @@ def object_policy(obj):
         return "h_first"
 
 
-################## Augmentations ##########################
-def remove_joints_augmentation(data, removal_rate, mean, std):
-    motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains = data['motion'], data['length'], data['object_type'], data['parents'], data['joints_graph_dist'], data['joints_relations'], data['tpos_first_frame'], data['offsets'], data['joints_names_embs'], data['kinematic_chains']
-    ee = [chain[-1] for chain in kinematic_chains]
-    possible_feet = np.unique(np.where(motion[..., -1] > 0)[1])
-    if object_type in SNAKES:
-        possible_feet=[]
-    removal_options = [j for j in ee if j not in possible_feet]
-    # removal_rate = min(1.0, (removal_rate*len(parents)) / len(removal_options))
-    remove_joints = sorted(random.sample(removal_options, math.floor(len(removal_options) * removal_rate)), reverse=True)
-    motion = np.delete(motion, remove_joints, axis=1)
-    new_ee = [parents[j] for j in remove_joints if np.count_nonzero(parents == parents[j]) == 1]
-    for el in new_ee:
-        joints_relations[el, el] = 5    
-    parents = np.delete(parents, remove_joints, axis=0)
-    joints_relations = np.delete(np.delete(joints_relations, remove_joints, axis=0), remove_joints, axis=1)
-        
-    for rj in remove_joints:
-        parents[parents > rj] -= 1
-    joints_graph_dist = np.delete(np.delete(joints_graph_dist, remove_joints, axis=0), remove_joints, axis=1)
-    tpos_first_frame = np.delete(tpos_first_frame, remove_joints, axis=0)
-    offsets = np.delete(offsets, remove_joints, axis=0)
-    joints_names_embs = np.delete(joints_names_embs, remove_joints, axis=0)
-    mean = np.delete(mean, remove_joints, axis=0)
-    std = np.delete(std, remove_joints, axis=0)
-    object_type = f'{object_type}__remove{remove_joints}'
-    return motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std
-
-
-def add_joint_augmentation(data, mean, std):
-    motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains = data['motion'], data['length'], data['object_type'], data['parents'], data['joints_graph_dist'], data['joints_relations'], data['tpos_first_frame'], data['offsets'], data['joints_names_embs'], data['kinematic_chains']
-    n_joints = motion.shape[1]
-    n_frames = motion.shape[0]
-    # added joint mut follow:
-    # j has exactly 1 child 
-    # j parent is not the root joint
-    # j is not the root joint
-    possible_joints_to_add = [j for j in range(1, n_joints) if np.count_nonzero(joints_relations[j] == 2) == 1 and joints_relations[j,0] != 1]
-    if len(possible_joints_to_add) == 0:
-        return motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std
-    add_j = random.choice(possible_joints_to_add)
-    # motion features
-    j_feats = motion[:, add_j].copy()
-    p_feats = motion[:, parents[add_j]]
-    new_feats = ((j_feats + p_feats)/2).copy()
-    new_feats[..., 3:9] = j_feats[..., 3:9].copy() # rotations
-    new_feats[..., 12] = j_feats[..., 12].copy() # feet 
-    j_feats[..., 3:9] = np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])[None].repeat(n_frames, axis=0)
-    
-    # tpos features
-    tpos_j_feats = tpos_first_frame[add_j].copy()
-    tpos_p_feats = tpos_first_frame[parents[add_j]]
-    tpos_new_feats = ((tpos_j_feats + tpos_p_feats)/2)
-    tpos_new_feats[3:9] = tpos_j_feats[3:9].copy() # rotations
-    tpos_new_feats[12] = tpos_j_feats[12] # feet 
-    tpos_j_feats[3:9] = np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
-    
-    # mean features
-    mean_j_feats = mean[add_j].copy()
-    mean_p_feats = mean[parents[add_j]]
-    mean_new_feats = ((mean_j_feats + mean_p_feats)/2).copy()
-    mean_new_feats[3:9] = mean_j_feats[3:9].copy() # rotations
-    mean_new_feats[12] = mean_j_feats[12] # feet 
-    mean_j_feats[3:9] = np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
-    
-    # std features
-    std_new_feats = std[add_j].copy()
-    
-    # joints names embs features 
-    emb_j_feats = joints_names_embs[add_j]
-    emb_p_feats = joints_names_embs[parents[add_j]]
-    emb_new_feats = (emb_j_feats + emb_p_feats)/2
-    
-    # apply augmentation
-    #motion
-    augmented = np.concatenate([motion[:, :add_j], new_feats[:, None], j_feats[:, None], motion[:, add_j+1:]], axis=1).copy()
-    #tpos_first_frame
-    tpos_first_frame_augmented = np.vstack([tpos_first_frame[:add_j], tpos_new_feats[None], tpos_j_feats[None], tpos_first_frame[add_j+1:]]).copy()
-    #mean TODO: AUGMENT LIKE MOTION AND TPOS 
-    mean_augmented = np.vstack([mean[:add_j], mean_new_feats[None], mean_j_feats[None], mean[add_j+1:]]).copy()
-    #std TODO: AUGMENT LIKE MOTION AND TPOS 
-    std_augmented = np.vstack([std[:add_j], std_new_feats[None], std[add_j:]]).copy()
-    #joints_names_embs
-    joints_names_embs_augmented = np.vstack([joints_names_embs[:add_j], emb_new_feats[None], joints_names_embs[add_j:]]).copy()
-    # parents 
-    augmented_parents = parents.copy()
-    augmented_parents[augmented_parents >= add_j] += 1
-    augmented_parents = augmented_parents.tolist()
-    augmented_parents = np.array(augmented_parents[:add_j] + [add_j] + augmented_parents[add_j:])
-
-    # topology conditions 
-    relations, graph_dist = create_topology_edge_relations(augmented_parents.tolist(), max_path_len = MAX_PATH_LEN)
-    
-    # all others 
-    offsets = np.vstack([offsets[:add_j], offsets[add_j]/2, offsets[add_j]/2, offsets[add_j+1:]])
-    object_type = f'{object_type}__add{add_j}'
-    return augmented, m_length, object_type, augmented_parents, graph_dist, relations, tpos_first_frame_augmented, offsets, joints_names_embs_augmented, kinematic_chains, mean_augmented, std_augmented
-
-
 ################## Dataset Pipeline #####################
 
 def _process_motion_file(file_path, object_type, max_joints,
                          offsets, foot_indices, tpos_rots, scale_factor,
-                         helper_metadata, orientation_quat):
+                         helper_metadata, orientation_quat, canon_joint_rot):
     local_errors = dict()
     # Load the animation file (FBX/GLB/GLTF) once; pass it as `preloaded` to every get_motion call so that
     raw_anim, names, frame_time = FBX.load(file_path)
@@ -815,6 +782,8 @@ def _process_motion_file(file_path, object_type, max_joints,
             slice_inds=[begin, slice_ind],
             preloaded=(raw_anim, names),
             helper_metadata=helper_metadata,
+            canon_joint_rot=canon_joint_rot,
+            norm_schema_version=STRUCTURAL_NORM_SCHEMA_VERSION,
         )
         current_begin = begin
         begin = slice_ind
@@ -916,6 +885,8 @@ def _build_tpose_cond(object_type, t_pos_path, face_joints, max_joints=MAX_JOINT
         orientation_quat=tp.orientation_quat,
         helper_metadata=tp.helper_metadata,
         animation_input_is_tpose_aligned=False,
+        canon_joint_rot=tp.canon_joint_rot,
+        norm_schema_version=4,
     )
     rest_positions = _rest_positions_from_offsets(tp.offsets, parents)
     original_joint_count = int(tp.helper_metadata['original_joint_count'])
@@ -938,10 +909,12 @@ def _build_tpose_cond(object_type, t_pos_path, face_joints, max_joints=MAX_JOINT
     object_cond['object_type'] = object_type
     object_cond['parents'] = parents
     object_cond['offsets'] = tp.offsets
+    object_cond['rest_rotations'] = tp.rest_rotations
+    object_cond['canon_joint_rot'] = tp.canon_joint_rot
     object_cond['joints_names'] = tp.names
     object_cond['canonical_joint_names'] = semantic_metadata['canonical_joint_names']
     object_cond['canonical_bvh_joint_names'] = [
-        _canonical_name_for_bvh(canonical_name, raw_name)
+        canonical_name_for_bvh(canonical_name, raw_name)
         for canonical_name, raw_name in zip(semantic_metadata['canonical_joint_names'], tp.names)
     ]
     object_cond['face_joints'] = list(tp.face_joints)
@@ -1043,6 +1016,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             character_scale_factor,
             tp.helper_metadata,
             orientation_quat=tp.orientation_quat,
+            canon_joint_rot=tp.canon_joint_rot,
         )
 
     file_outputs = [process_file(file_path) for file_path in anim_files]
@@ -1136,7 +1110,7 @@ def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, m
         error_file.write('%s: %f\n' %(f, squared_positions_error[f]))
     error_file.close()
 
-    _attach_joint_name_embeddings_to_cond(cond, save_dir)
+    attach_joint_name_embeddings_to_cond(cond, save_dir)
     np.save(pjoin(save_dir, "cond.npy"), cond)
     _save_structural_prior_bank(save_dir, structural_prior_bank)
     write_motion_metadata(save_dir, motion_metadata, files_counter)

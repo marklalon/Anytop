@@ -11,7 +11,7 @@ from utils.parser_util import dift_args
 from utils.model_util import create_model_and_diffusion_general_skeleton, load_model, resolve_t5_out_dim
 from utils import dist_util
 from data_loaders.get_data import get_dataset_loader
-from data_loaders.tensors import truebones_batch_collate
+from data_loaders.tensors import create_padded_relation, truebones_collate
 from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_ric_np
 from data_loaders.truebones.data.dataset import create_temporal_mask_for_window, ensure_joint_name_embeddings
 from os.path import join as pjoin
@@ -26,7 +26,7 @@ def encode_joints_names(joints_names, t5_conditioner): # joints names should be 
         return embs
 
 def create_sample_in_batch(motion, object_type, cond_dict_for_object, temporal_window, max_joints):
-    batch=list()
+    batch = list()
     parents = cond_dict_for_object['parents']
     n_joints = len(parents)
     n_frames = motion.shape[0]
@@ -34,26 +34,24 @@ def create_sample_in_batch(motion, object_type, cond_dict_for_object, temporal_w
     norm_std = cond_dict_for_object['norm_std']
     motion = (motion - norm_mean[None]) / (norm_std[None] + 1e-6)
     motion = np.nan_to_num(motion)
-    tpos_first_frame = np.asarray(cond_dict_for_object['tpos_first_frame'], dtype=np.float32)
-    joint_relations = cond_dict_for_object['joint_relations']
-    joints_graph_dist = cond_dict_for_object['joints_graph_dist']
-    offsets = cond_dict_for_object['offsets']
-    joints_names_embs = cond_dict_for_object['joints_names_embs']
-    batch.append(motion)
-    batch.append(n_frames)
-    batch.append(parents)
-    batch.append(tpos_first_frame)
-    batch.append(offsets)
-    batch.append(create_temporal_mask_for_window(temporal_window, n_frames))
-    batch.append(joints_graph_dist)
-    batch.append(joint_relations)
-    batch.append(object_type)
-    batch.append(joints_names_embs)
-    batch.append(0)
-    batch.append(norm_mean)
-    batch.append(norm_std)
-    batch.append(max_joints)
-    return batch
+    return {
+        'inp': torch.from_numpy(np.asarray(motion, dtype=np.float32)).permute(1, 2, 0),
+        'n_joints': n_joints,
+        'lengths': int(n_frames),
+        'parents': parents,
+        'offsets': torch.from_numpy(np.asarray(cond_dict_for_object['offsets'], dtype=np.float32)),
+        'rest_rotations': torch.from_numpy(np.asarray(cond_dict_for_object['rest_rotations'], dtype=np.float32)),
+        'canon_joint_rot': torch.from_numpy(np.asarray(cond_dict_for_object['canon_joint_rot'], dtype=np.float32)),
+        'norm_schema_version': norm_schema_version,
+        'temporal_mask': torch.as_tensor(create_temporal_mask_for_window(temporal_window, n_frames)),
+        'graph_dist': create_padded_relation(cond_dict_for_object['joints_graph_dist'], max_joints, n_joints),
+        'joints_relations': create_padded_relation(cond_dict_for_object['joint_relations'], max_joints, n_joints),
+        'object_type': object_type,
+        'joints_names_embs': torch.from_numpy(np.asarray(cond_dict_for_object['joints_names_embs'], dtype=np.float32)),
+        'tpos_first_frame': torch.from_numpy(np.asarray(cond_dict_for_object['tpos_first_frame'], dtype=np.float32)),
+        'norm_mean': torch.from_numpy(np.asarray(norm_mean, dtype=np.float32)),
+        'norm_std': torch.from_numpy(np.asarray(norm_std, dtype=np.float32)),
+    }
 
 def create_batch_from_motion_paths(motion_paths, cond_dict, temporal_window, max_joints):
     batches = list()
@@ -66,7 +64,7 @@ def create_batch_from_motion_paths(motion_paths, cond_dict, temporal_window, max
         batches.append(create_sample_in_batch(motion, object_type, cond_dict_object_type, temporal_window, max_joints))
         motions.append(motion)
         cond_dicts.append(cond_dict_object_type)
-    return *truebones_batch_collate(batches), motions, cond_dicts
+    return *truebones_collate(batches), motions, cond_dicts
 
 """
 Returns motion features of the given BVH file. besides bvh_path and face_joints, all other parameters 

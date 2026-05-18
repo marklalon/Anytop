@@ -282,6 +282,12 @@ def _run_test_fbx_npy_glb_roundtrip(
             scale_factor = float(tp.scale_factor)
         else:
             scale_factor = float(cond_entry["scale_factor"])
+        if cond_entry is None or cond_entry.get("canon_joint_rot") is None:
+            print(f"[WARN] canon_joint_rot missing from cond.npy for {object_type}; falling back to T-pose metadata")
+            canon_joint_rot = np.asarray(tp.canon_joint_rot, dtype=np.float32)
+        else:
+            canon_joint_rot = np.asarray(cond_entry["canon_joint_rot"], dtype=np.float32)
+        norm_schema_version = int(cond_entry.get("norm_schema_version", 4) or 4)
         print(f"Joints: {len(tp.names)}, scale_factor: {scale_factor:.6f}")
 
         # Phase B: Load source FBX and build the production preprocessed motion/features
@@ -304,6 +310,8 @@ def _run_test_fbx_npy_glb_roundtrip(
             orientation_quat=tp.orientation_quat,
             helper_metadata=tp.helper_metadata,
             preloaded=(source_anim, source_bone_names),
+            canon_joint_rot=canon_joint_rot,
+            norm_schema_version=norm_schema_version,
         )
 
         if feature_anim is None or _baseline_export_anim is None:

@@ -93,6 +93,8 @@ def add_model_options(parser):
                        help="Weight for velocity-position consistency loss (0.0=off)."
                             " Penalizes |pos[t+1]-pos[t] - vel[t]|^2 on denormalized outputs."
                             " Couples position and velocity feature groups to prevent independent memorization.")
+    group.add_argument("--lambda_fk", default=0.0, type=float,
+                       help="Weight for the v4 FK reconstruction loss (positions + finite-difference velocity).")
     group.add_argument("--t5_out_dim", default=0, type=int, help=argparse.SUPPRESS)
     group.add_argument("--temporal_window", default=31, type=int,
                        help="temporal window size")

@@ -10,7 +10,11 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from motion_lib.Animation import Animation
+from motion_lib.Quaternions import Quaternions
+
 from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata, write_motion_metadata
+from data_loaders.truebones.truebones_utils.motion_process import FOOT_CONTACT_VEL_THRESH, get_motion
 from data_loaders.truebones.truebones_utils import dataset_pipeline as dataset_pipeline_mod
 
 
@@ -21,12 +25,66 @@ regenerate_dataset_artifacts_module = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(regenerate_dataset_artifacts_module)
 
 
+def _identity_quats(count: int) -> np.ndarray:
+    qs = np.zeros((count, 4), dtype=np.float32)
+    qs[:, 0] = 1.0
+    return qs
+
+
+def _build_effective_translation_root_motion() -> np.ndarray:
+    parents = np.array([-1, 0, 1], dtype=np.int64)
+    offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, -1.0],
+        ],
+        dtype=np.float64,
+    )
+    rest_quat = _identity_quats(3).astype(np.float64)
+    frames = 4
+    trajectory_x = np.arange(frames, dtype=np.float64)
+
+    rotations = Quaternions(np.tile(rest_quat[None, :, :], (frames, 1, 1)))
+    positions = np.zeros((frames, 3, 3), dtype=np.float64)
+    positions[:, 0] = np.array([[0.0, 0.0, 1.0]] * frames, dtype=np.float64)
+    positions[:, 1] = np.array([[0.0, 1.0, 0.0]] * frames, dtype=np.float64)
+    positions[:, 2] = np.stack(
+        [trajectory_x, np.zeros_like(trajectory_x), -np.ones_like(trajectory_x)],
+        axis=-1,
+    )
+    anim = Animation(rotations, positions, Quaternions.id(0), offsets, parents)
+
+    motion, _parents, _max_joints, _feature_anim, _export_anim, _is_loop, translation_root_index, _root_translation_xz = get_motion(
+        anim,
+        FOOT_CONTACT_VEL_THRESH,
+        'Dragon',
+        max_joints=3,
+        offsets=offsets,
+        foot_indices=[],
+        tpos_rots=Quaternions(rest_quat[None, :, :]),
+        squared_positions_error={},
+        scale_factor=1.0,
+        orientation_quat=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+        helper_metadata=None,
+        animation_input_is_tpose_aligned=True,
+        canon_joint_rot=rest_quat.astype(np.float32),
+        norm_schema_version=4,
+    )
+
+    assert motion is not None
+    assert int(translation_root_index) == 2
+    return np.asarray(motion, dtype=np.float32)
+
+
 def _make_cond_entry(object_type: str) -> dict[str, object]:
     return {
         "object_type": object_type,
         "joints_names": ["Root", "Tail"],
         "parents": np.array([-1, 0], dtype=np.int64),
         "offsets": np.zeros((2, 3), dtype=np.float32),
+        "rest_rotations": _identity_quats(2),
+        "canon_joint_rot": _identity_quats(2),
     }
 
 
@@ -98,8 +156,8 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
         )
         return []
 
-    monkeypatch.setattr(regenerate_dataset_artifacts_module, "_attach_joint_name_embeddings_to_cond", fake_attach)
-    monkeypatch.setattr(regenerate_dataset_artifacts_module, "_write_joint_name_collision_report", fake_write_collision_report)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
 
     dataset_dir_path = regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
 
@@ -140,16 +198,7 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
 
 
 def test_process_skeleton_retarget_branch_writes_translation_root_metadata(monkeypatch, tmp_path):
-    motion = np.zeros((4, 3, 13), dtype=np.float32)
-    motion[:, :, 3:9] = np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32)
-    trajectory_x = np.arange(4, dtype=np.float32)
-    motion[:, 0, 0] = -trajectory_x
-    motion[:, 0, 2] = 1.0
-    motion[:, 1, 0] = -trajectory_x
-    motion[:, 1, 1] = 1.0
-    motion[:, 1, 2] = 1.0
-    motion[:, 2, 1] = 1.0
-    motion[:-1, 2, 9] = 1.0
+    motion = _build_effective_translation_root_motion()
 
     motion_path = tmp_path / 'Dragon_RunLoop_001.npy'
     np.save(motion_path, motion)
@@ -185,6 +234,8 @@ def test_process_skeleton_retarget_branch_writes_translation_root_metadata(monke
                 ],
                 dtype=np.float32,
             ),
+            'rest_rotations': _identity_quats(3),
+            'canon_joint_rot': _identity_quats(3),
             'tpos_first_frame': np.zeros((3, 13), dtype=np.float32),
         },
     )
@@ -193,7 +244,7 @@ def test_process_skeleton_retarget_branch_writes_translation_root_metadata(monke
     assert 'Dragon_RunLoop_001.npy' in motion_metadata
     assert motion_metadata['Dragon_RunLoop_001.npy']['motion_name'] == 'Dragon_RunLoop_001.npy'
     assert motion_metadata['Dragon_RunLoop_001.npy']['object_type'] == 'Dragon'
-    assert motion_metadata['Dragon_RunLoop_001.npy']['translation_root_index'] == 2
+    assert motion_metadata['Dragon_RunLoop_001.npy']['translation_root_index'] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -227,12 +278,16 @@ def test_rebuild_structural_prior_bank_normal(monkeypatch, tmp_path):
             'joints_names': ['Root', 'Tail'],
             'parents': np.array([-1, 0], dtype=np.int64),
             'offsets': np.zeros((2, 3), dtype=np.float32),
+            'rest_rotations': _identity_quats(2),
+            'canon_joint_rot': _identity_quats(2),
             'tpos_first_frame': np.zeros((2, 13), dtype=np.float32),
         },
         'Dog': {
             'joints_names': ['Root', 'Spine', 'Head'],
             'parents': np.array([-1, 0, 1], dtype=np.int64),
             'offsets': np.zeros((3, 3), dtype=np.float32),
+            'rest_rotations': _identity_quats(3),
+            'canon_joint_rot': _identity_quats(3),
             'tpos_first_frame': np.zeros((3, 13), dtype=np.float32),
         },
     }
@@ -250,10 +305,10 @@ def test_rebuild_structural_prior_bank_normal(monkeypatch, tmp_path):
         captured_payloads.extend(payloads)
         # Return a realistic-looking bank.
         return {
-            'schema_version': 3, 'feature_len': 13,
+            'schema_version': 4, 'feature_len': 13,
             'global_scales': {'pos': 0.5, 'rot': 0.3, 'vel': 0.2},
             'by_role': {}, 'by_semantic_group': {}, 'by_canonical_name': {},
-            'variance_calibration': {'pos': 1.0, 'rot': 1.0, 'vel': 1.0},
+            'variance_calibration': {'pos': 1.0, 'rot': 1.0, 'vel': 1.0, 'stretch': 1.0},
             'metadata': {'object_count': 2, 'joint_examples': 5},
         }
 
@@ -264,8 +319,8 @@ def test_rebuild_structural_prior_bank_normal(monkeypatch, tmp_path):
         object_cond['norm_mean'] = np.zeros_like(
             np.asarray(object_cond['tpos_first_frame'], dtype=np.float32))
         object_cond['norm_std'] = np.ones_like(object_cond['norm_mean'])
-        object_cond['norm_schema_version'] = 3
-        object_cond['norm_mean_source'] = 'tpose_anchor_v1'
+        object_cond['norm_schema_version'] = 4
+        object_cond['norm_mean_source'] = 'v4_target_anchor'
 
     monkeypatch.setattr(dataset_pipeline_mod, '_apply_structural_stats_to_object_cond', fake_apply)
 
@@ -291,10 +346,10 @@ def test_rebuild_structural_prior_bank_normal(monkeypatch, tmp_path):
 
     # Verify cond.npy was updated with structural stats for both objects.
     updated = dict(np.load(str(dataset_dir / "cond.npy"), allow_pickle=True).item())
-    assert updated['Cat']['norm_mean_source'] == 'tpose_anchor_v1'
-    assert updated['Cat']['norm_schema_version'] == 3
-    assert updated['Dog']['norm_mean_source'] == 'tpose_anchor_v1'
-    assert updated['Dog']['norm_schema_version'] == 3
+    assert updated['Cat']['norm_mean_source'] == 'v4_target_anchor'
+    assert updated['Cat']['norm_schema_version'] == 4
+    assert updated['Dog']['norm_mean_source'] == 'v4_target_anchor'
+    assert updated['Dog']['norm_schema_version'] == 4
 
 
 def test_rebuild_structural_prior_bank_rejects_unknown_object_type(tmp_path):
@@ -309,6 +364,8 @@ def test_rebuild_structural_prior_bank_rejects_unknown_object_type(tmp_path):
             'joints_names': ['Root'],
             'parents': np.array([-1], dtype=np.int64),
             'offsets': np.zeros((1, 3), dtype=np.float32),
+            'rest_rotations': _identity_quats(1),
+            'canon_joint_rot': _identity_quats(1),
             'tpos_first_frame': np.zeros((1, 13), dtype=np.float32),
         },
     }
@@ -322,10 +379,10 @@ def test_rebuild_structural_prior_bank_rejects_unknown_object_type(tmp_path):
     def fake_build(payloads):
         captured.extend(payloads)
         return {
-            'schema_version': 3, 'feature_len': 13,
+            'schema_version': 4, 'feature_len': 13,
             'global_scales': {'pos': 0.5, 'rot': 0.3, 'vel': 0.2},
             'by_role': {}, 'by_semantic_group': {}, 'by_canonical_name': {},
-            'variance_calibration': {'pos': 1.0, 'rot': 1.0, 'vel': 1.0},
+            'variance_calibration': {'pos': 1.0, 'rot': 1.0, 'vel': 1.0, 'stretch': 1.0},
             'metadata': {'object_count': 1, 'joint_examples': 1},
         }
 
@@ -350,6 +407,8 @@ def test_rebuild_structural_prior_bank_skips_objects_missing_tpose(monkeypatch, 
             'joints_names': ['Root'],
             'parents': np.array([-1], dtype=np.int64),
             'offsets': np.zeros((1, 3), dtype=np.float32),
+            'rest_rotations': _identity_quats(1),
+            'canon_joint_rot': _identity_quats(1),
             'tpos_first_frame': np.zeros((1, 13), dtype=np.float32),
         },
         'Dog': {

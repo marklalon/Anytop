@@ -177,7 +177,12 @@ def _recover_from_production_motion_features(
         rot_mats[:, parent_idx] = parent_rot_mats[:, child_idx - 1]
 
     all_rots = Qcls.from_transforms(rot_mats)
-    target_global = recover_from_bvh_ric_np(features_arr, translation_root_index=translation_root_index)
+    target_global = recover_from_bvh_ric_np(
+        features_arr,
+        translation_root_index=translation_root_index,
+        parents=parents,
+        offsets=offsets,
+    )
 
     positions = offsets[None].repeat(frame_count, axis=0).copy()
 

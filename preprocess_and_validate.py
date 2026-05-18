@@ -420,7 +420,6 @@ def run_validation(
         _require,
         ValidationError,
     )
-    from data_loaders.truebones.truebones_utils.motion_process import ROOT_XZ_STRIP_THRESHOLD
 
     # Resolve dataset directory
     dataset_dir = _resolve_dataset_dir(dataset_dir or None)
@@ -451,7 +450,7 @@ def run_validation(
         motion_files = sorted(motions_dir.glob("*.npy"))
         _validate_metadata(metadata_path, motion_files, cond)
         _validate_motion_metadata(dataset_dir, motion_files, cond)
-        _validate_motion_files(motions_dir, bvhs_dir, cond, sample_count, ROOT_XZ_STRIP_THRESHOLD)
+        _validate_motion_files(motions_dir, bvhs_dir, cond, sample_count)
 
         if skip_orientation_check:
             _print_warn("skipping T-pose face-orientation validation by request")

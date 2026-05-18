@@ -14,9 +14,7 @@ from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.param_utils import parse_action_tags
 from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
 from data_loaders.truebones.truebones_utils.motion_process import (
-    add_joint_augmentation,
     mirror_features_with_safeguards,
-    remove_joints_augmentation,
     refresh_joint_metadata_in_cond_dict,
 )
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import JOINT_NAME_EMBEDDING_SCHEMA_VERSION
@@ -490,6 +488,13 @@ class MotionDataset(data.Dataset):
         else:
             motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, norm_mean, norm_std = result
         motion_metadata = _copy_required_motion_metadata(name, data.get('motion_metadata'))
+        object_cond = self.cond_dict[object_type]
+        extra_cond = {
+            'offsets': object_cond['offsets'],
+            'rest_rotations': object_cond['rest_rotations'],
+            'canon_joint_rot': object_cond['canon_joint_rot'],
+            'norm_schema_version': int(object_cond.get('norm_schema_version', 0) or 0),
+        }
         ind = 0
         loop_applied = False
         if m_length > target_num_frames:
@@ -534,13 +539,13 @@ class MotionDataset(data.Dataset):
                 'crop_start': int(ind),
                 'loop_applied': bool(loop_applied),
             })
-            return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, norm_mean, norm_std, self.opt.max_joints, motion_metadata, name, {
+            return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, norm_mean, norm_std, self.opt.max_joints, extra_cond, motion_metadata, name, {
                 'mirror_applied': bool(aug_info['mirror_applied']),
                 'speed_factor': float(aug_info['speed_factor']),
                 'crop_start': int(aug_info['crop_start']),
                 'loop_applied': bool(aug_info['loop_applied']),
             }
-        return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, norm_mean, norm_std, self.opt.max_joints, motion_metadata, name
+        return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, norm_mean, norm_std, self.opt.max_joints, extra_cond, motion_metadata, name
     
     def augment(self, data, return_aug_info=False):
         object_type = data['object_type']
@@ -563,7 +568,7 @@ class MotionDataset(data.Dataset):
             motion = np.load(motion_path).astype(np.float32, copy=False)
 
         speed_range = getattr(self.opt, 'aug_speed_range', 0.0)
-        mirror_prob = getattr(self.opt, 'aug_mirror_prob', 0.0)
+        mirror_prob = 0.0
 
         if mirror_prob > 0.0 and random.random() < mirror_prob:
             spi = cond.get('symmetry_partner_indices')
@@ -693,6 +698,10 @@ class Truebones(data.Dataset):
             cond['norm_std'] = norm_std
             cond['norm_std_safe'] = norm_std + 1e-6
             cond['tpos_first_frame'] = np.asarray(cond['tpos_first_frame'], dtype=np.float32)
+            cond['offsets'] = np.asarray(cond['offsets'], dtype=np.float32)
+            cond['rest_rotations'] = np.asarray(cond['rest_rotations'], dtype=np.float32)
+            cond['canon_joint_rot'] = np.asarray(cond['canon_joint_rot'], dtype=np.float32)
+            cond['norm_schema_version'] = int(cond.get('norm_schema_version', 4) or 4)
             
         motion_metadata_lookup = load_motion_metadata(opt.data_root)
         self.split_file = pjoin(opt.data_root, f'{split}.txt') if split != ALL_SPLIT_NAME else ''

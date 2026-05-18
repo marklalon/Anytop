@@ -85,6 +85,21 @@ def truebones_collate(batch):
     if 'parents' in notnone_batches[0]:
         parentsbatch = [b['parents'] for b in notnone_batches]
         cond['y'].update({'parents': parentsbatch})
+
+    if 'offsets' in notnone_batches[0]:
+        offsetsbatch = [b['offsets'] for b in notnone_batches]
+        cond['y'].update({'offsets': collate_tensors(offsetsbatch)})
+
+    if 'rest_rotations' in notnone_batches[0]:
+        restrotbatch = [b['rest_rotations'] for b in notnone_batches]
+        cond['y'].update({'rest_rotations': collate_tensors(restrotbatch)})
+
+    if 'canon_joint_rot' in notnone_batches[0]:
+        canonrotbatch = [b['canon_joint_rot'] for b in notnone_batches]
+        cond['y'].update({'canon_joint_rot': collate_tensors(canonrotbatch)})
+
+    if any('norm_schema_version' in batch_item for batch_item in notnone_batches):
+        cond['y'].update({'norm_schema_version': torch.as_tensor([batch_item.get('norm_schema_version', 0) for batch_item in notnone_batches])})
           
     if 'joints_names_embs' in notnone_batches[0]:
         jointsnamesembsbatch = [b['joints_names_embs'] for b in notnone_batches]
@@ -108,6 +123,9 @@ def truebones_collate(batch):
  motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, norm_mean, norm_std, max_joints
 """
 def truebones_batch_collate(batch):
+    if batch and isinstance(batch[0], dict):
+        return truebones_collate(batch)
+
     max_joints = batch[0][13]
     adapted_batch = []
     for b in batch:  
@@ -128,14 +146,43 @@ def truebones_batch_collate(batch):
         padded_graph_dist =  create_padded_relation(b[6], max_joints, n_joints)
         object_type = b[8]
         motion_metadata = None
-        if len(b) >= 16 and isinstance(b[-2], dict) and ('action_category' in b[-2] or 'species_label' in b[-2] or 'action_tags' in b[-2] or 'translation_root_index' in b[-2]):
-            motion_metadata = b[-2]
+        extra_cond = None
+        motion_name = None
+        for tail_item in b[14:]:
+            if isinstance(tail_item, dict):
+                if extra_cond is None and ('offsets' in tail_item or 'rest_rotations' in tail_item or 'canon_joint_rot' in tail_item):
+                    extra_cond = tail_item
+                    continue
+                if motion_metadata is None and ('action_category' in tail_item or 'species_label' in tail_item or 'action_tags' in tail_item or 'translation_root_index' in tail_item):
+                    motion_metadata = tail_item
+            elif motion_name is None and isinstance(tail_item, str):
+                motion_name = tail_item
+
+        offsets = torch.zeros((max_joints, 3), dtype=torch.float32)
+        offsets[:n_joints] = torch.from_numpy(np.asarray(b[4], dtype=np.float32))
+        rest_rotations = torch.zeros((max_joints, 4), dtype=torch.float32)
+        rest_rotations[:, 0] = 1.0
+        canon_joint_rot = torch.zeros((max_joints, 4), dtype=torch.float32)
+        canon_joint_rot[:, 0] = 1.0
+        norm_schema_version = 0
+        if extra_cond is not None:
+            if 'offsets' in extra_cond:
+                offsets[:n_joints] = torch.from_numpy(np.asarray(extra_cond['offsets'], dtype=np.float32))
+            if 'rest_rotations' in extra_cond:
+                rest_rotations[:n_joints] = torch.from_numpy(np.asarray(extra_cond['rest_rotations'], dtype=np.float32))
+            if 'canon_joint_rot' in extra_cond:
+                canon_joint_rot[:n_joints] = torch.from_numpy(np.asarray(extra_cond['canon_joint_rot'], dtype=np.float32))
+            norm_schema_version = int(extra_cond.get('norm_schema_version', 0) or 0)
 
         item = {
             'inp': motion.permute(1, 2, 0).float(), # [seqlen , J, 13] -> [J, 13,  seqlen]
             'n_joints': n_joints,
             'lengths': b[1],
             'parents': b[2],
+            'offsets': offsets,
+            'rest_rotations': rest_rotations,
+            'canon_joint_rot': canon_joint_rot,
+            'norm_schema_version': norm_schema_version,
             'temporal_mask' : temporal_mask,
             'graph_dist' : padded_graph_dist,
             'joints_relations':  padded_joints_relations,
@@ -149,8 +196,8 @@ def truebones_batch_collate(batch):
             for key in ('species_label', 'species_group', 'action_tags', 'translation_root_index'):
                 if key in motion_metadata:
                     item[key] = motion_metadata[key]
-        if len(b) >= 15 and isinstance(b[-1], str):
-            item['motion_name'] = b[-1]
+        if motion_name is not None:
+            item['motion_name'] = motion_name
         adapted_batch.append(item)
 
     return truebones_collate(adapted_batch)

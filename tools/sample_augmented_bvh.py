@@ -100,6 +100,11 @@ def _build_cond_dict(opt, objects_subset: str) -> dict:
             f"Available species: {sorted(cond_dict_raw.keys())}"
         )
 
+    raise RuntimeError(
+        'sample_augmented_bvh.py is disabled for the current schema-v4 pipeline. '
+        'Mirror and joint augmentation remain intentionally disabled until the schema-aware rewrites land.'
+    )
+
     for object_type, cond in cond_dict.items():
         norm_mean = np.asarray(cond["norm_mean"], dtype=np.float32)
         norm_std = np.asarray(cond["norm_std"], dtype=np.float32)

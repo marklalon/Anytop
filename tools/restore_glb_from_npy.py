@@ -6,7 +6,7 @@ using a T-pose FBX as the mesh/rig source.
 
 Pipeline:
     NPY features
-        → recover_from_features(...)                    — feature-space Animation
+        → recover_animation_from_motion_np(...)         — feature-space Animation
         → recover_processed_animation_from_feature_animation(...)  — undo T-pose reparameterization
         → invert preprocess transform back to raw FBX rig space
         → animation_to_exporter_inputs(...)
@@ -22,10 +22,11 @@ Metadata is resolved from two sources in descending priority:
                               expensive, only loaded when cond.npy lacks
                               the needed fields.
 
-Note: locomotion XZ stripped during preprocessing cannot be recovered from a
-plain feature tensor alone. Non-locomotion clips also stay in their centred
-preprocessed space unless an explicit root-translation XZ override is passed
-during restore.
+Note: the per-frame locomotion trajectory is reconstructed from the feature
+tensor's root-velocity channels. What a plain feature tensor cannot recover by
+itself is the initial XZ centering offset removed during preprocessing; clips
+therefore stay in centred preprocessed space unless an explicit
+root-translation XZ override is passed during restore.
 
 Usage:
         # Using FBX T-pose (explicit)
@@ -76,7 +77,6 @@ _load_utils_module("utils.npy_roundtrip_utils")
 _load_utils_module("utils.misc")
 
 from utils.misc import infer_object_type_from_filename
-from utils.npy_roundtrip_utils import recover_from_features
 from Anytop.utils.roundtrip_common import _load_fbx_skeleton_metadata
 from Anytop.motion_lib.FBX import _collapse_root_skeleton
 
@@ -353,6 +353,8 @@ def _build_restore_context(
         "export_joint_names": export_joint_names,
         "parents": parents,
         "offsets": offsets,
+        "canon_joint_rot": None if cond_entry is None or cond_entry.get("canon_joint_rot") is None else np.asarray(cond_entry["canon_joint_rot"], dtype=np.float32),
+        "norm_schema_version": 0 if cond_entry is None else int(cond_entry.get("norm_schema_version", 0) or 0),
         "tpose_rest_rotations": tpose_rest_rotations,
         "orientation_quat": orientation_quat,
         "scale_factor": scale_factor,
@@ -389,6 +391,28 @@ def _strip_appended_helper_joints(
         animation.orients[:original_joint_count].copy(),
         animation.offsets[:original_joint_count].copy(),
         animation.parents[:original_joint_count].copy(),
+    )
+
+
+def _recover_feature_animation_for_restore(
+    raw_features: np.ndarray,
+    parents: np.ndarray,
+    offsets_hml: np.ndarray,
+    *,
+    translation_root_index: int | None,
+    canon_joint_rot: np.ndarray | None,
+    norm_schema_version: int | None,
+):
+    from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
+
+    return recover_animation_from_motion_np(
+        raw_features,
+        parents,
+        offsets_hml,
+        translation_root_index=translation_root_index,
+        canon_joint_rot=canon_joint_rot,
+        norm_schema_version=norm_schema_version,
+        allow_infer=True,
     )
 
 
@@ -898,7 +922,7 @@ def restore_glb(
     from Anytop.utils.exporter import AnimationExporter, animation_to_exporter_inputs
     from Anytop.utils.roundtrip_common import _build_skeleton
     from data_loaders.truebones.truebones_utils.motion_process import (
-        _find_translation_root,
+        find_translation_root,
         recover_processed_animation_from_feature_animation,
     )
 
@@ -1004,14 +1028,16 @@ def restore_glb(
 
     # ── Recover Animation (in HML feature space) ──────────────────────────────
     print("Recovering feature-space animation from NPY...")
-    recovered_feature_anim, has_animated_pos = recover_from_features(
+    recovered_feature_anim, has_animated_pos = _recover_feature_animation_for_restore(
         raw,
         parents,
         offsets_hml,
         translation_root_index=translation_root_index,
+        canon_joint_rot=restore_ctx.get("canon_joint_rot"),
+        norm_schema_version=restore_ctx.get("norm_schema_version"),
     )
     print(f"Recovered: {recovered_feature_anim.shape[0]} frames")
-    translation_root_index = _find_translation_root(recovered_feature_anim)
+    translation_root_index = find_translation_root(recovered_feature_anim)
 
     print("Recovering processed animation channels for export...")
     export_anim = recover_processed_animation_from_feature_animation(

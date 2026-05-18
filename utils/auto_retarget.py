@@ -20,7 +20,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (
 )
 from data_loaders.truebones.truebones_utils.animation_utils import (
     LEAF_ROTATION_HELPER_SUFFIX,
-    _find_translation_root,
+    find_translation_root,
 )
 
 
@@ -224,6 +224,7 @@ def retarget_features_npy_to_target(
         get_common_features_from_T_pose,
         get_motion,
         recover_animation_from_motion_np,
+        recover_bvh_export_animation_from_motion_with_object_cond_np,
     )
 
     def _resolve_match_names(raw_names, object_cond=None, joint_count=None):
@@ -280,6 +281,19 @@ def retarget_features_npy_to_target(
 
     src_parents = np.asarray(source_tp.tpos_anim.parents, dtype=np.int32)
     src_offsets = np.asarray(source_tp.offsets, dtype=np.float32)
+    src_rest_rotations = np.asarray(
+        getattr(source_tp, 'rest_rotations', np.asarray(source_tp.tpos_rots[0], dtype=np.float32)),
+        dtype=np.float32,
+    )
+    src_canon_joint_rot = np.asarray(
+        getattr(source_tp, 'canon_joint_rot', np.tile(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32), (source_joint_count, 1))),
+        dtype=np.float32,
+    )
+    tgt_joint_count = len(target_tp.names) if hasattr(target_tp, 'names') else len(target_tp.offsets)
+    tgt_canon_joint_rot = np.asarray(
+        getattr(target_tp, 'canon_joint_rot', np.tile(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32), (tgt_joint_count, 1))),
+        dtype=np.float32,
+    )
 
     # 2. Decode source features → Animation
     src_anim, _has_pos = recover_animation_from_motion_np(
@@ -287,9 +301,12 @@ def retarget_features_npy_to_target(
         src_parents,
         src_offsets,
         translation_root_index=None,
+        tpose_rest_rotations=src_rest_rotations,
+        canon_joint_rot=src_canon_joint_rot,
+        norm_schema_version=int(source_cond.get('norm_schema_version', 4) or 4),
         allow_infer=True,
     )
-    source_effective_root_index = int(_find_translation_root(src_anim))
+    source_effective_root_index = int(find_translation_root(src_anim))
 
     # 3. Build source skeleton
     src_skeleton = _build_skeleton(
@@ -340,6 +357,8 @@ def retarget_features_npy_to_target(
         orientation_quat=target_tp.orientation_quat,
         helper_metadata=target_tp.helper_metadata,
         animation_input_is_tpose_aligned=True,
+        canon_joint_rot=tgt_canon_joint_rot,
+        norm_schema_version=4,
     )
 
     if target_features is None:
@@ -442,9 +461,9 @@ def auto_retarget_pipeline(
           'donors_used'      -- list of (name, score, n_success) tuples
     """
     from data_loaders.truebones.truebones_utils.dataset_pipeline import _build_tpose_cond
-    from data_loaders.truebones.truebones_utils.features import get_common_features_from_T_pose
-    from data_loaders.truebones.truebones_utils.motion_process import (
-        recover_bvh_export_animation_from_motion_np,
+    from data_loaders.truebones.truebones_utils.features import (
+        get_common_features_from_T_pose,
+        recover_bvh_export_animation_from_motion_with_object_cond_np,
     )
     from data_loaders.truebones.truebones_utils.animation_utils import (
         needs_bvh_position_channels,
@@ -473,6 +492,7 @@ def auto_retarget_pipeline(
         _sq_err,
         max_joints_tgt,
     ) = _build_tpose_cond(target_object_type, target_tpose_path, face_joints_names)
+    target_cond['norm_schema_version'] = int(target_cond.get('norm_schema_version', 4) or 4)
     max_joints = max(max_joints, max_joints_tgt)
 
     n_joints = int(target_cond.get('original_joint_count') or len(target_parents))
@@ -597,13 +617,11 @@ def auto_retarget_pipeline(
                         target_cond.get('canonical_bvh_joint_names')
                         or target_cond.get('joints_names', [])
                     )
-                    out_anim, bvh_joint_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
+                    out_anim, bvh_joint_names, has_animated_pos = recover_bvh_export_animation_from_motion_with_object_cond_np(
                         tgt_features,
-                        np.asarray(target_cond['parents'], dtype=np.int32),
-                        np.asarray(target_cond['offsets'], dtype=np.float32),
+                        target_cond,
                         bvh_joint_names,
                         allow_infer=True,
-                        tpose_rest_rotations=target_tp.tpos_rots[0],
                     )
                     if out_anim is not None:
                         out_anim, bvh_joint_names = reorder_animation_to_dfs(out_anim, bvh_joint_names)

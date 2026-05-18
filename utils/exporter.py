@@ -10,14 +10,25 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import sys
 from typing import Optional
 
 import numpy as np
 import torch
 from torch import Tensor
 
-from motion_lib.FBX import _extract_armature_skeleton_data, import_fbx, remove_lights_and_cameras
-from data_loaders.truebones.truebones_utils.animation_utils import _refresh_joint_metadata_in_object_cond
+_ANYTOP_ROOT = os.path.dirname(os.path.dirname(__file__))
+if _ANYTOP_ROOT not in sys.path:
+    sys.path.insert(0, _ANYTOP_ROOT)
+
+try:
+    from motion_lib.FBX import _extract_armature_skeleton_data, import_fbx, remove_lights_and_cameras
+except ModuleNotFoundError:
+    from Anytop.motion_lib.FBX import _extract_armature_skeleton_data, import_fbx, remove_lights_and_cameras
+try:
+    from data_loaders.truebones.truebones_utils.animation_utils import refresh_joint_metadata_in_object_cond
+except ModuleNotFoundError:
+    from Anytop.data_loaders.truebones.truebones_utils.animation_utils import refresh_joint_metadata_in_object_cond
 from .rotation_numpy import (
     quat_conjugate_wxyz_np,
     quat_multiply_wxyz_np,
@@ -63,7 +74,7 @@ def _build_canonical_match_names(
         "parents": np.asarray(parents, dtype=np.int32),
         "offsets": np.asarray(offsets, dtype=np.float64),
     }
-    _refresh_joint_metadata_in_object_cond(object_cond)
+    refresh_joint_metadata_in_object_cond(object_cond)
     canonical_joint_names = object_cond.get("canonical_joint_names")
     if canonical_joint_names is None:
         raise ValueError(
@@ -220,9 +231,14 @@ class AnimationExporter:
         if _anytop_root not in sys.path:
             sys.path.insert(0, _anytop_root)
 
-        from motion_lib.BVH import save as bvh_save
-        from motion_lib.Animation import Animation
-        from motion_lib.Quaternions import Quaternions
+        try:
+            from motion_lib.BVH import save as bvh_save
+            from motion_lib.Animation import Animation
+            from motion_lib.Quaternions import Quaternions
+        except ModuleNotFoundError:
+            from Anytop.motion_lib.BVH import save as bvh_save
+            from Anytop.motion_lib.Animation import Animation
+            from Anytop.motion_lib.Quaternions import Quaternions
 
         F, J = joint_rotations.shape[:2]
 

@@ -20,14 +20,14 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from data_loaders.tensors import truebones_batch_collate
+from data_loaders.tensors import create_padded_relation, truebones_collate
 from data_loaders.truebones.data.dataset import (
     create_temporal_mask_for_window,
     ensure_joint_name_embeddings,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
-from data_loaders.truebones.truebones_utils.motion_process import (
-    recover_bvh_export_animation_from_motion_np,
+from data_loaders.truebones.truebones_utils.features import (
+    recover_bvh_export_animation_from_motion_with_object_cond_np,
 )
 from motion_lib import BVH
 from os.path import join as pjoin
@@ -110,13 +110,11 @@ def _retarget_reference_motion(
     # Inspection-friendly BVH sibling
     try:
         out_bvh = out_npy.replace('.npy', '.bvh')
-        out_anim, joint_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
+        out_anim, joint_names, has_animated_pos = recover_bvh_export_animation_from_motion_with_object_cond_np(
             target_features,
-            np.asarray(tgt_cond['parents'], dtype=np.int32),
-            np.asarray(tgt_cond['offsets'], dtype=np.float32),
+            tgt_cond,
             list(tgt_cond.get('canonical_bvh_joint_names', tgt_cond['joints_names'])),
             allow_infer=True,
-            tpose_rest_rotations=target_tp.tpos_rots[0],
         )
         if out_anim is not None:
             BVH.save(
@@ -131,14 +129,12 @@ def _retarget_reference_motion(
 
 
 def _export_motion(task):
-    motion_np, parents_np, offsets, npy_name, joint_names, out_path, fps, tpose_rest_rotations = task
-    out_anim, joint_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
+    motion_np, object_cond, npy_name, joint_names, out_path, fps = task
+    out_anim, joint_names, has_animated_pos = recover_bvh_export_animation_from_motion_with_object_cond_np(
         motion_np,
-        parents_np,
-        offsets,
+        object_cond,
         joint_names,
         allow_infer=True,
-        tpose_rest_rotations=tpose_rest_rotations,
     )
     np.save(pjoin(out_path, npy_name), motion_np)
     if out_anim is not None:
@@ -504,42 +500,28 @@ def main(args=None, cond_dict=None):
         ]
         base_index = len(existing_npy_files)
 
-        # Extract T-pose rest rotations (6D → quaternion)
-        _tff = cond_dict[object_type].get('tpos_first_frame')
-        _tpose_rest_rotations = None
-        if _tff is not None:
-            from utils.rotation_conversions import rotation_6d_to_matrix_np
-            from motion_lib.Quaternions import Quaternions
-            _rot6d = np.asarray(_tff[:, 3:9], dtype=np.float64)
-            _tpose_rest_rotations = Quaternions.from_transforms(
-                rotation_6d_to_matrix_np(_rot6d)
-            ).qs
-
         # Collect export tasks (in-process, no pickling needed)
         joint_names = cond_dict[object_type].get(
             'canonical_bvh_joint_names',
             cond_dict[object_type]['joints_names'],
         )
+        object_cond = cond_dict[object_type]
         export_tasks = []
         for sample_idx, motion in enumerate(sample):
             n_joints = model_kwargs['y']['n_joints'][sample_idx].item()
             motion = motion[:n_joints]
-            parents = model_kwargs['y']['parents'][sample_idx]
             norm_mean = cond_dict[object_type]['norm_mean'][None, :]
             norm_std = cond_dict[object_type]['norm_std'][None, :]
             motion_np = motion.cpu().permute(2, 0, 1).numpy() * norm_std + norm_mean
-            offsets = cond_dict[object_type]['offsets']
 
             npy_name = f'{object_type}_#{base_index + sample_idx}.npy'
             export_tasks.append((
                 motion_np,
-                parents,  # already np.ndarray, shared in-process
-                offsets,
+                object_cond,
                 npy_name,
                 joint_names,
                 out_path,
                 fps,
-                _tpose_rest_rotations,
             ))
 
         # Parallel export using ThreadPoolExecutor.
@@ -558,44 +540,43 @@ def main(args=None, cond_dict=None):
     return out_path
 
 
+def _build_condition_item(object_type, cond_dict, n_frames, temporal_window, max_joints, feature_len):
+    object_cond = cond_dict[object_type]
+    parents = np.asarray(object_cond['parents'], dtype=np.int64)
+    n_joints = len(parents)
+    return {
+        'inp': torch.zeros((n_joints, feature_len, n_frames), dtype=torch.float32),
+        'n_joints': n_joints,
+        'lengths': int(n_frames),
+        'parents': parents,
+        'offsets': torch.from_numpy(np.asarray(object_cond['offsets'], dtype=np.float32)),
+        'rest_rotations': torch.from_numpy(np.asarray(object_cond['rest_rotations'], dtype=np.float32)),
+        'canon_joint_rot': torch.from_numpy(np.asarray(object_cond['canon_joint_rot'], dtype=np.float32)),
+        'norm_schema_version': int(object_cond.get('norm_schema_version', 0) or 0),
+        'temporal_mask': torch.as_tensor(create_temporal_mask_for_window(temporal_window, n_frames)),
+        'graph_dist': create_padded_relation(object_cond['joints_graph_dist'], max_joints, n_joints),
+        'joints_relations': create_padded_relation(object_cond['joint_relations'], max_joints, n_joints),
+        'object_type': object_type,
+        'joints_names_embs': torch.from_numpy(np.asarray(object_cond['joints_names_embs'], dtype=np.float32)),
+        'tpos_first_frame': torch.from_numpy(np.asarray(object_cond['tpos_first_frame'], dtype=np.float32)),
+        'norm_mean': torch.from_numpy(np.asarray(object_cond['norm_mean'], dtype=np.float32)),
+        'norm_std': torch.from_numpy(np.asarray(object_cond['norm_std'], dtype=np.float32)),
+    }
+
+
 def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joints, feature_len):
     """Build model_kwargs for a batch of object_types.
     """
-    batches = list()
+    batch_items = list()
     for object_type in object_types:
         if object_type not in cond_dict:
             available = ', '.join(sorted(cond_dict.keys()))
             raise KeyError(
                 f"Unknown object_type '{object_type}'. Available object types in cond file: {available}"
             )
-        batch = list()
-        parents = cond_dict[object_type]['parents']
-        n_joints = len(parents)
-        norm_mean = cond_dict[object_type]['norm_mean']
-        norm_std = cond_dict[object_type]['norm_std']
-        tpos_first_frame = np.asarray(cond_dict[object_type]['tpos_first_frame'], dtype=np.float32)
-        joint_relations = cond_dict[object_type]['joint_relations']
-        joints_graph_dist = cond_dict[object_type]['joints_graph_dist']
-        offsets = cond_dict[object_type]['offsets']
-        joints_names_embs = cond_dict[object_type]['joints_names_embs']
-        batch.append(np.zeros((n_frames, n_joints, feature_len)))
-        batch.append(n_frames)
-        batch.append(parents)
-        batch.append(tpos_first_frame)
-        batch.append(offsets)
-        batch.append(create_temporal_mask_for_window(temporal_window, n_frames))
-        batch.append(joints_graph_dist)
-        batch.append(joint_relations)
-        batch.append(object_type)
-        batch.append(joints_names_embs)
-        batch.append(0)
-        batch.append(norm_mean)
-        batch.append(norm_std)
-        batch.append(max_joints)
-        batch.append(object_type)
-        batches.append(batch)
+        batch_items.append(_build_condition_item(object_type, cond_dict, n_frames, temporal_window, max_joints, feature_len))
 
-    return truebones_batch_collate(batches)
+    return truebones_collate(batch_items)
 
 
 if __name__ == '__main__':

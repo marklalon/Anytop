@@ -43,8 +43,8 @@ from truebones_utils.motion_labels import (  # noqa: E402
     write_motion_metadata,
 )
 from truebones_utils.motion_process import (  # noqa: E402
-    _attach_joint_name_embeddings_to_cond,
-    _write_joint_name_collision_report,
+    attach_joint_name_embeddings_to_cond,
+    write_joint_name_collision_report,
 )
 from truebones_utils.param_utils import MOTION_DIR, get_dataset_dir  # noqa: E402
 
@@ -156,14 +156,14 @@ def regenerate_dataset_artifacts(
     if collision_report_path.exists():
         collision_report_path.unlink()
 
-    _attach_joint_name_embeddings_to_cond(
+    attach_joint_name_embeddings_to_cond(
         rebuilt_cond,
         str(dataset_dir_path),
         t5_name=t5_model,
         write_collision_report=False,
         force_reencode=force_reencode,
     )
-    _write_joint_name_collision_report(rebuilt_cond, str(dataset_dir_path))
+    write_joint_name_collision_report(rebuilt_cond, str(dataset_dir_path))
     np.save(str(cond_path), rebuilt_cond)
 
     existing_motion_metadata = load_motion_metadata(dataset_dir_path)

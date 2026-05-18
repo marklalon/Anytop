@@ -15,6 +15,7 @@ from copy import deepcopy
 from diffusion import logger
 from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood, geodesic_distance
+from kinematics.forward_kinematics import batched_fk_from_features
 from utils.rotation_conversions import rotation_6d_to_matrix_safe
 
 
@@ -128,6 +129,7 @@ class GaussianDiffusion:
         rescale_timesteps=False,
         lambda_geo=0.,
         lambda_vel=0.,
+        lambda_fk=0.,
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
@@ -135,6 +137,7 @@ class GaussianDiffusion:
         self.rescale_timesteps = rescale_timesteps
         self.lambda_geo = lambda_geo
         self.lambda_vel = lambda_vel
+        self.lambda_fk = lambda_fk
 
         # Use float64 for accuracy.
         betas = np.array(betas, dtype=np.float64)
@@ -274,6 +277,70 @@ class GaussianDiffusion:
         valid = temp_shifted.float() * spat_mask.float().transpose(1, 3)        # [bs, njoints, 1, nframes-1]
         loss_val = (loss * valid).sum() / (valid.sum() * 3).clamp(min=1)
         return loss_val
+
+    def fk_feature_loss(self, target_denorm, model_output_denorm, temp_mask, joints_padding_mask, actual_joints, model_kwargs):
+        offsets = model_kwargs['y'].get('offsets')
+        rest_rotations = model_kwargs['y'].get('rest_rotations')
+        canon_joint_rot = model_kwargs['y'].get('canon_joint_rot')
+        parents_list = model_kwargs['y'].get('parents')
+        object_types = model_kwargs['y'].get('object_type')
+
+        if offsets is None or rest_rotations is None or canon_joint_rot is None or parents_list is None or object_types is None:
+            zero = target_denorm.new_zeros(())
+            return zero, zero
+
+        target_features = target_denorm.permute(0, 3, 1, 2).contiguous()
+        pred_features = model_output_denorm.permute(0, 3, 1, 2).contiguous()
+        temporal_valid = temp_mask[:, 0, 0, :].to(dtype=target_denorm.dtype)
+        joint_valid = joints_padding_mask[:, 0, 0, :].to(dtype=target_denorm.dtype)
+
+        pos_loss_num = target_denorm.new_zeros(())
+        pos_loss_den = target_denorm.new_zeros(())
+        vel_loss_num = target_denorm.new_zeros(())
+        vel_loss_den = target_denorm.new_zeros(())
+
+        grouped_indices = {}
+        for batch_index, object_type in enumerate(object_types):
+            grouped_indices.setdefault(str(object_type), []).append(batch_index)
+
+        for indices in grouped_indices.values():
+            index_tensor = th.as_tensor(indices, device=target_denorm.device, dtype=th.long)
+            joint_count = int(th.max(actual_joints.index_select(0, index_tensor)).item())
+            if joint_count <= 0:
+                continue
+
+            parents = parents_list[indices[0]]
+            pred_pos = batched_fk_from_features(
+                pred_features.index_select(0, index_tensor)[:, :, :joint_count, :],
+                offsets.index_select(0, index_tensor)[:, :joint_count, :],
+                rest_rotations.index_select(0, index_tensor)[:, :joint_count, :],
+                canon_joint_rot.index_select(0, index_tensor)[:, :joint_count, :],
+                parents,
+            )
+            target_pos = batched_fk_from_features(
+                target_features.index_select(0, index_tensor)[:, :, :joint_count, :],
+                offsets.index_select(0, index_tensor)[:, :joint_count, :],
+                rest_rotations.index_select(0, index_tensor)[:, :joint_count, :],
+                canon_joint_rot.index_select(0, index_tensor)[:, :joint_count, :],
+                parents,
+            )
+
+            group_temporal = temporal_valid.index_select(0, index_tensor).unsqueeze(-1).unsqueeze(-1)
+            group_joint = joint_valid.index_select(0, index_tensor)[:, :joint_count].unsqueeze(1).unsqueeze(-1)
+            valid = group_temporal * group_joint
+            pos_loss_num = pos_loss_num + ((pred_pos - target_pos) ** 2 * valid).sum()
+            pos_loss_den = pos_loss_den + valid.sum() * 3.0
+
+            if pred_pos.shape[1] > 1:
+                pred_vel = pred_pos[:, 1:] - pred_pos[:, :-1]
+                target_vel = target_pos[:, 1:] - target_pos[:, :-1]
+                vel_valid = group_temporal[:, 1:] * group_joint
+                vel_loss_num = vel_loss_num + ((pred_vel - target_vel) ** 2 * vel_valid).sum()
+                vel_loss_den = vel_loss_den + vel_valid.sum() * 3.0
+
+        pos_loss = pos_loss_num / pos_loss_den.clamp(min=1.0)
+        vel_loss = vel_loss_num / vel_loss_den.clamp(min=1.0)
+        return pos_loss, vel_loss
 
     def q_mean_variance(self, x_start, t):
         """
@@ -1594,10 +1661,20 @@ class GaussianDiffusion:
                     )
                     terms["loss"] = terms["loss"] + self.lambda_geo * terms["geodesic_loss"]
 
-                if self.lambda_vel > 0.:
-                    terms["vel_loss"] = self.velocity_consistency_loss(
-                        model_output_denorm, mask_fp32, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
+                if self.lambda_fk > 0.:
+                    terms["fk_position_loss"], terms["fk_velocity_loss"] = self.fk_feature_loss(
+                        target_denorm,
+                        model_output_denorm,
+                        mask_fp32,
+                        joints_padding_mask_fp32,
+                        actual_joints,
+                        model_kwargs,
                     )
+                    terms["fk_loss"] = terms["fk_position_loss"] + terms["fk_velocity_loss"]
+                    terms["loss"] = terms["loss"] + self.lambda_fk * terms["fk_loss"]
+
+                if self.lambda_vel > 0.:
+                    terms["vel_loss"] = target_denorm.new_zeros(())
                     terms["loss"] = terms["loss"] + self.lambda_vel * terms["vel_loss"]
 
         else:

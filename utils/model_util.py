@@ -112,4 +112,5 @@ def create_gaussian_diffusion(args):
         rescale_timesteps=rescale_timesteps,
         lambda_geo=args.lambda_geo,
         lambda_vel=getattr(args, 'lambda_vel', 0.0),
+        lambda_fk=getattr(args, 'lambda_fk', 0.0),
     )

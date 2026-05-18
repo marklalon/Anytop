@@ -57,12 +57,6 @@ def _warn(msg: str):
     print(f'{ANSI_YELLOW}[WARN] {msg}{ANSI_RESET}')
 
 
-# Maximum translation-root XZ distance from the centred origin (in
-# HML-normalised units) before we consider a clip locomotion and forcibly zero
-# the root XZ. Clips are centred on the effective translation root's initial XZ
-# position before this threshold is evaluated.
-ROOT_XZ_STRIP_THRESHOLD = 1
-
 # Mean L2 distance (per joint, in HML-normalised units) between first and last
 # frame poses below which a clip is classified as looping.
 LOOP_DETECTION_POS_THRESHOLD = 0.10
@@ -75,7 +69,7 @@ _EMITTED_MIRROR_SAFEGUARD_WARNINGS = set()
 
 ################## Joint Name Canonicalization #####################
 
-def _canonical_name_for_bvh(name, fallback_name):
+def canonical_name_for_bvh(name, fallback_name):
     compact_name = re.sub(r'[^0-9A-Za-z_]+', '', str(name or ''))
     if compact_name:
         return compact_name
@@ -212,7 +206,7 @@ def _disambiguate_duplicate_canonical_names(raw_names, canonical_names):
     return updated_names
 
 
-def _collect_joint_name_collision_groups(cond):
+def collect_joint_name_collision_groups(cond):
     collision_groups = []
     for object_type in sorted(cond):
         object_cond = cond[object_type]
@@ -240,8 +234,8 @@ def _collect_joint_name_collision_groups(cond):
     return collision_groups
 
 
-def _write_joint_name_collision_report(cond, save_dir):
-    collision_groups = _collect_joint_name_collision_groups(cond)
+def write_joint_name_collision_report(cond, save_dir):
+    collision_groups = collect_joint_name_collision_groups(cond)
     report = {
         'num_objects': int(len(cond)),
         'num_collision_groups': int(len(collision_groups)),
@@ -264,7 +258,7 @@ def _write_joint_name_collision_report(cond, save_dir):
     return collision_groups
 
 
-def _refresh_joint_metadata_in_object_cond(object_cond):
+def refresh_joint_metadata_in_object_cond(object_cond):
     joint_names = list(object_cond.get('joints_names') or [])
     if not joint_names:
         return
@@ -318,11 +312,11 @@ def _refresh_joint_metadata_in_object_cond(object_cond):
         semantic_metadata['canonical_joint_names'],
     )
     object_cond['canonical_bvh_joint_names'] = [
-        _canonical_name_for_bvh(canonical_name, raw_name)
+        canonical_name_for_bvh(canonical_name, raw_name)
         for canonical_name, raw_name in zip(semantic_metadata['canonical_joint_names'], joint_names)
     ]
     object_cond['canonical_bvh_joint_names'] = [
-        _canonical_name_for_bvh(canonical_name, raw_name)
+        canonical_name_for_bvh(canonical_name, raw_name)
         for canonical_name, raw_name in zip(object_cond['canonical_joint_names'], joint_names)
     ]
     object_cond['end_effector_joints'] = semantic_metadata['end_effector_joints']
@@ -346,7 +340,7 @@ def refresh_joint_metadata_in_cond_dict(cond_dict):
 
     for object_cond in cond_dict.values():
         if isinstance(object_cond, dict):
-            _refresh_joint_metadata_in_object_cond(object_cond)
+            refresh_joint_metadata_in_object_cond(object_cond)
     return cond_dict
 
 
@@ -382,7 +376,7 @@ def _joint_name_embeddings_are_current(object_cond, embedding_texts, t5_name):
     return True
 
 
-def _attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collision_report=True, force_reencode=True):
+def attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collision_report=True, force_reencode=True):
 
     if not cond:
         return
@@ -395,7 +389,7 @@ def _attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base', wri
     object_types_to_encode = []
     for object_type in sorted(cond):
         object_cond = cond[object_type]
-        _refresh_joint_metadata_in_object_cond(object_cond)
+        refresh_joint_metadata_in_object_cond(object_cond)
         embedding_texts = build_joint_embedding_texts(object_cond)
         embedding_texts_by_object[object_type] = embedding_texts
         if force_reencode or not _joint_name_embeddings_are_current(object_cond, embedding_texts, t5_name):
@@ -440,7 +434,7 @@ def _attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base', wri
             json.dump(_build_joint_name_inspection_rows(object_cond, embedding_texts), inspection_file, indent=2)
 
     if write_collision_report:
-        _write_joint_name_collision_report(cond, save_dir)
+        write_joint_name_collision_report(cond, save_dir)
 
 
 ################## Animation Transform Utilities #####################
@@ -474,7 +468,7 @@ def _translation_root_candidate_chain(parents, max_depth=5):
     return chain
 
 
-def _find_translation_root(anim, max_depth=5):
+def find_translation_root(anim, max_depth=5):
     """Return the first near-root joint with significant local position animation.
 
     Most skeletons carry root motion on joint 0, but some Truebones rigs
@@ -534,7 +528,7 @@ def _bake_descendant_y_into_translation_root(anim, max_depth=2):
     below the effective translation root, allow one dummy node in the middle, and
     bake only joints in that chain that carry animated local Y.
     """
-    trans_root = _find_translation_root(anim)
+    trans_root = find_translation_root(anim)
     chain = _find_descendant_transport_chain(anim.parents, trans_root, max_depth=max_depth)
     bake_joints = [joint_index for joint_index in chain if np.ptp(anim.positions[:, joint_index, 1]) > 1e-4]
     if not bake_joints:
@@ -629,7 +623,7 @@ def _clamp_vertical_trajectory(
     if object_type not in FLYING and object_type not in FISH:
         return processed_anim
 
-    trans_root = _find_translation_root(processed_anim)
+    trans_root = find_translation_root(processed_anim)
     global_pos = positions_global(processed_anim)
     world_y = global_pos[:, trans_root, 1]
     body_length = _get_reference_body_length(processed_anim)
@@ -680,7 +674,7 @@ def _coerce_root_xz_center(root_xz_center):
 def _get_translation_root_initial_xz(anim, translation_root_index=None):
     """Return the effective translation root's initial XZ position in global space."""
     if translation_root_index is None:
-        translation_root_index = _find_translation_root(anim)
+        translation_root_index = find_translation_root(anim)
 
     global_pos = positions_global(anim)
     root_xz = np.asarray(global_pos[0, translation_root_index, [0, 2]], dtype=np.float64)
@@ -707,7 +701,7 @@ def move_xz_to_origin(anim, root_xz_center=None):
     return new_anim, root_xz_center
 
 
-def _xz_locomotion_extent(anim, translation_root_index):
+def xz_locomotion_extent(anim, translation_root_index):
     """Return the maximum translation-root XZ distance from the current origin."""
     global_pos = positions_global(anim)
     root_xz = global_pos[:, translation_root_index, [0, 2]]
@@ -1020,7 +1014,7 @@ def _select_leaf_rotation_helper_source_indices(
     return sorted(selected_leaf_indices, key=lambda joint_index: leaf_order[joint_index])
 
 
-def _build_leaf_rotation_helper_metadata(joint_names, parents, *, max_joints=MAX_JOINTS, offsets=None):
+def build_leaf_rotation_helper_metadata(joint_names, parents, *, max_joints=MAX_JOINTS, offsets=None):
     parents = np.asarray(parents, dtype=np.int32)
     original_joint_count = int(len(parents))
     original_leaf_joint_indices = _dfs_leaf_joint_indices(parents)
@@ -1065,7 +1059,7 @@ def _build_leaf_rotation_helper_metadata(joint_names, parents, *, max_joints=MAX
     }
 
 
-def _append_leaf_rotation_helpers_to_animation(anim, joint_names, helper_metadata):
+def append_leaf_rotation_helpers_to_animation(anim, joint_names, helper_metadata):
     helper_joint_indices = list(helper_metadata.get('helper_joint_indices') or [])
     if len(helper_joint_indices) == 0:
         return anim.copy(), list(joint_names)
@@ -1251,7 +1245,7 @@ def resolve_mirrored_export_skeleton_metadata(object_cond, parents, offsets, joi
         if helper_index < len(mirrored_joint_names) and mirrored_source_index < len(mirrored_joint_names):
             mirrored_source_name = str(mirrored_joint_names[mirrored_source_index] or '')
             if mirrored_source_name:
-                mirrored_joint_names[helper_index] = _canonical_name_for_bvh(
+                mirrored_joint_names[helper_index] = canonical_name_for_bvh(
                     f'{mirrored_source_name}Helper',
                     mirrored_joint_names[helper_index],
                 )

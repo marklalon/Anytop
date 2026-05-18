@@ -111,6 +111,10 @@ def main() -> int:
     dataset_root = resolve_dataset_root(args.dataset_dir or None)
     motion_dir = get_motion_dir(dataset_root)
     cond_dict = load_cond_dict(dataset_root)
+    raise RuntimeError(
+        'export_mirror_verification.py is disabled for the current schema-v4 pipeline. '
+        'Mirror augmentation remains intentionally disabled until the v4 mirror semantics are rewritten.'
+    )
     motion_metadata_lookup = load_motion_metadata(dataset_root)
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)

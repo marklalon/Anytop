@@ -16,6 +16,7 @@ import sys
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -85,6 +86,16 @@ def _get_enriched_motion_metadata_lookup() -> dict[str, dict[str, object]]:
 
 
 def _build_truebones(**kwargs) -> Truebones:
+    opt = get_opt(None)
+    cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
+    objects_subset = kwargs.get('objects_subset', 'all')
+    if objects_subset in opt.subsets_dict:
+        subset = opt.subsets_dict[objects_subset]
+    else:
+        subset = [objects_subset]
+    if any(int(cond_dict[obj].get('norm_schema_version', 0) or 0) < 4 for obj in subset if obj in cond_dict):
+        pytest.skip('dataset-backed regression requires a regenerated schema v4 cond.npy')
+
     enriched_lookup = _get_enriched_motion_metadata_lookup()
     with patch.object(dataset_module, 'load_motion_metadata', return_value=enriched_lookup):
         return Truebones(**kwargs)
@@ -331,6 +342,53 @@ def test_batch_collate_preserves_translation_root_index() -> None:
     _motion, cond = truebones_batch_collate([sample])
 
     assert int(cond["y"]["translation_root_index"][0]) == 0
+
+
+def test_batch_collate_extracts_extra_cond_from_augmented_tuple() -> None:
+    extra_cond = {
+        "offsets": np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32),
+        "rest_rotations": np.array([[1.0, 0.0, 0.0, 0.0], [0.9238795, 0.3826834, 0.0, 0.0]], dtype=np.float32),
+        "canon_joint_rot": np.array([[1.0, 0.0, 0.0, 0.0], [0.9659258, 0.0, 0.0, 0.2588190]], dtype=np.float32),
+        "norm_schema_version": 4,
+    }
+    motion_metadata = {
+        "species_label": "buffalo",
+        "translation_root_index": 1,
+    }
+    sample = (
+        np.zeros((2, 2, 13), dtype=np.float32),
+        2,
+        np.array([-1, 0], dtype=np.int64),
+        np.zeros((2, 13), dtype=np.float32),
+        np.zeros((2, 3), dtype=np.float32),
+        np.eye(3, dtype=np.float32),
+        np.eye(2, dtype=np.float32),
+        np.eye(2, dtype=np.float32),
+        "Synthetic",
+        np.zeros((2, 4), dtype=np.float32),
+        0,
+        np.zeros((2, 13), dtype=np.float32),
+        np.ones((2, 13), dtype=np.float32),
+        4,
+        extra_cond,
+        motion_metadata,
+        "sample_motion",
+        {
+            "mirror_applied": False,
+            "speed_factor": 1.0,
+            "crop_start": 0,
+            "loop_applied": False,
+        },
+    )
+
+    _motion, cond = truebones_batch_collate([sample])
+
+    np.testing.assert_allclose(cond["y"]["offsets"][0, :2].cpu().numpy(), extra_cond["offsets"], atol=1e-6)
+    np.testing.assert_allclose(cond["y"]["rest_rotations"][0, :2].cpu().numpy(), extra_cond["rest_rotations"], atol=1e-6)
+    np.testing.assert_allclose(cond["y"]["canon_joint_rot"][0, :2].cpu().numpy(), extra_cond["canon_joint_rot"], atol=1e-6)
+    assert int(cond["y"]["norm_schema_version"][0].item()) == 4
+    assert int(cond["y"]["translation_root_index"][0]) == 1
+    assert cond["y"]["motion_name"][0] == "sample_motion"
 
 
 def test_mirror_safeguards_handle_single_frame_tpose() -> None:

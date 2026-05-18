@@ -39,7 +39,7 @@ from data_loaders.truebones.truebones_utils.features import (
     get_motion,
     recover_animation_from_motion_np,
 )
-from data_loaders.truebones.truebones_utils.animation_utils import _find_translation_root
+from data_loaders.truebones.truebones_utils.animation_utils import find_translation_root
 import Anytop.utils.retarget as retarget_mod
 from Anytop.utils.auto_retarget import _build_tpose_aligned_target_animation
 from Anytop.utils.auto_retarget import retarget_features_npy_to_target
@@ -89,7 +89,7 @@ def test_find_translation_root_ignores_sparse_wrapper_motion() -> None:
 
     anim = SimpleNamespace(positions=positions, parents=np.array([-1, 0, 1], dtype=np.int64))
 
-    assert int(_find_translation_root(anim)) == 1
+    assert int(find_translation_root(anim)) == 1
 
 
 def test_retarget_distributes_short_source_bone_across_longer_target_chain(
@@ -399,6 +399,8 @@ def test_tpose_aligned_roundtrip_preserves_gap_chain_and_rest_side_branch() -> N
         offsets=offsets,
         tpos_anim=SimpleNamespace(parents=parents),
         tpos_rots=_identity_quat(6)[None, :, :],
+        rest_rotations=_identity_quat(6),
+        canon_joint_rot=_identity_quat(6),
         foot_indices=[],
         scale_factor=1.0,
         orientation_quat=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
@@ -422,6 +424,8 @@ def test_tpose_aligned_roundtrip_preserves_gap_chain_and_rest_side_branch() -> N
         orientation_quat=target_tp.orientation_quat,
         helper_metadata=None,
         animation_input_is_tpose_aligned=True,
+        canon_joint_rot=target_tp.canon_joint_rot,
+        norm_schema_version=4,
     )
     assert features is not None
 
@@ -429,6 +433,9 @@ def test_tpose_aligned_roundtrip_preserves_gap_chain_and_rest_side_branch() -> N
         features,
         parents,
         offsets,
+        tpose_rest_rotations=target_tp.rest_rotations,
+        canon_joint_rot=target_tp.canon_joint_rot,
+        norm_schema_version=4,
         allow_infer=True,
     )
     recovered_world_rot = rotations_global(recovered_anim).qs
@@ -547,6 +554,8 @@ def test_tpose_aligned_roundtrip_with_nontrivial_rest_rotations() -> None:
         offsets=offsets,
         tpos_anim=SimpleNamespace(parents=parents),
         tpos_rots=tpos_rots,
+        rest_rotations=rest_local_rotations,
+        canon_joint_rot=_identity_quat(7),
         foot_indices=[],
         scale_factor=1.0,
         orientation_quat=identity.copy(),
@@ -579,6 +588,8 @@ def test_tpose_aligned_roundtrip_with_nontrivial_rest_rotations() -> None:
         orientation_quat=target_tp.orientation_quat,
         helper_metadata=None,
         animation_input_is_tpose_aligned=True,
+        canon_joint_rot=target_tp.canon_joint_rot,
+        norm_schema_version=4,
     )
     assert features is not None
 
@@ -586,6 +597,9 @@ def test_tpose_aligned_roundtrip_with_nontrivial_rest_rotations() -> None:
         features,
         parents,
         offsets,
+        tpose_rest_rotations=target_tp.rest_rotations,
+        canon_joint_rot=target_tp.canon_joint_rot,
+        norm_schema_version=4,
         allow_infer=True,
     )
     recovered_world_rot = rotations_global(recovered_anim).qs
@@ -638,12 +652,16 @@ def test_retarget_features_npy_to_target_uses_tpose_aligned_motion_path(monkeypa
         offsets=np.zeros((2, 3), dtype=np.float32),
         tpos_anim=SimpleNamespace(parents=np.array([-1, 0], dtype=np.int32)),
         tpos_rots=_identity_quat(2)[None, :, :].astype(np.float32),
+        rest_rotations=_identity_quat(2).astype(np.float32),
+        canon_joint_rot=_identity_quat(2).astype(np.float32),
     )
     target_tp = SimpleNamespace(
         names=['Root', 'Head'],
         offsets=np.zeros((2, 3), dtype=np.float64),
         tpos_anim=SimpleNamespace(parents=np.array([-1, 0], dtype=np.int32)),
         tpos_rots=_identity_quat(2)[None, :, :].astype(np.float64),
+        rest_rotations=_identity_quat(2).astype(np.float64),
+        canon_joint_rot=_identity_quat(2).astype(np.float64),
         foot_indices=[],
         scale_factor=1.0,
         orientation_quat=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
@@ -654,10 +672,12 @@ def test_retarget_features_npy_to_target_uses_tpose_aligned_motion_path(monkeypa
         'original_joint_count': 2,
         'canonical_joint_names': ['Root', 'Head'],
         'orientation_reference_fbx_path': 'unused',
+        'norm_schema_version': 4,
     }
     target_cond = {
         'object_type': 'Dragon',
         'canonical_joint_names': ['Root', 'Head'],
+        'norm_schema_version': 4,
     }
 
     monkeypatch.setattr(features_mod, 'recover_animation_from_motion_np', lambda *args, **kwargs: (object(), False))
@@ -672,7 +692,7 @@ def test_retarget_features_npy_to_target_uses_tpose_aligned_motion_path(monkeypa
             None,
         ),
     )
-    monkeypatch.setattr(auto_retarget_mod, '_find_translation_root', lambda anim: 0)
+    monkeypatch.setattr(auto_retarget_mod, 'find_translation_root', lambda anim: 0)
     monkeypatch.setattr(retarget_mod, 'retarget_world_space_np', lambda **kwargs: {'src_to_tgt': np.array([0, 1], dtype=np.int32)})
     monkeypatch.setattr(auto_retarget_mod, '_build_tpose_aligned_target_animation', lambda *args, **kwargs: sentinel_anim)
 

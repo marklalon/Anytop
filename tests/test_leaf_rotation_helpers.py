@@ -21,8 +21,8 @@ from motion_lib import BVH
 from motion_lib.Quaternions import Quaternions
 from motion_lib.Animation import positions_global
 from data_loaders.truebones.truebones_utils.motion_process import (
-    _append_leaf_rotation_helpers_to_animation,
-    _build_leaf_rotation_helper_metadata,
+    append_leaf_rotation_helpers_to_animation,
+    build_leaf_rotation_helper_metadata,
     get_bvh_cont6d_params,
     get_motion_features,
     get_rifke,
@@ -41,7 +41,7 @@ def test_leaf_rotation_helper_budget_uses_dfs_leaf_order() -> None:
     joint_names = ["Root", "LeafA", "LeafB", "LeafC", "LeafD"]
     parents = np.array([-1, 0, 0, 0, 0], dtype=np.int32)
 
-    helper_metadata = _build_leaf_rotation_helper_metadata(
+    helper_metadata = build_leaf_rotation_helper_metadata(
         joint_names,
         parents,
         max_joints=len(joint_names) + 2,
@@ -67,7 +67,7 @@ def test_leaf_rotation_helper_budget_prefers_complete_bilateral_pairs() -> None:
         dtype=np.float64,
     )
 
-    helper_metadata = _build_leaf_rotation_helper_metadata(
+    helper_metadata = build_leaf_rotation_helper_metadata(
         joint_names,
         parents,
         max_joints=len(joint_names) + 2,
@@ -102,13 +102,13 @@ def test_append_leaf_rotation_helpers_appends_helpers_at_end() -> None:
         offsets,
         parents,
     )
-    helper_metadata = _build_leaf_rotation_helper_metadata(
+    helper_metadata = build_leaf_rotation_helper_metadata(
         joint_names,
         parents,
         max_joints=4,
     )
 
-    augmented_anim, augmented_names = _append_leaf_rotation_helpers_to_animation(
+    augmented_anim, augmented_names = append_leaf_rotation_helpers_to_animation(
         original_anim,
         joint_names,
         helper_metadata,
@@ -211,12 +211,12 @@ def test_reorder_animation_to_dfs_preserves_helper_augmented_bvh_roundtrip() -> 
         offsets,
         parents,
     )
-    helper_metadata = _build_leaf_rotation_helper_metadata(
+    helper_metadata = build_leaf_rotation_helper_metadata(
         joint_names,
         parents,
         max_joints=5,
     )
-    augmented_anim, augmented_names = _append_leaf_rotation_helpers_to_animation(
+    augmented_anim, augmented_names = append_leaf_rotation_helpers_to_animation(
         original_anim,
         joint_names,
         helper_metadata,
@@ -283,12 +283,12 @@ def test_reorder_animation_to_dfs_is_idempotent() -> None:
         offsets,
         parents,
     )
-    helper_metadata = _build_leaf_rotation_helper_metadata(
+    helper_metadata = build_leaf_rotation_helper_metadata(
         joint_names,
         parents,
         max_joints=5,
     )
-    augmented_anim, augmented_names = _append_leaf_rotation_helpers_to_animation(
+    augmented_anim, augmented_names = append_leaf_rotation_helpers_to_animation(
         original_anim,
         joint_names,
         helper_metadata,
@@ -331,12 +331,12 @@ def test_helper_covered_leaf_rotation_roundtrips_through_bare_features() -> None
         offsets,
         parents,
     )
-    helper_metadata = _build_leaf_rotation_helper_metadata(
+    helper_metadata = build_leaf_rotation_helper_metadata(
         joint_names,
         parents,
         max_joints=4,
     )
-    augmented_anim, _augmented_names = _append_leaf_rotation_helpers_to_animation(
+    augmented_anim, _augmented_names = append_leaf_rotation_helpers_to_animation(
         original_anim,
         joint_names,
         helper_metadata,
@@ -360,10 +360,15 @@ def test_helper_covered_leaf_rotation_roundtrips_through_bare_features() -> None
         np.zeros((augmented_anim.shape[1], 3), dtype=np.float64),
         np.zeros((augmented_anim.shape[1],), dtype=np.float64),
         max_joints=augmented_anim.shape[1],
+        local_positions=augmented_anim.positions,
+        rest_offsets=augmented_anim.offsets,
     )
 
     recovered_anim, _has_animated_pos = recover_from_features(
-        features,
+        {
+            "features": features,
+            "translation_root_index": 0,
+        },
         augmented_anim.parents,
         augmented_anim.offsets,
         translation_root_index=0,
@@ -397,12 +402,12 @@ def test_strip_appended_helper_joints_restores_original_joint_count() -> None:
         offsets,
         parents,
     )
-    helper_metadata = _build_leaf_rotation_helper_metadata(
+    helper_metadata = build_leaf_rotation_helper_metadata(
         joint_names,
         parents,
         max_joints=4,
     )
-    augmented_anim, _augmented_names = _append_leaf_rotation_helpers_to_animation(
+    augmented_anim, _augmented_names = append_leaf_rotation_helpers_to_animation(
         original_anim,
         joint_names,
         helper_metadata,
