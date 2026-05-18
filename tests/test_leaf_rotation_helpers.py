@@ -30,11 +30,12 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     resolve_mirrored_export_skeleton_metadata,
     reorder_animation_to_dfs,
 )
+from data_loaders.truebones.truebones_utils.features import to_parent_local_pos_residual
 from tools.restore_glb_from_npy import (
     _bare_feature_rotation_channel_mask,
     _strip_appended_helper_joints,
 )
-from utils.npy_roundtrip_utils import recover_from_features
+from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
 
 
 def test_leaf_rotation_helper_budget_uses_dfs_leaf_order() -> None:
@@ -349,11 +350,12 @@ def test_helper_covered_leaf_rotation_roundtrips_through_bare_features() -> None
         translation_root_index=0,
     )
     ric_positions = get_rifke(global_positions, r_rot, translation_root_index=0)
+    residual_positions = to_parent_local_pos_residual(ric_positions, augmented_anim, translation_root_index=0)
     local_vel = np.repeat(r_rot[1:, None], global_positions.shape[1], axis=1) * (
         global_positions[1:] - global_positions[:-1]
     )
     features, _max_joints = get_motion_features(
-        ric_positions,
+        residual_positions,
         cont_6d_params,
         np.zeros((1, augmented_anim.shape[1]), dtype=np.float64),
         local_vel,
@@ -362,7 +364,7 @@ def test_helper_covered_leaf_rotation_roundtrips_through_bare_features() -> None
         max_joints=augmented_anim.shape[1],
     )
 
-    recovered_anim, _has_animated_pos = recover_from_features(
+    recovered_anim, _has_animated_pos = recover_animation_from_motion_np(
         features,
         augmented_anim.parents,
         augmented_anim.offsets,

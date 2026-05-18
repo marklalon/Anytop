@@ -144,9 +144,6 @@ def test_process_skeleton_retarget_branch_writes_translation_root_metadata(monke
     trajectory_x = np.arange(4, dtype=np.float32)
     motion[:, 0, 0] = -trajectory_x
     motion[:, 0, 2] = 1.0
-    motion[:, 1, 0] = -trajectory_x
-    motion[:, 1, 1] = 1.0
-    motion[:, 1, 2] = 1.0
     motion[:, 2, 1] = 1.0
     motion[:-1, 2, 9] = 1.0
 

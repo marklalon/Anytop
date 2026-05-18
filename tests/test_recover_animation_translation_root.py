@@ -26,7 +26,6 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     move_xz_to_origin,
     positions_global,
     recover_animation_from_motion_np,
-    recover_from_bvh_ric_np,
     recover_root_quat_and_pos_np,
 )
 from utils.rotation_conversions import rotation_6d_to_matrix_np
@@ -75,13 +74,14 @@ def test_recover_animation_uses_effective_translation_root_feature_row():
 
     trajectory_x = np.arange(frames, dtype=np.float32)
 
-    # Joint 2 is the effective translation root: its RIFKE XZ stays at zero, and
-    # its X velocity carries the trajectory. Joint 0 remains globally fixed.
+    # Row 0 still carries the root-world position in the de-rotated feature
+    # frame, so it cancels the recovered translation-root trajectory to keep the
+    # true root globally fixed at x=0.
     features[:, 0, 0] = -trajectory_x
     features[:, 0, 2] = 1.0
-    features[:, 1, 0] = -trajectory_x
-    features[:, 1, 1] = 1.0
-    features[:, 1, 2] = 1.0
+
+    # Non-root, non-translation-root joints now store parent-local residuals
+    # from rest. Joint 1 is rigid, so its residual stays exactly zero.
     features[:, 2, 1] = 1.0
     features[:-1, 2, 9] = 1.0
 
@@ -249,12 +249,13 @@ def test_recover_animation_matches_safeguarded_horse_target_globals():
         cond,
     )
     mirrored, mirrored_offsets = mirror_features_with_safeguards(raw, cond, motion_metadata=motion_metadata)
-    target_global = recover_from_bvh_ric_np(
-        mirrored,
-        parents=cond['parents'],
-        offsets=mirrored_offsets,
+    clean_anim, _ = recover_animation_from_motion_np(
+        raw,
+        cond['parents'],
+        cond['offsets'],
         motion_metadata=motion_metadata,
     )
+    clean_global = positions_global(clean_anim)
 
     anim, has_animated_pos = recover_animation_from_motion_np(
         mirrored,
@@ -264,7 +265,21 @@ def test_recover_animation_matches_safeguarded_horse_target_globals():
     )
     recovered_global = positions_global(anim)
 
-    np.testing.assert_allclose(recovered_global, target_global, atol=1e-4)
+    spi = np.asarray(cond['symmetry_partner_indices'], dtype=np.int64)
+    perm = np.arange(len(spi), dtype=np.int64)
+    perm[spi >= 0] = spi[spi >= 0]
+
+    target_global = clean_global[:, perm].copy()
+    target_global[..., 0] *= -1.0
+    reflected_z = clean_global[:, perm].copy()
+    reflected_z[..., 2] *= -1.0
+
+    x_error = float(np.abs(target_global - recovered_global).mean())
+    z_error = float(np.abs(reflected_z - recovered_global).mean())
+
+    np.testing.assert_allclose(recovered_global, target_global, atol=1e-5)
+    assert x_error < 1e-5
+    assert x_error * 1000.0 < z_error
     assert has_animated_pos is True
 
 

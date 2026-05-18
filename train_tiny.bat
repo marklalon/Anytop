@@ -1,12 +1,15 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=quadropeds_locomotion_v5
+set RUN_NAME=quadropeds_locomotion_v8
 
 pushd "%SCRIPT_DIR%"
 
 REM 使用 --objects_subset Horse 指定单个物种的所有动作作为训练集
 REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
+REM lambda_vel=0: velocity-consistency loss enforces dpos==vel, valid only for
+REM the old RIC pos. Parent-local residual pos is ~0 for rigid joints and
+REM decoupled from world velocity, so the consistency loss no longer applies.
 %PYTHON_EXE% train/train_anytop.py ^
 	--save_dir save/%RUN_NAME% ^
 	--save_interval 2000 ^
@@ -31,7 +34,7 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--dropout_prob 0.1 ^
 	--aug_speed_range 0.2 ^
 	--aug_mirror_prob 0.5 ^
-	--lambda_vel 0.2 ^
+	--lambda_vel 0.0 ^
 	--lambda_geo 0.0 ^
 	--motion_cache_size 512 ^
 	--amp_dtype bf16 ^

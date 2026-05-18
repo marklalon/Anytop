@@ -2,7 +2,10 @@
 Channel layout constants and low-level motion utilities.
 
 Motion format  (T × J × 13  float32, normalised):
-    ch 0-2  : local RIC position
+    ch 0-2  : parent-local pos residual = R_parentGlobal^-1·(p_j-p_parent) - restOffset_j
+              (0 for rigid/rotation-driven joints; non-zero only where a joint's
+              position is independently animated. Root row and translation_root
+              row instead carry the RIC root trajectory.)
     ch 3-8  : 6-D rotation  (two packed 3-D unit-norm vectors)
     ch 9-11 : linear velocity
     ch 12   : foot-contact flag

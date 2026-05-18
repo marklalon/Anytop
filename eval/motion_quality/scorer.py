@@ -21,7 +21,10 @@ Scoring dimensions
     reference priors using the same robust-deviation scheme.
 
 Motion format  (T × J × 13  float32, normalised):
-    ch 0-2  : local RIC position
+    ch 0-2  : parent-local pos residual in the stored feature tensor.
+              The scorer reconstructs root-centered analysis positions before
+              computing spectral/smoothness statistics, so the metric semantics
+              stay aligned with the old RIC-based scorer.
     ch 3-8  : 6-D rotation
     ch 9-11 : linear velocity
     ch 12   : foot-contact flag  (not evaluated)
@@ -299,10 +302,67 @@ def _welch_psd(sig: np.ndarray, nperseg: int) -> Tuple[np.ndarray, np.ndarray]:
     return freqs, psd + 1e-30
 
 
+def _coerce_position_series(motion_or_positions: np.ndarray) -> np.ndarray:
+    arr = np.asarray(motion_or_positions)
+    if arr.ndim != 3:
+        raise ValueError(f"Expected (T, J, C) position/motion array, got {arr.shape}")
+    if arr.shape[-1] == 3:
+        return arr.astype(np.float64, copy=False)
+    if arr.shape[-1] == 13:
+        return arr[:, :, CH_POS].astype(np.float64, copy=False)
+    raise ValueError(f"Expected last dimension 3 or 13, got {arr.shape[-1]}")
+
+
+def _recover_analysis_positions(
+    motion: np.ndarray,
+    parents: np.ndarray,
+    offsets: np.ndarray,
+    translation_root_index: Optional[int] = None,
+) -> np.ndarray:
+    from motion_lib.Animation import positions_global
+    from data_loaders.truebones.truebones_utils.features import (
+        get_rifke,
+        recover_animation_from_motion_np,
+        recover_root_quat_and_pos_np,
+        resolve_feature_translation_root_index,
+    )
+
+    motion_arr = np.asarray(motion, dtype=np.float64)
+    parents_arr = np.asarray(parents, dtype=np.int64)
+    offsets_arr = np.asarray(offsets, dtype=np.float64)
+    resolved_translation_root_index = resolve_feature_translation_root_index(
+        motion_arr,
+        parents=parents_arr,
+        offsets=offsets_arr,
+        translation_root_index=translation_root_index,
+        allow_infer=translation_root_index is None,
+        context='motion quality scorer',
+    )
+    recovered_anim, _has_animated_pos = recover_animation_from_motion_np(
+        motion_arr,
+        parents_arr,
+        offsets_arr,
+        translation_root_index=resolved_translation_root_index,
+        allow_infer=False,
+    )
+    world_positions = np.asarray(positions_global(recovered_anim), dtype=np.float64)
+    r_rot, _r_pos = recover_root_quat_and_pos_np(
+        motion_arr,
+        translation_root_index=resolved_translation_root_index,
+        parents=parents_arr,
+        offsets=offsets_arr,
+        allow_infer=False,
+    )
+    return np.asarray(
+        get_rifke(world_positions, r_rot, translation_root_index=resolved_translation_root_index),
+        dtype=np.float64,
+    )
+
+
 def _compute_features(motion: np.ndarray, nperseg: int) -> Dict[str, np.ndarray]:
-    """Compute per-joint features for a single motion (T, J, 13)."""
-    t_len, joint_count, _ = motion.shape
-    pos = motion[:, :, CH_POS].astype(np.float64)
+    """Compute per-joint features for a single motion/position series."""
+    pos = _coerce_position_series(motion)
+    t_len, joint_count, _ = pos.shape
 
     # Spectral flatness — batched Welch PSD over all joints×channels at once
     spectral_flatness = np.zeros(joint_count)
@@ -341,7 +401,7 @@ def _compute_features(motion: np.ndarray, nperseg: int) -> Dict[str, np.ndarray]
 
 
 def _compute_features_batch(motions: List[np.ndarray], nperseg: int) -> List[Dict[str, np.ndarray]]:
-    """Compute per-joint features for multiple motions, batching by frame count.
+    """Compute per-joint features for multiple motions/position series, batching by frame count.
 
     Groups motions with the same T together so Welch PSD can process them
     in a single call instead of one-per-motion. Large groups are further
@@ -349,8 +409,9 @@ def _compute_features_batch(motions: List[np.ndarray], nperseg: int) -> List[Dic
     """
     # Group by (T, J) so we can stack
     groups: Dict[Tuple[int, int], List[int]] = {}
-    for idx, m in enumerate(motions):
-        key = (m.shape[0], m.shape[1])
+    position_series = [_coerce_position_series(motion) for motion in motions]
+    for idx, pos in enumerate(position_series):
+        key = (pos.shape[0], pos.shape[1])
         groups.setdefault(key, []).append(idx)
 
     results: List[Optional[Dict[str, np.ndarray]]] = [None] * len(motions)
@@ -363,7 +424,7 @@ def _compute_features_batch(motions: List[np.ndarray], nperseg: int) -> List[Dic
             n_chunk = len(chunk_indices)
 
             # Stack to (N, T, J, 3) — float32 is sufficient; Welch promotes internally
-            pos = np.stack([motions[i][:, :, CH_POS] for i in chunk_indices], axis=0).astype(np.float32)
+            pos = np.stack([position_series[i] for i in chunk_indices], axis=0).astype(np.float32)
 
             # Spectral flatness — batched Welch PSD over all motions×joints×channels
             sf = np.zeros((n_chunk, joint_count), dtype=np.float64)
@@ -538,13 +599,14 @@ def _compute_bone_length_drift_from_motion(
     offsets = np.asarray(offsets, dtype=np.float64)
 
     try:
-        from utils.npy_roundtrip_utils import recover_from_features
         from motion_lib.Animation import positions_global
+        from data_loaders.truebones.truebones_utils.features import recover_animation_from_motion_np
 
-        recovered_anim, _has_animated_pos = recover_from_features(
-            motion,
-            parents,
-            offsets,
+        recovered_anim, _has_animated_pos = recover_animation_from_motion_np(
+            np.asarray(motion, dtype=np.float64),
+            np.asarray(parents, dtype=np.int64),
+            np.asarray(offsets, dtype=np.float64),
+            allow_infer=True,
         )
         world_pos = np.asarray(positions_global(recovered_anim), dtype=np.float64)
     except Exception:
@@ -783,18 +845,54 @@ class DistributionMotionQualityScorer:
     ) -> dict:
         query_active_groups = [name for name, _ in _active_joint_groups(query_joint_groups)]
 
+        query_cond = self._cond_lookup.get(object_key)
+        if query_cond is None:
+            raise KeyError(
+                f"Object type {object_key!r} not found in cond.npy. "
+                f"Motion-quality scoring requires a matching skeleton definition. "
+                f"Available types: {sorted(self._cond_lookup.keys())}"
+            )
+        q_parents = np.asarray(query_cond["parents"], dtype=np.int32)
+        q_offsets = np.asarray(query_cond["offsets"], dtype=np.float64)
+        q_translation_root_index = query_cond.get("translation_root_index")
+
+        query_positions = [
+            _recover_analysis_positions(
+                motion,
+                q_parents,
+                q_offsets,
+                translation_root_index=q_translation_root_index,
+            )
+            for motion in query_motions
+        ]
+
         # Batch feature extraction for query motions
-        query_features_list = _compute_features_batch(query_motions, nperseg)
+        query_features_list = _compute_features_batch(query_positions, nperseg)
         query_local = []
-        for motion, features in zip(query_motions, query_features_list):
+        for motion, features in zip(query_positions, query_features_list):
             query_local.append({
                 key: _group_scalar_means(values, query_joint_groups)
                 for key, values in features.items()
             })
 
         # Batch feature extraction for reference clips
-        ref_motions = [clip.motion for clip in reference_clips]
-        ref_features_list = _compute_features_batch(ref_motions, nperseg)
+        ref_positions = []
+        for clip in reference_clips:
+            clip_cond = self._cond_lookup.get(clip.object_type)
+            if clip_cond is None:
+                raise KeyError(
+                    f"Object type {clip.object_type!r} not found in cond.npy. "
+                    f"Reference motion quality scoring requires a matching skeleton definition."
+                )
+            ref_positions.append(
+                _recover_analysis_positions(
+                    clip.motion,
+                    np.asarray(clip_cond["parents"], dtype=np.int32),
+                    np.asarray(clip_cond["offsets"], dtype=np.float64),
+                    translation_root_index=clip_cond.get("translation_root_index"),
+                )
+            )
+        ref_features_list = _compute_features_batch(ref_positions, nperseg)
         reference_local = []
         for clip, features in zip(reference_clips, ref_features_list):
             clip_joint_groups, _ = self._resolve_joint_groups(clip.object_type, clip.motion.shape[1])
@@ -804,16 +902,6 @@ class DistributionMotionQualityScorer:
             })
 
         # Bone length scoring: use FK-based drift directly (no reference comparison)
-        query_cond = self._cond_lookup.get(object_key)
-        if query_cond is None:
-            raise KeyError(
-                f"Object type {object_key!r} not found in cond.npy. "
-                f"Bone-length drift scoring requires a matching skeleton definition. "
-                f"Available types: {sorted(self._cond_lookup.keys())}"
-            )
-
-        q_parents = np.asarray(query_cond["parents"], dtype=np.int32)
-        q_offsets = np.asarray(query_cond["offsets"], dtype=np.float64)
         bone_length_result = _score_bone_length_from_drift(
             query_motions, query_weights, q_parents, q_offsets
         )

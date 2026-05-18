@@ -45,16 +45,49 @@ from .features import (
 
 ################## Statistics & Topology #####################
 
+# Parent-local pos residual is ~0 for rigid joints, so the pooled non-root pos
+# std collapses toward 0 on rigid-dominant datasets and would blow up tiny
+# residuals after `(x - mean) / (std + 1e-6)`. Floor the pooled pos std. The
+# value is in scaled HML units; calibrate against the regenerated dataset's
+# actual residual magnitudes (see plan validation step 3) if it clips signal.
+POS_RESIDUAL_STD_FLOOR = 1e-2
+
+
+def _coerce_preserve_position_rows(joint_count, preserve_position_rows=None):
+    rows = {0}
+    if preserve_position_rows is None:
+        return rows
+    values = np.asarray(preserve_position_rows, dtype=np.int64).reshape(-1)
+    for row in values:
+        index = int(row)
+        if 0 <= index < int(joint_count):
+            rows.add(index)
+    return rows
+
+
 """ computes mean and std for a list of motions """
-def get_mean_std(data):
+def get_mean_std(data, preserve_position_rows=None):
     if len(data) > 0:
         Mean = data.mean(axis=0) # (Joints, 25)
         Std = data.std(axis=0) # # (Joints, 25)
-        Std[0, :3] = Std[0, :3].mean() / 1.0 # all joints except root ric pos
+        # Parent-local residual representation: most rows are 0-centered local
+        # residuals, but the root row and any translation-root rows still carry
+        # root-trajectory channels used at recovery time and must keep their
+        # dataset mean/std.
+        preserve_rows = _coerce_preserve_position_rows(Mean.shape[0], preserve_position_rows)
+        residual_rows = np.ones(Mean.shape[0], dtype=bool)
+        residual_rows[list(preserve_rows)] = False
+
+        Mean[residual_rows, :3] = 0.0
+        for row in sorted(preserve_rows):
+            Std[row, :3] = max(float(Std[row, :3].mean()), POS_RESIDUAL_STD_FLOOR)
+        if np.any(residual_rows):
+            pooled_residual_std = max(float(Std[residual_rows, :3].mean()), POS_RESIDUAL_STD_FLOOR)
+            Std[residual_rows, :3] = pooled_residual_std
+
         Std[0, 3:9] = Std[0, 3:9].mean() / 1.0 # all joints except root rotation
         Std[0, 9:12] = Std[0, 9:12].mean() / 1.0 # all joints except root local velocity
 
-        Std[1:, :3] = Std[1:, :3].mean() / 1.0 # all joints except root ric pos
         Std[1:, 3:9] = Std[1:, 3:9].mean() / 1.0 # all joints except root rotation
         Std[1:, 9:12] = Std[1:, 9:12].mean() / 1.0 # all joints except root local velocity
         if len(Std[:, 12][Std[:, 12]!=0]) > 0:
@@ -326,6 +359,8 @@ def _build_tpose_cond(object_type, t_pos_path, face_joints, max_joints=MAX_JOINT
     object_cond['object_type'] = object_type
     object_cond['parents'] = parents
     object_cond['offsets'] = tp.offsets
+    if _tpos_translation_root_index is not None:
+        object_cond['translation_root_index'] = int(_tpos_translation_root_index)
     object_cond['joints_names'] = tp.names
     object_cond['canonical_joint_names'] = semantic_metadata['canonical_joint_names']
     object_cond['canonical_bvh_joint_names'] = [
@@ -377,9 +412,18 @@ def _build_tpose_only_cond(object_type, t_pos_path, face_joints):
     num_joints = len(parents)
 
     # mean: T-pose feature vector with velocity channels (9:12) explicitly zeroed
-    # to make rest-pose semantics unambiguous.
+    # to make rest-pose semantics unambiguous. Non-root pos is the parent-local
+    # residual (0 at the rest T-pose); zero it too so the fallback matches
+    # get_mean_std. std=ones below is already a safe non-zero divisor.
     mean = t_pos_motion[0].astype(np.float32).copy()  # (J, 13)
     mean[:, 9:12] = 0.0
+    preserve_rows = _coerce_preserve_position_rows(
+        num_joints,
+        [object_cond.get('translation_root_index', 0)],
+    )
+    residual_rows = np.ones(num_joints, dtype=bool)
+    residual_rows[list(preserve_rows)] = False
+    mean[residual_rows, :3] = 0.0
     object_cond['mean'] = mean
 
     object_cond['std'] = np.ones_like(mean)
@@ -467,7 +511,18 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
 
     stats_tensors = np.concatenate(all_tensors, axis=0)
 
-    mean, std = get_mean_std(stats_tensors)
+    preserve_pos_rows = {
+        int(object_cond['translation_root_index'])
+        if 'translation_root_index' in object_cond
+        else 0
+    }
+    preserve_pos_rows.update(
+        int(result['translation_root_index'])
+        for result in prepared_results
+        if result.get('translation_root_index') is not None
+    )
+
+    mean, std = get_mean_std(stats_tensors, preserve_position_rows=sorted(preserve_pos_rows))
     object_cond["mean"] = mean
     object_cond["std"] = std
 
@@ -728,28 +783,37 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
         if not all_motions:
             print(f"[process_skeleton] no retargeted motions available; cond.npy not written")
             return
-        stats_tensors = np.concatenate(all_motions, axis=0)  # (total_frames, J, 13)
-        mean, std = get_mean_std(stats_tensors)
         object_cond = dict(target_cond_partial)
-        object_cond['mean'] = mean
-        object_cond['std'] = std
         motion_metadata = {}
         parents = np.asarray(object_cond['parents'], dtype=np.int64)
         offsets = np.asarray(object_cond['offsets'], dtype=np.float64)
+        translation_root_indices = {
+            int(object_cond['translation_root_index'])
+            if 'translation_root_index' in object_cond
+            else 0
+        }
         for motion_path, motion in zip(motions_from_npys, all_motions):
             motion_name = os.path.basename(motion_path)
             motion_labels = infer_motion_labels_from_motion_name(
                 motion_name,
                 object_type=object_name,
             )
-            motion_labels['translation_root_index'] = int(
+            translation_root_index = int(
                 infer_translation_root_index_from_features(
                     motion,
                     parents,
                     offsets,
                 )
             )
+            motion_labels['translation_root_index'] = translation_root_index
+            translation_root_indices.add(translation_root_index)
             motion_metadata[motion_name] = motion_labels
+        stats_tensors = np.concatenate(all_motions, axis=0)  # (total_frames, J, 13)
+        mean, std = get_mean_std(stats_tensors, preserve_position_rows=sorted(translation_root_indices))
+        if len(translation_root_indices) == 1:
+            object_cond['translation_root_index'] = next(iter(translation_root_indices))
+        object_cond['mean'] = mean
+        object_cond['std'] = std
         n_joints = len(object_cond['parents'])
         cond = {object_name: object_cond}
         _write_dataset_artifacts(

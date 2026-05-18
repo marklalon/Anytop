@@ -148,6 +148,39 @@ def get_rifke(global_positions, root_rot, translation_root_index=0):
     return positions
 
 
+def to_parent_local_pos_residual(rifke_positions, anim, translation_root_index):
+    """Convert the RIC position block to the parent-local residual-from-rest.
+
+        pos_j(t) = R_parentGlobal(t)^-1 . (p_j(t) - p_parent(t)) - restOffset_j
+                 = anim.positions[:, j] - anim.offsets[j]
+
+    ``anim.positions`` already holds the FK local positions (solved upstream by
+    ``solve_local_positions_for_target_global`` so that ``positions_global(anim)``
+    reproduces the world pose), so subtracting the rest offset yields an *exact*,
+    roundtrip-consistent inverse of the FK applied at recovery time. The residual
+    is identically 0 for rigid (rotation-driven) joints and non-zero only where a
+    joint's position is independently animated (translation root, non-rigid /
+    squash-stretch rigs).
+
+    The root row (parents == -1) and the ``translation_root_index`` row keep
+    their RIC values: those pos channels carry the root trajectory (root height
+    in ch1, de-rotated root XZ) consumed by ``recover_root_quat_and_pos_np`` /
+    ``recover_from_bvh_rot_np``.
+    """
+    positions = np.asarray(rifke_positions).copy()
+    parents = np.asarray(anim.parents)
+    offsets = np.asarray(anim.offsets, dtype=positions.dtype)
+    local_pos = np.asarray(anim.positions, dtype=positions.dtype)
+    keep_root = {0}
+    if translation_root_index is not None:
+        keep_root.add(int(translation_root_index))
+    for j in range(positions.shape[1]):
+        if parents[j] < 0 or j in keep_root:
+            continue
+        positions[:, j] = local_pos[:, j] - offsets[j]
+    return positions
+
+
 def get_motion_features(ric_positions, rotations, foot_contact, velocity, terminal_velocity, terminal_contact, max_joints):
     # F = Frames# , J = joints# 
     # parents (J,1)
@@ -413,7 +446,8 @@ def _neutralize_mirror_disabled_subtrees(
         translation_root_index=resolved_translation_root_index,
     )
     positions = get_rifke(global_positions, r_rot, translation_root_index=resolved_translation_root_index)
-    is_loop = detect_motion_loop(positions)
+    is_loop = detect_motion_loop(positions)  # on RIC positions; residual is ~0 for rigid joints
+    positions = to_parent_local_pos_residual(positions, neutral_anim, resolved_translation_root_index)
     local_vel = np.repeat(r_rot[1:, None], global_positions.shape[1], axis=1) * (global_positions[1:] - global_positions[:-1])
     prev_velocity = local_vel[-1] if local_vel.shape[0] > 0 else None
     terminal_local_vel = _compute_terminal_local_velocity(global_positions, r_rot, is_loop, prev_frame_velocity=prev_velocity)
@@ -597,7 +631,8 @@ def _extract_motion_features_from_aligned_anims(
     )
     foot_contact = get_contact_state(global_positions, foot_indices, foot_contact_vel_thresh)
     positions = get_rifke(global_positions, r_rot, translation_root_index=feature_translation_root_index)
-    is_loop = detect_motion_loop(positions)
+    is_loop = detect_motion_loop(positions)  # on RIC positions; residual is ~0 for rigid joints
+    positions = to_parent_local_pos_residual(positions, motion_anim, feature_translation_root_index)
     local_vel = np.repeat(r_rot[1:, None], global_positions.shape[1], axis=1) * (global_positions[1:] - global_positions[:-1])
     prev_velocity = local_vel[-1] if local_vel.shape[0] > 0 else None
     terminal_local_vel = _compute_terminal_local_velocity(global_positions, r_rot, is_loop, prev_frame_velocity=prev_velocity)
@@ -861,7 +896,15 @@ def recover_root_quat_and_pos(data):
     return r_rot_quat, r_pos
 
 
-""" recover xyz positions from ric (root relative positions) torch """
+""" recover xyz positions from ric (root relative positions).
+
+LEGACY / RIC-ONLY: this decodes the old RIC pos representation where ch 0:3 is
+the root-relative joint position. The active representation is the parent-local
+residual (see ``to_parent_local_pos_residual`` /
+``recover_animation_from_motion_np``); the main recovery path no longer calls
+this. Kept for old RIC datasets and diagnostics (npy_roundtrip_utils,
+dift_correspondence). Do NOT use it to decode parent-local-residual features.
+"""
 def recover_from_bvh_ric_np(
     data,
     translation_root_index=None,
@@ -1000,18 +1043,21 @@ def recover_from_bvh_rot_np(
 
 """ Reconstruct a BVH-ready Animation from the per-joint feature tensor.
 
-Combines the rotation path (recover_from_bvh_rot_np) with the RIC position
-path (recover_from_bvh_ric_np) to correctly handle skeletons that carry
-animated positions on non-root joints (e.g. Horse Bip01, Bear NPC_Pelvis).
-
-Unlike using animation_from_positions (pure IK), this preserves the
-per-joint position channels that the training features explicitly encode,
-reducing max global-position error from ~0.3 to ~0.02 units.
+Parent-local residual representation: the pos channel (ch 0:3) holds the FK
+local position minus the rest offset (identically 0 for rigid joints, non-zero
+only where a joint's position is independently animated). Recovery decodes the
+rotations (recover_from_bvh_rot_np) and recomposes the FK local positions as
+``rest_offset + residual`` for every joint except the root (row 0, world
+position) and the translation_root (already solved to the recovered root
+trajectory by recover_from_bvh_rot_np). pos == rot by construction, so no
+RIC/FK reconciliation (recover_from_bvh_ric_np /
+solve_local_positions_for_target_global) is needed and recovery is exact.
 
 Returns:
-    anim            : Animation with corrected local positions
-    has_animated_pos: bool — True when any non-root joint needed position fix
-                      (caller should pass this as BVH.save(..., positions=...))
+    anim            : Animation with recomposed local positions
+    has_animated_pos: bool — True when any non-root joint carries a non-zero
+                      position residual (caller passes this as
+                      BVH.save(..., positions=...))
 """
 def recover_animation_from_motion_np(
     data,
@@ -1032,16 +1078,7 @@ def recover_animation_from_motion_np(
         anim_pos_threshold=anim_pos_threshold,
         context='motion feature tensor',
     )
-    target_global        = recover_from_bvh_ric_np(
-        data,
-        translation_root_index=translation_root_index,
-        parents=parents,
-        offsets=offsets,
-        anim_pos_threshold=anim_pos_threshold,
-        motion_metadata=motion_metadata,
-        allow_infer=allow_infer,
-    )              # (F, J, 3)
-    _, anim_rot          = recover_from_bvh_rot_np(
+    _, anim = recover_from_bvh_rot_np(
         data,
         parents,
         offsets,
@@ -1050,31 +1087,43 @@ def recover_animation_from_motion_np(
         motion_metadata=motion_metadata,
         allow_infer=allow_infer,
     )
-    glob_rot             = positions_global(anim_rot)                  # (F, J, 3)
+    # Recompose FK local positions = rest_offset + residual. recover_from_bvh_rot_np
+    # already set row 0 (root world pos) and the translation_root row (solved to
+    # the recovered root trajectory); leave those untouched. Mirrors the
+    # extraction-side ``to_parent_local_pos_residual``, so positions_global(anim)
+    # reproduces the source world pose to numerical precision.
+    parents_arr = np.asarray(parents)
+    offsets_arr = np.asarray(offsets, dtype=anim.positions.dtype)
+    resid = np.asarray(data[..., :3], dtype=anim.positions.dtype)
+    keep_root = {0}
+    if translation_root_index is not None:
+        keep_root.add(int(translation_root_index))
+    pos = anim.positions
+    for j in range(len(parents_arr)):
+        if parents_arr[j] < 0 or j in keep_root:
+            continue
+        pos[:, j] = offsets_arr[j] + resid[..., j, :]
 
-    # joints whose FK-predicted global position drifts from the RIC truth
-    per_joint_err = np.abs(target_global - glob_rot).max(axis=(0, 2)) # (J,)
-    animated_joints = sorted(
-        j for j in range(len(parents)) if per_joint_err[j] > anim_pos_threshold
-    )
-
-    if not animated_joints:
-        return anim_rot, needs_bvh_position_channels(anim_rot)
-
-    new_pos = solve_local_positions_for_target_global(
-        anim_rot.rotations,
-        target_global,
-        anim_rot.offsets,
-        anim_rot.parents,
-        anim_rot.orients,
-        initial_positions=anim_rot.positions.copy(),
-        position_match_threshold=1e-5,
-        max_passes=2,
-    )
-
-    anim_fixed = Animation(anim_rot.rotations, new_pos, anim_rot.orients,
-                           anim_rot.offsets, anim_rot.parents)
-    return anim_fixed, needs_bvh_position_channels(anim_fixed)
+    if translation_root_index is not None and translation_root_index != 0 and parents_arr[translation_root_index] >= 0:
+        # Recompose residual joints first, then re-solve the effective translation
+        # root against the updated parent pose. Otherwise an animated parent can
+        # drag the recovered root trajectory away from the stored feature row.
+        _r_rot_quat, r_pos = recover_root_quat_and_pos_np(
+            data,
+            parents=parents,
+            offsets=offsets,
+            translation_root_index=translation_root_index,
+            anim_pos_threshold=anim_pos_threshold,
+            motion_metadata=motion_metadata,
+            allow_infer=allow_infer,
+        )
+        anim = Animation(anim.rotations, pos, anim.orients, anim.offsets, anim.parents)
+        global_rots = rotations_global(anim)
+        global_pos = positions_global(anim)
+        parent_index = int(parents_arr[translation_root_index])
+        pos[:, translation_root_index] = (-global_rots[:, parent_index]) * (r_pos - global_pos[:, parent_index])
+    anim = Animation(anim.rotations, pos, anim.orients, anim.offsets, anim.parents)
+    return anim, needs_bvh_position_channels(anim)
 
 
 def recover_bvh_export_animation_from_motion_np(

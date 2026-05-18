@@ -132,15 +132,18 @@ def animation_to_exporter_inputs(animation, skeleton) -> tuple[Tensor, Tensor, T
 
 
 def _normalize_imported_armature_and_meshes(bpy, armature) -> None:
-    """Remove FBX importer object-level rotation/scale from armature + meshes.
+    """Normalize imported FBX object scale while preserving the axis wrapper.
 
-    FBX import commonly leaves a +90deg X rotation and 0.01 object scale on
-    the armature object. The skinned meshes inherit the same world transform via
-    parenting / armature modifiers. That object-level transform is not part of
-    the pose retargeting math and can corrupt the exported glTF skin bind.
+    FBX import commonly leaves a +90deg X axis wrapper and a 0.01 object scale
+    on the armature object. The skinned meshes inherit the same world transform
+    via parenting / armature modifiers. We want to remove the importer scale and
+    stale parent-inverse state, but we must keep the axis wrapper rotation: the
+    imported bone and mesh local data still live in the FBX armature's Y-up
+    object space, so stripping the rotation would roll the character 90 degrees.
 
-    Normalize the imported objects back to identity rotation + unit scale while
-    preserving translation and keeping armature-local mesh/bone data unchanged.
+    Normalize the imported objects back to unit scale while preserving their
+    world translation and world rotation, keeping armature-local mesh/bone data
+    unchanged and still aligned to Blender's world up axis.
     """
     from mathutils import Matrix
 
@@ -154,14 +157,17 @@ def _normalize_imported_armature_and_meshes(bpy, armature) -> None:
             related_meshes.append(obj)
 
     objects_to_normalize = [armature] + related_meshes
-    world_positions = {
-        obj.name: obj.matrix_world.translation.copy()
+    world_transforms = {
+        obj.name: obj.matrix_world.copy()
         for obj in objects_to_normalize
     }
 
     for obj in objects_to_normalize:
+        world_matrix = world_transforms[obj.name]
+        world_position = world_matrix.translation.copy()
+        world_rotation = world_matrix.to_quaternion().to_matrix().to_4x4()
         obj.matrix_parent_inverse = Matrix.Identity(4)
-        obj.matrix_world = Matrix.Translation(world_positions[obj.name])
+        obj.matrix_world = Matrix.Translation(world_position) @ world_rotation
 
 
 class AnimationExporter:
@@ -411,8 +417,10 @@ class AnimationExporter:
             # 外部 mesh (FBX/GLB) 为 Y-up 坐标系，导出时需 yup=True 以保持一致
             yup = True
             if mesh_path_lower.endswith(".fbx"):
-                # Preserve the FBX import wrapper transform (+90deg X, 0.01 scale)
-                # so the re-imported GLB lands in the same object space.
+                # FBX import often leaves object-level wrapper rotation/scale on
+                # the armature and skinned meshes. Normalize those wrappers back
+                # to identity so pose-bone keyframes operate in armature space
+                # instead of double-counting the importer transform.
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     import_fbx(mesh_path)
             elif mesh_path_lower.endswith((".glb", ".gltf")):
@@ -426,6 +434,8 @@ class AnimationExporter:
             armature = next((o for o in bpy.data.objects if o.type == "ARMATURE"), None)
             if armature is None:
                 raise RuntimeError(f"No armature found after importing mesh_path: {mesh_path}")
+            if mesh_path_lower.endswith(".fbx"):
+                _normalize_imported_armature_and_meshes(bpy, armature)
         else:
             armature = self._create_armature_from_skeleton(bpy, skeleton=export_skeleton)
 

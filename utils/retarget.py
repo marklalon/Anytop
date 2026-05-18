@@ -918,24 +918,51 @@ def retarget_world_space_np(
         src_children_count[i] == 0 for i in range(J_src) if i not in exact_mapping
     )
     # Unmatched tgt joints are leaves?
+    unmatched_tgt_indices = np.flatnonzero(~matched_tgt)
     all_tgt_unmatched_are_leaves = all(
-        tgt_children_count[j] == 0 for j in range(J_tgt) if not matched_tgt[j]
+        tgt_children_count[j] == 0 for j in unmatched_tgt_indices
     )
+
+    exact_match_allows_target_root_wrappers = False
+    src_root_exact_tgt_indices = [
+        int(exact_mapping[i])
+        for i in range(J_src)
+        if src_parents[i] < 0 and i in exact_mapping
+    ]
+    if (
+        len(exact_mapping) == J_src
+        and unmatched_tgt_indices.size > 0
+        and src_root_exact_tgt_indices
+    ):
+        allowed_wrapper_indices: set[int] = set()
+        for mapped_root_tgt_idx in src_root_exact_tgt_indices:
+            current_tgt_idx = int(tgt_parents[mapped_root_tgt_idx])
+            while current_tgt_idx >= 0:
+                allowed_wrapper_indices.add(current_tgt_idx)
+                current_tgt_idx = int(tgt_parents[current_tgt_idx])
+
+        exact_match_allows_target_root_wrappers = bool(allowed_wrapper_indices) and all(
+            int(tgt_idx) in allowed_wrapper_indices and tgt_children_count[int(tgt_idx)] == 1
+            for tgt_idx in unmatched_tgt_indices
+        )
 
     is_exact_match = (
         len(exact_mapping) > 0
         and all_src_unmatched_are_leaves
-        and all_tgt_unmatched_are_leaves
+        and (all_tgt_unmatched_are_leaves or exact_match_allows_target_root_wrappers)
     )
 
     if is_exact_match:
         # Exact match (possibly with leaf-only differences) — use it directly
         unmatched_src_count = J_src - len(exact_mapping)
-        unmatched_tgt_count = int((~matched_tgt).sum())
+        unmatched_tgt_count = int(unmatched_tgt_indices.size)
         if verbose:
             leaf_note = ""
             if unmatched_src_count or unmatched_tgt_count:
-                leaf_note = f" ({unmatched_src_count} src leaves, {unmatched_tgt_count} tgt leaves skipped)"
+                if exact_match_allows_target_root_wrappers and unmatched_tgt_count:
+                    leaf_note = f" ({unmatched_tgt_count} tgt root wrappers skipped)"
+                else:
+                    leaf_note = f" ({unmatched_src_count} src leaves, {unmatched_tgt_count} tgt leaves skipped)"
             print(f"[retarget] Exact same-name matching: {len(exact_mapping)}/{J_src} joints matched{leaf_note}")
         for i, j in exact_mapping.items():
             src_to_tgt[i] = j
@@ -1258,10 +1285,11 @@ def retarget_world_space_np(
                 )
                 target_wpos[:, j] = np.where(valid[:, None], dir_pos, rest_pos)
             if p1 < 0:
-                # Source bone is the root edge: no parent to form a bone vector.
-                target_wpos[:, j] = target_wpos[:, p] + quat_rotate_wxyz_np(
-                    transport[:, p], rest_off_j,
-                )
+                # Source joint is the root but the target joint sits under one or
+                # more synthetic wrapper roots. Preserve the source root's world
+                # position directly instead of snapping back to the target rest
+                # offset under the wrapper chain.
+                target_wpos[:, j] = aligned_src_wpos[:, ii]
             transport[:, j] = aligned_src_wrot[:, ii]
         else:
             # Unmapped non-root: rigid rest relative to the transport frame.
@@ -1315,6 +1343,54 @@ def retarget_world_space_np(
                 target_wrot[:, p_par],
                 np.repeat(tgt_rest_rotations[p_idx:p_idx + 1], F_q, axis=0),
             )
+
+    # When a mapped source root lands under one or more unmatched single-child
+    # target wrappers, the realized Blender channels must move that wrapper
+    # chain, not just the mapped child itself. Back-propagate the mapped root's
+    # desired world transform through the wrapper rest chain so inverse-FK can
+    # emit a non-zero target root wrapper transform that Blender can reproduce.
+    for tgt_joint_idx in range(J_tgt):
+        src_joint_idx = int(src_for_tgt[tgt_joint_idx])
+        if src_joint_idx < 0 or int(src_parents[src_joint_idx]) >= 0:
+            continue
+
+        current_child_idx = int(tgt_joint_idx)
+        current_world_pos = target_wpos[:, current_child_idx].copy()
+        current_world_rot = target_wrot[:, current_child_idx].copy()
+        parent_idx = int(tgt_parents[current_child_idx])
+
+        while (
+            parent_idx >= 0
+            and int(src_for_tgt[parent_idx]) < 0
+            and int(bridge_src_for_tgt[parent_idx]) < 0
+            and int(tgt_children_count[parent_idx]) == 1
+        ):
+            child_rest_rot = np.repeat(
+                tgt_rest_rotations[current_child_idx:current_child_idx + 1],
+                F_q,
+                axis=0,
+            )
+            child_rest_offset = np.repeat(
+                tgt_rest_offsets[current_child_idx:current_child_idx + 1],
+                F_q,
+                axis=0,
+            )
+            parent_world_rot = quat_multiply_wxyz_np(
+                current_world_rot,
+                quat_conjugate_wxyz_np(child_rest_rot),
+            )
+            parent_world_pos = current_world_pos - quat_rotate_wxyz_np(
+                parent_world_rot,
+                child_rest_offset,
+            )
+
+            target_wrot[:, parent_idx] = parent_world_rot
+            target_wpos[:, parent_idx] = parent_world_pos
+
+            current_child_idx = parent_idx
+            current_world_pos = parent_world_pos
+            current_world_rot = parent_world_rot
+            parent_idx = int(tgt_parents[current_child_idx])
 
     # ── H) Inverse FK back to target local pose channels ──────────────────
     tgt_pose_rot = np.zeros((F, J_tgt, 4), dtype=np.float64)

@@ -59,7 +59,8 @@ _load_utils_module("utils.npy_roundtrip_utils")
 _load_utils_module("utils.misc")
 
 from utils.misc import infer_object_type_from_filename
-from utils.npy_roundtrip_utils import coerce_feature_payload, recover_from_features
+from data_loaders.truebones.truebones_utils.motion_process import recover_animation_from_motion_np
+from utils.npy_roundtrip_utils import coerce_feature_payload
 from Anytop.motion_lib.Animation import positions_global
 from Anytop.motion_lib.FBX import (
     _extract_armature_skeleton_data,
@@ -294,11 +295,12 @@ def _load_npy_motion(npy_path: str, reference: ReferenceSkeleton) -> MotionWorld
     if translation_root_index is not None:
         translation_root_index = int(translation_root_index)
 
-    recovered_anim, _has_animated_pos = recover_from_features(
-        raw,
+    recovered_anim, _has_animated_pos = recover_animation_from_motion_np(
+        _features_arr,
         parents,
         offsets,
         translation_root_index=translation_root_index,
+        allow_infer=translation_root_index is None,
     )
     world_positions = np.asarray(positions_global(recovered_anim), dtype=np.float64)
 

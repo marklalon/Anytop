@@ -6,7 +6,7 @@ using a T-pose FBX as the mesh/rig source.
 
 Pipeline:
     NPY features
-        → recover_from_features(...)                    — feature-space Animation
+        → recover_animation_from_motion_np(...)         — feature-space Animation
         → recover_processed_animation_from_feature_animation(...)  — undo T-pose reparameterization
         → invert preprocess transform back to raw FBX rig space
         → animation_to_exporter_inputs(...)
@@ -72,11 +72,9 @@ def _load_utils_module(module_name: str) -> None:
 
 
 _load_utils_module("utils.rotation_conversions")
-_load_utils_module("utils.npy_roundtrip_utils")
 _load_utils_module("utils.misc")
 
 from utils.misc import infer_object_type_from_filename
-from utils.npy_roundtrip_utils import recover_from_features
 from Anytop.utils.roundtrip_common import _load_fbx_skeleton_metadata
 from Anytop.motion_lib.FBX import _collapse_root_skeleton
 
@@ -899,6 +897,7 @@ def restore_glb(
     from Anytop.utils.roundtrip_common import _build_skeleton
     from data_loaders.truebones.truebones_utils.motion_process import (
         find_translation_root,
+        recover_animation_from_motion_np,
         recover_processed_animation_from_feature_animation,
     )
 
@@ -1004,11 +1003,12 @@ def restore_glb(
 
     # ── Recover Animation (in HML feature space) ──────────────────────────────
     print("Recovering feature-space animation from NPY...")
-    recovered_feature_anim, has_animated_pos = recover_from_features(
+    recovered_feature_anim, has_animated_pos = recover_animation_from_motion_np(
         raw,
         parents,
         offsets_hml,
         translation_root_index=translation_root_index,
+        allow_infer=translation_root_index is None,
     )
     print(f"Recovered: {recovered_feature_anim.shape[0]} frames")
     translation_root_index = find_translation_root(recovered_feature_anim)
