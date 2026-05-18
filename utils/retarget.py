@@ -186,8 +186,10 @@ def _llm_joint_mapping(
     disk_result = load_from_disk(system_msg, user_msg)
     if disk_result is not None:
         set_in_memory(system_msg, user_msg, disk_result)
+        matched = sum(1 for v in disk_result.values() if v is not None)
         print(f"[retarget] Disk cache hit for skeleton pair "
-              f"src={len(src_names)} joints  tgt={len(tgt_names)} joints")
+              f"src={len(src_names)} joints  tgt={len(tgt_names)} joints  "
+              f"matched={matched}")
         return disk_result
 
     client, model = _get_llm_client_and_model()
