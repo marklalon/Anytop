@@ -54,9 +54,7 @@ if not "%*"=="" echo Extra args: %*
     --model_path "%MODEL_PATH%" ^
     --output_dir %OUTPUT_DIR% ^
     --batch_size %BATCH_SIZE% ^
-    --motion_length 2.0 ^
-    --sampling_method ddim ^
-    --sampling_steps 100 %*
+    --motion_length 2.0 %*
 
 popd
 
