@@ -1,7 +1,9 @@
 import torch
 torch.cuda.empty_cache()
 import torch.nn as nn
+import numpy as np
 from model.motion_transformer import GraphMotionDecoderLayer, GraphMotionDecoder
+from model.joint_mask_utils import collect_subtree_indices, sample_subtree_joint_mask
 
 
 def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 10000,
@@ -69,15 +71,6 @@ class AnyTop(nn.Module):
         
         self.output_process = OutputProcess(self.feature_len, self.root_input_feats, self.max_joints, self.latent_dim)
 
-    def _collect_subtree_indices(self, root_index, children):
-        stack = [int(root_index)]
-        subtree = []
-        while stack:
-            current_index = stack.pop()
-            subtree.append(current_index)
-            stack.extend(children[current_index])
-        return subtree
-
     def _sample_subtree_joint_mask(self, y, n_joints, njoints, device):
         if (not self.training) or self.joint_mask_prob <= 0.0:
             return None
@@ -90,61 +83,29 @@ class AnyTop(nn.Module):
 
         subtree_joint_mask = torch.zeros((n_joints.shape[0], njoints), dtype=torch.bool, device=device)
         any_masked = False
+        rng = np.random.default_rng()
         for batch_index in range(n_joints.shape[0]):
             valid_joint_count = int(n_joints[batch_index].item())
-            non_root_joint_count = max(valid_joint_count - 1, 0)
-            budget = min(int(self.joint_mask_prob * non_root_joint_count), non_root_joint_count)
-            if budget <= 0 or valid_joint_count <= 1:
+            if valid_joint_count <= 1:
                 continue
 
-            parents = parents_batch[batch_index]
-            if torch.is_tensor(parents):
-                parents = parents.tolist()
-            else:
-                parents = list(parents)
-            children = [[] for _ in range(valid_joint_count)]
-            for child_index in range(1, valid_joint_count):
-                parent_index = int(parents[child_index])
-                if 0 <= parent_index < valid_joint_count:
-                    children[parent_index].append(child_index)
+            parents_list = parents_batch[batch_index].tolist() if torch.is_tensor(parents_batch[batch_index]) else list(parents_batch[batch_index])
 
             if candidate_roots_batch is None:
-                candidate_root_mask = torch.ones((valid_joint_count,), dtype=torch.bool, device=device)
+                cand_mask_np = np.ones(valid_joint_count, dtype=bool)
             else:
-                candidate_root_mask = candidate_roots_batch[batch_index, :valid_joint_count].to(device=device, dtype=torch.bool).clone()
-            candidate_root_mask[0] = False
+                cand_mask_np = candidate_roots_batch[batch_index, :valid_joint_count].cpu().numpy().copy()
+            cand_mask_np[0] = False
 
-            candidate_subtrees = []
-            candidate_root_indices = torch.nonzero(candidate_root_mask, as_tuple=False).flatten()
-            for root_index_tensor in candidate_root_indices:
-                root_index = int(root_index_tensor.item())
-                subtree = self._collect_subtree_indices(root_index, children)
-                subtree_size = len(subtree)
-                if 0 < subtree_size <= budget:
-                    candidate_subtrees.append(subtree)
-
-            if not candidate_subtrees:
-                continue
-
-            remaining_budget = budget
-            selected_any = False
-            random_order = torch.randperm(len(candidate_subtrees), device=device).tolist()
-            for candidate_position in random_order:
-                subtree = candidate_subtrees[candidate_position]
-                subtree_size = len(subtree)
-                if subtree_size > remaining_budget:
-                    continue
-                subtree_indices = torch.as_tensor(subtree, device=device, dtype=torch.long)
-                if torch.any(subtree_joint_mask[batch_index, subtree_indices]):
-                    continue
-                subtree_joint_mask[batch_index, subtree_indices] = True
-                remaining_budget -= subtree_size
-                selected_any = True
-                if remaining_budget == 0:
-                    break
-
-            # Removed: if nothing fits the budget, skip masking for this sample
-            any_masked = any_masked or bool(torch.any(subtree_joint_mask[batch_index]).item())
+            per_sample_mask = sample_subtree_joint_mask(
+                parents=parents_list,
+                candidate_root_mask=cand_mask_np,
+                joint_mask_prob=self.joint_mask_prob,
+                rng=rng,
+            )
+            if per_sample_mask is not None:
+                subtree_joint_mask[batch_index, :valid_joint_count] = torch.from_numpy(per_sample_mask).to(device=device)
+                any_masked = True
 
         if not any_masked:
             return None
