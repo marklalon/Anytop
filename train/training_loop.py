@@ -156,7 +156,7 @@ class TrainLoop:
             infer_args = pycopy.deepcopy(self.args)
             infer_args.timestep_respacing = f'ddim{sampling_steps}' if sampling_steps > 0 else ''
             _, self.inference_diffusion = create_model_and_diffusion_general_skeleton(infer_args)
-            self.scorer = DistributionMotionQualityScorer(fps=30)
+            self.scorer = DistributionMotionQualityScorer()
         self.use_ddp = False
         self.ddp_model = self.model
         self.forward_model = self.ddp_model
