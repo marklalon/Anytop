@@ -1,5 +1,0 @@
-Centipede
-Crab
-Isopetra
-KingCobra
-Scorpion
