@@ -29,24 +29,28 @@ class _DummyModel(nn.Module):
 
 
 class _CaptureDiffusion:
-    def __init__(self) -> None:
+    def __init__(self, return_values: list[object] | None = None) -> None:
         self.last_call = None
         self.last_kwargs = None
+        self.calls = []
+        self.return_values = list(return_values or [])
+
+    def _record_call(self, name: str, kwargs: dict) -> object:
+        self.last_call = name
+        self.last_kwargs = kwargs
+        self.calls.append((name, kwargs))
+        if self.return_values:
+            return self.return_values.pop(0)
+        return name
 
     def p_sample_loop(self, **kwargs):
-        self.last_call = "ddpm"
-        self.last_kwargs = kwargs
-        return "ddpm"
+        return self._record_call("ddpm", kwargs)
 
     def ddim_sample_loop(self, **kwargs):
-        self.last_call = "ddim"
-        self.last_kwargs = kwargs
-        return "ddim"
+        return self._record_call("ddim", kwargs)
 
     def plms_sample_loop(self, **kwargs):
-        self.last_call = "plms"
-        self.last_kwargs = kwargs
-        return "plms"
+        return self._record_call("plms", kwargs)
 
 
 def _make_cond_entry() -> dict:
@@ -130,17 +134,58 @@ def test_sample_batch_routes_inpainting_through_ddpm_from_pure_noise() -> None:
         seed=123,
         device=torch.device("cpu"),
         reference_motion=reference_motion,
-        skip_timesteps=80,
+        skip_timesteps=0,
         inpaint_mask=inpaint_mask,
     )
 
     assert result == "ddpm"
     assert diffusion.last_call == "ddpm"
+    assert len(diffusion.calls) == 1
     assert diffusion.last_kwargs["init_image"] is None
     assert diffusion.last_kwargs["skip_timesteps"] == 0
     assert torch.equal(diffusion.last_kwargs["inpaint_reference"], reference_motion)
     assert torch.equal(diffusion.last_kwargs["inpaint_mask"], inpaint_mask)
     assert tuple(diffusion.last_kwargs["noise"].shape) == sample_shape
+
+
+def test_sample_batch_uses_two_pass_ddpm_for_inpaint_with_skip_timesteps() -> None:
+    sample_shape = (1, 3, 13, 4)
+    reference_motion = torch.ones(sample_shape, dtype=torch.float32)
+    varied_motion = torch.full(sample_shape, 7.0, dtype=torch.float32)
+    inpaint_mask = torch.zeros((1, 3, 1, 4), dtype=torch.float32)
+    diffusion = _CaptureDiffusion(return_values=[varied_motion, "ddpm-final"])
+
+    result = _sample_batch(
+        diffusion=diffusion,
+        model=_DummyModel(),
+        model_kwargs={},
+        sampling_method="ddpm",
+        sample_shape=sample_shape,
+        ddim_eta=0.0,
+        seed=123,
+        device=torch.device("cpu"),
+        reference_motion=reference_motion,
+        skip_timesteps=80,
+        inpaint_mask=inpaint_mask,
+    )
+
+    assert result == "ddpm-final"
+    assert [name for name, _ in diffusion.calls] == ["ddpm", "ddpm"]
+
+    first_kwargs = diffusion.calls[0][1]
+    second_kwargs = diffusion.calls[1][1]
+
+    assert torch.equal(first_kwargs["init_image"], reference_motion)
+    assert first_kwargs["skip_timesteps"] == 80
+    assert first_kwargs["inpaint_reference"] is None
+    assert first_kwargs["inpaint_mask"] is None
+    assert tuple(first_kwargs["noise"].shape) == sample_shape
+
+    assert second_kwargs["init_image"] is None
+    assert second_kwargs["skip_timesteps"] == 0
+    assert torch.equal(second_kwargs["inpaint_reference"], varied_motion)
+    assert torch.equal(second_kwargs["inpaint_mask"], inpaint_mask)
+    assert tuple(second_kwargs["noise"].shape) == sample_shape
 
 
 def test_sample_batch_requires_reference_for_inpainting() -> None:

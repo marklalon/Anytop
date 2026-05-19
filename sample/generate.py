@@ -171,7 +171,6 @@ def _prepare_reference_motion_path(
     base = os.path.splitext(os.path.basename(reference_motion_path))[0]
     out_npy = os.path.join(output_dir, f"_reference_features_{source_type}__{base}.npy")
     np.save(out_npy, source_features, allow_pickle=False)
-    print(f"  Converted reference motion -> {out_npy}")
     return out_npy
 
 
@@ -298,16 +297,8 @@ def _sample_batch(
     skip_timesteps=0,
     inpaint_mask=None,
 ):
-    fixseed(seed)
-
     inpainting = inpaint_mask is not None
     if inpainting:
-        # Motion inpainting (RePaint-style imputation): the latent starts from
-        # PURE NOISE everywhere (so masked joints/frames are truly generated,
-        # not a noised copy of the reference), and the reference is used only
-        # as the per-step clamp source for the known (unmasked) region. So we
-        # deliberately do NOT route the reference through init_image, and we
-        # force skip_timesteps=0 to denoise the full schedule.
         if reference_motion is None:
             raise ValueError("inpaint_mask given without a reference_motion")
         if sampling_method == 'plms':
@@ -318,58 +309,117 @@ def _sample_batch(
                 "PLMS does not support motion inpainting; use "
                 "--sampling_method ddpm (recommended) or ddim."
             )
-        init_image = None
-        skip_timesteps = 0
-        noise = torch.randn(sample_shape, device=device)
-        inpaint_reference = reference_motion.to(device, non_blocking=True)
-        inpaint_mask = inpaint_mask.to(device, non_blocking=True)
-    elif reference_motion is not None and skip_timesteps > 0:
+
+    def _run_loop(noise, init_image, skip_ts, inpaint_mask_, inpaint_reference_):
+        common_kwargs = dict(
+            model=model,
+            shape=sample_shape,
+            noise=noise,
+            clip_denoised=False,
+            model_kwargs=model_kwargs,
+            device=device,
+            init_image=init_image,
+            skip_timesteps=skip_ts,
+        )
+        # Only p_* / ddim_* loops accept the inpaint kwargs; plms is rejected
+        # above whenever an inpaint mask is present.
+        inpaint_kwargs = dict(
+            inpaint_mask=inpaint_mask_, inpaint_reference=inpaint_reference_
+        )
+        if sampling_method == 'ddim':
+            return diffusion.ddim_sample_loop(
+                progress=True,
+                eta=ddim_eta,
+                **inpaint_kwargs,
+                **common_kwargs,
+            )
+        if sampling_method == 'plms':
+            return diffusion.plms_sample_loop(
+                progress=True,
+                **common_kwargs,
+            )
+        if sampling_method in ('p', 'ddpm'):
+            return diffusion.p_sample_loop(
+                progress=True,
+                dump_steps=None,
+                const_noise=False,
+                **inpaint_kwargs,
+                **common_kwargs,
+            )
+        raise ValueError(f'Unknown sampling_method: {sampling_method}')
+
+    if inpainting and skip_timesteps > 0:
+        # Combined inpaint + skip_timesteps: a two-pass pipeline equivalent to
+        # (1) img2img-varying the whole reference with skip_timesteps, then
+        # (2) RePaint-inpainting the masked region using that varied motion as
+        # the clamped known region. The unmasked region therefore RESPONDS to
+        # skip_timesteps (a variation of the reference) instead of being held
+        # to a verbatim copy. Two passes are required because the masked region
+        # needs the full denoising schedule while the unmasked region needs the
+        # truncated skip_timesteps schedule. Keeping the pass-1 result in memory
+        # (model-normalized space) avoids the lossy .npy round-trip + re-
+        # preprocessing the equivalent manual two-command workflow would incur.
+        ref = reference_motion.to(device, non_blocking=True)
+        mask = inpaint_mask.to(device, non_blocking=True)
+
+        # Pass 1 (img2img): noise the whole reference to an intermediate step
+        # and denoise from there. Higher skip_timesteps = more faithful.
+        fixseed(seed)
+        varied = _run_loop(
+            noise=torch.randn(sample_shape, device=device),
+            init_image=ref,
+            skip_ts=skip_timesteps,
+            inpaint_mask_=None,
+            inpaint_reference_=None,
+        )
+
+        # Pass 2 (inpaint): full schedule from pure noise, clamping the known
+        # (unmasked) region to the pass-1 varied motion. Re-seed so the run
+        # mirrors executing two separate commands (each re-seeds) and stays
+        # reproducible.
+        fixseed(seed)
+        return _run_loop(
+            noise=torch.randn(sample_shape, device=device),
+            init_image=None,
+            skip_ts=0,
+            inpaint_mask_=mask,
+            inpaint_reference_=varied,
+        )
+
+    fixseed(seed)
+    if inpainting:
+        # Motion inpainting (RePaint-style imputation), skip_timesteps == 0: the
+        # latent starts from PURE NOISE everywhere (so masked joints/frames are
+        # truly generated, not a noised copy of the reference), and the
+        # reference is used only as the per-step clamp source for the known
+        # (unmasked) region. We deliberately do NOT route the reference through
+        # init_image, and denoise the full schedule.
+        return _run_loop(
+            noise=torch.randn(sample_shape, device=device),
+            init_image=None,
+            skip_ts=0,
+            inpaint_mask_=inpaint_mask.to(device, non_blocking=True),
+            inpaint_reference_=reference_motion.to(device, non_blocking=True),
+        )
+    if reference_motion is not None and skip_timesteps > 0:
         # img2img-style: noise the whole reference to an intermediate step.
         # skip_timesteps: how many of the noisiest timesteps to skip.
         # Higher = start from less noisy state = more faithful to reference.
-        init_image = reference_motion.to(device, non_blocking=True)
-        noise = torch.randn(sample_shape, device=device)
-        inpaint_reference = None
-    else:
-        init_image = None
-        noise = torch.randn(sample_shape, device=device)
-        skip_timesteps = 0  # No reference => full denoising from pure noise
-        inpaint_reference = None
-
-    common_kwargs = dict(
-        model=model,
-        shape=sample_shape,
-        noise=noise,
-        clip_denoised=False,
-        model_kwargs=model_kwargs,
-        device=device,
-        init_image=init_image,
-        skip_timesteps=skip_timesteps,
+        return _run_loop(
+            noise=torch.randn(sample_shape, device=device),
+            init_image=reference_motion.to(device, non_blocking=True),
+            skip_ts=skip_timesteps,
+            inpaint_mask_=None,
+            inpaint_reference_=None,
+        )
+    # Plain generation: no reference => full denoising from pure noise.
+    return _run_loop(
+        noise=torch.randn(sample_shape, device=device),
+        init_image=None,
+        skip_ts=0,
+        inpaint_mask_=None,
+        inpaint_reference_=None,
     )
-    # Only p_* / ddim_* loops accept the inpaint kwargs; plms is rejected above.
-    inpaint_kwargs = dict(inpaint_mask=inpaint_mask, inpaint_reference=inpaint_reference)
-
-    if sampling_method == 'ddim':
-        return diffusion.ddim_sample_loop(
-            progress=True,
-            eta=ddim_eta,
-            **inpaint_kwargs,
-            **common_kwargs,
-        )
-    if sampling_method == 'plms':
-        return diffusion.plms_sample_loop(
-            progress=True,
-            **common_kwargs,
-        )
-    if sampling_method in ('p', 'ddpm'):
-        return diffusion.p_sample_loop(
-            progress=True,
-            dump_steps=None,
-            const_noise=False,
-            **inpaint_kwargs,
-            **common_kwargs,
-        )
-    raise ValueError(f'Unknown sampling_method: {sampling_method}')
 
 
 def main(args=None, cond_dict=None):
@@ -566,7 +616,7 @@ def main(args=None, cond_dict=None):
     export_pool = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
     try:
         print(f'\n### Sampling object_type: {object_type}')
-        print(f'    method={sampling_method} steps={sampling_steps or "full"} batch_size={args.batch_size}')
+        print(f'  method={sampling_method} steps={sampling_steps or "full"} batch_size={args.batch_size}')
 
         # Prepare reference motion (normalize + reshape)
         ref_motion = None
@@ -659,9 +709,14 @@ def main(args=None, cond_dict=None):
             if effective_reference_path != prepared_reference_path:
                 print(f'    (retargeted from preprocessed: {prepared_reference_path})')
             print(f'    Original: [{ref_frames} frames, {ref_joints} joints] -> Target: [{effective_n_frames} frames, {max_joints} joints]')
-            if inpaint_enabled:
+            if inpaint_enabled and skip_timesteps > 0:
+                print(f'    mode: inpaint + skip_timesteps={skip_timesteps} '
+                      '(two-pass: unmasked region = img2img variation of the '
+                      'reference [higher skip_timesteps = more faithful], masked '
+                      'region inpainted on the full schedule from pure noise)')
+            elif inpaint_enabled:
                 print('    mode: inpainting (reference is the clamped known region; '
-                      'skip_timesteps ignored, denoising full schedule from pure noise)')
+                      'skip_timesteps=0, denoising full schedule from pure noise)')
             else:
                 print(f'    skip_timesteps: {skip_timesteps} (higher = more faithful to reference)')
 

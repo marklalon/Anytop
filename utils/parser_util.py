@@ -220,8 +220,11 @@ def add_generate_options(parser):
                            "skeleton before noising. When filename inference is invalid, the target object_type "
                            "is used as a fallback. "
                             "Omit for pure random generation.")
-    group.add_argument("--skip_timesteps", default=50, type=int,
-                       help="Number of timesteps to skip when using --reference_motion. Higher = more faithful to reference. Range: 0~sampling_steps. Default: 50.")
+    group.add_argument("--skip_timesteps", default=80, type=int,
+                       help="Number of timesteps to skip when using --reference_motion. Higher = more faithful to reference. "
+                            "Range: 0~sampling_steps. Default: 80. When combined with --inpaint_*, a two-pass pipeline is "
+                            "used: pass 1 applies skip_timesteps (img2img) to the whole reference, pass 2 inpaints the "
+                            "masked region on the full schedule using the pass-1 result as the clamped known region.")
     group.add_argument("--inpaint_joints", default="", type=str,
                        help="Motion inpainting (mask painting): comma-separated joint names whose motion is "
                             "REGENERATED while the rest is held to --reference_motion. Names accept any of the "
