@@ -296,7 +296,14 @@ def _sample_batch(
     reference_motion=None,
     skip_timesteps=0,
     inpaint_mask=None,
+    repaint_jump_length=0,
+    repaint_jump_n_sample=1,
 ):
+    if repaint_jump_length < 0:
+        raise ValueError("repaint_jump_length must be >= 0")
+    if repaint_jump_n_sample < 1:
+        raise ValueError("repaint_jump_n_sample must be >= 1")
+
     inpainting = inpaint_mask is not None
     if inpainting:
         if reference_motion is None:
@@ -326,11 +333,16 @@ def _sample_batch(
         inpaint_kwargs = dict(
             inpaint_mask=inpaint_mask_, inpaint_reference=inpaint_reference_
         )
+        repaint_kwargs = dict(
+            repaint_jump_length=repaint_jump_length,
+            repaint_jump_n_sample=repaint_jump_n_sample,
+        )
         if sampling_method == 'ddim':
             return diffusion.ddim_sample_loop(
                 progress=True,
                 eta=ddim_eta,
                 **inpaint_kwargs,
+                **repaint_kwargs,
                 **common_kwargs,
             )
         if sampling_method == 'plms':
@@ -344,6 +356,7 @@ def _sample_batch(
                 dump_steps=None,
                 const_noise=False,
                 **inpaint_kwargs,
+                **repaint_kwargs,
                 **common_kwargs,
             )
         raise ValueError(f'Unknown sampling_method: {sampling_method}')
@@ -519,6 +532,13 @@ def main(args=None, cond_dict=None):
     inpaint_frames_arg = str(getattr(args, 'inpaint_frames', '') or '').strip()
     inpaint_include_subtree = bool(getattr(args, 'inpaint_include_subtree', True))
     inpaint_enabled = bool(inpaint_joints_arg or inpaint_frames_arg)
+    repaint_jump_length = int(getattr(args, 'repaint_jump_length', 0))
+    repaint_jump_n_sample = int(getattr(args, 'repaint_jump_n_sample', 1))
+    repaint_enabled = (
+        inpaint_enabled
+        and repaint_jump_length > 0
+        and repaint_jump_n_sample > 1
+    )
 
     # ── Resolve --object_type ───────────────────────────────────────────────
     # --object_type: look up directly in cond (user-provided first, then default).
@@ -719,6 +739,18 @@ def main(args=None, cond_dict=None):
                       'skip_timesteps=0, denoising full schedule from pure noise)')
             else:
                 print(f'    skip_timesteps: {skip_timesteps} (higher = more faithful to reference)')
+            if inpaint_enabled:
+                if repaint_enabled:
+                    print(
+                        f'    RePaint resampling: on '
+                        f'(jump_length={repaint_jump_length}, '
+                        f'jump_n_sample={repaint_jump_n_sample})'
+                    )
+                else:
+                    print(
+                        '    RePaint resampling: off '
+                        '(single reverse pass; known region is still clamped every step)'
+                    )
 
         # Build inpaint mask (masked region = regenerated, rest clamped to ref).
         inpaint_mask = None
@@ -760,6 +792,8 @@ def main(args=None, cond_dict=None):
             reference_motion=ref_motion,
             skip_timesteps=skip_timesteps,
             inpaint_mask=inpaint_mask,
+            repaint_jump_length=repaint_jump_length,
+            repaint_jump_n_sample=repaint_jump_n_sample,
         )
 
         # Pre-compute filenames with a single directory scan

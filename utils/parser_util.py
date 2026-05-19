@@ -245,6 +245,16 @@ def add_generate_options(parser):
                             "(inclusive, clipped to the reference length). Empty = all frames. Combined with "
                             "--inpaint_joints, the regenerated region is selected-joints x selected-frames; "
                             "everything else is clamped to --reference_motion. Requires --reference_motion.")
+    group.add_argument("--repaint_jump_length", default=0, type=int,
+                       help="RePaint resampling jump/time-travel length for motion inpainting. 0 disables "
+                           "resampling (default; single reverse pass). Positive values revisit later noisy "
+                           "states and can improve mask-boundary quality at the cost of extra runtime. Only "
+                           "used when --inpaint_* is set.")
+    group.add_argument("--repaint_jump_n_sample", default=1, type=int,
+                       help="RePaint resampling revisit count for each jump anchor. 1 disables extra revisits. "
+                           "Larger values perform more jump/time-travel cycles (slower, often smoother). "
+                           "Only used when --inpaint_* is set. Even with --sampling_method ddim --ddim_eta 0, "
+                           "enabling this adds fresh forward noise and makes sampling stochastic.")
 
 def add_dift_options(parser):
     # bvhs_dir, sample_bvh, face_joints, save_dir=None, tpos_bvh=None
