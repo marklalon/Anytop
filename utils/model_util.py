@@ -80,6 +80,7 @@ def get_gmdm_args(args):
             'cross_limb': True, 'cross_limb_latents': args.cross_limb_latents,
             'cross_limb_dim': getattr(args, 'cross_limb_dim', 64),
             'cross_limb_last_n': getattr(args, 'cross_limb_last_n', 0),
+            'joint_mask_prob': getattr(args, 'joint_mask_prob', 0.0),
             'root_input_feats': 13}
 
 def create_gaussian_diffusion(args):

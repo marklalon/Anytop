@@ -49,6 +49,9 @@ class AnyTop(nn.Module):
         self.cross_limb_latents=kargs.get('cross_limb_latents', 8)
         self.cross_limb_dim=kargs.get('cross_limb_dim', 64)
         self.cross_limb_last_n=kargs.get('cross_limb_last_n', 0)
+        self.joint_mask_prob=float(kargs.get('joint_mask_prob', 0.0))
+        if not 0.0 <= self.joint_mask_prob <= 1.0:
+            raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, skip_t5=self.skip_t5, dropout_prob=self.dropout)
 
         seqTransDecoderLayer = GraphMotionDecoderLayer(d_model=self.latent_dim,
@@ -66,6 +69,87 @@ class AnyTop(nn.Module):
         
         self.output_process = OutputProcess(self.feature_len, self.root_input_feats, self.max_joints, self.latent_dim)
 
+    def _collect_subtree_indices(self, root_index, children):
+        stack = [int(root_index)]
+        subtree = []
+        while stack:
+            current_index = stack.pop()
+            subtree.append(current_index)
+            stack.extend(children[current_index])
+        return subtree
+
+    def _sample_subtree_joint_mask(self, y, n_joints, njoints, device):
+        if (not self.training) or self.joint_mask_prob <= 0.0:
+            return None
+        parents_batch = y.get('parents')
+        if parents_batch is None:
+            return None
+        candidate_roots_batch = y.get('joint_mask_candidate_roots')
+        if candidate_roots_batch is not None and not torch.is_tensor(candidate_roots_batch):
+            candidate_roots_batch = torch.as_tensor(candidate_roots_batch)
+
+        subtree_joint_mask = torch.zeros((n_joints.shape[0], njoints), dtype=torch.bool, device=device)
+        any_masked = False
+        for batch_index in range(n_joints.shape[0]):
+            valid_joint_count = int(n_joints[batch_index].item())
+            non_root_joint_count = max(valid_joint_count - 1, 0)
+            budget = min(int(self.joint_mask_prob * non_root_joint_count), non_root_joint_count)
+            if budget <= 0 or valid_joint_count <= 1:
+                continue
+
+            parents = parents_batch[batch_index]
+            if torch.is_tensor(parents):
+                parents = parents.tolist()
+            else:
+                parents = list(parents)
+            children = [[] for _ in range(valid_joint_count)]
+            for child_index in range(1, valid_joint_count):
+                parent_index = int(parents[child_index])
+                if 0 <= parent_index < valid_joint_count:
+                    children[parent_index].append(child_index)
+
+            if candidate_roots_batch is None:
+                candidate_root_mask = torch.ones((valid_joint_count,), dtype=torch.bool, device=device)
+            else:
+                candidate_root_mask = candidate_roots_batch[batch_index, :valid_joint_count].to(device=device, dtype=torch.bool).clone()
+            candidate_root_mask[0] = False
+
+            candidate_subtrees = []
+            candidate_root_indices = torch.nonzero(candidate_root_mask, as_tuple=False).flatten()
+            for root_index_tensor in candidate_root_indices:
+                root_index = int(root_index_tensor.item())
+                subtree = self._collect_subtree_indices(root_index, children)
+                subtree_size = len(subtree)
+                if 0 < subtree_size <= budget:
+                    candidate_subtrees.append(subtree)
+
+            if not candidate_subtrees:
+                continue
+
+            remaining_budget = budget
+            selected_any = False
+            random_order = torch.randperm(len(candidate_subtrees), device=device).tolist()
+            for candidate_position in random_order:
+                subtree = candidate_subtrees[candidate_position]
+                subtree_size = len(subtree)
+                if subtree_size > remaining_budget:
+                    continue
+                subtree_indices = torch.as_tensor(subtree, device=device, dtype=torch.long)
+                if torch.any(subtree_joint_mask[batch_index, subtree_indices]):
+                    continue
+                subtree_joint_mask[batch_index, subtree_indices] = True
+                remaining_budget -= subtree_size
+                selected_any = True
+                if remaining_budget == 0:
+                    break
+
+            # Removed: if nothing fits the budget, skip masking for this sample
+            any_masked = any_masked or bool(torch.any(subtree_joint_mask[batch_index]).item())
+
+        if not any_masked:
+            return None
+        return subtree_joint_mask
+
     def forward(self, x, timesteps, get_layer_activation=-1, y=None, train_step=None, **unused_kwargs):
         """
         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
@@ -77,6 +161,12 @@ class AnyTop(nn.Module):
         tpos_first_frame = y['tpos_first_frame'].to(x.device).unsqueeze(0)
 
         bs, njoints, nfeats, nframes = x.shape
+        n_joints = torch.as_tensor(y['n_joints'], device=x.device).reshape(-1)
+        joint_key_padding_mask = torch.arange(njoints, device=x.device)[None, :] >= n_joints[:, None]
+        subtree_joint_mask = self._sample_subtree_joint_mask(y, n_joints, njoints, x.device)
+        if subtree_joint_mask is not None:
+            x = x.masked_fill(subtree_joint_mask[:, :, None, None], 0.0)
+            joint_key_padding_mask = joint_key_padding_mask | subtree_joint_mask
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
 
         x = self.input_process(x, tpos_first_frame, y['joints_names_embs']) # applies linear layer on each frame to convert it to latent dim
@@ -95,10 +185,7 @@ class AnyTop(nn.Module):
             assert 'n_joints' in y, "cross_limb requires y['n_joints'] in the batch"
             temporal_template = 1.0 - temp_mask.repeat(1, 1, self.num_heads, 1, 1).reshape(-1, nframes + 1, nframes + 1).float()
             temporal_template[temporal_template == 1.0] = -1e4
-            n_joints = torch.as_tensor(y['n_joints'], device=x.device).reshape(-1)
-            y['joints_key_padding_mask'] = (
-                torch.arange(njoints, device=x.device)[None, :] >= n_joints[:, None]
-            )
+            y['joints_key_padding_mask'] = joint_key_padding_mask
 
         output = self.seqTransDecoder(
             tgt=x,
@@ -106,6 +193,7 @@ class AnyTop(nn.Module):
             memory=None,
             spatial_mask=spatial_mask,
             temporal_mask=temporal_mask,
+            tgt_key_padding_mask=joint_key_padding_mask,
             y=y,
             get_layer_activation=get_layer_activation,
             temporal_template=temporal_template,

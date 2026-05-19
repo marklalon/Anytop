@@ -7,6 +7,7 @@ from collections import OrderedDict, defaultdict
 from os.path import join as pjoin
 from pathlib import Path
 import random
+import re
 from typing import Optional
 import warnings
 from torch.utils.data._utils.collate import default_collate
@@ -98,6 +99,98 @@ def create_temporal_mask_for_window(window, max_len):
     for i in range(max_len+1):
         mask[i, max(0, i - margin):min(max_len + 1, i + margin + 2)] = 1
     return mask
+
+
+_JOINT_MASK_SKIP_TOKENS = {
+    'mid',
+    'rear',
+    'front',
+    'back',
+    'base',
+    'tip',
+}
+_JOINT_MASK_EXCLUDE_TOKENS = {
+    'brain',
+    'bip',
+    'center',
+    'chain',
+    'cog',
+    'copy',
+    'ctrl',
+    'dummy',
+    'end',
+    'fur',
+    'hair',
+    'helper',
+    'ik',
+    'joint',
+    'link',
+    'locator',
+    'mane',
+    'mesh',
+    'node',
+    'nub',
+    'ponytail',
+    'projectile',
+    'reins',
+    'saddle',
+    'site',
+    'trajectory',
+    'xtra',
+}
+
+
+def _joint_mask_name_tokens(joint_name: str) -> list[str]:
+    tokens = []
+    for token in str(joint_name or '').split():
+        clean_token = re.sub(r'[^a-z0-9]+', '', token.lower())
+        clean_token = re.sub(r'\d+$', '', clean_token)
+        if clean_token and not clean_token.isdigit():
+            tokens.append(clean_token)
+    return tokens
+
+
+def _is_anatomical_non_helper_joint_name(joint_name: str) -> bool:
+    tokens = _joint_mask_name_tokens(joint_name)
+    if not tokens:
+        return False
+    if any(token in _JOINT_MASK_EXCLUDE_TOKENS for token in tokens):
+        return False
+    filtered_tokens = [token for token in tokens if token not in _JOINT_MASK_SKIP_TOKENS]
+    return bool(filtered_tokens)
+
+
+def _build_joint_mask_candidate_roots(object_cond) -> np.ndarray:
+    parents = [int(parent_index) for parent_index in object_cond.get('parents', [])]
+    joint_count = len(parents)
+    candidate_roots = np.zeros((joint_count,), dtype=np.bool_)
+    if joint_count <= 1:
+        return candidate_roots
+
+    helper_joint_indices = {int(joint_index) for joint_index in object_cond.get('helper_joint_indices') or []}
+    original_joint_count = int(object_cond.get('original_joint_count', joint_count) or joint_count)
+    canonical_joint_names = list(object_cond.get('canonical_joint_names') or object_cond.get('joints_names') or [])
+
+    for joint_index, parent_index in enumerate(parents):
+        if joint_index == 0 or parent_index < 0:
+            continue
+        if joint_index in helper_joint_indices or joint_index >= original_joint_count:
+            continue
+        joint_name = canonical_joint_names[joint_index] if joint_index < len(canonical_joint_names) else ''
+        if _is_anatomical_non_helper_joint_name(joint_name):
+            candidate_roots[joint_index] = True
+
+    if np.any(candidate_roots):
+        return candidate_roots
+
+    # Fallback: keep all non-root non-helper original joints if the semantic filter is too strict.
+    for joint_index, parent_index in enumerate(parents):
+        if joint_index == 0 or parent_index < 0:
+            continue
+        if joint_index in helper_joint_indices or joint_index >= original_joint_count:
+            continue
+        candidate_roots[joint_index] = True
+    return candidate_roots
 
 
 def _list_motion_files(motion_dir: str) -> list[str]:
@@ -533,12 +626,16 @@ class MotionDataset(data.Dataset):
                 'loop_applied': bool(loop_applied),
             })
             return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {
+                'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
+            }, {
                 'mirror_applied': bool(aug_info['mirror_applied']),
                 'speed_factor': float(aug_info['speed_factor']),
                 'crop_start': int(aug_info['crop_start']),
                 'loop_applied': bool(aug_info['loop_applied']),
             }
-        return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name
+        return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {
+            'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
+        }
     
     def augment(self, data, return_aug_info=False):
         object_type = data['object_type']
@@ -691,6 +788,7 @@ class Truebones(data.Dataset):
             cond['std'] = np.asarray(cond['std'], dtype=np.float32)
             cond['std_safe'] = std_safe
             cond['tpos_first_frame_normalized'] = np.nan_to_num((np.asarray(cond['tpos_first_frame'], dtype=np.float32) - mean) / std_safe).astype(np.float32, copy=False)
+            cond['joint_mask_candidate_roots'] = _build_joint_mask_candidate_roots(cond)
             
         motion_metadata_lookup = load_motion_metadata(opt.data_root)
         self.split_file = pjoin(opt.data_root, f'{split}.txt') if split != ALL_SPLIT_NAME else ''

@@ -289,6 +289,7 @@ class GraphMultiHeadAttention(nn.Module):
         distance,
         edge_attr,
         mask=None,
+        key_padding_mask: Optional[Tensor] = None,
     ):
         orig_q_size = q.size()
 
@@ -346,6 +347,11 @@ class GraphMultiHeadAttention(nn.Module):
 
         if mask is not None:
             x = x + mask.to(device=x.device, dtype=torch.float32)
+        if key_padding_mask is not None:
+            if key_padding_mask.dtype == torch.bool:
+                x = x.masked_fill(key_padding_mask[:, None, None, :].to(device=x.device), float('-inf'))
+            else:
+                x = x + key_padding_mask.to(device=x.device, dtype=torch.float32)[:, None, None, :]
 
         x = self._softmax_fp32(x)
         x = self.dropout(x)
@@ -483,9 +489,11 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         x = x.view(frames * bs, njoints, feature_len)
         topology_rel = topology_rel.unsqueeze(0).repeat(frames, 1, 1, 1).view(-1, njoints, njoints)
         edge_rel = edge_rel.unsqueeze(0).repeat(frames, 1, 1, 1).view(-1, njoints, njoints)
+        if key_padding_mask is not None:
+            key_padding_mask = key_padding_mask.unsqueeze(0).expand(frames, bs, njoints).reshape(-1, njoints)
         
         attn_output = self.spatial_attn(x, x, x, topology_query_emb.weight, edge_query_emb.weight, topology_key_emb.weight, edge_key_emb.weight, None if topology_value_emb is None else topology_value_emb.weight, 
-        None if edge_value_emb is None else edge_value_emb.weight, topology_rel, edge_rel, attn_mask)
+        None if edge_value_emb is None else edge_value_emb.weight, topology_rel, edge_rel, attn_mask, key_padding_mask=key_padding_mask)
         attn_output = attn_output.reshape(frames, bs, njoints, feature_len) # njoints, bs, frames, feature_len
         return self.dropout1(attn_output)
     
@@ -546,7 +554,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         spatial_attn_output = self._spatial_mha_block(x, topology_rel, edge_rel, edge_key_emb, edge_query_emb, edge_value_emb,
         topo_key_emb, topo_query_emb, topo_value_emb, spatial_mask, tgt_key_padding_mask, y)
         x = self.norm1(x + spatial_attn_output)
-        x = self.norm2(x + self._temporal_mha_block_sin_joint(x, temporal_mask, tgt_key_padding_mask))
+        x = self.norm2(x + self._temporal_mha_block_sin_joint(x, temporal_mask, None))
         if cross_limb_block is not None:
             x = cross_limb_block(x, temporal_template, y['joints_key_padding_mask'])
         if reference_memory is not None:
