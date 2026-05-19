@@ -58,8 +58,8 @@ MAX_PATH_LEN = 5.
 # body length (measured from the processed skeleton's rest-pose joint span).
 # Motion within VERTICAL_CLAMP_MIN_RATIO is left unchanged; only the excess is
 # compressed into the [min, max] band.
-VERTICAL_CLAMP_MIN_RATIO = 0.4
-VERTICAL_CLAMP_MAX_RATIO = 0.8
+VERTICAL_CLAMP_MIN_RATIO = 0.3
+VERTICAL_CLAMP_MAX_RATIO = 0.5
 
 COSMETICS = ["PolarBearB", "KingCobra", "Hamster", "Skunk", "Comodoa", "Hippopotamus", "Leapord", "Rhino", "Hound"]
 NO_HANDS = ["Raptor", "Anaconda"]

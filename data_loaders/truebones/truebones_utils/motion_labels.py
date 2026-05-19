@@ -175,7 +175,10 @@ def infer_motion_labels_from_motion_name(
     object_type: str | None = None,
     object_types: Iterable[str] | None = None,
 ) -> dict[str, object]:
-    from utils.misc import infer_object_type_from_filename
+    try:
+        from utils.misc import infer_object_type_from_filename
+    except ImportError:
+        from Anytop.utils.misc import infer_object_type_from_filename
 
     stem = Path(motion_name).stem
     resolved_object_type = object_type

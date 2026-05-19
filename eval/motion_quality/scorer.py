@@ -656,8 +656,7 @@ def _score_bone_length_from_drift(
 class DistributionMotionQualityScorer:
     """Low-shot weighted-reference motion quality scorer."""
 
-    def __init__(self, fps: int = 30, dataset_root: Optional[str] = None):
-        self.fps = fps
+    def __init__(self, dataset_root: Optional[str] = None):
         self.dataset_root = dataset_root
         self._cond_lookup = load_cond_dict(dataset_root)
         self._joint_group_cache: Dict[Tuple[str, int], Tuple[Dict[str, np.ndarray], str]] = {}

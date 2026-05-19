@@ -319,13 +319,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of semantic neighbor species to use for the weighted reference prior (default: 3).",
     )
     parser.add_argument(
-        "--fps",
-        type=int,
-        default=30,
-        metavar="N",
-        help="Frame rate of the motion data (default: 30).",
-    )
-    parser.add_argument(
         "--output_json",
         default=None,
         metavar="FILE",
@@ -369,7 +362,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 1
 
     # ── Evaluate each motion file independently ────────────────────────────
-    scorer = DistributionMotionQualityScorer(fps=args.fps, dataset_root=args.dataset_root)
+    scorer = DistributionMotionQualityScorer(dataset_root=args.dataset_root)
     results: list[tuple[str, DistributionEvalReport]] = []
     skipped = 0
 
