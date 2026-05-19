@@ -296,22 +296,45 @@ def _sample_batch(
     device,
     reference_motion=None,
     skip_timesteps=0,
+    inpaint_mask=None,
 ):
     fixseed(seed)
 
-    # If reference motion is provided, use it as init_image with skip_timesteps.
-    # skip_timesteps: how many of the noisiest timesteps to skip.
-    # Higher = start from less noisy state = more faithful to reference.
-    # e.g., skip_timesteps=80 with 100 total steps means:
-    #   - reference is noised to t=19 (light noise)
-    #   - only 20 denoising steps performed
-    if reference_motion is not None and skip_timesteps > 0:
+    inpainting = inpaint_mask is not None
+    if inpainting:
+        # Motion inpainting (RePaint-style imputation): the latent starts from
+        # PURE NOISE everywhere (so masked joints/frames are truly generated,
+        # not a noised copy of the reference), and the reference is used only
+        # as the per-step clamp source for the known (unmasked) region. So we
+        # deliberately do NOT route the reference through init_image, and we
+        # force skip_timesteps=0 to denoise the full schedule.
+        if reference_motion is None:
+            raise ValueError("inpaint_mask given without a reference_motion")
+        if sampling_method == 'plms':
+            # PLMS carries an Adams-Bashforth eps history (old_eps); an
+            # external per-step clamp would desync that history from the
+            # trajectory. Not supported for inpainting.
+            raise ValueError(
+                "PLMS does not support motion inpainting; use "
+                "--sampling_method ddpm (recommended) or ddim."
+            )
+        init_image = None
+        skip_timesteps = 0
+        noise = torch.randn(sample_shape, device=device)
+        inpaint_reference = reference_motion.to(device, non_blocking=True)
+        inpaint_mask = inpaint_mask.to(device, non_blocking=True)
+    elif reference_motion is not None and skip_timesteps > 0:
+        # img2img-style: noise the whole reference to an intermediate step.
+        # skip_timesteps: how many of the noisiest timesteps to skip.
+        # Higher = start from less noisy state = more faithful to reference.
         init_image = reference_motion.to(device, non_blocking=True)
         noise = torch.randn(sample_shape, device=device)
+        inpaint_reference = None
     else:
         init_image = None
         noise = torch.randn(sample_shape, device=device)
         skip_timesteps = 0  # No reference => full denoising from pure noise
+        inpaint_reference = None
 
     common_kwargs = dict(
         model=model,
@@ -323,11 +346,14 @@ def _sample_batch(
         init_image=init_image,
         skip_timesteps=skip_timesteps,
     )
+    # Only p_* / ddim_* loops accept the inpaint kwargs; plms is rejected above.
+    inpaint_kwargs = dict(inpaint_mask=inpaint_mask, inpaint_reference=inpaint_reference)
 
     if sampling_method == 'ddim':
         return diffusion.ddim_sample_loop(
             progress=True,
             eta=ddim_eta,
+            **inpaint_kwargs,
             **common_kwargs,
         )
     if sampling_method == 'plms':
@@ -338,9 +364,9 @@ def _sample_batch(
     if sampling_method in ('p', 'ddpm'):
         return diffusion.p_sample_loop(
             progress=True,
-            skip_timesteps=skip_timesteps,
             dump_steps=None,
             const_noise=False,
+            **inpaint_kwargs,
             **common_kwargs,
         )
     raise ValueError(f'Unknown sampling_method: {sampling_method}')
@@ -351,6 +377,20 @@ def main(args=None, cond_dict=None):
         args = generate_args()
 
     fixseed(args.seed)
+
+    # Fail fast (before the ~30s model load) if inpaint flags are set without a
+    # reference motion: the masked region needs a known region to clamp to,
+    # otherwise it would silently degrade to plain generation.
+    if (str(getattr(args, 'inpaint_joints', '') or '').strip()
+            or str(getattr(args, 'inpaint_frames', '') or '').strip()) \
+            and not getattr(args, 'reference_motion', None):
+        sys.exit(
+            "ERROR: --inpaint_joints / --inpaint_frames require --reference_motion "
+            "(the reference is the known region held fixed while the masked region "
+            "is regenerated). Pass --reference_motion <path>, or drop the inpaint "
+            "flags for plain generation."
+        )
+
     opt = get_opt(args.device)
     if cond_dict is None:
         if args.cond_path:
@@ -425,6 +465,11 @@ def main(args=None, cond_dict=None):
     reference_motion_path = getattr(args, 'reference_motion', None)
     skip_timesteps = int(getattr(args, 'skip_timesteps', 80))
 
+    inpaint_joints_arg = str(getattr(args, 'inpaint_joints', '') or '').strip()
+    inpaint_frames_arg = str(getattr(args, 'inpaint_frames', '') or '').strip()
+    inpaint_include_subtree = bool(getattr(args, 'inpaint_include_subtree', True))
+    inpaint_enabled = bool(inpaint_joints_arg or inpaint_frames_arg)
+
     # ── Resolve --object_type ───────────────────────────────────────────────
     # --object_type: look up directly in cond (user-provided first, then default).
     # --reference_motion: infer source type from filename, look up in cond the same way.
@@ -438,6 +483,8 @@ def main(args=None, cond_dict=None):
             "reference-guided generation (object_type auto-inferred from filename), "
             "or both to retarget the reference into a different target skeleton."
         )
+
+    # (inpaint-requires-reference is enforced early, before the model load)
 
     # 1) Resolve target object_type
     if explicit_object_type:
@@ -612,7 +659,29 @@ def main(args=None, cond_dict=None):
             if effective_reference_path != prepared_reference_path:
                 print(f'    (retargeted from preprocessed: {prepared_reference_path})')
             print(f'    Original: [{ref_frames} frames, {ref_joints} joints] -> Target: [{effective_n_frames} frames, {max_joints} joints]')
-            print(f'    skip_timesteps: {skip_timesteps} (higher = more faithful to reference)')
+            if inpaint_enabled:
+                print('    mode: inpainting (reference is the clamped known region; '
+                      'skip_timesteps ignored, denoising full schedule from pure noise)')
+            else:
+                print(f'    skip_timesteps: {skip_timesteps} (higher = more faithful to reference)')
+
+        # Build inpaint mask (masked region = regenerated, rest clamped to ref).
+        inpaint_mask = None
+        if inpaint_enabled:
+            if ref_motion is None:
+                sys.exit(
+                    "ERROR: --inpaint_* is set but the reference motion could "
+                    "not be loaded; cannot inpaint without a known region."
+                )
+            inpaint_mask = build_inpaint_mask(
+                cond_dict[object_type],
+                inpaint_joints_arg,
+                inpaint_include_subtree,
+                inpaint_frames_arg,
+                args.batch_size,
+                opt.max_joints,
+                effective_n_frames,
+            )
 
         # Create condition with effective frame count
         obj_batch = [object_type] * args.batch_size
@@ -635,6 +704,7 @@ def main(args=None, cond_dict=None):
             device=dist_util.dev(),
             reference_motion=ref_motion,
             skip_timesteps=skip_timesteps,
+            inpaint_mask=inpaint_mask,
         )
 
         # Pre-compute filenames with a single directory scan
@@ -696,6 +766,144 @@ def main(args=None, cond_dict=None):
         export_pool.shutdown(wait=True)
 
     return out_path
+
+
+def _parse_frame_ranges(spec, n_frames):
+    """Parse '40-90' / '0-20,150-180' / '30' into a set of frame indices,
+    inclusive and clipped to [0, n_frames - 1]. Empty spec => all frames.
+    """
+    if not spec:
+        return set(range(n_frames))
+    frames = set()
+    for chunk in spec.split(','):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if '-' in chunk:
+            lo_str, hi_str = chunk.split('-', 1)
+            lo, hi = int(lo_str), int(hi_str)
+        else:
+            lo = hi = int(chunk)
+        if lo > hi:
+            lo, hi = hi, lo
+        lo = max(0, lo)
+        hi = min(n_frames - 1, hi)
+        frames.update(range(lo, hi + 1))
+    if not frames:
+        raise ValueError(
+            f"--inpaint_frames '{spec}' selected no valid frames "
+            f"(motion has {n_frames} frames, indices 0..{n_frames - 1})"
+        )
+    return frames
+
+
+def _resolve_inpaint_joint_indices(cond_entry, names_arg, include_subtree):
+    """Resolve comma-separated joint names to a set of joint indices.
+
+    Names are matched against the union of the raw / canonical / canonical_bvh
+    alias lists (all same length and index order). When include_subtree is set,
+    every descendant of a selected joint is added too. Empty names_arg => all
+    real joints.
+    """
+    raw_names = list(cond_entry['joints_names'])
+    n_joints = len(raw_names)
+    canon = list(cond_entry.get('canonical_joint_names', raw_names))
+    canon_bvh = list(cond_entry.get('canonical_bvh_joint_names', raw_names))
+
+    if not names_arg:
+        base = set(range(n_joints))
+    else:
+        alias_to_index = {}
+        for idx in range(n_joints):
+            for alias in (raw_names[idx], canon[idx], canon_bvh[idx]):
+                if alias is not None:
+                    alias_to_index.setdefault(str(alias), idx)
+        base = set()
+        invalid = []
+        for token in names_arg.split(','):
+            token = token.strip()
+            if not token:
+                continue
+            if token in alias_to_index:
+                base.add(alias_to_index[token])
+            else:
+                invalid.append(token)
+        if invalid:
+            table = ['  idx | raw | canonical | canonical_bvh']
+            for idx in range(n_joints):
+                table.append(f'  {idx:>3} | {raw_names[idx]} | {canon[idx]} | {canon_bvh[idx]}')
+            raise ValueError(
+                f"--inpaint_joints: unknown joint name(s) {invalid}.\n"
+                "Accepted names (any of the three aliases):\n" + '\n'.join(table)
+            )
+
+    if not include_subtree or not base:
+        return base, n_joints
+
+    parents = np.asarray(cond_entry['parents'], dtype=np.int64)
+    children = [[] for _ in range(n_joints)]
+    for j in range(n_joints):
+        p = int(parents[j])
+        if 0 <= p < n_joints:
+            children[p].append(j)
+    selected = set(base)
+    stack = list(base)
+    while stack:
+        cur = stack.pop()
+        for child in children[cur]:
+            if child not in selected:
+                selected.add(child)
+                stack.append(child)
+    return selected, n_joints
+
+
+def build_inpaint_mask(
+    cond_entry,
+    inpaint_joints_arg,
+    inpaint_include_subtree,
+    inpaint_frames_arg,
+    batch_size,
+    max_joints,
+    n_frames,
+):
+    """Build the inpainting mask tensor [B, max_joints, 1, n_frames].
+
+    Convention: 1.0 = regenerate (free), 0.0 = keep reference (clamped).
+    Padding joints (index >= n_joints) stay 0.0. The regenerated region is
+    selected-joints x selected-frames; everything else is held to the
+    reference during sampling.
+    """
+    joint_indices, n_joints = _resolve_inpaint_joint_indices(
+        cond_entry, inpaint_joints_arg, inpaint_include_subtree
+    )
+    frame_indices = _parse_frame_ranges(inpaint_frames_arg, n_frames)
+    if not joint_indices:
+        raise ValueError("--inpaint_joints resolved to an empty joint set")
+
+    mask = np.zeros((max_joints, 1, n_frames), dtype=np.float32)
+    j_idx = np.fromiter(
+        (j for j in joint_indices if 0 <= j < n_joints), dtype=np.int64
+    )
+    f_idx = np.fromiter(
+        (f for f in frame_indices if 0 <= f < n_frames), dtype=np.int64
+    )
+    if j_idx.size and f_idx.size:
+        mask[np.ix_(j_idx, [0], f_idx)] = 1.0
+
+    n_regen_joints = int(j_idx.size)
+    n_regen_frames = int(f_idx.size)
+    print(
+        f'  Inpaint mask: regenerating {n_regen_joints}/{n_joints} joints x '
+        f'{n_regen_frames}/{n_frames} frames '
+        f'(joints={sorted(int(j) for j in j_idx)[:20]}'
+        f'{"..." if n_regen_joints > 20 else ""}, '
+        f'subtree={"on" if inpaint_include_subtree else "off"})'
+    )
+
+    mask_t = torch.from_numpy(mask).unsqueeze(0).expand(
+        batch_size, -1, -1, -1
+    ).contiguous()
+    return mask_t
 
 
 def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joints, feature_len):

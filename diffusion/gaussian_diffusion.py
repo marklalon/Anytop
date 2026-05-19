@@ -722,6 +722,28 @@ class GaussianDiffusion:
         sample = out["mean"] + nonzero_mask * th.exp(0.5 * out["log_variance"]) * noise
         return {"sample": sample, "pred_xstart": out["pred_xstart"].detach()}
 
+    def _inpaint_project(self, sample, i, shape, device, inpaint_mask, inpaint_reference):
+        """RePaint-style imputation: replace the known (unmasked) region of the
+        just-produced x_{i-1} with the reference forward-noised to step i-1.
+
+        inpaint_mask is 1.0 where the region is regenerated (free) and 0.0
+        where it must equal the reference. At the final step (i == 0) the
+        clean reference is used (no noise). Returns the projected sample so
+        callers can write it back into out["sample"] BEFORE yielding (the
+        loop yields before reading out["sample"], and the wrappers return
+        final["sample"], so an in-place local edit would not survive).
+        """
+        if inpaint_mask is None or inpaint_reference is None:
+            return sample
+        if i == 0:
+            known = inpaint_reference
+        else:
+            t_prev = th.tensor([i - 1] * shape[0], device=device)
+            known = self.q_sample(
+                inpaint_reference, t_prev, th.randn_like(inpaint_reference)
+            )
+        return inpaint_mask * sample + (1.0 - inpaint_mask) * known
+
     def p_sample_loop(
         self,
         model,
@@ -740,6 +762,8 @@ class GaussianDiffusion:
         dump_steps=None,
         const_noise=False,
         get_activations={"layer": -1, "timestep": -1},
+        inpaint_mask=None,
+        inpaint_reference=None,
     ):
         """
         Generate samples from the model.
@@ -781,6 +805,8 @@ class GaussianDiffusion:
             randomize_class=randomize_class,
             cond_fn_with_grad=cond_fn_with_grad,
             const_noise=const_noise,
+            inpaint_mask=inpaint_mask,
+            inpaint_reference=inpaint_reference,
         )):
             final = sample
             if dump_steps is not None and i in dump_steps:
@@ -878,7 +904,9 @@ class GaussianDiffusion:
         randomize_class=False,
         cond_fn_with_grad=False,
         const_noise=False,
-        get_activations=None# dummy
+        get_activations=None,# dummy
+        inpaint_mask=None,
+        inpaint_reference=None,
     ):
         """
         Generate samples from the model and yield intermediate samples from
@@ -928,6 +956,10 @@ class GaussianDiffusion:
                     cond_fn=cond_fn,
                     model_kwargs=model_kwargs,
                     const_noise=const_noise,
+                )
+                out["sample"] = self._inpaint_project(
+                    out["sample"], i, shape, device,
+                    inpaint_mask, inpaint_reference,
                 )
                 yield out
                 img = out["sample"]
@@ -1166,6 +1198,8 @@ class GaussianDiffusion:
         cond_fn_with_grad=False,
         dump_steps=None,
         const_noise=False,
+        inpaint_mask=None,
+        inpaint_reference=None,
     ):
         """
         Generate samples from the model using DDIM.
@@ -1193,10 +1227,12 @@ class GaussianDiffusion:
             init_image=init_image,
             randomize_class=randomize_class,
             cond_fn_with_grad=cond_fn_with_grad,
+            inpaint_mask=inpaint_mask,
+            inpaint_reference=inpaint_reference,
         ):
             final = sample
         return final["sample"]
-    
+
     def ddim_sample_loop_progressive(
         self,
         model,
@@ -1213,6 +1249,8 @@ class GaussianDiffusion:
         init_image=None,
         randomize_class=False,
         cond_fn_with_grad=False,
+        inpaint_mask=None,
+        inpaint_reference=None,
     ):
         """
         Use DDIM to sample from the model and yield intermediate samples from
@@ -1260,6 +1298,10 @@ class GaussianDiffusion:
                     cond_fn=cond_fn,
                     model_kwargs=model_kwargs,
                     eta=eta,
+                )
+                out["sample"] = self._inpaint_project(
+                    out["sample"], i, shape, device,
+                    inpaint_mask, inpaint_reference,
                 )
                 yield out
                 img = out["sample"]

@@ -220,8 +220,28 @@ def add_generate_options(parser):
                            "skeleton before noising. When filename inference is invalid, the target object_type "
                            "is used as a fallback. "
                             "Omit for pure random generation.")
-    group.add_argument("--skip_timesteps", default=80, type=int,
-                       help="Number of timesteps to skip when using --reference_motion. Higher = more faithful to reference. Range: 0~sampling_steps. Default: 80.")
+    group.add_argument("--skip_timesteps", default=50, type=int,
+                       help="Number of timesteps to skip when using --reference_motion. Higher = more faithful to reference. Range: 0~sampling_steps. Default: 50.")
+    group.add_argument("--inpaint_joints", default="", type=str,
+                       help="Motion inpainting (mask painting): comma-separated joint names whose motion is "
+                            "REGENERATED while the rest is held to --reference_motion. Names accept any of the "
+                            "raw / canonical / canonical_bvh aliases (use the names you see in the exported "
+                            "GLB/BVH). Empty = all real joints (pure temporal inpainting). Requires "
+                            "--reference_motion. NOTE: do NOT list the root joint for limb inpainting "
+                            "(it is the global anchor). PLMS is not supported for inpainting; use "
+                            "--sampling_method ddpm (recommended) or ddim.")
+    group.add_argument("--inpaint_include_subtree", action="store_true", default=True,
+                       help="When resolving --inpaint_joints, also regenerate all descendants of each named "
+                            "joint (so naming a hip regenerates the whole leg). Enabled by default; disable "
+                            "with --no_inpaint_include_subtree.")
+    group.add_argument("--no_inpaint_include_subtree", dest="inpaint_include_subtree",
+                       action="store_false",
+                       help="Disable subtree expansion for --inpaint_joints (regenerate only the named joints).")
+    group.add_argument("--inpaint_frames", default="", type=str,
+                       help="Motion inpainting frame ranges to REGENERATE, e.g. '40-90' or '0-20,150-180' "
+                            "(inclusive, clipped to the reference length). Empty = all frames. Combined with "
+                            "--inpaint_joints, the regenerated region is selected-joints x selected-frames; "
+                            "everything else is clamped to --reference_motion. Requires --reference_motion.")
 
 def add_dift_options(parser):
     # bvhs_dir, sample_bvh, face_joints, save_dir=None, tpos_bvh=None
