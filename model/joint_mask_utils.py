@@ -7,7 +7,7 @@ Core logic used by both:
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 
@@ -35,7 +35,7 @@ def sample_subtree_joint_mask(
     parents: list[int],
     candidate_root_mask: np.ndarray,
     joint_mask_prob: float,
-    rng: np.random.Generator,
+    rng: Any,
 ) -> Optional[np.ndarray]:
     """Replicate AnyTop._sample_subtree_joint_mask for a single skeleton.
 
@@ -48,8 +48,10 @@ def sample_subtree_joint_mask(
         subtree root.
     joint_mask_prob : float
         Fraction of non-root joints to mask (budget).  Must be in ``[0, 1]``.
-    rng : np.random.Generator
-        NumPy RNG for reproducible random selection.
+    rng : object
+        NumPy-compatible RNG object exposing ``choice`` and ``permutation``.
+        This can be a ``np.random.Generator`` or the global ``np.random``
+        module so training can participate in checkpointed NumPy RNG state.
 
     Returns
     -------
@@ -85,20 +87,37 @@ def sample_subtree_joint_mask(
     if not candidate_subtrees:
         return None
 
-    # Greedy random selection of non-overlapping subtrees
+    # Prefer larger connected regions so subtree masking more often removes
+    # a coherent limb/body part instead of accumulating many tiny subtrees.
     mask = np.zeros(n_joints, dtype=bool)
     remaining = budget
-    order = rng.permutation(len(candidate_subtrees))
-    for pos in order:
-        subtree = candidate_subtrees[pos]
+    subtree_sizes = np.asarray([len(subtree) for subtree in candidate_subtrees], dtype=np.float64)
+    available = np.ones(len(candidate_subtrees), dtype=bool)
+    while remaining > 0:
+        compatible_positions = []
+        compatible_weights = []
+        for pos, subtree in enumerate(candidate_subtrees):
+            if not available[pos]:
+                continue
+            sz = int(subtree_sizes[pos])
+            if sz > remaining:
+                continue
+            if np.any(mask[subtree]):
+                continue
+            compatible_positions.append(pos)
+            compatible_weights.append(float(sz * sz))
+
+        if not compatible_positions:
+            break
+
+        weights = np.asarray(compatible_weights, dtype=np.float64)
+        weights /= weights.sum()
+        chosen_pos = int(rng.choice(np.asarray(compatible_positions, dtype=np.int64), p=weights))
+        subtree = candidate_subtrees[chosen_pos]
         sz = len(subtree)
-        if sz > remaining:
-            continue
-        # Check overlap
-        if np.any(mask[subtree]):
-            continue
         mask[subtree] = True
         remaining -= sz
+        available[chosen_pos] = False
         if remaining == 0:
             break
 

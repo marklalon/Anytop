@@ -186,9 +186,9 @@ def parse_args() -> argparse.Namespace:
                    help="Processed dataset root (auto-detected if omitted).")
     p.add_argument("--output-dir", default="outputs/augmented_bvh_samples",
                    help="Directory to write BVH files.")
-    p.add_argument("--joint-mask-prob", type=float, default=0.0,
+    p.add_argument("--joint-mask-prob", type=float, default=0.15,
                    help="Subtree joint mask probability for masked export (0 = disabled). "
-                        "Matches --joint_mask_prob in training. (default: 0.0)")
+                        "Matches --joint_mask_prob in training. (default: 0.15)")
     return p.parse_args()
 
 

@@ -83,7 +83,7 @@ class AnyTop(nn.Module):
 
         subtree_joint_mask = torch.zeros((n_joints.shape[0], njoints), dtype=torch.bool, device=device)
         any_masked = False
-        rng = np.random.default_rng()
+        rng = np.random
         for batch_index in range(n_joints.shape[0]):
             valid_joint_count = int(n_joints[batch_index].item())
             if valid_joint_count <= 1:
