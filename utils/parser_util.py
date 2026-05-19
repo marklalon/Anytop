@@ -102,6 +102,13 @@ def add_model_options(parser):
                        help="If passed, graph multihead attention learns GRPE value embeddings")
     group.add_argument("--cross_limb_latents", default=8, type=int,
                        help="Number of latent tokens K in the cross-limb temporal block.")
+    group.add_argument("--cross_limb_dim", default=64, type=int,
+                       help="Bottleneck width of the (cross-layer-shared) cross-limb "
+                            "block. Clamped to <= latent_dim and a multiple of num_heads.")
+    group.add_argument("--cross_limb_last_n", default=0, type=int,
+                       help="Apply the cross-limb block only on the last N decoder "
+                            "layers (0 = all layers). Trades effect for compute; "
+                            "does not change parameter count (block is shared).")
     group.add_argument("--dropout_prob", default=0.1, type=float,
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
 

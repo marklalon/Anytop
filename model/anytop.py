@@ -45,19 +45,23 @@ class AnyTop(nn.Module):
         self.cond_mode = kargs.get('cond_mode', 'no_cond')
         self.skip_t5=kargs.get('skip_t5', False)
         self.value_emb=kargs.get('value_emb', False)
-        self.cross_limb=True
+        self.cross_limb=kargs.get('cross_limb', True)
         self.cross_limb_latents=kargs.get('cross_limb_latents', 8)
+        self.cross_limb_dim=kargs.get('cross_limb_dim', 64)
+        self.cross_limb_last_n=kargs.get('cross_limb_last_n', 0)
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, skip_t5=self.skip_t5, dropout_prob=self.dropout)
 
         seqTransDecoderLayer = GraphMotionDecoderLayer(d_model=self.latent_dim,
                                                             nhead=self.num_heads,
                                                             dim_feedforward=self.ff_size,
                                                             dropout=self.dropout,
-                                                            activation=self.activation,
-                                                            cross_limb=self.cross_limb,
-                                                            cross_limb_latents=self.cross_limb_latents)
+                                                            activation=self.activation)
         self.seqTransDecoder = GraphMotionDecoder(seqTransDecoderLayer,
-                                                        num_layers=self.num_layers, value_emb=self.value_emb)
+                                                        num_layers=self.num_layers, value_emb=self.value_emb,
+                                                        cross_limb=self.cross_limb,
+                                                        cross_limb_latents=self.cross_limb_latents,
+                                                        cross_limb_dim=self.cross_limb_dim,
+                                                        cross_limb_last_n=self.cross_limb_last_n)
             
         
         self.output_process = OutputProcess(self.feature_len, self.root_input_feats, self.max_joints, self.latent_dim)

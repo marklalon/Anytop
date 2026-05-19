@@ -153,8 +153,8 @@ class SelectiveMultiheadAttention(nn.Module):
 
 
 class CrossLimbTemporalBlock(nn.Module):
-    """Perceiver-style cross-limb temporal pathway (one post-norm sublayer per
-    decoder layer).
+    """Perceiver-style cross-limb temporal pathway, shared across all decoder
+    layers (one post-norm sublayer applied at each layer).
 
     The base decoder factorizes attention into spatial (per-frame, across
     joints) and temporal (per-joint, across frames). A joint's temporal
@@ -168,39 +168,60 @@ class CrossLimbTemporalBlock(nn.Module):
     back to every joint (cross-out). Reuses SelectiveMultiheadAttention; the
     final residual is post-norm to stay consistent with norm1/2/3 of the layer.
 
+    Efficiency: the latent pathway runs at a *narrow* bottleneck width
+    ``latent_width`` (Perceiver latents are meant to be a narrow information
+    bottleneck, not full model width). Joints are projected d_model -> d_cl
+    once (shared by cross-in K/V and cross-out Q), all three attentions run at
+    d_cl, and the whole-body context is projected d_cl -> d_model on the way
+    out. With cross-layer weight sharing (a single instance reused at every
+    decoder layer) this cuts the cross-limb parameter cost by ~75x vs. a
+    per-layer full-width block while keeping the pathway at every depth.
+
     x flows as (T, B, J, d) where T = nframes+1 (index 0 is the T-pose token).
     """
 
-    def __init__(self, d_model: int, nhead: int, num_latents: int = 8, dropout: float = 0.1):
+    def __init__(self, d_model: int, nhead: int, num_latents: int = 8,
+                 dropout: float = 0.1, latent_width: int = 64):
         super().__init__()
         self.d_model = d_model
         self.num_heads = nhead
         self.num_latents = num_latents
-        self.latents = nn.Parameter(torch.empty(num_latents, d_model))
+        # Bottleneck width: <= d_model and a multiple of nhead (>= nhead).
+        d_cl = max(nhead, (min(latent_width, d_model) // nhead) * nhead)
+        self.latent_dim = d_cl
+        self.latents = nn.Parameter(torch.empty(num_latents, d_cl))
         nn.init.normal_(self.latents, std=0.02)
-        self.cross_in_attn = SelectiveMultiheadAttention(d_model, nhead, dropout=dropout)
-        self.temporal_attn = SelectiveMultiheadAttention(d_model, nhead, dropout=dropout)
-        self.cross_out_attn = SelectiveMultiheadAttention(d_model, nhead, dropout=dropout)
+        # Shared joint <-> latent-space projection (read for cross-in K/V and
+        # write-query for cross-out); identity when no bottleneck is needed.
+        self.proj_in = nn.Linear(d_model, d_cl) if d_cl != d_model else nn.Identity()
+        self.proj_out = nn.Linear(d_cl, d_model) if d_cl != d_model else nn.Identity()
+        self.cross_in_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
+        self.temporal_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
+        self.cross_out_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
         self.norm_cl = nn.LayerNorm(d_model)
 
     def forward(self, x: Tensor, temporal_template: Tensor, joints_key_padding_mask: Tensor) -> Tensor:
-        # x: (T, B, J, d); temporal_template: (B*H, T, T) additive float mask
-        # (windowed, NO joint repeat); joints_key_padding_mask: (B, J) bool,
-        # True == padded joint.
-        T, B, J, d = x.shape
-        K, H = self.num_latents, self.num_heads
+        # x: (T, B, J, d_model); temporal_template: (B*H, T, T) additive float
+        # mask (windowed, NO joint repeat); joints_key_padding_mask: (B, J)
+        # bool, True == padded joint.
+        T, B, J, _ = x.shape
+        K, H, d = self.num_latents, self.num_heads, self.latent_dim
+
+        # Joints embedded into the narrow latent space once; reused as cross-in
+        # key/value and as cross-out query.
+        xd = self.proj_in(x)                                               # (T, B, J, d_cl)
 
         # --- Cross-in: latents (query) attend over joints (key/value), per frame.
         # Flatten so attention batch = T*B with index (t*B + b).
-        kv = x.permute(2, 0, 1, 3).reshape(J, T * B, d)                    # (J, T*B, d)
-        q = self.latents.unsqueeze(1).expand(K, T * B, d)                  # (K, T*B, d)
+        kv = xd.permute(2, 0, 1, 3).reshape(J, T * B, d)                   # (J, T*B, d_cl)
+        q = self.latents.unsqueeze(1).expand(K, T * B, d)                  # (K, T*B, d_cl)
         kpm = joints_key_padding_mask.unsqueeze(0).expand(T, B, J).reshape(T * B, J)  # (T*B, J)
         bz, _ = self.cross_in_attn(q, kv, kv, key_padding_mask=kpm, need_weights=False)
         bz = bz.reshape(K, T, B, d)
 
         # --- Latent temporal self-attention across T (same windowed mask).
         # attention batch = B*K with index (b*K + k); mask -> (B*K*H, T, T).
-        zt_in = bz.permute(1, 2, 0, 3).reshape(T, B * K, d)               # (T, B*K, d)
+        zt_in = bz.permute(1, 2, 0, 3).reshape(T, B * K, d)               # (T, B*K, d_cl)
         tt = temporal_template.reshape(B, H, T, T)
         tt = tt.unsqueeze(1).expand(B, K, H, T, T).reshape(B * K * H, T, T)
         zt, _ = self.temporal_attn(zt_in, zt_in, zt_in, attn_mask=tt, need_weights=False)
@@ -208,12 +229,12 @@ class CrossLimbTemporalBlock(nn.Module):
 
         # --- Cross-out: joints (query) attend over latents (key/value), per frame.
         # Both flattened to attention batch = T*B with index (t*B + b).
-        q_out = x.permute(2, 0, 1, 3).reshape(J, T * B, d)                # (J, T*B, d)
-        kv_out = zt.permute(2, 0, 1, 3).reshape(K, T * B, d)              # (K, T*B, d)
+        q_out = xd.permute(2, 0, 1, 3).reshape(J, T * B, d)               # (J, T*B, d_cl)
+        kv_out = zt.permute(2, 0, 1, 3).reshape(K, T * B, d)              # (K, T*B, d_cl)
         delta, _ = self.cross_out_attn(q_out, kv_out, kv_out, need_weights=False)
-        delta = delta.reshape(J, T, B, d).permute(1, 2, 0, 3)            # (T, B, J, d)
+        delta = delta.reshape(J, T, B, d).permute(1, 2, 0, 3)            # (T, B, J, d_cl)
 
-        return self.norm_cl(x + delta)
+        return self.norm_cl(x + self.proj_out(delta))
 
 
 class GraphMultiHeadAttention(nn.Module):
@@ -364,11 +385,27 @@ class GraphMultiHeadAttention(nn.Module):
         return x
 
 class GraphMotionDecoder(nn.TransformerDecoder):
-    def __init__(self, decoder_layer, num_layers, norm=None, max_path_len=5, value_emb=False): 
+    def __init__(self, decoder_layer, num_layers, norm=None, max_path_len=5, value_emb=False,
+                 cross_limb=True, cross_limb_latents=8, cross_limb_dim=64, cross_limb_last_n=0):
                 # multi head attention
         super().__init__(decoder_layer, num_layers, norm)
-        
+
         self.d_model = decoder_layer.d_model
+        # One cross-limb block, weight-shared across all decoder layers
+        # (ALBERT/Universal-Transformer-style): the pathway is present at every
+        # depth but costs a single block's parameters instead of num_layers x.
+        if cross_limb:
+            self.cross_limb_block = CrossLimbTemporalBlock(
+                self.d_model, decoder_layer.heads,
+                num_latents=cross_limb_latents, dropout=decoder_layer.dropout1.p,
+                latent_width=cross_limb_dim,
+            )
+        else:
+            self.cross_limb_block = None
+        # 0 -> apply at every layer; N>0 -> only the last N layers (whole-body
+        # rhythm is a late-stage feature, so this trades effect for compute
+        # without changing parameter count).
+        self.cross_limb_last_n = cross_limb_last_n
         self.topology_key_emb = nn.Embedding(max_path_len + 1, self.d_model) # 'far': max_path_len + 1
         self.edge_key_emb = nn.Embedding(6, self.d_model) # 'self':0, 'parent':1, 'child':2, 'sibling':3, 'no_relation':4, 'end_effector':5
         self.topology_query_emb = nn.Embedding(max_path_len + 1, self.d_model) # 'far': max_path_len + 1
@@ -389,16 +426,25 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         output = tgt
         if get_layer_activation > -1 and get_layer_activation < self.num_layers:
             activations=dict()
+        first_cl_layer = (
+            self.num_layers - self.cross_limb_last_n
+            if self.cross_limb_last_n > 0 else 0
+        )
         for layer_ind, mod in enumerate(self.layers):
             edge_value_emb = None
             topology_value_emb = None
             if self.value_emb_flag:
                 edge_value_emb = self.edge_value_emb
                 topology_value_emb = self.topology_value_emb
+            cl_block = (
+                self.cross_limb_block
+                if self.cross_limb_block is not None and layer_ind >= first_cl_layer
+                else None
+            )
             output = mod(
                     output, timesteps_embs, topology_rel, edge_rel, self.edge_key_emb, self.edge_query_emb, edge_value_emb, self.topology_key_emb, self.topology_query_emb, topology_value_emb, spatial_mask, temporal_mask,
                     tgt_key_padding_mask, memory_key_padding_mask, y, reference_memory, reference_key_padding_mask,
-                    temporal_template=temporal_template)
+                    temporal_template=temporal_template, cross_limb_block=cl_block)
             if layer_ind == get_layer_activation:
                 activations[layer_ind] = output.clone()
         if self.norm is not None:
@@ -409,9 +455,15 @@ class GraphMotionDecoder(nn.TransformerDecoder):
 
 class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
     def __init__(self, d_model: int, nhead: int, dim_feedforward: int = 2048, dropout: float = 0.1,
-                 activation: Union[str, Callable[[Tensor], Tensor]] = F.relu,
-                 cross_limb: bool = True, cross_limb_latents: int = 8):
+                 activation: Union[str, Callable[[Tensor], Tensor]] = F.relu):
         super().__init__(d_model, nhead, dim_feedforward, dropout, activation)
+        # nn.TransformerDecoderLayer.__init__ allocates self_attn and
+        # multihead_attn (each ~4*d_model^2 params). This layer overrides both
+        # with spatial_attn / temporal_attn / reference_attn and never calls
+        # the base sublayers, so those two modules are pure dead weight that
+        # would still be saved into every checkpoint -- drop them.
+        del self.self_attn
+        del self.multihead_attn
         self.d_model= d_model
         self.heads = nhead
         self.spatial_attn = GraphMultiHeadAttention(d_model = d_model, nheads = nhead, dropout=dropout)
@@ -420,10 +472,8 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         self.embed_timesteps = nn.Linear(d_model, d_model)
         self.norm_ref = nn.LayerNorm(d_model)
         self.dropout_ref = nn.Dropout(dropout)
-        self.cross_limb_block = (
-            CrossLimbTemporalBlock(d_model, nhead, cross_limb_latents, dropout)
-            if cross_limb else None
-        )
+        # The cross-limb pathway is owned by GraphMotionDecoder (one instance
+        # shared across all layers) and passed into forward(), not held here.
 
     # spatial attention block
     def _spatial_mha_block(self, x: Tensor, topology_rel: Optional[Tensor], edge_rel: Optional[Tensor], edge_key_emb, edge_query_emb, edge_value_emb,
@@ -488,7 +538,8 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         y = None,
         reference_memory: Optional[Tensor] = None,
         reference_key_padding_mask: Optional[Tensor] = None,
-        temporal_template: Optional[Tensor] = None) -> Tensor:
+        temporal_template: Optional[Tensor] = None,
+        cross_limb_block: Optional[nn.Module] = None) -> Tensor:
         x = tgt #(frames, bs, njoints, feature_len)
         bs = x.shape[1]
         x = x + self.embed_timesteps(timesteps_emb).view(1, bs, 1, self.d_model)
@@ -496,8 +547,8 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         topo_key_emb, topo_query_emb, topo_value_emb, spatial_mask, tgt_key_padding_mask, y)
         x = self.norm1(x + spatial_attn_output)
         x = self.norm2(x + self._temporal_mha_block_sin_joint(x, temporal_mask, tgt_key_padding_mask))
-        if self.cross_limb_block is not None:
-            x = self.cross_limb_block(x, temporal_template, y['joints_key_padding_mask'])
+        if cross_limb_block is not None:
+            x = cross_limb_block(x, temporal_template, y['joints_key_padding_mask'])
         if reference_memory is not None:
             x = self.norm_ref(x + self._reference_mha_block(x, reference_memory, reference_key_padding_mask))
         x = self.norm3(x + self._ff_block(x))
