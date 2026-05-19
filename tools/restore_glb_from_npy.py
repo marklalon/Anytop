@@ -142,26 +142,6 @@ def _load_tpose_restore_metadata(
     }
 
 
-def _remap_joint_array(
-    source_names: list[str],
-    target_names: list[str],
-    values: np.ndarray,
-    label: str,
-) -> np.ndarray:
-    if list(source_names) == list(target_names):
-        return np.asarray(values)
-
-    source_index = {name: index for index, name in enumerate(source_names)}
-    missing = [name for name in target_names if name not in source_index]
-    if missing:
-        preview = missing[:10]
-        suffix = "..." if len(missing) > 10 else ""
-        raise ValueError(f"T-pose mesh is missing {label} joints: {preview}{suffix}")
-
-    reordered = [values[source_index[name]] for name in target_names]
-    return np.asarray(reordered)
-
-
 def _warn_on_missing_mesh_joints(
     joint_names: list[str],
     tpose_mesh: str,
@@ -465,10 +445,6 @@ def _normalize_joint_index_selection(
     return np.unique(normalized)
 
 
-def _validate_ik_mode_selection(fullbody_ik: bool) -> None:
-    pass
-
-
 def _resolve_ik_rebuild_inputs(
     target_anim,
     *,
@@ -518,29 +494,26 @@ def _resolve_ik_rebuild_inputs(
     )
 
 
-def _build_selective_ik_seed_positions(
+def _build_fullbody_ik_seed_positions(
     target_anim,
     *,
     rest_offsets: np.ndarray,
     root_index: int,
-    rigidize_joint_mask: np.ndarray,
     preserved_position_indices: np.ndarray,
 ) -> np.ndarray:
+    """Build IK seed positions: reset all joints to rest offsets, then restore preserved joints."""
     target_positions = np.asarray(target_anim.positions, dtype=np.float64)
-    rigidize_joint_mask = np.asarray(rigidize_joint_mask, dtype=bool)
-    if rigidize_joint_mask.shape != target_positions.shape[:2]:
-        raise ValueError(
-            f"rigidize_joint_mask must have shape {target_positions.shape[:2]}, got {rigidize_joint_mask.shape}"
-        )
 
-    seed_positions = target_positions.copy()
-    if np.any(rigidize_joint_mask):
-        rigid_template = np.broadcast_to(rest_offsets[None, :, :], target_positions.shape)
-        seed_positions[rigidize_joint_mask] = rigid_template[rigidize_joint_mask]
+    # Start from rest offsets (rigid skeleton)
+    seed_positions = np.broadcast_to(rest_offsets[None, :, :], target_positions.shape).copy()
 
+    # Restore root position
     seed_positions[:, root_index, :] = target_positions[:, root_index, :]
+
+    # Restore preserved position joints
     if preserved_position_indices.size > 0:
         seed_positions[:, preserved_position_indices, :] = target_positions[:, preserved_position_indices, :]
+
     return seed_positions
 
 
@@ -599,7 +572,6 @@ def _run_basic_inverse_kinematics_with_constraints(
     target_global_positions: np.ndarray,
     *,
     frozen_rotation_indices: np.ndarray | list[int] | None = None,
-    active_child_mask: np.ndarray | None = None,
     iterations: int = _FULLBODY_IK_ITERATIONS,
     stretch_factor: float = 0.0,
 ):
@@ -615,12 +587,6 @@ def _run_basic_inverse_kinematics_with_constraints(
         animation.shape[1],
         label="frozen_rotation_indices",
     )
-    if active_child_mask is not None:
-        active_child_mask = np.asarray(active_child_mask, dtype=bool)
-        if active_child_mask.shape != (animation.shape[0], animation.shape[1]):
-            raise ValueError(
-                f"active_child_mask must have shape {(animation.shape[0], animation.shape[1])}, got {active_child_mask.shape}"
-            )
 
     frozen_rotation_lookup = {int(index) for index in frozen_rotation_indices.tolist()}
     children = animation_structure.children_list(animation.parents)
@@ -633,12 +599,6 @@ def _run_basic_inverse_kinematics_with_constraints(
             child_indices = np.asarray(children[joint_index], dtype=np.int32)
             if child_indices.size == 0:
                 continue
-
-            joint_active_child_mask = None
-            if active_child_mask is not None:
-                joint_active_child_mask = active_child_mask[:, child_indices]
-                if not np.any(joint_active_child_mask):
-                    continue
 
             anim_transforms = animation_module.transforms_global(animation)
             anim_positions = anim_transforms[:, :, :3, 3]
@@ -668,41 +628,16 @@ def _run_basic_inverse_kinematics_with_constraints(
                 continue
 
             rotations = Quaternions.from_angle_axis(angles, axes)
-            if joint_active_child_mask is None:
-                if rotations.shape[1] == 1:
-                    averaged_rotation = rotations[:, 0]
-                else:
-                    averaged_rotation = Quaternions.exp(
-                        rotations[:, valid_directions].log().mean(axis=-2)
-                    )
-
-                animation.rotations[:, joint_index] = (
-                    animation.rotations[:, joint_index] * averaged_rotation
+            if rotations.shape[1] == 1:
+                averaged_rotation = rotations[:, 0]
+            else:
+                averaged_rotation = Quaternions.exp(
+                    rotations[:, valid_directions].log().mean(axis=-2)
                 )
-                continue
 
-            active_frames = np.flatnonzero(np.any(joint_active_child_mask, axis=1))
-            for frame_index in active_frames.tolist():
-                frame_child_mask = (
-                    joint_active_child_mask[frame_index]
-                    & (joint_lengths[frame_index] > 1e-4)
-                    & (target_lengths[frame_index] > 1e-4)
-                )
-                if not np.any(frame_child_mask):
-                    continue
-
-                frame_slice = slice(frame_index, frame_index + 1)
-                if np.count_nonzero(frame_child_mask) == 1:
-                    child_slot = int(np.flatnonzero(frame_child_mask)[0])
-                    averaged_rotation = rotations[frame_slice, child_slot]
-                else:
-                    averaged_rotation = Quaternions.exp(
-                        rotations[frame_index, frame_child_mask].log().mean(axis=0, keepdims=True)
-                    )
-
-                animation.rotations[frame_slice, joint_index] = (
-                    animation.rotations[frame_slice, joint_index] * averaged_rotation
-                )
+            animation.rotations[:, joint_index] = (
+                animation.rotations[:, joint_index] * averaged_rotation
+            )
 
     # Post-rotation: apply bone stretch correction
     if abs(stretch_factor) > 1e-9:
@@ -711,62 +646,6 @@ def _run_basic_inverse_kinematics_with_constraints(
         )
 
     return animation
-
-
-def _rebuild_animation_with_ik(
-    target_anim,
-    *,
-    rigid_offsets: np.ndarray | None = None,
-    rigid_parents: np.ndarray | None = None,
-    preserved_position_indices: np.ndarray | list[int] | None = None,
-    preserved_rotation_indices: np.ndarray | list[int] | None = None,
-    rigidize_joint_mask: np.ndarray | None = None,
-    active_child_mask: np.ndarray | None = None,
-    iterations: int = _FULLBODY_IK_ITERATIONS,
-    stretch_factor: float = 0.0,
-) -> tuple[object, float, float]:
-    from motion_lib.Animation import Animation, positions_global
-
-    parents, rest_offsets, preserved_position_indices, preserved_rotation_indices, root_index = (
-        _resolve_ik_rebuild_inputs(
-            target_anim,
-            rigid_offsets=rigid_offsets,
-            rigid_parents=rigid_parents,
-            preserved_position_indices=preserved_position_indices,
-            preserved_rotation_indices=preserved_rotation_indices,
-        )
-    )
-    if rigidize_joint_mask is None:
-        rigidize_joint_mask = np.zeros(target_anim.shape[:2], dtype=bool)
-
-    rigid_positions = _build_selective_ik_seed_positions(
-        target_anim,
-        rest_offsets=rest_offsets,
-        root_index=root_index,
-        rigidize_joint_mask=rigidize_joint_mask,
-        preserved_position_indices=preserved_position_indices,
-    )
-
-    ik_seed = Animation(
-        target_anim.rotations.copy(),
-        rigid_positions,
-        target_anim.orients.copy(),
-        rest_offsets.copy(),
-        parents.copy(),
-    )
-
-    target_global_positions = positions_global(target_anim).astype(np.float64, copy=False)
-    rebuilt_anim = _run_basic_inverse_kinematics_with_constraints(
-        ik_seed,
-        target_global_positions,
-        frozen_rotation_indices=preserved_rotation_indices,
-        active_child_mask=active_child_mask,
-        iterations=iterations,
-        stretch_factor=stretch_factor,
-    )
-    rebuilt_global_positions = positions_global(rebuilt_anim).astype(np.float64, copy=False)
-    per_joint_error = np.linalg.norm(rebuilt_global_positions - target_global_positions, axis=-1)
-    return rebuilt_anim, float(per_joint_error.mean()), float(per_joint_error.max())
 
 
 def _rebuild_fullbody_animation_with_ik(
@@ -794,17 +673,44 @@ def _rebuild_fullbody_animation_with_ik(
         may stretch or compress by up to ±10 % to better reach IK targets.
         Default is {_DEFAULT_IK_STRETCH_FACTOR}.
     """
-    fullbody_rigidize_mask = np.ones(target_anim.shape[:2], dtype=bool)
-    return _rebuild_animation_with_ik(
+    from motion_lib.Animation import Animation, positions_global
+
+    parents, rest_offsets, preserved_position_indices, preserved_rotation_indices, root_index = (
+        _resolve_ik_rebuild_inputs(
+            target_anim,
+            rigid_offsets=rigid_offsets,
+            rigid_parents=rigid_parents,
+            preserved_position_indices=preserved_position_indices,
+            preserved_rotation_indices=preserved_rotation_indices,
+        )
+    )
+
+    seed_positions = _build_fullbody_ik_seed_positions(
         target_anim,
-        rigid_offsets=rigid_offsets,
-        rigid_parents=rigid_parents,
+        rest_offsets=rest_offsets,
+        root_index=root_index,
         preserved_position_indices=preserved_position_indices,
-        preserved_rotation_indices=preserved_rotation_indices,
-        rigidize_joint_mask=fullbody_rigidize_mask,
+    )
+
+    ik_seed = Animation(
+        target_anim.rotations.copy(),
+        seed_positions,
+        target_anim.orients.copy(),
+        rest_offsets.copy(),
+        parents.copy(),
+    )
+
+    target_global_positions = positions_global(target_anim).astype(np.float64, copy=False)
+    rebuilt_anim = _run_basic_inverse_kinematics_with_constraints(
+        ik_seed,
+        target_global_positions,
+        frozen_rotation_indices=preserved_rotation_indices,
         iterations=iterations,
         stretch_factor=stretch_factor,
     )
+    rebuilt_global_positions = positions_global(rebuilt_anim).astype(np.float64, copy=False)
+    per_joint_error = np.linalg.norm(rebuilt_global_positions - target_global_positions, axis=-1)
+    return rebuilt_anim, float(per_joint_error.mean()), float(per_joint_error.max())
 
 
 def _invert_preprocess_transform(
@@ -903,7 +809,6 @@ def restore_glb(
     )
 
     output_glb = os.path.abspath(output_glb)
-    _validate_ik_mode_selection(fullbody_ik)
     if stretch_factor < 0 or stretch_factor > 1.0:
         raise ValueError(f"stretch_factor must be in [0, 1], got {stretch_factor}")
 
@@ -1162,8 +1067,7 @@ def main() -> None:
             "the restored clip stays in centred preprocessed space."
         ),
     )
-    ik_mode_group = parser.add_mutually_exclusive_group()
-    ik_mode_group.add_argument(
+    parser.add_argument(
         "--fullbody-ik",
         action="store_true",
         default=False,
