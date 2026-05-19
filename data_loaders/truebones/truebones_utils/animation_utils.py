@@ -14,7 +14,7 @@ import os
 from os.path import join as pjoin
 import re
 import torch
-from data_loaders.truebones.truebones_utils.param_utils import HML_REF_AXIAL_BONE_LENGTH, MAX_JOINTS, FLYING, FISH, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
+from data_loaders.truebones.truebones_utils.param_utils import HML_REF_AXIAL_BONE_LENGTH, HML_REF_MAX_SPAN, MAX_JOINTS, FLYING, FISH, SCALE_BODY_SPAN_BLEND_WEIGHT, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
 from .physics_joint_annotation import (
     build_semantic_metadata,
     normalize_joint_name,
@@ -559,13 +559,7 @@ def bake_descendant_y_into_translation_root(anim, max_depth=2):
 
 def _get_reference_body_length(anim):
     """Estimate a character size from the processed rest pose joint span."""
-    rest_positions = np.zeros_like(anim.offsets)
-    for j, parent in enumerate(anim.parents):
-        if parent >= 0:
-            rest_positions[j] = rest_positions[parent] + anim.offsets[j]
-    joint_deltas = rest_positions[:, None, :] - rest_positions[None, :, :]
-    max_span = np.linalg.norm(joint_deltas, axis=-1).max()
-    return max(float(max_span), 1e-8)
+    return get_rest_body_max_span(anim.offsets, anim.parents)
 
 
 def _compress_positive_excursion(values, min_h, max_h):
@@ -858,10 +852,43 @@ def get_average_axial_bone_length(offsets, parents, joint_side_labels):
     return 0.1  # ultimate fallback for single-bone skeletons
 
 
-def compute_scale_factor(axial_avg_len):
+def get_rest_body_max_span(offsets, parents):
+    rest_positions = np.zeros_like(np.asarray(offsets, dtype=np.float64))
+    for joint_index, parent_index in enumerate(parents):
+        if parent_index >= 0:
+            rest_positions[joint_index] = rest_positions[parent_index] + offsets[joint_index]
+        else:
+            rest_positions[joint_index] = offsets[joint_index]
+    joint_deltas = rest_positions[:, None, :] - rest_positions[None, :, :]
+    max_span = np.linalg.norm(joint_deltas, axis=-1).max()
+    return max(float(max_span), 1e-8)
+
+
+def compute_scale_factor(axial_avg_len, body_max_span=None, *, span_blend_weight=SCALE_BODY_SPAN_BLEND_WEIGHT):
+    """Blend axial and whole-body span scaling to reduce size outliers symmetrically.
+
+    Axial mean bone length remains the primary normalization signal because it
+    tracks body thickness better than raw max span. A secondary max-span term is
+    blended in log-space so compact skeletons scale up and wide/long skeletons
+    scale down without letting tails or wings dominate as aggressively as pure
+    max-span scaling.
+    """
     if axial_avg_len <= 0:
         raise ValueError(f"Expected positive axial_avg_len, got {axial_avg_len}.")
-    return float(HML_REF_AXIAL_BONE_LENGTH / axial_avg_len)
+    if not 0.0 <= span_blend_weight <= 1.0:
+        raise ValueError(f"Expected span_blend_weight in [0, 1], got {span_blend_weight}.")
+
+    axial_scale_factor = HML_REF_AXIAL_BONE_LENGTH / axial_avg_len
+    if body_max_span is None or span_blend_weight == 0.0:
+        return float(axial_scale_factor)
+    if body_max_span <= 0:
+        raise ValueError(f"Expected positive body_max_span, got {body_max_span}.")
+
+    span_scale_factor = HML_REF_MAX_SPAN / body_max_span
+    return float(
+        (axial_scale_factor ** (1.0 - span_blend_weight))
+        * (span_scale_factor ** span_blend_weight)
+    )
 
 
 def scale_anim(anim, scale_factor):

@@ -45,6 +45,7 @@ from .animation_utils import (
     needs_bvh_position_channels,
     reorder_animation_to_dfs,
     get_average_axial_bone_length,
+    get_rest_body_max_span,
     compute_scale_factor,
     scale_anim,
     build_leaf_rotation_helper_metadata,
@@ -505,7 +506,8 @@ def get_common_features_from_T_pose(
         detected = detect_joint_side(name)
         _tpose_side_labels.append(detected if detected in ('left', 'right') else 'center')
     axial_avg_len = get_average_axial_bone_length(reference_anim.offsets, reference_anim.parents, _tpose_side_labels)
-    scale_factor = compute_scale_factor(axial_avg_len)
+    reference_body_max_span = get_rest_body_max_span(reference_anim.offsets, reference_anim.parents)
+    scale_factor = compute_scale_factor(axial_avg_len, body_max_span=reference_body_max_span)
 
     scaled, _root_xz_center, scale_factor = process_anim(
         reference_anim,

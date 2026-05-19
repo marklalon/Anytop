@@ -131,6 +131,15 @@ SMPL_OFFSETS = np.array([[ 0.0000,  0.0000,  0.0000],
         [ 0.0000, -0.2631,  0.0000],
         [ 0.0000, -0.2660,  0.0000],
         [ 0.0000, -0.2699,  0.0000]])
+SMPL_PARENTS = np.array([
+        -1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 12, 13, 14, 16, 17, 18, 19,
+], dtype=np.int32)
+_SMPL_REST_POSITIONS = np.zeros_like(SMPL_OFFSETS)
+for _joint_index, _parent_index in enumerate(SMPL_PARENTS):
+        if _parent_index >= 0:
+                _SMPL_REST_POSITIONS[_joint_index] = _SMPL_REST_POSITIONS[_parent_index] + SMPL_OFFSETS[_joint_index]
+        else:
+                _SMPL_REST_POSITIONS[_joint_index] = SMPL_OFFSETS[_joint_index]
 
 # Average bone length of axial (center/spine/neck/head) joints in the SMPL skeleton.
 # These are indices [3, 6, 9, 12, 15] — the central body chain that excludes all
@@ -141,3 +150,15 @@ HML_REF_AXIAL_BONE_LENGTH = float(np.linalg.norm(
     SMPL_OFFSETS[[3, 6, 9, 12, 15]],
     axis=1,
 ).mean())
+
+# Maximum rest-pose joint-to-joint span of the 22-joint HumanML / SMPL skeleton.
+# Used as a secondary target so compact characters can scale up and wide/long
+# characters can scale down without switching fully to max-span normalization.
+HML_REF_MAX_SPAN = float(np.linalg.norm(
+        _SMPL_REST_POSITIONS[:, None, :] - _SMPL_REST_POSITIONS[None, :, :],
+        axis=-1,
+).max())
+
+# Geometric blend weight between axial mean bone length and whole-body max span.
+# 0 keeps the existing axial-only scaling; 1 becomes pure max-span scaling.
+SCALE_BODY_SPAN_BLEND_WEIGHT = 0.5
