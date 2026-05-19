@@ -45,13 +45,17 @@ class AnyTop(nn.Module):
         self.cond_mode = kargs.get('cond_mode', 'no_cond')
         self.skip_t5=kargs.get('skip_t5', False)
         self.value_emb=kargs.get('value_emb', False)
+        self.cross_limb=True
+        self.cross_limb_latents=kargs.get('cross_limb_latents', 8)
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, skip_t5=self.skip_t5, dropout_prob=self.dropout)
 
         seqTransDecoderLayer = GraphMotionDecoderLayer(d_model=self.latent_dim,
                                                             nhead=self.num_heads,
                                                             dim_feedforward=self.ff_size,
                                                             dropout=self.dropout,
-                                                            activation=self.activation)
+                                                            activation=self.activation,
+                                                            cross_limb=self.cross_limb,
+                                                            cross_limb_latents=self.cross_limb_latents)
         self.seqTransDecoder = GraphMotionDecoder(seqTransDecoderLayer,
                                                         num_layers=self.num_layers, value_emb=self.value_emb)
             
@@ -77,7 +81,21 @@ class AnyTop(nn.Module):
         temporal_mask = 1.0 - temp_mask.repeat(1, njoints, self.num_heads, 1, 1).reshape(-1, nframes + 1, nframes + 1).float()
         spatial_mask[spatial_mask == 1.0] = -1e4
         temporal_mask[temporal_mask == 1.0] = -1e4
-        
+
+        # Cross-limb temporal pathway needs (1) the windowed temporal mask
+        # WITHOUT the per-joint repeat -> (bs*H, T, T), which the block expands
+        # per-latent itself, and (2) a (bs, njoints) bool key-padding mask
+        # (True == padded) derived from the real joint count.
+        temporal_template = None
+        if self.cross_limb:
+            assert 'n_joints' in y, "cross_limb requires y['n_joints'] in the batch"
+            temporal_template = 1.0 - temp_mask.repeat(1, 1, self.num_heads, 1, 1).reshape(-1, nframes + 1, nframes + 1).float()
+            temporal_template[temporal_template == 1.0] = -1e4
+            n_joints = torch.as_tensor(y['n_joints'], device=x.device).reshape(-1)
+            y['joints_key_padding_mask'] = (
+                torch.arange(njoints, device=x.device)[None, :] >= n_joints[:, None]
+            )
+
         output = self.seqTransDecoder(
             tgt=x,
             timesteps_embs=timesteps_emb,
@@ -86,6 +104,7 @@ class AnyTop(nn.Module):
             temporal_mask=temporal_mask,
             y=y,
             get_layer_activation=get_layer_activation,
+            temporal_template=temporal_template,
         )
         if get_layer_activation > -1 and get_layer_activation < self.num_layers:
             activations = output[1]

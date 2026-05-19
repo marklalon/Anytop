@@ -100,6 +100,8 @@ def add_model_options(parser):
                        help="If passed, joints names wont be added to features")
     group.add_argument("--value_emb", action='store_true',
                        help="If passed, graph multihead attention learns GRPE value embeddings")
+    group.add_argument("--cross_limb_latents", default=8, type=int,
+                       help="Number of latent tokens K in the cross-limb temporal block.")
     group.add_argument("--dropout_prob", default=0.1, type=float,
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
 

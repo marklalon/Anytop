@@ -76,7 +76,9 @@ def get_gmdm_args(args):
             'latent_dim': args.latent_dim, 'ff_size': 1024, 'num_layers': args.layers, 'num_heads': 4,
             'dropout': getattr(args, 'dropout_prob', 0.1), 'activation': "gelu", 'cond_mode': cond_mode,
             'max_joints': max_joints, 
-            'feature_len':feature_len,  'skip_t5': args.skip_t5, 'value_emb': args.value_emb, 'root_input_feats': 13}
+            'feature_len':feature_len,  'skip_t5': args.skip_t5, 'value_emb': args.value_emb,
+            'cross_limb': True, 'cross_limb_latents': args.cross_limb_latents,
+            'root_input_feats': 13}
 
 def create_gaussian_diffusion(args):
     # default params
