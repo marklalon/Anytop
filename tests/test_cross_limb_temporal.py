@@ -145,45 +145,63 @@ def test_bottleneck_width_is_clamped_and_multiple_of_heads():
     assert (bn.proj_out.in_features, bn.proj_out.out_features) == (8, D)
 
 
-def test_cross_limb_block_is_shared_across_layers_and_dead_attn_removed():
+def test_cross_limb_blocks_are_per_layer_and_dead_attn_removed():
+    num_layers = 3
     layer = GraphMotionDecoderLayer(D, H, dim_feedforward=32, dropout=0.0)
     dec = GraphMotionDecoder(
-        layer, num_layers=3, cross_limb=True, cross_limb_latents=K, cross_limb_dim=8
+        layer, num_layers=num_layers, cross_limb=True,
+        cross_limb_latents=K, cross_limb_dim=8,
     )
-    assert isinstance(dec.cross_limb_block, CrossLimbTemporalBlock)
-    assert dec.cross_limb_block.num_latents == K
-    assert dec.cross_limb_block.latent_dim == 8  # bottleneck threaded through
+    assert isinstance(dec.cross_limb_blocks, torch.nn.ModuleList)
+    assert len(dec.cross_limb_blocks) == num_layers  # last_n=0 -> all layers
+    for blk in dec.cross_limb_blocks:
+        assert isinstance(blk, CrossLimbTemporalBlock)
+        assert blk.num_latents == K
+        assert blk.latent_dim == 8  # bottleneck threaded through
+    # Independent instances, not aliases of the same block.
+    ids = {id(b) for b in dec.cross_limb_blocks}
+    assert len(ids) == num_layers
 
     for lyr in dec.layers:
-        # Cross-layer weight sharing: layers do not own a per-layer block.
+        # Cross-limb pathway is owned by the decoder, not the layers.
         assert not hasattr(lyr, "cross_limb_block")
+        assert not hasattr(lyr, "cross_limb_blocks")
         # Dead nn.TransformerDecoderLayer attention modules were removed so
         # they no longer bloat the checkpoint.
         assert not hasattr(lyr, "self_attn")
         assert not hasattr(lyr, "multihead_attn")
 
 
+def test_cross_limb_last_n_sizes_the_module_list():
+    layer = GraphMotionDecoderLayer(D, H, dim_feedforward=32, dropout=0.0)
+    dec = GraphMotionDecoder(
+        layer, num_layers=5, cross_limb=True,
+        cross_limb_latents=K, cross_limb_dim=8, cross_limb_last_n=2,
+    )
+    # Only the last N layers get a block, so the list has exactly N entries.
+    assert len(dec.cross_limb_blocks) == 2
+
+
 def test_cross_limb_can_be_disabled():
     layer = GraphMotionDecoderLayer(D, H, dim_feedforward=32, dropout=0.0)
     dec = GraphMotionDecoder(layer, num_layers=2, cross_limb=False)
-    assert dec.cross_limb_block is None
+    assert dec.cross_limb_blocks is None
 
 
-def _run_decoder_recording_block(num_layers: int, last_n: int) -> list[bool]:
-    """Drive GraphMotionDecoder.forward with stub layers that only record
-    whether they received the shared cross_limb_block. Exercises the real
-    loop + cross_limb_last_n gating without AnyTop's mask algebra."""
+def _run_decoder_recording_block(num_layers: int, last_n: int) -> list:
+    """Drive GraphMotionDecoder.forward with stub layers that record which
+    cross-limb block (if any) each layer received. Exercises the real loop +
+    cross_limb_last_n gating without AnyTop's mask algebra."""
     layer = GraphMotionDecoderLayer(D, H, dim_feedforward=32, dropout=0.0)
     dec = GraphMotionDecoder(
         layer, num_layers=num_layers, cross_limb=True,
         cross_limb_latents=K, cross_limb_dim=8, cross_limb_last_n=last_n,
     )
-    shared = dec.cross_limb_block
-    got: list[bool] = []
+    got: list = []
 
     def make_stub():
         def stub(output, *a, cross_limb_block=None, **kw):
-            got.append(cross_limb_block is shared)
+            got.append(cross_limb_block)
             return output
         return stub
 
@@ -196,13 +214,18 @@ def _run_decoder_recording_block(num_layers: int, last_n: int) -> list[bool]:
     return got
 
 
-def test_cross_limb_last_n_gates_which_layers_get_the_block():
-    # 0 -> every layer gets the shared block.
-    assert _run_decoder_recording_block(num_layers=4, last_n=0) == [True] * 4
-    # N>0 -> only the last N layers.
-    assert _run_decoder_recording_block(num_layers=5, last_n=2) == [
-        False, False, False, True, True
-    ]
+def test_cross_limb_last_n_gates_which_layers_get_a_block():
+    # last_n=0 -> every layer gets its own block, in order.
+    blocks_all = _run_decoder_recording_block(num_layers=4, last_n=0)
+    assert all(b is not None for b in blocks_all)
+    assert len({id(b) for b in blocks_all}) == 4  # all distinct
+
+    # last_n=N -> only the last N layers get a block; the first num_layers-N
+    # see None. Distinct instances for each active layer.
+    blocks_tail = _run_decoder_recording_block(num_layers=5, last_n=2)
+    assert [b is None for b in blocks_tail] == [True, True, True, False, False]
+    active = [b for b in blocks_tail if b is not None]
+    assert len({id(b) for b in active}) == 2
 
 
 if __name__ == "__main__":

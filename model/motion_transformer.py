@@ -153,8 +153,8 @@ class SelectiveMultiheadAttention(nn.Module):
 
 
 class CrossLimbTemporalBlock(nn.Module):
-    """Perceiver-style cross-limb temporal pathway, shared across all decoder
-    layers (one post-norm sublayer applied at each layer).
+    """Perceiver-style cross-limb temporal pathway (one independent instance
+    per active decoder layer; post-norm sublayer).
 
     The base decoder factorizes attention into spatial (per-frame, across
     joints) and temporal (per-joint, across frames). A joint's temporal
@@ -173,9 +173,8 @@ class CrossLimbTemporalBlock(nn.Module):
     bottleneck, not full model width). Joints are projected d_model -> d_cl
     once (shared by cross-in K/V and cross-out Q), all three attentions run at
     d_cl, and the whole-body context is projected d_cl -> d_model on the way
-    out. With cross-layer weight sharing (a single instance reused at every
-    decoder layer) this cuts the cross-limb parameter cost by ~75x vs. a
-    per-layer full-width block while keeping the pathway at every depth.
+    out. Cross-limb parameter cost scales with the number of active layers
+    (controlled by ``cross_limb_last_n``).
 
     x flows as (T, B, J, d) where T = nframes+1 (index 0 is the T-pose token).
     """
@@ -397,21 +396,25 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         super().__init__(decoder_layer, num_layers, norm)
 
         self.d_model = decoder_layer.d_model
-        # One cross-limb block, weight-shared across all decoder layers
-        # (ALBERT/Universal-Transformer-style): the pathway is present at every
-        # depth but costs a single block's parameters instead of num_layers x.
-        if cross_limb:
-            self.cross_limb_block = CrossLimbTemporalBlock(
-                self.d_model, decoder_layer.heads,
-                num_latents=cross_limb_latents, dropout=decoder_layer.dropout1.p,
-                latent_width=cross_limb_dim,
-            )
-        else:
-            self.cross_limb_block = None
-        # 0 -> apply at every layer; N>0 -> only the last N layers (whole-body
-        # rhythm is a late-stage feature, so this trades effect for compute
-        # without changing parameter count).
+        # 0 -> apply at every layer; N>0 -> only the last N layers. Each active
+        # layer gets its own independent block, so this also scales the
+        # cross-limb parameter count.
         self.cross_limb_last_n = cross_limb_last_n
+        if cross_limb:
+            num_active = (
+                cross_limb_last_n if cross_limb_last_n > 0 else num_layers
+            )
+            self.cross_limb_blocks = nn.ModuleList([
+                CrossLimbTemporalBlock(
+                    self.d_model, decoder_layer.heads,
+                    num_latents=cross_limb_latents,
+                    dropout=decoder_layer.dropout1.p,
+                    latent_width=cross_limb_dim,
+                )
+                for _ in range(num_active)
+            ])
+        else:
+            self.cross_limb_blocks = None
         self.topology_key_emb = nn.Embedding(max_path_len + 1, self.d_model) # 'far': max_path_len + 1
         self.edge_key_emb = nn.Embedding(6, self.d_model) # 'self':0, 'parent':1, 'child':2, 'sibling':3, 'no_relation':4, 'end_effector':5
         self.topology_query_emb = nn.Embedding(max_path_len + 1, self.d_model) # 'far': max_path_len + 1
@@ -442,11 +445,10 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             if self.value_emb_flag:
                 edge_value_emb = self.edge_value_emb
                 topology_value_emb = self.topology_value_emb
-            cl_block = (
-                self.cross_limb_block
-                if self.cross_limb_block is not None and layer_ind >= first_cl_layer
-                else None
-            )
+            if self.cross_limb_blocks is not None and layer_ind >= first_cl_layer:
+                cl_block = self.cross_limb_blocks[layer_ind - first_cl_layer]
+            else:
+                cl_block = None
             output = mod(
                     output, timesteps_embs, topology_rel, edge_rel, self.edge_key_emb, self.edge_query_emb, edge_value_emb, self.topology_key_emb, self.topology_query_emb, topology_value_emb, spatial_mask, temporal_mask,
                     tgt_key_padding_mask, memory_key_padding_mask, y, reference_memory, reference_key_padding_mask,
@@ -478,8 +480,8 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         self.embed_timesteps = nn.Linear(d_model, d_model)
         self.norm_ref = nn.LayerNorm(d_model)
         self.dropout_ref = nn.Dropout(dropout)
-        # The cross-limb pathway is owned by GraphMotionDecoder (one instance
-        # shared across all layers) and passed into forward(), not held here.
+        # The cross-limb pathway is owned by GraphMotionDecoder (one block per
+        # active layer) and passed into forward(), not held here.
 
     # spatial attention block
     def _spatial_mha_block(self, x: Tensor, topology_rel: Optional[Tensor], edge_rel: Optional[Tensor], edge_key_emb, edge_query_emb, edge_value_emb,
