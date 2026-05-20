@@ -465,6 +465,129 @@ class GraphMultiHeadAttention(nn.Module):
             scores = scores + mask.to(device=scores.device, dtype=torch.float32).unsqueeze(0)
         return scores.reshape(batch_size, self.nheads, tgt_len, src_len)
 
+    def _pairwise_mask_to_additive(
+        self,
+        mask: Optional[Tensor],
+        *,
+        batch_size: int,
+        tgt_len: int,
+        src_len: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Optional[Tensor]:
+        if mask is None:
+            return None
+        if mask.dim() == 3:
+            mask = mask.unsqueeze(1)
+        elif mask.dim() != 4:
+            raise ValueError(f"Unsupported pairwise mask shape: {tuple(mask.shape)}")
+
+        if mask.shape[-2:] != (tgt_len, src_len):
+            raise ValueError(
+                f"Pairwise mask shape {tuple(mask.shape)} does not match attention shape {(tgt_len, src_len)}"
+            )
+
+        base_batch = mask.shape[0]
+        if mask.shape[1] == 1:
+            mask = mask.expand(-1, self.nheads, -1, -1)
+        elif mask.shape[1] != self.nheads:
+            raise ValueError(
+                f"Pairwise mask head dimension {mask.shape[1]} does not match num_heads {self.nheads}"
+            )
+        if batch_size % base_batch != 0:
+            raise ValueError(
+                f"Expanded batch size {batch_size} is not divisible by mask batch {base_batch}"
+            )
+
+        frames = batch_size // base_batch
+        if frames > 1:
+            mask = mask.unsqueeze(0).expand(frames, -1, -1, -1, -1).reshape(
+                batch_size, self.nheads, tgt_len, src_len
+            )
+
+        if mask.dtype == torch.bool:
+            return torch.zeros(mask.shape, device=device, dtype=dtype).masked_fill(
+                mask.to(device=device),
+                float('-inf'),
+            )
+        return mask.to(device=device, dtype=dtype)
+
+    def _key_padding_mask_to_additive(
+        self,
+        key_padding_mask: Optional[Tensor],
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Optional[Tensor]:
+        if key_padding_mask is None:
+            return None
+        if key_padding_mask.dtype == torch.bool:
+            mask = key_padding_mask[:, None, None, :].to(device=device)
+            return torch.zeros(mask.shape, device=device, dtype=dtype).masked_fill(mask, float('-inf'))
+        return key_padding_mask.to(device=device, dtype=dtype)[:, None, None, :]
+
+    def _merged_sdpa_mask(
+        self,
+        graph_bias: Tensor,
+        pairwise_mask: Optional[Tensor],
+        key_padding_mask: Optional[Tensor],
+        *,
+        batch_size: int,
+        tgt_len: int,
+        src_len: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Tensor:
+        additive_mask = graph_bias.to(device=device, dtype=dtype) * self.scale
+        mask_bias = self._pairwise_mask_to_additive(
+            pairwise_mask,
+            batch_size=batch_size,
+            tgt_len=tgt_len,
+            src_len=src_len,
+            device=device,
+            dtype=dtype,
+        )
+        if mask_bias is not None:
+            additive_mask = additive_mask + mask_bias
+        padding_bias = self._key_padding_mask_to_additive(
+            key_padding_mask,
+            device=device,
+            dtype=dtype,
+        )
+        if padding_bias is not None:
+            additive_mask = additive_mask + padding_bias
+        return additive_mask
+
+    def _graph_scaled_dot_product_attention(
+        self,
+        q: Tensor,
+        k: Tensor,
+        v: Tensor,
+        *,
+        graph_bias: Tensor,
+        mask: Optional[Tensor],
+        key_padding_mask: Optional[Tensor],
+    ) -> Tensor:
+        additive_mask = self._merged_sdpa_mask(
+            graph_bias,
+            mask,
+            key_padding_mask,
+            batch_size=q.shape[0],
+            tgt_len=q.shape[2],
+            src_len=k.shape[2],
+            device=q.device,
+            dtype=q.dtype,
+        )
+        return F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=additive_mask,
+            dropout_p=self.dropout.p if self.training else 0.0,
+            is_causal=False,
+            scale=self.scale,
+        )
+
     def forward(
         self,
         q,
@@ -496,6 +619,7 @@ class GraphMultiHeadAttention(nn.Module):
         k = k.transpose(1, 2)  # [b, h, k_len, d_k]
 
         sequence_length = v.shape[2]
+        use_sdpa = value_hop_emb is None and value_edge_emb is None
         num_hop_types = query_hop_emb.shape[0]
         num_edge_types = query_edge_emb.shape[0]
         distance_index, relation_frames, relation_batch = self._prepare_pairwise_index(
@@ -548,22 +672,34 @@ class GraphMultiHeadAttention(nn.Module):
             key_edge = torch.gather(key_edge, 4, edge_index).reshape(
                 batch_size, self.nheads, sequence_length, sequence_length
             )
-            qk = torch.matmul(q, k.transpose(2, 3))
+            if not use_sdpa:
+                qk = torch.matmul(q, k.transpose(2, 3))
 
-        # Accumulate in fp32 to prevent catastrophic cancellation from summing bf16 terms
-        x = (qk.float() + query_hop.float() + key_hop.float() + query_edge.float() + key_edge.float()) * self.scale
+        graph_bias = query_hop.float() + key_hop.float() + query_edge.float() + key_edge.float()
 
-        if mask is not None:
-            x = self._apply_pairwise_mask(x, mask)
-        if key_padding_mask is not None:
-            if key_padding_mask.dtype == torch.bool:
-                x = x.masked_fill(key_padding_mask[:, None, None, :].to(device=x.device), float('-inf'))
-            else:
-                x = x + key_padding_mask.to(device=x.device, dtype=torch.float32)[:, None, None, :]
+        if use_sdpa:
+            x = self._graph_scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                graph_bias=graph_bias,
+                mask=mask,
+                key_padding_mask=key_padding_mask,
+            )
+        else:
+            # Accumulate in fp32 to prevent catastrophic cancellation from summing bf16 terms.
+            x = (qk.float() + graph_bias) * self.scale
 
-        x = self._softmax_fp32(x)
-        x = self.dropout(x)
-        if value_hop_emb is not None:
+            if mask is not None:
+                x = self._apply_pairwise_mask(x, mask)
+            if key_padding_mask is not None:
+                if key_padding_mask.dtype == torch.bool:
+                    x = x.masked_fill(key_padding_mask[:, None, None, :].to(device=x.device), float('-inf'))
+                else:
+                    x = x + key_padding_mask.to(device=x.device, dtype=torch.float32)[:, None, None, :]
+
+            x = self._softmax_fp32(x)
+            x = self.dropout(x)
             value_hop_emb = value_hop_emb.view(
                 1, num_hop_types, self.nheads, self.att_size
             ).transpose(1, 2)
@@ -588,9 +724,8 @@ class GraphMultiHeadAttention(nn.Module):
             value_edge_att = torch.scatter_add(
                 value_edge_att, 4, edge_index, x_for_scatter
             ).reshape(batch_size, self.nheads, sequence_length, num_edge_types)
-        with self._bf16_context(v):
-            x = torch.matmul(x, v)
-            if value_hop_emb is not None:
+            with self._bf16_context(v):
+                x = torch.matmul(x, v)
                 x = x + torch.matmul(value_hop_att, value_hop_emb) + torch.matmul(value_edge_att, value_edge_emb)
         x = x.transpose(1, 2).contiguous()
         x = x.view(batch_size, -1, self.nheads * d_v)
