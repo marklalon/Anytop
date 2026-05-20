@@ -84,12 +84,15 @@ def main():
 
     # If --tpos-path is given without --retarget-top-k, default to retarget-top-k 1
     # (prefer retarget over T-pose-only mode with no motions)
+    # If --donor-skeletons is given, also default to 1 but suppress the log
+    # since the user is explicitly configuring retarget.
     retarget_top_k = args.retarget_top_k
     auto_defaulted_retarget = False
     if retarget_top_k is None and args.anim_dir is None:
         retarget_top_k = 1
         auto_defaulted_retarget = True
-        print(f"[process_new_skeleton] No --retarget-top-k specified, defaulting to 1")
+        if args.donor_skeletons is None or args.donor_skeletons.strip() == '':
+            print(f"[process_new_skeleton] No --retarget-top-k specified, defaulting to 1")
 
     if retarget_top_k:
         if args.anim_dir:
