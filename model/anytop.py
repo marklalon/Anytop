@@ -3,7 +3,7 @@ torch.cuda.empty_cache()
 import torch.nn as nn
 import numpy as np
 from model.motion_transformer import GraphMotionDecoderLayer, GraphMotionDecoder
-from model.joint_mask_utils import sample_subtree_joint_mask
+from model.joint_mask_utils import sample_subtree_joint_mask_batch
 
 
 def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 10000,
@@ -99,48 +99,42 @@ class AnyTop(nn.Module):
         """
         if (not self.training) or self.joint_mask_prob <= 0.0:
             return None
-        n_joints_t = torch.as_tensor(y['n_joints'], device=device).reshape(-1)
-        return self._sample_subtree_joint_mask(y, n_joints_t, njoints, device)
+        n_joints_cpu = torch.as_tensor(y['n_joints'], device='cpu', dtype=torch.int64).reshape(-1)
+        return self._sample_subtree_joint_mask(y, n_joints_cpu, njoints, device)
 
     def _sample_subtree_joint_mask(self, y, n_joints, njoints, device):
-        if (not self.training) or self.joint_mask_prob <= 0.0:
-            return None
         parents_batch = y.get('parents')
         if parents_batch is None:
             return None
         candidate_roots_batch = y.get('joint_mask_candidate_roots')
-        if candidate_roots_batch is not None and not torch.is_tensor(candidate_roots_batch):
-            candidate_roots_batch = torch.as_tensor(candidate_roots_batch)
+        if torch.is_tensor(n_joints):
+            n_joints_np = n_joints.detach().to(device='cpu', dtype=torch.int64).numpy()
+        else:
+            n_joints_np = np.asarray(n_joints, dtype=np.int64)
 
-        subtree_joint_mask = torch.zeros((n_joints.shape[0], njoints), dtype=torch.bool, device=device)
-        any_masked = False
-        rng = np.random
-        for batch_index in range(n_joints.shape[0]):
-            valid_joint_count = int(n_joints[batch_index].item())
-            if valid_joint_count <= 1:
-                continue
+        if torch.is_tensor(parents_batch):
+            parents_batch_np = parents_batch.detach().to(device='cpu', dtype=torch.int64).numpy()
+        else:
+            parents_batch_np = [np.asarray(parents, dtype=np.int64) for parents in parents_batch]
 
-            parents_list = parents_batch[batch_index].tolist() if torch.is_tensor(parents_batch[batch_index]) else list(parents_batch[batch_index])
+        if candidate_roots_batch is None:
+            candidate_roots_np = None
+        elif torch.is_tensor(candidate_roots_batch):
+            candidate_roots_np = candidate_roots_batch.detach().to(device='cpu').numpy()
+        else:
+            candidate_roots_np = np.asarray(candidate_roots_batch, dtype=np.bool_)
 
-            if candidate_roots_batch is None:
-                cand_mask_np = np.ones(valid_joint_count, dtype=bool)
-            else:
-                cand_mask_np = candidate_roots_batch[batch_index, :valid_joint_count].cpu().numpy().copy()
-            cand_mask_np[0] = False
-
-            per_sample_mask = sample_subtree_joint_mask(
-                parents=parents_list,
-                candidate_root_mask=cand_mask_np,
-                joint_mask_prob=self.joint_mask_prob,
-                rng=rng,
-            )
-            if per_sample_mask is not None:
-                subtree_joint_mask[batch_index, :valid_joint_count] = torch.from_numpy(per_sample_mask).to(device=device)
-                any_masked = True
-
-        if not any_masked:
+        subtree_joint_mask_np = sample_subtree_joint_mask_batch(
+            parents_batch=parents_batch_np,
+            candidate_root_mask_batch=candidate_roots_np,
+            n_joints=n_joints_np,
+            max_joints=njoints,
+            joint_mask_prob=self.joint_mask_prob,
+            rng=np.random,
+        )
+        if subtree_joint_mask_np is None:
             return None
-        return subtree_joint_mask
+        return torch.from_numpy(subtree_joint_mask_np).to(device=device)
 
     def forward(self, x, timesteps, get_layer_activation=-1, y=None, train_step=None, **unused_kwargs):
         """

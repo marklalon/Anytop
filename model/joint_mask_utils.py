@@ -124,3 +124,51 @@ def sample_subtree_joint_mask(
     if not np.any(mask):
         return None
     return mask
+
+
+def sample_subtree_joint_mask_batch(
+    parents_batch: Any,
+    candidate_root_mask_batch: Optional[np.ndarray],
+    n_joints: np.ndarray,
+    max_joints: int,
+    joint_mask_prob: float,
+    rng: Any,
+) -> Optional[np.ndarray]:
+    """Batch wrapper around ``sample_subtree_joint_mask``.
+
+    The per-skeleton sampling order and RNG usage match the previous
+    AnyTop loop exactly; the optimization is that mask assembly stays on the
+    CPU in one NumPy array and is copied back to torch only once.
+    """
+    batch_size = int(np.asarray(n_joints).shape[0])
+    subtree_joint_mask = np.zeros((batch_size, max_joints), dtype=bool)
+    any_masked = False
+
+    for batch_index in range(batch_size):
+        valid_joint_count = int(n_joints[batch_index])
+        if valid_joint_count <= 1:
+            continue
+
+        parents = np.asarray(parents_batch[batch_index], dtype=np.int64)[:valid_joint_count].tolist()
+        if candidate_root_mask_batch is None:
+            candidate_root_mask = np.ones(valid_joint_count, dtype=bool)
+        else:
+            candidate_root_mask = np.asarray(
+                candidate_root_mask_batch[batch_index, :valid_joint_count],
+                dtype=bool,
+            ).copy()
+        candidate_root_mask[0] = False
+
+        per_sample_mask = sample_subtree_joint_mask(
+            parents=parents,
+            candidate_root_mask=candidate_root_mask,
+            joint_mask_prob=joint_mask_prob,
+            rng=rng,
+        )
+        if per_sample_mask is not None:
+            subtree_joint_mask[batch_index, :valid_joint_count] = per_sample_mask
+            any_masked = True
+
+    if not any_masked:
+        return None
+    return subtree_joint_mask

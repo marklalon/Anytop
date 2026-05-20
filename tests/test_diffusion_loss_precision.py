@@ -16,6 +16,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType  # noqa: E402
 from model.anytop import AnyTop  # noqa: E402
+from model.joint_mask_utils import sample_subtree_joint_mask  # noqa: E402
 
 
 class _BFloat16Model(nn.Module):
@@ -175,6 +176,59 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertIsNotNone(capture_decoder.last_kwargs)
         self.assertTrue(torch.equal(capture_decoder.last_kwargs["tgt_key_padding_mask"], expected))
         self.assertTrue(torch.equal(y["joints_key_padding_mask"], expected))
+
+    def test_anytop_sample_subtree_joint_mask_train_matches_sequential_baseline(self):
+        model = AnyTop(
+            max_joints=9,
+            feature_len=13,
+            latent_dim=8,
+            ff_size=32,
+            num_layers=1,
+            num_heads=2,
+            dropout=0.0,
+            skip_t5=True,
+            cross_limb=False,
+            joint_mask_prob=0.5,
+        )
+        model.train()
+
+        parents = torch.tensor(
+            [
+                [-1, 0, 1, 2, 3, 0, 5, 0, 7],
+                [-1, 0, 1, 2, 0, 0, 0, 0, 0],
+            ],
+            dtype=torch.int64,
+        )
+        candidate_root_mask = torch.tensor(
+            [
+                [False, True, False, False, False, True, False, True, False],
+                [False, True, False, True, False, False, False, False, False],
+            ],
+            dtype=torch.bool,
+        )
+        y = {
+            "n_joints": torch.tensor([9, 5], dtype=torch.int64),
+            "parents": parents,
+            "joint_mask_candidate_roots": candidate_root_mask,
+        }
+
+        np.random.seed(123)
+        batch_mask = model.sample_subtree_joint_mask_train(y, njoints=9, device=torch.device("cpu"))
+
+        np.random.seed(123)
+        expected = torch.zeros((2, 9), dtype=torch.bool)
+        for batch_index, valid_joint_count in enumerate((9, 5)):
+            per_sample_mask = sample_subtree_joint_mask(
+                parents=parents[batch_index, :valid_joint_count].tolist(),
+                candidate_root_mask=candidate_root_mask[batch_index, :valid_joint_count].numpy(),
+                joint_mask_prob=0.5,
+                rng=np.random,
+            )
+            if per_sample_mask is not None:
+                expected[batch_index, :valid_joint_count] = torch.from_numpy(per_sample_mask)
+
+        self.assertIsNotNone(batch_mask)
+        self.assertTrue(torch.equal(batch_mask.cpu(), expected))
 
 
 if __name__ == "__main__":
