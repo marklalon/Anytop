@@ -323,20 +323,42 @@ class MixedPrecisionTrainer:
         else:
             return self._optimize_normal(opt, scheduler)
 
+    def _clip_gradients_and_check_nonfinite(self, parameters, *, max_norm):
+        try:
+            total_norm = th.nn.utils.clip_grad_norm_(
+                parameters,
+                max_norm=max_norm,
+                error_if_nonfinite=True,
+            )
+            if th.is_tensor(total_norm):
+                return float(total_norm.item())
+            return float(total_norm)
+        except RuntimeError as exc:
+            exc_text = str(exc).lower()
+            if 'non-finite' not in exc_text and 'nonfinite' not in exc_text:
+                raise
+            return None
+
+    def _abort_on_large_finite_grad_norm(self, grad_norm, *, mode_label=None):
+        if not should_abort_on_grad_norm(grad_norm):
+            return
+        mode_suffix = f" under {mode_label}" if mode_label else ""
+        raise RuntimeError(
+            "Detected abnormal finite grad_norm before optimizer step"
+            f"{mode_suffix} (grad_norm={grad_norm:.6e}, "
+            f"threshold={GRAD_NORM_ABORT_THRESHOLD:.1e})"
+        )
+
     def _optimize_amp(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.StepLR):
         if self.scaler.is_enabled():
             self.scaler.unscale_(opt)
-        if self.log_norms:
-            grad_norm, param_norm = self._compute_norms_from_model()
-            logger.logkv_mean("grad_norm", grad_norm)
-            logger.logkv_mean("param_norm", param_norm)
-            if should_abort_on_grad_norm(grad_norm):
-                raise RuntimeError(
-                    "Detected abnormal finite grad_norm before optimizer step under AMP "
-                    f"(grad_norm={grad_norm:.6e}, threshold={GRAD_NORM_ABORT_THRESHOLD:.1e})"
-                )
-        grad_stats = count_nonfinite_gradients(self.model_params)
-        if grad_stats["found"]:
+
+        clipped_norm = self._clip_gradients_and_check_nonfinite(
+            self.model_params,
+            max_norm=1.0,
+        )
+        if clipped_norm is None:
+            grad_stats = count_nonfinite_gradients(self.model_params)
             logger.log(
                 "Skipping optimizer step due to non-finite gradients under AMP "
                 f"({format_nonfinite_stats(grad_stats)})"
@@ -346,7 +368,11 @@ class MixedPrecisionTrainer:
                 self.scaler.update()
             self.zero_grad()
             return False
-        th.nn.utils.clip_grad_norm_(self.model_params, max_norm=1.0)
+
+        self._abort_on_large_finite_grad_norm(clipped_norm, mode_label="AMP")
+        if self.log_norms:
+            logger.logkv_mean("grad_norm", clipped_norm)
+
         self.scaler.step(opt)
         self.scaler.update()
         scheduler.step()
@@ -357,19 +383,14 @@ class MixedPrecisionTrainer:
         if self.log_norms:
             logger.logkv_mean("lg_loss_scale", self.lg_loss_scale)
         model_grads_to_master_grads(self.param_groups_and_shapes, self.master_params)
-        grad_norm = 0.0
-        if self.log_norms:
-            grad_norm, param_norm = self._compute_norms(grad_scale=2 ** self.lg_loss_scale)
-            if should_abort_on_grad_norm(grad_norm):
-                raise RuntimeError(
-                    "Detected abnormal finite grad_norm before optimizer step under FP16 "
-                    f"(grad_norm={grad_norm:.6e}, threshold={GRAD_NORM_ABORT_THRESHOLD:.1e})"
-                )
-        if self.log_norms and check_overflow(grad_norm):
+        grad_norm, param_norm = self._compute_norms(grad_scale=2 ** self.lg_loss_scale)
+        if check_overflow(grad_norm):
             self.lg_loss_scale -= 1
             logger.log(f"Found NaN, decreased lg_loss_scale to {self.lg_loss_scale}")
             zero_master_grads(self.master_params)
             return False
+
+        self._abort_on_large_finite_grad_norm(grad_norm, mode_label="FP16")
 
         if self.log_norms:
             logger.logkv_mean("grad_norm", grad_norm)
@@ -384,24 +405,23 @@ class MixedPrecisionTrainer:
         return True
 
     def _optimize_normal(self, opt: th.optim.Optimizer, scheduler: th.optim.lr_scheduler.StepLR):
-        if self.log_norms:
-            grad_norm, param_norm = self._compute_norms()
-            logger.logkv_mean("grad_norm", grad_norm)
-            logger.logkv_mean("param_norm", param_norm)
-            if should_abort_on_grad_norm(grad_norm):
-                raise RuntimeError(
-                    "Detected abnormal finite grad_norm before optimizer step "
-                    f"(grad_norm={grad_norm:.6e}, threshold={GRAD_NORM_ABORT_THRESHOLD:.1e})"
-                )
-        grad_stats = count_nonfinite_gradients(self.master_params)
-        if grad_stats["found"]:
+        clipped_norm = self._clip_gradients_and_check_nonfinite(
+            self.model_params,
+            max_norm=1.0,
+        )
+        if clipped_norm is None:
+            grad_stats = count_nonfinite_gradients(self.master_params)
             logger.log(
                 "Skipping optimizer step due to non-finite gradients "
                 f"({format_nonfinite_stats(grad_stats)})"
             )
             zero_master_grads(self.master_params)
             return False
-        th.nn.utils.clip_grad_norm_(self.model_params, max_norm=1.0)
+
+        self._abort_on_large_finite_grad_norm(clipped_norm)
+        if self.log_norms:
+            logger.logkv_mean("grad_norm", clipped_norm)
+
         opt.step()
         scheduler.step()
         logger.logkv_mean("lr", scheduler.get_last_lr()[0])
@@ -416,16 +436,6 @@ class MixedPrecisionTrainer:
                 if p.grad is not None:
                     grad_norm += th.norm(p.grad, p=2, dtype=th.float32).item() ** 2
         return np.sqrt(grad_norm) / grad_scale, np.sqrt(param_norm)
-
-    def _compute_norms_from_model(self):
-        grad_norm = 0.0
-        param_norm = 0.0
-        for p in self.model_params:
-            with th.no_grad():
-                param_norm += th.norm(p, p=2, dtype=th.float32).item() ** 2
-                if p.grad is not None:
-                    grad_norm += th.norm(p.grad, p=2, dtype=th.float32).item() ** 2
-        return np.sqrt(grad_norm), np.sqrt(param_norm)
 
     def master_params_to_state_dict(self, master_params):
         return master_params_to_state_dict(
