@@ -3,7 +3,7 @@ torch.cuda.empty_cache()
 import torch.nn as nn
 import numpy as np
 from model.motion_transformer import GraphMotionDecoderLayer, GraphMotionDecoder
-from model.joint_mask_utils import collect_subtree_indices, sample_subtree_joint_mask
+from model.joint_mask_utils import sample_subtree_joint_mask
 
 
 def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 10000,
@@ -71,6 +71,37 @@ class AnyTop(nn.Module):
         
         self.output_process = OutputProcess(self.feature_len, self.root_input_feats, self.max_joints, self.latent_dim)
 
+    @staticmethod
+    def _build_joint_key_padding_mask(njoints, n_joints, device):
+        """Return the padding-only joint key mask used by attention.
+
+        Training-time subtree perturbation deliberately stays out of the
+        attention masks. Only structurally padded joints are masked here.
+        """
+        return torch.arange(njoints, device=device)[None, :] >= n_joints[:, None]
+
+    def sample_subtree_joint_mask_train(self, y, njoints, device):
+        """Select subtrees of joints to perturb during training (governed by
+        ``joint_mask_prob``).
+
+        Returns a bool tensor of shape ``[B, njoints]`` (True = joint selected)
+        or ``None`` if no joint was selected, or if not in training mode, or
+        if ``joint_mask_prob == 0`` -- so eval-mode loss reports a clean
+        diffusion objective.
+
+        Called from ``GaussianDiffusion.training_losses`` AFTER ``q_sample``
+        to decide which joints' x_t slice should be re-noised with an
+        independent random timestep and fresh noise, so that those joints'
+        noise level disagrees with the rest of the batch sample. This trains
+        the cross-joint pathway to denoise robustly against per-joint
+        timestep mismatch -- the regime RePaint clamping produces at
+        inference. The model's forward itself stays vanilla.
+        """
+        if (not self.training) or self.joint_mask_prob <= 0.0:
+            return None
+        n_joints_t = torch.as_tensor(y['n_joints'], device=device).reshape(-1)
+        return self._sample_subtree_joint_mask(y, n_joints_t, njoints, device)
+
     def _sample_subtree_joint_mask(self, y, n_joints, njoints, device):
         if (not self.training) or self.joint_mask_prob <= 0.0:
             return None
@@ -123,11 +154,15 @@ class AnyTop(nn.Module):
 
         bs, njoints, nfeats, nframes = x.shape
         n_joints = torch.as_tensor(y['n_joints'], device=x.device).reshape(-1)
-        joint_key_padding_mask = torch.arange(njoints, device=x.device)[None, :] >= n_joints[:, None]
-        subtree_joint_mask = self._sample_subtree_joint_mask(y, n_joints, njoints, x.device)
-        if subtree_joint_mask is not None:
-            x = x.masked_fill(subtree_joint_mask[:, :, None, None], 0.0)
-            joint_key_padding_mask = joint_key_padding_mask | subtree_joint_mask
+        joint_key_padding_mask = self._build_joint_key_padding_mask(njoints, n_joints, x.device)
+        # joint_mask_prob-driven subtree perturbation is applied OUTSIDE this
+        # forward, in diffusion.training_losses, by re-noising the selected
+        # joints' x_t with q_sample(x_0, t_random, fresh_noise). The model
+        # itself stays vanilla -- selected joints DO NOT enter the
+        # key-padding masks and continue to participate in attention normally,
+        # just with mismatched noise levels, which trains the
+        # cross-joint pathway to denoise robustly against per-joint timestep
+        # disagreement (matching RePaint clamp behavior at inference).
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
 
         x = self.input_process(x, tpos_first_frame, y['joints_names_embs']) # applies linear layer on each frame to convert it to latent dim

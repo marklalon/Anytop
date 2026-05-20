@@ -1634,6 +1634,32 @@ class GaussianDiffusion:
         output = th.where((t == 0), decoder_nll, kl)
         return {"output": output, "pred_xstart": out["pred_xstart"]}
 
+    def _apply_joint_mask_training_perturbation(
+        self, model, x_start, x_t, t, model_kwargs
+    ):
+        """Re-noise selected joints without altering attention masks.
+
+        AnyTop's training-time joint mask is meant to mimic RePaint's mixed
+        per-joint noise distribution at the model input, not to hide joints
+        from attention. The selected joints keep participating in attention;
+        only their x_t features are replaced by q_sample(x_0, t_random).
+        """
+        if not hasattr(model, 'sample_subtree_joint_mask_train'):
+            return x_t
+
+        subtree_mask = model.sample_subtree_joint_mask_train(
+            model_kwargs.get('y', {}), x_t.shape[1], x_t.device
+        )
+        if subtree_mask is None:
+            return x_t
+
+        t_random = th.randint(
+            0, self.num_timesteps, t.shape, device=x_t.device, dtype=t.dtype
+        )
+        fresh_noise = th.randn_like(x_start)
+        x_t_random = self.q_sample(x_start, t_random, noise=fresh_noise)
+        return th.where(subtree_mask[:, :, None, None], x_t_random, x_t)
+
     def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
         """
         Compute training losses for a single timestep.
@@ -1660,6 +1686,20 @@ class GaussianDiffusion:
         if noise is None:
             noise = th.randn_like(x_start)
         x_t = self.q_sample(x_start, t, noise=noise)
+
+        # Subtree perturbation: when the model selects a subset of joints
+        # (via joint_mask_prob), replace those joints' x_t slice with
+        # q_sample(x_0, t_random, fresh_noise) -- same x_0 ground truth (so
+        # the loss target is unchanged) but at a random independent timestep
+        # with fresh independent noise. The selected joints continue to
+        # participate in attention normally; the model must learn to denoise
+        # them despite their noise level disagreeing with the rest of the
+        # batch sample, which is exactly what RePaint clamping produces at
+        # inference (clamped joints are at a fixed reference's q_sample state
+        # that's uncorrelated with the in-flight masked joint's trajectory).
+        x_t = self._apply_joint_mask_training_perturbation(
+            model, x_start, x_t, t, model_kwargs
+        )
 
         terms = {}
 
