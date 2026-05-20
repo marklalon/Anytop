@@ -160,22 +160,23 @@ class AnyTop(nn.Module):
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
 
         x = self.input_process(x, tpos_first_frame, y['joints_names_embs']) # applies linear layer on each frame to convert it to latent dim
-        spatial_mask = 1.0 - joints_padding_mask[:, 0, 0, 1:, 1:]
-        spatial_mask = spatial_mask.unsqueeze(1).unsqueeze(1).repeat(1, nframes + 1, self.num_heads, 1, 1).reshape(-1,self.num_heads, njoints, njoints)
-        temporal_mask = 1.0 - temp_mask.repeat(1, njoints, self.num_heads, 1, 1).reshape(-1, nframes + 1, nframes + 1).float()
-        spatial_mask[spatial_mask == 1.0] = -1e4
-        temporal_mask[temporal_mask == 1.0] = -1e4
+        spatial_mask = (1.0 - joints_padding_mask[:, 0, 0, 1:, 1:].float()) * -1e4
+        spatial_mask = spatial_mask.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
+
+        temporal_template = (1.0 - temp_mask.reshape(bs, -1, nframes + 1, nframes + 1)[:, :1].float()) * -1e4
+        temporal_template = temporal_template.expand(-1, self.num_heads, -1, -1)
+        temporal_mask = temporal_template.unsqueeze(1).expand(-1, njoints, -1, -1, -1).reshape(-1, nframes + 1, nframes + 1)
 
         # Cross-limb temporal pathway needs (1) the windowed temporal mask
         # WITHOUT the per-joint repeat -> (bs*H, T, T), which the block expands
         # per-latent itself, and (2) a (bs, njoints) bool key-padding mask
         # (True == padded) derived from the real joint count.
-        temporal_template = None
         if self.cross_limb:
             assert 'n_joints' in y, "cross_limb requires y['n_joints'] in the batch"
-            temporal_template = 1.0 - temp_mask.repeat(1, 1, self.num_heads, 1, 1).reshape(-1, nframes + 1, nframes + 1).float()
-            temporal_template[temporal_template == 1.0] = -1e4
+            temporal_template = temporal_template.reshape(-1, nframes + 1, nframes + 1)
             y['joints_key_padding_mask'] = joint_key_padding_mask
+        else:
+            temporal_template = None
 
         output = self.seqTransDecoder(
             tgt=x,

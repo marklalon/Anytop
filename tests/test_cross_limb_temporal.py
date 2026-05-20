@@ -228,5 +228,32 @@ def test_cross_limb_last_n_gates_which_layers_get_a_block():
     assert len({id(b) for b in active}) == 2
 
 
+def test_decoder_expands_graph_relations_once_per_batch_not_per_frame():
+    layer = GraphMotionDecoderLayer(D, H, dim_feedforward=32, dropout=0.0)
+    dec = GraphMotionDecoder(layer, num_layers=1, cross_limb=False)
+    captured = {}
+
+    def stub(output, *a, **kw):
+        captured["topology_shape"] = a[1].shape
+        captured["edge_shape"] = a[2].shape
+        return output
+
+    dec.layers[0].forward = stub
+    y = {
+        "graph_dist": torch.zeros(2, 3, 3, dtype=torch.int64),
+        "joints_relations": torch.zeros(2, 3, 3, dtype=torch.int64),
+    }
+
+    dec.forward(
+        tgt=torch.zeros(5, 2, 3, D),
+        timesteps_embs=torch.zeros(2, D),
+        memory=None,
+        y=y,
+    )
+
+    assert captured["topology_shape"] == (2, H, 3, 3)
+    assert captured["edge_shape"] == (2, H, 3, 3)
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

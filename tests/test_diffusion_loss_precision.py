@@ -177,6 +177,50 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertTrue(torch.equal(capture_decoder.last_kwargs["tgt_key_padding_mask"], expected))
         self.assertTrue(torch.equal(y["joints_key_padding_mask"], expected))
 
+    def test_anytop_forward_reuses_shared_temporal_template_for_masks(self):
+        model = AnyTop(
+            max_joints=4,
+            feature_len=13,
+            latent_dim=8,
+            ff_size=32,
+            num_layers=1,
+            num_heads=2,
+            dropout=0.0,
+            skip_t5=True,
+            cross_limb=True,
+        )
+        capture_decoder = _CaptureDecoder()
+        model.seqTransDecoder = capture_decoder
+        model.eval()
+
+        x = torch.randn(2, 4, 13, 3, dtype=torch.float32)
+        temp_mask = torch.ones(2, 1, 1, 4, 4, dtype=torch.float32)
+        temp_mask[0, 0, 0, 1, 2] = 0.0
+        temp_mask[1, 0, 0, 2, 1] = 0.0
+        y = {
+            "joints_padding_mask": torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
+            "mask": temp_mask,
+            "tpos_first_frame": torch.randn(2, 4, 13, dtype=torch.float32),
+            "n_joints": torch.tensor([4, 3], dtype=torch.int64),
+            "joints_names_embs": torch.zeros(2, 4, 512, dtype=torch.float32),
+        }
+
+        model(x, torch.tensor([1, 2], dtype=torch.int64), y=y)
+
+        self.assertIsNotNone(capture_decoder.last_kwargs)
+        spatial_mask = capture_decoder.last_kwargs["spatial_mask"]
+        temporal_mask = capture_decoder.last_kwargs["temporal_mask"]
+        temporal_template = capture_decoder.last_kwargs["temporal_template"]
+
+        expected_template = (1.0 - temp_mask.reshape(2, -1, 4, 4)[:, :1].float()) * -1e4
+        expected_template = expected_template.expand(-1, model.num_heads, -1, -1).reshape(-1, 4, 4)
+        expected_mask = expected_template.reshape(2, model.num_heads, 4, 4).unsqueeze(1)
+        expected_mask = expected_mask.expand(-1, 4, -1, -1, -1).reshape(-1, 4, 4)
+
+        self.assertEqual(spatial_mask.shape, (2, model.num_heads, 4, 4))
+        self.assertTrue(torch.equal(temporal_template, expected_template))
+        self.assertTrue(torch.equal(temporal_mask, expected_mask))
+
     def test_anytop_sample_subtree_joint_mask_train_matches_sequential_baseline(self):
         model = AnyTop(
             max_joints=9,

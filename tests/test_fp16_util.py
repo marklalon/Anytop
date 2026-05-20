@@ -636,6 +636,55 @@ class SelectiveAutocastTests(unittest.TestCase):
         self.assertEqual(attn.recorded_softmax_dtype, torch.float32)
         self.assertEqual(output.dtype, torch.float32)
 
+    def test_graph_multihead_attention_broadcast_relations_and_masks_match_materialized_inputs(self):
+        torch.manual_seed(0)
+        attn = GraphMultiHeadAttention(d_model=8, dropout=0.0, nheads=2)
+        attn.eval()
+
+        frames = 3
+        batch_size = 2
+        sequence_length = 4
+        q = torch.randn(frames * batch_size, sequence_length, 8, dtype=torch.float32)
+        distance = torch.randint(0, 3, (batch_size, sequence_length, sequence_length), dtype=torch.long)
+        edge_attr = torch.randint(0, 4, (batch_size, sequence_length, sequence_length), dtype=torch.long)
+        spatial_mask = torch.zeros(batch_size, 2, sequence_length, sequence_length, dtype=torch.float32)
+        spatial_mask[1, :, :, -1] = -1e4
+        query_hop_emb = torch.randn(3, 8, dtype=torch.float32)
+        query_edge_emb = torch.randn(4, 8, dtype=torch.float32)
+        key_hop_emb = torch.randn(3, 8, dtype=torch.float32)
+        key_edge_emb = torch.randn(4, 8, dtype=torch.float32)
+
+        materialized_output = attn(
+            q,
+            q,
+            q,
+            query_hop_emb,
+            query_edge_emb,
+            key_hop_emb,
+            key_edge_emb,
+            None,
+            None,
+            distance.unsqueeze(0).repeat(frames, 1, 1, 1).reshape(-1, sequence_length, sequence_length),
+            edge_attr.unsqueeze(0).repeat(frames, 1, 1, 1).reshape(-1, sequence_length, sequence_length),
+            spatial_mask.unsqueeze(0).repeat(frames, 1, 1, 1, 1).reshape(-1, 2, sequence_length, sequence_length),
+        )
+        broadcast_output = attn(
+            q,
+            q,
+            q,
+            query_hop_emb,
+            query_edge_emb,
+            key_hop_emb,
+            key_edge_emb,
+            None,
+            None,
+            distance.unsqueeze(1).expand(-1, 2, -1, -1),
+            edge_attr.unsqueeze(1).expand(-1, 2, -1, -1),
+            spatial_mask,
+        )
+
+        self.assertTrue(torch.allclose(materialized_output, broadcast_output, atol=1e-5, rtol=1e-5))
+
 
 if __name__ == "__main__":
     unittest.main()

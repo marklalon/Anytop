@@ -391,6 +391,80 @@ class GraphMultiHeadAttention(nn.Module):
     def _softmax_fp32(self, scores: Tensor) -> Tensor:
         return torch.softmax(scores.float(), dim=3)
 
+    def _prepare_pairwise_index(
+        self,
+        pairwise: Tensor,
+        *,
+        batch_size: int,
+        sequence_length: int,
+    ) -> tuple[Tensor, int, int]:
+        if pairwise.dim() == 3:
+            pairwise = pairwise.unsqueeze(1)
+        elif pairwise.dim() != 4:
+            raise ValueError(f"Unsupported pairwise index shape: {tuple(pairwise.shape)}")
+        if pairwise.shape[-2:] != (sequence_length, sequence_length):
+            raise ValueError(
+                f"Pairwise index shape {tuple(pairwise.shape)} does not match sequence length {sequence_length}"
+            )
+
+        base_batch = pairwise.shape[0]
+        if pairwise.shape[1] == 1:
+            pairwise = pairwise.expand(-1, self.nheads, -1, -1)
+        elif pairwise.shape[1] != self.nheads:
+            raise ValueError(
+                f"Pairwise index head dimension {pairwise.shape[1]} does not match num_heads {self.nheads}"
+            )
+        if batch_size % base_batch != 0:
+            raise ValueError(
+                f"Expanded batch size {batch_size} is not divisible by pairwise batch {base_batch}"
+            )
+
+        frames = batch_size // base_batch
+        return pairwise.unsqueeze(0).expand(frames, -1, -1, -1, -1), frames, base_batch
+
+    @staticmethod
+    def _reshape_pairwise_tensor(tensor: Tensor, *, frames: int, base_batch: int) -> Tensor:
+        return tensor.reshape(frames, base_batch, *tensor.shape[1:])
+
+    def _apply_pairwise_mask(self, scores: Tensor, mask: Optional[Tensor]) -> Tensor:
+        if mask is None:
+            return scores
+        if mask.dim() == 3:
+            mask = mask.unsqueeze(1)
+        elif mask.dim() != 4:
+            raise ValueError(f"Unsupported pairwise mask shape: {tuple(mask.shape)}")
+
+        batch_size, _, tgt_len, src_len = scores.shape
+        if mask.shape[-2:] != (tgt_len, src_len):
+            raise ValueError(
+                f"Pairwise mask shape {tuple(mask.shape)} does not match attention shape {(tgt_len, src_len)}"
+            )
+
+        base_batch = mask.shape[0]
+        if mask.shape[1] == 1:
+            mask = mask.expand(-1, self.nheads, -1, -1)
+        elif mask.shape[1] != self.nheads:
+            raise ValueError(
+                f"Pairwise mask head dimension {mask.shape[1]} does not match num_heads {self.nheads}"
+            )
+        if batch_size % base_batch != 0:
+            raise ValueError(
+                f"Expanded batch size {batch_size} is not divisible by mask batch {base_batch}"
+            )
+
+        if base_batch == batch_size:
+            if mask.dtype == torch.bool:
+                return scores.masked_fill(mask.to(device=scores.device), float('-inf'))
+            return scores + mask.to(device=scores.device, dtype=torch.float32)
+
+        frames = batch_size // base_batch
+        scores = scores.reshape(frames, base_batch, self.nheads, tgt_len, src_len)
+        if mask.dtype == torch.bool:
+            scores = scores.masked_fill(mask.to(device=scores.device).unsqueeze(0), float('-inf'))
+        else:
+            scores = scores + mask.to(device=scores.device, dtype=torch.float32).unsqueeze(0)
+        return scores.reshape(batch_size, self.nheads, tgt_len, src_len)
+
     def forward(
         self,
         q,
@@ -424,6 +498,20 @@ class GraphMultiHeadAttention(nn.Module):
         sequence_length = v.shape[2]
         num_hop_types = query_hop_emb.shape[0]
         num_edge_types = query_edge_emb.shape[0]
+        distance_index, relation_frames, relation_batch = self._prepare_pairwise_index(
+            distance,
+            batch_size=batch_size,
+            sequence_length=sequence_length,
+        )
+        edge_index, edge_frames, edge_batch = self._prepare_pairwise_index(
+            edge_attr,
+            batch_size=batch_size,
+            sequence_length=sequence_length,
+        )
+        if (edge_frames, edge_batch) != (relation_frames, relation_batch):
+            raise ValueError(
+                "distance and edge_attr must expand to the same (frames, batch) layout"
+            )
 
         query_hop_emb = query_hop_emb.view(
             1, num_hop_types, self.nheads, self.att_size
@@ -440,21 +528,25 @@ class GraphMultiHeadAttention(nn.Module):
 
         with self._bf16_context(q):
             query_hop = torch.matmul(q, query_hop_emb.transpose(2, 3))
-            query_hop = torch.gather(
-                query_hop, 3, distance.unsqueeze(1).repeat(1, self.nheads, 1, 1)
+            query_hop = self._reshape_pairwise_tensor(query_hop, frames=relation_frames, base_batch=relation_batch)
+            query_hop = torch.gather(query_hop, 4, distance_index).reshape(
+                batch_size, self.nheads, sequence_length, sequence_length
             )
             query_edge = torch.matmul(q, query_edge_emb.transpose(2, 3))
-            query_edge = torch.gather(
-                query_edge, 3, edge_attr.unsqueeze(1).repeat(1, self.nheads, 1, 1)
+            query_edge = self._reshape_pairwise_tensor(query_edge, frames=edge_frames, base_batch=edge_batch)
+            query_edge = torch.gather(query_edge, 4, edge_index).reshape(
+                batch_size, self.nheads, sequence_length, sequence_length
             )
 
             key_hop = torch.matmul(k, key_hop_emb.transpose(2, 3))
-            key_hop = torch.gather(
-                key_hop, 3, distance.unsqueeze(1).repeat(1, self.nheads, 1, 1)
+            key_hop = self._reshape_pairwise_tensor(key_hop, frames=relation_frames, base_batch=relation_batch)
+            key_hop = torch.gather(key_hop, 4, distance_index).reshape(
+                batch_size, self.nheads, sequence_length, sequence_length
             )
             key_edge = torch.matmul(k, key_edge_emb.transpose(2, 3))
-            key_edge = torch.gather(
-                key_edge, 3, edge_attr.unsqueeze(1).repeat(1, self.nheads, 1, 1)
+            key_edge = self._reshape_pairwise_tensor(key_edge, frames=edge_frames, base_batch=edge_batch)
+            key_edge = torch.gather(key_edge, 4, edge_index).reshape(
+                batch_size, self.nheads, sequence_length, sequence_length
             )
             qk = torch.matmul(q, k.transpose(2, 3))
 
@@ -462,7 +554,7 @@ class GraphMultiHeadAttention(nn.Module):
         x = (qk.float() + query_hop.float() + key_hop.float() + query_edge.float() + key_edge.float()) * self.scale
 
         if mask is not None:
-            x = x + mask.to(device=x.device, dtype=torch.float32)
+            x = self._apply_pairwise_mask(x, mask)
         if key_padding_mask is not None:
             if key_padding_mask.dtype == torch.bool:
                 x = x.masked_fill(key_padding_mask[:, None, None, :].to(device=x.device), float('-inf'))
@@ -480,21 +572,22 @@ class GraphMultiHeadAttention(nn.Module):
             ).transpose(1, 2)
 
             value_hop_att = torch.zeros(
-                (batch_size, self.nheads, sequence_length, num_hop_types),
+                (relation_frames, relation_batch, self.nheads, sequence_length, num_hop_types),
                 device=value_hop_emb.device,
                 dtype=x.dtype,
             )
+            x_for_scatter = self._reshape_pairwise_tensor(x, frames=relation_frames, base_batch=relation_batch)
             value_hop_att = torch.scatter_add(
-                value_hop_att, 3, distance.unsqueeze(1).repeat(1, self.nheads, 1, 1), x
-            )
+                value_hop_att, 4, distance_index, x_for_scatter
+            ).reshape(batch_size, self.nheads, sequence_length, num_hop_types)
             value_edge_att = torch.zeros(
-                (batch_size, self.nheads, sequence_length, num_edge_types),
+                (edge_frames, edge_batch, self.nheads, sequence_length, num_edge_types),
                 device=value_hop_emb.device,
                 dtype=x.dtype,
             )
             value_edge_att = torch.scatter_add(
-                value_edge_att, 3, edge_attr.unsqueeze(1).repeat(1, self.nheads, 1, 1), x
-            )
+                value_edge_att, 4, edge_index, x_for_scatter
+            ).reshape(batch_size, self.nheads, sequence_length, num_edge_types)
         with self._bf16_context(v):
             x = torch.matmul(x, v)
             if value_hop_emb is not None:
@@ -513,6 +606,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         super().__init__(decoder_layer, num_layers, norm)
 
         self.d_model = decoder_layer.d_model
+        self.nheads = decoder_layer.heads
         # 0 -> apply at every layer; N>0 -> only the last N layers. Each active
         # layer gets its own independent block, so this also scales the
         # cross-limb parameter count.
@@ -540,6 +634,16 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         if value_emb:
             self.topology_value_emb = nn.Embedding(max_path_len + 1, self.d_model) # 'far': max_path_len + 1
             self.edge_value_emb = nn.Embedding(6, self.d_model) # 'self':0, 'parent':1, 'child':2, 'sibling':3, 'no_relation':4, 'end_effector':5
+
+    def _expand_relation_heads(self, relation: Tensor) -> Tensor:
+        if relation.dim() == 3:
+            return relation.unsqueeze(1).expand(-1, self.nheads, -1, -1)
+        if relation.dim() == 4:
+            if relation.shape[1] == 1:
+                return relation.expand(-1, self.nheads, -1, -1)
+            if relation.shape[1] == self.nheads:
+                return relation
+        raise ValueError(f"Unsupported graph relation shape: {tuple(relation.shape)}")
         
 
         
@@ -547,8 +651,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                 temporal_mask: Optional[Tensor] = None, tgt_key_padding_mask: Optional[Tensor] = None,
             memory_key_padding_mask: Optional[Tensor] = None, y=None, get_layer_activation=-1, reference_memory: Optional[Tensor] = None,
             reference_key_padding_mask: Optional[Tensor] = None, temporal_template: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
-        topology_rel = y['graph_dist'].long().to(tgt.device)
-        edge_rel = y['joints_relations'].long().to(tgt.device)
+        topology_rel = self._expand_relation_heads(y['graph_dist'].to(device=tgt.device, dtype=torch.long))
+        edge_rel = self._expand_relation_heads(y['joints_relations'].to(device=tgt.device, dtype=torch.long))
         output = tgt
         if get_layer_activation > -1 and get_layer_activation < self.num_layers:
             activations=dict()
@@ -605,9 +709,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         topology_key_emb, topology_query_emb, topology_value_emb, attn_mask: Optional[Tensor],  key_padding_mask: Optional[Tensor], y = None) -> Tensor:
         #x.shape (frames, bs, njoints, feature_len)
         frames, bs, njoints, feature_len = x.shape
-        x = x.view(frames * bs, njoints, feature_len)
-        topology_rel = topology_rel.unsqueeze(0).repeat(frames, 1, 1, 1).view(-1, njoints, njoints)
-        edge_rel = edge_rel.unsqueeze(0).repeat(frames, 1, 1, 1).view(-1, njoints, njoints)
+        x = x.reshape(frames * bs, njoints, feature_len)
         if key_padding_mask is not None:
             key_padding_mask = key_padding_mask.unsqueeze(0).expand(frames, bs, njoints).reshape(-1, njoints)
         
