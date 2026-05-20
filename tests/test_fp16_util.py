@@ -473,6 +473,89 @@ class SelectiveAutocastTests(unittest.TestCase):
         self.assertEqual(output.dtype, torch.float32)
         self.assertEqual(weights.dtype, torch.float32)
 
+    def test_selective_multihead_attention_need_weights_false_uses_sdpa_and_matches_manual_path(self):
+        attn = SelectiveMultiheadAttention(embed_dim=8, num_heads=2, dropout=0.0)
+        attn.configure_precision(device_type='cpu', autocast_dtype=torch.float16)
+
+        query = torch.randn(5, 3, 8, dtype=torch.float32)
+        attn_mask = torch.triu(torch.ones(3 * 2, 5, 5, dtype=torch.bool), diagonal=1)
+        key_padding_mask = torch.tensor(
+            [
+                [False, False, False, True, True],
+                [False, False, True, False, True],
+                [False, False, False, False, False],
+            ],
+            dtype=torch.bool,
+        )
+
+        with patch(
+            "model.motion_transformer.F.scaled_dot_product_attention",
+            wraps=F.scaled_dot_product_attention,
+        ) as sdpa:
+            sdpa_output, sdpa_weights = attn(
+                query,
+                query,
+                query,
+                attn_mask=attn_mask,
+                key_padding_mask=key_padding_mask,
+                need_weights=False,
+            )
+
+        manual_output, manual_weights = attn(
+            query,
+            query,
+            query,
+            attn_mask=attn_mask,
+            key_padding_mask=key_padding_mask,
+            need_weights=True,
+        )
+
+        sdpa.assert_called_once()
+        self.assertIsNone(sdpa_weights)
+        self.assertIsNotNone(manual_weights)
+        self.assertTrue(torch.allclose(sdpa_output, manual_output, atol=1e-5, rtol=1e-5))
+
+    def test_selective_multihead_attention_sdpa_casts_additive_mask_to_query_dtype(self):
+        attn = SelectiveMultiheadAttention(embed_dim=8, num_heads=2, dropout=0.0)
+        attn.configure_precision(device_type='cpu', autocast_dtype=torch.bfloat16)
+
+        query = torch.randn(5, 3, 8, dtype=torch.float32)
+        attn_mask = torch.zeros(3 * 2, 5, 5, dtype=torch.float32)
+        attn_mask[:, :, -1] = -1e4
+        key_padding_mask = torch.tensor(
+            [
+                [False, False, False, True, True],
+                [False, False, True, False, True],
+                [False, False, False, False, False],
+            ],
+            dtype=torch.bool,
+        )
+
+        original_sdpa = F.scaled_dot_product_attention
+
+        def checking_sdpa(q, k, v, *args, **kwargs):
+            self.assertEqual(q.dtype, torch.bfloat16)
+            self.assertIsNotNone(kwargs["attn_mask"])
+            self.assertEqual(kwargs["attn_mask"].dtype, q.dtype)
+            return original_sdpa(q, k, v, *args, **kwargs)
+
+        with patch(
+            "model.motion_transformer.F.scaled_dot_product_attention",
+            side_effect=checking_sdpa,
+        ) as sdpa:
+            output, weights = attn(
+                query,
+                query,
+                query,
+                attn_mask=attn_mask,
+                key_padding_mask=key_padding_mask,
+                need_weights=False,
+            )
+
+        sdpa.assert_called_once()
+        self.assertIsNone(weights)
+        self.assertEqual(output.dtype, torch.float32)
+
     def test_graph_multihead_attention_keeps_qkv_proj_bf16_but_uses_fp32_softmax(self):
         attn = _RecordingGraphMultiHeadAttention(d_model=8, dropout=0.0, nheads=2)
         enable_selective_autocast(

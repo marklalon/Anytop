@@ -99,6 +99,119 @@ class SelectiveMultiheadAttention(nn.Module):
             return scores.masked_fill(key_padding_mask[:, None, None, :].to(device=scores.device), float('-inf'))
         return scores + key_padding_mask.to(device=scores.device, dtype=scores.dtype)[:, None, None, :]
 
+    def _reshape_attention_mask_for_sdpa(
+        self,
+        attn_mask: Tensor,
+        *,
+        batch_size: int,
+        tgt_len: int,
+        src_len: int,
+    ) -> Tensor:
+        if attn_mask.dim() == 2:
+            return attn_mask.unsqueeze(0).unsqueeze(0)
+        if attn_mask.dim() == 3:
+            if attn_mask.shape[0] == batch_size * self.num_heads:
+                return attn_mask.reshape(batch_size, self.num_heads, tgt_len, src_len)
+            if attn_mask.shape[0] == batch_size:
+                return attn_mask.unsqueeze(1)
+        raise ValueError(f"Unsupported attn_mask shape: {tuple(attn_mask.shape)}")
+
+    def _attention_mask_to_additive(
+        self,
+        attn_mask: Optional[Tensor],
+        *,
+        batch_size: int,
+        tgt_len: int,
+        src_len: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Optional[Tensor]:
+        if attn_mask is None:
+            return None
+        attn_mask = self._reshape_attention_mask_for_sdpa(
+            attn_mask,
+            batch_size=batch_size,
+            tgt_len=tgt_len,
+            src_len=src_len,
+        )
+        if attn_mask.dtype == torch.bool:
+            return torch.zeros(attn_mask.shape, device=device, dtype=dtype).masked_fill(
+                attn_mask.to(device=device),
+                float('-inf'),
+            )
+        return attn_mask.to(device=device, dtype=dtype)
+
+    def _key_padding_mask_to_additive(
+        self,
+        key_padding_mask: Optional[Tensor],
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Optional[Tensor]:
+        if key_padding_mask is None:
+            return None
+        if key_padding_mask.dtype == torch.bool:
+            mask = key_padding_mask[:, None, None, :].to(device=device)
+            return torch.zeros(mask.shape, device=device, dtype=dtype).masked_fill(mask, float('-inf'))
+        return key_padding_mask.to(device=device, dtype=dtype)[:, None, None, :]
+
+    def _merged_sdpa_mask(
+        self,
+        attn_mask: Optional[Tensor],
+        key_padding_mask: Optional[Tensor],
+        *,
+        batch_size: int,
+        tgt_len: int,
+        src_len: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Optional[Tensor]:
+        additive_mask = self._attention_mask_to_additive(
+            attn_mask,
+            batch_size=batch_size,
+            tgt_len=tgt_len,
+            src_len=src_len,
+            device=device,
+            dtype=dtype,
+        )
+        padding_mask = self._key_padding_mask_to_additive(
+            key_padding_mask,
+            device=device,
+            dtype=dtype,
+        )
+        if additive_mask is None:
+            return padding_mask
+        if padding_mask is None:
+            return additive_mask
+        return additive_mask + padding_mask
+
+    def _scaled_dot_product_attention(
+        self,
+        q: Tensor,
+        k: Tensor,
+        v: Tensor,
+        attn_mask: Optional[Tensor],
+        key_padding_mask: Optional[Tensor],
+    ) -> Tensor:
+        additive_mask = self._merged_sdpa_mask(
+            attn_mask,
+            key_padding_mask,
+            batch_size=q.shape[0],
+            tgt_len=q.shape[2],
+            src_len=k.shape[2],
+            device=q.device,
+            dtype=q.dtype,
+        )
+        return F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=additive_mask,
+            dropout_p=self.dropout if self.training else 0.0,
+            is_causal=False,
+            scale=self.scaling,
+        )
+
     def _softmax_fp32(self, scores: Tensor) -> Tensor:
         return torch.softmax(scores.float(), dim=-1)
 
@@ -129,17 +242,21 @@ class SelectiveMultiheadAttention(nn.Module):
         k = k.transpose(0, 1).reshape(batch_size, src_len, self.num_heads, self.head_dim).transpose(1, 2)
         v = v.transpose(0, 1).reshape(batch_size, src_len, self.num_heads, self.head_dim).transpose(1, 2)
 
-        with self._bf16_context(q):
-            scores = torch.matmul(q, k.transpose(-2, -1))
-        scores = scores.float() * self.scaling
-        scores = self._apply_attention_mask(scores, attn_mask)
-        scores = self._apply_key_padding_mask(scores, key_padding_mask)
-        attn_weights_fp32 = self._softmax_fp32(scores)
-        attn_weights_fp32 = F.dropout(attn_weights_fp32, p=self.dropout, training=self.training)
+        attn_weights_fp32 = None
+        if need_weights:
+            with self._bf16_context(q):
+                scores = torch.matmul(q, k.transpose(-2, -1))
+            scores = scores.float() * self.scaling
+            scores = self._apply_attention_mask(scores, attn_mask)
+            scores = self._apply_key_padding_mask(scores, key_padding_mask)
+            attn_weights_fp32 = self._softmax_fp32(scores)
+            attn_weights_fp32 = F.dropout(attn_weights_fp32, p=self.dropout, training=self.training)
 
-        attn_weights = attn_weights_fp32.to(dtype=v.dtype)
-        with self._bf16_context(v):
-            attn_output = torch.matmul(attn_weights, v)
+            attn_weights = attn_weights_fp32.to(dtype=v.dtype)
+            with self._bf16_context(v):
+                attn_output = torch.matmul(attn_weights, v)
+        else:
+            attn_output = self._scaled_dot_product_attention(q, k, v, attn_mask, key_padding_mask)
 
         attn_output = attn_output.transpose(1, 2).contiguous().reshape(batch_size, tgt_len, self.embed_dim)
         attn_output = attn_output.transpose(0, 1)
@@ -505,9 +622,14 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         frames, bs, njoints, feats= x.size() 
         # attn_mask_ = attn_mask[..., 1:, 1:]
         x = x.view(frames, bs * njoints, feats)
-        output_attn, output_scores = self.temporal_attn(x, x, x,
-                                attn_mask=attn_mask,
-                                key_padding_mask=key_padding_mask)
+        output_attn, _ = self.temporal_attn(
+            x,
+            x,
+            x,
+            attn_mask=attn_mask,
+            key_padding_mask=key_padding_mask,
+            need_weights=False,
+        )
         output_attn = output_attn.view(frames, bs ,njoints, feats)
         return self.dropout2(output_attn)
     
