@@ -173,8 +173,9 @@ def add_training_options(parser):
     group.add_argument("--detect_anomaly", action='store_true',
                        help="Enable PyTorch autograd anomaly detection. Useful for debugging, but significantly slows training.")
     group.add_argument("--joint_mask_prob", default=0.0, type=float,
-                       help="Probability of masking each non-root joint during training. Masked joints keep their supervision loss,"
-                            " but their motion input is zeroed and hidden from other joints in spatial/cross-limb attention.")
+                       help="Probability of sampling each non-root joint into a training-time subtree perturbation. "
+                           "Selected joints keep their supervision loss and remain visible to attention, but their x_t "
+                           "features are re-noised at an independent timestep to mimic RePaint-style mixed reliability.")
     group.add_argument("--resume_checkpoint", default="", type=str,
                        help="If not empty, will start from the specified checkpoint (path to model###.pt file).")
     group.add_argument("--gen_during_training", action='store_true',

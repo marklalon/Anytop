@@ -1644,14 +1644,24 @@ class GaussianDiffusion:
         from attention. The selected joints keep participating in attention;
         only their x_t features are replaced by q_sample(x_0, t_random).
         """
+        y = model_kwargs.get('y') if model_kwargs is not None else None
         if not hasattr(model, 'sample_subtree_joint_mask_train'):
+            if y is not None:
+                y.pop('cross_limb_unreliable_mask', None)
             return x_t
 
         subtree_mask = model.sample_subtree_joint_mask_train(
             model_kwargs.get('y', {}), x_t.shape[1], x_t.device
         )
         if subtree_mask is None:
+            if y is not None:
+                y.pop('cross_limb_unreliable_mask', None)
             return x_t
+
+        if y is not None:
+            y['cross_limb_unreliable_mask'] = subtree_mask[:, None, :].to(dtype=x_t.dtype).expand(
+                -1, x_t.shape[-1], -1
+            ).contiguous()
 
         t_random = th.randint(
             0, self.num_timesteps, t.shape, device=x_t.device, dtype=t.dtype

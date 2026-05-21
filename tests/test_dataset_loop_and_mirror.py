@@ -115,7 +115,7 @@ def test_loop_padding_updates_effective_length() -> None:
 
     motion_dataset = dataset.motion_dataset
     sample = motion_dataset.prepare_sample_by_name(LOOP_MOTION, target_num_frames=NUM_FRAMES, loop_offset=0)
-    motion, m_length, *_rest, mean, std, _max_joints, motion_metadata, name = sample
+    motion, m_length, *_rest, mean, std, _max_joints, motion_metadata, name, _joint_mask_dict = sample
 
     assert name == LOOP_MOTION, f"unexpected sample: {name}"
     assert bool(motion_metadata.get("is_loop", False)), "loop regression sample is no longer marked loop"
@@ -184,7 +184,7 @@ def test_explicit_window_start_respects_requested_crop() -> None:
         if int(length) >= NUM_FRAMES + window_start
     )
 
-    motion, m_length, *_rest, _motion_metadata, name = motion_dataset.prepare_sample_by_name(
+    motion, m_length, *_rest, _motion_metadata, name, _joint_mask_dict = motion_dataset.prepare_sample_by_name(
         long_motion_name,
         target_num_frames=NUM_FRAMES,
         crop_start=window_start,
@@ -222,7 +222,7 @@ def test_prepare_sample_aug_info_reports_actual_loop_fill() -> None:
         loop_offset=0,
         return_aug_info=True,
     )
-    motion, m_length, *_rest, motion_metadata, name, aug_info = sample
+    motion, m_length, *_rest, motion_metadata, name, _joint_mask_dict, aug_info = sample
 
     assert name == LOOP_MOTION, f"unexpected sample: {name}"
     assert bool(motion_metadata.get("is_loop", False)), "loop regression sample is no longer marked loop"

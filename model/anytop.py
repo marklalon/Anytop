@@ -178,6 +178,21 @@ class AnyTop(nn.Module):
         else:
             temporal_template = None
 
+        cross_limb_unreliable_mask = None
+        if self.cross_limb:
+            raw_cross_limb_unreliable_mask = y.get('cross_limb_unreliable_mask')
+            if raw_cross_limb_unreliable_mask is not None:
+                cross_limb_unreliable_mask = raw_cross_limb_unreliable_mask.to(device=x.device, dtype=x.dtype)
+                expected_shape = (bs, nframes, njoints)
+                if cross_limb_unreliable_mask.shape != expected_shape:
+                    raise ValueError(
+                        "y['cross_limb_unreliable_mask'] must have shape "
+                        f"{expected_shape}, got {tuple(cross_limb_unreliable_mask.shape)}"
+                    )
+                reliable_tpose = torch.zeros((bs, 1, njoints), device=x.device, dtype=x.dtype)
+                cross_limb_unreliable_mask = torch.cat([reliable_tpose, cross_limb_unreliable_mask], dim=1)
+                cross_limb_unreliable_mask = cross_limb_unreliable_mask.transpose(0, 1).contiguous()
+
         output = self.seqTransDecoder(
             tgt=x,
             timesteps_embs=timesteps_emb,
@@ -188,6 +203,7 @@ class AnyTop(nn.Module):
             y=y,
             get_layer_activation=get_layer_activation,
             temporal_template=temporal_template,
+            cross_limb_unreliable_mask=cross_limb_unreliable_mask,
         )
         if get_layer_activation > -1 and get_layer_activation < self.num_layers:
             activations = output[1]

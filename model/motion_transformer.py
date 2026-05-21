@@ -269,6 +269,33 @@ class SelectiveMultiheadAttention(nn.Module):
         return attn_output, attn_weights_fp32
 
 
+def _sin_time_embedding(
+    length: int,
+    dim: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    max_period: float = 10000.0,
+) -> Tensor:
+    """Return a standard sinusoidal time table with shape ``(length, dim)``."""
+    if length <= 0:
+        raise ValueError(f"length must be positive, got {length}")
+    if dim <= 0:
+        raise ValueError(f"dim must be positive, got {dim}")
+
+    positions = torch.arange(length, device=device, dtype=dtype).unsqueeze(1)
+    half_dim = dim // 2
+    if half_dim == 0:
+        return torch.zeros((length, dim), device=device, dtype=dtype)
+
+    scales = torch.arange(half_dim, device=device, dtype=dtype).unsqueeze(0)
+    max_period_tensor = torch.full((), max_period, device=device, dtype=dtype)
+    phase = positions / (max_period_tensor ** (scales / max(half_dim - 1, 1)))
+    emb = torch.cat([torch.cos(phase), torch.sin(phase)], dim=1)
+    if emb.shape[1] < dim:
+        emb = F.pad(emb, (0, dim - emb.shape[1]))
+    return emb
+
+
 class CrossLimbTemporalBlock(nn.Module):
     """Perceiver-style cross-limb temporal pathway (one independent instance
     per active decoder layer; post-norm sublayer).
@@ -314,9 +341,17 @@ class CrossLimbTemporalBlock(nn.Module):
         self.cross_in_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
         self.temporal_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
         self.cross_out_attn = SelectiveMultiheadAttention(d_cl, nhead, dropout=dropout)
+        self.time_emb_scale = nn.Parameter(torch.zeros(1))
+        self.reliability_bias = nn.Parameter(torch.zeros(1))
         self.norm_cl = nn.LayerNorm(d_model)
 
-    def forward(self, x: Tensor, temporal_template: Tensor, joints_key_padding_mask: Tensor) -> Tensor:
+    def forward(
+        self,
+        x: Tensor,
+        temporal_template: Tensor,
+        joints_key_padding_mask: Tensor,
+        unreliable_mask: Optional[Tensor] = None,
+    ) -> Tensor:
         # x: (T, B, J, d_model); temporal_template: (B*H, T, T) additive float
         # mask (windowed, NO joint repeat); joints_key_padding_mask: (B, J)
         # bool, True == padded joint.
@@ -332,12 +367,31 @@ class CrossLimbTemporalBlock(nn.Module):
         kv = xd.permute(2, 0, 1, 3).reshape(J, T * B, d)                   # (J, T*B, d_cl)
         q = self.latents.unsqueeze(1).expand(K, T * B, d)                  # (K, T*B, d_cl)
         kpm = joints_key_padding_mask.unsqueeze(0).expand(T, B, J).reshape(T * B, J)  # (T*B, J)
-        bz, _ = self.cross_in_attn(q, kv, kv, key_padding_mask=kpm, need_weights=False)
+        reliability_attn_mask = None
+        if unreliable_mask is not None:
+            if unreliable_mask.shape != (T, B, J):
+                raise ValueError(
+                    f"unreliable_mask must have shape {(T, B, J)}, got {tuple(unreliable_mask.shape)}"
+                )
+            reliability_attn_mask = unreliable_mask.reshape(T * B, J)
+            reliability_attn_mask = reliability_attn_mask.to(device=xd.device, dtype=xd.dtype)
+            reliability_attn_mask = self.reliability_bias * reliability_attn_mask
+            reliability_attn_mask = reliability_attn_mask.unsqueeze(1).expand(T * B, K, J)
+        bz, _ = self.cross_in_attn(
+            q,
+            kv,
+            kv,
+            attn_mask=reliability_attn_mask,
+            key_padding_mask=kpm,
+            need_weights=False,
+        )
         bz = bz.reshape(K, T, B, d)
 
         # --- Latent temporal self-attention across T (same windowed mask).
         # attention batch = B*K with index (b*K + k); mask -> (B*K*H, T, T).
         zt_in = bz.permute(1, 2, 0, 3).reshape(T, B * K, d)               # (T, B*K, d_cl)
+        time_emb = _sin_time_embedding(T, d, zt_in.device, zt_in.dtype).unsqueeze(1)
+        zt_in = zt_in + self.time_emb_scale * time_emb
         tt = temporal_template.reshape(B, H, T, T)
         tt = tt.unsqueeze(1).expand(B, K, H, T, T).reshape(B * K * H, T, T)
         zt, _ = self.temporal_attn(zt_in, zt_in, zt_in, attn_mask=tt, need_weights=False)
@@ -736,7 +790,8 @@ class GraphMultiHeadAttention(nn.Module):
 
 class GraphMotionDecoder(nn.TransformerDecoder):
     def __init__(self, decoder_layer, num_layers, norm=None, max_path_len=5, value_emb=False,
-                 cross_limb=True, cross_limb_latents=8, cross_limb_dim=64, cross_limb_last_n=0):
+                 cross_limb=True, cross_limb_latents=8, cross_limb_dim=64,
+                 cross_limb_last_n=0):
                 # multi head attention
         super().__init__(decoder_layer, num_layers, norm)
 
@@ -785,7 +840,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
     def forward(self, tgt: Tensor, timesteps_embs: Tensor, memory: Tensor, spatial_mask:  Optional[Tensor] = None,
                 temporal_mask: Optional[Tensor] = None, tgt_key_padding_mask: Optional[Tensor] = None,
             memory_key_padding_mask: Optional[Tensor] = None, y=None, get_layer_activation=-1, reference_memory: Optional[Tensor] = None,
-            reference_key_padding_mask: Optional[Tensor] = None, temporal_template: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
+            reference_key_padding_mask: Optional[Tensor] = None, temporal_template: Optional[Tensor] = None,
+            cross_limb_unreliable_mask: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
         topology_rel = self._expand_relation_heads(y['graph_dist'].to(device=tgt.device, dtype=torch.long))
         edge_rel = self._expand_relation_heads(y['joints_relations'].to(device=tgt.device, dtype=torch.long))
         output = tgt
@@ -808,7 +864,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             output = mod(
                     output, timesteps_embs, topology_rel, edge_rel, self.edge_key_emb, self.edge_query_emb, edge_value_emb, self.topology_key_emb, self.topology_query_emb, topology_value_emb, spatial_mask, temporal_mask,
                     tgt_key_padding_mask, memory_key_padding_mask, y, reference_memory, reference_key_padding_mask,
-                    temporal_template=temporal_template, cross_limb_block=cl_block)
+                    temporal_template=temporal_template, cross_limb_block=cl_block,
+                    cross_limb_unreliable_mask=cross_limb_unreliable_mask)
             if layer_ind == get_layer_activation:
                 activations[layer_ind] = output.clone()
         if self.norm is not None:
@@ -908,7 +965,8 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         reference_memory: Optional[Tensor] = None,
         reference_key_padding_mask: Optional[Tensor] = None,
         temporal_template: Optional[Tensor] = None,
-        cross_limb_block: Optional[nn.Module] = None) -> Tensor:
+        cross_limb_block: Optional[nn.Module] = None,
+        cross_limb_unreliable_mask: Optional[Tensor] = None) -> Tensor:
         x = tgt #(frames, bs, njoints, feature_len)
         bs = x.shape[1]
         x = x + self.embed_timesteps(timesteps_emb).view(1, bs, 1, self.d_model)
@@ -917,7 +975,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         x = self.norm1(x + spatial_attn_output)
         x = self.norm2(x + self._temporal_mha_block_sin_joint(x, temporal_mask, None))
         if cross_limb_block is not None:
-            x = cross_limb_block(x, temporal_template, y['joints_key_padding_mask'])
+            x = cross_limb_block(x, temporal_template, y['joints_key_padding_mask'], unreliable_mask=cross_limb_unreliable_mask)
         if reference_memory is not None:
             x = self.norm_ref(x + self._reference_mha_block(x, reference_memory, reference_key_padding_mask))
         x = self.norm3(x + self._ff_block(x))

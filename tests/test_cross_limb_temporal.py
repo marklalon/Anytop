@@ -30,10 +30,17 @@ D, H, K = 16, 4, 3
 T, B, J = 5, 3, 6
 
 
-def _block(dropout: float = 0.0, latent_width: int = D) -> CrossLimbTemporalBlock:
+def _block(
+    dropout: float = 0.0,
+    latent_width: int = D,
+) -> CrossLimbTemporalBlock:
     torch.manual_seed(0)
     blk = CrossLimbTemporalBlock(
-        D, H, num_latents=K, dropout=dropout, latent_width=latent_width
+        D,
+        H,
+        num_latents=K,
+        dropout=dropout,
+        latent_width=latent_width,
     )
     blk.eval()  # deterministic (no dropout sampling) regardless of dropout arg
     return blk
@@ -61,6 +68,15 @@ def _kpm(b_count: int, valid_counts: list[int]) -> torch.Tensor:
     idx = torch.arange(J)[None, :]
     n = torch.tensor(valid_counts)[:, None]
     return idx >= n
+
+
+def _unreliable_mask(b_count: int, *, per_batch_pattern: bool = False) -> torch.Tensor:
+    mask = torch.zeros(T, b_count, J)
+    if per_batch_pattern:
+        for b in range(b_count):
+            mask[:, b, b % J] = 1.0
+            mask[1::2, b, (b + 2) % J] = 1.0
+    return mask
 
 
 def test_block_preserves_shape_is_finite_and_trains():
@@ -94,11 +110,13 @@ def test_full_batch_equals_per_sample_sliced(latent_width):
     expansion: each sample gets distinct x, mask and padding, so a wrong
     ordering makes the sliced result diverge from the full-batch result."""
     blk = _block(latent_width=latent_width)
+    blk.reliability_bias.data.fill_(-2.0)
     x = torch.randn(T, B, J, D)
     tt = _template(B, per_batch_pattern=True)
     kpm = _kpm(B, [J, J - 1, J - 3])
+    unreliable = _unreliable_mask(B, per_batch_pattern=True)
 
-    out_full = blk(x, tt, kpm)
+    out_full = blk(x, tt, kpm, unreliable)
 
     tt_bh = tt.reshape(B, H, T, T)
     for b in range(B):
@@ -106,11 +124,69 @@ def test_full_batch_equals_per_sample_sliced(latent_width):
             x[:, b : b + 1],
             tt_bh[b : b + 1].reshape(H, T, T),
             kpm[b : b + 1],
+            unreliable[:, b : b + 1],
         )
         assert torch.allclose(out_full[:, b], out_b[:, 0], atol=1e-5), (
             f"batch {b} diverges between full and sliced run -> batch-dim "
             f"ordering bug"
         )
+
+
+def test_reliability_path_is_exact_noop_at_init():
+    blk = _block()
+    x = torch.randn(T, B, J, D)
+    tt = _template(B, per_batch_pattern=True)
+    kpm = _kpm(B, [J, J - 1, J - 2])
+    unreliable = _unreliable_mask(B, per_batch_pattern=True)
+
+    out_without_mask = blk(x, tt, kpm, None)
+    out_with_mask = blk(x, tt, kpm, unreliable)
+
+    assert blk.time_emb_scale.item() == 0.0
+    assert blk.reliability_bias.item() == 0.0
+    assert torch.allclose(out_without_mask, out_with_mask, atol=1e-6)
+
+
+def test_unreliable_mask_none_matches_zero_mask_even_with_nonzero_bias():
+    blk = _block()
+    blk.reliability_bias.data.fill_(-7.0)
+    x = torch.randn(T, 1, J, D)
+    tt = _template(1, per_batch_pattern=True)
+    kpm = _kpm(1, [J - 1])
+    zero_mask = torch.zeros(T, 1, J)
+
+    out_none = blk(x, tt, kpm, None)
+    out_zero = blk(x, tt, kpm, zero_mask)
+
+    assert torch.allclose(out_none, out_zero, atol=1e-6)
+
+
+def test_negative_reliability_bias_downweights_flagged_joint_influence():
+    blk = _block()
+    blk.reliability_bias.data.fill_(-20.0)
+    x = torch.randn(T, 1, J, D)
+    tt = _template(1, per_batch_pattern=True)
+    kpm = _kpm(1, [J])
+    unreliable = torch.zeros(T, 1, J)
+    unreliable[:, 0, 0] = 1.0
+
+    baseline = blk(x, tt, kpm, unreliable)
+
+    x_unreliable = x.clone()
+    x_unreliable[:, 0, 0, :] += 8.0
+    x_reliable = x.clone()
+    x_reliable[:, 0, 1, :] += 8.0
+
+    probe_joint = 2
+    unreliable_delta = torch.linalg.norm(
+        blk(x_unreliable, tt, kpm, unreliable)[:, 0, probe_joint] - baseline[:, 0, probe_joint]
+    )
+    reliable_delta = torch.linalg.norm(
+        blk(x_reliable, tt, kpm, unreliable)[:, 0, probe_joint] - baseline[:, 0, probe_joint]
+    )
+
+    assert unreliable_delta < reliable_delta
+
 
 
 def test_padded_joints_do_not_leak_into_valid_outputs():

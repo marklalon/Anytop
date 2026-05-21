@@ -141,6 +141,22 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertTrue(torch.allclose(model.last_x[:, 0], expected_x_t[:, 0]))
         self.assertTrue(torch.allclose(model.last_x[:, 2], expected_x_t[:, 2]))
         self.assertTrue(torch.allclose(model.last_x[:, 1], expected_masked[:, 1]))
+        expected_unreliable = subtree_mask[:, None, :].float().expand(-1, n_frames, -1)
+        self.assertIn("cross_limb_unreliable_mask", model_kwargs["y"])
+        self.assertTrue(torch.equal(model_kwargs["y"]["cross_limb_unreliable_mask"], expected_unreliable))
+
+    def test_training_losses_clears_stale_cross_limb_unreliable_mask_when_no_mask_is_sampled(self):
+        batch_size, n_joints, n_feats, n_frames = 1, 3, 12, 4
+        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
+        model = _RecordingModel(subtree_mask=None)
+        x_start = torch.randn(batch_size, n_joints, n_feats, n_frames, dtype=torch.float32)
+        t = torch.tensor([1], dtype=torch.int64)
+        model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
+        model_kwargs["y"]["cross_limb_unreliable_mask"] = torch.ones(batch_size, n_frames, n_joints, dtype=torch.float32)
+
+        diffusion.training_losses(model, x_start, t, model_kwargs=model_kwargs)
+
+        self.assertNotIn("cross_limb_unreliable_mask", model_kwargs["y"])
 
     def test_anytop_forward_keeps_joint_key_padding_mask_padding_only(self):
         model = AnyTop(
@@ -220,6 +236,48 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertEqual(spatial_mask.shape, (2, model.num_heads, 4, 4))
         self.assertTrue(torch.equal(temporal_template, expected_template))
         self.assertTrue(torch.equal(temporal_mask, expected_mask))
+
+    def test_anytop_forward_normalizes_cross_limb_unreliable_mask_without_mutating_input(self):
+        model = AnyTop(
+            max_joints=4,
+            feature_len=13,
+            latent_dim=8,
+            ff_size=32,
+            num_layers=1,
+            num_heads=2,
+            dropout=0.0,
+            skip_t5=True,
+            cross_limb=True,
+        )
+        capture_decoder = _CaptureDecoder()
+        model.seqTransDecoder = capture_decoder
+        model.eval()
+
+        x = torch.randn(1, 4, 13, 3, dtype=torch.float32)
+        raw_unreliable = torch.tensor(
+            [[[0.0, 1.0, 0.0, 0.0],
+              [1.0, 0.0, 0.0, 0.0],
+              [0.0, 0.0, 1.0, 0.0]]],
+            dtype=torch.float32,
+        )
+        raw_copy = raw_unreliable.clone()
+        y = {
+            "joints_padding_mask": torch.ones(1, 1, 1, 5, 5, dtype=torch.float32),
+            "mask": torch.ones(1, 1, 1, 4, 4, dtype=torch.float32),
+            "tpos_first_frame": torch.randn(1, 4, 13, dtype=torch.float32),
+            "n_joints": torch.tensor([4], dtype=torch.int64),
+            "joints_names_embs": torch.zeros(1, 4, 512, dtype=torch.float32),
+            "cross_limb_unreliable_mask": raw_unreliable,
+        }
+
+        model(x, torch.tensor([1], dtype=torch.int64), y=y)
+
+        self.assertIsNotNone(capture_decoder.last_kwargs)
+        expected = torch.cat(
+            [torch.zeros(1, 1, 4, dtype=torch.float32), raw_unreliable], dim=1
+        ).transpose(0, 1).contiguous()
+        self.assertTrue(torch.equal(capture_decoder.last_kwargs["cross_limb_unreliable_mask"], expected))
+        self.assertTrue(torch.equal(y["cross_limb_unreliable_mask"], raw_copy))
 
     def test_anytop_sample_subtree_joint_mask_train_matches_sequential_baseline(self):
         model = AnyTop(
