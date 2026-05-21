@@ -344,6 +344,26 @@ class CrossLimbTemporalBlock(nn.Module):
         self.time_emb_scale = nn.Parameter(torch.zeros(1))
         self.reliability_bias = nn.Parameter(torch.zeros(1))
         self.norm_cl = nn.LayerNorm(d_model)
+        self.register_buffer('_cached_time_emb', torch.empty(0), persistent=False)
+
+    def _get_cached_time_embedding(
+        self,
+        length: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Tensor:
+        cached = self._cached_time_emb
+        if (
+            cached.ndim == 2
+            and cached.shape == (length, self.latent_dim)
+            and cached.device == device
+            and cached.dtype == dtype
+        ):
+            return cached
+
+        cached = _sin_time_embedding(length, self.latent_dim, device, dtype)
+        self._cached_time_emb = cached
+        return cached
 
     def forward(
         self,
@@ -390,7 +410,7 @@ class CrossLimbTemporalBlock(nn.Module):
         # --- Latent temporal self-attention across T (same windowed mask).
         # attention batch = B*K with index (b*K + k); mask -> (B*K*H, T, T).
         zt_in = bz.permute(1, 2, 0, 3).reshape(T, B * K, d)               # (T, B*K, d_cl)
-        time_emb = _sin_time_embedding(T, d, zt_in.device, zt_in.dtype).unsqueeze(1)
+        time_emb = self._get_cached_time_embedding(T, zt_in.device, zt_in.dtype).unsqueeze(1)
         zt_in = zt_in + self.time_emb_scale * time_emb
         tt = temporal_template.reshape(B, H, T, T)
         tt = tt.unsqueeze(1).expand(B, K, H, T, T).reshape(B * K * H, T, T)

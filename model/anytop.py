@@ -183,15 +183,18 @@ class AnyTop(nn.Module):
             raw_cross_limb_unreliable_mask = y.get('cross_limb_unreliable_mask')
             if raw_cross_limb_unreliable_mask is not None:
                 cross_limb_unreliable_mask = raw_cross_limb_unreliable_mask.to(device=x.device, dtype=x.dtype)
-                expected_shape = (bs, nframes, njoints)
-                if cross_limb_unreliable_mask.shape != expected_shape:
+                raw_expected_shape = (bs, nframes, njoints)
+                prepared_expected_shape = (nframes + 1, bs, njoints)
+                if cross_limb_unreliable_mask.shape == raw_expected_shape:
+                    reliable_tpose = torch.zeros((bs, 1, njoints), device=x.device, dtype=x.dtype)
+                    cross_limb_unreliable_mask = torch.cat([reliable_tpose, cross_limb_unreliable_mask], dim=1)
+                    cross_limb_unreliable_mask = cross_limb_unreliable_mask.transpose(0, 1).contiguous()
+                elif cross_limb_unreliable_mask.shape != prepared_expected_shape:
                     raise ValueError(
                         "y['cross_limb_unreliable_mask'] must have shape "
-                        f"{expected_shape}, got {tuple(cross_limb_unreliable_mask.shape)}"
+                        f"{raw_expected_shape} or {prepared_expected_shape}, got "
+                        f"{tuple(cross_limb_unreliable_mask.shape)}"
                     )
-                reliable_tpose = torch.zeros((bs, 1, njoints), device=x.device, dtype=x.dtype)
-                cross_limb_unreliable_mask = torch.cat([reliable_tpose, cross_limb_unreliable_mask], dim=1)
-                cross_limb_unreliable_mask = cross_limb_unreliable_mask.transpose(0, 1).contiguous()
 
         output = self.seqTransDecoder(
             tgt=x,

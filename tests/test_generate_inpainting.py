@@ -202,7 +202,13 @@ def test_sample_batch_injects_cross_limb_unreliable_mask_for_single_inpaint_pass
     )
 
     routed_y = diffusion.last_kwargs["model_kwargs"]["y"]
-    expected = inpaint_mask.squeeze(2).permute(0, 2, 1).contiguous()
+    expected = torch.cat(
+        [
+            torch.zeros(1, 1, 3, dtype=inpaint_mask.dtype),
+            inpaint_mask.squeeze(2).permute(0, 2, 1).contiguous(),
+        ],
+        dim=1,
+    ).transpose(0, 1).contiguous()
     assert torch.equal(routed_y["cross_limb_unreliable_mask"], expected)
     assert torch.equal(routed_y["existing"], model_kwargs["y"]["existing"])
     assert "cross_limb_unreliable_mask" not in model_kwargs["y"]
@@ -253,7 +259,13 @@ def test_sample_batch_uses_two_pass_ddpm_for_inpaint_with_skip_timesteps() -> No
     assert torch.equal(second_kwargs["inpaint_reference"], varied_motion)
     assert torch.equal(second_kwargs["inpaint_mask"], inpaint_mask)
     assert tuple(second_kwargs["noise"].shape) == sample_shape
-    expected = inpaint_mask.squeeze(2).permute(0, 2, 1).contiguous()
+    expected = torch.cat(
+        [
+            torch.zeros(1, 1, 3, dtype=inpaint_mask.dtype),
+            inpaint_mask.squeeze(2).permute(0, 2, 1).contiguous(),
+        ],
+        dim=1,
+    ).transpose(0, 1).contiguous()
     assert torch.equal(second_kwargs["model_kwargs"]["y"]["cross_limb_unreliable_mask"], expected)
     assert torch.equal(second_kwargs["model_kwargs"]["y"]["existing"], model_kwargs["y"]["existing"])
     assert "cross_limb_unreliable_mask" not in model_kwargs["y"]

@@ -279,6 +279,46 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertTrue(torch.equal(capture_decoder.last_kwargs["cross_limb_unreliable_mask"], expected))
         self.assertTrue(torch.equal(y["cross_limb_unreliable_mask"], raw_copy))
 
+    def test_anytop_forward_accepts_prepared_cross_limb_unreliable_mask_without_mutating_input(self):
+        model = AnyTop(
+            max_joints=4,
+            feature_len=13,
+            latent_dim=8,
+            ff_size=32,
+            num_layers=1,
+            num_heads=2,
+            dropout=0.0,
+            skip_t5=True,
+            cross_limb=True,
+        )
+        capture_decoder = _CaptureDecoder()
+        model.seqTransDecoder = capture_decoder
+        model.eval()
+
+        x = torch.randn(1, 4, 13, 3, dtype=torch.float32)
+        prepared_unreliable = torch.tensor(
+            [[[0.0, 0.0, 0.0, 0.0]],
+             [[0.0, 1.0, 0.0, 0.0]],
+             [[1.0, 0.0, 0.0, 0.0]],
+             [[0.0, 0.0, 1.0, 0.0]]],
+            dtype=torch.float32,
+        )
+        prepared_copy = prepared_unreliable.clone()
+        y = {
+            "joints_padding_mask": torch.ones(1, 1, 1, 5, 5, dtype=torch.float32),
+            "mask": torch.ones(1, 1, 1, 4, 4, dtype=torch.float32),
+            "tpos_first_frame": torch.randn(1, 4, 13, dtype=torch.float32),
+            "n_joints": torch.tensor([4], dtype=torch.int64),
+            "joints_names_embs": torch.zeros(1, 4, 512, dtype=torch.float32),
+            "cross_limb_unreliable_mask": prepared_unreliable,
+        }
+
+        model(x, torch.tensor([1], dtype=torch.int64), y=y)
+
+        self.assertIsNotNone(capture_decoder.last_kwargs)
+        self.assertTrue(torch.equal(capture_decoder.last_kwargs["cross_limb_unreliable_mask"], prepared_unreliable))
+        self.assertTrue(torch.equal(y["cross_limb_unreliable_mask"], prepared_copy))
+
     def test_anytop_sample_subtree_joint_mask_train_matches_sequential_baseline(self):
         model = AnyTop(
             max_joints=9,
