@@ -1753,13 +1753,6 @@ class GaussianDiffusion:
             y['reference_cond_mask'] = cond_mask
             return
 
-        clean_prob = float(getattr(model_for_hooks, 'reference_clean_prob', 0.0))
-        keep_clean_mask = cond_mask & (th.rand(batch_size, device=device) < clean_prob)
-        degrade_mask = cond_mask & ~keep_clean_mask
-
-        subtree_apply_mask = degrade_mask & (
-            th.rand(batch_size, device=device) < float(getattr(model_for_hooks, 'reference_subtree_prob', 0.0))
-        )
         subtree_mask = self._sample_reference_subtree_mask(
             y,
             batch_size,
@@ -1767,40 +1760,34 @@ class GaussianDiffusion:
             float(getattr(model_for_hooks, 'reference_subtree_budget', 0.0)),
             device,
         )
-        if subtree_mask is not None and bool(subtree_apply_mask.any()):
-            subtree_mask = subtree_mask & subtree_apply_mask[:, None]
+        if subtree_mask is not None:
+            subtree_mask = subtree_mask & cond_mask[:, None]
             reference_motion = th.where(
                 subtree_mask[:, :, None, None],
                 th.zeros_like(reference_motion),
                 reference_motion,
             )
 
-        noise_prob = float(getattr(model_for_hooks, 'reference_noise_prob', 0.0))
-        noise_apply_mask = degrade_mask & (th.rand(batch_size, device=device) < noise_prob)
-        if bool(noise_apply_mask.any()):
-            sigma_min = float(getattr(model_for_hooks, 'reference_noise_sigma_min', 0.0))
-            sigma_max = float(getattr(model_for_hooks, 'reference_noise_sigma_max', sigma_min))
-            sigma = sigma_min + (sigma_max - sigma_min) * th.rand(batch_size, device=device, dtype=x_start.dtype)
-            sigma = sigma * noise_apply_mask.to(dtype=x_start.dtype)
+        sigma_min = float(getattr(model_for_hooks, 'reference_noise_sigma_min', 0.0))
+        sigma_max = float(getattr(model_for_hooks, 'reference_noise_sigma_max', sigma_min))
+        sigma = sigma_min + (sigma_max - sigma_min) * th.rand(batch_size, device=device, dtype=x_start.dtype)
+        sigma = sigma * cond_mask.to(dtype=x_start.dtype)
+        if bool(cond_mask.any()):
             reference_motion = reference_motion + th.randn_like(reference_motion) * sigma[:, None, None, None]
 
-        jitter_prob = float(getattr(model_for_hooks, 'reference_jitter_prob', 0.0))
-        jitter_apply_mask = degrade_mask & (th.rand(batch_size, device=device) < jitter_prob)
-        if bool(jitter_apply_mask.any()) and nframes > 1:
+        if bool(cond_mask.any()) and nframes > 1:
             frame_index = th.arange(nframes, device=device).view(1, 1, 1, nframes)
             frame_offset = th.randint(-1, 2, (batch_size, nframes), device=device)
             frame_offset[:, 0] = 0
             jitter_index = (frame_index + frame_offset.view(batch_size, 1, 1, nframes)).clamp_(0, nframes - 1)
             jittered = th.gather(reference_motion, dim=-1, index=jitter_index.expand(-1, njoints, reference_motion.shape[2], -1))
             reference_motion = th.where(
-                jitter_apply_mask[:, None, None, None],
+                cond_mask[:, None, None, None],
                 jittered,
                 reference_motion,
             )
 
-        hold_prob = float(getattr(model_for_hooks, 'reference_hold_prob', 0.0))
-        hold_apply_mask = degrade_mask & (th.rand(batch_size, device=device) < hold_prob)
-        if bool(hold_apply_mask.any()) and nframes > 1:
+        if bool(cond_mask.any()) and nframes > 1:
             dropped = reference_motion.clone()
             hold_rates = 0.05 + 0.20 * th.rand(batch_size, device=device)
             hold_mask = th.rand(batch_size, nframes, device=device) < hold_rates[:, None]
@@ -1810,14 +1797,12 @@ class GaussianDiffusion:
                 if bool(frame_hold.any()):
                     dropped[frame_hold, :, :, frame_index] = dropped[frame_hold, :, :, frame_index - 1]
             reference_motion = th.where(
-                hold_apply_mask[:, None, None, None],
+                cond_mask[:, None, None, None],
                 dropped,
                 reference_motion,
             )
 
-        smooth_prob = float(getattr(model_for_hooks, 'reference_smooth_prob', 0.0))
-        smooth_apply_mask = degrade_mask & (th.rand(batch_size, device=device) < smooth_prob)
-        if bool(smooth_apply_mask.any()) and nframes > 2:
+        if bool(cond_mask.any()) and nframes > 2:
             smooth_input = reference_motion.permute(0, 1, 2, 3).reshape(batch_size * njoints, reference_motion.shape[2], nframes)
             smoothed = F.avg_pool1d(
                 F.pad(smooth_input, (1, 1), mode='replicate'),
@@ -1825,7 +1810,7 @@ class GaussianDiffusion:
                 stride=1,
             ).reshape(batch_size, njoints, reference_motion.shape[2], nframes)
             reference_motion = th.where(
-                smooth_apply_mask[:, None, None, None],
+                cond_mask[:, None, None, None],
                 smoothed,
                 reference_motion,
             )

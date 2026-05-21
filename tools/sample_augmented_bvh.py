@@ -11,8 +11,12 @@ applied faithfully in the same order as dataset.py:
   4. loop padding      — random phase offset circular tile for loop motions
      (zero-pad for non-loop clips that are shorter than num_frames)
 
+Optionally, the script can also export the training-time reference-conditioning
+preview motion (forced degradation: subtree + noise + jitter + hold + smooth).
+
 Exported filenames encode the applied augmentations, e.g.:
   Horse___Gallop_123_spd0.87_mirror_loop7.bvh
+        Horse___Gallop_123_spd0.87_refsub25+refnoise061+refjit+refhold12+refsmooth_reference.bvh
 
 Usage
 -----
@@ -21,6 +25,7 @@ Usage
         --n 10 \\
         --aug-speed-range 0.2 \\
         --aug-mirror-prob 0.5 \\
+        --export-reference-conditioning \
         --num-frames 60 \\
         --objects-subset quadropeds_test \\
         --output-dir ./augmented_bvh_samples
@@ -37,6 +42,11 @@ Arguments
   --seed              RNG seed for reproducibility (default: 0)
   --dataset-dir       Dataset root (auto-detected if omitted)
   --output-dir        Where to write BVH files (default: ./augmented_bvh_samples)
+    --export-reference-conditioning
+                                            Also export the training-time reference-conditioning motion
+                                            built from the already-augmented normalized sample.
+                                            All corruption modes (subtree, noise, jitter, hold, smooth)
+                                            are always enabled.
 """
 from __future__ import annotations
 
@@ -159,6 +169,119 @@ def _export_bvh(
     return True
 
 
+def _sample_structured_dropout_mask(batch_size: int, drop_prob: float, rng: np.random.Generator) -> np.ndarray:
+    """NumPy mirror of GaussianDiffusion._sample_structured_dropout_mask."""
+    if drop_prob <= 0.0 or batch_size <= 0:
+        return np.zeros(batch_size, dtype=bool)
+    expected = float(drop_prob) * float(batch_size)
+    drop_count = int(np.floor(expected))
+    if expected > drop_count and float(rng.random()) < (expected - drop_count):
+        drop_count += 1
+    drop_count = min(max(drop_count, 0), batch_size)
+    if drop_count == 0:
+        return np.zeros(batch_size, dtype=bool)
+    drop_mask = np.zeros(batch_size, dtype=bool)
+    drop_mask[rng.permutation(batch_size)[:drop_count]] = True
+    return drop_mask
+
+
+def _apply_reference_conditioning_preview(
+    motion_norm: np.ndarray,
+    parents: list[int],
+    candidate_root_mask: np.ndarray,
+    rng: np.random.Generator,
+    args: argparse.Namespace,
+) -> tuple[np.ndarray | None, dict[str, object]]:
+    """Mirror training-time reference conditioning for a single sample.
+
+    The implementation intentionally follows GaussianDiffusion.
+    _build_reference_conditioning() operation order so the exported preview uses
+    the same normalized-space corruption sequence as training.
+    """
+    reference_motion = np.asarray(motion_norm, dtype=np.float32).copy()
+    nframes = reference_motion.shape[0]
+    info: dict[str, object] = {
+        "conditioned": False,
+        "subtree_applied": False,
+        "masked_joint_indices": np.zeros(0, dtype=np.int64),
+        "noise_applied": False,
+        "noise_sigma": 0.0,
+        "jitter_applied": False,
+        "hold_applied": False,
+        "hold_rate": 0.0,
+        "held_frame_indices": np.zeros(0, dtype=np.int64),
+        "smooth_applied": False,
+    }
+
+    # Preview export intentionally forces the conditioned branch so we can
+    # inspect the fixed training-time corruption path on demand.
+    dropout_mask = _sample_structured_dropout_mask(1, 0.0, rng)
+    cond_mask = ~dropout_mask
+    info["conditioned"] = bool(cond_mask[0])
+    if not info["conditioned"]:
+        return None, info
+
+    subtree_mask = sample_subtree_joint_mask(
+        parents=list(parents),
+        candidate_root_mask=np.asarray(candidate_root_mask[: len(parents)], dtype=bool),
+        joint_mask_prob=args.reference_subtree_budget,
+        rng=rng,
+    )
+    if subtree_mask is not None:
+        reference_motion[:, subtree_mask, :] = 0.0
+        info["subtree_applied"] = True
+        info["masked_joint_indices"] = np.flatnonzero(subtree_mask).astype(np.int64, copy=False)
+
+    sigma_min = float(args.reference_noise_sigma_min)
+    sigma_max = float(max(args.reference_noise_sigma_max, sigma_min))
+    sigma = sigma_min + (sigma_max - sigma_min) * float(rng.random())
+    reference_motion = reference_motion + rng.standard_normal(reference_motion.shape, dtype=np.float32) * np.float32(sigma)
+    info["noise_applied"] = True
+    info["noise_sigma"] = float(sigma)
+
+    if nframes > 1:
+        frame_offset = rng.integers(-1, 2, size=nframes, endpoint=False)
+        frame_offset[0] = 0
+        jitter_index = np.clip(np.arange(nframes, dtype=np.int64) + frame_offset, 0, nframes - 1)
+        reference_motion = reference_motion[jitter_index]
+        info["jitter_applied"] = True
+
+    if nframes > 1:
+        dropped = reference_motion.copy()
+        hold_rate = 0.05 + 0.20 * float(rng.random())
+        hold_mask = rng.random(nframes) < hold_rate
+        hold_mask[0] = False
+        for frame_index in range(1, nframes):
+            if hold_mask[frame_index]:
+                dropped[frame_index] = dropped[frame_index - 1]
+        reference_motion = dropped
+        info["hold_applied"] = True
+        info["hold_rate"] = float(hold_rate)
+        info["held_frame_indices"] = np.flatnonzero(hold_mask).astype(np.int64, copy=False)
+
+    if nframes > 2:
+        padded = np.pad(reference_motion, ((1, 1), (0, 0), (0, 0)), mode="edge")
+        reference_motion = (padded[:-2] + padded[1:-1] + padded[2:]) / np.float32(3.0)
+        info["smooth_applied"] = True
+
+    return reference_motion.astype(np.float32, copy=False), info
+
+
+def _format_reference_preview_tags(info: dict[str, object], args: argparse.Namespace) -> list[str]:
+    tags = []
+    if bool(info.get("subtree_applied")):
+        tags.append(f"refsub{int(round(args.reference_subtree_budget * 100))}")
+    if bool(info.get("noise_applied")):
+        tags.append(f"refnoise{int(round(float(info.get('noise_sigma', 0.0)) * 1000)):03d}")
+    if bool(info.get("jitter_applied")):
+        tags.append("refjit")
+    if bool(info.get("hold_applied")):
+        tags.append(f"refhold{int(round(float(info.get('hold_rate', 0.0)) * 100)):02d}")
+    if bool(info.get("smooth_applied")):
+        tags.append("refsmooth")
+    return tags
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -189,6 +312,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--joint-mask-prob", type=float, default=0.15,
                    help="Subtree joint mask probability for masked export (0 = disabled). "
                         "Matches --joint_mask_prob in training. (default: 0.15)")
+    p.add_argument("--export-reference-conditioning", action="store_true",
+                   help="Also export the training-time reference-conditioning preview motion. "
+                        "Always exports the conditioned reference corruption path "
+                        "(subtree + noise + jitter + hold + smooth) built from the "
+                        "already-augmented normalized sample.")
+    p.add_argument("--reference-subtree-budget", default=0.25, type=float,
+                   help="Fraction of non-root joints available to reference subtree corruption.")
+    p.add_argument("--reference-noise-sigma-min", default=0.08, type=float,
+                   help="Minimum Gaussian noise sigma used for reference preview export.")
+    p.add_argument("--reference-noise-sigma-max", default=0.15, type=float,
+                   help="Maximum Gaussian noise sigma used for reference preview export.")
     return p.parse_args()
 
 
@@ -362,6 +496,45 @@ def main() -> int:
                 failed += 1
 
             # ----------------------------------------------------------------
+            # Reference conditioning preview export (if enabled)
+            # ----------------------------------------------------------------
+            if args.export_reference_conditioning:
+                reference_rng = np.random.default_rng(args.seed + 100000 + idx)
+                reference_motion_norm, ref_info = _apply_reference_conditioning_preview(
+                    motion_norm,
+                    list(parents),
+                    cond_dict[object_type]["joint_mask_candidate_roots"],
+                    reference_rng,
+                    args,
+                )
+                if reference_motion_norm is None:
+                    print("     └─ reference preview skipped (dropped by reference_uncond_prob)")
+                else:
+                    reference_motion_raw = (
+                        reference_motion_norm[:m_length] * std[None, :, :] + mean[None, :, :]
+                    ).astype(np.float32)
+                    ref_tags = list(tags) + _format_reference_preview_tags(ref_info, args)
+                    ref_fname = f"{stem}__{'+'.join(ref_tags)}_reference.bvh"
+                    ref_path = output_dir / ref_fname
+
+                    ok_ref = _export_bvh(
+                        ref_path,
+                        reference_motion_raw,
+                        list(parents),
+                        np.asarray(offsets, dtype=np.float32),
+                        joints_names,
+                        motion_metadata,
+                        object_cond=cond_dict[object_type],
+                        mirror_export_compat=bool(aug_info.get("mirror_applied")),
+                    )
+                    if ok_ref:
+                        print(f"     ├─ reference → {ref_path.name}")
+                        exported += 1
+                    else:
+                        print("     └─ reference export FAILED")
+                        failed += 1
+
+            # ----------------------------------------------------------------
             # Subtree joint mask export (if enabled)
             # ----------------------------------------------------------------
             if args.joint_mask_prob > 0.0:
@@ -393,15 +566,13 @@ def main() -> int:
                         mirror_export_compat=bool(aug_info.get("mirror_applied")),
                     )
                     if ok2:
-                        masked_joint_str = ", ".join(joints_names[i] for i in np.flatnonzero(mask))
-                        print(f"     ├─ masked  → {masked_path.name}")
-                        print(f"     └─ masked joints [{int(mask.sum())}]: {masked_joint_str}")
+                        print(f"     └─ masked  → {masked_path.name}")
                         exported += 1
                     else:
                         print(f"     └─ masked export FAILED")
                         failed += 1
                 else:
-                    print(f"     └─ no subtree fit the budget — skip masked export")
+                    pass
 
         except Exception as exc:
             print(f"ERROR: {exc}")

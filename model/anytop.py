@@ -55,16 +55,10 @@ class AnyTop(nn.Module):
         self.joint_mask_prob=float(kargs.get('joint_mask_prob', 0.0))
         self.reference_cond=bool(kargs.get('reference_cond', False))
         self.reference_encoder_layers=int(kargs.get('reference_encoder_layers', 2))
-        self.reference_uncond_prob=float(kargs.get('reference_uncond_prob', 0.25))
-        self.reference_clean_prob=float(kargs.get('reference_clean_prob', 0.1))
-        self.reference_subtree_prob=float(kargs.get('reference_subtree_prob', 0.35))
+        self.reference_uncond_prob=float(kargs.get('reference_uncond_prob', 0.5))
         self.reference_subtree_budget=float(kargs.get('reference_subtree_budget', 0.35))
-        self.reference_noise_prob=float(kargs.get('reference_noise_prob', 0.75))
         self.reference_noise_sigma_min=float(kargs.get('reference_noise_sigma_min', 0.02))
         self.reference_noise_sigma_max=float(kargs.get('reference_noise_sigma_max', 0.12))
-        self.reference_jitter_prob=float(kargs.get('reference_jitter_prob', 0.35))
-        self.reference_hold_prob=float(kargs.get('reference_hold_prob', 0.25))
-        self.reference_smooth_prob=float(kargs.get('reference_smooth_prob', 0.25))
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
         if self.reference_encoder_layers < 0:
@@ -73,13 +67,7 @@ class AnyTop(nn.Module):
             )
         for prob_name in (
             'reference_uncond_prob',
-            'reference_clean_prob',
-            'reference_subtree_prob',
             'reference_subtree_budget',
-            'reference_noise_prob',
-            'reference_jitter_prob',
-            'reference_hold_prob',
-            'reference_smooth_prob',
         ):
             prob_value = float(getattr(self, prob_name))
             if not 0.0 <= prob_value <= 1.0:

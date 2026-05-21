@@ -191,16 +191,10 @@ def get_gmdm_args(args):
             'joint_mask_prob': getattr(args, 'joint_mask_prob', 0.0),
             'reference_cond': getattr(args, 'reference_cond', False),
             'reference_encoder_layers': getattr(args, 'reference_encoder_layers', 2),
-            'reference_uncond_prob': getattr(args, 'reference_uncond_prob', 0.25),
-            'reference_clean_prob': getattr(args, 'reference_clean_prob', 0.1),
-            'reference_subtree_prob': getattr(args, 'reference_subtree_prob', 0.35),
-            'reference_subtree_budget': getattr(args, 'reference_subtree_budget', 0.35),
-            'reference_noise_prob': getattr(args, 'reference_noise_prob', 0.75),
-            'reference_noise_sigma_min': getattr(args, 'reference_noise_sigma_min', 0.02),
-            'reference_noise_sigma_max': getattr(args, 'reference_noise_sigma_max', 0.12),
-            'reference_jitter_prob': getattr(args, 'reference_jitter_prob', 0.35),
-            'reference_hold_prob': getattr(args, 'reference_hold_prob', 0.25),
-            'reference_smooth_prob': getattr(args, 'reference_smooth_prob', 0.25),
+            'reference_uncond_prob': getattr(args, 'reference_uncond_prob', 0.5),
+            'reference_subtree_budget': getattr(args, 'reference_subtree_budget', 0.25),
+            'reference_noise_sigma_min': getattr(args, 'reference_noise_sigma_min', 0.08),
+            'reference_noise_sigma_max': getattr(args, 'reference_noise_sigma_max', 0.15),
             'root_input_feats': 13}
 
 def create_gaussian_diffusion(args):
