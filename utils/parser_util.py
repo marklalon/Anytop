@@ -112,6 +112,30 @@ def add_model_options(parser):
                             "cross-limb parameter count.")
     group.add_argument("--dropout_prob", default=0.1, type=float,
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
+    group.add_argument("--reference_cond", action='store_true',
+                       help="Enable ControlNet-style reference conditioning through a dedicated reference encoder and decoder cross-attention path.")
+    group.add_argument("--reference_encoder_layers", default=2, type=int,
+                       help="Number of temporal self-attention layers in the reference encoder (0 = InputProcess only).")
+    group.add_argument("--reference_uncond_prob", default=0.25, type=float,
+                       help="Classifier-free dropout probability for reference conditioning during training.")
+    group.add_argument("--reference_clean_prob", default=0.1, type=float,
+                       help="Probability of keeping a conditioned reference sample clean during training instead of degrading it.")
+    group.add_argument("--reference_subtree_prob", default=0.35, type=float,
+                       help="Probability of applying subtree corruption to a conditioned reference sample during training.")
+    group.add_argument("--reference_subtree_budget", default=0.25, type=float,
+                       help="Fraction of non-root joints available to subtree corruption when subtree degradation is selected.")
+    group.add_argument("--reference_noise_prob", default=0.75, type=float,
+                       help="Probability of adding Gaussian noise to a conditioned reference sample during training.")
+    group.add_argument("--reference_noise_sigma_min", default=0.02, type=float,
+                       help="Minimum Gaussian noise sigma used for reference degradation.")
+    group.add_argument("--reference_noise_sigma_max", default=0.12, type=float,
+                       help="Maximum Gaussian noise sigma used for reference degradation.")
+    group.add_argument("--reference_jitter_prob", default=0.35, type=float,
+                       help="Probability of applying light temporal jitter to a conditioned reference sample during training.")
+    group.add_argument("--reference_hold_prob", default=0.25, type=float,
+                       help="Probability of applying hold-last frame dropout to a conditioned reference sample during training.")
+    group.add_argument("--reference_smooth_prob", default=0.25, type=float,
+                       help="Probability of applying temporal smoothing to a conditioned reference sample during training.")
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')
@@ -238,7 +262,12 @@ def add_generate_options(parser):
                        help="Number of timesteps to skip when using --reference_motion. Higher = more faithful to reference. "
                             "Range: 0~sampling_steps. Default: 80. When combined with --inpaint_*, a two-pass pipeline is "
                             "used: pass 1 applies skip_timesteps (img2img) to the whole reference, pass 2 inpaints the "
-                            "masked region on the full schedule using the pass-1 result as the clamped known region.")
+                           "masked region on the full schedule using the pass-1 result as the clamped known region. "
+                           "When --reference_mode controlnet is selected, this must be 0.")
+    group.add_argument("--reference_mode", default="img2img", choices=["img2img", "controlnet"],
+                       help="How to use --reference_motion. img2img = noise the reference into x_t. controlnet = keep the diffusion state on the full schedule and feed the reference through a separate conditioning branch.")
+    group.add_argument("--reference_scale", default=2.0, type=float,
+                       help="Classifier-free guidance scale for --reference_mode controlnet. Ignored in img2img mode.")
     group.add_argument("--inpaint_joints", default="", type=str,
                        help="Motion inpainting (mask painting): comma-separated joint names whose motion is "
                             "REGENERATED while the rest is held to --reference_motion. Names accept any of the "

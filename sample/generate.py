@@ -37,8 +37,10 @@ from os.path import join as pjoin
 from utils import dist_util
 from utils.fixseed import fixseed
 from utils.model_util import (
+    ClassifierFreeReferenceModel,
     create_model_and_diffusion_general_skeleton,
     load_model,
+    model_supports_reference_conditioning,
     resolve_t5_out_dim,
 )
 from utils.parser_util import generate_args
@@ -46,6 +48,24 @@ from utils.misc import infer_object_type_from_filename
 
 
 _REFERENCE_MOTION_PREPROCESS_SUFFIXES = {'.fbx', '.glb', '.gltf'}
+
+
+def validate_reference_mode_configuration(reference_mode, reference_motion_path=None, skip_timesteps=0, model=None):
+    mode = str(reference_mode or 'img2img').strip().lower()
+    if mode not in {'img2img', 'controlnet'}:
+        raise ValueError(f"Unsupported reference_mode '{reference_mode}'.")
+    if mode == 'controlnet':
+        if reference_motion_path is None:
+            raise ValueError("--reference_mode controlnet requires --reference_motion.")
+        if int(skip_timesteps) != 0:
+            raise ValueError(
+                "--reference_mode controlnet requires --skip_timesteps 0 because the diffusion state must run the full schedule."
+            )
+        if model is not None and not model_supports_reference_conditioning(model):
+            raise ValueError(
+                "Loaded checkpoint does not support --reference_mode controlnet. Load or retrain a checkpoint with --reference_cond enabled."
+            )
+    return mode
 
 
 def _lookup_object_type_case_insensitive(object_types, requested_type):
@@ -294,6 +314,8 @@ def _sample_batch(
     seed,
     device,
     reference_motion=None,
+    reference_mode='img2img',
+    reference_scale=2.0,
     skip_timesteps=0,
     inpaint_mask=None,
     repaint_jump_length=0,
@@ -303,6 +325,12 @@ def _sample_batch(
         raise ValueError("repaint_jump_length must be >= 0")
     if repaint_jump_n_sample < 1:
         raise ValueError("repaint_jump_n_sample must be >= 1")
+
+    reference_mode = validate_reference_mode_configuration(
+        reference_mode,
+        reference_motion_path=reference_motion,
+        skip_timesteps=skip_timesteps,
+    )
 
     inpainting = inpaint_mask is not None
     if inpainting:
@@ -336,25 +364,38 @@ def _sample_batch(
         )
         return torch.cat([reliable_tpose, raw_cross_limb_unreliable_mask], dim=1).transpose(0, 1).contiguous()
 
-    def _copy_model_kwargs_with_cross_limb_unreliable_mask(cross_limb_unreliable_mask_):
+    def _copy_model_kwargs_for_loop(cross_limb_unreliable_mask_, reference_motion_, use_reference_conditioning_):
         if model_kwargs is None:
-            return None
-        loop_model_kwargs = dict(model_kwargs)
-        loop_y = dict(model_kwargs.get('y', {}))
+            loop_model_kwargs = {}
+            loop_y = {}
+        else:
+            loop_model_kwargs = dict(model_kwargs)
+            loop_y = dict(model_kwargs.get('y', {}))
         if cross_limb_unreliable_mask_ is None:
             loop_y.pop('cross_limb_unreliable_mask', None)
         else:
             loop_y['cross_limb_unreliable_mask'] = cross_limb_unreliable_mask_
+        if use_reference_conditioning_:
+            loop_y['reference_motion'] = reference_motion_
+            loop_y['reference_scale'] = float(reference_scale)
+        else:
+            loop_y.pop('reference_motion', None)
+            loop_y.pop('reference_scale', None)
+            loop_y.pop('reference_cond_mask', None)
         loop_model_kwargs['y'] = loop_y
         return loop_model_kwargs
 
-    def _run_loop(noise, init_image, skip_ts, inpaint_mask_, inpaint_reference_, cross_limb_unreliable_mask_):
+    def _run_loop(noise, init_image, skip_ts, inpaint_mask_, inpaint_reference_, cross_limb_unreliable_mask_, use_reference_conditioning_):
         common_kwargs = dict(
-            model=model,
+            model=reference_cfg_model if use_reference_conditioning_ else model,
             shape=sample_shape,
             noise=noise,
             clip_denoised=False,
-            model_kwargs=_copy_model_kwargs_with_cross_limb_unreliable_mask(cross_limb_unreliable_mask_),
+            model_kwargs=_copy_model_kwargs_for_loop(
+                cross_limb_unreliable_mask_,
+                reference_conditioning_motion,
+                use_reference_conditioning_,
+            ),
             device=device,
             init_image=init_image,
             skip_timesteps=skip_ts,
@@ -392,7 +433,13 @@ def _sample_batch(
             )
         raise ValueError(f'Unknown sampling_method: {sampling_method}')
 
-    if inpainting and skip_timesteps > 0:
+    reference_conditioning_motion = None
+    reference_cfg_model = model
+    if reference_mode == 'controlnet' and reference_motion is not None:
+        reference_conditioning_motion = reference_motion.to(device, non_blocking=True)
+        reference_cfg_model = ClassifierFreeReferenceModel(model)
+
+    if inpainting and reference_mode == 'img2img' and skip_timesteps > 0:
         # Combined inpaint + skip_timesteps: a two-pass pipeline equivalent to
         # (1) img2img-varying the whole reference with skip_timesteps, then
         # (2) RePaint-inpainting the masked region using that varied motion as
@@ -417,6 +464,7 @@ def _sample_batch(
             inpaint_mask_=None,
             inpaint_reference_=None,
             cross_limb_unreliable_mask_=None,
+            use_reference_conditioning_=False,
         )
 
         # Pass 2 (inpaint): full schedule from pure noise, clamping the known
@@ -431,6 +479,7 @@ def _sample_batch(
             inpaint_mask_=mask,
             inpaint_reference_=varied,
             cross_limb_unreliable_mask_=prepared_cross_limb_unreliable_mask,
+            use_reference_conditioning_=False,
         )
 
     fixseed(seed)
@@ -450,6 +499,17 @@ def _sample_batch(
             inpaint_mask_=mask,
             inpaint_reference_=reference_motion.to(device, non_blocking=True),
             cross_limb_unreliable_mask_=prepared_cross_limb_unreliable_mask,
+            use_reference_conditioning_=reference_mode == 'controlnet',
+        )
+    if reference_mode == 'controlnet' and reference_motion is not None:
+        return _run_loop(
+            noise=torch.randn(sample_shape, device=device),
+            init_image=None,
+            skip_ts=0,
+            inpaint_mask_=None,
+            inpaint_reference_=None,
+            cross_limb_unreliable_mask_=None,
+            use_reference_conditioning_=True,
         )
     if reference_motion is not None and skip_timesteps > 0:
         # img2img-style: noise the whole reference to an intermediate step.
@@ -462,6 +522,7 @@ def _sample_batch(
             inpaint_mask_=None,
             inpaint_reference_=None,
             cross_limb_unreliable_mask_=None,
+            use_reference_conditioning_=False,
         )
     # Plain generation: no reference => full denoising from pure noise.
     return _run_loop(
@@ -471,6 +532,7 @@ def _sample_batch(
         inpaint_mask_=None,
         inpaint_reference_=None,
         cross_limb_unreliable_mask_=None,
+        use_reference_conditioning_=False,
     )
 
 
@@ -479,6 +541,16 @@ def main(args=None, cond_dict=None):
         args = generate_args()
 
     fixseed(args.seed)
+
+    skip_timesteps = int(getattr(args, 'skip_timesteps', 80))
+    try:
+        reference_mode = validate_reference_mode_configuration(
+            getattr(args, 'reference_mode', 'img2img'),
+            reference_motion_path=getattr(args, 'reference_motion', None),
+            skip_timesteps=skip_timesteps,
+        )
+    except ValueError as exc:
+        sys.exit(f"ERROR: {exc}")
 
     # Fail fast (before the ~30s model load) if inpaint flags are set without a
     # reference motion: the masked region needs a known region to clamp to,
@@ -553,6 +625,15 @@ def main(args=None, cond_dict=None):
     elif 'model' in state_dict:
         state_dict = state_dict['model']
     load_model(model, state_dict)
+    try:
+        validate_reference_mode_configuration(
+            reference_mode,
+            reference_motion_path=getattr(args, 'reference_motion', None),
+            skip_timesteps=skip_timesteps,
+            model=model,
+        )
+    except ValueError as exc:
+        sys.exit(f"ERROR: {exc}")
 
     print('Validating precomputed joint-name embeddings from cond.npy...')
     ensure_joint_name_embeddings(
@@ -565,7 +646,7 @@ def main(args=None, cond_dict=None):
 
     ddim_eta = float(getattr(args, 'ddim_eta', 0.0))
     reference_motion_path = getattr(args, 'reference_motion', None)
-    skip_timesteps = int(getattr(args, 'skip_timesteps', 80))
+    reference_scale = float(getattr(args, 'reference_scale', 2.0))
 
     inpaint_joints_arg = str(getattr(args, 'inpaint_joints', '') or '').strip()
     inpaint_frames_arg = str(getattr(args, 'inpaint_frames', '') or '').strip()
@@ -773,6 +854,16 @@ def main(args=None, cond_dict=None):
                       '(two-pass: unmasked region = img2img variation of the '
                       'reference [higher skip_timesteps = more faithful], masked '
                       'region inpainted on the full schedule from pure noise)')
+            elif inpaint_enabled and reference_mode == 'controlnet':
+                print(
+                    f'    mode: inpainting + controlnet '
+                    f'(full schedule from pure noise, reference_scale={reference_scale})'
+                )
+            elif reference_mode == 'controlnet':
+                print(
+                    f'    mode: controlnet reference conditioning '
+                    f'(full schedule from pure noise, reference_scale={reference_scale})'
+                )
             elif inpaint_enabled:
                 print('    mode: inpainting (reference is the clamped known region; '
                       'skip_timesteps=0, denoising full schedule from pure noise)')
@@ -829,6 +920,8 @@ def main(args=None, cond_dict=None):
             seed=args.seed,
             device=dist_util.dev(),
             reference_motion=ref_motion,
+            reference_mode=reference_mode,
+            reference_scale=reference_scale,
             skip_timesteps=skip_timesteps,
             inpaint_mask=inpaint_mask,
             repaint_jump_length=repaint_jump_length,

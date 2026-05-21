@@ -861,7 +861,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                 temporal_mask: Optional[Tensor] = None, tgt_key_padding_mask: Optional[Tensor] = None,
             memory_key_padding_mask: Optional[Tensor] = None, y=None, get_layer_activation=-1, reference_memory: Optional[Tensor] = None,
             reference_key_padding_mask: Optional[Tensor] = None, temporal_template: Optional[Tensor] = None,
-            cross_limb_unreliable_mask: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
+            cross_limb_unreliable_mask: Optional[Tensor] = None,
+            reference_batch_mask: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
         topology_rel = self._expand_relation_heads(y['graph_dist'].to(device=tgt.device, dtype=torch.long))
         edge_rel = self._expand_relation_heads(y['joints_relations'].to(device=tgt.device, dtype=torch.long))
         output = tgt
@@ -885,7 +886,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     output, timesteps_embs, topology_rel, edge_rel, self.edge_key_emb, self.edge_query_emb, edge_value_emb, self.topology_key_emb, self.topology_query_emb, topology_value_emb, spatial_mask, temporal_mask,
                     tgt_key_padding_mask, memory_key_padding_mask, y, reference_memory, reference_key_padding_mask,
                     temporal_template=temporal_template, cross_limb_block=cl_block,
-                    cross_limb_unreliable_mask=cross_limb_unreliable_mask)
+                    cross_limb_unreliable_mask=cross_limb_unreliable_mask,
+                    reference_batch_mask=reference_batch_mask)
             if layer_ind == get_layer_activation:
                 activations[layer_ind] = output.clone()
         if self.norm is not None:
@@ -952,7 +954,13 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         x = self.linear2(self.dropout(self.activation(self.linear1(x))))
         return self.dropout3(x)
 
-    def _reference_mha_block(self, x: Tensor, reference_memory: Tensor, key_padding_mask: Optional[Tensor]) -> Tensor:
+    def _reference_mha_block(
+        self,
+        x: Tensor,
+        reference_memory: Tensor,
+        key_padding_mask: Optional[Tensor],
+        reference_batch_mask: Optional[Tensor],
+    ) -> Tensor:
         frames, bs, njoints, feats = x.size()
         queries = x.reshape(frames, bs * njoints, feats)
         memory = reference_memory.reshape(reference_memory.shape[0], bs * njoints, feats)
@@ -964,6 +972,9 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             need_weights=False,
         )
         attn_output = attn_output.reshape(frames, bs, njoints, feats)
+        if reference_batch_mask is not None:
+            batch_mask = reference_batch_mask.to(device=attn_output.device, dtype=attn_output.dtype)
+            attn_output = attn_output * batch_mask.view(1, bs, 1, 1)
         return self.dropout_ref(attn_output)
     
     def forward(self,
@@ -986,7 +997,8 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         reference_key_padding_mask: Optional[Tensor] = None,
         temporal_template: Optional[Tensor] = None,
         cross_limb_block: Optional[nn.Module] = None,
-        cross_limb_unreliable_mask: Optional[Tensor] = None) -> Tensor:
+        cross_limb_unreliable_mask: Optional[Tensor] = None,
+        reference_batch_mask: Optional[Tensor] = None) -> Tensor:
         x = tgt #(frames, bs, njoints, feature_len)
         bs = x.shape[1]
         x = x + self.embed_timesteps(timesteps_emb).view(1, bs, 1, self.d_model)
@@ -997,6 +1009,17 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         if cross_limb_block is not None:
             x = cross_limb_block(x, temporal_template, y['joints_key_padding_mask'], unreliable_mask=cross_limb_unreliable_mask)
         if reference_memory is not None:
-            x = self.norm_ref(x + self._reference_mha_block(x, reference_memory, reference_key_padding_mask))
+            reference_delta = self._reference_mha_block(
+                x,
+                reference_memory,
+                reference_key_padding_mask,
+                reference_batch_mask,
+            )
+            reference_output = self.norm_ref(x + reference_delta)
+            if reference_batch_mask is None:
+                x = reference_output
+            else:
+                batch_mask = reference_batch_mask.to(device=x.device, dtype=torch.bool).view(1, bs, 1, 1)
+                x = torch.where(batch_mask, reference_output, x)
         x = self.norm3(x + self._ff_block(x))
         return x

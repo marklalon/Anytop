@@ -11,10 +11,12 @@ import math
 import numpy as np
 import torch
 import torch as th
+import torch.nn.functional as F
 from copy import deepcopy
 from diffusion import logger
 from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood, geodesic_distance
+from model.joint_mask_utils import sample_subtree_joint_mask_batch
 from utils.rotation_conversions import rotation_6d_to_matrix_safe
 
 
@@ -1645,12 +1647,13 @@ class GaussianDiffusion:
         only their x_t features are replaced by q_sample(x_0, t_random).
         """
         y = model_kwargs.get('y') if model_kwargs is not None else None
-        if not hasattr(model, 'sample_subtree_joint_mask_train'):
+        model_for_hooks = self._unwrap_model_for_training_hooks(model)
+        if not hasattr(model_for_hooks, 'sample_subtree_joint_mask_train'):
             if y is not None:
                 y.pop('cross_limb_unreliable_mask', None)
             return x_t
 
-        subtree_mask = model.sample_subtree_joint_mask_train(
+        subtree_mask = model_for_hooks.sample_subtree_joint_mask_train(
             model_kwargs.get('y', {}), x_t.shape[1], x_t.device
         )
         if subtree_mask is None:
@@ -1669,6 +1672,166 @@ class GaussianDiffusion:
         fresh_noise = th.randn_like(x_start)
         x_t_random = self.q_sample(x_start, t_random, noise=fresh_noise)
         return th.where(subtree_mask[:, :, None, None], x_t_random, x_t)
+
+    @staticmethod
+    def _unwrap_model_for_training_hooks(model):
+        unwrapped_model = model
+        while hasattr(unwrapped_model, 'model'):
+            next_model = getattr(unwrapped_model, 'model')
+            if next_model is None or next_model is unwrapped_model:
+                break
+            unwrapped_model = next_model
+        return unwrapped_model
+
+    @staticmethod
+    def _sample_structured_dropout_mask(batch_size, drop_prob, device):
+        if drop_prob <= 0.0 or batch_size <= 0:
+            return th.zeros(batch_size, device=device, dtype=th.bool)
+        expected = float(drop_prob) * float(batch_size)
+        drop_count = int(math.floor(expected))
+        if expected > drop_count and th.rand((), device=device).item() < (expected - drop_count):
+            drop_count += 1
+        drop_count = min(max(drop_count, 0), batch_size)
+        if drop_count == 0:
+            return th.zeros(batch_size, device=device, dtype=th.bool)
+        drop_mask = th.zeros(batch_size, device=device, dtype=th.bool)
+        drop_mask[th.randperm(batch_size, device=device)[:drop_count]] = True
+        return drop_mask
+
+    @staticmethod
+    def _sample_reference_subtree_mask(y, batch_size, njoints, subtree_budget, device):
+        parents_batch = y.get('parents')
+        if parents_batch is None or subtree_budget <= 0.0:
+            return None
+        n_joints = th.as_tensor(y['n_joints'], device='cpu', dtype=th.int64).reshape(-1).numpy()
+        if th.is_tensor(parents_batch):
+            parents_batch_np = parents_batch.detach().to(device='cpu', dtype=th.int64).numpy()
+        else:
+            parents_batch_np = [np.asarray(parents, dtype=np.int64) for parents in parents_batch]
+        candidate_roots_batch = y.get('joint_mask_candidate_roots')
+        if candidate_roots_batch is None:
+            candidate_roots_np = None
+        elif th.is_tensor(candidate_roots_batch):
+            candidate_roots_np = candidate_roots_batch.detach().to(device='cpu').numpy()
+        else:
+            candidate_roots_np = np.asarray(candidate_roots_batch, dtype=np.bool_)
+        sampled_mask = sample_subtree_joint_mask_batch(
+            parents_batch=parents_batch_np,
+            candidate_root_mask_batch=candidate_roots_np,
+            n_joints=n_joints,
+            max_joints=njoints,
+            joint_mask_prob=float(subtree_budget),
+            rng=np.random,
+        )
+        if sampled_mask is None:
+            return None
+        return th.from_numpy(sampled_mask).to(device=device, dtype=th.bool).reshape(batch_size, njoints)
+
+    def _build_reference_conditioning(self, model, x_start, model_kwargs):
+        y = model_kwargs.get('y') if model_kwargs is not None else None
+        if y is None:
+            return
+
+        model_for_hooks = self._unwrap_model_for_training_hooks(model)
+        if not getattr(model_for_hooks, 'reference_cond', False):
+            y.pop('reference_motion', None)
+            y.pop('reference_cond_mask', None)
+            return
+
+        batch_size, njoints, _, nframes = x_start.shape
+        device = x_start.device
+        reference_motion = x_start.detach().clone()
+
+        dropout_mask = self._sample_structured_dropout_mask(
+            batch_size,
+            float(getattr(model_for_hooks, 'reference_uncond_prob', 0.0)),
+            device,
+        )
+        cond_mask = ~dropout_mask
+        if not bool(cond_mask.any()):
+            y['reference_motion'] = None
+            y['reference_cond_mask'] = cond_mask
+            return
+
+        clean_prob = float(getattr(model_for_hooks, 'reference_clean_prob', 0.0))
+        keep_clean_mask = cond_mask & (th.rand(batch_size, device=device) < clean_prob)
+        degrade_mask = cond_mask & ~keep_clean_mask
+
+        subtree_apply_mask = degrade_mask & (
+            th.rand(batch_size, device=device) < float(getattr(model_for_hooks, 'reference_subtree_prob', 0.0))
+        )
+        subtree_mask = self._sample_reference_subtree_mask(
+            y,
+            batch_size,
+            njoints,
+            float(getattr(model_for_hooks, 'reference_subtree_budget', 0.0)),
+            device,
+        )
+        if subtree_mask is not None and bool(subtree_apply_mask.any()):
+            subtree_mask = subtree_mask & subtree_apply_mask[:, None]
+            reference_motion = th.where(
+                subtree_mask[:, :, None, None],
+                th.zeros_like(reference_motion),
+                reference_motion,
+            )
+
+        noise_prob = float(getattr(model_for_hooks, 'reference_noise_prob', 0.0))
+        noise_apply_mask = degrade_mask & (th.rand(batch_size, device=device) < noise_prob)
+        if bool(noise_apply_mask.any()):
+            sigma_min = float(getattr(model_for_hooks, 'reference_noise_sigma_min', 0.0))
+            sigma_max = float(getattr(model_for_hooks, 'reference_noise_sigma_max', sigma_min))
+            sigma = sigma_min + (sigma_max - sigma_min) * th.rand(batch_size, device=device, dtype=x_start.dtype)
+            sigma = sigma * noise_apply_mask.to(dtype=x_start.dtype)
+            reference_motion = reference_motion + th.randn_like(reference_motion) * sigma[:, None, None, None]
+
+        jitter_prob = float(getattr(model_for_hooks, 'reference_jitter_prob', 0.0))
+        jitter_apply_mask = degrade_mask & (th.rand(batch_size, device=device) < jitter_prob)
+        if bool(jitter_apply_mask.any()) and nframes > 1:
+            frame_index = th.arange(nframes, device=device).view(1, 1, 1, nframes)
+            frame_offset = th.randint(-1, 2, (batch_size, nframes), device=device)
+            frame_offset[:, 0] = 0
+            jitter_index = (frame_index + frame_offset.view(batch_size, 1, 1, nframes)).clamp_(0, nframes - 1)
+            jittered = th.gather(reference_motion, dim=-1, index=jitter_index.expand(-1, njoints, reference_motion.shape[2], -1))
+            reference_motion = th.where(
+                jitter_apply_mask[:, None, None, None],
+                jittered,
+                reference_motion,
+            )
+
+        hold_prob = float(getattr(model_for_hooks, 'reference_hold_prob', 0.0))
+        hold_apply_mask = degrade_mask & (th.rand(batch_size, device=device) < hold_prob)
+        if bool(hold_apply_mask.any()) and nframes > 1:
+            dropped = reference_motion.clone()
+            hold_rates = 0.05 + 0.20 * th.rand(batch_size, device=device)
+            hold_mask = th.rand(batch_size, nframes, device=device) < hold_rates[:, None]
+            hold_mask[:, 0] = False
+            for frame_index in range(1, nframes):
+                frame_hold = hold_mask[:, frame_index]
+                if bool(frame_hold.any()):
+                    dropped[frame_hold, :, :, frame_index] = dropped[frame_hold, :, :, frame_index - 1]
+            reference_motion = th.where(
+                hold_apply_mask[:, None, None, None],
+                dropped,
+                reference_motion,
+            )
+
+        smooth_prob = float(getattr(model_for_hooks, 'reference_smooth_prob', 0.0))
+        smooth_apply_mask = degrade_mask & (th.rand(batch_size, device=device) < smooth_prob)
+        if bool(smooth_apply_mask.any()) and nframes > 2:
+            smooth_input = reference_motion.permute(0, 1, 2, 3).reshape(batch_size * njoints, reference_motion.shape[2], nframes)
+            smoothed = F.avg_pool1d(
+                F.pad(smooth_input, (1, 1), mode='replicate'),
+                kernel_size=3,
+                stride=1,
+            ).reshape(batch_size, njoints, reference_motion.shape[2], nframes)
+            reference_motion = th.where(
+                smooth_apply_mask[:, None, None, None],
+                smoothed,
+                reference_motion,
+            )
+
+        y['reference_motion'] = reference_motion.to(dtype=x_start.dtype)
+        y['reference_cond_mask'] = cond_mask
 
     def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
         """
@@ -1710,6 +1873,7 @@ class GaussianDiffusion:
         x_t = self._apply_joint_mask_training_perturbation(
             model, x_start, x_t, t, model_kwargs
         )
+        self._build_reference_conditioning(model, x_start, model_kwargs)
 
         terms = {}
 

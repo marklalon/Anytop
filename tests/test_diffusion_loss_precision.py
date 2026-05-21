@@ -15,6 +15,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType  # noqa: E402
+from diffusion.respace import SpacedDiffusion, space_timesteps  # noqa: E402
 from model.anytop import AnyTop  # noqa: E402
 from model.joint_mask_utils import sample_subtree_joint_mask  # noqa: E402
 
@@ -48,6 +49,27 @@ class _RecordingModel(nn.Module):
         return x
 
 
+class _ReferenceConditioningModel(nn.Module):
+    def __init__(self, **overrides):
+        super().__init__()
+        self.reference_cond = True
+        self.reference_uncond_prob = 0.0
+        self.reference_clean_prob = 0.0
+        self.reference_subtree_prob = 0.0
+        self.reference_subtree_budget = 0.0
+        self.reference_noise_prob = 0.0
+        self.reference_noise_sigma_min = 0.0
+        self.reference_noise_sigma_max = 0.0
+        self.reference_jitter_prob = 0.0
+        self.reference_hold_prob = 0.0
+        self.reference_smooth_prob = 0.0
+        for name, value in overrides.items():
+            setattr(self, name, value)
+
+    def forward(self, x: torch.Tensor, t: torch.Tensor, **model_kwargs) -> torch.Tensor:
+        return x
+
+
 class _CaptureDecoder(nn.Module):
     def __init__(self):
         super().__init__()
@@ -67,6 +89,17 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             loss_type=LossType.MSE,
             lambda_geo=lambda_geo,
             lambda_vel=lambda_vel,
+        )
+
+    def _make_spaced_diffusion(self, *, model_var_type: ModelVarType) -> SpacedDiffusion:
+        return SpacedDiffusion(
+            use_timesteps=space_timesteps(3, [3]),
+            betas=np.array([0.001, 0.002, 0.003], dtype=np.float64),
+            model_mean_type=ModelMeanType.START_X,
+            model_var_type=model_var_type,
+            loss_type=LossType.MSE,
+            lambda_geo=0.0,
+            lambda_vel=0.0,
         )
 
     def _make_model_kwargs(self, batch_size: int, n_joints: int, n_feats: int, n_frames: int) -> dict:
@@ -157,6 +190,57 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         diffusion.training_losses(model, x_start, t, model_kwargs=model_kwargs)
 
         self.assertNotIn("cross_limb_unreliable_mask", model_kwargs["y"])
+
+    def test_spaced_diffusion_training_losses_unwraps_model_for_joint_mask_perturbation(self):
+        batch_size, n_joints, n_feats, n_frames = 1, 3, 12, 4
+        diffusion = self._make_spaced_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
+        subtree_mask = torch.tensor([[False, True, False]], dtype=torch.bool)
+        model = _RecordingModel(subtree_mask=subtree_mask)
+        x_start = torch.arange(
+            batch_size * n_joints * n_feats * n_frames, dtype=torch.float32
+        ).reshape(batch_size, n_joints, n_feats, n_frames)
+        t = torch.tensor([1], dtype=torch.int64)
+        t_random = torch.tensor([2], dtype=torch.int64)
+        base_noise = torch.full_like(x_start, 0.5)
+        fresh_noise = torch.full_like(x_start, -0.25)
+        model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
+
+        expected_x_t = diffusion.q_sample(x_start, t, noise=base_noise)
+        expected_masked = diffusion.q_sample(x_start, t_random, noise=fresh_noise)
+
+        with patch("diffusion.gaussian_diffusion.th.randint", return_value=t_random), \
+             patch("diffusion.gaussian_diffusion.th.randn_like", return_value=fresh_noise):
+            diffusion.training_losses(model, x_start, t, model_kwargs=model_kwargs, noise=base_noise)
+
+        self.assertIsNotNone(model.last_x)
+        self.assertTrue(torch.allclose(model.last_x[:, 0], expected_x_t[:, 0]))
+        self.assertTrue(torch.allclose(model.last_x[:, 2], expected_x_t[:, 2]))
+        self.assertTrue(torch.allclose(model.last_x[:, 1], expected_masked[:, 1]))
+
+    def test_build_reference_conditioning_applies_temporal_smoothing(self):
+        batch_size, n_joints, n_feats, n_frames = 2, 3, 4, 5
+        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
+        model = _ReferenceConditioningModel(reference_smooth_prob=1.0)
+        x_start = torch.arange(
+            batch_size * n_joints * n_feats * n_frames, dtype=torch.float32
+        ).reshape(batch_size, n_joints, n_feats, n_frames)
+        model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
+
+        diffusion._build_reference_conditioning(model, x_start, model_kwargs)
+
+        reference_motion = model_kwargs["y"]["reference_motion"]
+        expected = torch.nn.functional.avg_pool1d(
+            torch.nn.functional.pad(
+                x_start.reshape(batch_size * n_joints, n_feats, n_frames),
+                (1, 1),
+                mode="replicate",
+            ),
+            kernel_size=3,
+            stride=1,
+        ).reshape(batch_size, n_joints, n_feats, n_frames)
+
+        self.assertTrue(torch.equal(model_kwargs["y"]["reference_cond_mask"], torch.ones(batch_size, dtype=torch.bool)))
+        self.assertTrue(torch.allclose(reference_motion, expected))
 
     def test_anytop_forward_keeps_joint_key_padding_mask_padding_only(self):
         model = AnyTop(

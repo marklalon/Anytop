@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import torch.nn as nn
 
 from model.anytop import AnyTop
 from diffusion import gaussian_diffusion as gd
@@ -49,6 +50,113 @@ def resolve_t5_out_dim(args, cond_source: str | Path | dict | None = None) -> in
         'Provide a cond.npy with precomputed joints_names_embs or load a checkpoint that stores t5_out_dim.'
     )
 
+
+def unwrap_anytop_model(model):
+    unwrapped_model = model
+    while hasattr(unwrapped_model, 'model') and not isinstance(unwrapped_model, AnyTop):
+        next_model = getattr(unwrapped_model, 'model')
+        if next_model is None or next_model is unwrapped_model:
+            break
+        unwrapped_model = next_model
+    return unwrapped_model
+
+
+def model_supports_reference_conditioning(model) -> bool:
+    unwrapped_model = unwrap_anytop_model(model)
+    return bool(
+        getattr(unwrapped_model, 'reference_cond', False)
+        and getattr(unwrapped_model, 'reference_encoder', None) is not None
+    )
+
+
+class ClassifierFreeReferenceModel(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+        self.num_layers = getattr(model, 'num_layers', 0)
+        self.reference_cond = getattr(model, 'reference_cond', False)
+
+    @staticmethod
+    def _copy_y(y, reference_motion):
+        if y is None:
+            return None
+        routed_y = dict(y)
+        routed_y.pop('reference_cond_mask', None)
+        if reference_motion is None:
+            routed_y.pop('reference_motion', None)
+        else:
+            routed_y['reference_motion'] = reference_motion
+        return routed_y
+
+    def forward(self, x, timesteps, get_layer_activation=-1, y=None, train_step=None, **unused_kwargs):
+        if y is None or y.get('reference_motion') is None:
+            return self.model(
+                x,
+                timesteps,
+                get_layer_activation=get_layer_activation,
+                y=y,
+                train_step=train_step,
+                **unused_kwargs,
+            )
+
+        scale = float(y.get('reference_scale', 1.0))
+        if scale == 0.0:
+            return self.model(
+                x,
+                timesteps,
+                get_layer_activation=get_layer_activation,
+                y=self._copy_y(y, None),
+                train_step=train_step,
+                **unused_kwargs,
+            )
+
+        cond_y = self._copy_y(y, y.get('reference_motion'))
+        if scale == 1.0:
+            return self.model(
+                x,
+                timesteps,
+                get_layer_activation=get_layer_activation,
+                y=cond_y,
+                train_step=train_step,
+                **unused_kwargs,
+            )
+
+        uncond_y = self._copy_y(y, None)
+        cond_output = self.model(
+            x,
+            timesteps,
+            get_layer_activation=get_layer_activation,
+            y=cond_y,
+            train_step=train_step,
+            **unused_kwargs,
+        )
+        uncond_output = self.model(
+            x,
+            timesteps,
+            get_layer_activation=get_layer_activation,
+            y=uncond_y,
+            train_step=train_step,
+            **unused_kwargs,
+        )
+
+        if isinstance(cond_output, tuple):
+            cond_tensor, cond_activations = cond_output
+            if isinstance(uncond_output, tuple):
+                uncond_tensor, uncond_activations = uncond_output
+            else:
+                uncond_tensor = uncond_output
+                uncond_activations = None
+            guided = uncond_tensor + scale * (cond_tensor - uncond_tensor)
+            if uncond_activations is None:
+                return guided, cond_activations
+            guided_activations = {
+                layer: uncond_activations[layer] + scale * (cond_activations[layer] - uncond_activations[layer])
+                for layer in cond_activations
+            }
+            return guided, guided_activations
+
+        return uncond_output + scale * (cond_output - uncond_output)
+
 def load_model(model, state_dict):
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     unexpected_keys = [key for key in unexpected_keys if not key.startswith('quality_proxy.')]
@@ -81,6 +189,18 @@ def get_gmdm_args(args):
             'cross_limb_dim': getattr(args, 'cross_limb_dim', 64),
             'cross_limb_last_n': getattr(args, 'cross_limb_last_n', 0),
             'joint_mask_prob': getattr(args, 'joint_mask_prob', 0.0),
+            'reference_cond': getattr(args, 'reference_cond', False),
+            'reference_encoder_layers': getattr(args, 'reference_encoder_layers', 2),
+            'reference_uncond_prob': getattr(args, 'reference_uncond_prob', 0.25),
+            'reference_clean_prob': getattr(args, 'reference_clean_prob', 0.1),
+            'reference_subtree_prob': getattr(args, 'reference_subtree_prob', 0.35),
+            'reference_subtree_budget': getattr(args, 'reference_subtree_budget', 0.35),
+            'reference_noise_prob': getattr(args, 'reference_noise_prob', 0.75),
+            'reference_noise_sigma_min': getattr(args, 'reference_noise_sigma_min', 0.02),
+            'reference_noise_sigma_max': getattr(args, 'reference_noise_sigma_max', 0.12),
+            'reference_jitter_prob': getattr(args, 'reference_jitter_prob', 0.35),
+            'reference_hold_prob': getattr(args, 'reference_hold_prob', 0.25),
+            'reference_smooth_prob': getattr(args, 'reference_smooth_prob', 0.25),
             'root_input_feats': 13}
 
 def create_gaussian_diffusion(args):

@@ -2,7 +2,8 @@ import torch
 torch.cuda.empty_cache()
 import torch.nn as nn
 import numpy as np
-from model.motion_transformer import GraphMotionDecoderLayer, GraphMotionDecoder
+import torch.nn.functional as F
+from model.motion_transformer import GraphMotionDecoderLayer, GraphMotionDecoder, SelectiveMultiheadAttention
 from model.joint_mask_utils import sample_subtree_joint_mask_batch
 
 
@@ -52,9 +53,56 @@ class AnyTop(nn.Module):
         self.cross_limb_dim=kargs.get('cross_limb_dim', 64)
         self.cross_limb_last_n=kargs.get('cross_limb_last_n', 0)
         self.joint_mask_prob=float(kargs.get('joint_mask_prob', 0.0))
+        self.reference_cond=bool(kargs.get('reference_cond', False))
+        self.reference_encoder_layers=int(kargs.get('reference_encoder_layers', 2))
+        self.reference_uncond_prob=float(kargs.get('reference_uncond_prob', 0.25))
+        self.reference_clean_prob=float(kargs.get('reference_clean_prob', 0.1))
+        self.reference_subtree_prob=float(kargs.get('reference_subtree_prob', 0.35))
+        self.reference_subtree_budget=float(kargs.get('reference_subtree_budget', 0.35))
+        self.reference_noise_prob=float(kargs.get('reference_noise_prob', 0.75))
+        self.reference_noise_sigma_min=float(kargs.get('reference_noise_sigma_min', 0.02))
+        self.reference_noise_sigma_max=float(kargs.get('reference_noise_sigma_max', 0.12))
+        self.reference_jitter_prob=float(kargs.get('reference_jitter_prob', 0.35))
+        self.reference_hold_prob=float(kargs.get('reference_hold_prob', 0.25))
+        self.reference_smooth_prob=float(kargs.get('reference_smooth_prob', 0.25))
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
+        if self.reference_encoder_layers < 0:
+            raise ValueError(
+                f"reference_encoder_layers must be >= 0, got {self.reference_encoder_layers}"
+            )
+        for prob_name in (
+            'reference_uncond_prob',
+            'reference_clean_prob',
+            'reference_subtree_prob',
+            'reference_subtree_budget',
+            'reference_noise_prob',
+            'reference_jitter_prob',
+            'reference_hold_prob',
+            'reference_smooth_prob',
+        ):
+            prob_value = float(getattr(self, prob_name))
+            if not 0.0 <= prob_value <= 1.0:
+                raise ValueError(f"{prob_name} must be in [0, 1], got {prob_value}")
+        if self.reference_noise_sigma_min < 0.0 or self.reference_noise_sigma_max < self.reference_noise_sigma_min:
+            raise ValueError(
+                "reference_noise_sigma_min/max must satisfy 0 <= min <= max"
+            )
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, skip_t5=self.skip_t5, dropout_prob=self.dropout)
+        if self.reference_cond:
+            self.reference_encoder = ReferenceEncoder(
+                input_feats=self.input_feats,
+                root_input_feats=self.root_input_feats,
+                latent_dim=self.latent_dim,
+                ff_size=self.ff_size,
+                num_heads=self.num_heads,
+                dropout=self.dropout,
+                t5_out_dim=t5_out_dim,
+                skip_t5=self.skip_t5,
+                num_layers=self.reference_encoder_layers,
+            )
+        else:
+            self.reference_encoder = None
 
         seqTransDecoderLayer = GraphMotionDecoderLayer(d_model=self.latent_dim,
                                                             nhead=self.num_heads,
@@ -79,6 +127,21 @@ class AnyTop(nn.Module):
         attention masks. Only structurally padded joints are masked here.
         """
         return torch.arange(njoints, device=device)[None, :] >= n_joints[:, None]
+
+    @staticmethod
+    def _build_reference_key_padding_mask(nframes, njoints, lengths, device):
+        clipped_lengths = torch.clamp(lengths.to(device=device, dtype=torch.int64), min=0, max=nframes)
+        frame_positions = torch.arange(nframes, device=device)[None, :]
+        valid_frames = frame_positions < clipped_lengths[:, None]
+        valid_with_tpose = torch.cat(
+            [torch.ones((clipped_lengths.shape[0], 1), device=device, dtype=torch.bool), valid_frames],
+            dim=1,
+        )
+        key_padding_mask = ~valid_with_tpose
+        return key_padding_mask.unsqueeze(1).expand(-1, njoints, -1).reshape(-1, nframes + 1)
+
+    def supports_reference_conditioning(self):
+        return self.reference_cond and self.reference_encoder is not None
 
     def sample_subtree_joint_mask_train(self, y, njoints, device):
         """Select subtrees of joints to perturb during training (governed by
@@ -149,6 +212,9 @@ class AnyTop(nn.Module):
         bs, njoints, nfeats, nframes = x.shape
         n_joints = torch.as_tensor(y['n_joints'], device=x.device).reshape(-1)
         joint_key_padding_mask = self._build_joint_key_padding_mask(njoints, n_joints, x.device)
+        reference_memory = None
+        reference_key_padding_mask = None
+        reference_batch_mask = None
         # joint_mask_prob-driven subtree perturbation is applied OUTSIDE this
         # forward, in diffusion.training_losses, by re-noising the selected
         # joints' x_t with q_sample(x_0, t_random, fresh_noise). The model
@@ -178,6 +244,36 @@ class AnyTop(nn.Module):
         else:
             temporal_template = None
 
+        if self.reference_cond:
+            reference_motion = y.get('reference_motion')
+            raw_reference_batch_mask = y.get('reference_cond_mask')
+            if raw_reference_batch_mask is not None:
+                reference_batch_mask = raw_reference_batch_mask.to(device=x.device, dtype=torch.bool).reshape(bs)
+            if reference_motion is not None and (reference_batch_mask is None or bool(reference_batch_mask.any())):
+                reference_motion = reference_motion.to(device=x.device, dtype=x.dtype)
+                if reference_motion.shape[:3] != (bs, njoints, nfeats):
+                    raise ValueError(
+                        "y['reference_motion'] must have shape "
+                        f"(B, J, F, T) matching x except for T, got {tuple(reference_motion.shape)}"
+                    )
+                if reference_motion.shape[-1] != nframes:
+                    raise ValueError(
+                        "y['reference_motion'] must match x in frame count, got "
+                        f"{reference_motion.shape[-1]} and {nframes}"
+                    )
+                reference_key_padding_mask = self._build_reference_key_padding_mask(
+                    nframes,
+                    njoints,
+                    y['lengths'],
+                    x.device,
+                )
+                reference_memory = self.reference_encoder(
+                    reference_motion,
+                    tpos_first_frame,
+                    y['joints_names_embs'],
+                    reference_key_padding_mask,
+                )
+
         cross_limb_unreliable_mask = None
         if self.cross_limb:
             raw_cross_limb_unreliable_mask = y.get('cross_limb_unreliable_mask')
@@ -205,8 +301,11 @@ class AnyTop(nn.Module):
             tgt_key_padding_mask=joint_key_padding_mask,
             y=y,
             get_layer_activation=get_layer_activation,
+            reference_memory=reference_memory,
+            reference_key_padding_mask=reference_key_padding_mask,
             temporal_template=temporal_template,
             cross_limb_unreliable_mask=cross_limb_unreliable_mask,
+            reference_batch_mask=reference_batch_mask,
         )
         if get_layer_activation > -1 and get_layer_activation < self.num_layers:
             activations = output[1]
@@ -256,6 +355,79 @@ class InputProcess(nn.Module):
         positions = torch.arange(x.shape[0], device=x.device).view(1, -1, 1).repeat(x.shape[1], 1, 1)
         pos_emb = create_sin_embedding(positions, self.latent_dim)[0]
         return x + pos_emb.unsqueeze(1).unsqueeze(1)
+
+
+class ReferenceTemporalEncoderLayer(nn.Module):
+    def __init__(self, latent_dim, ff_size, num_heads, dropout):
+        super().__init__()
+        self.self_attn = SelectiveMultiheadAttention(latent_dim, num_heads, dropout=dropout)
+        self.norm1 = nn.LayerNorm(latent_dim)
+        self.norm2 = nn.LayerNorm(latent_dim)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.ffn = nn.Sequential(
+            nn.Linear(latent_dim, ff_size),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(ff_size, latent_dim),
+        )
+
+    def forward(self, x, key_padding_mask=None):
+        frames, bs, njoints, feats = x.shape
+        residual = x
+        x_norm = self.norm1(x)
+        attn_input = x_norm.reshape(frames, bs * njoints, feats)
+        attn_output, _ = self.self_attn(
+            attn_input,
+            attn_input,
+            attn_input,
+            key_padding_mask=key_padding_mask,
+            need_weights=False,
+        )
+        attn_output = attn_output.reshape(frames, bs, njoints, feats)
+        x = residual + self.dropout1(attn_output)
+        x = x + self.dropout2(self.ffn(self.norm2(x)))
+        return x
+
+
+class ReferenceEncoder(nn.Module):
+    def __init__(
+        self,
+        input_feats,
+        root_input_feats,
+        latent_dim,
+        ff_size,
+        num_heads,
+        dropout,
+        t5_out_dim,
+        skip_t5,
+        num_layers,
+    ):
+        super().__init__()
+        self.input_process = InputProcess(
+            input_feats,
+            root_input_feats,
+            latent_dim,
+            t5_out_dim,
+            skip_t5=skip_t5,
+            dropout_prob=dropout,
+        )
+        self.layers = nn.ModuleList([
+            ReferenceTemporalEncoderLayer(
+                latent_dim=latent_dim,
+                ff_size=ff_size,
+                num_heads=num_heads,
+                dropout=dropout,
+            )
+            for _ in range(num_layers)
+        ])
+        self.norm = nn.LayerNorm(latent_dim)
+
+    def forward(self, reference_motion, tpos_first_frame, joints_embedded_names, key_padding_mask=None):
+        output = self.input_process(reference_motion, tpos_first_frame, joints_embedded_names)
+        for layer in self.layers:
+            output = layer(output, key_padding_mask=key_padding_mask)
+        return self.norm(output)
 
 class OutputProcess(nn.Module):
     def __init__(self, feature_len, root_feature_len, max_joints, latent_dim):
