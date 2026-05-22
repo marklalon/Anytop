@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import io
 import math
+import os
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -209,6 +210,11 @@ def _load_scene(filepath: str):
     import bpy
 
     path = str(filepath)
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"Animation file not found: {path}\n"
+            f"Please verify the path exists and the file is accessible."
+        )
     suffix = Path(path).suffix.lower()
 
     clear_scene()

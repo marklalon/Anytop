@@ -45,6 +45,7 @@ from truebones_utils.motion_labels import (  # noqa: E402
 from truebones_utils.motion_process import (  # noqa: E402
     attach_joint_name_embeddings_to_cond,
     write_joint_name_collision_report,
+    get_mean_std,
 )
 from truebones_utils.param_utils import MOTION_DIR, get_dataset_dir  # noqa: E402
 
@@ -110,10 +111,40 @@ def _rewrite_positions_error_file(dataset_dir_path: Path, motion_entries: dict[s
     positions_error_path.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
 
 
+def _recompute_object_stats(
+    rebuilt_cond: dict[str, dict],
+    motion_files: list[Path],
+) -> None:
+    """Recompute per-object mean/std over every motion clip on disk.
+
+    regenerate_dataset_artifacts() otherwise preserves the mean/std deep-copied
+    from the existing cond.npy. After an incremental update that adds clips, the
+    preserved stats are stale, so --recompute-stats / recompute_stats=True asks
+    for a fresh computation that matches what preprocessing would produce."""
+    object_to_motions: dict[str, list[Path]] = {}
+    for motion_path in motion_files:
+        object_type = str(
+            infer_motion_labels_from_motion_name(
+                motion_path.name, object_types=tuple(rebuilt_cond.keys())
+            ).get("object_type")
+        )
+        object_to_motions.setdefault(object_type, []).append(motion_path)
+
+    for object_type, paths in sorted(object_to_motions.items()):
+        if object_type not in rebuilt_cond:
+            continue
+        clips = [np.load(path).astype(np.float32) for path in paths]
+        mean, std = get_mean_std(np.concatenate(clips, axis=0))
+        rebuilt_cond[object_type]["mean"] = mean
+        rebuilt_cond[object_type]["std"] = std
+        print(f"[OK] recomputed mean/std for {object_type} over {len(paths)} clip(s)")
+
+
 def regenerate_dataset_artifacts(
     dataset_dir: str | Path | None = None,
     t5_model: str = "t5-base",
     force_reencode: bool = False,
+    recompute_stats: bool = False,
 ) -> Path:
     dataset_dir_path = _resolve_dataset_dir_path(dataset_dir)
     motions_dir = dataset_dir_path / MOTION_DIR
@@ -173,6 +204,8 @@ def regenerate_dataset_artifacts(
         force_reencode=force_reencode,
     )
     write_joint_name_collision_report(rebuilt_cond, str(dataset_dir_path))
+    if recompute_stats:
+        _recompute_object_stats(rebuilt_cond, motion_files)
     np.save(str(cond_path), rebuilt_cond)
 
     existing_motion_metadata = load_motion_metadata(dataset_dir_path)
@@ -225,6 +258,13 @@ def main() -> int:
         type=str,
         help="T5 model to use for joint name embeddings (default: t5-base).",
     )
+    parser.add_argument(
+        "--recompute-stats",
+        action="store_true",
+        help="Recompute per-object mean/std over all motion clips on disk instead "
+             "of preserving the stats from the existing cond.npy. Use this after "
+             "incrementally adding motions so normalization reflects the new clips.",
+    )
     args = parser.parse_args()
     
     print("\n" + "=" * 70)
@@ -232,7 +272,11 @@ def main() -> int:
     print("=" * 70 + "\n")
     
     try:
-        dataset_dir_path = regenerate_dataset_artifacts(args.dataset_dir, t5_model=args.t5_model)
+        dataset_dir_path = regenerate_dataset_artifacts(
+            args.dataset_dir,
+            t5_model=args.t5_model,
+            recompute_stats=args.recompute_stats,
+        )
         cond_path = dataset_dir_path / "cond.npy"
         cond = dict(np.load(cond_path, allow_pickle=True).item())
 

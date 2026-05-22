@@ -78,6 +78,7 @@ tests = [
     ('Cat-Walk.fbx', 'Cat', False, 'Walk'),
     ('scorpion-Attack1.fbx', 'Scorpion', False, 'Attack1'),
     ('Dog-Back Away.fbx', 'Dog', False, 'BackAway'),
+    ('dragon_walk.fbx', 'Dragon', False, 'Walk'),
     # ── Reported real-world regressions ──
     ('T-Rex-bite 90 left.fbx', 'Trex', False, 'Bite90Left'),
     ('T-Rex-Chase Roar.fbx', 'Trex', False, 'ChaseRoar'),

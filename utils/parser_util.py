@@ -371,6 +371,16 @@ def process_new_skeleton_args():
     group.add_argument("--donor-skeletons", default=None, type=str,
                        help="Comma-separated donor skeleton names to use instead of auto-selection, "
                             "e.g. 'Bison,Cow,Horse'. Only effective with --retarget-top-k.")
+    group.add_argument("--update", action='store_true',
+                       help="Incremental update mode. Instead of clearing --save-dir and rebuilding "
+                           "from scratch, merge the current --anim-dir batch into the existing "
+                           "dataset, replacing any older clips produced from the same source files "
+                           "while keeping untouched sources, then rebuild the side "
+                            "artifacts (cond.npy mean/std, motion_metadata.json, metadata.txt, "
+                            "positions_error_rate.txt) over the merged clip set. Clips whose source "
+                           "file is present in the update batch are force-replaced. Supports both "
+                           "--anim-dir updates and --retarget-top-k updates, and requires an existing "
+                           "--save-dir when updating in place.")
     args = parser.parse_args()
     return args
 

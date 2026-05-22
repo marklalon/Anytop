@@ -16,7 +16,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import random
 import bisect
 from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, get_raw_data_dir
-from .motion_labels import build_motion_labels, build_object_labels, infer_motion_labels_from_motion_name, write_motion_metadata
+from pathlib import Path
+from .motion_labels import build_motion_labels, build_object_labels, infer_motion_labels_from_motion_name, write_motion_metadata, load_motion_metadata
 from .physics_joint_annotation import (
     build_semantic_metadata,
     rest_positions_from_offsets,
@@ -267,6 +268,7 @@ def _build_motion_metadata_entry(result, motion_file_name):
     motion_labels = dict(result['motion_labels'])
     motion_labels['motion_name'] = motion_file_name
     motion_labels['is_loop'] = result.get('is_loop', False)
+    motion_labels['motion_source'] = 'anim_dir'
 
     translation_root_index = result.get('translation_root_index')
     if translation_root_index is not None:
@@ -695,8 +697,204 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
     )
 
 
+"""Merge a freshly built object cond entry into an existing cond.npy in place.
+
+Other objects already present in cond.npy are left untouched. mean/std written
+here are provisional — regenerate_dataset_artifacts(recompute_stats=True) rebuilds
+them over the merged clip set after an incremental --update."""
+def _merge_object_into_cond(save_dir, object_name, object_cond):
+    cond_path = pjoin(save_dir, 'cond.npy')
+    cond = {}
+    if os.path.exists(cond_path):
+        cond = dict(np.load(cond_path, allow_pickle=True).item())
+    cond[object_name] = object_cond
+    np.save(cond_path, cond)
+
+
+def _is_anim_dir_motion_entry(entry):
+    return bool(entry.get('source_fbx_path')) or entry.get('motion_source') == 'anim_dir'
+
+
+def _is_retarget_motion_entry(entry):
+    return entry.get('motion_source') == 'retarget'
+
+
+def _normalized_source_fbx_path(entry):
+    source_fbx_path = entry.get('source_fbx_path')
+    if not source_fbx_path:
+        return None
+    return os.path.realpath(str(source_fbx_path))
+
+
+def validate_anim_dir_update_state(object_name, save_dir, existing_meta=None):
+    """Refuse incremental anim-dir replacement when target clips are ambiguous.
+
+    Replacing only the prior anim-dir clips is safe only when every existing
+    target motion on disk is tracked in motion_metadata.json and explicitly
+    identifiable as either a direct anim-dir clip or a preserved retarget clip.
+    Legacy datasets without that metadata must be rebuilt instead of updated in
+    place, otherwise an incoming source clip cannot reliably replace its older
+    output slices without duplicating target motions."""
+    motions_dir = pjoin(save_dir, MOTION_DIR)
+    existing_meta = load_motion_metadata(save_dir) if existing_meta is None else existing_meta
+
+    target_prefix = f"{object_name}_"
+    target_motion_names = [
+        p.name
+        for p in sorted(Path(motions_dir).glob("*.npy"))
+        if p.name.startswith(target_prefix)
+    ]
+    if not target_motion_names:
+        return
+
+    untracked_target = [
+        motion_name for motion_name in target_motion_names if motion_name not in existing_meta
+    ]
+    if untracked_target:
+        sample = ', '.join(untracked_target[:5])
+        raise RuntimeError(
+            f"cannot incrementally update anim-dir for {object_name}: existing target "
+            f"motions are present on disk but missing from motion_metadata.json "
+            f"({sample}). Rebuild this dataset without --update."
+        )
+
+    ambiguous_target = []
+    for motion_name in target_motion_names:
+        entry = existing_meta.get(motion_name, {})
+        if str(entry.get('object_type', '')) != object_name:
+            ambiguous_target.append(motion_name)
+            continue
+        if _is_anim_dir_motion_entry(entry) or _is_retarget_motion_entry(entry):
+            continue
+        ambiguous_target.append(motion_name)
+    if ambiguous_target:
+        sample = ', '.join(ambiguous_target[:5])
+        raise RuntimeError(
+            f"cannot incrementally update anim-dir for {object_name}: existing target "
+            f"motions lack source metadata needed to distinguish direct clips from "
+            f"preserved retarget clips ({sample}). Rebuild or regenerate this dataset "
+            f"with explicit motion_source metadata."
+        )
+
+
+"""Incremental --update for the --anim-dir path.
+
+Reprocesses the current --anim-dir input and merges the result into the
+existing dataset. Prior anim-dir clips from the same source FBX files are
+replaced in place, while untouched source clips and donor clips from a prior
+--retarget-top-k run are preserved. Side artifacts are rebuilt afterwards by
+regenerate_dataset_artifacts() in the caller."""
+def _update_anim_dir(object_name, face_joints, save_dir, tpose_path, anim_dir):
+    motions_dir = pjoin(save_dir, MOTION_DIR)
+    bvhs_dir = pjoin(save_dir, BVHS_DIR)
+    existing_meta = load_motion_metadata(save_dir)
+    validate_anim_dir_update_state(object_name, save_dir, existing_meta)
+
+    # Number new clips above every existing clip so they collide neither with
+    # retained donor clips nor with older anim-dir outputs still on disk during
+    # processing (matching-source clips are removed only after processing
+    # succeeds, so a failed reprocess leaves the existing dataset intact).
+    def _clip_index(name):
+        tail = os.path.splitext(name)[0].rsplit('_', 1)[-1]
+        return int(tail) if tail.isdigit() else 0
+    start_counter = max([_clip_index(n) for n in existing_meta] + [0])
+
+    squared_positions_error = dict()
+    _, _, _, object_cond, new_meta = process_object(
+        object_name,
+        start_counter,
+        0,
+        23,
+        squared_positions_error,
+        save_dir=save_dir,
+        fbxs_dir=anim_dir,
+        face_joints=face_joints,
+        t_pos_path=tpose_path,
+    )
+    if object_cond is None:
+        print(f"[update] no valid animation data found in {anim_dir}; dataset unchanged")
+        return
+
+    replaced_sources = {
+        _normalized_source_fbx_path(entry)
+        for entry in new_meta.values()
+    }
+    replaced_sources.discard(None)
+
+    # Processing succeeded — replace only prior direct clips that came from the
+    # same source files as this update. Untouched direct clips and donor clips
+    # are preserved, so A,B updated with B,C becomes A,B,C.
+    kept_meta = {}
+    replaced = 0
+    for motion_name, entry in existing_meta.items():
+        if (
+            str(entry.get('object_type', '')) == object_name
+            and _is_anim_dir_motion_entry(entry)
+            and _normalized_source_fbx_path(entry) in replaced_sources
+        ):
+            npy_path = pjoin(motions_dir, motion_name)
+            if os.path.exists(npy_path):
+                os.remove(npy_path)
+            bvh_path = pjoin(bvhs_dir, os.path.splitext(motion_name)[0] + '.bvh')
+            if os.path.exists(bvh_path):
+                os.remove(bvh_path)
+            replaced += 1
+        else:
+            kept_meta[motion_name] = entry
+    if replaced:
+        print(f"[update] replaced {replaced} previously processed anim-dir clip(s) "
+              f"from {len(replaced_sources)} updated source file(s)")
+
+    merged_meta = dict(kept_meta)
+    merged_meta.update(new_meta)
+    write_motion_metadata(save_dir, merged_meta, len(merged_meta))
+    _merge_object_into_cond(save_dir, object_name, object_cond)
+    print(f"[update] anim-dir: {len(new_meta)} clip(s) written, "
+          f"{len(merged_meta)} clip(s) total")
+
+
+"""Incremental --update for the --retarget-top-k path.
+
+Donor motions were already written to save_dir/motions/ by auto_retarget_pipeline
+(deterministic `{target}_{donor}_{action}` names, so re-runs overwrite same-named
+donors and add new ones). Existing clips are kept; cond.npy and motion_metadata
+are merged. Side artifacts are rebuilt afterwards by the caller."""
+def _update_retarget(object_name, save_dir, motions_from_npys, target_cond_partial):
+    all_motions = [np.load(p).astype(np.float32) for p in motions_from_npys]
+    if not all_motions:
+        print("[update] no retargeted motions produced; dataset unchanged")
+        return
+
+    object_cond = dict(target_cond_partial)
+    object_cond['mean'], object_cond['std'] = get_mean_std(
+        np.concatenate(all_motions, axis=0)
+    )
+
+    parents = np.asarray(object_cond['parents'], dtype=np.int64)
+    offsets = np.asarray(object_cond['offsets'], dtype=np.float64)
+    existing_meta = load_motion_metadata(save_dir)
+    new_meta = {}
+    for motion_path, motion in zip(motions_from_npys, all_motions):
+        motion_name = os.path.basename(motion_path)
+        motion_labels = infer_motion_labels_from_motion_name(
+            motion_name, object_type=object_name,
+        )
+        motion_labels['translation_root_index'] = int(
+            infer_translation_root_index_from_features(motion, parents, offsets)
+        )
+        motion_labels['motion_source'] = 'retarget'
+        new_meta[motion_name] = motion_labels
+
+    merged_meta = dict(existing_meta)
+    merged_meta.update(new_meta)
+    write_motion_metadata(save_dir, merged_meta, len(merged_meta))
+    _merge_object_into_cond(save_dir, object_name, object_cond)
+    print(f"[update] retarget: {len(new_meta)} donor clip(s) written, "
+          f"{len(merged_meta)} clip(s) total")
+
+
 def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=None,
-                     motions_from_npys=None, target_cond_partial=None):
+                     motions_from_npys=None, target_cond_partial=None, update=False):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(save_dir, BVHS_DIR), exist_ok=True)
@@ -705,6 +903,9 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
         # Retarget branch: motions already written to save_dir/motions/ by auto_retarget_pipeline.
         # Load them, compute mean/std, then write cond.npy.
         assert target_cond_partial is not None, "target_cond_partial required with motions_from_npys"
+        if update:
+            _update_retarget(object_name, save_dir, motions_from_npys, target_cond_partial)
+            return
         all_motions = [np.load(p).astype(np.float32) for p in motions_from_npys]
         if not all_motions:
             print(f"[process_skeleton] no retargeted motions available; cond.npy not written")
@@ -730,6 +931,7 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
                     offsets,
                 )
             )
+            motion_labels['motion_source'] = 'retarget'
             motion_metadata[motion_name] = motion_labels
         n_joints = len(object_cond['parents'])
         cond = {object_name: object_cond}
@@ -743,6 +945,10 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
             sum(m.shape[0] for m in all_motions),         # frames_counter
             {},                                           # squared_positions_error
         )
+        return
+
+    if update and anim_dir is not None:
+        _update_anim_dir(object_name, face_joints, save_dir, tpose_path, anim_dir)
         return
 
     ## process
