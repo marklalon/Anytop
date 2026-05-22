@@ -122,6 +122,61 @@ def _resolve_reference_source_type(
     return source_type, default_cond_cache, blind_type, used_target_fallback
 
 
+def _reference_uses_source_skeleton(reference_mode):
+    return str(reference_mode or 'img2img').strip().lower() == 'controlnet'
+
+
+def _reference_crosses_skeletons(source_type, target_type):
+    return bool(
+        source_type
+        and target_type
+        and source_type.upper() != target_type.upper()
+    )
+
+
+def _should_retarget_reference(source_type, target_type, reference_mode):
+    return (
+        _reference_crosses_skeletons(source_type, target_type)
+        and not _reference_uses_source_skeleton(reference_mode)
+    )
+
+
+def _resolve_source_cond_entry(source_type, cond_dict, default_cond_cache=None):
+    if not source_type:
+        return None
+    source_cond_entry = cond_dict.get(source_type)
+    if source_cond_entry is None and default_cond_cache:
+        source_cond_entry = default_cond_cache.get(source_type)
+    return source_cond_entry
+
+
+def _build_retarget_cond_dict(cond_dict, source_type, default_cond_cache=None):
+    retarget_cond_dict = dict(cond_dict)
+    if source_type in retarget_cond_dict:
+        return retarget_cond_dict
+    if not default_cond_cache:
+        raise ValueError(
+            f"source type '{source_type}' not found in cond file and no default cond available for retarget."
+        )
+    for key, value in default_cond_cache.items():
+        if key not in retarget_cond_dict:
+            retarget_cond_dict[key] = value
+    return retarget_cond_dict
+
+
+def _validate_reference_sampling_request(
+    *,
+    inpaint_enabled,
+    reference_mode,
+    cross_species_reference,
+):
+    if inpaint_enabled and _reference_uses_source_skeleton(reference_mode) and cross_species_reference:
+        raise ValueError(
+            "cross-species inpainting is not supported in controlnet prior mode. "
+            "The inpaint clamp requires a target-skeleton reference motion, but controlnet prior mode no longer retargets the source reference."
+        )
+
+
 def _prepare_reference_motion_path(
     reference_motion_path,
     source_type,
@@ -193,6 +248,39 @@ def _prepare_reference_motion_path(
     out_npy = os.path.join(output_dir, f"_reference_features_{source_type}__{base}.npy")
     np.save(out_npy, source_features, allow_pickle=False)
     return out_npy
+
+
+def _get_reference_normalization_stats(
+    cond_entry,
+    *,
+    object_type,
+    joint_count,
+    feature_count,
+    context,
+):
+    if cond_entry is None:
+        raise KeyError(
+            f"Missing cond entry for {context} object_type '{object_type}'."
+        )
+
+    mean = np.asarray(cond_entry['mean'], dtype=np.float32)
+    std = np.asarray(cond_entry['std'], dtype=np.float32)
+    if mean.ndim != 2 or std.ndim != 2:
+        raise ValueError(
+            f"{context} normalization stats for '{object_type}' must have shape (J, F), "
+            f"got mean={mean.shape}, std={std.shape}"
+        )
+    if mean.shape[0] != joint_count or std.shape[0] != joint_count:
+        raise ValueError(
+            f"{context} normalization stats for '{object_type}' expect {joint_count} joints, "
+            f"got mean={mean.shape[0]}, std={std.shape[0]}"
+        )
+    if mean.shape[1] < feature_count or std.shape[1] < feature_count:
+        raise ValueError(
+            f"{context} normalization stats for '{object_type}' need at least {feature_count} feature channels, "
+            f"got mean={mean.shape[1]}, std={std.shape[1]}"
+        )
+    return mean[:, :feature_count], std[:, :feature_count] + 1e-6
 
 
 def _retarget_reference_motion(
@@ -306,8 +394,6 @@ def _prepare_reference_prior_bundle(
     ref_frames, ref_joints, ref_feats = ref_raw.shape
     source_parents = np.asarray(source_cond['parents'], dtype=np.int64)
     source_offsets = np.asarray(source_cond['offsets'], dtype=np.float32)
-    source_mean = np.asarray(source_cond['mean'], dtype=np.float32)
-    source_std = np.asarray(source_cond['std'], dtype=np.float32) + 1e-6
     source_name_embs = np.asarray(source_cond['joints_names_embs'], dtype=np.float32)
 
     if ref_joints != source_parents.shape[0]:
@@ -328,6 +414,13 @@ def _prepare_reference_prior_bundle(
     if ref_feats > target_feature_len:
         ref_raw = ref_raw[:, :, :target_feature_len]
     normalized_feature_dim = ref_raw.shape[2]
+    source_mean, source_std = _get_reference_normalization_stats(
+        source_cond,
+        object_type=source_type,
+        joint_count=ref_joints,
+        feature_count=normalized_feature_dim,
+        context='reference prior',
+    )
     ref_norm = np.nan_to_num(
         (ref_raw - source_mean[None, :, :normalized_feature_dim])
         / source_std[None, :, :normalized_feature_dim],
@@ -365,6 +458,108 @@ def _prepare_reference_prior_bundle(
     # Feature/joint padding never touches axis 0, so the returned frame count
     # equals the loaded reference length.
     return ref_tensor, reference_conditioning_kwargs, ref_frames
+
+
+def _prepare_img2img_reference_bundle(
+    reference_motion_path,
+    target_type,
+    target_cond,
+    *,
+    max_joints,
+    target_feature_len,
+    batch_size,
+    requested_output_frame_count,
+):
+    ref_raw = np.load(reference_motion_path).astype(np.float32)
+    if ref_raw.ndim != 3:
+        raise ValueError(
+            f"Reference motion must have shape (T, J, F), got {ref_raw.shape}"
+        )
+
+    loaded_reference_frame_count, loaded_reference_joint_count, ref_feats = ref_raw.shape
+    output_frame_count = min(loaded_reference_frame_count, requested_output_frame_count)
+    if loaded_reference_frame_count > output_frame_count:
+        ref_raw = ref_raw[:output_frame_count]
+
+    obj_mean, obj_std = _get_reference_normalization_stats(
+        target_cond,
+        object_type=target_type,
+        joint_count=loaded_reference_joint_count,
+        feature_count=ref_feats,
+        context='reference motion',
+    )
+    ref_norm = np.nan_to_num(
+        (ref_raw - obj_mean[None, :, :ref_feats]) / obj_std[None, :, :ref_feats],
+        copy=True,
+    ).astype(np.float32)
+
+    if loaded_reference_joint_count < max_joints:
+        pad = np.zeros(
+            (output_frame_count, max_joints - loaded_reference_joint_count, ref_norm.shape[2]),
+            dtype=np.float32,
+        )
+        ref_norm = np.concatenate([ref_norm, pad], axis=1)
+
+    ref_tensor = torch.from_numpy(ref_norm).permute(1, 2, 0)
+    ref_feat = ref_tensor.shape[1]
+    if ref_feat < target_feature_len:
+        pad = torch.zeros(
+            (max_joints, target_feature_len - ref_feat, output_frame_count),
+            dtype=torch.float32,
+        )
+        ref_tensor = torch.cat([ref_tensor, pad], dim=1)
+    elif ref_feat > target_feature_len:
+        ref_tensor = ref_tensor[:, :target_feature_len, :]
+    ref_motion = ref_tensor.unsqueeze(0).expand(batch_size, -1, -1, -1)
+    return {
+        'reference_motion': ref_motion,
+        'reference_conditioning_kwargs': None,
+        'output_frame_count': output_frame_count,
+        'loaded_reference_frame_count': loaded_reference_frame_count,
+        'loaded_reference_joint_count': loaded_reference_joint_count,
+    }
+
+
+def _prepare_reference_for_mode(
+    reference_motion_path,
+    *,
+    reference_mode,
+    source_type,
+    source_cond,
+    target_type,
+    target_cond,
+    max_joints,
+    target_feature_len,
+    batch_size,
+    requested_output_frame_count,
+):
+    if _reference_uses_source_skeleton(reference_mode):
+        ref_motion, reference_conditioning_kwargs, loaded_reference_frame_count = _prepare_reference_prior_bundle(
+            reference_motion_path,
+            source_type,
+            source_cond,
+            max_joints=max_joints,
+            target_feature_len=target_feature_len,
+            batch_size=batch_size,
+        )
+        loaded_reference_joint_count = int(reference_conditioning_kwargs['reference_n_joints'][0].item())
+        return {
+            'reference_motion': ref_motion,
+            'reference_conditioning_kwargs': reference_conditioning_kwargs,
+            'output_frame_count': requested_output_frame_count,
+            'loaded_reference_frame_count': loaded_reference_frame_count,
+            'loaded_reference_joint_count': loaded_reference_joint_count,
+        }
+
+    return _prepare_img2img_reference_bundle(
+        reference_motion_path,
+        target_type,
+        target_cond,
+        max_joints=max_joints,
+        target_feature_len=target_feature_len,
+        batch_size=batch_size,
+        requested_output_frame_count=requested_output_frame_count,
+    )
 
 
 def _export_motion(task):
@@ -802,7 +997,6 @@ def main(args=None, cond_dict=None):
 
     # 2) Resolve reference source type (for retarget decision)
     source_type = None
-    needs_retarget = False
     _default_cond_cache = None
     source_type_used_target_fallback = False
     blind_type = None
@@ -830,8 +1024,12 @@ def main(args=None, cond_dict=None):
                 f"{reference_motion_path}) not found in cond file. "
                 f"Available: {available}"
             )
-    if source_type and target_type and source_type.upper() != target_type.upper():
-        needs_retarget = True
+    cross_species_reference = _reference_crosses_skeletons(source_type, target_type)
+    should_retarget_reference = _should_retarget_reference(
+        source_type,
+        target_type,
+        reference_mode,
+    )
 
     object_type = target_type  # downstream code keeps reading `object_type`
     if reference_motion_path:
@@ -840,9 +1038,9 @@ def main(args=None, cond_dict=None):
                 f"Reference motion object_type inference was invalid"
                 f" ({blind_type or 'no match'}); falling back to target object_type: {target_type}"
             )
-        if needs_retarget and reference_mode != 'controlnet':
+        if should_retarget_reference:
             print(f"Reference motion object_type: {source_type} (will retarget to {target_type})")
-        elif needs_retarget:
+        elif cross_species_reference:
             print(f"Reference motion object_type: {source_type} (controlnet prior path keeps source skeleton; no retarget to {target_type})")
         else:
             inferred_display = source_type if source_type else target_type
@@ -860,13 +1058,13 @@ def main(args=None, cond_dict=None):
         # Prepare reference motion (normalize + reshape)
         ref_motion = None
         reference_conditioning_kwargs = None
-        effective_n_frames = n_frames  # May be overridden by reference motion
+        output_frame_count = n_frames
 
-        source_cond_entry = None
-        if source_type:
-            source_cond_entry = cond_dict.get(source_type)
-            if source_cond_entry is None and _default_cond_cache:
-                source_cond_entry = _default_cond_cache.get(source_type)
+        source_cond_entry = _resolve_source_cond_entry(
+            source_type,
+            cond_dict,
+            _default_cond_cache,
+        )
 
         prepared_reference_path = reference_motion_path
         if reference_motion_path:
@@ -879,20 +1077,12 @@ def main(args=None, cond_dict=None):
             )
 
         effective_reference_path = prepared_reference_path
-        if needs_retarget and reference_mode != 'controlnet':
-            # Build a cond_dict that contains both source and target.
-            retarget_cond_dict = dict(cond_dict)
-            if source_type not in cond_dict:
-                # Source type not in user-provided cond — use cached default cond.
-                if _default_cond_cache:
-                    for k, v in _default_cond_cache.items():
-                        if k not in retarget_cond_dict:
-                            retarget_cond_dict[k] = v
-                else:
-                    sys.exit(
-                        f"ERROR: source type '{source_type}' not found in cond file "
-                        f"and no default cond available for retarget."
-                    )
+        if should_retarget_reference:
+            retarget_cond_dict = _build_retarget_cond_dict(
+                cond_dict,
+                source_type,
+                _default_cond_cache,
+            )
 
             effective_reference_path = _retarget_reference_motion(
                 prepared_reference_path,
@@ -904,66 +1094,50 @@ def main(args=None, cond_dict=None):
                 fps=fps,
             )
 
-        if inpaint_enabled and reference_mode == 'controlnet' and needs_retarget:
-            sys.exit(
-                "ERROR: cross-species inpainting is not supported in controlnet prior mode. "
-                "The inpaint clamp requires a target-skeleton reference motion, but controlnet prior mode no longer retargets the source reference."
-            )
+        _validate_reference_sampling_request(
+            inpaint_enabled=inpaint_enabled,
+            reference_mode=reference_mode,
+            cross_species_reference=cross_species_reference,
+        )
 
         if effective_reference_path:
-            if reference_mode == 'controlnet':
-                ref_motion, reference_conditioning_kwargs, reference_frame_count = _prepare_reference_prior_bundle(
-                    effective_reference_path,
-                    source_type,
-                    source_cond_entry,
-                    max_joints=max_joints,
-                    target_feature_len=model.feature_len,
-                    batch_size=args.batch_size,
-                )
-            else:
-                ref_raw = np.load(effective_reference_path).astype(np.float32)
-                ref_frames = ref_raw.shape[0]
-                ref_joints = ref_raw.shape[1]
+            reference_bundle = _prepare_reference_for_mode(
+                effective_reference_path,
+                reference_mode=reference_mode,
+                source_type=source_type,
+                source_cond=source_cond_entry,
+                target_type=object_type,
+                target_cond=cond_dict[object_type],
+                max_joints=max_joints,
+                target_feature_len=model.feature_len,
+                batch_size=args.batch_size,
+                requested_output_frame_count=n_frames,
+            )
+            ref_motion = reference_bundle['reference_motion']
+            reference_conditioning_kwargs = reference_bundle['reference_conditioning_kwargs']
+            output_frame_count = reference_bundle['output_frame_count']
+            loaded_reference_frame_count = reference_bundle['loaded_reference_frame_count']
+            loaded_reference_joint_count = reference_bundle['loaded_reference_joint_count']
 
-                effective_n_frames = min(ref_frames, n_frames)
-                if ref_frames > effective_n_frames:
-                    ref_raw = ref_raw[:effective_n_frames]
-
-                obj_mean = cond_dict[object_type]['mean']
-                obj_std = np.asarray(cond_dict[object_type]['std'], dtype=np.float32) + 1e-6
-                ref_norm = np.nan_to_num((ref_raw - obj_mean[None, :]) / obj_std[None, :], copy=True).astype(np.float32)
-
-                if ref_joints < max_joints:
-                    pad = np.zeros((effective_n_frames, max_joints - ref_joints, ref_norm.shape[2]), dtype=np.float32)
-                    ref_norm = np.concatenate([ref_norm, pad], axis=1)
-
-                ref_tensor = torch.from_numpy(ref_norm).permute(1, 2, 0)
-                ref_feat = ref_tensor.shape[1]
-                target_feat = model.feature_len
-                if ref_feat < target_feat:
-                    pad = torch.zeros((max_joints, target_feat - ref_feat, effective_n_frames), dtype=torch.float32)
-                    ref_tensor = torch.cat([ref_tensor, pad], dim=1)
-                elif ref_feat > target_feat:
-                    ref_tensor = ref_tensor[:, :target_feat, :]
-                ref_motion = ref_tensor.unsqueeze(0).expand(args.batch_size, -1, -1, -1)
-                reference_frame_count = effective_n_frames
-
-            if reference_mode != 'controlnet' and effective_n_frames != n_frames:
-                print(f'  Reference motion overrides frame count: {n_frames} -> {effective_n_frames}')
+            if not _reference_uses_source_skeleton(reference_mode) and output_frame_count != n_frames:
+                print(f'  Reference motion overrides frame count: {n_frames} -> {output_frame_count}')
             print(f'  Reference motion loaded: {effective_reference_path}')
             if prepared_reference_path != reference_motion_path:
                 print(f'    (preprocessed from original: {reference_motion_path})')
             if effective_reference_path != prepared_reference_path:
                 print(f'    (retargeted from preprocessed: {prepared_reference_path})')
-            elif needs_retarget and reference_mode == 'controlnet':
+            elif cross_species_reference and _reference_uses_source_skeleton(reference_mode):
                 print(f'    (controlnet prior path keeps source-space reference; no retarget from {source_type} to {target_type})')
-            if reference_mode == 'controlnet':
+            if _reference_uses_source_skeleton(reference_mode):
                 print(
-                    f'    Reference prior: [{reference_frame_count} frames, {max_joints} joints] '
-                    f'-> Output target: [{effective_n_frames} frames, {max_joints} joints]'
+                    f'    Reference prior input: [{loaded_reference_frame_count} frames, {loaded_reference_joint_count} joints] '
+                    f'-> Output target: [{output_frame_count} frames, {max_joints} joints]'
                 )
             else:
-                print(f'    Original: [{ref_frames} frames, {ref_joints} joints] -> Target: [{effective_n_frames} frames, {max_joints} joints]')
+                print(
+                    f'    Original: [{loaded_reference_frame_count} frames, {loaded_reference_joint_count} joints] '
+                    f'-> Target: [{output_frame_count} frames, {max_joints} joints]'
+                )
             if inpaint_enabled and skip_timesteps > 0:
                 print(f'    mode: inpaint + skip_timesteps={skip_timesteps} '
                       '(two-pass: unmasked region = img2img variation of the '
@@ -1012,7 +1186,7 @@ def main(args=None, cond_dict=None):
                 inpaint_frames_arg,
                 args.batch_size,
                 opt.max_joints,
-                effective_n_frames,
+                output_frame_count,
             )
 
         # Create condition with effective frame count
@@ -1020,7 +1194,7 @@ def main(args=None, cond_dict=None):
         _, model_kwargs = create_condition(
             obj_batch,
             cond_dict,
-            effective_n_frames,
+            output_frame_count,
             args.temporal_window,
             max_joints=opt.max_joints,
             feature_len=opt.feature_len
@@ -1030,7 +1204,7 @@ def main(args=None, cond_dict=None):
             model=model,
             model_kwargs=model_kwargs,
             sampling_method=sampling_method,
-            sample_shape=(args.batch_size, max_joints, model.feature_len, effective_n_frames),
+            sample_shape=(args.batch_size, max_joints, model.feature_len, output_frame_count),
             ddim_eta=ddim_eta,
             seed=args.seed,
             device=dist_util.dev(),
@@ -1286,4 +1460,7 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joi
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except ValueError as exc:
+        sys.exit(f"ERROR: {exc}")

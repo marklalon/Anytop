@@ -15,7 +15,14 @@ sys.path.insert(0, str(REPO_ROOT))
 
 
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType  # noqa: E402
-from sample.generate import _prepare_reference_prior_bundle, _sample_batch, validate_reference_mode_configuration  # noqa: E402
+from sample.generate import (  # noqa: E402
+    _prepare_reference_for_mode,
+    _prepare_reference_prior_bundle,
+    _sample_batch,
+    _should_retarget_reference,
+    _validate_reference_sampling_request,
+    validate_reference_mode_configuration,
+)
 from model.anytop import AnyTop, ReferencePriorEncoder  # noqa: E402
 from model.motion_transformer import GraphMotionDecoderLayer  # noqa: E402
 from utils.model_util import ClassifierFreeReferenceModel, model_supports_reference_conditioning  # noqa: E402
@@ -335,6 +342,68 @@ def test_prepare_reference_prior_bundle_preserves_reference_length_and_zero_feat
     assert torch.allclose(ref_tensor[0, :, 11:13, :], torch.zeros_like(ref_tensor[0, :, 11:13, :]))
 
 
+def test_prepare_reference_prior_bundle_rejects_incompatible_stat_schema(tmp_path: Path) -> None:
+    reference_motion_path = tmp_path / "reference_prior_bad_stats.npy"
+    ref_raw = np.ones((5, 2, 11), dtype=np.float32)
+    np.save(reference_motion_path, ref_raw)
+
+    source_cond = {
+        "parents": np.asarray([-1, 0], dtype=np.int64),
+        "offsets": np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32),
+        "mean": np.zeros((2, 10), dtype=np.float32),
+        "std": np.ones((2, 10), dtype=np.float32),
+        "joints_names_embs": np.zeros((2, 8), dtype=np.float32),
+    }
+
+    with pytest.raises(ValueError, match="need at least 11 feature channels"):
+        _prepare_reference_prior_bundle(
+            str(reference_motion_path),
+            "TestObject",
+            source_cond,
+            max_joints=2,
+            target_feature_len=13,
+            batch_size=1,
+        )
+
+
+def test_prepare_reference_for_mode_controlnet_keeps_reference_and_output_lengths_separate(tmp_path: Path) -> None:
+    reference_motion_path = tmp_path / "reference_prior_controlnet.npy"
+    ref_raw = np.ones((5, 2, 11), dtype=np.float32)
+    np.save(reference_motion_path, ref_raw)
+
+    source_cond = {
+        "parents": np.asarray([-1, 0], dtype=np.int64),
+        "offsets": np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32),
+        "mean": np.zeros((2, 13), dtype=np.float32),
+        "std": np.ones((2, 13), dtype=np.float32),
+        "joints_names_embs": np.zeros((2, 8), dtype=np.float32),
+    }
+
+    bundle = _prepare_reference_for_mode(
+        str(reference_motion_path),
+        reference_mode="controlnet",
+        source_type="TestObject",
+        source_cond=source_cond,
+        target_type="OtherObject",
+        target_cond=source_cond,
+        max_joints=4,
+        target_feature_len=13,
+        batch_size=1,
+        requested_output_frame_count=7,
+    )
+
+    assert bundle["loaded_reference_frame_count"] == 5
+    assert bundle["loaded_reference_joint_count"] == 2
+    assert bundle["output_frame_count"] == 7
+    assert bundle["reference_motion"].shape == (1, 4, 13, 5)
+
+
+def test_should_retarget_reference_skips_controlnet_source_space_path() -> None:
+    assert _should_retarget_reference("Horse", "Buffalo", "img2img")
+    assert not _should_retarget_reference("Horse", "Buffalo", "controlnet")
+    assert not _should_retarget_reference("Horse", "Horse", "img2img")
+
+
 def test_reference_prior_encoder_uses_effective_translation_root() -> None:
     encoder = ReferencePriorEncoder(
         input_feats=13,
@@ -419,6 +488,103 @@ def test_reference_prior_encoder_respects_zero_temporal_layers() -> None:
 
     assert len(encoder.conv_blocks) == 0
     assert len(encoder.temporal_layers) == 0
+
+
+def test_depth_to_root_matches_iterative_relaxation() -> None:
+    """Pointer-doubling depth must equal the O(J) relaxation it replaced."""
+
+    def _relaxation_depth(parents: torch.Tensor) -> torch.Tensor:
+        max_joints = parents.shape[1]
+        safe_parents = parents.clamp_min(0)
+        has_parent = parents >= 0
+        depth = torch.zeros_like(parents, dtype=torch.float32)
+        for _ in range(max_joints - 1):
+            parent_depth = depth.gather(1, safe_parents)
+            depth = torch.maximum(depth, torch.where(has_parent, parent_depth + 1.0, depth))
+        return depth
+
+    torch.manual_seed(0)
+    for _ in range(64):
+        max_joints = int(torch.randint(2, 48, (1,)))
+        n_joints = int(torch.randint(1, max_joints + 1, (1,)))
+        parents = torch.full((1, max_joints), -1, dtype=torch.long)
+        for joint in range(1, n_joints):
+            parents[0, joint] = int(torch.randint(0, joint, (1,)))
+        assert torch.equal(
+            ReferencePriorEncoder._depth_to_root(parents, torch.float32),
+            _relaxation_depth(parents),
+        )
+
+    # Worst case: a single chain is the deepest tree a J-joint skeleton allows.
+    chain = torch.arange(-1, 31, dtype=torch.long).unsqueeze(0)
+    chain_depth = ReferencePriorEncoder._depth_to_root(chain, torch.float32)
+    assert torch.equal(chain_depth, _relaxation_depth(chain))
+    assert int(chain_depth.max()) == 31
+
+
+def test_reference_prior_encoder_honours_per_sample_metadata_in_batch() -> None:
+    encoder = ReferencePriorEncoder(
+        input_feats=13,
+        latent_dim=32,
+        ff_size=64,
+        num_heads=4,
+        dropout=0.0,
+        t5_out_dim=8,
+        skip_t5=True,
+        num_layers=1,
+    )
+    encoder.eval()
+
+    torch.manual_seed(0)
+    # Both batch entries share identical motion, so any token difference can
+    # only come from the per-sample skeleton metadata (never silently broadcast).
+    shared_motion = torch.randn((1, 6, 13, 7), dtype=torch.float32)
+    motion = shared_motion.expand(2, -1, -1, -1).contiguous()
+    joints_names_embs = torch.zeros((2, 6, 8), dtype=torch.float32)
+    parents = [
+        np.asarray([-1, 0, 1, 2], dtype=np.int64),       # chain of 4
+        np.asarray([-1, 0, 0, 0, 0], dtype=np.int64),     # star of 5
+    ]
+
+    tokens = encoder(
+        motion,
+        n_joints=torch.tensor([4, 5]),
+        lengths=torch.tensor([7, 7]),
+        translation_root_index=torch.tensor([0, 0]),
+        parents_batch=parents,
+        joints_embedded_names=joints_names_embs,
+    )
+
+    assert tokens.shape == (8, 2, 32)
+    assert not torch.allclose(tokens[:, 0], tokens[:, 1])
+
+
+def test_reference_prior_encoder_rejects_batch_size_mismatch() -> None:
+    encoder = ReferencePriorEncoder(
+        input_feats=13,
+        latent_dim=32,
+        ff_size=64,
+        num_heads=4,
+        dropout=0.0,
+        t5_out_dim=8,
+        skip_t5=True,
+        num_layers=1,
+    )
+    encoder.eval()
+
+    motion = torch.zeros((2, 4, 13, 5), dtype=torch.float32)
+    joints_names_embs = torch.zeros((2, 4, 8), dtype=torch.float32)
+
+    # A single parents entry must not be silently broadcast onto a 2-sample batch.
+    with pytest.raises(ValueError, match="does not match batch size 2"):
+        encoder(
+            motion,
+            n_joints=torch.tensor([4, 4]),
+            lengths=torch.tensor([5, 5]),
+            translation_root_index=torch.tensor([0, 0]),
+            parents_batch=[np.asarray([-1, 0, 1, 1], dtype=np.int64)],
+            joints_embedded_names=joints_names_embs,
+        )
 
 
 def test_decoder_reference_mask_keeps_unconditioned_samples_on_baseline_path() -> None:
@@ -653,3 +819,18 @@ def test_sample_batch_rejects_controlnet_skip_timesteps() -> None:
             reference_scale=2.0,
             skip_timesteps=4,
         )
+
+
+def test_validate_reference_sampling_request_rejects_cross_species_controlnet_inpaint() -> None:
+    with pytest.raises(ValueError, match="cross-species inpainting is not supported"):
+        _validate_reference_sampling_request(
+            inpaint_enabled=True,
+            reference_mode="controlnet",
+            cross_species_reference=True,
+        )
+
+    _validate_reference_sampling_request(
+        inpaint_enabled=True,
+        reference_mode="img2img",
+        cross_species_reference=True,
+    )

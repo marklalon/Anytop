@@ -465,9 +465,7 @@ class ReferencePriorEncoder(nn.Module):
                 parents_batch = parents_batch.unsqueeze(0)
             elif parents_batch.dim() != 2:
                 raise ValueError(f"reference parents must be rank 1 or 2, got {tuple(parents_batch.shape)}")
-            if parents_batch.shape[0] == 1 and batch_size != 1:
-                parents_batch = parents_batch.expand(batch_size, -1)
-            elif parents_batch.shape[0] != batch_size:
+            if parents_batch.shape[0] != batch_size:
                 raise ValueError(
                     f"reference parents batch dimension {parents_batch.shape[0]} does not match batch size {batch_size}"
                 )
@@ -476,9 +474,7 @@ class ReferencePriorEncoder(nn.Module):
         parent_tensors = []
         for parents in parents_batch:
             parent_tensors.append(torch.as_tensor(parents, device=device, dtype=torch.long))
-        if len(parent_tensors) == 1 and batch_size != 1:
-            parent_tensors = parent_tensors * batch_size
-        elif len(parent_tensors) != batch_size:
+        if len(parent_tensors) != batch_size:
             raise ValueError(
                 f"reference parents list length {len(parent_tensors)} does not match batch size {batch_size}"
             )
@@ -503,9 +499,7 @@ class ReferencePriorEncoder(nn.Module):
             raise ValueError(
                 f"reference joint-name embeddings must be rank 2 or 3, got {tuple(joints_embedded_names.shape)}"
             )
-        if joints_embedded_names.shape[0] == 1 and batch_size != 1:
-            joints_embedded_names = joints_embedded_names.expand(batch_size, -1, -1)
-        elif joints_embedded_names.shape[0] != batch_size:
+        if joints_embedded_names.shape[0] != batch_size:
             raise ValueError(
                 "reference joint-name embedding batch dimension "
                 f"{joints_embedded_names.shape[0]} does not match batch size {batch_size}"
@@ -527,6 +521,32 @@ class ReferencePriorEncoder(nn.Module):
         return padded
 
     @staticmethod
+    def _depth_to_root(parents, dtype):
+        """Edge distance from each joint up to its root.
+
+        ``parents`` is (B, J) long with -1 for roots and padded slots. This is
+        the converged solution of ``depth[j] = depth[parent[j]] + 1`` (with
+        ``depth[root] = 0``), computed by pointer doubling: every round at least
+        doubles the resolved ancestor distance, so ~log2(J) GPU rounds replace
+        the J-1 sequential relaxation steps.
+        """
+        _, max_joints = parents.shape
+        # ancestor[j]: ancestor whose distance is not yet folded into depth[j]
+        #   (-1 once the walk has reached the root).
+        # depth[j]: confirmed edge count from j up to ancestor[j], becoming the
+        #   true depth once ancestor[j] == -1.
+        ancestor = parents.clone()
+        depth = (parents >= 0).to(dtype)
+        for _ in range(max(max_joints.bit_length(), 1)):
+            unresolved = ancestor >= 0
+            safe_ancestor = ancestor.clamp_min(0)
+            ancestor_depth = torch.gather(depth, 1, safe_ancestor)
+            ancestor_ancestor = torch.gather(ancestor, 1, safe_ancestor)
+            depth = torch.where(unresolved, depth + ancestor_depth, depth)
+            ancestor = torch.where(unresolved, ancestor_ancestor, ancestor)
+        return depth
+
+    @staticmethod
     def _build_role_features(parents, valid_joints, translation_root_index, dtype):
         batch_size, max_joints = parents.shape
         device = parents.device
@@ -541,12 +561,7 @@ class ReferencePriorEncoder(nn.Module):
         child_count_scale = raw_child_count.max(dim=1, keepdim=True).values.clamp_min(1.0)
         child_count = raw_child_count / child_count_scale
 
-        depth = torch.zeros((batch_size, max_joints), device=device, dtype=dtype)
-        for _ in range(max_joints - 1):
-            parent_depth = depth.gather(1, safe_parents)
-            candidate_depth = torch.where(parent_valid_mask, parent_depth + 1.0, depth)
-            depth = torch.maximum(depth, candidate_depth)
-        depth = depth * valid_joint_weights
+        depth = ReferencePriorEncoder._depth_to_root(parents, dtype) * valid_joint_weights
         depth_scale = depth.max(dim=1, keepdim=True).values.clamp_min(1.0)
         depth = depth / depth_scale
 
