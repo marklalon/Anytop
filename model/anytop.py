@@ -2,7 +2,6 @@ import torch
 torch.cuda.empty_cache()
 import torch.nn as nn
 import numpy as np
-import torch.nn.functional as F
 from model.motion_transformer import GraphMotionDecoderLayer, GraphMotionDecoder, SelectiveMultiheadAttention
 from model.joint_mask_utils import sample_subtree_joint_mask_batch
 
@@ -56,9 +55,6 @@ class AnyTop(nn.Module):
         self.reference_cond=bool(kargs.get('reference_cond', False))
         self.reference_encoder_layers=int(kargs.get('reference_encoder_layers', 2))
         self.reference_uncond_prob=float(kargs.get('reference_uncond_prob', 0.5))
-        self.reference_subtree_budget=float(kargs.get('reference_subtree_budget', 0.35))
-        self.reference_noise_sigma_min=float(kargs.get('reference_noise_sigma_min', 0.02))
-        self.reference_noise_sigma_max=float(kargs.get('reference_noise_sigma_max', 0.12))
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
         if self.reference_encoder_layers < 0:
@@ -67,20 +63,14 @@ class AnyTop(nn.Module):
             )
         for prob_name in (
             'reference_uncond_prob',
-            'reference_subtree_budget',
         ):
             prob_value = float(getattr(self, prob_name))
             if not 0.0 <= prob_value <= 1.0:
                 raise ValueError(f"{prob_name} must be in [0, 1], got {prob_value}")
-        if self.reference_noise_sigma_min < 0.0 or self.reference_noise_sigma_max < self.reference_noise_sigma_min:
-            raise ValueError(
-                "reference_noise_sigma_min/max must satisfy 0 <= min <= max"
-            )
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, skip_t5=self.skip_t5, dropout_prob=self.dropout)
         if self.reference_cond:
-            self.reference_encoder = ReferenceEncoder(
+            self.reference_encoder = ReferencePriorEncoder(
                 input_feats=self.input_feats,
-                root_input_feats=self.root_input_feats,
                 latent_dim=self.latent_dim,
                 ff_size=self.ff_size,
                 num_heads=self.num_heads,
@@ -115,18 +105,6 @@ class AnyTop(nn.Module):
         attention masks. Only structurally padded joints are masked here.
         """
         return torch.arange(njoints, device=device)[None, :] >= n_joints[:, None]
-
-    @staticmethod
-    def _build_reference_key_padding_mask(nframes, njoints, lengths, device):
-        clipped_lengths = torch.clamp(lengths.to(device=device, dtype=torch.int64), min=0, max=nframes)
-        frame_positions = torch.arange(nframes, device=device)[None, :]
-        valid_frames = frame_positions < clipped_lengths[:, None]
-        valid_with_tpose = torch.cat(
-            [torch.ones((clipped_lengths.shape[0], 1), device=device, dtype=torch.bool), valid_frames],
-            dim=1,
-        )
-        key_padding_mask = ~valid_with_tpose
-        return key_padding_mask.unsqueeze(1).expand(-1, njoints, -1).reshape(-1, nframes + 1)
 
     def supports_reference_conditioning(self):
         return self.reference_cond and self.reference_encoder is not None
@@ -239,28 +217,35 @@ class AnyTop(nn.Module):
                 reference_batch_mask = raw_reference_batch_mask.to(device=x.device, dtype=torch.bool).reshape(bs)
             if reference_motion is not None and (reference_batch_mask is None or bool(reference_batch_mask.any())):
                 reference_motion = reference_motion.to(device=x.device, dtype=x.dtype)
-                if reference_motion.shape[:3] != (bs, njoints, nfeats):
+                if reference_motion.shape[0] != bs or reference_motion.shape[2] != nfeats:
                     raise ValueError(
-                        "y['reference_motion'] must have shape "
-                        f"(B, J, F, T) matching x except for T, got {tuple(reference_motion.shape)}"
+                        "y['reference_motion'] must have shape (B, J, F, T) with matching batch/feature dims, got "
+                        f"{tuple(reference_motion.shape)}"
                     )
-                if reference_motion.shape[-1] != nframes:
-                    raise ValueError(
-                        "y['reference_motion'] must match x in frame count, got "
-                        f"{reference_motion.shape[-1]} and {nframes}"
-                    )
-                reference_key_padding_mask = self._build_reference_key_padding_mask(
-                    nframes,
-                    njoints,
-                    y['lengths'],
-                    x.device,
+                reference_n_joints = y.get('reference_n_joints', y['n_joints'])
+                reference_lengths = y.get('reference_lengths', y['lengths'])
+                reference_translation_root_index = y.get(
+                    'reference_translation_root_index',
+                    y.get('translation_root_index'),
                 )
+                if reference_translation_root_index is None:
+                    raise ValueError("reference conditioning requires translation_root_index metadata")
+                reference_parents = y.get('reference_parents', y.get('parents'))
+                reference_joints_names_embs = y.get(
+                    'reference_joints_names_embs',
+                    y.get('joints_names_embs'),
+                )
+                if reference_parents is None or reference_joints_names_embs is None:
+                    raise ValueError("reference conditioning requires reference parents and joint-name embeddings")
                 reference_memory = self.reference_encoder(
                     reference_motion,
-                    tpos_first_frame,
-                    y['joints_names_embs'],
-                    reference_key_padding_mask,
+                    n_joints=reference_n_joints,
+                    lengths=reference_lengths,
+                    translation_root_index=reference_translation_root_index,
+                    parents_batch=reference_parents,
+                    joints_embedded_names=reference_joints_names_embs,
                 )
+                reference_key_padding_mask = None
 
         cross_limb_unreliable_mask = None
         if self.cross_limb:
@@ -345,7 +330,7 @@ class InputProcess(nn.Module):
         return x + pos_emb.unsqueeze(1).unsqueeze(1)
 
 
-class ReferenceTemporalEncoderLayer(nn.Module):
+class ReferencePriorTemporalLayer(nn.Module):
     def __init__(self, latent_dim, ff_size, num_heads, dropout):
         super().__init__()
         self.self_attn = SelectiveMultiheadAttention(latent_dim, num_heads, dropout=dropout)
@@ -361,28 +346,23 @@ class ReferenceTemporalEncoderLayer(nn.Module):
         )
 
     def forward(self, x, key_padding_mask=None):
-        frames, bs, njoints, feats = x.shape
-        residual = x
         x_norm = self.norm1(x)
-        attn_input = x_norm.reshape(frames, bs * njoints, feats)
         attn_output, _ = self.self_attn(
-            attn_input,
-            attn_input,
-            attn_input,
+            x_norm,
+            x_norm,
+            x_norm,
             key_padding_mask=key_padding_mask,
             need_weights=False,
         )
-        attn_output = attn_output.reshape(frames, bs, njoints, feats)
-        x = residual + self.dropout1(attn_output)
+        x = x + self.dropout1(attn_output)
         x = x + self.dropout2(self.ffn(self.norm2(x)))
         return x
 
 
-class ReferenceEncoder(nn.Module):
+class ReferencePriorEncoder(nn.Module):
     def __init__(
         self,
         input_feats,
-        root_input_feats,
         latent_dim,
         ff_size,
         num_heads,
@@ -390,32 +370,339 @@ class ReferenceEncoder(nn.Module):
         t5_out_dim,
         skip_t5,
         num_layers,
+        num_groups=6,
+        num_prior_tokens=8,
+        role_feature_dim=5,
     ):
         super().__init__()
-        self.input_process = InputProcess(
-            input_feats,
-            root_input_feats,
-            latent_dim,
-            t5_out_dim,
-            skip_t5=skip_t5,
-            dropout_prob=dropout,
+        self.input_feats = int(input_feats)
+        if self.input_feats < 13:
+            raise ValueError(
+                "ReferencePriorEncoder expects at least the 13-dim feature schema "
+                "[pos(3), rot6d(6), vel(3), contact(1)], "
+                f"got input_feats={self.input_feats}"
+            )
+        self.latent_dim = int(latent_dim)
+        self.num_groups = int(num_groups)
+        self.num_prior_tokens = int(num_prior_tokens)
+        self.skip_t5 = bool(skip_t5)
+        self.role_feature_dim = int(role_feature_dim)
+        self.joint_feature_dim = 5
+        self.group_stat_dim = self.joint_feature_dim * 2
+        self.root_feature_dim = min(self.input_feats, 12)
+        self.global_feature_dim = self.group_stat_dim
+        prior_input_dim = self.root_feature_dim + self.global_feature_dim + self.num_groups * self.group_stat_dim
+        layer_count = int(num_layers)
+
+        self.role_projection = nn.Sequential(
+            nn.LayerNorm(self.role_feature_dim),
+            nn.Linear(self.role_feature_dim, self.latent_dim),
+            nn.GELU(),
+            nn.Linear(self.latent_dim, self.latent_dim),
         )
-        self.layers = nn.ModuleList([
-            ReferenceTemporalEncoderLayer(
-                latent_dim=latent_dim,
+        if self.skip_t5:
+            self.name_projection = None
+        else:
+            self.name_projection = nn.Sequential(
+                nn.LayerNorm(t5_out_dim),
+                nn.Linear(t5_out_dim, self.latent_dim),
+                nn.GELU(),
+                nn.Linear(self.latent_dim, self.latent_dim),
+            )
+        self.group_queries = nn.Parameter(torch.randn(self.num_groups, self.latent_dim) * 0.02)
+        self.sequence_projection = nn.Sequential(
+            nn.LayerNorm(prior_input_dim),
+            nn.Linear(prior_input_dim, self.latent_dim),
+            nn.GELU(),
+            nn.Linear(self.latent_dim, self.latent_dim),
+        )
+        self.conv_blocks = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv1d(self.latent_dim, self.latent_dim, kernel_size=5, padding=2),
+                nn.GELU(),
+                nn.Dropout(dropout),
+            )
+            for _ in range(layer_count)
+        ])
+        self.temporal_layers = nn.ModuleList([
+            ReferencePriorTemporalLayer(
+                latent_dim=self.latent_dim,
                 ff_size=ff_size,
                 num_heads=num_heads,
                 dropout=dropout,
             )
-            for _ in range(num_layers)
+            for _ in range(layer_count)
         ])
-        self.norm = nn.LayerNorm(latent_dim)
+        self.token_queries = nn.Parameter(torch.randn(self.num_prior_tokens, self.latent_dim) * 0.02)
+        self.token_attn = SelectiveMultiheadAttention(self.latent_dim, num_heads, dropout=dropout)
+        self.output_ffn = nn.Sequential(
+            nn.LayerNorm(self.latent_dim),
+            nn.Linear(self.latent_dim, ff_size),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(ff_size, self.latent_dim),
+        )
+        self.output_norm = nn.LayerNorm(self.latent_dim)
 
-    def forward(self, reference_motion, tpos_first_frame, joints_embedded_names, key_padding_mask=None):
-        output = self.input_process(reference_motion, tpos_first_frame, joints_embedded_names)
-        for layer in self.layers:
-            output = layer(output, key_padding_mask=key_padding_mask)
-        return self.norm(output)
+    @staticmethod
+    def _coerce_parents_batch(parents_batch, batch_size, max_joints, device):
+        if parents_batch is None:
+            raise ValueError("reference conditioning requires parents information")
+
+        def _pad_parent_tensor(parents_tensor):
+            if parents_tensor.shape[1] > max_joints:
+                raise ValueError(
+                    f"reference parents joint dimension {parents_tensor.shape[1]} exceeds reference motion joints {max_joints}"
+                )
+            if parents_tensor.shape[1] == max_joints:
+                return parents_tensor
+            padded = torch.full((parents_tensor.shape[0], max_joints), -1, device=device, dtype=torch.long)
+            padded[:, : parents_tensor.shape[1]] = parents_tensor
+            return padded
+
+        if torch.is_tensor(parents_batch):
+            if parents_batch.dim() == 1:
+                parents_batch = parents_batch.unsqueeze(0)
+            elif parents_batch.dim() != 2:
+                raise ValueError(f"reference parents must be rank 1 or 2, got {tuple(parents_batch.shape)}")
+            if parents_batch.shape[0] == 1 and batch_size != 1:
+                parents_batch = parents_batch.expand(batch_size, -1)
+            elif parents_batch.shape[0] != batch_size:
+                raise ValueError(
+                    f"reference parents batch dimension {parents_batch.shape[0]} does not match batch size {batch_size}"
+                )
+            parents_batch = parents_batch.to(device=device, dtype=torch.long)
+            return _pad_parent_tensor(parents_batch)
+        parent_tensors = []
+        for parents in parents_batch:
+            parent_tensors.append(torch.as_tensor(parents, device=device, dtype=torch.long))
+        if len(parent_tensors) == 1 and batch_size != 1:
+            parent_tensors = parent_tensors * batch_size
+        elif len(parent_tensors) != batch_size:
+            raise ValueError(
+                f"reference parents list length {len(parent_tensors)} does not match batch size {batch_size}"
+            )
+        padded = torch.full((batch_size, max_joints), -1, device=device, dtype=torch.long)
+        for batch_index, parents in enumerate(parent_tensors):
+            if parents.shape[0] > max_joints:
+                raise ValueError(
+                    f"reference parents joint dimension {parents.shape[0]} exceeds reference motion joints {max_joints}"
+                )
+            padded[batch_index, : parents.shape[0]] = parents
+        return padded
+
+    @staticmethod
+    def _coerce_joint_name_embeddings(joints_embedded_names, batch_size, max_joints, device, dtype):
+        if joints_embedded_names is None:
+            raise ValueError("reference conditioning requires joint-name embeddings")
+        if not torch.is_tensor(joints_embedded_names):
+            joints_embedded_names = torch.as_tensor(joints_embedded_names)
+        if joints_embedded_names.dim() == 2:
+            joints_embedded_names = joints_embedded_names.unsqueeze(0)
+        elif joints_embedded_names.dim() != 3:
+            raise ValueError(
+                f"reference joint-name embeddings must be rank 2 or 3, got {tuple(joints_embedded_names.shape)}"
+            )
+        if joints_embedded_names.shape[0] == 1 and batch_size != 1:
+            joints_embedded_names = joints_embedded_names.expand(batch_size, -1, -1)
+        elif joints_embedded_names.shape[0] != batch_size:
+            raise ValueError(
+                "reference joint-name embedding batch dimension "
+                f"{joints_embedded_names.shape[0]} does not match batch size {batch_size}"
+            )
+        joints_embedded_names = joints_embedded_names.to(device=device, dtype=dtype)
+        if joints_embedded_names.shape[1] > max_joints:
+            raise ValueError(
+                "reference joint-name embedding joint dimension "
+                f"{joints_embedded_names.shape[1]} exceeds reference motion joints {max_joints}"
+            )
+        if joints_embedded_names.shape[1] == max_joints:
+            return joints_embedded_names
+        padded = torch.zeros(
+            (batch_size, max_joints, joints_embedded_names.shape[2]),
+            device=device,
+            dtype=dtype,
+        )
+        padded[:, : joints_embedded_names.shape[1]] = joints_embedded_names
+        return padded
+
+    @staticmethod
+    def _build_role_features(parents, valid_joints, translation_root_index, dtype):
+        batch_size, max_joints = parents.shape
+        device = parents.device
+        valid_joint_mask = valid_joints.to(device=device, dtype=torch.bool)
+        valid_joint_weights = valid_joint_mask.to(dtype)
+        safe_parents = parents.clamp_min(0)
+        parent_valid_mask = (parents >= 0) & valid_joint_mask
+
+        raw_child_count = torch.zeros((batch_size, max_joints), device=device, dtype=dtype)
+        raw_child_count.scatter_add_(1, safe_parents, parent_valid_mask.to(dtype))
+        raw_child_count = raw_child_count * valid_joint_weights
+        child_count_scale = raw_child_count.max(dim=1, keepdim=True).values.clamp_min(1.0)
+        child_count = raw_child_count / child_count_scale
+
+        depth = torch.zeros((batch_size, max_joints), device=device, dtype=dtype)
+        for _ in range(max_joints - 1):
+            parent_depth = depth.gather(1, safe_parents)
+            candidate_depth = torch.where(parent_valid_mask, parent_depth + 1.0, depth)
+            depth = torch.maximum(depth, candidate_depth)
+        depth = depth * valid_joint_weights
+        depth_scale = depth.max(dim=1, keepdim=True).values.clamp_min(1.0)
+        depth = depth / depth_scale
+
+        is_leaf = ((raw_child_count == 0) & valid_joint_mask).to(dtype)
+        is_translation_root = torch.zeros((batch_size, max_joints), device=device, dtype=dtype)
+        safe_root_index = translation_root_index.clamp(min=0, max=max_joints - 1).view(batch_size, 1)
+        is_translation_root.scatter_(1, safe_root_index, 1.0)
+        is_translation_root = is_translation_root * valid_joint_weights
+
+        joint_index = torch.arange(max_joints, device=device, dtype=dtype).unsqueeze(0)
+        valid_joint_count = valid_joint_weights.sum(dim=1, keepdim=True)
+        chain_denominator = (valid_joint_count - 1.0).clamp_min(1.0)
+        chain_position = (joint_index / chain_denominator) * valid_joint_weights
+
+        return torch.stack(
+            [depth, child_count, is_leaf, is_translation_root, chain_position],
+            dim=-1,
+        )
+
+    @staticmethod
+    def _gather_translation_root_track(reference_motion, translation_root_index):
+        batch_size, _, _, frame_count = reference_motion.shape
+        gather_index = translation_root_index.to(device=reference_motion.device, dtype=torch.long).view(batch_size, 1, 1, 1)
+        gather_index = gather_index.expand(-1, 1, reference_motion.shape[2], frame_count)
+        root_track = torch.gather(reference_motion, dim=1, index=gather_index).squeeze(1)
+        return root_track.permute(0, 2, 1)
+
+    @staticmethod
+    def _masked_mean_and_std(values, weights, eps=1e-6):
+        weights_sum = weights.sum(dim=2, keepdim=True).clamp_min(eps)
+        mean = (values * weights.unsqueeze(-1)).sum(dim=2) / weights_sum
+        second_moment = ((values * values) * weights.unsqueeze(-1)).sum(dim=2) / weights_sum
+        variance = (second_moment - mean * mean).clamp_min(0.0)
+        std = torch.sqrt(variance + eps)
+        return mean, std
+
+    def forward(
+        self,
+        reference_motion,
+        n_joints,
+        lengths,
+        translation_root_index,
+        parents_batch,
+        joints_embedded_names,
+    ):
+        if reference_motion.dim() != 4:
+            raise ValueError(f"reference_motion must have shape (B, J, F, T), got {tuple(reference_motion.shape)}")
+
+        batch_size, max_joints, feature_dim, frame_count = reference_motion.shape
+        device = reference_motion.device
+        dtype = reference_motion.dtype
+
+        if feature_dim != self.input_feats:
+            raise ValueError(f"Expected reference feature dim {self.input_feats}, got {feature_dim}")
+
+        n_joints = torch.as_tensor(n_joints, device=device, dtype=torch.long).reshape(batch_size)
+        lengths = torch.as_tensor(lengths, device=device, dtype=torch.long).reshape(batch_size)
+        translation_root_index = torch.as_tensor(translation_root_index, device=device, dtype=torch.long).reshape(batch_size)
+        if bool(((n_joints < 0) | (n_joints > max_joints)).any()):
+            raise ValueError(
+                f"reference n_joints must be in [0, {max_joints}], got {n_joints.tolist()}"
+            )
+        if bool(((translation_root_index < 0) | (translation_root_index >= n_joints.clamp_min(1))).any()):
+            raise ValueError(
+                "reference translation_root_index must reference a valid non-padded joint, got "
+                f"{translation_root_index.tolist()} for n_joints={n_joints.tolist()}"
+            )
+        parents = self._coerce_parents_batch(parents_batch, batch_size, max_joints, device)
+        joints_embedded_names = self._coerce_joint_name_embeddings(
+            joints_embedded_names,
+            batch_size,
+            max_joints,
+            device,
+            dtype,
+        )
+        valid_joints = torch.arange(max_joints, device=device).unsqueeze(0) < n_joints.unsqueeze(1)
+        valid_frames = torch.arange(frame_count, device=device).unsqueeze(0) < lengths.unsqueeze(1)
+
+        role_features = self._build_role_features(
+            parents,
+            valid_joints,
+            translation_root_index,
+            dtype,
+        )
+        role_latent = self.role_projection(role_features)
+        if self.name_projection is not None:
+            joint_name_latent = self.name_projection(joints_embedded_names)
+            joint_role_latent = joint_name_latent + role_latent
+        else:
+            joint_role_latent = role_latent
+
+        group_logits = torch.einsum('bjd,gd->bjg', joint_role_latent, self.group_queries)
+        group_logits = group_logits.masked_fill(~valid_joints.unsqueeze(-1), -1e4)
+        group_weights = torch.softmax(group_logits, dim=-1) * valid_joints.unsqueeze(-1).to(dtype)
+
+        motion_btjf = reference_motion.permute(0, 3, 1, 2)
+        pos_norm = torch.linalg.norm(motion_btjf[..., 0:3], dim=-1, keepdim=True)
+        vel_norm = torch.linalg.norm(motion_btjf[..., 9:12], dim=-1, keepdim=True)
+        rot = motion_btjf[..., 3:9]
+        rot_delta = torch.zeros_like(rot)
+        if frame_count > 1:
+            rot_delta[:, 1:] = rot[:, 1:] - rot[:, :-1]
+        rot_delta_norm = torch.linalg.norm(rot_delta, dim=-1, keepdim=True)
+        energy = torch.sqrt(pos_norm.square() + vel_norm.square() + rot_delta_norm.square() + 1e-6)
+        contact = motion_btjf[..., 12:13]
+        joint_frame_features = torch.cat([pos_norm, vel_norm, rot_delta_norm, energy, contact], dim=-1)
+        joint_frame_features = joint_frame_features * valid_joints[:, None, :, None].to(dtype)
+
+        global_mean, global_std = self._masked_mean_and_std(
+            joint_frame_features,
+            valid_joints[:, None, :].expand(-1, frame_count, -1).to(dtype),
+        )
+        global_features = torch.cat([global_mean, global_std], dim=-1)
+
+        group_features = []
+        for group_index in range(self.num_groups):
+            group_mean, group_std = self._masked_mean_and_std(
+                joint_frame_features,
+                group_weights[:, None, :, group_index].expand(-1, frame_count, -1),
+            )
+            group_features.append(torch.cat([group_mean, group_std], dim=-1))
+        group_features = torch.cat(group_features, dim=-1)
+
+        root_track = self._gather_translation_root_track(reference_motion, translation_root_index)
+        root_track = root_track[..., : self.root_feature_dim]
+        prior_sequence = torch.cat([root_track, global_features, group_features], dim=-1)
+        # Reference priors assume the canonical 13-D motion schema:
+        # pos[0:3], rot6d[3:9], vel[9:12], contact[12].
+        frame_mask = valid_frames.unsqueeze(-1).to(dtype)
+        prior_sequence = prior_sequence * frame_mask
+        prior_sequence = self.sequence_projection(prior_sequence)
+
+        positions = torch.arange(frame_count, device=device).view(1, -1, 1).repeat(batch_size, 1, 1)
+        prior_sequence = prior_sequence + create_sin_embedding(positions, self.latent_dim, dtype=dtype)
+        prior_sequence = prior_sequence * frame_mask
+
+        conv_input = prior_sequence.transpose(1, 2)
+        conv_frame_mask = valid_frames.unsqueeze(1).to(dtype)
+        for conv_block in self.conv_blocks:
+            conv_input = (conv_input + conv_block(conv_input)) * conv_frame_mask
+        temporal_sequence = conv_input.transpose(1, 2).transpose(0, 1).contiguous()
+        temporal_key_padding_mask = ~valid_frames
+        for layer in self.temporal_layers:
+            temporal_sequence = layer(temporal_sequence, key_padding_mask=temporal_key_padding_mask)
+
+        token_queries = self.token_queries.unsqueeze(1).expand(-1, batch_size, -1)
+        prior_tokens, _ = self.token_attn(
+            token_queries,
+            temporal_sequence,
+            temporal_sequence,
+            key_padding_mask=temporal_key_padding_mask,
+            need_weights=False,
+        )
+        prior_tokens = prior_tokens + self.output_ffn(prior_tokens)
+        prior_tokens = self.output_norm(prior_tokens)
+        return prior_tokens
 
 class OutputProcess(nn.Module):
     def __init__(self, feature_len, root_feature_len, max_joints, latent_dim):

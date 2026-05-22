@@ -179,7 +179,7 @@
 | InputProcess | 107,200 |
 | GraphMotionDecoder (4层 + 共享嵌入) | 1,851,440 |
 | OutputProcess | 3,354 |
-| **总计 (不含ReferenceEncoder)** | **~1,961,994 (~2M)** |
+| **总计 (不含ReferencePriorEncoder)** | **~1,961,994 (~2M)** |
 
 ---
 

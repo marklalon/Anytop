@@ -963,12 +963,25 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
     ) -> Tensor:
         frames, bs, njoints, feats = x.size()
         queries = x.reshape(frames, bs * njoints, feats)
-        memory = reference_memory.reshape(reference_memory.shape[0], bs * njoints, feats)
+        if reference_memory.dim() != 3 or reference_memory.shape[1] != bs or reference_memory.shape[2] != feats:
+            raise ValueError(
+                "reference_memory must have shape (K, B, D), got "
+                f"{tuple(reference_memory.shape)} for batch={bs}, dim={feats}"
+            )
+        memory = reference_memory.unsqueeze(2).expand(-1, -1, njoints, -1).reshape(reference_memory.shape[0], bs * njoints, feats)
+        expanded_key_padding_mask = None
+        if key_padding_mask is not None:
+            if key_padding_mask.dim() != 2 or key_padding_mask.shape[0] != bs:
+                raise ValueError(
+                    "reference_key_padding_mask must have shape (B, K), got "
+                    f"{tuple(key_padding_mask.shape)} for batch={bs}"
+                )
+            expanded_key_padding_mask = key_padding_mask.unsqueeze(1).expand(-1, njoints, -1).reshape(bs * njoints, -1)
         attn_output, _ = self.reference_attn(
             queries,
             memory,
             memory,
-            key_padding_mask=key_padding_mask,
+            key_padding_mask=expanded_key_padding_mask,
             need_weights=False,
         )
         attn_output = attn_output.reshape(frames, bs, njoints, feats)

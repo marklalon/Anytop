@@ -118,12 +118,6 @@ def add_model_options(parser):
                        help="Number of temporal self-attention layers in the reference encoder (0 = InputProcess only).")
     group.add_argument("--reference_uncond_prob", default=0.5, type=float,
                        help="Classifier-free dropout probability for reference conditioning during training.")
-    group.add_argument("--reference_subtree_budget", default=0.25, type=float,
-                       help="Fraction of non-root joints available to subtree corruption for every conditioned reference sample.")
-    group.add_argument("--reference_noise_sigma_min", default=0.08, type=float,
-                       help="Minimum Gaussian noise sigma used for reference degradation.")
-    group.add_argument("--reference_noise_sigma_max", default=0.15, type=float,
-                       help="Maximum Gaussian noise sigma used for reference degradation.")
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')

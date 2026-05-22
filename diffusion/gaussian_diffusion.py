@@ -11,12 +11,10 @@ import math
 import numpy as np
 import torch
 import torch as th
-import torch.nn.functional as F
 from copy import deepcopy
 from diffusion import logger
 from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood, geodesic_distance
-from model.joint_mask_utils import sample_subtree_joint_mask_batch
 from utils.rotation_conversions import rotation_6d_to_matrix_safe
 
 
@@ -1698,35 +1696,6 @@ class GaussianDiffusion:
         drop_mask[th.randperm(batch_size, device=device)[:drop_count]] = True
         return drop_mask
 
-    @staticmethod
-    def _sample_reference_subtree_mask(y, batch_size, njoints, subtree_budget, device):
-        parents_batch = y.get('parents')
-        if parents_batch is None or subtree_budget <= 0.0:
-            return None
-        n_joints = th.as_tensor(y['n_joints'], device='cpu', dtype=th.int64).reshape(-1).numpy()
-        if th.is_tensor(parents_batch):
-            parents_batch_np = parents_batch.detach().to(device='cpu', dtype=th.int64).numpy()
-        else:
-            parents_batch_np = [np.asarray(parents, dtype=np.int64) for parents in parents_batch]
-        candidate_roots_batch = y.get('joint_mask_candidate_roots')
-        if candidate_roots_batch is None:
-            candidate_roots_np = None
-        elif th.is_tensor(candidate_roots_batch):
-            candidate_roots_np = candidate_roots_batch.detach().to(device='cpu').numpy()
-        else:
-            candidate_roots_np = np.asarray(candidate_roots_batch, dtype=np.bool_)
-        sampled_mask = sample_subtree_joint_mask_batch(
-            parents_batch=parents_batch_np,
-            candidate_root_mask_batch=candidate_roots_np,
-            n_joints=n_joints,
-            max_joints=njoints,
-            joint_mask_prob=float(subtree_budget),
-            rng=np.random,
-        )
-        if sampled_mask is None:
-            return None
-        return th.from_numpy(sampled_mask).to(device=device, dtype=th.bool).reshape(batch_size, njoints)
-
     def _build_reference_conditioning(self, model, x_start, model_kwargs):
         y = model_kwargs.get('y') if model_kwargs is not None else None
         if y is None:
@@ -1738,9 +1707,8 @@ class GaussianDiffusion:
             y.pop('reference_cond_mask', None)
             return
 
-        batch_size, njoints, _, nframes = x_start.shape
+        batch_size = x_start.shape[0]
         device = x_start.device
-        reference_motion = x_start.detach().clone()
 
         dropout_mask = self._sample_structured_dropout_mask(
             batch_size,
@@ -1753,69 +1721,9 @@ class GaussianDiffusion:
             y['reference_cond_mask'] = cond_mask
             return
 
-        subtree_mask = self._sample_reference_subtree_mask(
-            y,
-            batch_size,
-            njoints,
-            float(getattr(model_for_hooks, 'reference_subtree_budget', 0.0)),
-            device,
-        )
-        if subtree_mask is not None:
-            subtree_mask = subtree_mask & cond_mask[:, None]
-            reference_motion = th.where(
-                subtree_mask[:, :, None, None],
-                th.zeros_like(reference_motion),
-                reference_motion,
-            )
-
-        sigma_min = float(getattr(model_for_hooks, 'reference_noise_sigma_min', 0.0))
-        sigma_max = float(getattr(model_for_hooks, 'reference_noise_sigma_max', sigma_min))
-        sigma = sigma_min + (sigma_max - sigma_min) * th.rand(batch_size, device=device, dtype=x_start.dtype)
-        sigma = sigma * cond_mask.to(dtype=x_start.dtype)
-        if bool(cond_mask.any()):
-            reference_motion = reference_motion + th.randn_like(reference_motion) * sigma[:, None, None, None]
-
-        if bool(cond_mask.any()) and nframes > 1:
-            frame_index = th.arange(nframes, device=device).view(1, 1, 1, nframes)
-            frame_offset = th.randint(-1, 2, (batch_size, nframes), device=device)
-            frame_offset[:, 0] = 0
-            jitter_index = (frame_index + frame_offset.view(batch_size, 1, 1, nframes)).clamp_(0, nframes - 1)
-            jittered = th.gather(reference_motion, dim=-1, index=jitter_index.expand(-1, njoints, reference_motion.shape[2], -1))
-            reference_motion = th.where(
-                cond_mask[:, None, None, None],
-                jittered,
-                reference_motion,
-            )
-
-        if bool(cond_mask.any()) and nframes > 1:
-            dropped = reference_motion.clone()
-            hold_rates = 0.05 + 0.20 * th.rand(batch_size, device=device)
-            hold_mask = th.rand(batch_size, nframes, device=device) < hold_rates[:, None]
-            hold_mask[:, 0] = False
-            for frame_index in range(1, nframes):
-                frame_hold = hold_mask[:, frame_index]
-                if bool(frame_hold.any()):
-                    dropped[frame_hold, :, :, frame_index] = dropped[frame_hold, :, :, frame_index - 1]
-            reference_motion = th.where(
-                cond_mask[:, None, None, None],
-                dropped,
-                reference_motion,
-            )
-
-        if bool(cond_mask.any()) and nframes > 2:
-            smooth_input = reference_motion.permute(0, 1, 2, 3).reshape(batch_size * njoints, reference_motion.shape[2], nframes)
-            smoothed = F.avg_pool1d(
-                F.pad(smooth_input, (1, 1), mode='replicate'),
-                kernel_size=3,
-                stride=1,
-            ).reshape(batch_size, njoints, reference_motion.shape[2], nframes)
-            reference_motion = th.where(
-                cond_mask[:, None, None, None],
-                smoothed,
-                reference_motion,
-            )
-
-        y['reference_motion'] = reference_motion.to(dtype=x_start.dtype)
+        # Reuse x_start storage to avoid a per-step clone; callers must not
+        # mutate x_start in-place after building reference conditioning.
+        y['reference_motion'] = x_start.detach()
         y['reference_cond_mask'] = cond_mask
 
     def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):

@@ -83,7 +83,9 @@ class ClassifierFreeReferenceModel(nn.Module):
         routed_y = dict(y)
         routed_y.pop('reference_cond_mask', None)
         if reference_motion is None:
-            routed_y.pop('reference_motion', None)
+            for key in list(routed_y.keys()):
+                if key.startswith('reference_'):
+                    routed_y.pop(key, None)
         else:
             routed_y['reference_motion'] = reference_motion
         return routed_y
@@ -159,12 +161,8 @@ class ClassifierFreeReferenceModel(nn.Module):
 
 def load_model(model, state_dict):
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
-    unexpected_keys = [key for key in unexpected_keys if not key.startswith('quality_proxy.')]
     assert len(unexpected_keys) == 0, f"Unexpected keys in checkpoint: {unexpected_keys}"
-    assert all([
-        k.startswith('clip_model.')
-        for k in missing_keys
-    ]), f"Unexpected missing keys: {[k for k in missing_keys if not k.startswith('clip_model.')]}"
+    assert len(missing_keys) == 0, f"Missing keys in checkpoint: {missing_keys}"
 
 def create_model_and_diffusion_general_skeleton(args):
     model = AnyTop(**get_gmdm_args(args))
@@ -192,9 +190,6 @@ def get_gmdm_args(args):
             'reference_cond': getattr(args, 'reference_cond', False),
             'reference_encoder_layers': getattr(args, 'reference_encoder_layers', 2),
             'reference_uncond_prob': getattr(args, 'reference_uncond_prob', 0.5),
-            'reference_subtree_budget': getattr(args, 'reference_subtree_budget', 0.25),
-            'reference_noise_sigma_min': getattr(args, 'reference_noise_sigma_min', 0.08),
-            'reference_noise_sigma_max': getattr(args, 'reference_noise_sigma_max', 0.15),
             'root_input_feats': 13}
 
 def create_gaussian_diffusion(args):

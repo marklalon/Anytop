@@ -49,21 +49,6 @@ class _RecordingModel(nn.Module):
         return x
 
 
-class _ReferenceConditioningModel(nn.Module):
-    def __init__(self, **overrides):
-        super().__init__()
-        self.reference_cond = True
-        self.reference_uncond_prob = 0.0
-        self.reference_subtree_budget = 0.0
-        self.reference_noise_sigma_min = 0.0
-        self.reference_noise_sigma_max = 0.0
-        for name, value in overrides.items():
-            setattr(self, name, value)
-
-    def forward(self, x: torch.Tensor, t: torch.Tensor, **model_kwargs) -> torch.Tensor:
-        return x
-
-
 class _CaptureDecoder(nn.Module):
     def __init__(self):
         super().__init__()
@@ -210,90 +195,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertTrue(torch.allclose(model.last_x[:, 0], expected_x_t[:, 0]))
         self.assertTrue(torch.allclose(model.last_x[:, 2], expected_x_t[:, 2]))
         self.assertTrue(torch.allclose(model.last_x[:, 1], expected_masked[:, 1]))
-
-    def test_build_reference_conditioning_applies_temporal_smoothing(self):
-        batch_size, n_joints, n_feats, n_frames = 2, 3, 4, 5
-        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
-        model = _ReferenceConditioningModel(
-            reference_subtree_budget=0.0,
-            reference_noise_sigma_min=0.0,
-            reference_noise_sigma_max=0.0,
-        )
-        x_start = torch.arange(
-            batch_size * n_joints * n_feats * n_frames, dtype=torch.float32
-        ).reshape(batch_size, n_joints, n_feats, n_frames)
-        model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
-
-        with patch("diffusion.gaussian_diffusion.th.randint", return_value=torch.zeros(batch_size, n_frames, dtype=torch.int64)), \
-             patch(
-                 "diffusion.gaussian_diffusion.th.rand",
-                 side_effect=[
-                     torch.zeros(batch_size),
-                     torch.zeros(batch_size),
-                     torch.ones(batch_size, n_frames),
-                 ],
-             ):
-            diffusion._build_reference_conditioning(model, x_start, model_kwargs)
-
-        reference_motion = model_kwargs["y"]["reference_motion"]
-        expected = torch.nn.functional.avg_pool1d(
-            torch.nn.functional.pad(
-                x_start.reshape(batch_size * n_joints, n_feats, n_frames),
-                (1, 1),
-                mode="replicate",
-            ),
-            kernel_size=3,
-            stride=1,
-        ).reshape(batch_size, n_joints, n_feats, n_frames)
-
-        self.assertTrue(torch.equal(model_kwargs["y"]["reference_cond_mask"], torch.ones(batch_size, dtype=torch.bool)))
-        self.assertTrue(torch.allclose(reference_motion, expected))
-
-    def test_build_reference_conditioning_always_applies_subtree_noise_and_jitter(self):
-        batch_size, n_joints, n_feats, n_frames = 1, 3, 1, 4
-        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
-        model = _ReferenceConditioningModel(
-            reference_subtree_budget=1.0,
-            reference_noise_sigma_min=0.5,
-            reference_noise_sigma_max=0.5,
-        )
-        x_start = torch.arange(
-            batch_size * n_joints * n_feats * n_frames, dtype=torch.float32
-        ).reshape(batch_size, n_joints, n_feats, n_frames)
-        model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
-        subtree_mask = torch.tensor([[False, True, False]], dtype=torch.bool)
-        jitter_offsets = torch.tensor([[0, 1, -1, 0]], dtype=torch.int64)
-
-        with patch.object(diffusion, "_sample_reference_subtree_mask", return_value=subtree_mask), \
-             patch("diffusion.gaussian_diffusion.th.randn_like", return_value=torch.ones_like(x_start)), \
-             patch("diffusion.gaussian_diffusion.th.randint", return_value=jitter_offsets), \
-             patch(
-                 "diffusion.gaussian_diffusion.th.rand",
-                 side_effect=[
-                     torch.zeros(batch_size),
-                     torch.full((batch_size,), 0.25),
-                     torch.tensor([[1.0, 0.0, 1.0, 1.0]]),
-                 ],
-             ):
-            diffusion._build_reference_conditioning(model, x_start, model_kwargs)
-
-        reference_motion = x_start.clone()
-        reference_motion[:, 1] = 0.0
-        reference_motion = reference_motion + 0.5
-        reference_motion = reference_motion[..., torch.tensor([0, 2, 1, 3])]
-        reference_motion[..., 1] = reference_motion[..., 0]
-        expected = torch.nn.functional.avg_pool1d(
-            torch.nn.functional.pad(
-                reference_motion.reshape(batch_size * n_joints, n_feats, n_frames),
-                (1, 1),
-                mode="replicate",
-            ),
-            kernel_size=3,
-            stride=1,
-        ).reshape(batch_size, n_joints, n_feats, n_frames)
-
-        self.assertTrue(torch.equal(model_kwargs["y"]["reference_cond_mask"], torch.ones(batch_size, dtype=torch.bool)))
-        self.assertTrue(torch.allclose(model_kwargs["y"]["reference_motion"], expected))
 
     def test_anytop_forward_keeps_joint_key_padding_mask_padding_only(self):
         model = AnyTop(
