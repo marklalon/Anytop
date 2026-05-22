@@ -898,7 +898,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
 
 class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
     def __init__(self, d_model: int, nhead: int, dim_feedforward: int = 2048, dropout: float = 0.1,
-                 activation: Union[str, Callable[[Tensor], Tensor]] = F.relu):
+                 activation: Union[str, Callable[[Tensor], Tensor]] = F.relu,
+                 reference_residual_gate: float = 1.0):
         super().__init__(d_model, nhead, dim_feedforward, dropout, activation)
         # nn.TransformerDecoderLayer.__init__ allocates self_attn and
         # multihead_attn (each ~4*d_model^2 params). This layer overrides both
@@ -915,6 +916,11 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         self.embed_timesteps = nn.Linear(d_model, d_model)
         self.norm_ref = nn.LayerNorm(d_model)
         self.dropout_ref = nn.Dropout(dropout)
+        self.reference_residual_gate = float(reference_residual_gate)
+        if self.reference_residual_gate < 0.0:
+            raise ValueError(
+                f"reference_residual_gate must be >= 0, got {self.reference_residual_gate}"
+            )
         # The cross-limb pathway is owned by GraphMotionDecoder (one block per
         # active layer) and passed into forward(), not held here.
 
@@ -1021,13 +1027,15 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         x = self.norm2(x + self._temporal_mha_block_sin_joint(x, temporal_mask, None))
         if cross_limb_block is not None:
             x = cross_limb_block(x, temporal_template, y['joints_key_padding_mask'], unreliable_mask=cross_limb_unreliable_mask)
-        if reference_memory is not None:
+        if reference_memory is not None and self.reference_residual_gate != 0.0:
             reference_delta = self._reference_mha_block(
                 x,
                 reference_memory,
                 reference_key_padding_mask,
                 reference_batch_mask,
             )
+            if self.reference_residual_gate != 1.0:
+                reference_delta = reference_delta * self.reference_residual_gate
             reference_output = self.norm_ref(x + reference_delta)
             if reference_batch_mask is None:
                 x = reference_output

@@ -101,7 +101,6 @@ class _CaptureReferenceEncoder(nn.Module):
         n_joints,
         lengths,
         translation_root_index,
-        parents_batch,
         joints_embedded_names,
     ):
         self.last_kwargs = {
@@ -109,7 +108,6 @@ class _CaptureReferenceEncoder(nn.Module):
             "n_joints": n_joints,
             "lengths": lengths,
             "translation_root_index": translation_root_index,
-            "parents_batch": parents_batch,
             "joints_embedded_names": joints_embedded_names,
         }
         batch_size = reference_motion.shape[0]
@@ -193,7 +191,7 @@ def test_build_reference_conditioning_reuses_detached_x_start_without_clone() ->
         loss_type=LossType.MSE,
     )
     model = _DummyModel(reference_cond=True)
-    model.reference_uncond_prob = 0.0
+    model.reference_cond_prob = 1.0
     x_start = torch.randn((2, 3, 13, 4), dtype=torch.float32, requires_grad=True)
     model_kwargs = {"y": {}}
 
@@ -256,6 +254,7 @@ def test_anytop_forward_accepts_reference_motion_with_independent_frame_count() 
 def test_reference_prior_encoder_rejects_feature_schemas_shorter_than_13_dims() -> None:
     with pytest.raises(ValueError, match="13-dim"):
         ReferencePriorEncoder(
+            max_joints=4,
             input_feats=12,
             latent_dim=32,
             ff_size=64,
@@ -270,6 +269,7 @@ def test_reference_prior_encoder_rejects_feature_schemas_shorter_than_13_dims() 
 def test_reference_prior_encoder_ignores_padded_tail_frames_after_conv() -> None:
     torch.manual_seed(0)
     encoder = ReferencePriorEncoder(
+        max_joints=4,
         input_feats=13,
         latent_dim=32,
         ff_size=64,
@@ -285,14 +285,12 @@ def test_reference_prior_encoder_ignores_padded_tail_frames_after_conv() -> None
     padded_motion = torch.zeros((1, 4, 13, 5), dtype=torch.float32)
     padded_motion[..., :3] = valid_motion
     joints_names_embs = torch.zeros((1, 4, 8), dtype=torch.float32)
-    parents = [np.asarray([-1, 0, 1, 1], dtype=np.int64)]
 
     tokens_short = encoder(
         valid_motion,
         n_joints=torch.tensor([4]),
         lengths=torch.tensor([3]),
         translation_root_index=torch.tensor([0]),
-        parents_batch=parents,
         joints_embedded_names=joints_names_embs,
     )
     tokens_padded = encoder(
@@ -300,7 +298,6 @@ def test_reference_prior_encoder_ignores_padded_tail_frames_after_conv() -> None
         n_joints=torch.tensor([4]),
         lengths=torch.tensor([3]),
         translation_root_index=torch.tensor([0]),
-        parents_batch=parents,
         joints_embedded_names=joints_names_embs,
     )
 
@@ -406,6 +403,7 @@ def test_should_retarget_reference_skips_controlnet_source_space_path() -> None:
 
 def test_reference_prior_encoder_uses_effective_translation_root() -> None:
     encoder = ReferencePriorEncoder(
+        max_joints=4,
         input_feats=13,
         latent_dim=32,
         ff_size=64,
@@ -422,14 +420,12 @@ def test_reference_prior_encoder_uses_effective_translation_root() -> None:
     motion[0, 2, 9, 1:] = 2.0
     motion[0, 2, 10, 1:] = 1.0
     joints_names_embs = torch.zeros((1, 4, 8), dtype=torch.float32)
-    parents = [np.asarray([-1, 0, 1, 1], dtype=np.int64)]
 
     tokens_root0 = encoder(
         motion,
         n_joints=torch.tensor([4]),
         lengths=torch.tensor([5]),
         translation_root_index=torch.tensor([0]),
-        parents_batch=parents,
         joints_embedded_names=joints_names_embs,
     )
     tokens_root2 = encoder(
@@ -437,7 +433,6 @@ def test_reference_prior_encoder_uses_effective_translation_root() -> None:
         n_joints=torch.tensor([4]),
         lengths=torch.tensor([5]),
         translation_root_index=torch.tensor([2]),
-        parents_batch=parents,
         joints_embedded_names=joints_names_embs,
     )
 
@@ -447,6 +442,7 @@ def test_reference_prior_encoder_uses_effective_translation_root() -> None:
 
 def test_reference_prior_encoder_accepts_padded_motion_with_unpadded_parents() -> None:
     encoder = ReferencePriorEncoder(
+        max_joints=8,
         input_feats=13,
         latent_dim=32,
         ff_size=64,
@@ -460,14 +456,12 @@ def test_reference_prior_encoder_accepts_padded_motion_with_unpadded_parents() -
 
     motion = torch.zeros((1, 8, 13, 5), dtype=torch.float32)
     joints_names_embs = torch.zeros((1, 8, 8), dtype=torch.float32)
-    parents = [np.asarray([-1, 0, 1, 1], dtype=np.int64)]
 
     tokens = encoder(
         motion,
         n_joints=torch.tensor([4]),
         lengths=torch.tensor([5]),
         translation_root_index=torch.tensor([2]),
-        parents_batch=parents,
         joints_embedded_names=joints_names_embs,
     )
 
@@ -476,6 +470,7 @@ def test_reference_prior_encoder_accepts_padded_motion_with_unpadded_parents() -
 
 def test_reference_prior_encoder_respects_zero_temporal_layers() -> None:
     encoder = ReferencePriorEncoder(
+        max_joints=4,
         input_feats=13,
         latent_dim=32,
         ff_size=64,
@@ -490,40 +485,9 @@ def test_reference_prior_encoder_respects_zero_temporal_layers() -> None:
     assert len(encoder.temporal_layers) == 0
 
 
-def test_depth_to_root_matches_iterative_relaxation() -> None:
-    """Pointer-doubling depth must equal the O(J) relaxation it replaced."""
-
-    def _relaxation_depth(parents: torch.Tensor) -> torch.Tensor:
-        max_joints = parents.shape[1]
-        safe_parents = parents.clamp_min(0)
-        has_parent = parents >= 0
-        depth = torch.zeros_like(parents, dtype=torch.float32)
-        for _ in range(max_joints - 1):
-            parent_depth = depth.gather(1, safe_parents)
-            depth = torch.maximum(depth, torch.where(has_parent, parent_depth + 1.0, depth))
-        return depth
-
-    torch.manual_seed(0)
-    for _ in range(64):
-        max_joints = int(torch.randint(2, 48, (1,)))
-        n_joints = int(torch.randint(1, max_joints + 1, (1,)))
-        parents = torch.full((1, max_joints), -1, dtype=torch.long)
-        for joint in range(1, n_joints):
-            parents[0, joint] = int(torch.randint(0, joint, (1,)))
-        assert torch.equal(
-            ReferencePriorEncoder._depth_to_root(parents, torch.float32),
-            _relaxation_depth(parents),
-        )
-
-    # Worst case: a single chain is the deepest tree a J-joint skeleton allows.
-    chain = torch.arange(-1, 31, dtype=torch.long).unsqueeze(0)
-    chain_depth = ReferencePriorEncoder._depth_to_root(chain, torch.float32)
-    assert torch.equal(chain_depth, _relaxation_depth(chain))
-    assert int(chain_depth.max()) == 31
-
-
 def test_reference_prior_encoder_honours_per_sample_metadata_in_batch() -> None:
     encoder = ReferencePriorEncoder(
+        max_joints=6,
         input_feats=13,
         latent_dim=32,
         ff_size=64,
@@ -541,17 +505,12 @@ def test_reference_prior_encoder_honours_per_sample_metadata_in_batch() -> None:
     shared_motion = torch.randn((1, 6, 13, 7), dtype=torch.float32)
     motion = shared_motion.expand(2, -1, -1, -1).contiguous()
     joints_names_embs = torch.zeros((2, 6, 8), dtype=torch.float32)
-    parents = [
-        np.asarray([-1, 0, 1, 2], dtype=np.int64),       # chain of 4
-        np.asarray([-1, 0, 0, 0, 0], dtype=np.int64),     # star of 5
-    ]
 
     tokens = encoder(
         motion,
         n_joints=torch.tensor([4, 5]),
         lengths=torch.tensor([7, 7]),
         translation_root_index=torch.tensor([0, 0]),
-        parents_batch=parents,
         joints_embedded_names=joints_names_embs,
     )
 
@@ -559,8 +518,10 @@ def test_reference_prior_encoder_honours_per_sample_metadata_in_batch() -> None:
     assert not torch.allclose(tokens[:, 0], tokens[:, 1])
 
 
-def test_reference_prior_encoder_rejects_batch_size_mismatch() -> None:
+def test_reference_prior_encoder_preserves_velocity_direction_sign() -> None:
+    torch.manual_seed(0)
     encoder = ReferencePriorEncoder(
+        max_joints=4,
         input_feats=13,
         latent_dim=32,
         ff_size=64,
@@ -568,23 +529,223 @@ def test_reference_prior_encoder_rejects_batch_size_mismatch() -> None:
         dropout=0.0,
         t5_out_dim=8,
         skip_t5=True,
-        num_layers=1,
+        num_layers=0,
     )
     encoder.eval()
 
-    motion = torch.zeros((2, 4, 13, 5), dtype=torch.float32)
-    joints_names_embs = torch.zeros((2, 4, 8), dtype=torch.float32)
+    motion_pos = torch.zeros((1, 4, 13, 5), dtype=torch.float32)
+    motion_neg = torch.zeros((1, 4, 13, 5), dtype=torch.float32)
+    motion_pos[0, 1, 9:12, 1:] = torch.tensor([[1.0], [-0.5], [0.25]], dtype=torch.float32)
+    motion_neg[0, 1, 9:12, 1:] = torch.tensor([[-1.0], [0.5], [-0.25]], dtype=torch.float32)
+    joints_names_embs = torch.zeros((1, 4, 8), dtype=torch.float32)
 
-    # A single parents entry must not be silently broadcast onto a 2-sample batch.
-    with pytest.raises(ValueError, match="does not match batch size 2"):
-        encoder(
-            motion,
-            n_joints=torch.tensor([4, 4]),
-            lengths=torch.tensor([5, 5]),
-            translation_root_index=torch.tensor([0, 0]),
-            parents_batch=[np.asarray([-1, 0, 1, 1], dtype=np.int64)],
-            joints_embedded_names=joints_names_embs,
-        )
+    common_kwargs = dict(
+        n_joints=torch.tensor([4]),
+        lengths=torch.tensor([5]),
+        translation_root_index=torch.tensor([0]),
+        joints_embedded_names=joints_names_embs,
+    )
+
+    tokens_pos = encoder(motion_pos, **common_kwargs)
+    tokens_neg = encoder(motion_neg, **common_kwargs)
+
+    assert tokens_pos.shape == (8, 1, 32)
+    assert not torch.allclose(tokens_pos, tokens_neg)
+
+
+def test_reference_prior_encoder_joint_motion_features_ignore_velocity_sign() -> None:
+    vel_pos = torch.tensor([[[[1.0, -0.5, 0.25]]]], dtype=torch.float32)
+    vel_neg = -vel_pos
+    rot_delta_norm = torch.tensor([[[[0.75]]]], dtype=torch.float32)
+    contact = torch.tensor([[[[1.0]]]], dtype=torch.float32)
+
+    features_pos, _, _ = ReferencePriorEncoder._build_joint_motion_frame_features(
+        vel_pos,
+        rot_delta_norm,
+        contact,
+    )
+    features_neg, _, _ = ReferencePriorEncoder._build_joint_motion_frame_features(
+        vel_neg,
+        rot_delta_norm,
+        contact,
+    )
+
+    assert torch.allclose(features_pos, features_neg)
+
+
+def test_reference_prior_encoder_phase_joint_features_keep_velocity_sign() -> None:
+    vel_pos = torch.tensor([[[[1.0, -0.5, 0.25]]]], dtype=torch.float32)
+    vel_neg = -vel_pos
+    contact = torch.tensor([[[[1.0]]]], dtype=torch.float32)
+
+    features_pos = ReferencePriorEncoder._build_phase_joint_features(vel_pos, contact)
+    features_neg = ReferencePriorEncoder._build_phase_joint_features(vel_neg, contact)
+
+    assert not torch.allclose(features_pos, features_neg)
+
+
+def test_reference_prior_encoder_keeps_joint_phase_identity_outside_group_pooling() -> None:
+    torch.manual_seed(0)
+    encoder = ReferencePriorEncoder(
+        max_joints=4,
+        input_feats=13,
+        latent_dim=32,
+        ff_size=64,
+        num_heads=4,
+        dropout=0.0,
+        t5_out_dim=8,
+        skip_t5=True,
+        num_layers=0,
+    )
+    encoder.eval()
+    with torch.no_grad():
+        encoder.group_queries.zero_()
+
+    signal_a = torch.tensor([1.0, 0.0, -1.0, 0.0, 1.0], dtype=torch.float32)
+    signal_b = torch.tensor([0.0, 1.0, 0.0, -1.0, 0.0], dtype=torch.float32)
+    motion_a = torch.zeros((1, 4, 13, 6), dtype=torch.float32)
+    motion_b = torch.zeros((1, 4, 13, 6), dtype=torch.float32)
+    motion_a[0, 1, 9, 1:] = signal_a
+    motion_a[0, 2, 9, 1:] = signal_b
+    motion_b[0, 1, 9, 1:] = signal_b
+    motion_b[0, 2, 9, 1:] = signal_a
+    joints_names_embs = torch.zeros((1, 4, 8), dtype=torch.float32)
+
+    captured = {}
+
+    def capture_prior_input(module, inputs):
+        captured['prior_sequence'] = inputs[0].detach().clone()
+
+    hook = encoder.sequence_projection.register_forward_pre_hook(capture_prior_input)
+    try:
+        encoder(motion_a, n_joints=torch.tensor([4]), lengths=torch.tensor([6]), translation_root_index=torch.tensor([0]), joints_embedded_names=joints_names_embs)
+        prior_a = captured['prior_sequence']
+        captured.clear()
+        encoder(motion_b, n_joints=torch.tensor([4]), lengths=torch.tensor([6]), translation_root_index=torch.tensor([0]), joints_embedded_names=joints_names_embs)
+        prior_b = captured['prior_sequence']
+    finally:
+        hook.remove()
+
+    group_end = encoder.global_motion_feature_dim + encoder.num_groups * encoder.group_feature_dim
+    assert torch.allclose(prior_a[..., :group_end], prior_b[..., :group_end])
+    assert not torch.allclose(prior_a[..., group_end:], prior_b[..., group_end:])
+
+
+def test_reference_prior_encoder_includes_joint_semantics_in_prior_sequence() -> None:
+    torch.manual_seed(0)
+    encoder = ReferencePriorEncoder(
+        max_joints=4,
+        input_feats=13,
+        latent_dim=32,
+        ff_size=64,
+        num_heads=4,
+        dropout=0.0,
+        t5_out_dim=8,
+        skip_t5=False,
+        num_layers=0,
+    )
+    encoder.eval()
+    with torch.no_grad():
+        encoder.group_queries.zero_()
+
+    motion = torch.zeros((1, 4, 13, 6), dtype=torch.float32)
+    motion[0, 1, 9, 1:] = torch.tensor([1.0, -1.0, 1.0, -1.0, 1.0], dtype=torch.float32)
+    names_a = torch.zeros((1, 4, 8), dtype=torch.float32)
+    names_b = names_a.clone()
+    names_b[0, 2, 3] = 1.0
+
+    captured = {}
+
+    def capture_prior_input(module, inputs):
+        captured['prior_sequence'] = inputs[0].detach().clone()
+
+    hook = encoder.sequence_projection.register_forward_pre_hook(capture_prior_input)
+    try:
+        encoder(motion, n_joints=torch.tensor([4]), lengths=torch.tensor([6]), translation_root_index=torch.tensor([0]), joints_embedded_names=names_a)
+        prior_a = captured['prior_sequence']
+        captured.clear()
+        encoder(motion, n_joints=torch.tensor([4]), lengths=torch.tensor([6]), translation_root_index=torch.tensor([0]), joints_embedded_names=names_b)
+        prior_b = captured['prior_sequence']
+    finally:
+        hook.remove()
+
+    group_end = encoder.global_motion_feature_dim + encoder.num_groups * encoder.group_feature_dim
+    assert torch.allclose(prior_a[..., :group_end], prior_b[..., :group_end])
+    assert not torch.allclose(prior_a[..., group_end:], prior_b[..., group_end:])
+
+
+def test_reference_prior_encoder_phase_tokens_ignore_root_position() -> None:
+    torch.manual_seed(0)
+    encoder = ReferencePriorEncoder(
+        max_joints=4,
+        input_feats=13,
+        latent_dim=32,
+        ff_size=64,
+        num_heads=4,
+        dropout=0.0,
+        t5_out_dim=8,
+        skip_t5=True,
+        num_layers=0,
+    )
+    encoder.eval()
+
+    motion_a = torch.zeros((1, 4, 13, 6), dtype=torch.float32)
+    motion_b = motion_a.clone()
+    motion_a[0, 0, 0, :] = torch.linspace(0.0, 1.0, 6)
+    motion_b[0, 0, 0, :] = torch.linspace(3.0, -2.0, 6)
+    motion_a[0, 1, 9, 1:] = torch.tensor([1.0, -1.0, 1.0, -1.0, 1.0])
+    motion_b[0, 1, 9, 1:] = motion_a[0, 1, 9, 1:]
+    joints_names_embs = torch.zeros((1, 4, 8), dtype=torch.float32)
+
+    common_kwargs = dict(
+        n_joints=torch.tensor([4]),
+        lengths=torch.tensor([6]),
+        translation_root_index=torch.tensor([0]),
+        joints_embedded_names=joints_names_embs,
+    )
+
+    tokens_a = encoder(motion_a, **common_kwargs)
+    tokens_b = encoder(motion_b, **common_kwargs)
+
+    assert torch.allclose(tokens_a, tokens_b)
+
+
+def test_reference_prior_encoder_tracks_limb_phase_without_root_motion() -> None:
+    torch.manual_seed(0)
+    encoder = ReferencePriorEncoder(
+        max_joints=4,
+        input_feats=13,
+        latent_dim=32,
+        ff_size=64,
+        num_heads=4,
+        dropout=0.0,
+        t5_out_dim=8,
+        skip_t5=True,
+        num_layers=0,
+    )
+    encoder.eval()
+
+    motion_in_phase = torch.zeros((1, 4, 13, 6), dtype=torch.float32)
+    motion_antiphase = torch.zeros((1, 4, 13, 6), dtype=torch.float32)
+    in_phase_signal = torch.tensor([1.0, -1.0, 1.0, -1.0, 1.0], dtype=torch.float32)
+    anti_phase_signal = -in_phase_signal
+    motion_in_phase[0, 1, 9, 1:] = in_phase_signal
+    motion_in_phase[0, 2, 9, 1:] = in_phase_signal
+    motion_antiphase[0, 1, 9, 1:] = in_phase_signal
+    motion_antiphase[0, 2, 9, 1:] = anti_phase_signal
+    joints_names_embs = torch.zeros((1, 4, 8), dtype=torch.float32)
+
+    common_kwargs = dict(
+        n_joints=torch.tensor([4]),
+        lengths=torch.tensor([6]),
+        translation_root_index=torch.tensor([0]),
+        joints_embedded_names=joints_names_embs,
+    )
+
+    tokens_in_phase = encoder(motion_in_phase, **common_kwargs)
+    tokens_antiphase = encoder(motion_antiphase, **common_kwargs)
+
+    assert not torch.allclose(tokens_in_phase, tokens_antiphase)
 
 
 def test_decoder_reference_mask_keeps_unconditioned_samples_on_baseline_path() -> None:

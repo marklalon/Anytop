@@ -114,10 +114,19 @@ def add_model_options(parser):
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
     group.add_argument("--reference_cond", action='store_true',
                        help="Enable ControlNet-style reference conditioning through a dedicated reference encoder and decoder cross-attention path.")
-    group.add_argument("--reference_encoder_layers", default=2, type=int,
+    group.add_argument("--reference_encoder_layers", default=1, type=int,
                        help="Number of temporal self-attention layers in the reference encoder (0 = InputProcess only).")
-    group.add_argument("--reference_uncond_prob", default=0.5, type=float,
-                       help="Classifier-free dropout probability for reference conditioning during training.")
+    group.add_argument("--reference_cond_prob", default=0.2, type=float,
+                       help="Probability of keeping reference conditioning during training "
+                            "(1.0 = always conditioned, 0.0 = never).")
+    group.add_argument("--reference_residual_gate", default=1.0, type=float,
+                       help="Scalar gate applied to the decoder's reference residual path. "
+                            "1.0 keeps the current behavior, 0.0 disables the residual entirely, "
+                            "and intermediate values damp the reference branch without changing checkpoints.")
+    group.add_argument("--reference_token_dropout_prob", default=0.0, type=float,
+                       help="Per-prior-token dropout probability inside the reference encoder. Applied only during training.")
+    group.add_argument("--reference_token_noise_std", default=0.0, type=float,
+                       help="Additive Gaussian noise std applied to surviving reference prior tokens during training.")
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')

@@ -53,23 +53,36 @@ class AnyTop(nn.Module):
         self.cross_limb_last_n=kargs.get('cross_limb_last_n', 0)
         self.joint_mask_prob=float(kargs.get('joint_mask_prob', 0.0))
         self.reference_cond=bool(kargs.get('reference_cond', False))
-        self.reference_encoder_layers=int(kargs.get('reference_encoder_layers', 2))
-        self.reference_uncond_prob=float(kargs.get('reference_uncond_prob', 0.5))
+        self.reference_encoder_layers=int(kargs.get('reference_encoder_layers', 1))
+        self.reference_cond_prob=float(kargs.get('reference_cond_prob', 0.2))
+        self.reference_residual_gate=float(kargs.get('reference_residual_gate', 1.0))
+        self.reference_token_dropout_prob=float(kargs.get('reference_token_dropout_prob', 0.0))
+        self.reference_token_noise_std=float(kargs.get('reference_token_noise_std', 0.0))
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
         if self.reference_encoder_layers < 0:
             raise ValueError(
                 f"reference_encoder_layers must be >= 0, got {self.reference_encoder_layers}"
             )
+        if self.reference_residual_gate < 0.0:
+            raise ValueError(
+                f"reference_residual_gate must be >= 0, got {self.reference_residual_gate}"
+            )
         for prob_name in (
-            'reference_uncond_prob',
+            'reference_cond_prob',
+            'reference_token_dropout_prob',
         ):
             prob_value = float(getattr(self, prob_name))
             if not 0.0 <= prob_value <= 1.0:
                 raise ValueError(f"{prob_name} must be in [0, 1], got {prob_value}")
+        if self.reference_token_noise_std < 0.0:
+            raise ValueError(
+                f"reference_token_noise_std must be >= 0, got {self.reference_token_noise_std}"
+            )
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, skip_t5=self.skip_t5, dropout_prob=self.dropout)
         if self.reference_cond:
             self.reference_encoder = ReferencePriorEncoder(
+                max_joints=self.max_joints,
                 input_feats=self.input_feats,
                 latent_dim=self.latent_dim,
                 ff_size=self.ff_size,
@@ -78,6 +91,8 @@ class AnyTop(nn.Module):
                 t5_out_dim=t5_out_dim,
                 skip_t5=self.skip_t5,
                 num_layers=self.reference_encoder_layers,
+                token_dropout_prob=self.reference_token_dropout_prob,
+                token_noise_std=self.reference_token_noise_std,
             )
         else:
             self.reference_encoder = None
@@ -86,7 +101,8 @@ class AnyTop(nn.Module):
                                                             nhead=self.num_heads,
                                                             dim_feedforward=self.ff_size,
                                                             dropout=self.dropout,
-                                                            activation=self.activation)
+                                                            activation=self.activation,
+                                                            reference_residual_gate=self.reference_residual_gate)
         self.seqTransDecoder = GraphMotionDecoder(seqTransDecoderLayer,
                                                         num_layers=self.num_layers, value_emb=self.value_emb,
                                                         cross_limb=self.cross_limb,
@@ -230,19 +246,17 @@ class AnyTop(nn.Module):
                 )
                 if reference_translation_root_index is None:
                     raise ValueError("reference conditioning requires translation_root_index metadata")
-                reference_parents = y.get('reference_parents', y.get('parents'))
                 reference_joints_names_embs = y.get(
                     'reference_joints_names_embs',
                     y.get('joints_names_embs'),
                 )
-                if reference_parents is None or reference_joints_names_embs is None:
-                    raise ValueError("reference conditioning requires reference parents and joint-name embeddings")
+                if reference_joints_names_embs is None:
+                    raise ValueError("reference conditioning requires joint-name embeddings")
                 reference_memory = self.reference_encoder(
                     reference_motion,
                     n_joints=reference_n_joints,
                     lengths=reference_lengths,
                     translation_root_index=reference_translation_root_index,
-                    parents_batch=reference_parents,
                     joints_embedded_names=reference_joints_names_embs,
                 )
                 reference_key_padding_mask = None
@@ -362,6 +376,7 @@ class ReferencePriorTemporalLayer(nn.Module):
 class ReferencePriorEncoder(nn.Module):
     def __init__(
         self,
+        max_joints,
         input_feats,
         latent_dim,
         ff_size,
@@ -372,7 +387,8 @@ class ReferencePriorEncoder(nn.Module):
         num_layers,
         num_groups=6,
         num_prior_tokens=8,
-        role_feature_dim=5,
+        token_dropout_prob=0.0,
+        token_noise_std=0.0,
     ):
         super().__init__()
         self.input_feats = int(input_feats)
@@ -383,25 +399,49 @@ class ReferencePriorEncoder(nn.Module):
                 f"got input_feats={self.input_feats}"
             )
         self.latent_dim = int(latent_dim)
+        self.max_joints = int(max_joints)
+        if self.max_joints <= 0:
+            raise ValueError(f"max_joints must be > 0, got {self.max_joints}")
         self.num_groups = int(num_groups)
         self.num_prior_tokens = int(num_prior_tokens)
         self.skip_t5 = bool(skip_t5)
-        self.role_feature_dim = int(role_feature_dim)
-        self.joint_feature_dim = 5
-        self.group_stat_dim = self.joint_feature_dim * 2
-        self.root_feature_dim = min(self.input_feats, 12)
-        self.global_feature_dim = self.group_stat_dim
-        prior_input_dim = self.root_feature_dim + self.global_feature_dim + self.num_groups * self.group_stat_dim
+        self.token_dropout_prob = float(token_dropout_prob)
+        self.token_noise_std = float(token_noise_std)
+        if not 0.0 <= self.token_dropout_prob <= 1.0:
+            raise ValueError(f"token_dropout_prob must be in [0, 1], got {self.token_dropout_prob}")
+        if self.token_noise_std < 0.0:
+            raise ValueError(f"token_noise_std must be >= 0, got {self.token_noise_std}")
+        # Group assignment should be phase-invariant and only summarize each
+        # joint's coarse semantics/motion role across the clip.
+        self.joint_motion_feature_dim = 4
+        self.joint_motion_stat_dim = self.joint_motion_feature_dim * 2
+        # Global/group summaries stay phase-invariant; signed limb phase is
+        # fused into a direct per-joint semantic branch below.
+        self.group_motion_feature_dim = self.joint_motion_feature_dim
+        self.group_motion_stat_dim = self.group_motion_feature_dim * 2
+        self.phase_joint_feature_dim = 4
+        self.phase_joint_stat_dim = self.phase_joint_feature_dim * 3
+        self.group_feature_dim = self.group_motion_stat_dim
+        self.global_motion_feature_dim = self.group_motion_stat_dim
+        self.per_joint_prior_dim = self.phase_joint_stat_dim
+        prior_input_dim = (
+            self.global_motion_feature_dim
+            + self.num_groups * self.group_feature_dim
+            + self.max_joints * self.per_joint_prior_dim
+        )
         layer_count = int(num_layers)
 
-        self.role_projection = nn.Sequential(
-            nn.LayerNorm(self.role_feature_dim),
-            nn.Linear(self.role_feature_dim, self.latent_dim),
+        # Historical name kept for checkpoint-key stability: this projection is
+        # used to build per-joint grouping cues, not framewise phase dynamics.
+        self.joint_motion_projection = nn.Sequential(
+            nn.LayerNorm(self.joint_motion_stat_dim),
+            nn.Linear(self.joint_motion_stat_dim, self.latent_dim),
             nn.GELU(),
             nn.Linear(self.latent_dim, self.latent_dim),
         )
         if self.skip_t5:
             self.name_projection = None
+            self.joint_fusion = None
         else:
             self.name_projection = nn.Sequential(
                 nn.LayerNorm(t5_out_dim),
@@ -409,7 +449,14 @@ class ReferencePriorEncoder(nn.Module):
                 nn.GELU(),
                 nn.Linear(self.latent_dim, self.latent_dim),
             )
+            self.joint_fusion = nn.Linear(self.latent_dim * 2, self.latent_dim)
         self.group_queries = nn.Parameter(torch.randn(self.num_groups, self.latent_dim) * 0.02)
+        self.joint_prior_projection = nn.Sequential(
+            nn.LayerNorm(self.latent_dim + self.phase_joint_stat_dim),
+            nn.Linear(self.latent_dim + self.phase_joint_stat_dim, self.latent_dim),
+            nn.GELU(),
+            nn.Linear(self.latent_dim, self.per_joint_prior_dim),
+        )
         self.sequence_projection = nn.Sequential(
             nn.LayerNorm(prior_input_dim),
             nn.Linear(prior_input_dim, self.latent_dim),
@@ -444,48 +491,35 @@ class ReferencePriorEncoder(nn.Module):
         )
         self.output_norm = nn.LayerNorm(self.latent_dim)
 
-    @staticmethod
-    def _coerce_parents_batch(parents_batch, batch_size, max_joints, device):
-        if parents_batch is None:
-            raise ValueError("reference conditioning requires parents information")
+    def _apply_token_regularization(self, prior_tokens):
+        if not self.training:
+            return prior_tokens
 
-        def _pad_parent_tensor(parents_tensor):
-            if parents_tensor.shape[1] > max_joints:
-                raise ValueError(
-                    f"reference parents joint dimension {parents_tensor.shape[1]} exceeds reference motion joints {max_joints}"
+        keep_mask = None
+        if self.token_dropout_prob > 0.0:
+            keep_mask = torch.rand(
+                prior_tokens.shape[:2],
+                device=prior_tokens.device,
+            ) >= self.token_dropout_prob
+            all_dropped = ~keep_mask.any(dim=0)
+            if bool(all_dropped.any()):
+                dropped_batch_indices = torch.nonzero(all_dropped, as_tuple=False).flatten()
+                rescued_tokens = torch.randint(
+                    0,
+                    prior_tokens.shape[0],
+                    (dropped_batch_indices.numel(),),
+                    device=prior_tokens.device,
                 )
-            if parents_tensor.shape[1] == max_joints:
-                return parents_tensor
-            padded = torch.full((parents_tensor.shape[0], max_joints), -1, device=device, dtype=torch.long)
-            padded[:, : parents_tensor.shape[1]] = parents_tensor
-            return padded
+                keep_mask[rescued_tokens, dropped_batch_indices] = True
+            prior_tokens = prior_tokens * keep_mask.unsqueeze(-1).to(dtype=prior_tokens.dtype)
 
-        if torch.is_tensor(parents_batch):
-            if parents_batch.dim() == 1:
-                parents_batch = parents_batch.unsqueeze(0)
-            elif parents_batch.dim() != 2:
-                raise ValueError(f"reference parents must be rank 1 or 2, got {tuple(parents_batch.shape)}")
-            if parents_batch.shape[0] != batch_size:
-                raise ValueError(
-                    f"reference parents batch dimension {parents_batch.shape[0]} does not match batch size {batch_size}"
-                )
-            parents_batch = parents_batch.to(device=device, dtype=torch.long)
-            return _pad_parent_tensor(parents_batch)
-        parent_tensors = []
-        for parents in parents_batch:
-            parent_tensors.append(torch.as_tensor(parents, device=device, dtype=torch.long))
-        if len(parent_tensors) != batch_size:
-            raise ValueError(
-                f"reference parents list length {len(parent_tensors)} does not match batch size {batch_size}"
-            )
-        padded = torch.full((batch_size, max_joints), -1, device=device, dtype=torch.long)
-        for batch_index, parents in enumerate(parent_tensors):
-            if parents.shape[0] > max_joints:
-                raise ValueError(
-                    f"reference parents joint dimension {parents.shape[0]} exceeds reference motion joints {max_joints}"
-                )
-            padded[batch_index, : parents.shape[0]] = parents
-        return padded
+        if self.token_noise_std > 0.0:
+            noise = torch.randn_like(prior_tokens) * self.token_noise_std
+            if keep_mask is not None:
+                noise = noise * keep_mask.unsqueeze(-1).to(dtype=prior_tokens.dtype)
+            prior_tokens = prior_tokens + noise
+
+        return prior_tokens
 
     @staticmethod
     def _coerce_joint_name_embeddings(joints_embedded_names, batch_size, max_joints, device, dtype):
@@ -521,75 +555,6 @@ class ReferencePriorEncoder(nn.Module):
         return padded
 
     @staticmethod
-    def _depth_to_root(parents, dtype):
-        """Edge distance from each joint up to its root.
-
-        ``parents`` is (B, J) long with -1 for roots and padded slots. This is
-        the converged solution of ``depth[j] = depth[parent[j]] + 1`` (with
-        ``depth[root] = 0``), computed by pointer doubling: every round at least
-        doubles the resolved ancestor distance, so ~log2(J) GPU rounds replace
-        the J-1 sequential relaxation steps.
-        """
-        _, max_joints = parents.shape
-        # ancestor[j]: ancestor whose distance is not yet folded into depth[j]
-        #   (-1 once the walk has reached the root).
-        # depth[j]: confirmed edge count from j up to ancestor[j], becoming the
-        #   true depth once ancestor[j] == -1.
-        ancestor = parents.clone()
-        depth = (parents >= 0).to(dtype)
-        for _ in range(max(max_joints.bit_length(), 1)):
-            unresolved = ancestor >= 0
-            safe_ancestor = ancestor.clamp_min(0)
-            ancestor_depth = torch.gather(depth, 1, safe_ancestor)
-            ancestor_ancestor = torch.gather(ancestor, 1, safe_ancestor)
-            depth = torch.where(unresolved, depth + ancestor_depth, depth)
-            ancestor = torch.where(unresolved, ancestor_ancestor, ancestor)
-        return depth
-
-    @staticmethod
-    def _build_role_features(parents, valid_joints, translation_root_index, dtype):
-        batch_size, max_joints = parents.shape
-        device = parents.device
-        valid_joint_mask = valid_joints.to(device=device, dtype=torch.bool)
-        valid_joint_weights = valid_joint_mask.to(dtype)
-        safe_parents = parents.clamp_min(0)
-        parent_valid_mask = (parents >= 0) & valid_joint_mask
-
-        raw_child_count = torch.zeros((batch_size, max_joints), device=device, dtype=dtype)
-        raw_child_count.scatter_add_(1, safe_parents, parent_valid_mask.to(dtype))
-        raw_child_count = raw_child_count * valid_joint_weights
-        child_count_scale = raw_child_count.max(dim=1, keepdim=True).values.clamp_min(1.0)
-        child_count = raw_child_count / child_count_scale
-
-        depth = ReferencePriorEncoder._depth_to_root(parents, dtype) * valid_joint_weights
-        depth_scale = depth.max(dim=1, keepdim=True).values.clamp_min(1.0)
-        depth = depth / depth_scale
-
-        is_leaf = ((raw_child_count == 0) & valid_joint_mask).to(dtype)
-        is_translation_root = torch.zeros((batch_size, max_joints), device=device, dtype=dtype)
-        safe_root_index = translation_root_index.clamp(min=0, max=max_joints - 1).view(batch_size, 1)
-        is_translation_root.scatter_(1, safe_root_index, 1.0)
-        is_translation_root = is_translation_root * valid_joint_weights
-
-        joint_index = torch.arange(max_joints, device=device, dtype=dtype).unsqueeze(0)
-        valid_joint_count = valid_joint_weights.sum(dim=1, keepdim=True)
-        chain_denominator = (valid_joint_count - 1.0).clamp_min(1.0)
-        chain_position = (joint_index / chain_denominator) * valid_joint_weights
-
-        return torch.stack(
-            [depth, child_count, is_leaf, is_translation_root, chain_position],
-            dim=-1,
-        )
-
-    @staticmethod
-    def _gather_translation_root_track(reference_motion, translation_root_index):
-        batch_size, _, _, frame_count = reference_motion.shape
-        gather_index = translation_root_index.to(device=reference_motion.device, dtype=torch.long).view(batch_size, 1, 1, 1)
-        gather_index = gather_index.expand(-1, 1, reference_motion.shape[2], frame_count)
-        root_track = torch.gather(reference_motion, dim=1, index=gather_index).squeeze(1)
-        return root_track.permute(0, 2, 1)
-
-    @staticmethod
     def _masked_mean_and_std(values, weights, eps=1e-6):
         weights_sum = weights.sum(dim=2, keepdim=True).clamp_min(eps)
         mean = (values * weights.unsqueeze(-1)).sum(dim=2) / weights_sum
@@ -598,13 +563,39 @@ class ReferencePriorEncoder(nn.Module):
         std = torch.sqrt(variance + eps)
         return mean, std
 
+    @staticmethod
+    def _masked_mean(values, weights, eps=1e-6):
+        weights_sum = weights.sum(dim=2, keepdim=True).clamp_min(eps)
+        return (values * weights.unsqueeze(-1)).sum(dim=2) / weights_sum
+
+    @staticmethod
+    def _build_joint_motion_frame_features(vel, rot_delta_norm, contact):
+        """Return phase-invariant per-frame cues for joint grouping.
+
+        This branch deliberately drops velocity sign by using ``vel_norm`` so a
+        joint's coarse semantic role (for example foreleg vs hindleg) is driven
+        by stable motion statistics rather than instantaneous swing direction.
+        """
+        vel_norm = torch.linalg.norm(vel, dim=-1, keepdim=True)
+        energy = torch.sqrt(vel_norm.square() + rot_delta_norm.square() + 1e-6)
+        joint_motion_frame_features = torch.cat([vel_norm, rot_delta_norm, energy, contact], dim=-1)
+        return joint_motion_frame_features, vel_norm, energy
+
+    @staticmethod
+    def _build_phase_joint_features(vel, contact):
+        """Return root-excluded signed limb dynamics for phase modeling.
+
+        Unlike the grouping branch, this path keeps signed velocity so the
+        encoder can distinguish swing direction and left/right anti-phase.
+        """
+        return torch.cat([vel, contact], dim=-1)
+
     def forward(
         self,
         reference_motion,
         n_joints,
         lengths,
         translation_root_index,
-        parents_batch,
         joints_embedded_names,
     ):
         if reference_motion.dim() != 4:
@@ -616,6 +607,10 @@ class ReferencePriorEncoder(nn.Module):
 
         if feature_dim != self.input_feats:
             raise ValueError(f"Expected reference feature dim {self.input_feats}, got {feature_dim}")
+        if max_joints > self.max_joints:
+            raise ValueError(
+                f"reference_motion joint dimension {max_joints} exceeds configured max_joints {self.max_joints}"
+            )
 
         n_joints = torch.as_tensor(n_joints, device=device, dtype=torch.long).reshape(batch_size)
         lengths = torch.as_tensor(lengths, device=device, dtype=torch.long).reshape(batch_size)
@@ -629,7 +624,6 @@ class ReferencePriorEncoder(nn.Module):
                 "reference translation_root_index must reference a valid non-padded joint, got "
                 f"{translation_root_index.tolist()} for n_joints={n_joints.tolist()}"
             )
-        parents = self._coerce_parents_batch(parents_batch, batch_size, max_joints, device)
         joints_embedded_names = self._coerce_joint_name_embeddings(
             joints_embedded_names,
             batch_size,
@@ -640,54 +634,104 @@ class ReferencePriorEncoder(nn.Module):
         valid_joints = torch.arange(max_joints, device=device).unsqueeze(0) < n_joints.unsqueeze(1)
         valid_frames = torch.arange(frame_count, device=device).unsqueeze(0) < lengths.unsqueeze(1)
 
-        role_features = self._build_role_features(
-            parents,
-            valid_joints,
-            translation_root_index,
-            dtype,
-        )
-        role_latent = self.role_projection(role_features)
-        if self.name_projection is not None:
-            joint_name_latent = self.name_projection(joints_embedded_names)
-            joint_role_latent = joint_name_latent + role_latent
-        else:
-            joint_role_latent = role_latent
-
-        group_logits = torch.einsum('bjd,gd->bjg', joint_role_latent, self.group_queries)
-        group_logits = group_logits.masked_fill(~valid_joints.unsqueeze(-1), -1e4)
-        group_weights = torch.softmax(group_logits, dim=-1) * valid_joints.unsqueeze(-1).to(dtype)
-
         motion_btjf = reference_motion.permute(0, 3, 1, 2)
-        pos_norm = torch.linalg.norm(motion_btjf[..., 0:3], dim=-1, keepdim=True)
-        vel_norm = torch.linalg.norm(motion_btjf[..., 9:12], dim=-1, keepdim=True)
+        vel = motion_btjf[..., 9:12]
         rot = motion_btjf[..., 3:9]
         rot_delta = torch.zeros_like(rot)
         if frame_count > 1:
             rot_delta[:, 1:] = rot[:, 1:] - rot[:, :-1]
         rot_delta_norm = torch.linalg.norm(rot_delta, dim=-1, keepdim=True)
-        energy = torch.sqrt(pos_norm.square() + vel_norm.square() + rot_delta_norm.square() + 1e-6)
         contact = motion_btjf[..., 12:13]
-        joint_frame_features = torch.cat([pos_norm, vel_norm, rot_delta_norm, energy, contact], dim=-1)
-        joint_frame_features = joint_frame_features * valid_joints[:, None, :, None].to(dtype)
+        # Branch A: build phase-invariant per-joint statistics used only for
+        # semantic grouping / soft limb assignment.
+        joint_motion_frame_features, vel_norm, energy = self._build_joint_motion_frame_features(
+            vel,
+            rot_delta_norm,
+            contact,
+        )
+        joint_motion_frame_features = joint_motion_frame_features * valid_joints[:, None, :, None].to(dtype)
+
+        # Time-aggregate only the grouping branch. Despite the historical
+        # ``joint_motion`` name, these stats describe a joint's coarse semantic
+        # motion role across the whole clip, not its framewise phase.
+        valid_frames_bj = valid_frames[:, :, None, None].to(dtype)
+        masked_joint_motion_ff = joint_motion_frame_features * valid_frames_bj
+        frame_count_valid = valid_frames.to(dtype).sum(dim=1, keepdim=True).unsqueeze(-1).clamp_min(1)
+        joint_motion_mean = masked_joint_motion_ff.sum(dim=1) / frame_count_valid
+        joint_motion_second_moment = (masked_joint_motion_ff ** 2).sum(dim=1) / frame_count_valid
+        joint_motion_std = torch.sqrt(
+            (joint_motion_second_moment - joint_motion_mean ** 2).clamp_min(0.0) + 1e-6
+        )
+        joint_motion_stats = torch.cat([joint_motion_mean, joint_motion_std], dim=-1)
+        joint_motion_stats = joint_motion_stats * valid_joints.unsqueeze(-1).to(dtype)
+
+        projected_joint_motion = self.joint_motion_projection(joint_motion_stats)
+        if self.name_projection is not None:
+            joint_name_latent = self.name_projection(joints_embedded_names)
+            joint_latent = self.joint_fusion(
+                torch.cat([joint_name_latent, projected_joint_motion], dim=-1)
+            )
+        else:
+            joint_latent = projected_joint_motion
+
+        # Softly assign joints to motion groups using only the semantic/grouping
+        # branch (plus joint names when T5 embeddings are enabled).
+        group_logits = torch.einsum('bjd,gd->bjg', joint_latent, self.group_queries)
+        group_logits = group_logits.masked_fill(~valid_joints.unsqueeze(-1), -1e4)
+        group_weights = torch.softmax(group_logits, dim=-1) * valid_joints.unsqueeze(-1).to(dtype)
+
+        safe_root_index = translation_root_index.clamp(min=0, max=max_joints - 1).view(batch_size, 1)
+        non_root_joints = valid_joints.clone()
+        non_root_joints.scatter_(1, safe_root_index, False)
+        # Root-excluded signed phase cues are fused with each joint's semantic
+        # latent before entering the final prior sequence.
+        phase_joint_features = self._build_phase_joint_features(vel, contact)
+        phase_joint_features = phase_joint_features * non_root_joints[:, None, :, None].to(dtype)
 
         global_mean, global_std = self._masked_mean_and_std(
-            joint_frame_features,
+            joint_motion_frame_features,
             valid_joints[:, None, :].expand(-1, frame_count, -1).to(dtype),
         )
         global_features = torch.cat([global_mean, global_std], dim=-1)
 
         group_features = []
         for group_index in range(self.num_groups):
+            expanded_group_weights = group_weights[:, None, :, group_index].expand(-1, frame_count, -1)
             group_mean, group_std = self._masked_mean_and_std(
-                joint_frame_features,
-                group_weights[:, None, :, group_index].expand(-1, frame_count, -1),
+                joint_motion_frame_features,
+                expanded_group_weights,
             )
             group_features.append(torch.cat([group_mean, group_std], dim=-1))
         group_features = torch.cat(group_features, dim=-1)
-
-        root_track = self._gather_translation_root_track(reference_motion, translation_root_index)
-        root_track = root_track[..., : self.root_feature_dim]
-        prior_sequence = torch.cat([root_track, global_features, group_features], dim=-1)
+        phase_joint_abs = phase_joint_features.abs()
+        phase_joint_delta = torch.zeros_like(phase_joint_features)
+        if frame_count > 1:
+            phase_joint_delta[:, 1:] = phase_joint_features[:, 1:] - phase_joint_features[:, :-1]
+        phase_joint_stats = torch.cat([
+            phase_joint_features,
+            phase_joint_abs,
+            phase_joint_delta,
+        ], dim=-1)
+        joint_semantic_sequence = torch.cat(
+            [
+                joint_latent[:, None, :, :].expand(-1, frame_count, -1, -1),
+                phase_joint_stats,
+            ],
+            dim=-1,
+        )
+        joint_semantic_sequence = self.joint_prior_projection(joint_semantic_sequence)
+        joint_semantic_sequence = joint_semantic_sequence * valid_joints[:, None, :, None].to(dtype)
+        if max_joints < self.max_joints:
+            joint_semantic_sequence = torch.nn.functional.pad(
+                joint_semantic_sequence,
+                (0, 0, 0, self.max_joints - max_joints),
+            )
+        joint_semantic_features = joint_semantic_sequence.reshape(
+            batch_size,
+            frame_count,
+            self.max_joints * self.per_joint_prior_dim,
+        )
+        prior_sequence = torch.cat([global_features, group_features, joint_semantic_features], dim=-1)
         # Reference priors assume the canonical 13-D motion schema:
         # pos[0:3], rot6d[3:9], vel[9:12], contact[12].
         frame_mask = valid_frames.unsqueeze(-1).to(dtype)
@@ -717,6 +761,7 @@ class ReferencePriorEncoder(nn.Module):
         )
         prior_tokens = prior_tokens + self.output_ffn(prior_tokens)
         prior_tokens = self.output_norm(prior_tokens)
+        prior_tokens = self._apply_token_regularization(prior_tokens)
         return prior_tokens
 
 class OutputProcess(nn.Module):
