@@ -58,15 +58,18 @@ def validate_reference_mode_configuration(reference_mode, reference_motion_path=
     if mode == 'controlnet':
         if reference_motion_path is None:
             raise ValueError("--reference_mode controlnet requires --reference_motion.")
-        if int(skip_timesteps) != 0:
-            raise ValueError(
-                "--reference_mode controlnet requires --skip_timesteps 0 because the diffusion state must run the full schedule."
+        if skip_timesteps is not None and int(skip_timesteps) != 0:
+            print(
+                f"[generate] WARNING: --reference_mode controlnet requires --skip_timesteps 0; "
+                f"forcing skip_timesteps from {skip_timesteps} to 0."
             )
+        skip_timesteps = 0
         if model is not None and not model_supports_reference_conditioning(model):
             raise ValueError(
                 "Loaded checkpoint does not support --reference_mode controlnet. Load or retrain a checkpoint with --reference_cond enabled."
             )
-    return mode
+    # Resolve None to the default 80 for non-controlnet modes; controlnet always returns 0.
+    return mode, int(skip_timesteps) if skip_timesteps is not None else 80
 
 
 def _lookup_object_type_case_insensitive(object_types, requested_type):
@@ -607,7 +610,7 @@ def _sample_batch(
     if repaint_jump_n_sample < 1:
         raise ValueError("repaint_jump_n_sample must be >= 1")
 
-    reference_mode = validate_reference_mode_configuration(
+    reference_mode, skip_timesteps = validate_reference_mode_configuration(
         reference_mode,
         reference_motion_path=reference_motion,
         skip_timesteps=skip_timesteps,
@@ -834,12 +837,13 @@ def main(args=None, cond_dict=None):
 
     fixseed(args.seed)
 
-    skip_timesteps = int(getattr(args, 'skip_timesteps', 80))
+    skip_timesteps_raw = getattr(args, 'skip_timesteps', None)
+    skip_timesteps = 80 if skip_timesteps_raw is None else int(skip_timesteps_raw)
     try:
-        reference_mode = validate_reference_mode_configuration(
+        reference_mode, skip_timesteps = validate_reference_mode_configuration(
             getattr(args, 'reference_mode', 'img2img'),
             reference_motion_path=getattr(args, 'reference_motion', None),
-            skip_timesteps=skip_timesteps,
+            skip_timesteps=skip_timesteps_raw,
         )
     except ValueError as exc:
         sys.exit(f"ERROR: {exc}")
@@ -918,7 +922,7 @@ def main(args=None, cond_dict=None):
         state_dict = state_dict['model']
     load_model(model, state_dict)
     try:
-        validate_reference_mode_configuration(
+        reference_mode, skip_timesteps = validate_reference_mode_configuration(
             reference_mode,
             reference_motion_path=getattr(args, 'reference_motion', None),
             skip_timesteps=skip_timesteps,

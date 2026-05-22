@@ -14,7 +14,7 @@ REM Supports zero-shot inference on object types not seen during training.
 REM ----------------------------------------------------------------------
 set BATCH_SIZE=8
 
-rem set MODEL_FILE=model000002000.pt
+set MODEL_FILE=model000020000.pt
 
 pushd "%SCRIPT_DIR%"
 
@@ -48,7 +48,6 @@ if exist %OUTPUT_DIR% (
 mkdir %OUTPUT_DIR% 2>nul
 
 echo Output dir: %OUTPUT_DIR%
-if not "%*"=="" echo Extra args: %*
 
 %PYTHON_EXE% sample/generate.py ^
     --model_path "%MODEL_PATH%" ^

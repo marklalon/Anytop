@@ -664,8 +664,13 @@ def test_decoder_reference_block_accepts_shared_prior_tokens() -> None:
 def test_validate_reference_mode_configuration_rejects_invalid_controlnet_setup() -> None:
     with pytest.raises(ValueError, match="requires --reference_motion"):
         validate_reference_mode_configuration("controlnet", reference_motion_path=None, skip_timesteps=0)
-    with pytest.raises(ValueError, match="requires --skip_timesteps 0"):
-        validate_reference_mode_configuration("controlnet", reference_motion_path="ref.npy", skip_timesteps=3)
+    # As of the "soft skip" change, non-zero skip_timesteps with controlnet
+    # no longer raises — it prints a warning and forces 0.
+    mode, skip_ts = validate_reference_mode_configuration(
+        "controlnet", reference_motion_path="ref.npy", skip_timesteps=3,
+    )
+    assert mode == "controlnet"
+    assert skip_ts == 0
     with pytest.raises(ValueError, match="does not support --reference_mode controlnet"):
         validate_reference_mode_configuration(
             "controlnet",
@@ -803,22 +808,23 @@ def test_sample_batch_rejects_controlnet_inpaint_when_reference_length_differs_f
         )
 
 
-def test_sample_batch_rejects_controlnet_skip_timesteps() -> None:
-    with pytest.raises(ValueError, match="requires --skip_timesteps 0"):
-        _sample_batch(
-            diffusion=_CaptureDiffusion(),
-            model=_DummyModel(reference_cond=True),
-            model_kwargs={"y": {}},
-            sampling_method="ddpm",
-            sample_shape=(1, 3, 13, 4),
-            ddim_eta=0.0,
-            seed=123,
-            device=torch.device("cpu"),
-            reference_motion=torch.zeros((1, 3, 13, 4), dtype=torch.float32),
-            reference_mode="controlnet",
-            reference_scale=2.0,
-            skip_timesteps=4,
-        )
+def test_sample_batch_tolerates_controlnet_skip_timesteps() -> None:
+    # Non-zero skip_timesteps with controlnet no longer raises — it prints a
+    # warning and forces 0 internally via validate_reference_mode_configuration.
+    _sample_batch(
+        diffusion=_CaptureDiffusion(),
+        model=_DummyModel(reference_cond=True),
+        model_kwargs={"y": {}},
+        sampling_method="ddpm",
+        sample_shape=(1, 3, 13, 4),
+        ddim_eta=0.0,
+        seed=123,
+        device=torch.device("cpu"),
+        reference_motion=torch.zeros((1, 3, 13, 4), dtype=torch.float32),
+        reference_mode="controlnet",
+        reference_scale=2.0,
+        skip_timesteps=4,
+    )
 
 
 def test_validate_reference_sampling_request_rejects_cross_species_controlnet_inpaint() -> None:

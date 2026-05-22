@@ -65,6 +65,15 @@ def main():
     if update_mode:
         os.makedirs(save_dir, exist_ok=True)
     elif os.path.exists(save_dir):
+        # Ask for user confirmation before wiping existing data
+        reply = input(
+            f"WARNING: About to wipe all existing data in '{save_dir}' "
+            f"and rebuild from scratch.\n"
+            f"Proceed? [y/N]: "
+        )
+        if reply.strip().lower() not in ('y', 'yes'):
+            print("Aborted by user.")
+            sys.exit(0)
         # Clear old files in the target directory before processing
         for entry in os.listdir(save_dir):
             entry_path = os.path.join(save_dir, entry)
