@@ -100,6 +100,16 @@ def add_model_options(parser):
                        help="If passed, joints names wont be added to features")
     group.add_argument("--value_emb", action='store_true',
                        help="If passed, graph multihead attention learns GRPE value embeddings")
+    group.add_argument("--cross_limb_latents", default=8, type=int,
+                       help="Number of latent tokens K in the cross-limb temporal block.")
+    group.add_argument("--cross_limb_dim", default=64, type=int,
+                       help="Bottleneck width of each cross-limb temporal block. "
+                            "Clamped to <= latent_dim and a multiple of num_heads.")
+    group.add_argument("--cross_limb_last_n", default=0, type=int,
+                       help="Apply the cross-limb block only on the last N decoder "
+                            "layers (0 = all layers). Each active layer gets its "
+                            "own independent block, so this also controls the "
+                            "cross-limb parameter count.")
     group.add_argument("--dropout_prob", default=0.1, type=float,
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
 
@@ -162,6 +172,10 @@ def add_training_options(parser):
                        help="Prefetch this many batches on background thread for main-thread data loading to overlap with GPU compute. 0 disables it.")
     group.add_argument("--detect_anomaly", action='store_true',
                        help="Enable PyTorch autograd anomaly detection. Useful for debugging, but significantly slows training.")
+    group.add_argument("--joint_mask_prob", default=0.0, type=float,
+                       help="Probability of sampling each non-root joint into a training-time subtree perturbation. "
+                           "Selected joints keep their supervision loss and remain visible to attention, but their x_t "
+                           "features are re-noised at an independent timestep to mimic RePaint-style mixed reliability.")
     group.add_argument("--resume_checkpoint", default="", type=str,
                        help="If not empty, will start from the specified checkpoint (path to model###.pt file).")
     group.add_argument("--gen_during_training", action='store_true',

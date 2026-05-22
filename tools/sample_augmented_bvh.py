@@ -73,7 +73,9 @@ from data_loaders.truebones.data.dataset import (
     load_motion_names_for_split_with_action_tags,
     ALL_SPLIT_NAME,
     SUPPORTED_SPLITS,
+    _build_joint_mask_candidate_roots,
 )
+from model.joint_mask_utils import sample_subtree_joint_mask
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +116,9 @@ def _build_cond_dict(opt, objects_subset: str) -> dict:
         n_joints = np.asarray(cond["parents"]).shape[0]
         if "joints_names_embs" not in cond:
             cond["joints_names_embs"] = np.zeros((n_joints, 768), dtype=np.float32)
+
+        # Precompute joint_mask_candidate_roots for subtree masking export
+        cond["joint_mask_candidate_roots"] = _build_joint_mask_candidate_roots(cond)
 
     return cond_dict
 
@@ -181,6 +186,9 @@ def parse_args() -> argparse.Namespace:
                    help="Processed dataset root (auto-detected if omitted).")
     p.add_argument("--output-dir", default="outputs/augmented_bvh_samples",
                    help="Directory to write BVH files.")
+    p.add_argument("--joint-mask-prob", type=float, default=0.15,
+                   help="Subtree joint mask probability for masked export (0 = disabled). "
+                        "Matches --joint_mask_prob in training. (default: 0.15)")
     return p.parse_args()
 
 
@@ -291,6 +299,7 @@ def main() -> int:
                 _max_joints,
                 motion_metadata,
                 _name,
+                _candidate_roots_info,
                 aug_info,     # dict: mirror_applied, speed_factor, crop_start, loop_applied
             ) = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
 
@@ -352,6 +361,48 @@ def main() -> int:
                 print(f"FAIL (recover_animation returned None)")
                 failed += 1
 
+            # ----------------------------------------------------------------
+            # Subtree joint mask export (if enabled)
+            # ----------------------------------------------------------------
+            if args.joint_mask_prob > 0.0:
+                mask = sample_subtree_joint_mask(
+                    parents=list(parents),
+                    candidate_root_mask=cond_dict[object_type]["joint_mask_candidate_roots"][: len(parents)],
+                    joint_mask_prob=args.joint_mask_prob,
+                    rng=np.random.default_rng(args.seed + idx),
+                )
+                if mask is not None:
+                    # Apply mask in normalized space (same as the model does),
+                    # then denormalize so masked joints land at mean (valid pose).
+                    motion_masked_norm = motion_norm.copy()
+                    motion_masked_norm[:, mask, :] = 0.0
+                    motion_masked_raw = (motion_masked_norm[:m_length] * std[None, :, :] + mean[None, :, :]).astype(np.float32)
+
+                    masked_tags = list(tags) + [f"mask{int(round(args.joint_mask_prob * 100))}"]
+                    masked_fname = f"{stem}__{'+'.join(masked_tags)}_masked.bvh"
+                    masked_path = output_dir / masked_fname
+
+                    ok2 = _export_bvh(
+                        masked_path,
+                        motion_masked_raw,
+                        list(parents),
+                        np.asarray(offsets, dtype=np.float32),
+                        joints_names,
+                        motion_metadata,
+                        object_cond=cond_dict[object_type],
+                        mirror_export_compat=bool(aug_info.get("mirror_applied")),
+                    )
+                    if ok2:
+                        masked_joint_str = ", ".join(joints_names[i] for i in np.flatnonzero(mask))
+                        print(f"     ├─ masked  → {masked_path.name}")
+                        print(f"     └─ masked joints [{int(mask.sum())}]: {masked_joint_str}")
+                        exported += 1
+                    else:
+                        print(f"     └─ masked export FAILED")
+                        failed += 1
+                else:
+                    print(f"     └─ no subtree fit the budget — skip masked export")
+
         except Exception as exc:
             print(f"ERROR: {exc}")
             failed += 1
@@ -359,9 +410,9 @@ def main() -> int:
     # -----------------------------------------------------------------------
     # Summary
     # -----------------------------------------------------------------------
-    print(f"\n[DONE] Exported {exported}/{n} samples to: {output_dir}")
+    print(f"[DONE] Exported {exported} files ({n} samples) to: {output_dir}")
     if failed:
-        print(f"       {failed} sample(s) failed — check error messages above.")
+        print(f"       {failed} file(s) failed — check error messages above.")
     return 0
 
 

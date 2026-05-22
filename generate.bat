@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=quadropeds_locomotion_v10
+set RUN_NAME=quadropeds_locomotion_cross_limb_mask_v5
 REM ----------------------------------------------------------------------
 REM Combination rules for target skeleton + reference motion (passed via %* to sample/generate.py):
 REM   1) --object_type Horse only                          : random generation for Horse

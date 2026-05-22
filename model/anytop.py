@@ -1,7 +1,9 @@
 import torch
 torch.cuda.empty_cache()
 import torch.nn as nn
+import numpy as np
 from model.motion_transformer import GraphMotionDecoderLayer, GraphMotionDecoder
+from model.joint_mask_utils import sample_subtree_joint_mask_batch
 
 
 def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 10000,
@@ -45,6 +47,13 @@ class AnyTop(nn.Module):
         self.cond_mode = kargs.get('cond_mode', 'no_cond')
         self.skip_t5=kargs.get('skip_t5', False)
         self.value_emb=kargs.get('value_emb', False)
+        self.cross_limb=kargs.get('cross_limb', True)
+        self.cross_limb_latents=kargs.get('cross_limb_latents', 8)
+        self.cross_limb_dim=kargs.get('cross_limb_dim', 64)
+        self.cross_limb_last_n=kargs.get('cross_limb_last_n', 0)
+        self.joint_mask_prob=float(kargs.get('joint_mask_prob', 0.0))
+        if not 0.0 <= self.joint_mask_prob <= 1.0:
+            raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, skip_t5=self.skip_t5, dropout_prob=self.dropout)
 
         seqTransDecoderLayer = GraphMotionDecoderLayer(d_model=self.latent_dim,
@@ -53,10 +62,79 @@ class AnyTop(nn.Module):
                                                             dropout=self.dropout,
                                                             activation=self.activation)
         self.seqTransDecoder = GraphMotionDecoder(seqTransDecoderLayer,
-                                                        num_layers=self.num_layers, value_emb=self.value_emb)
+                                                        num_layers=self.num_layers, value_emb=self.value_emb,
+                                                        cross_limb=self.cross_limb,
+                                                        cross_limb_latents=self.cross_limb_latents,
+                                                        cross_limb_dim=self.cross_limb_dim,
+                                                        cross_limb_last_n=self.cross_limb_last_n)
             
         
         self.output_process = OutputProcess(self.feature_len, self.root_input_feats, self.max_joints, self.latent_dim)
+
+    @staticmethod
+    def _build_joint_key_padding_mask(njoints, n_joints, device):
+        """Return the padding-only joint key mask used by attention.
+
+        Training-time subtree perturbation deliberately stays out of the
+        attention masks. Only structurally padded joints are masked here.
+        """
+        return torch.arange(njoints, device=device)[None, :] >= n_joints[:, None]
+
+    def sample_subtree_joint_mask_train(self, y, njoints, device):
+        """Select subtrees of joints to perturb during training (governed by
+        ``joint_mask_prob``).
+
+        Returns a bool tensor of shape ``[B, njoints]`` (True = joint selected)
+        or ``None`` if no joint was selected, or if not in training mode, or
+        if ``joint_mask_prob == 0`` -- so eval-mode loss reports a clean
+        diffusion objective.
+
+        Called from ``GaussianDiffusion.training_losses`` AFTER ``q_sample``
+        to decide which joints' x_t slice should be re-noised with an
+        independent random timestep and fresh noise, so that those joints'
+        noise level disagrees with the rest of the batch sample. This trains
+        the cross-joint pathway to denoise robustly against per-joint
+        timestep mismatch -- the regime RePaint clamping produces at
+        inference. The model's forward itself stays vanilla.
+        """
+        if (not self.training) or self.joint_mask_prob <= 0.0:
+            return None
+        n_joints_cpu = torch.as_tensor(y['n_joints'], device='cpu', dtype=torch.int64).reshape(-1)
+        return self._sample_subtree_joint_mask(y, n_joints_cpu, njoints, device)
+
+    def _sample_subtree_joint_mask(self, y, n_joints, njoints, device):
+        parents_batch = y.get('parents')
+        if parents_batch is None:
+            return None
+        candidate_roots_batch = y.get('joint_mask_candidate_roots')
+        if torch.is_tensor(n_joints):
+            n_joints_np = n_joints.detach().to(device='cpu', dtype=torch.int64).numpy()
+        else:
+            n_joints_np = np.asarray(n_joints, dtype=np.int64)
+
+        if torch.is_tensor(parents_batch):
+            parents_batch_np = parents_batch.detach().to(device='cpu', dtype=torch.int64).numpy()
+        else:
+            parents_batch_np = [np.asarray(parents, dtype=np.int64) for parents in parents_batch]
+
+        if candidate_roots_batch is None:
+            candidate_roots_np = None
+        elif torch.is_tensor(candidate_roots_batch):
+            candidate_roots_np = candidate_roots_batch.detach().to(device='cpu').numpy()
+        else:
+            candidate_roots_np = np.asarray(candidate_roots_batch, dtype=np.bool_)
+
+        subtree_joint_mask_np = sample_subtree_joint_mask_batch(
+            parents_batch=parents_batch_np,
+            candidate_root_mask_batch=candidate_roots_np,
+            n_joints=n_joints_np,
+            max_joints=njoints,
+            joint_mask_prob=self.joint_mask_prob,
+            rng=np.random,
+        )
+        if subtree_joint_mask_np is None:
+            return None
+        return torch.from_numpy(subtree_joint_mask_np).to(device=device)
 
     def forward(self, x, timesteps, get_layer_activation=-1, y=None, train_step=None, **unused_kwargs):
         """
@@ -69,23 +147,66 @@ class AnyTop(nn.Module):
         tpos_first_frame = y['tpos_first_frame'].to(x.device).unsqueeze(0)
 
         bs, njoints, nfeats, nframes = x.shape
+        n_joints = torch.as_tensor(y['n_joints'], device=x.device).reshape(-1)
+        joint_key_padding_mask = self._build_joint_key_padding_mask(njoints, n_joints, x.device)
+        # joint_mask_prob-driven subtree perturbation is applied OUTSIDE this
+        # forward, in diffusion.training_losses, by re-noising the selected
+        # joints' x_t with q_sample(x_0, t_random, fresh_noise). The model
+        # itself stays vanilla -- selected joints DO NOT enter the
+        # key-padding masks and continue to participate in attention normally,
+        # just with mismatched noise levels, which trains the
+        # cross-joint pathway to denoise robustly against per-joint timestep
+        # disagreement (matching RePaint clamp behavior at inference).
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
 
         x = self.input_process(x, tpos_first_frame, y['joints_names_embs']) # applies linear layer on each frame to convert it to latent dim
-        spatial_mask = 1.0 - joints_padding_mask[:, 0, 0, 1:, 1:]
-        spatial_mask = spatial_mask.unsqueeze(1).unsqueeze(1).repeat(1, nframes + 1, self.num_heads, 1, 1).reshape(-1,self.num_heads, njoints, njoints)
-        temporal_mask = 1.0 - temp_mask.repeat(1, njoints, self.num_heads, 1, 1).reshape(-1, nframes + 1, nframes + 1).float()
-        spatial_mask[spatial_mask == 1.0] = -1e4
-        temporal_mask[temporal_mask == 1.0] = -1e4
-        
+        spatial_mask = (1.0 - joints_padding_mask[:, 0, 0, 1:, 1:].float()) * -1e4
+        spatial_mask = spatial_mask.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
+
+        temporal_template = (1.0 - temp_mask.reshape(bs, -1, nframes + 1, nframes + 1)[:, :1].float()) * -1e4
+        temporal_template = temporal_template.expand(-1, self.num_heads, -1, -1)
+        temporal_mask = temporal_template.unsqueeze(1).expand(-1, njoints, -1, -1, -1).reshape(-1, nframes + 1, nframes + 1)
+
+        # Cross-limb temporal pathway needs (1) the windowed temporal mask
+        # WITHOUT the per-joint repeat -> (bs*H, T, T), which the block expands
+        # per-latent itself, and (2) a (bs, njoints) bool key-padding mask
+        # (True == padded) derived from the real joint count.
+        if self.cross_limb:
+            assert 'n_joints' in y, "cross_limb requires y['n_joints'] in the batch"
+            temporal_template = temporal_template.reshape(-1, nframes + 1, nframes + 1)
+            y['joints_key_padding_mask'] = joint_key_padding_mask
+        else:
+            temporal_template = None
+
+        cross_limb_unreliable_mask = None
+        if self.cross_limb:
+            raw_cross_limb_unreliable_mask = y.get('cross_limb_unreliable_mask')
+            if raw_cross_limb_unreliable_mask is not None:
+                cross_limb_unreliable_mask = raw_cross_limb_unreliable_mask.to(device=x.device, dtype=x.dtype)
+                raw_expected_shape = (bs, nframes, njoints)
+                prepared_expected_shape = (nframes + 1, bs, njoints)
+                if cross_limb_unreliable_mask.shape == raw_expected_shape:
+                    reliable_tpose = torch.zeros((bs, 1, njoints), device=x.device, dtype=x.dtype)
+                    cross_limb_unreliable_mask = torch.cat([reliable_tpose, cross_limb_unreliable_mask], dim=1)
+                    cross_limb_unreliable_mask = cross_limb_unreliable_mask.transpose(0, 1).contiguous()
+                elif cross_limb_unreliable_mask.shape != prepared_expected_shape:
+                    raise ValueError(
+                        "y['cross_limb_unreliable_mask'] must have shape "
+                        f"{raw_expected_shape} or {prepared_expected_shape}, got "
+                        f"{tuple(cross_limb_unreliable_mask.shape)}"
+                    )
+
         output = self.seqTransDecoder(
             tgt=x,
             timesteps_embs=timesteps_emb,
             memory=None,
             spatial_mask=spatial_mask,
             temporal_mask=temporal_mask,
+            tgt_key_padding_mask=joint_key_padding_mask,
             y=y,
             get_layer_activation=get_layer_activation,
+            temporal_template=temporal_template,
+            cross_limb_unreliable_mask=cross_limb_unreliable_mask,
         )
         if get_layer_activation > -1 and get_layer_activation < self.num_layers:
             activations = output[1]
