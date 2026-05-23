@@ -214,17 +214,16 @@ def test_sample_batch_injects_cross_limb_unreliable_mask_for_single_inpaint_pass
     assert "cross_limb_unreliable_mask" not in model_kwargs["y"]
 
 
-def test_sample_batch_uses_two_pass_ddpm_for_inpaint_with_skip_timesteps() -> None:
+def test_sample_batch_applies_skip_timesteps_only_inside_inpaint_mask() -> None:
     sample_shape = (1, 3, 13, 4)
     reference_motion = torch.ones(sample_shape, dtype=torch.float32)
-    varied_motion = torch.full(sample_shape, 7.0, dtype=torch.float32)
     inpaint_mask = torch.tensor(
         [[[[0.0, 1.0, 0.0, 0.0]],
           [[1.0, 0.0, 1.0, 0.0]],
           [[0.0, 0.0, 0.0, 0.0]]]],
         dtype=torch.float32,
     )
-    diffusion = _CaptureDiffusion(return_values=[varied_motion, "ddpm-final"])
+    diffusion = _CaptureDiffusion(return_values=["ddpm-final"])
     model_kwargs = {"y": {"existing": torch.tensor([1.0])}}
 
     result = _sample_batch(
@@ -242,23 +241,15 @@ def test_sample_batch_uses_two_pass_ddpm_for_inpaint_with_skip_timesteps() -> No
     )
 
     assert result == "ddpm-final"
-    assert [name for name, _ in diffusion.calls] == ["ddpm", "ddpm"]
+    assert [name for name, _ in diffusion.calls] == ["ddpm"]
 
-    first_kwargs = diffusion.calls[0][1]
-    second_kwargs = diffusion.calls[1][1]
+    kwargs = diffusion.calls[0][1]
 
-    assert torch.equal(first_kwargs["init_image"], reference_motion)
-    assert first_kwargs["skip_timesteps"] == 80
-    assert first_kwargs["inpaint_reference"] is None
-    assert first_kwargs["inpaint_mask"] is None
-    assert tuple(first_kwargs["noise"].shape) == sample_shape
-    assert "cross_limb_unreliable_mask" not in first_kwargs["model_kwargs"]["y"]
-
-    assert second_kwargs["init_image"] is None
-    assert second_kwargs["skip_timesteps"] == 0
-    assert torch.equal(second_kwargs["inpaint_reference"], varied_motion)
-    assert torch.equal(second_kwargs["inpaint_mask"], inpaint_mask)
-    assert tuple(second_kwargs["noise"].shape) == sample_shape
+    assert torch.equal(kwargs["init_image"], reference_motion)
+    assert kwargs["skip_timesteps"] == 80
+    assert torch.equal(kwargs["inpaint_reference"], reference_motion)
+    assert torch.equal(kwargs["inpaint_mask"], inpaint_mask)
+    assert tuple(kwargs["noise"].shape) == sample_shape
     expected = torch.cat(
         [
             torch.zeros(1, 1, 3, dtype=inpaint_mask.dtype),
@@ -266,8 +257,8 @@ def test_sample_batch_uses_two_pass_ddpm_for_inpaint_with_skip_timesteps() -> No
         ],
         dim=1,
     ).transpose(0, 1).contiguous()
-    assert torch.equal(second_kwargs["model_kwargs"]["y"]["cross_limb_unreliable_mask"], expected)
-    assert torch.equal(second_kwargs["model_kwargs"]["y"]["existing"], model_kwargs["y"]["existing"])
+    assert torch.equal(kwargs["model_kwargs"]["y"]["cross_limb_unreliable_mask"], expected)
+    assert torch.equal(kwargs["model_kwargs"]["y"]["existing"], model_kwargs["y"]["existing"])
     assert "cross_limb_unreliable_mask" not in model_kwargs["y"]
 
 

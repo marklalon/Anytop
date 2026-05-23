@@ -251,14 +251,16 @@ def add_generate_options(parser):
                             "Omit for pure random generation.")
     group.add_argument("--skip_timesteps", default=None, type=int,
                        help="Number of timesteps to skip when using --reference_motion. Higher = more faithful to reference. "
-                            "Range: 0~sampling_steps. Default: 80. When combined with --inpaint_*, a two-pass pipeline is "
-                            "used: pass 1 applies skip_timesteps (img2img) to the whole reference, pass 2 inpaints the "
-                           "masked region on the full schedule using the pass-1 result as the clamped known region. "
+                           "Range: 0~sampling_steps. Default: required when using img2img without --inpaint_*; "
+                           "default: 0 when combined with --inpaint_* (disabled; use --skip_timesteps N to enable). "
+                           "When combined with --inpaint_*, the skip is applied "
+                           "only inside the masked region by starting that region from an img2img-noised reference, while "
+                          "the unmasked region stays clamped to the original reference throughout denoising. "
                            "When --reference_mode controlnet is selected, this must be 0.")
     group.add_argument("--reference_mode", default="img2img", choices=["img2img", "controlnet"],
                        help="How to use --reference_motion. img2img = noise the reference into x_t. controlnet = keep the diffusion state on the full schedule and feed the reference through a separate conditioning branch. When source and target skeletons differ, the reference is retargeted into the target skeleton first (both modes).")
-    group.add_argument("--reference_scale", default=2.0, type=float,
-                       help="Classifier-free guidance scale for --reference_mode controlnet. Ignored in img2img mode.")
+    group.add_argument("--reference_scale", default=None, type=float,
+                       help="Classifier-free guidance scale for --reference_mode controlnet (default: 2.0). Ignored in img2img mode.")
     group.add_argument("--inpaint_joints", default="", type=str,
                        help="Motion inpainting (mask painting): comma-separated joint names whose motion is "
                             "REGENERATED while the rest is held to --reference_motion. Names accept any of the "

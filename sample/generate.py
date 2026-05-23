@@ -68,8 +68,9 @@ def validate_reference_mode_configuration(reference_mode, reference_motion_path=
             raise ValueError(
                 "Loaded checkpoint does not support --reference_mode controlnet. Load or retrain a checkpoint with --reference_cond enabled."
             )
-    # Resolve None to the default 80 for non-controlnet modes; controlnet always returns 0.
-    return mode, int(skip_timesteps) if skip_timesteps is not None else 80
+    # Non-None values pass through (caller handles defaults per-mode);
+    # controlnet always returns 0.
+    return mode, int(skip_timesteps) if skip_timesteps is not None else 0
 
 
 def _lookup_object_type_case_insensitive(object_types, requested_type):
@@ -731,44 +732,22 @@ def _sample_batch(
         reference_cfg_model = ClassifierFreeReferenceModel(model)
 
     if inpainting and reference_mode == 'img2img' and skip_timesteps > 0:
-        # Combined inpaint + skip_timesteps: a two-pass pipeline equivalent to
-        # (1) img2img-varying the whole reference with skip_timesteps, then
-        # (2) RePaint-inpainting the masked region using that varied motion as
-        # the clamped known region. The unmasked region therefore RESPONDS to
-        # skip_timesteps (a variation of the reference) instead of being held
-        # to a verbatim copy. Two passes are required because the masked region
-        # needs the full denoising schedule while the unmasked region needs the
-        # truncated skip_timesteps schedule. Keeping the pass-1 result in memory
-        # (model-normalized space) avoids the lossy .npy round-trip + re-
-        # preprocessing the equivalent manual two-command workflow would incur.
+        # Localized img2img inpainting: start the reverse process from the
+        # reference noised to the requested skip timestep, but clamp the known
+        # (unmasked) region back to the ORIGINAL reference at every step. This
+        # keeps skip_timesteps local to the inpaint mask instead of varying the
+        # preserved context outside it.
         ref = reference_motion.to(device, non_blocking=True)
         mask = inpaint_mask.to(device, non_blocking=True)
         prepared_cross_limb_unreliable_mask = _prepared_cross_limb_unreliable_mask_from_inpaint_mask(mask)
 
-        # Pass 1 (img2img): noise the whole reference to an intermediate step
-        # and denoise from there. Higher skip_timesteps = more faithful.
-        fixseed(seed)
-        varied = _run_loop(
-            noise=torch.randn(sample_shape, device=device),
-            init_image=ref,
-            skip_ts=skip_timesteps,
-            inpaint_mask_=None,
-            inpaint_reference_=None,
-            cross_limb_unreliable_mask_=None,
-            use_reference_conditioning_=False,
-        )
-
-        # Pass 2 (inpaint): full schedule from pure noise, clamping the known
-        # (unmasked) region to the pass-1 varied motion. Re-seed so the run
-        # mirrors executing two separate commands (each re-seeds) and stays
-        # reproducible.
         fixseed(seed)
         return _run_loop(
             noise=torch.randn(sample_shape, device=device),
-            init_image=None,
-            skip_ts=0,
+            init_image=ref,
+            skip_ts=skip_timesteps,
             inpaint_mask_=mask,
-            inpaint_reference_=varied,
+            inpaint_reference_=ref,
             cross_limb_unreliable_mask_=prepared_cross_limb_unreliable_mask,
             use_reference_conditioning_=False,
         )
@@ -834,7 +813,40 @@ def main(args=None, cond_dict=None):
     fixseed(args.seed)
 
     skip_timesteps_raw = getattr(args, 'skip_timesteps', None)
-    skip_timesteps = 80 if skip_timesteps_raw is None else int(skip_timesteps_raw)
+
+    # Early check for inpaint before ~30s model load (reused below for the
+    # skip_timesteps fast-fail).
+    _inpaint_early = bool(
+        str(getattr(args, 'inpaint_joints', '') or '').strip()
+        or str(getattr(args, 'inpaint_frames', '') or '').strip()
+    )
+
+    # img2img + reference_motion + no inpaint + no explicit skip_timesteps =>
+    # fast-fail because the user must decide how faithful to the reference
+    # (skip_timesteps=0 means maximum variation from pure noise).
+    if (str(getattr(args, 'reference_mode', 'img2img')).strip().lower() == 'img2img'
+            and getattr(args, 'reference_motion', None)
+            and not _inpaint_early
+            and skip_timesteps_raw is None):
+        sys.exit(
+            "ERROR: --skip_timesteps is required when using --reference_motion "
+            "in img2img mode without --inpaint_joints/--inpaint_frames.\n"
+            "  Higher values (e.g. 80-100) produce motion more faithful to the reference;\n"
+            "  lower values (e.g. 20-40) allow more model-driven variation.\n"
+            "  When combined with --inpaint_joints, the default is 0 (skip disabled)."
+        )
+
+    # Fail fast (before the ~30s model load) if inpaint flags are set without a
+    # reference motion: the masked region needs a known region to clamp to,
+    # otherwise it would silently degrade to plain generation.
+    if _inpaint_early and not getattr(args, 'reference_motion', None):
+        sys.exit(
+            "ERROR: --inpaint_joints / --inpaint_frames require --reference_motion "
+            "(the reference is the known region held fixed while the masked region "
+            "is regenerated). Pass --reference_motion <path>, or drop the inpaint "
+            "flags for plain generation."
+        )
+
     try:
         reference_mode, skip_timesteps = validate_reference_mode_configuration(
             getattr(args, 'reference_mode', 'img2img'),
@@ -844,17 +856,24 @@ def main(args=None, cond_dict=None):
     except ValueError as exc:
         sys.exit(f"ERROR: {exc}")
 
-    # Fail fast (before the ~30s model load) if inpaint flags are set without a
-    # reference motion: the masked region needs a known region to clamp to,
-    # otherwise it would silently degrade to plain generation.
-    if (str(getattr(args, 'inpaint_joints', '') or '').strip()
-            or str(getattr(args, 'inpaint_frames', '') or '').strip()) \
-            and not getattr(args, 'reference_motion', None):
+    # --inpaint_joints with --skip_timesteps omitted: default to 0 (skip disabled).
+    if _inpaint_early and skip_timesteps_raw is None:
+        skip_timesteps = 0
+
+    # Fail fast: --reference_scale is only effective in controlnet mode.
+    if getattr(args, 'reference_scale', None) is not None \
+            and str(getattr(args, 'reference_mode', 'img2img')).strip().lower() != 'controlnet':
         sys.exit(
-            "ERROR: --inpaint_joints / --inpaint_frames require --reference_motion "
-            "(the reference is the known region held fixed while the masked region "
-            "is regenerated). Pass --reference_motion <path>, or drop the inpaint "
-            "flags for plain generation."
+            "ERROR: --reference_scale is only effective with --reference_mode controlnet. "
+            "In img2img mode, use --skip_timesteps to control faithfulness to the reference."
+        )
+
+    # Fail fast: --skip_timesteps is only effective in img2img mode.
+    if getattr(args, 'skip_timesteps', None) is not None \
+            and str(getattr(args, 'reference_mode', 'img2img')).strip().lower() == 'controlnet':
+        sys.exit(
+            "ERROR: --skip_timesteps is not supported with --reference_mode controlnet. "
+            "In controlnet mode, use --reference_scale to control faithfulness to the reference."
         )
 
     opt = get_opt(args.device)
@@ -938,7 +957,7 @@ def main(args=None, cond_dict=None):
 
     ddim_eta = float(getattr(args, 'ddim_eta', 0.0))
     reference_motion_path = getattr(args, 'reference_motion', None)
-    reference_scale = float(getattr(args, 'reference_scale', 2.0))
+    reference_scale = float(getattr(args, 'reference_scale', 2.0) or 2.0)
 
     inpaint_joints_arg = str(getattr(args, 'inpaint_joints', '') or '').strip()
     inpaint_frames_arg = str(getattr(args, 'inpaint_frames', '') or '').strip()
@@ -1140,9 +1159,8 @@ def main(args=None, cond_dict=None):
                 )
             if inpaint_enabled and skip_timesteps > 0:
                 print(f'    Mode: inpaint + skip_timesteps={skip_timesteps} '
-                      '(two-pass: unmasked region = img2img variation of the '
-                      'reference [higher skip_timesteps = more faithful], masked '
-                      'region inpainted on the full schedule from pure noise)')
+                      '(masked region starts from an img2img-noised reference; '
+                      'unmasked region stays clamped to the original reference)')
             elif inpaint_enabled and reference_mode == 'controlnet':
                 print(
                     f'    Mode: inpainting + controlnet '
