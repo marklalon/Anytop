@@ -197,7 +197,7 @@ class AnyTop(nn.Module):
         running_mean = self.global_energy_running_mean.to(device=device, dtype=dtype)
         running_std = torch.sqrt(self.global_energy_running_var.to(device=device, dtype=dtype).clamp_min(1e-6))
         normalized_global_energy = (raw_global_energy_cond - running_mean.unsqueeze(0)) / running_std.unsqueeze(0)
-        return self.global_energy_projection(normalized_global_energy).unsqueeze(0)
+        return self.global_energy_projection(normalized_global_energy)
 
     def sample_subtree_joint_mask_train(self, y, njoints, device):
         """Select subtrees of joints to perturb during training (governed by
@@ -269,7 +269,7 @@ class AnyTop(nn.Module):
         n_joints = torch.as_tensor(y['n_joints'], device=x.device).reshape(-1)
         joint_key_padding_mask = self._build_joint_key_padding_mask(njoints, n_joints, x.device)
         reference_memory = None
-        global_energy_memory = None
+        global_energy_condition = None
         reference_key_padding_mask = None
         reference_batch_mask = None
         # joint_mask_prob-driven subtree perturbation is applied OUTSIDE this
@@ -349,7 +349,7 @@ class AnyTop(nn.Module):
                 reference_key_padding_mask = None
 
         if self.global_energy_cond:
-            global_energy_memory = self._build_global_energy_token(
+            global_energy_condition = self._build_global_energy_token(
                 y.get('global_energy_cond'),
                 batch_size=bs,
                 device=x.device,
@@ -384,7 +384,7 @@ class AnyTop(nn.Module):
             y=y,
             get_layer_activation=get_layer_activation,
             reference_memory=reference_memory,
-            global_energy_memory=global_energy_memory,
+            global_energy_condition=global_energy_condition,
             reference_key_padding_mask=reference_key_padding_mask,
             temporal_template=temporal_template,
             cross_limb_unreliable_mask=cross_limb_unreliable_mask,

@@ -496,7 +496,7 @@ def test_anytop_forward_accepts_global_energy_condition_without_reference_motion
     assert output.shape == (1, 4, 13, 7)
     assert capture_decoder.last_kwargs is not None
     assert capture_decoder.last_kwargs["reference_memory"] is None
-    assert capture_decoder.last_kwargs["global_energy_memory"].shape == (1, 1, 8)
+    assert capture_decoder.last_kwargs["global_energy_condition"].shape == (1, 8)
 
 
 def test_decoder_layer_keeps_global_energy_condition_when_reference_gate_is_zero() -> None:
@@ -522,15 +522,19 @@ def test_decoder_layer_keeps_global_energy_condition_when_reference_gate_is_zero
             delta = delta * reference_batch_mask.to(device=x.device, dtype=x.dtype).view(1, x.shape[1], 1, 1)
         return delta
 
+    def _global_energy_film(self, x, global_energy_condition):
+        return x + global_energy_condition[:, :1].to(device=x.device, dtype=x.dtype).view(1, x.shape[1], 1, 1)
+
     layer._spatial_mha_block = types.MethodType(_zero_block, layer)
     layer._temporal_mha_block_sin_joint = types.MethodType(_zero_block, layer)
     layer._ff_block = types.MethodType(_zero_block, layer)
     layer._reference_mha_block = types.MethodType(_reference_block, layer)
+    layer._apply_global_energy_film = types.MethodType(_global_energy_film, layer)
 
     tgt = torch.zeros((2, 1, 3, 4), dtype=torch.float32)
     timesteps_emb = torch.zeros((1, 4), dtype=torch.float32)
     reference_memory = torch.full((1, 1, 4), 7.0, dtype=torch.float32)
-    global_energy_memory = torch.full((1, 1, 4), 3.0, dtype=torch.float32)
+    global_energy_condition = torch.full((1, 4), 3.0, dtype=torch.float32)
 
     output = layer(
         tgt=tgt,
@@ -544,7 +548,7 @@ def test_decoder_layer_keeps_global_energy_condition_when_reference_gate_is_zero
         topo_query_emb=None,
         topo_value_emb=None,
         reference_memory=reference_memory,
-        global_energy_memory=global_energy_memory,
+        global_energy_condition=global_energy_condition,
         reference_batch_mask=torch.tensor([True], dtype=torch.bool),
     )
 
