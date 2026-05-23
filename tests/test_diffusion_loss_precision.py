@@ -205,7 +205,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             num_layers=1,
             num_heads=2,
             dropout=0.0,
-            skip_t5=True,
             cross_limb=True,
             joint_mask_prob=1.0,
         )
@@ -240,7 +239,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             num_layers=1,
             num_heads=2,
             dropout=0.0,
-            skip_t5=True,
             cross_limb=True,
         )
         capture_decoder = _CaptureDecoder()
@@ -284,7 +282,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             num_layers=1,
             num_heads=2,
             dropout=0.0,
-            skip_t5=True,
             cross_limb=True,
         )
         capture_decoder = _CaptureDecoder()
@@ -326,7 +323,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             num_layers=1,
             num_heads=2,
             dropout=0.0,
-            skip_t5=True,
             cross_limb=True,
         )
         capture_decoder = _CaptureDecoder()
@@ -366,7 +362,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             num_layers=1,
             num_heads=2,
             dropout=0.0,
-            skip_t5=True,
             cross_limb=False,
             joint_mask_prob=0.5,
         )
@@ -413,3 +408,4 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

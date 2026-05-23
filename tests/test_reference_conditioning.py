@@ -329,7 +329,7 @@ def test_anytop_forward_accepts_reference_motion_with_independent_frame_count() 
         num_layers=1,
         num_heads=2,
         dropout=0.0,
-        skip_t5=True,
+        t5_out_dim=8,
         cross_limb=False,
         reference_cond=True,
     )
@@ -376,7 +376,7 @@ def test_anytop_forward_uses_cached_reference_memory_and_skips_encoder() -> None
         num_layers=1,
         num_heads=2,
         dropout=0.0,
-        skip_t5=True,
+        t5_out_dim=8,
         cross_limb=False,
         reference_cond=True,
     )
@@ -425,8 +425,7 @@ def test_reference_prior_encoder_rejects_feature_schemas_shorter_than_13_dims() 
             num_heads=4,
             dropout=0.0,
             t5_out_dim=8,
-            skip_t5=True,
-            num_layers=1,
+num_layers=1,
         )
 
 
@@ -440,8 +439,7 @@ def test_reference_prior_encoder_ignores_padded_tail_frames_after_conv() -> None
         num_heads=4,
         dropout=0.0,
         t5_out_dim=8,
-        skip_t5=True,
-        num_layers=1,
+num_layers=1,
     )
     encoder.eval()
 
@@ -648,8 +646,7 @@ def test_reference_prior_encoder_uses_effective_translation_root() -> None:
         num_heads=4,
         dropout=0.0,
         t5_out_dim=8,
-        skip_t5=True,
-        num_layers=1,
+num_layers=1,
     )
     encoder.eval()
 
@@ -687,8 +684,7 @@ def test_reference_prior_encoder_accepts_padded_motion_with_unpadded_parents() -
         num_heads=4,
         dropout=0.0,
         t5_out_dim=8,
-        skip_t5=False,
-        num_layers=1,
+num_layers=1,
     )
     encoder.eval()
 
@@ -715,8 +711,7 @@ def test_reference_prior_encoder_respects_zero_temporal_layers() -> None:
         num_heads=4,
         dropout=0.0,
         t5_out_dim=8,
-        skip_t5=True,
-        num_layers=0,
+num_layers=0,
     )
 
     assert len(encoder.conv_blocks) == 0
@@ -732,8 +727,7 @@ def test_reference_prior_encoder_honours_per_sample_metadata_in_batch() -> None:
         num_heads=4,
         dropout=0.0,
         t5_out_dim=8,
-        skip_t5=True,
-        num_layers=1,
+num_layers=1,
     )
     encoder.eval()
 
@@ -766,8 +760,7 @@ def test_reference_prior_encoder_preserves_velocity_direction_sign() -> None:
         num_heads=4,
         dropout=0.0,
         t5_out_dim=8,
-        skip_t5=True,
-        num_layers=0,
+num_layers=0,
     )
     encoder.eval()
 
@@ -832,8 +825,7 @@ def test_reference_prior_encoder_keeps_joint_phase_identity_outside_group_poolin
         num_heads=4,
         dropout=0.0,
         t5_out_dim=8,
-        skip_t5=True,
-        num_layers=0,
+num_layers=0,
     )
     encoder.eval()
     with torch.no_grad():
@@ -879,8 +871,7 @@ def test_reference_prior_encoder_includes_joint_semantics_in_prior_sequence() ->
         num_heads=4,
         dropout=0.0,
         t5_out_dim=8,
-        skip_t5=False,
-        num_layers=0,
+num_layers=0,
     )
     encoder.eval()
     with torch.no_grad():
@@ -922,8 +913,7 @@ def test_reference_prior_encoder_phase_tokens_ignore_root_position() -> None:
         num_heads=4,
         dropout=0.0,
         t5_out_dim=8,
-        skip_t5=True,
-        num_layers=0,
+num_layers=0,
     )
     encoder.eval()
 
@@ -958,8 +948,7 @@ def test_reference_prior_encoder_tracks_limb_phase_without_root_motion() -> None
         num_heads=4,
         dropout=0.0,
         t5_out_dim=8,
-        skip_t5=True,
-        num_layers=0,
+num_layers=0,
     )
     encoder.eval()
 
@@ -1244,3 +1233,4 @@ def test_validate_reference_sampling_request_allows_cross_species_controlnet_inp
         reference_mode="img2img",
         cross_species_reference=True,
     )
+

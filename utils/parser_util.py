@@ -96,8 +96,6 @@ def add_model_options(parser):
     group.add_argument("--t5_out_dim", default=0, type=int, help=argparse.SUPPRESS)
     group.add_argument("--temporal_window", default=31, type=int,
                        help="temporal window size")
-    group.add_argument("--skip_t5", action='store_true',
-                       help="If passed, joints names wont be added to features")
     group.add_argument("--value_emb", action='store_true',
                        help="If passed, graph multihead attention learns GRPE value embeddings")
     group.add_argument("--cross_limb_latents", default=8, type=int,

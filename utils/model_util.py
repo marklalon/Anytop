@@ -238,7 +238,7 @@ def get_gmdm_args(args):
             'latent_dim': args.latent_dim, 'ff_size': 1024, 'num_layers': args.layers, 'num_heads': 4,
             'dropout': getattr(args, 'dropout_prob', 0.1), 'activation': "gelu", 'cond_mode': cond_mode,
             'max_joints': max_joints, 
-            'feature_len':feature_len,  'skip_t5': args.skip_t5, 'value_emb': args.value_emb,
+            'feature_len':feature_len,  'value_emb': args.value_emb,
             'cross_limb': True, 'cross_limb_latents': args.cross_limb_latents,
             'cross_limb_dim': getattr(args, 'cross_limb_dim', 64),
             'cross_limb_last_n': getattr(args, 'cross_limb_last_n', 0),

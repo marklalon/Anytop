@@ -45,7 +45,6 @@ class AnyTop(nn.Module):
         self.input_feats = self.feature_len
         self.root_input_feats = root_input_feats
         self.cond_mode = kargs.get('cond_mode', 'no_cond')
-        self.skip_t5=kargs.get('skip_t5', False)
         self.value_emb=kargs.get('value_emb', False)
         self.cross_limb=kargs.get('cross_limb', True)
         self.cross_limb_latents=kargs.get('cross_limb_latents', 8)
@@ -79,7 +78,7 @@ class AnyTop(nn.Module):
             raise ValueError(
                 f"reference_token_noise_std must be >= 0, got {self.reference_token_noise_std}"
             )
-        self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, skip_t5=self.skip_t5, dropout_prob=self.dropout)
+        self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, dropout_prob=self.dropout)
         if self.reference_cond:
             self.reference_encoder = ReferencePriorEncoder(
                 max_joints=self.max_joints,
@@ -89,7 +88,6 @@ class AnyTop(nn.Module):
                 num_heads=self.num_heads,
                 dropout=self.dropout,
                 t5_out_dim=t5_out_dim,
-                skip_t5=self.skip_t5,
                 num_layers=self.reference_encoder_layers,
                 token_dropout_prob=self.reference_token_dropout_prob,
                 token_noise_std=self.reference_token_noise_std,
@@ -325,7 +323,7 @@ class AnyTop(nn.Module):
 # in the case of GMDM, the input process is as follows: 
 # embed each joint of each frame of each motion in batch by the same MLP, separately ! 
 class InputProcess(nn.Module):
-    def __init__(self, input_feats, root_input_feats, latent_dim, t5_output_dim, skip_t5=False, dropout_prob=0):
+    def __init__(self, input_feats, root_input_feats, latent_dim, t5_output_dim, dropout_prob=0):
         super().__init__()
         self.input_feats = input_feats
         self.latent_dim = latent_dim
@@ -334,10 +332,8 @@ class InputProcess(nn.Module):
         self.tpos_root_embedding = nn.Linear(self.root_input_feats, self.latent_dim)
         self.joint_embedding = nn.Linear(self.input_feats, self.latent_dim)
         self.tpos_joint_embedding = nn.Linear(self.input_feats, self.latent_dim)
-        self.skip_t5=skip_t5
-        if not self.skip_t5:
-            self.joints_names_dropout = nn.Dropout(p=dropout_prob)
-            self.text_embedding = nn.Linear(t5_output_dim, self.latent_dim)
+        self.joints_names_dropout = nn.Dropout(p=dropout_prob)
+        self.text_embedding = nn.Linear(t5_output_dim, self.latent_dim)
     def forward(self, x, tpos_first_frame, joints_embedded_names):
         # x.shape = [batch_size, joints, 13, frames]
         x = x.permute(3, 0, 1, 2) # [frames, batch_size, n_joints, features_len]
@@ -348,9 +344,8 @@ class InputProcess(nn.Module):
         tpos_embedded = torch.cat([tpos_root_data, tpos_all_joints_except_root], dim=2)
         x_embedded = torch.cat([root_data, all_joints_except_root], dim=2)
         x = torch.cat([tpos_embedded, x_embedded], dim=0)
-        if not self.skip_t5:
-            joints_embedded_names = self.text_embedding(self.joints_names_dropout(joints_embedded_names.to(x.device)))
-            x = x + joints_embedded_names[None, ...]# [frames, batch_size, n_joints, d]
+        joints_embedded_names = self.text_embedding(self.joints_names_dropout(joints_embedded_names.to(x.device)))
+        x = x + joints_embedded_names[None, ...]# [frames, batch_size, n_joints, d]
         positions = torch.arange(x.shape[0], device=x.device).view(1, -1, 1).repeat(x.shape[1], 1, 1)
         pos_emb = create_sin_embedding(positions, self.latent_dim)[0]
         return x + pos_emb.unsqueeze(1).unsqueeze(1)
@@ -395,7 +390,6 @@ class ReferencePriorEncoder(nn.Module):
         num_heads,
         dropout,
         t5_out_dim,
-        skip_t5,
         num_layers,
         num_groups=6,
         num_prior_tokens=8,
@@ -416,7 +410,6 @@ class ReferencePriorEncoder(nn.Module):
             raise ValueError(f"max_joints must be > 0, got {self.max_joints}")
         self.num_groups = int(num_groups)
         self.num_prior_tokens = int(num_prior_tokens)
-        self.skip_t5 = bool(skip_t5)
         self.token_dropout_prob = float(token_dropout_prob)
         self.token_noise_std = float(token_noise_std)
         if not 0.0 <= self.token_dropout_prob <= 1.0:
@@ -451,17 +444,13 @@ class ReferencePriorEncoder(nn.Module):
             nn.GELU(),
             nn.Linear(self.latent_dim, self.latent_dim),
         )
-        if self.skip_t5:
-            self.name_projection = None
-            self.joint_fusion = None
-        else:
-            self.name_projection = nn.Sequential(
-                nn.LayerNorm(t5_out_dim),
-                nn.Linear(t5_out_dim, self.latent_dim),
-                nn.GELU(),
-                nn.Linear(self.latent_dim, self.latent_dim),
-            )
-            self.joint_fusion = nn.Linear(self.latent_dim * 2, self.latent_dim)
+        self.name_projection = nn.Sequential(
+            nn.LayerNorm(t5_out_dim),
+            nn.Linear(t5_out_dim, self.latent_dim),
+            nn.GELU(),
+            nn.Linear(self.latent_dim, self.latent_dim),
+        )
+        self.joint_fusion = nn.Linear(self.latent_dim * 2, self.latent_dim)
         self.group_queries = nn.Parameter(torch.randn(self.num_groups, self.latent_dim) * 0.02)
         self.joint_prior_projection = nn.Sequential(
             nn.LayerNorm(self.latent_dim + self.phase_joint_stat_dim),
@@ -678,13 +667,10 @@ class ReferencePriorEncoder(nn.Module):
         joint_motion_stats = joint_motion_stats * valid_joints.unsqueeze(-1).to(dtype)
 
         projected_joint_motion = self.joint_motion_projection(joint_motion_stats)
-        if self.name_projection is not None:
-            joint_name_latent = self.name_projection(joints_embedded_names)
-            joint_latent = self.joint_fusion(
-                torch.cat([joint_name_latent, projected_joint_motion], dim=-1)
-            )
-        else:
-            joint_latent = projected_joint_motion
+        joint_name_latent = self.name_projection(joints_embedded_names)
+        joint_latent = self.joint_fusion(
+            torch.cat([joint_name_latent, projected_joint_motion], dim=-1)
+        )
 
         # Softly assign joints to motion groups using only the semantic/grouping
         # branch (plus joint names when T5 embeddings are enabled).
