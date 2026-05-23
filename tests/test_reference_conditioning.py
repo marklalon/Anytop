@@ -202,6 +202,80 @@ def test_cfg_reference_wrapper_always_falls_back_to_uncond_on_root_xz_axes() -> 
     assert torch.equal(guided_output[:, 0, 0, :], torch.full((1, 4), 9.0, dtype=torch.float32))
 
 
+def test_root_axis_guidance_guard_per_sample_root_indices() -> None:
+    """Each batch entry's root xz/x feature channels (0, 2, 9, 11) should be
+    replaced by the uncond tensor's values at THAT sample's own root joint —
+    not the first sample's joint. Locks in the vectorized rewrite against
+    accidental cross-sample bleeding.
+    """
+    B, J, F, T = 3, 4, 13, 5
+    guided = torch.full((B, J, F, T), 9.0)
+    uncond = torch.full((B, J, F, T), 1.0)
+    # Distinct root joint per batch entry.
+    y = {"reference_translation_root_index": torch.tensor([0, 2, 1])}
+
+    out = ClassifierFreeReferenceModel._apply_reference_root_axis_guidance_guard(
+        guided, uncond, y,
+    )
+
+    # Each sample b: only joint root_idx[b], features {0,2,9,11} → 1.0; else 9.0.
+    for b, root_idx in enumerate([0, 2, 1]):
+        for j in range(J):
+            for f in range(F):
+                expected = 1.0 if (j == root_idx and f in {0, 2, 9, 11}) else 9.0
+                assert torch.all(out[b, j, f] == expected), (
+                    f"sample={b} joint={j} feature={f}: expected {expected}"
+                )
+
+
+def test_root_axis_guidance_guard_skips_invalid_root_index() -> None:
+    """Negative or out-of-range root_idx entries leave the corresponding
+    batch sample untouched (matches old loop's `0 <= joint_idx < J` skip).
+    """
+    B, J, F, T = 3, 4, 13, 2
+    guided = torch.full((B, J, F, T), 9.0)
+    uncond = torch.full((B, J, F, T), 1.0)
+    y = {"reference_translation_root_index": torch.tensor([-1, 99, 2])}
+
+    out = ClassifierFreeReferenceModel._apply_reference_root_axis_guidance_guard(
+        guided, uncond, y,
+    )
+
+    # Samples 0 (-1) and 1 (99) untouched.
+    assert torch.all(out[0] == 9.0)
+    assert torch.all(out[1] == 9.0)
+    # Sample 2: joint 2, features {0, 2, 9, 11} → 1.0; others unchanged.
+    for f in range(F):
+        expected = 1.0 if f in {0, 2, 9, 11} else 9.0
+        assert torch.all(out[2, 2, f] == expected)
+    # Non-root joints of sample 2 untouched.
+    for j in (0, 1, 3):
+        assert torch.all(out[2, j] == 9.0)
+
+
+def test_root_axis_guidance_guard_handles_root_index_length_mismatch() -> None:
+    B, J, F, T = 3, 4, 13, 1
+    guided = torch.full((B, J, F, T), 9.0)
+    uncond = torch.full((B, J, F, T), 1.0)
+    # Length 2 (< B): the third sample should be skipped, not crash.
+    y_short = {"reference_translation_root_index": torch.tensor([1, 2])}
+    out_short = ClassifierFreeReferenceModel._apply_reference_root_axis_guidance_guard(
+        guided, uncond, y_short,
+    )
+    assert torch.all(out_short[2] == 9.0)
+    assert out_short[0, 1, 0, 0] == 1.0
+    assert out_short[1, 2, 0, 0] == 1.0
+
+    # Length 5 (> B): only first B entries are used.
+    y_long = {"reference_translation_root_index": torch.tensor([0, 1, 2, 3, 0])}
+    out_long = ClassifierFreeReferenceModel._apply_reference_root_axis_guidance_guard(
+        guided, uncond, y_long,
+    )
+    assert out_long[0, 0, 0, 0] == 1.0
+    assert out_long[1, 1, 0, 0] == 1.0
+    assert out_long[2, 2, 0, 0] == 1.0
+
+
 def test_cfg_reference_wrapper_strips_reference_prior_metadata_from_uncond_path() -> None:
     base_model = _ReferenceAwareModel()
     wrapped_model = ClassifierFreeReferenceModel(base_model)
@@ -291,6 +365,54 @@ def test_anytop_forward_accepts_reference_motion_with_independent_frame_count() 
     assert capture_reference_encoder.last_kwargs["reference_motion"].shape[-1] == 3
     assert capture_decoder.last_kwargs is not None
     assert capture_decoder.last_kwargs["reference_memory"].shape == (8, 1, 8)
+
+
+def test_anytop_forward_uses_cached_reference_memory_and_skips_encoder() -> None:
+    model = AnyTop(
+        max_joints=4,
+        feature_len=13,
+        latent_dim=8,
+        ff_size=32,
+        num_layers=1,
+        num_heads=2,
+        dropout=0.0,
+        skip_t5=True,
+        cross_limb=False,
+        reference_cond=True,
+    )
+    capture_decoder = _CaptureDecoder()
+    capture_reference_encoder = _CaptureReferenceEncoder(model.latent_dim)
+    model.seqTransDecoder = capture_decoder
+    model.reference_encoder = capture_reference_encoder
+    model.eval()
+
+    x = torch.randn(1, 4, 13, 7, dtype=torch.float32)
+    # Cached memory has the same shape ReferencePriorEncoder would produce:
+    # (num_tokens, batch, latent_dim).
+    cached_memory = torch.randn(
+        capture_reference_encoder.num_tokens, 1, model.latent_dim, dtype=torch.float32,
+    )
+    y = {
+        "joints_padding_mask": torch.ones(1, 1, 1, 5, 5, dtype=torch.float32),
+        "mask": torch.ones(1, 1, 1, 8, 8, dtype=torch.float32),
+        "tpos_first_frame": torch.randn(1, 4, 13, dtype=torch.float32),
+        "n_joints": torch.tensor([4], dtype=torch.int64),
+        "lengths": torch.tensor([7], dtype=torch.int64),
+        "translation_root_index": torch.tensor([0], dtype=torch.int64),
+        "joints_names_embs": torch.zeros(1, 4, 8, dtype=torch.float32),
+        "parents": torch.tensor([[-1, 0, 1, 2]], dtype=torch.int64),
+        # reference_motion is intentionally absent: cache should be enough.
+        "reference_memory": cached_memory,
+    }
+
+    output = model(x, torch.tensor([1], dtype=torch.int64), y=y)
+
+    assert output.shape == (1, 4, 13, 7)
+    assert capture_reference_encoder.last_kwargs is None, (
+        "reference_encoder must not be called when y['reference_memory'] is supplied"
+    )
+    assert capture_decoder.last_kwargs is not None
+    assert torch.equal(capture_decoder.last_kwargs["reference_memory"], cached_memory)
 
 
 def test_reference_prior_encoder_rejects_feature_schemas_shorter_than_13_dims() -> None:

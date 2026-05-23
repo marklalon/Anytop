@@ -736,6 +736,34 @@ def _sample_batch(
     if reference_mode == 'controlnet' and reference_motion is not None:
         reference_conditioning_motion = reference_motion.to(device, non_blocking=True)
         reference_cfg_model = ClassifierFreeReferenceModel(model)
+        # PERF: encode the reference once outside the diffusion loop. Without
+        # this, AnyTop.forward would re-run reference_encoder every timestep
+        # (and again on the cond pass of every CFG step). The reference motion
+        # is constant across the schedule, so the memory is identical — feed
+        # it through y['reference_memory'] and AnyTop.forward skips encoding.
+        # Only precompute when all required metadata is present and the encoder
+        # is callable; tests exercise the routing path with stub encoders.
+        _ref_meta_keys = (
+            'reference_n_joints',
+            'reference_lengths',
+            'reference_translation_root_index',
+            'reference_joints_names_embs',
+        )
+        _reference_encoder = getattr(model, 'reference_encoder', None)
+        if (
+            callable(_reference_encoder)
+            and all(reference_conditioning_kwargs.get(k) is not None for k in _ref_meta_keys)
+        ):
+            with torch.no_grad():
+                reference_memory_cache = _reference_encoder(
+                    reference_conditioning_motion,
+                    n_joints=reference_conditioning_kwargs['reference_n_joints'],
+                    lengths=reference_conditioning_kwargs['reference_lengths'],
+                    translation_root_index=reference_conditioning_kwargs['reference_translation_root_index'],
+                    joints_embedded_names=reference_conditioning_kwargs['reference_joints_names_embs'],
+                )
+            reference_conditioning_kwargs = dict(reference_conditioning_kwargs)
+            reference_conditioning_kwargs['reference_memory'] = reference_memory_cache
 
     if inpainting and reference_mode == 'img2img' and skip_timesteps > 0:
         # Localized img2img inpainting: start the reverse process from the
@@ -960,6 +988,29 @@ def main(args=None, cond_dict=None):
     )
     model.to(dist_util.dev())
     model.eval()
+
+    # PERF: optional bf16 selective autocast. Wraps linear / attention / conv
+    # forwards in torch.autocast(bf16) while keeping softmax + diffusion math
+    # in fp32. Same mechanism the trainer uses (model.selective_autocast).
+    amp_dtype_arg = str(getattr(args, 'amp_dtype', 'fp32')).lower()
+    if amp_dtype_arg == 'bf16':
+        _amp_device = dist_util.dev()
+        if _amp_device.type == 'cuda' and torch.cuda.is_bf16_supported():
+            from model.selective_autocast import enable_selective_autocast
+            patched = enable_selective_autocast(
+                model,
+                device_type='cuda',
+                autocast_dtype=torch.bfloat16,
+            )
+            print(
+                f'Selective bf16 autocast enabled for {patched} linear/attention/conv modules; '
+                'softmax stays fp32.'
+            )
+        else:
+            print(
+                '[generate] WARNING: --amp_dtype bf16 requested but the active device is CPU or lacks '
+                'bf16 support; falling back to fp32.'
+            )
 
     ddim_eta = float(getattr(args, 'ddim_eta', 0.0))
     reference_motion_path = getattr(args, 'reference_motion', None)

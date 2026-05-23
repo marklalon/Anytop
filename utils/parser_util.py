@@ -222,7 +222,11 @@ def add_sampling_options(parser):
                        help="Number of repetitions, per sample (text prompt/action)")
     group.add_argument("--cond_path", default='', type=str,
                        help="provide cond.py path in case you wish to generate motion for skeleton not included in Truebones dataset.")
-    
+    group.add_argument("--amp_dtype", default='fp32', choices=['fp32', 'bf16'], type=str,
+                       help="Autocast precision for inference. fp32 = full precision (default). "
+                            "bf16 = selective autocast on linear / attention / conv modules; "
+                            "softmax stays fp32. Requires a CUDA device with bf16 support (Ampere+).")
+
 
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')

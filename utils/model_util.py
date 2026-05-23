@@ -103,31 +103,46 @@ class ClassifierFreeReferenceModel(nn.Module):
         if reference_root_index is None:
             return guided
 
-        root_index = torch.as_tensor(reference_root_index, device=guided.device, dtype=torch.long).reshape(-1)
-        batch_size = min(guided.shape[0], root_index.shape[0])
-        if batch_size == 0:
+        batch_size, num_joints, num_features, _ = guided.shape
+        root_index = torch.as_tensor(
+            reference_root_index, device=guided.device, dtype=torch.long,
+        ).reshape(-1)
+        if root_index.numel() == 0:
             return guided
 
-        guided = guided.clone()
-        for batch_idx in range(batch_size):
-            joint_idx = int(root_index[batch_idx].item())
-            if joint_idx < 0 or joint_idx >= guided.shape[1]:
-                continue
+        # Align root_index length to the batch axis: pad short with -1 (which
+        # never matches a valid joint index) and truncate long. Mirrors the old
+        # `min(B, len(root_index))` loop bound and the per-sample
+        # `0 <= joint_idx < J` guard.
+        if root_index.shape[0] < batch_size:
+            pad = torch.full(
+                (batch_size - root_index.shape[0],), -1,
+                device=guided.device, dtype=torch.long,
+            )
+            root_index = torch.cat([root_index, pad], dim=0)
+        elif root_index.shape[0] > batch_size:
+            root_index = root_index[:batch_size]
 
-            guided[batch_idx, joint_idx, list(cls._REFERENCE_ROOT_X_FEATURES), :] = uncond_tensor[
-                batch_idx,
-                joint_idx,
-                list(cls._REFERENCE_ROOT_X_FEATURES),
-                :,
-            ]
-            guided[batch_idx, joint_idx, list(cls._REFERENCE_ROOT_Z_FEATURES), :] = uncond_tensor[
-                batch_idx,
-                joint_idx,
-                list(cls._REFERENCE_ROOT_Z_FEATURES),
-                :,
-            ]
+        joint_arange = torch.arange(num_joints, device=guided.device).view(1, num_joints, 1, 1)
+        joint_match = joint_arange == root_index.view(batch_size, 1, 1, 1)
 
-        return guided
+        # Combined X (0, 9) + Z (2, 11) feature mask, materialized fresh each
+        # call so it picks up the right device and feature_len. Cheap: F ~ 13.
+        # Clamp out-of-range indices so synthetic / undersized feature dims
+        # (seen in unit tests with stub models) don't IndexError — matches the
+        # old loop's "nothing to swap" behavior in that regime.
+        feature_indices = [
+            f for f in (list(cls._REFERENCE_ROOT_X_FEATURES) + list(cls._REFERENCE_ROOT_Z_FEATURES))
+            if 0 <= f < num_features
+        ]
+        if not feature_indices:
+            return guided
+        feature_mask = torch.zeros(num_features, dtype=torch.bool, device=guided.device)
+        feature_mask[feature_indices] = True
+        feature_mask = feature_mask.view(1, 1, num_features, 1)
+
+        mask = joint_match & feature_mask
+        return torch.where(mask, uncond_tensor, guided)
 
     def forward(self, x, timesteps, get_layer_activation=-1, y=None, train_step=None, **unused_kwargs):
         if y is None or y.get('reference_motion') is None:

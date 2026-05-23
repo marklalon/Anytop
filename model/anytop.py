@@ -228,10 +228,22 @@ class AnyTop(nn.Module):
 
         if self.reference_cond:
             reference_motion = y.get('reference_motion')
+            cached_reference_memory = y.get('reference_memory')
             raw_reference_batch_mask = y.get('reference_cond_mask')
             if raw_reference_batch_mask is not None:
                 reference_batch_mask = raw_reference_batch_mask.to(device=x.device, dtype=torch.bool).reshape(bs)
-            if reference_motion is not None and (reference_batch_mask is None or bool(reference_batch_mask.any())):
+            has_active_reference = (
+                (reference_motion is not None or cached_reference_memory is not None)
+                and (reference_batch_mask is None or bool(reference_batch_mask.any()))
+            )
+            if has_active_reference and cached_reference_memory is not None:
+                # Sampling-time fast path: reference_memory was precomputed once
+                # outside the diffusion loop (see generate._sample_batch). The
+                # reference motion is constant across timesteps and CFG passes,
+                # so reusing the cached memory avoids ~T encoder forwards.
+                reference_memory = cached_reference_memory.to(device=x.device, dtype=x.dtype)
+                reference_key_padding_mask = None
+            elif has_active_reference:
                 reference_motion = reference_motion.to(device=x.device, dtype=x.dtype)
                 if reference_motion.shape[0] != bs or reference_motion.shape[2] != nfeats:
                     raise ValueError(
