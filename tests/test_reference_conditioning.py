@@ -364,7 +364,7 @@ def test_prepare_reference_prior_bundle_preserves_reference_length_and_zero_feat
         "joints_names_embs": np.zeros((2, 8), dtype=np.float32),
     }
 
-    ref_tensor, reference_kwargs, reference_frame_count = _prepare_reference_prior_bundle(
+    ref_tensor, reference_kwargs, reference_frame_count, output_frame_count = _prepare_reference_prior_bundle(
         str(reference_motion_path),
         "TestObject",
         source_cond,
@@ -374,6 +374,7 @@ def test_prepare_reference_prior_bundle_preserves_reference_length_and_zero_feat
     )
 
     assert reference_frame_count == 5
+    assert output_frame_count == 5
     assert ref_tensor.shape == (1, 2, 13, 5)
     assert torch.equal(reference_kwargs["reference_n_joints"], torch.tensor([2], dtype=torch.long))
     assert torch.equal(reference_kwargs["reference_lengths"], torch.tensor([5], dtype=torch.long))
@@ -404,7 +405,7 @@ def test_prepare_reference_prior_bundle_rejects_incompatible_stat_schema(tmp_pat
         )
 
 
-def test_prepare_reference_for_mode_controlnet_keeps_reference_and_output_lengths_separate(tmp_path: Path) -> None:
+def test_prepare_reference_for_mode_controlnet_matches_img2img_when_reference_is_shorter(tmp_path: Path) -> None:
     reference_motion_path = tmp_path / "reference_prior_controlnet.npy"
     ref_raw = np.ones((5, 2, 11), dtype=np.float32)
     np.save(reference_motion_path, ref_raw)
@@ -432,8 +433,41 @@ def test_prepare_reference_for_mode_controlnet_keeps_reference_and_output_length
 
     assert bundle["loaded_reference_frame_count"] == 5
     assert bundle["loaded_reference_joint_count"] == 2
-    assert bundle["output_frame_count"] == 7
+    assert bundle["output_frame_count"] == 5
     assert bundle["reference_motion"].shape == (1, 4, 13, 5)
+    assert torch.equal(bundle["reference_conditioning_kwargs"]["reference_lengths"], torch.tensor([5], dtype=torch.long))
+
+
+def test_prepare_reference_for_mode_controlnet_truncates_longer_reference_to_requested_length(tmp_path: Path) -> None:
+    reference_motion_path = tmp_path / "reference_prior_controlnet_long.npy"
+    ref_raw = np.ones((6, 2, 11), dtype=np.float32)
+    np.save(reference_motion_path, ref_raw)
+
+    cond = {
+        "parents": np.asarray([-1, 0], dtype=np.int64),
+        "offsets": np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32),
+        "mean": np.zeros((2, 13), dtype=np.float32),
+        "std": np.ones((2, 13), dtype=np.float32),
+        "joints_names_embs": np.zeros((2, 8), dtype=np.float32),
+    }
+
+    bundle = _prepare_reference_for_mode(
+        str(reference_motion_path),
+        reference_mode="controlnet",
+        source_type="TestObject",
+        source_cond=cond,
+        target_type="OtherObject",
+        target_cond=cond,
+        max_joints=4,
+        target_feature_len=13,
+        batch_size=1,
+        requested_output_frame_count=4,
+    )
+
+    assert bundle["loaded_reference_frame_count"] == 6
+    assert bundle["output_frame_count"] == 4
+    assert bundle["reference_motion"].shape == (1, 4, 13, 4)
+    assert torch.equal(bundle["reference_conditioning_kwargs"]["reference_lengths"], torch.tensor([4], dtype=torch.long))
 
 
 def test_prepare_reference_for_mode_controlnet_uses_target_metadata(tmp_path: Path) -> None:
@@ -470,7 +504,9 @@ def test_prepare_reference_for_mode_controlnet_uses_target_metadata(tmp_path: Pa
     )
 
     assert bundle["loaded_reference_joint_count"] == 3
+    assert bundle["output_frame_count"] == 5
     assert torch.equal(bundle["reference_conditioning_kwargs"]["reference_n_joints"], torch.tensor([3]))
+    assert torch.equal(bundle["reference_conditioning_kwargs"]["reference_lengths"], torch.tensor([5], dtype=torch.long))
     assert bundle["reference_motion"].shape == (1, 4, 13, 5)
 
 
@@ -1026,9 +1062,9 @@ def test_sample_batch_supports_controlnet_plus_inpaint_in_single_pass() -> None:
 
 def test_sample_batch_rejects_controlnet_inpaint_when_reference_length_differs_from_target() -> None:
     diffusion = _CaptureDiffusion()
-    sample_shape = (1, 3, 13, 6)
-    reference_motion = torch.ones((1, 3, 13, 4), dtype=torch.float32)
-    inpaint_mask = torch.ones((1, 3, 1, 6), dtype=torch.float32)
+    sample_shape = (1, 3, 13, 4)
+    reference_motion = torch.arange(1, 1 + (1 * 3 * 13 * 6), dtype=torch.float32).reshape(1, 3, 13, 6)
+    inpaint_mask = torch.ones((1, 3, 1, 4), dtype=torch.float32)
 
     with pytest.raises(ValueError, match="reference_motion frame count to match target sample length"):
         _sample_batch(

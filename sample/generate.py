@@ -371,6 +371,7 @@ def _prepare_reference_prior_bundle(
     max_joints,
     target_feature_len,
     batch_size,
+    requested_output_frame_count=None,
 ):
     if source_cond is None:
         raise KeyError(
@@ -383,7 +384,13 @@ def _prepare_reference_prior_bundle(
             f"Reference prior motion must have shape (T, J, F), got {ref_raw.shape}"
         )
 
-    ref_frames, ref_joints, ref_feats = ref_raw.shape
+    loaded_reference_frame_count, ref_joints, ref_feats = ref_raw.shape
+    if requested_output_frame_count is None:
+        output_frame_count = loaded_reference_frame_count
+    else:
+        output_frame_count = min(loaded_reference_frame_count, requested_output_frame_count)
+    if loaded_reference_frame_count > output_frame_count:
+        ref_raw = ref_raw[:output_frame_count]
     source_parents = np.asarray(source_cond['parents'], dtype=np.int64)
     source_offsets = np.asarray(source_cond['offsets'], dtype=np.float32)
     source_name_embs = np.asarray(source_cond['joints_names_embs'], dtype=np.float32)
@@ -398,11 +405,11 @@ def _prepare_reference_prior_bundle(
             f"Reference prior joint count {ref_joints} exceeds model max_joints {max_joints}"
         )
 
-    # The reference prior encoder produces a fixed token bank, so the
-    # reference sequence length no longer has to match the target output
-    # length. Keep the full reference here; the caller owns the output frame
-    # count. Normalize real features first, then zero-pad feature channels in
-    # normalized space so padded channels stay exactly zero.
+    # When the caller supplies a requested output length, match img2img's
+    # effective frame-count rule so both reference modes drive the same
+    # output-length semantics. Normalize real features first, then zero-pad
+    # feature channels in normalized space so padded channels stay exactly
+    # zero.
     if ref_feats > target_feature_len:
         ref_raw = ref_raw[:, :, :target_feature_len]
     normalized_feature_dim = ref_raw.shape[2]
@@ -442,14 +449,12 @@ def _prepare_reference_prior_bundle(
     reference_name_embs = torch.from_numpy(reference_name_embs).unsqueeze(0).expand(batch_size, -1, -1).contiguous()
     reference_conditioning_kwargs = {
         'reference_n_joints': torch.full((batch_size,), ref_joints, dtype=torch.long),
-        'reference_lengths': torch.full((batch_size,), ref_norm.shape[0], dtype=torch.long),
+        'reference_lengths': torch.full((batch_size,), output_frame_count, dtype=torch.long),
         'reference_translation_root_index': torch.full((batch_size,), translation_root_index, dtype=torch.long),
         'reference_parents': [source_parents.copy() for _ in range(batch_size)],
         'reference_joints_names_embs': reference_name_embs,
     }
-    # Feature/joint padding never touches axis 0, so the returned frame count
-    # equals the loaded reference length.
-    return ref_tensor, reference_conditioning_kwargs, ref_frames
+    return ref_tensor, reference_conditioning_kwargs, loaded_reference_frame_count, output_frame_count
 
 
 def _prepare_img2img_reference_bundle(
@@ -527,19 +532,20 @@ def _prepare_reference_for_mode(
 ):
     mode = str(reference_mode or 'img2img').strip().lower()
     if mode == 'controlnet':
-        ref_motion, reference_conditioning_kwargs, loaded_reference_frame_count = _prepare_reference_prior_bundle(
+        ref_motion, reference_conditioning_kwargs, loaded_reference_frame_count, output_frame_count = _prepare_reference_prior_bundle(
             reference_motion_path,
             target_type,
             target_cond,
             max_joints=max_joints,
             target_feature_len=target_feature_len,
             batch_size=batch_size,
+            requested_output_frame_count=requested_output_frame_count,
         )
         loaded_reference_joint_count = int(reference_conditioning_kwargs['reference_n_joints'][0].item())
         return {
             'reference_motion': ref_motion,
             'reference_conditioning_kwargs': reference_conditioning_kwargs,
-            'output_frame_count': requested_output_frame_count,
+            'output_frame_count': output_frame_count,
             'loaded_reference_frame_count': loaded_reference_frame_count,
             'loaded_reference_joint_count': loaded_reference_joint_count,
         }
@@ -773,8 +779,8 @@ def _sample_batch(
         # latent starts from PURE NOISE everywhere (so masked joints/frames are
         # truly generated, not a noised copy of the reference), and the
         # reference is used only as the per-step clamp source for the known
-        # (unmasked) region. We deliberately do NOT route the reference through
-        # init_image, and denoise the full schedule.
+        # (unmasked) region. We deliberately do NOT route the reference
+        # through init_image, and denoise the full schedule.
         mask = inpaint_mask.to(device, non_blocking=True)
         prepared_cross_limb_unreliable_mask = _prepared_cross_limb_unreliable_mask_from_inpaint_mask(mask)
         return _run_loop(
@@ -1113,15 +1119,15 @@ def main(args=None, cond_dict=None):
             loaded_reference_frame_count = reference_bundle['loaded_reference_frame_count']
             loaded_reference_joint_count = reference_bundle['loaded_reference_joint_count']
 
-            if reference_mode != 'controlnet' and output_frame_count != n_frames:
+            if output_frame_count != n_frames:
                 print(f'  Reference motion overrides frame count: {n_frames} -> {output_frame_count}')
             print(f'  Reference motion loaded: {effective_reference_path}')
             if prepared_reference_path != reference_motion_path:
-                print(f'    (preprocessed from original: {reference_motion_path})')
+                print(f'    Preprocessed from original: {reference_motion_path}')
             if effective_reference_path != prepared_reference_path:
-                print(f'    (retargeted from preprocessed: {prepared_reference_path})')
+                print(f'    Retargeted from preprocessed: {prepared_reference_path}')
             elif cross_species_reference and reference_mode == 'controlnet':
-                print(f'    (controlnet prior path retargeted the reference into target-space before encoding)')
+                print(f'    Controlnet prior path retargeted the reference into target-space before encoding')
             if reference_mode == 'controlnet':
                 print(
                     f'    Reference prior input: [{loaded_reference_frame_count} frames, {loaded_reference_joint_count} joints] '
@@ -1133,22 +1139,22 @@ def main(args=None, cond_dict=None):
                     f'-> Target: [{output_frame_count} frames, {max_joints} joints]'
                 )
             if inpaint_enabled and skip_timesteps > 0:
-                print(f'    mode: inpaint + skip_timesteps={skip_timesteps} '
+                print(f'    Mode: inpaint + skip_timesteps={skip_timesteps} '
                       '(two-pass: unmasked region = img2img variation of the '
                       'reference [higher skip_timesteps = more faithful], masked '
                       'region inpainted on the full schedule from pure noise)')
             elif inpaint_enabled and reference_mode == 'controlnet':
                 print(
-                    f'    mode: inpainting + controlnet '
+                    f'    Mode: inpainting + controlnet '
                     f'(full schedule from pure noise, reference_scale={reference_scale})'
                 )
             elif reference_mode == 'controlnet':
                 print(
-                    f'    mode: controlnet prior conditioning '
+                    f'    Mode: controlnet prior conditioning '
                     f'(full schedule from pure noise, reference_scale={reference_scale})'
                 )
             elif inpaint_enabled:
-                print('    mode: inpainting (reference is the clamped known region; '
+                print('    Mode: inpainting (reference is the clamped known region; '
                       'skip_timesteps=0, denoising full schedule from pure noise)')
             else:
                 print(f'    skip_timesteps: {skip_timesteps} (higher = more faithful to reference)')
