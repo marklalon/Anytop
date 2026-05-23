@@ -1,6 +1,6 @@
 @echo off
 set SCRIPT_DIR=%~dp0
-set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
+set PYTHON_EXE=%SCRIPT_DIR%.venv\Scripts\python.exe
 set RUN_NAME=quadropeds_locomotion_controlnet_v6
 REM ----------------------------------------------------------------------
 REM Combination rules for target skeleton + reference motion (passed via %* to sample/generate.py):

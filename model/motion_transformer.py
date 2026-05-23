@@ -900,7 +900,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
 class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
     def __init__(self, d_model: int, nhead: int, dim_feedforward: int = 2048, dropout: float = 0.1,
                  activation: Union[str, Callable[[Tensor], Tensor]] = F.relu,
-                 reference_residual_gate: float = 1.0):
+                 reference_residual_gate: float = 1.0,
+                 global_energy_cond: bool = False):
         super().__init__(d_model, nhead, dim_feedforward, dropout, activation)
         # nn.TransformerDecoderLayer.__init__ allocates self_attn and
         # multihead_attn (each ~4*d_model^2 params). This layer overrides both
@@ -915,7 +916,10 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         self.temporal_attn = SelectiveMultiheadAttention(self.d_model, nhead, dropout=dropout)
         self.reference_attn = SelectiveMultiheadAttention(self.d_model, nhead, dropout=dropout)
         self.embed_timesteps = nn.Linear(d_model, d_model)
-        self.global_energy_film = nn.Linear(self.d_model, self.d_model * 2)
+        if global_energy_cond:
+            self.global_energy_film = nn.Linear(self.d_model, self.d_model * 2)
+            nn.init.zeros_(self.global_energy_film.weight)
+            nn.init.zeros_(self.global_energy_film.bias)
         self.norm_ref = nn.LayerNorm(d_model)
         self.dropout_ref = nn.Dropout(dropout)
         self.reference_residual_gate = float(reference_residual_gate)
@@ -923,8 +927,6 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             raise ValueError(
                 f"reference_residual_gate must be >= 0, got {self.reference_residual_gate}"
             )
-        nn.init.zeros_(self.global_energy_film.weight)
-        nn.init.zeros_(self.global_energy_film.bias)
         # The cross-limb pathway is owned by GraphMotionDecoder (one block per
         # active layer) and passed into forward(), not held here.
 
@@ -1005,6 +1007,11 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         x: Tensor,
         global_energy_condition: Tensor,
     ) -> Tensor:
+        if not hasattr(self, 'global_energy_film'):
+            raise RuntimeError(
+                "global_energy_film module not present. This model was built "
+                "with global_energy_cond=False; do not pass global_energy_condition."
+            )
         frames, bs, _, feats = x.size()
         if global_energy_condition.dim() == 1:
             global_energy_condition = global_energy_condition.unsqueeze(0)

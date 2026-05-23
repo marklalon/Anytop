@@ -114,7 +114,8 @@ class AnyTop(nn.Module):
                                                             dim_feedforward=self.ff_size,
                                                             dropout=self.dropout,
                                                             activation=self.activation,
-                                                            reference_residual_gate=self.reference_residual_gate)
+                                                            reference_residual_gate=self.reference_residual_gate,
+                                                            global_energy_cond=self.global_energy_cond)
         self.seqTransDecoder = GraphMotionDecoder(seqTransDecoderLayer,
                                                         num_layers=self.num_layers, value_emb=self.value_emb,
                                                         cross_limb=self.cross_limb,
