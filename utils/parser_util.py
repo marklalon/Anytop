@@ -268,11 +268,13 @@ def add_generate_options(parser):
                             "1.0 = single conditioned forward pass; >1 amplifies the reference signal. "
                             "Only effective in controlnet mode; will error if set in img2img mode.")
     group.add_argument("--global_energy_mean", default=None, type=float,
-                       help="Override the raw clip-level global energy mean used by the always-on global energy condition. "
-                           "If omitted, generation defaults to the checkpoint's running mean.")
+                       help="Override the clip-level global energy mean in normalized (Z-score) space. "
+                           "0.0 = training average intensity, 1.0 = 1 std above average, -0.5 = half std below average. "
+                           "If omitted, generation defaults to the checkpoint's running mean (equivalent to 0.0).")
     group.add_argument("--global_energy_std", default=None, type=float,
-                       help="Override the raw clip-level global energy std used by the always-on global energy condition. "
-                           "If omitted, generation defaults to the checkpoint's running std proxy from training.")
+                       help="Override the clip-level global energy std in normalized (Z-score) space. "
+                           "0.0 = training average intensity variation, 1.0 = 1 std above average variation. "
+                           "If omitted, generation defaults to the checkpoint's running std proxy (equivalent to 0.0).")
     group.add_argument("--inpaint_joints", default="", type=str,
                        help="Motion inpainting (mask painting): comma-separated joint names whose motion is "
                             "REGENERATED while the rest is held to --reference_motion. Names accept any of the "

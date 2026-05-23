@@ -101,6 +101,7 @@ class _DummyModel(nn.Module):
         self.global_energy_cond = global_energy_cond
         self.global_energy_projection = object() if global_energy_cond else None
         self.global_energy_running_mean = torch.tensor([0.25, 0.05], dtype=torch.float32)
+        self.global_energy_running_var = torch.ones(2, dtype=torch.float32)
 
     def forward(self, x, timesteps, get_layer_activation=-1, y=None, **unused_kwargs):
         return x
@@ -1224,8 +1225,11 @@ def test_resolve_global_energy_condition_uses_running_defaults_for_missing_compo
         batch_size=2,
     )
 
+    # With running_mean=[0.25, 0.05] and running_var=ones(2) (std=1.0):
+    # raw[0] = 0.4 * 1.0 + 0.25 = 0.65
+    # raw[1] = running_mean[1] = 0.05 (unchanged because global_energy_std=None)
     assert resolved.shape == (2, 2)
-    assert torch.allclose(resolved[:, 0], torch.full((2,), 0.4))
+    assert torch.allclose(resolved[:, 0], torch.full((2,), 0.65))
     assert torch.allclose(resolved[:, 1], torch.full((2,), 0.05))
 
 

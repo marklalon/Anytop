@@ -90,16 +90,25 @@ def resolve_global_energy_condition(model, global_energy_mean, global_energy_std
         )
 
     unwrapped_model = unwrap_anytop_model(model)
-    default_raw = unwrapped_model.global_energy_running_mean.detach().to(device='cpu', dtype=torch.float32).clone()
+    running_mean = unwrapped_model.global_energy_running_mean.detach().to(device='cpu', dtype=torch.float32).clone()
+    running_var = unwrapped_model.global_energy_running_var.detach().to(device='cpu', dtype=torch.float32).clone()
+    running_std = torch.sqrt(running_var.clamp_min(1e-6))
+    # CLI values are in normalized space (Z-score against training distribution).
+    # De-normalize to raw space so that downstream _build_global_energy_token
+    # re-normalizes them correctly: raw = norm * running_std + running_mean.
+    raw = running_mean.clone()
     if global_energy_mean is not None:
-        default_raw[0] = float(global_energy_mean)
+        raw[0] = float(global_energy_mean) * running_std[0] + running_mean[0]
     if global_energy_std is not None:
-        default_raw[1] = float(global_energy_std)
-    if not torch.isfinite(default_raw).all():
+        raw[1] = float(global_energy_std) * running_std[1] + running_mean[1]
+    if not torch.isfinite(raw).all():
         raise ValueError("--global_energy_mean/--global_energy_std must be finite")
-    if float(default_raw[1]) < 0.0:
-        raise ValueError("--global_energy_std must be >= 0")
-    return default_raw.unsqueeze(0).expand(batch_size, -1).clone()
+    if float(raw[1]) < 0.0:
+        raise ValueError(
+            "--global_energy_std resolves to a negative raw energy std "
+            f"({float(raw[1]):.4f}) after de-normalization; choose a less negative value"
+        )
+    return raw.unsqueeze(0).expand(batch_size, -1).clone()
 
 
 def _lookup_object_type_case_insensitive(object_types, requested_type):
