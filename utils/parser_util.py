@@ -256,7 +256,7 @@ def add_generate_options(parser):
                            "masked region on the full schedule using the pass-1 result as the clamped known region. "
                            "When --reference_mode controlnet is selected, this must be 0.")
     group.add_argument("--reference_mode", default="img2img", choices=["img2img", "controlnet"],
-                       help="How to use --reference_motion. img2img = noise the reference into x_t. controlnet = keep the diffusion state on the full schedule and feed the reference through a separate conditioning branch.")
+                       help="How to use --reference_motion. img2img = noise the reference into x_t. controlnet = keep the diffusion state on the full schedule and feed the reference through a separate conditioning branch. When source and target skeletons differ, the reference is retargeted into the target skeleton first (both modes).")
     group.add_argument("--reference_scale", default=2.0, type=float,
                        help="Classifier-free guidance scale for --reference_mode controlnet. Ignored in img2img mode.")
     group.add_argument("--inpaint_joints", default="", type=str,

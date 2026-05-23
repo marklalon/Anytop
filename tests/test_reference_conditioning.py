@@ -67,6 +67,25 @@ class _ReferenceAwareModel(nn.Module):
         return output
 
 
+class _AxisAwareReferenceModel(nn.Module):
+    def __init__(self, root_joint: int = 1) -> None:
+        super().__init__()
+        self.reference_cond = True
+        self.reference_encoder = object()
+        self.num_layers = 1
+        self.root_joint = root_joint
+
+    def forward(self, x, timesteps, get_layer_activation=-1, y=None, **unused_kwargs):
+        if y is not None and y.get('reference_motion') is not None:
+            output = torch.full_like(x, 5.0)
+            output[:, self.root_joint, [2, 11], :] = 7.0
+        else:
+            output = torch.full_like(x, 1.0)
+        if get_layer_activation > -1:
+            return output, {0: output.clone()}
+        return output
+
+
 class _DummyModel(nn.Module):
     def __init__(self, *, reference_cond: bool = False) -> None:
         super().__init__()
@@ -158,6 +177,28 @@ def test_cfg_reference_wrapper_guides_activations_when_requested() -> None:
     expected = torch.full_like(x, 9.0)
     assert torch.equal(guided_output, expected)
     assert torch.equal(activations[0], expected)
+
+
+def test_cfg_reference_wrapper_always_falls_back_to_uncond_on_root_xz_axes() -> None:
+    base_model = _AxisAwareReferenceModel(root_joint=1)
+    wrapped_model = ClassifierFreeReferenceModel(base_model)
+    x = torch.zeros((1, 3, 13, 4), dtype=torch.float32)
+    t = torch.tensor([1], dtype=torch.int64)
+    reference_motion = torch.zeros_like(x)
+    reference_motion[:, 1, [2, 11], :] = 0.5
+    y = {
+        "reference_motion": reference_motion,
+        "reference_scale": 2.0,
+        "reference_translation_root_index": torch.tensor([1]),
+    }
+
+    guided_output = wrapped_model(x, t, y=y)
+
+    assert torch.equal(guided_output[:, 1, 0, :], torch.ones((1, 4), dtype=torch.float32))
+    assert torch.equal(guided_output[:, 1, 9, :], torch.ones((1, 4), dtype=torch.float32))
+    assert torch.equal(guided_output[:, 1, 2, :], torch.ones((1, 4), dtype=torch.float32))
+    assert torch.equal(guided_output[:, 1, 11, :], torch.ones((1, 4), dtype=torch.float32))
+    assert torch.equal(guided_output[:, 0, 0, :], torch.full((1, 4), 9.0, dtype=torch.float32))
 
 
 def test_cfg_reference_wrapper_strips_reference_prior_metadata_from_uncond_path() -> None:
@@ -395,9 +436,47 @@ def test_prepare_reference_for_mode_controlnet_keeps_reference_and_output_length
     assert bundle["reference_motion"].shape == (1, 4, 13, 5)
 
 
-def test_should_retarget_reference_skips_controlnet_source_space_path() -> None:
+def test_prepare_reference_for_mode_controlnet_uses_target_metadata(tmp_path: Path) -> None:
+    reference_motion_path = tmp_path / "reference_prior_controlnet_target.npy"
+    ref_raw = np.ones((5, 3, 11), dtype=np.float32)
+    np.save(reference_motion_path, ref_raw)
+
+    source_cond = {
+        "parents": np.asarray([-1, 0], dtype=np.int64),
+        "offsets": np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32),
+        "mean": np.zeros((2, 13), dtype=np.float32),
+        "std": np.ones((2, 13), dtype=np.float32),
+        "joints_names_embs": np.zeros((2, 8), dtype=np.float32),
+    }
+    target_cond = {
+        "parents": np.asarray([-1, 0, 1], dtype=np.int64),
+        "offsets": np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 0.0, 0.0]], dtype=np.float32),
+        "mean": np.zeros((3, 13), dtype=np.float32),
+        "std": np.ones((3, 13), dtype=np.float32),
+        "joints_names_embs": np.zeros((3, 8), dtype=np.float32),
+    }
+
+    bundle = _prepare_reference_for_mode(
+        str(reference_motion_path),
+        reference_mode="controlnet",
+        source_type="Horse",
+        source_cond=source_cond,
+        target_type="Buffalo",
+        target_cond=target_cond,
+        max_joints=4,
+        target_feature_len=13,
+        batch_size=1,
+        requested_output_frame_count=7,
+    )
+
+    assert bundle["loaded_reference_joint_count"] == 3
+    assert torch.equal(bundle["reference_conditioning_kwargs"]["reference_n_joints"], torch.tensor([3]))
+    assert bundle["reference_motion"].shape == (1, 4, 13, 5)
+
+
+def test_should_retarget_reference_forces_cross_skeleton_controlnet_retarget() -> None:
     assert _should_retarget_reference("Horse", "Buffalo", "img2img")
-    assert not _should_retarget_reference("Horse", "Buffalo", "controlnet")
+    assert _should_retarget_reference("Horse", "Buffalo", "controlnet")
     assert not _should_retarget_reference("Horse", "Horse", "img2img")
 
 
@@ -988,13 +1067,12 @@ def test_sample_batch_tolerates_controlnet_skip_timesteps() -> None:
     )
 
 
-def test_validate_reference_sampling_request_rejects_cross_species_controlnet_inpaint() -> None:
-    with pytest.raises(ValueError, match="cross-species inpainting is not supported"):
-        _validate_reference_sampling_request(
-            inpaint_enabled=True,
-            reference_mode="controlnet",
-            cross_species_reference=True,
-        )
+def test_validate_reference_sampling_request_allows_cross_species_controlnet_inpaint() -> None:
+    _validate_reference_sampling_request(
+        inpaint_enabled=True,
+        reference_mode="controlnet",
+        cross_species_reference=True,
+    )
 
     _validate_reference_sampling_request(
         inpaint_enabled=True,

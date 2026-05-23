@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import torch
 import torch.nn as nn
 
 from model.anytop import AnyTop
@@ -70,6 +71,9 @@ def model_supports_reference_conditioning(model) -> bool:
 
 
 class ClassifierFreeReferenceModel(nn.Module):
+    _REFERENCE_ROOT_X_FEATURES = (0, 9)
+    _REFERENCE_ROOT_Z_FEATURES = (2, 11)
+
     def __init__(self, model):
         super().__init__()
         self.model = model
@@ -89,6 +93,41 @@ class ClassifierFreeReferenceModel(nn.Module):
         else:
             routed_y['reference_motion'] = reference_motion
         return routed_y
+
+    @classmethod
+    def _apply_reference_root_axis_guidance_guard(cls, guided, uncond_tensor, y):
+        if y is None or guided.ndim != 4 or uncond_tensor.shape != guided.shape:
+            return guided
+
+        reference_root_index = y.get('reference_translation_root_index')
+        if reference_root_index is None:
+            return guided
+
+        root_index = torch.as_tensor(reference_root_index, device=guided.device, dtype=torch.long).reshape(-1)
+        batch_size = min(guided.shape[0], root_index.shape[0])
+        if batch_size == 0:
+            return guided
+
+        guided = guided.clone()
+        for batch_idx in range(batch_size):
+            joint_idx = int(root_index[batch_idx].item())
+            if joint_idx < 0 or joint_idx >= guided.shape[1]:
+                continue
+
+            guided[batch_idx, joint_idx, list(cls._REFERENCE_ROOT_X_FEATURES), :] = uncond_tensor[
+                batch_idx,
+                joint_idx,
+                list(cls._REFERENCE_ROOT_X_FEATURES),
+                :,
+            ]
+            guided[batch_idx, joint_idx, list(cls._REFERENCE_ROOT_Z_FEATURES), :] = uncond_tensor[
+                batch_idx,
+                joint_idx,
+                list(cls._REFERENCE_ROOT_Z_FEATURES),
+                :,
+            ]
+
+        return guided
 
     def forward(self, x, timesteps, get_layer_activation=-1, y=None, train_step=None, **unused_kwargs):
         if y is None or y.get('reference_motion') is None:
@@ -149,6 +188,7 @@ class ClassifierFreeReferenceModel(nn.Module):
                 uncond_tensor = uncond_output
                 uncond_activations = None
             guided = uncond_tensor + scale * (cond_tensor - uncond_tensor)
+            guided = self._apply_reference_root_axis_guidance_guard(guided, uncond_tensor, y)
             if uncond_activations is None:
                 return guided, cond_activations
             guided_activations = {
@@ -157,7 +197,8 @@ class ClassifierFreeReferenceModel(nn.Module):
             }
             return guided, guided_activations
 
-        return uncond_output + scale * (cond_output - uncond_output)
+        guided = uncond_output + scale * (cond_output - uncond_output)
+        return self._apply_reference_root_axis_guidance_guard(guided, uncond_output, y)
 
 def load_model(model, state_dict):
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)

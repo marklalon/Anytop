@@ -125,10 +125,6 @@ def _resolve_reference_source_type(
     return source_type, default_cond_cache, blind_type, used_target_fallback
 
 
-def _reference_uses_source_skeleton(reference_mode):
-    return str(reference_mode or 'img2img').strip().lower() == 'controlnet'
-
-
 def _reference_crosses_skeletons(source_type, target_type):
     return bool(
         source_type
@@ -138,10 +134,7 @@ def _reference_crosses_skeletons(source_type, target_type):
 
 
 def _should_retarget_reference(source_type, target_type, reference_mode):
-    return (
-        _reference_crosses_skeletons(source_type, target_type)
-        and not _reference_uses_source_skeleton(reference_mode)
-    )
+    return _reference_crosses_skeletons(source_type, target_type)
 
 
 def _resolve_source_cond_entry(source_type, cond_dict, default_cond_cache=None):
@@ -173,11 +166,7 @@ def _validate_reference_sampling_request(
     reference_mode,
     cross_species_reference,
 ):
-    if inpaint_enabled and _reference_uses_source_skeleton(reference_mode) and cross_species_reference:
-        raise ValueError(
-            "cross-species inpainting is not supported in controlnet prior mode. "
-            "The inpaint clamp requires a target-skeleton reference motion, but controlnet prior mode no longer retargets the source reference."
-        )
+    return None
 
 
 def _prepare_reference_motion_path(
@@ -360,7 +349,7 @@ def _retarget_reference_motion(
             np.asarray(tgt_cond['offsets'], dtype=np.float32),
             list(tgt_cond.get('canonical_bvh_joint_names', tgt_cond['joints_names'])),
             allow_infer=True,
-            tpose_rest_rotations=target_tp.tpos_rots[0],
+            tpose_rest_rotations=tgt_tp.tpos_rots[0],
         )
         if out_anim is not None:
             BVH.save(
@@ -536,11 +525,12 @@ def _prepare_reference_for_mode(
     batch_size,
     requested_output_frame_count,
 ):
-    if _reference_uses_source_skeleton(reference_mode):
+    mode = str(reference_mode or 'img2img').strip().lower()
+    if mode == 'controlnet':
         ref_motion, reference_conditioning_kwargs, loaded_reference_frame_count = _prepare_reference_prior_bundle(
             reference_motion_path,
-            source_type,
-            source_cond,
+            target_type,
+            target_cond,
             max_joints=max_joints,
             target_feature_len=target_feature_len,
             batch_size=batch_size,
@@ -1045,7 +1035,7 @@ def main(args=None, cond_dict=None):
         if should_retarget_reference:
             print(f"Reference motion object_type: {source_type} (will retarget to {target_type})")
         elif cross_species_reference:
-            print(f"Reference motion object_type: {source_type} (controlnet prior path keeps source skeleton; no retarget to {target_type})")
+            print(f"Reference motion object_type: {source_type} (will retarget to {target_type})")
         else:
             inferred_display = source_type if source_type else target_type
             print(f"Reference motion object_type: {inferred_display}")
@@ -1123,16 +1113,16 @@ def main(args=None, cond_dict=None):
             loaded_reference_frame_count = reference_bundle['loaded_reference_frame_count']
             loaded_reference_joint_count = reference_bundle['loaded_reference_joint_count']
 
-            if not _reference_uses_source_skeleton(reference_mode) and output_frame_count != n_frames:
+            if reference_mode != 'controlnet' and output_frame_count != n_frames:
                 print(f'  Reference motion overrides frame count: {n_frames} -> {output_frame_count}')
             print(f'  Reference motion loaded: {effective_reference_path}')
             if prepared_reference_path != reference_motion_path:
                 print(f'    (preprocessed from original: {reference_motion_path})')
             if effective_reference_path != prepared_reference_path:
                 print(f'    (retargeted from preprocessed: {prepared_reference_path})')
-            elif cross_species_reference and _reference_uses_source_skeleton(reference_mode):
-                print(f'    (controlnet prior path keeps source-space reference; no retarget from {source_type} to {target_type})')
-            if _reference_uses_source_skeleton(reference_mode):
+            elif cross_species_reference and reference_mode == 'controlnet':
+                print(f'    (controlnet prior path retargeted the reference into target-space before encoding)')
+            if reference_mode == 'controlnet':
                 print(
                     f'    Reference prior input: [{loaded_reference_frame_count} frames, {loaded_reference_joint_count} joints] '
                     f'-> Output target: [{output_frame_count} frames, {max_joints} joints]'
