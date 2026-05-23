@@ -116,16 +116,16 @@ def add_model_options(parser):
                        help="Enable ControlNet-style reference conditioning through a dedicated reference encoder and decoder cross-attention path.")
     group.add_argument("--reference_encoder_layers", default=1, type=int,
                        help="Number of temporal self-attention layers in the reference encoder (0 = InputProcess only).")
-    group.add_argument("--reference_cond_prob", default=0.2, type=float,
+    group.add_argument("--reference_cond_prob", default=0.5, type=float,
                        help="Probability of keeping reference conditioning during training "
                             "(1.0 = always conditioned, 0.0 = never).")
     group.add_argument("--reference_residual_gate", default=1.0, type=float,
                        help="Scalar gate applied to the decoder's reference residual path. "
                             "1.0 keeps the current behavior, 0.0 disables the residual entirely, "
                             "and intermediate values damp the reference branch without changing checkpoints.")
-    group.add_argument("--reference_token_dropout_prob", default=0.0, type=float,
+    group.add_argument("--reference_token_dropout_prob", default=0.25, type=float,
                        help="Per-prior-token dropout probability inside the reference encoder. Applied only during training.")
-    group.add_argument("--reference_token_noise_std", default=0.0, type=float,
+    group.add_argument("--reference_token_noise_std", default=0.15, type=float,
                        help="Additive Gaussian noise std applied to surviving reference prior tokens during training.")
 
 def add_data_options(parser):
@@ -259,8 +259,10 @@ def add_generate_options(parser):
                            "When --reference_mode controlnet is selected, this must be 0.")
     group.add_argument("--reference_mode", default="img2img", choices=["img2img", "controlnet"],
                        help="How to use --reference_motion. img2img = noise the reference into x_t. controlnet = keep the diffusion state on the full schedule and feed the reference through a separate conditioning branch. When source and target skeletons differ, the reference is retargeted into the target skeleton first (both modes).")
-    group.add_argument("--reference_scale", default=None, type=float,
-                       help="Classifier-free guidance scale for --reference_mode controlnet (default: 2.0). Ignored in img2img mode.")
+    group.add_argument("--reference_scale", default=1.0, type=float,
+                       help="Classifier-free guidance scale for --reference_mode controlnet (default: 1.0). "
+                            "1.0 = single conditioned forward pass; >1 amplifies the reference signal. "
+                            "Only effective in controlnet mode; will error if set in img2img mode.")
     group.add_argument("--inpaint_joints", default="", type=str,
                        help="Motion inpainting (mask painting): comma-separated joint names whose motion is "
                             "REGENERATED while the rest is held to --reference_motion. Names accept any of the "

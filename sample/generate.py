@@ -75,7 +75,7 @@ def validate_reference_mode_configuration(reference_mode, reference_motion_path=
 
 def resolve_reference_scale(reference_scale):
     if reference_scale is None:
-        return 2.0
+        return 1.0
     return float(reference_scale)
 
 
@@ -602,7 +602,7 @@ def _sample_batch(
     reference_motion=None,
     reference_conditioning_kwargs=None,
     reference_mode='img2img',
-    reference_scale=2.0,
+    reference_scale=1.0,
     skip_timesteps=0,
     inpaint_mask=None,
     repaint_jump_length=0,

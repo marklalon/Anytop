@@ -54,10 +54,10 @@ class AnyTop(nn.Module):
         self.joint_mask_prob=float(kargs.get('joint_mask_prob', 0.0))
         self.reference_cond=bool(kargs.get('reference_cond', False))
         self.reference_encoder_layers=int(kargs.get('reference_encoder_layers', 1))
-        self.reference_cond_prob=float(kargs.get('reference_cond_prob', 0.2))
+        self.reference_cond_prob=float(kargs.get('reference_cond_prob', 0.5))
         self.reference_residual_gate=float(kargs.get('reference_residual_gate', 1.0))
-        self.reference_token_dropout_prob=float(kargs.get('reference_token_dropout_prob', 0.0))
-        self.reference_token_noise_std=float(kargs.get('reference_token_noise_std', 0.0))
+        self.reference_token_dropout_prob=float(kargs.get('reference_token_dropout_prob', 0.25))
+        self.reference_token_noise_std=float(kargs.get('reference_token_noise_std', 0.15))
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
         if self.reference_encoder_layers < 0:
