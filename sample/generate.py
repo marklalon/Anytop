@@ -73,6 +73,12 @@ def validate_reference_mode_configuration(reference_mode, reference_motion_path=
     return mode, int(skip_timesteps) if skip_timesteps is not None else 0
 
 
+def resolve_reference_scale(reference_scale):
+    if reference_scale is None:
+        return 2.0
+    return float(reference_scale)
+
+
 def _lookup_object_type_case_insensitive(object_types, requested_type):
     if requested_type is None:
         return None
@@ -957,7 +963,7 @@ def main(args=None, cond_dict=None):
 
     ddim_eta = float(getattr(args, 'ddim_eta', 0.0))
     reference_motion_path = getattr(args, 'reference_motion', None)
-    reference_scale = float(getattr(args, 'reference_scale', 2.0) or 2.0)
+    reference_scale = resolve_reference_scale(getattr(args, 'reference_scale', None))
 
     inpaint_joints_arg = str(getattr(args, 'inpaint_joints', '') or '').strip()
     inpaint_frames_arg = str(getattr(args, 'inpaint_frames', '') or '').strip()

@@ -21,6 +21,7 @@ from sample.generate import (  # noqa: E402
     _sample_batch,
     _should_retarget_reference,
     _validate_reference_sampling_request,
+    resolve_reference_scale,
     validate_reference_mode_configuration,
 )
 from model.anytop import AnyTop, ReferencePriorEncoder  # noqa: E402
@@ -954,6 +955,12 @@ def test_validate_reference_mode_configuration_rejects_invalid_controlnet_setup(
             skip_timesteps=0,
             model=_DummyModel(reference_cond=False),
         )
+
+
+def test_resolve_reference_scale_preserves_explicit_zero() -> None:
+    assert resolve_reference_scale(None) == 2.0
+    assert resolve_reference_scale(0.0) == 0.0
+    assert resolve_reference_scale(1.5) == 1.5
 
 
 def test_sample_batch_routes_controlnet_through_cfg_wrapper_without_mutating_y() -> None:
