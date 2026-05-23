@@ -70,6 +70,14 @@ def model_supports_reference_conditioning(model) -> bool:
     )
 
 
+def model_supports_global_energy_conditioning(model) -> bool:
+    unwrapped_model = unwrap_anytop_model(model)
+    return bool(
+        getattr(unwrapped_model, 'global_energy_cond', False)
+        and getattr(unwrapped_model, 'global_energy_projection', None) is not None
+    )
+
+
 class ClassifierFreeReferenceModel(nn.Module):
     _REFERENCE_ROOT_X_FEATURES = (0, 9)
     _REFERENCE_ROOT_Z_FEATURES = (2, 11)
@@ -244,6 +252,7 @@ def get_gmdm_args(args):
             'cross_limb_last_n': getattr(args, 'cross_limb_last_n', 0),
             'joint_mask_prob': getattr(args, 'joint_mask_prob', 0.0),
             'reference_cond': getattr(args, 'reference_cond', False),
+            'global_energy_cond': getattr(args, 'global_energy_cond', False),
             'reference_encoder_layers': getattr(args, 'reference_encoder_layers', 1),
             'reference_cond_prob': getattr(args, 'reference_cond_prob', 0.5),
             'reference_residual_gate': getattr(args, 'reference_residual_gate', 1.0),

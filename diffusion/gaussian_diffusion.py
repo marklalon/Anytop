@@ -15,6 +15,7 @@ from copy import deepcopy
 from diffusion import logger
 from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood, geodesic_distance
+from model.anytop import ReferencePriorEncoder
 from utils.rotation_conversions import rotation_6d_to_matrix_safe
 
 
@@ -1725,6 +1726,27 @@ class GaussianDiffusion:
         y['reference_motion'] = x_start.detach()
         y['reference_cond_mask'] = cond_mask
 
+    def _build_global_energy_conditioning(self, model, x_start, model_kwargs):
+        y = model_kwargs.get('y') if model_kwargs is not None else None
+        if y is None:
+            return
+
+        model_for_hooks = self._unwrap_model_for_training_hooks(model)
+        if not getattr(model_for_hooks, 'global_energy_cond', False):
+            y.pop('global_energy_cond', None)
+            return
+
+        lengths = y.get('lengths')
+        n_joints = y.get('n_joints')
+        if lengths is None or n_joints is None:
+            raise ValueError("global energy conditioning requires y['lengths'] and y['n_joints'] metadata")
+
+        y['global_energy_cond'] = ReferencePriorEncoder.compute_global_energy_condition(
+            x_start.detach(),
+            n_joints=n_joints,
+            lengths=lengths,
+        )
+
     def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
         """
         Compute training losses for a single timestep.
@@ -1766,6 +1788,7 @@ class GaussianDiffusion:
             model, x_start, x_t, t, model_kwargs
         )
         self._build_reference_conditioning(model, x_start, model_kwargs)
+        self._build_global_energy_conditioning(model, x_start, model_kwargs)
 
         terms = {}
 

@@ -41,8 +41,10 @@ from utils.model_util import (
     ClassifierFreeReferenceModel,
     create_model_and_diffusion_general_skeleton,
     load_model,
+    model_supports_global_energy_conditioning,
     model_supports_reference_conditioning,
     resolve_t5_out_dim,
+    unwrap_anytop_model,
 )
 from utils.parser_util import generate_args
 from utils.misc import infer_object_type_from_filename
@@ -77,6 +79,27 @@ def resolve_reference_scale(reference_scale):
     if reference_scale is None:
         return 1.0
     return float(reference_scale)
+
+
+def resolve_global_energy_condition(model, global_energy_mean, global_energy_std, batch_size):
+    if global_energy_mean is None and global_energy_std is None:
+        return None
+    if not model_supports_global_energy_conditioning(model):
+        raise ValueError(
+            "Loaded checkpoint does not support global energy conditioning. Load or retrain a checkpoint with --global_energy_cond enabled."
+        )
+
+    unwrapped_model = unwrap_anytop_model(model)
+    default_raw = unwrapped_model.global_energy_running_mean.detach().to(device='cpu', dtype=torch.float32).clone()
+    if global_energy_mean is not None:
+        default_raw[0] = float(global_energy_mean)
+    if global_energy_std is not None:
+        default_raw[1] = float(global_energy_std)
+    if not torch.isfinite(default_raw).all():
+        raise ValueError("--global_energy_mean/--global_energy_std must be finite")
+    if float(default_raw[1]) < 0.0:
+        raise ValueError("--global_energy_std must be >= 0")
+    return default_raw.unsqueeze(0).expand(batch_size, -1).clone()
 
 
 def _lookup_object_type_case_insensitive(object_types, requested_type):
@@ -979,6 +1002,15 @@ def main(args=None, cond_dict=None):
         )
     except ValueError as exc:
         sys.exit(f"ERROR: {exc}")
+    try:
+        global_energy_condition = resolve_global_energy_condition(
+            model,
+            getattr(args, 'global_energy_mean', None),
+            getattr(args, 'global_energy_std', None),
+            args.batch_size,
+        )
+    except ValueError as exc:
+        sys.exit(f"ERROR: {exc}")
 
     print('Validating precomputed joint-name embeddings from cond.npy...')
     ensure_joint_name_embeddings(
@@ -1274,6 +1306,8 @@ def main(args=None, cond_dict=None):
             max_joints=opt.max_joints,
             feature_len=opt.feature_len
         )
+        if global_energy_condition is not None:
+            model_kwargs['y']['global_energy_cond'] = global_energy_condition.clone()
         sample = _sample_batch(
             diffusion=diffusion,
             model=model,

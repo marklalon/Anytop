@@ -52,11 +52,13 @@ class AnyTop(nn.Module):
         self.cross_limb_last_n=kargs.get('cross_limb_last_n', 0)
         self.joint_mask_prob=float(kargs.get('joint_mask_prob', 0.0))
         self.reference_cond=bool(kargs.get('reference_cond', False))
+        self.global_energy_cond=bool(kargs.get('global_energy_cond', False))
         self.reference_encoder_layers=int(kargs.get('reference_encoder_layers', 1))
         self.reference_cond_prob=float(kargs.get('reference_cond_prob', 0.5))
         self.reference_residual_gate=float(kargs.get('reference_residual_gate', 1.0))
         self.reference_token_dropout_prob=float(kargs.get('reference_token_dropout_prob', 0.25))
         self.reference_token_noise_std=float(kargs.get('reference_token_noise_std', 0.15))
+        self.global_energy_stats_momentum = 0.01
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
         if self.reference_encoder_layers < 0:
@@ -94,6 +96,18 @@ class AnyTop(nn.Module):
             )
         else:
             self.reference_encoder = None
+        if self.global_energy_cond:
+            self.global_energy_projection = nn.Sequential(
+                nn.LayerNorm(2),
+                nn.Linear(2, self.latent_dim),
+                nn.GELU(),
+                nn.Linear(self.latent_dim, self.latent_dim),
+            )
+            self.register_buffer('global_energy_running_mean', torch.zeros(2, dtype=torch.float32))
+            self.register_buffer('global_energy_running_var', torch.ones(2, dtype=torch.float32))
+            self.register_buffer('global_energy_running_count', torch.zeros((), dtype=torch.long))
+        else:
+            self.global_energy_projection = None
 
         seqTransDecoderLayer = GraphMotionDecoderLayer(d_model=self.latent_dim,
                                                             nhead=self.num_heads,
@@ -122,6 +136,68 @@ class AnyTop(nn.Module):
 
     def supports_reference_conditioning(self):
         return self.reference_cond and self.reference_encoder is not None
+
+    def _update_global_energy_running_stats(self, raw_global_energy_cond):
+        if not self.global_energy_cond or raw_global_energy_cond.numel() == 0:
+            return
+
+        batch_stats = raw_global_energy_cond.detach().to(dtype=torch.float32)
+        batch_mean = batch_stats.mean(dim=0)
+        batch_var = batch_stats.var(dim=0, unbiased=False).clamp_min(1e-6)
+        with torch.no_grad():
+            if int(self.global_energy_running_count.item()) == 0:
+                self.global_energy_running_mean.copy_(batch_mean)
+                self.global_energy_running_var.copy_(batch_var)
+            else:
+                self.global_energy_running_mean.lerp_(batch_mean, self.global_energy_stats_momentum)
+                self.global_energy_running_var.lerp_(batch_var, self.global_energy_stats_momentum)
+            self.global_energy_running_count.add_(int(batch_stats.shape[0]))
+
+    def _coerce_global_energy_condition(self, raw_global_energy_cond, batch_size, device, dtype):
+        if raw_global_energy_cond is None:
+            raw_global_energy_cond = self.global_energy_running_mean.unsqueeze(0)
+        if not torch.is_tensor(raw_global_energy_cond):
+            raw_global_energy_cond = torch.as_tensor(raw_global_energy_cond)
+        raw_global_energy_cond = raw_global_energy_cond.to(device=device, dtype=dtype)
+        if raw_global_energy_cond.dim() == 1:
+            raw_global_energy_cond = raw_global_energy_cond.unsqueeze(0)
+        elif raw_global_energy_cond.dim() != 2:
+            raise ValueError(
+                "global_energy_cond must have shape (2,) or (B, 2), got "
+                f"{tuple(raw_global_energy_cond.shape)}"
+            )
+        if raw_global_energy_cond.shape[1] != 2:
+            raise ValueError(
+                "global_energy_cond must provide [energy_mean, energy_std], got "
+                f"shape {tuple(raw_global_energy_cond.shape)}"
+            )
+        if raw_global_energy_cond.shape[0] == 1 and batch_size != 1:
+            raw_global_energy_cond = raw_global_energy_cond.expand(batch_size, -1)
+        elif raw_global_energy_cond.shape[0] != batch_size:
+            raise ValueError(
+                "global_energy_cond batch dimension must match the motion batch size, got "
+                f"{raw_global_energy_cond.shape[0]} for batch {batch_size}"
+            )
+        if not torch.isfinite(raw_global_energy_cond).all():
+            raise ValueError("global_energy_cond must be finite")
+        return raw_global_energy_cond
+
+    def _build_global_energy_token(self, raw_global_energy_cond, batch_size, device, dtype):
+        if not self.global_energy_cond or self.global_energy_projection is None:
+            return None
+
+        raw_global_energy_cond = self._coerce_global_energy_condition(
+            raw_global_energy_cond,
+            batch_size,
+            device,
+            dtype,
+        )
+        if self.training:
+            self._update_global_energy_running_stats(raw_global_energy_cond)
+        running_mean = self.global_energy_running_mean.to(device=device, dtype=dtype)
+        running_std = torch.sqrt(self.global_energy_running_var.to(device=device, dtype=dtype).clamp_min(1e-6))
+        normalized_global_energy = (raw_global_energy_cond - running_mean.unsqueeze(0)) / running_std.unsqueeze(0)
+        return self.global_energy_projection(normalized_global_energy).unsqueeze(0)
 
     def sample_subtree_joint_mask_train(self, y, njoints, device):
         """Select subtrees of joints to perturb during training (governed by
@@ -193,6 +269,7 @@ class AnyTop(nn.Module):
         n_joints = torch.as_tensor(y['n_joints'], device=x.device).reshape(-1)
         joint_key_padding_mask = self._build_joint_key_padding_mask(njoints, n_joints, x.device)
         reference_memory = None
+        global_energy_memory = None
         reference_key_padding_mask = None
         reference_batch_mask = None
         # joint_mask_prob-driven subtree perturbation is applied OUTSIDE this
@@ -271,6 +348,14 @@ class AnyTop(nn.Module):
                 )
                 reference_key_padding_mask = None
 
+        if self.global_energy_cond:
+            global_energy_memory = self._build_global_energy_token(
+                y.get('global_energy_cond'),
+                batch_size=bs,
+                device=x.device,
+                dtype=x.dtype,
+            )
+
         cross_limb_unreliable_mask = None
         if self.cross_limb:
             raw_cross_limb_unreliable_mask = y.get('cross_limb_unreliable_mask')
@@ -299,6 +384,7 @@ class AnyTop(nn.Module):
             y=y,
             get_layer_activation=get_layer_activation,
             reference_memory=reference_memory,
+            global_energy_memory=global_energy_memory,
             reference_key_padding_mask=reference_key_padding_mask,
             temporal_template=temporal_template,
             cross_limb_unreliable_mask=cross_limb_unreliable_mask,
@@ -569,6 +655,82 @@ class ReferencePriorEncoder(nn.Module):
         weights_sum = weights.sum(dim=2, keepdim=True).clamp_min(eps)
         return (values * weights.unsqueeze(-1)).sum(dim=2) / weights_sum
 
+    @classmethod
+    def _extract_joint_motion_inputs(cls, motion, n_joints, lengths):
+        if motion.dim() != 4:
+            raise ValueError(f"reference_motion must have shape (B, J, F, T), got {tuple(motion.shape)}")
+
+        batch_size, max_joints, feature_dim, frame_count = motion.shape
+        if feature_dim < 13:
+            raise ValueError(
+                "ReferencePriorEncoder expects at least the 13-dim feature schema "
+                f"[pos(3), rot6d(6), vel(3), contact(1)], got input_feats={feature_dim}"
+            )
+
+        device = motion.device
+        dtype = motion.dtype
+        n_joints = torch.as_tensor(n_joints, device=device, dtype=torch.long).reshape(batch_size)
+        lengths = torch.as_tensor(lengths, device=device, dtype=torch.long).reshape(batch_size)
+        if bool(((n_joints < 0) | (n_joints > max_joints)).any()):
+            raise ValueError(
+                f"reference n_joints must be in [0, {max_joints}], got {n_joints.tolist()}"
+            )
+        if bool(((lengths < 0) | (lengths > frame_count)).any()):
+            raise ValueError(
+                f"reference lengths must be in [0, {frame_count}], got {lengths.tolist()}"
+            )
+
+        valid_joints = torch.arange(max_joints, device=device).unsqueeze(0) < n_joints.unsqueeze(1)
+        valid_frames = torch.arange(frame_count, device=device).unsqueeze(0) < lengths.unsqueeze(1)
+        motion_btjf = motion.permute(0, 3, 1, 2)
+        vel = motion_btjf[..., 9:12]
+        rot = motion_btjf[..., 3:9]
+        rot_delta = torch.zeros_like(rot)
+        if frame_count > 1:
+            rot_delta[:, 1:] = rot[:, 1:] - rot[:, :-1]
+        rot_delta_norm = torch.linalg.norm(rot_delta, dim=-1, keepdim=True)
+        contact = motion_btjf[..., 12:13]
+        joint_motion_frame_features, vel_norm, energy = cls._build_joint_motion_frame_features(
+            vel,
+            rot_delta_norm,
+            contact,
+        )
+        joint_motion_frame_features = joint_motion_frame_features * valid_joints[:, None, :, None].to(dtype)
+        return {
+            'batch_size': batch_size,
+            'max_joints': max_joints,
+            'feature_dim': feature_dim,
+            'frame_count': frame_count,
+            'device': device,
+            'dtype': dtype,
+            'n_joints': n_joints,
+            'lengths': lengths,
+            'valid_joints': valid_joints,
+            'valid_frames': valid_frames,
+            'vel': vel,
+            'contact': contact,
+            'joint_motion_frame_features': joint_motion_frame_features,
+            'vel_norm': vel_norm,
+            'energy': energy,
+        }
+
+    @classmethod
+    def compute_global_energy_condition(cls, motion, n_joints, lengths):
+        motion_inputs = cls._extract_joint_motion_inputs(motion, n_joints, lengths)
+        dtype = motion_inputs['dtype']
+        frame_count = motion_inputs['frame_count']
+        valid_joints = motion_inputs['valid_joints']
+        valid_frames = motion_inputs['valid_frames']
+        joint_motion_frame_features = motion_inputs['joint_motion_frame_features']
+        global_mean, global_std = cls._masked_mean_and_std(
+            joint_motion_frame_features,
+            valid_joints[:, None, :].expand(-1, frame_count, -1).to(dtype),
+        )
+        global_energy_profile = torch.cat([global_mean[..., 2:3], global_std[..., 2:3]], dim=-1)
+        frame_mask = valid_frames.unsqueeze(-1).to(dtype)
+        valid_frame_count = frame_mask.sum(dim=1).clamp_min(1.0)
+        return (global_energy_profile * frame_mask).sum(dim=1) / valid_frame_count
+
     @staticmethod
     def _build_joint_motion_frame_features(vel, rot_delta_norm, contact):
         """Return phase-invariant per-frame cues for joint grouping.
@@ -599,12 +761,20 @@ class ReferencePriorEncoder(nn.Module):
         translation_root_index,
         joints_embedded_names,
     ):
-        if reference_motion.dim() != 4:
-            raise ValueError(f"reference_motion must have shape (B, J, F, T), got {tuple(reference_motion.shape)}")
-
-        batch_size, max_joints, feature_dim, frame_count = reference_motion.shape
-        device = reference_motion.device
-        dtype = reference_motion.dtype
+        motion_inputs = self._extract_joint_motion_inputs(reference_motion, n_joints, lengths)
+        batch_size = motion_inputs['batch_size']
+        max_joints = motion_inputs['max_joints']
+        feature_dim = motion_inputs['feature_dim']
+        frame_count = motion_inputs['frame_count']
+        device = motion_inputs['device']
+        dtype = motion_inputs['dtype']
+        n_joints = motion_inputs['n_joints']
+        lengths = motion_inputs['lengths']
+        valid_joints = motion_inputs['valid_joints']
+        valid_frames = motion_inputs['valid_frames']
+        vel = motion_inputs['vel']
+        contact = motion_inputs['contact']
+        joint_motion_frame_features = motion_inputs['joint_motion_frame_features']
 
         if feature_dim != self.input_feats:
             raise ValueError(f"Expected reference feature dim {self.input_feats}, got {feature_dim}")
@@ -613,13 +783,7 @@ class ReferencePriorEncoder(nn.Module):
                 f"reference_motion joint dimension {max_joints} exceeds configured max_joints {self.max_joints}"
             )
 
-        n_joints = torch.as_tensor(n_joints, device=device, dtype=torch.long).reshape(batch_size)
-        lengths = torch.as_tensor(lengths, device=device, dtype=torch.long).reshape(batch_size)
         translation_root_index = torch.as_tensor(translation_root_index, device=device, dtype=torch.long).reshape(batch_size)
-        if bool(((n_joints < 0) | (n_joints > max_joints)).any()):
-            raise ValueError(
-                f"reference n_joints must be in [0, {max_joints}], got {n_joints.tolist()}"
-            )
         if bool(((translation_root_index < 0) | (translation_root_index >= n_joints.clamp_min(1))).any()):
             raise ValueError(
                 "reference translation_root_index must reference a valid non-padded joint, got "
@@ -632,25 +796,8 @@ class ReferencePriorEncoder(nn.Module):
             device,
             dtype,
         )
-        valid_joints = torch.arange(max_joints, device=device).unsqueeze(0) < n_joints.unsqueeze(1)
-        valid_frames = torch.arange(frame_count, device=device).unsqueeze(0) < lengths.unsqueeze(1)
-
-        motion_btjf = reference_motion.permute(0, 3, 1, 2)
-        vel = motion_btjf[..., 9:12]
-        rot = motion_btjf[..., 3:9]
-        rot_delta = torch.zeros_like(rot)
-        if frame_count > 1:
-            rot_delta[:, 1:] = rot[:, 1:] - rot[:, :-1]
-        rot_delta_norm = torch.linalg.norm(rot_delta, dim=-1, keepdim=True)
-        contact = motion_btjf[..., 12:13]
         # Branch A: build phase-invariant per-joint statistics used only for
         # semantic grouping / soft limb assignment.
-        joint_motion_frame_features, vel_norm, energy = self._build_joint_motion_frame_features(
-            vel,
-            rot_delta_norm,
-            contact,
-        )
-        joint_motion_frame_features = joint_motion_frame_features * valid_joints[:, None, :, None].to(dtype)
 
         # Time-aggregate only the grouping branch. Despite the historical
         # ``joint_motion`` name, these stats describe a joint's coarse semantic

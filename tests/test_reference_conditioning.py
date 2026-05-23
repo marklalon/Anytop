@@ -21,12 +21,17 @@ from sample.generate import (  # noqa: E402
     _sample_batch,
     _should_retarget_reference,
     _validate_reference_sampling_request,
+    resolve_global_energy_condition,
     resolve_reference_scale,
     validate_reference_mode_configuration,
 )
 from model.anytop import AnyTop, ReferencePriorEncoder  # noqa: E402
 from model.motion_transformer import GraphMotionDecoderLayer  # noqa: E402
-from utils.model_util import ClassifierFreeReferenceModel, model_supports_reference_conditioning  # noqa: E402
+from utils.model_util import (  # noqa: E402
+    ClassifierFreeReferenceModel,
+    model_supports_global_energy_conditioning,
+    model_supports_reference_conditioning,
+)
 
 
 class _CaptureDiffusion:
@@ -88,11 +93,14 @@ class _AxisAwareReferenceModel(nn.Module):
 
 
 class _DummyModel(nn.Module):
-    def __init__(self, *, reference_cond: bool = False) -> None:
+    def __init__(self, *, reference_cond: bool = False, global_energy_cond: bool = False) -> None:
         super().__init__()
         self.num_layers = 1
         self.reference_cond = reference_cond
         self.reference_encoder = object() if reference_cond else None
+        self.global_energy_cond = global_energy_cond
+        self.global_energy_projection = object() if global_energy_cond else None
+        self.global_energy_running_mean = torch.tensor([0.25, 0.05], dtype=torch.float32)
 
     def forward(self, x, timesteps, get_layer_activation=-1, y=None, **unused_kwargs):
         return x
@@ -299,6 +307,11 @@ def test_model_supports_reference_conditioning_detects_capability() -> None:
     assert not model_supports_reference_conditioning(_DummyModel(reference_cond=False))
 
 
+def test_model_supports_global_energy_conditioning_detects_capability() -> None:
+    assert model_supports_global_energy_conditioning(_DummyModel(global_energy_cond=True))
+    assert not model_supports_global_energy_conditioning(_DummyModel(global_energy_cond=False))
+
+
 def test_build_reference_conditioning_reuses_detached_x_start_without_clone() -> None:
     diffusion = GaussianDiffusion(
         betas=np.array([0.001, 0.002, 0.003], dtype=np.float64),
@@ -318,6 +331,35 @@ def test_build_reference_conditioning_reuses_detached_x_start_without_clone() ->
     assert reference_motion.requires_grad is False
     assert reference_motion.data_ptr() == x_start.data_ptr()
     assert torch.equal(model_kwargs["y"]["reference_cond_mask"], torch.ones(2, dtype=torch.bool))
+
+
+def test_build_global_energy_conditioning_sets_clip_condition() -> None:
+    diffusion = GaussianDiffusion(
+        betas=np.array([0.001, 0.002, 0.003], dtype=np.float64),
+        model_mean_type=ModelMeanType.START_X,
+        model_var_type=ModelVarType.FIXED_SMALL,
+        loss_type=LossType.MSE,
+    )
+    model = _DummyModel(global_energy_cond=True)
+    x_start = torch.zeros((2, 3, 13, 4), dtype=torch.float32)
+    x_start[0, :, 9, :] = 0.3
+    x_start[0, :, 10, :] = 0.4
+    x_start[1, :, 3, 1:] = 0.5
+    model_kwargs = {
+        "y": {
+            "lengths": torch.tensor([4, 4], dtype=torch.int64),
+            "n_joints": torch.tensor([3, 3], dtype=torch.int64),
+        }
+    }
+
+    diffusion._build_global_energy_conditioning(model, x_start, model_kwargs)
+
+    expected = ReferencePriorEncoder.compute_global_energy_condition(
+        x_start,
+        n_joints=model_kwargs["y"]["n_joints"],
+        lengths=model_kwargs["y"]["lengths"],
+    )
+    assert torch.allclose(model_kwargs["y"]["global_energy_cond"], expected)
 
 
 def test_anytop_forward_accepts_reference_motion_with_independent_frame_count() -> None:
@@ -413,6 +455,100 @@ def test_anytop_forward_uses_cached_reference_memory_and_skips_encoder() -> None
     )
     assert capture_decoder.last_kwargs is not None
     assert torch.equal(capture_decoder.last_kwargs["reference_memory"], cached_memory)
+
+
+def test_anytop_forward_accepts_global_energy_condition_without_reference_motion() -> None:
+    model = AnyTop(
+        max_joints=4,
+        feature_len=13,
+        latent_dim=8,
+        ff_size=32,
+        num_layers=1,
+        num_heads=2,
+        dropout=0.0,
+        t5_out_dim=8,
+        cross_limb=False,
+        reference_cond=False,
+        global_energy_cond=True,
+    )
+    capture_decoder = _CaptureDecoder()
+    model.seqTransDecoder = capture_decoder
+    model.eval()
+    with torch.no_grad():
+        model.global_energy_running_mean.copy_(torch.tensor([0.25, 0.05], dtype=torch.float32))
+        model.global_energy_running_var.copy_(torch.tensor([0.04, 0.01], dtype=torch.float32))
+
+    x = torch.randn(1, 4, 13, 7, dtype=torch.float32)
+    y = {
+        "joints_padding_mask": torch.ones(1, 1, 1, 5, 5, dtype=torch.float32),
+        "mask": torch.ones(1, 1, 1, 8, 8, dtype=torch.float32),
+        "tpos_first_frame": torch.randn(1, 4, 13, dtype=torch.float32),
+        "n_joints": torch.tensor([4], dtype=torch.int64),
+        "lengths": torch.tensor([7], dtype=torch.int64),
+        "translation_root_index": torch.tensor([0], dtype=torch.int64),
+        "joints_names_embs": torch.zeros(1, 4, 8, dtype=torch.float32),
+        "parents": torch.tensor([[-1, 0, 1, 2]], dtype=torch.int64),
+        "global_energy_cond": torch.tensor([[0.45, 0.15]], dtype=torch.float32),
+    }
+
+    output = model(x, torch.tensor([1], dtype=torch.int64), y=y)
+
+    assert output.shape == (1, 4, 13, 7)
+    assert capture_decoder.last_kwargs is not None
+    assert capture_decoder.last_kwargs["reference_memory"] is None
+    assert capture_decoder.last_kwargs["global_energy_memory"].shape == (1, 1, 8)
+
+
+def test_decoder_layer_keeps_global_energy_condition_when_reference_gate_is_zero() -> None:
+    layer = GraphMotionDecoderLayer(
+        d_model=4,
+        nhead=2,
+        dim_feedforward=16,
+        dropout=0.0,
+        reference_residual_gate=0.0,
+    )
+    layer.embed_timesteps = nn.Identity()
+    layer.norm1 = nn.Identity()
+    layer.norm2 = nn.Identity()
+    layer.norm3 = nn.Identity()
+    layer.norm_ref = nn.Identity()
+
+    def _zero_block(self, x, *args, **kwargs):
+        return torch.zeros_like(x)
+
+    def _reference_block(self, x, memory, key_padding_mask, reference_batch_mask):
+        delta = torch.full_like(x, float(memory[0, 0, 0]))
+        if reference_batch_mask is not None:
+            delta = delta * reference_batch_mask.to(device=x.device, dtype=x.dtype).view(1, x.shape[1], 1, 1)
+        return delta
+
+    layer._spatial_mha_block = types.MethodType(_zero_block, layer)
+    layer._temporal_mha_block_sin_joint = types.MethodType(_zero_block, layer)
+    layer._ff_block = types.MethodType(_zero_block, layer)
+    layer._reference_mha_block = types.MethodType(_reference_block, layer)
+
+    tgt = torch.zeros((2, 1, 3, 4), dtype=torch.float32)
+    timesteps_emb = torch.zeros((1, 4), dtype=torch.float32)
+    reference_memory = torch.full((1, 1, 4), 7.0, dtype=torch.float32)
+    global_energy_memory = torch.full((1, 1, 4), 3.0, dtype=torch.float32)
+
+    output = layer(
+        tgt=tgt,
+        timesteps_emb=timesteps_emb,
+        topology_rel=None,
+        edge_rel=None,
+        edge_key_emb=None,
+        edge_query_emb=None,
+        edge_value_emb=None,
+        topo_key_emb=None,
+        topo_query_emb=None,
+        topo_value_emb=None,
+        reference_memory=reference_memory,
+        global_energy_memory=global_energy_memory,
+        reference_batch_mask=torch.tensor([True], dtype=torch.bool),
+    )
+
+    assert torch.allclose(output, torch.full_like(tgt, 3.0))
 
 
 def test_reference_prior_encoder_rejects_feature_schemas_shorter_than_13_dims() -> None:
@@ -1072,6 +1208,38 @@ def test_resolve_reference_scale_preserves_explicit_zero() -> None:
     assert resolve_reference_scale(None) == 1.0
     assert resolve_reference_scale(0.0) == 0.0
     assert resolve_reference_scale(1.5) == 1.5
+
+
+def test_resolve_global_energy_condition_uses_running_defaults_for_missing_components() -> None:
+    model = _DummyModel(global_energy_cond=True)
+
+    resolved = resolve_global_energy_condition(
+        model,
+        global_energy_mean=0.4,
+        global_energy_std=None,
+        batch_size=2,
+    )
+
+    assert resolved.shape == (2, 2)
+    assert torch.allclose(resolved[:, 0], torch.full((2,), 0.4))
+    assert torch.allclose(resolved[:, 1], torch.full((2,), 0.05))
+
+
+def test_cfg_reference_wrapper_preserves_global_energy_condition_on_uncond_path() -> None:
+    base_model = _ReferenceAwareModel()
+    wrapped_model = ClassifierFreeReferenceModel(base_model)
+    x = torch.zeros((1, 2, 3, 4), dtype=torch.float32)
+    t = torch.tensor([1], dtype=torch.int64)
+    y = {
+        "reference_motion": torch.ones_like(x),
+        "reference_scale": 0.0,
+        "global_energy_cond": torch.tensor([[0.3, 0.1]], dtype=torch.float32),
+    }
+
+    wrapped_model(x, t, y=y)
+
+    assert torch.equal(base_model.forward_ys[-1]["global_energy_cond"], y["global_energy_cond"])
+    assert "reference_motion" not in base_model.forward_ys[-1]
 
 
 def test_sample_batch_routes_controlnet_through_cfg_wrapper_without_mutating_y() -> None:

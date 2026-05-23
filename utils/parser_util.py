@@ -112,6 +112,8 @@ def add_model_options(parser):
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
     group.add_argument("--reference_cond", action='store_true',
                        help="Enable ControlNet-style reference conditioning through a dedicated reference encoder and decoder cross-attention path.")
+    group.add_argument("--global_energy_cond", action='store_true',
+                       help="Enable an always-on clip-level global energy condition derived from the training motion's global energy mean/std.")
     group.add_argument("--reference_encoder_layers", default=1, type=int,
                        help="Number of temporal self-attention layers in the reference encoder (0 = InputProcess only).")
     group.add_argument("--reference_cond_prob", default=0.5, type=float,
@@ -265,6 +267,12 @@ def add_generate_options(parser):
                        help="Classifier-free guidance scale for --reference_mode controlnet (default: 1.0). "
                             "1.0 = single conditioned forward pass; >1 amplifies the reference signal. "
                             "Only effective in controlnet mode; will error if set in img2img mode.")
+    group.add_argument("--global_energy_mean", default=None, type=float,
+                       help="Override the raw clip-level global energy mean used by the always-on global energy condition. "
+                           "If omitted, generation defaults to the checkpoint's running mean.")
+    group.add_argument("--global_energy_std", default=None, type=float,
+                       help="Override the raw clip-level global energy std used by the always-on global energy condition. "
+                           "If omitted, generation defaults to the checkpoint's running std proxy from training.")
     group.add_argument("--inpaint_joints", default="", type=str,
                        help="Motion inpainting (mask painting): comma-separated joint names whose motion is "
                             "REGENERATED while the rest is held to --reference_motion. Names accept any of the "

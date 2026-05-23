@@ -860,6 +860,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
     def forward(self, tgt: Tensor, timesteps_embs: Tensor, memory: Tensor, spatial_mask:  Optional[Tensor] = None,
                 temporal_mask: Optional[Tensor] = None, tgt_key_padding_mask: Optional[Tensor] = None,
             memory_key_padding_mask: Optional[Tensor] = None, y=None, get_layer_activation=-1, reference_memory: Optional[Tensor] = None,
+            global_energy_memory: Optional[Tensor] = None,
             reference_key_padding_mask: Optional[Tensor] = None, temporal_template: Optional[Tensor] = None,
             cross_limb_unreliable_mask: Optional[Tensor] = None,
             reference_batch_mask: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
@@ -884,7 +885,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                 cl_block = None
             output = mod(
                     output, timesteps_embs, topology_rel, edge_rel, self.edge_key_emb, self.edge_query_emb, edge_value_emb, self.topology_key_emb, self.topology_query_emb, topology_value_emb, spatial_mask, temporal_mask,
-                    tgt_key_padding_mask, memory_key_padding_mask, y, reference_memory, reference_key_padding_mask,
+                    tgt_key_padding_mask, memory_key_padding_mask, y, reference_memory, global_energy_memory, reference_key_padding_mask,
                     temporal_template=temporal_template, cross_limb_block=cl_block,
                     cross_limb_unreliable_mask=cross_limb_unreliable_mask,
                     reference_batch_mask=reference_batch_mask)
@@ -1013,6 +1014,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         memory_key_padding_mask: Optional[Tensor] = None, #for future use
         y = None,
         reference_memory: Optional[Tensor] = None,
+        global_energy_memory: Optional[Tensor] = None,
         reference_key_padding_mask: Optional[Tensor] = None,
         temporal_template: Optional[Tensor] = None,
         cross_limb_block: Optional[nn.Module] = None,
@@ -1027,6 +1029,9 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         x = self.norm2(x + self._temporal_mha_block_sin_joint(x, temporal_mask, None))
         if cross_limb_block is not None:
             x = cross_limb_block(x, temporal_template, y['joints_key_padding_mask'], unreliable_mask=cross_limb_unreliable_mask)
+        reference_delta = None
+        global_energy_delta = None
+        conditioning_batch_mask = None
         if reference_memory is not None and self.reference_residual_gate != 0.0:
             reference_delta = self._reference_mha_block(
                 x,
@@ -1036,11 +1041,31 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             )
             if self.reference_residual_gate != 1.0:
                 reference_delta = reference_delta * self.reference_residual_gate
-            reference_output = self.norm_ref(x + reference_delta)
-            if reference_batch_mask is None:
-                x = reference_output
+            if reference_batch_mask is not None:
+                conditioning_batch_mask = reference_batch_mask.to(device=x.device, dtype=torch.bool)
+        if global_energy_memory is not None:
+            global_energy_delta = self._reference_mha_block(
+                x,
+                global_energy_memory,
+                None,
+                None,
+            )
+        if reference_delta is not None and global_energy_delta is not None:
+            conditioned_output = self.norm_ref(x + reference_delta + global_energy_delta)
+            if conditioning_batch_mask is None:
+                x = conditioned_output
             else:
-                batch_mask = reference_batch_mask.to(device=x.device, dtype=torch.bool).view(1, bs, 1, 1)
-                x = torch.where(batch_mask, reference_output, x)
+                global_energy_output = self.norm_ref(x + global_energy_delta)
+                batch_mask = conditioning_batch_mask.view(1, bs, 1, 1)
+                x = torch.where(batch_mask, conditioned_output, global_energy_output)
+        elif reference_delta is not None:
+            conditioned_output = self.norm_ref(x + reference_delta)
+            if conditioning_batch_mask is None:
+                x = conditioned_output
+            else:
+                batch_mask = conditioning_batch_mask.view(1, bs, 1, 1)
+                x = torch.where(batch_mask, conditioned_output, x)
+        elif global_energy_delta is not None:
+            x = self.norm_ref(x + global_energy_delta)
         x = self.norm3(x + self._ff_block(x))
         return x
