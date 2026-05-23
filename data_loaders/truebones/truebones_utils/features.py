@@ -797,6 +797,7 @@ def recover_root_quat_and_pos_np(
     anim_pos_threshold=0.01,
     motion_metadata=None,
     allow_infer=False,
+    loop_close=False,
 ):
     motion = np.asarray(data)
     if motion.ndim == 2:
@@ -834,6 +835,16 @@ def recover_root_quat_and_pos_np(
     r_pos = -r_rot_quat * r_pos
 
     r_pos = np.cumsum(r_pos, axis = -2)
+    if loop_close and r_pos.shape[-2] >= 2:
+        # Stationary-loop de-drift: subtract a linear XZ ramp so frame L-1
+        # lands exactly on frame 0 (which is the origin after cumsum).
+        # Equivalent to subtracting mean XZ world-velocity from each step.
+        L = r_pos.shape[-2]
+        drift_x = r_pos[..., -1:, 0:1].copy()
+        drift_z = r_pos[..., -1:, 2:3].copy()
+        ramp = (np.arange(L, dtype=r_pos.dtype) / (L - 1)).reshape((1,) * (r_pos.ndim - 2) + (L, 1))
+        r_pos[..., 0:1] -= drift_x * ramp
+        r_pos[..., 2:3] -= drift_z * ramp
     r_pos[...,1] = translation_features[..., 1]
     return r_rot_quat, r_pos
 
@@ -872,6 +883,7 @@ def recover_from_bvh_ric_np(
     anim_pos_threshold=0.01,
     motion_metadata=None,
     allow_infer=False,
+    loop_close=False,
 ):
     motion = np.asarray(data)
     translation_root_index = resolve_feature_translation_root_index(
@@ -892,6 +904,7 @@ def recover_from_bvh_ric_np(
         anim_pos_threshold=anim_pos_threshold,
         motion_metadata=motion_metadata,
         allow_infer=allow_infer,
+        loop_close=loop_close,
     )
     positions = np.asarray(data[..., :3], dtype=np.float32).copy()
     positions = np.repeat(-r_rot_quat[..., None, :], positions.shape[-2], axis=-2) * positions
@@ -947,6 +960,7 @@ def recover_from_bvh_rot_np(
     anim_pos_threshold=0.01,
     motion_metadata=None,
     allow_infer=False,
+    loop_close=False,
 ):
     translation_root_index = resolve_feature_translation_root_index(
         data,
@@ -966,6 +980,7 @@ def recover_from_bvh_rot_np(
         anim_pos_threshold=anim_pos_threshold,
         motion_metadata=motion_metadata,
         allow_infer=allow_infer,
+        loop_close=loop_close,
     )
     r_rot_cont6d = get_6d_rep(r_rot_quat)
     start_indx = 3
@@ -1023,6 +1038,7 @@ def recover_animation_from_motion_np(
     anim_pos_threshold=0.01,
     motion_metadata=None,
     allow_infer=False,
+    loop_close=False,
 ):
     translation_root_index = resolve_feature_translation_root_index(
         data,
@@ -1042,6 +1058,7 @@ def recover_animation_from_motion_np(
         anim_pos_threshold=anim_pos_threshold,
         motion_metadata=motion_metadata,
         allow_infer=allow_infer,
+        loop_close=loop_close,
     )              # (F, J, 3)
     _, anim_rot          = recover_from_bvh_rot_np(
         data,
@@ -1051,6 +1068,7 @@ def recover_animation_from_motion_np(
         anim_pos_threshold=anim_pos_threshold,
         motion_metadata=motion_metadata,
         allow_infer=allow_infer,
+        loop_close=loop_close,
     )
     glob_rot             = positions_global(anim_rot)                  # (F, J, 3)
 
@@ -1089,6 +1107,7 @@ def recover_bvh_export_animation_from_motion_np(
     motion_metadata=None,
     allow_infer=False,
     tpose_rest_rotations=None,
+    loop_close=False,
 ):
     """Recover a motion tensor and remap it into BVH-safe DFS order.
 
@@ -1111,6 +1130,7 @@ def recover_bvh_export_animation_from_motion_np(
         anim_pos_threshold=anim_pos_threshold,
         motion_metadata=motion_metadata,
         allow_infer=allow_infer,
+        loop_close=loop_close,
     )
     if anim is None:
         return None, list(joint_names), has_animated_pos

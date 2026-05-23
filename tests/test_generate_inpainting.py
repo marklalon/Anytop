@@ -16,8 +16,10 @@ sys.path.insert(0, str(REPO_ROOT))
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType  # noqa: E402
 from sample.generate import (  # noqa: E402
     _parse_frame_ranges,
+    _prepare_img2img_reference_bundle,
     _resolve_inpaint_joint_indices,
     _sample_batch,
+    _extend_reference_motion_for_loop,
     build_inpaint_mask,
 )
 
@@ -110,6 +112,65 @@ def test_build_inpaint_mask_accepts_aliases_and_expands_subtree() -> None:
     assert mask[0, 0, 0, 0].item() == 0.0
     assert mask[0, 1, 0, 0].item() == 1.0
     assert mask[0, 2, 0, 0].item() == 1.0
+
+
+def test_loop_reference_extension_preserves_visible_length_before_appending_tail(tmp_path: Path) -> None:
+    reference_path = tmp_path / "Horse___Run.npy"
+    np.save(reference_path, np.zeros((64, 3, 13), dtype=np.float32))
+
+    bundle = _prepare_img2img_reference_bundle(
+        str(reference_path),
+        "Horse",
+        {
+            "mean": np.zeros((3, 13), dtype=np.float32),
+            "std": np.ones((3, 13), dtype=np.float32),
+        },
+        max_joints=3,
+        target_feature_len=13,
+        batch_size=2,
+        requested_output_frame_count=60,
+    )
+
+    ref_motion, ref_kwargs, looped_length = _extend_reference_motion_for_loop(
+        bundle["reference_motion"],
+        bundle["reference_conditioning_kwargs"],
+        visible_frame_count=bundle["output_frame_count"],
+        loop_overlap=8,
+    )
+
+    assert bundle["loaded_reference_frame_count"] == 64
+    assert bundle["output_frame_count"] == 60
+    assert tuple(ref_motion.shape) == (2, 3, 13, 68)
+    assert looped_length == 68
+    assert ref_kwargs is None
+    assert torch.equal(ref_motion[..., -8:], ref_motion[..., :8])
+
+
+def test_loop_reference_extension_updates_reference_lengths_for_controlnet_metadata() -> None:
+    ref_motion = torch.arange(1 * 3 * 13 * 6, dtype=torch.float32).reshape(1, 3, 13, 6)
+    ref_kwargs = {"reference_lengths": torch.tensor([6], dtype=torch.long)}
+
+    extended_motion, updated_kwargs, looped_length = _extend_reference_motion_for_loop(
+        ref_motion,
+        ref_kwargs,
+        visible_frame_count=6,
+        loop_overlap=4,
+    )
+
+    assert tuple(extended_motion.shape) == (1, 3, 13, 10)
+    assert looped_length == 10
+    assert torch.equal(updated_kwargs["reference_lengths"], torch.tensor([10], dtype=torch.long))
+    assert torch.equal(extended_motion[..., -4:], extended_motion[..., :4])
+
+
+def test_loop_reference_extension_rejects_overlap_larger_than_visible_prefix() -> None:
+    with pytest.raises(ValueError, match="available reference-guided visible length"):
+        _extend_reference_motion_for_loop(
+            torch.zeros((1, 3, 13, 5), dtype=torch.float32),
+            None,
+            visible_frame_count=5,
+            loop_overlap=6,
+        )
 
 
 def test_resolve_inpaint_joint_indices_rejects_unknown_names() -> None:
