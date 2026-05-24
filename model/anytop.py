@@ -51,6 +51,9 @@ class AnyTop(nn.Module):
         self.cross_limb_dim=kargs.get('cross_limb_dim', 64)
         self.cross_limb_last_n=kargs.get('cross_limb_last_n', 0)
         self.joint_mask_prob=float(kargs.get('joint_mask_prob', 0.0))
+        self.temporal_span_mask_prob=float(kargs.get('temporal_span_mask_prob', 0.0))
+        self.temporal_span_mask_min_frames=int(kargs.get('temporal_span_mask_min_frames', 4))
+        self.temporal_span_mask_max_frames=int(kargs.get('temporal_span_mask_max_frames', 12))
         self.reference_cond=bool(kargs.get('reference_cond', False))
         self.global_energy_cond=bool(kargs.get('global_energy_cond', False))
         self.reference_encoder_layers=int(kargs.get('reference_encoder_layers', 1))
@@ -61,6 +64,22 @@ class AnyTop(nn.Module):
         self.global_energy_stats_momentum = 0.01
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
+        if not 0.0 <= self.temporal_span_mask_prob <= 1.0:
+            raise ValueError(
+                f"temporal_span_mask_prob must be in [0, 1], got {self.temporal_span_mask_prob}"
+            )
+        if self.temporal_span_mask_min_frames < 1:
+            raise ValueError(
+                "temporal_span_mask_min_frames must be >= 1, got "
+                f"{self.temporal_span_mask_min_frames}"
+            )
+        if self.temporal_span_mask_max_frames <= 0:
+            raise ValueError("temporal_span_mask_max_frames must be >= 1")
+        if 0 < self.temporal_span_mask_max_frames < self.temporal_span_mask_min_frames:
+            raise ValueError(
+                "temporal_span_mask_max_frames must be >= temporal_span_mask_min_frames "
+                f"(got min={self.temporal_span_mask_min_frames}, max={self.temporal_span_mask_max_frames})"
+            )
         if self.reference_encoder_layers < 0:
             raise ValueError(
                 f"reference_encoder_layers must be >= 0, got {self.reference_encoder_layers}"
@@ -255,6 +274,72 @@ class AnyTop(nn.Module):
         if subtree_joint_mask_np is None:
             return None
         return torch.from_numpy(subtree_joint_mask_np).to(device=device)
+
+    def sample_temporal_span_mask_train(self, y, njoints, nframes, device):
+        """Select contiguous temporal spans to perturb during training.
+
+        Returns a bool tensor of shape ``[B, njoints, nframes]`` (True =
+        re-noise that joint/frame cell) or ``None`` if no span was selected,
+        if not in training mode, or if ``temporal_span_mask_prob == 0``.
+
+        Full-clip spans are not supported: the sampled span always leaves at
+        least one frame at the start or end unmasked so seam detection never
+        triggers on a clip-span boundary.  ``temporal_span_mask_max_frames``
+        is therefore capped at ``min(config_max, valid_frames - 1)`` at
+        runtime.
+        Every real joint in the sample shares the same contiguous masked frame
+        interval, while padded joints stay False throughout.
+        """
+        if (not self.training) or self.temporal_span_mask_prob <= 0.0:
+            return None
+
+        lengths_batch = y.get('lengths')
+        n_joints_batch = y.get('n_joints_cpu', y.get('n_joints'))
+        if lengths_batch is None or n_joints_batch is None:
+            return None
+
+        if torch.is_tensor(lengths_batch):
+            lengths_np = lengths_batch.detach().to(device='cpu', dtype=torch.int64).numpy().reshape(-1)
+        else:
+            lengths_np = np.asarray(lengths_batch, dtype=np.int64).reshape(-1)
+
+        if torch.is_tensor(n_joints_batch):
+            n_joints_np = n_joints_batch.detach().to(device='cpu', dtype=torch.int64).numpy().reshape(-1)
+        else:
+            n_joints_np = np.asarray(n_joints_batch, dtype=np.int64).reshape(-1)
+
+        batch_size = min(len(lengths_np), len(n_joints_np))
+        if batch_size == 0:
+            return None
+
+        temporal_span_mask_np = np.zeros((batch_size, njoints, nframes), dtype=np.bool_)
+        any_selected = False
+        for batch_index in range(batch_size):
+            valid_frames = min(int(lengths_np[batch_index]), int(nframes))
+            valid_joints = min(int(n_joints_np[batch_index]), int(njoints))
+            if valid_frames <= 0 or valid_joints <= 0:
+                continue
+            if np.random.random() >= self.temporal_span_mask_prob:
+                continue
+
+            min_span = min(self.temporal_span_mask_min_frames, valid_frames)
+            max_span = max(
+                min_span,
+                min(self.temporal_span_mask_max_frames, valid_frames - 1),
+            )
+            span_length = int(np.random.randint(min_span, max_span + 1))
+            start_hi = valid_frames - span_length
+            span_start = 0 if start_hi <= 0 else int(np.random.randint(0, start_hi + 1))
+            temporal_span_mask_np[
+                batch_index,
+                :valid_joints,
+                span_start:span_start + span_length,
+            ] = True
+            any_selected = True
+
+        if not any_selected:
+            return None
+        return torch.from_numpy(temporal_span_mask_np).to(device=device)
 
     def forward(self, x, timesteps, get_layer_activation=-1, y=None, train_step=None, **unused_kwargs):
         """

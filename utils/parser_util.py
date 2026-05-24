@@ -191,6 +191,18 @@ def add_training_options(parser):
                        help="Probability of sampling each non-root joint into a training-time subtree perturbation. "
                            "Selected joints keep their supervision loss and remain visible to attention, but their x_t "
                            "features are re-noised at an independent timestep to mimic RePaint-style mixed reliability.")
+    group.add_argument("--temporal_span_mask_prob", default=0.0, type=float,
+                       help="Probability of sampling a contiguous training-time temporal span perturbation. "
+                            "Selected frames are re-noised for all real joints to teach native frame inpainting.")
+    group.add_argument("--temporal_span_mask_min_frames", default=4, type=int,
+                       help="Minimum length of each sampled training-time temporal span perturbation.")
+    group.add_argument("--temporal_span_mask_max_frames", default=12, type=int,
+                       help="Maximum length of each sampled training-time temporal span perturbation. "
+                            "Must be >= temporal_span_mask_min_frames.")
+    group.add_argument("--temporal_span_seam_loss_weight", default=0.0, type=float,
+                       help="Additional reconstruction loss weight applied around sampled temporal-span boundaries. Uses a Gaussian seam band centered on each boundary frame. 0 disables it.")
+    group.add_argument("--temporal_span_seam_width", default=2, type=int,
+                       help="Radius of the Gaussian seam band on each side of a sampled temporal-span boundary frame.")
     group.add_argument("--resume_checkpoint", default="", type=str,
                        help="If not empty, will start from the specified checkpoint (path to model###.pt file).")
     group.add_argument("--gen_during_training", action='store_true',

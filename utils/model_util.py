@@ -251,6 +251,9 @@ def get_gmdm_args(args):
             'cross_limb_dim': getattr(args, 'cross_limb_dim', 64),
             'cross_limb_last_n': getattr(args, 'cross_limb_last_n', 0),
             'joint_mask_prob': getattr(args, 'joint_mask_prob', 0.0),
+            'temporal_span_mask_prob': getattr(args, 'temporal_span_mask_prob', 0.0),
+            'temporal_span_mask_min_frames': getattr(args, 'temporal_span_mask_min_frames', 4),
+            'temporal_span_mask_max_frames': getattr(args, 'temporal_span_mask_max_frames', 12),
             'reference_cond': getattr(args, 'reference_cond', False),
             'global_energy_cond': getattr(args, 'global_energy_cond', False),
             'reference_encoder_layers': getattr(args, 'reference_encoder_layers', 1),
@@ -294,4 +297,6 @@ def create_gaussian_diffusion(args):
         rescale_timesteps=rescale_timesteps,
         lambda_geo=args.lambda_geo,
         lambda_vel=getattr(args, 'lambda_vel', 0.0),
+        temporal_span_seam_loss_weight=getattr(args, 'temporal_span_seam_loss_weight', 0.0),
+        temporal_span_seam_width=getattr(args, 'temporal_span_seam_width', 2),
     )

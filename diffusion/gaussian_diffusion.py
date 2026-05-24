@@ -129,6 +129,8 @@ class GaussianDiffusion:
         rescale_timesteps=False,
         lambda_geo=0.,
         lambda_vel=0.,
+        temporal_span_seam_loss_weight=0.0,
+        temporal_span_seam_width=0,
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
@@ -136,6 +138,17 @@ class GaussianDiffusion:
         self.rescale_timesteps = rescale_timesteps
         self.lambda_geo = lambda_geo
         self.lambda_vel = lambda_vel
+        self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
+        self.temporal_span_seam_width = int(temporal_span_seam_width)
+        if self.temporal_span_seam_loss_weight < 0.0:
+            raise ValueError(
+                "temporal_span_seam_loss_weight must be >= 0, got "
+                f"{self.temporal_span_seam_loss_weight}"
+            )
+        if self.temporal_span_seam_width < 0:
+            raise ValueError(
+                f"temporal_span_seam_width must be >= 0, got {self.temporal_span_seam_width}"
+            )
 
         # Use float64 for accuracy.
         betas = np.array(betas, dtype=np.float64)
@@ -224,6 +237,76 @@ class GaussianDiffusion:
         loss = sum_flat(weighted_loss)
         denom = sum_flat(weights.float()) * a.size(2)
         return loss / (denom + 1e-8)
+
+    def _normalize_temporal_span_time_mask(self, temporal_span_mask):
+        if temporal_span_mask is None:
+            return None
+        if temporal_span_mask.dim() == 3:
+            return temporal_span_mask.any(dim=1)
+        if temporal_span_mask.dim() == 2:
+            return temporal_span_mask
+        raise ValueError(
+            "temporal_span_mask must have shape (B, J, T) or (B, T), got "
+            f"{tuple(temporal_span_mask.shape)}"
+        )
+
+    def _build_temporal_span_seam_weights(self, temporal_span_mask, lengths):
+        if (
+            temporal_span_mask is None
+            or self.temporal_span_seam_width <= 0
+        ):
+            return None
+
+        temporal_span_time = self._normalize_temporal_span_time_mask(temporal_span_mask)
+
+        batch_size, n_frames = temporal_span_time.shape
+        seam_weights = th.zeros(
+            (batch_size, 1, 1, n_frames),
+            device=temporal_span_time.device,
+            dtype=th.float32,
+        )
+        lengths_long = th.as_tensor(
+            lengths, device=temporal_span_time.device, dtype=th.long
+        ).reshape(-1)
+        band = int(self.temporal_span_seam_width)
+        # Treat seam_width as an approximately 2-sigma support radius so the
+        # boundary frame remains dominant while nearby frames still contribute.
+        sigma = max(float(band) / 2.0, 1e-6)
+
+        for batch_index in range(batch_size):
+            valid_frames = min(int(lengths_long[batch_index].item()), n_frames)
+            if valid_frames <= 0:
+                continue
+            sample_mask = temporal_span_time[batch_index, :valid_frames]
+            if not bool(sample_mask.any()):
+                continue
+
+            prev_mask = th.zeros_like(sample_mask)
+            prev_mask[1:] = sample_mask[:-1]
+            next_mask = th.zeros_like(sample_mask)
+            next_mask[:-1] = sample_mask[1:]
+            boundaries = th.cat(
+                [
+                    th.nonzero(sample_mask & ~prev_mask, as_tuple=False).flatten(),
+                    th.nonzero(sample_mask & ~next_mask, as_tuple=False).flatten(),
+                ],
+                dim=0,
+            )
+            for boundary in boundaries.tolist():
+                left = max(0, boundary - band)
+                right = min(valid_frames, boundary + band + 1)
+                local_indices = th.arange(left, right, device=temporal_span_time.device)
+                boundary_weights = th.exp(
+                    -0.5 * ((local_indices.float() - float(boundary)) / sigma) ** 2
+                )
+                seam_weights[batch_index, 0, 0, left:right] = th.maximum(
+                    seam_weights[batch_index, 0, 0, left:right],
+                    boundary_weights,
+                )
+
+        if not bool((seam_weights > 0).any()):
+            return None
+        return seam_weights
 
     def quat_to_mat(self, qs):
         r = qs[..., 0]
@@ -1674,31 +1757,63 @@ class GaussianDiffusion:
     def _apply_joint_mask_training_perturbation(
         self, model, x_start, x_t, t, model_kwargs
     ):
-        """Re-noise selected joints without altering attention masks.
+        """Re-noise selected joints / spans without altering attention masks.
 
-        AnyTop's training-time joint mask is meant to mimic RePaint's mixed
-        per-joint noise distribution at the model input, not to hide joints
-        from attention. The selected joints keep participating in attention;
-        only their x_t features are replaced by q_sample(x_0, t_random).
+        Training-time structured corruption is meant to mimic RePaint's mixed
+        reliability at the model input, not to hide tokens from attention.
+        The selected joints / frames keep participating in attention; only
+        their x_t features are replaced by q_sample(x_0, t_random).
         """
         y = model_kwargs.get('y') if model_kwargs is not None else None
         model_for_hooks = self._unwrap_model_for_training_hooks(model)
-        if not hasattr(model_for_hooks, 'sample_subtree_joint_mask_train'):
-            if y is not None:
-                y.pop('cross_limb_unreliable_mask', None)
-            return x_t
 
-        subtree_mask = model_for_hooks.sample_subtree_joint_mask_train(
-            model_kwargs.get('y', {}), x_t.shape[1], x_t.device
-        )
-        if subtree_mask is None:
+        subtree_mask = None
+        if hasattr(model_for_hooks, 'sample_subtree_joint_mask_train'):
+            subtree_mask = model_for_hooks.sample_subtree_joint_mask_train(
+                model_kwargs.get('y', {}), x_t.shape[1], x_t.device
+            )
+
+        temporal_span_mask = None
+        if hasattr(model_for_hooks, 'sample_temporal_span_mask_train'):
+            temporal_span_mask = model_for_hooks.sample_temporal_span_mask_train(
+                model_kwargs.get('y', {}), x_t.shape[1], x_t.shape[-1], x_t.device
+            )
+
+        corruption_mask = None
+        if subtree_mask is not None:
+            subtree_mask = subtree_mask.to(device=x_t.device, dtype=th.bool)
+            expected_subtree_shape = (x_t.shape[0], x_t.shape[1])
+            if subtree_mask.shape != expected_subtree_shape:
+                raise ValueError(
+                    "sample_subtree_joint_mask_train must return shape "
+                    f"{expected_subtree_shape}, got {tuple(subtree_mask.shape)}"
+                )
+            corruption_mask = subtree_mask[:, :, None].expand(-1, -1, x_t.shape[-1])
+
+        if temporal_span_mask is not None:
+            temporal_span_mask = temporal_span_mask.to(device=x_t.device, dtype=th.bool)
+            if temporal_span_mask.dim() == 2:
+                temporal_span_mask = temporal_span_mask[:, None, :].expand(-1, x_t.shape[1], -1)
+            expected_temporal_shape = (x_t.shape[0], x_t.shape[1], x_t.shape[-1])
+            if temporal_span_mask.shape != expected_temporal_shape:
+                raise ValueError(
+                    "sample_temporal_span_mask_train must return shape "
+                    f"{expected_temporal_shape} or (B, T), got {tuple(temporal_span_mask.shape)}"
+                )
+            corruption_mask = (
+                temporal_span_mask
+                if corruption_mask is None
+                else (corruption_mask | temporal_span_mask)
+            )
+
+        if corruption_mask is None:
             if y is not None:
                 y.pop('cross_limb_unreliable_mask', None)
-            return x_t
+            return x_t, temporal_span_mask
 
         if y is not None:
-            y['cross_limb_unreliable_mask'] = subtree_mask[:, None, :].to(dtype=x_t.dtype).expand(
-                -1, x_t.shape[-1], -1
+            y['cross_limb_unreliable_mask'] = corruption_mask.transpose(1, 2).to(
+                dtype=x_t.dtype
             ).contiguous()
 
         t_random = th.randint(
@@ -1706,7 +1821,7 @@ class GaussianDiffusion:
         )
         fresh_noise = th.randn_like(x_start)
         x_t_random = self.q_sample(x_start, t_random, noise=fresh_noise)
-        return th.where(subtree_mask[:, :, None, None], x_t_random, x_t)
+        return th.where(corruption_mask[:, :, None, :], x_t_random, x_t), temporal_span_mask
 
     @staticmethod
     def _unwrap_model_for_training_hooks(model):
@@ -1820,7 +1935,7 @@ class GaussianDiffusion:
         # batch sample, which is exactly what RePaint clamping produces at
         # inference (clamped joints are at a fixed reference's q_sample state
         # that's uncorrelated with the in-flight masked joint's trajectory).
-        x_t = self._apply_joint_mask_training_perturbation(
+        x_t, temporal_span_mask = self._apply_joint_mask_training_perturbation(
             model, x_start, x_t, t, model_kwargs
         )
         self._build_reference_conditioning(model, x_start, model_kwargs)
@@ -1887,6 +2002,27 @@ class GaussianDiffusion:
                     target_fp32, model_output_fp32, mask_fp32, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
                 )
                 terms["loss"] = terms["l_simple"].clone()
+
+                temporal_span_seam_weights = self._build_temporal_span_seam_weights(
+                    temporal_span_mask, lengths
+                )
+                if (
+                    self.temporal_span_seam_loss_weight > 0.0
+                    and temporal_span_seam_weights is not None
+                ):
+                    seam_weights = (
+                        temporal_span_seam_weights
+                        * mask_fp32
+                        * joints_padding_mask_fp32.transpose(1, 3)
+                    )
+                    if bool(seam_weights.any()):
+                        terms["temporal_span_seam_loss"] = self.weighted_feature_l2(
+                            target_fp32, model_output_fp32, seam_weights
+                        )
+                        terms["loss"] = (
+                            terms["loss"]
+                            + self.temporal_span_seam_loss_weight * terms["temporal_span_seam_loss"]
+                        )
 
                 target_denorm = (target_fp32 * std_fp32) + mean_fp32
                 model_output_denorm = (model_output_fp32 * std_fp32) + mean_fp32
