@@ -1296,7 +1296,9 @@ def main(args=None, cond_dict=None):
             output_frame_count,
             args.temporal_window,
             max_joints=opt.max_joints,
-            feature_len=opt.feature_len
+            feature_len=opt.feature_len,
+            loop=getattr(args, 'loop', False),
+            loop_temporal_mode=getattr(args, 'loop_temporal_mode', 'linear'),
         )
         if global_energy_condition is not None:
             model_kwargs['y']['global_energy_cond'] = global_energy_condition.clone()
@@ -1611,10 +1613,11 @@ def build_inpaint_mask(
     return mask_t
 
 
-def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joints, feature_len):
+def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joints, feature_len, loop=False, loop_temporal_mode='linear'):
     """Build model_kwargs for a batch of object_types.
     """
     batches = list()
+    circular_mask = bool(loop) and loop_temporal_mode in ('circular_mask', 'both')
     for object_type in object_types:
         if object_type not in cond_dict:
             available = ', '.join(sorted(cond_dict.keys()))
@@ -1638,7 +1641,7 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joi
         batch.append(parents)
         batch.append(tpos_first_frame)
         batch.append(offsets)
-        batch.append(create_temporal_mask_for_window(temporal_window, n_frames))
+        batch.append(create_temporal_mask_for_window(temporal_window, n_frames, circular=circular_mask))
         batch.append(joints_graph_dist)
         batch.append(joint_relations)
         batch.append(object_type)
@@ -1647,6 +1650,11 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joi
         batch.append(mean)
         batch.append(std)
         batch.append(max_joints)
+        batch.append({
+            'is_loop': bool(loop),
+            'loop_full_cycle': bool(loop),
+            'translation_root_index': cond_dict[object_type].get('translation_root_index', 0),
+        })
         batch.append(object_type)
         batches.append(batch)
 

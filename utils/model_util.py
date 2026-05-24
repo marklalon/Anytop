@@ -256,6 +256,8 @@ def get_gmdm_args(args):
             'temporal_span_mask_max_frames': getattr(args, 'temporal_span_mask_max_frames', 12),
             'reference_cond': getattr(args, 'reference_cond', False),
             'global_energy_cond': getattr(args, 'global_energy_cond', False),
+            'loop_cond': getattr(args, 'loop_cond', False),
+            'loop_temporal_mode': getattr(args, 'loop_temporal_mode', 'linear'),
             'reference_encoder_layers': getattr(args, 'reference_encoder_layers', 1),
             'reference_cond_prob': getattr(args, 'reference_cond_prob', 0.5),
             'reference_residual_gate': getattr(args, 'reference_residual_gate', 1.0),
@@ -297,6 +299,8 @@ def create_gaussian_diffusion(args):
         rescale_timesteps=rescale_timesteps,
         lambda_geo=args.lambda_geo,
         lambda_vel=getattr(args, 'lambda_vel', 0.0),
+        lambda_loop_wrap=getattr(args, 'lambda_loop_wrap', 0.0),
+        loop_wrap_frames=getattr(args, 'loop_wrap_frames', 4),
         temporal_span_seam_loss_weight=getattr(args, 'temporal_span_seam_loss_weight', 0.0),
         temporal_span_seam_width=getattr(args, 'temporal_span_seam_width', 2),
     )

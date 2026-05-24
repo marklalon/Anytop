@@ -52,7 +52,21 @@ class BackgroundPrefetchLoader:
 def get_dataset_class(name):
     return Truebones
 
-def get_dataset(num_frames, split='train', temporal_window=31, balanced=False, objects_subset="all", sample_limit=0, action_tags='', motion_cache_size=0):
+def get_dataset(
+    num_frames,
+    split='train',
+    temporal_window=31,
+    balanced=False,
+    objects_subset="all",
+    sample_limit=0,
+    action_tags='',
+    motion_cache_size=0,
+    aug_speed_range=0.0,
+    aug_mirror_prob=0.0,
+    aug_loop_roll_prob=0.0,
+    loop_train_cycle_resample=False,
+    loop_temporal_mode='linear',
+):
     dataset = Truebones(
         split=split,
         num_frames=num_frames,
@@ -62,10 +76,36 @@ def get_dataset(num_frames, split='train', temporal_window=31, balanced=False, o
         sample_limit=sample_limit,
         action_tags=action_tags,
         motion_cache_size=motion_cache_size,
+        aug_speed_range=aug_speed_range,
+        aug_mirror_prob=aug_mirror_prob,
+        aug_loop_roll_prob=aug_loop_roll_prob,
+        loop_train_cycle_resample=loop_train_cycle_resample,
+        loop_temporal_mode=loop_temporal_mode,
     )
     return dataset
 
-def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31, balanced=True, objects_subset="all", num_workers=None, prefetch_factor=2, sample_limit=0, shuffle=True, drop_last=True, action_tags='', motion_cache_size=0, main_process_prefetch_batches=0, batch_transform=None):
+def get_dataset_loader(
+    batch_size,
+    num_frames,
+    split='train',
+    temporal_window=31,
+    balanced=True,
+    objects_subset="all",
+    num_workers=None,
+    prefetch_factor=2,
+    sample_limit=0,
+    shuffle=True,
+    drop_last=True,
+    action_tags='',
+    motion_cache_size=0,
+    main_process_prefetch_batches=0,
+    batch_transform=None,
+    aug_speed_range=0.0,
+    aug_mirror_prob=0.0,
+    aug_loop_roll_prob=0.0,
+    loop_train_cycle_resample=False,
+    loop_temporal_mode='linear',
+):
     # Always use main thread (num_workers=0) - multi-worker paths removed
     dataset = get_dataset(
         num_frames=num_frames,
@@ -76,6 +116,11 @@ def get_dataset_loader(batch_size, num_frames, split='train', temporal_window=31
         sample_limit=sample_limit,
         action_tags=action_tags,
         motion_cache_size=motion_cache_size,
+        aug_speed_range=aug_speed_range,
+        aug_mirror_prob=aug_mirror_prob,
+        aug_loop_roll_prob=aug_loop_roll_prob,
+        loop_train_cycle_resample=loop_train_cycle_resample,
+        loop_temporal_mode=loop_temporal_mode,
     )
     collate = truebones_batch_collate
     sampler = None

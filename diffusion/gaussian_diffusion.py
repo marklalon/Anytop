@@ -129,6 +129,8 @@ class GaussianDiffusion:
         rescale_timesteps=False,
         lambda_geo=0.,
         lambda_vel=0.,
+        lambda_loop_wrap=0.,
+        loop_wrap_frames=4,
         temporal_span_seam_loss_weight=0.0,
         temporal_span_seam_width=0,
     ):
@@ -138,8 +140,14 @@ class GaussianDiffusion:
         self.rescale_timesteps = rescale_timesteps
         self.lambda_geo = lambda_geo
         self.lambda_vel = lambda_vel
+        self.lambda_loop_wrap = float(lambda_loop_wrap)
+        self.loop_wrap_frames = int(loop_wrap_frames)
         self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
         self.temporal_span_seam_width = int(temporal_span_seam_width)
+        if self.lambda_loop_wrap < 0.0:
+            raise ValueError(f"lambda_loop_wrap must be >= 0, got {self.lambda_loop_wrap}")
+        if self.loop_wrap_frames < 1:
+            raise ValueError(f"loop_wrap_frames must be >= 1, got {self.loop_wrap_frames}")
         if self.temporal_span_seam_loss_weight < 0.0:
             raise ValueError(
                 "temporal_span_seam_loss_weight must be >= 0, got "
@@ -360,6 +368,115 @@ class GaussianDiffusion:
         valid = temp_shifted.float() * spat_mask.float().transpose(1, 3)        # [bs, njoints, 1, nframes-1]
         loss_val = (loss * valid).sum() / (valid.sum() * 3).clamp(min=1)
         return loss_val
+
+    def _coerce_bool_batch(self, value, batch_size, device, default=False):
+        if value is None:
+            return th.full((batch_size,), bool(default), device=device, dtype=th.bool)
+        value = th.as_tensor(value, device=device, dtype=th.bool).reshape(-1)
+        if value.numel() == 1 and batch_size != 1:
+            value = value.expand(batch_size)
+        elif value.numel() != batch_size:
+            raise ValueError(
+                f"Boolean batch value has length {value.numel()} but expected {batch_size}."
+            )
+        return value
+
+    def _coerce_index_batch(self, value, batch_size, device):
+        if value is None:
+            return th.zeros(batch_size, device=device, dtype=th.long)
+        if torch.is_tensor(value):
+            result = value.to(device=device, dtype=th.long).reshape(-1)
+        else:
+            result = th.as_tensor([
+                0 if item is None else int(item)
+                for item in value
+            ], device=device, dtype=th.long).reshape(-1)
+        if result.numel() == 1 and batch_size != 1:
+            result = result.expand(batch_size)
+        elif result.numel() != batch_size:
+            raise ValueError(
+                f"translation_root_index has length {result.numel()} but expected {batch_size}."
+            )
+        return result
+
+    def loop_wrap_loss(self, model_output, y, lengths, n_joints):
+        batch_size, max_joints, n_feats, n_frames = model_output.shape
+        device = model_output.device
+        is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
+        loop_full_cycle = self._coerce_bool_batch(y.get('loop_full_cycle'), batch_size, device, default=False)
+        active = is_loop & loop_full_cycle
+        if not bool(active.any()):
+            zero = model_output.new_zeros(())
+            return {
+                'loop_wrap_loss': zero,
+                'loop_wrap_pose': zero,
+                'loop_wrap_rot': zero,
+                'loop_wrap_vel': zero,
+                'loop_wrap_contact': zero,
+                'loop_wrap_terminal_vel': zero,
+            }
+
+        lengths_long = th.as_tensor(lengths, device=device, dtype=th.long).reshape(-1)
+        n_joints_long = th.as_tensor(n_joints, device=device, dtype=th.long).reshape(-1)
+        root_indices = self._coerce_index_batch(y.get('translation_root_index'), batch_size, device)
+        zero = model_output.new_zeros(())
+        pose_terms = []
+        rot_terms = []
+        vel_terms = []
+        contact_terms = []
+        terminal_vel_terms = []
+
+        for batch_index in range(batch_size):
+            valid_frames = min(int(lengths_long[batch_index].item()), n_frames)
+            valid_joints = min(int(n_joints_long[batch_index].item()), max_joints)
+            wrap_frames = min(int(self.loop_wrap_frames), valid_frames // 2)
+            if not bool(active[batch_index]) or valid_frames < 2 or valid_joints <= 0 or wrap_frames <= 0:
+                continue
+
+            sample = model_output[batch_index:batch_index + 1, :valid_joints, :, :valid_frames]
+            pose_first = sample[:, :, 0:3, 0:1]
+            pose_last = sample[:, :, 0:3, valid_frames - 1:valid_frames]
+            pose_weight = th.ones_like(pose_first)
+            root_index = int(root_indices[batch_index].item())
+            if 0 <= root_index < valid_joints:
+                pose_weight[:, root_index, 0, :] = 0.0
+                pose_weight[:, root_index, 2, :] = 0.0
+            pose_denom = pose_weight.sum().clamp(min=1.0)
+            pose_terms.append((((pose_first - pose_last) ** 2) * pose_weight).sum() / pose_denom)
+
+            rot_first = sample[:, :, 3:9, 0:1].permute(0, 3, 1, 2)
+            rot_last = sample[:, :, 3:9, valid_frames - 1:valid_frames].permute(0, 3, 1, 2)
+            rots_first = rotation_6d_to_matrix_safe(rot_first)
+            rots_last = rotation_6d_to_matrix_safe(rot_last)
+            rot_terms.append(geodesic_distance(rots_last, rots_first).mean())
+
+            if n_feats >= 12:
+                pos_first_frame = sample[:, :, 0:3, 0]
+                pos_last_frame = sample[:, :, 0:3, valid_frames - 1]
+                terminal_vel = sample[:, :, 9:12, valid_frames - 1]
+                terminal_vel_loss = ((pos_first_frame - pos_last_frame - terminal_vel) ** 2).mean()
+                vel_terms.append(terminal_vel_loss)
+                terminal_vel_terms.append(terminal_vel_loss)
+
+        def _mean_or_zero(values):
+            if not values:
+                return zero
+            return th.stack(values).mean()
+
+        pose_loss = _mean_or_zero(pose_terms)
+        rot_loss = _mean_or_zero(rot_terms)
+        vel_loss = _mean_or_zero(vel_terms)
+        contact_loss = _mean_or_zero(contact_terms)
+        terminal_vel_loss = _mean_or_zero(terminal_vel_terms)
+        total = pose_loss + rot_loss + vel_loss + contact_loss
+        return {
+            'loop_wrap_loss': total,
+            'loop_wrap_pose': pose_loss,
+            'loop_wrap_rot': rot_loss,
+            'loop_wrap_vel': vel_loss,
+            'loop_wrap_contact': contact_loss,
+            'loop_wrap_terminal_vel': terminal_vel_loss,
+        }
 
     def q_mean_variance(self, x_start, t):
         """
@@ -1805,6 +1922,17 @@ class GaussianDiffusion:
                         model_output_denorm, mask_fp32, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
                     )
                     terms["loss"] = terms["loss"] + self.lambda_vel * terms["vel_loss"]
+
+                if self.lambda_loop_wrap > 0.0:
+                    y = model_kwargs.get('y', {}) if isinstance(model_kwargs, dict) else {}
+                    loop_terms = self.loop_wrap_loss(
+                        model_output_denorm,
+                        y,
+                        lengths,
+                        actual_joints,
+                    )
+                    terms.update(loop_terms)
+                    terms["loss"] = terms["loss"] + self.lambda_loop_wrap * terms["loop_wrap_loss"]
 
         else:
             raise NotImplementedError(self.loss_type)

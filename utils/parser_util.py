@@ -93,6 +93,18 @@ def add_model_options(parser):
                        help="Weight for velocity-position consistency loss (0.0=off)."
                             " Penalizes |pos[t+1]-pos[t] - vel[t]|^2 on denormalized outputs."
                             " Couples position and velocity feature groups to prevent independent memorization.")
+    group.add_argument("--lambda_loop_wrap", default=0.0, type=float,
+                       help="Weight for loop-only wrap loss on denormalized pose/rotation/velocity/contact channels.")
+    group.add_argument("--loop_wrap_frames", default=4, type=int,
+                       help="Number of frames at each clip boundary used by loop wrap loss.")
+    group.add_argument("--loop_cond", action='store_true',
+                       help="Enable an explicit boolean loop-condition embedding in the model.")
+    group.add_argument("--loop_temporal_mode", default='linear', choices=['linear', 'circular_mask', 'circular_phase', 'both'], type=str,
+                       help="Loop-aware temporal inductive bias: keep linear behavior, use circular masks, circular phase embeddings, or both.")
+    group.add_argument("--aug_loop_roll_prob", default=0.0, type=float,
+                       help="Probability of circularly rolling prepared loop clips during training.")
+    group.add_argument("--loop_train_cycle_resample", action='store_true',
+                       help="For loop clips, resample the full stored period to num_frames before circular roll and wrap supervision.")
     group.add_argument("--t5_out_dim", default=0, type=int, help=argparse.SUPPRESS)
     group.add_argument("--temporal_window", default=31, type=int,
                        help="temporal window size")
@@ -238,6 +250,8 @@ def add_sampling_options(parser):
                        help="Autocast precision for inference. fp32 = full precision (default). "
                             "bf16 = selective autocast on linear / attention / conv modules; "
                             "softmax stays fp32. Requires a CUDA device with bf16 support (Ampere+).")
+    group.add_argument("--loop", action='store_true',
+                       help="Generate with loop conditioning and loop-aware temporal masks when supported by the checkpoint.")
 
 
 def add_generate_options(parser):

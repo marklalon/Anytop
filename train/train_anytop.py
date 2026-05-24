@@ -123,6 +123,11 @@ def create_training_data_loader(args):
         action_tags=getattr(args, 'action_tags', ''),
         motion_cache_size=getattr(args, 'motion_cache_size', 0),
         main_process_prefetch_batches=getattr(args, 'main_process_prefetch_batches', 0),
+        aug_speed_range=getattr(args, 'aug_speed_range', 0.0),
+        aug_mirror_prob=getattr(args, 'aug_mirror_prob', 0.0),
+        aug_loop_roll_prob=getattr(args, 'aug_loop_roll_prob', 0.0),
+        loop_train_cycle_resample=getattr(args, 'loop_train_cycle_resample', False),
+        loop_temporal_mode=getattr(args, 'loop_temporal_mode', 'linear'),
     )
 
 def run_training(args):

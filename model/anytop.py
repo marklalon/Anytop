@@ -56,6 +56,8 @@ class AnyTop(nn.Module):
         self.temporal_span_mask_max_frames=int(kargs.get('temporal_span_mask_max_frames', 12))
         self.reference_cond=bool(kargs.get('reference_cond', False))
         self.global_energy_cond=bool(kargs.get('global_energy_cond', False))
+        self.loop_cond=bool(kargs.get('loop_cond', False))
+        self.loop_temporal_mode=str(kargs.get('loop_temporal_mode', 'linear'))
         self.reference_encoder_layers=int(kargs.get('reference_encoder_layers', 1))
         self.reference_cond_prob=float(kargs.get('reference_cond_prob', 0.5))
         self.reference_residual_gate=float(kargs.get('reference_residual_gate', 1.0))
@@ -99,6 +101,8 @@ class AnyTop(nn.Module):
             raise ValueError(
                 f"reference_token_noise_std must be >= 0, got {self.reference_token_noise_std}"
             )
+        if self.loop_temporal_mode not in ('linear', 'circular_mask', 'circular_phase', 'both'):
+            raise ValueError(f"Unsupported loop_temporal_mode: {self.loop_temporal_mode}")
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, dropout_prob=self.dropout)
         if self.reference_cond:
             self.reference_encoder = ReferencePriorEncoder(
@@ -127,6 +131,14 @@ class AnyTop(nn.Module):
             self.register_buffer('global_energy_running_count', torch.zeros((), dtype=torch.long))
         else:
             self.global_energy_projection = None
+        if self.loop_cond:
+            self.loop_condition_projection = nn.Sequential(
+                nn.Linear(1, self.latent_dim),
+                nn.GELU(),
+                nn.Linear(self.latent_dim, self.latent_dim),
+            )
+        else:
+            self.loop_condition_projection = None
 
         seqTransDecoderLayer = GraphMotionDecoderLayer(d_model=self.latent_dim,
                                                             nhead=self.num_heads,
@@ -218,6 +230,24 @@ class AnyTop(nn.Module):
         running_std = torch.sqrt(self.global_energy_running_var.to(device=device, dtype=dtype).clamp_min(1e-6))
         normalized_global_energy = (raw_global_energy_cond - running_mean.unsqueeze(0)) / running_std.unsqueeze(0)
         return self.global_energy_projection(normalized_global_energy)
+
+    def _coerce_loop_condition(self, raw_loop_cond, batch_size, device, dtype):
+        if raw_loop_cond is None:
+            raw_loop_cond = torch.zeros(batch_size, device=device, dtype=dtype)
+        elif not torch.is_tensor(raw_loop_cond):
+            raw_loop_cond = torch.as_tensor(raw_loop_cond, device=device)
+        raw_loop_cond = raw_loop_cond.to(device=device)
+        if raw_loop_cond.dim() == 0:
+            raw_loop_cond = raw_loop_cond.reshape(1)
+        raw_loop_cond = raw_loop_cond.reshape(-1)
+        if raw_loop_cond.numel() == 1 and batch_size != 1:
+            raw_loop_cond = raw_loop_cond.expand(batch_size)
+        elif raw_loop_cond.numel() != batch_size:
+            raise ValueError(
+                "is_loop batch dimension must match the motion batch size, got "
+                f"{raw_loop_cond.numel()} for batch {batch_size}"
+            )
+        return raw_loop_cond.to(dtype=dtype).view(batch_size, 1)
 
     def sample_subtree_joint_mask_train(self, y, njoints, device):
         """Select subtrees of joints to perturb during training (governed by
@@ -367,6 +397,27 @@ class AnyTop(nn.Module):
         # cross-joint pathway to denoise robustly against per-joint timestep
         # disagreement (matching RePaint clamp behavior at inference).
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
+        if self.loop_cond:
+            loop_condition = self._coerce_loop_condition(
+                y.get('is_loop'),
+                batch_size=bs,
+                device=x.device,
+                dtype=x.dtype,
+            )
+            timesteps_emb = timesteps_emb + self.loop_condition_projection(loop_condition)
+
+        loop_phase_mask = None
+        if self.loop_temporal_mode in ('circular_phase', 'both'):
+            raw_loop_phase_mask = y.get('is_loop')
+            if raw_loop_phase_mask is not None:
+                loop_phase_mask = torch.as_tensor(raw_loop_phase_mask, device=x.device, dtype=torch.bool).reshape(-1)
+                if loop_phase_mask.numel() == 1 and bs != 1:
+                    loop_phase_mask = loop_phase_mask.expand(bs)
+                elif loop_phase_mask.numel() != bs:
+                    raise ValueError(
+                        "is_loop batch dimension must match the motion batch size, got "
+                        f"{loop_phase_mask.numel()} for batch {bs}"
+                    )
 
         x = self.input_process(x, tpos_first_frame, y['joints_names_embs']) # applies linear layer on each frame to convert it to latent dim
         spatial_mask = (1.0 - joints_padding_mask[:, 0, 0, 1:, 1:].float()) * -1e4
@@ -475,6 +526,8 @@ class AnyTop(nn.Module):
             temporal_template=temporal_template,
             cross_limb_unreliable_mask=cross_limb_unreliable_mask,
             reference_batch_mask=reference_batch_mask,
+            loop_phase_mask=loop_phase_mask,
+            lengths=y.get('lengths'),
         )
         if get_layer_activation > -1 and get_layer_activation < self.num_layers:
             activations = output[1]

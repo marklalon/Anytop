@@ -92,13 +92,43 @@ def get_motion_parents(motion):
     return parents
 
 """ create temporal mask template for window size"""
-def create_temporal_mask_for_window(window, max_len):
+def create_temporal_mask_for_window(window, max_len, circular=False):
     margin = window // 2
     mask = torch.zeros(max_len+1, max_len+1)
     mask[:, 0] = 1
     for i in range(max_len+1):
-        mask[i, max(0, i - margin):min(max_len + 1, i + margin + 2)] = 1
+        if circular and i > 0 and max_len > 0:
+            for delta in range(-margin, margin + 2):
+                j = ((i - 1 + delta) % max_len) + 1
+                mask[i, j] = 1
+        else:
+            mask[i, max(0, i - margin):min(max_len + 1, i + margin + 2)] = 1
     return mask
+
+
+def _periodic_resample_motion(motion, target_num_frames):
+    source_frames = int(motion.shape[0])
+    target_num_frames = int(target_num_frames)
+    if source_frames <= 0:
+        raise ValueError("Cannot resample an empty loop motion.")
+    if target_num_frames <= 0:
+        raise ValueError(f"target_num_frames must be positive, got {target_num_frames}.")
+    if source_frames == target_num_frames:
+        return motion
+
+    src = np.linspace(0.0, float(source_frames - 1), target_num_frames, endpoint=True, dtype=np.float32)
+    lo = np.floor(src).astype(np.int64).clip(0, source_frames - 1)
+    hi = np.minimum(lo + 1, source_frames - 1)
+    w = (src - np.floor(src))[:, None, None].astype(np.float32)
+    return (motion[lo] * (1.0 - w) + motion[hi] * w).astype(motion.dtype, copy=False)
+
+
+def _circular_roll_motion(motion, offset):
+    length = int(motion.shape[0])
+    if length <= 0:
+        return motion
+    indices = (np.arange(length, dtype=np.int64) + int(offset)) % length
+    return motion[indices]
 
 
 _JOINT_MASK_SKIP_TOKENS = {
@@ -537,7 +567,13 @@ class MotionDataset(data.Dataset):
         self.max_available_length = int(self.length_arr.max()) if len(self.length_arr) > 0 else 0
         self.data_dict = data_dict
         self.name_list = name_list
+        self.loop_temporal_mode = str(getattr(self.opt, 'loop_temporal_mode', 'linear'))
         self.temporal_mask_template = create_temporal_mask_for_window(self.temporal_window, self.max_motion_length)
+        self.circular_temporal_mask_template = create_temporal_mask_for_window(
+            self.temporal_window,
+            self.max_motion_length,
+            circular=True,
+        )
         self.reset_min_len(self.min_length)
 
     def reset_min_len(self, length):
@@ -552,10 +588,21 @@ class MotionDataset(data.Dataset):
         std = self.cond_dict[y['object_type']]['std']
         return x * std + mean
 
-    def _get_temporal_mask(self, target_num_frames):
+    def _get_temporal_mask(self, target_num_frames, circular=False):
         if int(target_num_frames) == int(self.max_motion_length):
-            return self.temporal_mask_template
-        return create_temporal_mask_for_window(self.temporal_window, int(target_num_frames))
+            return self.circular_temporal_mask_template if circular else self.temporal_mask_template
+        return create_temporal_mask_for_window(self.temporal_window, int(target_num_frames), circular=circular)
+
+    def _sample_loop_offset(self, length, loop_offset=None):
+        length = int(length)
+        if length <= 0:
+            return 0
+        if loop_offset is None:
+            return random.randint(0, length - 1)
+        offset = int(loop_offset)
+        if offset < 0 or offset >= length:
+            raise ValueError(f"loop_offset={offset} is invalid for loop motion with length={length}.")
+        return offset
 
     def prepare_sample_by_name(self, name, target_num_frames=None, crop_start=None, loop_offset=None):
         if name not in self.data_dict:
@@ -583,6 +630,21 @@ class MotionDataset(data.Dataset):
         motion_metadata = _copy_required_motion_metadata(name, data.get('motion_metadata'))
         ind = 0
         loop_applied = False
+        loop_full_cycle = False
+        is_loop = bool(motion_metadata.get('is_loop'))
+        loop_roll_prob = float(getattr(self.opt, 'aug_loop_roll_prob', 0.0) or 0.0)
+        loop_train_cycle_resample = bool(getattr(self.opt, 'loop_train_cycle_resample', False))
+        should_roll_loop = loop_offset is not None or (loop_roll_prob > 0.0 and random.random() < loop_roll_prob)
+
+        if is_loop and loop_train_cycle_resample and m_length > 0:
+            motion = _periodic_resample_motion(motion, target_num_frames)
+            m_length = target_num_frames
+            loop_full_cycle = True
+            if should_roll_loop:
+                offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
+                motion = _circular_roll_motion(motion, offset)
+                loop_applied = True
+
         if m_length > target_num_frames:
             max_start = m_length - target_num_frames
             if crop_start is None:
@@ -600,14 +662,8 @@ class MotionDataset(data.Dataset):
             pad_frames = target_num_frames - m_length
             if motion_metadata.get('is_loop') and m_length > 0:
                 loop_applied = True
-                if loop_offset is None:
-                    offset = random.randint(0, m_length - 1)
-                else:
-                    offset = int(loop_offset)
-                    if offset < 0 or offset >= m_length:
-                        raise ValueError(
-                            f"loop_offset={offset} is invalid for loop motion '{name}' with length={m_length}."
-                        )
+                loop_full_cycle = True
+                offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
                 loop_indices = (np.arange(target_num_frames, dtype=np.int64) + offset) % m_length
                 motion = motion[loop_indices]
                 m_length = target_num_frames
@@ -616,8 +672,17 @@ class MotionDataset(data.Dataset):
                                          motion,
                                          np.zeros((pad_frames, motion.shape[1], motion.shape[2]), dtype=motion.dtype)
                                          ], axis=0)
+        elif is_loop and m_length == target_num_frames:
+            loop_full_cycle = True
+            if should_roll_loop and not loop_applied:
+                offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
+                motion = _circular_roll_motion(motion, offset)
+                loop_applied = True
 
-        temporal_mask = self._get_temporal_mask(target_num_frames)
+        motion_metadata['is_loop'] = bool(is_loop)
+        motion_metadata['loop_full_cycle'] = bool(loop_full_cycle)
+        circular_mask = self.loop_temporal_mode in ('circular_mask', 'both') and bool(loop_full_cycle)
+        temporal_mask = self._get_temporal_mask(target_num_frames, circular=circular_mask)
 
         if return_aug_info:
             aug_info = dict(aug_info)
@@ -771,6 +836,11 @@ class Truebones(data.Dataset):
         self.sample_limit = kwargs.get('sample_limit', 0)
         self.motion_cache_size = kwargs.get('motion_cache_size', 0)
         self.opt.motion_cache_size = self.motion_cache_size
+        self.opt.aug_speed_range = kwargs.get('aug_speed_range', 0.0)
+        self.opt.aug_mirror_prob = kwargs.get('aug_mirror_prob', 0.0)
+        self.opt.aug_loop_roll_prob = kwargs.get('aug_loop_roll_prob', 0.0)
+        self.opt.loop_train_cycle_resample = kwargs.get('loop_train_cycle_resample', False)
+        self.opt.loop_temporal_mode = kwargs.get('loop_temporal_mode', 'linear')
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
         cond_dict = refresh_joint_metadata_in_cond_dict(cond_dict)
         # Support both predefined subsets and single species names

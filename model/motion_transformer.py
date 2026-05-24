@@ -296,6 +296,73 @@ def _sin_time_embedding(
     return emb
 
 
+def _circular_phase_embedding(
+    length: int,
+    dim: int,
+    batch_size: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    lengths: Optional[Tensor] = None,
+) -> Tensor:
+    if length <= 0:
+        raise ValueError(f"length must be positive, got {length}")
+    emb = torch.zeros((length, batch_size, dim), device=device, dtype=dtype)
+    motion_frames = max(length - 1, 0)
+    half_dim = dim // 2
+    if motion_frames <= 0 or half_dim == 0:
+        return emb
+
+    if lengths is None:
+        lengths_t = torch.full((batch_size,), max(motion_frames - 1, 1), device=device, dtype=dtype)
+    else:
+        lengths_t = torch.as_tensor(lengths, device=device, dtype=dtype).reshape(-1)
+        if lengths_t.numel() == 1 and batch_size != 1:
+            lengths_t = lengths_t.expand(batch_size)
+        elif lengths_t.numel() != batch_size:
+            raise ValueError(
+                "lengths batch dimension must match the motion batch size, got "
+                f"{lengths_t.numel()} for batch {batch_size}"
+            )
+        lengths_t = (lengths_t - 1.0).clamp(min=1.0)
+
+    frame_positions = torch.arange(motion_frames, device=device, dtype=dtype).unsqueeze(1)
+    phase = (2.0 * math.pi) * frame_positions / lengths_t.unsqueeze(0)
+    frequencies = torch.arange(1, half_dim + 1, device=device, dtype=dtype).view(1, 1, -1)
+    phase = phase.unsqueeze(-1) * frequencies
+    motion_emb = torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
+    if motion_emb.shape[-1] < dim:
+        motion_emb = F.pad(motion_emb, (0, dim - motion_emb.shape[-1]))
+    emb[1:] = motion_emb
+    return emb
+
+
+def _loop_aware_time_embedding(
+    length: int,
+    dim: int,
+    batch_size: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    loop_phase_mask: Optional[Tensor],
+    lengths: Optional[Tensor],
+) -> Tensor:
+    absolute = _sin_time_embedding(length, dim, device, dtype).unsqueeze(1)
+    if loop_phase_mask is None:
+        return absolute
+    loop_phase_mask = torch.as_tensor(loop_phase_mask, device=device, dtype=torch.bool).reshape(-1)
+    if loop_phase_mask.numel() == 1 and batch_size != 1:
+        loop_phase_mask = loop_phase_mask.expand(batch_size)
+    elif loop_phase_mask.numel() != batch_size:
+        raise ValueError(
+            "loop_phase_mask batch dimension must match the motion batch size, got "
+            f"{loop_phase_mask.numel()} for batch {batch_size}"
+        )
+    if not bool(loop_phase_mask.any()):
+        return absolute
+    absolute = absolute.expand(-1, batch_size, -1)
+    circular = _circular_phase_embedding(length, dim, batch_size, device, dtype, lengths)
+    return torch.where(loop_phase_mask.view(1, batch_size, 1), circular, absolute)
+
+
 class CrossLimbTemporalBlock(nn.Module):
     """Perceiver-style cross-limb temporal pathway (one independent instance
     per active decoder layer; post-norm sublayer).
@@ -371,6 +438,8 @@ class CrossLimbTemporalBlock(nn.Module):
         temporal_template: Tensor,
         joints_key_padding_mask: Tensor,
         unreliable_mask: Optional[Tensor] = None,
+        loop_phase_mask: Optional[Tensor] = None,
+        lengths: Optional[Tensor] = None,
     ) -> Tensor:
         # x: (T, B, J, d_model); temporal_template: (B*H, T, T) additive float
         # mask (windowed, NO joint repeat); joints_key_padding_mask: (B, J)
@@ -410,7 +479,19 @@ class CrossLimbTemporalBlock(nn.Module):
         # --- Latent temporal self-attention across T (same windowed mask).
         # attention batch = B*K with index (b*K + k); mask -> (B*K*H, T, T).
         zt_in = bz.permute(1, 2, 0, 3).reshape(T, B * K, d)               # (T, B*K, d_cl)
-        time_emb = self._get_cached_time_embedding(T, zt_in.device, zt_in.dtype).unsqueeze(1)
+        if loop_phase_mask is None:
+            time_emb = self._get_cached_time_embedding(T, zt_in.device, zt_in.dtype).unsqueeze(1)
+        else:
+            time_emb = _loop_aware_time_embedding(
+                T,
+                d,
+                B,
+                zt_in.device,
+                zt_in.dtype,
+                loop_phase_mask,
+                lengths,
+            )
+            time_emb = time_emb.unsqueeze(2).expand(T, B, K, d).reshape(T, B * K, d)
         zt_in = zt_in + self.time_emb_scale * time_emb
         tt = temporal_template.reshape(B, H, T, T)
         tt = tt.unsqueeze(1).expand(B, K, H, T, T).reshape(B * K * H, T, T)
@@ -863,7 +944,9 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             global_energy_condition: Optional[Tensor] = None,
             reference_key_padding_mask: Optional[Tensor] = None, temporal_template: Optional[Tensor] = None,
             cross_limb_unreliable_mask: Optional[Tensor] = None,
-            reference_batch_mask: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
+            reference_batch_mask: Optional[Tensor] = None,
+            loop_phase_mask: Optional[Tensor] = None,
+            lengths: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
         topology_rel = self._expand_relation_heads(y['graph_dist'].to(device=tgt.device, dtype=torch.long))
         edge_rel = self._expand_relation_heads(y['joints_relations'].to(device=tgt.device, dtype=torch.long))
         output = tgt
@@ -888,7 +971,9 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     tgt_key_padding_mask, memory_key_padding_mask, y, reference_memory, global_energy_condition, reference_key_padding_mask,
                     temporal_template=temporal_template, cross_limb_block=cl_block,
                     cross_limb_unreliable_mask=cross_limb_unreliable_mask,
-                    reference_batch_mask=reference_batch_mask)
+                    reference_batch_mask=reference_batch_mask,
+                    loop_phase_mask=loop_phase_mask,
+                    lengths=lengths)
             if layer_ind == get_layer_activation:
                 activations[layer_ind] = output.clone()
         if self.norm is not None:
@@ -929,6 +1014,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             )
         # The cross-limb pathway is owned by GraphMotionDecoder (one block per
         # active layer) and passed into forward(), not held here.
+        self.temporal_phase_scale = nn.Parameter(torch.zeros(1))
 
     # spatial attention block
     def _spatial_mha_block(self, x: Tensor, topology_rel: Optional[Tensor], edge_rel: Optional[Tensor], edge_key_emb, edge_query_emb, edge_value_emb,
@@ -946,9 +1032,17 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
     
     
         # temporal attention block
-    def _temporal_mha_block_sin_joint(self, x: Tensor, attn_mask: Optional[Tensor], key_padding_mask: Optional[Tensor]) -> Tensor:
+    def _temporal_mha_block_sin_joint(self, x: Tensor, attn_mask: Optional[Tensor], key_padding_mask: Optional[Tensor], loop_phase_mask: Optional[Tensor] = None, lengths: Optional[Tensor] = None) -> Tensor:
         frames, bs, njoints, feats= x.size() 
         # attn_mask_ = attn_mask[..., 1:, 1:]
+        if loop_phase_mask is not None:
+            loop_phase_mask = torch.as_tensor(loop_phase_mask, device=x.device, dtype=torch.bool).reshape(-1)
+            if loop_phase_mask.numel() == 1 and bs != 1:
+                loop_phase_mask = loop_phase_mask.expand(bs)
+            if bool(loop_phase_mask.any()):
+                phase = _circular_phase_embedding(frames, feats, bs, x.device, x.dtype, lengths)
+                phase = phase * loop_phase_mask.view(1, bs, 1)
+                x = x + self.temporal_phase_scale * phase.unsqueeze(2)
         x = x.view(frames, bs * njoints, feats)
         output_attn, _ = self.temporal_attn(
             x,
@@ -1055,16 +1149,25 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         temporal_template: Optional[Tensor] = None,
         cross_limb_block: Optional[nn.Module] = None,
         cross_limb_unreliable_mask: Optional[Tensor] = None,
-        reference_batch_mask: Optional[Tensor] = None) -> Tensor:
+        reference_batch_mask: Optional[Tensor] = None,
+        loop_phase_mask: Optional[Tensor] = None,
+        lengths: Optional[Tensor] = None) -> Tensor:
         x = tgt #(frames, bs, njoints, feature_len)
         bs = x.shape[1]
         x = x + self.embed_timesteps(timesteps_emb).view(1, bs, 1, self.d_model)
         spatial_attn_output = self._spatial_mha_block(x, topology_rel, edge_rel, edge_key_emb, edge_query_emb, edge_value_emb,
         topo_key_emb, topo_query_emb, topo_value_emb, spatial_mask, tgt_key_padding_mask, y)
         x = self.norm1(x + spatial_attn_output)
-        x = self.norm2(x + self._temporal_mha_block_sin_joint(x, temporal_mask, None))
+        x = self.norm2(x + self._temporal_mha_block_sin_joint(x, temporal_mask, None, loop_phase_mask=loop_phase_mask, lengths=lengths))
         if cross_limb_block is not None:
-            x = cross_limb_block(x, temporal_template, y['joints_key_padding_mask'], unreliable_mask=cross_limb_unreliable_mask)
+            x = cross_limb_block(
+                x,
+                temporal_template,
+                y['joints_key_padding_mask'],
+                unreliable_mask=cross_limb_unreliable_mask,
+                loop_phase_mask=loop_phase_mask,
+                lengths=lengths,
+            )
         reference_delta = None
         conditioning_batch_mask = None
         if reference_memory is not None and self.reference_residual_gate != 0.0:
