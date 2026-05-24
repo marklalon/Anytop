@@ -660,15 +660,6 @@ def _sample_batch(
                 "Motion inpainting requires reference_motion frame count to match target sample length; "
                 f"got reference {reference_motion.shape[-1]} and target {sample_shape[-1]}"
             )
-        if sampling_method == 'plms':
-            # PLMS carries an Adams-Bashforth eps history (old_eps); an
-            # external per-step clamp would desync that history from the
-            # trajectory. Not supported for inpainting.
-            raise ValueError(
-                "PLMS does not support motion inpainting; use "
-                "--sampling_method ddpm (recommended) or ddim."
-            )
-
     def _prepared_cross_limb_unreliable_mask_from_inpaint_mask(inpaint_mask_):
         if inpaint_mask_ is None:
             return None
@@ -728,8 +719,7 @@ def _sample_batch(
             init_image=init_image,
             skip_timesteps=skip_ts,
         )
-        # Only p_* / ddim_* loops accept the inpaint kwargs; plms is rejected
-        # above whenever an inpaint mask is present.
+        # Only p_* / ddim_* loops accept the inpaint kwargs.
         inpaint_kwargs = dict(
             inpaint_mask=inpaint_mask_, inpaint_reference=inpaint_reference_
         )
@@ -743,11 +733,6 @@ def _sample_batch(
                 eta=ddim_eta,
                 **inpaint_kwargs,
                 **repaint_kwargs,
-                **common_kwargs,
-            )
-        if sampling_method == 'plms':
-            return diffusion.plms_sample_loop(
-                progress=True,
                 **common_kwargs,
             )
         if sampling_method in ('p', 'ddpm'):
@@ -985,8 +970,6 @@ def main(args=None, cond_dict=None):
     sampling_method = str(getattr(args, 'sampling_method', 'ddim')).lower()
     if sampling_steps > 0:
         if sampling_method == 'ddim':
-            args.timestep_respacing = f'ddim{sampling_steps}'
-        elif sampling_method == 'plms':
             args.timestep_respacing = f'ddim{sampling_steps}'
         else:
             args.timestep_respacing = str(sampling_steps)

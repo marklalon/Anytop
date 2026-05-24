@@ -52,9 +52,6 @@ class _CaptureDiffusion:
     def ddim_sample_loop(self, **kwargs):
         return self._record_call("ddim", kwargs)
 
-    def plms_sample_loop(self, **kwargs):
-        return self._record_call("plms", kwargs)
-
 
 def _make_cond_entry() -> dict:
     return {
@@ -277,23 +274,6 @@ def test_sample_batch_requires_reference_for_inpainting() -> None:
             seed=123,
             device=torch.device("cpu"),
             reference_motion=None,
-            skip_timesteps=0,
-            inpaint_mask=torch.zeros((1, 3, 1, 4), dtype=torch.float32),
-        )
-
-
-def test_sample_batch_rejects_plms_for_inpainting() -> None:
-    with pytest.raises(ValueError, match="PLMS does not support motion inpainting"):
-        _sample_batch(
-            diffusion=_CaptureDiffusion(),
-            model=_DummyModel(),
-            model_kwargs={},
-            sampling_method="plms",
-            sample_shape=(1, 3, 13, 4),
-            ddim_eta=0.0,
-            seed=123,
-            device=torch.device("cpu"),
-            reference_motion=torch.zeros((1, 3, 13, 4), dtype=torch.float32),
             skip_timesteps=0,
             inpaint_mask=torch.zeros((1, 3, 1, 4), dtype=torch.float32),
         )

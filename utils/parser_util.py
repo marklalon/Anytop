@@ -250,8 +250,8 @@ def add_generate_options(parser):
                             "(inferred from filename). Required for pure-random generation. "
                             "When both flags are provided and the inferred type differs from "
                             "this value, the reference motion is auto-retargeted to this skeleton.")
-    group.add_argument("--sampling_method", default="ddim", choices=["p", "ddpm", "ddim", "plms"],
-                       help="Diffusion sampler to use. 'p'/'ddpm' = DDPM (slow, high quality). 'ddim' = DDIM (fast, recommended). 'plms' = PLMS (medium speed). Default: ddim.")
+    group.add_argument("--sampling_method", default="ddim", choices=["p", "ddpm", "ddim"],
+                       help="Diffusion sampler to use. 'p'/'ddpm' = DDPM (slow, high quality). 'ddim' = DDIM (fast, recommended). Default: ddim.")
     group.add_argument("--sampling_steps", default=100, type=int,
                        help="Number of respaced diffusion steps. 0 = use checkpoint's full diffusion_steps. Default: 100.")
     group.add_argument("--ddim_eta", default=0.0, type=float,
@@ -293,8 +293,7 @@ def add_generate_options(parser):
                             "raw / canonical / canonical_bvh aliases (use the names you see in the exported "
                             "GLB/BVH). Empty = all real joints (pure temporal inpainting). Requires "
                             "--reference_motion. NOTE: do NOT list the root joint for limb inpainting "
-                            "(it is the global anchor). PLMS is not supported for inpainting; use "
-                            "--sampling_method ddpm (recommended) or ddim.")
+                            "(it is the global anchor).")
     group.add_argument("--inpaint_include_subtree", action="store_true", default=True,
                        help="When resolving --inpaint_joints, also regenerate all descendants of each named "
                             "joint (so naming a hip regenerates the whole leg). Enabled by default; disable "

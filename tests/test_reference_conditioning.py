@@ -52,9 +52,6 @@ class _CaptureDiffusion:
     def ddim_sample_loop(self, **kwargs):
         return self._record_call("ddim", kwargs)
 
-    def plms_sample_loop(self, **kwargs):
-        return self._record_call("plms", kwargs)
-
 
 class _ReferenceAwareModel(nn.Module):
     def __init__(self) -> None:
