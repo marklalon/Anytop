@@ -1477,6 +1477,15 @@ def main(args=None, cond_dict=None):
             'canonical_bvh_joint_names',
             cond_dict[object_type]['joints_names'],
         )
+        # Inpaint Y-anchor: parse user --inpaint_frames into contiguous spans
+        # (user-frame indexing, already aligned with the post-trim motion_np
+        # frame axis). The correction is applied per joint via vel_y
+        # integration with dual-end ramp anchoring.
+        inpaint_y_spans = None
+        if inpaint_enabled and inpaint_frames_arg:
+            inpaint_y_spans = _contiguous_frame_runs(
+                _parse_frame_ranges(inpaint_frames_arg, sample.shape[-1])
+            )
         export_tasks = []
         for sample_idx, motion in enumerate(sample):
             n_joints = model_kwargs['y']['n_joints'][sample_idx].item()
@@ -1486,6 +1495,9 @@ def main(args=None, cond_dict=None):
             std = cond_dict[object_type]['std'][None, :]
             motion_np = motion.cpu().permute(2, 0, 1).numpy() * std + mean
             offsets = cond_dict[object_type]['offsets']
+
+            if inpaint_y_spans:
+                _reanchor_inpaint_root_y_via_velocity(motion_np, inpaint_y_spans)
 
             npy_name = f'{object_type}_#{base_index + sample_idx}.npy'
             export_tasks.append((
@@ -1543,6 +1555,87 @@ def _parse_frame_ranges(spec, n_frames):
             f"(motion has {n_frames} frames, indices 0..{n_frames - 1})"
         )
     return frames
+
+
+def _contiguous_frame_runs(frame_set):
+    """Convert a set of frame indices into a list of [start, end] inclusive
+    runs of consecutive frames, sorted ascending.
+    """
+    if not frame_set:
+        return []
+    sorted_frames = sorted(frame_set)
+    runs = []
+    start = prev = sorted_frames[0]
+    for f in sorted_frames[1:]:
+        if f == prev + 1:
+            prev = f
+            continue
+        runs.append((start, prev))
+        start = prev = f
+    runs.append((start, prev))
+    return runs
+
+
+def _reanchor_inpaint_root_y_via_velocity(motion_np, spans):
+    """Inpaint-side fix for Y misalignment: per contiguous inpaint span
+    [a, b] (frame indices into ``motion_np``) and per joint, replace the
+    absolute Y channel (pos[..., 1]) with a vel-Y integral anchored at the
+    last clamped frame ``a-1`` and linearly ramped to match the clamped Y
+    at ``b+1``.
+
+    Background: features are ``[pos(3) || rot(6) || vel(3) || foot(1)]`` (13ch).
+    For EVERY joint, pos[1] is the absolute world Y — ``get_rifke`` only
+    subtracts root XZ before encoding, leaving Y untouched, and the recover
+    path likewise reads pos[1] verbatim without adding root Y back. So in an
+    inpaint span the model regresses each joint's pos[1] toward its dataset
+    mean (visible as the whole skeleton sinking), while vel[1] (ch 10) — the
+    per-joint world Y velocity — stays near zero. Integrating vel_y from the
+    left-clamped Y plus a linear ramp to the right-clamped Y closes both
+    seams in the integral sense and preserves per-frame Y micro-structure.
+
+    Applied independently to every joint via a vectorized batched cumsum.
+    For joints whose columns were clamped to the reference (e.g. when
+    ``--inpaint_joints`` selects a subset), the inputs are already
+    consistent so the correction is mathematically a no-op.
+
+    No-op when an inpaint span has no left or no right clamped neighbour
+    (touches frame 0 or frame F-1).
+
+    Args:
+        motion_np: (F, J, C) feature tensor. Modified in place via a basic
+            slice on the channel axis (preserves view semantics).
+        spans: list of ``(a, b)`` inclusive frame ranges marking inpaint
+            regions; both ``a-1`` and ``b+1`` must lie inside [0, F-1].
+    """
+    if not spans:
+        return
+    F, J, C = motion_np.shape
+    if C < 11 or J == 0:
+        return
+    # Basic slicing on the channel axis returns a view, so assignments
+    # through ``pos_y`` write straight back into ``motion_np``.
+    pos_y = motion_np[:, :, 1]   # (F, J) view
+    vel_y = motion_np[:, :, 10]  # (F, J) view — vel[f] = pos[f+1] - pos[f]
+    for a, b in spans:
+        if a < 1 or b > F - 2 or a > b:
+            # Need both a-1 and b+1 as clamped anchors; otherwise leave alone.
+            continue
+        L = b - a + 1
+        # Forward integrate from clamped pos_y[a-1] across the span:
+        #   y_int[k] = pos_y[a-1] + sum_{i=a-1..k-1} vel_y[i]  for k in [a, b]
+        integrated = pos_y[a - 1:a] + np.cumsum(
+            vel_y[a - 1:b], axis=0, dtype=np.float64,
+        )  # (L, J)
+        # Bridge to the right anchor: if we also stepped one more by vel_y[b]
+        # we should land at pos_y[b+1]. Distribute the residual linearly so
+        # adjusted_y[a-1] is unchanged and adjusted_y[b+1] would land on target.
+        integrated_at_b_plus_1 = integrated[-1] + vel_y[b]
+        adjust = pos_y[b + 1] - integrated_at_b_plus_1  # (J,)
+        # Ramp factor for k in [a, b]: (k - (a-1)) / ((b+1) - (a-1)) = (k - a + 1) / (L + 1)
+        ramp = (np.arange(1, L + 1, dtype=np.float64) / float(L + 1))[:, None]  # (L, 1)
+        pos_y[a:b + 1] = (integrated + adjust[None, :] * ramp).astype(
+            pos_y.dtype, copy=False,
+        )
 
 
 def _resolve_inpaint_joint_indices(cond_entry, names_arg, include_subtree):

@@ -15,8 +15,10 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType  # noqa: E402
 from sample.generate import (  # noqa: E402
+    _contiguous_frame_runs,
     _parse_frame_ranges,
     _prepare_img2img_reference_bundle,
+    _reanchor_inpaint_root_y_via_velocity,
     _resolve_inpaint_joint_indices,
     _sample_batch,
     _extend_reference_motion_for_loop,
@@ -505,6 +507,142 @@ def test_ddim_sample_loop_rejects_const_noise() -> None:
             shape=(1, 1, 1, 1),
             const_noise=True,
         )
+
+
+def _make_root_y_motion(pos_y, vel_y, root_idx=0, n_joints=2, n_feat=13):
+    """Build a (F, J, C) motion_np tensor with the translation-root's
+    pos_y / vel_y channels set, other channels zeroed.
+    """
+    pos_y = np.asarray(pos_y, dtype=np.float32)
+    vel_y = np.asarray(vel_y, dtype=np.float32)
+    F = pos_y.shape[0]
+    motion = np.zeros((F, n_joints, n_feat), dtype=np.float32)
+    motion[:, root_idx, 1] = pos_y
+    motion[:, root_idx, 10] = vel_y
+    return motion
+
+
+def test_contiguous_frame_runs_basic():
+    assert _contiguous_frame_runs(set()) == []
+    assert _contiguous_frame_runs({7}) == [(7, 7)]
+    assert _contiguous_frame_runs({3, 4, 5}) == [(3, 5)]
+    assert _contiguous_frame_runs({1, 2, 5, 6, 7, 10}) == [(1, 2), (5, 7), (10, 10)]
+
+
+def test_reanchor_root_y_closes_both_seams():
+    # Reference Y trajectory: flat 1.0 outside, model produced a downward
+    # bias (~0.4) inside frames 3..6 with a low-amplitude vel_y wiggle. After
+    # fix, pos_y at frame a-1 / b+1 must remain untouched and the integrated
+    # trajectory must bridge them exactly (in the integral sense — the per-
+    # step adjustment is adjust/(L+1)).
+    pos_y_ref = np.array(
+        [1.0, 1.0, 1.0, 0.4, 0.42, 0.41, 0.43, 1.0, 1.0, 1.0], dtype=np.float32
+    )
+    vel_y_model = np.array(
+        [0.0, 0.0, 0.0, 0.02, -0.01, 0.015, -0.02, 0.0, 0.0, 0.0], dtype=np.float32
+    )
+    motion = _make_root_y_motion(pos_y_ref, vel_y_model)
+    _reanchor_inpaint_root_y_via_velocity(motion, spans=[(3, 6)])
+
+    fixed_pos_y = motion[:, 0, 1]
+    np.testing.assert_array_equal(fixed_pos_y[:3], pos_y_ref[:3])
+    np.testing.assert_array_equal(fixed_pos_y[7:], pos_y_ref[7:])
+    assert np.all(fixed_pos_y[3:7] > 0.9), f"Y not lifted: {fixed_pos_y[3:7]}"
+
+    # Recompute the expected trajectory from first principles so the test
+    # also serves as documentation of the formula.
+    a, b = 3, 6
+    L = b - a + 1
+    integrated = pos_y_ref[a - 1] + np.cumsum(vel_y_model[a - 1:b], dtype=np.float64)
+    integrated_at_b_plus_1 = integrated[-1] + float(vel_y_model[b])
+    adjust = float(pos_y_ref[b + 1]) - integrated_at_b_plus_1
+    ramp = np.arange(1, L + 1, dtype=np.float64) / float(L + 1)
+    expected = integrated + adjust * ramp
+    np.testing.assert_allclose(fixed_pos_y[a:b + 1], expected, atol=1e-6)
+
+    # Seam closure happens in the integral sense: the total Y change from
+    # the left to the right anchor across the span matches the reference,
+    # and each per-step deviation is bounded by |adjust|/(L+1).
+    per_step_bound = abs(adjust) / (L + 1) + 1e-6
+    assert abs(
+        (fixed_pos_y[a] - pos_y_ref[a - 1]) - vel_y_model[a - 1]
+    ) <= per_step_bound
+    assert abs(
+        (pos_y_ref[b + 1] - fixed_pos_y[b]) - vel_y_model[b]
+    ) <= per_step_bound
+
+
+def test_reanchor_root_y_preserves_consistent_trajectory():
+    # When pos_y[k+1] == pos_y[k] + vel_y[k] everywhere (clean reference),
+    # the helper should be a no-op within float precision.
+    rng = np.random.default_rng(0)
+    vel = rng.normal(0.0, 0.05, size=12).astype(np.float32)
+    pos = np.concatenate([[2.5], 2.5 + np.cumsum(vel[:-1])]).astype(np.float32)
+    motion = _make_root_y_motion(pos, vel)
+    original_pos = pos.copy()
+    _reanchor_inpaint_root_y_via_velocity(motion, spans=[(4, 8)])
+    np.testing.assert_allclose(motion[:, 0, 1], original_pos, atol=1e-5)
+
+
+def test_reanchor_root_y_noop_when_span_touches_boundary():
+    pos = np.array([1.0, 0.2, 0.3, 0.4, 1.0, 1.0], dtype=np.float32)
+    vel = np.array([0.0, 0.01, 0.02, 0.03, 0.0, 0.0], dtype=np.float32)
+    # Span starts at frame 0 — no left anchor available.
+    motion = _make_root_y_motion(pos, vel)
+    _reanchor_inpaint_root_y_via_velocity(motion, spans=[(0, 3)])
+    np.testing.assert_array_equal(motion[:, 0, 1], pos)
+    # Span ends at last frame — no right anchor available.
+    motion2 = _make_root_y_motion(pos, vel)
+    _reanchor_inpaint_root_y_via_velocity(motion2, spans=[(2, 5)])
+    np.testing.assert_array_equal(motion2[:, 0, 1], pos)
+
+
+def test_reanchor_root_y_corrects_all_joints():
+    # Multi-joint motion: every joint's pos_y is independently biased
+    # inside the inpaint span. The helper must correct each joint
+    # against its own boundary anchors.
+    F = 6
+    n_joints = 3
+    motion = np.zeros((F, n_joints, 13), dtype=np.float32)
+    # Joint 0 (translation_root style): outside ~1.0, inside biased to 0.4
+    motion[:, 0, 1] = [1.0, 1.0, 0.4, 0.42, 1.0, 1.0]
+    # Joint 1: outside ~2.5, inside biased to 1.0
+    motion[:, 1, 1] = [2.5, 2.5, 1.0, 1.05, 2.5, 2.5]
+    # Joint 2: outside ~0.3, inside biased to -0.5
+    motion[:, 2, 1] = [0.3, 0.3, -0.5, -0.45, 0.3, 0.3]
+    # vel_y all zero (model's locomotion prior approximates this)
+    _reanchor_inpaint_root_y_via_velocity(motion, spans=[(2, 3)])
+    # Every joint's Y should now bridge its two boundary anchors at 1.0,
+    # 2.5, and 0.3 respectively (with zero vel, both span frames land on
+    # the constant anchor value).
+    np.testing.assert_allclose(motion[2:4, 0, 1], 1.0, atol=1e-6)
+    np.testing.assert_allclose(motion[2:4, 1, 1], 2.5, atol=1e-6)
+    np.testing.assert_allclose(motion[2:4, 2, 1], 0.3, atol=1e-6)
+    # Outside frames unchanged (float32 exact compare via array equality).
+    for j, expected in enumerate([1.0, 2.5, 0.3]):
+        np.testing.assert_array_equal(
+            motion[[0, 1, 4, 5], j, 1],
+            np.full(4, expected, dtype=np.float32),
+        )
+
+
+def test_reanchor_root_y_multiple_spans_independent():
+    # Two disjoint inpaint spans; each must be corrected against its own
+    # anchors and not perturb the gap between them.
+    pos_y_ref = np.array(
+        [1.0, 1.0, 0.4, 0.42, 1.0, 1.0, 1.0, 0.5, 0.48, 1.0, 1.0],
+        dtype=np.float32,
+    )
+    vel_y_model = np.zeros_like(pos_y_ref)
+    motion = _make_root_y_motion(pos_y_ref, vel_y_model)
+    _reanchor_inpaint_root_y_via_velocity(motion, spans=[(2, 3), (7, 8)])
+    fixed = motion[:, 0, 1]
+    np.testing.assert_array_equal(fixed[:2], pos_y_ref[:2])
+    np.testing.assert_array_equal(fixed[4:7], pos_y_ref[4:7])
+    np.testing.assert_array_equal(fixed[9:], pos_y_ref[9:])
+    # With all-zero vel_y, both spans ramp linearly from 1.0 → 1.0.
+    np.testing.assert_allclose(fixed[2:4], 1.0, atol=1e-6)
+    np.testing.assert_allclose(fixed[7:9], 1.0, atol=1e-6)
 
 
 def test_ddim_sample_loop_uses_repaint_time_travel(monkeypatch: pytest.MonkeyPatch) -> None:
