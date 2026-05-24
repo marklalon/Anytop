@@ -600,49 +600,8 @@ def _prepare_reference_for_mode(
     )
 
 
-def _extend_reference_motion_for_loop(
-    ref_motion,
-    reference_conditioning_kwargs,
-    *,
-    visible_frame_count,
-    loop_overlap,
-):
-    if ref_motion is None or loop_overlap <= 0:
-        return ref_motion, reference_conditioning_kwargs, int(visible_frame_count)
-
-    visible_frame_count = int(visible_frame_count)
-    loop_overlap = int(loop_overlap)
-    if visible_frame_count <= 0:
-        raise ValueError("looped reference requires at least one visible frame")
-    if loop_overlap > visible_frame_count:
-        raise ValueError(
-            f"--loop_overlap={loop_overlap} exceeds the available reference-guided "
-            f"visible length ({visible_frame_count} frames). Use a longer reference "
-            "or a smaller --loop_overlap."
-        )
-
-    visible_prefix = ref_motion[..., :visible_frame_count].clone()
-    loop_tail = visible_prefix[..., :loop_overlap].clone()
-    extended_motion = torch.cat([visible_prefix, loop_tail], dim=-1)
-
-    updated_conditioning_kwargs = reference_conditioning_kwargs
-    if reference_conditioning_kwargs is not None:
-        updated_conditioning_kwargs = dict(reference_conditioning_kwargs)
-        reference_lengths = updated_conditioning_kwargs.get('reference_lengths')
-        if reference_lengths is not None:
-            updated_conditioning_kwargs['reference_lengths'] = torch.full_like(
-                reference_lengths,
-                visible_frame_count + loop_overlap,
-            )
-        reference_memory = updated_conditioning_kwargs.get('reference_memory')
-        if reference_memory is not None and reference_memory.shape[0] != visible_frame_count + loop_overlap:
-            updated_conditioning_kwargs.pop('reference_memory', None)
-
-    return extended_motion, updated_conditioning_kwargs, visible_frame_count + loop_overlap
-
-
 def _export_motion(task):
-    motion_np, parents_np, offsets, npy_name, joint_names, out_path, fps, tpose_rest_rotations, loop_close = task
+    motion_np, parents_np, offsets, npy_name, joint_names, out_path, fps, tpose_rest_rotations = task
     out_anim, joint_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
         motion_np,
         parents_np,
@@ -650,7 +609,6 @@ def _export_motion(task):
         joint_names,
         allow_infer=True,
         tpose_rest_rotations=tpose_rest_rotations,
-        loop_close=loop_close,
     )
     np.save(pjoin(out_path, npy_name), motion_np)
     if out_anim is not None:
@@ -681,27 +639,11 @@ def _sample_batch(
     inpaint_mask=None,
     repaint_jump_length=0,
     repaint_jump_n_sample=1,
-    loop_overlap=0,
 ):
     if repaint_jump_length < 0:
         raise ValueError("repaint_jump_length must be >= 0")
     if repaint_jump_n_sample < 1:
         raise ValueError("repaint_jump_n_sample must be >= 1")
-    if loop_overlap < 0:
-        raise ValueError("loop_overlap must be >= 0")
-    if loop_overlap > 0 and sampling_method == 'plms':
-        # Same reasoning as inpaint: PLMS carries an Adams-Bashforth eps
-        # history that an external per-step clamp would desync.
-        raise ValueError(
-            "PLMS does not support --loop_overlap; use --sampling_method ddpm "
-            "(recommended) or ddim."
-        )
-    if loop_overlap > 0 and loop_overlap * 2 > int(sample_shape[-1]):
-        raise ValueError(
-            f"--loop_overlap={loop_overlap} must be <= half the generated "
-            f"length ({int(sample_shape[-1])} frames); pick a smaller K or a "
-            f"longer --motion_length."
-        )
 
     reference_mode, skip_timesteps = validate_reference_mode_configuration(
         reference_mode,
@@ -795,14 +737,12 @@ def _sample_batch(
             repaint_jump_length=repaint_jump_length,
             repaint_jump_n_sample=repaint_jump_n_sample,
         )
-        loop_kwargs = dict(loop_overlap=loop_overlap)
         if sampling_method == 'ddim':
             return diffusion.ddim_sample_loop(
                 progress=True,
                 eta=ddim_eta,
                 **inpaint_kwargs,
                 **repaint_kwargs,
-                **loop_kwargs,
                 **common_kwargs,
             )
         if sampling_method == 'plms':
@@ -817,7 +757,6 @@ def _sample_batch(
                 const_noise=False,
                 **inpaint_kwargs,
                 **repaint_kwargs,
-                **loop_kwargs,
                 **common_kwargs,
             )
         raise ValueError(f'Unknown sampling_method: {sampling_method}')
@@ -1124,22 +1063,6 @@ def main(args=None, cond_dict=None):
     inpaint_enabled = bool(inpaint_joints_arg or inpaint_frames_arg)
     repaint_jump_length = int(getattr(args, 'repaint_jump_length', 0))
     repaint_jump_n_sample = int(getattr(args, 'repaint_jump_n_sample', 1))
-    loop_overlap = int(getattr(args, 'loop_overlap', 0))
-    loop_drift = str(getattr(args, 'loop_drift', 'stationary'))
-    if loop_overlap < 0:
-        sys.exit("ERROR: --loop_overlap must be >= 0.")
-    if loop_overlap > 0 and loop_overlap * 2 > n_frames:
-        sys.exit(
-            f"ERROR: --loop_overlap={loop_overlap} must be <= half of "
-            f"--motion_length in frames ({n_frames} frames at {fps} fps). "
-            f"Either shrink K or lengthen --motion_length."
-        )
-    if loop_overlap > 0 and sampling_method == 'plms':
-        sys.exit(
-            "ERROR: PLMS does not support --loop_overlap; use "
-            "--sampling_method ddpm (recommended) or ddim."
-        )
-    n_frames_gen = n_frames + loop_overlap  # length sampled internally
     repaint_enabled = (
         inpaint_enabled
         and repaint_jump_length > 0
@@ -1252,11 +1175,7 @@ def main(args=None, cond_dict=None):
         # Prepare reference motion (normalize + reshape)
         ref_motion = None
         reference_conditioning_kwargs = None
-        # Loop-aware: sample at L+K internally; trim back to L before export.
-        output_frame_count = n_frames_gen
-        if loop_overlap > 0:
-            print(f'  Loop generation: K={loop_overlap}, internal length '
-                  f'{n_frames}+{loop_overlap}={n_frames_gen}, drift={loop_drift}')
+        output_frame_count = n_frames
 
         source_cond_entry = _resolve_source_cond_entry(
             source_type,
@@ -1309,7 +1228,7 @@ def main(args=None, cond_dict=None):
                 max_joints=max_joints,
                 target_feature_len=model.feature_len,
                 batch_size=args.batch_size,
-                requested_output_frame_count=n_frames if loop_overlap > 0 else n_frames_gen,
+                requested_output_frame_count=n_frames,
             )
             ref_motion = reference_bundle['reference_motion']
             reference_conditioning_kwargs = reference_bundle['reference_conditioning_kwargs']
@@ -1317,23 +1236,8 @@ def main(args=None, cond_dict=None):
             loaded_reference_frame_count = reference_bundle['loaded_reference_frame_count']
             loaded_reference_joint_count = reference_bundle['loaded_reference_joint_count']
 
-            if loop_overlap > 0 and ref_motion is not None:
-                # Preserve the visible output length first, then append a
-                # synthetic loop tail [0:K) so the sampler still runs on L+K
-                # frames. This avoids silently shrinking the final export when
-                # the reference length is in [L, L+K).
-                try:
-                    ref_motion, reference_conditioning_kwargs, output_frame_count = _extend_reference_motion_for_loop(
-                        ref_motion,
-                        reference_conditioning_kwargs,
-                        visible_frame_count=output_frame_count,
-                        loop_overlap=loop_overlap,
-                    )
-                except ValueError as exc:
-                    sys.exit(f"ERROR: {exc}")
-
-            if output_frame_count != n_frames_gen:
-                print(f'  Reference motion overrides frame count: {n_frames_gen} -> {output_frame_count}')
+            if output_frame_count != n_frames:
+                print(f'  Reference motion overrides frame count: {n_frames} -> {output_frame_count}')
             print(f'  Reference motion loaded: {effective_reference_path}')
             if prepared_reference_path != reference_motion_path:
                 print(f'    Preprocessed from original: {reference_motion_path}')
@@ -1399,7 +1303,6 @@ def main(args=None, cond_dict=None):
                 args.batch_size,
                 opt.max_joints,
                 output_frame_count,
-                loop_overlap=loop_overlap,
             )
 
         # Create condition with effective frame count
@@ -1431,28 +1334,7 @@ def main(args=None, cond_dict=None):
             inpaint_mask=inpaint_mask,
             repaint_jump_length=repaint_jump_length,
             repaint_jump_n_sample=repaint_jump_n_sample,
-            loop_overlap=loop_overlap,
         )
-
-        # Loop generation: the sampler produced output_frame_count = L+K frames
-        # with the last K clamped to the first K at every step. Trim by
-        # dropping the FIRST K frames (not the last K). Reason: with the clamp
-        # frame[L+K-1] == frame[K-1] in feature space, so the loop wrap of the
-        # trimmed sequence (trimmed_frame[L-1] -> trimmed_frame[0]) corresponds
-        # to original frame[K-1] -> frame[K] — an adjacent pair the model
-        # produced as regular in-sequence motion, guaranteed smooth. Dropping
-        # the last K instead would force the model to bridge frame[L-1] into a
-        # clamped-from-start frame[L], an OOD constraint.
-        if loop_overlap > 0:
-            user_visible_length = sample.shape[-1] - loop_overlap
-            if user_visible_length <= 0:
-                sys.exit(
-                    f"ERROR: post-loop trim would produce a non-positive length "
-                    f"(sample frames={sample.shape[-1]}, K={loop_overlap}). "
-                    f"This usually means --reference_motion is shorter than "
-                    f"--motion_length + --loop_overlap; use a longer reference."
-                )
-            sample = sample[..., loop_overlap:]
 
         # Pre-compute filenames with a single directory scan
         existing_npy_files = [
@@ -1509,7 +1391,6 @@ def main(args=None, cond_dict=None):
                 out_path,
                 fps,
                 _tpose_rest_rotations,
-                bool(loop_overlap > 0 and loop_drift == 'stationary'),
             ))
 
         # Parallel export using ThreadPoolExecutor.
@@ -1706,7 +1587,6 @@ def build_inpaint_mask(
     batch_size,
     max_joints,
     n_frames,
-    loop_overlap=0,
 ):
     """Build the inpainting mask tensor [B, max_joints, 1, n_frames].
 
@@ -1714,39 +1594,11 @@ def build_inpaint_mask(
     Padding joints (index >= n_joints) stay 0.0. The regenerated region is
     selected-joints x selected-frames; everything else is held to the
     reference during sampling.
-
-    When ``loop_overlap > 0``, ``n_frames`` is the extended internal length
-    L+K. The user-visible motion length is L = n_frames - loop_overlap, and
-    the sampler's output is the slice [K, L+K) of the internal sequence
-    (the head [0, K) is discarded at trim time). User ``--inpaint_frames``
-    ranges are parsed in the *output* indexing 0..L-1; a range past L-1 is
-    rejected. They are then shifted by +K to the internal indexing so that
-    a user frame i marks internal frame K+i for regeneration. The discarded
-    head slice [0, K) is forced to mask=1.0 for every selected joint so the
-    loop clamp (which copies head onto tail at every step) is never fought
-    by an inpaint zero in those joints. Non-selected joints stay at 0.0
-    everywhere — they clamp to the reference, which the caller has already
-    cyclic-extended so ref[L:L+K] == ref[0:K] for self-consistency with
-    the loop clamp.
     """
     joint_indices, n_joints = _resolve_inpaint_joint_indices(
         cond_entry, inpaint_joints_arg, inpaint_include_subtree
     )
-    n_frames_user = n_frames - max(0, loop_overlap)
-    if loop_overlap > 0 and inpaint_frames_arg:
-        # Validate user frame ranges never reference indices past the
-        # user-visible length L.
-        spec_frames = _parse_frame_ranges(inpaint_frames_arg, n_frames_user + loop_overlap)
-        bad = [f for f in spec_frames if f >= n_frames_user]
-        if bad:
-            raise ValueError(
-                f"--inpaint_frames '{inpaint_frames_arg}' selects frames in "
-                f"[{n_frames_user}, {n_frames_user + loop_overlap - 1}], "
-                f"which is past the user-visible motion length L={n_frames_user} "
-                f"(--loop_overlap={loop_overlap}). Restrict inpaint ranges to "
-                f"[0, {n_frames_user - 1}]."
-            )
-    frame_indices = _parse_frame_ranges(inpaint_frames_arg, n_frames_user)
+    frame_indices = _parse_frame_ranges(inpaint_frames_arg, n_frames)
     if not joint_indices:
         raise ValueError("--inpaint_joints resolved to an empty joint set")
 
@@ -1754,30 +1606,20 @@ def build_inpaint_mask(
     j_idx = np.fromiter(
         (j for j in joint_indices if 0 <= j < n_joints), dtype=np.int64
     )
-    # Shift user-output frame indices into internal indexing by +K.
-    f_idx_user = np.fromiter(
-        (f for f in frame_indices if 0 <= f < n_frames_user), dtype=np.int64
+    f_idx = np.fromiter(
+        (f for f in frame_indices if 0 <= f < n_frames), dtype=np.int64
     )
-    f_idx = f_idx_user + loop_overlap if loop_overlap > 0 else f_idx_user
     if j_idx.size and f_idx.size:
         mask[np.ix_(j_idx, [0], f_idx)] = 1.0
-    if loop_overlap > 0 and j_idx.size:
-        # Head slice [0, K) is the trimmed-off region; let the model
-        # regenerate it freely for selected joints so the loop clamp (which
-        # then copies head onto tail) has consistent self-generated content
-        # in those joints.
-        head = np.arange(0, loop_overlap, dtype=np.int64)
-        mask[np.ix_(j_idx, [0], head)] = 1.0
 
     n_regen_joints = int(j_idx.size)
-    n_regen_frames = int(f_idx_user.size)
+    n_regen_frames = int(f_idx.size)
     print(
         f'  Inpaint mask: regenerating {n_regen_joints}/{n_joints} joints x '
-        f'{n_regen_frames}/{n_frames_user} frames '
+        f'{n_regen_frames}/{n_frames} frames '
         f'(joints={sorted(int(j) for j in j_idx)[:20]}'
         f'{"..." if n_regen_joints > 20 else ""}, '
-        f'subtree={"on" if inpaint_include_subtree else "off"}'
-        f'{f", +loop_head [0,{loop_overlap - 1}]" if loop_overlap > 0 else ""})'
+        f'subtree={"on" if inpaint_include_subtree else "off"})'
     )
 
     mask_t = torch.from_numpy(mask).unsqueeze(0).expand(

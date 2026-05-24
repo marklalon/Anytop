@@ -317,21 +317,6 @@ def add_generate_options(parser):
                            "Larger values perform more jump/time-travel cycles (slower, often smoother). "
                            "Only used when --inpaint_* is set. Even with --sampling_method ddim --ddim_eta 0, "
                            "enabling this adds fresh forward noise and makes sampling stochastic.")
-    group.add_argument("--loop_overlap", default=0, type=int,
-                       help="Seamless cyclic loop: K = seam overlap in frames. 0 disables (default). "
-                           "When >0, internally generates --motion_length seconds + K extra frames, "
-                           "clamps the last K frames to equal the first K at every diffusion step "
-                           "(forcing periodic pose/rotation/velocity), then trims the tail before "
-                           "export. The output animation has --motion_length seconds and loops "
-                           "seamlessly. Recommended: 8 (~0.27s @ 30fps). Composes with "
-                           "--reference_motion and --inpaint_*.")
-    group.add_argument("--loop_drift", default="stationary",
-                       choices=["stationary", "allow"],
-                       help="Behavior of root XZ trajectory when --loop_overlap > 0. "
-                           "'stationary' (default): post-recovery, linearly de-trend root XZ so "
-                           "frame L-1 lands exactly on frame 0 (idle / wave / breathing). "
-                           "'allow': keep whatever drift the model produces (walk / run cycles "
-                           "where the character moves forward each iteration).")
 
 def add_dift_options(parser):
     # bvhs_dir, sample_bvh, face_joints, save_dir=None, tpos_bvh=None

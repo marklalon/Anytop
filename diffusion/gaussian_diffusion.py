@@ -830,20 +830,6 @@ class GaussianDiffusion:
             )
         return inpaint_mask * sample + (1.0 - inpaint_mask) * known
 
-    def _loop_clamp(self, sample, loop_overlap):
-        """Self-referential cyclic boundary: force the last K temporal slots
-        to equal the first K. Both regions share the same noise level (same
-        x_t), so this is a direct copy with no q_sample needed. Applied after
-        _inpaint_project so user-anchored frames take precedence; the clamp
-        only acts on the tail beyond the user-visible length.
-        """
-        if loop_overlap and loop_overlap > 0:
-            # Clone the head before assigning to the tail; the indices are
-            # non-overlapping for K <= L/2 (the usual case) but the clone makes
-            # it safe even when they overlap.
-            sample[..., -loop_overlap:] = sample[..., :loop_overlap].clone()
-        return sample
-
     def _build_repaint_schedule(self, start_t, jump_length, jump_n_sample):
         """Build a RePaint jump/time-travel schedule over state timesteps x_t.
 
@@ -914,7 +900,6 @@ class GaussianDiffusion:
         inpaint_reference=None,
         repaint_jump_length=0,
         repaint_jump_n_sample=1,
-        loop_overlap=0,
     ):
         """
         Generate samples from the model.
@@ -960,7 +945,6 @@ class GaussianDiffusion:
             inpaint_reference=inpaint_reference,
             repaint_jump_length=repaint_jump_length,
             repaint_jump_n_sample=repaint_jump_n_sample,
-            loop_overlap=loop_overlap,
         )):
             final = sample
             if dump_steps is not None and i in dump_steps:
@@ -1063,7 +1047,6 @@ class GaussianDiffusion:
         inpaint_reference=None,
         repaint_jump_length=0,
         repaint_jump_n_sample=1,
-        loop_overlap=0,
     ):
         """
         Generate samples from the model and yield intermediate samples from
@@ -1090,10 +1073,6 @@ class GaussianDiffusion:
             my_t = th.ones([shape[0]], device=device, dtype=th.long) * indices[0]
             img = self.q_sample(init_image, my_t, img)
 
-        # Quality nicety: seed the initial noise tensor as cyclic too, so the
-        # very first denoising step already sees a periodic boundary.
-        img = self._loop_clamp(img, loop_overlap)
-
         # Keep the original final t=0 denoise step in the transition-based
         # sampler by ending the monotonic schedule with a single sentinel.
         repaint_schedule = indices + [-1]
@@ -1117,9 +1096,6 @@ class GaussianDiffusion:
                 img = self._repaint_time_travel(
                     img, t_forward, const_noise=const_noise
                 )
-                # RePaint time-travel injects fresh randn noise; re-establish
-                # the cyclic boundary so loop + inpaint compose correctly.
-                img = self._loop_clamp(img, loop_overlap)
                 continue
 
             t = th.tensor([current_i] * shape[0], device=device)
@@ -1143,7 +1119,6 @@ class GaussianDiffusion:
                     out["sample"], current_i, shape, device,
                     inpaint_mask, inpaint_reference,
                 )
-                out["sample"] = self._loop_clamp(out["sample"], loop_overlap)
                 yield out
                 img = out["sample"]
 
@@ -1385,7 +1360,6 @@ class GaussianDiffusion:
         inpaint_reference=None,
         repaint_jump_length=0,
         repaint_jump_n_sample=1,
-        loop_overlap=0,
     ):
         """
         Generate samples from the model using DDIM.
@@ -1417,7 +1391,6 @@ class GaussianDiffusion:
             inpaint_reference=inpaint_reference,
             repaint_jump_length=repaint_jump_length,
             repaint_jump_n_sample=repaint_jump_n_sample,
-            loop_overlap=loop_overlap,
         ):
             final = sample
         return final["sample"]
@@ -1442,7 +1415,6 @@ class GaussianDiffusion:
         inpaint_reference=None,
         repaint_jump_length=0,
         repaint_jump_n_sample=1,
-        loop_overlap=0,
     ):
         """
         Use DDIM to sample from the model and yield intermediate samples from
@@ -1467,10 +1439,6 @@ class GaussianDiffusion:
             my_t = th.ones([shape[0]], device=device, dtype=th.long) * indices[0]
             img = self.q_sample(init_image, my_t, img)
 
-        # Quality nicety: seed the initial noise tensor as cyclic too, so the
-        # very first denoising step already sees a periodic boundary.
-        img = self._loop_clamp(img, loop_overlap)
-
         # Keep the original final t=0 denoise step in the transition-based
         # sampler by ending the monotonic schedule with a single sentinel.
         repaint_schedule = indices + [-1]
@@ -1492,9 +1460,6 @@ class GaussianDiffusion:
             if next_i > current_i:
                 t_forward = th.tensor([next_i] * shape[0], device=device)
                 img = self._repaint_time_travel(img, t_forward)
-                # RePaint time-travel injects fresh randn noise; re-establish
-                # the cyclic boundary so loop + inpaint compose correctly.
-                img = self._loop_clamp(img, loop_overlap)
                 continue
 
             t = th.tensor([current_i] * shape[0], device=device)
@@ -1518,7 +1483,6 @@ class GaussianDiffusion:
                     out["sample"], current_i, shape, device,
                     inpaint_mask, inpaint_reference,
                 )
-                out["sample"] = self._loop_clamp(out["sample"], loop_overlap)
                 yield out
                 img = out["sample"]
 
