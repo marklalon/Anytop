@@ -127,6 +127,7 @@ def create_training_data_loader(args):
         aug_mirror_prob=getattr(args, 'aug_mirror_prob', 0.0),
         aug_loop_roll_prob=getattr(args, 'aug_loop_roll_prob', 0.0),
         loop_train_cycle_resample=getattr(args, 'loop_train_cycle_resample', False),
+        loop_uncond_prob=getattr(args, 'loop_uncond_prob', 0.0),
         loop_temporal_mode=getattr(args, 'loop_temporal_mode', 'linear'),
     )
 

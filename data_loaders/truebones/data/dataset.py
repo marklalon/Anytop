@@ -490,6 +490,7 @@ class MotionDataset(data.Dataset):
         self.sample_limit = max(0, int(sample_limit))
         self.motion_cache_size = max(0, int(getattr(opt, 'motion_cache_size', 0)))
         self.motion_cache = OrderedDict()
+        self.loop_cycle_resample_cache = OrderedDict()
         data_dict = {}
         all_object_types = self.cond_dict.keys()
         if motion_metadata_lookup is None:
@@ -604,6 +605,30 @@ class MotionDataset(data.Dataset):
             raise ValueError(f"loop_offset={offset} is invalid for loop motion with length={length}.")
         return offset
 
+    def _periodic_resample_loop_motion(self, name, motion, target_num_frames, mirror_applied=False, speed_factor=1.0):
+        cache_enabled = self.motion_cache_size > 0 and abs(float(speed_factor) - 1.0) < 1e-6
+        if not cache_enabled:
+            return _periodic_resample_motion(motion, target_num_frames)
+
+        key = (
+            name,
+            int(target_num_frames),
+            bool(mirror_applied),
+            tuple(int(v) for v in motion.shape),
+            str(motion.dtype),
+        )
+        cached = self.loop_cycle_resample_cache.get(key)
+        if cached is not None:
+            self.loop_cycle_resample_cache.move_to_end(key)
+            return cached
+
+        resampled = _periodic_resample_motion(motion, target_num_frames)
+        self.loop_cycle_resample_cache[key] = resampled
+        self.loop_cycle_resample_cache.move_to_end(key)
+        while len(self.loop_cycle_resample_cache) > self.motion_cache_size:
+            self.loop_cycle_resample_cache.popitem(last=False)
+        return resampled
+
     def prepare_sample_by_name(self, name, target_num_frames=None, crop_start=None, loop_offset=None):
         if name not in self.data_dict:
             raise KeyError(f"Unknown motion sample '{name}'.")
@@ -622,22 +647,36 @@ class MotionDataset(data.Dataset):
         if target_num_frames <= 0:
             raise ValueError(f"target_num_frames must be positive, got {target_num_frames}.")
 
-        result = self.augment(data, return_aug_info=return_aug_info)
-        if return_aug_info:
-            motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std, aug_info = result
-        else:
-            motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std = result
         motion_metadata = _copy_required_motion_metadata(name, data.get('motion_metadata'))
+        is_loop = bool(motion_metadata.get('is_loop'))
+        loop_uncond_prob = float(getattr(self.opt, 'loop_uncond_prob', 0.0) or 0.0)
+        if not 0.0 <= loop_uncond_prob <= 1.0:
+            raise ValueError(f"loop_uncond_prob must be in [0, 1], got {loop_uncond_prob}.")
+        loop_uncond = bool(
+            is_loop
+            and loop_offset is None
+            and loop_uncond_prob > 0.0
+            and random.random() < loop_uncond_prob
+        )
+
+        result = self.augment(data, return_aug_info=True, loop_uncond=loop_uncond)
+        motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std, aug_info = result
         ind = 0
         loop_applied = False
         loop_full_cycle = False
-        is_loop = bool(motion_metadata.get('is_loop'))
+        loop_condition_active = is_loop and not loop_uncond
         loop_roll_prob = float(getattr(self.opt, 'aug_loop_roll_prob', 0.0) or 0.0)
         loop_train_cycle_resample = bool(getattr(self.opt, 'loop_train_cycle_resample', False))
         should_roll_loop = loop_offset is not None or (loop_roll_prob > 0.0 and random.random() < loop_roll_prob)
 
-        if is_loop and loop_train_cycle_resample and m_length > 0:
-            motion = _periodic_resample_motion(motion, target_num_frames)
+        if loop_condition_active and loop_train_cycle_resample and m_length > 0:
+            motion = self._periodic_resample_loop_motion(
+                name,
+                motion,
+                target_num_frames,
+                mirror_applied=bool(aug_info.get('mirror_applied', False)),
+                speed_factor=float(aug_info.get('speed_factor', 1.0)),
+            )
             m_length = target_num_frames
             loop_full_cycle = True
             if should_roll_loop:
@@ -660,7 +699,7 @@ class MotionDataset(data.Dataset):
 
         if m_length < target_num_frames:
             pad_frames = target_num_frames - m_length
-            if motion_metadata.get('is_loop') and m_length > 0:
+            if loop_condition_active and m_length > 0:
                 loop_applied = True
                 loop_full_cycle = True
                 offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
@@ -672,14 +711,14 @@ class MotionDataset(data.Dataset):
                                          motion,
                                          np.zeros((pad_frames, motion.shape[1], motion.shape[2]), dtype=motion.dtype)
                                          ], axis=0)
-        elif is_loop and m_length == target_num_frames:
+        elif loop_condition_active and m_length == target_num_frames:
             loop_full_cycle = True
             if should_roll_loop and not loop_applied:
                 offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
                 motion = _circular_roll_motion(motion, offset)
                 loop_applied = True
 
-        motion_metadata['is_loop'] = bool(is_loop)
+        motion_metadata['is_loop'] = bool(loop_condition_active)
         motion_metadata['loop_full_cycle'] = bool(loop_full_cycle)
         circular_mask = self.loop_temporal_mode in ('circular_mask', 'both') and bool(loop_full_cycle)
         temporal_mask = self._get_temporal_mask(target_num_frames, circular=circular_mask)
@@ -697,12 +736,13 @@ class MotionDataset(data.Dataset):
                 'speed_factor': float(aug_info['speed_factor']),
                 'crop_start': int(aug_info['crop_start']),
                 'loop_applied': bool(aug_info['loop_applied']),
+                'loop_uncond': bool(loop_uncond),
             }
         return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {
             'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
         }
     
-    def augment(self, data, return_aug_info=False):
+    def augment(self, data, return_aug_info=False, loop_uncond=False):
         object_type = data['object_type']
         cond = self.cond_dict[object_type]
         motion_path = data['motion_path']
@@ -746,7 +786,12 @@ class MotionDataset(data.Dataset):
                             self.motion_cache.popitem(last=False)
 
         speed_factor = 1.0
-        if speed_range > 0.0:
+        skip_speed_for_loop_cycle = (
+            bool(motion_metadata.get('is_loop'))
+            and bool(getattr(self.opt, 'loop_train_cycle_resample', False))
+            and not bool(loop_uncond)
+        )
+        if speed_range > 0.0 and not skip_speed_for_loop_cycle:
             # Resample time axis: alpha<1 speeds up (fewer frames), alpha>1 slows down (more frames).
             # The existing random-start-offset logic in _prepare_sample handles length mismatch.
             speed_factor = 1.0 + random.uniform(-speed_range, speed_range)
@@ -840,6 +885,7 @@ class Truebones(data.Dataset):
         self.opt.aug_mirror_prob = kwargs.get('aug_mirror_prob', 0.0)
         self.opt.aug_loop_roll_prob = kwargs.get('aug_loop_roll_prob', 0.0)
         self.opt.loop_train_cycle_resample = kwargs.get('loop_train_cycle_resample', False)
+        self.opt.loop_uncond_prob = kwargs.get('loop_uncond_prob', 0.0)
         self.opt.loop_temporal_mode = kwargs.get('loop_temporal_mode', 'linear')
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
         cond_dict = refresh_joint_metadata_in_cond_dict(cond_dict)

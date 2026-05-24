@@ -411,8 +411,6 @@ class GaussianDiffusion:
                 'loop_wrap_loss': zero,
                 'loop_wrap_pose': zero,
                 'loop_wrap_rot': zero,
-                'loop_wrap_vel': zero,
-                'loop_wrap_contact': zero,
                 'loop_wrap_terminal_vel': zero,
             }
 
@@ -422,8 +420,6 @@ class GaussianDiffusion:
         zero = model_output.new_zeros(())
         pose_terms = []
         rot_terms = []
-        vel_terms = []
-        contact_terms = []
         terminal_vel_terms = []
 
         for batch_index in range(batch_size):
@@ -455,7 +451,6 @@ class GaussianDiffusion:
                 pos_last_frame = sample[:, :, 0:3, valid_frames - 1]
                 terminal_vel = sample[:, :, 9:12, valid_frames - 1]
                 terminal_vel_loss = ((pos_first_frame - pos_last_frame - terminal_vel) ** 2).mean()
-                vel_terms.append(terminal_vel_loss)
                 terminal_vel_terms.append(terminal_vel_loss)
 
         def _mean_or_zero(values):
@@ -465,16 +460,12 @@ class GaussianDiffusion:
 
         pose_loss = _mean_or_zero(pose_terms)
         rot_loss = _mean_or_zero(rot_terms)
-        vel_loss = _mean_or_zero(vel_terms)
-        contact_loss = _mean_or_zero(contact_terms)
         terminal_vel_loss = _mean_or_zero(terminal_vel_terms)
-        total = pose_loss + rot_loss + vel_loss + contact_loss
+        total = pose_loss + rot_loss + terminal_vel_loss
         return {
             'loop_wrap_loss': total,
             'loop_wrap_pose': pose_loss,
             'loop_wrap_rot': rot_loss,
-            'loop_wrap_vel': vel_loss,
-            'loop_wrap_contact': contact_loss,
             'loop_wrap_terminal_vel': terminal_vel_loss,
         }
 

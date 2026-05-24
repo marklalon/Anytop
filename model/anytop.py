@@ -418,6 +418,17 @@ class AnyTop(nn.Module):
                         "is_loop batch dimension must match the motion batch size, got "
                         f"{loop_phase_mask.numel()} for batch {bs}"
                     )
+                raw_loop_full_cycle = y.get('loop_full_cycle')
+                if raw_loop_full_cycle is not None:
+                    loop_full_cycle_mask = torch.as_tensor(raw_loop_full_cycle, device=x.device, dtype=torch.bool).reshape(-1)
+                    if loop_full_cycle_mask.numel() == 1 and bs != 1:
+                        loop_full_cycle_mask = loop_full_cycle_mask.expand(bs)
+                    elif loop_full_cycle_mask.numel() != bs:
+                        raise ValueError(
+                            "loop_full_cycle batch dimension must match the motion batch size, got "
+                            f"{loop_full_cycle_mask.numel()} for batch {bs}"
+                        )
+                    loop_phase_mask = loop_phase_mask & loop_full_cycle_mask
 
         x = self.input_process(x, tpos_first_frame, y['joints_names_embs']) # applies linear layer on each frame to convert it to latent dim
         spatial_mask = (1.0 - joints_padding_mask[:, 0, 0, 1:, 1:].float()) * -1e4

@@ -39,6 +39,7 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--aug_mirror_prob 0.5 ^
 	--aug_loop_roll_prob 1.0 ^
 	--loop_train_cycle_resample ^
+	--loop_uncond_prob 0.25 ^
 	--joint_mask_prob 0.2 ^
 	--temporal_span_mask_prob 0.3 ^
 	--temporal_span_seam_loss_weight 0.5 ^

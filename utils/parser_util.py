@@ -94,7 +94,7 @@ def add_model_options(parser):
                             " Penalizes |pos[t+1]-pos[t] - vel[t]|^2 on denormalized outputs."
                             " Couples position and velocity feature groups to prevent independent memorization.")
     group.add_argument("--lambda_loop_wrap", default=0.0, type=float,
-                       help="Weight for loop-only wrap loss on denormalized pose/rotation/velocity/contact channels.")
+                       help="Weight for loop-only wrap loss on denormalized pose/rotation/terminal_vel channels.")
     group.add_argument("--loop_wrap_frames", default=4, type=int,
                        help="Number of frames at each clip boundary used by loop wrap loss.")
     group.add_argument("--loop_cond", action='store_true',
@@ -105,6 +105,9 @@ def add_model_options(parser):
                        help="Probability of circularly rolling prepared loop clips during training.")
     group.add_argument("--loop_train_cycle_resample", action='store_true',
                        help="For loop clips, resample the full stored period to num_frames before circular roll and wrap supervision.")
+    group.add_argument("--loop_uncond_prob", default=0.0, type=float,
+                       help="Probability that a loop training clip is treated unconditionally (no loop conditioning)."
+                            " Disables circular masks/phase, cycle resampling, and loop wrap loss for that sample.")
     group.add_argument("--t5_out_dim", default=0, type=int, help=argparse.SUPPRESS)
     group.add_argument("--temporal_window", default=31, type=int,
                        help="temporal window size")

@@ -176,8 +176,9 @@ class NativeLoopTests(unittest.TestCase):
 
         self.assertLess(float(terms['loop_wrap_pose'].item()), 1e-6)
         self.assertLess(float(terms['loop_wrap_rot'].item()), 1e-6)
-        self.assertLess(float(terms['loop_wrap_vel'].item()), 1e-6)
-        self.assertLess(float(terms['loop_wrap_contact'].item()), 1e-6)
+        self.assertNotIn('loop_wrap_vel', terms)
+        self.assertNotIn('loop_wrap_contact', terms)
+        self.assertLess(float(terms['loop_wrap_terminal_vel'].item()), 1e-6)
 
     def test_create_gaussian_diffusion_preserves_loop_args(self):
         class Args:
@@ -228,6 +229,38 @@ class NativeLoopTests(unittest.TestCase):
         self.assertIsNotNone(capture_decoder.last_kwargs)
         self.assertTrue(torch.equal(capture_decoder.last_kwargs['loop_phase_mask'], y['is_loop']))
         self.assertTrue(torch.equal(capture_decoder.last_kwargs['lengths'], y['lengths']))
+
+    def test_anytop_loop_phase_requires_full_cycle_when_available(self):
+        model = AnyTop(
+            max_joints=4,
+            feature_len=13,
+            latent_dim=8,
+            ff_size=32,
+            num_layers=1,
+            num_heads=2,
+            dropout=0.0,
+            cross_limb=True,
+            loop_temporal_mode='both',
+        )
+        capture_decoder = _CaptureDecoder()
+        model.seqTransDecoder = capture_decoder
+
+        x = torch.randn(2, 4, 13, 3, dtype=torch.float32)
+        y = {
+            'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
+            'mask': torch.ones(2, 1, 1, 4, 4, dtype=torch.float32),
+            'tpos_first_frame': torch.randn(2, 4, 13, dtype=torch.float32),
+            'n_joints': torch.tensor([4, 3], dtype=torch.int64),
+            'joints_names_embs': torch.zeros(2, 4, 512, dtype=torch.float32),
+            'is_loop': torch.tensor([True, True]),
+            'loop_full_cycle': torch.tensor([True, False]),
+            'lengths': torch.tensor([3, 3], dtype=torch.int64),
+        }
+
+        model(x, torch.tensor([1, 2], dtype=torch.int64), y=y)
+
+        self.assertIsNotNone(capture_decoder.last_kwargs)
+        self.assertTrue(torch.equal(capture_decoder.last_kwargs['loop_phase_mask'], torch.tensor([True, False])))
 
 
 if __name__ == '__main__':
