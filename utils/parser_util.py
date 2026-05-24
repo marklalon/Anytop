@@ -261,7 +261,7 @@ def add_generate_options(parser):
                            "When --reference_mode controlnet is selected, this must be 0.")
     group.add_argument("--reference_mode", default="img2img", choices=["img2img", "controlnet"],
                        help="How to use --reference_motion. img2img = noise the reference into x_t. controlnet = keep the diffusion state on the full schedule and feed the reference through a separate conditioning branch. When source and target skeletons differ, the reference is retargeted into the target skeleton first (both modes).")
-    group.add_argument("--reference_scale", default=1.0, type=float,
+    group.add_argument("--reference_scale", default=None, type=float,
                        help="Classifier-free guidance scale for --reference_mode controlnet (default: 1.0). "
                             "1.0 = single conditioned forward pass; >1 amplifies the reference signal. "
                             "Only effective in controlnet mode; will error if set in img2img mode.")
