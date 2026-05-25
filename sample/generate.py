@@ -961,7 +961,7 @@ def main(args=None, cond_dict=None):
     niter = os.path.basename(args.model_path).replace('model', '').replace('.pt', '')
     fps = opt.fps
     n_frames = int(args.motion_length * fps)
-    max_joints = opt.max_joints
+    cond_max_joints = opt.max_joints
     dist_util.setup_dist(args.device)
     object_type = args.object_type
     if out_path == '':
@@ -1149,6 +1149,17 @@ def main(args=None, cond_dict=None):
     )
 
     object_type = target_type  # downstream code keeps reading `object_type`
+    max_joints = len(np.asarray(cond_dict[object_type]['parents']))
+    if max_joints > cond_max_joints:
+        raise RuntimeError(
+            f"target object_type '{object_type}' has {max_joints} joints, "
+            f"exceeding cond/model max_joints={cond_max_joints}"
+        )
+    if max_joints < cond_max_joints:
+        print(
+            f"[generate] using target joint count {max_joints} for sampling "
+            f"instead of cond max_joints={cond_max_joints}"
+        )
     if reference_motion_path:
         if source_type_used_target_fallback:
             print(
@@ -1301,7 +1312,7 @@ def main(args=None, cond_dict=None):
                 inpaint_include_subtree,
                 inpaint_frames_arg,
                 args.batch_size,
-                opt.max_joints,
+                max_joints,
                 output_frame_count,
             )
 
@@ -1312,7 +1323,7 @@ def main(args=None, cond_dict=None):
             cond_dict,
             output_frame_count,
             args.temporal_window,
-            max_joints=opt.max_joints,
+            max_joints=max_joints,
             feature_len=opt.feature_len,
             loop=getattr(args, 'loop', False),
         )

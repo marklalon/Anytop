@@ -120,9 +120,19 @@ class _WrappedModel:
         self.timestep_map = timestep_map
         self.rescale_timesteps = rescale_timesteps
         self.original_num_steps = original_num_steps
+        self._timestep_map_cache = {}
+
+    def _get_timestep_map_tensor(self, ts):
+        key = (ts.device.type, ts.device.index, ts.dtype)
+        cached = self._timestep_map_cache.get(key)
+        if cached is not None and cached.device == ts.device:
+            return cached
+        cached = th.as_tensor(self.timestep_map, device=ts.device, dtype=ts.dtype)
+        self._timestep_map_cache[key] = cached
+        return cached
 
     def __call__(self, x, ts, **kwargs):
-        map_tensor = th.tensor(self.timestep_map, device=ts.device, dtype=ts.dtype)
+        map_tensor = self._get_timestep_map_tensor(ts)
         new_ts = map_tensor[ts]
         if self.rescale_timesteps:
             new_ts = new_ts.float() * (1000.0 / self.original_num_steps)

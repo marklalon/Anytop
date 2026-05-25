@@ -22,6 +22,7 @@ from sample.generate import (  # noqa: E402
     _resolve_inpaint_joint_indices,
     _sample_batch,
     build_inpaint_mask,
+    create_condition,
 )
 
 
@@ -59,6 +60,23 @@ def _make_cond_entry() -> dict:
         "canonical_joint_names": ["Root", "Left Hip", "Left Knee"],
         "canonical_bvh_joint_names": ["Root", "LeftHip", "LeftKnee"],
         "parents": np.array([-1, 0, 1], dtype=np.int64),
+    }
+
+
+def _make_full_cond_entry(n_joints: int, feature_len: int = 13) -> dict:
+    parents = np.array([-1] + list(range(n_joints - 1)), dtype=np.int64)
+    return {
+        "joints_names": [f"Joint{i}" for i in range(n_joints)],
+        "canonical_joint_names": [f"Joint{i}" for i in range(n_joints)],
+        "canonical_bvh_joint_names": [f"Joint{i}" for i in range(n_joints)],
+        "parents": parents,
+        "mean": np.zeros((n_joints, feature_len), dtype=np.float32),
+        "std": np.ones((n_joints, feature_len), dtype=np.float32),
+        "tpos_first_frame": np.zeros((n_joints, feature_len), dtype=np.float32),
+        "joint_relations": np.zeros((n_joints, n_joints), dtype=np.int64),
+        "joints_graph_dist": np.zeros((n_joints, n_joints), dtype=np.int64),
+        "offsets": np.zeros((n_joints, 3), dtype=np.float32),
+        "joints_names_embs": np.zeros((n_joints, 4), dtype=np.float32),
     }
 
 
@@ -110,6 +128,25 @@ def test_build_inpaint_mask_accepts_aliases_and_expands_subtree() -> None:
     assert mask[0, 0, 0, 0].item() == 0.0
     assert mask[0, 1, 0, 0].item() == 1.0
     assert mask[0, 2, 0, 0].item() == 1.0
+
+
+def test_create_condition_can_sample_at_target_joint_count() -> None:
+    cond_dict = {"Horse": _make_full_cond_entry(3)}
+
+    motion_batch, model_kwargs = create_condition(
+        ["Horse", "Horse"],
+        cond_dict,
+        n_frames=4,
+        temporal_window=3,
+        max_joints=3,
+        feature_len=13,
+    )
+
+    y = model_kwargs["y"]
+    assert tuple(motion_batch.shape) == (2, 3, 13, 4)
+    assert tuple(y["joints_padding_mask"].shape) == (2, 1, 1, 4, 4)
+    assert tuple(y["graph_dist"].shape) == (2, 3, 3)
+    assert torch.equal(y["n_joints"], torch.tensor([3, 3]))
 
 
 def test_resolve_inpaint_joint_indices_rejects_unknown_names() -> None:

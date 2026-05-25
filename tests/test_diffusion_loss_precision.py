@@ -14,11 +14,21 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
-from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType  # noqa: E402
+from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType, _extract_into_tensor  # noqa: E402
 from diffusion.respace import SpacedDiffusion, space_timesteps  # noqa: E402
 from model.anytop import AnyTop  # noqa: E402
 from model.joint_mask_utils import sample_subtree_joint_mask  # noqa: E402
 from utils.model_util import create_gaussian_diffusion  # noqa: E402
+
+
+class _TimestepRecordingModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.timesteps = []
+
+    def forward(self, x: torch.Tensor, t: torch.Tensor, **model_kwargs) -> torch.Tensor:
+        self.timesteps.append(t.detach().clone())
+        return x
 
 
 class _BFloat16Model(nn.Module):
@@ -137,6 +147,32 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertEqual(terms["geodesic_loss"].dtype, torch.float32)
         self.assertEqual(terms["vel_loss"].dtype, torch.float32)
         self.assertEqual(terms["loss"].dtype, torch.float32)
+
+    def test_extract_into_tensor_keeps_fp32_broadcast_semantics(self):
+        arr = np.array([0.25, 0.5, 0.75], dtype=np.float64)
+        timesteps = torch.tensor([2, 0], dtype=torch.long)
+
+        result = _extract_into_tensor(arr, timesteps, (2, 3, 4))
+
+        self.assertEqual(result.dtype, torch.float32)
+        self.assertEqual(tuple(result.shape), (2, 3, 4))
+        self.assertTrue(torch.allclose(result[0], torch.full((3, 4), 0.75)))
+        self.assertTrue(torch.allclose(result[1], torch.full((3, 4), 0.25)))
+
+    def test_wrapped_model_reuses_timestep_map_tensor(self):
+        diffusion = self._make_spaced_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
+        model = _TimestepRecordingModel()
+        wrapped = diffusion._wrap_model(model)
+        x = torch.zeros(2, 3, 4)
+        ts = torch.tensor([0, 2], dtype=torch.long)
+
+        wrapped(x, ts)
+        wrapped(x, ts)
+
+        self.assertEqual(len(wrapped._timestep_map_cache), 1)
+        self.assertEqual(len(model.timesteps), 2)
+        self.assertTrue(torch.equal(model.timesteps[0], torch.tensor([0, 2])))
+        self.assertTrue(torch.equal(model.timesteps[1], torch.tensor([0, 2])))
 
     def test_training_losses_force_fp32_for_vb_term(self):
         batch_size, n_joints, n_feats, n_frames = 2, 3, 12, 5

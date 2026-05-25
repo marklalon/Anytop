@@ -8,6 +8,7 @@ Docstrings have been added, as well as DDIM sampling and a new collection of bet
 
 import enum
 import math
+import weakref
 import numpy as np
 import torch
 import torch as th
@@ -17,6 +18,41 @@ from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood, geodesic_distance
 from model.anytop import ReferencePriorEncoder
 from utils.rotation_conversions import rotation_6d_to_matrix_safe
+
+
+_EXTRACT_TENSOR_CACHE = {}
+_EXTRACT_TENSOR_CACHE_FINALIZERS = {}
+
+
+def _device_cache_key(device):
+    device = th.device(device)
+    return device.type, device.index
+
+
+def _cleanup_extract_tensor_cache(array_id):
+    for key in list(_EXTRACT_TENSOR_CACHE):
+        if key[0] == array_id:
+            _EXTRACT_TENSOR_CACHE.pop(key, None)
+    _EXTRACT_TENSOR_CACHE_FINALIZERS.pop(array_id, None)
+
+
+def _cached_extract_source_tensor(arr, device):
+    array_id = id(arr)
+    key = (array_id, arr.shape, arr.dtype.str, _device_cache_key(device))
+    cached = _EXTRACT_TENSOR_CACHE.get(key)
+    if cached is not None and cached.device == th.device(device):
+        return cached
+
+    tensor = th.from_numpy(arr).to(device=device, dtype=th.float32)
+    _EXTRACT_TENSOR_CACHE[key] = tensor
+    if array_id not in _EXTRACT_TENSOR_CACHE_FINALIZERS:
+        try:
+            _EXTRACT_TENSOR_CACHE_FINALIZERS[array_id] = weakref.finalize(
+                arr, _cleanup_extract_tensor_cache, array_id
+            )
+        except TypeError:
+            pass
+    return tensor
 
 
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, scale_betas=1.):
@@ -1954,7 +1990,7 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
                             dimension equal to the length of timesteps.
     :return: a tensor of shape [batch_size, 1, ...] where the shape has K dims.
     """
-    res = th.from_numpy(arr).to(device=timesteps.device)[timesteps].float()
+    res = _cached_extract_source_tensor(arr, timesteps.device)[timesteps]
     while len(res.shape) < len(broadcast_shape):
         res = res[..., None]
     return res.expand(broadcast_shape)
