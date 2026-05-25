@@ -23,7 +23,9 @@ import data_loaders.truebones.data.dataset as dataset_module
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import (
     Truebones,
+    _choose_loop_cycle_repeats,
     _circular_roll_motion,
+    _loop_phase_length_from_num_cycles,
     _periodic_resample_motion,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
@@ -107,6 +109,11 @@ def find_mirror_safeguard_sample(motion_dataset):
     )
 
 
+def test_loop_repeat_picker_prefers_near_unit_speed() -> None:
+    assert _choose_loop_cycle_repeats(32, 60) == 2
+    assert _choose_loop_cycle_repeats(25, 60) == 2
+
+
 def test_loop_padding_updates_effective_length() -> None:
     dataset = _build_truebones(
         split="train",
@@ -132,9 +139,16 @@ def test_loop_padding_updates_effective_length() -> None:
     raw_norm = np.nan_to_num((raw - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
     raw_len = raw_norm.shape[0]
     assert raw_len < NUM_FRAMES, "loop regression sample no longer needs padding"
-    # loop motions are always cycle-resampled to target_num_frames, then
-    # circular-rolled by the requested offset (0 here → no change).
-    expected = _periodic_resample_motion(raw_norm, NUM_FRAMES)
+    raw_cycle_count = float(data.get("motion_metadata", {}).get("loop_num_cycles", 1.0) or 1.0)
+    repeats = _choose_loop_cycle_repeats(raw_len, NUM_FRAMES)
+    tiled = np.tile(raw_norm, (repeats, 1, 1)) if repeats > 1 else raw_norm
+    expected = _periodic_resample_motion(tiled, NUM_FRAMES)
+
+    assert np.isclose(float(motion_metadata["loop_num_cycles"]), raw_cycle_count * repeats)
+    assert np.isclose(
+        float(motion_metadata["loop_phase_length"]),
+        _loop_phase_length_from_num_cycles(NUM_FRAMES, motion_metadata["loop_num_cycles"]),
+    )
     assert_close("loop-filled motion", motion, expected)
 
 
@@ -155,15 +169,15 @@ def test_loop_padding_random_offset_wraps_without_truncation() -> None:
     raw_norm = np.nan_to_num((raw - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
     raw_len = raw_norm.shape[0]
     offset = raw_len - 4
+    repeats = _choose_loop_cycle_repeats(raw_len, NUM_FRAMES)
 
     motion, m_length, *_rest = motion_dataset.prepare_sample_by_name(
         LOOP_MOTION,
         target_num_frames=NUM_FRAMES,
         loop_offset=offset,
     )
-    # loop motions are always cycle-resampled to target_num_frames first,
-    # then circular-rolled by the requested offset.
-    expected = _periodic_resample_motion(raw_norm, NUM_FRAMES)
+    tiled = np.tile(raw_norm, (repeats, 1, 1)) if repeats > 1 else raw_norm
+    expected = _periodic_resample_motion(tiled, NUM_FRAMES)
     expected = _circular_roll_motion(expected, offset)
     assert motion.shape[0] == NUM_FRAMES, f"expected random-offset loop fill to keep {NUM_FRAMES} frames"
     assert m_length == NUM_FRAMES, f"effective length should remain {NUM_FRAMES}, got {m_length}"
@@ -233,6 +247,7 @@ def test_prepare_sample_aug_info_reports_actual_loop_fill() -> None:
     assert motion.shape[0] == NUM_FRAMES, f"expected loop-filled motion to have {NUM_FRAMES} frames"
     assert m_length == NUM_FRAMES, f"expected effective length {NUM_FRAMES}, got {m_length}"
     assert aug_info["loop_applied"] is True, f"expected loop_applied=True, got {aug_info}"
+    assert float(aug_info["loop_num_cycles"]) >= 1.0, f"expected loop_num_cycles>=1, got {aug_info}"
     assert aug_info["crop_start"] == 0, f"expected crop_start=0, got {aug_info}"
     assert aug_info["mirror_applied"] is False, f"expected mirror_applied=False, got {aug_info}"
     assert np.isclose(float(aug_info["speed_factor"]), 1.0), f"expected speed_factor=1.0, got {aug_info}"

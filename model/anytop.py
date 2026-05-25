@@ -528,6 +528,8 @@ class AnyTop(nn.Module):
                         f"{tuple(cross_limb_unreliable_mask.shape)}"
                     )
 
+        loop_phase_lengths = y.get('loop_phase_lengths', y.get('lengths'))
+
         output = self.seqTransDecoder(
             tgt=x,
             timesteps_embs=timesteps_emb,
@@ -544,7 +546,7 @@ class AnyTop(nn.Module):
             cross_limb_unreliable_mask=cross_limb_unreliable_mask,
             reference_batch_mask=reference_batch_mask,
             loop_phase_mask=loop_phase_mask,
-            lengths=y.get('lengths'),
+            lengths=loop_phase_lengths,
         )
         if get_layer_activation > -1 and get_layer_activation < self.num_layers:
             activations = output[1]

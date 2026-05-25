@@ -8,8 +8,8 @@ applied faithfully in the same order as dataset.py:
   1. aug_mirror_prob   — left-right mirror (joint swap + YZ-plane sign flip)
   2. aug_speed_range   — temporal speed jitter via bilinear resampling
   3. random crop       — random start offset when clip > num_frames
-  4. loop padding      — random phase offset circular tile for loop motions
-     (zero-pad for non-loop clips that are shorter than num_frames)
+  4. loop simulation   — loop motions are repeated/resampled to num_frames,
+      with random phase offset and multi-cycle phase metadata
 
 Exported filenames encode the applied augmentations, e.g.:
   Horse___Gallop_123_spd0.87_mirror_loop7.bvh
@@ -31,6 +31,8 @@ Arguments
   --num-frames        Window length in frames, must match --num_frames in training (default: 60)
   --aug-speed-range   ±fraction speed jitter, matching --aug_speed_range (default: 0.2)
   --aug-mirror-prob   Mirror probability, matching --aug_mirror_prob (default: 0.5)
+    --loop-only         Sample only motions marked as loop clips
+    --loop-uncond-prob  Probability to route loop clips through the non-loop training path
   --objects-subset    Subset name or single species name (default: "all")
   --action-tags       Comma-separated action tags to filter (default: "")
   --split             train / test / all (default: "train")
@@ -159,6 +161,13 @@ def _export_bvh(
     return True
 
 
+def _format_float_tag(value: object) -> str:
+    number = float(value)
+    if np.isclose(number, round(number)):
+        return str(int(round(number)))
+    return f"{number:.2f}".rstrip("0").rstrip(".").replace(".", "p")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -174,6 +183,10 @@ def parse_args() -> argparse.Namespace:
                    help="Speed jitter ±fraction (0 = disabled). Match --aug_speed_range in training.")
     p.add_argument("--aug-mirror-prob", type=float, default=0.5,
                    help="Mirror augmentation probability (0 = disabled). Match --aug_mirror_prob.")
+    p.add_argument("--loop-only", action="store_true",
+                   help="Only sample/export motions whose metadata marks them as loop clips.")
+    p.add_argument("--loop-uncond-prob", type=float, default=0.0,
+                   help="Probability that a loop clip follows the non-loop training path. Match --loop_uncond_prob.")
     p.add_argument("--objects-subset", default="all",
                    help="Predefined subset name or single species (e.g. 'quadropeds_test', 'Horse').")
     p.add_argument("--action-tags", default="",
@@ -221,6 +234,7 @@ def main() -> int:
     # Augmentation settings (mirror training configuration)
     opt.aug_speed_range = args.aug_speed_range
     opt.aug_mirror_prob = args.aug_mirror_prob
+    opt.loop_uncond_prob = args.loop_uncond_prob
     opt.motion_cache_size = 0  # no cache needed for sampling
 
     output_dir = Path(args.output_dir).resolve()
@@ -260,16 +274,27 @@ def main() -> int:
         print("[ERROR] No motions available after filtering. Check subset / split / action-tags.")
         return 1
 
+    candidate_names = list(dataset.name_list)
+    if args.loop_only:
+        candidate_names = [
+            name for name in candidate_names
+            if bool(dataset.data_dict[name].get("motion_metadata", {}).get("is_loop", False))
+        ]
+        print(f"[INFO] Loop-only candidates: {len(candidate_names)}")
+        if not candidate_names:
+            print("[ERROR] No loop motions available after filtering. Check subset / split / action-tags.")
+            return 1
+
     # -----------------------------------------------------------------------
     # Sample N names (with replacement if N > dataset size)
     # -----------------------------------------------------------------------
-    n = min(args.n, len(dataset.name_list))
-    if args.n > len(dataset.name_list):
+    n = min(args.n, len(candidate_names))
+    if args.n > len(candidate_names):
         print(
-            f"[WARN] Requested {args.n} samples but only {len(dataset.name_list)} motions available. "
+            f"[WARN] Requested {args.n} samples but only {len(candidate_names)} motions available. "
             f"Sampling all of them."
         )
-    sampled_names = rng_py.sample(dataset.name_list, n)
+    sampled_names = rng_py.sample(candidate_names, n)
 
     # -----------------------------------------------------------------------
     # Export loop
@@ -329,6 +354,11 @@ def main() -> int:
             # ----------------------------------------------------------------
             stem = Path(name).stem
             tags: list[str] = []
+            source_metadata = dataset.data_dict[name].get("motion_metadata", {})
+            source_length = int(dataset.data_dict[name].get("length", motion_norm.shape[0]))
+            is_source_loop = bool(source_metadata.get("is_loop", False))
+            loop_num_cycles = float(motion_metadata.get("loop_num_cycles", 1.0))
+            loop_phase_length = float(motion_metadata.get("loop_phase_length", m_length))
 
             # aug_info contains actual augmentation results (not just parameters)
             if aug_info.get("mirror_applied"):
@@ -336,7 +366,10 @@ def main() -> int:
             if aug_info.get("speed_factor", 1.0) != 1.0:
                 tags.append(f"spd{int(round(aug_info['speed_factor'] * 100))}")
             if aug_info.get("loop_applied"):
-                tags.append("loop")
+                tags.append(f"loopc{_format_float_tag(loop_num_cycles)}")
+                tags.append(f"phase{_format_float_tag(loop_phase_length)}")
+            elif is_source_loop:
+                tags.append("loopuncond")
             actual_crop = aug_info.get("crop_start", 0)
             if actual_crop > 0:
                 tags.append(f"crop{actual_crop}")
@@ -355,7 +388,15 @@ def main() -> int:
                 mirror_export_compat=bool(aug_info.get("mirror_applied")),
             )
             if ok:
-                print(f"OK  → {save_path.name}  [{m_length}f, {object_type}]")
+                loop_note = ""
+                if is_source_loop:
+                    loop_note = (
+                        f", loop_applied={bool(aug_info.get('loop_applied'))}"
+                        f", cycles={loop_num_cycles:.3g}"
+                        f", phase_len={loop_phase_length:.3g}"
+                        f", source={source_length}f"
+                    )
+                print(f"OK  → {save_path.name}  [{m_length}f, {object_type}{loop_note}]")
                 exported += 1
             else:
                 print(f"FAIL (recover_animation returned None)")

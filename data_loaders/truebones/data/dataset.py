@@ -123,6 +123,48 @@ def _periodic_resample_motion(motion, target_num_frames):
     return (motion[lo] * (1.0 - w) + motion[hi] * w).astype(motion.dtype, copy=False)
 
 
+def _coerce_loop_num_cycles(motion_name, raw_loop_num_cycles):
+    loop_num_cycles = 1.0 if raw_loop_num_cycles is None else float(raw_loop_num_cycles)
+    if not np.isfinite(loop_num_cycles) or loop_num_cycles <= 0.0:
+        raise ValueError(
+            f"Motion '{motion_name}' has invalid loop_num_cycles={raw_loop_num_cycles!r}; expected a positive finite value."
+        )
+    return loop_num_cycles
+
+
+def _choose_loop_cycle_repeats(source_frames, target_num_frames):
+    source_frames = int(source_frames)
+    target_num_frames = int(target_num_frames)
+    if source_frames <= 0:
+        raise ValueError(f"source_frames must be positive, got {source_frames}.")
+    if target_num_frames <= 0:
+        raise ValueError(f"target_num_frames must be positive, got {target_num_frames}.")
+
+    ratio = float(target_num_frames) / float(source_frames)
+    lower = max(1, int(np.floor(ratio)))
+    upper = max(1, int(np.ceil(ratio)))
+    candidates = {1, lower, upper}
+
+    best_repeats = 1
+    best_error = None
+    for repeats in candidates:
+        speed_scale = float(target_num_frames) / float(source_frames * repeats)
+        error = abs(float(np.log(speed_scale)))
+        if best_error is None or error < best_error or (error == best_error and repeats > best_repeats):
+            best_repeats = repeats
+            best_error = error
+    return best_repeats
+
+
+def _loop_phase_length_from_num_cycles(length, loop_num_cycles):
+    length = int(length)
+    if length <= 0:
+        raise ValueError(f"length must be positive, got {length}.")
+    loop_num_cycles = _coerce_loop_num_cycles('loop sample', loop_num_cycles)
+    motion_frames = max(length - 1, 1)
+    return float(motion_frames / loop_num_cycles) + 1.0
+
+
 def _circular_roll_motion(motion, offset):
     length = int(motion.shape[0])
     if length <= 0:
@@ -663,9 +705,25 @@ class MotionDataset(data.Dataset):
         ind = 0
         loop_applied = False
         loop_full_cycle = False
+        loop_num_cycles = _coerce_loop_num_cycles(name, motion_metadata.get('loop_num_cycles', 1.0))
         loop_condition_active = is_loop and not loop_uncond
 
+        # When the original loop motion is much longer than the target window,
+        # periodic resampling would produce extreme speed distortion (e.g. a
+        # 300-frame walk compressed into 60 frames = 5× speed-up).  Fall back
+        # to random-crop behaviour so the model still sees natural-speed data.
+        if loop_condition_active and m_length > target_num_frames * 2:
+            loop_condition_active = False
+
         if loop_condition_active and m_length > 0:
+            # For short loops, choose the repeat count whose eventual resample
+            # factor is closest to 1x so phase speed distortion stays bounded.
+            if m_length < target_num_frames:
+                repeats = _choose_loop_cycle_repeats(m_length, target_num_frames)
+                if repeats > 1:
+                    motion = np.tile(motion, (repeats, 1, 1))
+                    m_length = motion.shape[0]
+                    loop_num_cycles *= float(repeats)
             motion = self._periodic_resample_loop_motion(
                 name,
                 motion,
@@ -694,18 +752,10 @@ class MotionDataset(data.Dataset):
 
         if m_length < target_num_frames:
             pad_frames = target_num_frames - m_length
-            if loop_condition_active and m_length > 0:
-                loop_applied = True
-                loop_full_cycle = True
-                offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
-                loop_indices = (np.arange(target_num_frames, dtype=np.int64) + offset) % m_length
-                motion = motion[loop_indices]
-                m_length = target_num_frames
-            else:
-                motion = np.concatenate([
-                                         motion,
-                                         np.zeros((pad_frames, motion.shape[1], motion.shape[2]), dtype=motion.dtype)
-                                         ], axis=0)
+            motion = np.concatenate([
+                                     motion,
+                                     np.zeros((pad_frames, motion.shape[1], motion.shape[2]), dtype=motion.dtype)
+                                     ], axis=0)
         elif loop_condition_active and m_length == target_num_frames:
             loop_full_cycle = True
             if not loop_applied:
@@ -715,6 +765,12 @@ class MotionDataset(data.Dataset):
 
         motion_metadata['is_loop'] = bool(loop_condition_active)
         motion_metadata['loop_full_cycle'] = bool(loop_full_cycle)
+        if loop_condition_active and loop_full_cycle:
+            motion_metadata['loop_num_cycles'] = float(loop_num_cycles)
+            motion_metadata['loop_phase_length'] = _loop_phase_length_from_num_cycles(target_num_frames, loop_num_cycles)
+        else:
+            motion_metadata['loop_num_cycles'] = 1.0
+            motion_metadata['loop_phase_length'] = float(max(int(m_length), 1))
         circular_mask = bool(loop_full_cycle)
         temporal_mask = self._get_temporal_mask(target_num_frames, circular=circular_mask)
 
@@ -723,6 +779,7 @@ class MotionDataset(data.Dataset):
             aug_info.update({
                 'crop_start': int(ind),
                 'loop_applied': bool(loop_applied),
+                'loop_num_cycles': float(motion_metadata['loop_num_cycles']),
             })
             return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {
                 'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
@@ -731,6 +788,7 @@ class MotionDataset(data.Dataset):
                 'speed_factor': float(aug_info['speed_factor']),
                 'crop_start': int(aug_info['crop_start']),
                 'loop_applied': bool(aug_info['loop_applied']),
+                'loop_num_cycles': float(aug_info['loop_num_cycles']),
                 'loop_uncond': bool(loop_uncond),
             }
         return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {

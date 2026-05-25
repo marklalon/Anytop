@@ -30,7 +30,7 @@ class _CaptureDecoder(torch.nn.Module):
         return kwargs['tgt']
 
 
-def _make_batch_item(is_loop: bool, loop_full_cycle: bool):
+def _make_batch_item(is_loop: bool, loop_full_cycle: bool, loop_num_cycles: float = 1.0, loop_phase_length: float | None = None):
     n_frames = 5
     n_joints = 2
     n_feats = 13
@@ -44,6 +44,8 @@ def _make_batch_item(is_loop: bool, loop_full_cycle: bool):
     names = np.zeros((n_joints, 4), dtype=np.float32)
     mean = np.zeros((n_joints, n_feats), dtype=np.float32)
     std = np.ones((n_joints, n_feats), dtype=np.float32)
+    if loop_phase_length is None:
+        loop_phase_length = float(n_frames)
     metadata = {
         'species_label': 'Horse',
         'species_group': 'quadropeds',
@@ -51,6 +53,8 @@ def _make_batch_item(is_loop: bool, loop_full_cycle: bool):
         'translation_root_index': 0,
         'is_loop': is_loop,
         'loop_full_cycle': loop_full_cycle,
+        'loop_num_cycles': loop_num_cycles,
+        'loop_phase_length': loop_phase_length,
     }
     extra_cond = {'joint_mask_candidate_roots': np.zeros((n_joints,), dtype=np.bool_)}
     return (
@@ -113,16 +117,34 @@ class NativeLoopTests(unittest.TestCase):
 
         self.assertTrue(torch.allclose(emb[1, 0], emb[-1, 0], atol=1e-6))
 
+    def test_circular_phase_can_repeat_multiple_cycles(self):
+        atol = 3e-6
+        emb = _circular_phase_embedding(
+            length=8,
+            dim=8,
+            batch_size=1,
+            device=torch.device('cpu'),
+            dtype=torch.float32,
+            lengths=torch.tensor([4.0]),
+        )
+
+        self.assertTrue(torch.allclose(emb[1, 0], emb[4, 0], atol=atol))
+        self.assertTrue(torch.allclose(emb[4, 0], emb[7, 0], atol=atol))
+        self.assertTrue(torch.allclose(emb[2, 0], emb[5, 0], atol=atol))
+        self.assertTrue(torch.allclose(emb[3, 0], emb[6, 0], atol=atol))
+
     def test_truebones_collate_forwards_loop_flags_as_bool_tensors(self):
         _, cond = truebones_batch_collate([
-            _make_batch_item(True, True),
-            _make_batch_item(False, False),
+            _make_batch_item(True, True, loop_num_cycles=2.0, loop_phase_length=3.0),
+            _make_batch_item(False, False, loop_num_cycles=1.0, loop_phase_length=5.0),
         ])
 
         self.assertEqual(cond['y']['is_loop'].dtype, torch.bool)
         self.assertEqual(cond['y']['loop_full_cycle'].dtype, torch.bool)
         self.assertEqual(cond['y']['is_loop'].tolist(), [True, False])
         self.assertEqual(cond['y']['loop_full_cycle'].tolist(), [True, False])
+        self.assertTrue(torch.equal(cond['y']['loop_num_cycles'], torch.tensor([2.0, 1.0], dtype=torch.float32)))
+        self.assertTrue(torch.equal(cond['y']['loop_phase_lengths'], torch.tensor([3.0, 5.0], dtype=torch.float32)))
 
     def test_loop_wrap_loss_skips_non_loop_samples(self):
         diffusion = self._make_diffusion()
@@ -218,13 +240,14 @@ class NativeLoopTests(unittest.TestCase):
             'joints_names_embs': torch.zeros(2, 4, 512, dtype=torch.float32),
             'is_loop': torch.tensor([True, False]),
             'lengths': torch.tensor([3, 3], dtype=torch.int64),
+            'loop_phase_lengths': torch.tensor([2.0, 3.0], dtype=torch.float32),
         }
 
         model(x, torch.tensor([1, 2], dtype=torch.int64), y=y)
 
         self.assertIsNotNone(capture_decoder.last_kwargs)
         self.assertTrue(torch.equal(capture_decoder.last_kwargs['loop_phase_mask'], y['is_loop']))
-        self.assertTrue(torch.equal(capture_decoder.last_kwargs['lengths'], y['lengths']))
+        self.assertTrue(torch.equal(capture_decoder.last_kwargs['lengths'], y['loop_phase_lengths']))
 
     def test_anytop_loop_phase_requires_full_cycle_when_available(self):
         model = AnyTop(
