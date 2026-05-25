@@ -185,8 +185,8 @@ def parse_args() -> argparse.Namespace:
                    help="Mirror augmentation probability (0 = disabled). Match --aug_mirror_prob.")
     p.add_argument("--loop-only", action="store_true",
                    help="Only sample/export motions whose metadata marks them as loop clips.")
-    p.add_argument("--loop-uncond-prob", type=float, default=0.0,
-                   help="Probability that a loop clip follows the non-loop training path. Match --loop_uncond_prob.")
+    p.add_argument("--loop-cond-prob", type=float, default=0.0,
+                   help="Probability that a loop clip follows the loop-conditioned path. Match --loop_cond_prob.")
     p.add_argument("--objects-subset", default="all",
                    help="Predefined subset name or single species (e.g. 'quadropeds_test', 'Horse').")
     p.add_argument("--action-tags", default="",
@@ -234,7 +234,7 @@ def main() -> int:
     # Augmentation settings (mirror training configuration)
     opt.aug_speed_range = args.aug_speed_range
     opt.aug_mirror_prob = args.aug_mirror_prob
-    opt.loop_uncond_prob = args.loop_uncond_prob
+    opt.loop_cond_prob = args.loop_cond_prob
     opt.motion_cache_size = 0  # no cache needed for sampling
 
     output_dir = Path(args.output_dir).resolve()

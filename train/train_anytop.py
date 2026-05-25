@@ -119,6 +119,7 @@ def prepare_save_dir(args):
     return save_dir
 
 def create_training_data_loader(args):
+    loop_cond_prob = getattr(args, 'loop_cond_prob', 0.0)
     return get_dataset_loader(
         batch_size=args.batch_size,
         num_frames=args.num_frames,
@@ -133,7 +134,7 @@ def create_training_data_loader(args):
         main_process_prefetch_batches=getattr(args, 'main_process_prefetch_batches', 0),
         aug_speed_range=getattr(args, 'aug_speed_range', 0.0),
         aug_mirror_prob=getattr(args, 'aug_mirror_prob', 0.0),
-        loop_uncond_prob=getattr(args, 'loop_uncond_prob', 0.0),
+        loop_cond_prob=loop_cond_prob,
     )
 
 def run_training(args):

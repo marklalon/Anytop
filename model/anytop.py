@@ -56,11 +56,11 @@ class AnyTop(nn.Module):
         self.temporal_span_mask_max_frames=int(kargs.get('temporal_span_mask_max_frames', 12))
         self.reference_cond=bool(kargs.get('reference_cond', False))
         self.global_energy_cond=bool(kargs.get('global_energy_cond', False))
-        self.loop_cond=bool(kargs.get('loop_cond', False))
+        self.loop_cond_prob=float(kargs.get('loop_cond_prob', 0.0))
         self.reference_encoder_layers=int(kargs.get('reference_encoder_layers', 1))
         self.reference_cond_prob=float(kargs.get('reference_cond_prob', 0.3))
         self.reference_residual_gate=float(kargs.get('reference_residual_gate', 1.0))
-        self.reference_token_dropout_prob=float(kargs.get('reference_token_dropout_prob', 0.15))
+        self.reference_token_dropout_prob=float(kargs.get('reference_token_dropout_prob', 0.25))
         self.reference_token_noise_std=float(kargs.get('reference_token_noise_std', 0.15))
         self.reference_cond_last_n=int(kargs.get('reference_cond_last_n', 0))
         self.global_energy_stats_momentum = 0.01
@@ -136,7 +136,7 @@ class AnyTop(nn.Module):
             self.register_buffer('global_energy_running_count', torch.zeros((), dtype=torch.long))
         else:
             self.global_energy_projection = None
-        if self.loop_cond:
+        if self.loop_cond_prob > 0.0:
             self.loop_condition_projection = nn.Sequential(
                 nn.Linear(1, self.latent_dim),
                 nn.GELU(),
@@ -424,7 +424,7 @@ class AnyTop(nn.Module):
         # cross-joint pathway to denoise robustly against per-joint timestep
         # disagreement (matching RePaint clamp behavior at inference).
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
-        if self.loop_cond:
+        if self.loop_cond_prob > 0.0 and self.loop_condition_projection is not None:
             loop_condition = self._coerce_loop_condition(
                 y.get('is_loop'),
                 batch_size=bs,

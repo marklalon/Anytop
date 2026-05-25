@@ -261,7 +261,7 @@ def test_loop_uncond_uses_non_loop_padding_and_metadata() -> None:
         balanced=False,
         objects_subset=LOOP_SUBSET,
         motion_cache_size=2,
-        loop_uncond_prob=1.0,
+        loop_cond_prob=0.0,
     )
 
     motion_dataset = dataset.motion_dataset
@@ -303,7 +303,7 @@ def test_loop_uncond_keeps_speed_jitter_enabled() -> None:
         balanced=False,
         objects_subset=LOOP_SUBSET,
         motion_cache_size=2,
-        loop_uncond_prob=1.0,
+        loop_cond_prob=0.0,
     )
 
     motion_dataset = dataset.motion_dataset

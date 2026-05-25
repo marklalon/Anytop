@@ -690,14 +690,17 @@ class MotionDataset(data.Dataset):
 
         motion_metadata = _copy_required_motion_metadata(name, data.get('motion_metadata'))
         is_loop = bool(motion_metadata.get('is_loop'))
-        loop_uncond_prob = float(getattr(self.opt, 'loop_uncond_prob', 0.0) or 0.0)
-        if not 0.0 <= loop_uncond_prob <= 1.0:
-            raise ValueError(f"loop_uncond_prob must be in [0, 1], got {loop_uncond_prob}.")
+        loop_cond_prob = float(getattr(self.opt, 'loop_cond_prob', 0.0) or 0.0)
+        if not 0.0 <= loop_cond_prob <= 1.0:
+            raise ValueError(f"loop_cond_prob must be in [0, 1], got {loop_cond_prob}.")
+        # loop_cond_prob: probability that a loop clip STAYS loop-conditioned.
+        # When the random draw succeeds, loop_uncond is False (loop path active).
+        # When it fails, loop_uncond is True (treated as non-loop).
         loop_uncond = bool(
             is_loop
             and loop_offset is None
-            and loop_uncond_prob > 0.0
-            and random.random() < loop_uncond_prob
+            and loop_cond_prob < 1.0
+            and random.random() >= loop_cond_prob
         )
 
         result = self.augment(data, return_aug_info=True, loop_uncond=loop_uncond)
@@ -936,7 +939,7 @@ class Truebones(data.Dataset):
         self.opt.aug_speed_range = kwargs.get('aug_speed_range', 0.0)
         self.opt.aug_mirror_prob = kwargs.get('aug_mirror_prob', 0.0)
 
-        self.opt.loop_uncond_prob = kwargs.get('loop_uncond_prob', 0.0)
+        self.opt.loop_cond_prob = kwargs.get('loop_cond_prob', 0.0)
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
         cond_dict = refresh_joint_metadata_in_cond_dict(cond_dict)
         # Support both predefined subsets and single species names

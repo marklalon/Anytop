@@ -256,11 +256,11 @@ def get_gmdm_args(args):
             'temporal_span_mask_max_frames': getattr(args, 'temporal_span_mask_max_frames', 12),
             'reference_cond': getattr(args, 'reference_cond', False),
             'global_energy_cond': getattr(args, 'global_energy_cond', False),
-            'loop_cond': getattr(args, 'loop_cond', False),
+            'loop_cond_prob': getattr(args, 'loop_cond_prob', 0.0),
             'reference_encoder_layers': getattr(args, 'reference_encoder_layers', 1),
             'reference_cond_prob': getattr(args, 'reference_cond_prob', 0.3),
             'reference_residual_gate': getattr(args, 'reference_residual_gate', 1.0),
-            'reference_token_dropout_prob': getattr(args, 'reference_token_dropout_prob', 0.15),
+            'reference_token_dropout_prob': getattr(args, 'reference_token_dropout_prob', 0.25),
             'reference_token_noise_std': getattr(args, 'reference_token_noise_std', 0.15),
             'reference_cond_last_n': getattr(args, 'reference_cond_last_n', 0),
             'root_input_feats': 13}

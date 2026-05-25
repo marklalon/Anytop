@@ -95,12 +95,11 @@ def add_model_options(parser):
                             " Couples position and velocity feature groups to prevent independent memorization.")
     group.add_argument("--lambda_loop_wrap", default=0.0, type=float,
                        help="Weight for loop-only wrap loss on denormalized pose/rotation/terminal_vel channels.")
-    group.add_argument("--loop_cond", action='store_true',
-                       help="Enable an explicit boolean loop-condition embedding in the model.")
-
-    group.add_argument("--loop_uncond_prob", default=0.0, type=float,
-                       help="Probability that a loop training clip is treated unconditionally (no loop conditioning)."
-                            " Disables circular masks/phase, cycle resampling, and loop wrap loss for that sample.")
+    group.add_argument("--loop_cond_prob", default=0.0, type=float,
+                       help="Probability that a loop training clip stays loop-conditioned "
+                            "(periodic resampling, circular phase, and loop-condition embedding)."
+                            " 0.0 = all loop clips treated as non-loop; 1.0 = always keep loop path."
+                            " Controls both the model loop-condition projection and dataset loop processing.")
     group.add_argument("--t5_out_dim", default=0, type=int, help=argparse.SUPPRESS)
     group.add_argument("--temporal_window", default=31, type=int,
                        help="temporal window size")
@@ -131,7 +130,7 @@ def add_model_options(parser):
                        help="Scalar gate applied to the decoder's reference residual path. "
                             "1.0 keeps the current behavior, 0.0 disables the residual entirely, "
                             "and intermediate values damp the reference branch without changing checkpoints.")
-    group.add_argument("--reference_token_dropout_prob", default=0.15, type=float,
+    group.add_argument("--reference_token_dropout_prob", default=0.25, type=float,
                        help="Per-prior-token dropout probability inside the reference encoder. Applied only during training.")
     group.add_argument("--reference_token_noise_std", default=0.15, type=float,
                        help="Additive Gaussian noise std applied to surviving reference prior tokens during training.")
