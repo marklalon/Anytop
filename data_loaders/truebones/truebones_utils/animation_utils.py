@@ -43,7 +43,7 @@ ROOT_XZ_STRIP_THRESHOLD = 1
 
 # Mean L2 distance (per joint, in HML-normalised units) between first and last
 # frame poses below which a clip is classified as looping.
-LOOP_DETECTION_POS_THRESHOLD = 0.10
+LOOP_DETECTION_POS_THRESHOLD = 0.05
 
 LEAF_ROTATION_HELPER_SUFFIX = '__rot_helper'
 
