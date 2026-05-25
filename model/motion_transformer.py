@@ -1051,10 +1051,12 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         self.temporal_attn = SelectiveMultiheadAttention(self.d_model, nhead, dropout=dropout)
         self.reference_attn = SelectiveMultiheadAttention(self.d_model, nhead, dropout=dropout)
         self.embed_timesteps = nn.Linear(d_model, d_model)
-        if global_energy_cond:
-            self.global_energy_film = nn.Linear(self.d_model, self.d_model * 2)
-            nn.init.zeros_(self.global_energy_film.weight)
-            nn.init.zeros_(self.global_energy_film.bias)
+        self.global_energy_cond = bool(global_energy_cond)
+        if self.global_energy_cond:
+            self.layer_gamma_scale = nn.Parameter(torch.zeros(d_model))
+            self.layer_gamma_bias = nn.Parameter(torch.zeros(d_model))
+            self.layer_beta_scale = nn.Parameter(torch.zeros(d_model))
+            self.layer_beta_bias = nn.Parameter(torch.zeros(d_model))
         self.norm_ref = nn.LayerNorm(d_model)
         self.dropout_ref = nn.Dropout(dropout)
         self.reference_residual_gate = float(reference_residual_gate)
@@ -1158,18 +1160,18 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         x: Tensor,
         global_energy_condition: Tensor,
     ) -> Tensor:
-        if not hasattr(self, 'global_energy_film'):
+        if not self.global_energy_cond:
             raise RuntimeError(
-                "global_energy_film module not present. This model was built "
-                "with global_energy_cond=False; do not pass global_energy_condition."
+                "This model was built with global_energy_cond=False; "
+                "do not pass global_energy_condition."
             )
         frames, bs, _, feats = x.size()
         if global_energy_condition.dim() == 1:
             global_energy_condition = global_energy_condition.unsqueeze(0)
-        if global_energy_condition.dim() != 2 or global_energy_condition.shape[1] != feats:
+        if global_energy_condition.dim() != 2 or global_energy_condition.shape[1] != feats * 2:
             raise ValueError(
-                "global_energy_condition must have shape (B, D) or (D,), got "
-                f"{tuple(global_energy_condition.shape)} for batch={bs}, dim={feats}"
+                "global_energy_condition must have shape (B, 2*D) or (2*D,), got "
+                f"{tuple(global_energy_condition.shape)} for batch={bs}, expected={feats * 2}"
             )
         if global_energy_condition.shape[0] == 1 and bs != 1:
             global_energy_condition = global_energy_condition.expand(bs, -1)
@@ -1179,9 +1181,16 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
                 f"{global_energy_condition.shape[0]} for batch {bs}"
             )
         cond = global_energy_condition.to(device=x.device, dtype=x.dtype)
-        gamma, beta = self.global_energy_film(cond).chunk(2, dim=-1)
-        gamma = torch.tanh(gamma).view(1, bs, 1, feats)
-        beta = beta.view(1, bs, 1, feats)
+        gamma, beta = cond.chunk(2, dim=-1)
+        gamma = gamma.view(1, bs, 1, feats)
+        beta  = beta.view(1, bs, 1, feats)
+        # Clamp gamma_scale to prevent collapse to -1 (which would zero out
+        # the global-energy contribution). Straight-through: clamping is
+        # applied in-place during forward so gradients flow through the
+        # unclamped values, keeping the optimizer's dynamics intact.
+        gamma = gamma * (1.0 + self.layer_gamma_scale.clamp(-0.95, 3.0)) + self.layer_gamma_bias
+        beta  = beta  * (1.0 + self.layer_beta_scale.clamp(-0.95, 3.0))  + self.layer_beta_bias
+        gamma = torch.tanh(gamma)
         return x * (1.0 + gamma) + beta
     
     def forward(self,

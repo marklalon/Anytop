@@ -122,8 +122,10 @@ class AnyTop(nn.Module):
                 nn.LayerNorm(2),
                 nn.Linear(2, self.latent_dim),
                 nn.GELU(),
-                nn.Linear(self.latent_dim, self.latent_dim),
+                nn.Linear(self.latent_dim, self.latent_dim * 2),
             )
+            nn.init.zeros_(self.global_energy_projection[-1].weight)
+            nn.init.zeros_(self.global_energy_projection[-1].bias)
             self.register_buffer('global_energy_running_mean', torch.zeros(2, dtype=torch.float32))
             self.register_buffer('global_energy_running_var', torch.ones(2, dtype=torch.float32))
             self.register_buffer('global_energy_running_count', torch.zeros((), dtype=torch.long))
