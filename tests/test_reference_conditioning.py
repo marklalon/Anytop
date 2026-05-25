@@ -520,14 +520,14 @@ def test_decoder_layer_keeps_global_energy_condition_when_reference_gate_is_zero
             delta = delta * reference_batch_mask.to(device=x.device, dtype=x.dtype).view(1, x.shape[1], 1, 1)
         return delta
 
-    def _global_energy_film(self, x, global_energy_condition):
+    def _global_energy_cond(self, x, global_energy_condition):
         return x + global_energy_condition[:, :1].to(device=x.device, dtype=x.dtype).view(1, x.shape[1], 1, 1)
 
     layer._spatial_mha_block = types.MethodType(_zero_block, layer)
     layer._temporal_mha_block_sin_joint = types.MethodType(_zero_block, layer)
     layer._ff_block = types.MethodType(_zero_block, layer)
     layer._reference_mha_block = types.MethodType(_reference_block, layer)
-    layer._apply_global_energy_film = types.MethodType(_global_energy_film, layer)
+    layer._apply_global_energy_cond = types.MethodType(_global_energy_cond, layer)
 
     tgt = torch.zeros((2, 1, 3, 4), dtype=torch.float32)
     timesteps_emb = torch.zeros((1, 4), dtype=torch.float32)

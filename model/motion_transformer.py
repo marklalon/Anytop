@@ -1155,7 +1155,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             attn_output = attn_output * batch_mask.view(1, bs, 1, 1)
         return self.dropout_ref(attn_output)
 
-    def _apply_global_energy_film(
+    def _apply_global_energy_cond(
         self,
         x: Tensor,
         global_energy_condition: Tensor,
@@ -1258,7 +1258,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             batch_mask = conditioning_batch_mask.view(1, bs, 1, 1)
             reference_conditioned = torch.where(batch_mask, reference_conditioned, x)
         if global_energy_condition is not None:
-            x = self.norm_ref(self._apply_global_energy_film(reference_conditioned, global_energy_condition))
+            x = self.norm_ref(self._apply_global_energy_cond(reference_conditioned, global_energy_condition))
         elif reference_delta is not None:
             conditioned_output = self.norm_ref(x + reference_delta)
             if conditioning_batch_mask is None:
