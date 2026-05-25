@@ -57,7 +57,6 @@ class AnyTop(nn.Module):
         self.reference_cond=bool(kargs.get('reference_cond', False))
         self.global_energy_cond=bool(kargs.get('global_energy_cond', False))
         self.loop_cond=bool(kargs.get('loop_cond', False))
-        self.loop_temporal_mode=str(kargs.get('loop_temporal_mode', 'linear'))
         self.reference_encoder_layers=int(kargs.get('reference_encoder_layers', 1))
         self.reference_cond_prob=float(kargs.get('reference_cond_prob', 0.5))
         self.reference_residual_gate=float(kargs.get('reference_residual_gate', 1.0))
@@ -101,8 +100,7 @@ class AnyTop(nn.Module):
             raise ValueError(
                 f"reference_token_noise_std must be >= 0, got {self.reference_token_noise_std}"
             )
-        if self.loop_temporal_mode not in ('linear', 'circular_mask', 'circular_phase', 'both'):
-            raise ValueError(f"Unsupported loop_temporal_mode: {self.loop_temporal_mode}")
+
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, dropout_prob=self.dropout)
         if self.reference_cond:
             self.reference_encoder = ReferencePriorEncoder(
@@ -407,28 +405,27 @@ class AnyTop(nn.Module):
             timesteps_emb = timesteps_emb + self.loop_condition_projection(loop_condition)
 
         loop_phase_mask = None
-        if self.loop_temporal_mode in ('circular_phase', 'both'):
-            raw_loop_phase_mask = y.get('is_loop')
-            if raw_loop_phase_mask is not None:
-                loop_phase_mask = torch.as_tensor(raw_loop_phase_mask, device=x.device, dtype=torch.bool).reshape(-1)
-                if loop_phase_mask.numel() == 1 and bs != 1:
-                    loop_phase_mask = loop_phase_mask.expand(bs)
-                elif loop_phase_mask.numel() != bs:
+        raw_loop_phase_mask = y.get('is_loop')
+        if raw_loop_phase_mask is not None:
+            loop_phase_mask = torch.as_tensor(raw_loop_phase_mask, device=x.device, dtype=torch.bool).reshape(-1)
+            if loop_phase_mask.numel() == 1 and bs != 1:
+                loop_phase_mask = loop_phase_mask.expand(bs)
+            elif loop_phase_mask.numel() != bs:
+                raise ValueError(
+                    "is_loop batch dimension must match the motion batch size, got "
+                    f"{loop_phase_mask.numel()} for batch {bs}"
+                )
+            raw_loop_full_cycle = y.get('loop_full_cycle')
+            if raw_loop_full_cycle is not None:
+                loop_full_cycle_mask = torch.as_tensor(raw_loop_full_cycle, device=x.device, dtype=torch.bool).reshape(-1)
+                if loop_full_cycle_mask.numel() == 1 and bs != 1:
+                    loop_full_cycle_mask = loop_full_cycle_mask.expand(bs)
+                elif loop_full_cycle_mask.numel() != bs:
                     raise ValueError(
-                        "is_loop batch dimension must match the motion batch size, got "
-                        f"{loop_phase_mask.numel()} for batch {bs}"
+                        "loop_full_cycle batch dimension must match the motion batch size, got "
+                        f"{loop_full_cycle_mask.numel()} for batch {bs}"
                     )
-                raw_loop_full_cycle = y.get('loop_full_cycle')
-                if raw_loop_full_cycle is not None:
-                    loop_full_cycle_mask = torch.as_tensor(raw_loop_full_cycle, device=x.device, dtype=torch.bool).reshape(-1)
-                    if loop_full_cycle_mask.numel() == 1 and bs != 1:
-                        loop_full_cycle_mask = loop_full_cycle_mask.expand(bs)
-                    elif loop_full_cycle_mask.numel() != bs:
-                        raise ValueError(
-                            "loop_full_cycle batch dimension must match the motion batch size, got "
-                            f"{loop_full_cycle_mask.numel()} for batch {bs}"
-                        )
-                    loop_phase_mask = loop_phase_mask & loop_full_cycle_mask
+                loop_phase_mask = loop_phase_mask & loop_full_cycle_mask
 
         x = self.input_process(x, tpos_first_frame, y['joints_names_embs']) # applies linear layer on each frame to convert it to latent dim
         spatial_mask = (1.0 - joints_padding_mask[:, 0, 0, 1:, 1:].float()) * -1e4

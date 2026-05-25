@@ -130,7 +130,6 @@ class GaussianDiffusion:
         lambda_geo=0.,
         lambda_vel=0.,
         lambda_loop_wrap=0.,
-        loop_wrap_frames=4,
         temporal_span_seam_loss_weight=0.0,
         temporal_span_seam_width=0,
     ):
@@ -141,13 +140,10 @@ class GaussianDiffusion:
         self.lambda_geo = lambda_geo
         self.lambda_vel = lambda_vel
         self.lambda_loop_wrap = float(lambda_loop_wrap)
-        self.loop_wrap_frames = int(loop_wrap_frames)
         self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
         self.temporal_span_seam_width = int(temporal_span_seam_width)
         if self.lambda_loop_wrap < 0.0:
             raise ValueError(f"lambda_loop_wrap must be >= 0, got {self.lambda_loop_wrap}")
-        if self.loop_wrap_frames < 1:
-            raise ValueError(f"loop_wrap_frames must be >= 1, got {self.loop_wrap_frames}")
         if self.temporal_span_seam_loss_weight < 0.0:
             raise ValueError(
                 "temporal_span_seam_loss_weight must be >= 0, got "
@@ -425,8 +421,7 @@ class GaussianDiffusion:
         for batch_index in range(batch_size):
             valid_frames = min(int(lengths_long[batch_index].item()), n_frames)
             valid_joints = min(int(n_joints_long[batch_index].item()), max_joints)
-            wrap_frames = min(int(self.loop_wrap_frames), valid_frames // 2)
-            if not bool(active[batch_index]) or valid_frames < 2 or valid_joints <= 0 or wrap_frames <= 0:
+            if not bool(active[batch_index]) or valid_frames < 2 or valid_joints <= 0:
                 continue
 
             sample = model_output[batch_index:batch_index + 1, :valid_joints, :, :valid_frames]

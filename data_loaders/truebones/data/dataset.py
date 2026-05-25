@@ -568,7 +568,6 @@ class MotionDataset(data.Dataset):
         self.max_available_length = int(self.length_arr.max()) if len(self.length_arr) > 0 else 0
         self.data_dict = data_dict
         self.name_list = name_list
-        self.loop_temporal_mode = str(getattr(self.opt, 'loop_temporal_mode', 'linear'))
         self.temporal_mask_template = create_temporal_mask_for_window(self.temporal_window, self.max_motion_length)
         self.circular_temporal_mask_template = create_temporal_mask_for_window(
             self.temporal_window,
@@ -666,10 +665,9 @@ class MotionDataset(data.Dataset):
         loop_full_cycle = False
         loop_condition_active = is_loop and not loop_uncond
         loop_roll_prob = float(getattr(self.opt, 'aug_loop_roll_prob', 0.0) or 0.0)
-        loop_train_cycle_resample = bool(getattr(self.opt, 'loop_train_cycle_resample', False))
         should_roll_loop = loop_offset is not None or (loop_roll_prob > 0.0 and random.random() < loop_roll_prob)
 
-        if loop_condition_active and loop_train_cycle_resample and m_length > 0:
+        if loop_condition_active and m_length > 0:
             motion = self._periodic_resample_loop_motion(
                 name,
                 motion,
@@ -720,7 +718,7 @@ class MotionDataset(data.Dataset):
 
         motion_metadata['is_loop'] = bool(loop_condition_active)
         motion_metadata['loop_full_cycle'] = bool(loop_full_cycle)
-        circular_mask = self.loop_temporal_mode in ('circular_mask', 'both') and bool(loop_full_cycle)
+        circular_mask = bool(loop_full_cycle)
         temporal_mask = self._get_temporal_mask(target_num_frames, circular=circular_mask)
 
         if return_aug_info:
@@ -788,7 +786,6 @@ class MotionDataset(data.Dataset):
         speed_factor = 1.0
         skip_speed_for_loop_cycle = (
             bool(motion_metadata.get('is_loop'))
-            and bool(getattr(self.opt, 'loop_train_cycle_resample', False))
             and not bool(loop_uncond)
         )
         if speed_range > 0.0 and not skip_speed_for_loop_cycle:
@@ -884,9 +881,7 @@ class Truebones(data.Dataset):
         self.opt.aug_speed_range = kwargs.get('aug_speed_range', 0.0)
         self.opt.aug_mirror_prob = kwargs.get('aug_mirror_prob', 0.0)
         self.opt.aug_loop_roll_prob = kwargs.get('aug_loop_roll_prob', 0.0)
-        self.opt.loop_train_cycle_resample = kwargs.get('loop_train_cycle_resample', False)
         self.opt.loop_uncond_prob = kwargs.get('loop_uncond_prob', 0.0)
-        self.opt.loop_temporal_mode = kwargs.get('loop_temporal_mode', 'linear')
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
         cond_dict = refresh_joint_metadata_in_cond_dict(cond_dict)
         # Support both predefined subsets and single species names

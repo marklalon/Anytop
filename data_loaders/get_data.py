@@ -64,9 +64,7 @@ def get_dataset(
     aug_speed_range=0.0,
     aug_mirror_prob=0.0,
     aug_loop_roll_prob=0.0,
-    loop_train_cycle_resample=False,
     loop_uncond_prob=0.0,
-    loop_temporal_mode='linear',
 ):
     dataset = Truebones(
         split=split,
@@ -80,9 +78,7 @@ def get_dataset(
         aug_speed_range=aug_speed_range,
         aug_mirror_prob=aug_mirror_prob,
         aug_loop_roll_prob=aug_loop_roll_prob,
-        loop_train_cycle_resample=loop_train_cycle_resample,
         loop_uncond_prob=loop_uncond_prob,
-        loop_temporal_mode=loop_temporal_mode,
     )
     return dataset
 
@@ -105,9 +101,7 @@ def get_dataset_loader(
     aug_speed_range=0.0,
     aug_mirror_prob=0.0,
     aug_loop_roll_prob=0.0,
-    loop_train_cycle_resample=False,
     loop_uncond_prob=0.0,
-    loop_temporal_mode='linear',
 ):
     # Always use main thread (num_workers=0) - multi-worker paths removed
     dataset = get_dataset(
@@ -122,9 +116,7 @@ def get_dataset_loader(
         aug_speed_range=aug_speed_range,
         aug_mirror_prob=aug_mirror_prob,
         aug_loop_roll_prob=aug_loop_roll_prob,
-        loop_train_cycle_resample=loop_train_cycle_resample,
         loop_uncond_prob=loop_uncond_prob,
-        loop_temporal_mode=loop_temporal_mode,
     )
     collate = truebones_batch_collate
     sampler = None

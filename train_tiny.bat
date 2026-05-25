@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=quadropeds_locomotion_loop_v3
+set RUN_NAME=quadropeds_locomotion_loop_v4
 
 pushd "%SCRIPT_DIR%"
 
@@ -21,7 +21,6 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--reference_cond ^
 	--global_energy_cond ^
 	--loop_cond ^
-	--loop_temporal_mode both ^
 	--cross_limb_dim 128 ^
 	--temporal_window 41 ^
 	--diffusion_steps 100 ^
@@ -38,13 +37,11 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--aug_speed_range 0.2 ^
 	--aug_mirror_prob 0.5 ^
 	--aug_loop_roll_prob 1.0 ^
-	--loop_train_cycle_resample ^
-	--loop_uncond_prob 0.25 ^
+	--loop_uncond_prob 0.5 ^
 	--joint_mask_prob 0.2 ^
 	--temporal_span_mask_prob 0.3 ^
 	--temporal_span_seam_loss_weight 0.5 ^
 	--lambda_loop_wrap 0.25 ^
-	--loop_wrap_frames 4 ^
 	--lambda_vel 0.5 ^
 	--lambda_geo 0.5 ^
 	--motion_cache_size 512 ^

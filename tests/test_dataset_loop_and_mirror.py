@@ -21,7 +21,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import data_loaders.truebones.data.dataset as dataset_module
 from data_loaders.tensors import truebones_batch_collate
-from data_loaders.truebones.data.dataset import Truebones
+from data_loaders.truebones.data.dataset import (
+    Truebones,
+    _circular_roll_motion,
+    _periodic_resample_motion,
+)
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_process import infer_translation_root_index_from_features
 
@@ -128,11 +132,9 @@ def test_loop_padding_updates_effective_length() -> None:
     raw_norm = np.nan_to_num((raw - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
     raw_len = raw_norm.shape[0]
     assert raw_len < NUM_FRAMES, "loop regression sample no longer needs padding"
-
-    expected = np.concatenate(
-        [raw_norm, np.tile(raw_norm, ((NUM_FRAMES - raw_len) // raw_len + 1, 1, 1))[: NUM_FRAMES - raw_len]],
-        axis=0,
-    )
+    # loop motions are always cycle-resampled to target_num_frames, then
+    # circular-rolled by the requested offset (0 here → no change).
+    expected = _periodic_resample_motion(raw_norm, NUM_FRAMES)
     assert_close("loop-filled motion", motion, expected)
 
 
@@ -159,8 +161,10 @@ def test_loop_padding_random_offset_wraps_without_truncation() -> None:
         target_num_frames=NUM_FRAMES,
         loop_offset=offset,
     )
-
-    expected = raw_norm[(np.arange(NUM_FRAMES, dtype=np.int64) + offset) % raw_len]
+    # loop motions are always cycle-resampled to target_num_frames first,
+    # then circular-rolled by the requested offset.
+    expected = _periodic_resample_motion(raw_norm, NUM_FRAMES)
+    expected = _circular_roll_motion(expected, offset)
     assert motion.shape[0] == NUM_FRAMES, f"expected random-offset loop fill to keep {NUM_FRAMES} frames"
     assert m_length == NUM_FRAMES, f"effective length should remain {NUM_FRAMES}, got {m_length}"
     assert_close("loop-filled motion with wraparound offset", motion, expected)
@@ -242,7 +246,6 @@ def test_loop_uncond_uses_non_loop_padding_and_metadata() -> None:
         balanced=False,
         objects_subset=LOOP_SUBSET,
         motion_cache_size=2,
-        loop_train_cycle_resample=True,
         loop_uncond_prob=1.0,
     )
 
@@ -285,7 +288,6 @@ def test_loop_uncond_keeps_speed_jitter_enabled() -> None:
         balanced=False,
         objects_subset=LOOP_SUBSET,
         motion_cache_size=2,
-        loop_train_cycle_resample=True,
         loop_uncond_prob=1.0,
     )
 

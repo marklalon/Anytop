@@ -82,7 +82,6 @@ class NativeLoopTests(unittest.TestCase):
             model_var_type=ModelVarType.FIXED_LARGE,
             loss_type=LossType.MSE,
             lambda_loop_wrap=1.0,
-            loop_wrap_frames=2,
         )
 
     def test_circular_temporal_mask_wraps_motion_frames_only(self):
@@ -189,13 +188,11 @@ class NativeLoopTests(unittest.TestCase):
             lambda_geo = 0.0
             lambda_vel = 0.0
             lambda_loop_wrap = 0.75
-            loop_wrap_frames = 6
             temporal_span_seam_loss_weight = 0.0
             temporal_span_seam_width = 2
 
         diffusion = create_gaussian_diffusion(Args())
         self.assertEqual(diffusion.lambda_loop_wrap, 0.75)
-        self.assertEqual(diffusion.loop_wrap_frames, 6)
 
     def test_anytop_forwards_loop_phase_metadata(self):
         model = AnyTop(
@@ -208,7 +205,6 @@ class NativeLoopTests(unittest.TestCase):
             dropout=0.0,
             cross_limb=True,
             loop_cond=True,
-            loop_temporal_mode='both',
         )
         capture_decoder = _CaptureDecoder()
         model.seqTransDecoder = capture_decoder
@@ -240,7 +236,6 @@ class NativeLoopTests(unittest.TestCase):
             num_heads=2,
             dropout=0.0,
             cross_limb=True,
-            loop_temporal_mode='both',
         )
         capture_decoder = _CaptureDecoder()
         model.seqTransDecoder = capture_decoder

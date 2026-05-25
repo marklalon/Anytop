@@ -1298,7 +1298,6 @@ def main(args=None, cond_dict=None):
             max_joints=opt.max_joints,
             feature_len=opt.feature_len,
             loop=getattr(args, 'loop', False),
-            loop_temporal_mode=getattr(args, 'loop_temporal_mode', 'linear'),
         )
         if global_energy_condition is not None:
             model_kwargs['y']['global_energy_cond'] = global_energy_condition.clone()
@@ -1613,11 +1612,11 @@ def build_inpaint_mask(
     return mask_t
 
 
-def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joints, feature_len, loop=False, loop_temporal_mode='linear'):
+def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joints, feature_len, loop=False):
     """Build model_kwargs for a batch of object_types.
     """
     batches = list()
-    circular_mask = bool(loop) and loop_temporal_mode in ('circular_mask', 'both')
+    circular_mask = bool(loop)
     for object_type in object_types:
         if object_type not in cond_dict:
             available = ', '.join(sorted(cond_dict.keys()))
