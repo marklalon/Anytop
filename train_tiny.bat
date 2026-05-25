@@ -25,7 +25,6 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--loop_uncond_prob 0.5 ^
 	--cross_limb_dim 128 ^
 	--cross_limb_last_n 4 ^
-	--temporal_window 41 ^
 	--diffusion_steps 100 ^
 	--num_frames 60 ^
 	--batch_size 16 ^
@@ -40,6 +39,7 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--aug_speed_range 0.2 ^
 	--aug_mirror_prob 0.5 ^
 	--joint_mask_prob 0.2 ^
+	--temporal_window 41 ^
 	--temporal_span_mask_prob 0.3 ^
 	--temporal_span_seam_loss_weight 0.5 ^
 	--lambda_loop_wrap 0.25 ^
