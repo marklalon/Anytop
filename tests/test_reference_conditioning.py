@@ -26,7 +26,7 @@ from sample.generate import (  # noqa: E402
     validate_reference_mode_configuration,
 )
 from model.anytop import AnyTop, ReferencePriorEncoder  # noqa: E402
-from model.motion_transformer import GraphMotionDecoderLayer  # noqa: E402
+from model.motion_transformer import GraphMotionDecoderLayer, ReferenceCrossAttnBlock  # noqa: E402
 from utils.model_util import (  # noqa: E402
     ClassifierFreeReferenceModel,
     model_supports_global_energy_conditioning,
@@ -494,7 +494,7 @@ def test_anytop_forward_accepts_global_energy_condition_without_reference_motion
     assert output.shape == (1, 4, 13, 7)
     assert capture_decoder.last_kwargs is not None
     assert capture_decoder.last_kwargs["reference_memory"] is None
-    assert capture_decoder.last_kwargs["global_energy_condition"].shape == (1, 8)
+    assert capture_decoder.last_kwargs["global_energy_condition"].shape == (1, 16)
 
 
 def test_decoder_layer_keeps_global_energy_condition_when_reference_gate_is_zero() -> None:
@@ -514,19 +514,12 @@ def test_decoder_layer_keeps_global_energy_condition_when_reference_gate_is_zero
     def _zero_block(self, x, *args, **kwargs):
         return torch.zeros_like(x)
 
-    def _reference_block(self, x, memory, key_padding_mask, reference_batch_mask):
-        delta = torch.full_like(x, float(memory[0, 0, 0]))
-        if reference_batch_mask is not None:
-            delta = delta * reference_batch_mask.to(device=x.device, dtype=x.dtype).view(1, x.shape[1], 1, 1)
-        return delta
-
     def _global_energy_cond(self, x, global_energy_condition):
         return x + global_energy_condition[:, :1].to(device=x.device, dtype=x.dtype).view(1, x.shape[1], 1, 1)
 
     layer._spatial_mha_block = types.MethodType(_zero_block, layer)
     layer._temporal_mha_block_sin_joint = types.MethodType(_zero_block, layer)
     layer._ff_block = types.MethodType(_zero_block, layer)
-    layer._reference_mha_block = types.MethodType(_reference_block, layer)
     layer._apply_global_energy_cond = types.MethodType(_global_energy_cond, layer)
 
     tgt = torch.zeros((2, 1, 3, 4), dtype=torch.float32)
@@ -1119,10 +1112,14 @@ def test_decoder_reference_mask_keeps_unconditioned_samples_on_baseline_path() -
     tsteps, batch_size, njoints, d_model = 3, 2, 1, 8
     x = torch.randn(tsteps, batch_size, njoints, d_model)
 
-    def fake_reference_mha_block(self, x, reference_memory, key_padding_mask, reference_batch_mask):
-        return torch.full_like(x, 0.5)
+    class _FakeReferenceBlock(nn.Module):
+        def forward(self, x, reference_memory, key_padding_mask, reference_batch_mask):
+            delta = torch.full_like(x, 0.5)
+            if reference_batch_mask is not None:
+                delta = delta * reference_batch_mask.to(device=x.device, dtype=x.dtype).view(1, x.shape[1], 1, 1)
+            return delta
 
-    layer._reference_mha_block = types.MethodType(fake_reference_mha_block, layer)
+    fake_reference_block = _FakeReferenceBlock()
 
     common_kwargs = dict(
         tgt=x,
@@ -1145,9 +1142,12 @@ def test_decoder_reference_mask_keeps_unconditioned_samples_on_baseline_path() -
         cross_limb_unreliable_mask=None,
     )
 
-    baseline = layer.forward(reference_memory=None, reference_batch_mask=None, **common_kwargs)
+    baseline = layer.forward(
+        reference_memory=None, reference_block=None, reference_batch_mask=None, **common_kwargs,
+    )
     mixed = layer.forward(
         reference_memory=torch.zeros(tsteps, batch_size, njoints, d_model),
+        reference_block=fake_reference_block,
         reference_batch_mask=torch.tensor([True, False]),
         **common_kwargs,
     )
@@ -1158,6 +1158,7 @@ def test_decoder_reference_mask_keeps_unconditioned_samples_on_baseline_path() -
 def test_decoder_reference_block_accepts_shared_prior_tokens() -> None:
     torch.manual_seed(0)
     layer = GraphMotionDecoderLayer(d_model=8, nhead=2, dim_feedforward=16, dropout=0.0)
+    reference_block = ReferenceCrossAttnBlock(d_model=8, nhead=2, dropout=0.0)
     tsteps, batch_size, njoints, d_model = 3, 2, 2, 8
     x = torch.randn(tsteps, batch_size, njoints, d_model)
 
@@ -1180,6 +1181,7 @@ def test_decoder_reference_block_accepts_shared_prior_tokens() -> None:
         reference_key_padding_mask=torch.zeros(batch_size, 5, dtype=torch.bool),
         temporal_template=torch.zeros(batch_size * layer.heads, tsteps, tsteps),
         cross_limb_block=None,
+        reference_block=reference_block,
         cross_limb_unreliable_mask=None,
         reference_batch_mask=torch.ones(batch_size, dtype=torch.bool),
     )

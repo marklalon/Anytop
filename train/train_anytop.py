@@ -11,6 +11,14 @@ import shutil
 # Ensure parent directory is in path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Windows torch wheels ship without compiled flash-attn and with mem-eff/cuDNN
+# SDPA disabled by default; enable them so F.scaled_dot_product_attention
+# doesn't fall back to the slow math kernel.
+import torch as _torch
+_torch.backends.cuda.enable_mem_efficient_sdp(True)
+_torch.backends.cuda.enable_cudnn_sdp(True)
+_torch.backends.cuda.enable_flash_sdp(True)
+
 from utils.fixseed import fixseed
 from utils.parser_util import train_args
 from utils import dist_util
@@ -125,7 +133,6 @@ def create_training_data_loader(args):
         main_process_prefetch_batches=getattr(args, 'main_process_prefetch_batches', 0),
         aug_speed_range=getattr(args, 'aug_speed_range', 0.0),
         aug_mirror_prob=getattr(args, 'aug_mirror_prob', 0.0),
-        aug_loop_roll_prob=getattr(args, 'aug_loop_roll_prob', 0.0),
         loop_uncond_prob=getattr(args, 'loop_uncond_prob', 0.0),
     )
 

@@ -58,10 +58,11 @@ class AnyTop(nn.Module):
         self.global_energy_cond=bool(kargs.get('global_energy_cond', False))
         self.loop_cond=bool(kargs.get('loop_cond', False))
         self.reference_encoder_layers=int(kargs.get('reference_encoder_layers', 1))
-        self.reference_cond_prob=float(kargs.get('reference_cond_prob', 0.5))
+        self.reference_cond_prob=float(kargs.get('reference_cond_prob', 0.3))
         self.reference_residual_gate=float(kargs.get('reference_residual_gate', 1.0))
-        self.reference_token_dropout_prob=float(kargs.get('reference_token_dropout_prob', 0.25))
+        self.reference_token_dropout_prob=float(kargs.get('reference_token_dropout_prob', 0.15))
         self.reference_token_noise_std=float(kargs.get('reference_token_noise_std', 0.15))
+        self.reference_cond_last_n=int(kargs.get('reference_cond_last_n', 0))
         self.global_energy_stats_momentum = 0.01
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
@@ -99,6 +100,10 @@ class AnyTop(nn.Module):
         if self.reference_token_noise_std < 0.0:
             raise ValueError(
                 f"reference_token_noise_std must be >= 0, got {self.reference_token_noise_std}"
+            )
+        if self.reference_cond_last_n < 0 or self.reference_cond_last_n > self.num_layers:
+            raise ValueError(
+                f"reference_cond_last_n must be in [0, num_layers={self.num_layers}], got {self.reference_cond_last_n}"
             )
 
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, dropout_prob=self.dropout)
@@ -152,7 +157,9 @@ class AnyTop(nn.Module):
                                                         cross_limb=self.cross_limb,
                                                         cross_limb_latents=self.cross_limb_latents,
                                                         cross_limb_dim=self.cross_limb_dim,
-                                                        cross_limb_last_n=self.cross_limb_last_n)
+                                                        cross_limb_last_n=self.cross_limb_last_n,
+                                                        reference_cond=self.reference_cond,
+                                                        reference_cond_last_n=self.reference_cond_last_n)
             
         
         self.output_process = OutputProcess(self.feature_len, self.root_input_feats, self.max_joints, self.latent_dim)

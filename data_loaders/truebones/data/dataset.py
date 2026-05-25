@@ -664,8 +664,6 @@ class MotionDataset(data.Dataset):
         loop_applied = False
         loop_full_cycle = False
         loop_condition_active = is_loop and not loop_uncond
-        loop_roll_prob = float(getattr(self.opt, 'aug_loop_roll_prob', 0.0) or 0.0)
-        should_roll_loop = loop_offset is not None or (loop_roll_prob > 0.0 and random.random() < loop_roll_prob)
 
         if loop_condition_active and m_length > 0:
             motion = self._periodic_resample_loop_motion(
@@ -677,10 +675,9 @@ class MotionDataset(data.Dataset):
             )
             m_length = target_num_frames
             loop_full_cycle = True
-            if should_roll_loop:
-                offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
-                motion = _circular_roll_motion(motion, offset)
-                loop_applied = True
+            offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
+            motion = _circular_roll_motion(motion, offset)
+            loop_applied = True
 
         if m_length > target_num_frames:
             max_start = m_length - target_num_frames
@@ -711,7 +708,7 @@ class MotionDataset(data.Dataset):
                                          ], axis=0)
         elif loop_condition_active and m_length == target_num_frames:
             loop_full_cycle = True
-            if should_roll_loop and not loop_applied:
+            if not loop_applied:
                 offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
                 motion = _circular_roll_motion(motion, offset)
                 loop_applied = True
@@ -880,7 +877,7 @@ class Truebones(data.Dataset):
         self.opt.motion_cache_size = self.motion_cache_size
         self.opt.aug_speed_range = kwargs.get('aug_speed_range', 0.0)
         self.opt.aug_mirror_prob = kwargs.get('aug_mirror_prob', 0.0)
-        self.opt.aug_loop_roll_prob = kwargs.get('aug_loop_roll_prob', 0.0)
+
         self.opt.loop_uncond_prob = kwargs.get('loop_uncond_prob', 0.0)
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
         cond_dict = refresh_joint_metadata_in_cond_dict(cond_dict)

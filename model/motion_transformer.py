@@ -901,10 +901,60 @@ class GraphMultiHeadAttention(nn.Module):
         assert x.size() == orig_q_size
         return x
 
+class ReferenceCrossAttnBlock(nn.Module):
+    """Reference cross-attention block — one per active decoder layer.
+
+    Owned by GraphMotionDecoder so that disabled layers (reference_cond=False
+    or outside the last-N range) don't carry dead weights. Mirrors the
+    cross-limb pattern: the decoder allocates a ModuleList of these and
+    passes the per-layer instance into GraphMotionDecoderLayer.forward.
+    """
+    def __init__(self, d_model: int, nhead: int, dropout: float = 0.1):
+        super().__init__()
+        self.reference_attn = SelectiveMultiheadAttention(d_model, nhead, dropout=dropout)
+        self.dropout_ref = nn.Dropout(dropout)
+
+    def forward(
+        self,
+        x: Tensor,
+        reference_memory: Tensor,
+        key_padding_mask: Optional[Tensor],
+        reference_batch_mask: Optional[Tensor],
+    ) -> Tensor:
+        frames, bs, njoints, feats = x.size()
+        queries = x.reshape(frames, bs * njoints, feats)
+        if reference_memory.dim() != 3 or reference_memory.shape[1] != bs or reference_memory.shape[2] != feats:
+            raise ValueError(
+                "reference_memory must have shape (K, B, D), got "
+                f"{tuple(reference_memory.shape)} for batch={bs}, dim={feats}"
+            )
+        memory = reference_memory.unsqueeze(2).expand(-1, -1, njoints, -1).reshape(reference_memory.shape[0], bs * njoints, feats)
+        expanded_key_padding_mask = None
+        if key_padding_mask is not None:
+            if key_padding_mask.dim() != 2 or key_padding_mask.shape[0] != bs:
+                raise ValueError(
+                    "reference_key_padding_mask must have shape (B, K), got "
+                    f"{tuple(key_padding_mask.shape)} for batch={bs}"
+                )
+            expanded_key_padding_mask = key_padding_mask.unsqueeze(1).expand(-1, njoints, -1).reshape(bs * njoints, -1)
+        attn_output, _ = self.reference_attn(
+            queries,
+            memory,
+            memory,
+            key_padding_mask=expanded_key_padding_mask,
+            need_weights=False,
+        )
+        attn_output = attn_output.reshape(frames, bs, njoints, feats)
+        if reference_batch_mask is not None:
+            batch_mask = reference_batch_mask.to(device=attn_output.device, dtype=attn_output.dtype)
+            attn_output = attn_output * batch_mask.view(1, bs, 1, 1)
+        return self.dropout_ref(attn_output)
+
+
 class GraphMotionDecoder(nn.TransformerDecoder):
     def __init__(self, decoder_layer, num_layers, norm=None, max_path_len=5, value_emb=False,
                  cross_limb=True, cross_limb_latents=8, cross_limb_dim=64,
-                 cross_limb_last_n=0):
+                 cross_limb_last_n=0, reference_cond=False, reference_cond_last_n=0):
                 # multi head attention
         super().__init__(decoder_layer, num_layers, norm)
 
@@ -912,8 +962,9 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         self.nheads = decoder_layer.heads
         # 0 -> apply at every layer; N>0 -> only the last N layers. Each active
         # layer gets its own independent block, so this also scales the
-        # cross-limb parameter count.
+        # parameter count for both cross-limb and reference paths.
         self.cross_limb_last_n = cross_limb_last_n
+        self.reference_cond_last_n = reference_cond_last_n
         if cross_limb:
             num_active = (
                 cross_limb_last_n if cross_limb_last_n > 0 else num_layers
@@ -929,6 +980,19 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             ])
         else:
             self.cross_limb_blocks = None
+        if reference_cond:
+            num_ref_active = (
+                reference_cond_last_n if reference_cond_last_n > 0 else num_layers
+            )
+            self.reference_blocks = nn.ModuleList([
+                ReferenceCrossAttnBlock(
+                    self.d_model, decoder_layer.heads,
+                    dropout=decoder_layer.dropout1.p,
+                )
+                for _ in range(num_ref_active)
+            ])
+        else:
+            self.reference_blocks = None
         self.topology_key_emb = nn.Embedding(max_path_len + 1, self.d_model) # 'far': max_path_len + 1
         self.edge_key_emb = nn.Embedding(6, self.d_model) # 'self':0, 'parent':1, 'child':2, 'sibling':3, 'no_relation':4, 'end_effector':5
         self.topology_query_emb = nn.Embedding(max_path_len + 1, self.d_model) # 'far': max_path_len + 1
@@ -1004,6 +1068,10 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             self.num_layers - self.cross_limb_last_n
             if self.cross_limb_last_n > 0 else 0
         )
+        first_ref_layer = (
+            self.num_layers - self.reference_cond_last_n
+            if self.reference_cond_last_n > 0 else 0
+        )
         for layer_ind, mod in enumerate(self.layers):
             edge_value_emb = None
             topology_value_emb = None
@@ -1014,10 +1082,15 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                 cl_block = self.cross_limb_blocks[layer_ind - first_cl_layer]
             else:
                 cl_block = None
+            if self.reference_blocks is not None and layer_ind >= first_ref_layer:
+                ref_block = self.reference_blocks[layer_ind - first_ref_layer]
+            else:
+                ref_block = None
             output = mod(
                     output, timesteps_embs, topology_rel, edge_rel, self.edge_key_emb, self.edge_query_emb, edge_value_emb, self.topology_key_emb, self.topology_query_emb, topology_value_emb, spatial_mask, temporal_mask,
                     tgt_key_padding_mask, memory_key_padding_mask, y, reference_memory, global_energy_condition, reference_key_padding_mask,
                     temporal_template=temporal_template, cross_limb_block=cl_block,
+                    reference_block=ref_block,
                     cross_limb_unreliable_mask=cross_limb_unreliable_mask,
                     reference_batch_mask=reference_batch_mask,
                     loop_phase_mask=loop_phase_mask_batch,
@@ -1040,16 +1113,15 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         super().__init__(d_model, nhead, dim_feedforward, dropout, activation)
         # nn.TransformerDecoderLayer.__init__ allocates self_attn and
         # multihead_attn (each ~4*d_model^2 params). This layer overrides both
-        # with spatial_attn / temporal_attn / reference_attn and never calls
-        # the base sublayers, so those two modules are pure dead weight that
-        # would still be saved into every checkpoint -- drop them.
+        # with spatial_attn / temporal_attn and never calls the base
+        # sublayers, so those two modules are pure dead weight that would
+        # still be saved into every checkpoint -- drop them.
         del self.self_attn
         del self.multihead_attn
         self.d_model= d_model
         self.heads = nhead
         self.spatial_attn = GraphMultiHeadAttention(d_model = d_model, nheads = nhead, dropout=dropout)
         self.temporal_attn = SelectiveMultiheadAttention(self.d_model, nhead, dropout=dropout)
-        self.reference_attn = SelectiveMultiheadAttention(self.d_model, nhead, dropout=dropout)
         self.embed_timesteps = nn.Linear(d_model, d_model)
         self.global_energy_cond = bool(global_energy_cond)
         if self.global_energy_cond:
@@ -1057,15 +1129,18 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             self.layer_gamma_bias = nn.Parameter(torch.zeros(d_model))
             self.layer_beta_scale = nn.Parameter(torch.zeros(d_model))
             self.layer_beta_bias = nn.Parameter(torch.zeros(d_model))
+        # norm_ref is reused by both the reference-residual path and the
+        # global-energy path, so it stays on every layer regardless of
+        # reference_cond_last_n.
         self.norm_ref = nn.LayerNorm(d_model)
-        self.dropout_ref = nn.Dropout(dropout)
         self.reference_residual_gate = float(reference_residual_gate)
         if self.reference_residual_gate < 0.0:
             raise ValueError(
                 f"reference_residual_gate must be >= 0, got {self.reference_residual_gate}"
             )
-        # The cross-limb pathway is owned by GraphMotionDecoder (one block per
-        # active layer) and passed into forward(), not held here.
+        # Both the cross-limb pathway and the reference cross-attention block
+        # are owned by GraphMotionDecoder (one block per active layer) and
+        # passed into forward(), not held here.
         self.temporal_phase_scale = nn.Parameter(torch.zeros(1))
 
     # spatial attention block
@@ -1118,42 +1193,6 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
     def _ff_block(self, x: Tensor) -> Tensor:
         x = self.linear2(self.dropout(self.activation(self.linear1(x))))
         return self.dropout3(x)
-
-    def _reference_mha_block(
-        self,
-        x: Tensor,
-        reference_memory: Tensor,
-        key_padding_mask: Optional[Tensor],
-        reference_batch_mask: Optional[Tensor],
-    ) -> Tensor:
-        frames, bs, njoints, feats = x.size()
-        queries = x.reshape(frames, bs * njoints, feats)
-        if reference_memory.dim() != 3 or reference_memory.shape[1] != bs or reference_memory.shape[2] != feats:
-            raise ValueError(
-                "reference_memory must have shape (K, B, D), got "
-                f"{tuple(reference_memory.shape)} for batch={bs}, dim={feats}"
-            )
-        memory = reference_memory.unsqueeze(2).expand(-1, -1, njoints, -1).reshape(reference_memory.shape[0], bs * njoints, feats)
-        expanded_key_padding_mask = None
-        if key_padding_mask is not None:
-            if key_padding_mask.dim() != 2 or key_padding_mask.shape[0] != bs:
-                raise ValueError(
-                    "reference_key_padding_mask must have shape (B, K), got "
-                    f"{tuple(key_padding_mask.shape)} for batch={bs}"
-                )
-            expanded_key_padding_mask = key_padding_mask.unsqueeze(1).expand(-1, njoints, -1).reshape(bs * njoints, -1)
-        attn_output, _ = self.reference_attn(
-            queries,
-            memory,
-            memory,
-            key_padding_mask=expanded_key_padding_mask,
-            need_weights=False,
-        )
-        attn_output = attn_output.reshape(frames, bs, njoints, feats)
-        if reference_batch_mask is not None:
-            batch_mask = reference_batch_mask.to(device=attn_output.device, dtype=attn_output.dtype)
-            attn_output = attn_output * batch_mask.view(1, bs, 1, 1)
-        return self.dropout_ref(attn_output)
 
     def _apply_global_energy_cond(
         self,
@@ -1214,6 +1253,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         reference_key_padding_mask: Optional[Tensor] = None,
         temporal_template: Optional[Tensor] = None,
         cross_limb_block: Optional[nn.Module] = None,
+        reference_block: Optional[nn.Module] = None,
         cross_limb_unreliable_mask: Optional[Tensor] = None,
         reference_batch_mask: Optional[Tensor] = None,
         loop_phase_mask: Optional[Tensor] = None,
@@ -1239,8 +1279,8 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             )
         reference_delta = None
         conditioning_batch_mask = None
-        if reference_memory is not None and self.reference_residual_gate != 0.0:
-            reference_delta = self._reference_mha_block(
+        if reference_block is not None and reference_memory is not None and self.reference_residual_gate != 0.0:
+            reference_delta = reference_block(
                 x,
                 reference_memory,
                 reference_key_padding_mask,

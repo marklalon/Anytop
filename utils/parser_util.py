@@ -97,8 +97,7 @@ def add_model_options(parser):
                        help="Weight for loop-only wrap loss on denormalized pose/rotation/terminal_vel channels.")
     group.add_argument("--loop_cond", action='store_true',
                        help="Enable an explicit boolean loop-condition embedding in the model.")
-    group.add_argument("--aug_loop_roll_prob", default=0.0, type=float,
-                       help="Probability of circularly rolling prepared loop clips during training.")
+
     group.add_argument("--loop_uncond_prob", default=0.0, type=float,
                        help="Probability that a loop training clip is treated unconditionally (no loop conditioning)."
                             " Disables circular masks/phase, cycle resampling, and loop wrap loss for that sample.")
@@ -125,17 +124,22 @@ def add_model_options(parser):
                        help="Enable an always-on clip-level global energy condition derived from the training motion's global energy mean/std.")
     group.add_argument("--reference_encoder_layers", default=1, type=int,
                        help="Number of temporal self-attention layers in the reference encoder (0 = InputProcess only).")
-    group.add_argument("--reference_cond_prob", default=0.5, type=float,
+    group.add_argument("--reference_cond_prob", default=0.3, type=float,
                        help="Probability of keeping reference conditioning during training "
                             "(1.0 = always conditioned, 0.0 = never).")
     group.add_argument("--reference_residual_gate", default=1.0, type=float,
                        help="Scalar gate applied to the decoder's reference residual path. "
                             "1.0 keeps the current behavior, 0.0 disables the residual entirely, "
                             "and intermediate values damp the reference branch without changing checkpoints.")
-    group.add_argument("--reference_token_dropout_prob", default=0.25, type=float,
+    group.add_argument("--reference_token_dropout_prob", default=0.15, type=float,
                        help="Per-prior-token dropout probability inside the reference encoder. Applied only during training.")
     group.add_argument("--reference_token_noise_std", default=0.15, type=float,
                        help="Additive Gaussian noise std applied to surviving reference prior tokens during training.")
+    group.add_argument("--reference_cond_last_n", default=0, type=int,
+                       help="Apply reference cross-attention only on the last N decoder layers "
+                            "(0 = all layers). Mirrors cross_limb_last_n semantics: only active "
+                            "layers allocate a ReferenceCrossAttnBlock, so this controls both "
+                            "reference MHA compute and checkpoint size.")
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')

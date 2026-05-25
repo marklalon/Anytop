@@ -1732,7 +1732,7 @@ class GaussianDiffusion:
         batch_size = x_start.shape[0]
         device = x_start.device
 
-        uncond_drop_prob = 1.0 - float(getattr(model_for_hooks, 'reference_cond_prob', 0.5))
+        uncond_drop_prob = 1.0 - float(getattr(model_for_hooks, 'reference_cond_prob', 0.3))
         dropout_mask = self._sample_structured_dropout_mask(
             batch_size, uncond_drop_prob, device,
         )
