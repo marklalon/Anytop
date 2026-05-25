@@ -360,6 +360,31 @@ def test_build_global_energy_conditioning_sets_clip_condition() -> None:
     assert torch.allclose(model_kwargs["y"]["global_energy_cond"], expected)
 
 
+def test_build_global_energy_conditioning_masks_reference_conditioned_samples() -> None:
+    diffusion = GaussianDiffusion(
+        betas=np.array([0.001, 0.002, 0.003], dtype=np.float64),
+        model_mean_type=ModelMeanType.START_X,
+        model_var_type=ModelVarType.FIXED_SMALL,
+        loss_type=LossType.MSE,
+    )
+    model = _DummyModel(global_energy_cond=True)
+    x_start = torch.zeros((3, 3, 13, 4), dtype=torch.float32)
+    model_kwargs = {
+        "y": {
+            "lengths": torch.tensor([4, 4, 4], dtype=torch.int64),
+            "n_joints": torch.tensor([3, 3, 3], dtype=torch.int64),
+            "reference_cond_mask": torch.tensor([True, False, True], dtype=torch.bool),
+        }
+    }
+
+    diffusion._build_global_energy_conditioning(model, x_start, model_kwargs)
+
+    assert torch.equal(
+        model_kwargs["y"]["global_energy_cond_mask"],
+        torch.tensor([False, True, False], dtype=torch.bool),
+    )
+
+
 def test_anytop_forward_accepts_reference_motion_with_independent_frame_count() -> None:
     model = AnyTop(
         max_joints=4,
@@ -497,6 +522,49 @@ def test_anytop_forward_accepts_global_energy_condition_without_reference_motion
     assert capture_decoder.last_kwargs["global_energy_condition"].shape == (1, 16)
 
 
+def test_anytop_forward_passes_global_energy_condition_mask_and_updates_active_stats_only() -> None:
+    model = AnyTop(
+        max_joints=4,
+        feature_len=13,
+        latent_dim=8,
+        ff_size=32,
+        num_layers=1,
+        num_heads=2,
+        dropout=0.0,
+        t5_out_dim=8,
+        cross_limb=False,
+        reference_cond=False,
+        global_energy_cond=True,
+    )
+    capture_decoder = _CaptureDecoder()
+    model.seqTransDecoder = capture_decoder
+    model.train()
+
+    x = torch.randn(2, 4, 13, 7, dtype=torch.float32)
+    y = {
+        "joints_padding_mask": torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
+        "mask": torch.ones(2, 1, 1, 8, 8, dtype=torch.float32),
+        "tpos_first_frame": torch.randn(2, 4, 13, dtype=torch.float32),
+        "n_joints": torch.tensor([4, 4], dtype=torch.int64),
+        "lengths": torch.tensor([7, 7], dtype=torch.int64),
+        "translation_root_index": torch.tensor([0, 0], dtype=torch.int64),
+        "joints_names_embs": torch.zeros(2, 4, 8, dtype=torch.float32),
+        "parents": torch.tensor([[-1, 0, 1, 2], [-1, 0, 1, 2]], dtype=torch.int64),
+        "global_energy_cond": torch.tensor([[10.0, 2.0], [0.5, 0.25]], dtype=torch.float32),
+        "global_energy_cond_mask": torch.tensor([False, True], dtype=torch.bool),
+    }
+
+    output = model(x, torch.tensor([1, 1], dtype=torch.int64), y=y)
+
+    assert output.shape == (2, 4, 13, 7)
+    assert capture_decoder.last_kwargs is not None
+    assert torch.equal(
+        capture_decoder.last_kwargs["global_energy_condition_mask"],
+        torch.tensor([False, True], dtype=torch.bool),
+    )
+    assert torch.allclose(model.global_energy_running_mean, torch.tensor([0.5, 0.25]))
+
+
 def test_decoder_layer_keeps_global_energy_condition_when_reference_gate_is_zero() -> None:
     layer = GraphMotionDecoderLayer(
         d_model=4,
@@ -544,6 +612,59 @@ def test_decoder_layer_keeps_global_energy_condition_when_reference_gate_is_zero
     )
 
     assert torch.allclose(output, torch.full_like(tgt, 3.0))
+
+
+def test_decoder_layer_global_energy_mask_bypasses_film_for_reference_samples() -> None:
+    layer = GraphMotionDecoderLayer(
+        d_model=4,
+        nhead=2,
+        dim_feedforward=16,
+        dropout=0.0,
+        reference_residual_gate=1.0,
+        global_energy_cond=True,
+    )
+    layer.embed_timesteps = nn.Identity()
+    layer.norm1 = nn.Identity()
+    layer.norm2 = nn.Identity()
+    layer.norm3 = nn.Identity()
+    layer.norm_ref = nn.Identity()
+
+    def _zero_block(self, x, *args, **kwargs):
+        return torch.zeros_like(x)
+
+    def _reference_block(x, *args, **kwargs):
+        return torch.full_like(x, 2.0)
+
+    def _global_energy_cond(self, x, global_energy_condition):
+        return x + global_energy_condition[:, :1].to(device=x.device, dtype=x.dtype).view(1, x.shape[1], 1, 1)
+
+    layer._spatial_mha_block = types.MethodType(_zero_block, layer)
+    layer._temporal_mha_block_sin_joint = types.MethodType(_zero_block, layer)
+    layer._ff_block = types.MethodType(_zero_block, layer)
+    layer._apply_global_energy_cond = types.MethodType(_global_energy_cond, layer)
+
+    tgt = torch.zeros((2, 2, 3, 4), dtype=torch.float32)
+    timesteps_emb = torch.zeros((2, 4), dtype=torch.float32)
+    output = layer(
+        tgt=tgt,
+        timesteps_emb=timesteps_emb,
+        topology_rel=None,
+        edge_rel=None,
+        edge_key_emb=None,
+        edge_query_emb=None,
+        edge_value_emb=None,
+        topo_key_emb=None,
+        topo_query_emb=None,
+        topo_value_emb=None,
+        reference_memory=torch.ones((1, 2, 4), dtype=torch.float32),
+        global_energy_condition=torch.full((2, 8), 3.0, dtype=torch.float32),
+        global_energy_condition_mask=torch.tensor([False, True], dtype=torch.bool),
+        reference_batch_mask=torch.tensor([True, False], dtype=torch.bool),
+        reference_block=_reference_block,
+    )
+
+    assert torch.allclose(output[:, 0], torch.full_like(output[:, 0], 2.0))
+    assert torch.allclose(output[:, 1], torch.full_like(output[:, 1], 3.0))
 
 
 def test_reference_prior_encoder_rejects_feature_schemas_shorter_than_13_dims() -> None:
@@ -1277,6 +1398,7 @@ def test_sample_batch_routes_controlnet_through_cfg_wrapper_without_mutating_y()
     routed_y = diffusion.last_kwargs["model_kwargs"]["y"]
     assert torch.equal(routed_y["reference_motion"], reference_motion)
     assert routed_y["reference_scale"] == 2.5
+    assert torch.equal(routed_y["global_energy_cond_mask"], torch.tensor([False], dtype=torch.bool))
     assert torch.equal(routed_y["existing"], model_kwargs["y"]["existing"])
     assert "reference_motion" not in model_kwargs["y"]
 

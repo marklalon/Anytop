@@ -693,6 +693,12 @@ def _sample_batch(
         if use_reference_conditioning_:
             loop_y['reference_motion'] = reference_motion_
             loop_y['reference_scale'] = float(reference_scale)
+            if float(reference_scale) != 0.0:
+                loop_y['global_energy_cond_mask'] = torch.zeros(
+                    sample_shape[0],
+                    dtype=torch.bool,
+                    device=device,
+                )
             if reference_conditioning_kwargs_:
                 loop_y.update(reference_conditioning_kwargs_)
         else:
@@ -700,6 +706,7 @@ def _sample_batch(
                 if key.startswith('reference_'):
                     loop_y.pop(key, None)
             loop_y.pop('reference_cond_mask', None)
+            loop_y.pop('global_energy_cond_mask', None)
         loop_model_kwargs['y'] = loop_y
         return loop_model_kwargs
 
@@ -1003,6 +1010,16 @@ def main(args=None, cond_dict=None):
         )
     except ValueError as exc:
         sys.exit(f"ERROR: {exc}")
+    if (
+        global_energy_condition is not None
+        and reference_mode == 'controlnet'
+        and getattr(args, 'reference_motion', None)
+        and resolve_reference_scale(getattr(args, 'reference_scale', None)) != 0.0
+    ):
+        print(
+            "WARNING: --global_energy_mean/--global_energy_std are ignored while "
+            "--reference_mode controlnet reference conditioning is active."
+        )
 
     print('Validating precomputed joint-name embeddings from cond.npy...')
     ensure_joint_name_embeddings(

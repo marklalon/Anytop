@@ -1755,6 +1755,7 @@ class GaussianDiffusion:
         model_for_hooks = self._unwrap_model_for_training_hooks(model)
         if not getattr(model_for_hooks, 'global_energy_cond', False):
             y.pop('global_energy_cond', None)
+            y.pop('global_energy_cond_mask', None)
             return
 
         lengths = y.get('lengths')
@@ -1767,6 +1768,24 @@ class GaussianDiffusion:
             n_joints=n_joints,
             lengths=lengths,
         )
+        reference_cond_mask = y.get('reference_cond_mask')
+        if reference_cond_mask is None:
+            y.pop('global_energy_cond_mask', None)
+            return
+        reference_cond_mask = torch.as_tensor(
+            reference_cond_mask,
+            device=x_start.device,
+            dtype=torch.bool,
+        ).reshape(-1)
+        batch_size = x_start.shape[0]
+        if reference_cond_mask.numel() == 1 and batch_size != 1:
+            reference_cond_mask = reference_cond_mask.expand(batch_size)
+        elif reference_cond_mask.numel() != batch_size:
+            raise ValueError(
+                "reference_cond_mask batch dimension must match the motion batch size, got "
+                f"{reference_cond_mask.numel()} for batch {batch_size}"
+            )
+        y['global_energy_cond_mask'] = ~reference_cond_mask
 
     def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
         """
