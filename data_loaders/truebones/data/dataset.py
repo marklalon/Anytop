@@ -706,10 +706,12 @@ class MotionDataset(data.Dataset):
         result = self.augment(data, return_aug_info=True, loop_uncond=loop_uncond)
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std, aug_info = result
         ind = 0
+        cropped_to_target = False
         loop_applied = False
         loop_full_cycle = False
         loop_num_cycles = _coerce_loop_num_cycles(name, motion_metadata.get('loop_num_cycles', 1.0))
         loop_condition_active = is_loop and not loop_uncond
+        loop_legacy_aug_active = is_loop and loop_uncond
 
         # When the original loop motion is much longer than the target window,
         # periodic resampling would produce extreme speed distortion (e.g. a
@@ -752,19 +754,31 @@ class MotionDataset(data.Dataset):
                     )
             motion = motion[ind: ind + target_num_frames]
             m_length = target_num_frames
+            cropped_to_target = True
 
         if m_length < target_num_frames:
             pad_frames = target_num_frames - m_length
-            motion = np.concatenate([
-                                     motion,
-                                     np.zeros((pad_frames, motion.shape[1], motion.shape[2]), dtype=motion.dtype)
-                                     ], axis=0)
+            if loop_legacy_aug_active and m_length > 0:
+                offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
+                loop_indices = (np.arange(target_num_frames, dtype=np.int64) + offset) % m_length
+                motion = motion[loop_indices]
+                m_length = target_num_frames
+                loop_applied = True
+            else:
+                motion = np.concatenate([
+                                         motion,
+                                         np.zeros((pad_frames, motion.shape[1], motion.shape[2]), dtype=motion.dtype)
+                                         ], axis=0)
         elif loop_condition_active and m_length == target_num_frames:
             loop_full_cycle = True
             if not loop_applied:
                 offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
                 motion = _circular_roll_motion(motion, offset)
                 loop_applied = True
+        elif loop_legacy_aug_active and not cropped_to_target and m_length == target_num_frames:
+            offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
+            motion = _circular_roll_motion(motion, offset)
+            loop_applied = True
 
         motion_metadata['is_loop'] = bool(loop_condition_active)
         motion_metadata['loop_full_cycle'] = bool(loop_full_cycle)
@@ -842,11 +856,7 @@ class MotionDataset(data.Dataset):
                             self.motion_cache.popitem(last=False)
 
         speed_factor = 1.0
-        skip_speed_for_loop_cycle = (
-            bool(motion_metadata.get('is_loop'))
-            and not bool(loop_uncond)
-        )
-        if speed_range > 0.0 and not skip_speed_for_loop_cycle:
+        if speed_range > 0.0:
             # Resample time axis: alpha<1 speeds up (fewer frames), alpha>1 slows down (more frames).
             # The existing random-start-offset logic in _prepare_sample handles length mismatch.
             speed_factor = 1.0 + random.uniform(-speed_range, speed_range)

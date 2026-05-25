@@ -253,7 +253,7 @@ def test_prepare_sample_aug_info_reports_actual_loop_fill() -> None:
     assert np.isclose(float(aug_info["speed_factor"]), 1.0), f"expected speed_factor=1.0, got {aug_info}"
 
 
-def test_loop_uncond_uses_non_loop_padding_and_metadata() -> None:
+def test_loop_uncond_keeps_legacy_loop_tile_but_non_loop_metadata() -> None:
     dataset = _build_truebones(
         split="train",
         temporal_window=31,
@@ -268,31 +268,29 @@ def test_loop_uncond_uses_non_loop_padding_and_metadata() -> None:
     motion_dataset.opt.aug_mirror_prob = 0.0
     motion_dataset.opt.aug_speed_range = 0.0
 
-    sample = motion_dataset._prepare_sample(
-        LOOP_MOTION,
-        motion_dataset.data_dict[LOOP_MOTION],
-        target_num_frames=NUM_FRAMES,
-        return_aug_info=True,
-    )
+    with patch.object(dataset_module.random, 'randint', return_value=0):
+        sample = motion_dataset._prepare_sample(
+            LOOP_MOTION,
+            motion_dataset.data_dict[LOOP_MOTION],
+            target_num_frames=NUM_FRAMES,
+            return_aug_info=True,
+        )
     motion, m_length, *_rest, motion_metadata, name, _joint_mask_dict, aug_info = sample
 
     data = motion_dataset.data_dict[LOOP_MOTION]
     cond = motion_dataset.cond_dict[data["object_type"]]
     raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
     raw_norm = np.nan_to_num((raw - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
-    expected = np.concatenate(
-        [raw_norm, np.zeros((NUM_FRAMES - raw_norm.shape[0], raw_norm.shape[1], raw_norm.shape[2]), dtype=raw_norm.dtype)],
-        axis=0,
-    )
+    expected = raw_norm[np.arange(NUM_FRAMES, dtype=np.int64) % raw_norm.shape[0]]
 
     assert name == LOOP_MOTION, f"unexpected sample: {name}"
     assert motion.shape[0] == NUM_FRAMES
-    assert m_length == raw_norm.shape[0]
+    assert m_length == NUM_FRAMES
     assert motion_metadata["is_loop"] is False
     assert motion_metadata["loop_full_cycle"] is False
-    assert aug_info["loop_applied"] is False
+    assert aug_info["loop_applied"] is True
     assert aug_info["loop_uncond"] is True
-    assert_close("loop uncond zero-pad", motion, expected)
+    assert_close("loop uncond legacy tile", motion, expected)
 
 
 def test_loop_uncond_keeps_speed_jitter_enabled() -> None:
@@ -322,10 +320,97 @@ def test_loop_uncond_keeps_speed_jitter_enabled() -> None:
     raw_len = int(motion_dataset.data_dict[LOOP_MOTION]["length"])
     expected_len = max(1, int(round(raw_len * 1.2)))
     assert motion.shape[0] == NUM_FRAMES
-    assert m_length == expected_len
+    assert m_length == NUM_FRAMES
     assert motion_metadata["is_loop"] is False
     assert motion_metadata["loop_full_cycle"] is False
+    assert aug_info["loop_applied"] is True
     assert aug_info["loop_uncond"] is True
+    assert np.isclose(float(aug_info["speed_factor"]), 1.2)
+    assert expected_len > 0
+
+
+def test_loop_uncond_long_loop_crops_without_extra_roll(tmp_path) -> None:
+    dataset = _build_truebones(
+        split="train",
+        temporal_window=31,
+        num_frames=NUM_FRAMES,
+        balanced=False,
+        objects_subset=LOOP_SUBSET,
+        motion_cache_size=0,
+        loop_cond_prob=0.0,
+    )
+
+    motion_dataset = dataset.motion_dataset
+    motion_dataset.opt.aug_mirror_prob = 0.0
+    motion_dataset.opt.aug_speed_range = 0.0
+
+    source_data = motion_dataset.data_dict[LOOP_MOTION]
+    source_raw = np.load(source_data["motion_path"]).astype(np.float32, copy=False)
+    repeat_count = (NUM_FRAMES + 8 + source_raw.shape[0] - 1) // source_raw.shape[0]
+    long_raw = np.tile(source_raw, (repeat_count, 1, 1))[:NUM_FRAMES + 8]
+    motion_path = tmp_path / "long_loop.npy"
+    np.save(motion_path, long_raw.astype(np.float32, copy=False))
+
+    long_data = dict(source_data)
+    long_data["motion_path"] = str(motion_path)
+    long_data["length"] = long_raw.shape[0]
+    long_data["motion_metadata"] = dict(source_data["motion_metadata"])
+    long_data["motion_metadata"]["is_loop"] = True
+
+    crop_start = 5
+    with patch.object(dataset_module.random, 'randint', return_value=11):
+        sample = motion_dataset._prepare_sample(
+            "synthetic_long_loop.npy",
+            long_data,
+            target_num_frames=NUM_FRAMES,
+            crop_start=crop_start,
+            return_aug_info=True,
+        )
+    motion, m_length, *_rest, motion_metadata, _name, _joint_mask_dict, aug_info = sample
+
+    cond = motion_dataset.cond_dict[long_data["object_type"]]
+    long_norm = np.nan_to_num((long_raw - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
+    expected = long_norm[crop_start:crop_start + NUM_FRAMES]
+
+    assert motion.shape[0] == NUM_FRAMES
+    assert m_length == NUM_FRAMES
+    assert motion_metadata["is_loop"] is False
+    assert motion_metadata["loop_full_cycle"] is False
+    assert aug_info["loop_applied"] is False
+    assert aug_info["loop_uncond"] is True
+    assert_close("loop uncond long crop", motion, expected)
+
+
+def test_loop_conditioned_keeps_speed_jitter_enabled() -> None:
+    dataset = _build_truebones(
+        split="train",
+        temporal_window=31,
+        num_frames=NUM_FRAMES,
+        balanced=False,
+        objects_subset=LOOP_SUBSET,
+        motion_cache_size=2,
+        loop_cond_prob=1.0,
+    )
+
+    motion_dataset = dataset.motion_dataset
+    motion_dataset.opt.aug_mirror_prob = 0.0
+    motion_dataset.opt.aug_speed_range = 0.2
+
+    with patch.object(dataset_module.random, 'uniform', return_value=0.2):
+        sample = motion_dataset._prepare_sample(
+            LOOP_MOTION,
+            motion_dataset.data_dict[LOOP_MOTION],
+            target_num_frames=NUM_FRAMES,
+            return_aug_info=True,
+        )
+    motion, m_length, *_rest, motion_metadata, _name, _joint_mask_dict, aug_info = sample
+
+    assert motion.shape[0] == NUM_FRAMES
+    assert m_length == NUM_FRAMES
+    assert motion_metadata["is_loop"] is True
+    assert motion_metadata["loop_full_cycle"] is True
+    assert aug_info["loop_applied"] is True
+    assert aug_info["loop_uncond"] is False
     assert np.isclose(float(aug_info["speed_factor"]), 1.2)
 
 
