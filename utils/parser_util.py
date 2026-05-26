@@ -86,9 +86,6 @@ def add_model_options(parser):
     group.add_argument("--aug_speed_range", default=0.0, type=float,
                        help="Speed augmentation range (0.0=off). E.g. 0.2 randomly stretches/compresses"
                             " each clip's time axis by ±20%% before the random-window crop.")
-    group.add_argument("--aug_mirror_prob", default=0.0, type=float,
-                       help="Probability of applying left-right mirror augmentation (0.0=off, 0.5=half)."
-                            " Swaps symmetric joint pairs and negates X-axis components of pos/rot/vel.")
     group.add_argument("--lambda_vel", default=0.0, type=float,
                        help="Weight for velocity-position consistency loss (0.0=off)."
                             " Penalizes |pos[t+1]-pos[t] - vel[t]|^2 on denormalized outputs."

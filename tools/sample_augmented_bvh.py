@@ -5,14 +5,13 @@ Randomly samples N motions from the training dataset and exports them as BVH fil
 for manual verification. Every augmentation that the model sees during training is
 applied faithfully in the same order as dataset.py:
 
-  1. aug_mirror_prob   — left-right mirror (joint swap + YZ-plane sign flip)
-  2. aug_speed_range   — temporal speed jitter via bilinear resampling
-  3. random crop       — random start offset when clip > num_frames
-  4. loop simulation   — loop motions are repeated/resampled to num_frames,
+  1. aug_speed_range   — temporal speed jitter via bilinear resampling
+  2. random crop       — random start offset when clip > num_frames
+  3. loop simulation   — loop motions are repeated/resampled to num_frames,
       with random phase offset and multi-cycle phase metadata
 
 Exported filenames encode the applied augmentations, e.g.:
-  Horse___Gallop_123_spd0.87_mirror_loop7.bvh
+  Horse___Gallop_123_spd0.87_loop7.bvh
 
 Usage
 -----
@@ -20,7 +19,6 @@ Usage
     python tools/sample_augmented_bvh.py \\
         --n 10 \\
         --aug-speed-range 0.2 \\
-        --aug-mirror-prob 0.5 \\
         --num-frames 60 \\
         --objects-subset quadropeds_test \\
         --output-dir ./augmented_bvh_samples
@@ -30,7 +28,6 @@ Arguments
   --n                 Number of samples to export  (default: 10)
   --num-frames        Window length in frames, must match --num_frames in training (default: 60)
   --aug-speed-range   ±fraction speed jitter, matching --aug_speed_range (default: 0.2)
-  --aug-mirror-prob   Mirror probability, matching --aug_mirror_prob (default: 0.5)
     --loop-only         Sample only motions marked as loop clips
     --loop-uncond-prob  Probability to route loop clips through the non-loop training path
   --objects-subset    Subset name or single species name (default: "all")
@@ -62,7 +59,6 @@ from motion_lib import BVH
 from data_loaders.truebones.truebones_utils.motion_process import (
     recover_bvh_export_animation_from_motion_np,
     refresh_joint_metadata_in_cond_dict,
-    resolve_mirrored_export_skeleton_metadata,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.param_utils import OBJECT_SUBSETS_DICT
@@ -134,19 +130,11 @@ def _export_bvh(
     motion_metadata: dict[str, object],
     *,
     object_cond: dict[str, object] | None = None,
-    mirror_export_compat: bool = False,
 ) -> bool:
     """Denormalized (F, J, 13) → BVH file.  Returns True on success."""
     export_parents = list(parents)
     export_offsets = np.asarray(offsets)
     export_joint_names = list(joints_names)
-    if mirror_export_compat and object_cond is not None:
-        export_parents, export_offsets, export_joint_names = resolve_mirrored_export_skeleton_metadata(
-            object_cond,
-            export_parents,
-            export_offsets,
-            export_joint_names,
-        )
 
     anim, joints_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
         motion_raw,
@@ -181,8 +169,6 @@ def parse_args() -> argparse.Namespace:
                    help="Temporal window length in frames (must match --num_frames in training).")
     p.add_argument("--aug-speed-range", type=float, default=0.2,
                    help="Speed jitter ±fraction (0 = disabled). Match --aug_speed_range in training.")
-    p.add_argument("--aug-mirror-prob", type=float, default=0.5,
-                   help="Mirror augmentation probability (0 = disabled). Match --aug_mirror_prob.")
     p.add_argument("--loop-only", action="store_true",
                    help="Only sample/export motions whose metadata marks them as loop clips.")
     p.add_argument("--loop-cond-prob", type=float, default=0.0,
@@ -231,9 +217,8 @@ def main() -> int:
     opt.motion_dir = pjoin(".", opt.motion_dir)
     opt.data_root = pjoin(".", opt.data_root)
 
-    # Augmentation settings (mirror training configuration)
+    # Augmentation settings
     opt.aug_speed_range = args.aug_speed_range
-    opt.aug_mirror_prob = args.aug_mirror_prob
     opt.loop_cond_prob = args.loop_cond_prob
     opt.motion_cache_size = 0  # no cache needed for sampling
 
@@ -325,7 +310,7 @@ def main() -> int:
                 motion_metadata,
                 _name,
                 _candidate_roots_info,
-                aug_info,     # dict: mirror_applied, speed_factor, crop_start, loop_applied
+                aug_info,     # dict: speed_factor, crop_start, loop_applied
             ) = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
 
             # ----------------------------------------------------------------
@@ -361,8 +346,6 @@ def main() -> int:
             loop_phase_length = float(motion_metadata.get("loop_phase_length", m_length))
 
             # aug_info contains actual augmentation results (not just parameters)
-            if aug_info.get("mirror_applied"):
-                tags.append("mir")
             if aug_info.get("speed_factor", 1.0) != 1.0:
                 tags.append(f"spd{int(round(aug_info['speed_factor'] * 100))}")
             if aug_info.get("loop_applied"):
@@ -385,7 +368,6 @@ def main() -> int:
                 joints_names,
                 motion_metadata,
                 object_cond=cond_dict[object_type],
-                mirror_export_compat=bool(aug_info.get("mirror_applied")),
             )
             if ok:
                 loop_note = ""
@@ -431,7 +413,6 @@ def main() -> int:
                         joints_names,
                         motion_metadata,
                         object_cond=cond_dict[object_type],
-                        mirror_export_compat=bool(aug_info.get("mirror_applied")),
                     )
                     if ok2:
                         print(f"     └─ masked  → {masked_path.name}")

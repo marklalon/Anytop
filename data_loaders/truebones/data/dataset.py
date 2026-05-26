@@ -15,7 +15,6 @@ from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.param_utils import parse_action_tags
 from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
 from data_loaders.truebones.truebones_utils.motion_process import (
-    mirror_features_with_safeguards,
     refresh_joint_metadata_in_cond_dict,
 )
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import JOINT_NAME_EMBEDDING_SCHEMA_VERSION
@@ -664,7 +663,7 @@ class MotionDataset(data.Dataset):
             raise ValueError(f"loop_offset={offset} is invalid for loop motion with length={length}.")
         return offset
 
-    def _periodic_resample_loop_motion(self, name, motion, target_num_frames, mirror_applied=False, speed_factor=1.0):
+    def _periodic_resample_loop_motion(self, name, motion, target_num_frames, speed_factor=1.0):
         cache_enabled = self.motion_cache_size > 0 and abs(float(speed_factor) - 1.0) < 1e-6
         if not cache_enabled:
             return _periodic_resample_motion(motion, target_num_frames)
@@ -672,7 +671,6 @@ class MotionDataset(data.Dataset):
         key = (
             name,
             int(target_num_frames),
-            bool(mirror_applied),
             tuple(int(v) for v in motion.shape),
             str(motion.dtype),
         )
@@ -751,7 +749,6 @@ class MotionDataset(data.Dataset):
                 name,
                 motion,
                 target_num_frames,
-                mirror_applied=bool(aug_info.get('mirror_applied', False)),
                 speed_factor=float(aug_info.get('speed_factor', 1.0)),
             )
             m_length = target_num_frames
@@ -819,7 +816,6 @@ class MotionDataset(data.Dataset):
             return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {
                 'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
             }, {
-                'mirror_applied': bool(aug_info['mirror_applied']),
                 'speed_factor': float(aug_info['speed_factor']),
                 'crop_start': int(aug_info['crop_start']),
                 'loop_applied': bool(aug_info['loop_applied']),
@@ -835,8 +831,6 @@ class MotionDataset(data.Dataset):
         cond = self.cond_dict[object_type]
         motion_path = data['motion_path']
         motion_metadata = _copy_required_motion_metadata(Path(motion_path).name, data.get('motion_metadata'))
-        mirror_applied = False
-        mirrored_offsets = None
         if self.motion_cache_size > 0:
             motion = self.motion_cache.get(motion_path)
             if motion is None:
@@ -851,27 +845,6 @@ class MotionDataset(data.Dataset):
             motion = np.load(motion_path).astype(np.float32, copy=False)
 
         speed_range = getattr(self.opt, 'aug_speed_range', 0.0)
-        mirror_prob = getattr(self.opt, 'aug_mirror_prob', 0.0)
-
-        if mirror_prob > 0.0 and random.random() < mirror_prob:
-            spi = cond.get('symmetry_partner_indices')
-            if spi is not None and len(spi) == motion.shape[1]:
-                mirror_applied = True
-                mirrored_cache_key = f'{motion_path}__mirrored_raw__safe_v1'
-                if self.motion_cache_size > 0 and mirrored_cache_key in self.motion_cache:
-                    motion, mirrored_offsets = self.motion_cache[mirrored_cache_key]
-                    self.motion_cache.move_to_end(mirrored_cache_key)
-                else:
-                    motion, mirrored_offsets = mirror_features_with_safeguards(
-                        motion,
-                        cond,
-                        motion_metadata=motion_metadata,
-                    )
-                    if self.motion_cache_size > 0:
-                        self.motion_cache[mirrored_cache_key] = (motion, mirrored_offsets)
-                        self.motion_cache.move_to_end(mirrored_cache_key)
-                        while len(self.motion_cache) > self.motion_cache_size:
-                            self.motion_cache.popitem(last=False)
 
         speed_factor = 1.0
         if speed_range > 0.0:
@@ -892,20 +865,11 @@ class MotionDataset(data.Dataset):
         m_length = motion.shape[0]
         mean = self.cond_dict[object_type]['mean']
         std = self.cond_dict[object_type]['std_safe']
-        if mirror_applied:
-            mirrored_tpose_raw, _mirrored_tpose_offsets = mirror_features_with_safeguards(
-                np.asarray(cond['tpos_first_frame'], dtype=np.float32),
-                cond,
-                motion_metadata=motion_metadata,
-            )
-            tpos_first_frame = np.nan_to_num((mirrored_tpose_raw - mean) / std).astype(np.float32, copy=False)
-            offsets = mirrored_offsets
-        else:
-            tpos_first_frame = cond['tpos_first_frame_normalized']
-            offsets = cond['offsets']
+        tpos_first_frame = cond['tpos_first_frame_normalized']
+        offsets = cond['offsets']
         sample = (motion, m_length, object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], tpos_first_frame, offsets, cond['joints_names_embs'], cond['kinematic_chains'], mean, std)
         if return_aug_info:
-            return sample + ({'mirror_applied': bool(mirror_applied), 'speed_factor': float(speed_factor)},)
+            return sample + ({'speed_factor': float(speed_factor)},)
         return sample
         
     def __len__(self):
@@ -965,7 +929,6 @@ class Truebones(data.Dataset):
         self.motion_cache_size = kwargs.get('motion_cache_size', 0)
         self.opt.motion_cache_size = self.motion_cache_size
         self.opt.aug_speed_range = kwargs.get('aug_speed_range', 0.0)
-        self.opt.aug_mirror_prob = kwargs.get('aug_mirror_prob', 0.0)
 
         self.opt.loop_cond_prob = kwargs.get('loop_cond_prob', 0.0)
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
