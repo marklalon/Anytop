@@ -150,7 +150,9 @@ def add_data_options(parser):
     group.add_argument("--objects_subset", default='all', type=str,
                        help="Object subset. Can be a predefined category (e.g. 'all', 'quadropeds', 'flying', 'bipeds', 'millipeds', etc.) or a single species name (e.g. 'Horse', 'Dragon').")
     group.add_argument("--action_tags", default='', type=str,
-                       help="Comma-separated action tags used to keep only motions whose metadata tags match, e.g. 'locomotion,attack'.")
+                       help="Comma-separated action tags, e.g. 'locomotion,attack'. During training, filters "
+                            "kept motions whose metadata tags match. During generation with --score, filters "
+                            "the scorer's reference prior selection.")
 
 def add_training_options(parser):
     group = parser.add_argument_group('training')
@@ -330,6 +332,10 @@ def add_generate_options(parser):
                            "Larger values perform more jump/time-travel cycles (slower, often smoother). "
                            "Only used when --inpaint_* is set. Even with --sampling_method ddim --ddim_eta 0, "
                            "enabling this adds fresh forward noise and makes sampling stochastic.")
+    group.add_argument("--score", action='store_true',
+                       help="After generation, automatically run the motion quality scorer on the output "
+                            "and print a quality report. Uses --action_tags (already supported for training) "
+                            "to filter the scorer's reference prior, e.g. 'locomotion,attack'.")
 
 def add_dift_options(parser):
     # bvhs_dir, sample_bvh, face_joints, save_dir=None, tpos_bvh=None

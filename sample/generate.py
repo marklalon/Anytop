@@ -693,12 +693,6 @@ def _sample_batch(
         if use_reference_conditioning_:
             loop_y['reference_motion'] = reference_motion_
             loop_y['reference_scale'] = float(reference_scale)
-            if float(reference_scale) != 0.0:
-                loop_y['global_energy_cond_mask'] = torch.zeros(
-                    sample_shape[0],
-                    dtype=torch.bool,
-                    device=device,
-                )
             if reference_conditioning_kwargs_:
                 loop_y.update(reference_conditioning_kwargs_)
         else:
@@ -706,7 +700,6 @@ def _sample_batch(
                 if key.startswith('reference_'):
                     loop_y.pop(key, None)
             loop_y.pop('reference_cond_mask', None)
-            loop_y.pop('global_energy_cond_mask', None)
         loop_model_kwargs['y'] = loop_y
         return loop_model_kwargs
 
@@ -1010,16 +1003,6 @@ def main(args=None, cond_dict=None):
         )
     except ValueError as exc:
         sys.exit(f"ERROR: {exc}")
-    if (
-        global_energy_condition is not None
-        and reference_mode == 'controlnet'
-        and getattr(args, 'reference_motion', None)
-        and resolve_reference_scale(getattr(args, 'reference_scale', None)) != 0.0
-    ):
-        print(
-            "WARNING: --global_energy_mean/--global_energy_std are ignored while "
-            "--reference_mode controlnet reference conditioning is active."
-        )
 
     print('Validating precomputed joint-name embeddings from cond.npy...')
     ensure_joint_name_embeddings(
@@ -1388,10 +1371,11 @@ def main(args=None, cond_dict=None):
             mean = cond_dict[object_type]['mean'][None, :]
             std = cond_dict[object_type]['std'][None, :]
             motion_np = motion.cpu().permute(2, 0, 1).numpy() * std + mean
-            offsets = cond_dict[object_type]['offsets']
 
             if inpaint_y_spans:
                 _reanchor_inpaint_root_y_via_velocity(motion_np, inpaint_y_spans)
+
+            offsets = cond_dict[object_type]['offsets']
 
             npy_name = f'{object_type}_#{base_index + sample_idx}.npy'
             export_tasks.append((
@@ -1415,6 +1399,28 @@ def main(args=None, cond_dict=None):
         )
         for npy_name in results:
             print(f'    Created motion: {npy_name}')
+
+        # ── Optional scoring via evaluate_motion_quality.py ────────────
+        if getattr(args, 'score', False) and results:
+            _action_tags = str(getattr(args, 'action_tags', '') or '').strip()
+            motion_glob = os.path.join(out_path, f'{object_type}_*.npy')
+            import subprocess
+            eval_script = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                'eval', 'evaluate_motion_quality.py',
+            )
+            score_cmd = [
+                sys.executable, eval_script,
+                '--motions', motion_glob,
+                '--object_type', object_type,
+                '--action_tags', _action_tags or 'locomotion',
+            ]
+            try:
+                subprocess.run(score_cmd, check=True)
+            except subprocess.CalledProcessError as exc:
+                print(f'  [WARN] Scoring failed (exit code {exc.returncode}): {exc}')
+            except Exception as exc:
+                print(f'  [WARN] Scoring failed: {exc}')
     finally:
         export_pool.shutdown(wait=True)
 

@@ -1018,7 +1018,6 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                 temporal_mask: Optional[Tensor] = None, tgt_key_padding_mask: Optional[Tensor] = None,
             memory_key_padding_mask: Optional[Tensor] = None, y=None, get_layer_activation=-1, reference_memory: Optional[Tensor] = None,
             global_energy_condition: Optional[Tensor] = None,
-            global_energy_condition_mask: Optional[Tensor] = None,
             reference_key_padding_mask: Optional[Tensor] = None, temporal_template: Optional[Tensor] = None,
             cross_limb_unreliable_mask: Optional[Tensor] = None,
             reference_batch_mask: Optional[Tensor] = None,
@@ -1089,7 +1088,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                 ref_block = None
             output = mod(
                     output, timesteps_embs, topology_rel, edge_rel, self.edge_key_emb, self.edge_query_emb, edge_value_emb, self.topology_key_emb, self.topology_query_emb, topology_value_emb, spatial_mask, temporal_mask,
-                    tgt_key_padding_mask, memory_key_padding_mask, y, reference_memory, global_energy_condition, global_energy_condition_mask, reference_key_padding_mask,
+                    tgt_key_padding_mask, memory_key_padding_mask, y, reference_memory, global_energy_condition, reference_key_padding_mask,
                     temporal_template=temporal_template, cross_limb_block=cl_block,
                     reference_block=ref_block,
                     cross_limb_unreliable_mask=cross_limb_unreliable_mask,
@@ -1124,12 +1123,10 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         self.spatial_attn = GraphMultiHeadAttention(d_model = d_model, nheads = nhead, dropout=dropout)
         self.temporal_attn = SelectiveMultiheadAttention(self.d_model, nhead, dropout=dropout)
         self.embed_timesteps = nn.Linear(d_model, d_model)
-        self.global_energy_cond = bool(global_energy_cond)
-        if self.global_energy_cond:
-            self.layer_gamma_scale = nn.Parameter(torch.zeros(d_model))
-            self.layer_gamma_bias = nn.Parameter(torch.zeros(d_model))
-            self.layer_beta_scale = nn.Parameter(torch.zeros(d_model))
-            self.layer_beta_bias = nn.Parameter(torch.zeros(d_model))
+        if global_energy_cond:
+            self.global_energy_film = nn.Linear(self.d_model, self.d_model * 2)
+            nn.init.zeros_(self.global_energy_film.weight)
+            nn.init.zeros_(self.global_energy_film.bias)
         # norm_ref is reused by both the reference-residual path and the
         # global-energy path, so it stays on every layer regardless of
         # reference_cond_last_n.
@@ -1200,18 +1197,18 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         x: Tensor,
         global_energy_condition: Tensor,
     ) -> Tensor:
-        if not self.global_energy_cond:
+        if not hasattr(self, 'global_energy_film'):
             raise RuntimeError(
-                "This model was built with global_energy_cond=False; "
-                "do not pass global_energy_condition."
+                "global_energy_film module not present. This model was built "
+                "with global_energy_cond=False; do not pass global_energy_condition."
             )
         frames, bs, _, feats = x.size()
         if global_energy_condition.dim() == 1:
             global_energy_condition = global_energy_condition.unsqueeze(0)
-        if global_energy_condition.dim() != 2 or global_energy_condition.shape[1] != feats * 2:
+        if global_energy_condition.dim() != 2 or global_energy_condition.shape[1] != feats:
             raise ValueError(
-                "global_energy_condition must have shape (B, 2*D) or (2*D,), got "
-                f"{tuple(global_energy_condition.shape)} for batch={bs}, expected={feats * 2}"
+                "global_energy_condition must have shape (B, D) or (D,), got "
+                f"{tuple(global_energy_condition.shape)} for batch={bs}, dim={feats}"
             )
         if global_energy_condition.shape[0] == 1 and bs != 1:
             global_energy_condition = global_energy_condition.expand(bs, -1)
@@ -1221,31 +1218,10 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
                 f"{global_energy_condition.shape[0]} for batch {bs}"
             )
         cond = global_energy_condition.to(device=x.device, dtype=x.dtype)
-        gamma, beta = cond.chunk(2, dim=-1)
-        gamma = gamma.view(1, bs, 1, feats)
-        beta  = beta.view(1, bs, 1, feats)
-        # Clamp gamma_scale to prevent collapse to -1 (which would zero out
-        # the global-energy contribution). Straight-through: clamping is
-        # applied in-place during forward so gradients flow through the
-        # unclamped values, keeping the optimizer's dynamics intact.
-        gamma = gamma * (1.0 + self.layer_gamma_scale.clamp(-0.95, 3.0)) + self.layer_gamma_bias
-        beta  = beta  * (1.0 + self.layer_beta_scale.clamp(-0.95, 3.0))  + self.layer_beta_bias
-        gamma = torch.tanh(gamma)
+        gamma, beta = self.global_energy_film(cond).chunk(2, dim=-1)
+        gamma = torch.tanh(gamma).view(1, bs, 1, feats)
+        beta = beta.view(1, bs, 1, feats)
         return x * (1.0 + gamma) + beta
-
-    @staticmethod
-    def _coerce_batch_condition_mask(raw_mask: Optional[Tensor], batch_size: int, device: torch.device) -> Optional[Tensor]:
-        if raw_mask is None:
-            return None
-        mask = torch.as_tensor(raw_mask, device=device, dtype=torch.bool).reshape(-1)
-        if mask.numel() == 1 and batch_size != 1:
-            mask = mask.expand(batch_size)
-        elif mask.numel() != batch_size:
-            raise ValueError(
-                "global_energy_condition_mask batch dimension must match the motion batch size, got "
-                f"{mask.numel()} for batch {batch_size}"
-            )
-        return mask
     
     def forward(self,
         tgt: Tensor,
@@ -1265,7 +1241,6 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         y = None,
         reference_memory: Optional[Tensor] = None,
         global_energy_condition: Optional[Tensor] = None,
-        global_energy_condition_mask: Optional[Tensor] = None,
         reference_key_padding_mask: Optional[Tensor] = None,
         temporal_template: Optional[Tensor] = None,
         cross_limb_block: Optional[nn.Module] = None,
@@ -1314,25 +1289,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             batch_mask = conditioning_batch_mask.view(1, bs, 1, 1)
             reference_conditioned = torch.where(batch_mask, reference_conditioned, x)
         if global_energy_condition is not None:
-            energy_output = self.norm_ref(self._apply_global_energy_cond(reference_conditioned, global_energy_condition))
-            global_energy_batch_mask = self._coerce_batch_condition_mask(
-                global_energy_condition_mask,
-                bs,
-                x.device,
-            )
-            if global_energy_batch_mask is None:
-                x = energy_output
-            else:
-                fallback_output = x
-                if reference_delta is not None:
-                    reference_output = self.norm_ref(reference_conditioned)
-                    if conditioning_batch_mask is None:
-                        fallback_output = reference_output
-                    else:
-                        batch_mask = conditioning_batch_mask.view(1, bs, 1, 1)
-                        fallback_output = torch.where(batch_mask, reference_output, x)
-                energy_mask = global_energy_batch_mask.view(1, bs, 1, 1)
-                x = torch.where(energy_mask, energy_output, fallback_output)
+            x = self.norm_ref(self._apply_global_energy_cond(reference_conditioned, global_energy_condition))
         elif reference_delta is not None:
             conditioned_output = self.norm_ref(x + reference_delta)
             if conditioning_batch_mask is None:

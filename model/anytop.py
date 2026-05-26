@@ -127,10 +127,8 @@ class AnyTop(nn.Module):
                 nn.LayerNorm(2),
                 nn.Linear(2, self.latent_dim),
                 nn.GELU(),
-                nn.Linear(self.latent_dim, self.latent_dim * 2),
+                nn.Linear(self.latent_dim, self.latent_dim),
             )
-            nn.init.zeros_(self.global_energy_projection[-1].weight)
-            nn.init.zeros_(self.global_energy_projection[-1].bias)
             self.register_buffer('global_energy_running_mean', torch.zeros(2, dtype=torch.float32))
             self.register_buffer('global_energy_running_var', torch.ones(2, dtype=torch.float32))
             self.register_buffer('global_energy_running_count', torch.zeros((), dtype=torch.long))
@@ -221,22 +219,7 @@ class AnyTop(nn.Module):
             raise ValueError("global_energy_cond must be finite")
         return raw_global_energy_cond
 
-    def _coerce_global_energy_condition_mask(self, raw_mask, batch_size, device):
-        if raw_mask is None:
-            return None
-        if not torch.is_tensor(raw_mask):
-            raw_mask = torch.as_tensor(raw_mask, device=device)
-        mask = raw_mask.to(device=device, dtype=torch.bool).reshape(-1)
-        if mask.numel() == 1 and batch_size != 1:
-            mask = mask.expand(batch_size)
-        elif mask.numel() != batch_size:
-            raise ValueError(
-                "global_energy_cond_mask batch dimension must match the motion batch size, got "
-                f"{mask.numel()} for batch {batch_size}"
-            )
-        return mask
-
-    def _build_global_energy_token(self, raw_global_energy_cond, batch_size, device, dtype, active_mask=None):
+    def _build_global_energy_token(self, raw_global_energy_cond, batch_size, device, dtype):
         if not self.global_energy_cond or self.global_energy_projection is None:
             return None
 
@@ -246,12 +229,8 @@ class AnyTop(nn.Module):
             device,
             dtype,
         )
-        active_mask = self._coerce_global_energy_condition_mask(active_mask, batch_size, device)
         if self.training:
-            stats_for_update = raw_global_energy_cond
-            if active_mask is not None:
-                stats_for_update = raw_global_energy_cond[active_mask]
-            self._update_global_energy_running_stats(stats_for_update)
+            self._update_global_energy_running_stats(raw_global_energy_cond)
         running_mean = self.global_energy_running_mean.to(device=device, dtype=dtype)
         running_std = torch.sqrt(self.global_energy_running_var.to(device=device, dtype=dtype).clamp_min(1e-6))
         normalized_global_energy = (raw_global_energy_cond - running_mean.unsqueeze(0)) / running_std.unsqueeze(0)
@@ -412,7 +391,6 @@ class AnyTop(nn.Module):
         joint_key_padding_mask = self._build_joint_key_padding_mask(njoints, n_joints, x.device)
         reference_memory = None
         global_energy_condition = None
-        global_energy_condition_mask = None
         reference_key_padding_mask = None
         reference_batch_mask = None
         # joint_mask_prob-driven subtree perturbation is applied OUTSIDE this
@@ -523,17 +501,11 @@ class AnyTop(nn.Module):
                 reference_key_padding_mask = None
 
         if self.global_energy_cond:
-            global_energy_condition_mask = self._coerce_global_energy_condition_mask(
-                y.get('global_energy_cond_mask'),
-                batch_size=bs,
-                device=x.device,
-            )
             global_energy_condition = self._build_global_energy_token(
                 y.get('global_energy_cond'),
                 batch_size=bs,
                 device=x.device,
                 dtype=x.dtype,
-                active_mask=global_energy_condition_mask,
             )
 
         cross_limb_unreliable_mask = None
@@ -567,7 +539,6 @@ class AnyTop(nn.Module):
             get_layer_activation=get_layer_activation,
             reference_memory=reference_memory,
             global_energy_condition=global_energy_condition,
-            global_energy_condition_mask=global_energy_condition_mask,
             reference_key_padding_mask=reference_key_padding_mask,
             temporal_template=temporal_template,
             cross_limb_unreliable_mask=cross_limb_unreliable_mask,
