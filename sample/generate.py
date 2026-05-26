@@ -1433,6 +1433,13 @@ def main(args=None, cond_dict=None):
 
             if inpaint_y_spans:
                 _reanchor_inpaint_root_y_via_velocity(motion_np, inpaint_y_spans)
+            if getattr(args, 'loop', False):
+                translation_root_index = _get_batch_translation_root_index(
+                    model_kwargs,
+                    sample_idx,
+                    fallback=cond_dict[object_type].get('translation_root_index', 0),
+                )
+                _close_loop_root_xz_via_velocity(motion_np, translation_root_index)
 
             offsets = cond_dict[object_type]['offsets']
 
@@ -1594,6 +1601,62 @@ def _reanchor_inpaint_root_y_via_velocity(motion_np, spans):
         pos_y[a:b + 1] = (integrated + adjust[None, :] * ramp).astype(
             pos_y.dtype, copy=False,
         )
+
+
+def _close_loop_root_xz_via_velocity(motion_np, translation_root_index):
+    """Close loop root XZ drift by distributing velocity residual.
+
+    The feature recover path reconstructs root XZ by integrating channels 9
+    and 11 over frames ``0..F-2``. The translation-root RIC X/Z channels 0 and
+    2 should be zero by construction because RIFKE subtracts that root's XZ
+    before encoding. For generated loop clips, tiny non-zero residuals in both
+    places become a visible first/last root-position seam when the BVH loops.
+    Subtracting the mean velocity residual from each transition preserves the
+    local root motion shape while making the integrated endpoint match the
+    start; zeroing the root RIC X/Z removes representation noise only.
+    """
+    if motion_np.ndim != 3:
+        return
+    frame_count, joint_count, feature_count = motion_np.shape
+    root_index = int(translation_root_index)
+    if frame_count < 2 or feature_count < 12 or root_index < 0 or root_index >= joint_count:
+        return
+
+    motion_np[:, root_index, 0] = 0.0
+    motion_np[:, root_index, 2] = 0.0
+
+    transition_count = frame_count - 1
+    drift_x = np.sum(motion_np[:-1, root_index, 9], dtype=np.float64)
+    drift_z = np.sum(motion_np[:-1, root_index, 11], dtype=np.float64)
+    if abs(drift_x) <= 1e-8 and abs(drift_z) <= 1e-8:
+        motion_np[-1, root_index, 9] = 0.0
+        motion_np[-1, root_index, 11] = 0.0
+        return
+
+    motion_np[:-1, root_index, 9] -= np.asarray(drift_x / transition_count, dtype=motion_np.dtype)
+    motion_np[:-1, root_index, 11] -= np.asarray(drift_z / transition_count, dtype=motion_np.dtype)
+    motion_np[-1, root_index, 9] = 0.0
+    motion_np[-1, root_index, 11] = 0.0
+
+
+def _get_batch_translation_root_index(model_kwargs, sample_idx, fallback=0):
+    y = model_kwargs.get('y', {}) if isinstance(model_kwargs, dict) else {}
+    value = y.get('translation_root_index', fallback)
+    if torch.is_tensor(value):
+        value = value.detach().cpu().reshape(-1)
+        if value.numel() == 0:
+            return int(fallback)
+        return int(value[min(sample_idx, value.numel() - 1)].item())
+    if isinstance(value, np.ndarray):
+        value = value.reshape(-1)
+        if value.size == 0:
+            return int(fallback)
+        return int(value[min(sample_idx, value.size - 1)])
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return int(fallback)
+        return int(value[min(sample_idx, len(value) - 1)])
+    return int(value)
 
 
 def _resolve_inpaint_joint_indices(cond_entry, names_arg, include_subtree):

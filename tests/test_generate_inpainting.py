@@ -15,6 +15,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType  # noqa: E402
 from sample.generate import (  # noqa: E402
+    _close_loop_root_xz_via_velocity,
     _contiguous_frame_runs,
     _parse_frame_ranges,
     _prepare_img2img_reference_bundle,
@@ -600,6 +601,33 @@ def test_reanchor_root_y_multiple_spans_independent():
     # With all-zero vel_y, both spans ramp linearly from 1.0 → 1.0.
     np.testing.assert_allclose(fixed[2:4], 1.0, atol=1e-6)
     np.testing.assert_allclose(fixed[7:9], 1.0, atol=1e-6)
+
+
+def test_close_loop_root_xz_distributes_velocity_residual():
+    motion = np.zeros((5, 2, 13), dtype=np.float32)
+    motion[:, 1, 0] = np.linspace(-0.1, 0.1, num=5, dtype=np.float32)
+    motion[:, 1, 2] = np.linspace(0.2, -0.2, num=5, dtype=np.float32)
+    motion[:-1, 1, 9] = np.array([1.0, 2.0, -1.0, 0.0], dtype=np.float32)
+    motion[:-1, 1, 11] = np.array([0.5, -0.25, 0.25, 1.5], dtype=np.float32)
+    motion[-1, 1, [9, 11]] = 100.0
+    original_nonroot = motion[:, 0].copy()
+
+    _close_loop_root_xz_via_velocity(motion, translation_root_index=1)
+
+    np.testing.assert_allclose(motion[:-1, 1, [9, 11]].sum(axis=0), 0.0, atol=1e-6)
+    np.testing.assert_allclose(motion[:, 1, [0, 2]], 0.0, atol=1e-6)
+    np.testing.assert_allclose(motion[-1, 1, [9, 11]], 0.0, atol=1e-6)
+    np.testing.assert_array_equal(motion[:, 0], original_nonroot)
+
+
+def test_close_loop_root_xz_noop_for_invalid_root():
+    motion = np.zeros((4, 1, 13), dtype=np.float32)
+    motion[:-1, 0, 9] = 1.0
+    original = motion.copy()
+
+    _close_loop_root_xz_via_velocity(motion, translation_root_index=5)
+
+    np.testing.assert_array_equal(motion, original)
 
 
 def test_ddim_sample_loop_uses_repaint_time_travel(monkeypatch: pytest.MonkeyPatch) -> None:
