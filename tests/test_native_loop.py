@@ -201,6 +201,56 @@ class NativeLoopTests(unittest.TestCase):
         self.assertNotIn('loop_wrap_contact', terms)
         self.assertLess(float(terms['loop_wrap_terminal_vel'].item()), 1e-6)
 
+    def test_loop_root_xz_closure_uses_integrated_root_velocity(self):
+        diffusion = self._make_diffusion()
+        model_output = torch.zeros(2, 3, 13, 6, dtype=torch.float32)
+
+        # Sample 0 closes in XZ over visible transitions 0..4; terminal row is ignored.
+        model_output[0, 1, 9, 0] = 0.25
+        model_output[0, 1, 9, 1] = -0.25
+        model_output[0, 1, 11, 2] = 0.5
+        model_output[0, 1, 11, 3] = -0.5
+        model_output[0, 1, [9, 11], -1] = 100.0
+
+        # Sample 1 has huge drift but is not loop-conditioned, so it must not contribute.
+        model_output[1, 1, 9, 0:5] = 10.0
+        y = {
+            'is_loop': torch.tensor([True, False]),
+            'loop_full_cycle': torch.tensor([True, True]),
+            'translation_root_index': [1, 1],
+        }
+
+        loss = diffusion.loop_root_xz_closure_loss(
+            model_output,
+            y,
+            lengths=torch.tensor([6, 6]),
+            n_joints=torch.tensor([3, 3]),
+        )
+
+        self.assertLess(float(loss.item()), 1e-6)
+
+    def test_loop_root_xz_closure_penalizes_net_visible_drift(self):
+        diffusion = self._make_diffusion()
+        model_output = torch.zeros(1, 2, 13, 5, dtype=torch.float32)
+        model_output[0, 1, 9, 0] = 1.0
+        model_output[0, 1, 9, 1] = 2.0
+        model_output[0, 1, 11, 2] = -4.0
+        model_output[0, 1, [9, 11], -1] = 100.0
+        y = {
+            'is_loop': torch.tensor([True]),
+            'loop_full_cycle': torch.tensor([True]),
+            'translation_root_index': [1],
+        }
+
+        loss = diffusion.loop_root_xz_closure_loss(
+            model_output,
+            y,
+            lengths=torch.tensor([5]),
+            n_joints=torch.tensor([2]),
+        )
+
+        self.assertAlmostEqual(float(loss.item()), 12.5, places=6)
+
     def test_create_gaussian_diffusion_preserves_loop_args(self):
         class Args:
             noise_schedule = 'cosine'
@@ -210,11 +260,13 @@ class NativeLoopTests(unittest.TestCase):
             lambda_geo = 0.0
             lambda_vel = 0.0
             lambda_loop_wrap = 0.75
+            lambda_loop_root_xz = 0.25
             temporal_span_seam_loss_weight = 0.0
             temporal_span_seam_width = 2
 
         diffusion = create_gaussian_diffusion(Args())
         self.assertEqual(diffusion.lambda_loop_wrap, 0.75)
+        self.assertEqual(diffusion.lambda_loop_root_xz, 0.25)
 
     def test_anytop_forwards_loop_phase_metadata(self):
         model = AnyTop(

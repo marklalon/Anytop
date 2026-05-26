@@ -166,6 +166,7 @@ class GaussianDiffusion:
         lambda_geo=0.,
         lambda_vel=0.,
         lambda_loop_wrap=0.,
+        lambda_loop_root_xz=0.,
         temporal_span_seam_loss_weight=0.0,
         temporal_span_seam_width=0,
     ):
@@ -176,10 +177,13 @@ class GaussianDiffusion:
         self.lambda_geo = lambda_geo
         self.lambda_vel = lambda_vel
         self.lambda_loop_wrap = float(lambda_loop_wrap)
+        self.lambda_loop_root_xz = float(lambda_loop_root_xz)
         self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
         self.temporal_span_seam_width = int(temporal_span_seam_width)
         if self.lambda_loop_wrap < 0.0:
             raise ValueError(f"lambda_loop_wrap must be >= 0, got {self.lambda_loop_wrap}")
+        if self.lambda_loop_root_xz < 0.0:
+            raise ValueError(f"lambda_loop_root_xz must be >= 0, got {self.lambda_loop_root_xz}")
         if self.temporal_span_seam_loss_weight < 0.0:
             raise ValueError(
                 "temporal_span_seam_loss_weight must be >= 0, got "
@@ -495,6 +499,36 @@ class GaussianDiffusion:
             'loop_wrap_rot': rot_loss,
             'loop_wrap_terminal_vel': terminal_vel_loss,
         }
+
+    def loop_root_xz_closure_loss(self, model_output, y, lengths, n_joints):
+        batch_size, max_joints, n_feats, n_frames = model_output.shape
+        device = model_output.device
+        if n_feats < 12 or n_frames < 2:
+            return model_output.new_zeros(())
+
+        is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
+        loop_full_cycle = self._coerce_bool_batch(y.get('loop_full_cycle'), batch_size, device, default=False)
+        active = is_loop & loop_full_cycle
+        lengths_long = th.as_tensor(lengths, device=device, dtype=th.long).reshape(-1)
+        n_joints_long = th.as_tensor(n_joints, device=device, dtype=th.long).reshape(-1)
+        root_indices = self._coerce_index_batch(y.get('translation_root_index'), batch_size, device)
+
+        valid_frames = lengths_long.clamp(min=0, max=n_frames)
+        valid_joints = n_joints_long.clamp(min=0, max=max_joints)
+        root_valid = (root_indices >= 0) & (root_indices < valid_joints)
+        active_valid = active & root_valid & (valid_frames >= 2)
+        active_weight = active_valid.to(dtype=model_output.dtype)
+        active_denom = active_weight.sum().clamp(min=1.0)
+
+        batch_indices = th.arange(batch_size, device=device)
+        root_indices_clamped = root_indices.clamp(min=0, max=max(max_joints - 1, 0))
+        root_vel_xz = model_output[batch_indices, root_indices_clamped][:, [9, 11], :]
+        transition_count = (valid_frames - 1).clamp(min=0)
+        time_mask = th.arange(n_frames, device=device).view(1, 1, n_frames) < transition_count.view(batch_size, 1, 1)
+        net_xz = (root_vel_xz * time_mask.to(dtype=model_output.dtype)).sum(dim=2)
+        per_sample = (net_xz ** 2).mean(dim=1)
+        per_sample = th.where(active_valid, per_sample, th.zeros_like(per_sample))
+        return (per_sample * active_weight).sum() / active_denom
 
     def q_mean_variance(self, x_start, t):
         """
@@ -1951,6 +1985,16 @@ class GaussianDiffusion:
                     )
                     terms.update(loop_terms)
                     terms["loss"] = terms["loss"] + self.lambda_loop_wrap * terms["loop_wrap_loss"]
+
+                if self.lambda_loop_root_xz > 0.0:
+                    y = model_kwargs.get('y', {}) if isinstance(model_kwargs, dict) else {}
+                    terms["loop_root_xz_loss"] = self.loop_root_xz_closure_loss(
+                        model_output_denorm,
+                        y,
+                        lengths,
+                        actual_joints,
+                    )
+                    terms["loss"] = terms["loss"] + self.lambda_loop_root_xz * terms["loop_root_xz_loss"]
 
         else:
             raise NotImplementedError(self.loss_type)
