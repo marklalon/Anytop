@@ -437,61 +437,57 @@ class GaussianDiffusion:
         is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
         loop_full_cycle = self._coerce_bool_batch(y.get('loop_full_cycle'), batch_size, device, default=False)
         active = is_loop & loop_full_cycle
-        if not bool(active.any()):
-            zero = model_output.new_zeros(())
-            return {
-                'loop_wrap_loss': zero,
-                'loop_wrap_pose': zero,
-                'loop_wrap_rot': zero,
-                'loop_wrap_terminal_vel': zero,
-            }
-
         lengths_long = th.as_tensor(lengths, device=device, dtype=th.long).reshape(-1)
         n_joints_long = th.as_tensor(n_joints, device=device, dtype=th.long).reshape(-1)
         root_indices = self._coerce_index_batch(y.get('translation_root_index'), batch_size, device)
         zero = model_output.new_zeros(())
-        pose_terms = []
-        rot_terms = []
-        terminal_vel_terms = []
 
-        for batch_index in range(batch_size):
-            valid_frames = min(int(lengths_long[batch_index].item()), n_frames)
-            valid_joints = min(int(n_joints_long[batch_index].item()), max_joints)
-            if not bool(active[batch_index]) or valid_frames < 2 or valid_joints <= 0:
-                continue
+        valid_frames = lengths_long.clamp(min=0, max=n_frames)
+        valid_joints = n_joints_long.clamp(min=0, max=max_joints)
+        active_valid = active & (valid_frames >= 2) & (valid_joints > 0)
+        active_weight = active_valid.to(dtype=model_output.dtype)
+        active_denom = active_weight.sum().clamp(min=1.0)
 
-            sample = model_output[batch_index:batch_index + 1, :valid_joints, :, :valid_frames]
-            pose_first = sample[:, :, 0:3, 0:1]
-            pose_last = sample[:, :, 0:3, valid_frames - 1:valid_frames]
-            pose_weight = th.ones_like(pose_first)
-            root_index = int(root_indices[batch_index].item())
-            if 0 <= root_index < valid_joints:
-                pose_weight[:, root_index, 0, :] = 0.0
-                pose_weight[:, root_index, 2, :] = 0.0
-            pose_denom = pose_weight.sum().clamp(min=1.0)
-            pose_terms.append((((pose_first - pose_last) ** 2) * pose_weight).sum() / pose_denom)
+        last_frame_index = (valid_frames.clamp(min=1) - 1).view(batch_size, 1, 1, 1)
+        last_frame_index = last_frame_index.expand(-1, max_joints, n_feats, 1)
+        first_frame = model_output[..., 0:1]
+        last_frame = model_output.gather(dim=3, index=last_frame_index)
 
-            rot_first = sample[:, :, 3:9, 0:1].permute(0, 3, 1, 2)
-            rot_last = sample[:, :, 3:9, valid_frames - 1:valid_frames].permute(0, 3, 1, 2)
-            rots_first = rotation_6d_to_matrix_safe(rot_first)
-            rots_last = rotation_6d_to_matrix_safe(rot_last)
-            rot_terms.append(geodesic_distance(rots_last, rots_first).mean())
+        joint_mask = th.arange(max_joints, device=device).view(1, max_joints) < valid_joints.view(batch_size, 1)
+        joint_weight = joint_mask.to(dtype=model_output.dtype)
 
-            if n_feats >= 12:
-                pos_first_frame = sample[:, :, 0:3, 0]
-                pos_last_frame = sample[:, :, 0:3, valid_frames - 1]
-                terminal_vel = sample[:, :, 9:12, valid_frames - 1]
-                terminal_vel_loss = ((pos_first_frame - pos_last_frame - terminal_vel) ** 2).mean()
-                terminal_vel_terms.append(terminal_vel_loss)
+        pose_weight = joint_weight[:, :, None, None].expand(-1, -1, 3, -1).clone()
+        batch_indices = th.arange(batch_size, device=device)
+        root_valid = ((root_indices >= 0) & (root_indices < valid_joints)).to(dtype=model_output.dtype)
+        root_indices_clamped = root_indices.clamp(min=0, max=max(max_joints - 1, 0))
+        pose_weight[batch_indices, root_indices_clamped, 0, 0] *= 1.0 - root_valid
+        pose_weight[batch_indices, root_indices_clamped, 2, 0] *= 1.0 - root_valid
+        pose_denom = pose_weight.sum(dim=(1, 2, 3)).clamp(min=1.0)
+        pose_per_sample = (
+            (((first_frame[:, :, 0:3] - last_frame[:, :, 0:3]) ** 2) * pose_weight)
+            .sum(dim=(1, 2, 3))
+            / pose_denom
+        )
+        pose_per_sample = th.where(active_valid, pose_per_sample, th.zeros_like(pose_per_sample))
+        pose_loss = (pose_per_sample * active_weight).sum() / active_denom
 
-        def _mean_or_zero(values):
-            if not values:
-                return zero
-            return th.stack(values).mean()
+        rot_first = first_frame[:, :, 3:9].permute(0, 3, 1, 2)
+        rot_last = last_frame[:, :, 3:9].permute(0, 3, 1, 2)
+        rots_first = rotation_6d_to_matrix_safe(rot_first)
+        rots_last = rotation_6d_to_matrix_safe(rot_last)
+        rot_distance = geodesic_distance(rots_last, rots_first).squeeze(-1).squeeze(1)
+        rot_per_sample = (rot_distance * joint_weight).sum(dim=1) / joint_weight.sum(dim=1).clamp(min=1.0)
+        rot_per_sample = th.where(active_valid, rot_per_sample, th.zeros_like(rot_per_sample))
+        rot_loss = (rot_per_sample * active_weight).sum() / active_denom
 
-        pose_loss = _mean_or_zero(pose_terms)
-        rot_loss = _mean_or_zero(rot_terms)
-        terminal_vel_loss = _mean_or_zero(terminal_vel_terms)
+        terminal_vel_loss = zero
+        if n_feats >= 12:
+            terminal_residual = first_frame[:, :, 0:3, 0] - last_frame[:, :, 0:3, 0] - last_frame[:, :, 9:12, 0]
+            terminal_per_sample = ((terminal_residual ** 2) * joint_weight[:, :, None]).sum(dim=(1, 2))
+            terminal_per_sample = terminal_per_sample / (joint_weight.sum(dim=1) * 3.0).clamp(min=1.0)
+            terminal_per_sample = th.where(active_valid, terminal_per_sample, th.zeros_like(terminal_per_sample))
+            terminal_vel_loss = (terminal_per_sample * active_weight).sum() / active_denom
+
         total = pose_loss + rot_loss + terminal_vel_loss
         return {
             'loop_wrap_loss': total,
