@@ -53,13 +53,25 @@ from utils.misc import infer_object_type_from_filename
 _REFERENCE_MOTION_PREPROCESS_SUFFIXES = {'.fbx', '.glb', '.gltf'}
 
 
-def validate_reference_mode_configuration(reference_mode, reference_motion_path=None, skip_timesteps=0, model=None):
+def validate_reference_mode_configuration(
+    reference_mode,
+    reference_motion_path=None,
+    skip_timesteps=0,
+    model=None,
+    global_energy_mean=None,
+    global_energy_std=None,
+):
     mode = str(reference_mode or 'img2img').strip().lower()
     if mode not in {'img2img', 'controlnet'}:
         raise ValueError(f"Unsupported reference_mode '{reference_mode}'.")
     if mode == 'controlnet':
         if reference_motion_path is None:
             raise ValueError("--reference_mode controlnet requires --reference_motion.")
+        if global_energy_mean is not None or global_energy_std is not None:
+            raise ValueError(
+                "--reference_mode controlnet does not accept --global_energy_mean / --global_energy_std. "
+                "Global energy is automatically extracted from the reference motion."
+            )
         if skip_timesteps is not None and int(skip_timesteps) != 0:
             print(
                 f"[generate] WARNING: --reference_mode controlnet requires --skip_timesteps 0; "
@@ -109,6 +121,26 @@ def resolve_global_energy_condition(model, global_energy_mean, global_energy_std
             f"({float(raw[1]):.4f}) after de-normalization; choose a less negative value"
         )
     return raw.unsqueeze(0).expand(batch_size, -1).clone()
+
+
+def _compute_global_energy_from_reference(ref_motion, reference_conditioning_kwargs):
+    """Extract raw global energy [mean, std] from a reference motion tensor.
+
+    ``ref_motion`` must be a (B, J, F, T) tensor in the model feature space
+    (the same space used by the reference prior encoder).  Returns a (B, 2)
+    float32 tensor on the same device with columns ``[global_mean, global_std]``
+    ready for ``_build_global_energy_token``.
+    """
+    from Anytop.model.anytop import ReferencePriorEncoder
+
+    n_joints = reference_conditioning_kwargs['reference_n_joints']
+    lengths = reference_conditioning_kwargs['reference_lengths']
+    return ReferencePriorEncoder.compute_global_energy_condition(
+        ref_motion,
+        n_joints,
+        lengths,
+    )
+
 
 
 def _lookup_object_type_case_insensitive(object_types, requested_type):
@@ -991,6 +1023,8 @@ def main(args=None, cond_dict=None):
             reference_motion_path=getattr(args, 'reference_motion', None),
             skip_timesteps=skip_timesteps,
             model=model,
+            global_energy_mean=getattr(args, 'global_energy_mean', None),
+            global_energy_std=getattr(args, 'global_energy_std', None),
         )
     except ValueError as exc:
         sys.exit(f"ERROR: {exc}")
@@ -1279,6 +1313,31 @@ def main(args=None, cond_dict=None):
                     print(
                         '    RePaint resampling: off '
                         '(single reverse pass; known region is still clamped every step)'
+                    )
+
+            # ── Auto-extract global energy from controlnet reference ─────────
+            if reference_mode == 'controlnet' and ref_motion is not None:
+                if reference_conditioning_kwargs is None:
+                    sys.exit(
+                        "ERROR: reference_conditioning_kwargs is missing for "
+                        "controlnet mode; cannot extract global energy."
+                    )
+                if model_supports_global_energy_conditioning(model):
+                    global_energy_condition = _compute_global_energy_from_reference(
+                        ref_motion,
+                        reference_conditioning_kwargs,
+                    )
+                    if global_energy_condition is not None:
+                        ge_mean = float(global_energy_condition[0, 0])
+                        ge_std = float(global_energy_condition[0, 1])
+                        print(
+                            f'    Global energy auto-extracted from reference: '
+                            f'mean={ge_mean:.4f}, std={ge_std:.4f}'
+                        )
+                else:
+                    print(
+                        '    Model does not support global energy conditioning; '
+                        'skipping auto-extraction.'
                     )
 
         # Build inpaint mask (masked region = regenerated, rest clamped to ref).
