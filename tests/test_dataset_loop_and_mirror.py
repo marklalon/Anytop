@@ -27,6 +27,7 @@ from data_loaders.truebones.data.dataset import (
     _circular_roll_motion,
     _loop_phase_length_from_num_cycles,
     _periodic_resample_motion,
+    _resample_motion_features,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_process import infer_translation_root_index_from_features
@@ -112,6 +113,46 @@ def find_mirror_safeguard_sample(motion_dataset):
 def test_loop_repeat_picker_prefers_near_unit_speed() -> None:
     assert _choose_loop_cycle_repeats(32, 60) == 2
     assert _choose_loop_cycle_repeats(25, 60) == 2
+
+
+def test_speed_resample_scales_velocity_and_keeps_contact_binary() -> None:
+    source = np.zeros((4, 2, 13), dtype=np.float32)
+    source[:, :, 0] = np.array([0.0, 1.0, 3.0, 6.0], dtype=np.float32)[:, None]
+    source[:, :, 1] = np.array([0.0, 0.5, 1.0, 2.0], dtype=np.float32)[:, None]
+    source[:, :, 2] = np.array([0.0, -1.0, -1.5, -2.0], dtype=np.float32)[:, None]
+    source[:, :, 9] = np.array([0.0, 2.0, 4.0, 8.0], dtype=np.float32)[:, None]
+    source[:, :, 10] = 3.0
+    source[:, :, 11] = 0.0
+    source[:, :, 12] = np.array([0.0, 1.0, 0.0, 1.0], dtype=np.float32)[:, None]
+
+    resampled = _resample_motion_features(source, 7)
+
+    src = np.linspace(0.0, 3.0, 7, endpoint=True, dtype=np.float32)
+    lo = np.floor(src).astype(np.int64).clip(0, 3)
+    hi = np.minimum(lo + 1, 3)
+    w = (src - np.floor(src))[:, None, None].astype(np.float32)
+    expected_vel = (source[lo, :, 9:12] * (1.0 - w) + source[hi, :, 9:12] * w) * (3.0 / 6.0)
+    expected_vel[-1] = expected_vel[-2]
+
+    assert_close("resampled velocity", resampled[:, :, 9:12], expected_vel)
+    assert_close("zero velocity channel", resampled[:, :, 11], np.zeros_like(resampled[:, :, 11]))
+    assert set(np.unique(resampled[:, :, 12]).tolist()).issubset({0.0, 1.0})
+
+
+def test_loop_speed_resample_keeps_scaled_terminal_velocity() -> None:
+    source = np.zeros((4, 1, 13), dtype=np.float32)
+    source[:, 0, 0:3] = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 1.0, 0.0], [4.0, 1.0, 1.0]],
+        dtype=np.float32,
+    )
+    source[:, 0, 9:12] = np.array(
+        [[0.5, 0.0, 0.0], [0.5, 0.5, 0.0], [1.0, 0.5, 0.5], [-2.0, -1.0, -0.5]],
+        dtype=np.float32,
+    )
+
+    resampled = _resample_motion_features(source, 6, loop_terminal=True)
+
+    assert_close("loop terminal velocity", resampled[-1, :, 9:12], source[-1, :, 9:12] * (3.0 / 5.0))
 
 
 def test_loop_padding_updates_effective_length() -> None:

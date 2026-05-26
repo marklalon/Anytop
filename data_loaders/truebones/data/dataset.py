@@ -106,11 +106,11 @@ def create_temporal_mask_for_window(window, max_len, circular=False):
     return mask
 
 
-def _periodic_resample_motion(motion, target_num_frames):
+def _resample_motion_features(motion, target_num_frames, *, loop_terminal=False):
     source_frames = int(motion.shape[0])
     target_num_frames = int(target_num_frames)
     if source_frames <= 0:
-        raise ValueError("Cannot resample an empty loop motion.")
+        raise ValueError("Cannot resample an empty motion.")
     if target_num_frames <= 0:
         raise ValueError(f"target_num_frames must be positive, got {target_num_frames}.")
     if source_frames == target_num_frames:
@@ -120,7 +120,25 @@ def _periodic_resample_motion(motion, target_num_frames):
     lo = np.floor(src).astype(np.int64).clip(0, source_frames - 1)
     hi = np.minimum(lo + 1, source_frames - 1)
     w = (src - np.floor(src))[:, None, None].astype(np.float32)
-    return (motion[lo] * (1.0 - w) + motion[hi] * w).astype(motion.dtype, copy=False)
+    resampled = (motion[lo] * (1.0 - w) + motion[hi] * w).astype(motion.dtype, copy=False)
+
+    if resampled.shape[-1] >= 13:
+        nearest = np.rint(src).astype(np.int64).clip(0, source_frames - 1)
+        resampled[..., 12] = (motion[nearest, :, 12] >= 0.5).astype(resampled.dtype, copy=False)
+
+        time_step_scale = (
+            float(source_frames - 1) / float(target_num_frames - 1)
+            if target_num_frames > 1 else 1.0
+        )
+        resampled[..., 9:12] *= time_step_scale
+        if target_num_frames > 1 and not loop_terminal:
+            resampled[-1, :, 9:12] = resampled[-2, :, 9:12]
+
+    return resampled.astype(motion.dtype, copy=False)
+
+
+def _periodic_resample_motion(motion, target_num_frames):
+    return _resample_motion_features(motion, target_num_frames, loop_terminal=True)
 
 
 def _coerce_loop_num_cycles(motion_name, raw_loop_num_cycles):
@@ -863,11 +881,11 @@ class MotionDataset(data.Dataset):
             orig_len = motion.shape[0]
             new_len = max(1, int(round(orig_len * speed_factor)))
             if new_len != orig_len:
-                src = np.linspace(0, orig_len - 1, new_len)
-                lo = np.floor(src).astype(np.int32).clip(0, orig_len - 1)
-                hi = np.minimum(lo + 1, orig_len - 1)
-                w = (src - lo)[:, None, None]
-                motion = motion[lo] * (1.0 - w) + motion[hi] * w
+                motion = _resample_motion_features(
+                    motion,
+                    new_len,
+                    loop_terminal=bool(motion_metadata.get('is_loop')),
+                )
 
         motion = np.nan_to_num((motion - cond['mean'][None, :]) / cond['std_safe'][None, :]).astype(np.float32, copy=False)
 
