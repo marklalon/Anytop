@@ -151,7 +151,7 @@ class TrainLoop:
                 drop_last=getattr(self.args, 'drop_last', False),
                 action_tags=getattr(self.args, 'action_tags', ''),
                 motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
-                min_motion_length=getattr(self.args, 'min_motion_length', 20),
+                min_length=getattr(self.args, 'min_length', 20),
                 main_process_prefetch_batches=getattr(self.args, 'main_process_prefetch_batches', 0),
                 loop_cond_prob=eval_loop_cond_prob,
             )

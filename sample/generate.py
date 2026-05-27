@@ -444,7 +444,7 @@ def _prepare_reference_prior_bundle(
     batch_size,
     requested_output_frame_count=None,
     requested_visible_frame_count=None,
-    min_motion_length=20,
+    min_length=20,
 ):
     if source_cond is None:
         raise KeyError(
@@ -462,10 +462,10 @@ def _prepare_reference_prior_bundle(
         output_frame_count = loaded_reference_frame_count
     else:
         output_frame_count = min(loaded_reference_frame_count, int(requested_output_frame_count))
-    max_source_frames = max(int(min_motion_length), output_frame_count * 2)
+    max_source_frames = max(int(min_length), output_frame_count * 2)
     if loaded_reference_frame_count > max_source_frames:
         visible_frames = output_frame_count if requested_visible_frame_count is None else int(requested_visible_frame_count)
-        source_frames = min(max_source_frames, max(int(min_motion_length), visible_frames))
+        source_frames = min(max_source_frames, max(int(min_length), visible_frames))
         ref_raw = ref_raw[:source_frames]
     reference_source_frame_count = int(ref_raw.shape[0])
     if ref_raw.shape[0] != output_frame_count:
@@ -545,7 +545,7 @@ def _prepare_img2img_reference_bundle(
     batch_size,
     requested_output_frame_count,
     requested_visible_frame_count=None,
-    min_motion_length=20,
+    min_length=20,
 ):
     ref_raw = np.load(reference_motion_path).astype(np.float32)
     if ref_raw.ndim != 3:
@@ -555,10 +555,10 @@ def _prepare_img2img_reference_bundle(
 
     loaded_reference_frame_count, loaded_reference_joint_count, ref_feats = ref_raw.shape
     output_frame_count = min(loaded_reference_frame_count, int(requested_output_frame_count))
-    max_source_frames = max(int(min_motion_length), output_frame_count * 2)
+    max_source_frames = max(int(min_length), output_frame_count * 2)
     if loaded_reference_frame_count > max_source_frames:
         visible_frames = output_frame_count if requested_visible_frame_count is None else int(requested_visible_frame_count)
-        source_frames = min(max_source_frames, max(int(min_motion_length), visible_frames))
+        source_frames = min(max_source_frames, max(int(min_length), visible_frames))
         ref_raw = ref_raw[:source_frames]
     reference_source_frame_count = int(ref_raw.shape[0])
     if ref_raw.shape[0] != output_frame_count:
@@ -617,7 +617,7 @@ def _prepare_reference_for_mode(
     batch_size,
     requested_output_frame_count,
     requested_visible_frame_count=None,
-    min_motion_length=20,
+    min_length=20,
 ):
     mode = str(reference_mode or 'img2img').strip().lower()
     if mode == 'controlnet':
@@ -630,7 +630,7 @@ def _prepare_reference_for_mode(
             batch_size=batch_size,
             requested_output_frame_count=requested_output_frame_count,
             requested_visible_frame_count=requested_visible_frame_count,
-            min_motion_length=min_motion_length,
+            min_length=min_length,
         )
         loaded_reference_joint_count = int(reference_conditioning_kwargs['reference_n_joints'][0].item())
         return {
@@ -651,7 +651,7 @@ def _prepare_reference_for_mode(
         batch_size=batch_size,
         requested_output_frame_count=requested_output_frame_count,
         requested_visible_frame_count=requested_visible_frame_count,
-        min_motion_length=min_motion_length,
+        min_length=min_length,
     )
 
 
@@ -1008,11 +1008,11 @@ def main(args=None, cond_dict=None):
     fps = opt.fps
     requested_output_frames = int(round(float(args.motion_length) * fps))
     internal_num_frames = int(getattr(args, 'num_frames', 60))
-    min_motion_length = int(getattr(args, 'min_motion_length', 20))
-    if requested_output_frames < min_motion_length or requested_output_frames > 2 * internal_num_frames:
+    min_length = int(getattr(args, 'min_length', 20))
+    if requested_output_frames < min_length or requested_output_frames > 2 * internal_num_frames:
         sys.exit(
             f"ERROR: motion_length frames M={requested_output_frames} outside "
-            f"[min_length={min_motion_length}, 2*num_frames={2 * internal_num_frames}]"
+            f"[min_length={min_length}, 2*num_frames={2 * internal_num_frames}]"
         )
     playspeed_cond_value = float(requested_output_frames) / float(internal_num_frames)
     n_frames = internal_num_frames
@@ -1289,7 +1289,7 @@ def main(args=None, cond_dict=None):
                 batch_size=args.batch_size,
                 requested_output_frame_count=n_frames,
                 requested_visible_frame_count=target_output_frames,
-                min_motion_length=min_motion_length,
+                min_length=min_length,
             )
             ref_motion = reference_bundle['reference_motion']
             reference_conditioning_kwargs = reference_bundle['reference_conditioning_kwargs']

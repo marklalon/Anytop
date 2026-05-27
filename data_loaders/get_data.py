@@ -61,7 +61,7 @@ def get_dataset(
     sample_limit=0,
     action_tags='',
     motion_cache_size=0,
-    min_motion_length=20,
+    min_length=20,
     loop_cond_prob=0.0,
 ):
     dataset = Truebones(
@@ -73,7 +73,7 @@ def get_dataset(
         sample_limit=sample_limit,
         action_tags=action_tags,
         motion_cache_size=motion_cache_size,
-        min_motion_length=min_motion_length,
+        min_length=min_length,
         loop_cond_prob=loop_cond_prob,
     )
     return dataset
@@ -92,7 +92,7 @@ def get_dataset_loader(
     drop_last=True,
     action_tags='',
     motion_cache_size=0,
-    min_motion_length=20,
+    min_length=20,
     main_process_prefetch_batches=0,
     batch_transform=None,
     loop_cond_prob=0.0,
@@ -107,7 +107,7 @@ def get_dataset_loader(
         sample_limit=sample_limit,
         action_tags=action_tags,
         motion_cache_size=motion_cache_size,
-        min_motion_length=min_motion_length,
+        min_length=min_length,
         loop_cond_prob=loop_cond_prob,
     )
     collate = truebones_batch_collate

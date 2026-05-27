@@ -544,7 +544,7 @@ class MotionDataset(data.Dataset):
     def __init__(self, opt, cond_dict, temporal_window, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None):
         self.opt = opt
         self.temporal_window = int(temporal_window)
-        self.min_length = int(getattr(opt, 'min_motion_length', 20))
+        self.min_length = int(getattr(opt, 'min_length', 20))
         self.pointer = 0
         self.max_motion_length = num_frames
         self.cond_dict = cond_dict
@@ -921,7 +921,7 @@ class Truebones(data.Dataset):
         self.sample_limit = kwargs.get('sample_limit', 0)
         self.motion_cache_size = kwargs.get('motion_cache_size', 0)
         self.opt.motion_cache_size = self.motion_cache_size
-        self.opt.min_motion_length = int(kwargs.get('min_motion_length', getattr(self.opt, 'min_motion_length', 20)))
+        self.opt.min_length = int(kwargs.get('min_length', getattr(self.opt, 'min_length', 20)))
 
         self.opt.loop_cond_prob = kwargs.get('loop_cond_prob', 0.0)
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
