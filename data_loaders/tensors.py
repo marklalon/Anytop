@@ -1,19 +1,9 @@
 import torch
 import numpy as np
 
-def lengths_to_mask(lengths, max_len):
-    mask = torch.arange(max_len, device=lengths.device).expand(len(lengths), max_len) < lengths.unsqueeze(1)
-    return mask
-
 def n_joints_to_mask(n_joints, max_joints):
     mask = torch.arange(max_joints + 1, device=n_joints.device).expand(len(n_joints), max_joints + 1) < (n_joints.unsqueeze(1) + 1)
     mask = mask.unsqueeze(2).float() * mask.unsqueeze(1).float() 
-    return mask
-
-def length_to_temp_mask(max_len_mask, lengths, max_len):
-    mask = torch.arange(max_len + 1, device=lengths.device).expand(len(lengths), max_len + 1) < (lengths.unsqueeze(1) + 1)
-    mask = mask.unsqueeze(2).float() * mask.unsqueeze(1).float() 
-    mask = mask.logical_and(max_len_mask)
     return mask
 
 def collate_tensors(batch):
@@ -41,10 +31,6 @@ def truebones_collate(batch):
     tposfirstframebatch = [b['tpos_first_frame'] for b in notnone_batches]
     meanbatch = [b['mean'] for b in notnone_batches]
     stdbatch = [b['std'] for b in notnone_batches]
-    if 'lengths' in notnone_batches[0]:
-        lenbatch = [b['lengths'] for b in notnone_batches]
-    else:
-        lenbatch = [len(b['inp'][0][0]) for b in notnone_batches]
     if 'n_joints' in notnone_batches[0]:
         jointsnumbatch = [b['n_joints'] for b in notnone_batches]
     else:
@@ -59,16 +45,19 @@ def truebones_collate(batch):
     tposfirstframebatchTensor = collate_tensors(tposfirstframebatch)
     meanbatchTensor = collate_tensors(meanbatch)
     stdbatchTensor = collate_tensors(stdbatch)
-    lenbatchTensor = torch.as_tensor(lenbatch)
-    lengthsmaskbatchTensor = lengths_to_mask(lenbatchTensor, databatchTensor.shape[-1]).unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
     jointsnumbatchTensor = torch.as_tensor(jointsnumbatch)
     jointsmaskbatchTensor = n_joints_to_mask(jointsnumbatchTensor, databatchTensor.shape[1]).unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
 
     collated_temporalmasksbatch = collate_tensors(temporalmasksbatch)
-    maskbatchTensor = length_to_temp_mask(collated_temporalmasksbatch, lenbatchTensor, collated_temporalmasksbatch[0].size(0) - 1).unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
+    # All samples have identical frame counts after resampling, so the
+    # length-derived portion of the temporal mask is an all-True no-op;
+    # the collated window template is used directly.
+    maskbatchTensor = collated_temporalmasksbatch.unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
 
     motion = databatchTensor
-    cond = {'y': {'mask': maskbatchTensor, 'lengths': lenbatchTensor, 'lengths_mask': lengthsmaskbatchTensor, 'tpos_first_frame': tposfirstframebatchTensor, 'mean': meanbatchTensor, 'std':stdbatchTensor}}
+    frame_count = databatchTensor.shape[-1]
+    batch_size = len(databatch)
+    cond = {'y': {'mask': maskbatchTensor, 'lengths': torch.full((batch_size,), frame_count, dtype=torch.long), 'tpos_first_frame': tposfirstframebatchTensor, 'mean': meanbatchTensor, 'std':stdbatchTensor}}
 
     if 'object_type' in notnone_batches[0]:
         objecttypebatch = [b['object_type'] for b in notnone_batches]

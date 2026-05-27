@@ -53,8 +53,7 @@ echo Output dir: %OUTPUT_DIR%
     --model_path "%MODEL_PATH%" ^
     --output_dir %OUTPUT_DIR% ^
     --batch_size %BATCH_SIZE% ^
-    --amp_dtype bf16 ^
-    --motion_length 2.0 %*
+    --amp_dtype bf16 %*
 
 popd
 

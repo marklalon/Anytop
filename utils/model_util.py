@@ -152,12 +152,11 @@ class ClassifierFreeReferenceModel(nn.Module):
         mask = joint_match & feature_mask
         return torch.where(mask, uncond_tensor, guided)
 
-    def forward(self, x, timesteps, get_layer_activation=-1, y=None, train_step=None, **unused_kwargs):
+    def forward(self, x, timesteps, y=None, train_step=None, **unused_kwargs):
         if y is None or y.get('reference_motion') is None:
             return self.model(
                 x,
                 timesteps,
-                get_layer_activation=get_layer_activation,
                 y=y,
                 train_step=train_step,
                 **unused_kwargs,
@@ -168,7 +167,6 @@ class ClassifierFreeReferenceModel(nn.Module):
             return self.model(
                 x,
                 timesteps,
-                get_layer_activation=get_layer_activation,
                 y=self._copy_y(y, None),
                 train_step=train_step,
                 **unused_kwargs,
@@ -179,7 +177,6 @@ class ClassifierFreeReferenceModel(nn.Module):
             return self.model(
                 x,
                 timesteps,
-                get_layer_activation=get_layer_activation,
                 y=cond_y,
                 train_step=train_step,
                 **unused_kwargs,
@@ -189,7 +186,6 @@ class ClassifierFreeReferenceModel(nn.Module):
         cond_output = self.model(
             x,
             timesteps,
-            get_layer_activation=get_layer_activation,
             y=cond_y,
             train_step=train_step,
             **unused_kwargs,
@@ -197,28 +193,10 @@ class ClassifierFreeReferenceModel(nn.Module):
         uncond_output = self.model(
             x,
             timesteps,
-            get_layer_activation=get_layer_activation,
             y=uncond_y,
             train_step=train_step,
             **unused_kwargs,
         )
-
-        if isinstance(cond_output, tuple):
-            cond_tensor, cond_activations = cond_output
-            if isinstance(uncond_output, tuple):
-                uncond_tensor, uncond_activations = uncond_output
-            else:
-                uncond_tensor = uncond_output
-                uncond_activations = None
-            guided = uncond_tensor + scale * (cond_tensor - uncond_tensor)
-            guided = self._apply_reference_root_axis_guidance_guard(guided, uncond_tensor, y)
-            if uncond_activations is None:
-                return guided, cond_activations
-            guided_activations = {
-                layer: uncond_activations[layer] + scale * (cond_activations[layer] - uncond_activations[layer])
-                for layer in cond_activations
-            }
-            return guided, guided_activations
 
         guided = uncond_output + scale * (cond_output - uncond_output)
         return self._apply_reference_root_axis_guidance_guard(guided, uncond_output, y)

@@ -655,8 +655,7 @@ class MotionDataset(data.Dataset):
             and random.random() >= loop_cond_prob
         )
 
-        result = self.augment(data, return_aug_info=True, loop_uncond=loop_uncond)
-        motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std, aug_info = result
+        motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std = self._load_normalized_motion(data)
         ind = 0
         loop_applied = False
         loop_full_cycle = False
@@ -725,30 +724,22 @@ class MotionDataset(data.Dataset):
         temporal_mask = self._get_temporal_mask(target_num_frames, circular=circular_mask)
 
         if return_aug_info:
-            aug_info = dict(aug_info)
-            aug_info.update({
-                'crop_start': int(ind),
-                'loop_applied': bool(loop_applied),
-                'playspeed_cond': float(playspeed_cond),
-            })
             return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {
                 'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
             }, {
-                'speed_factor': float(aug_info['speed_factor']),
-                'crop_start': int(aug_info['crop_start']),
-                'loop_applied': bool(aug_info['loop_applied']),
-                'playspeed_cond': float(aug_info['playspeed_cond']),
+                'crop_start': int(ind),
+                'loop_applied': bool(loop_applied),
+                'playspeed_cond': float(playspeed_cond),
                 'loop_uncond': bool(loop_uncond),
             }
         return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {
             'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
         }
     
-    def augment(self, data, return_aug_info=False, loop_uncond=False):
+    def _load_normalized_motion(self, data):
         object_type = data['object_type']
         cond = self.cond_dict[object_type]
         motion_path = data['motion_path']
-        motion_metadata = _copy_required_motion_metadata(Path(motion_path).name, data.get('motion_metadata'))
         if self.motion_cache_size > 0:
             motion = self.motion_cache.get(motion_path)
             if motion is None:
@@ -762,22 +753,6 @@ class MotionDataset(data.Dataset):
         else:
             motion = np.load(motion_path).astype(np.float32, copy=False)
 
-        speed_range = getattr(self.opt, 'aug_speed_range', 0.0)
-
-        speed_factor = 1.0
-        if speed_range > 0.0:
-            # Resample time axis: alpha<1 speeds up (fewer frames), alpha>1 slows down (more frames).
-            # The existing random-start-offset logic in _prepare_sample handles length mismatch.
-            speed_factor = 1.0 + random.uniform(-speed_range, speed_range)
-            orig_len = motion.shape[0]
-            new_len = max(1, int(round(orig_len * speed_factor)))
-            if new_len != orig_len:
-                motion = _resample_motion_features(
-                    motion,
-                    new_len,
-                    loop_terminal=bool(motion_metadata.get('is_loop')),
-                )
-
         motion = np.nan_to_num((motion - cond['mean'][None, :]) / cond['std_safe'][None, :]).astype(np.float32, copy=False)
 
         m_length = motion.shape[0]
@@ -785,10 +760,7 @@ class MotionDataset(data.Dataset):
         std = self.cond_dict[object_type]['std_safe']
         tpos_first_frame = cond['tpos_first_frame_normalized']
         offsets = cond['offsets']
-        sample = (motion, m_length, object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], tpos_first_frame, offsets, cond['joints_names_embs'], cond['kinematic_chains'], mean, std)
-        if return_aug_info:
-            return sample + ({'speed_factor': float(speed_factor)},)
-        return sample
+        return (motion, m_length, object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], tpos_first_frame, offsets, cond['joints_names_embs'], cond['kinematic_chains'], mean, std)
         
     def __len__(self):
         return len(self.name_list) - self.pointer
@@ -847,7 +819,6 @@ class Truebones(data.Dataset):
         self.motion_cache_size = kwargs.get('motion_cache_size', 0)
         self.opt.motion_cache_size = self.motion_cache_size
         self.opt.min_motion_length = int(kwargs.get('min_motion_length', getattr(self.opt, 'min_motion_length', 20)))
-        self.opt.aug_speed_range = kwargs.get('aug_speed_range', 0.0)
 
         self.opt.loop_cond_prob = kwargs.get('loop_cond_prob', 0.0)
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()

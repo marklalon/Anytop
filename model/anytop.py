@@ -401,7 +401,7 @@ class AnyTop(nn.Module):
             return None
         return torch.from_numpy(temporal_span_mask_np).to(device=device)
 
-    def forward(self, x, timesteps, get_layer_activation=-1, y=None, train_step=None, **unused_kwargs):
+    def forward(self, x, timesteps, y=None, train_step=None, **unused_kwargs):
         """
         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
         timesteps: [batch_size] (int)
@@ -568,7 +568,6 @@ class AnyTop(nn.Module):
             temporal_mask=temporal_mask,
             tgt_key_padding_mask=joint_key_padding_mask,
             y=y,
-            get_layer_activation=get_layer_activation,
             reference_memory=reference_memory,
             global_energy_condition=global_energy_condition,
             reference_key_padding_mask=reference_key_padding_mask,
@@ -578,12 +577,7 @@ class AnyTop(nn.Module):
             loop_phase_mask=loop_phase_mask,
             lengths=loop_phase_lengths,
         )
-        if get_layer_activation > -1 and get_layer_activation < self.num_layers:
-            activations = output[1]
-            output=output[0]
         output = self.output_process(output) # Applies linear layer on each frame to convert it back to feature len dim
-        if get_layer_activation > -1 and get_layer_activation < self.num_layers:
-            return output, activations
         return output
 
 

@@ -61,12 +61,10 @@ class _ReferenceAwareModel(nn.Module):
         self.num_layers = 2
         self.forward_ys = []
 
-    def forward(self, x, timesteps, get_layer_activation=-1, y=None, **unused_kwargs):
+    def forward(self, x, timesteps, y=None, **unused_kwargs):
         self.forward_ys.append(None if y is None else dict(y))
         bias = 5.0 if y is not None and y.get('reference_motion') is not None else 1.0
         output = torch.full_like(x, bias)
-        if get_layer_activation > -1:
-            return output, {0: output.clone()}
         return output
 
 
@@ -78,14 +76,12 @@ class _AxisAwareReferenceModel(nn.Module):
         self.num_layers = 1
         self.root_joint = root_joint
 
-    def forward(self, x, timesteps, get_layer_activation=-1, y=None, **unused_kwargs):
+    def forward(self, x, timesteps, y=None, **unused_kwargs):
         if y is not None and y.get('reference_motion') is not None:
             output = torch.full_like(x, 5.0)
             output[:, self.root_joint, [2, 11], :] = 7.0
         else:
             output = torch.full_like(x, 1.0)
-        if get_layer_activation > -1:
-            return output, {0: output.clone()}
         return output
 
 
@@ -100,7 +96,7 @@ class _DummyModel(nn.Module):
         self.global_energy_running_mean = torch.tensor([0.25, 0.05], dtype=torch.float32)
         self.global_energy_running_var = torch.ones(2, dtype=torch.float32)
 
-    def forward(self, x, timesteps, get_layer_activation=-1, y=None, **unused_kwargs):
+    def forward(self, x, timesteps, y=None, **unused_kwargs):
         return x
 
 
@@ -166,24 +162,6 @@ def test_cfg_reference_wrapper_matches_cond_and_uncond_extremes() -> None:
     guided_output = wrapped_model(x, t, y=y)
     assert torch.equal(guided_output, torch.full_like(x, 9.0))
     assert base_model.forward_ys[-1].get("reference_motion") is None
-
-
-def test_cfg_reference_wrapper_guides_activations_when_requested() -> None:
-    base_model = _ReferenceAwareModel()
-    wrapped_model = ClassifierFreeReferenceModel(base_model)
-    x = torch.zeros((1, 2, 3, 4), dtype=torch.float32)
-    t = torch.tensor([1], dtype=torch.int64)
-    y = {
-        "reference_motion": torch.ones_like(x),
-        "reference_scale": 2.0,
-        "existing": torch.tensor([1.0]),
-    }
-
-    guided_output, activations = wrapped_model(x, t, get_layer_activation=0, y=y)
-
-    expected = torch.full_like(x, 9.0)
-    assert torch.equal(guided_output, expected)
-    assert torch.equal(activations[0], expected)
 
 
 def test_cfg_reference_wrapper_always_falls_back_to_uncond_on_root_xz_axes() -> None:

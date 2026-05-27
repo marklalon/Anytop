@@ -89,9 +89,6 @@ def add_model_options(parser):
     group.add_argument("--latent_dim", default=128, type=int,
                        help="Transformer/GRU width.")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Foot contact loss.")
-    group.add_argument("--aug_speed_range", default=0.0, type=float,
-                       help="Speed augmentation range (0.0=off). E.g. 0.2 randomly stretches/compresses"
-                            " each clip's time axis by ±20%% before the random-window crop.")
     group.add_argument("--lambda_vel", default=0.0, type=float,
                        help="Weight for velocity-position consistency loss (0.0=off)."
                             " Penalizes |pos[t+1]-pos[t] - vel[t]|^2 on denormalized outputs."
@@ -345,27 +342,6 @@ def add_generate_options(parser):
                             "and print a quality report. Uses --action_tags (already supported for training) "
                             "to filter the scorer's reference prior, e.g. 'locomotion,attack'.")
 
-def add_dift_options(parser):
-    # bvhs_dir, sample_bvh, face_joints, save_dir=None, tpos_bvh=None
-    group = parser.add_argument_group('dift')
-    # group.add_argument("--apply_pca", action='store_true',
-    #                    help="apply pca on feats before calculating similarity.")
-    group.add_argument("--sample_ref", default='assets/Monkey___B2Attack_574.npy', type=str,
-                       help="sample bvh ref.")
-    group.add_argument("--sample_tgt", default=['assets/Scorpion___SlowForward_837.npy'], type=str, nargs='+',
-                       help="sample bvh tgt.")
-    group.add_argument("--tmp_save_dir", default='', type=str,
-                       help="temporal save dir.")
-    group.add_argument("--suffix", default='', type=str,
-                       help="file suffix.")
-    group.add_argument("--dift_type", default='spatial', choices=['spatial', 'temporal'], type=str,
-                       help="apply dift on spatial or temporal features")
-    group.add_argument("--layer", default=0, type=int,
-                       help="Layer to extract DIFT features from.")
-    group.add_argument("--timestep", default=90, type=int,
-                       help="Timestep to extract DIFT features from.")
-
-
 def add_render_options(parser):
     group = parser.add_argument_group('render')
     group.add_argument('--bvh_path', type=str, default='assets/Truebones_Chicken', help='path of animation bvh file')
@@ -447,18 +423,6 @@ def process_new_skeleton_args():
                            "--save-dir when updating in place.")
     args = parser.parse_args()
     return args
-
-def dift_args():
-    parser = ArgumentParser()
-    # args specified by the user: (all other will be loaded from the model)
-    add_base_options(parser)
-    add_data_options(parser)
-    add_sampling_options(parser)
-    add_dift_options(parser)
-    args = parse_and_load_from_model(parser)
-
-    return args
-
 
 def evaluation_parser():
     parser = ArgumentParser()

@@ -215,39 +215,7 @@ Example of training only on locomotion clips:
 python -m train.train_anytop --model_prefix all_locomotion --objects_subset all --action_tags locomotion --lambda_geo 1.0 --auto_resume --balanced
 ```
 
-## Correspondence
-We release our correspondence code for both joint-level and temporal matching.
-### Joints Correspondence
-Our joint correspondence module finds, for each joint in a target skeleton, its best matching joint in a reference skeleton.
-For better visualization, we color the joints of the Monkey skeleton (used as the reference).
-
-The script accepts one or more motions from the Truebones processed dataset as input and computes joint correspondences to a reference Monkey motion.
-Note: The motion you choose for the target skeleton can affect the resulting correspondences.
-
-```shell
-python -m sample.dift_correspondence --dift_type spatial --model_path save/all_model_dataset_truebones_bs_16_latentdim_128/model000459999.pt --sample_tgt assets/Scorpion___SlowForward_837.npy
-```
-Running this will create a new directory dift_out under the model’s directory, where the joint correspondences are saved as both .npy and .mp4 files (for visualization).
-The output looks like:
-<div style="text-align: left; margin-top: 20px;">
-<img src="assets/Monkey_Scorpion_spatial_corr.gif" width="400"/>
-</div>
-
-### Temporal Correspondence
-Our temporal correspondence module matches each frame of a target motion to its most similar frame in a reference motion.
-For better visualization, we also provide a segmentation of frames from a Monkey motion as the reference.
-
-To test it on target skeletons from the Truebones processed dataset, run:
-
-```shell
-python -m sample.dift_correspondence --dift_type temporal --model_path save/all_model_dataset_truebones_bs_16_latentdim_128/model000459999.pt --sample_tgt assets/Hound___Attack_470.npy --layer 3 --timestep 1
-```
-This will also create a dift_out directory under the model’s directory, saving the temporal correspondences as both .npy and .mp4 files. The output looks like:
-<div style="text-align: left; margin-top: 20px;">
-<img src="assets/Monkey_Hound_temporal_corr.gif" width="400"/>
-</div>
-
-## Visualizing Motions in Blender
+## Visualizing Motions in Blender## Visualizing Motions in Blender
 We provide a script to visualize motion data as animated skeletons in Blender, similar to the figures shown in the paper.
 The script accepts either a single .bvh file or a directory containing multiple .bvh files. For each file, it generates a corresponding .blend file with the skeleton animation rendered in an empty scene.
 **Note**: To export an .mp4 render, you'll need to manually set up lighting and position the camera in the Blender UI.  

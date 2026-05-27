@@ -261,15 +261,13 @@ class GaussianDiffusion:
         # print('mse_loss_val', mse_loss_val)
         return mse_loss_val
     
-    def temporal_spatial_masked_l2(self, a, b, temp_mask, spat_mask, lengths, n_joints):
+    def spatial_masked_l2(self, a, b, spat_mask, lengths, n_joints):
         # assuming a.shape == b.shape == bs, J, Jdim, seqlen
-        # assuming temp_mask.shape == bs, 1, 1, seqlen
         # assuming spat_mask.shape == bs, 1, 1, max_joints
 
         loss = self.l2_loss(a, b)
-        temp_masked_loss = loss * temp_mask.float()
-        spat_temp_masked_loss = (temp_masked_loss * spat_mask.float().transpose(1,3))
-        loss = sum_flat(spat_temp_masked_loss)  # gives \sigma_euclidean over unmasked elements
+        spat_masked_loss = (loss * spat_mask.float().transpose(1,3))
+        loss = sum_flat(spat_masked_loss)  # gives \sigma_euclidean over unmasked elements
         non_zero_elements = lengths * n_joints * a.size(2) 
         mse_loss_val = loss / non_zero_elements
         return mse_loss_val
@@ -375,23 +373,21 @@ class GaussianDiffusion:
         rotations = o.reshape(qs.shape[:-1] + (3, 3))
         return rotations
     
-    def geodesic_loss(self, a, b, temp_mask, spat_mask, lengths, n_joints):
+    def geodesic_loss(self, a, b, spat_mask, lengths, n_joints):
         # assuming a.shape == b.shape == bs, J, Jdim, seqlen
-        # assuming temp_mask.shape == bs, 1, 1, seqlen
         # assuming spat_mask.shape == bs, 1, 1, max_joints
         a = a.float()
         b = b.float()
         rots_target = rotation_6d_to_matrix_safe(a.permute(0, 3, 1, 2)[..., 3:9])
         rots_pred = rotation_6d_to_matrix_safe(b.permute(0, 3, 1, 2)[..., 3:9])
         loss = geodesic_distance(rots_pred, rots_target).permute(0, 2, 3, 1)
-        temp_masked_loss = loss * temp_mask.float()
-        spat_temp_masked_loss = (temp_masked_loss * spat_mask.float().transpose(1,3))
-        loss = sum_flat(spat_temp_masked_loss)  # gives \sigma_euclidean over unmasked elements
+        spat_masked_loss = (loss * spat_mask.float().transpose(1,3))
+        loss = sum_flat(spat_masked_loss)  # gives \sigma_euclidean over unmasked elements
         non_zero_elements = (lengths * n_joints).float()
         loss_val = loss / non_zero_elements
         return loss_val
 
-    def velocity_consistency_loss(self, model_output, temp_mask, spat_mask, lengths, n_joints):
+    def velocity_consistency_loss(self, model_output, spat_mask, lengths, n_joints):
         # model_output: [bs, njoints, nfeats, nframes] (denormalized)
         # vel[t] should equal pos[t+1] - pos[t]; enforce this across all valid frames.
         pos = model_output[:, :, 0:3, :]    # [bs, njoints, 3, nframes]
@@ -399,9 +395,7 @@ class GaussianDiffusion:
         finite_diff = pos[:, :, :, 1:] - pos[:, :, :, :-1]  # [bs, njoints, 3, nframes-1]
         pred_vel    = vel[:, :, :, :-1]                       # [bs, njoints, 3, nframes-1]
         loss = (finite_diff - pred_vel) ** 2
-        # Align masks to nframes-1 (drop last time-step)
-        temp_shifted = temp_mask[:, :, :, :-1]                                  # [bs, 1, 1, nframes-1]
-        valid = temp_shifted.float() * spat_mask.float().transpose(1, 3)        # [bs, njoints, 1, nframes-1]
+        valid = spat_mask.float().transpose(1, 3)[:, :, :, :-1]        # [bs, njoints, 1, nframes-1]
         loss_val = (loss * valid).sum() / (valid.sum() * 3).clamp(min=1)
         return loss_val
 
@@ -592,7 +586,7 @@ class GaussianDiffusion:
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
     def p_mean_variance(
-        self, model, x, t, clip_denoised=True, denoised_fn=None, model_kwargs=None, get_layer_activation=-1
+        self, model, x, t, clip_denoised=True, denoised_fn=None, model_kwargs=None
     ):
         """
         Apply the model to get p(x_{t-1} | x_t), as well as a prediction of
@@ -619,10 +613,7 @@ class GaussianDiffusion:
 
         B, C = x.shape[:2]
         assert t.shape == (B,)
-        if get_layer_activation > -1 and get_layer_activation < model.model.num_layers :
-            model_output, activations = model(x, self._scale_timesteps(t), get_layer_activation=get_layer_activation, **model_kwargs)
-        else:
-            model_output = model(x, self._scale_timesteps(t), **model_kwargs)
+        model_output = model(x, self._scale_timesteps(t), **model_kwargs)
 
         if self.model_var_type in [ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE]:
             assert model_output.shape == (B, C * 2, *x.shape[2:])
@@ -691,21 +682,12 @@ class GaussianDiffusion:
         assert (
             model_mean.shape == model_log_variance.shape == pred_xstart.shape == x.shape
         )
-        if get_layer_activation > -1 and get_layer_activation < model.model.num_layers:
-            return {
-                "mean": model_mean,
-                "variance": model_variance,
-                "log_variance": model_log_variance,
-                "pred_xstart": pred_xstart,
-                "activations": activations
-            }
-        else:
-            return {
-                "mean": model_mean,
-                "variance": model_variance,
-                "log_variance": model_log_variance,
-                "pred_xstart": pred_xstart,
-            }
+        return {
+            "mean": model_mean,
+            "variance": model_variance,
+            "log_variance": model_log_variance,
+            "pred_xstart": pred_xstart,
+        }
 
     def _predict_xstart_from_eps(self, x_t, t, eps):
         assert x_t.shape == eps.shape
@@ -867,65 +849,6 @@ class GaussianDiffusion:
         sample = out["mean"] + nonzero_mask * th.exp(0.5 * out["log_variance"]) * noise
         return {"sample": sample, "pred_xstart": out["pred_xstart"]}
 
-    def p_sample_dift(
-        self,
-        model,
-        x,
-        t,
-        clip_denoised=True,
-        denoised_fn=None,
-        cond_fn=None,
-        model_kwargs=None,
-        const_noise=False,
-        get_layer_activation = -1
-    ):
-        """
-        Sample x_{t-1} from the model at the given timestep.
-
-        :param model: the model to sample from.
-        :param x: the current tensor at x_{t-1}.
-        :param t: the value of t, starting at 0 for the first diffusion step.
-        :param clip_denoised: if True, clip the x_start prediction to [-1, 1].
-        :param denoised_fn: if not None, a function which applies to the
-            x_start prediction before it is used to sample.
-        :param cond_fn: if not None, this is a gradient function that acts
-                        similarly to the model.
-        :param model_kwargs: if not None, a dict of extra keyword arguments to
-            pass to the model. This can be used for conditioning.
-        :return: a dict containing the following keys:
-                 - 'sample': a random sample from the model.
-                 - 'pred_xstart': a prediction of x_0.
-        """
-        out = self.p_mean_variance(
-            model,
-            x,
-            t,
-            clip_denoised=clip_denoised,
-            denoised_fn=denoised_fn,
-            model_kwargs=model_kwargs,
-            get_layer_activation=get_layer_activation
-        )
-        noise = th.randn_like(x)
-        # print('const_noise', const_noise)
-        if const_noise:
-            noise = noise[[0]].repeat(x.shape[0], 1, 1, 1)
-
-        nonzero_mask = (
-            (t != 0).float().view(-1, *([1] * (len(x.shape) - 1)))
-        )  # no noise when t == 0
-        if cond_fn is not None:
-            out["mean"] = self.condition_mean(
-                cond_fn, out, x, t, model_kwargs=model_kwargs
-            )
-        # print('mean', out["mean"].shape, out["mean"])
-        # print('log_variance', out["log_variance"].shape, out["log_variance"])
-        # print('nonzero_mask', nonzero_mask.shape, nonzero_mask)
-        sample = out["mean"] + nonzero_mask * th.exp(0.5 * out["log_variance"]) * noise
-        if get_layer_activation > -1:
-            return {"sample": sample, "pred_xstart": out["pred_xstart"], "activations": out["activations"]}
-        else:
-            return {"sample": sample, "pred_xstart": out["pred_xstart"]}
-    
     def p_sample_with_grad(
         self,
         model,
@@ -1064,7 +987,6 @@ class GaussianDiffusion:
         cond_fn_with_grad=False,
         dump_steps=None,
         const_noise=False,
-        get_activations={"layer": -1, "timestep": -1},
         inpaint_mask=None,
         inpaint_reference=None,
         repaint_jump_length=0,
@@ -1093,7 +1015,6 @@ class GaussianDiffusion:
         final = None
         if dump_steps is not None:
             dump = []
-        activations_dict=dict()
         sample_loop = self.p_sample_loop_progressive
         for i, sample in enumerate(sample_loop(
             model,
@@ -1123,78 +1044,6 @@ class GaussianDiffusion:
             return dump
         return final["sample"]
 
-    def p_sample_single_timestep(
-        self,
-        model,
-        shape,
-        noise=None,
-        clip_denoised=True,
-        denoised_fn=None,
-        cond_fn=None,
-        model_kwargs=None,
-        device=None,
-        init_image=None,
-        randomize_class=False,
-        const_noise=False,
-        get_activations={"layer": -1, "timestep": -1},
-    ):
-        """
-        Generate samples from the model.
-
-        :param model: the model module.
-        :param shape: the shape of the samples, (N, C, H, W).
-        :param t: diffusion timestep.
-        :param noise: if specified, the noise from the encoder to sample.
-                      Should be of the same shape as `shape`.
-        :param clip_denoised: if True, clip x_start predictions to [-1, 1].
-        :param denoised_fn: if not None, a function which applies to the
-            x_start prediction before it is used to sample.
-        :param cond_fn: if not None, this is a gradient function that acts
-                        similarly to the model.
-        :param model_kwargs: if not None, a dict of extra keyword arguments to
-            pass to the model. This can be used for conditioning.
-        :param device: if specified, the device to create the samples on.
-                       If not specified, use a model parameter's device.
-        :param progress: if True, show a tqdm progress bar.
-        :param const_noise: If True, will noise all samples with the same noise throughout sampling
-        :return: a non-differentiable batch of samples.
-        """
-        activations_dict=dict()
-        if device is None:
-            device = next(model.parameters()).device
-        assert isinstance(shape, (tuple, list))
-        if noise is None:
-            noise = th.randn(*shape, device=device)
-        img = th.randn(*shape, device=device)
-        t = get_activations["timestep"]
-        t_tnsr = th.tensor([t] * shape[0], device=device)
-        if init_image is not None:
-            # randomize the initial image to timestep t for dift extractrion
-            img = self.q_sample(init_image, t_tnsr, noise)
-        if randomize_class and 'y' in model_kwargs:
-            model_kwargs['y'] = th.randint(low=0, high=model.num_classes,
-                                            size=model_kwargs['y'].shape,
-                                            device=model_kwargs['y'].device)
-        with th.no_grad():
-            out = self.p_sample_dift(
-                model,
-                img,
-                t_tnsr,
-                clip_denoised=clip_denoised,
-                denoised_fn=denoised_fn,
-                cond_fn=cond_fn,
-                model_kwargs=model_kwargs,
-                const_noise=const_noise,
-                get_layer_activation=get_activations["layer"]
-            )
-            
-            if get_activations["timestep"] == t:
-                activations_dict[t] = out["activations"]
-        
-        if get_activations["timestep"] == t:
-            return out["sample"], activations_dict 
-        return out["sample"]
-    
     def p_sample_loop_progressive(
         self,
         model,
@@ -1211,7 +1060,6 @@ class GaussianDiffusion:
         randomize_class=False,
         cond_fn_with_grad=False,
         const_noise=False,
-        get_activations=None,# dummy
         inpaint_mask=None,
         inpaint_reference=None,
         repaint_jump_length=0,
@@ -1291,75 +1139,6 @@ class GaussianDiffusion:
                 yield out
                 img = out["sample"]
 
-    def p_sample_loop_for_dift(
-        self,
-        model,
-        shape,
-        noise=None,
-        clip_denoised=True,
-        denoised_fn=None,
-        cond_fn=None,
-        model_kwargs=None,
-        device=None,
-        progress=False,
-        skip_timesteps=0,
-        init_image=None,
-        randomize_class=False,
-        cond_fn_with_grad=False,
-        const_noise=False,
-        get_activations={"layer": -1, "timestep": -1}
-        
-    ):
-        """
-        Generate samples from the model and yield intermediate samples from
-        each timestep of diffusion.
-
-        Arguments are the same as p_sample_loop().
-        Returns a generator over dicts, where each dict is the return value of
-        p_sample().
-        """
-        if device is None:
-            device = next(model.parameters()).device
-        assert isinstance(shape, (tuple, list))
-        if noise is not None:
-            noise = th.randn(*shape, device=device)
-        img = th.randn(*shape, device=device)
-        indices = list(range(self.num_timesteps - skip_timesteps))[::-1]
-        if progress:
-            # Lazy import so that we don't depend on tqdm.
-            from tqdm.auto import tqdm
-
-            indices = tqdm(indices)
-
-        for i in indices:
-            get_layer_activation = -1
-            if get_activations["timestep"] == i:
-                get_layer_activation = get_activations["layer"]
-            t = th.tensor([i] * shape[0], device=device)
-            if init_image is not None:
-                # randomize the initial image to timestep t for dift extractrion
-                img = self.q_sample(init_image, t, noise)
-                
-            if randomize_class and 'y' in model_kwargs:
-                model_kwargs['y'] = th.randint(low=0, high=model.num_classes,
-                                               size=model_kwargs['y'].shape,
-                                               device=model_kwargs['y'].device)
-            with th.no_grad():
-                sample_fn = self.p_sample_dift
-                out = sample_fn(
-                    model,
-                    img,
-                    t,
-                    clip_denoised=clip_denoised,
-                    denoised_fn=denoised_fn,
-                    cond_fn=cond_fn,
-                    model_kwargs=model_kwargs,
-                    const_noise=const_noise,
-                    get_layer_activation = get_layer_activation
-                )
-                yield out
-                img = out["sample"]
-    
     def ddim_sample(
         self,
         model,
@@ -1848,7 +1627,6 @@ class GaussianDiffusion:
                  Some mean or variance settings may also have other keys.
         """
 
-        mask = model_kwargs['y']['lengths_mask']
         lengths = model_kwargs['y']['lengths']
         actual_joints = model_kwargs['y']['n_joints']
         joints_padding_mask = model_kwargs['y']['joints_padding_mask'][:, :, :, 1, 1:]
@@ -1927,15 +1705,14 @@ class GaussianDiffusion:
             with self._fp32_math_context(model_output, target, mean, std):
                 target_fp32 = target.float()
                 model_output_fp32 = model_output.float()
-                mask_fp32 = mask.float()
                 joints_padding_mask_fp32 = joints_padding_mask.float()
                 lengths_fp32 = lengths.float()
                 actual_joints_fp32 = actual_joints.float()
                 mean_fp32 = mean.float()
                 std_fp32 = std.float()
 
-                terms["l_simple"] = self.temporal_spatial_masked_l2(
-                    target_fp32, model_output_fp32, mask_fp32, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
+                terms["l_simple"] = self.spatial_masked_l2(
+                    target_fp32, model_output_fp32, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
                 )
                 terms["loss"] = terms["l_simple"].clone()
 
@@ -1948,7 +1725,6 @@ class GaussianDiffusion:
                 ):
                     seam_weights = (
                         temporal_span_seam_weights
-                        * mask_fp32
                         * joints_padding_mask_fp32.transpose(1, 3)
                     )
                     if bool(seam_weights.any()):
@@ -1965,13 +1741,13 @@ class GaussianDiffusion:
 
                 if self.lambda_geo > 0.:
                     terms["geodesic_loss"] = self.geodesic_loss(
-                        target_denorm, model_output_denorm, mask_fp32, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
+                        target_denorm, model_output_denorm, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
                     )
                     terms["loss"] = terms["loss"] + self.lambda_geo * terms["geodesic_loss"]
 
                 if self.lambda_vel > 0.:
                     terms["vel_loss"] = self.velocity_consistency_loss(
-                        model_output_denorm, mask_fp32, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
+                        model_output_denorm, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
                     )
                     terms["loss"] = terms["loss"] + self.lambda_vel * terms["vel_loss"]
 

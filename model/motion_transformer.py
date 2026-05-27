@@ -1016,7 +1016,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
         
     def forward(self, tgt: Tensor, timesteps_embs: Tensor, memory: Tensor, spatial_mask:  Optional[Tensor] = None,
                 temporal_mask: Optional[Tensor] = None, tgt_key_padding_mask: Optional[Tensor] = None,
-            memory_key_padding_mask: Optional[Tensor] = None, y=None, get_layer_activation=-1, reference_memory: Optional[Tensor] = None,
+            memory_key_padding_mask: Optional[Tensor] = None, y=None, reference_memory: Optional[Tensor] = None,
             global_energy_condition: Optional[Tensor] = None,
             reference_key_padding_mask: Optional[Tensor] = None, temporal_template: Optional[Tensor] = None,
             cross_limb_unreliable_mask: Optional[Tensor] = None,
@@ -1062,8 +1062,6 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     )
             else:
                 loop_phase_mask_batch = None
-        if get_layer_activation > -1 and get_layer_activation < self.num_layers:
-            activations=dict()
         first_cl_layer = (
             self.num_layers - self.cross_limb_last_n
             if self.cross_limb_last_n > 0 else 0
@@ -1097,12 +1095,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     lengths=lengths,
                     loop_phase_embedding=loop_phase_embedding,
                     cross_limb_time_embedding=cross_limb_time_embedding)
-            if layer_ind == get_layer_activation:
-                activations[layer_ind] = output.clone()
         if self.norm is not None:
             output = self.norm(output)
-        if get_layer_activation > -1 and get_layer_activation < self.num_layers:
-            return output, activations
         return output
 
 class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
