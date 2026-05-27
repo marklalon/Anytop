@@ -662,9 +662,6 @@ class MotionDataset(data.Dataset):
         loop_full_cycle = False
         loop_condition_active = is_loop and not loop_uncond
 
-        if m_length < self.min_length:
-            raise ValueError(f"motion '{name}' length {m_length} < min_length {self.min_length}")
-
         max_source_length = target_num_frames * 2
         if loop_condition_active and m_length > max_source_length:
             loop_condition_active = False
