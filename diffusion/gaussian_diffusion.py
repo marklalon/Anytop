@@ -381,13 +381,50 @@ class GaussianDiffusion:
         loss_val = loss / non_zero_elements
         return loss_val
 
-    def velocity_consistency_loss(self, model_output, spat_mask, n_joints):
+    def _coerce_playspeed_batch(self, value, batch_size, device, dtype):
+        if value is None:
+            return th.ones(batch_size, device=device, dtype=dtype)
+        value = th.as_tensor(value, device=device, dtype=dtype).reshape(-1)
+        if value.numel() == 1 and batch_size != 1:
+            value = value.expand(batch_size)
+        elif value.numel() != batch_size:
+            raise ValueError(
+                f"playspeed_cond has length {value.numel()} but expected {batch_size}."
+            )
+        if not th.isfinite(value).all():
+            raise ValueError("playspeed_cond must be finite")
+        if bool((value <= 0).any()):
+            raise ValueError("playspeed_cond must be positive")
+        return value
+
+    def _physical_velocity_step_scale(self, y, batch_size, n_frames, device, dtype):
+        if n_frames <= 1:
+            return th.ones(batch_size, device=device, dtype=dtype)
+        playspeed = self._coerce_playspeed_batch(
+            y.get('playspeed_cond') if isinstance(y, dict) else None,
+            batch_size,
+            device,
+            dtype,
+        )
+        source_frames = (playspeed * float(n_frames)).clamp_min(1.0)
+        return ((source_frames - 1.0) / float(n_frames - 1)).clamp_min(0.0)
+
+    def velocity_consistency_loss(self, model_output, spat_mask, n_joints, y=None):
         # model_output: [bs, njoints, nfeats, nframes] (denormalized)
-        # vel[t] should equal pos[t+1] - pos[t]; enforce this across all valid frames.
+        # vel[t] carries physical-frame units. Scale it into the current
+        # resampled window step before comparing with position deltas.
+        batch_size, _max_joints, _n_feats, n_frames = model_output.shape
         pos = model_output[:, :, 0:3, :]    # [bs, njoints, 3, nframes]
         vel = model_output[:, :, 9:12, :]   # [bs, njoints, 3, nframes]
         finite_diff = pos[:, :, :, 1:] - pos[:, :, :, :-1]  # [bs, njoints, 3, nframes-1]
-        pred_vel    = vel[:, :, :, :-1]                       # [bs, njoints, 3, nframes-1]
+        step_scale = self._physical_velocity_step_scale(
+            y or {},
+            batch_size,
+            n_frames,
+            model_output.device,
+            model_output.dtype,
+        ).view(batch_size, 1, 1, 1)
+        pred_vel = vel[:, :, :, :-1] * step_scale              # [bs, njoints, 3, nframes-1]
         loss = (finite_diff - pred_vel) ** 2
         valid_joints = spat_mask.float().transpose(1, 3)        # [bs, njoints, 1, 1]
         valid = valid_joints.expand(-1, -1, -1, loss.shape[-1])
@@ -478,7 +515,18 @@ class GaussianDiffusion:
 
         terminal_vel_loss = zero
         if n_feats >= 12:
-            terminal_residual = first_frame[:, :, 0:3, 0] - last_frame[:, :, 0:3, 0] - last_frame[:, :, 9:12, 0]
+            step_scale = self._physical_velocity_step_scale(
+                y,
+                batch_size,
+                n_frames,
+                device,
+                model_output.dtype,
+            ).view(batch_size, 1, 1)
+            terminal_residual = (
+                first_frame[:, :, 0:3, 0]
+                - last_frame[:, :, 0:3, 0]
+                - last_frame[:, :, 9:12, 0] * step_scale
+            )
             terminal_per_sample = ((terminal_residual ** 2) * joint_weight[:, :, None]).sum(dim=(1, 2))
             terminal_per_sample = terminal_per_sample / (joint_weight.sum(dim=1) * 3.0).clamp(min=1.0)
             terminal_per_sample = th.where(active_valid, terminal_per_sample, th.zeros_like(terminal_per_sample))
@@ -515,7 +563,14 @@ class GaussianDiffusion:
         # Root XZ closure sums root velocity over the n_frames-1 frame-to-frame
         # transitions; the velocity stored at the terminal frame is the
         # wrap-around delta and is excluded from the sum.
-        root_vel_xz = model_output[batch_indices, root_indices_clamped][:, [9, 11], :n_frames - 1]
+        step_scale = self._physical_velocity_step_scale(
+            y,
+            batch_size,
+            n_frames,
+            device,
+            model_output.dtype,
+        ).view(batch_size, 1, 1)
+        root_vel_xz = model_output[batch_indices, root_indices_clamped][:, [9, 11], :n_frames - 1] * step_scale
         net_xz = root_vel_xz.sum(dim=2)
         per_sample = (net_xz ** 2).mean(dim=1)
         per_sample = th.where(active_valid, per_sample, th.zeros_like(per_sample))
@@ -1603,9 +1658,31 @@ class GaussianDiffusion:
         if n_joints is None:
             raise ValueError("global energy conditioning requires y['n_joints'] metadata")
 
+        # Variable-length dataset samples precompute the exact physical-space
+        # energy label before window resampling. Do not overwrite it with an
+        # x_start-derived value from the stretched training window.
+        if y.get('global_energy_cond') is not None:
+            batch_size = int(x_start.shape[0])
+            global_energy_cond = th.as_tensor(
+                y['global_energy_cond'],
+                device=x_start.device,
+                dtype=x_start.dtype,
+            )
+            if global_energy_cond.dim() == 1:
+                global_energy_cond = global_energy_cond.unsqueeze(0)
+            if global_energy_cond.shape[0] == 1 and batch_size != 1:
+                global_energy_cond = global_energy_cond.expand(batch_size, -1).clone()
+            elif global_energy_cond.shape[0] != batch_size:
+                raise ValueError(
+                    f"global_energy_cond has batch dimension {global_energy_cond.shape[0]} but expected {batch_size}."
+                )
+            y['global_energy_cond'] = global_energy_cond
+            return
+
         y['global_energy_cond'] = ReferencePriorEncoder.compute_global_energy_condition(
             x_start.detach(),
             n_joints=n_joints,
+            playspeed_cond=y.get('playspeed_cond'),
         )
 
     def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
@@ -1742,7 +1819,7 @@ class GaussianDiffusion:
 
                 if self.lambda_vel > 0.:
                     terms["vel_loss"] = self.velocity_consistency_loss(
-                        model_output_denorm, joints_padding_mask_fp32, actual_joints_fp32
+                        model_output_denorm, joints_padding_mask_fp32, actual_joints_fp32, (model_kwargs or {}).get('y', {})
                     )
                     terms["loss"] = terms["loss"] + self.lambda_vel * terms["vel_loss"]
 

@@ -91,6 +91,18 @@ def truebones_collate(batch):
             )
         })
 
+    if any('global_energy_cond' in batch_item for batch_item in notnone_batches):
+        if not all('global_energy_cond' in batch_item for batch_item in notnone_batches):
+            raise ValueError(
+                "global_energy_cond must be present for all samples in a batch when any sample provides it."
+            )
+        cond['y'].update({
+            'global_energy_cond': torch.stack([
+                torch.as_tensor(batch_item['global_energy_cond'], dtype=torch.float32).reshape(2)
+                for batch_item in notnone_batches
+            ]),
+        })
+
     if any('joint_mask_candidate_roots' in batch_item for batch_item in notnone_batches):
         candidate_root_batch = []
         for batch_item in notnone_batches:
@@ -149,7 +161,7 @@ def truebones_batch_collate(batch):
             if isinstance(extra, dict):
                 if 'joint_mask_candidate_roots' in extra:
                     extra_cond = extra
-                elif any(key in extra for key in ('action_category', 'species_label', 'action_tags', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond')):
+                elif any(key in extra for key in ('action_category', 'species_label', 'action_tags', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'global_energy_cond')):
                     motion_metadata = extra
             elif isinstance(extra, str):
                 motion_name = extra
@@ -176,7 +188,7 @@ def truebones_batch_collate(batch):
                 padded_candidate_roots[:candidate_count] = torch.from_numpy(raw_candidates[:candidate_count])
             item['joint_mask_candidate_roots'] = padded_candidate_roots
         if motion_metadata is not None:
-            for key in ('species_label', 'species_group', 'action_tags', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond'):
+            for key in ('species_label', 'species_group', 'action_tags', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'global_energy_cond'):
                 if key in motion_metadata:
                     item[key] = motion_metadata[key]
         if motion_name is not None:

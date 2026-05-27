@@ -825,6 +825,60 @@ class ReferencePriorEncoder(nn.Module):
         weights_sum = weights.sum(dim=2, keepdim=True).clamp_min(eps)
         return (values * weights.unsqueeze(-1)).sum(dim=2) / weights_sum
 
+    @staticmethod
+    def _coerce_global_energy_playspeed_cond(raw_playspeed_cond, batch_size, device, dtype):
+        if raw_playspeed_cond is None:
+            return None
+        if not torch.is_tensor(raw_playspeed_cond):
+            raw_playspeed_cond = torch.as_tensor(raw_playspeed_cond, device=device)
+        raw_playspeed_cond = raw_playspeed_cond.to(device=device)
+        if raw_playspeed_cond.dim() == 0:
+            raw_playspeed_cond = raw_playspeed_cond.reshape(1)
+        raw_playspeed_cond = raw_playspeed_cond.reshape(-1)
+        if raw_playspeed_cond.numel() == 1 and batch_size != 1:
+            raw_playspeed_cond = raw_playspeed_cond.expand(batch_size)
+        elif raw_playspeed_cond.numel() != batch_size:
+            raise ValueError(
+                "playspeed_cond batch dimension must match the motion batch size, got "
+                f"{raw_playspeed_cond.numel()} for batch {batch_size}"
+            )
+        if not torch.isfinite(raw_playspeed_cond).all():
+            raise ValueError("playspeed_cond must be finite")
+        if bool((raw_playspeed_cond <= 0).any()):
+            raise ValueError("playspeed_cond must be positive")
+        return raw_playspeed_cond.to(dtype=dtype).view(batch_size, 1, 1, 1)
+
+    @staticmethod
+    def _resample_motion_time_axis(motion, target_frame_count):
+        # Fallback global-energy paths may only have the internal-window clip
+        # plus playspeed_cond. Rebuild the inferred physical frame count first,
+        # then measure energy on that cadence instead of the stretched window.
+        source_frame_count = int(motion.shape[-1])
+        target_frame_count = int(target_frame_count)
+        if target_frame_count <= 0:
+            raise ValueError(f"target_frame_count must be positive, got {target_frame_count}")
+        if source_frame_count == target_frame_count:
+            return motion
+
+        motion_tjf = motion.permute(2, 0, 1)
+        src = torch.linspace(
+            0.0,
+            float(source_frame_count - 1),
+            target_frame_count,
+            device=motion.device,
+            dtype=motion.dtype,
+        )
+        lo = torch.floor(src).to(dtype=torch.long).clamp(0, source_frame_count - 1)
+        hi = torch.minimum(lo + 1, torch.full_like(lo, source_frame_count - 1))
+        w = (src - torch.floor(src)).view(-1, 1, 1).to(dtype=motion_tjf.dtype)
+        resampled = motion_tjf.index_select(0, lo) * (1.0 - w) + motion_tjf.index_select(0, hi) * w
+
+        if motion.shape[1] >= 13:
+            nearest = torch.round(src).to(dtype=torch.long).clamp(0, source_frame_count - 1)
+            resampled[..., 12] = (motion_tjf.index_select(0, nearest)[..., 12] >= 0.5).to(dtype=resampled.dtype)
+
+        return resampled.permute(1, 2, 0).contiguous()
+
     @classmethod
     def _extract_joint_motion_inputs(cls, motion, n_joints):
         if motion.dim() != 4:
@@ -877,7 +931,38 @@ class ReferencePriorEncoder(nn.Module):
         }
 
     @classmethod
-    def compute_global_energy_condition(cls, motion, n_joints):
+    def compute_global_energy_condition(cls, motion, n_joints, playspeed_cond=None):
+        if playspeed_cond is not None:
+            if motion.dim() != 4:
+                raise ValueError(f"reference_motion must have shape (B, J, F, T), got {tuple(motion.shape)}")
+            batch_size = motion.shape[0]
+            source_length_ratio = cls._coerce_global_energy_playspeed_cond(
+                playspeed_cond,
+                batch_size,
+                motion.device,
+                motion.dtype,
+            ).reshape(batch_size)
+            inferred_source_frames = torch.round(source_length_ratio * float(motion.shape[-1])).to(dtype=torch.long).clamp_min(1)
+            if bool((inferred_source_frames != motion.shape[-1]).any()):
+                # Scaling rot_delta alone is not enough: the energy mean/std is
+                # also averaged across the wrong number of frames. Resample back
+                # to the inferred physical length before extracting statistics.
+                n_joints_tensor = torch.as_tensor(n_joints, device=motion.device, dtype=torch.long).reshape(batch_size)
+                sample_conditions = []
+                for batch_index in range(batch_size):
+                    sample_motion = motion[batch_index]
+                    sample_source_frames = int(inferred_source_frames[batch_index].item())
+                    if sample_source_frames != motion.shape[-1]:
+                        sample_motion = cls._resample_motion_time_axis(sample_motion, sample_source_frames)
+                    sample_conditions.append(
+                        cls.compute_global_energy_condition(
+                            sample_motion.unsqueeze(0),
+                            n_joints=n_joints_tensor[batch_index:batch_index + 1],
+                            playspeed_cond=None,
+                        )
+                    )
+                return torch.cat(sample_conditions, dim=0)
+
         motion_inputs = cls._extract_joint_motion_inputs(motion, n_joints)
         dtype = motion_inputs['dtype']
         frame_count = motion_inputs['frame_count']

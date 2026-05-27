@@ -14,6 +14,7 @@ import sys
 from unittest.mock import patch
 
 import numpy as np
+import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -27,6 +28,7 @@ from data_loaders.truebones.data.dataset import (
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_process import infer_translation_root_index_from_features
+from model.anytop import ReferencePriorEncoder
 
 
 def _find_motion(pattern: str) -> str:
@@ -56,8 +58,8 @@ def _normalize_motion(raw: np.ndarray, cond: dict[str, np.ndarray]) -> np.ndarra
     return np.nan_to_num((raw - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
 
 
-def _resample_raw_then_normalize(raw: np.ndarray, cond: dict[str, np.ndarray], target_frames: int, *, loop_terminal: bool) -> np.ndarray:
-    resampled = _resample_motion_features(raw, target_frames, loop_terminal=loop_terminal)
+def _resample_raw_then_normalize(raw: np.ndarray, cond: dict[str, np.ndarray], target_frames: int) -> np.ndarray:
+    resampled = _resample_motion_features(raw, target_frames)
     return _normalize_motion(resampled, cond)
 
 
@@ -99,7 +101,7 @@ def _build_truebones(**kwargs) -> Truebones:
         return Truebones(**kwargs)
 
 
-def test_speed_resample_scales_velocity_and_keeps_contact_binary() -> None:
+def test_speed_resample_preserves_velocity_and_keeps_contact_binary() -> None:
     source = np.zeros((4, 2, 13), dtype=np.float32)
     source[:, :, 0] = np.array([0.0, 1.0, 3.0, 6.0], dtype=np.float32)[:, None]
     source[:, :, 1] = np.array([0.0, 0.5, 1.0, 2.0], dtype=np.float32)[:, None]
@@ -115,15 +117,46 @@ def test_speed_resample_scales_velocity_and_keeps_contact_binary() -> None:
     lo = np.floor(src).astype(np.int64).clip(0, 3)
     hi = np.minimum(lo + 1, 3)
     w = (src - np.floor(src))[:, None, None].astype(np.float32)
-    expected_vel = (source[lo, :, 9:12] * (1.0 - w) + source[hi, :, 9:12] * w) * (3.0 / 6.0)
-    expected_vel[-1] = expected_vel[-2]
+    expected_vel = source[lo, :, 9:12] * (1.0 - w) + source[hi, :, 9:12] * w
 
     assert_close("resampled velocity", resampled[:, :, 9:12], expected_vel)
     assert_close("zero velocity channel", resampled[:, :, 11], np.zeros_like(resampled[:, :, 11]))
     assert set(np.unique(resampled[:, :, 12]).tolist()).issubset({0.0, 1.0})
 
 
-def test_loop_speed_resample_keeps_scaled_terminal_velocity() -> None:
+def test_speed_resample_preserves_global_energy_magnitude() -> None:
+    source = np.zeros((4, 2, 13), dtype=np.float32)
+    source[:, :, 9:12] = np.array([1.25, 0.0, 0.0], dtype=np.float32)
+
+    resampled = _resample_motion_features(source, 7)
+    source_tensor = torch.from_numpy(source).permute(1, 2, 0).unsqueeze(0)
+    resampled_tensor = torch.from_numpy(resampled).permute(1, 2, 0).unsqueeze(0)
+
+    source_energy = ReferencePriorEncoder.compute_global_energy_condition(source_tensor, torch.tensor([2]))
+    resampled_energy = ReferencePriorEncoder.compute_global_energy_condition(resampled_tensor, torch.tensor([2]))
+
+    assert_close("global energy after window stretch", resampled_energy.numpy(), source_energy.numpy())
+
+
+def test_speed_resample_preserves_rotation_only_global_energy_with_playspeed() -> None:
+    source = np.zeros((4, 2, 13), dtype=np.float32)
+    source[:, :, 3] = np.arange(4, dtype=np.float32)[:, None]
+
+    resampled = _resample_motion_features(source, 7)
+    source_tensor = torch.from_numpy(source).permute(1, 2, 0).unsqueeze(0)
+    resampled_tensor = torch.from_numpy(resampled).permute(1, 2, 0).unsqueeze(0)
+
+    source_energy = ReferencePriorEncoder.compute_global_energy_condition(source_tensor, torch.tensor([2]))
+    resampled_energy = ReferencePriorEncoder.compute_global_energy_condition(
+        resampled_tensor,
+        torch.tensor([2]),
+        playspeed_cond=torch.tensor([4.0 / 7.0], dtype=torch.float32),
+    )
+
+    assert_close("rotation-only energy after window stretch", resampled_energy.numpy(), source_energy.numpy(), atol=1e-5)
+
+
+def test_loop_speed_resample_preserves_terminal_velocity() -> None:
     source = np.zeros((4, 1, 13), dtype=np.float32)
     source[:, 0, 0:3] = np.array(
         [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 1.0, 0.0], [4.0, 1.0, 1.0]],
@@ -134,9 +167,9 @@ def test_loop_speed_resample_keeps_scaled_terminal_velocity() -> None:
         dtype=np.float32,
     )
 
-    resampled = _resample_motion_features(source, 6, loop_terminal=True)
+    resampled = _resample_motion_features(source, 6)
 
-    assert_close("loop terminal velocity", resampled[-1, :, 9:12], source[-1, :, 9:12] * (3.0 / 5.0))
+    assert_close("loop terminal velocity", resampled[-1, :, 9:12], source[-1, :, 9:12])
 
 
 def test_loop_padding_updates_effective_length() -> None:
@@ -164,7 +197,7 @@ def test_loop_padding_updates_effective_length() -> None:
     raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
     raw_len = raw.shape[0]
     assert raw_len < NUM_FRAMES, "loop regression sample no longer needs padding"
-    expected = _resample_raw_then_normalize(raw, cond, NUM_FRAMES, loop_terminal=True)
+    expected = _resample_raw_then_normalize(raw, cond, NUM_FRAMES)
 
     assert np.isclose(float(motion_metadata["loop_phase_length"]), float(NUM_FRAMES))
     assert np.isclose(float(motion_metadata["playspeed_cond"]), float(raw_len) / float(NUM_FRAMES))
@@ -190,7 +223,7 @@ def test_loop_padding_can_tile_multiple_cycles_before_resample() -> None:
         sample = motion_dataset.prepare_sample_by_name(LOOP_MOTION, target_num_frames=NUM_FRAMES, loop_offset=0)
     motion, m_length, *_rest, mean, std, _max_joints, motion_metadata, name, _joint_mask_dict = sample
 
-    expected = _resample_raw_then_normalize(_tile_loop_motion(raw, 2), cond, NUM_FRAMES, loop_terminal=True)
+    expected = _resample_raw_then_normalize(_tile_loop_motion(raw, 2), cond, NUM_FRAMES)
 
     assert name == LOOP_MOTION, f"unexpected sample: {name}"
     assert motion.shape[0] == NUM_FRAMES
@@ -223,7 +256,7 @@ def test_loop_padding_random_offset_wraps_without_truncation() -> None:
             target_num_frames=NUM_FRAMES,
             loop_offset=offset,
         )
-    expected = _resample_raw_then_normalize(_circular_roll_motion(raw, offset), cond, NUM_FRAMES, loop_terminal=True)
+    expected = _resample_raw_then_normalize(_circular_roll_motion(raw, offset), cond, NUM_FRAMES)
     assert motion.shape[0] == NUM_FRAMES, f"expected random-offset loop fill to keep {NUM_FRAMES} frames"
     assert m_length == NUM_FRAMES, f"effective length should remain {NUM_FRAMES}, got {m_length}"
     assert_close("loop-filled motion with wraparound offset", motion, expected)
@@ -321,7 +354,7 @@ def test_loop_uncond_keeps_legacy_loop_tile_but_non_loop_metadata() -> None:
     data = motion_dataset.data_dict[LOOP_MOTION]
     cond = motion_dataset.cond_dict[data["object_type"]]
     raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
-    expected = _resample_raw_then_normalize(raw, cond, NUM_FRAMES, loop_terminal=False)
+    expected = _resample_raw_then_normalize(raw, cond, NUM_FRAMES)
 
     assert name == LOOP_MOTION, f"unexpected sample: {name}"
     assert motion.shape[0] == NUM_FRAMES

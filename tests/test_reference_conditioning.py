@@ -335,6 +335,61 @@ def test_build_global_energy_conditioning_sets_clip_condition() -> None:
     assert torch.allclose(model_kwargs["y"]["global_energy_cond"], expected)
 
 
+def test_build_global_energy_conditioning_respects_existing_precomputed_value() -> None:
+    diffusion = GaussianDiffusion(
+        betas=np.array([0.001, 0.002, 0.003], dtype=np.float64),
+        model_mean_type=ModelMeanType.START_X,
+        model_var_type=ModelVarType.FIXED_SMALL,
+        loss_type=LossType.MSE,
+    )
+    model = _DummyModel(global_energy_cond=True)
+    x_start = torch.zeros((1, 3, 13, 7), dtype=torch.float32)
+    x_start[:, :, 3, :] = torch.linspace(0.0, 3.0, steps=7, dtype=torch.float32).view(1, 1, 7)
+    precomputed = torch.tensor([[0.75, 0.01]], dtype=torch.float32)
+    model_kwargs = {
+        "y": {
+            "lengths": torch.tensor([7], dtype=torch.int64),
+            "n_joints": torch.tensor([3], dtype=torch.int64),
+            "playspeed_cond": torch.tensor([4.0 / 7.0], dtype=torch.float32),
+            "global_energy_cond": precomputed.clone(),
+        }
+    }
+
+    diffusion._build_global_energy_conditioning(model, x_start, model_kwargs)
+
+    assert torch.equal(model_kwargs["y"]["global_energy_cond"], precomputed)
+
+
+def test_build_global_energy_conditioning_uses_playspeed_for_rotation_energy() -> None:
+    diffusion = GaussianDiffusion(
+        betas=np.array([0.001, 0.002, 0.003], dtype=np.float64),
+        model_mean_type=ModelMeanType.START_X,
+        model_var_type=ModelVarType.FIXED_SMALL,
+        loss_type=LossType.MSE,
+    )
+    model = _DummyModel(global_energy_cond=True)
+
+    physical_motion = torch.zeros((1, 3, 13, 4), dtype=torch.float32)
+    physical_motion[:, :, 3, :] = torch.arange(4, dtype=torch.float32).view(1, 1, 4)
+    stretched_motion = torch.zeros((1, 3, 13, 7), dtype=torch.float32)
+    stretched_motion[:, :, 3, :] = torch.linspace(0.0, 3.0, steps=7, dtype=torch.float32).view(1, 1, 7)
+    model_kwargs = {
+        "y": {
+            "lengths": torch.tensor([7], dtype=torch.int64),
+            "n_joints": torch.tensor([3], dtype=torch.int64),
+            "playspeed_cond": torch.tensor([4.0 / 7.0], dtype=torch.float32),
+        }
+    }
+
+    diffusion._build_global_energy_conditioning(model, stretched_motion, model_kwargs)
+
+    expected = ReferencePriorEncoder.compute_global_energy_condition(
+        physical_motion,
+        n_joints=model_kwargs["y"]["n_joints"],
+    )
+    assert torch.allclose(model_kwargs["y"]["global_energy_cond"], expected, atol=1e-5)
+
+
 def test_anytop_forward_accepts_reference_motion_with_independent_frame_count() -> None:
     model = AnyTop(
         max_joints=4,
@@ -553,7 +608,7 @@ def test_prepare_reference_prior_bundle_preserves_reference_length_and_zero_feat
         "joints_names_embs": np.zeros((2, 8), dtype=np.float32),
     }
 
-    ref_tensor, reference_kwargs, reference_frame_count, output_frame_count = _prepare_reference_prior_bundle(
+    ref_tensor, reference_kwargs, reference_frame_count, reference_source_frame_count, output_frame_count = _prepare_reference_prior_bundle(
         str(reference_motion_path),
         "TestObject",
         source_cond,
@@ -563,6 +618,7 @@ def test_prepare_reference_prior_bundle_preserves_reference_length_and_zero_feat
     )
 
     assert reference_frame_count == 5
+    assert reference_source_frame_count == 5
     assert output_frame_count == 5
     assert ref_tensor.shape == (1, 2, 13, 5)
     assert torch.equal(reference_kwargs["reference_n_joints"], torch.tensor([2], dtype=torch.long))
@@ -620,6 +676,7 @@ def test_prepare_reference_for_mode_controlnet_matches_img2img_when_reference_is
     )
 
     assert bundle["loaded_reference_frame_count"] == 5
+    assert bundle["reference_source_frame_count"] == 5
     assert bundle["loaded_reference_joint_count"] == 2
     assert bundle["output_frame_count"] == 5
     assert bundle["reference_motion"].shape == (1, 4, 13, 5)
@@ -652,6 +709,7 @@ def test_prepare_reference_for_mode_controlnet_truncates_longer_reference_to_req
     )
 
     assert bundle["loaded_reference_frame_count"] == 6
+    assert bundle["reference_source_frame_count"] == 6
     assert bundle["output_frame_count"] == 4
     assert bundle["reference_motion"].shape == (1, 4, 13, 4)
 
@@ -690,6 +748,7 @@ def test_prepare_reference_for_mode_controlnet_uses_target_metadata(tmp_path: Pa
     )
 
     assert bundle["loaded_reference_joint_count"] == 3
+    assert bundle["reference_source_frame_count"] == 5
     assert bundle["output_frame_count"] == 5
     assert torch.equal(bundle["reference_conditioning_kwargs"]["reference_n_joints"], torch.tensor([3]))
     assert bundle["reference_motion"].shape == (1, 4, 13, 5)

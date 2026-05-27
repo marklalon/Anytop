@@ -124,7 +124,7 @@ def resolve_global_energy_condition(model, global_energy_mean, global_energy_std
     return raw.unsqueeze(0).expand(batch_size, -1).clone()
 
 
-def _compute_global_energy_from_reference(ref_motion, reference_conditioning_kwargs):
+def _compute_global_energy_from_reference(ref_motion, reference_conditioning_kwargs, playspeed_cond=None):
     """Extract raw global energy [mean, std] from a reference motion tensor.
 
     ``ref_motion`` must be a (B, J, F, T) tensor in the model feature space
@@ -138,6 +138,7 @@ def _compute_global_energy_from_reference(ref_motion, reference_conditioning_kwa
     return ReferencePriorEncoder.compute_global_energy_condition(
         ref_motion,
         n_joints,
+        playspeed_cond=playspeed_cond,
     )
 
 
@@ -444,7 +445,6 @@ def _prepare_reference_prior_bundle(
     requested_output_frame_count=None,
     requested_visible_frame_count=None,
     min_motion_length=20,
-    loop_terminal=False,
 ):
     if source_cond is None:
         raise KeyError(
@@ -467,8 +467,9 @@ def _prepare_reference_prior_bundle(
         visible_frames = output_frame_count if requested_visible_frame_count is None else int(requested_visible_frame_count)
         source_frames = min(max_source_frames, max(int(min_motion_length), visible_frames))
         ref_raw = ref_raw[:source_frames]
+    reference_source_frame_count = int(ref_raw.shape[0])
     if ref_raw.shape[0] != output_frame_count:
-        ref_raw = _resample_motion_features(ref_raw, output_frame_count, loop_terminal=bool(loop_terminal))
+        ref_raw = _resample_motion_features(ref_raw, output_frame_count)
     source_parents = np.asarray(source_cond['parents'], dtype=np.int64)
     source_offsets = np.asarray(source_cond['offsets'], dtype=np.float32)
     source_name_embs = np.asarray(source_cond['joints_names_embs'], dtype=np.float32)
@@ -531,7 +532,7 @@ def _prepare_reference_prior_bundle(
         'reference_parents': [source_parents.copy() for _ in range(batch_size)],
         'reference_joints_names_embs': reference_name_embs,
     }
-    return ref_tensor, reference_conditioning_kwargs, loaded_reference_frame_count, output_frame_count
+    return ref_tensor, reference_conditioning_kwargs, loaded_reference_frame_count, reference_source_frame_count, output_frame_count
 
 
 def _prepare_img2img_reference_bundle(
@@ -545,7 +546,6 @@ def _prepare_img2img_reference_bundle(
     requested_output_frame_count,
     requested_visible_frame_count=None,
     min_motion_length=20,
-    loop_terminal=False,
 ):
     ref_raw = np.load(reference_motion_path).astype(np.float32)
     if ref_raw.ndim != 3:
@@ -560,8 +560,9 @@ def _prepare_img2img_reference_bundle(
         visible_frames = output_frame_count if requested_visible_frame_count is None else int(requested_visible_frame_count)
         source_frames = min(max_source_frames, max(int(min_motion_length), visible_frames))
         ref_raw = ref_raw[:source_frames]
+    reference_source_frame_count = int(ref_raw.shape[0])
     if ref_raw.shape[0] != output_frame_count:
-        ref_raw = _resample_motion_features(ref_raw, output_frame_count, loop_terminal=bool(loop_terminal))
+        ref_raw = _resample_motion_features(ref_raw, output_frame_count)
 
     obj_mean, obj_std = _get_reference_normalization_stats(
         target_cond,
@@ -598,6 +599,7 @@ def _prepare_img2img_reference_bundle(
         'reference_conditioning_kwargs': None,
         'output_frame_count': output_frame_count,
         'loaded_reference_frame_count': loaded_reference_frame_count,
+        'reference_source_frame_count': reference_source_frame_count,
         'loaded_reference_joint_count': loaded_reference_joint_count,
     }
 
@@ -616,11 +618,10 @@ def _prepare_reference_for_mode(
     requested_output_frame_count,
     requested_visible_frame_count=None,
     min_motion_length=20,
-    loop_terminal=False,
 ):
     mode = str(reference_mode or 'img2img').strip().lower()
     if mode == 'controlnet':
-        ref_motion, reference_conditioning_kwargs, loaded_reference_frame_count, output_frame_count = _prepare_reference_prior_bundle(
+        ref_motion, reference_conditioning_kwargs, loaded_reference_frame_count, reference_source_frame_count, output_frame_count = _prepare_reference_prior_bundle(
             reference_motion_path,
             target_type,
             target_cond,
@@ -630,7 +631,6 @@ def _prepare_reference_for_mode(
             requested_output_frame_count=requested_output_frame_count,
             requested_visible_frame_count=requested_visible_frame_count,
             min_motion_length=min_motion_length,
-            loop_terminal=loop_terminal,
         )
         loaded_reference_joint_count = int(reference_conditioning_kwargs['reference_n_joints'][0].item())
         return {
@@ -638,6 +638,7 @@ def _prepare_reference_for_mode(
             'reference_conditioning_kwargs': reference_conditioning_kwargs,
             'output_frame_count': output_frame_count,
             'loaded_reference_frame_count': loaded_reference_frame_count,
+            'reference_source_frame_count': reference_source_frame_count,
             'loaded_reference_joint_count': loaded_reference_joint_count,
         }
 
@@ -651,7 +652,6 @@ def _prepare_reference_for_mode(
         requested_output_frame_count=requested_output_frame_count,
         requested_visible_frame_count=requested_visible_frame_count,
         min_motion_length=min_motion_length,
-        loop_terminal=loop_terminal,
     )
 
 
@@ -1290,12 +1290,12 @@ def main(args=None, cond_dict=None):
                 requested_output_frame_count=n_frames,
                 requested_visible_frame_count=target_output_frames,
                 min_motion_length=min_motion_length,
-                loop_terminal=bool(getattr(args, 'loop', False)),
             )
             ref_motion = reference_bundle['reference_motion']
             reference_conditioning_kwargs = reference_bundle['reference_conditioning_kwargs']
             output_frame_count = reference_bundle['output_frame_count']
             loaded_reference_frame_count = reference_bundle['loaded_reference_frame_count']
+            reference_source_frame_count = reference_bundle.get('reference_source_frame_count', loaded_reference_frame_count)
             loaded_reference_joint_count = reference_bundle['loaded_reference_joint_count']
 
             print(f'  Reference motion loaded: {effective_reference_path}')
@@ -1358,6 +1358,7 @@ def main(args=None, cond_dict=None):
                     global_energy_condition = _compute_global_energy_from_reference(
                         ref_motion,
                         reference_conditioning_kwargs,
+                        playspeed_cond=float(reference_source_frame_count) / float(output_frame_count),
                     )
                     if global_energy_condition is not None:
                         ge_mean = float(global_energy_condition[0, 0])
@@ -1487,7 +1488,6 @@ def main(args=None, cond_dict=None):
                 motion_np = _resample_motion_features(
                     motion_np,
                     target_output_frames,
-                    loop_terminal=bool(getattr(args, 'loop', False)),
                 )
 
             if inpaint_y_spans:

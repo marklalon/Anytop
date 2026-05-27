@@ -105,7 +105,7 @@ def create_temporal_mask_for_window(window, max_len, circular=False):
     return mask
 
 
-def _resample_motion_features(motion, target_num_frames, *, loop_terminal=False):
+def _resample_motion_features(motion, target_num_frames):
     source_frames = int(motion.shape[0])
     target_num_frames = int(target_num_frames)
     if source_frames <= 0:
@@ -125,21 +125,42 @@ def _resample_motion_features(motion, target_num_frames, *, loop_terminal=False)
         nearest = np.rint(src).astype(np.int64).clip(0, source_frames - 1)
         resampled[..., 12] = (motion[nearest, :, 12] >= 0.5).astype(resampled.dtype, copy=False)
 
-        time_step_scale = (
-            float(source_frames - 1) / float(target_num_frames - 1)
-            if target_num_frames > 1 else 1.0
-        )
-        resampled[..., 9:12] *= time_step_scale
-        if target_num_frames > 1 and not loop_terminal:
-            resampled[-1, :, 9:12] = resampled[-2, :, 9:12]
-
     return resampled.astype(motion.dtype, copy=False)
 
 
-def _resample_normalized_motion_features(motion, target_num_frames, mean, std, *, loop_terminal=False):
+def _resample_normalized_motion_features(motion, target_num_frames, mean, std):
     raw_motion = motion * std[None, :, :] + mean[None, :, :]
-    raw_resampled = _resample_motion_features(raw_motion, target_num_frames, loop_terminal=loop_terminal)
+    raw_resampled = _resample_motion_features(raw_motion, target_num_frames)
     return np.nan_to_num((raw_resampled - mean[None, :, :]) / std[None, :, :]).astype(np.float32, copy=False)
+
+
+def _compute_global_energy_condition_np(motion: np.ndarray, n_joints: int) -> np.ndarray:
+    # Global energy must describe the clip's physical cadence before we stretch
+    # or squeeze it into the fixed training window. After resampling, the model
+    # only sees the windowed clip plus playspeed_cond.
+    #
+    # n_joints is explicit so the statistic stays aligned with the encoder's
+    # valid_joints mask even if a future caller passes a joint-padded motion.
+    if motion.ndim != 3 or motion.shape[-1] < 13:
+        raise ValueError(f"Expected normalized motion with shape (T, J, >=13), got {motion.shape}.")
+    n_joints = int(n_joints)
+    if n_joints <= 0 or n_joints > motion.shape[1]:
+        raise ValueError(
+            f"n_joints must be in (0, {motion.shape[1]}], got {n_joints}."
+        )
+
+    motion = motion[:, :n_joints, :]
+    velocity_norm = np.linalg.norm(motion[..., 9:12], axis=-1)
+    rotation_delta = np.zeros_like(motion[..., 3:9])
+    if motion.shape[0] > 1:
+        rotation_delta[1:] = motion[1:, :, 3:9] - motion[:-1, :, 3:9]
+    rotation_delta_norm = np.linalg.norm(rotation_delta, axis=-1)
+    energy = np.sqrt(velocity_norm * velocity_norm + rotation_delta_norm * rotation_delta_norm + 1e-6)
+
+    frame_mean = energy.mean(axis=1)
+    frame_second_moment = (energy * energy).mean(axis=1)
+    frame_std = np.sqrt(np.maximum(frame_second_moment - frame_mean * frame_mean, 0.0) + 1e-6)
+    return np.asarray([frame_mean.mean(), frame_std.mean()], dtype=np.float32)
 
 
 def _circular_roll_motion(motion, offset):
@@ -688,7 +709,7 @@ class MotionDataset(data.Dataset):
         # When the random draw succeeds, loop_uncond is False (loop path active).
         # When it fails, loop_uncond is True — the motion is still physically a
         # loop, but the model is *told* it is not (is_loop=False in metadata,
-        # no circular temporal mask, loop_terminal=False at resample).
+        # no circular temporal mask).
         #
         # IMPORTANT: loop_uncond only controls the *label / conditioning*
         # exposed to the model.  The data-level augmentations below (circular
@@ -762,6 +783,12 @@ class MotionDataset(data.Dataset):
 
         source_len_for_playspeed = int(m_length)
         playspeed_cond = float(source_len_for_playspeed) / float(target_num_frames)
+        # Capture clip-level energy before window resampling. The later
+        # resample changes temporal density for batching, not the motion's
+        # physical velocity / rotation-energy semantics. Pass the real joint
+        # count explicitly so the statistic matches the encoder's valid-joint
+        # mask if a future caller pre-pads the joint axis.
+        global_energy_cond = _compute_global_energy_condition_np(motion, n_joints=int(motion.shape[1]))
 
         if m_length != target_num_frames:
             motion = _resample_normalized_motion_features(
@@ -769,7 +796,6 @@ class MotionDataset(data.Dataset):
                 target_num_frames,
                 mean,
                 std,
-                loop_terminal=bool(loop_condition_active),
             )
             m_length = target_num_frames
 
@@ -780,6 +806,7 @@ class MotionDataset(data.Dataset):
         motion_metadata['is_loop'] = bool(loop_condition_active)
         motion_metadata['loop_full_cycle'] = bool(loop_full_cycle)
         motion_metadata['playspeed_cond'] = float(playspeed_cond)
+        motion_metadata['global_energy_cond'] = global_energy_cond
         # loop_phase_length: the expected single-cycle period in output frames.
         # When multiple tile copies were resampled to one target window the
         # effective cycle length is compressed proportionally.

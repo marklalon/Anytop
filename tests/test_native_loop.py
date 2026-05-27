@@ -30,7 +30,13 @@ class _CaptureDecoder(torch.nn.Module):
         return kwargs['tgt']
 
 
-def _make_batch_item(is_loop: bool, loop_full_cycle: bool, loop_phase_length: float | None = None, playspeed_cond: float = 1.0):
+def _make_batch_item(
+    is_loop: bool,
+    loop_full_cycle: bool,
+    loop_phase_length: float | None = None,
+    playspeed_cond: float = 1.0,
+    global_energy_cond: list[float] | None = None,
+):
     n_frames = 5
     n_joints = 2
     n_feats = 13
@@ -56,6 +62,8 @@ def _make_batch_item(is_loop: bool, loop_full_cycle: bool, loop_phase_length: fl
         'loop_phase_length': loop_phase_length,
         'playspeed_cond': playspeed_cond,
     }
+    if global_energy_cond is not None:
+        metadata['global_energy_cond'] = global_energy_cond
     extra_cond = {'joint_mask_candidate_roots': np.zeros((n_joints,), dtype=np.bool_)}
     return (
         motion,
@@ -100,7 +108,7 @@ class NativeLoopTests(unittest.TestCase):
         motion = np.zeros((4, 1, 1), dtype=np.float32)
         motion[:, 0, 0] = np.array([0.0, 1.0, 2.0, 0.0], dtype=np.float32)
 
-        resampled = _resample_motion_features(motion, 7, loop_terminal=True)
+        resampled = _resample_motion_features(motion, 7)
 
         self.assertAlmostEqual(float(resampled[0, 0, 0]), 0.0)
         self.assertAlmostEqual(float(resampled[-1, 0, 0]), 0.0)
@@ -146,6 +154,13 @@ class NativeLoopTests(unittest.TestCase):
         self.assertTrue(torch.equal(cond['y']['loop_phase_lengths'], torch.tensor([3.0, 5.0], dtype=torch.float32)))
         self.assertTrue(torch.equal(cond['y']['playspeed_cond'], torch.tensor([0.5, 2.0], dtype=torch.float32)))
 
+    def test_truebones_collate_rejects_mixed_global_energy_condition(self):
+        with self.assertRaises(ValueError):
+            truebones_batch_collate([
+                _make_batch_item(True, True, global_energy_cond=[0.7, 0.2]),
+                _make_batch_item(False, False),
+            ])
+
     def test_anytop_coerces_default_playspeed_to_one(self):
         model = AnyTop(
             max_joints=4,
@@ -161,6 +176,22 @@ class NativeLoopTests(unittest.TestCase):
         value = model._coerce_playspeed_cond(None, batch_size=2, device=torch.device('cpu'), dtype=torch.float32)
 
         self.assertTrue(torch.equal(value, torch.ones(2, 1, dtype=torch.float32)))
+
+    def test_velocity_consistency_scales_physical_velocity_by_playspeed(self):
+        diffusion = self._make_diffusion()
+        model_output = torch.zeros(1, 1, 13, 7, dtype=torch.float32)
+        model_output[0, 0, 0, :] = torch.linspace(0.0, 3.0, steps=7)
+        model_output[0, 0, 9, :] = 1.0
+        spat_mask = torch.ones(1, 1, 1, 1, dtype=torch.float32)
+
+        loss = diffusion.velocity_consistency_loss(
+            model_output,
+            spat_mask,
+            n_joints=torch.tensor([1]),
+            y={'playspeed_cond': torch.tensor([4.0 / 7.0], dtype=torch.float32)},
+        )
+
+        self.assertLess(float(loss.item()), 1e-6)
 
     def test_loop_wrap_loss_skips_non_loop_samples(self):
         diffusion = self._make_diffusion()
@@ -215,6 +246,24 @@ class NativeLoopTests(unittest.TestCase):
         self.assertNotIn('loop_wrap_contact', terms)
         self.assertLess(float(terms['loop_wrap_terminal_vel'].item()), 1e-6)
 
+    def test_loop_wrap_terminal_velocity_uses_physical_step_scale(self):
+        diffusion = self._make_diffusion()
+        model_output = torch.zeros(1, 1, 13, 7, dtype=torch.float32)
+        model_output[:, :, 3, :] = 1.0
+        model_output[:, :, 7, :] = 1.0
+        model_output[0, 0, 0, -1] = -0.5
+        model_output[0, 0, 9, -1] = 1.0
+        y = {
+            'is_loop': torch.tensor([True]),
+            'loop_full_cycle': torch.tensor([True]),
+            'translation_root_index': [0],
+            'playspeed_cond': torch.tensor([4.0 / 7.0], dtype=torch.float32),
+        }
+
+        terms = diffusion.loop_wrap_loss(model_output, y, n_joints=torch.tensor([1]))
+
+        self.assertLess(float(terms['loop_wrap_terminal_vel'].item()), 1e-6)
+
     def test_loop_root_xz_closure_uses_integrated_root_velocity(self):
         diffusion = self._make_diffusion()
         model_output = torch.zeros(2, 3, 13, 6, dtype=torch.float32)
@@ -262,6 +311,21 @@ class NativeLoopTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(float(loss.item()), 12.5, places=6)
+
+    def test_loop_root_xz_closure_scales_physical_velocity_by_playspeed(self):
+        diffusion = self._make_diffusion()
+        model_output = torch.zeros(1, 1, 13, 7, dtype=torch.float32)
+        model_output[0, 0, 9, :6] = 1.0
+        y = {
+            'is_loop': torch.tensor([True]),
+            'loop_full_cycle': torch.tensor([True]),
+            'translation_root_index': [0],
+            'playspeed_cond': torch.tensor([4.0 / 7.0], dtype=torch.float32),
+        }
+
+        loss = diffusion.loop_root_xz_closure_loss(model_output, y, n_joints=torch.tensor([1]))
+
+        self.assertTrue(torch.allclose(loss, torch.tensor(4.5), atol=1e-6))
 
     def test_create_gaussian_diffusion_preserves_loop_args(self):
         class Args:
