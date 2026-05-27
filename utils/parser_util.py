@@ -33,6 +33,12 @@ def extract_args(args, args_to_overwrite, model_path):
         if a in model_args.keys():
             setattr(args, a, model_args[a])
 
+    for a, default in (('num_frames', 60), ('min_motion_length', 20)):
+        if a in model_args:
+            setattr(args, a, model_args[a])
+        elif not hasattr(args, a):
+            setattr(args, a, default)
+
     # backward compatibility
     if isinstance(args.emb_trans_dec, bool):
         if args.emb_trans_dec:
@@ -193,6 +199,8 @@ def add_training_options(parser):
                        help="Training will stop after the specified number of steps.")
     group.add_argument("--num_frames", default=60, type=int,
                        help="Limit for the maximal number of frames. In HumanML3D and KIT this field is ignored.")
+    group.add_argument("--min_motion_length", default=20, type=int,
+                       help="Variable-length pipeline lower bound in frames. Inference rejects shorter requested lengths.")
     group.add_argument("--sample_limit", default=0, type=int,
                        help="Limit the number of motion clips loaded for tiny overfit/debug runs. 0 keeps the full dataset.")
     group.add_argument("--motion_cache_size", default=0, type=int,

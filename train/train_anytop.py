@@ -131,6 +131,7 @@ def create_training_data_loader(args):
         drop_last=getattr(args, 'drop_last', False),
         action_tags=getattr(args, 'action_tags', ''),
         motion_cache_size=getattr(args, 'motion_cache_size', 0),
+        min_motion_length=getattr(args, 'min_motion_length', 20),
         main_process_prefetch_batches=getattr(args, 'main_process_prefetch_batches', 0),
         aug_speed_range=getattr(args, 'aug_speed_range', 0.0),
         loop_cond_prob=loop_cond_prob,

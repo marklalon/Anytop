@@ -136,50 +136,10 @@ def _resample_motion_features(motion, target_num_frames, *, loop_terminal=False)
     return resampled.astype(motion.dtype, copy=False)
 
 
-def _periodic_resample_motion(motion, target_num_frames):
-    return _resample_motion_features(motion, target_num_frames, loop_terminal=True)
-
-
-def _coerce_loop_num_cycles(motion_name, raw_loop_num_cycles):
-    loop_num_cycles = 1.0 if raw_loop_num_cycles is None else float(raw_loop_num_cycles)
-    if not np.isfinite(loop_num_cycles) or loop_num_cycles <= 0.0:
-        raise ValueError(
-            f"Motion '{motion_name}' has invalid loop_num_cycles={raw_loop_num_cycles!r}; expected a positive finite value."
-        )
-    return loop_num_cycles
-
-
-def _choose_loop_cycle_repeats(source_frames, target_num_frames):
-    source_frames = int(source_frames)
-    target_num_frames = int(target_num_frames)
-    if source_frames <= 0:
-        raise ValueError(f"source_frames must be positive, got {source_frames}.")
-    if target_num_frames <= 0:
-        raise ValueError(f"target_num_frames must be positive, got {target_num_frames}.")
-
-    ratio = float(target_num_frames) / float(source_frames)
-    lower = max(1, int(np.floor(ratio)))
-    upper = max(1, int(np.ceil(ratio)))
-    candidates = {1, lower, upper}
-
-    best_repeats = 1
-    best_error = None
-    for repeats in candidates:
-        speed_scale = float(target_num_frames) / float(source_frames * repeats)
-        error = abs(float(np.log(speed_scale)))
-        if best_error is None or error < best_error or (error == best_error and repeats > best_repeats):
-            best_repeats = repeats
-            best_error = error
-    return best_repeats
-
-
-def _loop_phase_length_from_num_cycles(length, loop_num_cycles):
-    length = int(length)
-    if length <= 0:
-        raise ValueError(f"length must be positive, got {length}.")
-    loop_num_cycles = _coerce_loop_num_cycles('loop sample', loop_num_cycles)
-    motion_frames = max(length - 1, 1)
-    return float(motion_frames / loop_num_cycles) + 1.0
+def _resample_normalized_motion_features(motion, target_num_frames, mean, std, *, loop_terminal=False):
+    raw_motion = motion * std[None, :, :] + mean[None, :, :]
+    raw_resampled = _resample_motion_features(raw_motion, target_num_frames, loop_terminal=loop_terminal)
+    return np.nan_to_num((raw_resampled - mean[None, :, :]) / std[None, :, :]).astype(np.float32, copy=False)
 
 
 def _circular_roll_motion(motion, offset):
@@ -541,7 +501,7 @@ class MotionDataset(data.Dataset):
     def __init__(self, opt, cond_dict, temporal_window, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None):
         self.opt = opt
         self.temporal_window = int(temporal_window)
-        self.min_length = 20
+        self.min_length = int(getattr(opt, 'min_motion_length', 20))
         self.pointer = 0
         self.max_motion_length = num_frames
         self.cond_dict = cond_dict
@@ -549,7 +509,6 @@ class MotionDataset(data.Dataset):
         self.sample_limit = max(0, int(sample_limit))
         self.motion_cache_size = max(0, int(getattr(opt, 'motion_cache_size', 0)))
         self.motion_cache = OrderedDict()
-        self.loop_cycle_resample_cache = OrderedDict()
         data_dict = {}
         all_object_types = self.cond_dict.keys()
         if motion_metadata_lookup is None:
@@ -663,29 +622,6 @@ class MotionDataset(data.Dataset):
             raise ValueError(f"loop_offset={offset} is invalid for loop motion with length={length}.")
         return offset
 
-    def _periodic_resample_loop_motion(self, name, motion, target_num_frames, speed_factor=1.0):
-        cache_enabled = self.motion_cache_size > 0 and abs(float(speed_factor) - 1.0) < 1e-6
-        if not cache_enabled:
-            return _periodic_resample_motion(motion, target_num_frames)
-
-        key = (
-            name,
-            int(target_num_frames),
-            tuple(int(v) for v in motion.shape),
-            str(motion.dtype),
-        )
-        cached = self.loop_cycle_resample_cache.get(key)
-        if cached is not None:
-            self.loop_cycle_resample_cache.move_to_end(key)
-            return cached
-
-        resampled = _periodic_resample_motion(motion, target_num_frames)
-        self.loop_cycle_resample_cache[key] = resampled
-        self.loop_cycle_resample_cache.move_to_end(key)
-        while len(self.loop_cycle_resample_cache) > self.motion_cache_size:
-            self.loop_cycle_resample_cache.popitem(last=False)
-        return resampled
-
     def prepare_sample_by_name(self, name, target_num_frames=None, crop_start=None, loop_offset=None):
         if name not in self.data_dict:
             raise KeyError(f"Unknown motion sample '{name}'.")
@@ -722,87 +658,72 @@ class MotionDataset(data.Dataset):
         result = self.augment(data, return_aug_info=True, loop_uncond=loop_uncond)
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std, aug_info = result
         ind = 0
-        cropped_to_target = False
         loop_applied = False
         loop_full_cycle = False
-        loop_num_cycles = _coerce_loop_num_cycles(name, motion_metadata.get('loop_num_cycles', 1.0))
         loop_condition_active = is_loop and not loop_uncond
-        loop_legacy_aug_active = is_loop and loop_uncond
 
-        # When the original loop motion is much longer than the target window,
-        # periodic resampling would produce extreme speed distortion (e.g. a
-        # 300-frame walk compressed into 60 frames = 5× speed-up).  Fall back
-        # to random-crop behaviour so the model still sees natural-speed data.
-        if loop_condition_active and m_length > target_num_frames * 2:
+        if m_length < self.min_length:
+            raise ValueError(f"motion '{name}' length {m_length} < min_length {self.min_length}")
+
+        max_source_length = target_num_frames * 2
+        if loop_condition_active and m_length > max_source_length:
             loop_condition_active = False
+            loop_uncond = True
 
-        if loop_condition_active and m_length > 0:
-            # For short loops, choose the repeat count whose eventual resample
-            # factor is closest to 1x so phase speed distortion stays bounded.
-            if m_length < target_num_frames:
-                repeats = _choose_loop_cycle_repeats(m_length, target_num_frames)
-                if repeats > 1:
-                    motion = np.tile(motion, (repeats, 1, 1))
-                    m_length = motion.shape[0]
-                    loop_num_cycles *= float(repeats)
-            motion = self._periodic_resample_loop_motion(
-                name,
-                motion,
-                target_num_frames,
-                speed_factor=float(aug_info.get('speed_factor', 1.0)),
-            )
-            m_length = target_num_frames
-            loop_full_cycle = True
-            offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
-            motion = _circular_roll_motion(motion, offset)
-            loop_applied = True
-
-        if m_length > target_num_frames:
-            max_start = m_length - target_num_frames
+        if crop_start is not None and m_length > target_num_frames:
+            crop_length = target_num_frames
+            max_start = m_length - crop_length
+            ind = int(crop_start)
+            if ind < 0 or ind > max_start:
+                raise ValueError(
+                    f"crop_start={ind} is invalid for motion '{name}' with length={m_length} and crop_length={crop_length}."
+                )
+            motion = motion[ind: ind + crop_length]
+            m_length = int(motion.shape[0])
+            if loop_condition_active:
+                loop_condition_active = False
+                loop_uncond = True
+        elif m_length > max_source_length:
+            # Long loops have been downgraded to non-loop above, so this path
+            # is always a linear crop (no circular indexing needed).
+            crop_length = random.randint(self.min_length, max_source_length)
+            max_start = m_length - crop_length
             if crop_start is None:
                 ind = random.randint(0, max_start)
             else:
                 ind = int(crop_start)
                 if ind < 0 or ind > max_start:
                     raise ValueError(
-                        f"crop_start={ind} is invalid for motion '{name}' with length={m_length} and target_num_frames={target_num_frames}."
+                        f"crop_start={ind} is invalid for motion '{name}' with length={m_length} and crop_length={crop_length}."
                     )
-            motion = motion[ind: ind + target_num_frames]
-            m_length = target_num_frames
-            cropped_to_target = True
+            motion = motion[ind: ind + crop_length]
+            m_length = int(motion.shape[0])
 
-        if m_length < target_num_frames:
-            pad_frames = target_num_frames - m_length
-            if loop_legacy_aug_active and m_length > 0:
-                offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
-                loop_indices = (np.arange(target_num_frames, dtype=np.int64) + offset) % m_length
-                motion = motion[loop_indices]
-                m_length = target_num_frames
-                loop_applied = True
-            else:
-                motion = np.concatenate([
-                                         motion,
-                                         np.zeros((pad_frames, motion.shape[1], motion.shape[2]), dtype=motion.dtype)
-                                         ], axis=0)
-        elif loop_condition_active and m_length == target_num_frames:
+        source_len_for_playspeed = int(m_length)
+        playspeed_cond = float(source_len_for_playspeed) / float(target_num_frames)
+
+        if m_length != target_num_frames:
+            motion = _resample_normalized_motion_features(
+                motion,
+                target_num_frames,
+                mean,
+                std,
+                loop_terminal=bool(loop_condition_active),
+            )
+            m_length = target_num_frames
+
+        if loop_condition_active and m_length == target_num_frames:
             loop_full_cycle = True
-            if not loop_applied:
-                offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
-                motion = _circular_roll_motion(motion, offset)
-                loop_applied = True
-        elif loop_legacy_aug_active and not cropped_to_target and m_length == target_num_frames:
             offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
             motion = _circular_roll_motion(motion, offset)
             loop_applied = True
 
         motion_metadata['is_loop'] = bool(loop_condition_active)
         motion_metadata['loop_full_cycle'] = bool(loop_full_cycle)
-        if loop_condition_active and loop_full_cycle:
-            motion_metadata['loop_num_cycles'] = float(loop_num_cycles)
-            motion_metadata['loop_phase_length'] = _loop_phase_length_from_num_cycles(target_num_frames, loop_num_cycles)
-        else:
-            motion_metadata['loop_num_cycles'] = 1.0
-            motion_metadata['loop_phase_length'] = float(max(int(m_length), 1))
+        motion_metadata['playspeed_cond'] = float(playspeed_cond)
+        motion_metadata['loop_phase_length'] = float(
+            target_num_frames if loop_condition_active and loop_full_cycle else max(int(m_length), 1)
+        )
         circular_mask = bool(loop_full_cycle)
         temporal_mask = self._get_temporal_mask(target_num_frames, circular=circular_mask)
 
@@ -811,7 +732,7 @@ class MotionDataset(data.Dataset):
             aug_info.update({
                 'crop_start': int(ind),
                 'loop_applied': bool(loop_applied),
-                'loop_num_cycles': float(motion_metadata['loop_num_cycles']),
+                'playspeed_cond': float(playspeed_cond),
             })
             return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {
                 'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
@@ -819,7 +740,7 @@ class MotionDataset(data.Dataset):
                 'speed_factor': float(aug_info['speed_factor']),
                 'crop_start': int(aug_info['crop_start']),
                 'loop_applied': bool(aug_info['loop_applied']),
-                'loop_num_cycles': float(aug_info['loop_num_cycles']),
+                'playspeed_cond': float(aug_info['playspeed_cond']),
                 'loop_uncond': bool(loop_uncond),
             }
         return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {
@@ -928,6 +849,7 @@ class Truebones(data.Dataset):
         self.sample_limit = kwargs.get('sample_limit', 0)
         self.motion_cache_size = kwargs.get('motion_cache_size', 0)
         self.opt.motion_cache_size = self.motion_cache_size
+        self.opt.min_motion_length = int(kwargs.get('min_motion_length', getattr(self.opt, 'min_motion_length', 20)))
         self.opt.aug_speed_range = kwargs.get('aug_speed_range', 0.0)
 
         self.opt.loop_cond_prob = kwargs.get('loop_cond_prob', 0.0)

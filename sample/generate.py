@@ -24,6 +24,7 @@ from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import (
     create_temporal_mask_for_window,
     ensure_joint_name_embeddings,
+    _resample_motion_features,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_process import (
@@ -443,6 +444,9 @@ def _prepare_reference_prior_bundle(
     target_feature_len,
     batch_size,
     requested_output_frame_count=None,
+    requested_visible_frame_count=None,
+    min_motion_length=20,
+    loop_terminal=False,
 ):
     if source_cond is None:
         raise KeyError(
@@ -459,9 +463,18 @@ def _prepare_reference_prior_bundle(
     if requested_output_frame_count is None:
         output_frame_count = loaded_reference_frame_count
     else:
-        output_frame_count = min(loaded_reference_frame_count, requested_output_frame_count)
-    if loaded_reference_frame_count > output_frame_count:
-        ref_raw = ref_raw[:output_frame_count]
+        output_frame_count = int(requested_output_frame_count)
+    if loaded_reference_frame_count < int(min_motion_length):
+        raise ValueError(
+            f"reference motion too short: {loaded_reference_frame_count} < min_length {int(min_motion_length)}"
+        )
+    max_source_frames = max(int(min_motion_length), output_frame_count * 2)
+    if loaded_reference_frame_count > max_source_frames:
+        visible_frames = output_frame_count if requested_visible_frame_count is None else int(requested_visible_frame_count)
+        source_frames = min(max_source_frames, max(int(min_motion_length), visible_frames))
+        ref_raw = ref_raw[:source_frames]
+    if ref_raw.shape[0] != output_frame_count:
+        ref_raw = _resample_motion_features(ref_raw, output_frame_count, loop_terminal=bool(loop_terminal))
     source_parents = np.asarray(source_cond['parents'], dtype=np.int64)
     source_offsets = np.asarray(source_cond['offsets'], dtype=np.float32)
     source_name_embs = np.asarray(source_cond['joints_names_embs'], dtype=np.float32)
@@ -537,6 +550,9 @@ def _prepare_img2img_reference_bundle(
     target_feature_len,
     batch_size,
     requested_output_frame_count,
+    requested_visible_frame_count=None,
+    min_motion_length=20,
+    loop_terminal=False,
 ):
     ref_raw = np.load(reference_motion_path).astype(np.float32)
     if ref_raw.ndim != 3:
@@ -545,9 +561,18 @@ def _prepare_img2img_reference_bundle(
         )
 
     loaded_reference_frame_count, loaded_reference_joint_count, ref_feats = ref_raw.shape
-    output_frame_count = min(loaded_reference_frame_count, requested_output_frame_count)
-    if loaded_reference_frame_count > output_frame_count:
-        ref_raw = ref_raw[:output_frame_count]
+    output_frame_count = int(requested_output_frame_count)
+    if loaded_reference_frame_count < int(min_motion_length):
+        raise ValueError(
+            f"reference motion too short: {loaded_reference_frame_count} < min_length {int(min_motion_length)}"
+        )
+    max_source_frames = max(int(min_motion_length), output_frame_count * 2)
+    if loaded_reference_frame_count > max_source_frames:
+        visible_frames = output_frame_count if requested_visible_frame_count is None else int(requested_visible_frame_count)
+        source_frames = min(max_source_frames, max(int(min_motion_length), visible_frames))
+        ref_raw = ref_raw[:source_frames]
+    if ref_raw.shape[0] != output_frame_count:
+        ref_raw = _resample_motion_features(ref_raw, output_frame_count, loop_terminal=bool(loop_terminal))
 
     obj_mean, obj_std = _get_reference_normalization_stats(
         target_cond,
@@ -600,6 +625,9 @@ def _prepare_reference_for_mode(
     target_feature_len,
     batch_size,
     requested_output_frame_count,
+    requested_visible_frame_count=None,
+    min_motion_length=20,
+    loop_terminal=False,
 ):
     mode = str(reference_mode or 'img2img').strip().lower()
     if mode == 'controlnet':
@@ -611,6 +639,9 @@ def _prepare_reference_for_mode(
             target_feature_len=target_feature_len,
             batch_size=batch_size,
             requested_output_frame_count=requested_output_frame_count,
+            requested_visible_frame_count=requested_visible_frame_count,
+            min_motion_length=min_motion_length,
+            loop_terminal=loop_terminal,
         )
         loaded_reference_joint_count = int(reference_conditioning_kwargs['reference_n_joints'][0].item())
         return {
@@ -629,6 +660,9 @@ def _prepare_reference_for_mode(
         target_feature_len=target_feature_len,
         batch_size=batch_size,
         requested_output_frame_count=requested_output_frame_count,
+        requested_visible_frame_count=requested_visible_frame_count,
+        min_motion_length=min_motion_length,
+        loop_terminal=loop_terminal,
     )
 
 
@@ -985,7 +1019,17 @@ def main(args=None, cond_dict=None):
     name = os.path.basename(os.path.dirname(args.model_path))
     niter = os.path.basename(args.model_path).replace('model', '').replace('.pt', '')
     fps = opt.fps
-    n_frames = int(args.motion_length * fps)
+    requested_output_frames = int(round(float(args.motion_length) * fps))
+    internal_num_frames = int(getattr(args, 'num_frames', 60))
+    min_motion_length = int(getattr(args, 'min_motion_length', 20))
+    if requested_output_frames < min_motion_length or requested_output_frames > 2 * internal_num_frames:
+        sys.exit(
+            f"ERROR: motion_length frames M={requested_output_frames} outside "
+            f"[min_length={min_motion_length}, 2*num_frames={2 * internal_num_frames}]"
+        )
+    playspeed_cond_value = float(requested_output_frames) / float(internal_num_frames)
+    n_frames = internal_num_frames
+    target_output_frames = requested_output_frames
     cond_max_joints = opt.max_joints
     dist_util.setup_dist(args.device)
     object_type = args.object_type
@@ -1257,6 +1301,9 @@ def main(args=None, cond_dict=None):
                 target_feature_len=model.feature_len,
                 batch_size=args.batch_size,
                 requested_output_frame_count=n_frames,
+                requested_visible_frame_count=target_output_frames,
+                min_motion_length=min_motion_length,
+                loop_terminal=bool(getattr(args, 'loop', False)),
             )
             ref_motion = reference_bundle['reference_motion']
             reference_conditioning_kwargs = reference_bundle['reference_conditioning_kwargs']
@@ -1264,8 +1311,6 @@ def main(args=None, cond_dict=None):
             loaded_reference_frame_count = reference_bundle['loaded_reference_frame_count']
             loaded_reference_joint_count = reference_bundle['loaded_reference_joint_count']
 
-            if output_frame_count != n_frames:
-                print(f'  Reference motion overrides frame count: {n_frames} -> {output_frame_count}')
             print(f'  Reference motion loaded: {effective_reference_path}')
             if prepared_reference_path != reference_motion_path:
                 print(f'    Preprocessed from original: {reference_motion_path}')
@@ -1276,12 +1321,12 @@ def main(args=None, cond_dict=None):
             if reference_mode == 'controlnet':
                 print(
                     f'    Reference prior input: [{loaded_reference_frame_count} frames, {loaded_reference_joint_count} joints] '
-                    f'-> Output target: [{output_frame_count} frames, {max_joints} joints]'
+                    f'-> Internal target: [{output_frame_count} frames, {max_joints} joints]'
                 )
             else:
                 print(
                     f'    Original: [{loaded_reference_frame_count} frames, {loaded_reference_joint_count} joints] '
-                    f'-> Target: [{output_frame_count} frames, {max_joints} joints]'
+                    f'-> Internal target: [{output_frame_count} frames, {max_joints} joints]'
                 )
             if inpaint_enabled and skip_timesteps > 0:
                 print(f'    Mode: inpaint + skip_timesteps={skip_timesteps} '
@@ -1357,11 +1402,16 @@ def main(args=None, cond_dict=None):
                     "ERROR: --inpaint_* is set but the reference motion could "
                     "not be loaded; cannot inpaint without a known region."
                 )
+            internal_inpaint_frames_arg = _map_frame_ranges_to_internal(
+                inpaint_frames_arg,
+                source_frames=target_output_frames,
+                target_frames=output_frame_count,
+            )
             inpaint_mask = build_inpaint_mask(
                 cond_dict[object_type],
                 inpaint_joints_arg,
                 inpaint_include_subtree,
-                inpaint_frames_arg,
+                internal_inpaint_frames_arg,
                 args.batch_size,
                 max_joints,
                 output_frame_count,
@@ -1380,6 +1430,12 @@ def main(args=None, cond_dict=None):
         )
         if global_energy_condition is not None:
             model_kwargs['y']['global_energy_cond'] = global_energy_condition.clone()
+        model_kwargs['y']['playspeed_cond'] = torch.full(
+            (args.batch_size,),
+            playspeed_cond_value,
+            dtype=torch.float32,
+            device=dist_util.dev(),
+        )
         sample = _sample_batch(
             diffusion=diffusion,
             model=model,
@@ -1429,7 +1485,7 @@ def main(args=None, cond_dict=None):
         inpaint_y_spans = None
         if inpaint_enabled and inpaint_frames_arg:
             inpaint_y_spans = _contiguous_frame_runs(
-                _parse_frame_ranges(inpaint_frames_arg, sample.shape[-1])
+                _parse_frame_ranges(inpaint_frames_arg, target_output_frames)
             )
         export_tasks = []
         for sample_idx, motion in enumerate(sample):
@@ -1439,6 +1495,13 @@ def main(args=None, cond_dict=None):
             mean = cond_dict[object_type]['mean'][None, :]
             std = cond_dict[object_type]['std'][None, :]
             motion_np = motion.cpu().permute(2, 0, 1).numpy() * std + mean
+
+            if target_output_frames != output_frame_count:
+                motion_np = _resample_motion_features(
+                    motion_np,
+                    target_output_frames,
+                    loop_terminal=bool(getattr(args, 'loop', False)),
+                )
 
             if inpaint_y_spans:
                 _reanchor_inpaint_root_y_via_velocity(motion_np, inpaint_y_spans)
@@ -1529,6 +1592,46 @@ def _parse_frame_ranges(spec, n_frames):
             f"(motion has {n_frames} frames, indices 0..{n_frames - 1})"
         )
     return frames
+
+
+def _map_frame_ranges_to_internal(spec, source_frames, target_frames):
+    if not spec or int(source_frames) == int(target_frames):
+        return spec
+    source_frames = int(source_frames)
+    target_frames = int(target_frames)
+    if source_frames <= 0 or target_frames <= 0:
+        raise ValueError(
+            f"Cannot map frame ranges with source_frames={source_frames}, target_frames={target_frames}"
+        )
+    scale = float(target_frames - 1) / float(source_frames - 1) if source_frames > 1 else 0.0
+    mapped_frames = set()
+    for chunk in spec.split(','):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if '-' in chunk:
+            lo_str, hi_str = chunk.split('-', 1)
+            lo, hi = int(lo_str), int(hi_str)
+        else:
+            lo = hi = int(chunk)
+        if lo > hi:
+            lo, hi = hi, lo
+        lo = max(0, lo)
+        hi = min(source_frames - 1, hi)
+        if lo > hi:
+            continue
+        start = max(0, min(target_frames - 1, int(np.floor(float(lo) * scale))))
+        end = max(0, min(target_frames - 1, int(np.ceil(float(hi) * scale))))
+        mapped_frames.update(range(start, end + 1))
+    if not mapped_frames:
+        raise ValueError(
+            f"--inpaint_frames '{spec}' selected no valid frames "
+            f"(motion has {source_frames} frames, indices 0..{source_frames - 1})"
+        )
+    return ','.join(
+        f'{start}-{end}' if start != end else str(start)
+        for start, end in _contiguous_frame_runs(mapped_frames)
+    )
 
 
 def _contiguous_frame_runs(frame_set):

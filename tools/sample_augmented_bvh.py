@@ -342,14 +342,12 @@ def main() -> int:
             source_metadata = dataset.data_dict[name].get("motion_metadata", {})
             source_length = int(dataset.data_dict[name].get("length", motion_norm.shape[0]))
             is_source_loop = bool(source_metadata.get("is_loop", False))
-            loop_num_cycles = float(motion_metadata.get("loop_num_cycles", 1.0))
             loop_phase_length = float(motion_metadata.get("loop_phase_length", m_length))
 
             # aug_info contains actual augmentation results (not just parameters)
             if aug_info.get("speed_factor", 1.0) != 1.0:
                 tags.append(f"spd{int(round(aug_info['speed_factor'] * 100))}")
             if aug_info.get("loop_applied"):
-                tags.append(f"loopc{_format_float_tag(loop_num_cycles)}")
                 tags.append(f"phase{_format_float_tag(loop_phase_length)}")
             elif is_source_loop:
                 tags.append("loopuncond")
@@ -374,7 +372,6 @@ def main() -> int:
                 if is_source_loop:
                     loop_note = (
                         f", loop_applied={bool(aug_info.get('loop_applied'))}"
-                        f", cycles={loop_num_cycles:.3g}"
                         f", phase_len={loop_phase_length:.3g}"
                         f", source={source_length}f"
                     )

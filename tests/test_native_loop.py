@@ -13,7 +13,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 
 from data_loaders.tensors import truebones_batch_collate  # noqa: E402
-from data_loaders.truebones.data.dataset import _periodic_resample_motion, create_temporal_mask_for_window  # noqa: E402
+from data_loaders.truebones.data.dataset import _resample_motion_features, create_temporal_mask_for_window  # noqa: E402
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType  # noqa: E402
 from model.anytop import AnyTop  # noqa: E402
 from model.motion_transformer import _circular_phase_embedding  # noqa: E402
@@ -30,7 +30,7 @@ class _CaptureDecoder(torch.nn.Module):
         return kwargs['tgt']
 
 
-def _make_batch_item(is_loop: bool, loop_full_cycle: bool, loop_num_cycles: float = 1.0, loop_phase_length: float | None = None):
+def _make_batch_item(is_loop: bool, loop_full_cycle: bool, loop_phase_length: float | None = None, playspeed_cond: float = 1.0):
     n_frames = 5
     n_joints = 2
     n_feats = 13
@@ -53,8 +53,8 @@ def _make_batch_item(is_loop: bool, loop_full_cycle: bool, loop_num_cycles: floa
         'translation_root_index': 0,
         'is_loop': is_loop,
         'loop_full_cycle': loop_full_cycle,
-        'loop_num_cycles': loop_num_cycles,
         'loop_phase_length': loop_phase_length,
+        'playspeed_cond': playspeed_cond,
     }
     extra_cond = {'joint_mask_candidate_roots': np.zeros((n_joints,), dtype=np.bool_)}
     return (
@@ -100,7 +100,7 @@ class NativeLoopTests(unittest.TestCase):
         motion = np.zeros((4, 1, 1), dtype=np.float32)
         motion[:, 0, 0] = np.array([0.0, 1.0, 2.0, 0.0], dtype=np.float32)
 
-        resampled = _periodic_resample_motion(motion, 7)
+        resampled = _resample_motion_features(motion, 7, loop_terminal=True)
 
         self.assertAlmostEqual(float(resampled[0, 0, 0]), 0.0)
         self.assertAlmostEqual(float(resampled[-1, 0, 0]), 0.0)
@@ -135,16 +135,32 @@ class NativeLoopTests(unittest.TestCase):
 
     def test_truebones_collate_forwards_loop_flags_as_bool_tensors(self):
         _, cond = truebones_batch_collate([
-            _make_batch_item(True, True, loop_num_cycles=2.0, loop_phase_length=3.0),
-            _make_batch_item(False, False, loop_num_cycles=1.0, loop_phase_length=5.0),
+            _make_batch_item(True, True, loop_phase_length=3.0, playspeed_cond=0.5),
+            _make_batch_item(False, False, loop_phase_length=5.0, playspeed_cond=2.0),
         ])
 
         self.assertEqual(cond['y']['is_loop'].dtype, torch.bool)
         self.assertEqual(cond['y']['loop_full_cycle'].dtype, torch.bool)
         self.assertEqual(cond['y']['is_loop'].tolist(), [True, False])
         self.assertEqual(cond['y']['loop_full_cycle'].tolist(), [True, False])
-        self.assertTrue(torch.equal(cond['y']['loop_num_cycles'], torch.tensor([2.0, 1.0], dtype=torch.float32)))
         self.assertTrue(torch.equal(cond['y']['loop_phase_lengths'], torch.tensor([3.0, 5.0], dtype=torch.float32)))
+        self.assertTrue(torch.equal(cond['y']['playspeed_cond'], torch.tensor([0.5, 2.0], dtype=torch.float32)))
+
+    def test_anytop_coerces_default_playspeed_to_one(self):
+        model = AnyTop(
+            max_joints=4,
+            feature_len=13,
+            latent_dim=8,
+            ff_size=32,
+            num_layers=1,
+            num_heads=2,
+            dropout=0.0,
+            cross_limb=True,
+        )
+
+        value = model._coerce_playspeed_cond(None, batch_size=2, device=torch.device('cpu'), dtype=torch.float32)
+
+        self.assertTrue(torch.equal(value, torch.ones(2, 1, dtype=torch.float32)))
 
     def test_loop_wrap_loss_skips_non_loop_samples(self):
         diffusion = self._make_diffusion()

@@ -21,10 +21,7 @@ import data_loaders.truebones.data.dataset as dataset_module
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import (
     Truebones,
-    _choose_loop_cycle_repeats,
     _circular_roll_motion,
-    _loop_phase_length_from_num_cycles,
-    _periodic_resample_motion,
     _resample_motion_features,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
@@ -52,6 +49,15 @@ _ENRICHED_MOTION_METADATA_LOOKUP = None
 def assert_close(name: str, actual: np.ndarray, expected: np.ndarray, atol: float = 1e-6) -> None:
     max_diff = float(np.max(np.abs(actual - expected))) if actual.size else 0.0
     assert np.allclose(actual, expected, atol=atol), f"{name} mismatch: max_diff={max_diff}"
+
+
+def _normalize_motion(raw: np.ndarray, cond: dict[str, np.ndarray]) -> np.ndarray:
+    return np.nan_to_num((raw - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
+
+
+def _resample_raw_then_normalize(raw: np.ndarray, cond: dict[str, np.ndarray], target_frames: int, *, loop_terminal: bool) -> np.ndarray:
+    resampled = _resample_motion_features(raw, target_frames, loop_terminal=loop_terminal)
+    return _normalize_motion(resampled, cond)
 
 
 def _get_enriched_motion_metadata_lookup() -> dict[str, dict[str, object]]:
@@ -90,11 +96,6 @@ def _build_truebones(**kwargs) -> Truebones:
     enriched_lookup = _get_enriched_motion_metadata_lookup()
     with patch.object(dataset_module, 'load_motion_metadata', return_value=enriched_lookup):
         return Truebones(**kwargs)
-
-
-def test_loop_repeat_picker_prefers_near_unit_speed() -> None:
-    assert _choose_loop_cycle_repeats(32, 60) == 2
-    assert _choose_loop_cycle_repeats(25, 60) == 2
 
 
 def test_speed_resample_scales_velocity_and_keeps_contact_binary() -> None:
@@ -159,19 +160,12 @@ def test_loop_padding_updates_effective_length() -> None:
     data = motion_dataset.data_dict[LOOP_MOTION]
     cond = motion_dataset.cond_dict[data["object_type"]]
     raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
-    raw_norm = np.nan_to_num((raw - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
-    raw_len = raw_norm.shape[0]
+    raw_len = raw.shape[0]
     assert raw_len < NUM_FRAMES, "loop regression sample no longer needs padding"
-    raw_cycle_count = float(data.get("motion_metadata", {}).get("loop_num_cycles", 1.0) or 1.0)
-    repeats = _choose_loop_cycle_repeats(raw_len, NUM_FRAMES)
-    tiled = np.tile(raw_norm, (repeats, 1, 1)) if repeats > 1 else raw_norm
-    expected = _periodic_resample_motion(tiled, NUM_FRAMES)
+    expected = _resample_raw_then_normalize(raw, cond, NUM_FRAMES, loop_terminal=True)
 
-    assert np.isclose(float(motion_metadata["loop_num_cycles"]), raw_cycle_count * repeats)
-    assert np.isclose(
-        float(motion_metadata["loop_phase_length"]),
-        _loop_phase_length_from_num_cycles(NUM_FRAMES, motion_metadata["loop_num_cycles"]),
-    )
+    assert np.isclose(float(motion_metadata["loop_phase_length"]), float(NUM_FRAMES))
+    assert np.isclose(float(motion_metadata["playspeed_cond"]), float(raw_len) / float(NUM_FRAMES))
     assert_close("loop-filled motion", motion, expected)
 
 
@@ -189,18 +183,15 @@ def test_loop_padding_random_offset_wraps_without_truncation() -> None:
     data = motion_dataset.data_dict[LOOP_MOTION]
     cond = motion_dataset.cond_dict[data["object_type"]]
     raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
-    raw_norm = np.nan_to_num((raw - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
-    raw_len = raw_norm.shape[0]
+    raw_len = raw.shape[0]
     offset = raw_len - 4
-    repeats = _choose_loop_cycle_repeats(raw_len, NUM_FRAMES)
 
     motion, m_length, *_rest = motion_dataset.prepare_sample_by_name(
         LOOP_MOTION,
         target_num_frames=NUM_FRAMES,
         loop_offset=offset,
     )
-    tiled = np.tile(raw_norm, (repeats, 1, 1)) if repeats > 1 else raw_norm
-    expected = _periodic_resample_motion(tiled, NUM_FRAMES)
+    expected = _resample_raw_then_normalize(raw, cond, NUM_FRAMES, loop_terminal=True)
     expected = _circular_roll_motion(expected, offset)
     assert motion.shape[0] == NUM_FRAMES, f"expected random-offset loop fill to keep {NUM_FRAMES} frames"
     assert m_length == NUM_FRAMES, f"effective length should remain {NUM_FRAMES}, got {m_length}"
@@ -222,7 +213,7 @@ def test_explicit_window_start_respects_requested_crop() -> None:
     long_motion_name = next(
         name
         for name, length in zip(motion_dataset.name_list, motion_dataset.length_arr)
-        if int(length) >= NUM_FRAMES + window_start
+        if NUM_FRAMES + window_start <= int(length) <= NUM_FRAMES * 2
     )
 
     motion, m_length, *_rest, _motion_metadata, name, _joint_mask_dict = motion_dataset.prepare_sample_by_name(
@@ -234,8 +225,7 @@ def test_explicit_window_start_respects_requested_crop() -> None:
     data = motion_dataset.data_dict[long_motion_name]
     cond = motion_dataset.cond_dict[data["object_type"]]
     raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
-    raw_norm = np.nan_to_num((raw - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
-    expected = raw_norm[window_start:window_start + NUM_FRAMES]
+    expected = _normalize_motion(raw[window_start:window_start + NUM_FRAMES], cond)
 
     assert name == long_motion_name, f"unexpected cropped sample: {name}"
     assert m_length == NUM_FRAMES, f"cropped sample should have effective length {NUM_FRAMES}, got {m_length}"
@@ -269,7 +259,7 @@ def test_prepare_sample_aug_info_reports_actual_loop_fill() -> None:
     assert motion.shape[0] == NUM_FRAMES, f"expected loop-filled motion to have {NUM_FRAMES} frames"
     assert m_length == NUM_FRAMES, f"expected effective length {NUM_FRAMES}, got {m_length}"
     assert aug_info["loop_applied"] is True, f"expected loop_applied=True, got {aug_info}"
-    assert float(aug_info["loop_num_cycles"]) >= 1.0, f"expected loop_num_cycles>=1, got {aug_info}"
+    assert np.isclose(float(aug_info["playspeed_cond"]), float(motion_dataset.data_dict[LOOP_MOTION]["length"]) / float(NUM_FRAMES))
     assert aug_info["crop_start"] == 0, f"expected crop_start=0, got {aug_info}"
     assert np.isclose(float(aug_info["speed_factor"]), 1.0), f"expected speed_factor=1.0, got {aug_info}"
 
@@ -300,17 +290,16 @@ def test_loop_uncond_keeps_legacy_loop_tile_but_non_loop_metadata() -> None:
     data = motion_dataset.data_dict[LOOP_MOTION]
     cond = motion_dataset.cond_dict[data["object_type"]]
     raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
-    raw_norm = np.nan_to_num((raw - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
-    expected = raw_norm[np.arange(NUM_FRAMES, dtype=np.int64) % raw_norm.shape[0]]
+    expected = _resample_raw_then_normalize(raw, cond, NUM_FRAMES, loop_terminal=False)
 
     assert name == LOOP_MOTION, f"unexpected sample: {name}"
     assert motion.shape[0] == NUM_FRAMES
     assert m_length == NUM_FRAMES
     assert motion_metadata["is_loop"] is False
     assert motion_metadata["loop_full_cycle"] is False
-    assert aug_info["loop_applied"] is True
+    assert aug_info["loop_applied"] is False
     assert aug_info["loop_uncond"] is True
-    assert_close("loop uncond legacy tile", motion, expected)
+    assert_close("loop uncond resample", motion, expected)
 
 
 def test_loop_uncond_keeps_speed_jitter_enabled() -> None:
@@ -342,9 +331,10 @@ def test_loop_uncond_keeps_speed_jitter_enabled() -> None:
     assert m_length == NUM_FRAMES
     assert motion_metadata["is_loop"] is False
     assert motion_metadata["loop_full_cycle"] is False
-    assert aug_info["loop_applied"] is True
+    assert aug_info["loop_applied"] is False
     assert aug_info["loop_uncond"] is True
     assert np.isclose(float(aug_info["speed_factor"]), 1.2)
+    assert np.isclose(float(aug_info["playspeed_cond"]), float(expected_len) / float(NUM_FRAMES))
     assert expected_len > 0
 
 
@@ -364,8 +354,8 @@ def test_loop_uncond_long_loop_crops_without_extra_roll(tmp_path) -> None:
 
     source_data = motion_dataset.data_dict[LOOP_MOTION]
     source_raw = np.load(source_data["motion_path"]).astype(np.float32, copy=False)
-    repeat_count = (NUM_FRAMES + 8 + source_raw.shape[0] - 1) // source_raw.shape[0]
-    long_raw = np.tile(source_raw, (repeat_count, 1, 1))[:NUM_FRAMES + 8]
+    repeat_count = (NUM_FRAMES * 2 + 8 + source_raw.shape[0] - 1) // source_raw.shape[0]
+    long_raw = np.tile(source_raw, (repeat_count, 1, 1))[:NUM_FRAMES * 2 + 8]
     motion_path = tmp_path / "long_loop.npy"
     np.save(motion_path, long_raw.astype(np.float32, copy=False))
 
@@ -376,7 +366,7 @@ def test_loop_uncond_long_loop_crops_without_extra_roll(tmp_path) -> None:
     long_data["motion_metadata"]["is_loop"] = True
 
     crop_start = 5
-    with patch.object(dataset_module.random, 'randint', return_value=11):
+    with patch.object(dataset_module.random, 'randint', return_value=NUM_FRAMES):
         sample = motion_dataset._prepare_sample(
             "synthetic_long_loop.npy",
             long_data,
@@ -387,8 +377,7 @@ def test_loop_uncond_long_loop_crops_without_extra_roll(tmp_path) -> None:
     motion, m_length, *_rest, motion_metadata, _name, _joint_mask_dict, aug_info = sample
 
     cond = motion_dataset.cond_dict[long_data["object_type"]]
-    long_norm = np.nan_to_num((long_raw - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
-    expected = long_norm[crop_start:crop_start + NUM_FRAMES]
+    expected = _normalize_motion(long_raw[crop_start:crop_start + NUM_FRAMES], cond)
 
     assert motion.shape[0] == NUM_FRAMES
     assert m_length == NUM_FRAMES
@@ -397,6 +386,58 @@ def test_loop_uncond_long_loop_crops_without_extra_roll(tmp_path) -> None:
     assert aug_info["loop_applied"] is False
     assert aug_info["loop_uncond"] is True
     assert_close("loop uncond long crop", motion, expected)
+
+
+def test_loop_conditioned_long_loop_downgrades_to_non_loop(tmp_path) -> None:
+    dataset = _build_truebones(
+        split="train",
+        temporal_window=31,
+        num_frames=NUM_FRAMES,
+        balanced=False,
+        objects_subset=LOOP_SUBSET,
+        motion_cache_size=0,
+        loop_cond_prob=1.0,
+    )
+
+    motion_dataset = dataset.motion_dataset
+    motion_dataset.opt.aug_speed_range = 0.0
+
+    source_data = motion_dataset.data_dict[LOOP_MOTION]
+    source_raw = np.load(source_data["motion_path"]).astype(np.float32, copy=False)
+    repeat_count = (NUM_FRAMES * 2 + 8 + source_raw.shape[0] - 1) // source_raw.shape[0]
+    long_raw = np.tile(source_raw, (repeat_count, 1, 1))[:NUM_FRAMES * 2 + 8]
+    motion_path = tmp_path / "conditioned_long_loop.npy"
+    np.save(motion_path, long_raw.astype(np.float32, copy=False))
+
+    long_data = dict(source_data)
+    long_data["motion_path"] = str(motion_path)
+    long_data["length"] = long_raw.shape[0]
+    long_data["motion_metadata"] = dict(source_data["motion_metadata"])
+    long_data["motion_metadata"]["is_loop"] = True
+
+    crop_start = 5
+    with patch.object(dataset_module.random, 'randint', return_value=NUM_FRAMES):
+        sample = motion_dataset._prepare_sample(
+            "synthetic_conditioned_long_loop.npy",
+            long_data,
+            target_num_frames=NUM_FRAMES,
+            crop_start=crop_start,
+            return_aug_info=True,
+        )
+    motion, m_length, *_rest, motion_metadata, _name, _joint_mask_dict, aug_info = sample
+
+    cond = motion_dataset.cond_dict[long_data["object_type"]]
+    expected = _normalize_motion(long_raw[crop_start:crop_start + NUM_FRAMES], cond)
+
+    assert motion.shape[0] == NUM_FRAMES
+    assert m_length == NUM_FRAMES
+    assert motion_metadata["is_loop"] is False
+    assert motion_metadata["loop_full_cycle"] is False
+    assert motion_metadata["loop_phase_length"] == float(NUM_FRAMES)
+    assert aug_info["loop_applied"] is False
+    assert aug_info["loop_uncond"] is True
+    assert np.isclose(float(aug_info["playspeed_cond"]), 1.0)
+    assert_close("conditioned long loop downgraded crop", motion, expected)
 
 
 def test_loop_conditioned_keeps_speed_jitter_enabled() -> None:
@@ -451,6 +492,7 @@ def test_batch_collate_preserves_translation_root_index() -> None:
     _motion, cond = truebones_batch_collate([sample])
 
     assert int(cond["y"]["translation_root_index"][0]) == 0
+    assert "playspeed_cond" in cond["y"]
 
 
 def main() -> None:

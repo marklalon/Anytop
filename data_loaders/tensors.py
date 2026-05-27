@@ -86,18 +86,18 @@ def truebones_collate(batch):
         if any(key in batch_item for batch_item in notnone_batches):
             cond['y'].update({key: torch.as_tensor([bool(batch_item.get(key, False)) for batch_item in notnone_batches], dtype=torch.bool)})
 
-    if any('loop_num_cycles' in batch_item for batch_item in notnone_batches):
-        cond['y'].update({
-            'loop_num_cycles': torch.as_tensor(
-                [float(batch_item.get('loop_num_cycles', 1.0)) for batch_item in notnone_batches],
-                dtype=torch.float32,
-            )
-        })
-
     if any('loop_phase_length' in batch_item for batch_item in notnone_batches):
         cond['y'].update({
             'loop_phase_lengths': torch.as_tensor(
                 [float(batch_item.get('loop_phase_length', batch_item.get('lengths', 1))) for batch_item in notnone_batches],
+                dtype=torch.float32,
+            )
+        })
+
+    if any('playspeed_cond' in batch_item for batch_item in notnone_batches):
+        cond['y'].update({
+            'playspeed_cond': torch.as_tensor(
+                [float(batch_item.get('playspeed_cond', 1.0)) for batch_item in notnone_batches],
                 dtype=torch.float32,
             )
         })
@@ -160,7 +160,7 @@ def truebones_batch_collate(batch):
             if isinstance(extra, dict):
                 if 'joint_mask_candidate_roots' in extra:
                     extra_cond = extra
-                elif any(key in extra for key in ('action_category', 'species_label', 'action_tags', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_num_cycles', 'loop_phase_length')):
+                elif any(key in extra for key in ('action_category', 'species_label', 'action_tags', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond')):
                     motion_metadata = extra
             elif isinstance(extra, str):
                 motion_name = extra
@@ -187,7 +187,7 @@ def truebones_batch_collate(batch):
                 padded_candidate_roots[:candidate_count] = torch.from_numpy(raw_candidates[:candidate_count])
             item['joint_mask_candidate_roots'] = padded_candidate_roots
         if motion_metadata is not None:
-            for key in ('species_label', 'species_group', 'action_tags', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_num_cycles', 'loop_phase_length'):
+            for key in ('species_label', 'species_group', 'action_tags', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond'):
                 if key in motion_metadata:
                     item[key] = motion_metadata[key]
         if motion_name is not None:

@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=quadropeds_locomotion_loop_v21
+set RUN_NAME=quadropeds_locomotion_varying_length_v1
 
 pushd "%SCRIPT_DIR%"
 

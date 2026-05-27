@@ -17,6 +17,7 @@ from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanT
 from sample.generate import (  # noqa: E402
     _close_loop_root_xz_via_velocity,
     _contiguous_frame_runs,
+    _map_frame_ranges_to_internal,
     _parse_frame_ranges,
     _prepare_img2img_reference_bundle,
     _reanchor_inpaint_root_y_via_velocity,
@@ -94,6 +95,12 @@ def _make_diffusion(num_steps: int = 2) -> GaussianDiffusion:
 def test_parse_frame_ranges_clips_and_keeps_inclusive_bounds() -> None:
     assert _parse_frame_ranges("2-9", 4) == {2, 3}
     assert _parse_frame_ranges("3-1", 5) == {1, 2, 3}
+
+
+def test_map_frame_ranges_to_internal_preserves_contiguous_spans() -> None:
+    assert _map_frame_ranges_to_internal("0-19", 20, 60) == "0-59"
+    assert _map_frame_ranges_to_internal("10-20", 30, 60) == "20-41"
+    assert _map_frame_ranges_to_internal("0-119", 120, 60) == "0-59"
 
 
 def test_build_inpaint_mask_uses_all_real_joints_for_selected_frames() -> None:
