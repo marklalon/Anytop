@@ -267,7 +267,7 @@ def should_skip_anim(file_path: str, object_type: str) -> bool:
 
     variant1 = re.compile(r'^[a-z]+[a-z]_\w+$', re.IGNORECASE)
     variant2 = re.compile(r'^[a-z]+_[a-z]\d+$', re.IGNORECASE)
-    if variant1.match(stem) or variant2.match(stem):
+    if variant1.match(stripped_action) or variant2.match(stripped_action):
         print(
             f'  [SKIP] {os.path.basename(file_path)}: '
             f'variant codename, no inferable action name'

@@ -40,7 +40,8 @@ env/
 .coverage
 htmlcov/
 
-dataset/
+dataset
+save
 save/
 logs/
 outputs/

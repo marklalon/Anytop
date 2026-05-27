@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=quadropeds_locomotion_cross_limb_mask_v5
+set RUN_NAME=quadropeds_locomotion_loop_v21
 REM ----------------------------------------------------------------------
 REM Combination rules for target skeleton + reference motion (passed via %* to sample/generate.py):
 REM   1) --object_type Horse only                          : random generation for Horse
@@ -14,7 +14,7 @@ REM Supports zero-shot inference on object types not seen during training.
 REM ----------------------------------------------------------------------
 set BATCH_SIZE=8
 
-rem set MODEL_FILE=model000002000.pt
+rem set MODEL_FILE=model000020000.pt
 
 pushd "%SCRIPT_DIR%"
 
@@ -48,12 +48,12 @@ if exist %OUTPUT_DIR% (
 mkdir %OUTPUT_DIR% 2>nul
 
 echo Output dir: %OUTPUT_DIR%
-if not "%*"=="" echo Extra args: %*
 
 %PYTHON_EXE% sample/generate.py ^
     --model_path "%MODEL_PATH%" ^
     --output_dir %OUTPUT_DIR% ^
     --batch_size %BATCH_SIZE% ^
+    --amp_dtype bf16 ^
     --motion_length 2.0 %*
 
 popd

@@ -12,9 +12,19 @@ face-joints-names - Optional manual override for four joints defining skeleton o
             When omitted, preprocessing tries to infer them from semantic joint names. If inference is ambiguous,
             pass the four joint names explicitly. 
 save-dir - Output directory.
-tpos-path - An FBX/GLB/GLTF file of the character's natural rest pose for meaningful rotation learning. 
+tpos-path - An FBX/GLB/GLTF file of the character's natural rest pose for meaningful rotation learning.
         If missing, the code selects a pose from the provided files in --anim-dir.
-        
+update - Incremental update flag. Without it, --save-dir is wiped and rebuilt from scratch.
+        With it, the existing dataset is kept and motions are added/replaced:
+    --anim-dir merges the newly processed clips into the existing dataset,
+    replacing only prior clips from the same source files (untouched clips kept);
+        --retarget-top-k adds the newly generated donor clips alongside existing ones.
+        Side artifacts (cond.npy embeddings + mean/std, motion_metadata.json, metadata.txt)
+    are then rebuilt over the merged clip set. Requires an existing --save-dir/cond.npy;
+    for --anim-dir, existing target clips must also be tracked in motion_metadata.json
+    with explicit source metadata, otherwise the script exits instead of mixing old and
+    new target motions. Falls back to a full build only when no dataset exists yet.
+
 Output:
 The code will create the following under save_dir:
 save_dir/
@@ -30,7 +40,10 @@ which is given as input to AnyTop during inference. Please follow sampling instr
 import sys, os, shutil
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data_loaders.truebones.truebones_utils.motion_process import process_skeleton
+from data_loaders.truebones.truebones_utils.motion_process import (
+    process_skeleton,
+    validate_anim_dir_update_state,
+)
 from data_loaders.truebones.truebones_utils.fbx_filename_rules import find_tpose_reference_path
 from utils.misc import infer_object_type_from_filename
 from utils.parser_util import process_new_skeleton_args
@@ -38,10 +51,30 @@ from utils.parser_util import process_new_skeleton_args
 
 def main():
     args = process_new_skeleton_args()
-
-    # Clear old files in the target directory before processing
     save_dir = args.save_dir
-    if os.path.exists(save_dir):
+
+    # --update: incremental mode. Keeps the existing dataset and adds/replaces
+    # motions instead of wiping --save-dir. Works for both the --anim-dir path
+    # and the --retarget-top-k path; side artifacts are rebuilt afterwards.
+    update_mode = bool(getattr(args, 'update', False))
+    if update_mode and not os.path.exists(os.path.join(save_dir, 'cond.npy')):
+        print(f"[process_new_skeleton] --update requested but no existing dataset "
+              f"found in '{save_dir}'; performing a full build instead.")
+        update_mode = False
+
+    if update_mode:
+        os.makedirs(save_dir, exist_ok=True)
+    elif os.path.exists(save_dir):
+        # Ask for user confirmation before wiping existing data
+        reply = input(
+            f"WARNING: About to wipe all existing data in '{save_dir}' "
+            f"and rebuild from scratch.\n"
+            f"Proceed? [y/N]: "
+        )
+        if reply.strip().lower() not in ('y', 'yes'):
+            print("Aborted by user.")
+            sys.exit(0)
+        # Clear old files in the target directory before processing
         for entry in os.listdir(save_dir):
             entry_path = os.path.join(save_dir, entry)
             if os.path.isdir(entry_path):
@@ -87,12 +120,20 @@ def main():
     # If --donor-skeletons is given, also default to 1 but suppress the log
     # since the user is explicitly configuring retarget.
     retarget_top_k = args.retarget_top_k
-    auto_defaulted_retarget = False
     if retarget_top_k is None and args.anim_dir is None:
         retarget_top_k = 1
-        auto_defaulted_retarget = True
         if args.donor_skeletons is None or args.donor_skeletons.strip() == '':
             print(f"[process_new_skeleton] No --retarget-top-k specified, defaulting to 1")
+
+    if update_mode and args.anim_dir:
+        try:
+            validate_anim_dir_update_state(object_type, save_dir)
+        except RuntimeError as exc:
+            raise SystemExit(f"Error: {exc}") from exc
+
+    if update_mode:
+        print(f"[process_new_skeleton] --update: incrementally updating {save_dir} "
+              f"(existing clips preserved)")
 
     if retarget_top_k:
         if args.anim_dir:
@@ -120,6 +161,7 @@ def main():
             tpose_path,
             motions_from_npys=result['retargeted_npys'],
             target_cond_partial=result['target_cond'],
+            update=update_mode,
         )
     else:
         process_skeleton(
@@ -128,8 +170,25 @@ def main():
             args.save_dir,
             tpose_path,
             args.anim_dir,
+            update=update_mode,
         )
 
+    # In --update mode process_skeleton only writes motions plus a provisional
+    # cond.npy / motion_metadata. Rebuild the side artifacts over the merged
+    # clip set, recomputing mean/std so normalization reflects the added motions.
+    if update_mode:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from regenerate_dataset_artifacts import regenerate_dataset_artifacts
+        print("[process_new_skeleton] --update: rebuilding side artifacts "
+              "(embeddings, mean/std, metadata)")
+        regenerate_dataset_artifacts(args.save_dir, recompute_stats=True)
+
 if __name__ == '__main__':
+    try:
         main()
+    except (SystemExit, KeyboardInterrupt):
+        raise
+    except Exception as exc:
+        print(f"\n[process_new_skeleton] Error: {exc}", file=sys.stderr)
+        sys.exit(1)
     

@@ -43,7 +43,22 @@ ROOT_XZ_STRIP_THRESHOLD = 1
 
 # Mean L2 distance (per joint, in HML-normalised units) between first and last
 # frame poses below which a clip is classified as looping.
-LOOP_DETECTION_POS_THRESHOLD = 0.10
+#
+# The threshold is intentionally relaxed (0.1 instead of a stricter ~0.05).
+# Most clips in the 0.05-0.1 band are quasi-periodic locomotion (Run, Walk,
+# etc.) whose first/last frames are already close but not perfectly closed.
+# Treating them as loops:
+#   1. Routes them through periodic resample + random phase offset, which
+#      preserves their natural gait structure better than a naive random crop.
+#   2. Applies circular temporal mask / circular phase embedding, giving the
+#      model consistent cyclic conditioning.
+#   3. Engages loop wrap loss (pose / rotation / terminal-velocity closure) —
+#      this produces smoother, more periodic generations and trains the model
+#      to repair imperfect seams on the few truly non-looping clips that cross
+#      the threshold (e.g. RunToStop transitions).
+# In practice, this improves validation metrics (Jerk, Snap, SpectralFlatness)
+# without harming non-periodic motion quality.
+LOOP_DETECTION_POS_THRESHOLD = 0.1
 
 LEAF_ROTATION_HELPER_SUFFIX = '__rot_helper'
 

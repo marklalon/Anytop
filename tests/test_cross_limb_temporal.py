@@ -16,6 +16,8 @@ from pathlib import Path
 import pytest
 import torch
 
+import model.motion_transformer as motion_transformer_module
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -329,6 +331,51 @@ def test_decoder_expands_graph_relations_once_per_batch_not_per_frame():
 
     assert captured["topology_shape"] == (2, H, 3, 3)
     assert captured["edge_shape"] == (2, H, 3, 3)
+
+
+def test_decoder_reuses_precomputed_loop_phase_embeddings(monkeypatch):
+    calls: list[tuple[int, int, int]] = []
+    original = motion_transformer_module._circular_phase_embedding
+
+    def wrapped(length, dim, batch_size, device, dtype, lengths=None):
+        calls.append((length, dim, batch_size))
+        return original(length, dim, batch_size, device, dtype, lengths)
+
+    monkeypatch.setattr(motion_transformer_module, "_circular_phase_embedding", wrapped)
+
+    layer = GraphMotionDecoderLayer(D, H, dim_feedforward=32, dropout=0.0)
+    dec = GraphMotionDecoder(
+        layer,
+        num_layers=3,
+        cross_limb=True,
+        cross_limb_latents=K,
+        cross_limb_dim=8,
+    )
+    seen = []
+
+    def stub(output, *a, **kw):
+        seen.append((kw["loop_phase_embedding"], kw["cross_limb_time_embedding"]))
+        return output
+
+    for decoder_layer in dec.layers:
+        decoder_layer.forward = stub
+
+    y = {
+        "graph_dist": torch.zeros(2, J, J, dtype=torch.int64),
+        "joints_relations": torch.zeros(2, J, J, dtype=torch.int64),
+    }
+    dec.forward(
+        tgt=torch.zeros(T, 2, J, D),
+        timesteps_embs=torch.zeros(2, D),
+        memory=None,
+        y=y,
+        loop_phase_mask=torch.tensor([True, False]),
+        lengths=torch.tensor([T - 1, T - 1]),
+    )
+
+    assert calls == [(T, D, 2), (T, 8, 2)]
+    assert len({id(pair[0]) for pair in seen}) == 1
+    assert len({id(pair[1]) for pair in seen}) == 1
 
 
 if __name__ == "__main__":

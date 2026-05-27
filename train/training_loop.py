@@ -138,6 +138,7 @@ class TrainLoop:
         self.inference_diffusion = None
         self.scorer = None
         if self.args.eval_during_training:
+            eval_loop_cond_prob = getattr(self.args, 'loop_cond_prob', 0.0)
             self.eval_data = get_dataset_loader(
                 batch_size=self.args.eval_batch_size,
                 num_frames=self.args.num_frames,
@@ -151,6 +152,7 @@ class TrainLoop:
                 action_tags=getattr(self.args, 'action_tags', ''),
                 motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
                 main_process_prefetch_batches=getattr(self.args, 'main_process_prefetch_batches', 0),
+                loop_cond_prob=eval_loop_cond_prob,
             )
             sampling_steps = int(getattr(self.args, 'sampling_steps', 100))
             infer_args = pycopy.deepcopy(self.args)

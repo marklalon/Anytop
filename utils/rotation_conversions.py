@@ -541,11 +541,17 @@ def rotation_6d_to_matrix(d6: torch.Tensor) -> torch.Tensor:
 
 def rotation_6d_to_matrix_np(cont6d):
     assert cont6d.shape[-1] == 6, "The last dimension must be 6"
+    epsilon = 1e-8
     x_raw = cont6d[..., 0:3]
     y_raw = cont6d[..., 3:6]
-    x = x_raw / np.linalg.norm(x_raw, axis=-1, keepdims=True)
+    x_norm = np.linalg.norm(x_raw, axis=-1, keepdims=True)
+    x = np.zeros_like(x_raw)
+    np.divide(x_raw, x_norm, out=x, where=x_norm > epsilon)
     z = np.cross(x, y_raw, axis=-1)
-    z = z / np.linalg.norm(z, axis=-1, keepdims=True)
+    z_norm = np.linalg.norm(z, axis=-1, keepdims=True)
+    z_normed = np.zeros_like(z)
+    np.divide(z, z_norm, out=z_normed, where=z_norm > epsilon)
+    z = z_normed
     y = np.cross(z, x, axis=-1)
     x = x[..., None]
     y = y[..., None]

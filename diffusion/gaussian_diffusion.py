@@ -8,6 +8,7 @@ Docstrings have been added, as well as DDIM sampling and a new collection of bet
 
 import enum
 import math
+import weakref
 import numpy as np
 import torch
 import torch as th
@@ -15,7 +16,43 @@ from copy import deepcopy
 from diffusion import logger
 from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood, geodesic_distance
+from model.anytop import ReferencePriorEncoder
 from utils.rotation_conversions import rotation_6d_to_matrix_safe
+
+
+_EXTRACT_TENSOR_CACHE = {}
+_EXTRACT_TENSOR_CACHE_FINALIZERS = {}
+
+
+def _device_cache_key(device):
+    device = th.device(device)
+    return device.type, device.index
+
+
+def _cleanup_extract_tensor_cache(array_id):
+    for key in list(_EXTRACT_TENSOR_CACHE):
+        if key[0] == array_id:
+            _EXTRACT_TENSOR_CACHE.pop(key, None)
+    _EXTRACT_TENSOR_CACHE_FINALIZERS.pop(array_id, None)
+
+
+def _cached_extract_source_tensor(arr, device):
+    array_id = id(arr)
+    key = (array_id, arr.shape, arr.dtype.str, _device_cache_key(device))
+    cached = _EXTRACT_TENSOR_CACHE.get(key)
+    if cached is not None and cached.device == th.device(device):
+        return cached
+
+    tensor = th.from_numpy(arr).to(device=device, dtype=th.float32)
+    _EXTRACT_TENSOR_CACHE[key] = tensor
+    if array_id not in _EXTRACT_TENSOR_CACHE_FINALIZERS:
+        try:
+            _EXTRACT_TENSOR_CACHE_FINALIZERS[array_id] = weakref.finalize(
+                arr, _cleanup_extract_tensor_cache, array_id
+            )
+        except TypeError:
+            pass
+    return tensor
 
 
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, scale_betas=1.):
@@ -128,6 +165,10 @@ class GaussianDiffusion:
         rescale_timesteps=False,
         lambda_geo=0.,
         lambda_vel=0.,
+        lambda_loop_wrap=0.,
+        lambda_loop_root_xz=0.,
+        temporal_span_seam_loss_weight=0.0,
+        temporal_span_seam_width=0,
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
@@ -135,6 +176,23 @@ class GaussianDiffusion:
         self.rescale_timesteps = rescale_timesteps
         self.lambda_geo = lambda_geo
         self.lambda_vel = lambda_vel
+        self.lambda_loop_wrap = float(lambda_loop_wrap)
+        self.lambda_loop_root_xz = float(lambda_loop_root_xz)
+        self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
+        self.temporal_span_seam_width = int(temporal_span_seam_width)
+        if self.lambda_loop_wrap < 0.0:
+            raise ValueError(f"lambda_loop_wrap must be >= 0, got {self.lambda_loop_wrap}")
+        if self.lambda_loop_root_xz < 0.0:
+            raise ValueError(f"lambda_loop_root_xz must be >= 0, got {self.lambda_loop_root_xz}")
+        if self.temporal_span_seam_loss_weight < 0.0:
+            raise ValueError(
+                "temporal_span_seam_loss_weight must be >= 0, got "
+                f"{self.temporal_span_seam_loss_weight}"
+            )
+        if self.temporal_span_seam_width < 0:
+            raise ValueError(
+                f"temporal_span_seam_width must be >= 0, got {self.temporal_span_seam_width}"
+            )
 
         # Use float64 for accuracy.
         betas = np.array(betas, dtype=np.float64)
@@ -224,6 +282,76 @@ class GaussianDiffusion:
         denom = sum_flat(weights.float()) * a.size(2)
         return loss / (denom + 1e-8)
 
+    def _normalize_temporal_span_time_mask(self, temporal_span_mask):
+        if temporal_span_mask is None:
+            return None
+        if temporal_span_mask.dim() == 3:
+            return temporal_span_mask.any(dim=1)
+        if temporal_span_mask.dim() == 2:
+            return temporal_span_mask
+        raise ValueError(
+            "temporal_span_mask must have shape (B, J, T) or (B, T), got "
+            f"{tuple(temporal_span_mask.shape)}"
+        )
+
+    def _build_temporal_span_seam_weights(self, temporal_span_mask, lengths):
+        if (
+            temporal_span_mask is None
+            or self.temporal_span_seam_width <= 0
+        ):
+            return None
+
+        temporal_span_time = self._normalize_temporal_span_time_mask(temporal_span_mask)
+
+        batch_size, n_frames = temporal_span_time.shape
+        seam_weights = th.zeros(
+            (batch_size, 1, 1, n_frames),
+            device=temporal_span_time.device,
+            dtype=th.float32,
+        )
+        lengths_long = th.as_tensor(
+            lengths, device=temporal_span_time.device, dtype=th.long
+        ).reshape(-1)
+        band = int(self.temporal_span_seam_width)
+        # Treat seam_width as an approximately 2-sigma support radius so the
+        # boundary frame remains dominant while nearby frames still contribute.
+        sigma = max(float(band) / 2.0, 1e-6)
+
+        for batch_index in range(batch_size):
+            valid_frames = min(int(lengths_long[batch_index].item()), n_frames)
+            if valid_frames <= 0:
+                continue
+            sample_mask = temporal_span_time[batch_index, :valid_frames]
+            if not bool(sample_mask.any()):
+                continue
+
+            prev_mask = th.zeros_like(sample_mask)
+            prev_mask[1:] = sample_mask[:-1]
+            next_mask = th.zeros_like(sample_mask)
+            next_mask[:-1] = sample_mask[1:]
+            boundaries = th.cat(
+                [
+                    th.nonzero(sample_mask & ~prev_mask, as_tuple=False).flatten(),
+                    th.nonzero(sample_mask & ~next_mask, as_tuple=False).flatten(),
+                ],
+                dim=0,
+            )
+            for boundary in boundaries.tolist():
+                left = max(0, boundary - band)
+                right = min(valid_frames, boundary + band + 1)
+                local_indices = th.arange(left, right, device=temporal_span_time.device)
+                boundary_weights = th.exp(
+                    -0.5 * ((local_indices.float() - float(boundary)) / sigma) ** 2
+                )
+                seam_weights[batch_index, 0, 0, left:right] = th.maximum(
+                    seam_weights[batch_index, 0, 0, left:right],
+                    boundary_weights,
+                )
+
+        if not bool((seam_weights > 0).any()):
+            return None
+        return seam_weights
+
     def quat_to_mat(self, qs):
         r = qs[..., 0]
         i = qs[..., 1]
@@ -276,6 +404,131 @@ class GaussianDiffusion:
         valid = temp_shifted.float() * spat_mask.float().transpose(1, 3)        # [bs, njoints, 1, nframes-1]
         loss_val = (loss * valid).sum() / (valid.sum() * 3).clamp(min=1)
         return loss_val
+
+    def _coerce_bool_batch(self, value, batch_size, device, default=False):
+        if value is None:
+            return th.full((batch_size,), bool(default), device=device, dtype=th.bool)
+        value = th.as_tensor(value, device=device, dtype=th.bool).reshape(-1)
+        if value.numel() == 1 and batch_size != 1:
+            value = value.expand(batch_size)
+        elif value.numel() != batch_size:
+            raise ValueError(
+                f"Boolean batch value has length {value.numel()} but expected {batch_size}."
+            )
+        return value
+
+    def _coerce_index_batch(self, value, batch_size, device):
+        if value is None:
+            return th.zeros(batch_size, device=device, dtype=th.long)
+        if torch.is_tensor(value):
+            result = value.to(device=device, dtype=th.long).reshape(-1)
+        else:
+            result = th.as_tensor([
+                0 if item is None else int(item)
+                for item in value
+            ], device=device, dtype=th.long).reshape(-1)
+        if result.numel() == 1 and batch_size != 1:
+            result = result.expand(batch_size)
+        elif result.numel() != batch_size:
+            raise ValueError(
+                f"translation_root_index has length {result.numel()} but expected {batch_size}."
+            )
+        return result
+
+    def loop_wrap_loss(self, model_output, y, lengths, n_joints):
+        batch_size, max_joints, n_feats, n_frames = model_output.shape
+        device = model_output.device
+        is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
+        loop_full_cycle = self._coerce_bool_batch(y.get('loop_full_cycle'), batch_size, device, default=False)
+        active = is_loop & loop_full_cycle
+        lengths_long = th.as_tensor(lengths, device=device, dtype=th.long).reshape(-1)
+        n_joints_long = th.as_tensor(n_joints, device=device, dtype=th.long).reshape(-1)
+        root_indices = self._coerce_index_batch(y.get('translation_root_index'), batch_size, device)
+        zero = model_output.new_zeros(())
+
+        valid_frames = lengths_long.clamp(min=0, max=n_frames)
+        valid_joints = n_joints_long.clamp(min=0, max=max_joints)
+        active_valid = active & (valid_frames >= 2) & (valid_joints > 0)
+        active_weight = active_valid.to(dtype=model_output.dtype)
+        active_denom = active_weight.sum().clamp(min=1.0)
+
+        last_frame_index = (valid_frames.clamp(min=1) - 1).view(batch_size, 1, 1, 1)
+        last_frame_index = last_frame_index.expand(-1, max_joints, n_feats, 1)
+        first_frame = model_output[..., 0:1]
+        last_frame = model_output.gather(dim=3, index=last_frame_index)
+
+        joint_mask = th.arange(max_joints, device=device).view(1, max_joints) < valid_joints.view(batch_size, 1)
+        joint_weight = joint_mask.to(dtype=model_output.dtype)
+
+        pose_weight = joint_weight[:, :, None, None].expand(-1, -1, 3, -1).clone()
+        batch_indices = th.arange(batch_size, device=device)
+        root_valid = ((root_indices >= 0) & (root_indices < valid_joints)).to(dtype=model_output.dtype)
+        root_indices_clamped = root_indices.clamp(min=0, max=max(max_joints - 1, 0))
+        pose_weight[batch_indices, root_indices_clamped, 0, 0] *= 1.0 - root_valid
+        pose_weight[batch_indices, root_indices_clamped, 2, 0] *= 1.0 - root_valid
+        pose_denom = pose_weight.sum(dim=(1, 2, 3)).clamp(min=1.0)
+        pose_per_sample = (
+            (((first_frame[:, :, 0:3] - last_frame[:, :, 0:3]) ** 2) * pose_weight)
+            .sum(dim=(1, 2, 3))
+            / pose_denom
+        )
+        pose_per_sample = th.where(active_valid, pose_per_sample, th.zeros_like(pose_per_sample))
+        pose_loss = (pose_per_sample * active_weight).sum() / active_denom
+
+        rot_first = first_frame[:, :, 3:9].permute(0, 3, 1, 2)
+        rot_last = last_frame[:, :, 3:9].permute(0, 3, 1, 2)
+        rots_first = rotation_6d_to_matrix_safe(rot_first)
+        rots_last = rotation_6d_to_matrix_safe(rot_last)
+        rot_distance = geodesic_distance(rots_last, rots_first).squeeze(-1).squeeze(1)
+        rot_per_sample = (rot_distance * joint_weight).sum(dim=1) / joint_weight.sum(dim=1).clamp(min=1.0)
+        rot_per_sample = th.where(active_valid, rot_per_sample, th.zeros_like(rot_per_sample))
+        rot_loss = (rot_per_sample * active_weight).sum() / active_denom
+
+        terminal_vel_loss = zero
+        if n_feats >= 12:
+            terminal_residual = first_frame[:, :, 0:3, 0] - last_frame[:, :, 0:3, 0] - last_frame[:, :, 9:12, 0]
+            terminal_per_sample = ((terminal_residual ** 2) * joint_weight[:, :, None]).sum(dim=(1, 2))
+            terminal_per_sample = terminal_per_sample / (joint_weight.sum(dim=1) * 3.0).clamp(min=1.0)
+            terminal_per_sample = th.where(active_valid, terminal_per_sample, th.zeros_like(terminal_per_sample))
+            terminal_vel_loss = (terminal_per_sample * active_weight).sum() / active_denom
+
+        total = pose_loss + rot_loss + terminal_vel_loss
+        return {
+            'loop_wrap_loss': total,
+            'loop_wrap_pose': pose_loss,
+            'loop_wrap_rot': rot_loss,
+            'loop_wrap_terminal_vel': terminal_vel_loss,
+        }
+
+    def loop_root_xz_closure_loss(self, model_output, y, lengths, n_joints):
+        batch_size, max_joints, n_feats, n_frames = model_output.shape
+        device = model_output.device
+        if n_feats < 12 or n_frames < 2:
+            return model_output.new_zeros(())
+
+        is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
+        loop_full_cycle = self._coerce_bool_batch(y.get('loop_full_cycle'), batch_size, device, default=False)
+        active = is_loop & loop_full_cycle
+        lengths_long = th.as_tensor(lengths, device=device, dtype=th.long).reshape(-1)
+        n_joints_long = th.as_tensor(n_joints, device=device, dtype=th.long).reshape(-1)
+        root_indices = self._coerce_index_batch(y.get('translation_root_index'), batch_size, device)
+
+        valid_frames = lengths_long.clamp(min=0, max=n_frames)
+        valid_joints = n_joints_long.clamp(min=0, max=max_joints)
+        root_valid = (root_indices >= 0) & (root_indices < valid_joints)
+        active_valid = active & root_valid & (valid_frames >= 2)
+        active_weight = active_valid.to(dtype=model_output.dtype)
+        active_denom = active_weight.sum().clamp(min=1.0)
+
+        batch_indices = th.arange(batch_size, device=device)
+        root_indices_clamped = root_indices.clamp(min=0, max=max(max_joints - 1, 0))
+        root_vel_xz = model_output[batch_indices, root_indices_clamped][:, [9, 11], :]
+        transition_count = (valid_frames - 1).clamp(min=0)
+        time_mask = th.arange(n_frames, device=device).view(1, 1, n_frames) < transition_count.view(batch_size, 1, 1)
+        net_xz = (root_vel_xz * time_mask.to(dtype=model_output.dtype)).sum(dim=2)
+        per_sample = (net_xz ** 2).mean(dim=1)
+        per_sample = th.where(active_valid, per_sample, th.zeros_like(per_sample))
+        return (per_sample * active_weight).sum() / active_denom
 
     def q_mean_variance(self, x_start, t):
         """
@@ -1402,203 +1655,6 @@ class GaussianDiffusion:
                 yield out
                 img = out["sample"]
 
-    def plms_sample(
-        self,
-        model,
-        x,
-        t,
-        clip_denoised=True,
-        denoised_fn=None,
-        cond_fn=None,
-        model_kwargs=None,
-        cond_fn_with_grad=False,
-        order=2,
-        old_out=None,
-    ):
-        """
-        Sample x_{t-1} from the model using Pseudo Linear Multistep.
-
-        Same usage as p_sample().
-        """
-        if not int(order) or not 1 <= order <= 4:
-            raise ValueError('order is invalid (should be int from 1-4).')
-
-        def get_model_output(x, t):
-            with th.set_grad_enabled(cond_fn_with_grad and cond_fn is not None):
-                x = x.detach().requires_grad_() if cond_fn_with_grad else x
-                out_orig = self.p_mean_variance(
-                    model,
-                    x,
-                    t,
-                    clip_denoised=clip_denoised,
-                    denoised_fn=denoised_fn,
-                    model_kwargs=model_kwargs,
-                )
-                if cond_fn is not None:
-                    if cond_fn_with_grad:
-                        out = self.condition_score_with_grad(cond_fn, out_orig, x, t, model_kwargs=model_kwargs)
-                        x = x.detach()
-                    else:
-                        out = self.condition_score(cond_fn, out_orig, x, t, model_kwargs=model_kwargs)
-                else:
-                    out = out_orig
-
-            # Usually our model outputs epsilon, but we re-derive it
-            # in case we used x_start or x_prev prediction.
-            eps = self._predict_eps_from_xstart(x, t, out["pred_xstart"])
-            return eps, out, out_orig
-
-        alpha_bar = _extract_into_tensor(self.alphas_cumprod, t, x.shape)
-        alpha_bar_prev = _extract_into_tensor(self.alphas_cumprod_prev, t, x.shape)
-        eps, out, out_orig = get_model_output(x, t)
-
-        if order > 1 and old_out is None:
-            # Pseudo Improved Euler
-            old_eps = [eps]
-            mean_pred = out["pred_xstart"] * th.sqrt(alpha_bar_prev) + th.sqrt(1 - alpha_bar_prev) * eps
-            eps_2, _, _ = get_model_output(mean_pred, t - 1)
-            eps_prime = (eps + eps_2) / 2
-            pred_prime = self._predict_xstart_from_eps(x, t, eps_prime)
-            mean_pred = pred_prime * th.sqrt(alpha_bar_prev) + th.sqrt(1 - alpha_bar_prev) * eps_prime
-        else:
-            # Pseudo Linear Multistep (Adams-Bashforth)
-            old_eps = old_out["old_eps"]
-            old_eps.append(eps)
-            cur_order = min(order, len(old_eps))
-            if cur_order == 1:
-                eps_prime = old_eps[-1]
-            elif cur_order == 2:
-                eps_prime = (3 * old_eps[-1] - old_eps[-2]) / 2
-            elif cur_order == 3:
-                eps_prime = (23 * old_eps[-1] - 16 * old_eps[-2] + 5 * old_eps[-3]) / 12
-            elif cur_order == 4:
-                eps_prime = (55 * old_eps[-1] - 59 * old_eps[-2] + 37 * old_eps[-3] - 9 * old_eps[-4]) / 24
-            else:
-                raise RuntimeError('cur_order is invalid.')
-            pred_prime = self._predict_xstart_from_eps(x, t, eps_prime)
-            mean_pred = pred_prime * th.sqrt(alpha_bar_prev) + th.sqrt(1 - alpha_bar_prev) * eps_prime
-
-        if len(old_eps) >= order:
-            old_eps.pop(0)
-
-        nonzero_mask = (t != 0).float().view(-1, *([1] * (len(x.shape) - 1)))
-        sample = mean_pred * nonzero_mask + out["pred_xstart"] * (1 - nonzero_mask)
-
-        return {"sample": sample, "pred_xstart": out_orig["pred_xstart"], "old_eps": old_eps}
-
-    def plms_sample_loop(
-        self,
-        model,
-        shape,
-        noise=None,
-        clip_denoised=True,
-        denoised_fn=None,
-        cond_fn=None,
-        model_kwargs=None,
-        device=None,
-        progress=False,
-        skip_timesteps=0,
-        init_image=None,
-        randomize_class=False,
-        cond_fn_with_grad=False,
-        order=2,
-    ):
-        """
-        Generate samples from the model using Pseudo Linear Multistep.
-
-        Same usage as p_sample_loop().
-        """
-        final = None
-        for sample in self.plms_sample_loop_progressive(
-            model,
-            shape,
-            noise=noise,
-            clip_denoised=clip_denoised,
-            denoised_fn=denoised_fn,
-            cond_fn=cond_fn,
-            model_kwargs=model_kwargs,
-            device=device,
-            progress=progress,
-            skip_timesteps=skip_timesteps,
-            init_image=init_image,
-            randomize_class=randomize_class,
-            cond_fn_with_grad=cond_fn_with_grad,
-            order=order,
-        ):
-            final = sample
-        return final["sample"]
-
-    def plms_sample_loop_progressive(
-        self,
-        model,
-        shape,
-        noise=None,
-        clip_denoised=True,
-        denoised_fn=None,
-        cond_fn=None,
-        model_kwargs=None,
-        device=None,
-        progress=False,
-        skip_timesteps=0,
-        init_image=None,
-        randomize_class=False,
-        cond_fn_with_grad=False,
-        order=2,
-    ):
-        """
-        Use PLMS to sample from the model and yield intermediate samples from each
-        timestep of PLMS.
-
-        Same usage as p_sample_loop_progressive().
-        """
-        if device is None:
-            device = next(model.parameters()).device
-        assert isinstance(shape, (tuple, list))
-        if noise is not None:
-            img = noise
-        else:
-            img = th.randn(*shape, device=device)
-
-        if skip_timesteps and init_image is None:
-            init_image = th.zeros_like(img)
-
-        indices = list(range(self.num_timesteps - skip_timesteps))[::-1]
-
-        if init_image is not None:
-            my_t = th.ones([shape[0]], device=device, dtype=th.long) * indices[0]
-            img = self.q_sample(init_image, my_t, img)
-
-        if progress:
-            # Lazy import so that we don't depend on tqdm.
-            from tqdm.auto import tqdm
-
-            indices = tqdm(indices)
-
-        old_out = None
-
-        for i in indices:
-            t = th.tensor([i] * shape[0], device=device)
-            if randomize_class and 'y' in model_kwargs:
-                model_kwargs['y'] = th.randint(low=0, high=model.num_classes,
-                                               size=model_kwargs['y'].shape,
-                                               device=model_kwargs['y'].device)
-            with th.no_grad():
-                out = self.plms_sample(
-                    model,
-                    img,
-                    t,
-                    clip_denoised=clip_denoised,
-                    denoised_fn=denoised_fn,
-                    cond_fn=cond_fn,
-                    model_kwargs=model_kwargs,
-                    cond_fn_with_grad=cond_fn_with_grad,
-                    order=order,
-                    old_out=old_out,
-                )
-                yield out
-                old_out = out
-                img = out["sample"]
-
     def _vb_terms_bpd(
         self, model, x_start, x_t, t, clip_denoised=True, model_kwargs=None
     ):
@@ -1637,30 +1693,63 @@ class GaussianDiffusion:
     def _apply_joint_mask_training_perturbation(
         self, model, x_start, x_t, t, model_kwargs
     ):
-        """Re-noise selected joints without altering attention masks.
+        """Re-noise selected joints / spans without altering attention masks.
 
-        AnyTop's training-time joint mask is meant to mimic RePaint's mixed
-        per-joint noise distribution at the model input, not to hide joints
-        from attention. The selected joints keep participating in attention;
-        only their x_t features are replaced by q_sample(x_0, t_random).
+        Training-time structured corruption is meant to mimic RePaint's mixed
+        reliability at the model input, not to hide tokens from attention.
+        The selected joints / frames keep participating in attention; only
+        their x_t features are replaced by q_sample(x_0, t_random).
         """
         y = model_kwargs.get('y') if model_kwargs is not None else None
-        if not hasattr(model, 'sample_subtree_joint_mask_train'):
-            if y is not None:
-                y.pop('cross_limb_unreliable_mask', None)
-            return x_t
+        model_for_hooks = self._unwrap_model_for_training_hooks(model)
 
-        subtree_mask = model.sample_subtree_joint_mask_train(
-            model_kwargs.get('y', {}), x_t.shape[1], x_t.device
-        )
-        if subtree_mask is None:
+        subtree_mask = None
+        if hasattr(model_for_hooks, 'sample_subtree_joint_mask_train'):
+            subtree_mask = model_for_hooks.sample_subtree_joint_mask_train(
+                model_kwargs.get('y', {}), x_t.shape[1], x_t.device
+            )
+
+        temporal_span_mask = None
+        if hasattr(model_for_hooks, 'sample_temporal_span_mask_train'):
+            temporal_span_mask = model_for_hooks.sample_temporal_span_mask_train(
+                model_kwargs.get('y', {}), x_t.shape[1], x_t.shape[-1], x_t.device
+            )
+
+        corruption_mask = None
+        if subtree_mask is not None:
+            subtree_mask = subtree_mask.to(device=x_t.device, dtype=th.bool)
+            expected_subtree_shape = (x_t.shape[0], x_t.shape[1])
+            if subtree_mask.shape != expected_subtree_shape:
+                raise ValueError(
+                    "sample_subtree_joint_mask_train must return shape "
+                    f"{expected_subtree_shape}, got {tuple(subtree_mask.shape)}"
+                )
+            corruption_mask = subtree_mask[:, :, None].expand(-1, -1, x_t.shape[-1])
+
+        if temporal_span_mask is not None:
+            temporal_span_mask = temporal_span_mask.to(device=x_t.device, dtype=th.bool)
+            if temporal_span_mask.dim() == 2:
+                temporal_span_mask = temporal_span_mask[:, None, :].expand(-1, x_t.shape[1], -1)
+            expected_temporal_shape = (x_t.shape[0], x_t.shape[1], x_t.shape[-1])
+            if temporal_span_mask.shape != expected_temporal_shape:
+                raise ValueError(
+                    "sample_temporal_span_mask_train must return shape "
+                    f"{expected_temporal_shape} or (B, T), got {tuple(temporal_span_mask.shape)}"
+                )
+            corruption_mask = (
+                temporal_span_mask
+                if corruption_mask is None
+                else (corruption_mask | temporal_span_mask)
+            )
+
+        if corruption_mask is None:
             if y is not None:
                 y.pop('cross_limb_unreliable_mask', None)
-            return x_t
+            return x_t, temporal_span_mask
 
         if y is not None:
-            y['cross_limb_unreliable_mask'] = subtree_mask[:, None, :].to(dtype=x_t.dtype).expand(
-                -1, x_t.shape[-1], -1
+            y['cross_limb_unreliable_mask'] = corruption_mask.transpose(1, 2).to(
+                dtype=x_t.dtype
             ).contiguous()
 
         t_random = th.randint(
@@ -1668,7 +1757,82 @@ class GaussianDiffusion:
         )
         fresh_noise = th.randn_like(x_start)
         x_t_random = self.q_sample(x_start, t_random, noise=fresh_noise)
-        return th.where(subtree_mask[:, :, None, None], x_t_random, x_t)
+        return th.where(corruption_mask[:, :, None, :], x_t_random, x_t), temporal_span_mask
+
+    @staticmethod
+    def _unwrap_model_for_training_hooks(model):
+        unwrapped_model = model
+        while hasattr(unwrapped_model, 'model'):
+            next_model = getattr(unwrapped_model, 'model')
+            if next_model is None or next_model is unwrapped_model:
+                break
+            unwrapped_model = next_model
+        return unwrapped_model
+
+    @staticmethod
+    def _sample_structured_dropout_mask(batch_size, drop_prob, device):
+        if drop_prob <= 0.0 or batch_size <= 0:
+            return th.zeros(batch_size, device=device, dtype=th.bool)
+        expected = float(drop_prob) * float(batch_size)
+        drop_count = int(math.floor(expected))
+        if expected > drop_count and th.rand((), device=device).item() < (expected - drop_count):
+            drop_count += 1
+        drop_count = min(max(drop_count, 0), batch_size)
+        if drop_count == 0:
+            return th.zeros(batch_size, device=device, dtype=th.bool)
+        drop_mask = th.zeros(batch_size, device=device, dtype=th.bool)
+        drop_mask[th.randperm(batch_size, device=device)[:drop_count]] = True
+        return drop_mask
+
+    def _build_reference_conditioning(self, model, x_start, model_kwargs):
+        y = model_kwargs.get('y') if model_kwargs is not None else None
+        if y is None:
+            return
+
+        model_for_hooks = self._unwrap_model_for_training_hooks(model)
+        if not getattr(model_for_hooks, 'reference_cond', False):
+            y.pop('reference_motion', None)
+            y.pop('reference_cond_mask', None)
+            return
+
+        batch_size = x_start.shape[0]
+        device = x_start.device
+
+        uncond_drop_prob = 1.0 - float(getattr(model_for_hooks, 'reference_cond_prob', 0.3))
+        dropout_mask = self._sample_structured_dropout_mask(
+            batch_size, uncond_drop_prob, device,
+        )
+        cond_mask = ~dropout_mask
+        if not bool(cond_mask.any()):
+            y['reference_motion'] = None
+            y['reference_cond_mask'] = cond_mask
+            return
+
+        # Reuse x_start storage to avoid a per-step clone; callers must not
+        # mutate x_start in-place after building reference conditioning.
+        y['reference_motion'] = x_start.detach()
+        y['reference_cond_mask'] = cond_mask
+
+    def _build_global_energy_conditioning(self, model, x_start, model_kwargs):
+        y = model_kwargs.get('y') if model_kwargs is not None else None
+        if y is None:
+            return
+
+        model_for_hooks = self._unwrap_model_for_training_hooks(model)
+        if not getattr(model_for_hooks, 'global_energy_cond', False):
+            y.pop('global_energy_cond', None)
+            return
+
+        lengths = y.get('lengths')
+        n_joints = y.get('n_joints')
+        if lengths is None or n_joints is None:
+            raise ValueError("global energy conditioning requires y['lengths'] and y['n_joints'] metadata")
+
+        y['global_energy_cond'] = ReferencePriorEncoder.compute_global_energy_condition(
+            x_start.detach(),
+            n_joints=n_joints,
+            lengths=lengths,
+        )
 
     def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
         """
@@ -1707,9 +1871,11 @@ class GaussianDiffusion:
         # batch sample, which is exactly what RePaint clamping produces at
         # inference (clamped joints are at a fixed reference's q_sample state
         # that's uncorrelated with the in-flight masked joint's trajectory).
-        x_t = self._apply_joint_mask_training_perturbation(
+        x_t, temporal_span_mask = self._apply_joint_mask_training_perturbation(
             model, x_start, x_t, t, model_kwargs
         )
+        self._build_reference_conditioning(model, x_start, model_kwargs)
+        self._build_global_energy_conditioning(model, x_start, model_kwargs)
 
         terms = {}
 
@@ -1773,6 +1939,27 @@ class GaussianDiffusion:
                 )
                 terms["loss"] = terms["l_simple"].clone()
 
+                temporal_span_seam_weights = self._build_temporal_span_seam_weights(
+                    temporal_span_mask, lengths
+                )
+                if (
+                    self.temporal_span_seam_loss_weight > 0.0
+                    and temporal_span_seam_weights is not None
+                ):
+                    seam_weights = (
+                        temporal_span_seam_weights
+                        * mask_fp32
+                        * joints_padding_mask_fp32.transpose(1, 3)
+                    )
+                    if bool(seam_weights.any()):
+                        terms["temporal_span_seam_loss"] = self.weighted_feature_l2(
+                            target_fp32, model_output_fp32, seam_weights
+                        )
+                        terms["loss"] = (
+                            terms["loss"]
+                            + self.temporal_span_seam_loss_weight * terms["temporal_span_seam_loss"]
+                        )
+
                 target_denorm = (target_fp32 * std_fp32) + mean_fp32
                 model_output_denorm = (model_output_fp32 * std_fp32) + mean_fp32
 
@@ -1787,6 +1974,27 @@ class GaussianDiffusion:
                         model_output_denorm, mask_fp32, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
                     )
                     terms["loss"] = terms["loss"] + self.lambda_vel * terms["vel_loss"]
+
+                if self.lambda_loop_wrap > 0.0:
+                    y = model_kwargs.get('y', {}) if isinstance(model_kwargs, dict) else {}
+                    loop_terms = self.loop_wrap_loss(
+                        model_output_denorm,
+                        y,
+                        lengths,
+                        actual_joints,
+                    )
+                    terms.update(loop_terms)
+                    terms["loss"] = terms["loss"] + self.lambda_loop_wrap * terms["loop_wrap_loss"]
+
+                if self.lambda_loop_root_xz > 0.0:
+                    y = model_kwargs.get('y', {}) if isinstance(model_kwargs, dict) else {}
+                    terms["loop_root_xz_loss"] = self.loop_root_xz_closure_loss(
+                        model_output_denorm,
+                        y,
+                        lengths,
+                        actual_joints,
+                    )
+                    terms["loss"] = terms["loss"] + self.lambda_loop_root_xz * terms["loop_root_xz_loss"]
 
         else:
             raise NotImplementedError(self.loss_type)
@@ -1803,7 +2011,7 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
                             dimension equal to the length of timesteps.
     :return: a tensor of shape [batch_size, 1, ...] where the shape has K dims.
     """
-    res = th.from_numpy(arr).to(device=timesteps.device)[timesteps].float()
+    res = _cached_extract_source_tensor(arr, timesteps.device)[timesteps]
     while len(res.shape) < len(broadcast_shape):
         res = res[..., None]
     return res.expand(broadcast_shape)

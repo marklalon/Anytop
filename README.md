@@ -15,7 +15,6 @@ This fork includes significant improvements over the original repository while p
 ### Data Quality & Preprocessing
 - **Semantic Joint Name Embeddings** — T5-encoded joint names with capitalization, left/right word-order, and compound-word normalization. Cached in `cond.npy`.
 - **Canonical Joint Naming** — Normalized joint names, inferred symmetry pairs, end-effectors, and contact joints from semantic name tokens.
-- **Mirror Augmentation** — Left-right mirror augmentation via `--aug_mirror_prob` for training data diversity.
 - **Loop Detection** — Automatic detection of looping motion clips.
 - **Preprocessing + Validation Workflow** — Unified CLI (`preprocess_and_validate.py`) chains preprocessing with immediate validation.
 

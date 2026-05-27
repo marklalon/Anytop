@@ -1,11 +1,9 @@
-"""Regression checks for loop padding and mirror augmentation.
+"""Regression checks for loop padding.
 
 Usage:
     d:/AI/pcvg-skeleton-animation/.venv/Scripts/python.exe tests/test_dataset_loop_and_mirror_regression.py
 
-This script covers two previously broken behaviors:
-1. Loop padding must update effective length to max_motion_length.
-2. Mirror augmentation must run in raw feature space before normalization.
+This script verifies loop padding behavior.
 """
 
 from __future__ import annotations
@@ -21,7 +19,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import data_loaders.truebones.data.dataset as dataset_module
 from data_loaders.tensors import truebones_batch_collate
-from data_loaders.truebones.data.dataset import Truebones
+from data_loaders.truebones.data.dataset import (
+    Truebones,
+    _choose_loop_cycle_repeats,
+    _circular_roll_motion,
+    _loop_phase_length_from_num_cycles,
+    _periodic_resample_motion,
+    _resample_motion_features,
+)
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_process import infer_translation_root_index_from_features
 
@@ -40,9 +45,6 @@ def _find_motion(pattern: str) -> str:
 
 LOOP_MOTION = _find_motion("Ostrich_Run_*.npy")
 LOOP_SUBSET = "bipeds_clean"
-MIRROR_MOTION = _find_motion("Jaguar_Run_*.npy")
-MIRROR_SUBSET = "quadropeds_clean"
-MIRROR_SAFEGUARD_SUBSET = "all"
 NUM_FRAMES = 60
 _ENRICHED_MOTION_METADATA_LOOKUP = None
 
@@ -90,17 +92,49 @@ def _build_truebones(**kwargs) -> Truebones:
         return Truebones(**kwargs)
 
 
-def find_mirror_safeguard_sample(motion_dataset):
-    for name in motion_dataset.name_list:
-        data = motion_dataset.data_dict[name]
-        cond = motion_dataset.cond_dict[data["object_type"]]
-        if cond["mirror_disabled_joint_indices"]:
-            return name, data, cond
+def test_loop_repeat_picker_prefers_near_unit_speed() -> None:
+    assert _choose_loop_cycle_repeats(32, 60) == 2
+    assert _choose_loop_cycle_repeats(25, 60) == 2
 
-    raise AssertionError(
-        "no current dataset sample exercises mirror safeguards; "
-        "pick a new regression object or replace this test with synthetic coverage"
+
+def test_speed_resample_scales_velocity_and_keeps_contact_binary() -> None:
+    source = np.zeros((4, 2, 13), dtype=np.float32)
+    source[:, :, 0] = np.array([0.0, 1.0, 3.0, 6.0], dtype=np.float32)[:, None]
+    source[:, :, 1] = np.array([0.0, 0.5, 1.0, 2.0], dtype=np.float32)[:, None]
+    source[:, :, 2] = np.array([0.0, -1.0, -1.5, -2.0], dtype=np.float32)[:, None]
+    source[:, :, 9] = np.array([0.0, 2.0, 4.0, 8.0], dtype=np.float32)[:, None]
+    source[:, :, 10] = 3.0
+    source[:, :, 11] = 0.0
+    source[:, :, 12] = np.array([0.0, 1.0, 0.0, 1.0], dtype=np.float32)[:, None]
+
+    resampled = _resample_motion_features(source, 7)
+
+    src = np.linspace(0.0, 3.0, 7, endpoint=True, dtype=np.float32)
+    lo = np.floor(src).astype(np.int64).clip(0, 3)
+    hi = np.minimum(lo + 1, 3)
+    w = (src - np.floor(src))[:, None, None].astype(np.float32)
+    expected_vel = (source[lo, :, 9:12] * (1.0 - w) + source[hi, :, 9:12] * w) * (3.0 / 6.0)
+    expected_vel[-1] = expected_vel[-2]
+
+    assert_close("resampled velocity", resampled[:, :, 9:12], expected_vel)
+    assert_close("zero velocity channel", resampled[:, :, 11], np.zeros_like(resampled[:, :, 11]))
+    assert set(np.unique(resampled[:, :, 12]).tolist()).issubset({0.0, 1.0})
+
+
+def test_loop_speed_resample_keeps_scaled_terminal_velocity() -> None:
+    source = np.zeros((4, 1, 13), dtype=np.float32)
+    source[:, 0, 0:3] = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 1.0, 0.0], [4.0, 1.0, 1.0]],
+        dtype=np.float32,
     )
+    source[:, 0, 9:12] = np.array(
+        [[0.5, 0.0, 0.0], [0.5, 0.5, 0.0], [1.0, 0.5, 0.5], [-2.0, -1.0, -0.5]],
+        dtype=np.float32,
+    )
+
+    resampled = _resample_motion_features(source, 6, loop_terminal=True)
+
+    assert_close("loop terminal velocity", resampled[-1, :, 9:12], source[-1, :, 9:12] * (3.0 / 5.0))
 
 
 def test_loop_padding_updates_effective_length() -> None:
@@ -128,10 +162,15 @@ def test_loop_padding_updates_effective_length() -> None:
     raw_norm = np.nan_to_num((raw - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
     raw_len = raw_norm.shape[0]
     assert raw_len < NUM_FRAMES, "loop regression sample no longer needs padding"
+    raw_cycle_count = float(data.get("motion_metadata", {}).get("loop_num_cycles", 1.0) or 1.0)
+    repeats = _choose_loop_cycle_repeats(raw_len, NUM_FRAMES)
+    tiled = np.tile(raw_norm, (repeats, 1, 1)) if repeats > 1 else raw_norm
+    expected = _periodic_resample_motion(tiled, NUM_FRAMES)
 
-    expected = np.concatenate(
-        [raw_norm, np.tile(raw_norm, ((NUM_FRAMES - raw_len) // raw_len + 1, 1, 1))[: NUM_FRAMES - raw_len]],
-        axis=0,
+    assert np.isclose(float(motion_metadata["loop_num_cycles"]), raw_cycle_count * repeats)
+    assert np.isclose(
+        float(motion_metadata["loop_phase_length"]),
+        _loop_phase_length_from_num_cycles(NUM_FRAMES, motion_metadata["loop_num_cycles"]),
     )
     assert_close("loop-filled motion", motion, expected)
 
@@ -153,14 +192,16 @@ def test_loop_padding_random_offset_wraps_without_truncation() -> None:
     raw_norm = np.nan_to_num((raw - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
     raw_len = raw_norm.shape[0]
     offset = raw_len - 4
+    repeats = _choose_loop_cycle_repeats(raw_len, NUM_FRAMES)
 
     motion, m_length, *_rest = motion_dataset.prepare_sample_by_name(
         LOOP_MOTION,
         target_num_frames=NUM_FRAMES,
         loop_offset=offset,
     )
-
-    expected = raw_norm[(np.arange(NUM_FRAMES, dtype=np.int64) + offset) % raw_len]
+    tiled = np.tile(raw_norm, (repeats, 1, 1)) if repeats > 1 else raw_norm
+    expected = _periodic_resample_motion(tiled, NUM_FRAMES)
+    expected = _circular_roll_motion(expected, offset)
     assert motion.shape[0] == NUM_FRAMES, f"expected random-offset loop fill to keep {NUM_FRAMES} frames"
     assert m_length == NUM_FRAMES, f"effective length should remain {NUM_FRAMES}, got {m_length}"
     assert_close("loop-filled motion with wraparound offset", motion, expected)
@@ -212,7 +253,6 @@ def test_prepare_sample_aug_info_reports_actual_loop_fill() -> None:
     )
 
     motion_dataset = dataset.motion_dataset
-    motion_dataset.opt.aug_mirror_prob = 0.0
     motion_dataset.opt.aug_speed_range = 0.0
 
     sample = motion_dataset._prepare_sample(
@@ -229,85 +269,166 @@ def test_prepare_sample_aug_info_reports_actual_loop_fill() -> None:
     assert motion.shape[0] == NUM_FRAMES, f"expected loop-filled motion to have {NUM_FRAMES} frames"
     assert m_length == NUM_FRAMES, f"expected effective length {NUM_FRAMES}, got {m_length}"
     assert aug_info["loop_applied"] is True, f"expected loop_applied=True, got {aug_info}"
+    assert float(aug_info["loop_num_cycles"]) >= 1.0, f"expected loop_num_cycles>=1, got {aug_info}"
     assert aug_info["crop_start"] == 0, f"expected crop_start=0, got {aug_info}"
-    assert aug_info["mirror_applied"] is False, f"expected mirror_applied=False, got {aug_info}"
     assert np.isclose(float(aug_info["speed_factor"]), 1.0), f"expected speed_factor=1.0, got {aug_info}"
 
 
-def test_mirror_augmentation_runs_before_normalization() -> None:
+def test_loop_uncond_keeps_legacy_loop_tile_but_non_loop_metadata() -> None:
     dataset = _build_truebones(
         split="train",
         temporal_window=31,
         num_frames=NUM_FRAMES,
         balanced=False,
-        objects_subset=MIRROR_SUBSET,
-
-        motion_cache_size=4,
+        objects_subset=LOOP_SUBSET,
+        motion_cache_size=2,
+        loop_cond_prob=0.0,
     )
 
     motion_dataset = dataset.motion_dataset
-    motion_dataset.opt.aug_mirror_prob = 1.0
     motion_dataset.opt.aug_speed_range = 0.0
 
-    data = motion_dataset.data_dict[MIRROR_MOTION]
-    motion, m_length, object_type, _parents, _graph_dist, _joint_relations, tpos_first_frame, offsets, *_ = motion_dataset.augment(data)
-    cond = motion_dataset.cond_dict[object_type]
+    with patch.object(dataset_module.random, 'randint', return_value=0):
+        sample = motion_dataset._prepare_sample(
+            LOOP_MOTION,
+            motion_dataset.data_dict[LOOP_MOTION],
+            target_num_frames=NUM_FRAMES,
+            return_aug_info=True,
+        )
+    motion, m_length, *_rest, motion_metadata, name, _joint_mask_dict, aug_info = sample
 
+    data = motion_dataset.data_dict[LOOP_MOTION]
+    cond = motion_dataset.cond_dict[data["object_type"]]
     raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
-    spi = cond["symmetry_partner_indices"]
-    perm = list(range(len(spi)))
-    for joint_index, partner in enumerate(spi):
-        if partner != -1:
-            perm[joint_index] = int(partner)
+    raw_norm = np.nan_to_num((raw - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
+    expected = raw_norm[np.arange(NUM_FRAMES, dtype=np.int64) % raw_norm.shape[0]]
 
-    manual = raw[:, perm, :].copy()
-    manual[:, :, [0, 4, 5, 6, 9]] *= -1
-    manual = np.nan_to_num((manual - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
-
-    manual_tpose = np.asarray(cond["tpos_first_frame"], dtype=np.float32)[perm].copy()
-    manual_tpose[:, [0, 4, 5, 6, 9]] *= -1
-    manual_tpose = np.nan_to_num((manual_tpose - cond["mean"]) / cond["std_safe"]).astype(np.float32, copy=False)
-
-    manual_offsets = np.asarray(cond["offsets"], dtype=np.float32)[perm].copy()
-    manual_offsets[:, 0] *= -1
-
-    assert m_length == raw.shape[0], f"mirror augmentation changed sequence length unexpectedly: {m_length}"
-    assert_close("mirrored normalized motion", motion, manual)
-    assert_close("mirrored normalized tpose", tpos_first_frame, manual_tpose)
-    assert_close("mirrored offsets", offsets, manual_offsets)
+    assert name == LOOP_MOTION, f"unexpected sample: {name}"
+    assert motion.shape[0] == NUM_FRAMES
+    assert m_length == NUM_FRAMES
+    assert motion_metadata["is_loop"] is False
+    assert motion_metadata["loop_full_cycle"] is False
+    assert aug_info["loop_applied"] is True
+    assert aug_info["loop_uncond"] is True
+    assert_close("loop uncond legacy tile", motion, expected)
 
 
-def test_mirror_augmentation_passes_motion_translation_root_index(monkeypatch) -> None:
+def test_loop_uncond_keeps_speed_jitter_enabled() -> None:
     dataset = _build_truebones(
         split="train",
         temporal_window=31,
         num_frames=NUM_FRAMES,
         balanced=False,
-        objects_subset=MIRROR_SUBSET,
-        motion_cache_size=4,
+        objects_subset=LOOP_SUBSET,
+        motion_cache_size=2,
+        loop_cond_prob=0.0,
     )
 
     motion_dataset = dataset.motion_dataset
-    motion_dataset.opt.aug_mirror_prob = 1.0
+    motion_dataset.opt.aug_speed_range = 0.2
+
+    with patch.object(dataset_module.random, 'uniform', return_value=0.2):
+        sample = motion_dataset._prepare_sample(
+            LOOP_MOTION,
+            motion_dataset.data_dict[LOOP_MOTION],
+            target_num_frames=NUM_FRAMES,
+            return_aug_info=True,
+        )
+    motion, m_length, *_rest, motion_metadata, _name, _joint_mask_dict, aug_info = sample
+
+    raw_len = int(motion_dataset.data_dict[LOOP_MOTION]["length"])
+    expected_len = max(1, int(round(raw_len * 1.2)))
+    assert motion.shape[0] == NUM_FRAMES
+    assert m_length == NUM_FRAMES
+    assert motion_metadata["is_loop"] is False
+    assert motion_metadata["loop_full_cycle"] is False
+    assert aug_info["loop_applied"] is True
+    assert aug_info["loop_uncond"] is True
+    assert np.isclose(float(aug_info["speed_factor"]), 1.2)
+    assert expected_len > 0
+
+
+def test_loop_uncond_long_loop_crops_without_extra_roll(tmp_path) -> None:
+    dataset = _build_truebones(
+        split="train",
+        temporal_window=31,
+        num_frames=NUM_FRAMES,
+        balanced=False,
+        objects_subset=LOOP_SUBSET,
+        motion_cache_size=0,
+        loop_cond_prob=0.0,
+    )
+
+    motion_dataset = dataset.motion_dataset
     motion_dataset.opt.aug_speed_range = 0.0
 
-    data = motion_dataset.data_dict[MIRROR_MOTION]
-    data["motion_metadata"] = dict(data.get("motion_metadata") or {})
-    data["motion_metadata"]["translation_root_index"] = 0
+    source_data = motion_dataset.data_dict[LOOP_MOTION]
+    source_raw = np.load(source_data["motion_path"]).astype(np.float32, copy=False)
+    repeat_count = (NUM_FRAMES + 8 + source_raw.shape[0] - 1) // source_raw.shape[0]
+    long_raw = np.tile(source_raw, (repeat_count, 1, 1))[:NUM_FRAMES + 8]
+    motion_path = tmp_path / "long_loop.npy"
+    np.save(motion_path, long_raw.astype(np.float32, copy=False))
 
-    seen = []
+    long_data = dict(source_data)
+    long_data["motion_path"] = str(motion_path)
+    long_data["length"] = long_raw.shape[0]
+    long_data["motion_metadata"] = dict(source_data["motion_metadata"])
+    long_data["motion_metadata"]["is_loop"] = True
 
-    def fake_mirror(features, object_cond, *, translation_root_index=None, motion_metadata=None, anim_pos_threshold=0.01):
-        seen.append((translation_root_index, dict(motion_metadata or {})))
-        return np.asarray(features).copy(), np.asarray(object_cond["offsets"], dtype=np.float32).copy()
+    crop_start = 5
+    with patch.object(dataset_module.random, 'randint', return_value=11):
+        sample = motion_dataset._prepare_sample(
+            "synthetic_long_loop.npy",
+            long_data,
+            target_num_frames=NUM_FRAMES,
+            crop_start=crop_start,
+            return_aug_info=True,
+        )
+    motion, m_length, *_rest, motion_metadata, _name, _joint_mask_dict, aug_info = sample
 
-    monkeypatch.setattr(dataset_module, "mirror_features_with_safeguards", fake_mirror)
+    cond = motion_dataset.cond_dict[long_data["object_type"]]
+    long_norm = np.nan_to_num((long_raw - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
+    expected = long_norm[crop_start:crop_start + NUM_FRAMES]
 
-    motion_dataset.augment(data)
+    assert motion.shape[0] == NUM_FRAMES
+    assert m_length == NUM_FRAMES
+    assert motion_metadata["is_loop"] is False
+    assert motion_metadata["loop_full_cycle"] is False
+    assert aug_info["loop_applied"] is False
+    assert aug_info["loop_uncond"] is True
+    assert_close("loop uncond long crop", motion, expected)
 
-    assert seen, "mirror augmentation never called mirror_features_with_safeguards"
-    assert [entry[0] for entry in seen] == [None, None]
-    assert all(entry[1].get("translation_root_index") == 0 for entry in seen)
+
+def test_loop_conditioned_keeps_speed_jitter_enabled() -> None:
+    dataset = _build_truebones(
+        split="train",
+        temporal_window=31,
+        num_frames=NUM_FRAMES,
+        balanced=False,
+        objects_subset=LOOP_SUBSET,
+        motion_cache_size=2,
+        loop_cond_prob=1.0,
+    )
+
+    motion_dataset = dataset.motion_dataset
+    motion_dataset.opt.aug_speed_range = 0.2
+
+    with patch.object(dataset_module.random, 'uniform', return_value=0.2):
+        sample = motion_dataset._prepare_sample(
+            LOOP_MOTION,
+            motion_dataset.data_dict[LOOP_MOTION],
+            target_num_frames=NUM_FRAMES,
+            return_aug_info=True,
+        )
+    motion, m_length, *_rest, motion_metadata, _name, _joint_mask_dict, aug_info = sample
+
+    assert motion.shape[0] == NUM_FRAMES
+    assert m_length == NUM_FRAMES
+    assert motion_metadata["is_loop"] is True
+    assert motion_metadata["loop_full_cycle"] is True
+    assert aug_info["loop_applied"] is True
+    assert aug_info["loop_uncond"] is False
+    assert np.isclose(float(aug_info["speed_factor"]), 1.2)
 
 
 def test_batch_collate_preserves_translation_root_index() -> None:
@@ -316,49 +437,20 @@ def test_batch_collate_preserves_translation_root_index() -> None:
         temporal_window=31,
         num_frames=NUM_FRAMES,
         balanced=False,
-        objects_subset=MIRROR_SUBSET,
+        objects_subset=LOOP_SUBSET,
         motion_cache_size=2,
     )
 
     motion_dataset = dataset.motion_dataset
-    motion_dataset.data_dict[MIRROR_MOTION]["motion_metadata"] = dict(
-        motion_dataset.data_dict[MIRROR_MOTION].get("motion_metadata") or {}
+    motion_dataset.data_dict[LOOP_MOTION]["motion_metadata"] = dict(
+        motion_dataset.data_dict[LOOP_MOTION].get("motion_metadata") or {}
     )
-    motion_dataset.data_dict[MIRROR_MOTION]["motion_metadata"]["translation_root_index"] = 0
+    motion_dataset.data_dict[LOOP_MOTION]["motion_metadata"]["translation_root_index"] = 0
 
-    sample = motion_dataset.prepare_sample_by_name(MIRROR_MOTION, target_num_frames=NUM_FRAMES)
+    sample = motion_dataset.prepare_sample_by_name(LOOP_MOTION, target_num_frames=NUM_FRAMES)
     _motion, cond = truebones_batch_collate([sample])
 
     assert int(cond["y"]["translation_root_index"][0]) == 0
-
-
-def test_mirror_safeguards_handle_single_frame_tpose() -> None:
-    dataset = _build_truebones(
-        split="train",
-        temporal_window=31,
-        num_frames=NUM_FRAMES,
-        balanced=False,
-        objects_subset=MIRROR_SAFEGUARD_SUBSET,
-        motion_cache_size=4,
-    )
-
-    motion_dataset = dataset.motion_dataset
-    motion_dataset.opt.aug_mirror_prob = 1.0
-    motion_dataset.opt.aug_speed_range = 0.0
-
-    sample_name, data, cond = find_mirror_safeguard_sample(motion_dataset)
-    motion, m_length, object_type, _parents, _graph_dist, _joint_relations, tpos_first_frame, offsets, *_ = motion_dataset.augment(data)
-
-    assert cond["mirror_disabled_joint_indices"], f"selected sample {sample_name} no longer exercises mirror safeguards"
-    assert motion.ndim == 3, f"expected mirrored motion to keep frame axis, got {motion.shape}"
-    assert tpos_first_frame.ndim == 2, f"expected mirrored t-pose to remain (J, C), got {tpos_first_frame.shape}"
-    assert m_length == motion.shape[0], f"expected mirrored motion length to match frame axis, got {m_length} vs {motion.shape[0]}"
-    assert tpos_first_frame.shape == np.asarray(cond["mean"]).shape, (
-        f"expected mirrored t-pose shape {np.asarray(cond['mean']).shape}, got {tpos_first_frame.shape}"
-    )
-    assert np.asarray(offsets).shape == np.asarray(cond["offsets"]).shape, (
-        f"expected mirrored offsets shape {np.asarray(cond['offsets']).shape}, got {np.asarray(offsets).shape}"
-    )
 
 
 def main() -> None:
@@ -373,12 +465,6 @@ def main() -> None:
 
     test_prepare_sample_aug_info_reports_actual_loop_fill()
     print("loop aug-info regression: ok")
-
-    test_mirror_augmentation_runs_before_normalization()
-    print("mirror normalization regression: ok")
-
-    test_mirror_safeguards_handle_single_frame_tpose()
-    print("mirror safeguard tpose regression: ok")
 
     print("all regression checks passed")
 
