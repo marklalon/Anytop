@@ -292,7 +292,7 @@ class GaussianDiffusion:
             f"{tuple(temporal_span_mask.shape)}"
         )
 
-    def _build_temporal_span_seam_weights(self, temporal_span_mask, lengths):
+    def _build_temporal_span_seam_weights(self, temporal_span_mask):
         if (
             temporal_span_mask is None
             or self.temporal_span_seam_width <= 0
@@ -307,19 +307,13 @@ class GaussianDiffusion:
             device=temporal_span_time.device,
             dtype=th.float32,
         )
-        lengths_long = th.as_tensor(
-            lengths, device=temporal_span_time.device, dtype=th.long
-        ).reshape(-1)
         band = int(self.temporal_span_seam_width)
         # Treat seam_width as an approximately 2-sigma support radius so the
         # boundary frame remains dominant while nearby frames still contribute.
         sigma = max(float(band) / 2.0, 1e-6)
 
         for batch_index in range(batch_size):
-            valid_frames = min(int(lengths_long[batch_index].item()), n_frames)
-            if valid_frames <= 0:
-                continue
-            sample_mask = temporal_span_time[batch_index, :valid_frames]
+            sample_mask = temporal_span_time[batch_index]
             if not bool(sample_mask.any()):
                 continue
 
@@ -336,7 +330,7 @@ class GaussianDiffusion:
             )
             for boundary in boundaries.tolist():
                 left = max(0, boundary - band)
-                right = min(valid_frames, boundary + band + 1)
+                right = min(n_frames, boundary + band + 1)
                 local_indices = th.arange(left, right, device=temporal_span_time.device)
                 boundary_weights = th.exp(
                     -0.5 * ((local_indices.float() - float(boundary)) / sigma) ** 2
@@ -387,7 +381,7 @@ class GaussianDiffusion:
         loss_val = loss / non_zero_elements
         return loss_val
 
-    def velocity_consistency_loss(self, model_output, spat_mask, lengths, n_joints):
+    def velocity_consistency_loss(self, model_output, spat_mask, n_joints):
         # model_output: [bs, njoints, nfeats, nframes] (denormalized)
         # vel[t] should equal pos[t+1] - pos[t]; enforce this across all valid frames.
         pos = model_output[:, :, 0:3, :]    # [bs, njoints, 3, nframes]
@@ -395,7 +389,8 @@ class GaussianDiffusion:
         finite_diff = pos[:, :, :, 1:] - pos[:, :, :, :-1]  # [bs, njoints, 3, nframes-1]
         pred_vel    = vel[:, :, :, :-1]                       # [bs, njoints, 3, nframes-1]
         loss = (finite_diff - pred_vel) ** 2
-        valid = spat_mask.float().transpose(1, 3)[:, :, :, :-1]        # [bs, njoints, 1, nframes-1]
+        valid_joints = spat_mask.float().transpose(1, 3)        # [bs, njoints, 1, 1]
+        valid = valid_joints.expand(-1, -1, -1, loss.shape[-1])
         loss_val = (loss * valid).sum() / (valid.sum() * 3).clamp(min=1)
         return loss_val
 
@@ -429,27 +424,30 @@ class GaussianDiffusion:
             )
         return result
 
-    def loop_wrap_loss(self, model_output, y, lengths, n_joints):
+    def loop_wrap_loss(self, model_output, y, n_joints):
         batch_size, max_joints, n_feats, n_frames = model_output.shape
         device = model_output.device
+        zero = model_output.new_zeros(())
+        if n_frames < 2:
+            return {
+                'loop_wrap_loss': zero,
+                'loop_wrap_pose': zero,
+                'loop_wrap_rot': zero,
+                'loop_wrap_terminal_vel': zero,
+            }
         is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
         loop_full_cycle = self._coerce_bool_batch(y.get('loop_full_cycle'), batch_size, device, default=False)
         active = is_loop & loop_full_cycle
-        lengths_long = th.as_tensor(lengths, device=device, dtype=th.long).reshape(-1)
         n_joints_long = th.as_tensor(n_joints, device=device, dtype=th.long).reshape(-1)
         root_indices = self._coerce_index_batch(y.get('translation_root_index'), batch_size, device)
-        zero = model_output.new_zeros(())
 
-        valid_frames = lengths_long.clamp(min=0, max=n_frames)
         valid_joints = n_joints_long.clamp(min=0, max=max_joints)
-        active_valid = active & (valid_frames >= 2) & (valid_joints > 0)
+        active_valid = active & (valid_joints > 0)
         active_weight = active_valid.to(dtype=model_output.dtype)
         active_denom = active_weight.sum().clamp(min=1.0)
 
-        last_frame_index = (valid_frames.clamp(min=1) - 1).view(batch_size, 1, 1, 1)
-        last_frame_index = last_frame_index.expand(-1, max_joints, n_feats, 1)
         first_frame = model_output[..., 0:1]
-        last_frame = model_output.gather(dim=3, index=last_frame_index)
+        last_frame = model_output[..., -1:]
 
         joint_mask = th.arange(max_joints, device=device).view(1, max_joints) < valid_joints.view(batch_size, 1)
         joint_weight = joint_mask.to(dtype=model_output.dtype)
@@ -494,7 +492,7 @@ class GaussianDiffusion:
             'loop_wrap_terminal_vel': terminal_vel_loss,
         }
 
-    def loop_root_xz_closure_loss(self, model_output, y, lengths, n_joints):
+    def loop_root_xz_closure_loss(self, model_output, y, n_joints):
         batch_size, max_joints, n_feats, n_frames = model_output.shape
         device = model_output.device
         if n_feats < 12 or n_frames < 2:
@@ -503,23 +501,22 @@ class GaussianDiffusion:
         is_loop = self._coerce_bool_batch(y.get('is_loop'), batch_size, device, default=False)
         loop_full_cycle = self._coerce_bool_batch(y.get('loop_full_cycle'), batch_size, device, default=False)
         active = is_loop & loop_full_cycle
-        lengths_long = th.as_tensor(lengths, device=device, dtype=th.long).reshape(-1)
         n_joints_long = th.as_tensor(n_joints, device=device, dtype=th.long).reshape(-1)
         root_indices = self._coerce_index_batch(y.get('translation_root_index'), batch_size, device)
 
-        valid_frames = lengths_long.clamp(min=0, max=n_frames)
         valid_joints = n_joints_long.clamp(min=0, max=max_joints)
         root_valid = (root_indices >= 0) & (root_indices < valid_joints)
-        active_valid = active & root_valid & (valid_frames >= 2)
+        active_valid = active & root_valid
         active_weight = active_valid.to(dtype=model_output.dtype)
         active_denom = active_weight.sum().clamp(min=1.0)
 
         batch_indices = th.arange(batch_size, device=device)
         root_indices_clamped = root_indices.clamp(min=0, max=max(max_joints - 1, 0))
-        root_vel_xz = model_output[batch_indices, root_indices_clamped][:, [9, 11], :]
-        transition_count = (valid_frames - 1).clamp(min=0)
-        time_mask = th.arange(n_frames, device=device).view(1, 1, n_frames) < transition_count.view(batch_size, 1, 1)
-        net_xz = (root_vel_xz * time_mask.to(dtype=model_output.dtype)).sum(dim=2)
+        # Root XZ closure sums root velocity over the n_frames-1 frame-to-frame
+        # transitions; the velocity stored at the terminal frame is the
+        # wrap-around delta and is excluded from the sum.
+        root_vel_xz = model_output[batch_indices, root_indices_clamped][:, [9, 11], :n_frames - 1]
+        net_xz = root_vel_xz.sum(dim=2)
         per_sample = (net_xz ** 2).mean(dim=1)
         per_sample = th.where(active_valid, per_sample, th.zeros_like(per_sample))
         return (per_sample * active_weight).sum() / active_denom
@@ -1602,15 +1599,13 @@ class GaussianDiffusion:
             y.pop('global_energy_cond', None)
             return
 
-        lengths = y.get('lengths')
         n_joints = y.get('n_joints')
-        if lengths is None or n_joints is None:
-            raise ValueError("global energy conditioning requires y['lengths'] and y['n_joints'] metadata")
+        if n_joints is None:
+            raise ValueError("global energy conditioning requires y['n_joints'] metadata")
 
         y['global_energy_cond'] = ReferencePriorEncoder.compute_global_energy_condition(
             x_start.detach(),
             n_joints=n_joints,
-            lengths=lengths,
         )
 
     def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
@@ -1717,7 +1712,7 @@ class GaussianDiffusion:
                 terms["loss"] = terms["l_simple"].clone()
 
                 temporal_span_seam_weights = self._build_temporal_span_seam_weights(
-                    temporal_span_mask, lengths
+                    temporal_span_mask
                 )
                 if (
                     self.temporal_span_seam_loss_weight > 0.0
@@ -1747,7 +1742,7 @@ class GaussianDiffusion:
 
                 if self.lambda_vel > 0.:
                     terms["vel_loss"] = self.velocity_consistency_loss(
-                        model_output_denorm, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
+                        model_output_denorm, joints_padding_mask_fp32, actual_joints_fp32
                     )
                     terms["loss"] = terms["loss"] + self.lambda_vel * terms["vel_loss"]
 
@@ -1756,7 +1751,6 @@ class GaussianDiffusion:
                     loop_terms = self.loop_wrap_loss(
                         model_output_denorm,
                         y,
-                        lengths,
                         actual_joints,
                     )
                     terms.update(loop_terms)
@@ -1767,7 +1761,6 @@ class GaussianDiffusion:
                     terms["loop_root_xz_loss"] = self.loop_root_xz_closure_loss(
                         model_output_denorm,
                         y,
-                        lengths,
                         actual_joints,
                     )
                     terms["loss"] = terms["loss"] + self.lambda_loop_root_xz * terms["loop_root_xz_loss"]

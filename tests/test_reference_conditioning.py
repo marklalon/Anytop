@@ -121,14 +121,12 @@ class _CaptureReferenceEncoder(nn.Module):
         self,
         reference_motion,
         n_joints,
-        lengths,
         translation_root_index,
         joints_embedded_names,
     ):
         self.last_kwargs = {
             "reference_motion": reference_motion,
             "n_joints": n_joints,
-            "lengths": lengths,
             "translation_root_index": translation_root_index,
             "joints_embedded_names": joints_embedded_names,
         }
@@ -333,7 +331,6 @@ def test_build_global_energy_conditioning_sets_clip_condition() -> None:
     expected = ReferencePriorEncoder.compute_global_energy_condition(
         x_start,
         n_joints=model_kwargs["y"]["n_joints"],
-        lengths=model_kwargs["y"]["lengths"],
     )
     assert torch.allclose(model_kwargs["y"]["global_energy_cond"], expected)
 
@@ -370,7 +367,6 @@ def test_anytop_forward_accepts_reference_motion_with_independent_frame_count() 
         "parents": torch.tensor([[-1, 0, 1, 2]], dtype=torch.int64),
         "reference_motion": reference_motion,
         "reference_n_joints": torch.tensor([4], dtype=torch.int64),
-        "reference_lengths": torch.tensor([3], dtype=torch.int64),
         "reference_translation_root_index": torch.tensor([0], dtype=torch.int64),
         "reference_parents": [np.asarray([-1, 0, 1, 2], dtype=np.int64)],
         "reference_joints_names_embs": torch.zeros(1, 4, 8, dtype=torch.float32),
@@ -472,7 +468,7 @@ def test_anytop_forward_accepts_global_energy_condition_without_reference_motion
     assert output.shape == (1, 4, 13, 7)
     assert capture_decoder.last_kwargs is not None
     assert capture_decoder.last_kwargs["reference_memory"] is None
-    assert capture_decoder.last_kwargs["global_energy_condition"].shape == (1, 16)
+    assert capture_decoder.last_kwargs["global_energy_condition"].shape == (1, model.latent_dim)
 
 
 def test_decoder_layer_keeps_global_energy_condition_when_reference_gate_is_zero() -> None:
@@ -538,43 +534,6 @@ num_layers=1,
         )
 
 
-def test_reference_prior_encoder_ignores_padded_tail_frames_after_conv() -> None:
-    torch.manual_seed(0)
-    encoder = ReferencePriorEncoder(
-        max_joints=4,
-        input_feats=13,
-        latent_dim=32,
-        ff_size=64,
-        num_heads=4,
-        dropout=0.0,
-        t5_out_dim=8,
-num_layers=1,
-    )
-    encoder.eval()
-
-    valid_motion = torch.randn((1, 4, 13, 3), dtype=torch.float32)
-    padded_motion = torch.zeros((1, 4, 13, 5), dtype=torch.float32)
-    padded_motion[..., :3] = valid_motion
-    joints_names_embs = torch.zeros((1, 4, 8), dtype=torch.float32)
-
-    tokens_short = encoder(
-        valid_motion,
-        n_joints=torch.tensor([4]),
-        lengths=torch.tensor([3]),
-        translation_root_index=torch.tensor([0]),
-        joints_embedded_names=joints_names_embs,
-    )
-    tokens_padded = encoder(
-        padded_motion,
-        n_joints=torch.tensor([4]),
-        lengths=torch.tensor([3]),
-        translation_root_index=torch.tensor([0]),
-        joints_embedded_names=joints_names_embs,
-    )
-
-    assert torch.allclose(tokens_short, tokens_padded, atol=1e-5, rtol=1e-5)
-
-
 def test_prepare_reference_prior_bundle_preserves_reference_length_and_zero_feature_padding(tmp_path: Path) -> None:
     reference_motion_path = tmp_path / "reference_prior.npy"
     ref_raw = np.ones((5, 2, 11), dtype=np.float32)
@@ -607,7 +566,6 @@ def test_prepare_reference_prior_bundle_preserves_reference_length_and_zero_feat
     assert output_frame_count == 5
     assert ref_tensor.shape == (1, 2, 13, 5)
     assert torch.equal(reference_kwargs["reference_n_joints"], torch.tensor([2], dtype=torch.long))
-    assert torch.equal(reference_kwargs["reference_lengths"], torch.tensor([5], dtype=torch.long))
     assert torch.allclose(ref_tensor[0, :, 11:13, :], torch.zeros_like(ref_tensor[0, :, 11:13, :]))
 
 
@@ -665,7 +623,6 @@ def test_prepare_reference_for_mode_controlnet_matches_img2img_when_reference_is
     assert bundle["loaded_reference_joint_count"] == 2
     assert bundle["output_frame_count"] == 5
     assert bundle["reference_motion"].shape == (1, 4, 13, 5)
-    assert torch.equal(bundle["reference_conditioning_kwargs"]["reference_lengths"], torch.tensor([5], dtype=torch.long))
 
 
 def test_prepare_reference_for_mode_controlnet_truncates_longer_reference_to_requested_length(tmp_path: Path) -> None:
@@ -697,7 +654,6 @@ def test_prepare_reference_for_mode_controlnet_truncates_longer_reference_to_req
     assert bundle["loaded_reference_frame_count"] == 6
     assert bundle["output_frame_count"] == 4
     assert bundle["reference_motion"].shape == (1, 4, 13, 4)
-    assert torch.equal(bundle["reference_conditioning_kwargs"]["reference_lengths"], torch.tensor([4], dtype=torch.long))
 
 
 def test_prepare_reference_for_mode_controlnet_uses_target_metadata(tmp_path: Path) -> None:
@@ -736,7 +692,6 @@ def test_prepare_reference_for_mode_controlnet_uses_target_metadata(tmp_path: Pa
     assert bundle["loaded_reference_joint_count"] == 3
     assert bundle["output_frame_count"] == 5
     assert torch.equal(bundle["reference_conditioning_kwargs"]["reference_n_joints"], torch.tensor([3]))
-    assert torch.equal(bundle["reference_conditioning_kwargs"]["reference_lengths"], torch.tensor([5], dtype=torch.long))
     assert bundle["reference_motion"].shape == (1, 4, 13, 5)
 
 
@@ -768,14 +723,12 @@ num_layers=1,
     tokens_root0 = encoder(
         motion,
         n_joints=torch.tensor([4]),
-        lengths=torch.tensor([5]),
         translation_root_index=torch.tensor([0]),
         joints_embedded_names=joints_names_embs,
     )
     tokens_root2 = encoder(
         motion,
         n_joints=torch.tensor([4]),
-        lengths=torch.tensor([5]),
         translation_root_index=torch.tensor([2]),
         joints_embedded_names=joints_names_embs,
     )
@@ -803,7 +756,6 @@ num_layers=1,
     tokens = encoder(
         motion,
         n_joints=torch.tensor([4]),
-        lengths=torch.tensor([5]),
         translation_root_index=torch.tensor([2]),
         joints_embedded_names=joints_names_embs,
     )
@@ -850,7 +802,6 @@ num_layers=1,
     tokens = encoder(
         motion,
         n_joints=torch.tensor([4, 5]),
-        lengths=torch.tensor([7, 7]),
         translation_root_index=torch.tensor([0, 0]),
         joints_embedded_names=joints_names_embs,
     )
@@ -881,7 +832,6 @@ num_layers=0,
 
     common_kwargs = dict(
         n_joints=torch.tensor([4]),
-        lengths=torch.tensor([5]),
         translation_root_index=torch.tensor([0]),
         joints_embedded_names=joints_names_embs,
     )
@@ -957,10 +907,10 @@ num_layers=0,
 
     hook = encoder.sequence_projection.register_forward_pre_hook(capture_prior_input)
     try:
-        encoder(motion_a, n_joints=torch.tensor([4]), lengths=torch.tensor([6]), translation_root_index=torch.tensor([0]), joints_embedded_names=joints_names_embs)
+        encoder(motion_a, n_joints=torch.tensor([4]), translation_root_index=torch.tensor([0]), joints_embedded_names=joints_names_embs)
         prior_a = captured['prior_sequence']
         captured.clear()
-        encoder(motion_b, n_joints=torch.tensor([4]), lengths=torch.tensor([6]), translation_root_index=torch.tensor([0]), joints_embedded_names=joints_names_embs)
+        encoder(motion_b, n_joints=torch.tensor([4]), translation_root_index=torch.tensor([0]), joints_embedded_names=joints_names_embs)
         prior_b = captured['prior_sequence']
     finally:
         hook.remove()
@@ -999,10 +949,10 @@ num_layers=0,
 
     hook = encoder.sequence_projection.register_forward_pre_hook(capture_prior_input)
     try:
-        encoder(motion, n_joints=torch.tensor([4]), lengths=torch.tensor([6]), translation_root_index=torch.tensor([0]), joints_embedded_names=names_a)
+        encoder(motion, n_joints=torch.tensor([4]), translation_root_index=torch.tensor([0]), joints_embedded_names=names_a)
         prior_a = captured['prior_sequence']
         captured.clear()
-        encoder(motion, n_joints=torch.tensor([4]), lengths=torch.tensor([6]), translation_root_index=torch.tensor([0]), joints_embedded_names=names_b)
+        encoder(motion, n_joints=torch.tensor([4]), translation_root_index=torch.tensor([0]), joints_embedded_names=names_b)
         prior_b = captured['prior_sequence']
     finally:
         hook.remove()
@@ -1036,7 +986,6 @@ num_layers=0,
 
     common_kwargs = dict(
         n_joints=torch.tensor([4]),
-        lengths=torch.tensor([6]),
         translation_root_index=torch.tensor([0]),
         joints_embedded_names=joints_names_embs,
     )
@@ -1073,7 +1022,6 @@ num_layers=0,
 
     common_kwargs = dict(
         n_joints=torch.tensor([4]),
-        lengths=torch.tensor([6]),
         translation_root_index=torch.tensor([0]),
         joints_embedded_names=joints_names_embs,
     )

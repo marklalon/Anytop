@@ -150,6 +150,28 @@ def _circular_roll_motion(motion, offset):
     return motion[indices]
 
 
+def _tile_loop_motion(motion, repeat_count):
+    """Concatenate ``repeat_count`` copies of a loop motion along the time axis.
+
+    Feature consistency at tile boundaries is guaranteed because preprocessing
+    writes the terminal velocity (channels 9-11) as the wrap-around delta
+    ``pos[0] - pos[-1]`` for all motions classified as loop
+    (``detect_motion_loop`` / ``_compute_terminal_local_velocity``).  Because
+    the last and first frames are near-identical in a loop clip, the velocity
+    at the boundary from copy *k* to copy *k+1* stays physically consistent.
+
+    Binary contact (channel 12) and 6-D rotations (channels 3-8) are
+    unaffected by tiling.  Tiling operates in whichever feature space the
+    caller supplies (raw or normalized); both are linear transformations of
+    each other, so the result is equivalent and the caller must only ensure
+    ``playspeed_cond`` reflects the post-tile frame count.
+    """
+    repeat_count = int(repeat_count)
+    if repeat_count <= 1:
+        return motion
+    return np.concatenate([motion] * repeat_count, axis=0).astype(motion.dtype, copy=False)
+
+
 _JOINT_MASK_SKIP_TOKENS = {
     'mid',
     'rear',
@@ -622,6 +644,23 @@ class MotionDataset(data.Dataset):
             raise ValueError(f"loop_offset={offset} is invalid for loop motion with length={length}.")
         return offset
 
+    def _sample_loop_tile_count(self, length, max_source_length):
+        """Randomly select how many times to repeat a loop motion so the
+        tiled length stays within ``[length, max_source_length]``.
+
+        Returns ``1`` (no tiling) when the single-cycle length already
+        exceeds the budget (``length > max_source_length``).  Otherwise
+        picks uniformly from ``{1, …, max_source_length // length}``.
+        """
+        length = int(length)
+        max_source_length = int(max_source_length)
+        if length <= 0 or max_source_length <= 0:
+            return 1
+        max_tile_count = max_source_length // length
+        if max_tile_count <= 1:
+            return 1
+        return int(random.randint(1, max_tile_count))
+
     def prepare_sample_by_name(self, name, target_num_frames=None, crop_start=None, loop_offset=None):
         if name not in self.data_dict:
             raise KeyError(f"Unknown motion sample '{name}'.")
@@ -647,7 +686,16 @@ class MotionDataset(data.Dataset):
             raise ValueError(f"loop_cond_prob must be in [0, 1], got {loop_cond_prob}.")
         # loop_cond_prob: probability that a loop clip STAYS loop-conditioned.
         # When the random draw succeeds, loop_uncond is False (loop path active).
-        # When it fails, loop_uncond is True (treated as non-loop).
+        # When it fails, loop_uncond is True — the motion is still physically a
+        # loop, but the model is *told* it is not (is_loop=False in metadata,
+        # no circular temporal mask, loop_terminal=False at resample).
+        #
+        # IMPORTANT: loop_uncond only controls the *label / conditioning*
+        # exposed to the model.  The data-level augmentations below (circular
+        # roll + tile for diverse phase coverage) apply to **all** is_loop
+        # motions regardless of loop_uncond.  This keeps training-data
+        # diversity high while the loop_uncond path trains the model to
+        # denoise loop-shaped data WITHOUT explicit loop priors.
         loop_uncond = bool(
             is_loop
             and loop_offset is None
@@ -659,9 +707,26 @@ class MotionDataset(data.Dataset):
         ind = 0
         loop_applied = False
         loop_full_cycle = False
+        loop_phase_offset = 0
+        loop_tile_count = 1
         loop_condition_active = is_loop and not loop_uncond
 
         max_source_length = target_num_frames * 2
+        # ── Loop-aware data augmentation (applies to ALL is_loop motions) ──
+        # Circular roll shifts the temporal phase so the model sees every loop
+        # from a random starting frame.  Random tiling repeats the cycle up to
+        # 2× target length so the subsequent resample has enough source frames
+        # to produce a clean stretched/clipped result without heavy speed
+        # distortion.  Both are pure temporal operations on feature arrays —
+        # they preserve per-frame feature semantics (see _tile_loop_motion and
+        # _circular_roll_motion for consistency guarantees).
+        if is_loop:
+            loop_phase_offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
+            motion = _circular_roll_motion(motion, loop_phase_offset)
+            loop_tile_count = self._sample_loop_tile_count(m_length, max_source_length)
+            motion = _tile_loop_motion(motion, loop_tile_count)
+            m_length = int(motion.shape[0])
+
         if loop_condition_active and m_length > max_source_length:
             loop_condition_active = False
             loop_uncond = True
@@ -710,15 +775,20 @@ class MotionDataset(data.Dataset):
 
         if loop_condition_active and m_length == target_num_frames:
             loop_full_cycle = True
-            offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
-            motion = _circular_roll_motion(motion, offset)
             loop_applied = True
 
         motion_metadata['is_loop'] = bool(loop_condition_active)
         motion_metadata['loop_full_cycle'] = bool(loop_full_cycle)
         motion_metadata['playspeed_cond'] = float(playspeed_cond)
+        # loop_phase_length: the expected single-cycle period in output frames.
+        # When multiple tile copies were resampled to one target window the
+        # effective cycle length is compressed proportionally.
+        # Example: 32f loop tiled 2× → 64f resampled to 60f → phase_len ≈ 30.5.
+        loop_phase_length = target_num_frames
+        if loop_condition_active and loop_full_cycle and loop_tile_count > 1:
+            loop_phase_length = ((float(target_num_frames) - 1.0) / float(loop_tile_count)) + 1.0
         motion_metadata['loop_phase_length'] = float(
-            target_num_frames if loop_condition_active and loop_full_cycle else max(int(m_length), 1)
+            loop_phase_length if loop_condition_active and loop_full_cycle else max(int(m_length), 1)
         )
         circular_mask = bool(loop_full_cycle)
         temporal_mask = self._get_temporal_mask(target_num_frames, circular=circular_mask)
@@ -729,6 +799,8 @@ class MotionDataset(data.Dataset):
             }, {
                 'crop_start': int(ind),
                 'loop_applied': bool(loop_applied),
+                'loop_phase_offset': int(loop_phase_offset),
+                'loop_tile_count': int(loop_tile_count),
                 'playspeed_cond': float(playspeed_cond),
                 'loop_uncond': bool(loop_uncond),
             }

@@ -325,7 +325,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
 
         seam_weights = diffusion._build_temporal_span_seam_weights(
             temporal_span_mask,
-            torch.tensor([50], dtype=torch.int64),
         )
 
         self.assertIsNotNone(seam_weights)
@@ -625,7 +624,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         model.train()
 
         y = {
-            "lengths": torch.tensor([5, 3], dtype=torch.int64),
             "n_joints": torch.tensor([4, 2], dtype=torch.int64),
         }
 
@@ -641,12 +639,11 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertEqual(temporal_mask.shape, (2, 4, 5))
         self.assertEqual(temporal_mask.dtype, torch.bool)
 
-        for sample_index, (valid_joints, valid_frames) in enumerate(((4, 5), (2, 3))):
+        for sample_index, valid_joints in enumerate((4, 2)):
             sample_mask = temporal_mask[sample_index]
-            self.assertFalse(sample_mask[:, valid_frames:].any())
             self.assertFalse(sample_mask[valid_joints:, :].any())
             self.assertTrue(torch.equal(sample_mask[:valid_joints], sample_mask[0:1].expand(valid_joints, -1)))
-            frame_indices = torch.nonzero(sample_mask[0, :valid_frames], as_tuple=False).flatten()
+            frame_indices = torch.nonzero(sample_mask[0], as_tuple=False).flatten()
             self.assertEqual(len(frame_indices), 2)
             self.assertEqual(int(frame_indices[-1] - frame_indices[0]), 1)
 

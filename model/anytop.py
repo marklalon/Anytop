@@ -345,50 +345,40 @@ class AnyTop(nn.Module):
         Full-clip spans are not supported: the sampled span always leaves at
         least one frame at the start or end unmasked so seam detection never
         triggers on a clip-span boundary.  ``temporal_span_mask_max_frames``
-        is therefore capped at ``min(config_max, valid_frames - 1)`` at
-        runtime.
+        is therefore capped at ``min(config_max, nframes - 1)`` at runtime.
         Every real joint in the sample shares the same contiguous masked frame
         interval, while padded joints stay False throughout.
         """
         if (not self.training) or self.temporal_span_mask_prob <= 0.0:
             return None
 
-        lengths_batch = y.get('lengths')
         n_joints_batch = y.get('n_joints_cpu', y.get('n_joints'))
-        if lengths_batch is None or n_joints_batch is None:
+        if n_joints_batch is None:
             return None
-
-        if torch.is_tensor(lengths_batch):
-            lengths_np = lengths_batch.detach().to(device='cpu', dtype=torch.int64).numpy().reshape(-1)
-        else:
-            lengths_np = np.asarray(lengths_batch, dtype=np.int64).reshape(-1)
 
         if torch.is_tensor(n_joints_batch):
             n_joints_np = n_joints_batch.detach().to(device='cpu', dtype=torch.int64).numpy().reshape(-1)
         else:
             n_joints_np = np.asarray(n_joints_batch, dtype=np.int64).reshape(-1)
 
-        batch_size = min(len(lengths_np), len(n_joints_np))
-        if batch_size == 0:
+        batch_size = len(n_joints_np)
+        if batch_size == 0 or nframes <= 0:
             return None
+
+        min_span = min(self.temporal_span_mask_min_frames, nframes)
+        max_span = max(min_span, min(self.temporal_span_mask_max_frames, nframes - 1))
 
         temporal_span_mask_np = np.zeros((batch_size, njoints, nframes), dtype=np.bool_)
         any_selected = False
         for batch_index in range(batch_size):
-            valid_frames = min(int(lengths_np[batch_index]), int(nframes))
             valid_joints = min(int(n_joints_np[batch_index]), int(njoints))
-            if valid_frames <= 0 or valid_joints <= 0:
+            if valid_joints <= 0:
                 continue
             if np.random.random() >= self.temporal_span_mask_prob:
                 continue
 
-            min_span = min(self.temporal_span_mask_min_frames, valid_frames)
-            max_span = max(
-                min_span,
-                min(self.temporal_span_mask_max_frames, valid_frames - 1),
-            )
             span_length = int(np.random.randint(min_span, max_span + 1))
-            start_hi = valid_frames - span_length
+            start_hi = nframes - span_length
             span_start = 0 if start_hi <= 0 else int(np.random.randint(0, start_hi + 1))
             temporal_span_mask_np[
                 batch_index,
@@ -510,7 +500,6 @@ class AnyTop(nn.Module):
                         f"{tuple(reference_motion.shape)}"
                     )
                 reference_n_joints = y.get('reference_n_joints', y['n_joints'])
-                reference_lengths = y.get('reference_lengths', y['lengths'])
                 reference_translation_root_index = y.get(
                     'reference_translation_root_index',
                     y.get('translation_root_index'),
@@ -526,7 +515,6 @@ class AnyTop(nn.Module):
                 reference_memory = self.reference_encoder(
                     reference_motion,
                     n_joints=reference_n_joints,
-                    lengths=reference_lengths,
                     translation_root_index=reference_translation_root_index,
                     joints_embedded_names=reference_joints_names_embs,
                 )
@@ -838,7 +826,7 @@ class ReferencePriorEncoder(nn.Module):
         return (values * weights.unsqueeze(-1)).sum(dim=2) / weights_sum
 
     @classmethod
-    def _extract_joint_motion_inputs(cls, motion, n_joints, lengths):
+    def _extract_joint_motion_inputs(cls, motion, n_joints):
         if motion.dim() != 4:
             raise ValueError(f"reference_motion must have shape (B, J, F, T), got {tuple(motion.shape)}")
 
@@ -852,18 +840,12 @@ class ReferencePriorEncoder(nn.Module):
         device = motion.device
         dtype = motion.dtype
         n_joints = torch.as_tensor(n_joints, device=device, dtype=torch.long).reshape(batch_size)
-        lengths = torch.as_tensor(lengths, device=device, dtype=torch.long).reshape(batch_size)
         if bool(((n_joints < 0) | (n_joints > max_joints)).any()):
             raise ValueError(
                 f"reference n_joints must be in [0, {max_joints}], got {n_joints.tolist()}"
             )
-        if bool(((lengths < 0) | (lengths > frame_count)).any()):
-            raise ValueError(
-                f"reference lengths must be in [0, {frame_count}], got {lengths.tolist()}"
-            )
 
         valid_joints = torch.arange(max_joints, device=device).unsqueeze(0) < n_joints.unsqueeze(1)
-        valid_frames = torch.arange(frame_count, device=device).unsqueeze(0) < lengths.unsqueeze(1)
         motion_btjf = motion.permute(0, 3, 1, 2)
         vel = motion_btjf[..., 9:12]
         rot = motion_btjf[..., 3:9]
@@ -886,9 +868,7 @@ class ReferencePriorEncoder(nn.Module):
             'device': device,
             'dtype': dtype,
             'n_joints': n_joints,
-            'lengths': lengths,
             'valid_joints': valid_joints,
-            'valid_frames': valid_frames,
             'vel': vel,
             'contact': contact,
             'joint_motion_frame_features': joint_motion_frame_features,
@@ -897,21 +877,18 @@ class ReferencePriorEncoder(nn.Module):
         }
 
     @classmethod
-    def compute_global_energy_condition(cls, motion, n_joints, lengths):
-        motion_inputs = cls._extract_joint_motion_inputs(motion, n_joints, lengths)
+    def compute_global_energy_condition(cls, motion, n_joints):
+        motion_inputs = cls._extract_joint_motion_inputs(motion, n_joints)
         dtype = motion_inputs['dtype']
         frame_count = motion_inputs['frame_count']
         valid_joints = motion_inputs['valid_joints']
-        valid_frames = motion_inputs['valid_frames']
         joint_motion_frame_features = motion_inputs['joint_motion_frame_features']
         global_mean, global_std = cls._masked_mean_and_std(
             joint_motion_frame_features,
             valid_joints[:, None, :].expand(-1, frame_count, -1).to(dtype),
         )
         global_energy_profile = torch.cat([global_mean[..., 2:3], global_std[..., 2:3]], dim=-1)
-        frame_mask = valid_frames.unsqueeze(-1).to(dtype)
-        valid_frame_count = frame_mask.sum(dim=1).clamp_min(1.0)
-        return (global_energy_profile * frame_mask).sum(dim=1) / valid_frame_count
+        return global_energy_profile.mean(dim=1)
 
     @staticmethod
     def _build_joint_motion_frame_features(vel, rot_delta_norm, contact):
@@ -939,11 +916,10 @@ class ReferencePriorEncoder(nn.Module):
         self,
         reference_motion,
         n_joints,
-        lengths,
         translation_root_index,
         joints_embedded_names,
     ):
-        motion_inputs = self._extract_joint_motion_inputs(reference_motion, n_joints, lengths)
+        motion_inputs = self._extract_joint_motion_inputs(reference_motion, n_joints)
         batch_size = motion_inputs['batch_size']
         max_joints = motion_inputs['max_joints']
         feature_dim = motion_inputs['feature_dim']
@@ -951,9 +927,7 @@ class ReferencePriorEncoder(nn.Module):
         device = motion_inputs['device']
         dtype = motion_inputs['dtype']
         n_joints = motion_inputs['n_joints']
-        lengths = motion_inputs['lengths']
         valid_joints = motion_inputs['valid_joints']
-        valid_frames = motion_inputs['valid_frames']
         vel = motion_inputs['vel']
         contact = motion_inputs['contact']
         joint_motion_frame_features = motion_inputs['joint_motion_frame_features']
@@ -984,11 +958,8 @@ class ReferencePriorEncoder(nn.Module):
         # Time-aggregate only the grouping branch. Despite the historical
         # ``joint_motion`` name, these stats describe a joint's coarse semantic
         # motion role across the whole clip, not its framewise phase.
-        valid_frames_bj = valid_frames[:, :, None, None].to(dtype)
-        masked_joint_motion_ff = joint_motion_frame_features * valid_frames_bj
-        frame_count_valid = valid_frames.to(dtype).sum(dim=1, keepdim=True).unsqueeze(-1).clamp_min(1)
-        joint_motion_mean = masked_joint_motion_ff.sum(dim=1) / frame_count_valid
-        joint_motion_second_moment = (masked_joint_motion_ff ** 2).sum(dim=1) / frame_count_valid
+        joint_motion_mean = joint_motion_frame_features.mean(dim=1)
+        joint_motion_second_moment = (joint_motion_frame_features ** 2).mean(dim=1)
         joint_motion_std = torch.sqrt(
             (joint_motion_second_moment - joint_motion_mean ** 2).clamp_min(0.0) + 1e-6
         )
@@ -1061,29 +1032,23 @@ class ReferencePriorEncoder(nn.Module):
         prior_sequence = torch.cat([global_features, group_features, joint_semantic_features], dim=-1)
         # Reference priors assume the canonical 13-D motion schema:
         # pos[0:3], rot6d[3:9], vel[9:12], contact[12].
-        frame_mask = valid_frames.unsqueeze(-1).to(dtype)
-        prior_sequence = prior_sequence * frame_mask
         prior_sequence = self.sequence_projection(prior_sequence)
 
         positions = torch.arange(frame_count, device=device).view(1, -1, 1).repeat(batch_size, 1, 1)
         prior_sequence = prior_sequence + create_sin_embedding(positions, self.latent_dim, dtype=dtype)
-        prior_sequence = prior_sequence * frame_mask
 
         conv_input = prior_sequence.transpose(1, 2)
-        conv_frame_mask = valid_frames.unsqueeze(1).to(dtype)
         for conv_block in self.conv_blocks:
-            conv_input = (conv_input + conv_block(conv_input)) * conv_frame_mask
+            conv_input = conv_input + conv_block(conv_input)
         temporal_sequence = conv_input.transpose(1, 2).transpose(0, 1).contiguous()
-        temporal_key_padding_mask = ~valid_frames
         for layer in self.temporal_layers:
-            temporal_sequence = layer(temporal_sequence, key_padding_mask=temporal_key_padding_mask)
+            temporal_sequence = layer(temporal_sequence)
 
         token_queries = self.token_queries.unsqueeze(1).expand(-1, batch_size, -1)
         prior_tokens, _ = self.token_attn(
             token_queries,
             temporal_sequence,
             temporal_sequence,
-            key_padding_mask=temporal_key_padding_mask,
             need_weights=False,
         )
         prior_tokens = prior_tokens + self.output_ffn(prior_tokens)

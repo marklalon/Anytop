@@ -177,7 +177,6 @@ class NativeLoopTests(unittest.TestCase):
         terms = diffusion.loop_wrap_loss(
             model_output,
             y,
-            lengths=torch.tensor([6, 6]),
             n_joints=torch.tensor([3, 3]),
         )
 
@@ -207,7 +206,6 @@ class NativeLoopTests(unittest.TestCase):
         terms = diffusion.loop_wrap_loss(
             model_output,
             y,
-            lengths=torch.tensor([6]),
             n_joints=torch.tensor([2]),
         )
 
@@ -239,7 +237,6 @@ class NativeLoopTests(unittest.TestCase):
         loss = diffusion.loop_root_xz_closure_loss(
             model_output,
             y,
-            lengths=torch.tensor([6, 6]),
             n_joints=torch.tensor([3, 3]),
         )
 
@@ -261,7 +258,6 @@ class NativeLoopTests(unittest.TestCase):
         loss = diffusion.loop_root_xz_closure_loss(
             model_output,
             y,
-            lengths=torch.tensor([5]),
             n_joints=torch.tensor([2]),
         )
 

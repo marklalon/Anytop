@@ -135,11 +135,9 @@ def _compute_global_energy_from_reference(ref_motion, reference_conditioning_kwa
     from Anytop.model.anytop import ReferencePriorEncoder
 
     n_joints = reference_conditioning_kwargs['reference_n_joints']
-    lengths = reference_conditioning_kwargs['reference_lengths']
     return ReferencePriorEncoder.compute_global_energy_condition(
         ref_motion,
         n_joints,
-        lengths,
     )
 
 
@@ -463,11 +461,7 @@ def _prepare_reference_prior_bundle(
     if requested_output_frame_count is None:
         output_frame_count = loaded_reference_frame_count
     else:
-        output_frame_count = int(requested_output_frame_count)
-    if loaded_reference_frame_count < int(min_motion_length):
-        raise ValueError(
-            f"reference motion too short: {loaded_reference_frame_count} < min_length {int(min_motion_length)}"
-        )
+        output_frame_count = min(loaded_reference_frame_count, int(requested_output_frame_count))
     max_source_frames = max(int(min_motion_length), output_frame_count * 2)
     if loaded_reference_frame_count > max_source_frames:
         visible_frames = output_frame_count if requested_visible_frame_count is None else int(requested_visible_frame_count)
@@ -533,7 +527,6 @@ def _prepare_reference_prior_bundle(
     reference_name_embs = torch.from_numpy(reference_name_embs).unsqueeze(0).expand(batch_size, -1, -1).contiguous()
     reference_conditioning_kwargs = {
         'reference_n_joints': torch.full((batch_size,), ref_joints, dtype=torch.long),
-        'reference_lengths': torch.full((batch_size,), output_frame_count, dtype=torch.long),
         'reference_translation_root_index': torch.full((batch_size,), translation_root_index, dtype=torch.long),
         'reference_parents': [source_parents.copy() for _ in range(batch_size)],
         'reference_joints_names_embs': reference_name_embs,
@@ -561,11 +554,7 @@ def _prepare_img2img_reference_bundle(
         )
 
     loaded_reference_frame_count, loaded_reference_joint_count, ref_feats = ref_raw.shape
-    output_frame_count = int(requested_output_frame_count)
-    if loaded_reference_frame_count < int(min_motion_length):
-        raise ValueError(
-            f"reference motion too short: {loaded_reference_frame_count} < min_length {int(min_motion_length)}"
-        )
+    output_frame_count = min(loaded_reference_frame_count, int(requested_output_frame_count))
     max_source_frames = max(int(min_motion_length), output_frame_count * 2)
     if loaded_reference_frame_count > max_source_frames:
         visible_frames = output_frame_count if requested_visible_frame_count is None else int(requested_visible_frame_count)
@@ -828,7 +817,6 @@ def _sample_batch(
         # is callable; tests exercise the routing path with stub encoders.
         _ref_meta_keys = (
             'reference_n_joints',
-            'reference_lengths',
             'reference_translation_root_index',
             'reference_joints_names_embs',
         )
@@ -841,7 +829,6 @@ def _sample_batch(
                 reference_memory_cache = _reference_encoder(
                     reference_conditioning_motion,
                     n_joints=reference_conditioning_kwargs['reference_n_joints'],
-                    lengths=reference_conditioning_kwargs['reference_lengths'],
                     translation_root_index=reference_conditioning_kwargs['reference_translation_root_index'],
                     joints_embedded_names=reference_conditioning_kwargs['reference_joints_names_embs'],
                 )

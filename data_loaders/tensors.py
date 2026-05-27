@@ -49,9 +49,9 @@ def truebones_collate(batch):
     jointsmaskbatchTensor = n_joints_to_mask(jointsnumbatchTensor, databatchTensor.shape[1]).unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
 
     collated_temporalmasksbatch = collate_tensors(temporalmasksbatch)
-    # All samples have identical frame counts after resampling, so the
-    # length-derived portion of the temporal mask is an all-True no-op;
-    # the collated window template is used directly.
+    # All samples are resampled to a fixed frame count, so the per-sample
+    # temporal mask is the windowed-attention template (no length-derived
+    # padding portion).
     maskbatchTensor = collated_temporalmasksbatch.unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
 
     motion = databatchTensor
