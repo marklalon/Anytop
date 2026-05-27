@@ -768,7 +768,11 @@ class MotionDataset(data.Dataset):
         elif m_length > max_source_length:
             # Long loops have been downgraded to non-loop above, so this path
             # is always a linear crop (no circular indexing needed).
-            crop_length = random.randint(self.min_length, max_source_length)
+            # Sample crop_length from a normal distribution centered at
+            # target_num_frames (peak probability) with std=target_num_frames/2
+            # so ±2σ roughly spans [0, 2n]; clip to the valid range.
+            crop_length = int(round(random.gauss(target_num_frames, target_num_frames / 2.0)))
+            crop_length = max(self.min_length, min(max_source_length, crop_length))
             max_start = m_length - crop_length
             if crop_start is None:
                 ind = random.randint(0, max_start)
