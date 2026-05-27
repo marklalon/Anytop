@@ -1330,9 +1330,18 @@ def main(args=None, cond_dict=None):
                     if global_energy_condition is not None:
                         ge_mean = float(global_energy_condition[0, 0])
                         ge_std = float(global_energy_condition[0, 1])
+                        # Normalize using the model's running stats for display
+                        _uw_model = unwrap_anytop_model(model)
+                        _rm = _uw_model.global_energy_running_mean.to(device='cpu', dtype=torch.float32)
+                        _rs = torch.sqrt(
+                            _uw_model.global_energy_running_var.to(device='cpu', dtype=torch.float32).clamp_min(1e-6)
+                        )
+                        ge_mean_norm = (ge_mean - float(_rm[0])) / float(_rs[0])
+                        ge_std_norm = (ge_std - float(_rm[1])) / float(_rs[1])
                         print(
                             f'    Global energy auto-extracted from reference: '
-                            f'mean={ge_mean:.4f}, std={ge_std:.4f}'
+                            f'mean={ge_mean_norm:.4f}, std={ge_std_norm:.4f}'
+                            f' (normalized z-score)'
                         )
                 else:
                     print(
