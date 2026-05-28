@@ -105,7 +105,7 @@ def create_temporal_mask_for_window(window, max_len, circular=False):
     return mask
 
 
-def _resample_motion_features(motion, target_num_frames):
+def _resample_motion_features(motion, target_num_frames, *, loop_terminal=False):
     source_frames = int(motion.shape[0])
     target_num_frames = int(target_num_frames)
     if source_frames <= 0:
@@ -121,6 +121,42 @@ def _resample_motion_features(motion, target_num_frames):
     w = (src - np.floor(src))[:, None, None].astype(np.float32)
     resampled = (motion[lo] * (1.0 - w) + motion[hi] * w).astype(motion.dtype, copy=False)
 
+    if resampled.shape[-1] >= 12:
+        # Velocity channels are stored so that `vel[t] * step_scale` recovers
+        # the target-frame position delta — matching the contract that
+        # velocity_consistency_loss and loop_wrap_loss multiply by step_scale
+        # (reconstructed from playspeed_cond) before comparing with pos deltas.
+        # Linear interpolation of source velocities would give the instantaneous
+        # value at src[t], which is off whenever step_scale != 1; instead we
+        # integrate to a position path, interpolate that, then take target-step
+        # differences divided by step_scale.
+        source_velocity_path = np.zeros((source_frames, motion.shape[1], 3), dtype=motion.dtype)
+        if source_frames > 1:
+            source_velocity_path[1:] = np.cumsum(
+                motion[:-1, :, 9:12].astype(np.float64, copy=False),
+                axis=0,
+            ).astype(motion.dtype, copy=False)
+        resampled_velocity_path = (
+            source_velocity_path[lo] * (1.0 - w)
+            + source_velocity_path[hi] * w
+        ).astype(motion.dtype, copy=False)
+        if target_num_frames > 1:
+            step_scale = float(source_frames - 1) / float(target_num_frames - 1)
+            rebuilt_visible_velocity = (
+                (resampled_velocity_path[1:] - resampled_velocity_path[:-1])
+                / step_scale
+            ).astype(motion.dtype, copy=False)
+            resampled[:-1, :, 9:12] = rebuilt_visible_velocity
+            if loop_terminal:
+                resampled[-1, :, 9:12] = (
+                    (resampled_velocity_path[0] - resampled_velocity_path[-1])
+                    / step_scale
+                ).astype(motion.dtype, copy=False)
+            else:
+                resampled[-1, :, 9:12] = rebuilt_visible_velocity[-1]
+        else:
+            resampled[0, :, 9:12] = 0.0
+
     if resampled.shape[-1] >= 13:
         nearest = np.rint(src).astype(np.int64).clip(0, source_frames - 1)
         resampled[..., 12] = (motion[nearest, :, 12] >= 0.5).astype(resampled.dtype, copy=False)
@@ -128,9 +164,13 @@ def _resample_motion_features(motion, target_num_frames):
     return resampled.astype(motion.dtype, copy=False)
 
 
-def _resample_normalized_motion_features(motion, target_num_frames, mean, std):
+def _resample_normalized_motion_features(motion, target_num_frames, mean, std, *, loop_terminal=False):
     raw_motion = motion * std[None, :, :] + mean[None, :, :]
-    raw_resampled = _resample_motion_features(raw_motion, target_num_frames)
+    raw_resampled = _resample_motion_features(
+        raw_motion,
+        target_num_frames,
+        loop_terminal=loop_terminal,
+    )
     return np.nan_to_num((raw_resampled - mean[None, :, :]) / std[None, :, :]).astype(np.float32, copy=False)
 
 
@@ -730,6 +770,7 @@ class MotionDataset(data.Dataset):
         loop_full_cycle = False
         loop_phase_offset = 0
         loop_tile_count = 1
+        physical_loop_terminal = bool(is_loop)
         loop_condition_active = is_loop and not loop_uncond
 
         max_source_length = target_num_frames * 2
@@ -762,6 +803,7 @@ class MotionDataset(data.Dataset):
                 )
             motion = motion[ind: ind + crop_length]
             m_length = int(motion.shape[0])
+            physical_loop_terminal = False
             if loop_condition_active:
                 loop_condition_active = False
                 loop_uncond = True
@@ -784,6 +826,7 @@ class MotionDataset(data.Dataset):
                     )
             motion = motion[ind: ind + crop_length]
             m_length = int(motion.shape[0])
+            physical_loop_terminal = False
 
         source_len_for_playspeed = int(m_length)
         playspeed_cond = float(source_len_for_playspeed) / float(target_num_frames)
@@ -800,6 +843,7 @@ class MotionDataset(data.Dataset):
                 target_num_frames,
                 mean,
                 std,
+                loop_terminal=physical_loop_terminal,
             )
             m_length = target_num_frames
 
