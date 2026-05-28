@@ -154,7 +154,7 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
 def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch, tmp_path):
     dataset_dir = tmp_path / "dataset"
 
-    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None):
+    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20):
         return {
             'object_type': object_type,
             'object_cond': _make_cond_entry(object_type),
@@ -207,7 +207,7 @@ def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch,
 def test_create_data_samples_raises_preprocess_error_instead_of_exit(monkeypatch, tmp_path):
     dataset_dir = tmp_path / 'dataset'
 
-    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None):
+    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20):
         return {
             'object_type': object_type,
             'object_cond': _make_cond_entry(object_type),

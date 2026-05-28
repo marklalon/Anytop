@@ -120,28 +120,8 @@ def add_model_options(parser):
                             "cross-limb parameter count.")
     group.add_argument("--dropout_prob", default=0.1, type=float,
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
-    group.add_argument("--reference_cond", action='store_true',
-                       help="Enable ControlNet-style reference conditioning through a dedicated reference encoder and decoder cross-attention path.")
     group.add_argument("--global_energy_cond", action='store_true',
                        help="Enable an always-on clip-level global energy condition derived from the training motion's global energy mean/std.")
-    group.add_argument("--reference_encoder_layers", default=1, type=int,
-                       help="Number of temporal self-attention layers in the reference encoder (0 = InputProcess only).")
-    group.add_argument("--reference_cond_prob", default=0.3, type=float,
-                       help="Probability of keeping reference conditioning during training "
-                            "(1.0 = always conditioned, 0.0 = never).")
-    group.add_argument("--reference_residual_gate", default=1.0, type=float,
-                       help="Scalar gate applied to the decoder's reference residual path. "
-                            "1.0 keeps the current behavior, 0.0 disables the residual entirely, "
-                            "and intermediate values damp the reference branch without changing checkpoints.")
-    group.add_argument("--reference_token_dropout_prob", default=0.25, type=float,
-                       help="Per-prior-token dropout probability inside the reference encoder. Applied only during training.")
-    group.add_argument("--reference_token_noise_std", default=0.15, type=float,
-                       help="Additive Gaussian noise std applied to surviving reference prior tokens during training.")
-    group.add_argument("--reference_cond_last_n", default=0, type=int,
-                       help="Apply reference cross-attention only on the last N decoder layers "
-                            "(0 = all layers). Mirrors cross_limb_last_n semantics: only active "
-                            "layers allocate a ReferenceCrossAttnBlock, so this controls both "
-                            "reference MHA compute and checkpoint size.")
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')
@@ -285,19 +265,12 @@ def add_generate_options(parser):
                            "is used as a fallback. "
                             "Omit for pure random generation.")
     group.add_argument("--skip_timesteps", default=None, type=int,
-                       help="Number of timesteps to skip when using --reference_motion. Higher = more faithful to reference. "
-                           "Range: 0~sampling_steps. Default: required when using img2img without --inpaint_*; "
+                       help="Number of timesteps to skip when using --reference_motion (img2img). Higher = more faithful to reference. "
+                           "Range: 0~sampling_steps. Default: required when using --reference_motion without --inpaint_*; "
                            "default: 0 when combined with --inpaint_* (disabled; use --skip_timesteps N to enable). "
                            "When combined with --inpaint_*, the skip is applied "
                            "only inside the masked region by starting that region from an img2img-noised reference, while "
-                          "the unmasked region stays clamped to the original reference throughout denoising. "
-                           "When --reference_mode controlnet is selected, this must be 0.")
-    group.add_argument("--reference_mode", default="img2img", choices=["img2img", "controlnet"],
-                       help="How to use --reference_motion. img2img = noise the reference into x_t. controlnet = keep the diffusion state on the full schedule and feed the reference through a separate conditioning branch. When source and target skeletons differ, the reference is retargeted into the target skeleton first (both modes).")
-    group.add_argument("--reference_scale", default=None, type=float,
-                       help="Classifier-free guidance scale for --reference_mode controlnet (default: 1.0). "
-                            "1.0 = single conditioned forward pass; >1 amplifies the reference signal. "
-                            "Only effective in controlnet mode; will error if set in img2img mode.")
+                          "the unmasked region stays clamped to the original reference throughout denoising.")
     group.add_argument("--global_energy_mean", default=None, type=float,
                        help="Override the clip-level global energy mean in normalized (Z-score) space. "
                            "0.0 = training average intensity, 1.0 = 1 std above average, -0.5 = half std below average. "

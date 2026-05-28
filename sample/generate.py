@@ -39,11 +39,9 @@ from os.path import join as pjoin
 from utils import dist_util
 from utils.fixseed import fixseed
 from utils.model_util import (
-    ClassifierFreeReferenceModel,
     create_model_and_diffusion_general_skeleton,
     load_model,
     model_supports_global_energy_conditioning,
-    model_supports_reference_conditioning,
     resolve_t5_out_dim,
     unwrap_anytop_model,
 )
@@ -54,20 +52,15 @@ from utils.misc import infer_object_type_from_filename
 _REFERENCE_MOTION_PREPROCESS_SUFFIXES = {'.fbx', '.glb', '.gltf'}
 
 
-def validate_reference_mode_configuration(
-    reference_mode,
+def validate_reference_configuration(
     reference_motion_path=None,
     skip_timesteps=0,
-    model=None,
     global_energy_mean=None,
     global_energy_std=None,
 ):
-    mode = str(reference_mode or 'img2img').strip().lower()
-    if mode not in {'img2img', 'controlnet'}:
-        raise ValueError(f"Unsupported reference_mode '{reference_mode}'.")
-    # Global energy is auto-extracted from the reference in both modes, so an
-    # explicit --global_energy_mean/--global_energy_std cannot be combined with
-    # --reference_motion. (Without a reference, e.g. pure-random img2img, the
+    # Global energy is auto-extracted from the reference, so an explicit
+    # --global_energy_mean/--global_energy_std cannot be combined with
+    # --reference_motion. (Without a reference, e.g. pure-random generation, the
     # CLI values remain the only source and are allowed.)
     if reference_motion_path is not None and (
         global_energy_mean is not None or global_energy_std is not None
@@ -77,28 +70,7 @@ def validate_reference_mode_configuration(
             "--reference_motion; global energy is automatically extracted from the "
             "reference motion."
         )
-    if mode == 'controlnet':
-        if reference_motion_path is None:
-            raise ValueError("--reference_mode controlnet requires --reference_motion.")
-        if skip_timesteps is not None and int(skip_timesteps) != 0:
-            print(
-                f"[generate] WARNING: --reference_mode controlnet requires --skip_timesteps 0; "
-                f"forcing skip_timesteps from {skip_timesteps} to 0."
-            )
-        skip_timesteps = 0
-        if model is not None and not model_supports_reference_conditioning(model):
-            raise ValueError(
-                "Loaded checkpoint does not support --reference_mode controlnet. Load or retrain a checkpoint with --reference_cond enabled."
-            )
-    # Non-None values pass through (caller handles defaults per-mode);
-    # controlnet always returns 0.
-    return mode, int(skip_timesteps) if skip_timesteps is not None else 0
-
-
-def resolve_reference_scale(reference_scale):
-    if reference_scale is None:
-        return 1.0
-    return float(reference_scale)
+    return int(skip_timesteps) if skip_timesteps is not None else 0
 
 
 def resolve_global_energy_condition(model, global_energy_mean, global_energy_std, batch_size):
@@ -131,18 +103,16 @@ def resolve_global_energy_condition(model, global_energy_mean, global_energy_std
     return raw.unsqueeze(0).expand(batch_size, -1).clone()
 
 
-def _compute_global_energy_from_reference(ref_motion, reference_conditioning_kwargs, playspeed_cond=None):
+def _compute_global_energy_from_reference(ref_motion, n_joints, playspeed_cond=None):
     """Extract raw global energy [mean, std] from a reference motion tensor.
 
-    ``ref_motion`` must be a (B, J, F, T) tensor in the model feature space
-    (the same space used by the reference prior encoder).  Returns a (B, 2)
-    float32 tensor on the same device with columns ``[global_mean, global_std]``
-    ready for ``_build_global_energy_token``.
+    ``ref_motion`` must be a (B, J, F, T) tensor in the model feature space.
+    Returns a (B, 2) float32 tensor on the same device with columns
+    ``[global_mean, global_std]`` ready for ``_build_global_energy_token``.
     """
-    from Anytop.model.anytop import ReferencePriorEncoder
+    from Anytop.model.anytop import GlobalEnergyExtractor
 
-    n_joints = reference_conditioning_kwargs['reference_n_joints']
-    return ReferencePriorEncoder.compute_global_energy_condition(
+    return GlobalEnergyExtractor.compute_global_energy_condition(
         ref_motion,
         n_joints,
         playspeed_cond=playspeed_cond,
@@ -211,7 +181,7 @@ def _reference_crosses_skeletons(source_type, target_type):
     )
 
 
-def _should_retarget_reference(source_type, target_type, reference_mode):
+def _should_retarget_reference(source_type, target_type):
     return _reference_crosses_skeletons(source_type, target_type)
 
 
@@ -236,15 +206,6 @@ def _build_retarget_cond_dict(cond_dict, source_type, default_cond_cache=None):
         if key not in retarget_cond_dict:
             retarget_cond_dict[key] = value
     return retarget_cond_dict
-
-
-def _validate_reference_sampling_request(
-    *,
-    inpaint_enabled,
-    reference_mode,
-    cross_species_reference,
-):
-    return None
 
 
 def _prepare_reference_motion_path(
@@ -441,107 +402,6 @@ def _retarget_reference_motion(
     return out_npy
 
 
-def _prepare_reference_prior_bundle(
-    reference_motion_path,
-    source_type,
-    source_cond,
-    *,
-    max_joints,
-    target_feature_len,
-    batch_size,
-    requested_output_frame_count=None,
-    requested_visible_frame_count=None,
-    min_length=20,
-):
-    if source_cond is None:
-        raise KeyError(
-            f"Missing cond entry for reference prior object_type '{source_type}'."
-        )
-
-    ref_raw = np.load(reference_motion_path).astype(np.float32)
-    if ref_raw.ndim != 3:
-        raise ValueError(
-            f"Reference prior motion must have shape (T, J, F), got {ref_raw.shape}"
-        )
-
-    loaded_reference_frame_count, ref_joints, ref_feats = ref_raw.shape
-    if requested_output_frame_count is None:
-        output_frame_count = loaded_reference_frame_count
-    else:
-        output_frame_count = min(loaded_reference_frame_count, int(requested_output_frame_count))
-    max_source_frames = max(int(min_length), output_frame_count * 2)
-    if loaded_reference_frame_count > max_source_frames:
-        visible_frames = output_frame_count if requested_visible_frame_count is None else int(requested_visible_frame_count)
-        source_frames = min(max_source_frames, max(int(min_length), visible_frames))
-        ref_raw = ref_raw[:source_frames]
-    reference_source_frame_count = int(ref_raw.shape[0])
-    if ref_raw.shape[0] != output_frame_count:
-        ref_raw = _resample_motion_features(ref_raw, output_frame_count)
-    source_parents = np.asarray(source_cond['parents'], dtype=np.int64)
-    source_offsets = np.asarray(source_cond['offsets'], dtype=np.float32)
-    source_name_embs = np.asarray(source_cond['joints_names_embs'], dtype=np.float32)
-
-    if ref_joints != source_parents.shape[0]:
-        raise RuntimeError(
-            f"Reference prior joint count mismatch for '{source_type}': motion has {ref_joints} joints, "
-            f"cond expects {source_parents.shape[0]}"
-        )
-    if ref_joints > max_joints:
-        raise RuntimeError(
-            f"Reference prior joint count {ref_joints} exceeds model max_joints {max_joints}"
-        )
-
-    # When the caller supplies a requested output length, match img2img's
-    # effective frame-count rule so both reference modes drive the same
-    # output-length semantics. Normalize real features first, then zero-pad
-    # feature channels in normalized space so padded channels stay exactly
-    # zero.
-    if ref_feats > target_feature_len:
-        ref_raw = ref_raw[:, :, :target_feature_len]
-    normalized_feature_dim = ref_raw.shape[2]
-    source_mean, source_std = _get_reference_normalization_stats(
-        source_cond,
-        object_type=source_type,
-        joint_count=ref_joints,
-        feature_count=normalized_feature_dim,
-        context='reference prior',
-    )
-    ref_norm = np.nan_to_num(
-        (ref_raw - source_mean[None, :, :normalized_feature_dim])
-        / source_std[None, :, :normalized_feature_dim],
-        copy=True,
-    ).astype(np.float32)
-    if normalized_feature_dim < target_feature_len:
-        feat_pad = np.zeros(
-            (ref_norm.shape[0], ref_norm.shape[1], target_feature_len - normalized_feature_dim),
-            dtype=np.float32,
-        )
-        ref_norm = np.concatenate([ref_norm, feat_pad], axis=2)
-    if ref_joints < max_joints:
-        joint_pad = np.zeros((ref_norm.shape[0], max_joints - ref_joints, ref_norm.shape[2]), dtype=np.float32)
-        ref_norm = np.concatenate([ref_norm, joint_pad], axis=1)
-
-    ref_tensor = torch.from_numpy(ref_norm).permute(1, 2, 0).unsqueeze(0).expand(batch_size, -1, -1, -1).contiguous()
-    translation_root_index = int(resolve_feature_translation_root_index(
-        ref_raw,
-        parents=source_parents,
-        offsets=source_offsets,
-        allow_infer=True,
-        context=f"reference prior motion '{reference_motion_path}'",
-    ))
-
-    reference_name_embs = np.zeros((max_joints, source_name_embs.shape[1]), dtype=np.float32)
-    reference_name_embs[:ref_joints] = source_name_embs
-    reference_name_embs = torch.from_numpy(reference_name_embs).unsqueeze(0).expand(batch_size, -1, -1).contiguous()
-    reference_conditioning_kwargs = {
-        'reference_n_joints': torch.full((batch_size,), ref_joints, dtype=torch.long),
-        'reference_translation_root_index': torch.full((batch_size,), translation_root_index, dtype=torch.long),
-        'reference_parents': [source_parents.copy() for _ in range(batch_size)],
-        'reference_joints_names_embs': reference_name_embs,
-    }
-    return ref_tensor, reference_conditioning_kwargs, loaded_reference_frame_count, reference_source_frame_count, output_frame_count
-
-
 def _prepare_img2img_reference_bundle(
     reference_motion_path,
     target_type,
@@ -603,63 +463,11 @@ def _prepare_img2img_reference_bundle(
     ref_motion = ref_tensor.unsqueeze(0).expand(batch_size, -1, -1, -1)
     return {
         'reference_motion': ref_motion,
-        'reference_conditioning_kwargs': None,
         'output_frame_count': output_frame_count,
         'loaded_reference_frame_count': loaded_reference_frame_count,
         'reference_source_frame_count': reference_source_frame_count,
         'loaded_reference_joint_count': loaded_reference_joint_count,
     }
-
-
-def _prepare_reference_for_mode(
-    reference_motion_path,
-    *,
-    reference_mode,
-    source_type,
-    source_cond,
-    target_type,
-    target_cond,
-    max_joints,
-    target_feature_len,
-    batch_size,
-    requested_output_frame_count,
-    requested_visible_frame_count=None,
-    min_length=20,
-):
-    mode = str(reference_mode or 'img2img').strip().lower()
-    if mode == 'controlnet':
-        ref_motion, reference_conditioning_kwargs, loaded_reference_frame_count, reference_source_frame_count, output_frame_count = _prepare_reference_prior_bundle(
-            reference_motion_path,
-            target_type,
-            target_cond,
-            max_joints=max_joints,
-            target_feature_len=target_feature_len,
-            batch_size=batch_size,
-            requested_output_frame_count=requested_output_frame_count,
-            requested_visible_frame_count=requested_visible_frame_count,
-            min_length=min_length,
-        )
-        loaded_reference_joint_count = int(reference_conditioning_kwargs['reference_n_joints'][0].item())
-        return {
-            'reference_motion': ref_motion,
-            'reference_conditioning_kwargs': reference_conditioning_kwargs,
-            'output_frame_count': output_frame_count,
-            'loaded_reference_frame_count': loaded_reference_frame_count,
-            'reference_source_frame_count': reference_source_frame_count,
-            'loaded_reference_joint_count': loaded_reference_joint_count,
-        }
-
-    return _prepare_img2img_reference_bundle(
-        reference_motion_path,
-        target_type,
-        target_cond,
-        max_joints=max_joints,
-        target_feature_len=target_feature_len,
-        batch_size=batch_size,
-        requested_output_frame_count=requested_output_frame_count,
-        requested_visible_frame_count=requested_visible_frame_count,
-        min_length=min_length,
-    )
 
 
 def _export_motion(task):
@@ -694,9 +502,6 @@ def _sample_batch(
     seed,
     device,
     reference_motion=None,
-    reference_conditioning_kwargs=None,
-    reference_mode='img2img',
-    reference_scale=1.0,
     skip_timesteps=0,
     inpaint_mask=None,
     repaint_jump_length=0,
@@ -707,11 +512,7 @@ def _sample_batch(
     if repaint_jump_n_sample < 1:
         raise ValueError("repaint_jump_n_sample must be >= 1")
 
-    reference_mode, skip_timesteps = validate_reference_mode_configuration(
-        reference_mode,
-        reference_motion_path=reference_motion,
-        skip_timesteps=skip_timesteps,
-    )
+    skip_timesteps = int(skip_timesteps) if skip_timesteps is not None else 0
 
     inpainting = inpaint_mask is not None
     if inpainting:
@@ -741,7 +542,7 @@ def _sample_batch(
         )
         return torch.cat([reliable_tpose, raw_cross_limb_unreliable_mask], dim=1).transpose(0, 1).contiguous()
 
-    def _copy_model_kwargs_for_loop(cross_limb_unreliable_mask_, reference_motion_, reference_conditioning_kwargs_, use_reference_conditioning_):
+    def _copy_model_kwargs_for_loop(cross_limb_unreliable_mask_):
         if model_kwargs is None:
             loop_model_kwargs = {}
             loop_y = {}
@@ -752,31 +553,16 @@ def _sample_batch(
             loop_y.pop('cross_limb_unreliable_mask', None)
         else:
             loop_y['cross_limb_unreliable_mask'] = cross_limb_unreliable_mask_
-        if use_reference_conditioning_:
-            loop_y['reference_motion'] = reference_motion_
-            loop_y['reference_scale'] = float(reference_scale)
-            if reference_conditioning_kwargs_:
-                loop_y.update(reference_conditioning_kwargs_)
-        else:
-            for key in list(loop_y.keys()):
-                if key.startswith('reference_'):
-                    loop_y.pop(key, None)
-            loop_y.pop('reference_cond_mask', None)
         loop_model_kwargs['y'] = loop_y
         return loop_model_kwargs
 
-    def _run_loop(noise, init_image, skip_ts, inpaint_mask_, inpaint_reference_, cross_limb_unreliable_mask_, use_reference_conditioning_):
+    def _run_loop(noise, init_image, skip_ts, inpaint_mask_, inpaint_reference_, cross_limb_unreliable_mask_):
         common_kwargs = dict(
-            model=reference_cfg_model if use_reference_conditioning_ else model,
+            model=model,
             shape=sample_shape,
             noise=noise,
             clip_denoised=False,
-            model_kwargs=_copy_model_kwargs_for_loop(
-                cross_limb_unreliable_mask_,
-                reference_conditioning_motion,
-                reference_conditioning_kwargs,
-                use_reference_conditioning_,
-            ),
+            model_kwargs=_copy_model_kwargs_for_loop(cross_limb_unreliable_mask_),
             device=device,
             init_image=init_image,
             skip_timesteps=skip_ts,
@@ -808,41 +594,7 @@ def _sample_batch(
             )
         raise ValueError(f'Unknown sampling_method: {sampling_method}')
 
-    reference_conditioning_motion = None
-    if reference_conditioning_kwargs is None:
-        reference_conditioning_kwargs = {}
-    reference_cfg_model = model
-    if reference_mode == 'controlnet' and reference_motion is not None:
-        reference_conditioning_motion = reference_motion.to(device, non_blocking=True)
-        reference_cfg_model = ClassifierFreeReferenceModel(model)
-        # PERF: encode the reference once outside the diffusion loop. Without
-        # this, AnyTop.forward would re-run reference_encoder every timestep
-        # (and again on the cond pass of every CFG step). The reference motion
-        # is constant across the schedule, so the memory is identical — feed
-        # it through y['reference_memory'] and AnyTop.forward skips encoding.
-        # Only precompute when all required metadata is present and the encoder
-        # is callable; tests exercise the routing path with stub encoders.
-        _ref_meta_keys = (
-            'reference_n_joints',
-            'reference_translation_root_index',
-            'reference_joints_names_embs',
-        )
-        _reference_encoder = getattr(model, 'reference_encoder', None)
-        if (
-            callable(_reference_encoder)
-            and all(reference_conditioning_kwargs.get(k) is not None for k in _ref_meta_keys)
-        ):
-            with torch.no_grad():
-                reference_memory_cache = _reference_encoder(
-                    reference_conditioning_motion,
-                    n_joints=reference_conditioning_kwargs['reference_n_joints'],
-                    translation_root_index=reference_conditioning_kwargs['reference_translation_root_index'],
-                    joints_embedded_names=reference_conditioning_kwargs['reference_joints_names_embs'],
-                )
-            reference_conditioning_kwargs = dict(reference_conditioning_kwargs)
-            reference_conditioning_kwargs['reference_memory'] = reference_memory_cache
-
-    if inpainting and reference_mode == 'img2img' and skip_timesteps > 0:
+    if inpainting and skip_timesteps > 0:
         # Localized img2img inpainting: start the reverse process from the
         # reference noised to the requested skip timestep, but clamp the known
         # (unmasked) region back to the ORIGINAL reference at every step. This
@@ -860,7 +612,6 @@ def _sample_batch(
             inpaint_mask_=mask,
             inpaint_reference_=ref,
             cross_limb_unreliable_mask_=prepared_cross_limb_unreliable_mask,
-            use_reference_conditioning_=False,
         )
 
     fixseed(seed)
@@ -880,17 +631,6 @@ def _sample_batch(
             inpaint_mask_=mask,
             inpaint_reference_=reference_motion.to(device, non_blocking=True),
             cross_limb_unreliable_mask_=prepared_cross_limb_unreliable_mask,
-            use_reference_conditioning_=reference_mode == 'controlnet',
-        )
-    if reference_mode == 'controlnet' and reference_motion is not None:
-        return _run_loop(
-            noise=torch.randn(sample_shape, device=device),
-            init_image=None,
-            skip_ts=0,
-            inpaint_mask_=None,
-            inpaint_reference_=None,
-            cross_limb_unreliable_mask_=None,
-            use_reference_conditioning_=True,
         )
     if reference_motion is not None and skip_timesteps > 0:
         # img2img-style: noise the whole reference to an intermediate step.
@@ -903,7 +643,6 @@ def _sample_batch(
             inpaint_mask_=None,
             inpaint_reference_=None,
             cross_limb_unreliable_mask_=None,
-            use_reference_conditioning_=False,
         )
     # Plain generation: no reference => full denoising from pure noise.
     return _run_loop(
@@ -913,7 +652,6 @@ def _sample_batch(
         inpaint_mask_=None,
         inpaint_reference_=None,
         cross_limb_unreliable_mask_=None,
-        use_reference_conditioning_=False,
     )
 
 
@@ -932,16 +670,15 @@ def main(args=None, cond_dict=None):
         or str(getattr(args, 'inpaint_frames', '') or '').strip()
     )
 
-    # img2img + reference_motion + no inpaint + no explicit skip_timesteps =>
-    # fast-fail because the user must decide how faithful to the reference
-    # (skip_timesteps=0 means maximum variation from pure noise).
-    if (str(getattr(args, 'reference_mode', 'img2img')).strip().lower() == 'img2img'
-            and getattr(args, 'reference_motion', None)
+    # reference_motion + no inpaint + no explicit skip_timesteps => fast-fail
+    # because the user must decide how faithful to the reference (skip_timesteps=0
+    # means maximum variation from pure noise).
+    if (getattr(args, 'reference_motion', None)
             and not _inpaint_early
             and skip_timesteps_raw is None):
         sys.exit(
             "ERROR: --skip_timesteps is required when using --reference_motion "
-            "in img2img mode without --inpaint_joints/--inpaint_frames.\n"
+            "without --inpaint_joints/--inpaint_frames.\n"
             "  Higher values (e.g. 80-100) produce motion more faithful to the reference;\n"
             "  lower values (e.g. 20-40) allow more model-driven variation.\n"
             "  When combined with --inpaint_joints, the default is 0 (skip disabled)."
@@ -959,8 +696,7 @@ def main(args=None, cond_dict=None):
         )
 
     try:
-        reference_mode, skip_timesteps = validate_reference_mode_configuration(
-            getattr(args, 'reference_mode', 'img2img'),
+        skip_timesteps = validate_reference_configuration(
             reference_motion_path=getattr(args, 'reference_motion', None),
             skip_timesteps=skip_timesteps_raw,
         )
@@ -970,22 +706,6 @@ def main(args=None, cond_dict=None):
     # --inpaint_joints with --skip_timesteps omitted: default to 0 (skip disabled).
     if _inpaint_early and skip_timesteps_raw is None:
         skip_timesteps = 0
-
-    # Fail fast: --reference_scale is only effective in controlnet mode.
-    if getattr(args, 'reference_scale', None) is not None \
-            and str(getattr(args, 'reference_mode', 'img2img')).strip().lower() != 'controlnet':
-        sys.exit(
-            "ERROR: --reference_scale is only effective with --reference_mode controlnet. "
-            "In img2img mode, use --skip_timesteps to control faithfulness to the reference."
-        )
-
-    # Fail fast: --skip_timesteps is only effective in img2img mode.
-    if getattr(args, 'skip_timesteps', None) is not None \
-            and str(getattr(args, 'reference_mode', 'img2img')).strip().lower() == 'controlnet':
-        sys.exit(
-            "ERROR: --skip_timesteps is not supported with --reference_mode controlnet. "
-            "In controlnet mode, use --reference_scale to control faithfulness to the reference."
-        )
 
     opt = get_opt(args.device)
     if cond_dict is None:
@@ -1056,11 +776,9 @@ def main(args=None, cond_dict=None):
         state_dict = state_dict['model']
     load_model(model, state_dict)
     try:
-        reference_mode, skip_timesteps = validate_reference_mode_configuration(
-            reference_mode,
+        skip_timesteps = validate_reference_configuration(
             reference_motion_path=getattr(args, 'reference_motion', None),
             skip_timesteps=skip_timesteps,
-            model=model,
             global_energy_mean=getattr(args, 'global_energy_mean', None),
             global_energy_std=getattr(args, 'global_energy_std', None),
         )
@@ -1110,7 +828,6 @@ def main(args=None, cond_dict=None):
 
     ddim_eta = float(getattr(args, 'ddim_eta', 0.0))
     reference_motion_path = getattr(args, 'reference_motion', None)
-    reference_scale = resolve_reference_scale(getattr(args, 'reference_scale', None))
 
     inpaint_joints_arg = str(getattr(args, 'inpaint_joints', '') or '').strip()
     inpaint_frames_arg = str(getattr(args, 'inpaint_frames', '') or '').strip()
@@ -1200,7 +917,6 @@ def main(args=None, cond_dict=None):
     should_retarget_reference = _should_retarget_reference(
         source_type,
         target_type,
-        reference_mode,
     )
 
     object_type = target_type  # downstream code keeps reading `object_type`
@@ -1240,7 +956,6 @@ def main(args=None, cond_dict=None):
 
         # Prepare reference motion (normalize + reshape)
         ref_motion = None
-        reference_conditioning_kwargs = None
         output_frame_count = n_frames
 
         source_cond_entry = _resolve_source_cond_entry(
@@ -1277,20 +992,11 @@ def main(args=None, cond_dict=None):
                 fps=fps,
             )
 
-        _validate_reference_sampling_request(
-            inpaint_enabled=inpaint_enabled,
-            reference_mode=reference_mode,
-            cross_species_reference=cross_species_reference,
-        )
-
         if effective_reference_path:
-            reference_bundle = _prepare_reference_for_mode(
+            reference_bundle = _prepare_img2img_reference_bundle(
                 effective_reference_path,
-                reference_mode=reference_mode,
-                source_type=source_type,
-                source_cond=source_cond_entry,
-                target_type=object_type,
-                target_cond=cond_dict[object_type],
+                object_type,
+                cond_dict[object_type],
                 max_joints=max_joints,
                 target_feature_len=model.feature_len,
                 batch_size=args.batch_size,
@@ -1299,7 +1005,6 @@ def main(args=None, cond_dict=None):
                 min_length=min_length,
             )
             ref_motion = reference_bundle['reference_motion']
-            reference_conditioning_kwargs = reference_bundle['reference_conditioning_kwargs']
             output_frame_count = reference_bundle['output_frame_count']
             loaded_reference_frame_count = reference_bundle['loaded_reference_frame_count']
             reference_source_frame_count = reference_bundle.get('reference_source_frame_count', loaded_reference_frame_count)
@@ -1310,32 +1015,14 @@ def main(args=None, cond_dict=None):
                 print(f'    Preprocessed from original: {reference_motion_path}')
             if effective_reference_path != prepared_reference_path:
                 print(f'    Retargeted from preprocessed: {prepared_reference_path}')
-            elif cross_species_reference and reference_mode == 'controlnet':
-                print(f'    Controlnet prior path retargeted the reference into target-space before encoding')
-            if reference_mode == 'controlnet':
-                print(
-                    f'    Reference prior input: [{loaded_reference_frame_count} frames, {loaded_reference_joint_count} joints] '
-                    f'-> Internal target: [{output_frame_count} frames, {max_joints} joints]'
-                )
-            else:
-                print(
-                    f'    Original: [{loaded_reference_frame_count} frames, {loaded_reference_joint_count} joints] '
-                    f'-> Internal target: [{output_frame_count} frames, {max_joints} joints]'
-                )
+            print(
+                f'    Original: [{loaded_reference_frame_count} frames, {loaded_reference_joint_count} joints] '
+                f'-> Internal target: [{output_frame_count} frames, {max_joints} joints]'
+            )
             if inpaint_enabled and skip_timesteps > 0:
                 print(f'    Mode: inpaint + skip_timesteps={skip_timesteps} '
                       '(masked region starts from an img2img-noised reference; '
                       'unmasked region stays clamped to the original reference)')
-            elif inpaint_enabled and reference_mode == 'controlnet':
-                print(
-                    f'    Mode: inpainting + controlnet '
-                    f'(full schedule from pure noise, reference_scale={reference_scale})'
-                )
-            elif reference_mode == 'controlnet':
-                print(
-                    f'    Mode: controlnet prior conditioning '
-                    f'(full schedule from pure noise, reference_scale={reference_scale})'
-                )
             elif inpaint_enabled:
                 print('    Mode: inpainting (reference is the clamped known region; '
                       'skip_timesteps=0, denoising full schedule from pure noise)')
@@ -1360,18 +1047,14 @@ def main(args=None, cond_dict=None):
             # we always have `global_energy_condition is None` here.
             if ref_motion is not None:
                 if model_supports_global_energy_conditioning(model):
-                    energy_conditioning_kwargs = reference_conditioning_kwargs
-                    if energy_conditioning_kwargs is None:
-                        energy_conditioning_kwargs = {
-                            'reference_n_joints': torch.full(
-                                (args.batch_size,),
-                                loaded_reference_joint_count,
-                                dtype=torch.long,
-                            ),
-                        }
+                    _ref_n_joints = torch.full(
+                        (args.batch_size,),
+                        loaded_reference_joint_count,
+                        dtype=torch.long,
+                    )
                     global_energy_condition = _compute_global_energy_from_reference(
                         ref_motion,
-                        energy_conditioning_kwargs,
+                        _ref_n_joints,
                         playspeed_cond=float(reference_source_frame_count) / float(output_frame_count),
                     )
                     if global_energy_condition is not None:
@@ -1443,9 +1126,6 @@ def main(args=None, cond_dict=None):
             seed=args.seed,
             device=dist_util.dev(),
             reference_motion=ref_motion,
-            reference_conditioning_kwargs=reference_conditioning_kwargs,
-            reference_mode=reference_mode,
-            reference_scale=reference_scale,
             skip_timesteps=skip_timesteps,
             inpaint_mask=inpaint_mask,
             repaint_jump_length=repaint_jump_length,

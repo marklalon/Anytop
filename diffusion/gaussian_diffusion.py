@@ -16,7 +16,7 @@ from copy import deepcopy
 from diffusion import logger
 from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood, geodesic_distance
-from model.anytop import ReferencePriorEncoder
+from model.anytop import GlobalEnergyExtractor
 from utils.rotation_conversions import rotation_6d_to_matrix_safe
 
 
@@ -1600,50 +1600,6 @@ class GaussianDiffusion:
             unwrapped_model = next_model
         return unwrapped_model
 
-    @staticmethod
-    def _sample_structured_dropout_mask(batch_size, drop_prob, device):
-        if drop_prob <= 0.0 or batch_size <= 0:
-            return th.zeros(batch_size, device=device, dtype=th.bool)
-        expected = float(drop_prob) * float(batch_size)
-        drop_count = int(math.floor(expected))
-        if expected > drop_count and th.rand((), device=device).item() < (expected - drop_count):
-            drop_count += 1
-        drop_count = min(max(drop_count, 0), batch_size)
-        if drop_count == 0:
-            return th.zeros(batch_size, device=device, dtype=th.bool)
-        drop_mask = th.zeros(batch_size, device=device, dtype=th.bool)
-        drop_mask[th.randperm(batch_size, device=device)[:drop_count]] = True
-        return drop_mask
-
-    def _build_reference_conditioning(self, model, x_start, model_kwargs):
-        y = model_kwargs.get('y') if model_kwargs is not None else None
-        if y is None:
-            return
-
-        model_for_hooks = self._unwrap_model_for_training_hooks(model)
-        if not getattr(model_for_hooks, 'reference_cond', False):
-            y.pop('reference_motion', None)
-            y.pop('reference_cond_mask', None)
-            return
-
-        batch_size = x_start.shape[0]
-        device = x_start.device
-
-        uncond_drop_prob = 1.0 - float(getattr(model_for_hooks, 'reference_cond_prob', 0.3))
-        dropout_mask = self._sample_structured_dropout_mask(
-            batch_size, uncond_drop_prob, device,
-        )
-        cond_mask = ~dropout_mask
-        if not bool(cond_mask.any()):
-            y['reference_motion'] = None
-            y['reference_cond_mask'] = cond_mask
-            return
-
-        # Reuse x_start storage to avoid a per-step clone; callers must not
-        # mutate x_start in-place after building reference conditioning.
-        y['reference_motion'] = x_start.detach()
-        y['reference_cond_mask'] = cond_mask
-
     def _build_global_energy_conditioning(self, model, x_start, model_kwargs):
         y = model_kwargs.get('y') if model_kwargs is not None else None
         if y is None:
@@ -1679,7 +1635,7 @@ class GaussianDiffusion:
             y['global_energy_cond'] = global_energy_cond
             return
 
-        y['global_energy_cond'] = ReferencePriorEncoder.compute_global_energy_condition(
+        y['global_energy_cond'] = GlobalEnergyExtractor.compute_global_energy_condition(
             x_start.detach(),
             n_joints=n_joints,
             playspeed_cond=y.get('playspeed_cond'),
@@ -1724,7 +1680,6 @@ class GaussianDiffusion:
         x_t, temporal_span_mask = self._apply_joint_mask_training_perturbation(
             model, x_start, x_t, t, model_kwargs
         )
-        self._build_reference_conditioning(model, x_start, model_kwargs)
         self._build_global_energy_conditioning(model, x_start, model_kwargs)
 
         terms = {}

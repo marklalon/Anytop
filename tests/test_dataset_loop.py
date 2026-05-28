@@ -28,7 +28,7 @@ from data_loaders.truebones.data.dataset import (
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_process import infer_translation_root_index_from_features
-from model.anytop import ReferencePriorEncoder
+from model.anytop import GlobalEnergyExtractor
 
 
 def _find_motion(pattern: str) -> str:
@@ -162,8 +162,8 @@ def test_speed_resample_preserves_global_energy_magnitude() -> None:
     source_tensor = torch.from_numpy(source).permute(1, 2, 0).unsqueeze(0)
     resampled_tensor = torch.from_numpy(resampled).permute(1, 2, 0).unsqueeze(0)
 
-    source_energy = ReferencePriorEncoder.compute_global_energy_condition(source_tensor, torch.tensor([2]))
-    resampled_energy = ReferencePriorEncoder.compute_global_energy_condition(resampled_tensor, torch.tensor([2]))
+    source_energy = GlobalEnergyExtractor.compute_global_energy_condition(source_tensor, torch.tensor([2]))
+    resampled_energy = GlobalEnergyExtractor.compute_global_energy_condition(resampled_tensor, torch.tensor([2]))
 
     assert_close("global energy after window stretch", resampled_energy.numpy(), source_energy.numpy())
 
@@ -176,8 +176,8 @@ def test_speed_resample_preserves_rotation_only_global_energy_with_playspeed() -
     source_tensor = torch.from_numpy(source).permute(1, 2, 0).unsqueeze(0)
     resampled_tensor = torch.from_numpy(resampled).permute(1, 2, 0).unsqueeze(0)
 
-    source_energy = ReferencePriorEncoder.compute_global_energy_condition(source_tensor, torch.tensor([2]))
-    resampled_energy = ReferencePriorEncoder.compute_global_energy_condition(
+    source_energy = GlobalEnergyExtractor.compute_global_energy_condition(source_tensor, torch.tensor([2]))
+    resampled_energy = GlobalEnergyExtractor.compute_global_energy_condition(
         resampled_tensor,
         torch.tensor([2]),
         playspeed_cond=torch.tensor([4.0 / 7.0], dtype=torch.float32),
@@ -314,10 +314,13 @@ def test_explicit_window_start_respects_requested_crop() -> None:
 
     motion_dataset = dataset.motion_dataset
     window_start = 7
+    # Pick a NON-loop motion: loop motions get circular-roll + tile augmentation
+    # before the crop, so their window would not match a direct raw crop.
     long_motion_name = next(
         name
         for name, length in zip(motion_dataset.name_list, motion_dataset.length_arr)
         if NUM_FRAMES + window_start <= int(length) <= NUM_FRAMES * 2
+        and not bool(motion_dataset.data_dict[name].get('motion_metadata', {}).get('is_loop'))
     )
 
     motion, m_length, *_rest, _motion_metadata, name, _joint_mask_dict = motion_dataset.prepare_sample_by_name(

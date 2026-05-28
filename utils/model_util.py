@@ -4,7 +4,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn as nn
 
 from model.anytop import AnyTop
 from diffusion import gaussian_diffusion as gd
@@ -62,14 +61,6 @@ def unwrap_anytop_model(model):
     return unwrapped_model
 
 
-def model_supports_reference_conditioning(model) -> bool:
-    unwrapped_model = unwrap_anytop_model(model)
-    return bool(
-        getattr(unwrapped_model, 'reference_cond', False)
-        and getattr(unwrapped_model, 'reference_encoder', None) is not None
-    )
-
-
 def model_supports_global_energy_conditioning(model) -> bool:
     unwrapped_model = unwrap_anytop_model(model)
     return bool(
@@ -77,129 +68,6 @@ def model_supports_global_energy_conditioning(model) -> bool:
         and getattr(unwrapped_model, 'global_energy_projection', None) is not None
     )
 
-
-class ClassifierFreeReferenceModel(nn.Module):
-    _REFERENCE_ROOT_X_FEATURES = (0, 9)
-    _REFERENCE_ROOT_Z_FEATURES = (2, 11)
-
-    def __init__(self, model):
-        super().__init__()
-        self.model = model
-        self.num_layers = getattr(model, 'num_layers', 0)
-        self.reference_cond = getattr(model, 'reference_cond', False)
-
-    @staticmethod
-    def _copy_y(y, reference_motion):
-        if y is None:
-            return None
-        routed_y = dict(y)
-        routed_y.pop('reference_cond_mask', None)
-        if reference_motion is None:
-            for key in list(routed_y.keys()):
-                if key.startswith('reference_'):
-                    routed_y.pop(key, None)
-        else:
-            routed_y['reference_motion'] = reference_motion
-        return routed_y
-
-    @classmethod
-    def _apply_reference_root_axis_guidance_guard(cls, guided, uncond_tensor, y):
-        if y is None or guided.ndim != 4 or uncond_tensor.shape != guided.shape:
-            return guided
-
-        reference_root_index = y.get('reference_translation_root_index')
-        if reference_root_index is None:
-            return guided
-
-        batch_size, num_joints, num_features, _ = guided.shape
-        root_index = torch.as_tensor(
-            reference_root_index, device=guided.device, dtype=torch.long,
-        ).reshape(-1)
-        if root_index.numel() == 0:
-            return guided
-
-        # Align root_index length to the batch axis: pad short with -1 (which
-        # never matches a valid joint index) and truncate long. Mirrors the old
-        # `min(B, len(root_index))` loop bound and the per-sample
-        # `0 <= joint_idx < J` guard.
-        if root_index.shape[0] < batch_size:
-            pad = torch.full(
-                (batch_size - root_index.shape[0],), -1,
-                device=guided.device, dtype=torch.long,
-            )
-            root_index = torch.cat([root_index, pad], dim=0)
-        elif root_index.shape[0] > batch_size:
-            root_index = root_index[:batch_size]
-
-        joint_arange = torch.arange(num_joints, device=guided.device).view(1, num_joints, 1, 1)
-        joint_match = joint_arange == root_index.view(batch_size, 1, 1, 1)
-
-        # Combined X (0, 9) + Z (2, 11) feature mask, materialized fresh each
-        # call so it picks up the right device and feature_len. Cheap: F ~ 13.
-        # Clamp out-of-range indices so synthetic / undersized feature dims
-        # (seen in unit tests with stub models) don't IndexError — matches the
-        # old loop's "nothing to swap" behavior in that regime.
-        feature_indices = [
-            f for f in (list(cls._REFERENCE_ROOT_X_FEATURES) + list(cls._REFERENCE_ROOT_Z_FEATURES))
-            if 0 <= f < num_features
-        ]
-        if not feature_indices:
-            return guided
-        feature_mask = torch.zeros(num_features, dtype=torch.bool, device=guided.device)
-        feature_mask[feature_indices] = True
-        feature_mask = feature_mask.view(1, 1, num_features, 1)
-
-        mask = joint_match & feature_mask
-        return torch.where(mask, uncond_tensor, guided)
-
-    def forward(self, x, timesteps, y=None, train_step=None, **unused_kwargs):
-        if y is None or y.get('reference_motion') is None:
-            return self.model(
-                x,
-                timesteps,
-                y=y,
-                train_step=train_step,
-                **unused_kwargs,
-            )
-
-        scale = float(y.get('reference_scale', 1.0))
-        if scale == 0.0:
-            return self.model(
-                x,
-                timesteps,
-                y=self._copy_y(y, None),
-                train_step=train_step,
-                **unused_kwargs,
-            )
-
-        cond_y = self._copy_y(y, y.get('reference_motion'))
-        if scale == 1.0:
-            return self.model(
-                x,
-                timesteps,
-                y=cond_y,
-                train_step=train_step,
-                **unused_kwargs,
-            )
-
-        uncond_y = self._copy_y(y, None)
-        cond_output = self.model(
-            x,
-            timesteps,
-            y=cond_y,
-            train_step=train_step,
-            **unused_kwargs,
-        )
-        uncond_output = self.model(
-            x,
-            timesteps,
-            y=uncond_y,
-            train_step=train_step,
-            **unused_kwargs,
-        )
-
-        guided = uncond_output + scale * (cond_output - uncond_output)
-        return self._apply_reference_root_axis_guidance_guard(guided, uncond_output, y)
 
 def load_model(model, state_dict):
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
@@ -232,15 +100,8 @@ def get_gmdm_args(args):
             'temporal_span_mask_prob': getattr(args, 'temporal_span_mask_prob', 0.0),
             'temporal_span_mask_min_frames': getattr(args, 'temporal_span_mask_min_frames', 4),
             'temporal_span_mask_max_frames': getattr(args, 'temporal_span_mask_max_frames', 12),
-            'reference_cond': getattr(args, 'reference_cond', False),
             'global_energy_cond': getattr(args, 'global_energy_cond', False),
             'loop_cond_prob': getattr(args, 'loop_cond_prob', 0.0),
-            'reference_encoder_layers': getattr(args, 'reference_encoder_layers', 1),
-            'reference_cond_prob': getattr(args, 'reference_cond_prob', 0.3),
-            'reference_residual_gate': getattr(args, 'reference_residual_gate', 1.0),
-            'reference_token_dropout_prob': getattr(args, 'reference_token_dropout_prob', 0.25),
-            'reference_token_noise_std': getattr(args, 'reference_token_noise_std', 0.15),
-            'reference_cond_last_n': getattr(args, 'reference_cond_last_n', 0),
             'root_input_feats': 13}
 
 def create_gaussian_diffusion(args):
