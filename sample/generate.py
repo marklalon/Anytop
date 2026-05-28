@@ -1034,10 +1034,10 @@ def main(args=None, cond_dict=None):
                     _finalize_output_lengths(auto_frames, min_length, internal_num_frames)
                 )
                 if auto_frames == R:
-                    print(f'  --motion_length omitted: using reference native length R={R} frames')
+                    print(f'  Using reference native length R={R} frames')
                 else:
                     print(
-                        f'  --motion_length omitted: reference R={R} frames clamped to {auto_frames} '
+                        f'  Reference R={R} frames clamped to {auto_frames} '
                         f'(variable-length window [{min_length}, {2 * internal_num_frames}])'
                     )
             M = int(requested_output_frames)
@@ -1204,11 +1204,12 @@ def main(args=None, cond_dict=None):
             device=dist_util.dev(),
         )
 
-        def _build_inpaint_mask_for(frames_arg, joints_arg):
+        def _build_inpaint_mask_for(frames_arg, joints_arg, warn_remap=False):
             internal_frames = _map_frame_ranges_to_internal(
                 frames_arg,
                 source_frames=target_output_frames,
                 target_frames=output_frame_count,
+                warn_remap=warn_remap,
             )
             return build_inpaint_mask(
                 cond_dict[object_type],
@@ -1246,7 +1247,7 @@ def main(args=None, cond_dict=None):
             # Pass 2: apply the requested skip / inpaint to the completed reference.
             print('  [two-pass] pass 2/2: applying requested skip/inpaint to the completed reference')
             pass2_mask = (
-                _build_inpaint_mask_for(inpaint_frames_arg, inpaint_joints_arg)
+                _build_inpaint_mask_for(inpaint_frames_arg, inpaint_joints_arg, warn_remap=True)
                 if user_inpaint_active else None
             )
             sample = _run_sample(completed_reference, skip_timesteps, pass2_mask)
@@ -1254,7 +1255,7 @@ def main(args=None, cond_dict=None):
             outpaint_mask = _build_inpaint_mask_for(auto_outpaint_range, '')
             sample = _run_sample(ref_motion, 0, outpaint_mask)
         elif user_inpaint_active:
-            user_mask = _build_inpaint_mask_for(inpaint_frames_arg, inpaint_joints_arg)
+            user_mask = _build_inpaint_mask_for(inpaint_frames_arg, inpaint_joints_arg, warn_remap=True)
             sample = _run_sample(ref_motion, skip_timesteps, user_mask)
         else:
             # Plain img2img (reference present) or plain generation (ref_motion None).
@@ -1398,7 +1399,7 @@ def _parse_frame_ranges(spec, n_frames):
     return frames
 
 
-def _map_frame_ranges_to_internal(spec, source_frames, target_frames):
+def _map_frame_ranges_to_internal(spec, source_frames, target_frames, warn_remap=False):
     if not spec or int(source_frames) == int(target_frames):
         return spec
     source_frames = int(source_frames)
@@ -1432,10 +1433,41 @@ def _map_frame_ranges_to_internal(spec, source_frames, target_frames):
             f"--inpaint_frames '{spec}' selected no valid frames "
             f"(motion has {source_frames} frames, indices 0..{source_frames - 1})"
         )
-    return ','.join(
+    internal_runs = _contiguous_frame_runs(mapped_frames)
+    internal_spec = ','.join(
         f'{start}-{end}' if start != end else str(start)
-        for start, end in _contiguous_frame_runs(mapped_frames)
+        for start, end in internal_runs
     )
+
+    # The frame range was given in visible/output-frame space but the model
+    # samples at a different internal length, so the mask had to be rescaled.
+    # floor/ceil widening + the resolution drop (visible -> internal -> visible)
+    # mean the regenerated region will NOT line up with the requested integer
+    # frames; warn with the effective visible boundaries so the drift is not
+    # silent. To inpaint exact frames, set --motion_length to the model's
+    # num_frames so visible == internal and no remapping happens.
+    if warn_remap:
+        inv_scale = float(source_frames - 1) / float(target_frames - 1) if target_frames > 1 else 0.0
+        effective_runs = [
+            (
+                int(np.floor(float(start) * inv_scale)),
+                int(np.ceil(float(end) * inv_scale)),
+            )
+            for start, end in internal_runs
+        ]
+        effective_spec = ','.join(
+            f'{a}-{b}' if a != b else str(a) for a, b in effective_runs
+        )
+        print(
+            f'\033[33m  [WARN] --inpaint_frames remapped: requested visible frames '
+            f"'{spec}' (output length {source_frames}) -> internal frames "
+            f"'{internal_spec}' (sampler length {target_frames}). "
+            f'Effective regenerated visible region is ~{effective_spec}, not the '
+            f'exact frames requested (boundaries drift ~1-2 frames from floor/ceil '
+            f'widening and the {source_frames}->{target_frames} resolution change). '
+            f'Pass --motion_length {target_frames} for exact frame-accurate inpaint.\033[0m'
+        )
+    return internal_spec
 
 
 def _contiguous_frame_runs(frame_set):
