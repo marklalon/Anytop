@@ -329,27 +329,6 @@ def _list_motion_files(motion_dir: str) -> list[str]:
     return sorted(path.name for path in Path(motion_dir).glob("*.npy"))
 
 
-
-def _build_symmetry_permutation(symmetry_partner_indices) -> np.ndarray:
-    spi = np.asarray(symmetry_partner_indices, dtype=np.int64)
-    perm = np.arange(len(spi), dtype=np.int64)
-    valid = spi >= 0
-    perm[valid] = spi[valid]
-    return perm
-
-
-def _mirror_motion_feature_array(features: np.ndarray, perm: np.ndarray) -> np.ndarray:
-    mirrored = np.asarray(features)[perm].copy() if features.ndim == 2 else np.asarray(features)[:, perm, :].copy()
-    mirrored[..., [0, 4, 5, 6, 9]] *= -1
-    return mirrored
-
-
-def _mirror_offsets_array(offsets: np.ndarray, perm: np.ndarray) -> np.ndarray:
-    mirrored = np.asarray(offsets)[perm].copy()
-    mirrored[:, 0] *= -1
-    return mirrored
-
-
 def _compute_split_counts(num_items: int) -> dict[str, int]:
     if num_items <= 0:
         return {split: 0 for split in SUPPORTED_SPLITS}

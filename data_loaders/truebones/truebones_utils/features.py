@@ -52,8 +52,6 @@ from .animation_utils import (
     append_leaf_rotation_helpers_to_animation,
     compute_rots_from_tpos,
     solve_local_positions_for_target_global,
-    warn_mirror_disabled_subtrees,
-    neutralize_animation_subtrees,
 )
 
 
@@ -352,128 +350,6 @@ def infer_translation_root_index_from_features(data, parents, offsets, anim_pos_
                 break
 
     return int(best_candidate)
-
-
-################## Mirror #####################
-
-def _neutralize_mirror_disabled_subtrees(
-    features,
-    object_cond,
-    mirrored_offsets,
-    *,
-    translation_root_index=None,
-    motion_metadata=None,
-    allow_infer=False,
-    anim_pos_threshold=0.01,
-):
-    disabled_joint_indices = sorted({
-        int(index)
-        for index in object_cond['mirror_disabled_joint_indices']
-        if int(index) > 0
-    })
-    if not disabled_joint_indices:
-        return np.asarray(features).copy()
-
-    motion = np.asarray(features, dtype=np.float32)
-    squeeze_frame = False
-    if motion.ndim == 2:
-        motion = motion[None, ...]
-        squeeze_frame = True
-    elif motion.ndim != 3:
-        raise ValueError(f"Expected motion features with shape (F, J, C) or (J, C), got {motion.shape}.")
-
-    parents = np.asarray(object_cond['parents'], dtype=np.int64)
-    offsets = np.asarray(mirrored_offsets, dtype=np.float64)
-    resolved_translation_root_index = resolve_feature_translation_root_index(
-        motion,
-        parents=parents,
-        offsets=offsets,
-        translation_root_index=translation_root_index,
-        motion_metadata=motion_metadata,
-        allow_infer=allow_infer,
-        anim_pos_threshold=anim_pos_threshold,
-        context=f"{object_cond['object_type']} mirrored motion",
-    )
-    anim, _has_animated_pos = recover_animation_from_motion_np(
-        motion,
-        parents,
-        offsets,
-        translation_root_index=resolved_translation_root_index,
-        anim_pos_threshold=anim_pos_threshold,
-    )
-    if anim is None:
-        neutralized = motion.copy()
-        return neutralized[0] if squeeze_frame else neutralized
-
-    neutral_anim = neutralize_animation_subtrees(anim, disabled_joint_indices)
-    contact_joint_indices = list(object_cond['contact_joints'])
-    cont_6d_params, _r_velocity, _velocity, r_rot, global_positions = get_bvh_cont6d_params(
-        neutral_anim,
-        str(object_cond['object_type']),
-        object_cond['orientation_quat'],
-        translation_root_index=resolved_translation_root_index,
-    )
-    positions = get_rifke(global_positions, r_rot, translation_root_index=resolved_translation_root_index)
-    is_loop = detect_motion_loop(positions)
-    local_vel = np.repeat(r_rot[1:, None], global_positions.shape[1], axis=1) * (global_positions[1:] - global_positions[:-1])
-    prev_velocity = local_vel[-1] if local_vel.shape[0] > 0 else None
-    terminal_local_vel = _compute_terminal_local_velocity(global_positions, r_rot, is_loop, prev_frame_velocity=prev_velocity)
-    foot_contact = get_contact_state(global_positions, contact_joint_indices, FOOT_CONTACT_VEL_THRESH)
-    terminal_contact = get_terminal_contact_state(global_positions, contact_joint_indices, FOOT_CONTACT_VEL_THRESH, is_loop)
-    neutralized, _max_joints = get_motion_features(
-        positions,
-        cont_6d_params,
-        foot_contact,
-        local_vel,
-        terminal_local_vel,
-        terminal_contact,
-        motion.shape[1],
-    )
-    neutralized = neutralized.astype(motion.dtype, copy=False)
-    return neutralized[0] if squeeze_frame else neutralized
-
-
-def mirror_features_with_safeguards(
-    features,
-    object_cond,
-    *,
-    translation_root_index=None,
-    motion_metadata=None,
-    allow_infer=False,
-    anim_pos_threshold=0.01,
-):
-    spi = np.asarray(object_cond['symmetry_partner_indices'], dtype=np.int64)
-    perm = np.arange(len(spi), dtype=np.int64)
-    valid = spi >= 0
-    perm[valid] = spi[valid]
-
-    mirrored = np.asarray(features)[perm].copy() if np.asarray(features).ndim == 2 else np.asarray(features)[:, perm, :].copy()
-    mirrored[..., [0, 4, 5, 6, 9]] *= -1
-
-    mirrored_offsets = np.asarray(object_cond['offsets'], dtype=np.float32)[perm].copy()
-    mirrored_offsets[:, 0] *= -1
-
-    if object_cond['mirror_disabled_joint_indices']:
-        warn_mirror_disabled_subtrees(object_cond)
-        # Unpaired joints have no mirror partner so they can't be reflected meaningfully.
-        # Restore their original x offsets so that when they are neutralized to rest pose,
-        # they retain their original rest orientation rather than the x-flipped version
-        # produced by the global mirror pass above.
-        disabled_indices = [int(i) for i in object_cond['mirror_disabled_joint_indices'] if int(i) > 0]
-        if disabled_indices:
-            orig_offsets = np.asarray(object_cond['offsets'], dtype=np.float32)
-            mirrored_offsets[disabled_indices, 0] = orig_offsets[disabled_indices, 0]
-        mirrored = _neutralize_mirror_disabled_subtrees(
-            mirrored,
-            object_cond,
-            mirrored_offsets,
-            translation_root_index=translation_root_index,
-            motion_metadata=motion_metadata,
-            allow_infer=allow_infer,
-            anim_pos_threshold=anim_pos_threshold,
-        )
-
-    return mirrored, mirrored_offsets
 
 
 ################## T-Pose & Motion Extraction #####################

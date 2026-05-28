@@ -22,11 +22,9 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     get_hml_aligned_anim,
     get_motion,
     infer_translation_root_index_from_features,
-    mirror_features_with_safeguards,
     move_xz_to_origin,
     positions_global,
     recover_animation_from_motion_np,
-    recover_from_bvh_ric_np,
     recover_root_quat_and_pos_np,
 )
 from utils.rotation_conversions import rotation_6d_to_matrix_np
@@ -233,41 +231,6 @@ def test_raw_tpose_animation_input_reapplies_tpose_normalization():
     np.testing.assert_allclose(aligned_anim.rotations.qs[0], expected_identity, atol=1e-5)
 
 
-def test_recover_animation_matches_safeguarded_horse_target_globals():
-    opt = get_opt(None)
-    cond = np.load(opt.cond_file, allow_pickle=True).item()['Horse']
-
-    motion_dir = opt.motion_dir
-    if not os.path.isabs(motion_dir):
-        motion_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), motion_dir)
-
-    motion_path, motion_name = _find_motion_file(motion_dir, 'Horse_RunLoop_*.npy')
-    raw = np.load(motion_path).astype(np.float32, copy=False)
-    motion_metadata = _with_translation_root_index(
-        _load_motion_metadata_entry(opt, motion_name),
-        raw,
-        cond,
-    )
-    mirrored, mirrored_offsets = mirror_features_with_safeguards(raw, cond, motion_metadata=motion_metadata)
-    target_global = recover_from_bvh_ric_np(
-        mirrored,
-        parents=cond['parents'],
-        offsets=mirrored_offsets,
-        motion_metadata=motion_metadata,
-    )
-
-    anim, has_animated_pos = recover_animation_from_motion_np(
-        mirrored,
-        cond['parents'],
-        mirrored_offsets,
-        motion_metadata=motion_metadata,
-    )
-    recovered_global = positions_global(anim)
-
-    np.testing.assert_allclose(recovered_global, target_global, atol=1e-4)
-    assert has_animated_pos is True
-
-
 def _find_motion_file(motion_dir: str, pattern: str) -> tuple[str, str]:
     """Find a motion file by glob pattern, returning (full_path, basename)."""
     files = sorted(glob.glob(os.path.join(motion_dir, pattern)))
@@ -456,50 +419,3 @@ def test_recover_bvh_rot_np_normalizes_non_root_quaternion_sign_flips():
         atol=1e-6,
     )
 
-
-def test_recover_animation_hound_mirror_matches_world_x_reflection():
-    opt = get_opt(None)
-    cond = np.load(opt.cond_file, allow_pickle=True).item()['Hound']
-
-    motion_dir = opt.motion_dir
-    if not os.path.isabs(motion_dir):
-        motion_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), motion_dir)
-
-    motion_path, motion_name = _find_motion_file(motion_dir, 'Hound_Attack_*.npy')
-    raw = np.load(motion_path).astype(np.float32, copy=False)
-    motion_metadata = _with_translation_root_index(
-        _load_motion_metadata_entry(opt, motion_name),
-        raw,
-        cond,
-    )
-    mirrored, mirrored_offsets = mirror_features_with_safeguards(raw, cond, motion_metadata=motion_metadata)
-
-    clean_anim, _ = recover_animation_from_motion_np(
-        raw,
-        cond['parents'],
-        cond['offsets'],
-        motion_metadata=motion_metadata,
-    )
-    mirror_anim, _ = recover_animation_from_motion_np(
-        mirrored,
-        cond['parents'],
-        mirrored_offsets,
-        motion_metadata=motion_metadata,
-    )
-    clean_global = positions_global(clean_anim)
-    mirror_global = positions_global(mirror_anim)
-
-    spi = np.asarray(cond['symmetry_partner_indices'], dtype=np.int64)
-    perm = np.arange(len(spi), dtype=np.int64)
-    perm[spi >= 0] = spi[spi >= 0]
-
-    expected_x = clean_global[:, perm].copy()
-    expected_x[..., 0] *= -1.0
-    reflected_z = clean_global[:, perm].copy()
-    reflected_z[..., 2] *= -1.0
-
-    x_error = float(np.abs(expected_x - mirror_global).mean())
-    z_error = float(np.abs(reflected_z - mirror_global).mean())
-
-    assert x_error < 1e-5
-    assert x_error * 1000.0 < z_error

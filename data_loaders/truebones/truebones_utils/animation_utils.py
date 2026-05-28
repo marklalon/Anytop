@@ -2,7 +2,7 @@
 
 Lowest layer of the motion-processing pipeline. Handles FK transforms,
 coordinate normalization, scaling, BVH export preparation, joint-name
-canonicalization, leaf rotation helpers, and mirror augmentation.
+canonicalization and leaf rotation helpers.
 """
 
 from motion_lib import Animation, Quaternions
@@ -63,7 +63,6 @@ LOOP_DETECTION_POS_THRESHOLD = 0.1
 LEAF_ROTATION_HELPER_SUFFIX = '__rot_helper'
 
 
-_EMITTED_MIRROR_SAFEGUARD_WARNINGS = set()
 
 
 ################## Joint Name Canonicalization #####################
@@ -327,9 +326,6 @@ def refresh_joint_metadata_in_object_cond(object_cond):
     object_cond['symmetry_partner_indices'] = semantic_metadata['symmetry_partner_indices']
     object_cond['symmetric_joint_pairs'] = semantic_metadata['symmetric_joint_pairs']
     object_cond['symmetric_joint_pair_names'] = semantic_metadata['symmetric_joint_pair_names']
-    object_cond['mirror_disabled_joint_indices'] = semantic_metadata['mirror_disabled_joint_indices']
-    object_cond['mirror_disabled_joint_names'] = semantic_metadata['mirror_disabled_joint_names']
-    object_cond['mirror_disabled_warnings'] = semantic_metadata['mirror_disabled_warnings']
     object_cond['is_symmetric'] = semantic_metadata['is_symmetric']
 
 
@@ -1051,8 +1047,8 @@ def build_leaf_rotation_helper_metadata(joint_names, parents, *, max_joints=MAX_
         if not _is_terminal_leaf_name(joint_names[idx])
     ]
     helper_budget = max(int(max_joints) - original_joint_count, 0)
-    # Under a tight joint budget, prefer complete left/right helper pairs so a
-    # mirrored export never carries a single-sided helper across the body.
+    # Under a tight joint budget, prefer complete left/right helper pairs so the
+    # export never carries a single-sided helper across the body.
     helper_source_leaf_indices = _select_leaf_rotation_helper_source_indices(
         joint_names,
         parents,
@@ -1148,10 +1144,6 @@ def extend_semantic_metadata_with_leaf_helpers(base_semantic_metadata, joint_nam
     symmetric_joint_pairs = [list(pair) for pair in base_semantic_metadata['symmetric_joint_pairs']]
     symmetric_joint_pair_names = [list(pair) for pair in base_semantic_metadata['symmetric_joint_pair_names']]
     base_symmetry_partner_indices = list(base_semantic_metadata['symmetry_partner_indices'])
-    mirror_disabled_joint_indices = list(base_semantic_metadata['mirror_disabled_joint_indices'])
-    mirror_disabled_joint_names = list(base_semantic_metadata['mirror_disabled_joint_names'])
-    mirror_disabled_warnings = list(base_semantic_metadata['mirror_disabled_warnings'])
-    mirror_disabled_set = {int(joint_index) for joint_index in mirror_disabled_joint_indices}
 
     for source_index in helper_source_leaf_indices:
         source_canonical_name = canonical_joint_names[int(source_index)]
@@ -1172,28 +1164,6 @@ def extend_semantic_metadata_with_leaf_helpers(base_semantic_metadata, joint_nam
                 joint_names[int(partner_helper_index)],
             ])
 
-    truncated_helper_names = []
-    for source_index, helper_index in zip(helper_source_leaf_indices, helper_joint_indices):
-        partner_index = int(base_symmetry_partner_indices[int(source_index)])
-        if partner_index < 0:
-            continue
-        if helper_joint_index_by_source.get(partner_index) is not None:
-            continue
-        if int(helper_index) in mirror_disabled_set:
-            continue
-
-        mirror_disabled_set.add(int(helper_index))
-        mirror_disabled_joint_indices.append(int(helper_index))
-        mirror_disabled_joint_names.append(joint_names[int(helper_index)])
-        truncated_helper_names.append(joint_names[int(helper_index)])
-
-    if truncated_helper_names:
-        helper_names = ', '.join(str(name) for name in truncated_helper_names)
-        mirror_disabled_warnings.append(
-            'leaf rotation helper budget omitted mirrored helper partners for '
-            f'[{helper_names}]. Mirror augmentation will neutralize these helpers.'
-        )
-
     return {
         'canonical_joint_names': canonical_joint_names,
         'end_effector_joints': list(base_semantic_metadata['end_effector_joints']),
@@ -1205,129 +1175,8 @@ def extend_semantic_metadata_with_leaf_helpers(base_semantic_metadata, joint_nam
         'symmetry_partner_indices': symmetry_partner_indices,
         'symmetric_joint_pairs': symmetric_joint_pairs,
         'symmetric_joint_pair_names': symmetric_joint_pair_names,
-        'mirror_disabled_joint_indices': mirror_disabled_joint_indices,
-        'mirror_disabled_joint_names': mirror_disabled_joint_names,
-        'mirror_disabled_warnings': mirror_disabled_warnings,
         'is_symmetric': bool(base_semantic_metadata['is_symmetric']),
     }
-
-
-def resolve_mirrored_export_skeleton_metadata(object_cond, parents, offsets, joint_names):
-    """Return export metadata that keeps old single-sided helpers attached to the mirrored leaf.
-
-    Older processed datasets can contain a helper bone for only one side of a
-    mirrored pair. After feature-space mirroring, the helper's recovered global
-    position lands on the opposite side, but the original hierarchy still keeps
-    it parented to the source-side leaf. For BVH export we can repair this by
-    reparenting the helper to the mirrored source leaf and zeroing its offset.
-    Helpers already marked mirror-disabled are left untouched because the mirror
-    pipeline neutralizes them instead of reflecting them.
-    """
-    mirrored_parents = np.asarray(parents, dtype=np.int32).copy()
-    mirrored_offsets = np.asarray(offsets).copy()
-    mirrored_joint_names = list(joint_names)
-
-    helper_joint_indices = [
-        int(joint_index)
-        for joint_index in list(object_cond.get('helper_joint_indices') or [])
-    ]
-    helper_source_leaf_indices = [
-        int(joint_index)
-        for joint_index in list(object_cond.get('helper_source_leaf_indices') or [])
-    ]
-    symmetry_partner_indices = np.asarray(
-        object_cond.get('symmetry_partner_indices') or [],
-        dtype=np.int32,
-    )
-    mirror_disabled_joint_indices = {
-        int(joint_index)
-        for joint_index in list(object_cond.get('mirror_disabled_joint_indices') or [])
-    }
-    if (
-        len(helper_joint_indices) == 0
-        or len(helper_joint_indices) != len(helper_source_leaf_indices)
-        or symmetry_partner_indices.size == 0
-    ):
-        return mirrored_parents, mirrored_offsets, mirrored_joint_names
-
-    for helper_index, source_index in zip(helper_joint_indices, helper_source_leaf_indices):
-        if helper_index < 0 or helper_index >= len(mirrored_parents):
-            continue
-        if helper_index in mirror_disabled_joint_indices:
-            continue
-        if source_index < 0 or source_index >= len(symmetry_partner_indices):
-            continue
-        if helper_index < len(symmetry_partner_indices) and int(symmetry_partner_indices[helper_index]) >= 0:
-            continue
-
-        mirrored_source_index = int(symmetry_partner_indices[source_index])
-        if mirrored_source_index < 0 or mirrored_source_index >= len(mirrored_parents):
-            continue
-
-        mirrored_parents[helper_index] = mirrored_source_index
-        if helper_index < len(mirrored_offsets):
-            mirrored_offsets[helper_index] = np.zeros_like(mirrored_offsets[helper_index])
-
-        if helper_index < len(mirrored_joint_names) and mirrored_source_index < len(mirrored_joint_names):
-            mirrored_source_name = str(mirrored_joint_names[mirrored_source_index] or '')
-            if mirrored_source_name:
-                mirrored_joint_names[helper_index] = canonical_name_for_bvh(
-                    f'{mirrored_source_name}Helper',
-                    mirrored_joint_names[helper_index],
-                )
-
-    return mirrored_parents, mirrored_offsets, mirrored_joint_names
-
-
-################## Mirror & Neutralization #####################
-
-def warn_mirror_disabled_subtrees(object_cond):
-    disabled_joint_indices = tuple(int(index) for index in object_cond['mirror_disabled_joint_indices'])
-    if not disabled_joint_indices:
-        return
-
-    object_type = str(object_cond['object_type'])
-    warning_key = (object_type, disabled_joint_indices)
-    if warning_key in _EMITTED_MIRROR_SAFEGUARD_WARNINGS:
-        return
-
-    _EMITTED_MIRROR_SAFEGUARD_WARNINGS.add(warning_key)
-    warning_messages = list(object_cond['mirror_disabled_warnings'])
-    if not warning_messages:
-        names = ', '.join(str(name) for name in object_cond['mirror_disabled_joint_names'])
-        warning_messages = [f'unpaired mirrored joints [{names}] will be neutralized during mirror augmentation.']
-
-    for message in warning_messages:
-        _warn(f'{object_type}: {message}')
-
-
-def neutralize_animation_subtrees(anim, joint_indices):
-    disabled_joint_indices = sorted({
-        int(index)
-        for index in joint_indices
-        if int(index) > 0
-    })
-    if not disabled_joint_indices:
-        return Animation(
-            anim.rotations.copy(),
-            anim.positions.copy(),
-            anim.orients.copy(),
-            anim.offsets.copy(),
-            anim.parents.copy(),
-        )
-
-    neutral_positions = anim.positions.copy()
-    neutral_rotations = anim.rotations.copy()
-    neutral_positions[:, disabled_joint_indices] = np.asarray(anim.offsets, dtype=np.float64)[disabled_joint_indices][None, :, :]
-    neutral_rotations[:, disabled_joint_indices] = Quaternions.id((len(anim), len(disabled_joint_indices)))
-
-    return Animation(
-        neutral_rotations,
-        neutral_positions,
-        anim.orients.copy(),
-        anim.offsets.copy(),
-        anim.parents.copy(),
-    )
 
 
 ################## FK Helpers #####################

@@ -1,7 +1,7 @@
 """Regression checks for loop padding.
 
 Usage:
-    d:/AI/pcvg-skeleton-animation/.venv/Scripts/python.exe tests/test_dataset_loop_and_mirror_regression.py
+    d:/AI/pcvg-skeleton-animation/.venv/Scripts/python.exe tests/test_dataset_loop_regression.py
 
 This script verifies loop padding behavior.
 """

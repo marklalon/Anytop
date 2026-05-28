@@ -30,7 +30,6 @@ from .animation_utils import (
     # Leaf rotation helpers
     build_leaf_rotation_helper_metadata,
     append_leaf_rotation_helpers_to_animation,
-    resolve_mirrored_export_skeleton_metadata,
 )
 
 # ── features (feature extraction & motion recovery) ─────────────────────
@@ -41,7 +40,6 @@ from .features import (
     get_bvh_cont6d_params,
     process_anim,
     infer_translation_root_index_from_features,
-    mirror_features_with_safeguards,
     get_common_features_from_T_pose,
     TPoseFeatures,
     get_hml_aligned_anim,

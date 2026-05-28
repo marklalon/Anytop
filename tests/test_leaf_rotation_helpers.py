@@ -27,7 +27,6 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     get_motion_features,
     get_rifke,
     needs_bvh_position_channels,
-    resolve_mirrored_export_skeleton_metadata,
     reorder_animation_to_dfs,
 )
 from tools.restore_glb_from_npy import (
@@ -120,65 +119,6 @@ def test_append_leaf_rotation_helpers_appends_helpers_at_end() -> None:
     assert np.array_equal(augmented_anim.parents, np.array([-1, 0, 1, 2], dtype=np.int32))
     assert np.allclose(augmented_anim.offsets[3], np.zeros(3, dtype=np.float64))
     assert np.allclose(augmented_anim.positions[:, 3, :], 0.0)
-
-
-def test_mirrored_export_metadata_reparents_unpaired_helper_to_mirrored_leaf() -> None:
-    object_cond = {
-        "parents": np.array([-1, 0, 0, 1], dtype=np.int32),
-        "offsets": np.array(
-            [
-                [0.0, 0.0, 0.0],
-                [-1.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0],
-            ],
-            dtype=np.float64,
-        ),
-        "symmetry_partner_indices": [-1, 2, 1, -1],
-        "helper_joint_indices": [3],
-        "helper_source_leaf_indices": [1],
-    }
-
-    parents, offsets, joint_names = resolve_mirrored_export_skeleton_metadata(
-        object_cond,
-        object_cond["parents"],
-        object_cond["offsets"],
-        ["Root", "LeftToe", "RightToe", "LeftToeHelper"],
-    )
-
-    assert np.array_equal(parents, np.array([-1, 0, 0, 2], dtype=np.int32))
-    assert np.allclose(offsets[3], np.zeros(3, dtype=np.float64))
-    assert joint_names == ["Root", "LeftToe", "RightToe", "RightToeHelper"]
-
-
-def test_mirrored_export_metadata_keeps_mirror_disabled_helper_on_original_side() -> None:
-    object_cond = {
-        "parents": np.array([-1, 0, 0, 2], dtype=np.int32),
-        "offsets": np.array(
-            [
-                [0.0, 0.0, 0.0],
-                [-1.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [0.0, 0.0, 0.0],
-            ],
-            dtype=np.float64,
-        ),
-        "symmetry_partner_indices": [-1, 2, 1, -1],
-        "helper_joint_indices": [3],
-        "helper_source_leaf_indices": [2],
-        "mirror_disabled_joint_indices": [3],
-    }
-
-    parents, offsets, joint_names = resolve_mirrored_export_skeleton_metadata(
-        object_cond,
-        object_cond["parents"],
-        object_cond["offsets"],
-        ["Root", "LeftToe", "RightToe", "RightToeHelper"],
-    )
-
-    assert np.array_equal(parents, np.array([-1, 0, 0, 2], dtype=np.int32))
-    assert np.allclose(offsets, object_cond["offsets"])
-    assert joint_names == ["Root", "LeftToe", "RightToe", "RightToeHelper"]
 
 
 def test_reorder_animation_to_dfs_preserves_helper_augmented_bvh_roundtrip() -> None:
