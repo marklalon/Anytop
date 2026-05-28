@@ -65,14 +65,21 @@ def validate_reference_mode_configuration(
     mode = str(reference_mode or 'img2img').strip().lower()
     if mode not in {'img2img', 'controlnet'}:
         raise ValueError(f"Unsupported reference_mode '{reference_mode}'.")
+    # Global energy is auto-extracted from the reference in both modes, so an
+    # explicit --global_energy_mean/--global_energy_std cannot be combined with
+    # --reference_motion. (Without a reference, e.g. pure-random img2img, the
+    # CLI values remain the only source and are allowed.)
+    if reference_motion_path is not None and (
+        global_energy_mean is not None or global_energy_std is not None
+    ):
+        raise ValueError(
+            "--global_energy_mean / --global_energy_std cannot be combined with "
+            "--reference_motion; global energy is automatically extracted from the "
+            "reference motion."
+        )
     if mode == 'controlnet':
         if reference_motion_path is None:
             raise ValueError("--reference_mode controlnet requires --reference_motion.")
-        if global_energy_mean is not None or global_energy_std is not None:
-            raise ValueError(
-                "--reference_mode controlnet does not accept --global_energy_mean / --global_energy_std. "
-                "Global energy is automatically extracted from the reference motion."
-            )
         if skip_timesteps is not None and int(skip_timesteps) != 0:
             print(
                 f"[generate] WARNING: --reference_mode controlnet requires --skip_timesteps 0; "
@@ -1347,17 +1354,24 @@ def main(args=None, cond_dict=None):
                         '(single reverse pass; known region is still clamped every step)'
                     )
 
-            # ── Auto-extract global energy from controlnet reference ─────────
-            if reference_mode == 'controlnet' and ref_motion is not None:
-                if reference_conditioning_kwargs is None:
-                    sys.exit(
-                        "ERROR: reference_conditioning_kwargs is missing for "
-                        "controlnet mode; cannot extract global energy."
-                    )
+            # ── Auto-extract global energy from the reference ────────────────
+            # --global_energy_mean/--global_energy_std cannot be combined with
+            # --reference_motion (enforced above), so when a reference is loaded
+            # we always have `global_energy_condition is None` here.
+            if ref_motion is not None:
                 if model_supports_global_energy_conditioning(model):
+                    energy_conditioning_kwargs = reference_conditioning_kwargs
+                    if energy_conditioning_kwargs is None:
+                        energy_conditioning_kwargs = {
+                            'reference_n_joints': torch.full(
+                                (args.batch_size,),
+                                loaded_reference_joint_count,
+                                dtype=torch.long,
+                            ),
+                        }
                     global_energy_condition = _compute_global_energy_from_reference(
                         ref_motion,
-                        reference_conditioning_kwargs,
+                        energy_conditioning_kwargs,
                         playspeed_cond=float(reference_source_frame_count) / float(output_frame_count),
                     )
                     if global_energy_condition is not None:
@@ -1376,12 +1390,7 @@ def main(args=None, cond_dict=None):
                             f'mean={ge_mean_norm:.4f}, std={ge_std_norm:.4f}'
                             f' (normalized z-score)'
                         )
-                else:
-                    print(
-                        '    Model does not support global energy conditioning; '
-                        'skipping auto-extraction.'
-                    )
-
+                
         # Build inpaint mask (masked region = regenerated, rest clamped to ref).
         inpaint_mask = None
         if inpaint_enabled:

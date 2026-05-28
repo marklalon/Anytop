@@ -1191,6 +1191,21 @@ def test_validate_reference_mode_configuration_rejects_invalid_controlnet_setup(
             skip_timesteps=0,
             model=_DummyModel(reference_cond=False),
         )
+    # Explicit global energy is mutually exclusive with a reference motion in
+    # both modes — it is auto-extracted from the reference instead.
+    for mode in ("img2img", "controlnet"):
+        with pytest.raises(ValueError, match="cannot be combined with --reference_motion"):
+            validate_reference_mode_configuration(
+                mode,
+                reference_motion_path="ref.npy",
+                skip_timesteps=0,
+                global_energy_mean=0.4,
+            )
+    # Without a reference (pure-random img2img) the CLI value is still allowed.
+    mode, _ = validate_reference_mode_configuration(
+        "img2img", reference_motion_path=None, skip_timesteps=0, global_energy_std=0.2,
+    )
+    assert mode == "img2img"
 
 
 def test_resolve_reference_scale_preserves_explicit_zero() -> None:
