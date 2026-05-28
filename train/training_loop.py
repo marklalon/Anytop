@@ -130,6 +130,15 @@ class TrainLoop:
             logger.log(
                 f"Selective {self.amp_dtype} autocast enabled for {patched_modules} linear/attention/conv modules; softmax and dropout stay fp32"
             )
+            # The EMA model is what evaluate() samples from; patch it too so
+            # eval sampling runs under bf16 instead of fp32. Wrapping forwards
+            # leaves parameters untouched, so EMA updates are unaffected.
+            if self.model_avg is not None:
+                enable_selective_autocast(
+                    self.model_avg,
+                    device_type=self.device.type,
+                    autocast_dtype=self.autocast_dtype,
+                )
         self.mp_trainer = MixedPrecisionTrainer(
             model=self.model,
             use_fp16=False,

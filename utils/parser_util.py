@@ -177,9 +177,9 @@ def add_training_options(parser):
 
     group.add_argument("--weight_decay", default=0.0, type=float, help="Optimizer weight decay.")
     group.add_argument("--lr_anneal_steps", default=0, type=int, help="Number of learning rate anneal steps.")
-    group.add_argument("--eval_batch_size", default=32, type=int,
+    group.add_argument("--eval_batch_size", default=16, type=int,
                        help="Batch size during evaluation loop. Do not change this unless you know what you are doing. "
-                            "T2m precision calculation is based on fixed batch size 32.")
+                            "T2m precision calculation is based on fixed batch size 16.")
     group.add_argument("--eval_split", default='val', choices=['val', 'test'], type=str,
                        help="Which held-out split to evaluate on during training.")
     group.add_argument("--eval_during_training", action='store_true',
