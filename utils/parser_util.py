@@ -186,8 +186,6 @@ def add_training_options(parser):
                        help="If True, will run evaluation during training.")
     group.add_argument("--eval_interval", default=1_000, type=int,
                        help="Run validation loss every N training steps when eval_during_training is enabled.")
-    group.add_argument("--eval_num_samples", default=32, type=int,
-                       help="If -1, will use all samples in the specified split.")
     group.add_argument("--log_interval", default=100, type=int,
                        help="Log losses each N steps")
     group.add_argument("--save_interval", default=10_000, type=int,

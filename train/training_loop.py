@@ -44,6 +44,25 @@ def _normalize_eval_action_tags(raw_action_tags):
     }
     return tuple(sorted(normalized))
 
+def _tile_eval_cond(cond, repeat):
+    """Repeat each sample in a cond dict ``repeat`` times for batched DDIM sampling.
+
+    All tensors in ``cond['y']`` are repeated along the batch axis;
+    python lists (object_type, parents, action_tags, etc.) are
+    element-replicated.
+    """
+    if repeat <= 1:
+        return cond
+    y = {}
+    for key, val in cond['y'].items():
+        if isinstance(val, torch.Tensor):
+            y[key] = torch.cat([val] * repeat, dim=0)
+        elif isinstance(val, list):
+            y[key] = val * repeat
+        else:
+            y[key] = val
+    return {'y': y}
+
 class TrainLoop:
     def __init__(self, args, train_platform, model, diffusion, data):
         self.args = args
@@ -501,19 +520,23 @@ class TrainLoop:
         infer_model = self.model_avg if self.model_avg is not None else self.model
         motion_groups = {}
         missing_action_tag_count = 0
-        seen_samples = 0
-        max_eval_samples = int(self.args.eval_num_samples)
-        eval_iter = iter(self.eval_data)
+        target_batch = int(self.args.eval_batch_size)
 
         infer_model.eval()
         with torch.no_grad():
-            while True:
-                try:
-                    motion, cond = next(eval_iter)
-                except StopIteration:
-                    break
-
+            # Iterate the whole eval split so every unique motion is sampled
+            # at least once. The loader batches by eval_batch_size, so full
+            # batches sample each motion once; a smaller trailing batch is
+            # tiled up to fill eval_batch_size (each motion sampled repeat
+            # times, may overshoot slightly when it doesn't divide evenly).
+            for motion, cond in self.eval_data:
                 cond = self._move_cond_to_device(cond)
+                native_batch = motion.shape[0]
+                if native_batch < target_batch:
+                    repeat = (target_batch + native_batch - 1) // native_batch
+                    motion = torch.cat([motion] * repeat, dim=0)
+                    cond = _tile_eval_cond(cond, repeat)
+
                 batch_size = motion.shape[0]
                 max_joints = motion.shape[1]
                 n_frames = motion.shape[3]
@@ -546,10 +569,6 @@ class TrainLoop:
                     motion_np = motion_sample.cpu().permute(2, 0, 1).numpy() * std + mean
                     group_key = (object_type, action_tags)
                     motion_groups.setdefault(group_key, []).append(motion_np.astype(np.float32))
-
-                seen_samples += batch_size
-                if max_eval_samples > 0 and seen_samples >= max_eval_samples:
-                    break
 
         infer_model.train()
 
