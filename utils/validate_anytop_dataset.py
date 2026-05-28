@@ -8,13 +8,13 @@ from collections import Counter
 from pathlib import Path
 
 import numpy as np
-from motion_lib.Quaternions import Quaternions
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT.parent))
 sys.path.insert(0, str(REPO_ROOT))
 
+from motion_lib.Quaternions import Quaternions  # noqa: E402
 from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     FEATS_LEN,
     MAX_JOINTS,
@@ -439,7 +439,14 @@ def _validate_root_motion_extent(
         )
 
 
-def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample_limit: int, root_motion_threshold: float) -> None:
+def _validate_motion_files(
+    motions_dir: Path,
+    bvhs_dir: Path,
+    cond: dict,
+    sample_limit: int,
+    root_motion_threshold: float,
+    motion_orientation_threshold: float = 45.0,
+) -> None:
     motion_files = sorted(motions_dir.glob("*.npy"))
     bvh_files = sorted(bvhs_dir.glob("*.bvh")) if bvhs_dir.exists() else []
 
@@ -494,6 +501,15 @@ def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample
                 root_motion_threshold,
                 translation_root_index,
             )
+
+            _validate_motion_orientation(
+                motion,
+                object_type,
+                cond[object_type],
+                motion_path.name,
+                motion_orientation_threshold,
+                translation_root_index,
+            )
         except ValidationError as e:
             _print_warn(f"validation error: {motion_path.name}: {e}")
 
@@ -502,6 +518,106 @@ def _validate_motion_files(motions_dir: Path, bvhs_dir: Path, cond: dict, sample
         _print_ok(f"validated {scope} motion tensors and {len(motion_files)} paired optional BVH artifacts")
     else:
         _print_ok(f"validated {scope} motion tensors")
+
+
+def _validate_motion_orientation(
+    motion: np.ndarray,
+    object_type: str,
+    object_cond: dict[str, object],
+    motion_name: str,
+    threshold_deg: float,
+    translation_root_index: int,
+) -> None:
+    """Warn when both endpoint motion facings differ from the T-pose facing.
+
+    The feature root-rotation channel is canonicalized to identity for many
+    preprocessed clips, so this uses recovered global joint geometry and the
+    same face-orientation heuristic as preprocessing instead.  A clip passes
+    when either its first or final frame faces close enough to the T-pose.
+    """
+    try:
+        from data_loaders.truebones.truebones_utils.features import recover_from_bvh_rot_np
+        from data_loaders.truebones.truebones_utils.face_orientation import (
+            _get_facing_forward,
+            resolve_face_joints,
+            resolve_forward_reference_joints,
+        )
+
+        parents = np.asarray(object_cond["parents"], dtype=np.int64)
+        offsets = np.asarray(object_cond["offsets"], dtype=np.float64)
+        tpose_features = np.asarray(object_cond["tpos_first_frame"], dtype=np.float64)
+        joint_names = list(object_cond.get("joints_names", []))
+
+        face_joints = object_cond.get("face_joints")
+        if face_joints is not None:
+            face_joints = [int(index) for index in face_joints]
+        else:
+            face_joints = resolve_face_joints(object_type, joint_names, parents)
+
+        forward_joint_index = object_cond.get("forward_joint_index")
+        forward_base_joint_index = object_cond.get("forward_base_joint_index")
+        if forward_joint_index is None:
+            forward_joint_index, forward_base_joint_index = resolve_forward_reference_joints(
+                joint_names,
+                parents,
+                object_type,
+            )
+        elif forward_base_joint_index is not None:
+            forward_base_joint_index = int(forward_base_joint_index)
+        if forward_joint_index is not None:
+            forward_joint_index = int(forward_joint_index)
+
+        endpoint_indices = [0] if motion.shape[0] == 1 else [0, motion.shape[0] - 1]
+        motion_positions, _ = recover_from_bvh_rot_np(
+            motion[endpoint_indices],
+            parents,
+            offsets,
+            translation_root_index=translation_root_index,
+        )
+        tpose_positions, _ = recover_from_bvh_rot_np(
+            tpose_features[None],
+            parents,
+            offsets,
+            translation_root_index=translation_root_index,
+        )
+
+        tpose_forward = _get_facing_forward(
+            tpose_positions,
+            object_type,
+            face_joint_indx=face_joints,
+            forward_joint_index=forward_joint_index,
+            forward_base_joint_index=forward_base_joint_index,
+            emit_warnings=False,
+        )
+        motion_forward = _get_facing_forward(
+            motion_positions,
+            object_type,
+            face_joint_indx=face_joints,
+            forward_joint_index=forward_joint_index,
+            forward_base_joint_index=forward_base_joint_index,
+            emit_warnings=False,
+        )
+        if tpose_forward is None or motion_forward is None:
+            _print_warn(f"{motion_name}: failed to resolve geometric facing for motion orientation validation")
+            return
+
+        tpose_reference = np.asarray(tpose_forward[0], dtype=np.float64)
+        motion_forward = np.asarray(motion_forward, dtype=np.float64)
+        cosine = np.sum(motion_forward * tpose_reference[None], axis=-1)
+        cosine = np.clip(cosine, -1.0, 1.0)
+        angles_deg = np.degrees(np.arccos(cosine))
+    except Exception as exc:
+        _print_warn(f"{motion_name}: failed to inspect geometric motion orientation from NPy: {exc}")
+        return
+
+    if float(np.min(angles_deg)) > threshold_deg:
+        first_angle_deg = float(angles_deg[0])
+        last_angle_deg = float(angles_deg[-1])
+        _print_warn(
+            f"{motion_name} ({object_type}): first/last recovered facing both deviate from T-pose facing "
+            f"(first={first_angle_deg:.2f} deg, last={last_angle_deg:.2f} deg) "
+            f"(threshold={threshold_deg:.1f} deg)"
+        )
 
 
 def _validate_tpose_orientation(cond: dict, threshold_deg: float) -> None:
@@ -714,6 +830,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--orientation-threshold-deg", type=float, default=5.0, help="Maximum allowed T-pose face-orientation delta from the nearest cardinal XZ axis (+x/-x/+z/-z) before warning.")
     parser.add_argument("--skip-orientation-check", action="store_true", help="Skip T-pose face-orientation validation.")
     parser.add_argument("--root-motion-threshold", type=float, default=ROOT_XZ_STRIP_THRESHOLD, help=f"Maximum allowed root XZ distance from the centred origin (default={ROOT_XZ_STRIP_THRESHOLD}).")
+    parser.add_argument(
+        "--motion-orientation-threshold",
+        type=float,
+        default=45.0,
+        help="Maximum allowed first/last-frame recovered-facing delta from T-pose facing before warning (default=45.0).",
+    )
     return parser.parse_args()
 
 
@@ -741,7 +863,14 @@ def main() -> int:
     _validate_metadata(metadata_path, motion_files, cond)
     _validate_motion_metadata(dataset_dir, motion_files, cond)
     
-    _validate_motion_files(motions_dir, bvhs_dir, cond, args.sample_count, args.root_motion_threshold)
+    _validate_motion_files(
+        motions_dir,
+        bvhs_dir,
+        cond,
+        args.sample_count,
+        args.root_motion_threshold,
+        motion_orientation_threshold=args.motion_orientation_threshold,
+    )
     
     if args.skip_orientation_check:
         _print_warn("skipping T-pose face-orientation validation by request")

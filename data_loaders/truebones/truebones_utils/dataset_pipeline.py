@@ -41,6 +41,7 @@ from .features import (
     get_common_features_from_T_pose,
     get_motion,
     infer_translation_root_index_from_features,
+    _extract_motion_features_from_aligned_anims,
 )
 
 
@@ -392,8 +393,36 @@ def _build_tpose_only_cond(object_type, t_pos_path, face_joints):
     return object_cond, max_joints
 
 
+def _resample_animation(anim, target_len):
+    """Resample Animation to target_len frames; uses slerp for rotations, linear for positions."""
+    from motion_lib.Animation import Animation
+    from motion_lib.Quaternions import Quaternions
+
+    src_len = len(anim)
+    if src_len == target_len:
+        return anim
+    t = np.linspace(0, src_len - 1, target_len)
+    lo = np.floor(t).astype(int)
+    hi = np.minimum(lo + 1, src_len - 1)
+    w = t - lo  # (target_len,)
+
+    # Positions: linear interpolation
+    new_pos = anim.positions[lo] * (1.0 - w[:, None, None]) + anim.positions[hi] * w[:, None, None]
+
+    # Rotations: slerp each target frame
+    qs_a = anim.rotations.qs[lo]
+    qs_b = anim.rotations.qs[hi]
+    new_qs = np.zeros_like(qs_a)
+    for i in range(target_len):
+        q = Quaternions.slerp(Quaternions(qs_a[i]), Quaternions(qs_b[i]), float(w[i]))
+        new_qs[i] = q.qs
+    new_rot = Quaternions(new_qs)
+
+    return Animation(new_rot, new_pos, anim.orients, anim.offsets, anim.parents)
+
+
 """Prepare processed tensors for all the files of a given object without writing them to disk yet."""
-def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None):
+def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20):
     object_cond = dict()
     if fbxs_dir is None:
         fbxs_dir = pjoin(get_raw_data_dir(raw_data_dir), object_type)
@@ -455,6 +484,32 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
         max_joints = max(max_joints, file_output['max_joints'])
         all_motion_errors.extend(file_output.get('motion_errors', []))
         for result in file_output['results']:
+            num_frames = result['motion'].shape[0]
+            if num_frames < filter_min_length:
+                continue
+            if resample_min_length > 0 and num_frames < resample_min_length:
+                # Resample the animation (slerp rotations / linear positions), then
+                # RECOMPUTE the feature tensor from it. Interpolating the precomputed
+                # feature tensor directly would corrupt every channel: velocity is
+                # per-frame displacement (so it must shrink as frames are added),
+                # foot contact is binary, and the 6D rotation rep is not closed under
+                # linear interpolation. Re-extraction keeps vel = diff(pos), valid
+                # rotations, and re-thresholded contacts — all physically consistent
+                # with the resampled motion.
+                result['new_anim'] = _resample_animation(result['new_anim'], resample_min_length)
+                result['export_anim'] = _resample_animation(result['export_anim'], resample_min_length)
+                motion, _, _, _, is_loop = _extract_motion_features_from_aligned_anims(
+                    result['new_anim'],
+                    result['export_anim'],
+                    FOOT_CONTACT_VEL_THRESH,
+                    object_type,
+                    max_joints,
+                    tp.foot_indices,
+                    tp.orientation_quat,
+                    result['translation_root_index'],
+                )
+                result['motion'] = motion
+                result['is_loop'] = is_loop
             result['canonical_names'] = list(object_cond['canonical_bvh_joint_names'])
             prepared_results.append(result)
 
@@ -566,12 +621,14 @@ def _resolve_preprocessing_workers(objects, object_workers=8):
     return min(object_count, max(1, int(object_workers)))
 
 
-def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None):
+def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, filter_min_length=10, resample_min_length=20):
     return _prepare_object_outputs(
         object_type,
         max_joints=23,
         max_files=max_files,
         raw_data_dir=raw_data_dir,
+        filter_min_length=filter_min_length,
+        resample_min_length=resample_min_length,
     )
 
 
@@ -603,7 +660,7 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
 
 
 """ create dataset """
-def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, raw_data_dir=None, object_workers=8):
+def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, raw_data_dir=None, object_workers=8, filter_min_length=10, resample_min_length=20):
     ## prepare
     target_dataset_dir = dataset_dir or DEFAULT_DATASET_DIR
     os.makedirs(pjoin(target_dataset_dir, MOTION_DIR), exist_ok=True)
@@ -631,6 +688,8 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
                 max_joints=23,
                 max_files=max_files_per_object,
                 raw_data_dir=raw_data_dir,
+                filter_min_length=filter_min_length,
+                resample_min_length=resample_min_length,
             )
     else:
         with ProcessPoolExecutor(max_workers=obj_workers) as executor:
@@ -640,6 +699,8 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
                     object_type,
                     max_files_per_object,
                     raw_data_dir,
+                    filter_min_length,
+                    resample_min_length,
                 ): idx
                 for idx, object_type in enumerate(objects)
             }

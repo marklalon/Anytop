@@ -19,6 +19,10 @@ def main():
     # MP4 export removed - no --save-animations argument needed
     parser.add_argument("--object-workers", default=8, type=int,
                         help="Concurrent characters to preprocess. Defaults to 8.")
+    parser.add_argument("--filter-min-length", default=10, type=int,
+                        help="Minimum number of frames a motion clip must have; shorter clips are filtered out. Defaults to 10.")
+    parser.add_argument("--resample-min-length", default=20, type=int,
+                        help="When a motion has >= filter-min-length but < resample-min-length frames, resample it to resample-min-length frames. 0 disables. Defaults to 20.")
     args = parser.parse_args()
 
     objects = args.object_types
@@ -37,6 +41,8 @@ def main():
             dataset_dir=args.dataset_dir or None,
             raw_data_dir=args.raw_data_dir or None,
             object_workers=args.object_workers,
+            filter_min_length=args.filter_min_length,
+            resample_min_length=args.resample_min_length,
         )
     except DatasetPreprocessingError:
         return 1

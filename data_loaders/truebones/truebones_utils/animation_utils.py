@@ -39,7 +39,7 @@ def _warn(msg: str):
 # HML-normalised units) before we consider a clip locomotion and forcibly zero
 # the root XZ. Clips are centred on the effective translation root's initial XZ
 # position before this threshold is evaluated.
-ROOT_XZ_STRIP_THRESHOLD = 1
+ROOT_XZ_STRIP_THRESHOLD = 0.6
 
 # Mean L2 distance (per joint, in HML-normalised units) between first and last
 # frame poses below which a clip is classified as looping.
