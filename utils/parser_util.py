@@ -241,8 +241,12 @@ def add_sampling_options(parser):
 
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')
-    group.add_argument("--motion_length", default=2.0, type=float,
+    group.add_argument("--motion_length", default=None, type=float,
                        help="The length of the sampled motion [in seconds]. "
+                            "If omitted together with --reference_motion, defaults to the "
+                            "reference's native length (R frames); otherwise defaults to 2.0s. "
+                            "When specified with --reference_motion: if R < M the appended "
+                            "frames are auto-outpainted, if R > M the reference is cropped to M. "
                             "Maximum is 9.8 for HumanML3D (text-to-motion), and 2.0 for HumanAct12 (action-to-motion)")
     group.add_argument("--object_type", default=None, type=str,
                        help="Target object type. Optional if --reference_motion is provided "

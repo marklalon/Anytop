@@ -73,6 +73,20 @@ def validate_reference_configuration(
     return int(skip_timesteps) if skip_timesteps is not None else 0
 
 
+def _finalize_output_lengths(requested_frames, min_length, internal_num_frames):
+    """Validate the requested output frame count M and derive the playspeed
+    conditioning value. Returns ``(requested_output_frames, target_output_frames,
+    playspeed_cond_value)``.
+    """
+    if requested_frames < min_length or requested_frames > 2 * internal_num_frames:
+        sys.exit(
+            f"ERROR: motion_length frames M={requested_frames} outside "
+            f"[min_length={min_length}, 2*num_frames={2 * internal_num_frames}]"
+        )
+    playspeed = float(requested_frames) / float(internal_num_frames)
+    return requested_frames, requested_frames, playspeed
+
+
 def resolve_global_energy_condition(model, global_energy_mean, global_energy_std, batch_size):
     if global_energy_mean is None and global_energy_std is None:
         return None
@@ -413,8 +427,12 @@ def _prepare_img2img_reference_bundle(
     requested_output_frame_count,
     requested_visible_frame_count=None,
     min_length=20,
+    preloaded_features=None,
 ):
-    ref_raw = np.load(reference_motion_path).astype(np.float32)
+    if preloaded_features is not None:
+        ref_raw = np.asarray(preloaded_features, dtype=np.float32)
+    else:
+        ref_raw = np.load(reference_motion_path).astype(np.float32)
     if ref_raw.ndim != 3:
         raise ValueError(
             f"Reference motion must have shape (T, J, F), got {ref_raw.shape}"
@@ -670,19 +688,10 @@ def main(args=None, cond_dict=None):
         or str(getattr(args, 'inpaint_frames', '') or '').strip()
     )
 
-    # reference_motion + no inpaint + no explicit skip_timesteps => fast-fail
-    # because the user must decide how faithful to the reference (skip_timesteps=0
-    # means maximum variation from pure noise).
-    if (getattr(args, 'reference_motion', None)
-            and not _inpaint_early
-            and skip_timesteps_raw is None):
-        sys.exit(
-            "ERROR: --skip_timesteps is required when using --reference_motion "
-            "without --inpaint_joints/--inpaint_frames.\n"
-            "  Higher values (e.g. 80-100) produce motion more faithful to the reference;\n"
-            "  lower values (e.g. 20-40) allow more model-driven variation.\n"
-            "  When combined with --inpaint_joints, the default is 0 (skip disabled)."
-        )
+    # NOTE: the "--reference_motion needs --skip_timesteps (or inpaint)" check is
+    # deferred until after the reference frame count R is known, because an
+    # R < M length extension auto-enables outpaint (a temporal inpaint) and so
+    # does not require --skip_timesteps. See the crop/outpaint block below.
 
     # Fail fast (before the ~30s model load) if inpaint flags are set without a
     # reference motion: the masked region needs a known region to clamp to,
@@ -733,18 +742,30 @@ def main(args=None, cond_dict=None):
     name = os.path.basename(os.path.dirname(args.model_path))
     niter = os.path.basename(args.model_path).replace('model', '').replace('.pt', '')
     fps = opt.fps
-    requested_output_frames = int(round(float(args.motion_length) * fps))
     internal_num_frames = int(getattr(args, 'num_frames', 60))
     min_length = int(getattr(args, 'min_length', 20))
-    if requested_output_frames < min_length or requested_output_frames > 2 * internal_num_frames:
-        sys.exit(
-            f"ERROR: motion_length frames M={requested_output_frames} outside "
-            f"[min_length={min_length}, 2*num_frames={2 * internal_num_frames}]"
-        )
-    playspeed_cond_value = float(requested_output_frames) / float(internal_num_frames)
     n_frames = internal_num_frames
-    target_output_frames = requested_output_frames
     cond_max_joints = opt.max_joints
+
+    reference_present = bool(getattr(args, 'reference_motion', None))
+    motion_length_specified = getattr(args, 'motion_length', None) is not None
+    if not motion_length_specified and not reference_present:
+        # Pure-random generation with no --motion_length keeps the historical 2.0s default.
+        args.motion_length = 2.0
+        motion_length_specified = True
+
+    # Output lengths are finalized here when --motion_length is known. When it is
+    # omitted together with --reference_motion they are deferred until the
+    # reference frame count R is known (the output length then defaults to R).
+    requested_output_frames = target_output_frames = playspeed_cond_value = None
+    if motion_length_specified:
+        requested_output_frames, target_output_frames, playspeed_cond_value = (
+            _finalize_output_lengths(
+                int(round(float(args.motion_length) * fps)),
+                min_length,
+                internal_num_frames,
+            )
+        )
     dist_util.setup_dist(args.device)
     object_type = args.object_type
     if out_path == '':
@@ -832,14 +853,11 @@ def main(args=None, cond_dict=None):
     inpaint_joints_arg = str(getattr(args, 'inpaint_joints', '') or '').strip()
     inpaint_frames_arg = str(getattr(args, 'inpaint_frames', '') or '').strip()
     inpaint_include_subtree = bool(getattr(args, 'inpaint_include_subtree', True))
-    inpaint_enabled = bool(inpaint_joints_arg or inpaint_frames_arg)
     repaint_jump_length = int(getattr(args, 'repaint_jump_length', 0))
     repaint_jump_n_sample = int(getattr(args, 'repaint_jump_n_sample', 1))
-    repaint_enabled = (
-        inpaint_enabled
-        and repaint_jump_length > 0
-        and repaint_jump_n_sample > 1
-    )
+    # Cosmetic flag (whether RePaint resampling params are on); the actual
+    # RePaint activation in the sampler also requires an inpaint mask.
+    repaint_enabled = repaint_jump_length > 0 and repaint_jump_n_sample > 1
 
     # ── Resolve --object_type ───────────────────────────────────────────────
     # --object_type: look up directly in cond (user-provided first, then default).
@@ -958,6 +976,13 @@ def main(args=None, cond_dict=None):
         ref_motion = None
         output_frame_count = n_frames
 
+        # Length-mode flags, finalized inside the reference block below.
+        user_inpaint_active = bool(inpaint_joints_arg or inpaint_frames_arg)
+        outpaint_active = False
+        two_pass_outpaint = False
+        single_pass_outpaint = False
+        auto_outpaint_range = None
+
         source_cond_entry = _resolve_source_cond_entry(
             source_type,
             cond_dict,
@@ -993,6 +1018,71 @@ def main(args=None, cond_dict=None):
             )
 
         if effective_reference_path:
+            ref_features_full = np.load(effective_reference_path).astype(np.float32)
+            if ref_features_full.ndim != 3:
+                raise ValueError(
+                    f"Reference motion must have shape (T, J, F), got {ref_features_full.shape}"
+                )
+            R = int(ref_features_full.shape[0])
+
+            # Finalize output lengths now that the reference frame count R is
+            # known. With --motion_length omitted the output defaults to R,
+            # clamped to the variable-length window [min_length, 2*num_frames].
+            if requested_output_frames is None:
+                auto_frames = int(np.clip(R, min_length, 2 * internal_num_frames))
+                requested_output_frames, target_output_frames, playspeed_cond_value = (
+                    _finalize_output_lengths(auto_frames, min_length, internal_num_frames)
+                )
+                if auto_frames == R:
+                    print(f'  --motion_length omitted: using reference native length R={R} frames')
+                else:
+                    print(
+                        f'  --motion_length omitted: reference R={R} frames clamped to {auto_frames} '
+                        f'(variable-length window [{min_length}, {2 * internal_num_frames}])'
+                    )
+            M = int(requested_output_frames)
+
+            # Crop (R > M) / outpaint (R < M) the reference to exactly M frames so
+            # the rest of the pipeline runs at the requested length. The appended
+            # [R, M) frames are padded by holding the last reference frame; that
+            # placeholder is only a carrier — it is always regenerated.
+            if R > M:
+                ref_features_full = ref_features_full[:M]
+                print(f'  Reference cropped: R={R} > M={M} -> using first {M} frames')
+            elif R < M:
+                outpaint_active = True
+                pad = np.repeat(ref_features_full[-1:], M - R, axis=0)
+                ref_features_full = np.concatenate([ref_features_full, pad], axis=0)
+                auto_outpaint_range = f'{R}-{M - 1}'
+                print(f'  Reference outpaint: R={R} < M={M} -> appended frames [{R}, {M - 1}]')
+
+            # The appended [R, M) tail must be generated from PURE NOISE on the
+            # full reverse schedule (a noised copy of the held-last-frame
+            # placeholder would bias it toward the frozen final pose). A single
+            # reverse pass has one start timestep, so it cannot give the tail a
+            # from-noise start while ALSO honoring skip_timesteps / an explicit
+            # inpaint selection elsewhere. When the user asks for that
+            # combination we split into two passes:
+            #   pass 1: outpaint the tail from noise -> a complete M-frame reference
+            #   pass 2: run the requested skip / inpaint on that completed reference
+            # Otherwise the extension is a single pure-noise outpaint pass.
+            two_pass_outpaint = outpaint_active and (
+                skip_timesteps > 0 or user_inpaint_active
+            )
+            single_pass_outpaint = outpaint_active and not two_pass_outpaint
+
+            # Deferred fast-fail: plain reference img2img (no inpaint, no
+            # outpaint) requires an explicit --skip_timesteps so the user
+            # consciously chooses how faithful to the reference to be.
+            if not outpaint_active and not user_inpaint_active and skip_timesteps_raw is None:
+                sys.exit(
+                    "ERROR: --skip_timesteps is required when using --reference_motion "
+                    "without --inpaint_joints/--inpaint_frames and without a length "
+                    "extension (R < motion_length).\n"
+                    "  Higher values (e.g. 80-100) produce motion more faithful to the reference;\n"
+                    "  lower values (e.g. 20-40) allow more model-driven variation."
+                )
+
             reference_bundle = _prepare_img2img_reference_bundle(
                 effective_reference_path,
                 object_type,
@@ -1002,6 +1092,7 @@ def main(args=None, cond_dict=None):
                 batch_size=args.batch_size,
                 requested_output_frame_count=n_frames,
                 requested_visible_frame_count=target_output_frames,
+                preloaded_features=ref_features_full,
                 min_length=min_length,
             )
             ref_motion = reference_bundle['reference_motion']
@@ -1019,16 +1110,29 @@ def main(args=None, cond_dict=None):
                 f'    Original: [{loaded_reference_frame_count} frames, {loaded_reference_joint_count} joints] '
                 f'-> Internal target: [{output_frame_count} frames, {max_joints} joints]'
             )
-            if inpaint_enabled and skip_timesteps > 0:
+            if two_pass_outpaint:
+                pass2_desc = (
+                    f'inpaint (skip_timesteps={skip_timesteps})' if user_inpaint_active
+                    else f'img2img (skip_timesteps={skip_timesteps})'
+                )
+                print(
+                    f'    Mode: two-pass outpaint '
+                    f'(pass 1: fill appended frames [{R}, {M - 1}] from pure noise; '
+                    f'pass 2: {pass2_desc})'
+                )
+            elif single_pass_outpaint:
+                print('    Mode: outpaint (appended frames from pure noise, full schedule; '
+                      'retained frames clamped to reference)')
+            elif user_inpaint_active and skip_timesteps > 0:
                 print(f'    Mode: inpaint + skip_timesteps={skip_timesteps} '
                       '(masked region starts from an img2img-noised reference; '
                       'unmasked region stays clamped to the original reference)')
-            elif inpaint_enabled:
+            elif user_inpaint_active:
                 print('    Mode: inpainting (reference is the clamped known region; '
                       'skip_timesteps=0, denoising full schedule from pure noise)')
             else:
                 print(f'    skip_timesteps: {skip_timesteps} (higher = more faithful to reference)')
-            if inpaint_enabled:
+            if (user_inpaint_active or outpaint_active):
                 if repaint_enabled:
                     print(
                         f'    RePaint resampling: on '
@@ -1074,30 +1178,13 @@ def main(args=None, cond_dict=None):
                             f' (normalized z-score)'
                         )
                 
-        # Build inpaint mask (masked region = regenerated, rest clamped to ref).
-        inpaint_mask = None
-        if inpaint_enabled:
-            if ref_motion is None:
-                sys.exit(
-                    "ERROR: --inpaint_* is set but the reference motion could "
-                    "not be loaded; cannot inpaint without a known region."
-                )
-            internal_inpaint_frames_arg = _map_frame_ranges_to_internal(
-                inpaint_frames_arg,
-                source_frames=target_output_frames,
-                target_frames=output_frame_count,
-            )
-            inpaint_mask = build_inpaint_mask(
-                cond_dict[object_type],
-                inpaint_joints_arg,
-                inpaint_include_subtree,
-                internal_inpaint_frames_arg,
-                args.batch_size,
-                max_joints,
-                output_frame_count,
+        if (user_inpaint_active or outpaint_active) and ref_motion is None:
+            sys.exit(
+                "ERROR: --inpaint_* / length extension is set but the reference "
+                "motion could not be loaded; cannot inpaint without a known region."
             )
 
-        # Create condition with effective frame count
+        # Create condition with effective frame count (shared across passes).
         obj_batch = [object_type] * args.batch_size
         _, model_kwargs = create_condition(
             obj_batch,
@@ -1116,21 +1203,62 @@ def main(args=None, cond_dict=None):
             dtype=torch.float32,
             device=dist_util.dev(),
         )
-        sample = _sample_batch(
-            diffusion=diffusion,
-            model=model,
-            model_kwargs=model_kwargs,
-            sampling_method=sampling_method,
-            sample_shape=(args.batch_size, max_joints, model.feature_len, output_frame_count),
-            ddim_eta=ddim_eta,
-            seed=args.seed,
-            device=dist_util.dev(),
-            reference_motion=ref_motion,
-            skip_timesteps=skip_timesteps,
-            inpaint_mask=inpaint_mask,
-            repaint_jump_length=repaint_jump_length,
-            repaint_jump_n_sample=repaint_jump_n_sample,
-        )
+
+        def _build_inpaint_mask_for(frames_arg, joints_arg):
+            internal_frames = _map_frame_ranges_to_internal(
+                frames_arg,
+                source_frames=target_output_frames,
+                target_frames=output_frame_count,
+            )
+            return build_inpaint_mask(
+                cond_dict[object_type],
+                joints_arg,
+                inpaint_include_subtree,
+                internal_frames,
+                args.batch_size,
+                max_joints,
+                output_frame_count,
+            )
+
+        def _run_sample(reference_motion, skip_ts, inpaint_mask):
+            return _sample_batch(
+                diffusion=diffusion,
+                model=model,
+                model_kwargs=model_kwargs,
+                sampling_method=sampling_method,
+                sample_shape=(args.batch_size, max_joints, model.feature_len, output_frame_count),
+                ddim_eta=ddim_eta,
+                seed=args.seed,
+                device=dist_util.dev(),
+                reference_motion=reference_motion,
+                skip_timesteps=skip_ts,
+                inpaint_mask=inpaint_mask,
+                repaint_jump_length=repaint_jump_length,
+                repaint_jump_n_sample=repaint_jump_n_sample,
+            )
+
+        if two_pass_outpaint:
+            # Pass 1: outpaint the appended tail (all joints) from pure noise to
+            # complete the reference; [0, R) stays clamped to the real reference.
+            print('  [two-pass] pass 1/2: outpaint appended frames from pure noise')
+            outpaint_mask = _build_inpaint_mask_for(auto_outpaint_range, '')
+            completed_reference = _run_sample(ref_motion, 0, outpaint_mask)
+            # Pass 2: apply the requested skip / inpaint to the completed reference.
+            print('  [two-pass] pass 2/2: applying requested skip/inpaint to the completed reference')
+            pass2_mask = (
+                _build_inpaint_mask_for(inpaint_frames_arg, inpaint_joints_arg)
+                if user_inpaint_active else None
+            )
+            sample = _run_sample(completed_reference, skip_timesteps, pass2_mask)
+        elif single_pass_outpaint:
+            outpaint_mask = _build_inpaint_mask_for(auto_outpaint_range, '')
+            sample = _run_sample(ref_motion, 0, outpaint_mask)
+        elif user_inpaint_active:
+            user_mask = _build_inpaint_mask_for(inpaint_frames_arg, inpaint_joints_arg)
+            sample = _run_sample(ref_motion, skip_timesteps, user_mask)
+        else:
+            # Plain img2img (reference present) or plain generation (ref_motion None).
+            sample = _run_sample(ref_motion, skip_timesteps, None)
 
         # Pre-compute filenames with a single directory scan
         existing_npy_files = [
@@ -1160,7 +1288,7 @@ def main(args=None, cond_dict=None):
         # frame axis). The correction is applied per joint via vel_y
         # integration with dual-end ramp anchoring.
         inpaint_y_spans = None
-        if inpaint_enabled and inpaint_frames_arg:
+        if user_inpaint_active and inpaint_frames_arg:
             inpaint_y_spans = _contiguous_frame_runs(
                 _parse_frame_ranges(inpaint_frames_arg, target_output_frames)
             )

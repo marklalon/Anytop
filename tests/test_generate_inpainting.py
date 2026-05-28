@@ -17,6 +17,7 @@ from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanT
 from sample.generate import (  # noqa: E402
     _close_loop_root_xz_via_velocity,
     _contiguous_frame_runs,
+    _finalize_output_lengths,
     _map_frame_ranges_to_internal,
     _parse_frame_ranges,
     _prepare_img2img_reference_bundle,
@@ -101,6 +102,51 @@ def test_map_frame_ranges_to_internal_preserves_contiguous_spans() -> None:
     assert _map_frame_ranges_to_internal("0-19", 20, 60) == "0-59"
     assert _map_frame_ranges_to_internal("10-20", 30, 60) == "20-41"
     assert _map_frame_ranges_to_internal("0-119", 120, 60) == "0-59"
+
+
+def test_finalize_output_lengths_returns_frames_and_playspeed() -> None:
+    requested, target, playspeed = _finalize_output_lengths(
+        requested_frames=90, min_length=20, internal_num_frames=60
+    )
+    assert requested == 90
+    assert target == 90
+    assert playspeed == pytest.approx(90.0 / 60.0)
+
+
+def test_finalize_output_lengths_rejects_out_of_window() -> None:
+    with pytest.raises(SystemExit):
+        _finalize_output_lengths(requested_frames=10, min_length=20, internal_num_frames=60)
+    with pytest.raises(SystemExit):
+        _finalize_output_lengths(requested_frames=121, min_length=20, internal_num_frames=60)
+
+
+def test_prepare_reference_bundle_uses_preloaded_cropped_features() -> None:
+    # Crop path: feed exactly M=40 frames (as main() does for R > M). The bundle
+    # must consume the preloaded array verbatim (no disk load) and not re-trim it.
+    n_joints, feat = 3, 13
+    cond = _make_full_cond_entry(n_joints, feature_len=feat)
+    preloaded = np.random.default_rng(0).normal(
+        size=(40, n_joints, feat)
+    ).astype(np.float32)
+
+    bundle = _prepare_img2img_reference_bundle(
+        reference_motion_path="/nonexistent/should_not_be_loaded.npy",
+        target_type="Horse",
+        target_cond=cond,
+        max_joints=n_joints,
+        target_feature_len=feat,
+        batch_size=2,
+        requested_output_frame_count=60,
+        requested_visible_frame_count=40,
+        preloaded_features=preloaded,
+    )
+
+    assert bundle["loaded_reference_frame_count"] == 40
+    assert bundle["loaded_reference_joint_count"] == n_joints
+    # M=40 <= internal window 60 -> generated at native 40 frames, no down-trim.
+    assert bundle["output_frame_count"] == 40
+    assert bundle["reference_source_frame_count"] == 40
+    assert tuple(bundle["reference_motion"].shape) == (2, n_joints, feat, 40)
 
 
 def test_build_inpaint_mask_uses_all_real_joints_for_selected_frames() -> None:
