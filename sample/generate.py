@@ -1284,27 +1284,15 @@ def main(args=None, cond_dict=None):
             'canonical_bvh_joint_names',
             cond_dict[object_type]['joints_names'],
         )
-        # Inpaint Y-anchor: parse user --inpaint_frames and auto outpaint
-        # ranges into contiguous spans (user-frame indexing, already aligned
-        # with the post-trim motion_np frame axis). The correction is applied
-        # per joint via vel_y integration; dual-end ramp anchoring for spans
-        # with both left and right neighbours, pure left-anchor integration
-        # for spans touching the right edge (outpaint tail).
-        inpaint_y_spans = []
+        # Inpaint Y-anchor: parse user --inpaint_frames into contiguous spans
+        # (user-frame indexing, already aligned with the post-trim motion_np
+        # frame axis). The correction is applied per joint via vel_y
+        # integration with dual-end ramp anchoring.
+        inpaint_y_spans = None
         if user_inpaint_active and inpaint_frames_arg:
-            inpaint_y_spans.extend(
-                _contiguous_frame_runs(
-                    _parse_frame_ranges(inpaint_frames_arg, target_output_frames)
-                )
+            inpaint_y_spans = _contiguous_frame_runs(
+                _parse_frame_ranges(inpaint_frames_arg, target_output_frames)
             )
-        if outpaint_active and auto_outpaint_range:
-            _out_frames = _parse_frame_ranges(auto_outpaint_range, target_output_frames)
-            outpaint_y_spans = _contiguous_frame_runs(_out_frames)
-            # Outpaint spans always touch the right edge; the single-anchor
-            # branch in _reanchor_inpaint_root_y_via_velocity handles them.
-            inpaint_y_spans.extend(outpaint_y_spans)
-        if not inpaint_y_spans:
-            inpaint_y_spans = None
         export_tasks = []
         for sample_idx, motion in enumerate(sample):
             n_joints = model_kwargs['y']['n_joints'][sample_idx].item()
@@ -1522,11 +1510,8 @@ def _reanchor_inpaint_root_y_via_velocity(motion_np, spans):
     ``--inpaint_joints`` selects a subset), the inputs are already
     consistent so the correction is mathematically a no-op.
 
-    No-op when an inpaint span has no left clamped neighbour (touches
-    frame 0). When the span touches the right edge (frame F-1, e.g.
-    outpaint tail) only the left anchor is used — Y is reconstructed by
-    pure vel integration from the known left boundary, with no ramp
-    correction (there is no right target to ramp toward).
+    No-op when an inpaint span has no left or no right clamped neighbour
+    (touches frame 0 or frame F-1).
 
     Args:
         motion_np: (F, J, C) feature tensor. Modified in place via a basic
@@ -1544,33 +1529,25 @@ def _reanchor_inpaint_root_y_via_velocity(motion_np, spans):
     pos_y = motion_np[:, :, 1]   # (F, J) view
     vel_y = motion_np[:, :, 10]  # (F, J) view — vel[f] = pos[f+1] - pos[f]
     for a, b in spans:
-        if a < 1 or a > b:
-            # Skip spans that start at frame 0: no left-clamped neighbour.
+        if a < 1 or b > F - 2 or a > b:
+            # Need both a-1 and b+1 as clamped anchors; otherwise leave alone.
             continue
         L = b - a + 1
-        have_right = b < F - 1  # b+1 exists as a right anchor
-
         # Forward integrate from clamped pos_y[a-1] across the span:
         #   y_int[k] = pos_y[a-1] + sum_{i=a-1..k-1} vel_y[i]  for k in [a, b]
         integrated = pos_y[a - 1:a] + np.cumsum(
             vel_y[a - 1:b], axis=0, dtype=np.float64,
         )  # (L, J)
-
-        if have_right:
-            # Dual-anchor: distribute the right residual linearly so both
-            # boundaries are seamless.
-            integrated_at_b_plus_1 = integrated[-1] + vel_y[b]
-            adjust = pos_y[b + 1] - integrated_at_b_plus_1  # (J,)
-            # Ramp factor for k in [a, b]:
-            # (k - (a-1)) / ((b+1) - (a-1)) = (k - a + 1) / (L + 1)
-            ramp = (np.arange(1, L + 1, dtype=np.float64) / float(L + 1))[:, None]  # (L, 1)
-            pos_y[a:b + 1] = (integrated + adjust[None, :] * ramp).astype(
-                pos_y.dtype, copy=False,
-            )
-        else:
-            # Single-anchor (outpaint tail): pure vel-Y integral from the
-            # left boundary. No ramp correction — there is no right target.
-            pos_y[a:b + 1] = integrated.astype(pos_y.dtype, copy=False)
+        # Bridge to the right anchor: if we also stepped one more by vel_y[b]
+        # we should land at pos_y[b+1]. Distribute the residual linearly so
+        # adjusted_y[a-1] is unchanged and adjusted_y[b+1] would land on target.
+        integrated_at_b_plus_1 = integrated[-1] + vel_y[b]
+        adjust = pos_y[b + 1] - integrated_at_b_plus_1  # (J,)
+        # Ramp factor for k in [a, b]: (k - (a-1)) / ((b+1) - (a-1)) = (k - a + 1) / (L + 1)
+        ramp = (np.arange(1, L + 1, dtype=np.float64) / float(L + 1))[:, None]  # (L, 1)
+        pos_y[a:b + 1] = (integrated + adjust[None, :] * ramp).astype(
+            pos_y.dtype, copy=False,
+        )
 
 
 def _close_loop_root_xz_via_velocity(motion_np, translation_root_index):
