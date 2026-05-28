@@ -80,7 +80,7 @@ def _finalize_output_lengths(requested_frames, min_length, internal_num_frames):
     """
     if requested_frames < min_length or requested_frames > 2 * internal_num_frames:
         sys.exit(
-            f"ERROR: motion_length frames M={requested_frames} outside "
+            f"ERROR: motion_frames M={requested_frames} outside "
             f"[min_length={min_length}, 2*num_frames={2 * internal_num_frames}]"
         )
     playspeed = float(requested_frames) / float(internal_num_frames)
@@ -748,20 +748,20 @@ def main(args=None, cond_dict=None):
     cond_max_joints = opt.max_joints
 
     reference_present = bool(getattr(args, 'reference_motion', None))
-    motion_length_specified = getattr(args, 'motion_length', None) is not None
-    if not motion_length_specified and not reference_present:
-        # Pure-random generation with no --motion_length keeps the historical 2.0s default.
-        args.motion_length = 2.0
-        motion_length_specified = True
+    motion_frames = getattr(args, 'motion_frames', None)
+    if motion_frames is None and not reference_present:
+        # Pure-random generation with no --motion_frames defaults to 60 frames.
+        motion_frames = 60
 
-    # Output lengths are finalized here when --motion_length is known. When it is
-    # omitted together with --reference_motion they are deferred until the
-    # reference frame count R is known (the output length then defaults to R).
+    # Output lengths are finalized here when --motion_frames is known. When it
+    # is omitted together with --reference_motion they are deferred until the
+    # reference frame count R is known (the output length then defaults to R,
+    # clamped to [min_length, 2*num_frames]).
     requested_output_frames = target_output_frames = playspeed_cond_value = None
-    if motion_length_specified:
+    if motion_frames is not None:
         requested_output_frames, target_output_frames, playspeed_cond_value = (
             _finalize_output_lengths(
-                int(round(float(args.motion_length) * fps)),
+                motion_frames,
                 min_length,
                 internal_num_frames,
             )
@@ -1026,8 +1026,8 @@ def main(args=None, cond_dict=None):
             R = int(ref_features_full.shape[0])
 
             # Finalize output lengths now that the reference frame count R is
-            # known. With --motion_length omitted the output defaults to R,
-            # clamped to the variable-length window [min_length, 2*num_frames].
+            # known. If --motion_frames wasn't specified, use R clamped to
+            # [min_length, 2*num_frames].
             if requested_output_frames is None:
                 auto_frames = int(np.clip(R, min_length, 2 * internal_num_frames))
                 requested_output_frames, target_output_frames, playspeed_cond_value = (
@@ -1078,7 +1078,7 @@ def main(args=None, cond_dict=None):
                 sys.exit(
                     "ERROR: --skip_timesteps is required when using --reference_motion "
                     "without --inpaint_joints/--inpaint_frames and without a length "
-                    "extension (R < motion_length).\n"
+                    "extension (R < motion_frames).\n"
                     "  Higher values (e.g. 80-100) produce motion more faithful to the reference;\n"
                     "  lower values (e.g. 20-40) allow more model-driven variation."
                 )
@@ -1284,15 +1284,27 @@ def main(args=None, cond_dict=None):
             'canonical_bvh_joint_names',
             cond_dict[object_type]['joints_names'],
         )
-        # Inpaint Y-anchor: parse user --inpaint_frames into contiguous spans
-        # (user-frame indexing, already aligned with the post-trim motion_np
-        # frame axis). The correction is applied per joint via vel_y
-        # integration with dual-end ramp anchoring.
-        inpaint_y_spans = None
+        # Inpaint Y-anchor: parse user --inpaint_frames and auto outpaint
+        # ranges into contiguous spans (user-frame indexing, already aligned
+        # with the post-trim motion_np frame axis). The correction is applied
+        # per joint via vel_y integration; dual-end ramp anchoring for spans
+        # with both left and right neighbours, pure left-anchor integration
+        # for spans touching the right edge (outpaint tail).
+        inpaint_y_spans = []
         if user_inpaint_active and inpaint_frames_arg:
-            inpaint_y_spans = _contiguous_frame_runs(
-                _parse_frame_ranges(inpaint_frames_arg, target_output_frames)
+            inpaint_y_spans.extend(
+                _contiguous_frame_runs(
+                    _parse_frame_ranges(inpaint_frames_arg, target_output_frames)
+                )
             )
+        if outpaint_active and auto_outpaint_range:
+            _out_frames = _parse_frame_ranges(auto_outpaint_range, target_output_frames)
+            outpaint_y_spans = _contiguous_frame_runs(_out_frames)
+            # Outpaint spans always touch the right edge; the single-anchor
+            # branch in _reanchor_inpaint_root_y_via_velocity handles them.
+            inpaint_y_spans.extend(outpaint_y_spans)
+        if not inpaint_y_spans:
+            inpaint_y_spans = None
         export_tasks = []
         for sample_idx, motion in enumerate(sample):
             n_joints = model_kwargs['y']['n_joints'][sample_idx].item()
@@ -1444,7 +1456,7 @@ def _map_frame_ranges_to_internal(spec, source_frames, target_frames, warn_remap
     # floor/ceil widening + the resolution drop (visible -> internal -> visible)
     # mean the regenerated region will NOT line up with the requested integer
     # frames; warn with the effective visible boundaries so the drift is not
-    # silent. To inpaint exact frames, set --motion_length to the model's
+    # silent. To inpaint exact frames, set --motion_frames to the model's
     # num_frames so visible == internal and no remapping happens.
     if warn_remap:
         inv_scale = float(source_frames - 1) / float(target_frames - 1) if target_frames > 1 else 0.0
@@ -1464,8 +1476,7 @@ def _map_frame_ranges_to_internal(spec, source_frames, target_frames, warn_remap
             f"'{internal_spec}' (sampler length {target_frames}). "
             f'Effective regenerated visible region is ~{effective_spec}, not the '
             f'exact frames requested (boundaries drift ~1-2 frames from floor/ceil '
-            f'widening and the {source_frames}->{target_frames} resolution change). '
-            f'Pass --motion_length {target_frames} for exact frame-accurate inpaint.\033[0m'
+            f'widening and the {source_frames}->{target_frames} resolution change).\033[0m'
         )
     return internal_spec
 
@@ -1511,8 +1522,11 @@ def _reanchor_inpaint_root_y_via_velocity(motion_np, spans):
     ``--inpaint_joints`` selects a subset), the inputs are already
     consistent so the correction is mathematically a no-op.
 
-    No-op when an inpaint span has no left or no right clamped neighbour
-    (touches frame 0 or frame F-1).
+    No-op when an inpaint span has no left clamped neighbour (touches
+    frame 0). When the span touches the right edge (frame F-1, e.g.
+    outpaint tail) only the left anchor is used — Y is reconstructed by
+    pure vel integration from the known left boundary, with no ramp
+    correction (there is no right target to ramp toward).
 
     Args:
         motion_np: (F, J, C) feature tensor. Modified in place via a basic
@@ -1530,25 +1544,33 @@ def _reanchor_inpaint_root_y_via_velocity(motion_np, spans):
     pos_y = motion_np[:, :, 1]   # (F, J) view
     vel_y = motion_np[:, :, 10]  # (F, J) view — vel[f] = pos[f+1] - pos[f]
     for a, b in spans:
-        if a < 1 or b > F - 2 or a > b:
-            # Need both a-1 and b+1 as clamped anchors; otherwise leave alone.
+        if a < 1 or a > b:
+            # Skip spans that start at frame 0: no left-clamped neighbour.
             continue
         L = b - a + 1
+        have_right = b < F - 1  # b+1 exists as a right anchor
+
         # Forward integrate from clamped pos_y[a-1] across the span:
         #   y_int[k] = pos_y[a-1] + sum_{i=a-1..k-1} vel_y[i]  for k in [a, b]
         integrated = pos_y[a - 1:a] + np.cumsum(
             vel_y[a - 1:b], axis=0, dtype=np.float64,
         )  # (L, J)
-        # Bridge to the right anchor: if we also stepped one more by vel_y[b]
-        # we should land at pos_y[b+1]. Distribute the residual linearly so
-        # adjusted_y[a-1] is unchanged and adjusted_y[b+1] would land on target.
-        integrated_at_b_plus_1 = integrated[-1] + vel_y[b]
-        adjust = pos_y[b + 1] - integrated_at_b_plus_1  # (J,)
-        # Ramp factor for k in [a, b]: (k - (a-1)) / ((b+1) - (a-1)) = (k - a + 1) / (L + 1)
-        ramp = (np.arange(1, L + 1, dtype=np.float64) / float(L + 1))[:, None]  # (L, 1)
-        pos_y[a:b + 1] = (integrated + adjust[None, :] * ramp).astype(
-            pos_y.dtype, copy=False,
-        )
+
+        if have_right:
+            # Dual-anchor: distribute the right residual linearly so both
+            # boundaries are seamless.
+            integrated_at_b_plus_1 = integrated[-1] + vel_y[b]
+            adjust = pos_y[b + 1] - integrated_at_b_plus_1  # (J,)
+            # Ramp factor for k in [a, b]:
+            # (k - (a-1)) / ((b+1) - (a-1)) = (k - a + 1) / (L + 1)
+            ramp = (np.arange(1, L + 1, dtype=np.float64) / float(L + 1))[:, None]  # (L, 1)
+            pos_y[a:b + 1] = (integrated + adjust[None, :] * ramp).astype(
+                pos_y.dtype, copy=False,
+            )
+        else:
+            # Single-anchor (outpaint tail): pure vel-Y integral from the
+            # left boundary. No ramp correction — there is no right target.
+            pos_y[a:b + 1] = integrated.astype(pos_y.dtype, copy=False)
 
 
 def _close_loop_root_xz_via_velocity(motion_np, translation_root_index):

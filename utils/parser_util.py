@@ -202,12 +202,6 @@ def add_training_options(parser):
                        help="Radius of the Gaussian seam band on each side of a sampled temporal-span boundary frame.")
     group.add_argument("--resume_checkpoint", default="", type=str,
                        help="If not empty, will start from the specified checkpoint (path to model###.pt file).")
-    group.add_argument("--gen_during_training", action='store_true',
-                       help="If True, will generate motions during training, on each save interval.")
-    group.add_argument("--gen_num_samples", default=3, type=int,
-                       help="Number of samples to sample while generating")
-    group.add_argument("--gen_num_repetitions", default=2, type=int,
-                       help="Number of repetitions, per sample (text prompt/action)")
     group.add_argument("--use_ema", action='store_true',
                        help="If True, will use EMA model averaging.")
     group.add_argument("--balanced", action='store_true',
@@ -241,13 +235,13 @@ def add_sampling_options(parser):
 
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')
-    group.add_argument("--motion_length", default=None, type=float,
-                       help="The length of the sampled motion [in seconds]. "
-                            "If omitted together with --reference_motion, defaults to the "
-                            "reference's native length (R frames); otherwise defaults to 2.0s. "
-                            "When specified with --reference_motion: if R < M the appended "
-                            "frames are auto-outpainted, if R > M the reference is cropped to M. "
-                            "Maximum is 9.8 for HumanML3D (text-to-motion), and 2.0 for HumanAct12 (action-to-motion)")
+    group.add_argument("--motion_frames", default=None, type=int,
+                       help="The number of frames in the sampled motion. "
+                            "If omitted with --reference_motion, defaults to the "
+                            "reference's native length (R frames); otherwise defaults to 60. "
+                            "When specified with --reference_motion: if R < M the tail "
+                            "is auto-outpainted, if R > M the reference is cropped to M. "
+                            "Valid range: [min_length, 2*num_frames] of the checkpoint.")
     group.add_argument("--object_type", default=None, type=str,
                        help="Target object type. Optional if --reference_motion is provided "
                             "(inferred from filename). Required for pure-random generation. "
