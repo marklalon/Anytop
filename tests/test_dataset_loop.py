@@ -283,15 +283,23 @@ def test_loop_padding_random_offset_wraps_without_truncation() -> None:
     offset = raw_len - 4
 
     with patch.object(motion_dataset, '_sample_loop_tile_count', return_value=1):
-        motion, m_length, *_rest = motion_dataset.prepare_sample_by_name(
+        sample = motion_dataset.prepare_sample_by_name(
             LOOP_MOTION,
             target_num_frames=NUM_FRAMES,
             loop_offset=offset,
         )
-    expected = _resample_raw_then_normalize(_circular_roll_motion(raw, offset), cond, NUM_FRAMES, loop_terminal=True)
+    motion, m_length, *_rest, mean, std, _max_joints, _motion_metadata, _name, _joint_mask_dict = sample
+    rolled_raw = _circular_roll_motion(raw, offset)
+    expected_raw = _resample_motion_features(rolled_raw, NUM_FRAMES, loop_terminal=True)
+    expected = _normalize_motion(expected_raw, cond)
+    raw_motion = motion * std[None, :, :] + mean[None, :, :]
     assert motion.shape[0] == NUM_FRAMES, f"expected random-offset loop fill to keep {NUM_FRAMES} frames"
     assert m_length == NUM_FRAMES, f"effective length should remain {NUM_FRAMES}, got {m_length}"
     assert_close("loop-filled motion with wraparound offset", motion, expected, atol=3e-5)
+    # Pure circular roll preserves the velocity ring; the terminal velocity
+    # (channels 9-12, i.e. the wrap-around delta) must equal the expected
+    # terminal velocity after resample — it is NOT forced to zero/copy.
+    assert_close("rolled loop terminal velocity", raw_motion[-1, :, 9:12], expected_raw[-1, :, 9:12], atol=3e-5)
 
 
 def test_explicit_window_start_respects_requested_crop() -> None:

@@ -763,7 +763,8 @@ class MotionDataset(data.Dataset):
         # _circular_roll_motion for consistency guarantees).
         if is_loop:
             loop_phase_offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
-            motion = _circular_roll_motion(motion, loop_phase_offset)
+            if loop_phase_offset != 0:
+                motion = _circular_roll_motion(motion, loop_phase_offset)
             loop_tile_count = self._sample_loop_tile_count(m_length, max_source_length)
             motion = _tile_loop_motion(motion, loop_tile_count)
             m_length = int(motion.shape[0])
