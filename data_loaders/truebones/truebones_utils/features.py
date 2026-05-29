@@ -475,8 +475,12 @@ def _extract_motion_features_from_aligned_anims(
     )
     foot_contact = get_contact_state(global_positions, foot_indices, foot_contact_vel_thresh)
     positions = get_rifke(global_positions, r_rot, translation_root_index=feature_translation_root_index)
-    is_loop = detect_motion_loop(positions)
     local_vel = np.repeat(r_rot[1:, None], global_positions.shape[1], axis=1) * (global_positions[1:] - global_positions[:-1])
+    is_loop = detect_motion_loop(
+        positions,
+        root_xz_velocity=local_vel,
+        translation_root_index=feature_translation_root_index,
+    )
     prev_velocity = local_vel[-1] if local_vel.shape[0] > 0 else None
     terminal_local_vel = _compute_terminal_local_velocity(global_positions, r_rot, is_loop, prev_frame_velocity=prev_velocity)
     if has_locomotion:
