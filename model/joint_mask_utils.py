@@ -34,7 +34,7 @@ def collect_subtree_indices(root_index: int, children: list[list[int]]) -> list[
 def sample_subtree_joint_mask(
     parents: list[int],
     candidate_root_mask: np.ndarray,
-    joint_mask_prob: float,
+    joint_mask_budget: float,
     rng: Any,
 ) -> Optional[np.ndarray]:
     """Replicate AnyTop._sample_subtree_joint_mask for a single skeleton.
@@ -46,7 +46,7 @@ def sample_subtree_joint_mask(
     candidate_root_mask : np.ndarray
         Boolean array of shape ``(J,)`` — ``True`` where a joint is a valid
         subtree root.
-    joint_mask_prob : float
+    joint_mask_budget : float
         Fraction of non-root joints to mask (budget).  Must be in ``[0, 1]``.
     rng : object
         NumPy-compatible RNG object exposing ``choice`` and ``permutation``.
@@ -61,7 +61,7 @@ def sample_subtree_joint_mask(
     """
     n_joints = len(parents)
     non_root_count = max(n_joints - 1, 0)
-    budget = min(int(joint_mask_prob * non_root_count), non_root_count)
+    budget = min(int(joint_mask_budget * non_root_count), non_root_count)
     if budget <= 0 or n_joints <= 1:
         return None
 
@@ -132,14 +132,19 @@ def sample_subtree_joint_mask_batch(
     n_joints: np.ndarray,
     max_joints: int,
     joint_mask_prob: float,
+    joint_mask_budget: float,
     rng: Any,
 ) -> Optional[np.ndarray]:
     """Batch wrapper around ``sample_subtree_joint_mask``.
 
-    The per-skeleton sampling order and RNG usage match the previous
-    AnyTop loop exactly; the optimization is that mask assembly stays on the
-    CPU in one NumPy array and is copied back to torch only once.
+    ``joint_mask_prob`` gates whether each sample is perturbed at all;
+    ``joint_mask_budget`` caps the size of the selected subtrees. Mask
+    assembly stays on the CPU in one NumPy array and is copied back to torch
+    only once.
     """
+    if joint_mask_prob <= 0.0 or joint_mask_budget <= 0.0:
+        return None
+
     batch_size = int(np.asarray(n_joints).shape[0])
     subtree_joint_mask = np.zeros((batch_size, max_joints), dtype=bool)
     any_masked = False
@@ -147,6 +152,8 @@ def sample_subtree_joint_mask_batch(
     for batch_index in range(batch_size):
         valid_joint_count = int(n_joints[batch_index])
         if valid_joint_count <= 1:
+            continue
+        if joint_mask_prob < 1.0 and float(rng.random()) >= joint_mask_prob:
             continue
 
         parents = np.asarray(parents_batch[batch_index], dtype=np.int64)[:valid_joint_count].tolist()
@@ -162,7 +169,7 @@ def sample_subtree_joint_mask_batch(
         per_sample_mask = sample_subtree_joint_mask(
             parents=parents,
             candidate_root_mask=candidate_root_mask,
-            joint_mask_prob=joint_mask_prob,
+            joint_mask_budget=joint_mask_budget,
             rng=rng,
         )
         if per_sample_mask is not None:

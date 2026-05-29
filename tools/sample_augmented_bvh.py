@@ -180,9 +180,12 @@ def parse_args() -> argparse.Namespace:
                    help="Processed dataset root (auto-detected if omitted).")
     p.add_argument("--output-dir", default="outputs/augmented_bvh_samples",
                    help="Directory to write BVH files.")
-    p.add_argument("--joint-mask-prob", type=float, default=0.15,
-                   help="Subtree joint mask probability for masked export (0 = disabled). "
-                        "Matches --joint_mask_prob in training. (default: 0.15)")
+    p.add_argument("--joint-mask-prob", type=float, default=1.0,
+                   help="Probability of exporting a masked counterpart for each sampled clip (0 = disabled). "
+                        "Matches --joint_mask_prob in training. (default: 1.0)")
+    p.add_argument("--joint-mask-budget", type=float, default=0.15,
+                   help="Maximum fraction of non-root joints in each masked export. "
+                        "Matches --joint_mask_budget in training. (default: 0.15)")
     return p.parse_args()
 
 
@@ -376,13 +379,17 @@ def main() -> int:
             # ----------------------------------------------------------------
             # Subtree joint mask export (if enabled)
             # ----------------------------------------------------------------
-            if args.joint_mask_prob > 0.0:
-                mask = sample_subtree_joint_mask(
-                    parents=list(parents),
-                    candidate_root_mask=cond_dict[object_type]["joint_mask_candidate_roots"][: len(parents)],
-                    joint_mask_prob=args.joint_mask_prob,
-                    rng=np.random.default_rng(args.seed + idx),
-                )
+            if args.joint_mask_prob > 0.0 and args.joint_mask_budget > 0.0:
+                mask_rng = np.random.default_rng(args.seed + idx)
+                if args.joint_mask_prob >= 1.0 or float(mask_rng.random()) < args.joint_mask_prob:
+                    mask = sample_subtree_joint_mask(
+                        parents=list(parents),
+                        candidate_root_mask=cond_dict[object_type]["joint_mask_candidate_roots"][: len(parents)],
+                        joint_mask_budget=args.joint_mask_budget,
+                        rng=mask_rng,
+                    )
+                else:
+                    mask = None
                 if mask is not None:
                     # Apply mask in normalized space (same as the model does),
                     # then denormalize so masked joints land at mean (valid pose).
@@ -390,7 +397,7 @@ def main() -> int:
                     motion_masked_norm[:, mask, :] = 0.0
                     motion_masked_raw = (motion_masked_norm[:m_length] * std[None, :, :] + mean[None, :, :]).astype(np.float32)
 
-                    masked_tags = list(tags) + [f"mask{int(round(args.joint_mask_prob * 100))}"]
+                    masked_tags = list(tags) + [f"mask{int(round(args.joint_mask_budget * 100))}"]
                     masked_fname = f"{stem}__{'+'.join(masked_tags)}_masked.bvh"
                     masked_path = output_dir / masked_fname
 

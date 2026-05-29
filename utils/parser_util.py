@@ -184,10 +184,12 @@ def add_training_options(parser):
                        help="Prefetch this many batches on background thread for main-thread data loading to overlap with GPU compute. 0 disables it.")
     group.add_argument("--detect_anomaly", action='store_true',
                        help="Enable PyTorch autograd anomaly detection. Useful for debugging, but significantly slows training.")
-    group.add_argument("--joint_mask_prob", default=0.0, type=float,
-                       help="Probability of sampling each non-root joint into a training-time subtree perturbation. "
+    group.add_argument("--joint_mask_prob", default=0.5, type=float,
+                       help="Per-sample probability of applying a training-time subtree joint perturbation. "
                            "Selected joints keep their supervision loss and remain visible to attention, but their x_t "
                            "features are re-noised at an independent timestep to mimic RePaint-style mixed reliability.")
+    group.add_argument("--joint_mask_budget", default=0.15, type=float,
+                       help="Maximum fraction of non-root joints to include in each sampled subtree perturbation.")
     group.add_argument("--temporal_span_mask_prob", default=0.0, type=float,
                        help="Probability of sampling a contiguous training-time temporal span perturbation. "
                             "Selected frames are re-noised for all real joints to teach native frame inpainting.")
@@ -197,7 +199,7 @@ def add_training_options(parser):
                        help="Maximum length of each sampled training-time temporal span perturbation. "
                             "Must be >= temporal_span_mask_min_frames.")
     group.add_argument("--temporal_span_seam_loss_weight", default=0.0, type=float,
-                       help="Additional reconstruction loss weight applied around sampled temporal-span boundaries. Uses a Gaussian seam band centered on each boundary frame. 0 disables it.")
+                       help="Weight of a target-relative acceleration (2nd temporal difference) penalty on the position channel, applied in a Gaussian seam band around sampled temporal-span boundaries. Suppresses inpainting-seam acceleration spikes that l_simple and vel_loss do not catch. 0 disables it.")
     group.add_argument("--temporal_span_seam_width", default=2, type=int,
                        help="Radius of the Gaussian seam band on each side of a sampled temporal-span boundary frame.")
     group.add_argument("--resume_checkpoint", default="", type=str,

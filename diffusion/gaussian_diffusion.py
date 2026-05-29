@@ -344,6 +344,34 @@ class GaussianDiffusion:
             return None
         return seam_weights
 
+    def temporal_span_seam_acceleration_loss(
+        self, target, model_output, temporal_span_seam_weights, spat_mask
+    ):
+        # target / model_output: [bs, njoints, nfeats, nframes] (denormalized).
+        # Penalize the prediction's second-order temporal difference
+        # (acceleration) of the position channel against the target's, weighted
+        # by the seam band. This is target-relative on purpose: l_simple already
+        # matches per-frame values and vel_loss only enforces pos/vel channel
+        # self-consistency (a synchronized jump satisfies it), so neither stops
+        # the inpainting seam from injecting an acceleration spike absent from
+        # ground truth. Matching GT acceleration kills that spike without
+        # over-smoothing genuinely sharp motion.
+        n_frames = model_output.shape[-1]
+        if n_frames < 3 or model_output.shape[2] < 3:
+            return None
+        pos_pred = model_output[:, :, 0:3, :]
+        pos_target = target[:, :, 0:3, :]
+        acc_pred = pos_pred[:, :, :, 2:] - 2.0 * pos_pred[:, :, :, 1:-1] + pos_pred[:, :, :, :-2]
+        acc_target = pos_target[:, :, :, 2:] - 2.0 * pos_target[:, :, :, 1:-1] + pos_target[:, :, :, :-2]
+        # Acceleration at interior index k is centered on frame k+1, so drop the
+        # two edge frames from the time weights.
+        center_weights = temporal_span_seam_weights[:, :, :, 1:-1]
+        joint_valid = spat_mask.transpose(1, 3)  # [bs, njoints, 1, 1]
+        weights = center_weights * joint_valid  # [bs, njoints, 1, nframes-2]
+        if not bool((weights > 0).any()):
+            return None
+        return self.weighted_feature_l2(acc_pred, acc_target, weights)
+
     def quat_to_mat(self, qs):
         r = qs[..., 0]
         i = qs[..., 1]
@@ -1668,7 +1696,7 @@ class GaussianDiffusion:
         x_t = self.q_sample(x_start, t, noise=noise)
 
         # Subtree perturbation: when the model selects a subset of joints
-        # (via joint_mask_prob), replace those joints' x_t slice with
+        # (via joint_mask_prob and joint_mask_budget), replace those joints' x_t slice with
         # q_sample(x_0, t_random, fresh_noise) -- same x_0 ground truth (so
         # the loss target is unchanged) but at a random independent timestep
         # with fresh independent noise. The selected joints continue to
@@ -1743,28 +1771,26 @@ class GaussianDiffusion:
                 )
                 terms["loss"] = terms["l_simple"].clone()
 
-                temporal_span_seam_weights = self._build_temporal_span_seam_weights(
-                    temporal_span_mask
-                )
-                if (
-                    self.temporal_span_seam_loss_weight > 0.0
-                    and temporal_span_seam_weights is not None
-                ):
-                    seam_weights = (
-                        temporal_span_seam_weights
-                        * joints_padding_mask_fp32.transpose(1, 3)
-                    )
-                    if bool(seam_weights.any()):
-                        terms["temporal_span_seam_loss"] = self.weighted_feature_l2(
-                            target_fp32, model_output_fp32, seam_weights
-                        )
-                        terms["loss"] = (
-                            terms["loss"]
-                            + self.temporal_span_seam_loss_weight * terms["temporal_span_seam_loss"]
-                        )
-
                 target_denorm = (target_fp32 * std_fp32) + mean_fp32
                 model_output_denorm = (model_output_fp32 * std_fp32) + mean_fp32
+
+                if self.temporal_span_seam_loss_weight > 0.0:
+                    temporal_span_seam_weights = self._build_temporal_span_seam_weights(
+                        temporal_span_mask
+                    )
+                    if temporal_span_seam_weights is not None:
+                        seam_acc_loss = self.temporal_span_seam_acceleration_loss(
+                            target_denorm,
+                            model_output_denorm,
+                            temporal_span_seam_weights,
+                            joints_padding_mask_fp32,
+                        )
+                        if seam_acc_loss is not None:
+                            terms["temporal_span_seam_loss"] = seam_acc_loss
+                            terms["loss"] = (
+                                terms["loss"]
+                                + self.temporal_span_seam_loss_weight * terms["temporal_span_seam_loss"]
+                            )
 
                 if self.lambda_geo > 0.:
                     terms["geodesic_loss"] = self.geodesic_loss(

@@ -50,7 +50,8 @@ class AnyTop(nn.Module):
         self.cross_limb_latents=kargs.get('cross_limb_latents', 8)
         self.cross_limb_dim=kargs.get('cross_limb_dim', 64)
         self.cross_limb_last_n=kargs.get('cross_limb_last_n', 0)
-        self.joint_mask_prob=float(kargs.get('joint_mask_prob', 0.0))
+        self.joint_mask_prob=float(kargs.get('joint_mask_prob', 0.5))
+        self.joint_mask_budget=float(kargs.get('joint_mask_budget', 0.15))
         self.temporal_span_mask_prob=float(kargs.get('temporal_span_mask_prob', 0.0))
         self.temporal_span_mask_min_frames=int(kargs.get('temporal_span_mask_min_frames', 4))
         self.temporal_span_mask_max_frames=int(kargs.get('temporal_span_mask_max_frames', 12))
@@ -59,6 +60,8 @@ class AnyTop(nn.Module):
         self.global_energy_stats_momentum = 0.01
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
+        if not 0.0 <= self.joint_mask_budget <= 1.0:
+            raise ValueError(f"joint_mask_budget must be in [0, 1], got {self.joint_mask_budget}")
         if not 0.0 <= self.temporal_span_mask_prob <= 1.0:
             raise ValueError(
                 f"temporal_span_mask_prob must be in [0, 1], got {self.temporal_span_mask_prob}"
@@ -229,13 +232,12 @@ class AnyTop(nn.Module):
         return raw_playspeed_cond.to(dtype=dtype).view(batch_size, 1)
 
     def sample_subtree_joint_mask_train(self, y, njoints, device):
-        """Select subtrees of joints to perturb during training (governed by
-        ``joint_mask_prob``).
+        """Select subtrees of joints to perturb during training.
 
         Returns a bool tensor of shape ``[B, njoints]`` (True = joint selected)
         or ``None`` if no joint was selected, or if not in training mode, or
-        if ``joint_mask_prob == 0`` -- so eval-mode loss reports a clean
-        diffusion objective.
+        if ``joint_mask_prob == 0`` or ``joint_mask_budget == 0`` -- so
+        eval-mode loss reports a clean diffusion objective.
 
         Called from ``GaussianDiffusion.training_losses`` AFTER ``q_sample``
         to decide which joints' x_t slice should be re-noised with an
@@ -245,7 +247,7 @@ class AnyTop(nn.Module):
         timestep mismatch -- the regime RePaint clamping produces at
         inference. The model's forward itself stays vanilla.
         """
-        if (not self.training) or self.joint_mask_prob <= 0.0:
+        if (not self.training) or self.joint_mask_prob <= 0.0 or self.joint_mask_budget <= 0.0:
             return None
         n_joints_cpu = torch.as_tensor(y['n_joints'], device='cpu', dtype=torch.int64).reshape(-1)
         return self._sample_subtree_joint_mask(y, n_joints_cpu, njoints, device)
@@ -278,6 +280,7 @@ class AnyTop(nn.Module):
             n_joints=n_joints_np,
             max_joints=njoints,
             joint_mask_prob=self.joint_mask_prob,
+            joint_mask_budget=self.joint_mask_budget,
             rng=np.random,
         )
         if subtree_joint_mask_np is None:
@@ -354,7 +357,7 @@ class AnyTop(nn.Module):
         n_joints = torch.as_tensor(y['n_joints'], device=x.device).reshape(-1)
         joint_key_padding_mask = self._build_joint_key_padding_mask(njoints, n_joints, x.device)
         global_energy_condition = None
-        # joint_mask_prob-driven subtree perturbation is applied OUTSIDE this
+        # joint-mask subtree perturbation is applied OUTSIDE this
         # forward, in diffusion.training_losses, by re-noising the selected
         # joints' x_t with q_sample(x_0, t_random, fresh_noise). The model
         # itself stays vanilla -- selected joints DO NOT enter the

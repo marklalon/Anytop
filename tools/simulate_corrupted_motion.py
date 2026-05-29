@@ -4,7 +4,7 @@ Simulate Corrupted Motion — Freeze Specified Joint Subtrees
 Loads a raw motion NPY ``(T, J, 13)``, freezes the channels of the requested
 joints (and, by default, their subtrees) by setting them to the dataset's
 per-joint mean — the exact corruption signal the model sees during training
-when ``joint_mask_prob`` masks a subtree — and writes both the corrupted NPY
+when joint-mask subtree perturbation is enabled — and writes both the corrupted NPY
 and a BVH preview.
 
 The joint name resolution follows the same alias rules as
@@ -144,7 +144,7 @@ def parse_args() -> argparse.Namespace:
             "Freeze specified joints (and their subtrees) in a raw motion NPY "
             "by replacing their channels with the dataset's per-joint mean — "
             "matching the corruption signal seen during training when "
-            "joint_mask_prob masks a subtree."
+            "joint-mask subtree perturbation is enabled."
         )
     )
     p.add_argument("--motion", required=True,
