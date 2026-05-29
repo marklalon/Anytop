@@ -827,7 +827,7 @@ class MotionDataset(data.Dataset):
             )
             m_length = target_num_frames
 
-        if loop_condition_active and m_length == target_num_frames:
+        if loop_condition_active:
             loop_full_cycle = True
             loop_applied = True
 
