@@ -34,6 +34,8 @@ from .face_orientation import (
 
 from .animation_utils import (
     ROOT_XZ_STRIP_THRESHOLD,
+    LOOP_DETECTION_ROOT_XZ_TOLERANCE,
+    LOOP_DETECTION_STEP_MIN,
     detect_motion_loop,
     find_translation_root,
     bake_descendant_y_into_translation_root,
@@ -463,6 +465,24 @@ def _extract_motion_features_from_aligned_anims(
     motion_export_anim = export_anim
     xz_extent = xz_locomotion_extent(export_anim, feature_translation_root_index)
     has_locomotion = xz_extent > ROOT_XZ_STRIP_THRESHOLD
+
+    # Additional check: if xz_extent falls in the ambiguous band between loop
+    # tolerance and strip threshold, treat clips with a small endpoint gap as
+    # loop locomotion and also strip the root XZ.  The endpoint gap is evaluated
+    # in root-relative global positions (translation-root XZ subtracted) so that
+    # the wrap gap reflects per-joint closure rather than overall scene translation.
+    if (
+        not has_locomotion
+        and LOOP_DETECTION_ROOT_XZ_TOLERANCE <= xz_extent <= ROOT_XZ_STRIP_THRESHOLD
+    ):
+        root_rel_pos = positions_global(export_anim).copy()
+        root_rel_pos[..., 0] -= root_rel_pos[:, feature_translation_root_index:feature_translation_root_index + 1, 0]
+        root_rel_pos[..., 2] -= root_rel_pos[:, feature_translation_root_index:feature_translation_root_index + 1, 2]
+        endpoint_delta = np.linalg.norm(root_rel_pos[-1] - root_rel_pos[0], axis=-1)
+        wrap_gap_p75 = float(np.percentile(endpoint_delta, 75))
+        if wrap_gap_p75 < LOOP_DETECTION_STEP_MIN:
+            has_locomotion = True
+
     if has_locomotion:
         motion_anim = strip_translation_root_xz(new_anim, feature_translation_root_index)
         motion_export_anim = strip_translation_root_xz(export_anim, feature_translation_root_index)
