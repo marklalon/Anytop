@@ -47,7 +47,7 @@ ROOT_XZ_STRIP_THRESHOLD = 0.6
 #
 # A clip loops only when the endpoint gap fits inside that transition envelope
 # and the translation root's accumulated XZ displacement returns to the start.
-LOOP_DETECTION_GAP_RATIO = 2
+LOOP_DETECTION_GAP_RATIO = 2.2
 LOOP_DETECTION_STEP_MIN = 0.02
 LOOP_DETECTION_STEP_MAX = 0.08
 LOOP_DETECTION_ROOT_XZ_TOLERANCE = 0.08
