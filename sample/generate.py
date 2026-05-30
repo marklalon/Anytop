@@ -33,7 +33,6 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     get_motion,
     recover_bvh_export_animation_from_motion_np,
 )
-from data_loaders.truebones.truebones_utils.features import resolve_feature_translation_root_index
 from motion_lib import BVH
 from os.path import join as pjoin
 from utils import dist_util
@@ -522,14 +521,7 @@ def _sample_batch(
     reference_motion=None,
     skip_timesteps=0,
     inpaint_mask=None,
-    repaint_jump_length=0,
-    repaint_jump_n_sample=1,
 ):
-    if repaint_jump_length < 0:
-        raise ValueError("repaint_jump_length must be >= 0")
-    if repaint_jump_n_sample < 1:
-        raise ValueError("repaint_jump_n_sample must be >= 1")
-
     skip_timesteps = int(skip_timesteps) if skip_timesteps is not None else 0
 
     inpainting = inpaint_mask is not None
@@ -589,16 +581,11 @@ def _sample_batch(
         inpaint_kwargs = dict(
             inpaint_mask=inpaint_mask_, inpaint_reference=inpaint_reference_
         )
-        repaint_kwargs = dict(
-            repaint_jump_length=repaint_jump_length,
-            repaint_jump_n_sample=repaint_jump_n_sample,
-        )
         if sampling_method == 'ddim':
             return diffusion.ddim_sample_loop(
                 progress=True,
                 eta=ddim_eta,
                 **inpaint_kwargs,
-                **repaint_kwargs,
                 **common_kwargs,
             )
         if sampling_method in ('p', 'ddpm'):
@@ -607,7 +594,6 @@ def _sample_batch(
                 dump_steps=None,
                 const_noise=False,
                 **inpaint_kwargs,
-                **repaint_kwargs,
                 **common_kwargs,
             )
         raise ValueError(f'Unknown sampling_method: {sampling_method}')
@@ -634,7 +620,7 @@ def _sample_batch(
 
     fixseed(seed)
     if inpainting:
-        # Motion inpainting (RePaint-style imputation), skip_timesteps == 0: the
+        # Motion inpainting, skip_timesteps == 0: the
         # latent starts from PURE NOISE everywhere (so masked joints/frames are
         # truly generated, not a noised copy of the reference), and the
         # reference is used only as the per-step clamp source for the known
@@ -853,11 +839,6 @@ def main(args=None, cond_dict=None):
     inpaint_joints_arg = str(getattr(args, 'inpaint_joints', '') or '').strip()
     inpaint_frames_arg = str(getattr(args, 'inpaint_frames', '') or '').strip()
     inpaint_include_subtree = bool(getattr(args, 'inpaint_include_subtree', True))
-    repaint_jump_length = int(getattr(args, 'repaint_jump_length', 0))
-    repaint_jump_n_sample = int(getattr(args, 'repaint_jump_n_sample', 1))
-    # Cosmetic flag (whether RePaint resampling params are on); the actual
-    # RePaint activation in the sampler also requires an inpaint mask.
-    repaint_enabled = repaint_jump_length > 0 and repaint_jump_n_sample > 1
 
     # ── Resolve --object_type ───────────────────────────────────────────────
     # --object_type: look up directly in cond (user-provided first, then default).
@@ -931,7 +912,6 @@ def main(args=None, cond_dict=None):
                 f"{reference_motion_path}) not found in cond file. "
                 f"Available: {available}"
             )
-    cross_species_reference = _reference_crosses_skeletons(source_type, target_type)
     should_retarget_reference = _should_retarget_reference(
         source_type,
         target_type,
@@ -956,8 +936,6 @@ def main(args=None, cond_dict=None):
                 f" ({blind_type or 'no match'}); falling back to target object_type: {target_type}"
             )
         if should_retarget_reference:
-            print(f"Reference motion object_type: {source_type} (will retarget to {target_type})")
-        elif cross_species_reference:
             print(f"Reference motion object_type: {source_type} (will retarget to {target_type})")
         else:
             inferred_display = source_type if source_type else target_type
@@ -1132,19 +1110,6 @@ def main(args=None, cond_dict=None):
                       'skip_timesteps=0, denoising full schedule from pure noise)')
             else:
                 print(f'    skip_timesteps: {skip_timesteps} (higher = more faithful to reference)')
-            if (user_inpaint_active or outpaint_active):
-                if repaint_enabled:
-                    print(
-                        f'    RePaint resampling: on '
-                        f'(jump_length={repaint_jump_length}, '
-                        f'jump_n_sample={repaint_jump_n_sample})'
-                    )
-                else:
-                    print(
-                        '    RePaint resampling: off '
-                        '(single reverse pass; known region is still clamped every step)'
-                    )
-
             # ── Auto-extract global energy from the reference ────────────────
             # --global_energy_mean/--global_energy_std cannot be combined with
             # --reference_motion (enforced above), so when a reference is loaded
@@ -1234,8 +1199,6 @@ def main(args=None, cond_dict=None):
                 reference_motion=reference_motion,
                 skip_timesteps=skip_ts,
                 inpaint_mask=inpaint_mask,
-                repaint_jump_length=repaint_jump_length,
-                repaint_jump_n_sample=repaint_jump_n_sample,
             )
 
         if two_pass_outpaint:

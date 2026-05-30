@@ -981,7 +981,7 @@ class GaussianDiffusion:
         return {"sample": sample, "pred_xstart": out["pred_xstart"].detach()}
 
     def _inpaint_project(self, sample, i, shape, device, inpaint_mask, inpaint_reference):
-        """RePaint-style imputation: replace the known (unmasked) region of the
+        """Imputation: replace the known (unmasked) region of the
         just-produced x_{i-1} with the reference forward-noised to step i-1.
 
         inpaint_mask is 1.0 where the region is regenerated (free) and 0.0
@@ -1002,54 +1002,6 @@ class GaussianDiffusion:
             )
         return inpaint_mask * sample + (1.0 - inpaint_mask) * known
 
-    def _build_repaint_schedule(self, start_t, jump_length, jump_n_sample):
-        """Build a RePaint jump/time-travel schedule over state timesteps x_t.
-
-        Returns a list like [T-1, T-2, T-1, T-2, ... , 0, -1]. Consecutive
-        entries differ by exactly one timestep; descending transitions are
-        denoising steps, ascending transitions are forward noising (time
-        travel). The terminal -1 sentinel preserves the final t=0 denoise step
-        from the original monotonic sampler.
-        """
-        schedule = [start_t]
-        if start_t <= 0 or jump_length <= 0 or jump_n_sample <= 1:
-            schedule.extend(range(start_t - 1, -1, -1))
-            schedule.append(-1)
-            return schedule
-
-        max_anchor = start_t - jump_length
-        if max_anchor < jump_length:
-            schedule.extend(range(start_t - 1, -1, -1))
-            schedule.append(-1)
-            return schedule
-
-        jumps = {
-            t: jump_n_sample - 1
-            for t in range(jump_length, max_anchor + 1, jump_length)
-        }
-        t = start_t
-        while t > 0:
-            t -= 1
-            schedule.append(t)
-            repeats_left = jumps.get(t, 0)
-            if repeats_left > 0:
-                jumps[t] = repeats_left - 1
-                for _ in range(jump_length):
-                    t += 1
-                    schedule.append(t)
-        schedule.append(-1)
-        return schedule
-
-    def _repaint_time_travel(self, sample, t, const_noise=False):
-        """Sample one exact forward diffusion step q(x_t | x_{t-1})."""
-        noise = th.randn_like(sample)
-        if const_noise:
-            noise = noise[[0]].repeat(sample.shape[0], 1, 1, 1)
-        return (
-            _extract_into_tensor(self.sqrt_alphas, t, sample.shape) * sample
-            + _extract_into_tensor(self.sqrt_betas, t, sample.shape) * noise
-        )
-
     def p_sample_loop(
         self,
         model,
@@ -1069,8 +1021,6 @@ class GaussianDiffusion:
         const_noise=False,
         inpaint_mask=None,
         inpaint_reference=None,
-        repaint_jump_length=0,
-        repaint_jump_n_sample=1,
     ):
         """
         Generate samples from the model.
@@ -1113,8 +1063,6 @@ class GaussianDiffusion:
             const_noise=const_noise,
             inpaint_mask=inpaint_mask,
             inpaint_reference=inpaint_reference,
-            repaint_jump_length=repaint_jump_length,
-            repaint_jump_n_sample=repaint_jump_n_sample,
         )):
             final = sample
             if dump_steps is not None and i in dump_steps:
@@ -1142,8 +1090,6 @@ class GaussianDiffusion:
         const_noise=False,
         inpaint_mask=None,
         inpaint_reference=None,
-        repaint_jump_length=0,
-        repaint_jump_n_sample=1,
     ):
         """
         Generate samples from the model and yield intermediate samples from
@@ -1170,16 +1116,8 @@ class GaussianDiffusion:
             my_t = th.ones([shape[0]], device=device, dtype=th.long) * indices[0]
             img = self.q_sample(init_image, my_t, img)
 
-        # Keep the original final t=0 denoise step in the transition-based
-        # sampler by ending the monotonic schedule with a single sentinel.
-        repaint_schedule = indices + [-1]
-        if inpaint_mask is not None and inpaint_reference is not None:
-            repaint_schedule = self._build_repaint_schedule(
-                start_t=indices[0],
-                jump_length=repaint_jump_length,
-                jump_n_sample=repaint_jump_n_sample,
-            )
-        transitions = list(zip(repaint_schedule[:-1], repaint_schedule[1:]))
+        schedule = indices + [-1]
+        transitions = list(zip(schedule[:-1], schedule[1:]))
 
         if progress:
             # Lazy import so that we don't depend on tqdm.
@@ -1188,13 +1126,6 @@ class GaussianDiffusion:
             transitions = tqdm(transitions)
 
         for current_i, next_i in transitions:
-            if next_i > current_i:
-                t_forward = th.tensor([next_i] * shape[0], device=device)
-                img = self._repaint_time_travel(
-                    img, t_forward, const_noise=const_noise
-                )
-                continue
-
             t = th.tensor([current_i] * shape[0], device=device)
             if randomize_class and 'y' in model_kwargs:
                 model_kwargs['y'] = th.randint(low=0, high=model.num_classes,
@@ -1386,8 +1317,6 @@ class GaussianDiffusion:
         const_noise=False,
         inpaint_mask=None,
         inpaint_reference=None,
-        repaint_jump_length=0,
-        repaint_jump_n_sample=1,
     ):
         """
         Generate samples from the model using DDIM.
@@ -1417,8 +1346,6 @@ class GaussianDiffusion:
             cond_fn_with_grad=cond_fn_with_grad,
             inpaint_mask=inpaint_mask,
             inpaint_reference=inpaint_reference,
-            repaint_jump_length=repaint_jump_length,
-            repaint_jump_n_sample=repaint_jump_n_sample,
         ):
             final = sample
         return final["sample"]
@@ -1441,8 +1368,6 @@ class GaussianDiffusion:
         cond_fn_with_grad=False,
         inpaint_mask=None,
         inpaint_reference=None,
-        repaint_jump_length=0,
-        repaint_jump_n_sample=1,
     ):
         """
         Use DDIM to sample from the model and yield intermediate samples from
@@ -1467,16 +1392,8 @@ class GaussianDiffusion:
             my_t = th.ones([shape[0]], device=device, dtype=th.long) * indices[0]
             img = self.q_sample(init_image, my_t, img)
 
-        # Keep the original final t=0 denoise step in the transition-based
-        # sampler by ending the monotonic schedule with a single sentinel.
-        repaint_schedule = indices + [-1]
-        if inpaint_mask is not None and inpaint_reference is not None:
-            repaint_schedule = self._build_repaint_schedule(
-                start_t=indices[0],
-                jump_length=repaint_jump_length,
-                jump_n_sample=repaint_jump_n_sample,
-            )
-        transitions = list(zip(repaint_schedule[:-1], repaint_schedule[1:]))
+        schedule = indices + [-1]
+        transitions = list(zip(schedule[:-1], schedule[1:]))
 
         if progress:
             # Lazy import so that we don't depend on tqdm.
@@ -1485,11 +1402,6 @@ class GaussianDiffusion:
             transitions = tqdm(transitions)
 
         for current_i, next_i in transitions:
-            if next_i > current_i:
-                t_forward = th.tensor([next_i] * shape[0], device=device)
-                img = self._repaint_time_travel(img, t_forward)
-                continue
-
             t = th.tensor([current_i] * shape[0], device=device)
             if randomize_class and 'y' in model_kwargs:
                 model_kwargs['y'] = th.randint(low=0, high=model.num_classes,
@@ -1554,7 +1466,7 @@ class GaussianDiffusion:
     ):
         """Re-noise selected joints / spans without altering attention masks.
 
-        Training-time structured corruption is meant to mimic RePaint's mixed
+        Training-time structured corruption is meant to mimic the mixed
         reliability at the model input, not to hide tokens from attention.
         The selected joints / frames keep participating in attention; only
         their x_t features are replaced by q_sample(x_0, t_random).
@@ -1702,7 +1614,7 @@ class GaussianDiffusion:
         # with fresh independent noise. The selected joints continue to
         # participate in attention normally; the model must learn to denoise
         # them despite their noise level disagreeing with the rest of the
-        # batch sample, which is exactly what RePaint clamping produces at
+        # batch sample, which is exactly what inpaint clamping produces at
         # inference (clamped joints are at a fixed reference's q_sample state
         # that's uncorrelated with the in-flight masked joint's trajectory).
         x_t, temporal_span_mask = self._apply_joint_mask_training_perturbation(

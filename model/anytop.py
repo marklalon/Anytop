@@ -244,7 +244,7 @@ class AnyTop(nn.Module):
         independent random timestep and fresh noise, so that those joints'
         noise level disagrees with the rest of the batch sample. This trains
         the cross-joint pathway to denoise robustly against per-joint
-        timestep mismatch -- the regime RePaint clamping produces at
+        timestep mismatch -- the regime inpaint clamping produces at
         inference. The model's forward itself stays vanilla.
         """
         if (not self.training) or self.joint_mask_prob <= 0.0 or self.joint_mask_budget <= 0.0:
@@ -364,7 +364,7 @@ class AnyTop(nn.Module):
         # key-padding masks and continue to participate in attention normally,
         # just with mismatched noise levels, which trains the
         # cross-joint pathway to denoise robustly against per-joint timestep
-        # disagreement (matching RePaint clamp behavior at inference).
+        # disagreement (matching inpaint clamp behavior at inference).
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
         playspeed_condition = self._coerce_playspeed_cond(
             y.get('playspeed_cond'),

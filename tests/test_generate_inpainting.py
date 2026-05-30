@@ -239,33 +239,6 @@ def test_sample_batch_routes_inpainting_through_ddpm_from_pure_noise() -> None:
     assert tuple(diffusion.last_kwargs["noise"].shape) == sample_shape
 
 
-def test_sample_batch_forwards_repaint_resampling_args_to_ddim() -> None:
-    diffusion = _CaptureDiffusion()
-    sample_shape = (1, 3, 13, 4)
-    reference_motion = torch.ones(sample_shape, dtype=torch.float32)
-    inpaint_mask = torch.zeros((1, 3, 1, 4), dtype=torch.float32)
-
-    result = _sample_batch(
-        diffusion=diffusion,
-        model=_DummyModel(),
-        model_kwargs={},
-        sampling_method="ddim",
-        sample_shape=sample_shape,
-        ddim_eta=0.0,
-        seed=123,
-        device=torch.device("cpu"),
-        reference_motion=reference_motion,
-        skip_timesteps=0,
-        inpaint_mask=inpaint_mask,
-        repaint_jump_length=2,
-        repaint_jump_n_sample=3,
-    )
-
-    assert result == "ddim"
-    assert diffusion.last_kwargs["repaint_jump_length"] == 2
-    assert diffusion.last_kwargs["repaint_jump_n_sample"] == 3
-
-
 def test_sample_batch_injects_cross_limb_unreliable_mask_for_single_inpaint_pass() -> None:
     diffusion = _CaptureDiffusion()
     sample_shape = (1, 3, 13, 4)
@@ -414,51 +387,6 @@ def test_p_sample_loop_visits_final_timestep_without_inpaint(monkeypatch: pytest
     )
 
     assert reverse_ts == [3, 2, 1, 0]
-
-
-def test_build_repaint_schedule_revisits_anchor_timesteps_and_keeps_final_step() -> None:
-    diffusion = _make_diffusion(num_steps=4)
-
-    schedule = diffusion._build_repaint_schedule(
-        start_t=3,
-        jump_length=1,
-        jump_n_sample=2,
-    )
-
-    assert schedule == [3, 2, 3, 2, 1, 2, 1, 0, -1]
-
-
-def test_p_sample_loop_uses_repaint_time_travel(monkeypatch: pytest.MonkeyPatch) -> None:
-    diffusion = _make_diffusion(num_steps=4)
-    sample = torch.zeros((1, 1, 1, 1), dtype=torch.float32)
-    reverse_ts: list[int] = []
-    forward_ts: list[int] = []
-
-    def fake_p_sample(model, x, t, clip_denoised=True, denoised_fn=None, cond_fn=None, model_kwargs=None, const_noise=False):
-        reverse_ts.append(int(t.item()))
-        return {"sample": sample.clone(), "pred_xstart": torch.zeros_like(sample)}
-
-    def fake_repaint_time_travel(sample_in, t, const_noise=False):
-        forward_ts.append(int(t.item()))
-        return sample_in
-
-    monkeypatch.setattr(diffusion, "p_sample", fake_p_sample)
-    monkeypatch.setattr(diffusion, "_repaint_time_travel", fake_repaint_time_travel)
-
-    diffusion.p_sample_loop(
-        _DummyModel(),
-        shape=tuple(sample.shape),
-        noise=torch.zeros_like(sample),
-        device=torch.device("cpu"),
-        progress=False,
-        inpaint_mask=torch.ones((1, 1, 1, 1), dtype=torch.float32),
-        inpaint_reference=torch.zeros_like(sample),
-        repaint_jump_length=1,
-        repaint_jump_n_sample=2,
-    )
-
-    assert reverse_ts == [3, 3, 2, 2, 1, 0]
-    assert forward_ts == [3, 2]
 
 
 def test_ddim_sample_loop_returns_projected_final_sample(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -681,37 +609,3 @@ def test_close_loop_root_xz_noop_for_invalid_root():
     _close_loop_root_xz_via_velocity(motion, translation_root_index=5)
 
     np.testing.assert_array_equal(motion, original)
-
-
-def test_ddim_sample_loop_uses_repaint_time_travel(monkeypatch: pytest.MonkeyPatch) -> None:
-    diffusion = _make_diffusion(num_steps=4)
-    sample = torch.zeros((1, 1, 1, 1), dtype=torch.float32)
-    reverse_ts: list[int] = []
-    forward_ts: list[int] = []
-
-    def fake_ddim_sample(model, x, t, clip_denoised=True, denoised_fn=None, cond_fn=None, model_kwargs=None, eta=0.0):
-        reverse_ts.append(int(t.item()))
-        return {"sample": sample.clone(), "pred_xstart": torch.zeros_like(sample)}
-
-    def fake_repaint_time_travel(sample_in, t, const_noise=False):
-        forward_ts.append(int(t.item()))
-        return sample_in
-
-    monkeypatch.setattr(diffusion, "ddim_sample", fake_ddim_sample)
-    monkeypatch.setattr(diffusion, "_repaint_time_travel", fake_repaint_time_travel)
-
-    diffusion.ddim_sample_loop(
-        _DummyModel(),
-        shape=tuple(sample.shape),
-        noise=torch.zeros_like(sample),
-        device=torch.device("cpu"),
-        progress=False,
-        eta=0.0,
-        inpaint_mask=torch.ones((1, 1, 1, 1), dtype=torch.float32),
-        inpaint_reference=torch.zeros_like(sample),
-        repaint_jump_length=1,
-        repaint_jump_n_sample=2,
-    )
-
-    assert reverse_ts == [3, 3, 2, 2, 1, 0]
-    assert forward_ts == [3, 2]

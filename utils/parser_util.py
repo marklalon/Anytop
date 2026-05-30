@@ -187,7 +187,7 @@ def add_training_options(parser):
     group.add_argument("--joint_mask_prob", default=0.5, type=float,
                        help="Per-sample probability of applying a training-time subtree joint perturbation. "
                            "Selected joints keep their supervision loss and remain visible to attention, but their x_t "
-                           "features are re-noised at an independent timestep to mimic RePaint-style mixed reliability.")
+                           "features are re-noised at an independent timestep to mimic mixed reliability during inpainting.")
     group.add_argument("--joint_mask_budget", default=0.15, type=float,
                        help="Maximum fraction of non-root joints to include in each sampled subtree perturbation.")
     group.add_argument("--temporal_span_mask_prob", default=0.0, type=float,
@@ -298,16 +298,7 @@ def add_generate_options(parser):
                             "(inclusive, clipped to the reference length). Empty = all frames. Combined with "
                             "--inpaint_joints, the regenerated region is selected-joints x selected-frames; "
                             "everything else is clamped to --reference_motion. Requires --reference_motion.")
-    group.add_argument("--repaint_jump_length", default=0, type=int,
-                       help="RePaint resampling jump/time-travel length for motion inpainting. 0 disables "
-                           "resampling (default; single reverse pass). Positive values revisit later noisy "
-                           "states and can improve mask-boundary quality at the cost of extra runtime. Only "
-                           "used when --inpaint_* is set.")
-    group.add_argument("--repaint_jump_n_sample", default=1, type=int,
-                       help="RePaint resampling revisit count for each jump anchor. 1 disables extra revisits. "
-                           "Larger values perform more jump/time-travel cycles (slower, often smoother). "
-                           "Only used when --inpaint_* is set. Even with --sampling_method ddim --ddim_eta 0, "
-                           "enabling this adds fresh forward noise and makes sampling stochastic.")
+
     group.add_argument("--score", action='store_true',
                        help="After generation, automatically run the motion quality scorer on the output "
                             "and print a quality report. Uses --action_tags (already supported for training) "
