@@ -750,7 +750,7 @@ class DistributionMotionQualityScorer:
                     "cosine_distance": round(species.cosine_distance, 4),
                     "topology_distance": round(species.topology_distance, 4),
                     "combined_distance": round(species.combined_distance, 4),
-                    "same_species_group": species.same_species_group,
+                    "same_group": species.same_group,
                     "species_weight": round(species.species_weight, 4),
                     "clip_count": species.clip_count,
                     "total_frames": species.total_frames,

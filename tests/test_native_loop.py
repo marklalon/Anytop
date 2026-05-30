@@ -53,8 +53,6 @@ def _make_batch_item(
     if loop_phase_length is None:
         loop_phase_length = float(n_frames)
     metadata = {
-        'species_label': 'Horse',
-        'species_group': 'quadropeds',
         'action_tags': ['locomotion'],
         'translation_root_index': 0,
         'is_loop': is_loop,

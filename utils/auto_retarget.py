@@ -413,11 +413,10 @@ def auto_retarget_pipeline(
     max_joints = max(max_joints, max_joints_tgt)
 
     n_joints = int(target_cond.get('original_joint_count') or len(target_parents))
-    t_species = target_cond.get('species_group') or 'unknown'
     n_chains = len(target_cond.get('kinematic_chains', []))
     print(
         f"[auto_retarget] Target: {target_object_type} "
-        f"({n_joints} joints, species_group={t_species})"
+        f"({n_joints} joints"
     )
 
     # 3. Select donors

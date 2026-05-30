@@ -27,8 +27,7 @@ Similarity blends three complementary signals (see ``SimilarityWeights``):
 Plus a graded ``lineage_tags`` discount: each species carries a coarse-to-fine
 ``(clade, family)`` tag pair (e.g. Cat -> ('Mammal', 'Felid')); the more tags
 two skeletons share, the larger the fractional discount on their combined
-distance. This supersedes the old binary ``species_group`` class match, which
-lumped every quadruped into one bucket. (``species_group`` is deprecated.)
+distance.
 
 The module is intentionally numpy-only so the lightweight motion-quality
 scorer does not pull in torch/motion_lib. Components degrade gracefully: a
@@ -243,17 +242,6 @@ def topology_descriptor(object_cond: Mapping[str, object]) -> np.ndarray:
         std_chain,
         float(np.log(n)),
     ], dtype=np.float64)
-
-
-def species_group(object_cond: Mapping[str, object]) -> str:
-    """Deprecated coarse class (biped/quadruped/...).
-
-    No longer used for similarity scoring -- superseded by the finer-grained
-    ``lineage_tags`` overlap (see ``rank_species``). Retained only so legacy
-    call sites that still read the persisted ``species_group`` cond field keep
-    working.
-    """
-    return str(np.asarray(object_cond.get("species_group", ""))).strip().lower()
 
 
 def lineage_tags(object_type: object) -> frozenset:

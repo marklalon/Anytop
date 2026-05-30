@@ -43,7 +43,7 @@ class ReferenceSpeciesSummary:
     total_frames: int
     topology_distance: float = 0.0
     combined_distance: float = 0.0
-    same_species_group: bool = False
+    same_group: bool = False
 
 
 @dataclass(frozen=True)
@@ -309,7 +309,7 @@ def _build_weighted_reference_bank(
                 total_frames=int(total_frames),
                 topology_distance=float(ranked.topology_distance),
                 combined_distance=float(ranked.combined_distance),
-                same_species_group=bool(ranked.same_group),
+                same_group=bool(ranked.same_group),
             )
         )
 
@@ -342,7 +342,7 @@ def _build_weighted_reference_bank(
                 total_frames=species.total_frames,
                 topology_distance=species.topology_distance,
                 combined_distance=species.combined_distance,
-                same_species_group=species.same_species_group,
+                same_group=species.same_group,
             )
             for species in species_summaries
         ]
