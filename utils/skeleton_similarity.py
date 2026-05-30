@@ -278,10 +278,10 @@ class SimilarityWeights:
     overlap (same clade only) gets a proportional share.
     """
 
-    jaccard: float = 0.5
-    embedding: float = 0.2
-    topology: float = 0.3
-    group_bonus: float = 0.25
+    topology: float = 0.5
+    jaccard: float = 0.4
+    embedding: float = 0.1
+    group_bonus: float = 0.3
 
 
 DEFAULT_WEIGHTS = SimilarityWeights()
