@@ -143,10 +143,14 @@ def test_prepare_reference_bundle_uses_preloaded_cropped_features() -> None:
 
     assert bundle["loaded_reference_frame_count"] == 40
     assert bundle["loaded_reference_joint_count"] == n_joints
-    # M=40 <= internal window 60 -> generated at native 40 frames, no down-trim.
-    assert bundle["output_frame_count"] == 40
+    # The model is a fixed-window model trained only at num_frames. The bundle
+    # always runs at that native window (requested_output_frame_count=60) and
+    # resamples the shorter reference up to it; the requested output length is
+    # honored later by resampling the sampled motion. reference_source_frame_count
+    # records the pre-resample reference length (40) for playspeed/energy.
+    assert bundle["output_frame_count"] == 60
     assert bundle["reference_source_frame_count"] == 40
-    assert tuple(bundle["reference_motion"].shape) == (2, n_joints, feat, 40)
+    assert tuple(bundle["reference_motion"].shape) == (2, n_joints, feat, 60)
 
 
 def test_build_inpaint_mask_uses_all_real_joints_for_selected_frames() -> None:

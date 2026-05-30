@@ -438,7 +438,18 @@ def _prepare_img2img_reference_bundle(
         )
 
     loaded_reference_frame_count, loaded_reference_joint_count, ref_feats = ref_raw.shape
-    output_frame_count = min(loaded_reference_frame_count, int(requested_output_frame_count))
+    # The model is a fixed-window model: every training clip is resampled to
+    # num_frames (see dataset._resample_motion_features), so the temporal
+    # transformer and the loop-phase positional embedding are only ever valid at
+    # the native window length. Always run the model at that native window
+    # (requested_output_frame_count == num_frames) and resample the reference up
+    # to it, exactly like the pure-generation path. The requested output length
+    # is honored afterwards by resampling the sampled motion to
+    # target_output_frames. Previously this used min(loaded, requested), which
+    # ran the model at a shorter, never-trained window whenever the (cropped)
+    # reference was shorter than num_frames -- breaking loop closure and quality
+    # for motion_frames < num_frames.
+    output_frame_count = int(requested_output_frame_count)
     max_source_frames = max(int(min_length), output_frame_count * 2)
     if loaded_reference_frame_count > max_source_frames:
         visible_frames = output_frame_count if requested_visible_frame_count is None else int(requested_visible_frame_count)
