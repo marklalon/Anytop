@@ -201,7 +201,61 @@ def _select_species_weights(
     ]
 
 
+_REFERENCE_BANK_CACHE: Dict[tuple, WeightedReferenceBank] = {}
+
+
+def clear_reference_bank_cache() -> None:
+    """Drop all memoized reference banks (frees the loaded clip arrays)."""
+    _REFERENCE_BANK_CACHE.clear()
+
+
 def build_weighted_reference_bank(
+    object_type: str,
+    action_tags: str,
+    dataset_root: Optional[str] = None,
+    top_k_species: int = 5,
+    min_frames: int = 8,
+    use_cache: bool = True,
+) -> WeightedReferenceBank:
+    """Build (or fetch from cache) the weighted reference prior.
+
+    Assembling the bank loads every matching reference clip from disk, which is
+    the dominant cost when scoring many query clips that share the same
+    (object_type, action_tags, top_k_species) prior. The result is memoized on
+    the resolved dataset root plus the normalized request so repeated calls
+    reuse the already-loaded clips. The returned bank is treated as read-only by
+    all callers; do not mutate its clips in place.
+    """
+    if not use_cache:
+        return _build_weighted_reference_bank(
+            object_type, action_tags, dataset_root, top_k_species, min_frames
+        )
+
+    dataset_root_key = str(resolve_dataset_root(dataset_root))
+    action_tags_key = frozenset(
+        token.strip().lower()
+        for token in str(action_tags or "").replace(";", ",").split(",")
+        if token.strip()
+    )
+    cache_key = (
+        dataset_root_key,
+        str(object_type).strip().lower(),
+        action_tags_key,
+        int(top_k_species),
+        int(min_frames),
+    )
+    cached = _REFERENCE_BANK_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    bank = _build_weighted_reference_bank(
+        object_type, action_tags, dataset_root, top_k_species, min_frames
+    )
+    _REFERENCE_BANK_CACHE[cache_key] = bank
+    return bank
+
+
+def _build_weighted_reference_bank(
     object_type: str,
     action_tags: str,
     dataset_root: Optional[str] = None,

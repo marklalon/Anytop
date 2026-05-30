@@ -347,19 +347,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("[error] No query motion files found.", file=sys.stderr)
         return 1
 
-    # ── Auto-infer object_type from filenames ──────────────────────────────
-    if args.object_type is None:
-        inferred = infer_object_type_from_filename(motion_paths[0])
-        if inferred is not None:
-            args.object_type = inferred
-            print(f"Auto-detected object_type: {inferred}")
-        else:
-            print(
-                f"[error] Cannot auto-detect object_type from '{os.path.basename(motion_paths[0])}'.\n"
-                f"  Pass --object_type explicitly.",
-                file=sys.stderr,
-            )
-            return 1
+    # ── Resolve object_type strategy ────────────────────────────────────────
+    # An explicit --object_type applies to every file. Otherwise the type is
+    # inferred per file from its name, so a single end-of-workflow run can score
+    # a mixed output tree containing several species. The reference prior is
+    # cached per (object_type, action_tags), so files that share a type only pay
+    # the dataset-loading cost once.
+    explicit_object_type = args.object_type
 
     # ── Evaluate each motion file independently ────────────────────────────
     scorer = DistributionMotionQualityScorer(dataset_root=args.dataset_root)
@@ -368,6 +362,18 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     print(f"Evaluating {len(motion_paths)} motion(s) ...")
     for path in motion_paths:
+        if explicit_object_type is not None:
+            object_type = explicit_object_type
+        else:
+            object_type = infer_object_type_from_filename(path)
+            if object_type is None:
+                print(
+                    f"[warn] cannot auto-detect object_type from "
+                    f"'{os.path.basename(path)}' - skipping (pass --object_type to override)",
+                    file=sys.stderr,
+                )
+                skipped += 1
+                continue
         motion = _validate_motion(path)
         if motion is None:
             skipped += 1
@@ -375,7 +381,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         try:
             report = scorer.evaluate(
                 motions=[motion],
-                object_type=args.object_type,
+                object_type=object_type,
                 action_tags=args.action_tags,
                 top_k_species=args.top_k_species,
             )
