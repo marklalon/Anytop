@@ -378,9 +378,20 @@ def _collapse_solitary_head_feature_indices(canonical_joint_names):
     return collapsed_names
 
 
+# Lazy lowercase→tags mapping for case-insensitive species lookup
+_SPECIES_LINEAGE_TAGS_LOWER = None
+
+
 def _species_lineage_tokens(object_cond):
+    global _SPECIES_LINEAGE_TAGS_LOWER
     object_type = str(object_cond.get('object_type') or '').strip()
-    return list(_SPECIES_LINEAGE_TAGS.get(object_type, ()))
+    if not object_type:
+        return []
+    if _SPECIES_LINEAGE_TAGS_LOWER is None:
+        _SPECIES_LINEAGE_TAGS_LOWER = {
+            key.lower(): tags for key, tags in _SPECIES_LINEAGE_TAGS.items()
+        }
+    return list(_SPECIES_LINEAGE_TAGS_LOWER.get(object_type.lower(), ()))
 
 
 def _refine_joint_embedding_name(name):
