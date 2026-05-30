@@ -6,6 +6,7 @@ numpy array. This can be used to produce samples for FID evaluation.
 import concurrent.futures
 import os
 import sys
+from dataclasses import dataclass
 
 # Ensure both the Anytop dir (for bare ``utils.*`` / ``data_loaders.*`` imports)
 # and its parent (for ``Anytop.utils.*`` imports made by submodules like
@@ -49,6 +50,155 @@ from utils.misc import infer_object_type_from_filename
 
 
 _REFERENCE_MOTION_PREPROCESS_SUFFIXES = {'.fbx', '.glb', '.gltf'}
+
+
+@dataclass
+class GenerationRuntime:
+    opt: object
+    cond_dict: dict
+    actual_cond_file: str
+    model: torch.nn.Module
+    diffusion: object
+    model_path: str
+    device: int
+    sampling_method: str
+    sampling_steps: int
+    amp_dtype: str
+    cond_path: str
+
+    def validate_args(self, args):
+        expected_model = os.path.realpath(self.model_path)
+        actual_model = os.path.realpath(args.model_path)
+        if actual_model != expected_model:
+            raise ValueError(
+                f"GenerationRuntime was prepared for model_path={self.model_path!r}, "
+                f"but task requested {args.model_path!r}"
+            )
+        if int(getattr(args, 'device', 0)) != int(self.device):
+            raise ValueError("GenerationRuntime cannot be reused across different --device values")
+        sampling_steps = int(getattr(args, 'sampling_steps', 100))
+        sampling_method = str(getattr(args, 'sampling_method', 'ddim')).lower()
+        if sampling_method != self.sampling_method or sampling_steps != self.sampling_steps:
+            raise ValueError(
+                "GenerationRuntime cannot be reused when --sampling_method or "
+                "--sampling_steps changes"
+            )
+        amp_dtype = str(getattr(args, 'amp_dtype', 'fp32')).lower()
+        if amp_dtype != self.amp_dtype:
+            raise ValueError("GenerationRuntime cannot be reused across different --amp_dtype values")
+        cond_path = _normalize_optional_path(getattr(args, 'cond_path', '') or '')
+        if cond_path != self.cond_path:
+            raise ValueError("GenerationRuntime cannot be reused across different --cond_path values")
+
+
+def _load_generation_cond(args, opt, cond_dict=None):
+    if cond_dict is None:
+        if args.cond_path:
+            return np.load(args.cond_path, allow_pickle=True).item(), args.cond_path
+        return np.load(opt.cond_file, allow_pickle=True).item(), opt.cond_file
+    return cond_dict, opt.cond_file
+
+
+def _normalize_optional_path(path):
+    return os.path.realpath(path) if path else ''
+
+
+def _raise_opt_max_joints_for_cond(opt, cond_dict):
+    n_joints_in_cond = max(
+        len(np.asarray(cond_dict[object_key]['parents']))
+        for object_key in cond_dict
+    )
+    if n_joints_in_cond > opt.max_joints:
+        print(
+            f'[generate] detected cond max joints {n_joints_in_cond} > '
+            f'opt.max_joints={opt.max_joints}; raising to {n_joints_in_cond}'
+        )
+        opt.max_joints = n_joints_in_cond
+
+
+def _configure_sampling_args(args):
+    sampling_steps = int(getattr(args, 'sampling_steps', 100))
+    sampling_method = str(getattr(args, 'sampling_method', 'ddim')).lower()
+    if sampling_steps > 0:
+        if sampling_method == 'ddim':
+            args.timestep_respacing = f'ddim{sampling_steps}'
+        else:
+            args.timestep_respacing = str(sampling_steps)
+    else:
+        args.timestep_respacing = ''
+    return sampling_method, sampling_steps
+
+
+def _enable_inference_amp(args, model):
+    amp_dtype_arg = str(getattr(args, 'amp_dtype', 'fp32')).lower()
+    if amp_dtype_arg != 'bf16':
+        return amp_dtype_arg
+    _amp_device = dist_util.dev()
+    if _amp_device.type == 'cuda' and torch.cuda.is_bf16_supported():
+        from model.selective_autocast import enable_selective_autocast
+        patched = enable_selective_autocast(
+            model,
+            device_type='cuda',
+            autocast_dtype=torch.bfloat16,
+        )
+        print(
+            f'Selective bf16 autocast enabled for {patched} linear/attention/conv modules; '
+            'softmax stays fp32.'
+        )
+    else:
+        print(
+            '[generate] WARNING: --amp_dtype bf16 requested but the active device is CPU or lacks '
+            'bf16 support; falling back to fp32.'
+        )
+    return amp_dtype_arg
+
+
+def prepare_generation_runtime(args=None, cond_dict=None):
+    if args is None:
+        args = generate_args()
+
+    dist_util.setup_dist(args.device)
+    opt = get_opt(args.device)
+    cond_dict, actual_cond_file = _load_generation_cond(args, opt, cond_dict)
+    _raise_opt_max_joints_for_cond(opt, cond_dict)
+
+    print('Creating model and diffusion...')
+    resolve_t5_out_dim(args, cond_source=actual_cond_file)
+    sampling_method, sampling_steps = _configure_sampling_args(args)
+    model, diffusion = create_model_and_diffusion_general_skeleton(args)
+
+    print(f'Loading checkpoints from [{args.model_path}]...')
+    state_dict = torch.load(args.model_path, map_location='cpu')
+    if 'model_avg' in state_dict:
+        print('EMA checkpoint detected, loading model_avg weights.')
+        state_dict = state_dict['model_avg']
+    elif 'model' in state_dict:
+        state_dict = state_dict['model']
+    load_model(model, state_dict)
+
+    print('Validating precomputed joint-name embeddings from cond.npy...')
+    ensure_joint_name_embeddings(
+        cond_dict,
+        expected_embedding_dim=args.t5_out_dim,
+        cond_source=actual_cond_file,
+    )
+    model.to(dist_util.dev())
+    model.eval()
+    amp_dtype = _enable_inference_amp(args, model)
+
+    return GenerationRuntime(
+        opt=opt,
+        cond_dict=cond_dict,
+        actual_cond_file=actual_cond_file,
+        model=model,
+        diffusion=diffusion,
+        model_path=args.model_path,
+        device=int(getattr(args, 'device', 0)),
+        sampling_method=sampling_method,
+        sampling_steps=sampling_steps,
+        amp_dtype=amp_dtype,
+        cond_path=_normalize_optional_path(getattr(args, 'cond_path', '') or ''),
+    )
 
 
 def validate_reference_configuration(
@@ -670,7 +820,7 @@ def _sample_batch(
     )
 
 
-def main(args=None, cond_dict=None):
+def main(args=None, cond_dict=None, runtime=None):
     if args is None:
         args = generate_args()
 
@@ -701,39 +851,32 @@ def main(args=None, cond_dict=None):
             "flags for plain generation."
         )
 
+    # --inpaint_joints with --skip_timesteps omitted: default to 0 (skip disabled).
+    if _inpaint_early and skip_timesteps_raw is None:
+        skip_timesteps_raw = 0
+
     try:
         skip_timesteps = validate_reference_configuration(
             reference_motion_path=getattr(args, 'reference_motion', None),
             skip_timesteps=skip_timesteps_raw,
+            global_energy_mean=getattr(args, 'global_energy_mean', None),
+            global_energy_std=getattr(args, 'global_energy_std', None),
         )
     except ValueError as exc:
         sys.exit(f"ERROR: {exc}")
 
-    # --inpaint_joints with --skip_timesteps omitted: default to 0 (skip disabled).
-    if _inpaint_early and skip_timesteps_raw is None:
-        skip_timesteps = 0
-
-    opt = get_opt(args.device)
-    if cond_dict is None:
-        if args.cond_path:
-            cond_dict = np.load(args.cond_path, allow_pickle=True).item()
-            actual_cond_file = args.cond_path
-        else:
-            cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
-            actual_cond_file = opt.cond_file
+    if runtime is None:
+        runtime = prepare_generation_runtime(args, cond_dict=cond_dict)
     else:
-        actual_cond_file = opt.cond_file
+        runtime.validate_args(args)
 
-    n_joints_in_cond = max(
-        len(np.asarray(cond_dict[object_key]['parents']))
-        for object_key in cond_dict
-    )
-    if n_joints_in_cond > opt.max_joints:
-        print(
-            f'[generate] detected cond max joints {n_joints_in_cond} > '
-            f'opt.max_joints={opt.max_joints}; raising to {n_joints_in_cond}'
-        )
-        opt.max_joints = n_joints_in_cond
+    opt = runtime.opt
+    cond_dict = runtime.cond_dict
+    actual_cond_file = runtime.actual_cond_file
+    model = runtime.model
+    diffusion = runtime.diffusion
+    sampling_method = runtime.sampling_method
+    sampling_steps = runtime.sampling_steps
 
     out_path = args.output_dir
     name = os.path.basename(os.path.dirname(args.model_path))
@@ -763,7 +906,6 @@ def main(args=None, cond_dict=None):
                 internal_num_frames,
             )
         )
-    dist_util.setup_dist(args.device)
     object_type = args.object_type
     if out_path == '':
         out_path = os.path.join(
@@ -772,36 +914,6 @@ def main(args=None, cond_dict=None):
         )
     os.makedirs(out_path, exist_ok=True)
 
-    print('Creating model and diffusion...')
-    resolve_t5_out_dim(args, cond_source=actual_cond_file)
-    sampling_steps = int(getattr(args, 'sampling_steps', 100))
-    sampling_method = str(getattr(args, 'sampling_method', 'ddim')).lower()
-    if sampling_steps > 0:
-        if sampling_method == 'ddim':
-            args.timestep_respacing = f'ddim{sampling_steps}'
-        else:
-            args.timestep_respacing = str(sampling_steps)
-    else:
-        args.timestep_respacing = ''
-    model, diffusion = create_model_and_diffusion_general_skeleton(args)
-
-    print(f'Loading checkpoints from [{args.model_path}]...')
-    state_dict = torch.load(args.model_path, map_location='cpu')
-    if 'model_avg' in state_dict:
-        print('EMA checkpoint detected, loading model_avg weights.')
-        state_dict = state_dict['model_avg']
-    elif 'model' in state_dict:
-        state_dict = state_dict['model']
-    load_model(model, state_dict)
-    try:
-        skip_timesteps = validate_reference_configuration(
-            reference_motion_path=getattr(args, 'reference_motion', None),
-            skip_timesteps=skip_timesteps,
-            global_energy_mean=getattr(args, 'global_energy_mean', None),
-            global_energy_std=getattr(args, 'global_energy_std', None),
-        )
-    except ValueError as exc:
-        sys.exit(f"ERROR: {exc}")
     try:
         global_energy_condition = resolve_global_energy_condition(
             model,
@@ -811,38 +923,6 @@ def main(args=None, cond_dict=None):
         )
     except ValueError as exc:
         sys.exit(f"ERROR: {exc}")
-
-    print('Validating precomputed joint-name embeddings from cond.npy...')
-    ensure_joint_name_embeddings(
-        cond_dict,
-        expected_embedding_dim=args.t5_out_dim,
-        cond_source=actual_cond_file,
-    )
-    model.to(dist_util.dev())
-    model.eval()
-
-    # PERF: optional bf16 selective autocast. Wraps linear / attention / conv
-    # forwards in torch.autocast(bf16) while keeping softmax + diffusion math
-    # in fp32. Same mechanism the trainer uses (model.selective_autocast).
-    amp_dtype_arg = str(getattr(args, 'amp_dtype', 'fp32')).lower()
-    if amp_dtype_arg == 'bf16':
-        _amp_device = dist_util.dev()
-        if _amp_device.type == 'cuda' and torch.cuda.is_bf16_supported():
-            from model.selective_autocast import enable_selective_autocast
-            patched = enable_selective_autocast(
-                model,
-                device_type='cuda',
-                autocast_dtype=torch.bfloat16,
-            )
-            print(
-                f'Selective bf16 autocast enabled for {patched} linear/attention/conv modules; '
-                'softmax stays fp32.'
-            )
-        else:
-            print(
-                '[generate] WARNING: --amp_dtype bf16 requested but the active device is CPU or lacks '
-                'bf16 support; falling back to fp32.'
-            )
 
     ddim_eta = float(getattr(args, 'ddim_eta', 0.0))
     reference_motion_path = getattr(args, 'reference_motion', None)

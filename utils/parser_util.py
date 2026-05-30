@@ -5,11 +5,11 @@ import json
 import copy
 import sys
 
-def parse_and_load_from_model(parser):
+def parse_and_load_from_model(parser, argv=None):
     # args according to the loaded model
     # do not try to specify them from cmd line since they will be overwritten
     add_model_options(parser)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     args_to_overwrite = []
     for group_name in ['dataset', 'model', 'diffusion']:
         args_to_overwrite += get_args_per_group_name(parser, args, group_name)
@@ -332,14 +332,14 @@ def train_args():
     return parser.parse_args()
 
 
-def generate_args():
+def generate_args(argv=None):
     parser = ArgumentParser()
     # args specified by the user: (all other will be loaded from the model)
     add_base_options(parser)
     add_data_options(parser)
     add_sampling_options(parser)
     add_generate_options(parser)
-    args = parse_and_load_from_model(parser)
+    args = parse_and_load_from_model(parser, argv=argv)
     return args
 
 def process_new_skeleton_args():
