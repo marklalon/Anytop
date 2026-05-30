@@ -20,59 +20,16 @@ from data_loaders.truebones.truebones_utils.param_utils import (
     MOTION_DIR,
 )
 from data_loaders.truebones.truebones_utils.animation_utils import (
-    LEAF_ROTATION_HELPER_SUFFIX,
     find_translation_root,
 )
-
-
-# ---------------------------------------------------------------------------
-# Canonical joint-name synonym map (for Jaccard scoring in donor ranking)
-# ---------------------------------------------------------------------------
-
-_CANONICAL_SYNONYMS: dict[str, str] = {
-    "leg 1": "thigh", "leg 2": "calf", "leg ankle": "foot", "leg ball 1": "toe 0",
-    "arm collarbone": "clavicle", "arm 1": "upper arm", "arm 2": "forearm",
-    "arm palm": "hand", "arm ball 1": "wrist",
-    "index": "finger 0", "middle": "finger 1", "ring": "finger 2", "pinky": "finger 3",
-    "spine 1": "spine", "spine 2": "spine 1", "spine 3": "spine 2", "spine 4": "spine 3",
-    "neck 1": "neck", "neck 2": "neck 1",
-    "jaw": "chin",
-}
-_SYNONYM_EXACT = {k: v for k, v in _CANONICAL_SYNONYMS.items() if any(c.isdigit() for c in k)}
-_SYNONYM_PREFIX = {k: v for k, v in _CANONICAL_SYNONYMS.items() if not any(c.isdigit() for c in k)}
-
-
-def _normalize_match_name(name: str) -> str:
-    """Normalize a joint name via the canonical synonym map (for Jaccard scoring)."""
-    lower = name.lower().strip()
-    if lower in _SYNONYM_EXACT:
-        return _SYNONYM_EXACT[lower]
-    for side in ("left ", "right "):
-        if lower.startswith(side):
-            return side + _normalize_match_name(lower[len(side):])
-    for key, value in _SYNONYM_PREFIX.items():
-        if lower == key or lower.startswith(key + " "):
-            suffix = lower[len(key):].strip()
-            if suffix:
-                # Extract trailing digit(s) from the suffix
-                digit = ""
-                for ch in reversed(suffix):
-                    if ch.isdigit():
-                        digit = ch + digit
-                    elif ch == " ":
-                        continue
-                    else:
-                        break
-                if digit:
-                    # Replace the trailing digit in the canonical value
-                    # e.g. "finger 0" + digit "02" → "finger 2"
-                    digit_int = str(int(digit))
-                    parts = value.rsplit(" ", 1)
-                    if parts[-1].isdigit():
-                        return parts[0] + " " + digit_int
-                    return value + " " + digit_int
-            return value
-    return lower
+# Skeleton-similarity primitives are shared with the motion-quality scorer.
+# Imported under the existing private aliases so retarget call sites are unchanged.
+from utils.skeleton_similarity import (
+    normalize_match_name as _normalize_match_name,
+    require_canonical_joint_names as _require_canonical_joint_names,
+    strip_helper_names as _strip_helper_names,
+    rank_species,
+)
 
 
 def _infer_donor_consensus_effective_root_index(
@@ -103,22 +60,6 @@ def _infer_donor_consensus_effective_root_index(
 # ---------------------------------------------------------------------------
 # Core retarget helper (shared between pipeline and generate.py wrapper)
 # ---------------------------------------------------------------------------
-
-
-def _require_canonical_joint_names(object_cond: dict, *, object_type_hint: str, joint_count: int | None = None) -> list[str]:
-    canonical_joint_names = object_cond.get('canonical_joint_names')
-    if canonical_joint_names is None:
-        raise ValueError(
-            f"Retarget requires canonical_joint_names for {object_type_hint}"
-        )
-
-    canonical_joint_names = list(canonical_joint_names)
-    if joint_count is not None and len(canonical_joint_names) < int(joint_count):
-        raise ValueError(
-            f"Retarget canonical_joint_names for {object_type_hint} has length {len(canonical_joint_names)} "
-            f"but joint count requires at least {int(joint_count)}"
-        )
-    return canonical_joint_names
 
 
 def _build_tpose_aligned_target_animation(retarget_result: dict, target_tp):
@@ -381,16 +322,6 @@ def retarget_features_npy_to_target(
 # Donor ranking
 # ---------------------------------------------------------------------------
 
-def _strip_helper_names(names: list) -> set:
-    """Return a set of canonical joint names excluding leaf rotation helpers.
-
-    Leaf helpers are training-time augmentation joints whose count varies
-    with the max_joints budget.  They should never participate in skeleton
-    mapping or similarity scoring.
-    """
-    return {n for n in names if not str(n).endswith(LEAF_ROTATION_HELPER_SUFFIX) and ' Helper' not in str(n)}
-
-
 def rank_donors(
     target_cond: dict,
     training_cond_dict: dict,
@@ -398,47 +329,23 @@ def rank_donors(
 ) -> List[Tuple[str, float]]:
     """Rank all training skeletons by similarity to the target.
 
-    Score = 100 * jaccard(normalized_joint_names) - 0.2 * |Δjoints| - 0.5 * |Δchains|
+    Uses the shared ``rank_species`` blend (Jaccard primary + joint-name
+    embedding secondary + topology descriptor + species_group discount). A
+    freshly built target skeleton usually lacks ``joints_names_embs`` /
+    ``species_group``; those terms are dropped automatically and the blend
+    reduces to Jaccard + topology.
 
-    The Jaccard index is computed on synonym-normalized names so that
-    skeletons with different naming conventions (e.g. "Leg 1" vs "Thigh")
-    still get credit for semantically matching joints.
-
-    Returns list of (donor_name, score) sorted by descending score.
-
-    Leaf rotation helpers are excluded from the Jaccard comparison so that
-    budget-dependent augmentation joints do not inflate or distort scores.
+    Returns list of (donor_name, score) sorted by descending score, where
+    ``score = 100 / (1 + combined_distance)`` is a monotonic higher-is-better
+    transform of the combined distance (ordering matches closest-first).
     """
-    t_names = _strip_helper_names(
-        _require_canonical_joint_names(
-            target_cond,
-            object_type_hint=target_object_type,
-        )
+    ranked = rank_species(
+        target_cond,
+        training_cond_dict,
+        query_hint=target_object_type,
+        top_k=None,
     )
-    t_norm_names = {_normalize_match_name(n) for n in t_names}
-    t_n_joints = int(target_cond.get('original_joint_count') or len(target_cond['parents']))
-    t_n_chains = len(target_cond.get('kinematic_chains', []))
-    t_species = target_cond.get('species_group') or ''
-
-    scored = []
-    for donor_name, donor_cond in training_cond_dict.items():
-        d_names = _strip_helper_names(
-            _require_canonical_joint_names(
-                donor_cond,
-                object_type_hint=donor_name,
-            )
-        )
-        d_norm_names = {_normalize_match_name(n) for n in d_names}
-        union = len(t_norm_names | d_norm_names)
-        jaccard = len(t_norm_names & d_norm_names) / max(1, union)
-        d_n_joints = int(donor_cond.get('original_joint_count') or len(donor_cond['parents']))
-        joint_penalty = abs(t_n_joints - d_n_joints)
-        chain_penalty = abs(t_n_chains - len(donor_cond.get('kinematic_chains', [])))
-        score = 100.0 * jaccard - 0.2 * joint_penalty - 0.5 * chain_penalty
-        scored.append((donor_name, score))
-
-    scored.sort(key=lambda x: -x[1])
-    return scored
+    return [(r.name, 100.0 / (1.0 + r.combined_distance)) for r in ranked]
 
 
 # ---------------------------------------------------------------------------

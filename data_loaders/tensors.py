@@ -67,7 +67,7 @@ def truebones_collate(batch):
         motionnamebatch = [b['motion_name'] for b in notnone_batches]
         cond['y'].update({'motion_name': motionnamebatch})
 
-    for key in ('species_label', 'species_group', 'action_tags', 'translation_root_index'):
+    for key in ('action_tags', 'translation_root_index'):
         if any(key in batch_item for batch_item in notnone_batches):
             cond['y'].update({key: [batch_item.get(key) for batch_item in notnone_batches]})
 
@@ -188,7 +188,7 @@ def truebones_batch_collate(batch):
                 padded_candidate_roots[:candidate_count] = torch.from_numpy(raw_candidates[:candidate_count])
             item['joint_mask_candidate_roots'] = padded_candidate_roots
         if motion_metadata is not None:
-            for key in ('species_label', 'species_group', 'action_tags', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'global_energy_cond'):
+            for key in ('action_tags', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'global_energy_cond'):
                 if key in motion_metadata:
                     item[key] = motion_metadata[key]
         if motion_name is not None:

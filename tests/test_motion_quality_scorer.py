@@ -133,7 +133,10 @@ def test_reference_species_selection_accepts_external_query_cond() -> None:
         query_cond=query_cond,
     )
 
-    assert selected == [("snake", pytest.approx(0.0), 1.0)]
+    assert len(selected) == 1
+    assert selected[0].name == "snake"
+    assert selected[0].semantic_distance == pytest.approx(0.0)
+    assert selected[0].weight == pytest.approx(1.0)
 
 
 def test_registered_cond_is_query_only_reference_baseline(
