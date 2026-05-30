@@ -162,7 +162,7 @@ def _bvh_href(npy_path: Path) -> str:
     pass, double-encoding ``%23`` into ``%2523`` so bvhview could not resolve the
     file. Use the file URI directly."""
     bvh_path = npy_path.with_suffix(".bvh")
-    return f"bvhview://open?url={bvh_path.as_uri()}"
+    return f"bvhview://open?--reuse&url={bvh_path.as_uri()}"
 
 
 def _extract_reference_motion(extra_args: list) -> str | None:
@@ -476,7 +476,7 @@ def write_html_report(
         if ref_motion:
             ref_bvh = _find_reference_bvh(ref_motion)
             if ref_bvh is not None and ref_bvh.is_file():
-                href = f"bvhview://open?url={ref_bvh.as_uri()}"
+                href = f"bvhview://open?--reuse&url={ref_bvh.as_uri()}"
                 idx = raw_cmd.find(ref_motion)
                 if idx != -1:
                     before = html.escape(raw_cmd[:idx])

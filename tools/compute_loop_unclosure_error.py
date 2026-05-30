@@ -102,11 +102,11 @@ def compute_unclosure_error(motion_path: str, translation_root_index: int = 0) -
 
 
 def _bvh_href(name: str, bvh_dir_abs: Path) -> str:
-    """Build a bvhview://open?url=... link so the OS opens with the BVH viewer app."""
+    """Build a bvhview://open?--reuse&url=... link so the OS opens with the BVH viewer app."""
     stem = name[:-4] if name.endswith(".npy") else name
     bvh_path = bvh_dir_abs / f"{stem}.bvh"
     encoded = quote(str(bvh_path.as_uri()), safe="")
-    return f"bvhview://open?url={encoded}"
+    return f"bvhview://open?--reuse&url={encoded}"
 
 
 def write_html_report(
