@@ -86,9 +86,6 @@ class GenerationRuntime:
         amp_dtype = str(getattr(args, 'amp_dtype', 'fp32')).lower()
         if amp_dtype != self.amp_dtype:
             raise ValueError("GenerationRuntime cannot be reused across different --amp_dtype values")
-        cond_path = _normalize_optional_path(getattr(args, 'cond_path', '') or '')
-        if cond_path != self.cond_path:
-            raise ValueError("GenerationRuntime cannot be reused across different --cond_path values")
 
 
 def _load_generation_cond(args, opt, cond_dict=None):
@@ -869,6 +866,15 @@ def main(args=None, cond_dict=None, runtime=None):
         runtime = prepare_generation_runtime(args, cond_dict=cond_dict)
     else:
         runtime.validate_args(args)
+        # If the task specifies a different --cond_path, reload cond and update
+        # the runtime in-place so the model/diffusion can still be shared.
+        task_cond = _normalize_optional_path(getattr(args, 'cond_path', '') or '')
+        if task_cond != runtime.cond_path:
+            new_cond_dict, new_actual_cond_file = _load_generation_cond(args, runtime.opt)
+            _raise_opt_max_joints_for_cond(runtime.opt, new_cond_dict)
+            runtime.cond_dict = new_cond_dict
+            runtime.actual_cond_file = new_actual_cond_file
+            runtime.cond_path = task_cond
 
     opt = runtime.opt
     cond_dict = runtime.cond_dict

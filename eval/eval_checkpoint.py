@@ -116,6 +116,19 @@ def build_tasks() -> list[tuple[str, list[str]]]:
          "--motion_frames", "120", "--skip_timesteps", "90"],
     ))
 
+    # NewSkeleton: generate on a novel skeleton, then img2img the result.
+    tasks.append((
+        "NewSkeleton",
+        ["--cond_path", "D:\\AI\\pcvg-skeleton-animation\\Anytop\\outputs\\new_skeleton\\cond.npy",
+         "--reference_motion", "D:\\AI\\pcvg-skeleton-animation\\Anytop\\outputs\\new_skeleton\\motions\\dragon_Walk_33.npy",
+         "--inpaint_joints", "RightThigh"],
+    ))
+    tasks.append((
+        "NewSkeleton",
+        ["--cond_path", "D:\\AI\\pcvg-skeleton-animation\\Anytop\\outputs\\new_skeleton\\cond.npy",
+         "--reference_motion", _LAST_OUTPUT, "--skip_timesteps", "90"],
+    ))
+
     return tasks
 
 
@@ -174,6 +187,26 @@ def _extract_reference_motion(extra_args: list) -> str | None:
     except ValueError:
         pass
     return None
+
+
+def _extract_cond_path(extra_args: list) -> str | None:
+    """Extract the path value after --cond_path in extra_args."""
+    try:
+        idx = extra_args.index("--cond_path")
+        if idx + 1 < len(extra_args):
+            return extra_args[idx + 1]
+    except ValueError:
+        pass
+    return None
+
+
+def _register_cond_path(scorer: DistributionMotionQualityScorer, cond_path: str) -> None:
+    """Load a cond.npy and register its entries as query skeleton metadata."""
+    try:
+        cond_dict = np.load(cond_path, allow_pickle=True).item()
+        scorer.register_cond(cond_dict)
+    except Exception as exc:
+        print(f"    [WARN] failed to register cond_path {cond_path}: {exc}")
 
 
 def _find_reference_bvh(reference_motion: str | None) -> Path | None:
@@ -266,6 +299,9 @@ def _build_record_from_existing(
         m = re.search(r'--reference_motion\s+(?:"([^"]*)"|(\S+))', record["command"])
         if m:
             record["reference_motion"] = m.group(1) or m.group(2)
+        m = re.search(r'--cond_path\s+(?:"([^"]*)"|(\S+))', record["command"])
+        if m:
+            _register_cond_path(scorer, m.group(1) or m.group(2))
 
     first_npy = _first_output_npy(task_dir)
     record["first_npy"] = first_npy
@@ -343,6 +379,8 @@ def run_task(
     extra_args: list[str],
     root: Path,
     prev_first_npy: Path | None,
+    total: int = 0,
+    current: int = 0,
 ) -> dict:
     """Run one generation task and return a result record."""
     task_dir = root / category / f"task{index}"
@@ -351,10 +389,12 @@ def run_task(
     # Resolve the $LAST_OUTPUT sentinel against the previous task's first clip.
     resolved_args = list(extra_args)
     last_output_unresolved = False
+    last_output_resolved: Path | None = None
     if _LAST_OUTPUT in resolved_args:
         pos = resolved_args.index(_LAST_OUTPUT)
         if prev_first_npy is not None and prev_first_npy.is_file():
-            resolved_args[pos] = str(prev_first_npy)
+            last_output_resolved = prev_first_npy
+            resolved_args[pos] = str(last_output_resolved)
         else:
             last_output_unresolved = True
 
@@ -380,14 +420,15 @@ def run_task(
         "status": "ok",
         "first_npy": None,
         "reference_motion": _extract_reference_motion(extra_args),
+        "last_output_resolved": str(last_output_resolved) if last_output_resolved is not None else None,
     }
 
     if last_output_unresolved:
         record["status"] = "skipped ($LAST_OUTPUT unavailable — previous task produced no output)"
-        print(f"  [SKIP] {category}/task{index}: {record['status']}")
+        print(f"  [SKIP] {category}/task{index} ({current}/{total}): {record['status']}")
         return record
 
-    print(f"\n=== {category}/task{index} ===")
+    print(f"\n=== {category}/task{index} ({current}/{total}) ===")
     print(f"  {display_cmd}")
 
     log_path = task_dir / "generate.log"
@@ -418,6 +459,13 @@ def run_task(
     first_npy = _first_output_npy(task_dir)
     record["first_npy"] = first_npy
     object_type = _extract_object_type(first_npy) if first_npy else None
+
+    # Register custom cond_path into the scorer so novel skeleton types
+    # (e.g., 'dragon') can be resolved for query grouping and bone-length
+    # scoring while reference comparisons still use the default cond baseline.
+    task_cond_path = _extract_cond_path(extra_args)
+    if task_cond_path:
+        _register_cond_path(scorer, task_cond_path)
 
     # Score the generated clips via evaluate_motion_quality.py (JSON output).
     scores: dict[str, float] = {}
@@ -473,7 +521,26 @@ def write_html_report(
 
         # Build command cell: if there is a --reference_motion path, make it a
         # clickable bvhview link directly in-place (no extra appended content).
-        if ref_motion:
+        if ref_motion == _LAST_OUTPUT:
+            # $LAST_OUTPUT sentinel — link to the resolved previous task output.
+            resolved_path = r.get("last_output_resolved")
+            if resolved_path:
+                resolved_bvh = Path(resolved_path).with_suffix(".bvh")
+                if resolved_bvh.is_file():
+                    href = f"bvhview://open?--reuse&url={resolved_bvh.as_uri()}"
+                    idx = raw_cmd.find(_LAST_OUTPUT)
+                    if idx != -1:
+                        before = html.escape(raw_cmd[:idx])
+                        after = html.escape(raw_cmd[idx + len(_LAST_OUTPUT):])
+                        link = f'<a href="{href}">{_LAST_OUTPUT}</a>'
+                        cmd_html = before + link + after
+                    else:
+                        cmd_html = html.escape(raw_cmd)
+                else:
+                    cmd_html = html.escape(raw_cmd)
+            else:
+                cmd_html = html.escape(raw_cmd)
+        elif ref_motion:
             ref_bvh = _find_reference_bvh(ref_motion)
             if ref_bvh is not None and ref_bvh.is_file():
                 href = f"bvhview://open?--reuse&url={ref_bvh.as_uri()}"
@@ -655,6 +722,7 @@ def main() -> int:
     if args.report_only:
         print("\n[report_only] scanning existing task directories...")
         records: list[dict] = []
+        prev_first_npy: Path | None = None
         for cat_dir in sorted(root.iterdir()):
             if not cat_dir.is_dir() or cat_dir.name.startswith("."):
                 continue
@@ -667,7 +735,10 @@ def main() -> int:
                     continue
                 index = int(m.group(1))
                 record = _build_record_from_existing(task_dir, category, index, scorer, root)
+                if record.get("reference_motion") == _LAST_OUTPUT and prev_first_npy is not None:
+                    record["last_output_resolved"] = str(prev_first_npy)
                 records.append(record)
+                prev_first_npy = record["first_npy"]
         all_scores: list[float] = []
         for r in records:
             all_scores.extend(r["scores"].values())
@@ -693,17 +764,19 @@ def main() -> int:
     runtime = prepare_generation_runtime(runtime_args)
 
     tasks = build_tasks()
+    total_tasks = len(tasks)
     # Per-category running index so dirs read task1, task2, ... within a category.
     cat_counter: dict[str, int] = {}
     records: list[dict] = []
     prev_first_npy: Path | None = None
 
-    for category, extra_args in tasks:
+    for task_num, (category, extra_args) in enumerate(tasks, 1):
         cat_counter[category] = cat_counter.get(category, 0) + 1
         index = cat_counter[category]
         try:
             record = run_task(
                 runtime, scorer, model_path, category, index, extra_args, root, prev_first_npy,
+                total=total_tasks, current=task_num,
             )
         except Exception as exc:  # never let one task abort the whole battery
             print(f"  [ERROR] {category}/task{index} raised: {exc}")

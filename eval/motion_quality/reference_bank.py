@@ -162,11 +162,15 @@ def _select_species_weights(
     action_paths_by_species: Mapping[str, Sequence[str]],
     cond_lookup: Mapping[str, Mapping[str, object]],
     top_k_species: int,
+    query_cond: Optional[Mapping[str, object]] = None,
 ) -> List[tuple[str, float, float]]:
     if top_k_species <= 0:
         raise ValueError("top_k_species must be >= 1")
-    query_key = _resolve_lookup_key(query_object_type, cond_lookup)
-    query_emb = _embedding_for_object(cond_lookup[query_key])
+    if query_cond is None:
+        query_key = _resolve_lookup_key(query_object_type, cond_lookup)
+        query_emb = _embedding_for_object(cond_lookup[query_key])
+    else:
+        query_emb = _embedding_for_object(query_cond)
 
     candidates: List[tuple[str, float]] = []
     for object_type, paths in action_paths_by_species.items():
@@ -216,6 +220,8 @@ def build_weighted_reference_bank(
     top_k_species: int = 5,
     min_frames: int = 8,
     use_cache: bool = True,
+    cond_lookup: Optional[Mapping[str, Mapping[str, object]]] = None,
+    query_cond: Optional[Mapping[str, object]] = None,
 ) -> WeightedReferenceBank:
     """Build (or fetch from cache) the weighted reference prior.
 
@@ -226,9 +232,15 @@ def build_weighted_reference_bank(
     reuse the already-loaded clips. The returned bank is treated as read-only by
     all callers; do not mutate its clips in place.
     """
-    if not use_cache:
+    if cond_lookup is not None or query_cond is not None or not use_cache:
         return _build_weighted_reference_bank(
-            object_type, action_tags, dataset_root, top_k_species, min_frames
+            object_type,
+            action_tags,
+            dataset_root,
+            top_k_species,
+            min_frames,
+            cond_lookup=cond_lookup,
+            query_cond=query_cond,
         )
 
     dataset_root_key = str(resolve_dataset_root(dataset_root))
@@ -261,10 +273,13 @@ def _build_weighted_reference_bank(
     dataset_root: Optional[str] = None,
     top_k_species: int = 5,
     min_frames: int = 8,
+    cond_lookup: Optional[Mapping[str, Mapping[str, object]]] = None,
+    query_cond: Optional[Mapping[str, object]] = None,
 ) -> WeightedReferenceBank:
     dataset_root_path = resolve_dataset_root(dataset_root)
-    cond_lookup = load_cond_dict(dataset_root_path)
-    object_key = _resolve_lookup_key(object_type, cond_lookup)
+    if cond_lookup is None:
+        cond_lookup = load_cond_dict(dataset_root_path)
+    object_key = str(object_type) if query_cond is not None else _resolve_lookup_key(object_type, cond_lookup)
     action_tags_str = str(action_tags or "").strip()
     if not action_tags_str:
         raise ValueError("action_tags must be a non-empty string")
@@ -276,6 +291,7 @@ def _build_weighted_reference_bank(
         action_paths_by_species,
         cond_lookup,
         top_k_species,
+        query_cond=query_cond,
     )
 
     clips: List[ReferenceClip] = []
