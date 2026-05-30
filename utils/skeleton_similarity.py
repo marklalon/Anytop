@@ -24,14 +24,17 @@ Similarity blends three complementary signals (see ``SimilarityWeights``):
     computed from the *biological* skeleton (helper/augmentation leaves and
     padding dropped).
 
-Plus a ``species_group`` discount when both skeletons share a coarse class
-(quadruped / biped / flying / snake / ...).
+Plus a graded ``lineage_tags`` discount: each species carries a coarse-to-fine
+``(clade, family)`` tag pair (e.g. Cat -> ('Mammal', 'Felid')); the more tags
+two skeletons share, the larger the fractional discount on their combined
+distance. This supersedes the old binary ``species_group`` class match, which
+lumped every quadruped into one bucket. (``species_group`` is deprecated.)
 
 The module is intentionally numpy-only so the lightweight motion-quality
 scorer does not pull in torch/motion_lib. Components degrade gracefully: a
 skeleton missing ``joints_names_embs`` (e.g. a freshly built retarget target)
 simply drops the embedding term and the remaining weights are renormalised;
-a skeleton missing ``species_group`` skips the group discount.
+a species absent from the lineage table simply gets no group discount.
 """
 
 from __future__ import annotations
@@ -41,9 +44,25 @@ from typing import List, Mapping, Optional, Sequence
 
 import numpy as np
 
+# Single source of truth for the coarse-to-fine biological lineage tags
+# ((clade, family) per species). physics_joint_annotation is torch-free
+# (numpy/collections/re only) and its package path carries no heavy __init__
+# side effects, so importing the constant keeps this module lightweight.
+from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
+    _SPECIES_LINEAGE_TAGS,
+)
+
 # Mirrors data_loaders...animation_utils.LEAF_ROTATION_HELPER_SUFFIX. Duplicated
 # (not imported) to keep this module torch-free; the token format is stable.
 LEAF_ROTATION_HELPER_SUFFIX = "__rot_helper"
+
+# Case-insensitive object_type -> frozenset of lineage tags. Built once.
+_LINEAGE_TAGS_LOWER: dict[str, frozenset] = {
+    key.lower(): frozenset(tags) for key, tags in _SPECIES_LINEAGE_TAGS.items()
+}
+# Every registered species carries this many lineage tags; the graded group
+# discount normalises overlap by it (full overlap -> full bonus).
+_LINEAGE_TAG_ARITY = 2
 
 
 # ── Canonical joint-name normalisation (for Jaccard) ─────────────────────────
@@ -227,7 +246,24 @@ def topology_descriptor(object_cond: Mapping[str, object]) -> np.ndarray:
 
 
 def species_group(object_cond: Mapping[str, object]) -> str:
+    """Deprecated coarse class (biped/quadruped/...).
+
+    No longer used for similarity scoring -- superseded by the finer-grained
+    ``lineage_tags`` overlap (see ``rank_species``). Retained only so legacy
+    call sites that still read the persisted ``species_group`` cond field keep
+    working.
+    """
     return str(np.asarray(object_cond.get("species_group", ""))).strip().lower()
+
+
+def lineage_tags(object_type: object) -> frozenset:
+    """Biological lineage tags ``(clade, family)`` for an object_type.
+
+    Case-insensitive; species absent from ``_SPECIES_LINEAGE_TAGS`` (e.g. a
+    novel retarget target the user has not registered) return an empty set,
+    which yields no group discount.
+    """
+    return _LINEAGE_TAGS_LOWER.get(str(object_type).strip().lower(), frozenset())
 
 
 # ── Combined similarity ──────────────────────────────────────────────────────
@@ -237,7 +273,9 @@ class SimilarityWeights:
 
     ``jaccard`` + ``embedding`` + ``topology`` need not sum to 1: only their
     ratios matter, and inactive terms (e.g. missing embeddings) are dropped
-    with the rest renormalised.
+    with the rest renormalised. ``group_bonus`` is the *maximum* fractional
+    discount, applied at full lineage-tag overlap (same family); partial
+    overlap (same clade only) gets a proportional share.
     """
 
     jaccard: float = 0.5
@@ -256,7 +294,7 @@ class SpeciesSimilarity:
     semantic_distance: float      # 1 - embedding cosine (nan if embedding inactive)
     topology_distance: float      # z-scored descriptor euclidean (pool-relative)
     combined_distance: float
-    same_group: bool
+    same_group: bool            # same lineage family (full tag overlap)
     weight: float = 0.0
 
 
@@ -288,21 +326,23 @@ def rank_species(
 
     query_names = joint_name_set(query_cond, query_hint)
     query_desc = topology_descriptor(query_cond)
-    query_group = species_group(query_cond)
+    # Lineage tags drive a graded group discount. The dict key (``name`` /
+    # ``query_hint``) is the object_type; prefer an explicit cond field if set.
+    query_tags = lineage_tags(query_cond.get("object_type") or query_hint)
     query_emb = embedding_for_object(query_cond) if has_embedding(query_cond) else None
 
     jaccard_arr = np.zeros(len(names), dtype=np.float64)
     semantic_arr = np.full(len(names), np.nan, dtype=np.float64)
     descriptors: List[np.ndarray] = []
-    same_group: List[bool] = []
+    lineage_overlap = np.zeros(len(names), dtype=np.int64)
     for i, name in enumerate(names):
         cond = candidate_conds[name]
         cand_names = joint_name_set(cond, name)
         union = len(query_names | cand_names)
         jaccard_arr[i] = (len(query_names & cand_names) / union) if union else 0.0
         descriptors.append(topology_descriptor(cond))
-        cand_group = species_group(cond)
-        same_group.append(bool(query_group and cand_group and cand_group == query_group))
+        cand_tags = lineage_tags(cond.get("object_type") or name)
+        lineage_overlap[i] = len(query_tags & cand_tags)
         if query_emb is not None and has_embedding(cond):
             cos = float(np.clip(np.dot(query_emb, embedding_for_object(cond)), -1.0, 1.0))
             semantic_arr[i] = max(0.0, 1.0 - cos)
@@ -336,8 +376,13 @@ def rank_species(
     for weight, distance in terms:
         combined += (weight / total_weight) * _pool_scale(distance)
 
-    # Same coarse species_group -> fractional discount on the combined distance.
-    group_factor = np.where(np.asarray(same_group, dtype=bool), 1.0 - weights.group_bonus, 1.0)
+    # Graded lineage discount: shared (clade, family) tags fractionally shrink
+    # the combined distance. Full overlap (same family, e.g. Cat/Lion) gets the
+    # full bonus; partial overlap (same clade only, e.g. Cat/Horse) gets a
+    # proportional share; no shared tag (or an unregistered species) -> no
+    # discount. ``same_group`` now means "same family" (full overlap).
+    same_group = lineage_overlap >= _LINEAGE_TAG_ARITY
+    group_factor = 1.0 - weights.group_bonus * (lineage_overlap / _LINEAGE_TAG_ARITY)
     combined = combined * group_factor
 
     order = sorted(range(len(names)), key=lambda i: (combined[i], names[i]))

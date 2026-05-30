@@ -330,10 +330,10 @@ def rank_donors(
     """Rank all training skeletons by similarity to the target.
 
     Uses the shared ``rank_species`` blend (Jaccard primary + joint-name
-    embedding secondary + topology descriptor + species_group discount). A
-    freshly built target skeleton usually lacks ``joints_names_embs`` /
-    ``species_group``; those terms are dropped automatically and the blend
-    reduces to Jaccard + topology.
+    embedding secondary + topology descriptor + graded lineage-tag discount). A
+    freshly built target skeleton usually lacks ``joints_names_embs`` (and, if
+    its object_type is unregistered, lineage tags); those terms are dropped
+    automatically and the blend reduces to Jaccard + topology.
 
     Returns list of (donor_name, score) sorted by descending score, where
     ``score = 100 / (1 + combined_distance)`` is a monotonic higher-is-better
