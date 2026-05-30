@@ -13,6 +13,12 @@ python eval/evaluate_motion_quality.py \
     --motions "outputs/trial_00/*.npy" \
     --object-type Buffalo \
     --action-tags locomotion,attack
+
+python eval/evaluate_motion_quality.py \
+    --motions "outputs/new_skeleton/*.npy" \
+    --object-type dragon \
+    --action-tags locomotion \
+    --cond-path outputs/new_skeleton/cond.npy
 """
 
 from __future__ import annotations
@@ -63,6 +69,22 @@ def _validate_motion(path: str) -> Optional[np.ndarray]:
         )
         return None
     return motion.astype(np.float32)
+
+
+def _register_cond_path(scorer: DistributionMotionQualityScorer, cond_path: str) -> Path:
+    """Register an optional custom cond.npy for novel query species."""
+    resolved = Path(cond_path).expanduser()
+    if not resolved.is_absolute():
+        resolved = resolved.resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"cond.npy not found: {resolved}")
+
+    cond_dict = np.load(resolved, allow_pickle=True).item()
+    if not isinstance(cond_dict, dict):
+        raise ValueError(f"Expected cond.npy to contain a dict, got {type(cond_dict).__name__}")
+
+    scorer.register_cond(cond_dict)
+    return resolved
 
 
 def _color(score: float, text: str, use_color: bool) -> str:
@@ -296,8 +318,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--object_type", "--object-type",
         default=None,
         metavar="TYPE",
-        help="Object type key present in cond.npy, e.g. Buffalo or Horse. "
-             "Auto-inferred from motion filenames when omitted.",
+        help="Object type key present in the default cond.npy or in --cond-path, "
+             "e.g. Buffalo or dragon. Auto-inferred from motion filenames when omitted.",
+    )
+    parser.add_argument(
+        "--cond_path", "--cond-path",
+        default=None,
+        metavar="FILE",
+        help="Optional custom cond.npy for novel query species. This is used only for query-side skeleton metadata; "
+             "reference action distributions still come from the default dataset cond.npy.",
     )
     parser.add_argument(
         "--action_tags", "--action-tags",
@@ -357,6 +386,12 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # ── Evaluate each motion file independently ────────────────────────────
     scorer = DistributionMotionQualityScorer(dataset_root=args.dataset_root)
+    if args.cond_path:
+        try:
+            _register_cond_path(scorer, args.cond_path)
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            print(f"[error] failed to load --cond-path: {exc}", file=sys.stderr)
+            return 1
     results: list[tuple[str, DistributionEvalReport]] = []
     skipped = 0
 
