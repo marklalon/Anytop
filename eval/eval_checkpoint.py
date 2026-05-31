@@ -294,10 +294,11 @@ def _register_cond_path(scorer: DistributionMotionQualityScorer, cond_path: str)
 
 
 def _find_reference_bvh(reference_motion: str | None) -> Path | None:
-    """Find the actual .bvh file for a reference motion path.
+    """Find the actual .bvh/.glb file for a reference motion path.
 
     Priority:
-    1. The path itself if it's already a .bvh and exists.
+    1. The path itself if it already exists and has a directly-viewable
+       extension (.bvh or .glb).
     2. Same directory: replace extension with .bvh, or append .bvh.
     3. ``../bvhs/`` relative to the reference motion's directory: look for a
        matching file by stem.
@@ -307,8 +308,8 @@ def _find_reference_bvh(reference_motion: str | None) -> Path | None:
 
     candidate = Path(reference_motion)
 
-    # 1. Already a .bvh and exists
-    if candidate.suffix.lower() == ".bvh" and candidate.is_file():
+    # 1. Already a directly-viewable file (.bvh or .glb) and exists
+    if candidate.suffix.lower() in (".bvh", ".glb") and candidate.is_file():
         return candidate
 
     # 2. Same directory: .bvh sibling or appended .bvh
