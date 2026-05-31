@@ -185,9 +185,34 @@ def _reference_skeleton_from_tpose(tp):
     ``tp.names`` / ``tp.tpos_anim`` already include the appended leaf-rotation
     helper joints. The raw input animation must match the skeleton *before* that
     augmentation, so we slice the leading ``original_joint_count`` entries (helpers
-    are always appended at the end)."""
-    helper_count = int(tp.helper_metadata.get('helper_joint_count', 0)) if tp.helper_metadata else 0
-    original_joint_count = len(tp.names) - helper_count
+    are always appended at the end).
+
+    ``helper_metadata`` records ``original_joint_count`` authoritatively; we use it
+    directly rather than inferring ``len(names) - helper_joint_count`` so that a
+    missing/zero helper count cannot silently promote the helper-augmented list to
+    the "expected" skeleton.
+    """
+    helper_metadata = tp.helper_metadata
+    if not isinstance(helper_metadata, dict):
+        raise SystemExit(
+            "Error: T-pose features are missing helper_metadata; cannot determine the "
+            "reference skeleton's original joint count. Rebuild the character constants "
+            "(get_common_features_from_T_pose must be called with the leaf-helper budget)."
+        )
+
+    total = len(tp.names)
+    original_joint_count = int(
+        helper_metadata.get(
+            'original_joint_count',
+            total - int(helper_metadata.get('helper_joint_count', 0)),
+        )
+    )
+    if not 0 < original_joint_count <= total:
+        raise SystemExit(
+            f"Error: invalid reference original_joint_count={original_joint_count} for a "
+            f"{total}-joint T-pose; cannot validate the input skeleton."
+        )
+
     expected_names = list(tp.names[:original_joint_count])
     expected_parents = np.asarray(tp.tpos_anim.parents[:original_joint_count], dtype=np.int32)
     return expected_names, expected_parents
