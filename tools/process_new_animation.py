@@ -55,6 +55,8 @@ if ANYTOP_DIR not in sys.path:
     sys.path.insert(0, ANYTOP_DIR)
 
 from motion_lib import BVH, FBX  # noqa: E402
+from motion_lib.Animation import Animation  # noqa: E402
+from motion_lib.Quaternions import Quaternions  # noqa: E402
 from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
     get_common_features_from_T_pose,
     get_motion,
@@ -177,6 +179,119 @@ def _build_character_constants(object_cond, object_type, tpose_path):
     return tp
 
 
+def _reference_skeleton_from_tpose(tp):
+    """Return (names, parents) of the original (un-augmented) reference skeleton.
+
+    ``tp.names`` / ``tp.tpos_anim`` already include the appended leaf-rotation
+    helper joints. The raw input animation must match the skeleton *before* that
+    augmentation, so we slice the leading ``original_joint_count`` entries (helpers
+    are always appended at the end)."""
+    helper_count = int(tp.helper_metadata.get('helper_joint_count', 0)) if tp.helper_metadata else 0
+    original_joint_count = len(tp.names) - helper_count
+    expected_names = list(tp.names[:original_joint_count])
+    expected_parents = np.asarray(tp.tpos_anim.parents[:original_joint_count], dtype=np.int32)
+    return expected_names, expected_parents
+
+
+def _reindex_animation_subset(raw_anim, names, keep_indices):
+    """Drop all joints except ``keep_indices`` and reindex parents/arrays.
+
+    ``keep_indices`` must already be in ascending (DFS pre-order) order and must
+    be closed under the parent relation (every kept joint's parent is kept), which
+    the caller guarantees before calling."""
+    old_to_new = {old: new for new, old in enumerate(keep_indices)}
+    new_names = [names[i] for i in keep_indices]
+    new_parents = np.array(
+        [old_to_new[int(raw_anim.parents[i])] if int(raw_anim.parents[i]) >= 0 else -1
+         for i in keep_indices],
+        dtype=np.int32,
+    )
+    new_anim = Animation(
+        Quaternions(raw_anim.rotations.qs[:, keep_indices].copy()),
+        raw_anim.positions[:, keep_indices].copy(),
+        Quaternions(raw_anim.orients.qs[keep_indices].copy()),
+        raw_anim.offsets[keep_indices].copy(),
+        new_parents,
+    )
+    return new_anim, new_names
+
+
+def _align_input_skeleton_to_reference(raw_anim, names, expected_names, expected_parents, fname):
+    """Validate/repair the raw input skeleton against the dataset reference skeleton.
+
+    ``process_new_animation`` (via ``get_motion``) assumes the raw animation's
+    joints match the dataset's canonical skeleton index-for-index, then appends
+    leaf-rotation helpers to reach the feature joint count. That assumption is
+    silent: an input carrying extra terminal bones (e.g. Blender ``*_end`` tip
+    bones materialised on FBX/GLB export) can coincidentally match the *augmented*
+    joint count and get mismatched joint-by-joint, scrambling the whole skeleton.
+
+    Defense:
+      * If the skeleton already matches the reference, return it unchanged.
+      * Otherwise strip terminal (leaf) bones whose names are not in the reference
+        — this removes ``*_end``-style tip bones while preserving DFS order — and
+        re-validate.
+      * If it still does not match (missing joints, reordered joints, or an
+        *internal* extra bone that cannot be safely dropped), raise with a clear
+        diff instead of silently producing corrupt motion.
+    """
+    expected_name_set = set(expected_names)
+
+    if list(names) == list(expected_names):
+        return raw_anim, list(names)
+
+    # Identify leaf joints (no children) whose names are not in the reference.
+    parents = np.asarray(raw_anim.parents, dtype=np.int32)
+    has_children = np.zeros(len(names), dtype=bool)
+    has_children[parents[parents >= 0]] = True
+    unexpected_leaves = [
+        i for i, name in enumerate(names)
+        if name not in expected_name_set and not has_children[i]
+    ]
+
+    if unexpected_leaves:
+        keep_indices = [i for i in range(len(names)) if i not in set(unexpected_leaves)]
+        # Reject if dropping orphans an expected joint (its parent was removed) —
+        # that means the extra bone is internal and cannot be safely stripped.
+        keep_set = set(keep_indices)
+        for i in keep_indices:
+            p = int(parents[i])
+            if p >= 0 and p not in keep_set:
+                break
+        else:
+            stripped_names = [names[i] for i in unexpected_leaves]
+            raw_anim, names = _reindex_animation_subset(raw_anim, names, keep_indices)
+            print(
+                f"[process_new_animation] WARNING: stripped {len(stripped_names)} terminal "
+                f"bone(s) from {fname} not present in the '{','.join(expected_names[:1])}...' "
+                f"reference skeleton: {stripped_names[:10]}"
+                f"{'...' if len(stripped_names) > 10 else ''}. These are typically Blender "
+                f"'*_end' tip bones; the clip is processed on the canonical "
+                f"{len(expected_names)}-joint skeleton.",
+                flush=True,
+            )
+
+    # Final structural validation (names AND parents must match exactly).
+    if list(names) == list(expected_names) and np.array_equal(
+        np.asarray(raw_anim.parents, dtype=np.int32), expected_parents
+    ):
+        return raw_anim, list(names)
+
+    extra = [n for n in names if n not in expected_name_set]
+    missing = [n for n in expected_names if n not in set(names)]
+    raise SystemExit(
+        f"Error: skeleton of '{fname}' does not match the dataset reference skeleton "
+        f"({len(expected_names)} joints, root '{expected_names[0] if expected_names else '?'}') "
+        f"and cannot be auto-aligned.\n"
+        f"  input joints  : {len(names)}\n"
+        f"  extra joints  ({len(extra)}): {extra[:10]}{'...' if len(extra) > 10 else ''}\n"
+        f"  missing joints({len(missing)}): {missing[:10]}{'...' if len(missing) > 10 else ''}\n"
+        f"  Re-export the animation on the dataset's canonical skeleton, or pass a matching "
+        f"--tpose-path. (A same-count but differently-ordered skeleton would otherwise be "
+        f"silently scrambled.)"
+    )
+
+
 def _process_one_file(file_path, object_type, tp, max_joints, filter_min_length, resample_min_length):
     """Process a single animation file as one full-length clip (no windowing).
 
@@ -192,6 +307,14 @@ def _process_one_file(file_path, object_type, tp, max_joints, filter_min_length,
     if anim_len == 0:
         print(f"[process_new_animation] skipping empty animation: {file_path}", flush=True)
         return [], max_joints
+
+    # Defense: make sure the raw skeleton matches the dataset's canonical skeleton
+    # before get_motion blindly aligns it index-by-index against the T-pose. Strips
+    # stray terminal '*_end' tip bones (or errors clearly on a real mismatch).
+    expected_names, expected_parents = _reference_skeleton_from_tpose(tp)
+    raw_anim, names = _align_input_skeleton_to_reference(
+        raw_anim, names, expected_names, expected_parents, fname
+    )
 
     local_errors = dict()
     # whole clip, no auto-splitting (slice_inds spans the full length)
