@@ -34,7 +34,9 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     get_motion,
     recover_bvh_export_animation_from_motion_np,
 )
-from motion_lib import BVH
+from motion_lib import BVH, FBX
+from motion_lib.Animation import Animation
+from motion_lib.Quaternions import Quaternions
 from os.path import join as pjoin
 from utils import dist_util
 from utils.fixseed import fixseed
@@ -368,6 +370,141 @@ def _build_retarget_cond_dict(cond_dict, source_type, default_cond_cache=None):
     return retarget_cond_dict
 
 
+def _reference_skeleton_from_tpose(tp):
+    """Return (names, parents) of the original (un-augmented) reference skeleton.
+
+    ``tp.names`` / ``tp.tpos_anim`` already include the appended leaf-rotation
+    helper joints. The raw reference animation must match the skeleton *before*
+    that augmentation, so we slice the leading ``original_joint_count`` entries
+    (helpers are always appended at the end). ``helper_metadata`` records
+    ``original_joint_count`` authoritatively; we use it directly rather than
+    inferring ``len(names) - helper_joint_count`` so a missing/zero helper count
+    cannot silently promote the helper-augmented list to the "expected" skeleton.
+    """
+    helper_metadata = tp.helper_metadata
+    if not isinstance(helper_metadata, dict):
+        raise RuntimeError(
+            "Reference T-pose features are missing helper_metadata; cannot determine "
+            "the reference skeleton's original joint count."
+        )
+
+    total = len(tp.names)
+    original_joint_count = int(
+        helper_metadata.get(
+            'original_joint_count',
+            total - int(helper_metadata.get('helper_joint_count', 0)),
+        )
+    )
+    if not 0 < original_joint_count <= total:
+        raise RuntimeError(
+            f"Invalid reference original_joint_count={original_joint_count} for a "
+            f"{total}-joint T-pose; cannot validate the input skeleton."
+        )
+
+    expected_names = list(tp.names[:original_joint_count])
+    expected_parents = np.asarray(tp.tpos_anim.parents[:original_joint_count], dtype=np.int32)
+    return expected_names, expected_parents
+
+
+def _reindex_animation_subset(raw_anim, names, keep_indices):
+    """Drop all joints except ``keep_indices`` and reindex parents/arrays.
+
+    ``keep_indices`` must already be in ascending (DFS pre-order) order and must
+    be closed under the parent relation (every kept joint's parent is kept), which
+    the caller guarantees before calling.
+    """
+    old_to_new = {old: new for new, old in enumerate(keep_indices)}
+    new_names = [names[i] for i in keep_indices]
+    new_parents = np.array(
+        [old_to_new[int(raw_anim.parents[i])] if int(raw_anim.parents[i]) >= 0 else -1
+         for i in keep_indices],
+        dtype=np.int32,
+    )
+    new_anim = Animation(
+        Quaternions(raw_anim.rotations.qs[:, keep_indices].copy()),
+        raw_anim.positions[:, keep_indices].copy(),
+        Quaternions(raw_anim.orients.qs[keep_indices].copy()),
+        raw_anim.offsets[keep_indices].copy(),
+        new_parents,
+    )
+    return new_anim, new_names
+
+
+def _align_reference_skeleton(raw_anim, names, expected_names, expected_parents, fname, source_type=None):
+    """Validate/repair the raw reference skeleton against the dataset reference skeleton.
+
+    ``get_motion`` assumes the raw animation's joints match the dataset's canonical
+    skeleton index-for-index, then appends leaf-rotation helpers to reach the feature
+    joint count. That assumption is silent: a reference carrying extra terminal bones
+    (e.g. Blender ``*_end`` tip bones materialised on FBX/GLB export) can coincidentally
+    match the *augmented* joint count and get mismatched joint-by-joint, scrambling the
+    whole skeleton.
+
+    Defense:
+      * If the skeleton already matches the reference, return it unchanged.
+      * Otherwise strip terminal (leaf) bones whose names are not in the reference
+        — this removes ``*_end``-style tip bones while preserving DFS order — and
+        re-validate.
+      * If it still does not match (missing joints, reordered joints, or an
+        *internal* extra bone that cannot be safely dropped), raise with a clear
+        diff instead of silently producing corrupt motion.
+    """
+    expected_name_set = set(expected_names)
+
+    if list(names) == list(expected_names):
+        return raw_anim, list(names)
+
+    # Identify leaf joints (no children) whose names are not in the reference.
+    parents = np.asarray(raw_anim.parents, dtype=np.int32)
+    has_children = np.zeros(len(names), dtype=bool)
+    has_children[parents[parents >= 0]] = True
+    unexpected_leaves = [
+        i for i, name in enumerate(names)
+        if name not in expected_name_set and not has_children[i]
+    ]
+
+    if unexpected_leaves:
+        keep_indices = [i for i in range(len(names)) if i not in set(unexpected_leaves)]
+        # Reject if dropping orphans an expected joint (its parent was removed) —
+        # that means the extra bone is internal and cannot be safely stripped.
+        keep_set = set(keep_indices)
+        for i in keep_indices:
+            p = int(parents[i])
+            if p >= 0 and p not in keep_set:
+                break
+        else:
+            stripped_names = [names[i] for i in unexpected_leaves]
+            raw_anim, names = _reindex_animation_subset(raw_anim, names, keep_indices)
+            print(
+                f"[generate] WARNING: stripped {len(stripped_names)} terminal bone(s) "
+                f"from reference {fname} not present in the '{','.join(expected_names[:1])}...' "
+                f"reference skeleton: {stripped_names[:10]}"
+                f"{'...' if len(stripped_names) > 10 else ''}. These are typically Blender "
+                f"'*_end' tip bones; the clip is processed on the canonical "
+                f"{len(expected_names)}-joint skeleton."
+            )
+
+    # Final structural validation (names AND parents must match exactly).
+    if list(names) == list(expected_names) and np.array_equal(
+        np.asarray(raw_anim.parents, dtype=np.int32), expected_parents
+    ):
+        return raw_anim, list(names)
+
+    extra = [n for n in names if n not in expected_name_set]
+    missing = [n for n in expected_names if n not in set(names)]
+    type_label = f" (object_type='{source_type}')" if source_type else ""
+    raise ValueError(
+        f"Reference motion skeleton of '{fname}'{type_label} does not match the dataset reference "
+        f"skeleton ({len(expected_names)} joints, root "
+        f"'{expected_names[0] if expected_names else '?'}') and cannot be auto-aligned.\n"
+        f"  input joints  : {len(names)}\n"
+        f"  extra joints  ({len(extra)}): {extra[:10]}{'...' if len(extra) > 10 else ''}\n"
+        f"  missing joints({len(missing)}): {missing[:10]}{'...' if len(missing) > 10 else ''}\n"
+        f"  Re-export the reference on the dataset's canonical skeleton. (A same-count but "
+        f"differently-ordered skeleton would otherwise be silently scrambled.)"
+    )
+
+
 def _prepare_reference_motion_path(
     reference_motion_path,
     source_type,
@@ -402,13 +539,31 @@ def _prepare_reference_motion_path(
     preprocess_max_joints = len(cond_parents) if cond_parents is not None else int(opt.max_joints)
 
     print(f"  Preprocessing reference motion {suffix} -> .npy using object_type={source_type}")
+    # Pass the cond entry's recorded face joints so the reproduced orientation_quat
+    # matches the feature space the dataset (and the model's mean/std) were built in;
+    # omitting it would silently fall back to default face joints for any object_type
+    # that was authored with custom ones, misaligning the reference.
     source_tp = get_common_features_from_T_pose(
         tpose_path,
         source_type,
+        face_joints=source_cond.get('face_joint_names') or None,
         augment_leaf_rotation_helpers=True,
         max_joints=preprocess_max_joints,
     )
     scale_factor = float(source_cond.get('scale_factor', source_tp.scale_factor))
+
+    # Defense: align the raw reference skeleton to the dataset's canonical skeleton
+    # before get_motion blindly maps it index-by-index against the T-pose. This strips
+    # stray terminal '*_end' tip bones (common on Blender FBX/GLB export) and fast-fails
+    # on a real structural mismatch instead of silently scrambling the joints.
+    fname = os.path.basename(reference_motion_path)
+    raw_anim, names, _frame_time = FBX.load(reference_motion_path)
+    anim_len = len(raw_anim)
+    expected_names, expected_parents = _reference_skeleton_from_tpose(source_tp)
+    raw_anim, names = _align_reference_skeleton(
+        raw_anim, names, expected_names, expected_parents, fname, source_type
+    )
+
     squared_positions_error = {}
     source_features, *_ = get_motion(
         reference_motion_path,
@@ -421,6 +576,8 @@ def _prepare_reference_motion_path(
         squared_positions_error,
         scale_factor=scale_factor,
         orientation_quat=source_tp.orientation_quat,
+        slice_inds=[0, anim_len],
+        preloaded=(raw_anim, names),
         helper_metadata=source_tp.helper_metadata,
     )
     if source_features is None:
