@@ -24,8 +24,12 @@ Output layout::
         eval_report.html
 
 By default the evaluation runs *incrementally*: existing task outputs are
-kept and re-scored, and only newly-added tasks are generated.  Pass ``--force``
-to wipe the output root and regenerate everything.
+kept and re-scored, and only newly-added tasks are generated.  Each task's
+generate.py flags — and the contents of any referenced motion/cond files — are
+checksummed into a ``task_params.json`` sidecar; if a task's parameters change
+(e.g. its entry in the task config is edited, or a reference file is modified
+in place), the stale output is wiped and the task is regenerated.  Pass
+``--force`` to wipe the output root and regenerate everything.
 
 The task battery is loaded from a JSON config (``--task_config``, default
 ``eval/eval_tasks.json``) so it can be tuned without editing code. Each task is
@@ -45,6 +49,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime as _dt
+import hashlib
 import html
 import io
 import json
@@ -132,12 +137,83 @@ def build_tasks(config_path: Path) -> list[tuple[str, list[str]]]:
         # Resolve the value following each path-valued flag, in place.
         for j in range(len(args) - 1):
             if args[j] in _PATH_FLAGS:
-                args[j + 1] = _resolve_arg_path(args[j + 1], _ANYTOP_DIR)
+                resolved = _resolve_arg_path(args[j + 1], _ANYTOP_DIR)
+                # Fast-fail on missing paths (sentinel passes through).
+                if resolved != _LAST_OUTPUT and not Path(resolved).is_file():
+                    raise ValueError(
+                        f"Task #{i} in {config_path}: {args[j]} points to "
+                        f"non-existent file: {resolved}"
+                    )
+                args[j + 1] = resolved
         tasks.append((category, args))
 
     if not tasks:
         raise ValueError(f"No tasks found in config: {config_path}")
     return tasks
+
+
+# ── Task parameter checksum (incremental change detection) ───────────────────
+# Name of the per-task sidecar that records the checksum of the generate.py
+# flags used to produce a task dir, so the incremental runner can detect when a
+# task's parameters have changed and the output must be regenerated.
+_TASK_HASH_FILE = "task_params.json"
+
+
+def _file_content_hash(path: Path) -> str:
+    """SHA-256 of a file's bytes, read in chunks so large motion files don't
+    have to be loaded into memory at once."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _task_param_hash(extra_args: list[str]) -> str:
+    """Deterministic SHA-256 checksum of a task's generate.py flags.
+
+    Hashes the full ordered argument list, so any change to a task's parameters
+    (a flag added/removed/reordered, or a value edited) yields a different
+    digest. This includes all flags — ``--model_path``, ``--output_dir``,
+    ``--batch_size``, ``--amp_dtype``, etc. — since any of these can affect
+    the generated output and should trigger a regeneration when changed.
+
+    For path-valued flags (``_PATH_FLAGS``, e.g. ``--reference_motion`` /
+    ``--cond_path``) the referenced file's *contents* are folded in as well, so
+    editing a reference file in place (same path, new content) also changes the
+    digest and forces a regen. The ``$LAST_OUTPUT`` sentinel is left as-is (it
+    is resolved per-run from the previous task's output, not a fixed file).
+    """
+    parts: list[str] = []
+    for i, arg in enumerate(extra_args):
+        parts.append(arg)
+        if i > 0 and extra_args[i - 1] in _PATH_FLAGS and arg != _LAST_OUTPUT:
+            p = Path(arg)
+            parts.append(f"sha256:{_file_content_hash(p)}" if p.is_file() else "missing")
+    payload = json.dumps(parts, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _read_stored_hash(task_dir: Path) -> str | None:
+    """Return the checksum recorded in a task dir's sidecar, or None if absent
+    (legacy output predating checksums) or unreadable."""
+    meta_path = task_dir / _TASK_HASH_FILE
+    if not meta_path.is_file():
+        return None
+    try:
+        return json.loads(meta_path.read_text(encoding="utf-8")).get("hash")
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _write_task_hash(task_dir: Path, extra_args: list[str], digest: str) -> None:
+    """Record a task's parameter checksum (and the args it covers) so a later
+    incremental run can tell whether the parameters have changed."""
+    meta_path = task_dir / _TASK_HASH_FILE
+    meta_path.write_text(
+        json.dumps({"hash": digest, "args": extra_args}, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
 def _first_output_npy(task_dir: Path) -> Path | None:
@@ -464,6 +540,10 @@ def run_task(
         print(f"  [FAIL] {record['status']}")
         return record
 
+    # Record the parameter checksum so a later incremental run can detect when
+    # this task's flags change and regenerate instead of reusing stale output.
+    _write_task_hash(task_dir, extra_args, _task_param_hash(extra_args))
+
     first_npy = _first_output_npy(task_dir)
     record["first_npy"] = first_npy
     object_type = _extract_object_type(first_npy) if first_npy else None
@@ -769,9 +849,18 @@ def main() -> int:
         task_dir = root / category / f"task{index}"
 
         # ── Incremental mode (default): reuse existing output, re-score only. ──
-        # Skip the expensive generation step when output already exists.
+        # Reuse the existing task dir only when output exists AND its recorded
+        # parameter checksum still matches the current flags. A missing checksum
+        # is legacy/pre-checksum output: reuse it and backfill the checksum so
+        # later runs are guarded (we can't know the old params, so we assume the
+        # output matches the current config rather than forcing a full regen).
         # --force bypasses this check to regenerate everything.
-        if not args.force and _first_output_npy(task_dir) is not None:
+        current_hash = _task_param_hash(extra_args)
+        stored_hash = _read_stored_hash(task_dir)
+        output_exists = _first_output_npy(task_dir) is not None
+        params_match = stored_hash is None or stored_hash == current_hash
+
+        if not args.force and output_exists and params_match:
             print(f"\n=== {category}/task{index} ({task_num}/{total_tasks}) [reuse existing] ===")
             try:
                 record = _build_record_from_existing(task_dir, category, index, scorer, root)
@@ -783,12 +872,23 @@ def main() -> int:
                     "status": f"harness error: {exc}", "first_npy": _first_output_npy(task_dir),
                     "reference_motion": None,
                 }
+            # Backfill the checksum for legacy output so subsequent runs can
+            # detect parameter changes against it.
+            if stored_hash is None:
+                _write_task_hash(task_dir, extra_args, current_hash)
             if record.get("reference_motion") == _LAST_OUTPUT and prev_first_npy is not None:
                 record["last_output_resolved"] = str(prev_first_npy)
             n_skipped += 1
             records.append(record)
             prev_first_npy = record["first_npy"]
             continue
+
+        # Parameters changed since the recorded checksum: wipe the stale output
+        # so the regenerated task dir contains only clips for the new params
+        # (the new run may produce differently-named or fewer files).
+        if not args.force and output_exists:
+            print(f"  [regen] {category}/task{index}: task parameters changed; regenerating")
+            shutil.rmtree(task_dir, ignore_errors=True)
 
         # ── Otherwise generate the task (new task, or full run). ──
         try:
