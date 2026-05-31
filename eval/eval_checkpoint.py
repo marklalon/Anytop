@@ -23,12 +23,15 @@ Output layout::
             scores.json            # machine-readable per-clip scores
         eval_report.html
 
-The whole ``<RUN_NAME>/<MODEL_NAME>`` root is wiped before the run.
+By default the evaluation runs *incrementally*: existing task outputs are
+kept and re-scored, and only newly-added tasks are generated.  Pass ``--force``
+to wipe the output root and regenerate everything.
 
 Usage::
 
     python eval/eval_checkpoint.py --model_path save/quadropeds_locomotion_slim_v2/model000020000.pt
     python eval/eval_checkpoint.py --model_path .../model.pt --output_root <dir>
+    python eval/eval_checkpoint.py --model_path .../model.pt --force
 """
 
 from __future__ import annotations
@@ -448,7 +451,7 @@ def run_task(
         stdout.write("\n")
         stdout.write(traceback.format_exc())
 
-    # Prepend the command line so report_only can recover it.
+    # Prepend the command line so incremental re-scoring can recover it.
     log_path.write_text(f"# {display_cmd}\n" + stdout.getvalue(), encoding="utf-8", errors="replace")
 
     if returncode != 0:
@@ -682,8 +685,10 @@ def main() -> int:
         help="Override the output root (default: Anytop/outputs/eval_checkpoint/<RUN_NAME>/<MODEL_NAME>).",
     )
     parser.add_argument(
-        "--report_only", "--report-only", action="store_true",
-        help="Skip generation tasks; only regenerate the HTML report from existing output directories.",
+        "--force", action="store_true",
+        help="Wipe the output root and regenerate all tasks from scratch. "
+             "By default the evaluation is incremental: existing outputs are "
+             "re-scored and only new tasks are generated.",
     )
     args = parser.parse_args()
 
@@ -702,66 +707,17 @@ def main() -> int:
     else:
         root = _ANYTOP_DIR / "outputs" / "eval_checkpoint" / run_name / model_name
 
-    # Wipe the entire output root before evaluating (skip for report-only).
-    if args.report_only:
-        if not root.exists():
-            print(f"ERROR: output root does not exist for report_only: {root}", file=sys.stderr)
-            return 1
-    else:
+    # Default is incremental (keep existing outputs). --force wipes everything.
+    if args.force:
         if root.exists():
             print(f"Cleaning output root: {root}")
             shutil.rmtree(root)
-        root.mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True)
 
     scorer = DistributionMotionQualityScorer()
     print(f"Python      : {sys.executable}")
     print(f"Checkpoint  : {model_path}")
     print(f"Output root : {root}")
-
-    # ── Report-only mode: scan existing task dirs, re-score, write report ──
-    if args.report_only:
-        print("\n[report_only] scanning existing task directories...")
-        records: list[dict] = []
-        prev_first_npy: Path | None = None
-        for cat_dir in sorted(root.iterdir()):
-            if not cat_dir.is_dir() or cat_dir.name.startswith("."):
-                continue
-            category = cat_dir.name
-            for task_dir in sorted(cat_dir.iterdir()):
-                if not task_dir.is_dir():
-                    continue
-                m = re.match(r"task(\d+)", task_dir.name)
-                if not m:
-                    continue
-                index = int(m.group(1))
-                record = _build_record_from_existing(task_dir, category, index, scorer, root)
-                if record.get("reference_motion") == _LAST_OUTPUT and prev_first_npy is not None:
-                    record["last_output_resolved"] = str(prev_first_npy)
-                records.append(record)
-                prev_first_npy = record["first_npy"]
-        all_scores: list[float] = []
-        for r in records:
-            all_scores.extend(r["scores"].values())
-        report_path = root / "eval_report.html"
-        write_html_report(report_path, model_path, run_name, model_name, records, all_scores)
-        print(f"\nHTML report : {report_path}")
-        if all_scores:
-            print(
-                f"Overall score  median={_pct(all_scores, 50):.4f}  "
-                f"p25={_pct(all_scores, 25):.4f}  p75={_pct(all_scores, 75):.4f}  "
-                f"(n={len(all_scores)} clips)"
-            )
-        else:
-            print("No scores were produced.")
-        return 0
-
-    print("Preparing shared generation runtime (loads checkpoint once)...")
-    runtime_args = generate_args([
-        "--model_path", str(model_path),
-        "--batch_size", "8",
-        "--amp_dtype", "bf16",
-    ])
-    runtime = prepare_generation_runtime(runtime_args)
 
     tasks = build_tasks()
     total_tasks = len(tasks)
@@ -769,28 +725,75 @@ def main() -> int:
     cat_counter: dict[str, int] = {}
     records: list[dict] = []
     prev_first_npy: Path | None = None
+    # The generation runtime loads the checkpoint; only prepare it if at least
+    # one task actually needs generating. In incremental runs where every task
+    # already has output, this is never built and we just re-score + report.
+    runtime = None
+    n_generated = 0
+    n_skipped = 0
+
+    def _ensure_runtime():
+        nonlocal runtime
+        if runtime is None:
+            print("Preparing shared generation runtime (loads checkpoint once)...")
+            runtime_args = generate_args([
+                "--model_path", str(model_path),
+                "--batch_size", "8",
+                "--amp_dtype", "bf16",
+            ])
+            runtime = prepare_generation_runtime(runtime_args)
+        return runtime
 
     for task_num, (category, extra_args) in enumerate(tasks, 1):
         cat_counter[category] = cat_counter.get(category, 0) + 1
         index = cat_counter[category]
+        task_dir = root / category / f"task{index}"
+
+        # ── Incremental mode (default): reuse existing output, re-score only. ──
+        # Skip the expensive generation step when output already exists.
+        # --force bypasses this check to regenerate everything.
+        if not args.force and _first_output_npy(task_dir) is not None:
+            print(f"\n=== {category}/task{index} ({task_num}/{total_tasks}) [reuse existing] ===")
+            try:
+                record = _build_record_from_existing(task_dir, category, index, scorer, root)
+            except Exception as exc:
+                print(f"  [ERROR] {category}/task{index} rescore raised: {exc}")
+                record = {
+                    "category": category, "index": index, "task_dir": task_dir,
+                    "command": "", "scores": {}, "median": None,
+                    "status": f"harness error: {exc}", "first_npy": _first_output_npy(task_dir),
+                    "reference_motion": None,
+                }
+            if record.get("reference_motion") == _LAST_OUTPUT and prev_first_npy is not None:
+                record["last_output_resolved"] = str(prev_first_npy)
+            n_skipped += 1
+            records.append(record)
+            prev_first_npy = record["first_npy"]
+            continue
+
+        # ── Otherwise generate the task (new task, or full run). ──
         try:
             record = run_task(
-                runtime, scorer, model_path, category, index, extra_args, root, prev_first_npy,
+                _ensure_runtime(), scorer, model_path, category, index, extra_args, root, prev_first_npy,
                 total=total_tasks, current=task_num,
             )
         except Exception as exc:  # never let one task abort the whole battery
             print(f"  [ERROR] {category}/task{index} raised: {exc}")
             record = {
                 "category": category, "index": index,
-                "task_dir": root / category / f"task{index}",
+                "task_dir": task_dir,
                 "command": "generate.py " + " ".join(extra_args),
                 "scores": {}, "median": None,
                 "status": f"harness error: {exc}", "first_npy": None,
                 "reference_motion": _extract_reference_motion(extra_args),
             }
+        n_generated += 1
         records.append(record)
         # $LAST_OUTPUT tracks the immediately preceding task's first clip.
         prev_first_npy = record["first_npy"]
+
+    if not args.force:
+        print(f"\n[increment] generated {n_generated} new task(s); reused {n_skipped} existing task(s)")
 
     all_scores: list[float] = []
     for r in records:
