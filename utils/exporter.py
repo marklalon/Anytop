@@ -135,15 +135,25 @@ def _normalize_imported_armature_and_meshes(bpy, armature) -> None:
     """Normalize imported FBX object scale while preserving the axis wrapper.
 
     FBX import commonly leaves a +90deg X axis wrapper and a 0.01 object scale
-    on the armature object. The skinned meshes inherit the same world transform
-    via parenting / armature modifiers. We want to remove the importer scale and
-    stale parent-inverse state, but we must keep the axis wrapper rotation: the
+    on the armature object. We want to remove the importer scale and stale
+    parent-inverse state, but we must keep the axis wrapper rotation: the
     imported bone and mesh local data still live in the FBX armature's Y-up
     object space, so stripping the rotation would roll the character 90 degrees.
 
-    Normalize the imported objects back to unit scale while preserving their
-    world translation and world rotation, keeping armature-local mesh/bone data
-    unchanged and still aligned to Blender's world up axis.
+    Dropping the armature's object scale re-interprets its armature-local bone
+    data (centimetre units) as world units, which is what aligns the exported
+    skeleton with the centimetre-scale NPY animation. The skinned meshes must
+    move with that change so they stay glued to the skeleton — but they do NOT
+    necessarily share the armature's object scale: a mesh parented *under* the
+    armature inherits an extra scale factor (e.g. armature scale 0.01 + mesh
+    basis 0.01 -> mesh world scale 0.0001). Resetting every object to unit scale
+    independently therefore detaches such a mesh (it ends up 100x too large).
+
+    Instead, compute the world-space delta that maps the armature's old world
+    frame onto its normalized (scale-dropped) frame, then apply that *same*
+    delta to every bound mesh. This preserves each mesh's transform relative to
+    the armature exactly, so the skin stays aligned regardless of how the mesh's
+    own object scale differs from the armature's.
     """
     from mathutils import Matrix
 
@@ -156,18 +166,26 @@ def _normalize_imported_armature_and_meshes(bpy, armature) -> None:
         ):
             related_meshes.append(obj)
 
-    objects_to_normalize = [armature] + related_meshes
-    world_transforms = {
-        obj.name: obj.matrix_world.copy()
-        for obj in objects_to_normalize
-    }
+    arm_world_old = armature.matrix_world.copy()
+    # Normalized armature frame: keep world translation + rotation, drop scale/shear.
+    arm_position = arm_world_old.translation.copy()
+    arm_rotation = arm_world_old.to_quaternion().to_matrix().to_4x4()
+    arm_world_new = Matrix.Translation(arm_position) @ arm_rotation
 
-    for obj in objects_to_normalize:
-        world_matrix = world_transforms[obj.name]
-        world_position = world_matrix.translation.copy()
-        world_rotation = world_matrix.to_quaternion().to_matrix().to_4x4()
-        obj.matrix_parent_inverse = Matrix.Identity(4)
-        obj.matrix_world = Matrix.Translation(world_position) @ world_rotation
+    # World-space delta carrying the old armature frame onto the normalized one.
+    # Applying it to a bound mesh preserves arm_world_new.inverted() @ mesh_world
+    # == arm_world_old.inverted() @ mesh_world_old, i.e. the mesh-in-armature
+    # bind transform the armature modifier relies on.
+    delta = arm_world_new @ arm_world_old.inverted()
+
+    mesh_worlds_old = {m.name: m.matrix_world.copy() for m in related_meshes}
+
+    armature.matrix_parent_inverse = Matrix.Identity(4)
+    armature.matrix_world = arm_world_new
+
+    for mesh in related_meshes:
+        mesh.matrix_parent_inverse = Matrix.Identity(4)
+        mesh.matrix_world = delta @ mesh_worlds_old[mesh.name]
 
 
 class AnimationExporter:
