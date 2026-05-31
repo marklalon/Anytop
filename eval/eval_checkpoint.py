@@ -27,10 +27,16 @@ By default the evaluation runs *incrementally*: existing task outputs are
 kept and re-scored, and only newly-added tasks are generated.  Pass ``--force``
 to wipe the output root and regenerate everything.
 
+The task battery is loaded from a JSON config (``--task_config``, default
+``eval/eval_tasks.json``) so it can be tuned without editing code. Each task is
+``{"category": str, "args": [<generate.py flags>]}``; path-valued flags accept
+absolute paths or paths relative to the Anytop dir.
+
 Usage::
 
     python eval/eval_checkpoint.py --model_path save/quadropeds_locomotion_slim_v2/model000020000.pt
     python eval/eval_checkpoint.py --model_path .../model.pt --output_root <dir>
+    python eval/eval_checkpoint.py --model_path .../model.pt --task_config my_tasks.json
     python eval/eval_checkpoint.py --model_path .../model.pt --force
 """
 
@@ -62,76 +68,75 @@ from sample.generate import main as generate_main
 from sample.generate import prepare_generation_runtime
 from utils.parser_util import generate_args
 
-# Reference motions used by the reference-guided tasks.
-_DATASET_MOTIONS = _ANYTOP_DIR / "dataset" / "truebones" / "zoo" / "truebones_processed" / "motions"
-_BUFFALO_RUNLOOP = _DATASET_MOTIONS / "Buffalo_RunLoop_115.npy"
-_BUFFALO_RUN_NOLOOP = _ANYTOP_DIR / "outputs" / "test" / "Buffalo_Run_Noloop.npy"
-
 # Sentinel resolved at run time to the first output .npy of the previous task.
 _LAST_OUTPUT = "$LAST_OUTPUT"
 _SCORE_ACTION_TAGS = "locomotion"
 _SCORE_TOP_K_SPECIES = 3
 
+# Default task battery, loaded by build_tasks() when --task_config is omitted.
+_DEFAULT_TASK_CONFIG = _SCRIPT_DIR / "eval_tasks.json"
+# generate.py flags whose following value is a filesystem path. Their values are
+# resolved (relative → Anytop dir) when a task is loaded from the config.
+_PATH_FLAGS = ("--reference_motion", "--cond_path")
+
 
 # ── Task battery ────────────────────────────────────────────────────────────
-# Each task: (category, extra_args). The common args (model_path, output_dir,
-# batch_size, amp_dtype) are added per task in run_task().
-def build_tasks() -> list[tuple[str, list[str]]]:
+# Tasks are loaded from a JSON config file so the battery can be tuned without
+# editing code. Each task is ``{"category": str, "args": [str, ...]}`` where
+# ``args`` are the extra generate.py flags; the common args (model_path,
+# output_dir, batch_size, amp_dtype) are added per task in run_task().
+#
+# Path-valued flags (see ``_PATH_FLAGS``) accept either an absolute path or a
+# path relative to the Anytop dir; the "$LAST_OUTPUT" sentinel passes through
+# unchanged. See eval/eval_tasks.json for the default battery.
+def _resolve_arg_path(value: str, base_dir: Path) -> str:
+    """Resolve a path-valued task arg.
+
+    Absolute paths and the ``$LAST_OUTPUT`` sentinel pass through unchanged;
+    relative paths are resolved against ``base_dir``. ``~`` and ``$VARS`` are
+    expanded for either form.
+    """
+    if value == _LAST_OUTPUT:
+        return value
+    p = Path(os.path.expanduser(os.path.expandvars(value)))
+    if not p.is_absolute():
+        p = base_dir / p
+    return str(p)
+
+
+def build_tasks(config_path: Path) -> list[tuple[str, list[str]]]:
+    """Load the evaluation task battery from a JSON config file.
+
+    The config is either a list of task objects or an object with a ``"tasks"``
+    list. Each task is ``{"category": str, "args": [str, ...]}``. Path-valued
+    flag arguments are resolved relative to the Anytop dir unless absolute.
+    """
+    with open(config_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    raw_tasks = data.get("tasks", []) if isinstance(data, dict) else data
+    if not isinstance(raw_tasks, list):
+        raise ValueError(
+            f"Task config must be a JSON list or an object with a 'tasks' list: {config_path}"
+        )
+
     tasks: list[tuple[str, list[str]]] = []
+    for i, entry in enumerate(raw_tasks):
+        try:
+            category = entry["category"]
+            args = [str(a) for a in entry["args"]]
+        except (KeyError, TypeError) as exc:
+            raise ValueError(
+                f"Task #{i} in {config_path} must have 'category' and an 'args' list ({exc})"
+            )
+        # Resolve the value following each path-valued flag, in place.
+        for j in range(len(args) - 1):
+            if args[j] in _PATH_FLAGS:
+                args[j + 1] = _resolve_arg_path(args[j + 1], _ANYTOP_DIR)
+        tasks.append((category, args))
 
-    # Basic: plain generation + energy-conditioned loops at several lengths.
-    tasks.append(("Basic", ["--object_type", "Buffalo"]))
-    for frames in (30, 60, 120):
-        for energy in (1, -1):
-            tasks.append((
-                "Basic",
-                ["--object_type", "Buffalo", "--motion_frames", str(frames),
-                 "--global_energy_mean", str(energy), "--loop"],
-            ))
-
-    # ConvertLoop: take a non-loop reference and convert it into a loop.
-    tasks.append((
-        "ConvertLoop",
-        ["--reference_motion", str(_BUFFALO_RUN_NOLOOP), "--skip_timesteps", "90", "--loop"],
-    ))
-
-    # InpaintFrames: regenerate a frame window, then img2img the result.
-    tasks.append((
-        "InpaintFrames",
-        ["--reference_motion", str(_BUFFALO_RUNLOOP), "--inpaint_frames", "20-30"],
-    ))
-    tasks.append((
-        "InpaintFrames",
-        ["--reference_motion", _LAST_OUTPUT, "--skip_timesteps", "90"],
-    ))
-
-    # InpaintJoints: regenerate selected limbs while holding the rest.
-    tasks.append((
-        "InpaintJoints",
-        ["--reference_motion", str(_BUFFALO_RUNLOOP),
-         "--inpaint_joints", "RightThigh,LeftThigh", "--loop"],
-    ))
-
-    # Outpaint: extend a reference to a longer clip.
-    tasks.append((
-        "Outpaint",
-        ["--reference_motion", str(_BUFFALO_RUNLOOP),
-         "--motion_frames", "120", "--skip_timesteps", "90"],
-    ))
-
-    # NewSkeleton: generate on a novel skeleton, then img2img the result.
-    tasks.append((
-        "NewSkeleton",
-        ["--cond_path", "D:\\AI\\pcvg-skeleton-animation\\Anytop\\outputs\\new_skeleton\\cond.npy",
-         "--reference_motion", "D:\\AI\\pcvg-skeleton-animation\\Anytop\\outputs\\new_skeleton\\motions\\dragon_Walk_33.npy",
-         "--inpaint_joints", "RightThigh"],
-    ))
-    tasks.append((
-        "NewSkeleton",
-        ["--cond_path", "D:\\AI\\pcvg-skeleton-animation\\Anytop\\outputs\\new_skeleton\\cond.npy",
-         "--reference_motion", _LAST_OUTPUT, "--skip_timesteps", "90"],
-    ))
-
+    if not tasks:
+        raise ValueError(f"No tasks found in config: {config_path}")
     return tasks
 
 
@@ -566,10 +571,7 @@ def write_html_report(
         if first is not None and first.is_file():
             rel = os.path.relpath(first, root).replace(os.sep, "/")
             href = _bvh_href(first)
-            motion_cell = (
-                f'<a href="{href}">{html.escape(first.stem)}</a>'
-                f'<br><span class="path">{html.escape(rel)}</span>'
-            )
+            motion_cell = f'<a href="{href}">{html.escape(rel)}</a>'
         else:
             motion_cell = '<span class="muted">—</span>'
 
@@ -690,6 +692,12 @@ def main() -> int:
              "By default the evaluation is incremental: existing outputs are "
              "re-scored and only new tasks are generated.",
     )
+    parser.add_argument(
+        "--task_config", "--task-config", default=str(_DEFAULT_TASK_CONFIG),
+        help="Path to the JSON file defining the task battery (absolute, or "
+             "relative to the current working directory, falling back to the "
+             "Anytop dir). Default: eval/eval_tasks.json.",
+    )
     args = parser.parse_args()
 
     model_path = Path(args.model_path)
@@ -697,6 +705,16 @@ def main() -> int:
         model_path = (_ANYTOP_DIR / model_path).resolve()
     if not model_path.is_file():
         print(f"ERROR: checkpoint not found: {model_path}", file=sys.stderr)
+        return 1
+
+    # Resolve the task config path: absolute as-is; relative against the cwd,
+    # falling back to the Anytop dir so both invocation styles work.
+    task_config = Path(os.path.expanduser(os.path.expandvars(args.task_config)))
+    if not task_config.is_absolute():
+        task_config = task_config if task_config.exists() else (_ANYTOP_DIR / task_config)
+    task_config = task_config.resolve()
+    if not task_config.is_file():
+        print(f"ERROR: task config not found: {task_config}", file=sys.stderr)
         return 1
 
     run_name = model_path.parent.name                      # e.g. quadropeds_locomotion_slim_v2
@@ -717,9 +735,10 @@ def main() -> int:
     scorer = DistributionMotionQualityScorer()
     print(f"Python      : {sys.executable}")
     print(f"Checkpoint  : {model_path}")
+    print(f"Task config : {task_config}")
     print(f"Output root : {root}")
 
-    tasks = build_tasks()
+    tasks = build_tasks(task_config)
     total_tasks = len(tasks)
     # Per-category running index so dirs read task1, task2, ... within a category.
     cat_counter: dict[str, int] = {}

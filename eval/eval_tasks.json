@@ -1,0 +1,25 @@
+{
+  "_comment": "Evaluation task battery for eval_checkpoint.py. Each task is {category, args}, where args are extra generate.py flags. Path-valued flags (--reference_motion, --cond_path) accept an absolute path or a path relative to the Anytop dir; \"$LAST_OUTPUT\" resolves to the first output .npy of the previous task.",
+  "tasks": [
+    { "category": "Basic", "args": ["--object_type", "Buffalo"] },
+
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "30", "--global_energy_mean", "1", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "30", "--global_energy_mean", "-1", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "60", "--global_energy_mean", "1", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "60", "--global_energy_mean", "-1", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "120", "--global_energy_mean", "1", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "120", "--global_energy_mean", "-1", "--loop"] },
+
+    { "category": "ConvertLoop", "args": ["--reference_motion", "outputs/test/Buffalo_Run_Noloop.npy", "--skip_timesteps", "90", "--loop"] },
+
+    { "category": "InpaintFrames", "args": ["--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Buffalo_RunLoop_115.npy", "--inpaint_frames", "20-30"] },
+    { "category": "InpaintFrames", "args": ["--reference_motion", "$LAST_OUTPUT", "--skip_timesteps", "90"] },
+
+    { "category": "InpaintJoints", "args": ["--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Buffalo_RunLoop_115.npy", "--inpaint_joints", "RightThigh,LeftThigh", "--loop"] },
+
+    { "category": "Outpaint", "args": ["--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Buffalo_RunLoop_115.npy", "--motion_frames", "120", "--skip_timesteps", "90"] },
+
+    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--reference_motion", "outputs/new_skeleton/motions/dragon_Walk_33.npy", "--inpaint_joints", "RightThigh"] },
+    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--reference_motion", "$LAST_OUTPUT", "--skip_timesteps", "90"] }
+  ]
+}
