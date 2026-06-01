@@ -5,7 +5,13 @@ import re
 from motion_lib.Quaternions import Quaternions
 from motion_lib.Animation import Animation
 from .param_utils import CHAIN_FORWARD_JOINTS
-from .physics_joint_annotation import normalize_joint_name, detect_joint_side, _joint_depths, strip_joint_name_prefix
+from .physics_joint_annotation import (
+    normalize_joint_name,
+    detect_joint_side,
+    _joint_depths,
+    strip_joint_name_prefix,
+    effective_canonical_replacements,
+)
 
 
 _EMITTED_DEGENERATE_FACING_WARNINGS = set()
@@ -64,18 +70,26 @@ _BODY_AXIS_BASE_PRIORITIES = (
     ('tail',),
 )
 
-def _canonicalize_joint_name(name):
+def _canonicalize_joint_name(name, replacements=None):
     """Canonicalize a joint name using shared constants from physics_joint_annotation.
 
     Note: drops single-character tokens (including isolated digits), unlike the
     sibling implementation in physics_joint_annotation which preserves digits.
     This preserves existing face-orientation matching behavior.
+
+    ``replacements`` lets callers pass the skeleton-aware replacement table from
+    ``effective_canonical_replacements`` so Japanese-only mappings (kao/kosi/o)
+    apply only when the rig is confirmed Japanese-style; defaults to the base
+    table otherwise.
     """
-    from .physics_joint_annotation import _CANONICAL_NAME_PREFIXES, _CANONICAL_NAME_REPLACEMENTS
-    
+    from .physics_joint_annotation import _JAPANESE_NAME_REPLACEMENTS
+
+    if replacements is None:
+        replacements = _JAPANESE_NAME_REPLACEMENTS
+
     # Strip prefix using the shared utility
     stripped = strip_joint_name_prefix(name)
-    
+
     # Normalize and canonicalize
     split_name = normalize_joint_name(stripped)
     canonical_parts = []
@@ -87,8 +101,8 @@ def _canonicalize_joint_name(name):
             canonical_parts.append('Left')
         elif clean_part in ('r', 'right'):
             canonical_parts.append('Right')
-        elif clean_part in _CANONICAL_NAME_REPLACEMENTS:
-            canonical_parts.append(_CANONICAL_NAME_REPLACEMENTS[clean_part])
+        elif clean_part in replacements:
+            canonical_parts.append(replacements[clean_part])
         elif len(clean_part) == 1:
             continue
         else:
@@ -96,9 +110,9 @@ def _canonicalize_joint_name(name):
     return ' '.join(canonical_parts) if canonical_parts else name.strip()
 
 
-def _joint_signature(name):
+def _joint_signature(name, replacements=None):
     signature_tokens = [
-        token for token in _canonicalize_joint_name(name).lower().split()
+        token for token in _canonicalize_joint_name(name, replacements).lower().split()
         if token not in ('left', 'right', 'lf', 'rf')
     ]
     if signature_tokens:
@@ -120,13 +134,14 @@ def _face_joint_name_allowed(name):
 
 def _find_semantic_joint_pair(joint_names, parents, priorities, *, exclude_near_root=True):
     depths = _joint_depths(parents)
+    replacements = effective_canonical_replacements(joint_names)
     candidates = {'right': [], 'left': []}
     paired_candidates = {}
 
     for joint_index, joint_name in enumerate(joint_names):
         if not _face_joint_name_allowed(joint_name):
             continue
-        normalized = normalize_joint_name(_canonicalize_joint_name(joint_name))
+        normalized = normalize_joint_name(_canonicalize_joint_name(joint_name, replacements))
         if exclude_near_root and any(token in normalized for token in _FACE_JOINT_NEAR_ROOT_EXCLUDE_TOKENS):
             continue
 
@@ -145,7 +160,7 @@ def _find_semantic_joint_pair(joint_names, parents, priorities, *, exclude_near_
         candidate = (priority_index, depths[joint_index], joint_index)
         candidates[side].append(candidate)
 
-        signature = _joint_signature(joint_name)
+        signature = _joint_signature(joint_name, replacements)
         if signature:
             if signature not in paired_candidates:
                 paired_candidates[signature] = {'right': [], 'left': []}
@@ -184,10 +199,11 @@ def _find_semantic_joint_pair(joint_names, parents, priorities, *, exclude_near_
 
 def _find_forward_reference_joint(joint_names, parents):
     depths = _joint_depths(parents)
+    replacements = effective_canonical_replacements(joint_names)
     candidates = []
 
     for joint_index, joint_name in enumerate(joint_names):
-        normalized = normalize_joint_name(_canonicalize_joint_name(joint_name))
+        normalized = normalize_joint_name(_canonicalize_joint_name(joint_name, replacements))
         if 'nub' in normalized:
             continue
         priority_index = None
@@ -207,13 +223,14 @@ def _find_forward_reference_joint(joint_names, parents):
 
 def _find_centerline_reference_joint(joint_names, parents, priorities, *, prefer_deepest):
     depths = _joint_depths(parents)
+    replacements = effective_canonical_replacements(joint_names)
     candidates = []
 
     for joint_index, joint_name in enumerate(joint_names):
         if detect_joint_side(joint_name) is not None:
             continue
 
-        normalized = normalize_joint_name(_canonicalize_joint_name(joint_name))
+        normalized = normalize_joint_name(_canonicalize_joint_name(joint_name, replacements))
         normalized_tokens = set(normalized.split())
         priority_index = None
         for current_priority, keyword_group in enumerate(priorities):

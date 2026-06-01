@@ -38,7 +38,7 @@ from .animation_utils import (
 )
 
 from .features import (
-    get_common_features_from_T_pose,
+    get_common_features_from_rest_pose,
     get_motion,
     infer_translation_root_index_from_features,
     _extract_motion_features_from_aligned_anims,
@@ -289,18 +289,18 @@ def _build_motion_metadata_entry(result, motion_file_name):
     return motion_labels
 
 
-"""Load T-pose FBX, build the shared cond dict, and return all values callers need."""
-def _build_tpose_cond(object_type, t_pos_path, face_joints, max_joints=MAX_JOINTS):
+"""Load a reference FBX/GLB, build rest-pose-based cond, and return all caller values."""
+def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=MAX_JOINTS):
     squared_positions_error = dict()
-    tp = get_common_features_from_T_pose(
-        t_pos_path,
+    tp = get_common_features_from_rest_pose(
+        rest_pose_path,
         object_type,
         face_joints=face_joints,
         augment_leaf_rotation_helpers=True,
         max_joints=MAX_JOINTS,
     )
     character_scale_factor = float(tp.scale_factor)
-    t_pos_motion, parents, max_joints, new_anim, _export_anim, _tpos_is_loop, _tpos_translation_root_index, _tpos_root_translation_xz = get_motion(
+    rest_pose_motion, parents, max_joints, new_anim, _export_anim, _rest_is_loop, _rest_translation_root_index, _rest_root_translation_xz = get_motion(
         tp.tpos_anim,
         FOOT_CONTACT_VEL_THRESH,
         object_type,
@@ -328,7 +328,8 @@ def _build_tpose_cond(object_type, t_pos_path, face_joints, max_joints=MAX_JOINT
         tp.helper_metadata,
     )
     object_cond = dict()
-    object_cond['tpos_first_frame'] = t_pos_motion[0]
+    object_cond['tpos_first_frame'] = rest_pose_motion[0]
+    object_cond['pose_base'] = 'rest_pose'
     joint_relations, joints_graph_dist = create_topology_edge_relations(tp.tpos_anim.parents, max_path_len=MAX_PATH_LEN)
     object_cond['joint_relations'] = joint_relations
     object_cond['joints_graph_dist'] = joints_graph_dist
@@ -348,7 +349,7 @@ def _build_tpose_cond(object_type, t_pos_path, face_joints, max_joints=MAX_JOINT
         tp.orientation_quat,
         tp.forward_joint_index,
         tp.forward_base_joint_index,
-        t_pos_path,
+        rest_pose_path,
     )
     object_cond['end_effector_joints'] = semantic_metadata['end_effector_joints']
     object_cond['end_effector_names'] = semantic_metadata['end_effector_names']
@@ -372,25 +373,35 @@ def _build_tpose_cond(object_type, t_pos_path, face_joints, max_joints=MAX_JOINT
     object_cond['axial_avg_len'] = float(tp.axial_avg_len)
     object_cond['kinematic_chains'] = parents2kinchains(parents, object_policy(object_type))
     object_cond.update(build_object_labels(object_type))
-    return object_cond, tp, t_pos_motion, parents, semantic_metadata, character_scale_factor, squared_positions_error, max_joints
+    return object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, squared_positions_error, max_joints
 
 
-"""Build the T-pose cond dict from a single FBX file (no motion files needed)."""
-def _build_tpose_only_cond(object_type, t_pos_path, face_joints):
-    object_cond, tp, t_pos_motion, parents, semantic_metadata, character_scale_factor, _, max_joints = _build_tpose_cond(
-        object_type, t_pos_path, face_joints,
+def _build_tpose_cond(*args, **kwargs):
+    """Backward-compatible alias; cond is now built from the file bind/rest pose."""
+    return _build_rest_pose_cond(*args, **kwargs)
+
+
+"""Build the rest-pose cond dict from a single FBX/GLB file (no motion files needed)."""
+def _build_rest_pose_only_cond(object_type, rest_pose_path, face_joints):
+    object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints = _build_rest_pose_cond(
+        object_type, rest_pose_path, face_joints,
     )
     num_joints = len(parents)
 
-    # mean: T-pose feature vector with velocity channels (9:12) explicitly zeroed
+    # mean: rest-pose feature vector with velocity channels (9:12) explicitly zeroed
     # to make rest-pose semantics unambiguous.
-    mean = t_pos_motion[0].astype(np.float32).copy()  # (J, 13)
+    mean = rest_pose_motion[0].astype(np.float32).copy()  # (J, 13)
     mean[:, 9:12] = 0.0
     object_cond['mean'] = mean
 
     object_cond['std'] = np.ones_like(mean)
 
     return object_cond, max_joints
+
+
+def _build_tpose_only_cond(*args, **kwargs):
+    """Backward-compatible alias; cond is now built from the file bind/rest pose."""
+    return _build_rest_pose_only_cond(*args, **kwargs)
 
 
 def _resample_animation(anim, target_len):
@@ -433,11 +444,11 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     if len(anim_files) == 0:
         print(f'skipping {object_type}: no animation files (.fbx/.glb/.gltf) found in {fbxs_dir}')
         return None
-    ## get a character-level orientation reference clip
+    ## get a character-level rest-pose reference carrier
     if t_pos_path is None or t_pos_path == '':
         t_pos_path = find_tpose_reference_path(anim_files)
     else:
-        # removes T-pose file from anim_files, as it represents a static pose and should be used only for
+        # removes a static reference file from anim_files, as it should be used only for
         # extracting common characteristics. If this is not the case, disable this part
         anim_files.remove(t_pos_path)
     if max_files is not None:
@@ -450,7 +461,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
         return None
 
     squared_positions_error = dict()
-    object_cond, tp, t_pos_motion, parents, semantic_metadata, character_scale_factor, _, max_joints = _build_tpose_cond(
+    object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints = _build_rest_pose_cond(
         object_type, t_pos_path, face_joints, max_joints=max_joints,
     )
     all_tensors = list()
@@ -558,7 +569,7 @@ def _write_object_outputs(save_dir, object_payload, files_counter):
         motion_file_name = name + '.npy'
         np.save(pjoin(save_dir, MOTION_DIR, motion_file_name), motion)
         # Export the visually faithful processed animation rather than the
-        # T-pose-reparameterized training animation. The latter preserves global
+        # rest-pose-reparameterized training animation. The latter preserves global
         # positions under this repo's FK but can look distorted in external BVH
         # viewers because its local position/offset decomposition is training-oriented.
         anim_obj = result['export_anim']
@@ -633,7 +644,7 @@ def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, fi
 
 
 """ creates processed tensors for all the files of a given object. Returens statistics and the object condition,
-which includes tpos, relation/distances matrices, offsets, parents, joints names, kinematic chains, mean and std"""    
+which includes rest-pose/tpos-compatible conditioning, relation/distances matrices, offsets, parents, joints names, kinematic chains, mean and std"""    
 def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None):
     object_payload = _prepare_object_outputs(
         object_type,
@@ -1019,8 +1030,8 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
     motion_metadata = {}
 
     if anim_dir is None:
-        # T-pose only: generate cond.npy without motion file processing
-        object_cond, max_joints = _build_tpose_only_cond(
+        # Rest-pose only: generate cond.npy without motion file processing
+        object_cond, max_joints = _build_rest_pose_only_cond(
             object_name,
             tpose_path,
             face_joints,

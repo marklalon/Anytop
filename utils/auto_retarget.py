@@ -324,8 +324,8 @@ def retarget_animation_file_to_target(
     only the quat is computed on the fly from the file's bind pose (via name-based
     face/forward-joint detection) instead of being read from cond. This is *not*
     done with the retarget's rigid ``coordinate_search``: that aligns the source
-    bind pose to the target's *T-pose* geometrically, which is unreliable because
-    the bind pose and the spread-leg T-pose differ in shape — even for an
+    bind pose to the target's reference pose geometrically, which is unreliable because
+    different authored reference files can differ in shape — even for an
     identical skeleton it can fail to find the 90° yaw and leave the motion in its
     native (OOD) facing. ``orientation_quat`` looks at the head/face direction
     instead, which is invariant to leg configuration, so it canonicalizes robustly
@@ -573,7 +573,7 @@ def retarget_animation_file_to_target(
             source_effective_root_index,
         )
 
-    # 4. Build source T-pose metadata from this file's own bind pose. This keeps
+    # 4. Build source rest-pose metadata from this file's own bind pose. This keeps
     #    the raw-file path cond-free while still using the same feature convention
     #    as the dataset preprocessing path before entering the shared retargeter.
     side_labels = []

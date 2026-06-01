@@ -27,6 +27,7 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     recover_animation_from_motion_np,
     recover_root_quat_and_pos_np,
 )
+from data_loaders.truebones.truebones_utils import features as features_module
 from utils.rotation_conversions import rotation_6d_to_matrix_np
 
 
@@ -229,6 +230,39 @@ def test_raw_tpose_animation_input_reapplies_tpose_normalization():
     expected_identity = np.zeros((len(tp.names), 4), dtype=np.float64)
     expected_identity[:, 0] = 1.0
     np.testing.assert_allclose(aligned_anim.rotations.qs[0], expected_identity, atol=1e-5)
+
+
+def test_common_features_use_bind_pose_not_sampled_frame_zero(monkeypatch):
+    parents = np.array([-1, 0, 1], dtype=np.int32)
+    offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    rest_rotations = Quaternions.id(3)
+    sampled_rotations = Quaternions.id((2, 3))
+    sampled_positions = np.repeat(offsets[None], 2, axis=0)
+    sampled_positions[0, 1] = [3.0, 0.0, 0.0]
+    sampled_positions[0, 2] = [0.0, 4.0, 0.0]
+
+    loaded_anim = Animation(sampled_rotations, sampled_positions, rest_rotations, offsets, parents)
+
+    def fake_load(_path):
+        return loaded_anim, ["Root", "Spine", "Head"], 1.0 / 30.0
+
+    monkeypatch.setattr(features_module.FBX, "load", fake_load)
+
+    tp = features_module.get_common_features_from_rest_pose("fake.fbx", "TestCreature")
+
+    rest_global = positions_global(tp.tpos_anim)[0]
+    sampled_global = positions_global(loaded_anim[:1])[0]
+
+    assert not np.allclose(rest_global, sampled_global)
+    np.testing.assert_allclose(tp.offsets[1:], offsets[1:] * float(tp.scale_factor), atol=1e-8)
+    np.testing.assert_allclose(tp.tpos_anim.positions[0, 1:], tp.offsets[1:], atol=1e-8)
 
 
 def _find_motion_file(motion_dir: str, pattern: str) -> tuple[str, str]:

@@ -73,7 +73,12 @@ def _is_fly_reference_path(file_path):
 
 
 def find_tpose_reference_path(anim_files):
-    """Find a character-level orientation reference clip with priority T-pose > idle > walk > run > fly."""
+    """Find a character-level rest-pose reference carrier.
+
+    The selected file's bind/rest pose is used as the encoding base. Filename
+    priority still prefers static pose files because they usually carry the
+    cleanest skeleton/mesh container: T-pose/rest/bind > idle > walk > run > fly.
+    """
     for file_path in anim_files:
         if _is_tpose_reference_path(file_path):
             anim_files.remove(file_path)
@@ -254,7 +259,7 @@ def should_skip_anim(file_path: str, object_type: str) -> bool:
     if compact_stem.endswith('nosaddle') and _matches_object_alias(compact_stem[:-8], object_type):
         print(
             f'  [SKIP] {os.path.basename(file_path)}: '
-            f'NoSaddle T-pose file (no animation)'
+            f'NoSaddle reference file (no animation)'
         )
         return True
 

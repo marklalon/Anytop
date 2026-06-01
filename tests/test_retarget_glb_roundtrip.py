@@ -23,8 +23,8 @@ What this test asserts:
   * joint-position error      -- the reproduced motion matches the source;
     * local bone-direction error-- the per-joint pose channels match.
 
-The raw file path is intentionally source-cond-free and, when a sibling T-pose
-is present, first normalizes the source into the same feature-space reference as
+The raw file path is intentionally source-cond-free and, when a sibling reference
+file is present, first normalizes the source into the same rest-pose feature base as
 matching NPY inputs. That means this GLB smoke test gates on rigid alignment,
 joint positions, and bone directions. Full raw-rig twist / mesh-surface identity
 is covered by export/restore-specific tests, not by this feature-space retarget
@@ -135,7 +135,7 @@ def _run_retarget_glb_roundtrip(
     """FBX/GLB -> retarget NPY -> restore GLB -> compare vs source.
 
     Pipeline:
-        1. Build the target T-pose features + resolve the target cond entry.
+        1. Build the target rest-pose features + resolve the target cond entry.
         2. Retarget the raw source animation onto the target skeleton straight
            from the file (cond-free source) -> (F, J, 13) feature tensor.
         3. Save the bare NPY exactly like the generation pipeline.
@@ -146,7 +146,7 @@ def _run_retarget_glb_roundtrip(
     tpose_fbx = tpose_fbx or _DEFAULT_TPOSE
 
     _require_or_skip(os.path.isfile(source_motion), f"Missing source motion: {source_motion}")
-    _require_or_skip(os.path.isfile(tpose_fbx), f"Missing target T-pose: {tpose_fbx}")
+    _require_or_skip(os.path.isfile(tpose_fbx), f"Missing target rest-pose reference: {tpose_fbx}")
 
     target_cond = load_cond_dict().get(target_type)
     _require_or_skip(
@@ -174,8 +174,8 @@ def _run_retarget_glb_roundtrip(
         npy_path = os.path.join(work_dir, f"{base_name}_retargeted_to_{target_type}.npy")
         recovered_glb = os.path.join(work_dir, f"{base_name}_retargeted_to_{target_type}.glb")
 
-        # Phase A: target T-pose features (helper-augmented, like generation).
-        print(f"[Phase A] Building target T-pose features for {target_type}...")
+        # Phase A: target rest-pose features (helper-augmented, like generation).
+        print(f"[Phase A] Building target rest-pose features for {target_type}...")
         target_tp: TPoseFeatures = get_common_features_from_T_pose(
             tpose_fbx,
             target_type,
@@ -339,16 +339,6 @@ def test_retarget_raw_fbx_matches_matching_npy_reference(target_type: str) -> No
     _require_or_skip(source_cond is not None, f"cond.npy is missing '{_DEFAULT_SOURCE_TYPE}'")
     _require_or_skip(target_cond is not None, f"cond.npy is missing '{target_type}'")
 
-    if target_type == _DEFAULT_CROSS_TARGET_TYPE:
-        # TODO: Re-enable exact raw-vs-NPY cross-skeleton equality after the
-        # source NPY/cond convention is unified with the raw cond-free fallback.
-        # The raw path derives the source basis from the file bind pose, while
-        # the current processed Buffalo NPY/cond are still TPOSE-frame based;
-        # retargeting both into Deer is therefore not expected to be bit-exact.
-        pytest.xfail(
-            "raw cond-free bind-pose source basis does not match current TPOSE-based source NPY/cond"
-        )
-
     max_joints = max(
         len(np.asarray(source_cond["parents"])),
         len(np.asarray(target_cond["parents"])),
@@ -407,7 +397,7 @@ def test_retarget_raw_fbx_matches_matching_npy_reference(target_type: str) -> No
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Retarget FBX/GLB -> NPY -> GLB roundtrip test")
     parser.add_argument("--source", default=None, help="Source animation FBX/GLB to retarget.")
-    parser.add_argument("--tpose-fbx", default=None, help="Target T-pose FBX (skeleton + restore container).")
+    parser.add_argument("--tpose-fbx", default=None, help="Target rest-pose reference FBX/GLB (skeleton + restore container).")
     parser.add_argument("--target-type", default=_DEFAULT_TARGET_TYPE, help="Target object type (must be in cond.npy).")
     parser.add_argument(
         "--output-dir",
@@ -420,7 +410,7 @@ def parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = parse_args()
     print(f"Source     : {args.source or _DEFAULT_SOURCE}")
-    print(f"T-pose FBX : {args.tpose_fbx or _DEFAULT_TPOSE}")
+    print(f"Reference  : {args.tpose_fbx or _DEFAULT_TPOSE}")
     print(f"Target type: {args.target_type}")
     print(f"Output dir : {args.output_dir}")
     print()

@@ -1256,7 +1256,7 @@ def extend_semantic_metadata_with_leaf_helpers(base_semantic_metadata, joint_nam
 def coerce_single_orientation_quat(orientation_quat):
     if orientation_quat is None:
         raise ValueError(
-            "orientation_quat must be precomputed from the reference T-pose and provided to downstream motion processing"
+            "orientation_quat must be precomputed from the reference rest pose and provided to downstream motion processing"
         )
 
     orientation_qs = getattr(orientation_quat, 'qs', orientation_quat)

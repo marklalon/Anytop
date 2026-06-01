@@ -79,6 +79,7 @@ def align_directory(
     )
     from data_loaders.truebones.truebones_utils.features import (
         get_common_features_from_T_pose,
+        _rest_pose_animation_from_loaded_anim,
     )
     from data_loaders.truebones.truebones_utils.face_orientation import (
         rotate_to_hml_orientation,
@@ -131,12 +132,15 @@ def align_directory(
     # and align it per-clip.
     tp = get_common_features_from_T_pose(reference_path, object_type)
 
-    # T-pose native forward (frame 0), computed with the same face/forward joints
+    # T-pose rest/bind-pose forward, computed with the same face/forward joints
     # that produced tp.orientation_quat so native-matching clips map to ~identity.
+    # Use the rest pose (bind pose), NOT frame 0 of the animation, because some
+    # T-pose FBX files carry non-identity root rotation at frame 0 (e.g. Crab
+    # has +X rest pose but -Z at frame 0).
     ref_anim, _ref_names, _ref_ft = FBX.load(reference_path)
-    ref_anim0 = ref_anim[:1] if len(ref_anim) > 1 else ref_anim
+    ref_rest_anim = _rest_pose_animation_from_loaded_anim(ref_anim)
     tpose_forward = _get_facing_forward(
-        positions_global(ref_anim0),
+        positions_global(ref_rest_anim),
         object_type,
         face_joint_indx=tp.face_joints,
         forward_joint_index=tp.forward_joint_index,
@@ -145,7 +149,7 @@ def align_directory(
     )
 
     def _clip_alignment_quat(anim, names):
-        """Rotation mapping this clip's frame-0 facing onto the T-pose facing."""
+        """Rotation mapping this clip's frame-0 facing onto the T-pose rest-pose facing."""
         if tpose_forward is None:
             return tp.orientation_quat
         fj = resolve_face_joints(object_type, names, anim.parents)

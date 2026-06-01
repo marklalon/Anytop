@@ -40,6 +40,7 @@ from .features import (
     get_bvh_cont6d_params,
     process_anim,
     infer_translation_root_index_from_features,
+    get_common_features_from_rest_pose,
     get_common_features_from_T_pose,
     TPoseFeatures,
     get_hml_aligned_anim,
