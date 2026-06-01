@@ -541,6 +541,28 @@ def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints
     return []
 
 
+_Y_AXIS = np.array([0.0, 1.0, 0.0])
+
+
+def _snap_root_quat_to_quarter_turn(root_quat):
+    """Snap a forward-alignment rotation to the nearest 90-degree turn about +Y.
+
+    ``forward`` is projected onto the XZ plane before ``Quaternions.between``,
+    so ``root_quat`` is a pure rotation about the +Y axis whose quaternion has
+    the form ``(cos(theta/2), 0, sin(theta/2), 0)``.  Rather than rotating the
+    body forward exactly onto +Z, we only want to align its *dominant* axis to
+    +Z, i.e. rotate by the multiple of 90 degrees that is closest to the exact
+    alignment.  This collapses the saved ``orientation_quat`` to one of just
+    four possible values (0, +90, 180, -90 degrees about +Y).
+    """
+    qs = np.asarray(root_quat.qs, dtype=np.float64).reshape(-1, 4)
+    # theta = full rotation angle about +Y, recovered from (w, _, qy, _).
+    theta = 2.0 * np.arctan2(qs[:, 2], qs[:, 0])
+    snapped = np.round(theta / (np.pi / 2.0)) * (np.pi / 2.0)
+    axis = np.broadcast_to(_Y_AXIS, (snapped.shape[0], 3))
+    return Quaternions.from_angle_axis(snapped, axis)
+
+
 def calculate_root_quat(joints, object_type, face_joint_indx=None, forward_joint_index=None, forward_base_joint_index=None, emit_warnings=True):
     if face_joint_indx is None:
         face_joint_indx = resolve_face_joints(object_type)
@@ -556,7 +578,7 @@ def calculate_root_quat(joints, object_type, face_joint_indx=None, forward_joint
         forward = np.array([[0.0, 0.0, 1.0]]).repeat(len(joints), axis=0)
     target = np.array([[0, 0, 1]]).repeat(len(forward), axis=0)
     root_quat = Quaternions.between(forward, target)
-    return root_quat
+    return _snap_root_quat_to_quarter_turn(root_quat)
 
 
 def rotate_to_hml_orientation(anim, orientation_quat):
