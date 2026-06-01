@@ -44,7 +44,11 @@ from data_loaders.truebones.truebones_utils.animation_utils import find_translat
 import Anytop.utils.retarget as retarget_mod
 from Anytop.utils.auto_retarget import build_tpose_aligned_target_animation
 from Anytop.utils.auto_retarget import retarget_features_npy_to_target
-from Anytop.utils.rotation_numpy import quat_multiply_wxyz_np, quat_rotate_wxyz_np
+from Anytop.utils.rotation_numpy import (
+    quat_conjugate_wxyz_np,
+    quat_multiply_wxyz_np,
+    quat_rotate_wxyz_np,
+)
 
 
 def _quat_x(angle_deg: float) -> np.ndarray:
@@ -1124,6 +1128,134 @@ def test_bridge_gap_joint_uses_source_anchor_rotation_to_avoid_spine_translation
         tgt_rest_offsets[2],
         atol=1e-6,
     )
+
+
+def test_bridge_ignores_degenerate_zero_length_source_wrapper_bone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A near-zero-length source bone must not drive a target wrapper chain.
+
+    Regression for the Buffalo->Horse corruption: 3ds Max "Bip01" rigs place a
+    near-zero-offset wrapper bone (root ``Hips`` coincident with ``Pelvis``).
+    When the target inserts unmapped single-child wrappers (``Ctrl``/``Bip01``)
+    between its root and that pelvis, the bridge distributes the source bone's
+    direction across the wrapper chain. A degenerate-rest bone has no meaningful
+    direction and an ill-defined stretch ratio (``anim_len / rest_len`` blows up
+    when ``rest_len`` is a negligible fraction of the skeleton), so the wrappers
+    used to swing wildly (80-90 deg/frame), scrambling the whole body below.
+
+    Here the degenerate ``Hips->Pelvis`` rest bone (1e-4 vs ~0.5 typical) carries
+    a large per-frame pose-location swing. Before the scale-relative degeneracy
+    gate, ``Ctrl`` swung ~90 deg/frame; now it (and the rest of the wrapper
+    chain) stays rigid relative to its parent.
+    """
+    monkeypatch.setattr(
+        retarget_mod,
+        '_llm_joint_mapping',
+        lambda *_args, **_kwargs: {'Hips': 'Hips', 'Pelvis': 'Pelvis'},
+    )
+
+    # Source: Hips -> Pelvis (degenerate, ~zero offset) -> Spine (real bone, so
+    # the skeleton's typical bone length is O(1) and the pelvis bone reads as a
+    # negligible fraction of it).
+    src_parents = np.array([-1, 0, 1], dtype=np.int32)
+    src_rest_offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0e-4, 0.0],  # degenerate Bip01-style wrapper bone
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+
+    # Target: Hips -> Ctrl -> Bip01 -> Pelvis (two unmapped single-child wrappers).
+    tgt_parents = np.array([-1, 0, 1, 2], dtype=np.int32)
+    tgt_rest_offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.3, 0.0],
+            [0.0, 0.4, 0.0],
+            [0.0, 0.5, 0.0],
+        ],
+        dtype=np.float64,
+    )
+
+    # Two frames. The root stays put; only the degenerate pelvis bone gets a
+    # large pose-location that swings 90 deg between frames. Distributing that
+    # through a degenerate rest bone is exactly what produced the corruption.
+    joint_rotations = np.tile(_identity_quat(3)[None, :, :], (2, 1, 1))
+    bone_translations = np.zeros((2, 3, 3), dtype=np.float64)
+    bone_translations[0, 1] = np.array([0.0, 0.5, 0.0], dtype=np.float64)
+    bone_translations[1, 1] = np.array([0.5, 0.0, 0.0], dtype=np.float64)
+
+    result = retarget_mod.retarget_world_space_np(
+        src_parents=src_parents,
+        src_rest_offsets=src_rest_offsets,
+        src_rest_rotations=_identity_quat(3),
+        tgt_parents=tgt_parents,
+        tgt_rest_offsets=tgt_rest_offsets,
+        tgt_rest_rotations=_identity_quat(4),
+        src_joint_rotations=joint_rotations,
+        src_root_translation=np.zeros((2, 3), dtype=np.float64),
+        src_root_rotation=np.tile(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64), (2, 1)),
+        src_bone_translations=bone_translations,
+        src_match_names=['Hips', 'Pelvis', 'Spine'],
+        tgt_match_names=['Hips', 'Ctrl', 'Bip01', 'Pelvis'],
+        coordinate_search=False,
+        verbose=False,
+    )
+
+    # Ctrl (1) and Bip01 (2) are the unmapped wrappers bridged from src Pelvis.
+    src_to_tgt = np.asarray(result['src_to_tgt'], dtype=np.int32)
+    assert src_to_tgt[0] == 0  # Hips -> Hips
+    assert src_to_tgt[1] == 3  # Pelvis -> Pelvis (deep), forcing the wrapper bridge
+    assert 1 not in src_to_tgt and 2 not in src_to_tgt  # Ctrl/Bip01 unmapped
+
+    wrot = np.asarray(result['target_world_rotations'], dtype=np.float64)
+    for wrapper_idx in (1, 2):
+        parent_idx = int(tgt_parents[wrapper_idx])
+        rel = [
+            quat_multiply_wxyz_np(
+                quat_conjugate_wxyz_np(wrot[f, parent_idx]),
+                wrot[f, wrapper_idx],
+            )
+            for f in range(2)
+        ]
+        assert _quat_angle_deg(rel[0], rel[1]) < 1.0, (
+            f"wrapper joint {wrapper_idx} swung "
+            f"{_quat_angle_deg(rel[0], rel[1]):.1f} deg/frame from a degenerate source bone"
+        )
+
+
+def test_select_twist_axis_prefers_chain_continuation_over_longer_side_branch() -> None:
+    """The twist axis must follow the chain continuation, not the longest child.
+
+    Regression for the Buffalo->Horse head/neck roll: a ``Neck`` carries
+    ``Clavicle`` side branches that are longer than the ``Neck1`` joint that
+    actually continues the spine. Selecting the longer clavicle as the twist axis
+    swings the neck about a sideways axis and injects a ~90 deg parasitic roll
+    that propagates up to the head (and the rigid reins hanging off it). The axis
+    must instead follow the continuation that is colinear with the incoming bone.
+    """
+    parents = np.array([-1, 0, 1, 1, 1], dtype=np.int32)
+    rest_offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],   # incoming to joint 1 points +Y
+            [1.0, 0.0, 0.0],   # longer "clavicle" side branch (+X), len 1.0
+            [-1.0, 0.0, 0.0],  # longer "clavicle" side branch (-X), len 1.0
+            [0.0, 0.6, 0.0],   # shorter "neck1" continuation (+Y), len 0.6
+        ],
+        dtype=np.float64,
+    )
+
+    axis, child = retarget_mod._select_twist_axis_offset(1, parents, rest_offsets)
+    assert child == 4, f"expected continuation child 4, got {child}"
+    np.testing.assert_allclose(axis, rest_offsets[4], atol=1e-9)
+
+    # Root joints (no incoming bone) keep the longest-child behavior.
+    root_axis, root_child = retarget_mod._select_twist_axis_offset(0, parents, rest_offsets)
+    assert root_child == 1  # only child of the root
 
 
 def test_root_promotion_shifts_descendant_chain_up_one_target_level(

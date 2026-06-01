@@ -606,23 +606,47 @@ def _select_twist_axis_offset(
     rest_offsets: np.ndarray,
 ) -> tuple[np.ndarray, int | None]:
     child_indices = np.flatnonzero(parents == int(joint_idx))
-    best_child_idx: int | None = None
-    best_length = 0.0
-    for child_idx in child_indices.tolist():
-        child_offset = np.asarray(rest_offsets[int(child_idx)], dtype=np.float64)
-        child_length = float(np.linalg.norm(child_offset))
-        if child_length > best_length:
-            best_child_idx = int(child_idx)
-            best_length = child_length
-
-    if best_child_idx is not None and best_length > 1e-8:
-        return np.asarray(rest_offsets[best_child_idx], dtype=np.float64), best_child_idx
+    candidate_children = [
+        int(child_idx)
+        for child_idx in child_indices.tolist()
+        if float(np.linalg.norm(rest_offsets[int(child_idx)])) > 1e-8
+    ]
 
     parent_idx = int(parents[joint_idx])
-    if parent_idx >= 0:
-        incoming = np.asarray(rest_offsets[joint_idx], dtype=np.float64)
-        if float(np.linalg.norm(incoming)) > 1e-8:
-            return incoming, None
+    incoming = (
+        np.asarray(rest_offsets[joint_idx], dtype=np.float64) if parent_idx >= 0 else None
+    )
+    incoming_len = float(np.linalg.norm(incoming)) if incoming is not None else 0.0
+
+    if candidate_children:
+        # The twist axis should run along the bone's *chain continuation*, not
+        # merely its longest child. A joint with side branches (e.g. a Neck whose
+        # Clavicle children are longer than the Neck1 that continues the spine, or
+        # a Head carrying long reins/halter bones) would otherwise pick a sideways
+        # child, swinging the bone about the wrong axis and injecting a large
+        # parasitic roll that propagates down the rest of the chain. When an
+        # incoming bone (parent -> joint) exists, prefer the child whose direction
+        # is most colinear with it (the continuation), tie-broken by length;
+        # otherwise (root, or no incoming) fall back to the longest child.
+        if incoming_len > 1e-8:
+            incoming_unit = incoming / incoming_len
+
+            def _continuation_key(child_idx: int) -> tuple[float, float]:
+                child_offset = np.asarray(rest_offsets[child_idx], dtype=np.float64)
+                child_length = float(np.linalg.norm(child_offset))
+                colinearity = float(np.dot(child_offset / child_length, incoming_unit))
+                return (colinearity, child_length)
+
+            best_child_idx = max(candidate_children, key=_continuation_key)
+        else:
+            best_child_idx = max(
+                candidate_children,
+                key=lambda child_idx: float(np.linalg.norm(rest_offsets[child_idx])),
+            )
+        return np.asarray(rest_offsets[best_child_idx], dtype=np.float64), best_child_idx
+
+    if incoming_len > 1e-8:
+        return incoming, None
 
     return np.array([1.0, 0.0, 0.0], dtype=np.float64), None
 
@@ -1406,6 +1430,20 @@ def retarget_world_space_np(
     src_bv_aligned = aligned_src_wpos - aligned_src_wpos[:, parent_idx]
     src_anim_len = np.linalg.norm(src_bv, axis=-1)           # (F, J_src)
 
+    # Per-bone rest lengths and a scale-relative degeneracy threshold. Some rigs
+    # (e.g. 3ds Max "Bip01" hierarchies) place a zero-offset wrapper bone — the
+    # root ``Hips`` coincident with ``Pelvis`` — whose rest length is ~1e-8, just
+    # above ``_EPS``. The per-frame FK bone vector of such a bone is pure numerical
+    # noise, so dividing by its norm yields a unit direction (and a stretch ratio)
+    # pointing in a random direction every frame. Direction-transfer must treat
+    # these bones as having no usable direction and fall back to the rest pose.
+    # A bone is degenerate when its rest length is a negligible fraction of the
+    # skeleton's typical bone length (robust across normalized skeleton scales).
+    src_rest_lengths = np.linalg.norm(src_rest_offsets, axis=-1)
+    _src_nonzero_rest = src_rest_lengths[src_rest_lengths > _EPS]
+    _src_bone_scale = float(np.median(_src_nonzero_rest)) if _src_nonzero_rest.size else 1.0
+    _DEGENERATE_BONE_EPS = max(_EPS, 1e-3 * _src_bone_scale)
+
     # ── Pass G1: world positions + a transport frame for unmapped joints ──
     # tgt_parents is topologically ordered (parent index < child index), so a
     # single forward pass places every joint after its parent. ``transport``
@@ -1434,12 +1472,13 @@ def retarget_world_space_np(
             # that source-bone direction across the whole target chain so the
             # inserted gap joints do not peel sideways with the transport frame.
             tgt_rest_len = float(np.linalg.norm(tgt_rest_offsets[j]))
+            src_rest_len = float(np.linalg.norm(src_rest_offsets[bridge_src_idx]))
+            rest_usable = src_rest_len > _DEGENERATE_BONE_EPS
             bn = np.linalg.norm(src_bv_aligned[:, bridge_src_idx], axis=-1)
-            valid = bn > _EPS
+            valid = (bn > _EPS) & rest_usable
             d = src_bv_aligned[:, bridge_src_idx] / np.where(valid, bn, 1.0)[:, None]
 
-            src_rest_len = float(np.linalg.norm(src_rest_offsets[bridge_src_idx]))
-            if src_rest_len > _EPS:
+            if rest_usable:
                 stretch = src_anim_len[:, bridge_src_idx] / src_rest_len
             else:
                 stretch = np.ones(F_q, dtype=np.float64)
@@ -1469,12 +1508,13 @@ def retarget_world_space_np(
             tgt_rest_len = float(np.linalg.norm(tgt_rest_offsets[j]))
             p1 = int(src_parents[ii])
             if p1 >= 0:
+                src_rest_len = float(np.linalg.norm(src_rest_offsets[ii]))
+                rest_usable = src_rest_len > _DEGENERATE_BONE_EPS
                 bn = np.linalg.norm(src_bv_aligned[:, ii], axis=-1)  # (F,)
-                valid = bn > _EPS
+                valid = (bn > _EPS) & rest_usable
                 d = src_bv_aligned[:, ii] / np.where(valid, bn, 1.0)[:, None]
 
-                src_rest_len = float(np.linalg.norm(src_rest_offsets[ii]))
-                if src_rest_len > _EPS:
+                if rest_usable:
                     stretch = src_anim_len[:, ii] / src_rest_len      # (F,)
                 else:
                     stretch = np.ones(F_q, dtype=np.float64)
@@ -1618,6 +1658,36 @@ def retarget_world_space_np(
             current_world_pos = parent_world_pos
             current_world_rot = parent_world_rot
             parent_idx = int(tgt_parents[current_child_idx])
+
+    # Re-seat pure-unmapped side-branch subtrees on the parent's FINAL world
+    # rotation. Pass G1 places unmapped joints via the rotation-only ``transport``
+    # frame, but Pass G2 then changes a mapped ancestor's world rotation (target
+    # rest-roll swing + relative twist) so that it no longer equals ``transport``.
+    # For a rigid side branch hanging off such a joint — e.g. a horse's
+    # reins/halter on the head, or the leaf-rotation helper on a toe nub — that
+    # stale-frame mismatch rolls the branch out of its rest plane (the reported
+    # "+X" offset). A subtree with no mapped/bridge joint anywhere inside it
+    # should simply sit at rest relative to its parent's final orientation, so
+    # recompute it from ``target_wrot`` after all anchor rotations are finalized.
+    # Joints feeding a mapped descendant (bridge gaps, or wrappers above a
+    # mapped-from-root joint handled just above) keep ``subtree_has_anchor`` set
+    # and are intentionally left untouched.
+    subtree_has_anchor = (src_for_tgt >= 0) | (bridge_src_for_tgt >= 0)
+    for j in range(J_tgt - 1, 0, -1):
+        if subtree_has_anchor[j]:
+            subtree_has_anchor[int(tgt_parents[j])] = True
+    for j in range(J_tgt):
+        p = int(tgt_parents[j])
+        if p < 0 or subtree_has_anchor[j]:
+            continue
+        target_wrot[:, j] = quat_multiply_wxyz_np(
+            target_wrot[:, p],
+            np.repeat(tgt_rest_rotations[j:j + 1], F_q, axis=0),
+        )
+        target_wpos[:, j] = target_wpos[:, p] + quat_rotate_wxyz_np(
+            target_wrot[:, p],
+            np.repeat(tgt_rest_offsets[j:j + 1], F_q, axis=0),
+        )
 
     # ── H) Inverse FK back to target local pose channels ──────────────────
     tgt_pose_rot = np.zeros((F, J_tgt, 4), dtype=np.float64)
