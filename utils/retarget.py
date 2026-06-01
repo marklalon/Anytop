@@ -539,6 +539,209 @@ def _batch_internal_pose_fk_np(
     return world_pos, world_rot
 
 
+def _normalize_quaternions_np(quaternions: np.ndarray) -> np.ndarray:
+    quat_array = np.asarray(quaternions, dtype=np.float64)
+    norms = np.linalg.norm(quat_array, axis=-1, keepdims=True)
+    return quat_array / np.maximum(norms, 1e-12)
+
+
+def _normalize_vectors_np(vectors: np.ndarray) -> np.ndarray:
+    vec_array = np.asarray(vectors, dtype=np.float64)
+    norms = np.linalg.norm(vec_array, axis=-1, keepdims=True)
+    return vec_array / np.maximum(norms, 1e-12)
+
+
+def _quat_from_vectors_wxyz_np(from_vectors: np.ndarray, to_vectors: np.ndarray) -> np.ndarray:
+    from_unit = _normalize_vectors_np(from_vectors)
+    to_unit = _normalize_vectors_np(to_vectors)
+    dots = np.sum(from_unit * to_unit, axis=-1, keepdims=True)
+    crosses = np.cross(from_unit, to_unit)
+    quats = np.concatenate([1.0 + dots, crosses], axis=-1)
+
+    opposite = dots[..., 0] < -1.0 + 1e-8
+    if np.any(opposite):
+        fallback = np.zeros_like(from_unit)
+        fallback[..., 0] = 1.0
+        nearly_x = np.abs(from_unit[..., 0]) > 0.9
+        fallback[nearly_x] = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+        axes = _normalize_vectors_np(np.cross(from_unit, fallback))
+        quats[opposite] = np.concatenate(
+            [np.zeros((int(np.count_nonzero(opposite)), 1), dtype=np.float64), axes[opposite]],
+            axis=-1,
+        )
+
+    same = dots[..., 0] > 1.0 - 1e-8
+    if np.any(same):
+        quats[same] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+
+    return _normalize_quaternions_np(quats)
+
+
+def _axis_angle_quat_wxyz_np(axis: np.ndarray, angles: np.ndarray) -> np.ndarray:
+    axis_unit = _normalize_vectors_np(axis)
+    angle_array = np.asarray(angles, dtype=np.float64)
+    half_angles = 0.5 * angle_array
+    if axis_unit.ndim == 1:
+        axis_unit = np.broadcast_to(axis_unit, angle_array.shape + (3,))
+    quats = np.concatenate(
+        [np.cos(half_angles)[..., None], axis_unit * np.sin(half_angles)[..., None]],
+        axis=-1,
+    )
+    return _normalize_quaternions_np(quats)
+
+
+def _twist_angles_about_axis_wxyz_np(rotations: np.ndarray, axis: np.ndarray) -> np.ndarray:
+    rot_quats = _normalize_quaternions_np(rotations)
+    axis_unit = _normalize_vectors_np(axis)
+    if axis_unit.ndim == 1:
+        axis_unit = np.broadcast_to(axis_unit, rot_quats.shape[:-1] + (3,))
+    signed_xyz = np.sum(rot_quats[..., 1:] * axis_unit, axis=-1)
+    angles = 2.0 * np.arctan2(signed_xyz, rot_quats[..., 0])
+    return (angles + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def _select_twist_axis_offset(
+    joint_idx: int,
+    parents: np.ndarray,
+    rest_offsets: np.ndarray,
+) -> tuple[np.ndarray, int | None]:
+    child_indices = np.flatnonzero(parents == int(joint_idx))
+    best_child_idx: int | None = None
+    best_length = 0.0
+    for child_idx in child_indices.tolist():
+        child_offset = np.asarray(rest_offsets[int(child_idx)], dtype=np.float64)
+        child_length = float(np.linalg.norm(child_offset))
+        if child_length > best_length:
+            best_child_idx = int(child_idx)
+            best_length = child_length
+
+    if best_child_idx is not None and best_length > 1e-8:
+        return np.asarray(rest_offsets[best_child_idx], dtype=np.float64), best_child_idx
+
+    parent_idx = int(parents[joint_idx])
+    if parent_idx >= 0:
+        incoming = np.asarray(rest_offsets[joint_idx], dtype=np.float64)
+        if float(np.linalg.norm(incoming)) > 1e-8:
+            return incoming, None
+
+    return np.array([1.0, 0.0, 0.0], dtype=np.float64), None
+
+
+def _relative_source_twist_angles_np(
+    *,
+    source_idx: int,
+    src_parents: np.ndarray,
+    src_rest_offsets: np.ndarray,
+    src_rest_rotations: np.ndarray,
+    src_wpos: np.ndarray,
+    src_wrot: np.ndarray,
+) -> np.ndarray | None:
+    parent_idx = int(src_parents[source_idx])
+    if parent_idx < 0:
+        return None
+
+    rest_axis_local, axis_child_idx = _select_twist_axis_offset(
+        source_idx,
+        src_parents,
+        src_rest_offsets,
+    )
+    if float(np.linalg.norm(rest_axis_local)) <= 1e-8:
+        return None
+    rest_axis_local = _normalize_vectors_np(rest_axis_local)
+
+    if axis_child_idx is None:
+        axis_vec_world = src_wpos[:, source_idx] - src_wpos[:, parent_idx]
+    else:
+        axis_vec_world = src_wpos[:, axis_child_idx] - src_wpos[:, source_idx]
+
+    valid = np.linalg.norm(axis_vec_world, axis=-1) > 1e-8
+    if not np.any(valid):
+        return None
+
+    parent_wrot = src_wrot[:, parent_idx]
+    anim_axis_parent = quat_rotate_wxyz_np(
+        quat_conjugate_wxyz_np(parent_wrot),
+        _normalize_vectors_np(axis_vec_world),
+    )
+
+    rel_frame = quat_multiply_wxyz_np(
+        quat_conjugate_wxyz_np(parent_wrot),
+        src_wrot[:, source_idx],
+    )
+    rest_rel = np.repeat(src_rest_rotations[source_idx:source_idx + 1], src_wrot.shape[0], axis=0)
+    rest_axis_parent = quat_rotate_wxyz_np(rest_rel, rest_axis_local)
+    anim_axis_parent[~valid] = rest_axis_parent[~valid]
+    no_twist_rel = quat_multiply_wxyz_np(
+        _quat_from_vectors_wxyz_np(
+            rest_axis_parent,
+            anim_axis_parent,
+        ),
+        rest_rel,
+    )
+    residual = quat_multiply_wxyz_np(
+        quat_conjugate_wxyz_np(no_twist_rel),
+        rel_frame,
+    )
+    angles = _twist_angles_about_axis_wxyz_np(residual, rest_axis_local)
+    angles[~valid] = 0.0
+    return angles
+
+
+def _compose_target_relative_twist_world_rotation_np(
+    *,
+    target_idx: int,
+    twist_angles: np.ndarray,
+    target_wpos: np.ndarray,
+    target_wrot: np.ndarray,
+    tgt_parents: np.ndarray,
+    tgt_rest_offsets: np.ndarray,
+    tgt_rest_rotations: np.ndarray,
+) -> np.ndarray | None:
+    parent_idx = int(tgt_parents[target_idx])
+    if parent_idx < 0:
+        return None
+
+    rest_axis_local, axis_child_idx = _select_twist_axis_offset(
+        target_idx,
+        tgt_parents,
+        tgt_rest_offsets,
+    )
+    if float(np.linalg.norm(rest_axis_local)) <= 1e-8:
+        return None
+    rest_axis_local = _normalize_vectors_np(rest_axis_local)
+
+    parent_wrot = target_wrot[:, parent_idx]
+    if axis_child_idx is None:
+        axis_vec_world = target_wpos[:, target_idx] - target_wpos[:, parent_idx]
+    else:
+        axis_vec_world = target_wpos[:, axis_child_idx] - target_wpos[:, target_idx]
+
+    valid = np.linalg.norm(axis_vec_world, axis=-1) > 1e-8
+    if not np.any(valid):
+        return None
+
+    anim_axis_parent = quat_rotate_wxyz_np(
+        quat_conjugate_wxyz_np(parent_wrot),
+        _normalize_vectors_np(axis_vec_world),
+    )
+
+    rest_rel = np.repeat(tgt_rest_rotations[target_idx:target_idx + 1], target_wrot.shape[0], axis=0)
+    rest_axis_parent = quat_rotate_wxyz_np(rest_rel, rest_axis_local)
+    anim_axis_parent[~valid] = rest_axis_parent[~valid]
+    no_twist_rel = quat_multiply_wxyz_np(
+        _quat_from_vectors_wxyz_np(
+            rest_axis_parent,
+            anim_axis_parent,
+        ),
+        rest_rel,
+    )
+    twist_quat = _axis_angle_quat_wxyz_np(rest_axis_local, twist_angles)
+    rel_rot = quat_multiply_wxyz_np(no_twist_rel, twist_quat)
+    world_rot = quat_multiply_wxyz_np(parent_wrot, rel_rot)
+    world_rot[~valid] = quat_multiply_wxyz_np(parent_wrot[~valid], rest_rel[~valid])
+    return world_rot
+
+
 # ---------------------------------------------------------------------------
 # Public retargeting function
 # ---------------------------------------------------------------------------
@@ -578,30 +781,14 @@ def retarget_world_space_np(
 ) -> RetargetResult:
     """Retarget an exporter-style animation from a source skeleton to a target.
 
-    Bone-vector direction-transfer with rigid target skeleton: each mapped
-    bone is placed at ``K2 = P2 + L · dir(K − P1)`` where ``dir`` is the
-    source bone's unit world direction (aligned by a 1-of-12 rigid coordinate
-    match + scale), ``P2`` is the target-skeleton parent's world position, and
-    ``L = ‖tgt_rest_offsets[j]‖ · (src_anim_len / src_rest_len)`` is the
-    target rest bone length modulated by the source bone's *relative*
-    squash/stretch — so the target keeps its own proportions while the
-    source's stretch carries through (the ratio is 1 when the source has no
-    bone-translation channel, making pure-rotation behavior unchanged and
-    self-retarget exactly idempotent). Unmapped target joints stay rigid
-    relative to a
-    transport frame (rest-composed, source-aligned at mapped ancestors). Only
-    the root joint carries source translation (scaled), so global locomotion
-    transfers. Target world rotation is the source's aligned world rotation
-    for mapped joints (rest-composed off the parent for unmapped ones): the
-    bone-vector transfer carries position, so self-retarget reproduces the
-    source rotation exactly (twist included) with no skeleton-equality
-    shortcut. The rotation is intentionally NOT re-fit to the realized
-    positions — those carry the source's per-bone translation channel
-    (squash/stretch / IK), a translation that a position-derived rotation
-    would chase and thereby break rotation idempotency; that position vs.
-    rest-rotation residual is represented exactly by the inverse-FK
-    pose-location channel instead. This also avoids the chain-skip position
-    discontinuity that arises when source and target chains differ in length.
+    Bone-vector direction-transfer with rigid target skeleton: each mapped bone
+    is placed at ``K2 = P2 + L * dir(K - P1)`` where ``dir`` is the source
+    bone's unit world direction, ``P2`` is the target-skeleton parent's world
+    position, and ``L = norm(tgt_rest_offsets[j]) * (src_anim_len / src_rest_len)``.
+    The target keeps its own proportions while source relative stretch carries
+    through. Target world rotation is built from the realized target bone
+    direction plus only the source's relative twist change, so mapped joints keep
+    the target skeleton's rest roll while still carrying animated axial twist.
 
     Args:
         src_parents: (J_src,) int32 parent indices, -1 for root.
@@ -618,21 +805,13 @@ def retarget_world_space_np(
         src_match_names: semantic match names for source joints.
         tgt_match_names: semantic match names for target joints.
         src_effective_root_index: optional source joint index that carries the
-            locomotion translation in local position channels (for example Horse
-            ``Bip01`` beneath a static wrapper root). When that joint is left
-            unmatched by semantic mapping, it may replace a mapped wrapper root
-            as the target root anchor.
-        coordinate_search: when ``True``, sweep 12 rigid rotation/flip candidates
-            to find the best alignment of rest poses. Set ``False`` when the
-            source and target are known to share the same world basis (e.g.
-            both are processed cond entries from the same dataset pipeline).
+            locomotion translation in local position channels.
+        coordinate_search: when ``True``, sweep rigid rotation/flip candidates
+            to find the best alignment of rest poses.
         verbose: print one-line summary diagnostics.
 
     Returns:
-        A ``RetargetResult`` mapping. ``joint_rotations`` / ``root_translation``
-        / ``root_rotation`` / ``bone_translations`` are exporter-input
-        compatible and can be fed straight back into ``AnimationExporter`` or
-        used to drive any other target-skeleton animation pipeline.
+        A ``RetargetResult`` mapping compatible with exporter-style inputs.
     """
     src_parents = np.asarray(src_parents, dtype=np.int32)
     tgt_parents = np.asarray(tgt_parents, dtype=np.int32)
@@ -1155,8 +1334,8 @@ def retarget_world_space_np(
     # (src_anim_len / src_rest_len)`` — the target's own rest bone length
     # scaled by the source bone's relative squash/stretch. So the target keeps
     # its own proportions while the source's stretch carries through; with no
-    # source bone-translation channel the ratio is 1 and behavior is
-    # unchanged, and self-retarget stays exactly idempotent. The root joint, if
+    # source bone-translation channel the ratio is 1 and pure position transfer
+    # falls back to target rest length. The root joint, if
     # mapped, takes the source's (scaled + axis-aligned) world translation so
     # global locomotion transfers. Unmapped joints stay rigid relative to a
     # transport frame (rest-composed, source-aligned at mapped ancestors),
@@ -1164,9 +1343,8 @@ def retarget_world_space_np(
     # "mapped → unmapped span → mapped" discontinuity across chains with
     # different joint counts (e.g. Parrot 2-joint neck vs Dragon 5-joint neck).
     #
-    # A bone vector fixes position but not twist; Pass G2 takes the rotation
-    # directly from the source's aligned world rotation (rest-composed for
-    # unmapped joints) — exact for self-retarget, with the position vs.
+    # A bone vector fixes position but not twist; Pass G2 preserves target rest
+    # roll and transfers only source relative twist, with the position vs.
     # rest-rotation residual absorbed by the Pass-H pose-location channel.
     aligned_src_wpos = (
         src_wpos * scale + t_align[np.newaxis, np.newaxis, :]
@@ -1187,6 +1365,28 @@ def retarget_world_space_np(
         tgt_parents,
         tgt_children_count,
     )
+
+    def _mapped_joint_rest_equivalent(src_idx: int, tgt_idx: int) -> bool:
+        src_parent_idx = int(src_parents[src_idx])
+        tgt_parent_idx = int(tgt_parents[tgt_idx])
+        if src_parent_idx < 0 or tgt_parent_idx < 0:
+            if src_parent_idx != tgt_parent_idx:
+                return False
+        elif int(src_to_tgt[src_parent_idx]) != tgt_parent_idx:
+            return False
+
+        src_offset = np.asarray(src_rest_offsets[src_idx], dtype=np.float64) * scale
+        tgt_offset = np.asarray(tgt_rest_offsets[tgt_idx], dtype=np.float64)
+        offset_tol = 1e-5 * max(1.0, float(np.linalg.norm(tgt_offset)))
+        if float(np.linalg.norm(src_offset - tgt_offset)) > offset_tol:
+            return False
+
+        src_rest_q = _normalize_quaternions_np(src_rest_rotations[src_idx])
+        tgt_rest_q = _normalize_quaternions_np(tgt_rest_rotations[tgt_idx])
+        if abs(float(np.dot(src_rest_q, tgt_rest_q))) < 1.0 - 1e-6:
+            return False
+
+        return True
 
     def _bridge_parent_world_rotation(bridge_src_idx: int) -> np.ndarray | None:
         src_parent_idx = int(src_parents[bridge_src_idx])
@@ -1303,30 +1503,55 @@ def retarget_world_space_np(
                 np.repeat(tgt_rest_rotations[j:j + 1], F_q, axis=0),
             )
 
-    # ── Pass G2: target world rotation = source world rotation ────────────
-    # Pass G1 already places every joint by the bone-vector transfer. The
-    # rotation is simply the source's aligned world rotation for mapped
-    # joints, and the rest-composed rotation off the finalized parent for
-    # unmapped (gap / side-branch) joints. This is exact for a self-retarget
-    # — target_wrot == source world rotation, twist included — with no
-    # skeleton-equality shortcut.
-    #
-    # It deliberately does NOT re-fit the rotation to the realized positions:
-    # those positions carry the source's per-bone translation channel
-    # (squash/stretch / IK offset), which is a translation, not a rotation —
-    # any position-derived rotation would chase it and break rotation
-    # idempotency. The position vs. rest-rotation residual is instead
-    # represented exactly by the inverse-FK pose-location channel (Pass H).
+    # ── Pass G2: target-rest swing + source relative twist ────────────────
+    # Pass G1 already places every joint by the bone-vector transfer. For a
+    # mapped non-root joint, construct a no-extra-twist target relative rotation
+    # that swings the target rest bone direction onto the realized target bone
+    # vector while preserving target rest roll. Then apply only the source's
+    # relative twist delta around that bone axis.
     for p_idx in range(J_tgt):
         p_par = int(tgt_parents[p_idx])
         ii = int(src_for_tgt[p_idx])
         bridge_src_idx = int(bridge_src_for_tgt[p_idx])
         if ii >= 0:
-            target_wrot[:, p_idx] = aligned_src_wrot[:, ii]
+            if _mapped_joint_rest_equivalent(ii, p_idx):
+                target_wrot[:, p_idx] = aligned_src_wrot[:, ii]
+            else:
+                relative_twist_angles = _relative_source_twist_angles_np(
+                    source_idx=ii,
+                    src_parents=src_parents,
+                    src_rest_offsets=src_rest_offsets,
+                    src_rest_rotations=src_rest_rotations,
+                    src_wpos=src_wpos,
+                    src_wrot=src_wrot,
+                )
+                relative_twist_wrot = None
+                if relative_twist_angles is not None:
+                    relative_twist_wrot = _compose_target_relative_twist_world_rotation_np(
+                        target_idx=p_idx,
+                        twist_angles=relative_twist_angles,
+                        target_wpos=target_wpos,
+                        target_wrot=target_wrot,
+                        tgt_parents=tgt_parents,
+                        tgt_rest_offsets=tgt_rest_offsets,
+                        tgt_rest_rotations=tgt_rest_rotations,
+                    )
+                if relative_twist_wrot is not None:
+                    target_wrot[:, p_idx] = relative_twist_wrot
+                else:
+                    target_wrot[:, p_idx] = aligned_src_wrot[:, ii]
         elif bridge_src_idx >= 0:
-            bridge_parent_rot = _bridge_parent_world_rotation(bridge_src_idx)
-            if bridge_parent_rot is not None:
-                target_wrot[:, p_idx] = bridge_parent_rot
+            bridge_wrot = _compose_target_relative_twist_world_rotation_np(
+                target_idx=p_idx,
+                twist_angles=np.zeros(F_q, dtype=np.float64),
+                target_wpos=target_wpos,
+                target_wrot=target_wrot,
+                tgt_parents=tgt_parents,
+                tgt_rest_offsets=tgt_rest_offsets,
+                tgt_rest_rotations=tgt_rest_rotations,
+            )
+            if bridge_wrot is not None:
+                target_wrot[:, p_idx] = bridge_wrot
             elif p_par < 0:
                 target_wrot[:, p_idx] = np.repeat(
                     tgt_rest_wrot[0, p_idx][None], F_q, axis=0
@@ -1471,8 +1696,7 @@ def retarget_world_space_np(
     # so ``tgt_pose_loc`` is generally non-zero and is kept when so. This now
     # also carries the source's *relative* squash/stretch (folded into the
     # transferred bone length L), so a stretched source bone reproduces a
-    # proportionally stretched target bone — and self-retarget round-trips the
-    # bone-translation channel exactly.
+    # proportionally stretched target bone.
     has_nonzero_bone_translations = bool(
         np.any(np.abs(tgt_pose_loc[:, ~root_mask, :]) > 1e-6)
     )

@@ -392,7 +392,7 @@ def test_build_target_animation_preserves_world_rotations_across_gap() -> None:
     np.testing.assert_allclose(anim.rotations.qs[0, 1], gap_world, atol=1e-6)
 
 
-def test_build_target_animation_keeps_pure_unmapped_branch_at_identity() -> None:
+def test_build_target_animation_preserves_pure_unmapped_branch_rotations() -> None:
     parents = np.array([-1, 0, 1], dtype=np.int32)
     offsets = np.array(
         [
@@ -403,7 +403,8 @@ def test_build_target_animation_keeps_pure_unmapped_branch_at_identity() -> None
         dtype=np.float64,
     )
     branch_world = _quat_z(177.0)
-    leaf_world = quat_multiply_wxyz_np(branch_world[None, :], _quat_x(25.0)[None, :])[0]
+    branch_leaf_local = _quat_x(25.0)
+    leaf_world = quat_multiply_wxyz_np(branch_world[None, :], branch_leaf_local[None, :])[0]
     retarget_result = {
         'joint_rotations': np.tile(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64), (1, 3, 1)),
         'target_world_positions': np.array(
@@ -432,8 +433,13 @@ def test_build_target_animation_keeps_pure_unmapped_branch_at_identity() -> None
 
     anim = _build_tpose_aligned_target_animation(retarget_result, target_tp)
 
-    np.testing.assert_allclose(anim.rotations.qs[0, 1], np.array([1.0, 0.0, 0.0, 0.0]), atol=1e-6)
-    np.testing.assert_allclose(anim.rotations.qs[0, 2], np.array([1.0, 0.0, 0.0, 0.0]), atol=1e-6)
+    np.testing.assert_allclose(anim.rotations.qs[0, 1], branch_world, atol=1e-6)
+    np.testing.assert_allclose(anim.rotations.qs[0, 2], branch_leaf_local, atol=1e-6)
+    np.testing.assert_allclose(
+        rotations_global(anim).qs,
+        retarget_result['target_world_rotations'],
+        atol=1e-6,
+    )
 
 
 def test_tpose_aligned_roundtrip_preserves_gap_chain_and_rest_side_branch() -> None:
@@ -540,12 +546,15 @@ def test_tpose_aligned_roundtrip_preserves_gap_chain_and_rest_side_branch() -> N
             assert _quat_angle_deg(recovered_world_rot[frame_idx, joint_idx], baseline_world_rot[frame_idx, joint_idx]) < 1e-5
         np.testing.assert_allclose(recovered_world_pos[:, joint_idx], baseline_world_pos[:, joint_idx], atol=1e-5)
 
+    for frame_idx in range(2):
+        assert _quat_angle_deg(recovered_world_rot[frame_idx, 4], baseline_world_rot[frame_idx, 4]) < 1e-5
     for joint_idx in (4, 5):
-        np.testing.assert_allclose(
-            recovered_anim.rotations.qs[:, joint_idx],
-            np.tile(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64), (2, 1)),
-            atol=1e-6,
-        )
+        np.testing.assert_allclose(recovered_world_pos[:, joint_idx], baseline_world_pos[:, joint_idx], atol=1e-5)
+    np.testing.assert_allclose(
+        recovered_anim.rotations.qs[:, 5],
+        np.tile(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64), (2, 1)),
+        atol=1e-6,
+    )
 
 
 def _fk_world_positions(
@@ -714,7 +723,14 @@ def test_tpose_aligned_roundtrip_with_nontrivial_rest_rotations() -> None:
             )
 
 
-def test_retarget_features_npy_to_target_uses_tpose_aligned_motion_path(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_retarget_features_npy_to_target_encodes_feature_space_animation_directly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """get_motion must preserve the retargeted feature-space rotations.
+
+    Source NPY retargeting decodes and transfers the T-pose-relative feature
+    animation. ``_build_tpose_aligned_target_animation`` therefore already emits
+    local rotations in that feature basis, and get_motion must not remove the
+    target T-pose rest rotations a second time.
+    """
     import importlib
     import Anytop.utils.auto_retarget as auto_retarget_mod
     import Anytop.utils.exporter as exporter_mod

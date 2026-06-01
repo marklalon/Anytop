@@ -65,16 +65,12 @@ def _infer_donor_consensus_effective_root_index(
 def _build_tpose_aligned_target_animation(retarget_result: dict, target_tp):
     """Convert a retarget result into the Animation form expected by get_motion.
 
-    The motion-feature path stores total local joint rotations, not pose-space
-     rotations with a separate rest-orient channel. Mapped joints therefore keep
-     the local rotation recovered from ``target_world_rotations``. Unmapped
-     joints split into two cases:
-        1. gap joints on a path to a mapped descendant must also keep that local
-            rotation, or downstream mapped joints (for example dragon Head below
-            Neck2/3/4) lose the necessary rest delta.
-        2. pure unmapped side branches must stay at local identity, otherwise a
-            large FBX rest quaternion (for example dragon clavicles) gets baked
-            into the motion channels and folds the whole branch in BVH playback.
+    ``retarget_world_space_np`` works in target rest-composed world space so it
+    can preserve target rest roll while transferring relative twist. The returned
+    ``target_world_rotations`` are the world rotations of the feature Animation
+    reproduced by the exporter semantics, so recover total local rotations by a
+    direct parent-relative inverse. Non-root positions are reconstructed from the
+    pose-location channels when present, otherwise they stay at rest offsets.
     """
     from motion_lib.Animation import Animation
     from motion_lib.Quaternions import Quaternions
@@ -92,58 +88,46 @@ def _build_tpose_aligned_target_animation(retarget_result: dict, target_tp):
         retarget_result['target_world_rotations'],
         dtype=np.float64,
     )
-    target_bone_translations = retarget_result.get('bone_translations')
-    if target_bone_translations is not None:
-        target_bone_translations = np.asarray(target_bone_translations, dtype=np.float64)
     target_offsets = np.asarray(target_tp.offsets, dtype=np.float64)
     target_parents = np.asarray(target_tp.tpos_anim.parents, dtype=np.int32)
-    src_to_tgt = np.asarray(retarget_result['src_to_tgt'], dtype=np.int32)
+    target_rest_rotations = np.asarray(target_tp.tpos_rots[0], dtype=np.float64)
 
     frame_count, joint_count = target_world_positions.shape[:2]
-    target_rest_rotations = np.asarray(target_tp.tpos_rots[0], dtype=np.float64)
     identity_orients = np.zeros((joint_count, 4), dtype=np.float64)
     identity_orients[:, 0] = 1.0
     orient_quats = Quaternions(identity_orients)
-    mapped_target_mask = np.zeros(joint_count, dtype=bool)
-    for target_idx in src_to_tgt:
-        if int(target_idx) >= 0:
-            mapped_target_mask[int(target_idx)] = True
 
-    has_mapped_descendant = np.zeros(joint_count, dtype=bool)
-    for joint_idx in range(joint_count - 1, -1, -1):
-        parent_idx = int(target_parents[joint_idx])
-        if parent_idx >= 0 and (mapped_target_mask[joint_idx] or has_mapped_descendant[joint_idx]):
-            has_mapped_descendant[parent_idx] = True
-
-    local_rotations = np.zeros((frame_count, joint_count, 4), dtype=np.float64)
-    local_positions = np.zeros_like(target_world_positions)
-    local_rotations[:, :, 0] = 1.0
-
+    total_local_rotations = np.zeros((frame_count, joint_count, 4), dtype=np.float64)
+    total_local_rotations[:, :, 0] = 1.0
     for joint_idx in range(joint_count):
         parent_idx = int(target_parents[joint_idx])
         if parent_idx < 0:
-            local_rotations[:, joint_idx] = target_world_rotations[:, joint_idx]
-            local_positions[:, joint_idx] = target_world_positions[:, joint_idx]
-            continue
-
-        if mapped_target_mask[joint_idx] or has_mapped_descendant[joint_idx]:
-            local_rotations[:, joint_idx] = quat_multiply_wxyz_np(
+            total_local_rotations[:, joint_idx] = target_world_rotations[:, joint_idx]
+        else:
+            total_local_rotations[:, joint_idx] = quat_multiply_wxyz_np(
                 quat_conjugate_wxyz_np(target_world_rotations[:, parent_idx]),
                 target_world_rotations[:, joint_idx],
             )
 
-        if target_bone_translations is not None:
+    local_positions = np.repeat(target_offsets[None, :, :], frame_count, axis=0)
+    bone_translations = retarget_result.get('bone_translations')
+    if bone_translations is not None:
+        bone_translations = np.asarray(bone_translations, dtype=np.float64)
+        for joint_idx in range(joint_count):
+            parent_idx = int(target_parents[joint_idx])
+            if parent_idx < 0:
+                continue
+            rest_rot = np.repeat(target_rest_rotations[joint_idx:joint_idx + 1], frame_count, axis=0)
             local_positions[:, joint_idx] = target_offsets[joint_idx] + quat_rotate_wxyz_np(
-                np.repeat(target_rest_rotations[joint_idx:joint_idx + 1], frame_count, axis=0),
-                target_bone_translations[:, joint_idx],
+                rest_rot,
+                bone_translations[:, joint_idx],
             )
-        else:
-            local_positions[:, joint_idx] = quat_rotate_wxyz_np(
-                quat_conjugate_wxyz_np(target_world_rotations[:, parent_idx]),
-                target_world_positions[:, joint_idx] - target_world_positions[:, parent_idx],
-            )
+    for joint_idx in range(joint_count):
+        parent_idx = int(target_parents[joint_idx])
+        if parent_idx < 0:
+            local_positions[:, joint_idx] = target_world_positions[:, joint_idx]
 
-    rotation_quats = Quaternions(local_rotations)
+    rotation_quats = Quaternions(total_local_rotations)
 
     return Animation(
         rotation_quats,
@@ -292,8 +276,9 @@ def retarget_features_npy_to_target(
         verbose=False,
     )
 
-    # 6. Build the target Animation from pose-space local channels. This keeps
-    # mapped joints in the target T-pose-relative basis expected by get_motion.
+    # 6. Build the target Animation in the feature-space local basis. The source
+    # NPY path retargets decoded feature rotations, so target_world_rotations are
+    # already the world rotations of that T-pose-relative representation.
     tgt_anim = _build_tpose_aligned_target_animation(retarget_result, target_tp)
 
     # 7. Re-encode target Animation → motion features
@@ -316,6 +301,359 @@ def retarget_features_npy_to_target(
     if target_features is None:
         return None
     return np.asarray(target_features, dtype=np.float32)
+
+
+def retarget_animation_file_to_target(
+    source_motion_path: str,
+    target_tp,
+    target_object_type: str,
+    max_joints: int,
+    target_cond: dict,
+    *,
+    slice_inds=None,
+) -> Optional[np.ndarray]:
+    """Retarget a raw animation file (FBX/GLB/GLTF) onto the target skeleton.
+
+    Unlike :func:`retarget_features_npy_to_target`, this path needs **no source
+    cond entry**. The full source skeleton (topology, rest offsets, joint names)
+    is read straight from the file's bind pose via ``FBX.load`` without requiring
+    the source object_type to be present in the training cond.
+
+    Facing is canonicalized exactly like the in-cond path — by a per-skeleton
+    ``orientation_quat`` that rotates the skeleton to the dataset's +Z reference —
+    only the quat is computed on the fly from the file's bind pose (via name-based
+    face/forward-joint detection) instead of being read from cond. This is *not*
+    done with the retarget's rigid ``coordinate_search``: that aligns the source
+    bind pose to the target's *T-pose* geometrically, which is unreliable because
+    the bind pose and the spread-leg T-pose differ in shape — even for an
+    identical skeleton it can fail to find the 90° yaw and leave the motion in its
+    native (OOD) facing. ``orientation_quat`` looks at the head/face direction
+    instead, which is invariant to leg configuration, so it canonicalizes robustly
+    and ``coordinate_search`` is left off (source and target are both already +Z).
+
+    The source's canonical match names are produced with the same
+    ``build_semantic_metadata`` canonicalization the dataset cond uses, so name
+    matching against the target behaves identically whether or not the source is
+    registered in cond.
+
+    Args:
+        source_motion_path: path to an .fbx/.glb/.gltf animation.
+        target_tp:          pre-loaded target ``TPoseFeatures`` (helper-augmented).
+        target_object_type: target object-type name (passed to get_motion).
+        max_joints:         maximum joint count for feature padding.
+        target_cond:        target cond entry (for ``canonical_joint_names``).
+        slice_inds:         optional ``[start, end]`` frame slice on the source.
+
+    Returns:
+        (F, J_tgt, 13) retargeted feature array, or None if the retarget failed.
+    """
+    from types import SimpleNamespace
+
+    from motion_lib import FBX
+    from motion_lib.Animation import Animation, positions_global, offsets_from_positions
+    from motion_lib.Quaternions import Quaternions
+    from data_loaders.truebones.truebones_utils.features import (
+        get_motion,
+        get_common_features_from_T_pose,
+        calculate_root_quat,
+        process_anim,
+    )
+    from data_loaders.truebones.truebones_utils.param_utils import FOOT_CONTACT_VEL_THRESH
+    from data_loaders.truebones.truebones_utils.face_orientation import (
+        resolve_face_joints,
+        resolve_forward_reference_joints,
+    )
+    from data_loaders.truebones.truebones_utils.animation_utils import (
+        get_average_axial_bone_length,
+        get_rest_body_max_span,
+        compute_scale_factor,
+        build_leaf_rotation_helper_metadata,
+    )
+    from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
+        build_semantic_metadata,
+        detect_joint_side,
+        infer_contact_joints,
+    )
+
+    # 1. Load the raw animation. FBX.load returns per-joint total local rotations
+    #    plus the armature's local rest rotations in ``orients``. Keeping that
+    #    rest basis separate prevents bind-pose bone roll from being treated as
+    #    animated twist by the cond-free retarget path.
+    raw_anim, src_names, _fps = FBX.load(source_motion_path)
+    if slice_inds:
+        raw_anim = raw_anim[slice_inds[0]:slice_inds[1]]
+
+    src_parents = np.asarray(raw_anim.parents, dtype=np.int32)
+    src_offsets = np.asarray(raw_anim.offsets, dtype=np.float64)
+    src_joint_count = len(src_parents)
+    src_rest_rotations = np.asarray(raw_anim.orients.qs, dtype=np.float64)
+
+    # 2. Source canonical match names — same canonicalization the dataset cond
+    #    uses, so matching is consistent with the in-cond path.
+    src_match_names = list(
+        build_semantic_metadata(src_names, src_parents, src_offsets)['canonical_joint_names']
+    )
+    # 3. Source canonical orientation. Compute the +Z-facing quat from the bind
+    #    pose (FK of the rest offsets) using name-based face/forward detection — no
+    #    registered source object_type is needed (a neutral hint falls back to the
+    #    name heuristics, which is what the dataset uses for the same skeleton).
+    bind_anim = Animation(
+        Quaternions(src_rest_rotations[None].copy()),
+        src_offsets[None].copy(),
+        Quaternions(src_rest_rotations.copy()),
+        src_offsets.copy(),
+        src_parents.copy(),
+    )
+    bind_positions = positions_global(bind_anim)  # (1, J, 3)
+    _SRC_FACE_HINT = '__retarget_source_from_file__'
+    src_face_joints = resolve_face_joints(_SRC_FACE_HINT, src_names, src_parents, None)
+    src_forward_joint, src_forward_base_joint = resolve_forward_reference_joints(
+        src_names, src_parents, object_type=_SRC_FACE_HINT,
+    )
+    src_orientation_quat = np.asarray(
+        calculate_root_quat(
+            bind_positions,
+            _SRC_FACE_HINT,
+            face_joint_indx=src_face_joints,
+            forward_joint_index=src_forward_joint,
+            forward_base_joint_index=src_forward_base_joint,
+        )[0].qs,
+        dtype=np.float64,
+    ).reshape(-1)
+
+    def _retarget_encoded_source_features(
+        source_features: np.ndarray,
+        source_cond: dict,
+        source_object_type: str,
+        source_tp,
+        source_effective_root_index: int | None,
+    ) -> Optional[np.ndarray]:
+        return retarget_features_npy_to_target(
+            np.asarray(source_features, dtype=np.float32),
+            source_cond,
+            source_object_type,
+            target_tp,
+            target_object_type,
+            max_joints,
+            source_tp=source_tp,
+            target_cond=target_cond,
+            source_effective_root_index_override=source_effective_root_index,
+        )
+
+    def _reindex_raw_animation_subset(anim, names, keep_indices):
+        old_to_new = {old: new for new, old in enumerate(keep_indices)}
+        new_parents = np.array(
+            [
+                old_to_new[int(anim.parents[i])] if int(anim.parents[i]) >= 0 else -1
+                for i in keep_indices
+            ],
+            dtype=np.int32,
+        )
+        return Animation(
+            Quaternions(anim.rotations.qs[:, keep_indices].copy()),
+            anim.positions[:, keep_indices].copy(),
+            Quaternions(anim.orients.qs[keep_indices].copy()),
+            anim.offsets[keep_indices].copy(),
+            new_parents,
+        ), [names[i] for i in keep_indices]
+
+    def _align_raw_to_expected_original_skeleton(anim, names, expected_names, expected_parents):
+        if list(names) == list(expected_names) and np.array_equal(
+            np.asarray(anim.parents, dtype=np.int32),
+            expected_parents,
+        ):
+            return anim, list(names)
+
+        expected_name_set = set(expected_names)
+        parents = np.asarray(anim.parents, dtype=np.int32)
+        has_children = np.zeros(len(names), dtype=bool)
+        has_children[parents[parents >= 0]] = True
+        unexpected_leaves = [
+            idx for idx, name in enumerate(names)
+            if name not in expected_name_set and not has_children[idx]
+        ]
+        if not unexpected_leaves:
+            return None
+
+        drop_set = set(unexpected_leaves)
+        keep_indices = [idx for idx in range(len(names)) if idx not in drop_set]
+        keep_set = set(keep_indices)
+        for idx in keep_indices:
+            parent_idx = int(parents[idx])
+            if parent_idx >= 0 and parent_idx not in keep_set:
+                return None
+
+        aligned_anim, aligned_names = _reindex_raw_animation_subset(anim, names, keep_indices)
+        if list(aligned_names) == list(expected_names) and np.array_equal(
+            np.asarray(aligned_anim.parents, dtype=np.int32),
+            expected_parents,
+        ):
+            stripped_names = [names[idx] for idx in unexpected_leaves]
+            print(
+                f"[retarget] stripped {len(stripped_names)} terminal bone(s) from raw reference "
+                f"{os.path.basename(source_motion_path)!r}: {stripped_names[:10]}"
+                f"{'...' if len(stripped_names) > 10 else ''}"
+            )
+            return aligned_anim, aligned_names
+
+        return None
+
+    target_source_basis_available = False
+    target_source_tp = None
+    target_aligned_raw_anim = None
+    target_aligned_names = None
+    target_tpose_path = target_cond.get('orientation_reference_fbx_path')
+    if (
+        target_tpose_path
+        and os.path.isfile(target_tpose_path)
+    ):
+        target_source_tp = get_common_features_from_T_pose(
+            target_tpose_path,
+            target_object_type,
+            augment_leaf_rotation_helpers=False,
+            max_joints=max_joints,
+        )
+        expected_names = list(target_source_tp.names)
+        expected_parents = np.asarray(target_source_tp.tpos_anim.parents, dtype=np.int32)
+        aligned = _align_raw_to_expected_original_skeleton(
+            raw_anim,
+            src_names,
+            expected_names,
+            expected_parents,
+        )
+        if aligned is not None:
+            target_aligned_raw_anim, target_aligned_names = aligned
+
+        target_orientation_quat = np.asarray(
+            getattr(target_tp.orientation_quat, 'qs', target_tp.orientation_quat),
+            dtype=np.float64,
+        ).reshape(-1)
+        target_orientation_quat = target_orientation_quat / max(
+            float(np.linalg.norm(target_orientation_quat)),
+            1e-12,
+        )
+        source_orientation_unit = src_orientation_quat / max(
+            float(np.linalg.norm(src_orientation_quat)),
+            1e-12,
+        )
+        target_source_basis_available = (
+            target_aligned_raw_anim is not None
+            and abs(float(np.dot(source_orientation_unit, target_orientation_quat))) > 1.0 - 1e-4
+        )
+
+    if target_source_basis_available:
+        squared_positions_error = {}
+        source_features, *_unused, source_effective_root_index, _source_root_xz = get_motion(
+            source_motion_path,
+            FOOT_CONTACT_VEL_THRESH,
+            target_object_type,
+            max_joints,
+            np.asarray(target_tp.offsets, dtype=np.float64),
+            target_tp.foot_indices,
+            target_tp.tpos_rots,
+            squared_positions_error,
+            scale_factor=float(target_tp.scale_factor),
+            orientation_quat=target_tp.orientation_quat,
+            slice_inds=None,
+            preloaded=(target_aligned_raw_anim, target_aligned_names),
+            helper_metadata=target_tp.helper_metadata,
+            animation_input_is_tpose_aligned=False,
+        )
+        if source_features is None:
+            return None
+        target_helper_source_cond = dict(target_cond)
+        target_helper_source_cond['original_joint_count'] = int(
+            target_cond.get('original_joint_count') or len(np.asarray(target_cond['parents']))
+        )
+        return _retarget_encoded_source_features(
+            source_features,
+            target_helper_source_cond,
+            target_object_type,
+            target_tp,
+            source_effective_root_index,
+        )
+
+    # 4. Build source T-pose metadata from this file's own bind pose. This keeps
+    #    the raw-file path cond-free while still using the same feature convention
+    #    as the dataset preprocessing path before entering the shared retargeter.
+    side_labels = []
+    for name in src_names:
+        detected = detect_joint_side(name)
+        side_labels.append(detected if detected in ('left', 'right') else 'center')
+    axial_avg_len = get_average_axial_bone_length(src_offsets, src_parents, side_labels)
+    body_max_span = get_rest_body_max_span(src_offsets, src_parents)
+    source_scale_factor = compute_scale_factor(axial_avg_len, body_max_span=body_max_span)
+    source_tpose_anim, _source_root_xz_center, source_scale_factor = process_anim(
+        bind_anim,
+        _SRC_FACE_HINT,
+        Quaternions(src_orientation_quat[None]),
+        scale_factor=source_scale_factor,
+    )
+    source_tpose_positions = positions_global(source_tpose_anim)
+    source_offsets = offsets_from_positions(source_tpose_positions[0], source_tpose_anim.parents)
+    source_foot_indices, source_contact_source = infer_contact_joints(
+        src_names,
+        source_tpose_anim.parents,
+        source_tpose_positions[0],
+    )
+    source_helper_metadata = build_leaf_rotation_helper_metadata(
+        src_names,
+        source_tpose_anim.parents,
+        offsets=source_offsets,
+        max_joints=src_joint_count,
+    )
+    source_tp = SimpleNamespace(
+        scale_factor=source_scale_factor,
+        offsets=source_offsets,
+        foot_indices=source_foot_indices,
+        tpos_rots=source_tpose_anim.rotations,
+        names=list(src_names),
+        tpos_anim=source_tpose_anim,
+        face_joints=src_face_joints,
+        orientation_quat=Quaternions(src_orientation_quat[None]),
+        forward_joint_index=src_forward_joint,
+        forward_base_joint_index=src_forward_base_joint,
+        contact_joint_source=source_contact_source,
+        axial_avg_len=axial_avg_len,
+        helper_metadata=source_helper_metadata,
+    )
+    source_cond = {
+        'object_type': _SRC_FACE_HINT,
+        'parents': np.asarray(source_tpose_anim.parents, dtype=np.int32),
+        'offsets': np.asarray(source_offsets, dtype=np.float32),
+        'original_joint_count': src_joint_count,
+        'canonical_joint_names': src_match_names,
+        'orientation_quat': src_orientation_quat.astype(np.float32),
+        'scale_factor': float(source_scale_factor),
+    }
+
+    squared_positions_error = {}
+    source_features, *_unused, source_effective_root_index, _source_root_xz = get_motion(
+        source_motion_path,
+        FOOT_CONTACT_VEL_THRESH,
+        _SRC_FACE_HINT,
+        max_joints,
+        np.asarray(source_offsets, dtype=np.float64),
+        source_foot_indices,
+        source_tpose_anim.rotations,
+        squared_positions_error,
+        scale_factor=float(source_scale_factor),
+        orientation_quat=Quaternions(src_orientation_quat[None]),
+        slice_inds=None,
+        preloaded=(raw_anim, src_names),
+        helper_metadata=source_helper_metadata,
+        animation_input_is_tpose_aligned=False,
+    )
+    if source_features is None:
+        return None
+
+    return _retarget_encoded_source_features(
+        source_features,
+        source_cond,
+        _SRC_FACE_HINT,
+        source_tp,
+        source_effective_root_index,
+    )
 
 
 # ---------------------------------------------------------------------------

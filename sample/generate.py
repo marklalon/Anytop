@@ -719,6 +719,94 @@ def _retarget_reference_motion(
     return out_npy
 
 
+def _retarget_reference_motion_from_file(
+    reference_motion_path,
+    target_type,
+    cond_dict,
+    opt,
+    output_dir,
+    fps,
+):
+    """Retarget a raw .fbx/.glb/.gltf reference onto ``target_type``, cond-free on
+    the source side.
+
+    Unlike :func:`_retarget_reference_motion` (which consumes a feature .npy and
+    needs the source object's cond entry), this reads the source skeleton and
+    motion straight from the animation file via ``FBX.load`` and delegates to
+    ``utils.auto_retarget.retarget_animation_file_to_target``. It works even when
+    the source object_type is not present in ``cond_dict`` — only the target's
+    cond/T-pose is required. Output artifacts (retargeted .npy + inspection .bvh)
+    match the feature-npy retarget path.
+    """
+    from Anytop.utils.auto_retarget import retarget_animation_file_to_target
+    from data_loaders.truebones.truebones_utils.features import get_common_features_from_T_pose
+
+    tgt_cond = cond_dict[target_type]
+    tgt_tpose_path = tgt_cond.get('orientation_reference_fbx_path')
+    if not tgt_tpose_path or not os.path.isfile(tgt_tpose_path):
+        raise FileNotFoundError(
+            f"Reference retarget requires the target T-pose file "
+            f"(cond_dict['{target_type}']['orientation_reference_fbx_path']), "
+            f"not found: {tgt_tpose_path!r}"
+        )
+
+    # Source label is for output naming only — never used to look up cond or to
+    # drive any object_type-dependent processing on the source.
+    base = os.path.splitext(os.path.basename(reference_motion_path))[0]
+    source_label = infer_object_type_from_filename(reference_motion_path, valid_types=None) or base
+
+    print(
+        f"\n### Reference retarget (cond-free source): {reference_motion_path} → {target_type}"
+    )
+
+    tgt_tp = get_common_features_from_T_pose(
+        tgt_tpose_path, target_type,
+        augment_leaf_rotation_helpers=True,
+        max_joints=opt.max_joints,
+    )
+
+    target_features = retarget_animation_file_to_target(
+        reference_motion_path,
+        tgt_tp,
+        target_type,
+        opt.max_joints,
+        tgt_cond,
+    )
+
+    if target_features is None:
+        raise RuntimeError(
+            f"retarget_animation_file_to_target returned None "
+            f"({reference_motion_path} → {target_type}). Check target T-pose FBX "
+            f"and joint-name overlap with the source file."
+        )
+
+    out_npy = os.path.join(output_dir, f"_retargeted_{source_label}_to_{target_type}__{base}.npy")
+    np.save(out_npy, target_features)
+    print(f"  Retargeted features {target_features.shape} → {out_npy}")
+
+    # Inspection-friendly BVH sibling
+    try:
+        out_bvh = out_npy.replace('.npy', '.bvh')
+        out_anim, joint_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
+            target_features,
+            np.asarray(tgt_cond['parents'], dtype=np.int32),
+            np.asarray(tgt_cond['offsets'], dtype=np.float32),
+            list(tgt_cond.get('canonical_bvh_joint_names', tgt_cond['joints_names'])),
+            allow_infer=True,
+            tpose_rest_rotations=tgt_tp.tpos_rots[0],
+        )
+        if out_anim is not None:
+            BVH.save(
+                out_bvh, out_anim, joint_names,
+                frametime=1.0 / fps, positions=has_animated_pos,
+            )
+            print(f"  Retargeted BVH (for inspection) → {out_bvh}")
+    except Exception as e:
+        print(f"  [WARN] Failed to write inspection BVH: {e}")
+
+    return out_npy
+
+
 def _prepare_img2img_reference_bundle(
     reference_motion_path,
     target_type,
@@ -1138,12 +1226,21 @@ def main(args=None, cond_dict=None, runtime=None):
         target_type = None  # unreachable
 
     # 2) Resolve reference source type (for retarget decision)
+    #
+    # Raw animation references (.fbx/.glb/.gltf) are handled cond-free: the source
+    # skeleton + motion are read straight from the file, so we neither infer the
+    # source object_type nor look it up in cond. Only .npy references (already in
+    # feature space) still need a source cond entry for their T-pose/skeleton.
+    reference_is_raw_anim = bool(reference_motion_path) and (
+        os.path.splitext(reference_motion_path)[1].lower()
+        in _REFERENCE_MOTION_PREPROCESS_SUFFIXES
+    )
     source_type = None
     _default_cond_cache = None
     source_type_used_target_fallback = False
     blind_type = None
 
-    if reference_motion_path:
+    if reference_motion_path and not reference_is_raw_anim:
         source_type, _default_cond_cache, blind_type, source_type_used_target_fallback = _resolve_reference_source_type(
             reference_motion_path,
             cond_dict,
@@ -1166,7 +1263,9 @@ def main(args=None, cond_dict=None, runtime=None):
                 f"{reference_motion_path}) not found in cond file. "
                 f"Available: {available}"
             )
-    should_retarget_reference = _should_retarget_reference(
+    # Raw-anim references always retarget onto the target skeleton (cond-free path);
+    # .npy references retarget only when their source type differs from the target.
+    should_retarget_reference = reference_is_raw_anim or _should_retarget_reference(
         source_type,
         target_type,
     )
@@ -1184,16 +1283,22 @@ def main(args=None, cond_dict=None, runtime=None):
             f"instead of cond max_joints={cond_max_joints}"
         )
     if reference_motion_path:
-        if source_type_used_target_fallback:
+        if reference_is_raw_anim:
             print(
-                f"Reference motion object_type inference was invalid"
-                f" ({blind_type or 'no match'}); falling back to target object_type: {target_type}"
+                f"Reference motion: raw animation file (source skeleton extracted "
+                f"from file, cond-free; will retarget to {target_type})"
             )
-        if should_retarget_reference:
-            print(f"Reference motion object_type: {source_type} (will retarget to {target_type})")
         else:
-            inferred_display = source_type if source_type else target_type
-            print(f"Reference motion object_type: {inferred_display}")
+            if source_type_used_target_fallback:
+                print(
+                    f"Reference motion object_type inference was invalid"
+                    f" ({blind_type or 'no match'}); falling back to target object_type: {target_type}"
+                )
+            if should_retarget_reference:
+                print(f"Reference motion object_type: {source_type} (will retarget to {target_type})")
+            else:
+                inferred_display = source_type if source_type else target_type
+                print(f"Reference motion object_type: {inferred_display}")
 
     # Create thread pool for export.
     # Threads still benefit from GIL release inside np.save / np.savetxt (C code),
@@ -1215,14 +1320,28 @@ def main(args=None, cond_dict=None, runtime=None):
         single_pass_outpaint = False
         auto_outpaint_range = None
 
-        source_cond_entry = _resolve_source_cond_entry(
-            source_type,
-            cond_dict,
-            _default_cond_cache,
-        )
-
         prepared_reference_path = reference_motion_path
-        if reference_motion_path:
+        effective_reference_path = reference_motion_path
+        if reference_is_raw_anim:
+            # Cond-free source path: read the source skeleton + motion straight
+            # from the .fbx/.glb/.gltf and retarget onto the target. No source
+            # cond entry, no source object_type inference, no source-side
+            # feature-space preprocessing.
+            effective_reference_path = _retarget_reference_motion_from_file(
+                reference_motion_path,
+                target_type=target_type,
+                cond_dict=cond_dict,
+                opt=opt,
+                output_dir=out_path,
+                fps=fps,
+            )
+        elif reference_motion_path:
+            source_cond_entry = _resolve_source_cond_entry(
+                source_type,
+                cond_dict,
+                _default_cond_cache,
+            )
+
             prepared_reference_path = _prepare_reference_motion_path(
                 reference_motion_path,
                 source_type,
@@ -1231,23 +1350,23 @@ def main(args=None, cond_dict=None, runtime=None):
                 out_path,
             )
 
-        effective_reference_path = prepared_reference_path
-        if should_retarget_reference:
-            retarget_cond_dict = _build_retarget_cond_dict(
-                cond_dict,
-                source_type,
-                _default_cond_cache,
-            )
+            effective_reference_path = prepared_reference_path
+            if should_retarget_reference:
+                retarget_cond_dict = _build_retarget_cond_dict(
+                    cond_dict,
+                    source_type,
+                    _default_cond_cache,
+                )
 
-            effective_reference_path = _retarget_reference_motion(
-                prepared_reference_path,
-                source_type=source_type,
-                target_type=target_type,
-                cond_dict=retarget_cond_dict,
-                opt=opt,
-                output_dir=out_path,
-                fps=fps,
-            )
+                effective_reference_path = _retarget_reference_motion(
+                    prepared_reference_path,
+                    source_type=source_type,
+                    target_type=target_type,
+                    cond_dict=retarget_cond_dict,
+                    opt=opt,
+                    output_dir=out_path,
+                    fps=fps,
+                )
 
         if effective_reference_path:
             ref_features_full = np.load(effective_reference_path).astype(np.float32)
@@ -1334,10 +1453,14 @@ def main(args=None, cond_dict=None, runtime=None):
             loaded_reference_joint_count = reference_bundle['loaded_reference_joint_count']
 
             print(f'  Reference motion loaded: {effective_reference_path}')
-            if prepared_reference_path != reference_motion_path:
-                print(f'    Preprocessed from original: {reference_motion_path}')
-            if effective_reference_path != prepared_reference_path:
-                print(f'    Retargeted from preprocessed: {prepared_reference_path}')
+            if reference_is_raw_anim:
+                if effective_reference_path != reference_motion_path:
+                    print(f'    Retargeted from raw animation file: {reference_motion_path}')
+            else:
+                if prepared_reference_path != reference_motion_path:
+                    print(f'    Preprocessed from original: {reference_motion_path}')
+                if effective_reference_path != prepared_reference_path:
+                    print(f'    Retargeted from preprocessed: {prepared_reference_path}')
             print(
                 f'    Original: [{loaded_reference_frame_count} frames, {loaded_reference_joint_count} joints] '
                 f'-> Internal target: [{output_frame_count} frames, {max_joints} joints]'

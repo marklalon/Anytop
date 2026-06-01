@@ -376,10 +376,10 @@ def _scene_to_animation(scene_path: str, collapse_root: bool = True) -> tuple[An
     from motion_lib.Quaternions import Quaternions
 
     armature = _load_scene(scene_path)
-    bone_names, parents, offsets, _rest_rotations = _extract_armature_skeleton_data(armature)
+    bone_names, parents, offsets, rest_rotations = _extract_armature_skeleton_data(armature)
 
     joint_count = len(bone_names)
-    orients = Quaternions.id(joint_count)
+    orients = Quaternions(rest_rotations)
 
     scene = bpy.context.scene
     sample_times = _get_action_sample_times(armature)
