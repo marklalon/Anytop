@@ -84,10 +84,10 @@ def align_directory(
         rotate_to_hml_orientation,
         resolve_face_joints,
         resolve_forward_reference_joints,
+        snap_forward_alignment_quat,
         _get_facing_forward,
     )
     from motion_lib.Animation import positions_global
-    from motion_lib.Quaternions import Quaternions
     from motion_lib.FBX import (
         _collapse_root_skeleton,
         _extract_armature_skeleton_data,
@@ -160,7 +160,9 @@ def align_directory(
         )
         if clip_forward is None:
             return tp.orientation_quat
-        return Quaternions.between(clip_forward, tpose_forward)[0]
+        # Align the clip's dominant axis onto the T-pose's dominant axis using
+        # only a 90-degree-multiple turn, matching the canonical orientation_quat.
+        return snap_forward_alignment_quat(clip_forward, tpose_forward)[0]
 
     written: list[str] = []
     for fbx_path in action_files:

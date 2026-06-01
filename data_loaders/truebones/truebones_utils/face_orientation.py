@@ -544,23 +544,38 @@ def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints
 _Y_AXIS = np.array([0.0, 1.0, 0.0])
 
 
-def _snap_root_quat_to_quarter_turn(root_quat):
-    """Snap a forward-alignment rotation to the nearest 90-degree turn about +Y.
+def _forward_to_y_angle(forward):
+    """Angle (rad) about +Y that rotates +Z onto the given XZ-plane forward."""
+    forward = np.asarray(forward, dtype=np.float64).reshape(-1, 3)
+    return np.arctan2(forward[:, 0], forward[:, 2])
 
-    ``forward`` is projected onto the XZ plane before ``Quaternions.between``,
-    so ``root_quat`` is a pure rotation about the +Y axis whose quaternion has
-    the form ``(cos(theta/2), 0, sin(theta/2), 0)``.  Rather than rotating the
-    body forward exactly onto +Z, we only want to align its *dominant* axis to
-    +Z, i.e. rotate by the multiple of 90 degrees that is closest to the exact
-    alignment.  This collapses the saved ``orientation_quat`` to one of just
-    four possible values (0, +90, 180, -90 degrees about +Y).
+
+def _snap_angle_to_quarter_turn(angles):
+    """Round each angle (rad) to the nearest multiple of 90 degrees."""
+    quarter = np.pi / 2.0
+    return np.round(np.asarray(angles, dtype=np.float64) / quarter) * quarter
+
+
+def _y_rotation_quat(angles):
+    """Pure +Y rotation quaternion for each angle (rad)."""
+    angles = np.atleast_1d(np.asarray(angles, dtype=np.float64))
+    axis = np.broadcast_to(_Y_AXIS, (angles.shape[0], 3))
+    return Quaternions.from_angle_axis(angles, axis)
+
+
+def snap_forward_alignment_quat(source_forward, target_forward):
+    """Quaternion aligning ``source``'s dominant axis onto ``target``'s.
+
+    Both forwards must already be projected onto the XZ plane.  Each forward is
+    snapped to its nearest cardinal axis (+X/-X/+Z/-Z) before the rotation is
+    measured, so the result is restricted to a multiple of 90 degrees about +Y.
+    Using snapped angles (instead of ``Quaternions.between`` on the snapped
+    vectors) also avoids the degenerate zero-quaternion that ``between`` returns
+    for antiparallel vectors, e.g. the 180-degree case.
     """
-    qs = np.asarray(root_quat.qs, dtype=np.float64).reshape(-1, 4)
-    # theta = full rotation angle about +Y, recovered from (w, _, qy, _).
-    theta = 2.0 * np.arctan2(qs[:, 2], qs[:, 0])
-    snapped = np.round(theta / (np.pi / 2.0)) * (np.pi / 2.0)
-    axis = np.broadcast_to(_Y_AXIS, (snapped.shape[0], 3))
-    return Quaternions.from_angle_axis(snapped, axis)
+    source = _snap_angle_to_quarter_turn(_forward_to_y_angle(source_forward))
+    target = _snap_angle_to_quarter_turn(_forward_to_y_angle(target_forward))
+    return _y_rotation_quat(target - source)
 
 
 def calculate_root_quat(joints, object_type, face_joint_indx=None, forward_joint_index=None, forward_base_joint_index=None, emit_warnings=True):
@@ -576,9 +591,10 @@ def calculate_root_quat(joints, object_type, face_joint_indx=None, forward_joint
     )
     if forward is None:
         forward = np.array([[0.0, 0.0, 1.0]]).repeat(len(joints), axis=0)
-    target = np.array([[0, 0, 1]]).repeat(len(forward), axis=0)
-    root_quat = Quaternions.between(forward, target)
-    return _snap_root_quat_to_quarter_turn(root_quat)
+    # Align the body's dominant axis to +Z using only a 90-degree-multiple turn,
+    # collapsing the saved orientation_quat to one of four possible values.
+    snapped = _snap_angle_to_quarter_turn(_forward_to_y_angle(forward))
+    return _y_rotation_quat(-snapped)
 
 
 def rotate_to_hml_orientation(anim, orientation_quat):
