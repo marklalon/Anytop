@@ -47,6 +47,7 @@ from truebones_utils.motion_process import (  # noqa: E402
     write_joint_name_collision_report,
     get_mean_std,
 )
+from truebones_utils.features import infer_translation_root_index_from_features  # noqa: E402
 from truebones_utils.param_utils import MOTION_DIR, get_dataset_dir  # noqa: E402
 
 
@@ -140,6 +141,59 @@ def _recompute_object_stats(
         print(f"[OK] recomputed mean/std for {object_type} over {len(paths)} clip(s)")
 
 
+def _normalize_object_translation_roots(
+    rebuilt_cond: dict[str, dict],
+    motion_files: list[Path],
+) -> dict[str, int]:
+    """Infer per-motion translation roots, then collapse each object to one root.
+
+    Sidecar regeneration needs object-level cond.npy and per-motion metadata to
+    agree. When clips for the same object disagree, use the most common inferred
+    index as the canonical effective translation root for that object. Ties fall
+    back to the smaller index for determinism.
+    """
+    object_root_counts: dict[str, Counter[int]] = {}
+    for motion_path in motion_files:
+        object_type = str(
+            infer_motion_labels_from_motion_name(
+                motion_path.name,
+                object_types=tuple(rebuilt_cond.keys()),
+            ).get("object_type")
+        )
+        parents = np.asarray(rebuilt_cond[object_type]["parents"], dtype=np.int64)
+        offsets = np.asarray(rebuilt_cond[object_type]["offsets"], dtype=np.float64)
+        try:
+            motion = np.load(motion_path, mmap_mode="r")
+            inferred_root_index = int(
+                infer_translation_root_index_from_features(motion, parents, offsets)
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to infer translation_root_index from motion '{motion_path.name}' "
+                f"for object '{object_type}'"
+            ) from exc
+
+        object_root_counts.setdefault(object_type, Counter())[inferred_root_index] += 1
+
+    canonical_roots: dict[str, int] = {}
+    for object_type, root_counts in sorted(object_root_counts.items()):
+        canonical_root_index = min(
+            root_index
+            for root_index, count in root_counts.items()
+            if count == max(root_counts.values())
+        )
+        unique_roots = sorted(int(root_index) for root_index in root_counts)
+        rebuilt_cond[object_type]["translation_root_index"] = canonical_root_index
+        canonical_roots[object_type] = canonical_root_index
+        if len(unique_roots) > 1:
+            print(
+                f"[OK] normalized {object_type} translation_root_index "
+                f"from {dict(sorted(root_counts.items()))} to {canonical_root_index}"
+            )
+
+    return canonical_roots
+
+
 def regenerate_dataset_artifacts(
     dataset_dir: str | Path | None = None,
     t5_model: str = "t5-base",
@@ -160,6 +214,7 @@ def regenerate_dataset_artifacts(
         raise RuntimeError(f"no motion files found under {motions_dir}")
 
     existing_cond = dict(np.load(cond_path, allow_pickle=True).item())
+    existing_motion_metadata = load_motion_metadata(dataset_dir_path)
     known_object_types = tuple(existing_cond.keys())
     active_object_types = sorted(
         {
@@ -188,6 +243,10 @@ def regenerate_dataset_artifacts(
         object_type: copy.deepcopy(object_cond)
         for object_type, object_cond in active_cond.items()
     }
+    canonical_translation_roots = _normalize_object_translation_roots(
+        rebuilt_cond,
+        motion_files,
+    )
 
     inspection_dir = dataset_dir_path / "joint_name_inspection"
     if inspection_dir.exists():
@@ -208,7 +267,6 @@ def regenerate_dataset_artifacts(
         _recompute_object_stats(rebuilt_cond, motion_files)
     np.save(str(cond_path), rebuilt_cond)
 
-    existing_motion_metadata = load_motion_metadata(dataset_dir_path)
     rebuilt_motion_metadata: dict[str, dict[str, object]] = {}
     object_counts: Counter[str] = Counter()
     total_frames = 0
@@ -224,6 +282,9 @@ def regenerate_dataset_artifacts(
         )
         motion_entry["motion_name"] = motion_path.name
         motion_entry.setdefault("is_loop", False)
+        motion_entry["translation_root_index"] = int(
+            canonical_translation_roots[str(motion_entry["object_type"])]
+        )
         rebuilt_motion_metadata[motion_path.name] = motion_entry
         object_counts[str(motion_entry["object_type"])] += 1
 

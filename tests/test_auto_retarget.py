@@ -1063,6 +1063,73 @@ def test_retarget_promotes_matched_effective_root_over_wrapper_root(
     assert int(result['src_to_tgt'][0]) == -1
 
 
+def test_retarget_promotes_source_root_to_nonroot_target_effective_root() -> None:
+    result = retarget_mod.retarget_world_space_np(
+        src_parents=np.array([-1, 0], dtype=np.int32),
+        src_rest_offsets=np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 0.4, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        src_rest_rotations=_identity_quat(2),
+        tgt_parents=np.array([-1, 0], dtype=np.int32),
+        tgt_rest_offsets=np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 0.4, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        tgt_rest_rotations=_identity_quat(2),
+        src_joint_rotations=np.tile(_identity_quat(2)[None, :, :], (2, 1, 1)),
+        src_root_translation=np.array(
+            [
+                [0.0, 0.4, 0.0],
+                [1.0, 0.4, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        src_root_rotation=np.tile(
+            np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64),
+            (2, 1),
+        ),
+        src_effective_root_index=0,
+        tgt_effective_root_index=1,
+        src_bone_translations=None,
+        src_match_names=['Hips', 'Pelvis'],
+        tgt_match_names=['Hips', 'Pelvis'],
+        coordinate_search=False,
+        verbose=False,
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(result['target_world_positions'], dtype=np.float64)[:, 0],
+        np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        np.asarray(result['target_world_positions'], dtype=np.float64)[:, 1],
+        np.array(
+            [
+                [0.0, 0.4, 0.0],
+                [1.0, 0.4, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        atol=1e-6,
+    )
+    assert int(result['src_to_tgt'][0]) == 1
+    assert int(result['src_to_tgt'][1]) == -1
+
+
 def test_bridge_gap_joint_uses_source_anchor_rotation_to_avoid_spine_translation_jitter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1405,8 +1472,8 @@ def test_build_target_animation_prefers_retarget_bone_translations() -> None:
         'target_world_positions': np.array(
             [[
                 [0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [2.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 1.5, 0.0],
             ]],
             dtype=np.float64,
         ),
@@ -1420,6 +1487,40 @@ def test_build_target_animation_prefers_retarget_bone_translations() -> None:
     np.testing.assert_allclose(anim.positions[0, 0], np.array([0.0, 0.0, 0.0], dtype=np.float64), atol=1e-6)
     np.testing.assert_allclose(anim.positions[0, 1], np.array([0.0, 1.0, 0.0], dtype=np.float64), atol=1e-6)
     np.testing.assert_allclose(anim.positions[0, 2], np.array([0.0, 0.5, 0.0], dtype=np.float64), atol=1e-6)
+
+
+def test_build_target_animation_matches_target_world_positions() -> None:
+    target_tp = SimpleNamespace(
+        offsets=np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        tpos_anim=SimpleNamespace(parents=np.array([-1, 0], dtype=np.int32)),
+        tpos_rots=np.array([_identity_quat(2)], dtype=np.float64),
+    )
+
+    retarget_result = {
+        'target_world_positions': np.array(
+            [[
+                [0.0, 0.0, 0.0],
+                [0.2, 1.0, 0.0],
+            ]],
+            dtype=np.float64,
+        ),
+        'target_world_rotations': np.array([_identity_quat(2)], dtype=np.float64),
+        'src_to_tgt': np.array([0, 1], dtype=np.int32),
+        'bone_translations': None,
+    }
+
+    anim = build_tpose_aligned_target_animation(retarget_result, target_tp)
+    np.testing.assert_allclose(
+        positions_global(anim),
+        retarget_result['target_world_positions'],
+        atol=1e-6,
+    )
 
 
 # ---------------------------------------------------------------------------

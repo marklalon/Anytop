@@ -32,6 +32,22 @@ from utils.skeleton_similarity import (
 )
 
 
+def _get_valid_translation_root_index(
+    object_cond: Optional[dict],
+    *,
+    joint_count: Optional[int] = None,
+) -> Optional[int]:
+    if not isinstance(object_cond, dict):
+        return None
+    try:
+        candidate = int(object_cond.get('translation_root_index'))
+    except (TypeError, ValueError):
+        return None
+    if candidate < 0 or (joint_count is not None and candidate >= joint_count):
+        return None
+    return candidate
+
+
 def _infer_donor_consensus_effective_root_index(
     donor_npys: List[str],
     donor_cond: dict,
@@ -57,6 +73,27 @@ def _infer_donor_consensus_effective_root_index(
     return int(counts.most_common(1)[0][0])
 
 
+def infer_object_consensus_effective_root_index(
+    motions_dir: str,
+    object_type: str,
+    object_cond: dict,
+    *,
+    max_files: int = 32,
+) -> Optional[int]:
+    stored_index = _get_valid_translation_root_index(object_cond)
+    if stored_index is not None:
+        return stored_index
+
+    if not motions_dir or not os.path.isdir(motions_dir):
+        return None
+
+    object_npys = sorted(glob.glob(pjoin(motions_dir, f"{object_type}_*.npy")))[:max_files]
+    if not object_npys:
+        return None
+
+    return _infer_donor_consensus_effective_root_index(object_npys, object_cond)
+
+
 # ---------------------------------------------------------------------------
 # Core retarget helper (shared between pipeline and generate.py wrapper)
 # ---------------------------------------------------------------------------
@@ -74,6 +111,9 @@ def build_tpose_aligned_target_animation(retarget_result: dict, target_tp):
     """
     from motion_lib.Animation import Animation
     from motion_lib.Quaternions import Quaternions
+    from data_loaders.truebones.truebones_utils.animation_utils import (
+        solve_local_positions_for_target_global,
+    )
     from utils.rotation_numpy import (
         quat_conjugate_wxyz_np,
         quat_multiply_wxyz_np,
@@ -126,8 +166,15 @@ def build_tpose_aligned_target_animation(retarget_result: dict, target_tp):
         parent_idx = int(target_parents[joint_idx])
         if parent_idx < 0:
             local_positions[:, joint_idx] = target_world_positions[:, joint_idx]
-
     rotation_quats = Quaternions(total_local_rotations)
+    local_positions = solve_local_positions_for_target_global(
+        rotation_quats,
+        target_world_positions,
+        target_offsets,
+        target_parents,
+        orient_quats,
+        initial_positions=local_positions,
+    )
 
     return Animation(
         rotation_quats,
@@ -232,6 +279,10 @@ def retarget_features_npy_to_target(
 
     src_parents = np.asarray(source_tp.tpos_anim.parents, dtype=np.int32)
     src_offsets = np.asarray(source_tp.offsets, dtype=np.float32)
+    target_effective_root_index = _get_valid_translation_root_index(
+        target_cond,
+        joint_count=len(target_tp.names),
+    )
 
     # 2. Decode source features → Animation
     src_anim, _has_pos = recover_animation_from_motion_np(
@@ -269,6 +320,7 @@ def retarget_features_npy_to_target(
         src_root_translation=src_rt.numpy().astype(np.float64),
         src_root_rotation=src_rr.numpy().astype(np.float64),
         src_effective_root_index=source_effective_root_index,
+        tgt_effective_root_index=target_effective_root_index,
         src_bone_translations=src_bt.numpy().astype(np.float64) if src_bt is not None else None,
         src_match_names=_resolve_match_names(source_tp.names, source_cond, source_joint_count),
         tgt_match_names=_resolve_match_names(target_tp.names, target_cond),
@@ -749,6 +801,13 @@ def auto_retarget_pipeline(
         max_joints_tgt,
     ) = build_tpose_cond(target_object_type, target_tpose_path, face_joints_names)
     max_joints = max(max_joints, max_joints_tgt)
+    target_effective_root_index = infer_object_consensus_effective_root_index(
+        training_motions_dir,
+        target_object_type,
+        target_cond,
+    )
+    if target_effective_root_index is not None:
+        target_cond['translation_root_index'] = int(target_effective_root_index)
 
     n_joints = int(target_cond.get('original_joint_count') or len(target_parents))
     n_chains = len(target_cond.get('kinematic_chains', []))
@@ -756,6 +815,11 @@ def auto_retarget_pipeline(
         f"[auto_retarget] Target: {target_object_type} "
         f"({n_joints} joints"
     )
+    if target_effective_root_index is not None:
+        print(
+            f"[auto_retarget] {target_object_type}: using target effective root "
+            f"{target_effective_root_index} for retarget mapping"
+        )
 
     # 3. Select donors
     if donor_skeletons_override is not None:

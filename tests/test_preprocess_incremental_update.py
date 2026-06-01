@@ -107,8 +107,16 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
         )
         return []
 
+    def fake_infer_translation_root_index_from_features(motion, parents, offsets):
+        return 1 if int(np.asarray(motion).shape[1]) == 2 else 0
+
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
+    monkeypatch.setattr(
+        regenerate_dataset_artifacts_module,
+        "infer_translation_root_index_from_features",
+        fake_infer_translation_root_index_from_features,
+    )
 
     dataset_dir_path = regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
 
@@ -118,6 +126,8 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
     assert sorted(regenerated_cond) == ["Cat", "Dog"]
     assert regenerated_cond["Cat"]["joints_names_embs_meta"]["t5_name"] == "fake-t5"
     assert regenerated_cond["Dog"]["joints_names_embs_meta"]["t5_name"] == "fake-t5"
+    assert regenerated_cond["Cat"]["translation_root_index"] == 1
+    assert regenerated_cond["Dog"]["translation_root_index"] == 0
 
     motion_metadata = load_motion_metadata(dataset_dir)
     assert sorted(motion_metadata) == ["Cat_Run_001.npy", "Dog_Jump_002.npy"]
@@ -149,6 +159,184 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
     assert "~~~~ objects_counts - Total: 2 ~~~~" in metadata_summary
     assert "Cat: 1" in metadata_summary
     assert "Dog: 1" in metadata_summary
+
+
+def test_regenerate_dataset_artifacts_unifies_translation_root_index_per_object(monkeypatch, tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    motions_dir = dataset_dir / "motions"
+    motions_dir.mkdir(parents=True)
+
+    np.save(motions_dir / "Cat_Run_001.npy", np.zeros((3, 3, 13), dtype=np.float32))
+    np.save(motions_dir / "Cat_Idle_002.npy", np.zeros((5, 3, 13), dtype=np.float32))
+    np.save(
+        dataset_dir / "cond.npy",
+        {
+            "Cat": {
+                "object_type": "Cat",
+                "joints_names": ["Root", "Mid", "Tip"],
+                "parents": np.array([-1, 0, 1], dtype=np.int64),
+                "offsets": np.zeros((3, 3), dtype=np.float32),
+            },
+        },
+    )
+    write_motion_metadata(
+        dataset_dir,
+        {
+            "Cat_Run_001.npy": {
+                "object_type": "Cat",
+                "translation_root_index": 2,
+                "motion_source": "anim_dir",
+            },
+            "Cat_Idle_002.npy": {
+                "object_type": "Cat",
+                "translation_root_index": 1,
+                "motion_source": "retarget",
+            },
+        },
+        total_clips=2,
+    )
+
+    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True, force_reencode=True):
+        for object_cond in cond.values():
+            joint_count = len(object_cond["joints_names"])
+            object_cond["joints_names_embs"] = np.ones((joint_count, 1), dtype=np.float32)
+            object_cond["joints_names_embs_meta"] = {"t5_name": t5_name}
+
+    def fake_write_collision_report(cond, save_dir):
+        return []
+
+    def fake_infer_translation_root_index_from_features(motion, parents, offsets):
+        frame_count = int(np.asarray(motion).shape[0])
+        return 2 if frame_count == 3 else 1
+
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
+    monkeypatch.setattr(
+        regenerate_dataset_artifacts_module,
+        "infer_translation_root_index_from_features",
+        fake_infer_translation_root_index_from_features,
+    )
+
+    regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
+
+    regenerated_cond = dict(np.load(dataset_dir / "cond.npy", allow_pickle=True).item())
+    assert regenerated_cond["Cat"]["translation_root_index"] == 1
+
+    motion_metadata = load_motion_metadata(dataset_dir)
+    assert motion_metadata["Cat_Run_001.npy"]["translation_root_index"] == 1
+    assert motion_metadata["Cat_Idle_002.npy"]["translation_root_index"] == 1
+
+
+def test_regenerate_dataset_artifacts_rebuilds_translation_root_when_metadata_missing(monkeypatch, tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    motions_dir = dataset_dir / "motions"
+    motions_dir.mkdir(parents=True)
+
+    np.save(motions_dir / "Cat_Run_001.npy", np.zeros((3, 3, 13), dtype=np.float32))
+    np.save(
+        dataset_dir / "cond.npy",
+        {
+            "Cat": {
+                "object_type": "Cat",
+                "joints_names": ["Root", "Mid", "Tip"],
+                "parents": np.array([-1, 0, 1], dtype=np.int64),
+                "offsets": np.zeros((3, 3), dtype=np.float32),
+            },
+        },
+    )
+    write_motion_metadata(
+        dataset_dir,
+        {
+            "Cat_Run_001.npy": {
+                "object_type": "Cat",
+                "motion_source": "anim_dir",
+            },
+        },
+        total_clips=1,
+    )
+
+    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True, force_reencode=True):
+        for object_cond in cond.values():
+            joint_count = len(object_cond["joints_names"])
+            object_cond["joints_names_embs"] = np.ones((joint_count, 1), dtype=np.float32)
+            object_cond["joints_names_embs_meta"] = {"t5_name": t5_name}
+
+    def fake_write_collision_report(cond, save_dir):
+        return []
+
+    def fake_infer_translation_root_index_from_features(motion, parents, offsets):
+        return 2
+
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
+    monkeypatch.setattr(
+        regenerate_dataset_artifacts_module,
+        "infer_translation_root_index_from_features",
+        fake_infer_translation_root_index_from_features,
+    )
+
+    regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
+
+    regenerated_cond = dict(np.load(dataset_dir / "cond.npy", allow_pickle=True).item())
+    assert regenerated_cond["Cat"]["translation_root_index"] == 2
+
+    motion_metadata = load_motion_metadata(dataset_dir)
+    assert motion_metadata["Cat_Run_001.npy"]["translation_root_index"] == 2
+
+
+def test_regenerate_dataset_artifacts_uses_majority_root_not_minimum(monkeypatch, tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    motions_dir = dataset_dir / "motions"
+    motions_dir.mkdir(parents=True)
+
+    for idx in range(4):
+        np.save(motions_dir / f"Bear_Run_{idx:03d}.npy", np.zeros((idx + 3, 3, 13), dtype=np.float32))
+
+    np.save(
+        dataset_dir / "cond.npy",
+        {
+            "Bear": {
+                "object_type": "Bear",
+                "joints_names": ["Hips", "Pelvis", "Leg"],
+                "parents": np.array([-1, 0, 1], dtype=np.int64),
+                "offsets": np.zeros((3, 3), dtype=np.float32),
+            },
+        },
+    )
+    write_motion_metadata(
+        dataset_dir,
+        {f"Bear_Run_{idx:03d}.npy": {"object_type": "Bear"} for idx in range(4)},
+        total_clips=4,
+    )
+
+    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True, force_reencode=True):
+        for object_cond in cond.values():
+            joint_count = len(object_cond["joints_names"])
+            object_cond["joints_names_embs"] = np.ones((joint_count, 1), dtype=np.float32)
+            object_cond["joints_names_embs_meta"] = {"t5_name": t5_name}
+
+    def fake_write_collision_report(cond, save_dir):
+        return []
+
+    def fake_infer_translation_root_index_from_features(motion, parents, offsets):
+        frame_count = int(np.asarray(motion).shape[0])
+        return 0 if frame_count == 3 else 1
+
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
+    monkeypatch.setattr(
+        regenerate_dataset_artifacts_module,
+        "infer_translation_root_index_from_features",
+        fake_infer_translation_root_index_from_features,
+    )
+
+    regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
+
+    regenerated_cond = dict(np.load(dataset_dir / "cond.npy", allow_pickle=True).item())
+    assert regenerated_cond["Bear"]["translation_root_index"] == 1
+
+    motion_metadata = load_motion_metadata(dataset_dir)
+    assert all(entry["translation_root_index"] == 1 for entry in motion_metadata.values())
 
 
 def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch, tmp_path):

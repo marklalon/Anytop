@@ -631,6 +631,23 @@ def _get_reference_normalization_stats(
     return mean[:, :feature_count], std[:, :feature_count] + 1e-6
 
 
+def _require_cond_translation_root_index(cond_entry, *, object_type, context):
+    try:
+        root = int(cond_entry['translation_root_index'])
+    except KeyError:
+        raise KeyError(
+            f"{context}: cond_dict['{object_type}'] is missing 'translation_root_index'. "
+            "Regenerate dataset artifacts to populate it."
+        )
+    n_joints = len(cond_entry['parents'])
+    if not 0 <= root < n_joints:
+        raise ValueError(
+            f"{context}: translation_root_index={root} out of range [0, {n_joints}) "
+            f"for '{object_type}'"
+        )
+    return root
+
+
 def _retarget_reference_motion(
     ref_motion_path,
     source_type,
@@ -646,11 +663,13 @@ def _retarget_reference_motion(
     Loads source features, builds target TPoseFeatures, delegates the math, then
     writes the retargeted .npy and an inspection .bvh under ``output_dir``.
     """
-    from Anytop.utils.auto_retarget import retarget_features_npy_to_target
+    from Anytop.utils.auto_retarget import (
+        retarget_features_npy_to_target,
+    )
     from data_loaders.truebones.truebones_utils.features import get_common_features_from_T_pose
 
     src_cond = cond_dict[source_type]
-    tgt_cond = cond_dict[target_type]
+    tgt_cond = dict(cond_dict[target_type])
 
     src_tpose_path = src_cond.get('orientation_reference_fbx_path')
     tgt_tpose_path = tgt_cond.get('orientation_reference_fbx_path')
@@ -666,6 +685,12 @@ def _retarget_reference_motion(
 
     ref_raw = np.load(ref_motion_path).astype(np.float32)
     print(f"  Source motion shape: {ref_raw.shape}")
+
+    tgt_cond['translation_root_index'] = _require_cond_translation_root_index(
+        tgt_cond,
+        object_type=target_type,
+        context='Cross-species reference retarget',
+    )
 
     tgt_tp = get_common_features_from_T_pose(
         tgt_tpose_path, target_type,
@@ -738,10 +763,12 @@ def _retarget_reference_motion_from_file(
     cond/T-pose is required. Output artifacts (retargeted .npy + inspection .bvh)
     match the feature-npy retarget path.
     """
-    from Anytop.utils.auto_retarget import retarget_animation_file_to_target
+    from Anytop.utils.auto_retarget import (
+        retarget_animation_file_to_target,
+    )
     from data_loaders.truebones.truebones_utils.features import get_common_features_from_T_pose
 
-    tgt_cond = cond_dict[target_type]
+    tgt_cond = dict(cond_dict[target_type])
     tgt_tpose_path = tgt_cond.get('orientation_reference_fbx_path')
     if not tgt_tpose_path or not os.path.isfile(tgt_tpose_path):
         raise FileNotFoundError(
@@ -757,6 +784,12 @@ def _retarget_reference_motion_from_file(
 
     print(
         f"\n### Reference retarget (cond-free source): {reference_motion_path} → {target_type}"
+    )
+
+    tgt_cond['translation_root_index'] = _require_cond_translation_root_index(
+        tgt_cond,
+        object_type=target_type,
+        context='Cond-free reference retarget',
     )
 
     tgt_tp = get_common_features_from_T_pose(

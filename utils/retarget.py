@@ -799,6 +799,7 @@ def retarget_world_space_np(
     src_match_names: list[str],
     tgt_match_names: list[str],
     src_effective_root_index: int | None = None,
+    tgt_effective_root_index: int | None = None,
     src_bone_translations: Optional[np.ndarray] = None,
     coordinate_search: bool = True,
     verbose: bool = True,
@@ -830,6 +831,8 @@ def retarget_world_space_np(
         tgt_match_names: semantic match names for target joints.
         src_effective_root_index: optional source joint index that carries the
             locomotion translation in local position channels.
+        tgt_effective_root_index: optional target joint index that should carry
+            locomotion after retargeting. Defaults to the hierarchy root.
         coordinate_search: when ``True``, sweep rigid rotation/flip candidates
             to find the best alignment of rest poses.
         verbose: print one-line summary diagnostics.
@@ -872,6 +875,14 @@ def retarget_world_space_np(
             if current_idx == int(ancestor_idx):
                 return True
             current_idx = int(src_parents[current_idx])
+        return False
+
+    def _is_target_ancestor(ancestor_idx: int, descendant_idx: int) -> bool:
+        current_idx = int(descendant_idx)
+        while current_idx >= 0:
+            if current_idx == int(ancestor_idx):
+                return True
+            current_idx = int(tgt_parents[current_idx])
         return False
 
     def _chain_root(name: str) -> str:
@@ -1206,42 +1217,68 @@ def retarget_world_space_np(
     # accidentally swap unrelated joints).
     root_tgt_indices = np.flatnonzero(tgt_parents < 0)
     root_tgt_idx = int(root_tgt_indices[0]) if root_tgt_indices.size > 0 else -1
+    locomotion_tgt_idx = root_tgt_idx
+    if tgt_effective_root_index is not None:
+        tgt_effective_root_index = int(tgt_effective_root_index)
+        if 0 <= tgt_effective_root_index < J_tgt:
+            locomotion_tgt_idx = tgt_effective_root_index
     if (
         src_effective_root_index is not None
-        and root_tgt_idx >= 0
+        and locomotion_tgt_idx >= 0
     ):
         src_effective_root_index = int(src_effective_root_index)
         if 0 <= src_effective_root_index < J_src:
-            current_root_src = np.flatnonzero(src_to_tgt == root_tgt_idx)
-            current_root_src_idx = int(current_root_src[0]) if current_root_src.size > 0 else -1
-            should_promote_effective_root = (
-                current_root_src_idx < 0
-                or _is_source_ancestor(current_root_src_idx, src_effective_root_index)
+            current_locomotion_src = np.flatnonzero(src_to_tgt == locomotion_tgt_idx)
+            current_locomotion_src_idx = (
+                int(current_locomotion_src[0]) if current_locomotion_src.size > 0 else -1
             )
-            if should_promote_effective_root and current_root_src_idx != src_effective_root_index:
+            should_promote_effective_root = (
+                current_locomotion_src_idx < 0
+                or _is_source_ancestor(current_locomotion_src_idx, src_effective_root_index)
+                or _is_source_ancestor(src_effective_root_index, current_locomotion_src_idx)
+            )
+            if (
+                should_promote_effective_root
+                and current_locomotion_src_idx != src_effective_root_index
+            ):
                 previous_tgt_for_effective = int(src_to_tgt[src_effective_root_index])
-                if current_root_src_idx >= 0:
-                    src_to_tgt[current_root_src_idx] = -1
-                if previous_tgt_for_effective >= 0 and previous_tgt_for_effective != root_tgt_idx:
+                if current_locomotion_src_idx >= 0:
+                    src_to_tgt[current_locomotion_src_idx] = -1
+                if (
+                    previous_tgt_for_effective >= 0
+                    and previous_tgt_for_effective != locomotion_tgt_idx
+                ):
                     src_to_tgt[src_effective_root_index] = -1
-                src_to_tgt[src_effective_root_index] = root_tgt_idx
-                if previous_tgt_for_effective >= 0 and previous_tgt_for_effective != root_tgt_idx:
+                src_to_tgt[src_effective_root_index] = locomotion_tgt_idx
+                should_shift_displaced_target = (
+                    previous_tgt_for_effective >= 0
+                    and previous_tgt_for_effective != locomotion_tgt_idx
+                    and not _is_target_ancestor(previous_tgt_for_effective, locomotion_tgt_idx)
+                )
+                if should_shift_displaced_target:
                     _shift_descendant_chain_after_root_promotion(
                         src_effective_root_index,
                         previous_tgt_for_effective,
                     )
                 if verbose:
                     replaced_name = (
-                        src_match_names[current_root_src_idx]
-                        if current_root_src_idx >= 0 else '<none>'
+                        src_match_names[current_locomotion_src_idx]
+                        if current_locomotion_src_idx >= 0 else '<none>'
                     )
                     displaced_name = (
                         tgt_match_names[previous_tgt_for_effective]
-                        if previous_tgt_for_effective >= 0 and previous_tgt_for_effective != root_tgt_idx else '<none>'
+                        if (
+                            previous_tgt_for_effective >= 0
+                            and previous_tgt_for_effective != locomotion_tgt_idx
+                        ) else '<none>'
+                    )
+                    target_label = (
+                        'target effective root'
+                        if locomotion_tgt_idx != root_tgt_idx else 'target root'
                     )
                     print(
                         f"[retarget] Promoting source effective root "
-                        f"{src_match_names[src_effective_root_index]!r} to target root "
+                        f"{src_match_names[src_effective_root_index]!r} to {target_label} "
                         f"(replacing {replaced_name!r}, displaced target match {displaced_name!r})"
                     )
 
@@ -1616,9 +1653,18 @@ def retarget_world_space_np(
     # chain, not just the mapped child itself. Back-propagate the mapped root's
     # desired world transform through the wrapper rest chain so inverse-FK can
     # emit a non-zero target root wrapper transform that Blender can reproduce.
+    # Feature-space retarget callers can opt out by naming a non-root target
+    # effective root: in that case locomotion should stay on that joint's local
+    # translation, leaving wrapper ancestors static.
     for tgt_joint_idx in range(J_tgt):
         src_joint_idx = int(src_for_tgt[tgt_joint_idx])
         if src_joint_idx < 0 or int(src_parents[src_joint_idx]) >= 0:
+            continue
+        if (
+            tgt_effective_root_index is not None
+            and int(tgt_joint_idx) == int(tgt_effective_root_index)
+            and int(tgt_parents[tgt_joint_idx]) >= 0
+        ):
             continue
 
         current_child_idx = int(tgt_joint_idx)
