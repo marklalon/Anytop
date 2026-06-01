@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=quadropeds_locomotion_slim_v3
+set RUN_NAME=quadropeds_locomotion_slim_v4
 
 pushd "%SCRIPT_DIR%"
 
@@ -27,7 +27,7 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--batch_size 16 ^
 	--lr 5e-5 ^
 	--num_steps 100000 ^
-	--lr_scheduler_step_size 10000 ^
+	--lr_scheduler_step_size 100000 ^
 	--lr_scheduler_gamma 0.95 ^
 	--eval_during_training ^
 	--eval_interval 500 ^
