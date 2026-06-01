@@ -42,7 +42,7 @@ from data_loaders.truebones.truebones_utils.features import (
 )
 from data_loaders.truebones.truebones_utils.animation_utils import find_translation_root
 import Anytop.utils.retarget as retarget_mod
-from Anytop.utils.auto_retarget import _build_tpose_aligned_target_animation
+from Anytop.utils.auto_retarget import build_tpose_aligned_target_animation
 from Anytop.utils.auto_retarget import retarget_features_npy_to_target
 from Anytop.utils.rotation_numpy import quat_multiply_wxyz_np, quat_rotate_wxyz_np
 
@@ -377,7 +377,7 @@ def test_build_target_animation_preserves_world_rotations_across_gap() -> None:
         tpos_rots=_identity_quat(3)[None, :, :],
     )
 
-    anim = _build_tpose_aligned_target_animation(retarget_result, target_tp)
+    anim = build_tpose_aligned_target_animation(retarget_result, target_tp)
 
     np.testing.assert_allclose(
         rotations_global(anim).qs,
@@ -431,7 +431,7 @@ def test_build_target_animation_preserves_pure_unmapped_branch_rotations() -> No
         tpos_rots=_identity_quat(3)[None, :, :],
     )
 
-    anim = _build_tpose_aligned_target_animation(retarget_result, target_tp)
+    anim = build_tpose_aligned_target_animation(retarget_result, target_tp)
 
     np.testing.assert_allclose(anim.rotations.qs[0, 1], branch_world, atol=1e-6)
     np.testing.assert_allclose(anim.rotations.qs[0, 2], branch_leaf_local, atol=1e-6)
@@ -512,7 +512,7 @@ def test_tpose_aligned_roundtrip_preserves_gap_chain_and_rest_side_branch() -> N
         helper_metadata=None,
     )
 
-    baseline_anim = _build_tpose_aligned_target_animation(retarget_result, target_tp)
+    baseline_anim = build_tpose_aligned_target_animation(retarget_result, target_tp)
     baseline_world_rot = rotations_global(baseline_anim).qs
     baseline_world_pos = positions_global(baseline_anim)
 
@@ -663,7 +663,7 @@ def test_tpose_aligned_roundtrip_with_nontrivial_rest_rotations() -> None:
         helper_metadata=None,
     )
 
-    baseline_anim = _build_tpose_aligned_target_animation(retarget_result, target_tp)
+    baseline_anim = build_tpose_aligned_target_animation(retarget_result, target_tp)
     baseline_world_rot = rotations_global(baseline_anim).qs
 
     # Sanity: the built Animation's FK must already reproduce mapped + gap
@@ -778,7 +778,7 @@ def test_retarget_features_npy_to_target_encodes_feature_space_animation_directl
     }
 
     monkeypatch.setattr(features_mod, 'recover_animation_from_motion_np', lambda *args, **kwargs: (object(), False))
-    monkeypatch.setattr(roundtrip_common_mod, '_build_skeleton', lambda *args, **kwargs: object())
+    monkeypatch.setattr(roundtrip_common_mod, 'build_skeleton', lambda *args, **kwargs: object())
     monkeypatch.setattr(
         exporter_mod,
         'animation_to_exporter_inputs',
@@ -791,7 +791,7 @@ def test_retarget_features_npy_to_target_encodes_feature_space_animation_directl
     )
     monkeypatch.setattr(auto_retarget_mod, 'find_translation_root', lambda anim: 0)
     monkeypatch.setattr(retarget_mod, 'retarget_world_space_np', lambda **kwargs: {'src_to_tgt': np.array([0, 1], dtype=np.int32)})
-    monkeypatch.setattr(auto_retarget_mod, '_build_tpose_aligned_target_animation', lambda *args, **kwargs: sentinel_anim)
+    monkeypatch.setattr(auto_retarget_mod, 'build_tpose_aligned_target_animation', lambda *args, **kwargs: sentinel_anim)
 
     captured: dict[str, object] = {}
 
@@ -861,7 +861,7 @@ def test_retarget_features_npy_to_target_uses_effective_root_override(
     }
 
     monkeypatch.setattr(features_mod, 'recover_animation_from_motion_np', lambda *args, **kwargs: (object(), False))
-    monkeypatch.setattr(roundtrip_common_mod, '_build_skeleton', lambda *args, **kwargs: object())
+    monkeypatch.setattr(roundtrip_common_mod, 'build_skeleton', lambda *args, **kwargs: object())
     monkeypatch.setattr(
         exporter_mod,
         'animation_to_exporter_inputs',
@@ -873,7 +873,7 @@ def test_retarget_features_npy_to_target_uses_effective_root_override(
         ),
     )
     monkeypatch.setattr(auto_retarget_mod, 'find_translation_root', lambda anim: 0)
-    monkeypatch.setattr(auto_retarget_mod, '_build_tpose_aligned_target_animation', lambda *args, **kwargs: sentinel_anim)
+    monkeypatch.setattr(auto_retarget_mod, 'build_tpose_aligned_target_animation', lambda *args, **kwargs: sentinel_anim)
 
     captured: dict[str, object] = {}
 
@@ -1117,7 +1117,7 @@ def test_bridge_gap_joint_uses_source_anchor_rotation_to_avoid_spine_translation
         tpos_anim=SimpleNamespace(parents=tgt_parents),
         tpos_rots=_identity_quat(3)[None, :, :],
     )
-    anim = _build_tpose_aligned_target_animation(result, target_tp)
+    anim = build_tpose_aligned_target_animation(result, target_tp)
 
     np.testing.assert_allclose(
         anim.positions[0, 2],
@@ -1283,7 +1283,7 @@ def test_build_target_animation_prefers_retarget_bone_translations() -> None:
         'bone_translations': np.zeros((1, 3, 3), dtype=np.float64),
     }
 
-    anim = _build_tpose_aligned_target_animation(retarget_result, target_tp)
+    anim = build_tpose_aligned_target_animation(retarget_result, target_tp)
 
     np.testing.assert_allclose(anim.positions[0, 0], np.array([0.0, 0.0, 0.0], dtype=np.float64), atol=1e-6)
     np.testing.assert_allclose(anim.positions[0, 1], np.array([0.0, 1.0, 0.0], dtype=np.float64), atol=1e-6)
@@ -1406,4 +1406,3 @@ def test_infer_donor_consensus_effective_root_index_skip_corrupted(
     # Only the valid file should be counted
     assert result == 3
     assert len(call_log) == 1
-

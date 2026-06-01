@@ -335,13 +335,13 @@ def test_decoder_expands_graph_relations_once_per_batch_not_per_frame():
 
 def test_decoder_reuses_precomputed_loop_phase_embeddings(monkeypatch):
     calls: list[tuple[int, int, int]] = []
-    original = motion_transformer_module._circular_phase_embedding
+    original = motion_transformer_module.circular_phase_embedding
 
     def wrapped(length, dim, batch_size, device, dtype, lengths=None):
         calls.append((length, dim, batch_size))
         return original(length, dim, batch_size, device, dtype, lengths)
 
-    monkeypatch.setattr(motion_transformer_module, "_circular_phase_embedding", wrapped)
+    monkeypatch.setattr(motion_transformer_module, "circular_phase_embedding", wrapped)
 
     layer = GraphMotionDecoderLayer(D, H, dim_feedforward=32, dropout=0.0)
     dec = GraphMotionDecoder(

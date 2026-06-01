@@ -37,7 +37,7 @@ _COMMON_ROOT_NAMES = frozenset(
 )
 
 
-def _collapse_root_skeleton(
+def collapse_root_skeleton(
     joint_names: list[str],
     parents: np.ndarray,
     offsets: np.ndarray,
@@ -235,11 +235,11 @@ def _load_scene(filepath: str):
     return armature
 
 
-def _load_fbx_scene(fbx_path: str):
+def load_fbx_scene(fbx_path: str):
     """Import an FBX file into a fresh Blender scene and return the armature."""
     return _load_scene(fbx_path)
 
-def _extract_armature_skeleton_data(
+def extract_armature_skeleton_data(
     armature,
 ) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
     """Extract bone names, parents, rest offsets, and rest rotations from an armature.
@@ -316,7 +316,7 @@ def _extract_armature_skeleton_data(
 
 # ── Animation extraction helpers ─────────────────────────────────────────────
 
-def _iter_action_fcurves(action):
+def iter_action_fcurves(action):
     if action is None:
         return []
     if hasattr(action, "fcurves"):
@@ -332,17 +332,17 @@ def _iter_action_fcurves(action):
     return all_fcurves
 
 
-def _get_action_sample_times(armature) -> list[float]:
+def get_action_sample_times(armature) -> list[float]:
     action = armature.animation_data.action if armature.animation_data else None
     key_times = sorted({
         round(float(keyframe.co[0]), 6)
-        for fcurve in _iter_action_fcurves(action)
+        for fcurve in iter_action_fcurves(action)
         for keyframe in fcurve.keyframe_points
     })
     return key_times or [0.0]
 
 
-def _infer_sample_fps(scene, sample_times: list[float]) -> float:
+def infer_sample_fps(scene, sample_times: list[float]) -> float:
     scene_fps = scene.render.fps / scene.render.fps_base
     if len(sample_times) < 2:
         return float(scene_fps)
@@ -353,7 +353,7 @@ def _infer_sample_fps(scene, sample_times: list[float]) -> float:
     return float(scene_fps / np.median(positive_deltas))
 
 
-def _set_scene_time(scene, sample_time: float) -> None:
+def set_scene_time(scene, sample_time: float) -> None:
     frame = math.floor(sample_time)
     subframe = float(sample_time - frame)
     scene.frame_set(frame, subframe=subframe)
@@ -376,14 +376,14 @@ def _scene_to_animation(scene_path: str, collapse_root: bool = True) -> tuple[An
     from motion_lib.Quaternions import Quaternions
 
     armature = _load_scene(scene_path)
-    bone_names, parents, offsets, rest_rotations = _extract_armature_skeleton_data(armature)
+    bone_names, parents, offsets, rest_rotations = extract_armature_skeleton_data(armature)
 
     joint_count = len(bone_names)
     orients = Quaternions(rest_rotations)
 
     scene = bpy.context.scene
-    sample_times = _get_action_sample_times(armature)
-    fps = _infer_sample_fps(scene, sample_times)
+    sample_times = get_action_sample_times(armature)
+    fps = infer_sample_fps(scene, sample_times)
     num_frames = len(sample_times)
 
     rot_qs = np.zeros((num_frames, joint_count, 4), dtype=np.float64)
@@ -398,7 +398,7 @@ def _scene_to_animation(scene_path: str, collapse_root: bool = True) -> tuple[An
     ordered_parent_indices = parents.tolist()
 
     for frame_idx, sample_time in enumerate(sample_times):
-        _set_scene_time(scene, sample_time)
+        set_scene_time(scene, sample_time)
 
         pose_matrices = [
             pose_bone.matrix.copy() if pose_bone is not None else None
@@ -432,7 +432,7 @@ def _scene_to_animation(scene_path: str, collapse_root: bool = True) -> tuple[An
     bpy.ops.object.mode_set(mode="OBJECT")
 
     if collapse_root:
-        bone_names, parents, offsets, rot_qs, pos_np, orients = _collapse_root_skeleton(
+        bone_names, parents, offsets, rot_qs, pos_np, orients = collapse_root_skeleton(
             bone_names,
             parents,
             offsets,
@@ -446,7 +446,7 @@ def _scene_to_animation(scene_path: str, collapse_root: bool = True) -> tuple[An
     return anim, bone_names, fps
 
 
-def _fbx_to_animation(fbx_path: str, collapse_root: bool = True) -> tuple[Any, list[str], float]:
+def fbx_to_animation(fbx_path: str, collapse_root: bool = True) -> tuple[Any, list[str], float]:
     """Load FBX via Blender and return (Animation, joint_names, fps)."""
     return _scene_to_animation(fbx_path, collapse_root=collapse_root)
 

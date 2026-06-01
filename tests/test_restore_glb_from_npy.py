@@ -23,7 +23,7 @@ from tools.restore_glb_from_npy import (
     _rebuild_fullbody_animation_with_ik,
 )
 from Anytop.utils.exporter import animation_to_exporter_inputs
-from Anytop.utils.roundtrip_common import _build_skeleton
+from Anytop.utils.roundtrip_common import build_skeleton
 
 
 def test_fullbody_ik_rebuild_restores_rigid_local_positions() -> None:
@@ -143,7 +143,7 @@ def test_fullbody_ik_rebuild_zeroes_exporter_nonroot_translations() -> None:
 
     identity_rest_rotations = np.zeros((3, 4), dtype=np.float32)
     identity_rest_rotations[:, 0] = 1.0
-    skeleton = _build_skeleton(joint_names, rigid_offsets, parents, identity_rest_rotations)
+    skeleton = build_skeleton(joint_names, rigid_offsets, parents, identity_rest_rotations)
     _joint_rotations, _root_translation, _root_rotation, bone_translations = (
         animation_to_exporter_inputs(rebuilt_anim, skeleton)
     )
@@ -195,7 +195,7 @@ def test_clamp_unobservable_joint_positions_to_rest_zeroes_leaf_exporter_transla
     assert np.allclose(clamped_anim.positions[:, 2, :], offsets[2][None, :])
     identity_rest_rotations = np.zeros((3, 4), dtype=np.float32)
     identity_rest_rotations[:, 0] = 1.0
-    skeleton = _build_skeleton(joint_names, offsets, parents, identity_rest_rotations)
+    skeleton = build_skeleton(joint_names, offsets, parents, identity_rest_rotations)
     _joint_rotations, _root_translation, _root_rotation, bone_translations = animation_to_exporter_inputs(
         clamped_anim,
         skeleton,

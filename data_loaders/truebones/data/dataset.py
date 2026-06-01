@@ -105,7 +105,7 @@ def create_temporal_mask_for_window(window, max_len, circular=False):
     return mask
 
 
-def _resample_motion_features(motion, target_num_frames, *, loop_terminal=False):
+def resample_motion_features(motion, target_num_frames, *, loop_terminal=False):
     source_frames = int(motion.shape[0])
     target_num_frames = int(target_num_frames)
     if source_frames <= 0:
@@ -166,7 +166,7 @@ def _resample_motion_features(motion, target_num_frames, *, loop_terminal=False)
 
 def _resample_normalized_motion_features(motion, target_num_frames, mean, std, *, loop_terminal=False):
     raw_motion = motion * std[None, :, :] + mean[None, :, :]
-    raw_resampled = _resample_motion_features(
+    raw_resampled = resample_motion_features(
         raw_motion,
         target_num_frames,
         loop_terminal=loop_terminal,

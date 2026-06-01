@@ -16,7 +16,7 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from motion_lib.FBX import _extract_armature_skeleton_data, import_fbx, remove_lights_and_cameras
+from motion_lib.FBX import extract_armature_skeleton_data, import_fbx, remove_lights_and_cameras
 from data_loaders.truebones.truebones_utils.animation_utils import refresh_joint_metadata_in_object_cond
 from .rotation_numpy import (
     quat_conjugate_wxyz_np,
@@ -463,7 +463,7 @@ class AnimationExporter:
         # ``Anytop.utils.retarget`` so non-Blender callers can share it.
         # ────────────────────────────────────────────────────────────────
         if mesh_path:
-            fbx_names, fbx_parents, fbx_offsets, fbx_rest_rots = _extract_armature_skeleton_data(armature)
+            fbx_names, fbx_parents, fbx_offsets, fbx_rest_rots = extract_armature_skeleton_data(armature)
             J_fbx = len(fbx_names)
 
             rest_rot_input = np.array([
@@ -702,4 +702,3 @@ class AnimationExporter:
 
         bpy.ops.object.mode_set(mode="OBJECT")
         return armature_obj
-

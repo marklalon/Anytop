@@ -77,14 +77,14 @@ from Anytop.utils.rotation_numpy import (
 )
 from Anytop.motion_lib.FBX import clear_scene, remove_lights_and_cameras
 from Anytop.motion_lib.FBX import (
-    _extract_armature_skeleton_data,
-    _iter_action_fcurves,
-    _set_scene_time,
-    _infer_sample_fps,
-    _get_action_sample_times,
+    extract_armature_skeleton_data,
+    iter_action_fcurves,
+    set_scene_time,
+    infer_sample_fps,
+    get_action_sample_times,
 )
 from Anytop.utils.retarget import (
-    _generate_coordinate_candidates_np,
+    generate_coordinate_candidates_np,
 )
 
 
@@ -178,7 +178,7 @@ def _collect_armature_world_pose_data(armature, sample_frames: list[float],
     bpy.ops.object.mode_set(mode="OBJECT")
 
     for frame_idx, sample_frame in enumerate(sample_frames):
-        _set_scene_time(scene, float(sample_frame))
+        set_scene_time(scene, float(sample_frame))
         bpy.context.view_layer.update()
         for bone_idx, bone_name in enumerate(bone_names):
             pose_bone = armature.pose.bones.get(bone_name)
@@ -200,7 +200,7 @@ def _collect_armature_world_pose_data(armature, sample_frames: list[float],
 
 # ── Import dispatcher ─────────────────────────────────────────────────────────
 
-def _load_motion(
+def load_motion(
     file_path: str,
     *,
     fps: float | None = None,
@@ -236,11 +236,11 @@ def _load_motion(
         raise RuntimeError(f"No armature found in {file_path}")
 
     # Extract skeleton metadata
-    bone_names, parents, offsets, _rest_rotations = _extract_armature_skeleton_data(armature)
+    bone_names, parents, offsets, _rest_rotations = extract_armature_skeleton_data(armature)
     num_joints = len(bone_names)
 
     # Determine sample times and FPS
-    sample_frames = _get_action_sample_times(armature)
+    sample_frames = get_action_sample_times(armature)
     scene = bpy.context.scene
 
     # For BVH, read FPS from the file header's "Frame Time" field directly,
@@ -249,7 +249,7 @@ def _load_motion(
     if file_format == "bvh":
         fps = _read_bvh_frame_rate(file_path)
     else:
-        fps = _infer_sample_fps(scene, sample_frames)
+        fps = infer_sample_fps(scene, sample_frames)
     sample_times = _sample_frames_to_relative_seconds(sample_frames, fps)
     num_frames = len(sample_frames)
 
@@ -321,7 +321,7 @@ def _sample_world_mesh_points(mesh_obj, sample_frame: float) -> np.ndarray:
     import bpy
 
     scene = bpy.context.scene
-    _set_scene_time(scene, float(sample_frame))
+    set_scene_time(scene, float(sample_frame))
     bpy.context.view_layer.update()
     depsgraph = bpy.context.evaluated_depsgraph_get()
     obj_eval = mesh_obj.evaluated_get(depsgraph)
@@ -363,7 +363,7 @@ def _nearest_surface_stats(points_a: np.ndarray, points_b: np.ndarray) -> dict[s
     }
 
 
-def _compute_mesh_surface_error(
+def compute_mesh_surface_error(
     motion_a: MotionData,
     motion_b: MotionData,
     alignment: AlignmentResult,
@@ -509,7 +509,7 @@ def _compute_common_bone_reindex(
 
 # ── Alignment detection ───────────────────────────────────────────────────────
 
-def _detect_and_align(
+def detect_and_align(
     motion_a: MotionData,
     motion_b: MotionData,
 ) -> tuple[MotionData, AlignmentResult]:
@@ -588,7 +588,7 @@ def _detect_and_align(
     pos_b_aligned = pos_b_scaled + translation_offset[np.newaxis, np.newaxis, :]
 
     # ── Step 5: Detect coordinate system ────────────────────────────────────
-    candidates = _generate_coordinate_candidates_np()
+    candidates = generate_coordinate_candidates_np()
 
     best_label = "identity"
     best_R = np.eye(3, dtype=np.float64)
@@ -718,7 +718,7 @@ def _summarize_error_matrix(errors: np.ndarray, common_names: list[str]) -> dict
 
 # ── Comparison ────────────────────────────────────────────────────────────────
 
-def _compare_motions(
+def compare_motions(
     motion_a: MotionData,
     motion_b: MotionData,
     alignment: AlignmentResult,
@@ -950,7 +950,7 @@ def _compare_motions(
 
     # ── Mesh surface comparison (only when both motions have skinning) ──
     if motion_a.has_skinned_mesh and motion_b.has_skinned_mesh:
-        mesh_result = _compute_mesh_surface_error(
+        mesh_result = compute_mesh_surface_error(
             motion_a,
             motion_b,
             alignment,
@@ -965,7 +965,7 @@ def _compare_motions(
 
 # ── Reporting ─────────────────────────────────────────────────────────────────
 
-def _print_summary(
+def print_summary(
     motion_a: MotionData,
     motion_b: MotionData,
     alignment: AlignmentResult,
@@ -1078,14 +1078,14 @@ def main() -> None:
     args = parser.parse_args()
 
     print(f"[Info] Loading {args.motion_a} ...")
-    motion_a = _load_motion(
+    motion_a = load_motion(
         args.motion_a,
         fps=args.fps_a,
     )
     print(f"           bones={motion_a.num_joints}  frames={motion_a.num_frames}  "
           f"skinned_mesh={motion_a.has_skinned_mesh}")
     print(f"[Info] Loading {args.motion_b} ...")
-    motion_b = _load_motion(
+    motion_b = load_motion(
         args.motion_b,
         fps=args.fps_b,
     )
@@ -1095,11 +1095,11 @@ def main() -> None:
 
     _validate_compatible(motion_a, motion_b)
 
-    motion_b_aligned, alignment = _detect_and_align(motion_a, motion_b)
+    motion_b_aligned, alignment = detect_and_align(motion_a, motion_b)
 
-    result = _compare_motions(motion_a, motion_b_aligned, alignment)
+    result = compare_motions(motion_a, motion_b_aligned, alignment)
 
-    _print_summary(motion_a, motion_b, alignment, result)
+    print_summary(motion_a, motion_b, alignment, result)
     print()
 
     if args.json_out:

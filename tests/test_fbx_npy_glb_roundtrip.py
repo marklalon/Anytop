@@ -78,12 +78,12 @@ from data_loaders.truebones.truebones_utils.motion_process import (
 from tools.restore_glb_from_npy import restore_glb
 
 from tools.compare_motions import (
-    _compute_mesh_surface_error,
-    _load_motion,
+    compute_mesh_surface_error,
+    load_motion,
     _validate_compatible,
-    _detect_and_align,
-    _compare_motions,
-    _print_summary,
+    detect_and_align,
+    compare_motions,
+    print_summary,
 )
 
 
@@ -123,15 +123,15 @@ def _compare_export_to_source(
     exported_path: str,
     label: str,
 ) -> dict[str, Any]:
-    motion_a = _load_motion(source_fbx)
-    motion_b = _load_motion(exported_path)
+    motion_a = load_motion(source_fbx)
+    motion_b = load_motion(exported_path)
     _validate_compatible(motion_a, motion_b)
 
-    motion_b_aligned, alignment = _detect_and_align(motion_a, motion_b)
-    result = _compare_motions(motion_a, motion_b_aligned, alignment)
+    motion_b_aligned, alignment = detect_and_align(motion_a, motion_b)
+    result = compare_motions(motion_a, motion_b_aligned, alignment)
     print(f"{'Compare Motions':=^{70}}")
     print(f"[Compare] {label}")
-    _print_summary(motion_a, motion_b, alignment, result)
+    print_summary(motion_a, motion_b, alignment, result)
 
     errors: list[str] = []
     if alignment.rotation_label != "identity":
@@ -188,7 +188,7 @@ def _compare_export_to_source(
     mesh_mean_pct_char = None
     mesh_p99_pct_char = None
     if motion_a.has_skinned_mesh and motion_b.has_skinned_mesh:
-        mesh_result = _compute_mesh_surface_error(motion_a, motion_b_aligned, alignment)
+        mesh_result = compute_mesh_surface_error(motion_a, motion_b_aligned, alignment)
         if mesh_result is None:
             errors.append(f"{label}: expected mesh surface stats")
         else:
@@ -343,7 +343,7 @@ def _run_test_fbx_npy_glb_roundtrip(
 
         # Map worst_frame to sample time for the return dict
         worst_frame = recovered_report["position_worst_frame"]
-        source_motion = _load_motion(anim_fbx)
+        source_motion = load_motion(anim_fbx)
         recovered_worst_time = float(source_motion.sample_times[worst_frame]) \
             if worst_frame < len(source_motion.sample_times) else 0.0
 

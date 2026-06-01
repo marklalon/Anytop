@@ -342,44 +342,43 @@ def run_validation(
     # Import and call validate_anytop_dataset.py main() directly instead of subprocess
     sys.path.insert(0, str(ANYTOP_DIR / "utils"))
     from validate_anytop_dataset import (
-        _resolve_dataset_dir,
-        _print_ok,
-        _print_warn,
-        _require,
+        resolve_dataset_dir,
+        print_ok,
+        print_warn,
         ValidationError,
     )
     from data_loaders.truebones.truebones_utils.motion_process import ROOT_XZ_STRIP_THRESHOLD
 
     # Resolve dataset directory
-    dataset_dir = _resolve_dataset_dir(dataset_dir or None)
+    dataset_dir = resolve_dataset_dir(dataset_dir or None)
 
-    _print_ok(f"dataset_dir: {dataset_dir}")
-    _print_ok(f"objects_subset: {objects_subset}")
-    _print_ok(f"file_validation_scope: {'all files' if sample_count == 0 else f'first {sample_count} files'}")
+    print_ok(f"dataset_dir: {dataset_dir}")
+    print_ok(f"objects_subset: {objects_subset}")
+    print_ok(f"file_validation_scope: {'all files' if sample_count == 0 else f'first {sample_count} files'}")
 
     from validate_anytop_dataset import (
-        _prepare_dataset_for_validation,
-        _read_required_artifacts,
-        _validate_metadata,
-        _validate_cond_file,
-        _validate_motion_files,
-        _validate_motion_metadata,
-        _validate_positions_error_file,
+        prepare_dataset_for_validation,
+        read_required_artifacts,
+        validate_metadata,
+        validate_cond_file,
+        validate_motion_files,
+        validate_motion_metadata,
+        validate_positions_error_file,
     )
 
     try:
-        _prepare_dataset_for_validation(
+        prepare_dataset_for_validation(
             dataset_dir,
             objects_subset,
             sample_count,
         )
 
-        motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path = _read_required_artifacts(dataset_dir)
-        cond = _validate_cond_file(cond_path, objects_subset)
+        motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path = read_required_artifacts(dataset_dir)
+        cond = validate_cond_file(cond_path, objects_subset)
         motion_files = sorted(motions_dir.glob("*.npy"))
-        _validate_metadata(metadata_path, motion_files, cond)
-        _validate_motion_metadata(dataset_dir, motion_files, cond)
-        _validate_motion_files(
+        validate_metadata(metadata_path, motion_files, cond)
+        validate_motion_metadata(dataset_dir, motion_files, cond)
+        validate_motion_files(
             motions_dir,
             bvhs_dir,
             cond,
@@ -389,12 +388,12 @@ def run_validation(
         )
 
         if skip_orientation_check:
-            _print_warn("skipping T-pose face-orientation validation by request")
+            print_warn("skipping T-pose face-orientation validation by request")
         else:
-            from validate_anytop_dataset import _validate_tpose_orientation
-            _validate_tpose_orientation(cond, orientation_threshold_deg)
+            from validate_anytop_dataset import validate_tpose_orientation
+            validate_tpose_orientation(cond, orientation_threshold_deg)
 
-        _validate_positions_error_file(positions_error_path)
+        validate_positions_error_file(positions_error_path)
 
         print(f"[OK] total motions: {len(motion_files)}")
         print("[PASS] dataset validation completed successfully")
@@ -585,3 +584,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

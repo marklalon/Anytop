@@ -90,12 +90,12 @@ def align_directory(
     )
     from motion_lib.Animation import positions_global
     from motion_lib.FBX import (
-        _collapse_root_skeleton,
-        _extract_armature_skeleton_data,
-        _load_fbx_scene,
+        collapse_root_skeleton,
+        extract_armature_skeleton_data,
+        load_fbx_scene,
     )
     from utils.exporter import AnimationExporter, animation_to_exporter_inputs
-    from utils.roundtrip_common import _build_skeleton
+    from utils.roundtrip_common import build_skeleton
 
     if not os.path.isdir(directory):
         raise NotADirectoryError(f"Input directory not found: {directory}")
@@ -188,10 +188,10 @@ def align_directory(
         # Rest rotations matching FBX.load's collapsed skeleton, so the exporter's
         # source rest geometry matches the FBX bind pose and the world-space
         # retarget onto this same rig stays near-identity (no spurious basis flip).
-        raw_names, raw_parents, raw_offsets, raw_rest_rotations = _extract_armature_skeleton_data(
-            _load_fbx_scene(fbx_path)
+        raw_names, raw_parents, raw_offsets, raw_rest_rotations = extract_armature_skeleton_data(
+            load_fbx_scene(fbx_path)
         )
-        collapsed_rest_rotations = _collapse_root_skeleton(
+        collapsed_rest_rotations = collapse_root_skeleton(
             list(raw_names),
             np.asarray(raw_parents, dtype=np.int32),
             np.asarray(raw_offsets, dtype=np.float64),
@@ -199,7 +199,7 @@ def align_directory(
             np.asarray(raw_offsets, dtype=np.float64)[None, ...],
         )[3][0]
 
-        skeleton = _build_skeleton(
+        skeleton = build_skeleton(
             names,
             aligned.offsets,
             aligned.parents,

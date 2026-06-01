@@ -14,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
-from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType, _extract_into_tensor  # noqa: E402
+from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType, extract_into_tensor  # noqa: E402
 from diffusion.respace import SpacedDiffusion, space_timesteps  # noqa: E402
 from model.anytop import AnyTop  # noqa: E402
 from model.joint_mask_utils import sample_subtree_joint_mask  # noqa: E402
@@ -151,7 +151,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         arr = np.array([0.25, 0.5, 0.75], dtype=np.float64)
         timesteps = torch.tensor([2, 0], dtype=torch.long)
 
-        result = _extract_into_tensor(arr, timesteps, (2, 3, 4))
+        result = extract_into_tensor(arr, timesteps, (2, 3, 4))
 
         self.assertEqual(result.dtype, torch.float32)
         self.assertEqual(tuple(result.shape), (2, 3, 4))
@@ -661,4 +661,3 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

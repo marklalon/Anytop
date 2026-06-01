@@ -107,7 +107,7 @@ def test_extract_armature_skeleton_data_promotes_null_root_children_and_keeps_la
         ]
     )
 
-    bone_names, parents, offsets, rest_rotations = FBX._extract_armature_skeleton_data(armature)
+    bone_names, parents, offsets, rest_rotations = FBX.extract_armature_skeleton_data(armature)
 
     assert bone_names == ["LargeRoot", "LargeMid", "LargeLeaf"]
     np.testing.assert_array_equal(parents, np.asarray([-1, 0, 1], dtype=np.int32))

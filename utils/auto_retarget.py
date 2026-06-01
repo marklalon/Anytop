@@ -62,7 +62,7 @@ def _infer_donor_consensus_effective_root_index(
 # ---------------------------------------------------------------------------
 
 
-def _build_tpose_aligned_target_animation(retarget_result: dict, target_tp):
+def build_tpose_aligned_target_animation(retarget_result: dict, target_tp):
     """Convert a retarget result into the Animation form expected by get_motion.
 
     ``retarget_world_space_np`` works in target rest-composed world space so it
@@ -171,7 +171,7 @@ def retarget_features_npy_to_target(
     """
     from utils.retarget import retarget_world_space_np
     from utils.exporter import animation_to_exporter_inputs
-    from utils.roundtrip_common import _build_skeleton
+    from utils.roundtrip_common import build_skeleton
     from data_loaders.truebones.truebones_utils.features import (
         get_common_features_from_T_pose,
         get_motion,
@@ -247,7 +247,7 @@ def retarget_features_npy_to_target(
         source_effective_root_index = int(source_effective_root_index_override)
 
     # 3. Build source skeleton
-    src_skeleton = _build_skeleton(
+    src_skeleton = build_skeleton(
         source_tp.names,
         src_offsets,
         src_parents,
@@ -279,7 +279,7 @@ def retarget_features_npy_to_target(
     # 6. Build the target Animation in the feature-space local basis. The source
     # NPY path retargets decoded feature rotations, so target_world_rotations are
     # already the world rotations of that T-pose-relative representation.
-    tgt_anim = _build_tpose_aligned_target_animation(retarget_result, target_tp)
+    tgt_anim = build_tpose_aligned_target_animation(retarget_result, target_tp)
 
     # 7. Re-encode target Animation → motion features
     squared_positions_error = {}
@@ -716,7 +716,7 @@ def auto_retarget_pipeline(
           'retargeted_npys'  -- list of absolute paths to written .npy files
           'donors_used'      -- list of (name, score, n_success) tuples
     """
-    from data_loaders.truebones.truebones_utils.dataset_pipeline import _build_tpose_cond
+    from data_loaders.truebones.truebones_utils.dataset_pipeline import build_tpose_cond
     from data_loaders.truebones.truebones_utils.features import get_common_features_from_T_pose
     from data_loaders.truebones.truebones_utils.motion_process import (
         recover_bvh_export_animation_from_motion_np,
@@ -747,7 +747,7 @@ def auto_retarget_pipeline(
         _scale,
         _sq_err,
         max_joints_tgt,
-    ) = _build_tpose_cond(target_object_type, target_tpose_path, face_joints_names)
+    ) = build_tpose_cond(target_object_type, target_tpose_path, face_joints_names)
     max_joints = max(max_joints, max_joints_tgt)
 
     n_joints = int(target_cond.get('original_joint_count') or len(target_parents))
@@ -923,4 +923,3 @@ def auto_retarget_pipeline(
         'retargeted_npys': retargeted_npys,
         'donors_used': donors_used,
     }
-

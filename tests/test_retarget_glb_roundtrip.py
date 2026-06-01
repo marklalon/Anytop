@@ -81,11 +81,11 @@ from utils.auto_retarget import retarget_animation_file_to_target, retarget_feat
 from utils.misc import normalize_bone_key as _normalize_bone_key
 from tools.restore_glb_from_npy import restore_glb
 from tools.compare_motions import (
-    _load_motion,
+    load_motion,
     _validate_compatible,
-    _detect_and_align,
-    _compare_motions,
-    _print_summary,
+    detect_and_align,
+    compare_motions,
+    print_summary,
 )
 
 
@@ -216,12 +216,12 @@ def _run_retarget_glb_roundtrip(
 
         # Phase E: compare restored GLB vs source.
         print("[Phase E] Comparing restored GLB against source motion...")
-        motion_a = _load_motion(source_motion)
-        motion_b = _load_motion(recovered_glb)
+        motion_a = load_motion(source_motion)
+        motion_b = load_motion(recovered_glb)
         _validate_compatible(motion_a, motion_b)
-        motion_b_aligned, alignment = _detect_and_align(motion_a, motion_b)
-        result = _compare_motions(motion_a, motion_b_aligned, alignment)
-        _print_summary(motion_a, motion_b, alignment, result)
+        motion_b_aligned, alignment = detect_and_align(motion_a, motion_b)
+        result = compare_motions(motion_a, motion_b_aligned, alignment)
+        print_summary(motion_a, motion_b, alignment, result)
 
         pos_result = result["position"]
         rot_result = result["rotation"]

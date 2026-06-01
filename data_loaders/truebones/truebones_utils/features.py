@@ -475,7 +475,7 @@ class TPoseFeatures:
     helper_metadata: dict[str, object]
 
 
-def _extract_motion_features_from_aligned_anims(
+def extract_motion_features_from_aligned_anims(
     new_anim,
     export_anim,
     foot_contact_vel_thresh,
@@ -649,7 +649,7 @@ def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joint
             find_translation_root(export_anim),
             object_type,
         )
-        features, max_joints, motion_anim, motion_export_anim, is_loop = _extract_motion_features_from_aligned_anims(
+        features, max_joints, motion_anim, motion_export_anim, is_loop = extract_motion_features_from_aligned_anims(
             new_anim,
             export_anim,
             foot_contact_vel_thresh,
@@ -1048,4 +1048,3 @@ def recover_bvh_export_animation_from_motion_np(
 
     anim, joint_names = reorder_animation_to_dfs(anim, joint_names)
     return anim, joint_names, has_animated_pos
-

@@ -13,10 +13,10 @@ sys.path.insert(0, str(REPO_ROOT))
 
 
 from data_loaders.tensors import truebones_batch_collate  # noqa: E402
-from data_loaders.truebones.data.dataset import _resample_motion_features, create_temporal_mask_for_window  # noqa: E402
+from data_loaders.truebones.data.dataset import resample_motion_features, create_temporal_mask_for_window  # noqa: E402
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType  # noqa: E402
 from model.anytop import AnyTop  # noqa: E402
-from model.motion_transformer import _circular_phase_embedding  # noqa: E402
+from model.motion_transformer import circular_phase_embedding  # noqa: E402
 from utils.model_util import create_gaussian_diffusion  # noqa: E402
 
 
@@ -106,13 +106,13 @@ class NativeLoopTests(unittest.TestCase):
         motion = np.zeros((4, 1, 1), dtype=np.float32)
         motion[:, 0, 0] = np.array([0.0, 1.0, 2.0, 0.0], dtype=np.float32)
 
-        resampled = _resample_motion_features(motion, 7)
+        resampled = resample_motion_features(motion, 7)
 
         self.assertAlmostEqual(float(resampled[0, 0, 0]), 0.0)
         self.assertAlmostEqual(float(resampled[-1, 0, 0]), 0.0)
 
     def test_circular_phase_gives_loop_endpoints_same_phase(self):
-        emb = _circular_phase_embedding(
+        emb = circular_phase_embedding(
             length=6,
             dim=8,
             batch_size=1,
@@ -125,7 +125,7 @@ class NativeLoopTests(unittest.TestCase):
 
     def test_circular_phase_can_repeat_multiple_cycles(self):
         atol = 3e-6
-        emb = _circular_phase_embedding(
+        emb = circular_phase_embedding(
             length=8,
             dim=8,
             batch_size=1,

@@ -77,8 +77,8 @@ _load_utils_module("utils.misc")
 
 from utils.misc import infer_object_type_from_filename
 from utils.npy_roundtrip_utils import recover_from_features
-from Anytop.utils.roundtrip_common import _load_fbx_skeleton_metadata
-from Anytop.motion_lib.FBX import _collapse_root_skeleton
+from Anytop.utils.roundtrip_common import load_fbx_skeleton_metadata
+from Anytop.motion_lib.FBX import collapse_root_skeleton
 
 # ── Default cond.npy path ─────────────────────────────────────────────────────
 
@@ -110,12 +110,12 @@ def _load_tpose_restore_metadata(
         tp_kwargs["max_joints"] = len(cond_parents) if cond_parents is not None else 0
 
     tp: TPoseFeatures = get_common_features_from_T_pose(tpose_mesh, object_type, **tp_kwargs)
-    raw_joint_names, raw_parents, raw_offsets, raw_rest_rotations = _load_fbx_skeleton_metadata(tpose_mesh)
+    raw_joint_names, raw_parents, raw_offsets, raw_rest_rotations = load_fbx_skeleton_metadata(tpose_mesh)
     raw_parents = np.asarray(raw_parents, dtype=np.int32)
     raw_offsets = np.asarray(raw_offsets, dtype=np.float32)
     raw_rest_rotations = np.asarray(raw_rest_rotations, dtype=np.float32)
     collapsed_joint_names, collapsed_parents, collapsed_offsets, collapsed_rest_rotations = (
-        _collapse_root_skeleton(
+        collapse_root_skeleton(
             raw_joint_names,
             raw_parents,
             raw_offsets,
@@ -153,7 +153,7 @@ def _warn_on_missing_mesh_joints(
     re-loading the FBX.
     """
     if mesh_bone_names is None:
-        mesh_bone_names, _mesh_parents, _mesh_offsets, _mesh_rest_rots = _load_fbx_skeleton_metadata(
+        mesh_bone_names, _mesh_parents, _mesh_offsets, _mesh_rest_rots = load_fbx_skeleton_metadata(
             tpose_mesh
         )
 
@@ -802,7 +802,7 @@ def restore_glb(
         The absolute path of the written GLB file.
     """
     from Anytop.utils.exporter import AnimationExporter, animation_to_exporter_inputs
-    from Anytop.utils.roundtrip_common import _build_skeleton
+    from Anytop.utils.roundtrip_common import build_skeleton
     from data_loaders.truebones.truebones_utils.motion_process import (
         find_translation_root,
         recover_processed_animation_from_feature_animation,
@@ -976,7 +976,7 @@ def restore_glb(
             )
 
     # ── Build skeleton for exporter ─────────────────────────────────────────
-    skeleton = _build_skeleton(
+    skeleton = build_skeleton(
         export_joint_names,
         export_offsets,
         export_parents,
@@ -1163,4 +1163,3 @@ def _run_bone_length_check(glb_path: str, cond_npy: str, object_type: str | None
 
 if __name__ == "__main__":
     main()
-

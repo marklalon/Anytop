@@ -41,7 +41,7 @@ from .features import (
     get_common_features_from_rest_pose,
     get_motion,
     infer_translation_root_index_from_features,
-    _extract_motion_features_from_aligned_anims,
+    extract_motion_features_from_aligned_anims,
 )
 
 
@@ -376,7 +376,7 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
     return object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, squared_positions_error, max_joints
 
 
-def _build_tpose_cond(*args, **kwargs):
+def build_tpose_cond(*args, **kwargs):
     """Backward-compatible alias; cond is now built from the file bind/rest pose."""
     return _build_rest_pose_cond(*args, **kwargs)
 
@@ -504,7 +504,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
                 # with the resampled motion.
                 result['new_anim'] = _resample_animation(result['new_anim'], resample_min_length)
                 result['export_anim'] = _resample_animation(result['export_anim'], resample_min_length)
-                motion, _, _, _, is_loop = _extract_motion_features_from_aligned_anims(
+                motion, _, _, _, is_loop = extract_motion_features_from_aligned_anims(
                     result['new_anim'],
                     result['export_anim'],
                     FOOT_CONTACT_VEL_THRESH,
@@ -1073,6 +1073,3 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
         frames_counter,
         squared_positions_error,
     )
-
-
-

@@ -296,7 +296,7 @@ def _sin_time_embedding(
     return emb
 
 
-def _circular_phase_embedding(
+def circular_phase_embedding(
     length: int,
     dim: int,
     batch_size: int,
@@ -359,7 +359,7 @@ def _loop_aware_time_embedding(
     if not bool(loop_phase_mask.any()):
         return absolute
     absolute = absolute.expand(-1, batch_size, -1)
-    circular = _circular_phase_embedding(length, dim, batch_size, device, dtype, lengths)
+    circular = circular_phase_embedding(length, dim, batch_size, device, dtype, lengths)
     return torch.where(loop_phase_mask.view(1, batch_size, 1), circular, absolute)
 
 
@@ -975,7 +975,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     f"{loop_phase_mask_batch.numel()} for batch {B}"
                 )
             if bool(loop_phase_mask_batch.any()):
-                loop_phase_embedding = _circular_phase_embedding(
+                loop_phase_embedding = circular_phase_embedding(
                     T,
                     self.d_model,
                     B,
@@ -1082,7 +1082,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             if loop_phase_mask.numel() == 1 and bs != 1:
                 loop_phase_mask = loop_phase_mask.expand(bs)
             if bool(loop_phase_mask.any()):
-                phase = _circular_phase_embedding(frames, feats, bs, x.device, x.dtype, lengths)
+                phase = circular_phase_embedding(frames, feats, bs, x.device, x.dtype, lengths)
                 phase = phase * loop_phase_mask.view(1, bs, 1)
                 x = x + self.temporal_phase_scale * phase.unsqueeze(2)
         x = x.view(frames, bs * njoints, feats)

@@ -308,7 +308,7 @@ def _llm_joint_mapping(
 # ---------------------------------------------------------------------------
 
 
-def _generate_coordinate_candidates_np():
+def generate_coordinate_candidates_np():
     """Generate candidate 3x3 rotation/flip matrices for auto-detection."""
     I = np.eye(3, dtype=np.float64)
 
@@ -407,7 +407,7 @@ def _build_target_bridge_source_indices(
     return bridge_src_for_tgt
 
 
-def _batch_forward_kinematics_np(
+def batch_forward_kinematics_np(
     local_rotations: np.ndarray,
     local_positions: np.ndarray,
     parents: np.ndarray,
@@ -1299,7 +1299,7 @@ def retarget_world_space_np(
     t_align = np.zeros(3, dtype=np.float64)
     pos_src_rest_st = pos_src_rest * scale
 
-    candidates = _generate_coordinate_candidates_np() if coordinate_search else [
+    candidates = generate_coordinate_candidates_np() if coordinate_search else [
         ("identity", np.eye(3, dtype=np.float64))
     ]
     best_R = np.eye(3, dtype=np.float64)

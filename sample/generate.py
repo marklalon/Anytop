@@ -25,7 +25,7 @@ from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import (
     create_temporal_mask_for_window,
     ensure_joint_name_embeddings,
-    _resample_motion_features,
+    resample_motion_features,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_process import (
@@ -849,7 +849,7 @@ def _prepare_img2img_reference_bundle(
         ref_raw = ref_raw[:source_frames]
     reference_source_frame_count = int(ref_raw.shape[0])
     if ref_raw.shape[0] != output_frame_count:
-        ref_raw = _resample_motion_features(ref_raw, output_frame_count)
+        ref_raw = resample_motion_features(ref_raw, output_frame_count)
 
     obj_mean, obj_std = _get_reference_normalization_stats(
         target_cond,
@@ -1643,7 +1643,7 @@ def main(args=None, cond_dict=None, runtime=None):
             motion_np = motion.cpu().permute(2, 0, 1).numpy() * std + mean
 
             if target_output_frames != output_frame_count:
-                motion_np = _resample_motion_features(
+                motion_np = resample_motion_features(
                     motion_np,
                     target_output_frames,
                 )
