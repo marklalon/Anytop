@@ -399,11 +399,6 @@ def _build_rest_pose_only_cond(object_type, rest_pose_path, face_joints):
     return object_cond, max_joints
 
 
-def _build_tpose_only_cond(*args, **kwargs):
-    """Backward-compatible alias; cond is now built from the file bind/rest pose."""
-    return _build_rest_pose_only_cond(*args, **kwargs)
-
-
 def _resample_animation(anim, target_len):
     """Resample Animation to target_len frames; uses slerp for rotations, linear for positions."""
     from motion_lib.Animation import Animation
