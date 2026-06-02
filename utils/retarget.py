@@ -1705,19 +1705,25 @@ def retarget_world_space_np(
             current_world_rot = parent_world_rot
             parent_idx = int(tgt_parents[current_child_idx])
 
-    # Re-seat pure-unmapped side-branch subtrees on the parent's FINAL world
-    # rotation. Pass G1 places unmapped joints via the rotation-only ``transport``
-    # frame, but Pass G2 then changes a mapped ancestor's world rotation (target
-    # rest-roll swing + relative twist) so that it no longer equals ``transport``.
-    # For a rigid side branch hanging off such a joint — e.g. a horse's
-    # reins/halter on the head, or the leaf-rotation helper on a toe nub — that
-    # stale-frame mismatch rolls the branch out of its rest plane (the reported
-    # "+X" offset). A subtree with no mapped/bridge joint anywhere inside it
-    # should simply sit at rest relative to its parent's final orientation, so
-    # recompute it from ``target_wrot`` after all anchor rotations are finalized.
-    # Joints feeding a mapped descendant (bridge gaps, or wrappers above a
-    # mapped-from-root joint handled just above) keep ``subtree_has_anchor`` set
-    # and are intentionally left untouched.
+    # Re-seat pure-unmapped side-branch subtrees on the source-aligned
+    # ``transport`` frame, NOT the swing+twist ``target_wrot``. Pass G2 rolls a
+    # mapped joint to the target's rest-roll + relative source twist to fix the
+    # *mesh* twist of the mapped chain. That roll is invisible on the in-line
+    # mapped bones (their world positions come from direction transfer, which is
+    # independent of axial roll), but a side branch hanging perpendicular off the
+    # joint — e.g. a dragon's wings on the spine, a horse's reins/halter on the
+    # head, the leaf-rotation helper on a toe nub — rigidly inherits it and gets
+    # rotated wholesale out of its rest plane (the reported scrambled/​"+X" wing
+    # span). Such a branch carries no mapped/bridge descendant, so it has no body
+    # constraint and should hang exactly as it did before Pass G2: rigid at rest
+    # relative to the parent's source-derived ``transport`` orientation. Pass G1
+    # already computed that rigid frame and the matching positions; reassert both
+    # here so the G2 else-branch / mesh-twist roll does not leak into the branch.
+    # (Position and rotation are both taken from ``transport`` so they stay
+    # mutually consistent — the inconsistency between the two was the original
+    # "+X offset".) Joints feeding a mapped descendant (bridge gaps, or wrappers
+    # above a mapped-from-root joint handled just above) keep ``subtree_has_anchor``
+    # set and are intentionally left untouched.
     subtree_has_anchor = (src_for_tgt >= 0) | (bridge_src_for_tgt >= 0)
     for j in range(J_tgt - 1, 0, -1):
         if subtree_has_anchor[j]:
@@ -1726,12 +1732,9 @@ def retarget_world_space_np(
         p = int(tgt_parents[j])
         if p < 0 or subtree_has_anchor[j]:
             continue
-        target_wrot[:, j] = quat_multiply_wxyz_np(
-            target_wrot[:, p],
-            np.repeat(tgt_rest_rotations[j:j + 1], F_q, axis=0),
-        )
+        target_wrot[:, j] = transport[:, j]
         target_wpos[:, j] = target_wpos[:, p] + quat_rotate_wxyz_np(
-            target_wrot[:, p],
+            transport[:, p],
             np.repeat(tgt_rest_offsets[j:j + 1], F_q, axis=0),
         )
 
