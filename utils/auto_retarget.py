@@ -189,7 +189,7 @@ def build_tpose_aligned_target_animation(retarget_result: dict, target_tp):
     )
 
 def bake_foot_floor_offset(anim, foot_indices, up_axis: int = 1):
-    """Lower the whole skeleton so its lowest foot-contact joint rests on y=0.
+    """Lower the whole skeleton so foot-contact joints rest on y=0.
 
     Applied to the *reconstructed* target animation (after
     :func:`build_tpose_aligned_target_animation`), not to the retarget's
@@ -199,8 +199,9 @@ def bake_foot_floor_offset(anim, foot_indices, up_axis: int = 1):
     fitted. Measuring the floor here — on the geometry that is actually encoded
     and exported — is the only place the contact really lands at y=0.
 
-    A single constant offset (the minimum contact height over the WHOLE clip)
-    is subtracted from the hierarchy root's local translation. The root has no
+    For each foot-contact joint, compute its minimum height across the entire
+    clip, then take the median of those per-joint minimums. A single constant
+    offset (that median) is subtracted from the hierarchy root's local translation. The root has no
     parent, so this is an exact world-space vertical shift of every joint; the
     encoded ``root_height`` feature carries it identically regardless of which
     ancestor it is baked into. Skeletons with no detected foot contact (snakes,
@@ -225,15 +226,19 @@ def bake_foot_floor_offset(anim, foot_indices, up_axis: int = 1):
         return anim
 
     global_positions = positions_global(anim)
-    min_foot_height = float(np.min(global_positions[:, foot_idx, up_axis]))
-    if abs(min_foot_height) <= 1e-9:
+    # For each foot contact joint, compute its minimum height across all frames,
+    # then use the median of those per-joint minimums for floor alignment.
+    per_joint_min = np.min(global_positions[:, foot_idx, up_axis], axis=0)
+    floor_height = float(np.median(per_joint_min))
+    # Ignore sub-centimeter drift from FK reconstruction to preserve self-retarget accuracy. 
+    if abs(floor_height) <= 1e-2:
         return anim
 
     parents = np.asarray(anim.parents)
     root_candidates = np.flatnonzero(parents < 0)
     if root_candidates.size == 0:
         return anim
-    anim.positions[:, int(root_candidates[0]), up_axis] -= min_foot_height
+    anim.positions[:, int(root_candidates[0]), up_axis] -= floor_height
     return anim
 
 

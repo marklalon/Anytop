@@ -1632,7 +1632,7 @@ def _floating_anim(foot_height: float):
     return Animation(rotations, positions, orients, offsets, parents)
 
 
-def test_bake_foot_floor_offset_drops_lowest_contact_to_zero() -> None:
+def test_bake_foot_floor_offset_single_foot_still_aligns_to_zero() -> None:
     from motion_lib.Animation import positions_global
     from Anytop.utils.auto_retarget import bake_foot_floor_offset
 
@@ -1666,3 +1666,46 @@ def test_bake_foot_floor_offset_lifts_sunken_skeleton() -> None:
     anim = _floating_anim(foot_height=-0.4)
     bake_foot_floor_offset(anim, foot_indices=[2])
     assert positions_global(anim)[:, 2, 1].min() == pytest.approx(0.0, abs=1e-6)
+
+
+def test_bake_foot_floor_offset_uses_median_of_per_joint_mins() -> None:
+    # Two feet at different heights: the median of per-joint minimums aligns.
+    from motion_lib.Animation import Animation, positions_global
+    from Anytop.utils.auto_retarget import bake_foot_floor_offset
+
+    # 5-joint skeleton: Root(0) -> LeftMid(1) -> LeftFoot(2), Root -> RightMid(3) -> RightFoot(4)
+    parents = np.array([-1, 0, 1, 0, 3], dtype=np.int32)
+    # LeftMid at (0,-1,0), LeftFoot at (0,-1,0) relative to LeftMid -> world y = root_y - 2
+    # RightMid at (0,-1.5,0), RightFoot at (0,-0.5,0) relative to RightMid -> world y = root_y - 2
+    offsets = np.zeros((5, 3), dtype=np.float64)
+    offsets[1, 1] = -1.0  # LeftMid
+    offsets[2, 1] = -1.0  # LeftFoot
+    offsets[3, 1] = -1.0  # RightMid
+    offsets[4, 1] = -1.0  # RightFoot
+
+    frames = 4
+    positions = np.repeat(offsets[None], frames, axis=0)
+    # root_y = 3.0 => both feet at world y = 3 - 1 - 1 = 1
+    # We'll vary: shift LeftFoot extra down by 0.5 on all frames so its min = 0.5
+    positions[:, 0, 1] = 3.0  # root local y
+    # LeftFoot world y = 3 - 1 - 1 = 1, RightFoot world y = 3 - 1 - 1 = 1
+    # To make them different, add local offset to LeftFoot
+    positions[:, 2, 1] = -1.5  # LeftFoot local y = -1.5, world = 3 - 1 - 1.5 = 0.5
+    # RightFoot stays at -1.0, world = 3 - 1 - 1 = 1.0
+
+    rotations = Quaternions(np.tile(_identity_quat(5)[None], (frames, 1, 1)))
+    orients = Quaternions(_identity_quat(5))
+    anim = Animation(rotations, positions, orients, offsets, parents)
+
+    gp = positions_global(anim)
+    left_foot_min = gp[:, 2, 1].min()   # 0.5
+    right_foot_min = gp[:, 4, 1].min()  # 1.0
+    expected_median = float(np.median([left_foot_min, right_foot_min]))  # 0.75
+
+    bake_foot_floor_offset(anim, foot_indices=[2, 4])
+    gp_after = positions_global(anim)
+
+    # Left foot min should be at 0.5 - 0.75 = -0.25
+    assert gp_after[:, 2, 1].min() == pytest.approx(-0.25, abs=1e-6)
+    # Right foot min should be at 1.0 - 0.75 = 0.25
+    assert gp_after[:, 4, 1].min() == pytest.approx(0.25, abs=1e-6)

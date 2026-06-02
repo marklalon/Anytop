@@ -107,16 +107,8 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
         )
         return []
 
-    def fake_infer_translation_root_index_from_features(motion, parents, offsets):
-        return 1 if int(np.asarray(motion).shape[1]) == 2 else 0
-
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
-    monkeypatch.setattr(
-        regenerate_dataset_artifacts_module,
-        "infer_translation_root_index_from_features",
-        fake_infer_translation_root_index_from_features,
-    )
 
     dataset_dir_path = regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
 
@@ -205,17 +197,8 @@ def test_regenerate_dataset_artifacts_unifies_translation_root_index_per_object(
     def fake_write_collision_report(cond, save_dir):
         return []
 
-    def fake_infer_translation_root_index_from_features(motion, parents, offsets):
-        frame_count = int(np.asarray(motion).shape[0])
-        return 2 if frame_count == 3 else 1
-
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
-    monkeypatch.setattr(
-        regenerate_dataset_artifacts_module,
-        "infer_translation_root_index_from_features",
-        fake_infer_translation_root_index_from_features,
-    )
 
     regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
 
@@ -249,6 +232,7 @@ def test_regenerate_dataset_artifacts_rebuilds_translation_root_when_metadata_mi
         {
             "Cat_Run_001.npy": {
                 "object_type": "Cat",
+                "translation_root_index": 2,
                 "motion_source": "anim_dir",
             },
         },
@@ -264,16 +248,8 @@ def test_regenerate_dataset_artifacts_rebuilds_translation_root_when_metadata_mi
     def fake_write_collision_report(cond, save_dir):
         return []
 
-    def fake_infer_translation_root_index_from_features(motion, parents, offsets):
-        return 2
-
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
-    monkeypatch.setattr(
-        regenerate_dataset_artifacts_module,
-        "infer_translation_root_index_from_features",
-        fake_infer_translation_root_index_from_features,
-    )
 
     regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
 
@@ -305,7 +281,7 @@ def test_regenerate_dataset_artifacts_uses_majority_root_not_minimum(monkeypatch
     )
     write_motion_metadata(
         dataset_dir,
-        {f"Bear_Run_{idx:03d}.npy": {"object_type": "Bear"} for idx in range(4)},
+        {f"Bear_Run_{idx:03d}.npy": {"object_type": "Bear", "translation_root_index": 1} for idx in range(4)},
         total_clips=4,
     )
 
@@ -318,17 +294,8 @@ def test_regenerate_dataset_artifacts_uses_majority_root_not_minimum(monkeypatch
     def fake_write_collision_report(cond, save_dir):
         return []
 
-    def fake_infer_translation_root_index_from_features(motion, parents, offsets):
-        frame_count = int(np.asarray(motion).shape[0])
-        return 0 if frame_count == 3 else 1
-
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
-    monkeypatch.setattr(
-        regenerate_dataset_artifacts_module,
-        "infer_translation_root_index_from_features",
-        fake_infer_translation_root_index_from_features,
-    )
 
     regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
 

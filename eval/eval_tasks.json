@@ -22,7 +22,7 @@
 
     { "category": "Outpaint", "args": ["--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Buffalo_RunLoop_115.npy", "--motion_frames", "120", "--skip_timesteps", "90"] },
 
-    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--reference_motion", "outputs/new_skeleton/motions/dragon_Walk_33.npy", "--inpaint_joints", "RightThigh"] },
+    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--reference_motion", "outputs/new_skeleton/motions/dragon_Walk_1.npy", "--inpaint_joints", "RightThigh"] },
     { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--reference_motion", "$LAST_OUTPUT", "--skip_timesteps", "90"] }
   ]
 }
