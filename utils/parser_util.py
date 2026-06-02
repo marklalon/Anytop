@@ -88,7 +88,7 @@ def add_model_options(parser):
                        help="Number of layers.")
     group.add_argument("--latent_dim", default=128, type=int,
                        help="Transformer/GRU width.")
-    group.add_argument("--lambda_geo", default=0.0, type=float, help="Foot contact loss.")
+    group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
     group.add_argument("--lambda_vel", default=0.0, type=float,
                        help="Weight for velocity-position consistency loss (0.0=off)."
                             " Penalizes |pos[t+1]-pos[t] - vel[t]|^2 on denormalized outputs."

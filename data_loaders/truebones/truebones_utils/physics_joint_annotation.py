@@ -950,7 +950,7 @@ def infer_contact_joints(joint_names, parents, rest_positions):
     if contact_joints:
         return contact_joints, 'names'
 
-    return _infer_end_effector_joints(parents, joint_names=joint_names, rest_positions=rest_positions), 'end_effectors'
+    return [], 'none'
 
 
 def _joint_depths(parents):

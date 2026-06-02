@@ -26,6 +26,7 @@ import argparse
 import copy
 import shutil
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -47,8 +48,13 @@ from truebones_utils.motion_process import (  # noqa: E402
     write_joint_name_collision_report,
     get_mean_std,
 )
-from truebones_utils.features import infer_translation_root_index_from_features  # noqa: E402
 from truebones_utils.param_utils import MOTION_DIR, get_dataset_dir  # noqa: E402
+from truebones_utils.physics_joint_annotation import (  # noqa: E402
+    build_semantic_metadata,
+)
+from truebones_utils.animation_utils import (  # noqa: E402
+    extend_semantic_metadata_with_leaf_helpers,
+)
 
 
 from Anytop.utils.misc import normalize_identifier as _normalize_identifier
@@ -141,39 +147,80 @@ def _recompute_object_stats(
         print(f"[OK] recomputed mean/std for {object_type} over {len(paths)} clip(s)")
 
 
+def _recompute_contact_joints(rebuilt_cond: dict[str, dict]) -> None:
+    """Re-infer contact joints for every object using current skeleton info.
+
+    Contact joints depend only on skeleton topology (names, parents, offsets),
+    so they can be safely recomputed from cond.npy without re-loading source FBX."""
+
+    for object_type, object_cond in sorted(rebuilt_cond.items()):
+        parents = np.asarray(object_cond["parents"], dtype=np.int64)
+        offsets = np.asarray(object_cond["offsets"], dtype=np.float64)
+        joint_names = list(object_cond["joints_names"])
+        original_joint_count = int(object_cond.get("original_joint_count", len(parents)))
+
+        base_names = joint_names[:original_joint_count]
+        base_parents = parents[:original_joint_count]
+        base_offsets = offsets[:original_joint_count]
+
+        base_semantic_metadata = build_semantic_metadata(
+            base_names, base_parents, base_offsets
+        )
+        semantic_metadata = extend_semantic_metadata_with_leaf_helpers(
+            base_semantic_metadata,
+            joint_names,
+            {
+                "helper_joint_indices": list(object_cond.get("helper_joint_indices") or []),
+                "helper_source_leaf_indices": list(object_cond.get("helper_source_leaf_indices") or []),
+            },
+        )
+
+        old_contact = list(object_cond.get("contact_joints", []))
+        new_contact = semantic_metadata["contact_joints"]
+        old_source = object_cond.get("contact_joint_source", "")
+        new_source = semantic_metadata["contact_joint_source"]
+
+        object_cond["contact_joints"] = new_contact
+        object_cond["contact_joint_names"] = semantic_metadata["contact_joint_names"]
+        object_cond["contact_joint_source"] = new_source
+        object_cond["end_effector_joints"] = semantic_metadata["end_effector_joints"]
+        object_cond["end_effector_names"] = semantic_metadata["end_effector_names"]
+
+        if old_contact != new_contact or old_source != new_source:
+            print(
+                f"[OK] {object_type}: contact_joints {old_contact} -> {new_contact} "
+                f"(source: {old_source} -> {new_source})"
+            )
+
+
 def _normalize_object_translation_roots(
     rebuilt_cond: dict[str, dict],
     motion_files: list[Path],
+    motion_metadata: dict[str, dict],
 ) -> dict[str, int]:
-    """Infer per-motion translation roots, then collapse each object to one root.
+    """Collapse per-motion translation_root_index to one canonical root per object.
 
-    Sidecar regeneration needs object-level cond.npy and per-motion metadata to
-    agree. When clips for the same object disagree, use the most common inferred
-    index as the canonical effective translation root for that object. Ties fall
-    back to the smaller index for determinism.
+    Each motion's metadata already contains a `translation_root_index` from
+    preprocessing.  We just aggregate the existing values per object and pick
+    the most common one.  Ties fall back to the smaller index for determinism.
     """
+    motion_names = {p.name for p in motion_files}
     object_root_counts: dict[str, Counter[int]] = {}
-    for motion_path in motion_files:
-        object_type = str(
-            infer_motion_labels_from_motion_name(
-                motion_path.name,
-                object_types=tuple(rebuilt_cond.keys()),
-            ).get("object_type")
-        )
-        parents = np.asarray(rebuilt_cond[object_type]["parents"], dtype=np.int64)
-        offsets = np.asarray(rebuilt_cond[object_type]["offsets"], dtype=np.float64)
-        try:
-            motion = np.load(motion_path, mmap_mode="r")
-            inferred_root_index = int(
-                infer_translation_root_index_from_features(motion, parents, offsets)
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                f"Failed to infer translation_root_index from motion '{motion_path.name}' "
-                f"for object '{object_type}'"
-            ) from exc
 
-        object_root_counts.setdefault(object_type, Counter())[inferred_root_index] += 1
+    for motion_name, entry in motion_metadata.items():
+        if motion_name not in motion_names:
+            continue
+        object_type = str(entry.get("object_type", ""))
+        if object_type not in rebuilt_cond:
+            continue
+        if "translation_root_index" not in entry:
+            raise RuntimeError(
+                f"Motion metadata for '{motion_name}' (object '{object_type}') is missing "
+                f"'translation_root_index'. The metadata may be stale or from an older "
+                f"preprocessing version. Re-run preprocess_and_validate.py to regenerate it."
+            )
+        root_index = int(entry["translation_root_index"])
+        object_root_counts.setdefault(object_type, Counter())[root_index] += 1
 
     canonical_roots: dict[str, int] = {}
     for object_type, root_counts in sorted(object_root_counts.items()):
@@ -243,10 +290,20 @@ def regenerate_dataset_artifacts(
         object_type: copy.deepcopy(object_cond)
         for object_type, object_cond in active_cond.items()
     }
+
+    t0 = time.time()
+    _recompute_contact_joints(rebuilt_cond)
+    print(f"[OK] contact joints recomputed in {time.time() - t0:.1f}s")
+
+    t0 = time.time()
     canonical_translation_roots = _normalize_object_translation_roots(
         rebuilt_cond,
         motion_files,
+        existing_motion_metadata,
     )
+    print(f"[OK] translation roots normalized in {time.time() - t0:.1f}s")
+
+    t0 = time.time()
 
     inspection_dir = dataset_dir_path / "joint_name_inspection"
     if inspection_dir.exists():
@@ -262,6 +319,7 @@ def regenerate_dataset_artifacts(
         write_collision_report=False,
         force_reencode=force_reencode,
     )
+    print(f"[OK] T5 embeddings attached in {time.time() - t0:.1f}s")
     write_joint_name_collision_report(rebuilt_cond, str(dataset_dir_path))
     if recompute_stats:
         _recompute_object_stats(rebuilt_cond, motion_files)
