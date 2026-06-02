@@ -1507,6 +1507,19 @@ def retarget_world_space_np(
         if int(tgt_parents[j]) < 0:
             continue
 
+        # The locomotion joint (an effective root sitting under static wrapper
+        # joints, e.g. a Bip01 hierarchy's Bip01 below Hips→Ctrl) must keep its
+        # full inverse-FK local translation: that translation IS the character's
+        # global locomotion. The source carries locomotion in its root-translation
+        # channel, not a per-joint pose-location channel, so the suppression test
+        # below (which only inspects the source pose-location channel) sees ~0 and
+        # would wrongly zero it — freezing the whole character at its rest offset
+        # (sinking it below the floor). When the effective root is itself the
+        # hierarchy root the ``tgt_parents[j] < 0`` guard already skips it, so this
+        # only matters for the wrapped case and is otherwise a no-op.
+        if j == locomotion_tgt_idx:
+            continue
+
         controller_src_idx = int(src_for_tgt[j])
         if controller_src_idx < 0:
             controller_src_idx = int(bridge_src_for_tgt[j])
