@@ -98,6 +98,10 @@ def add_model_options(parser):
     group.add_argument("--lambda_loop_root_xz", default=0.0, type=float,
                        help="Weight for loop-only translation-root XZ closure loss."
                            " Penalizes net X/Z velocity drift over the visible loop while preserving in-loop root motion.")
+    group.add_argument("--lambda_energy_consistency", default=0.0, type=float,
+                       help="Weight for the global-energy consistency loss (0.0=off; requires --global_energy_cond)."
+                           " Penalizes the z-scored gap between the conditioned [energy_mean, energy_std] and the"
+                           " energy of the model's denoised output, giving the FiLM weights a direct gradient.")
     group.add_argument("--loop_cond_prob", default=0.0, type=float,
                        help="Probability that a loop training clip stays loop-conditioned "
                             "(periodic resampling, circular phase, and loop-condition embedding)."
@@ -122,6 +126,10 @@ def add_model_options(parser):
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
     group.add_argument("--global_energy_cond", action='store_true',
                        help="Enable an always-on clip-level global energy condition derived from the training motion's global energy mean/std.")
+    group.add_argument("--global_energy_cfg_drop_prob", default=0.1, type=float,
+                       help="CFG drop probability for global energy during training. Randomly replaces "
+                           "the energy condition with the running mean, forcing the model to learn "
+                           "to actually respond to it. Default 0.1 (10%% of samples dropped).")
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')

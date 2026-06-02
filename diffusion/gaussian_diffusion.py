@@ -167,6 +167,7 @@ class GaussianDiffusion:
         lambda_vel=0.,
         lambda_loop_wrap=0.,
         lambda_loop_root_xz=0.,
+        lambda_energy_consistency=0.0,
         temporal_span_seam_loss_weight=0.0,
         temporal_span_seam_width=0,
     ):
@@ -178,12 +179,15 @@ class GaussianDiffusion:
         self.lambda_vel = lambda_vel
         self.lambda_loop_wrap = float(lambda_loop_wrap)
         self.lambda_loop_root_xz = float(lambda_loop_root_xz)
+        self.lambda_energy_consistency = float(lambda_energy_consistency)
         self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
         self.temporal_span_seam_width = int(temporal_span_seam_width)
         if self.lambda_loop_wrap < 0.0:
             raise ValueError(f"lambda_loop_wrap must be >= 0, got {self.lambda_loop_wrap}")
         if self.lambda_loop_root_xz < 0.0:
             raise ValueError(f"lambda_loop_root_xz must be >= 0, got {self.lambda_loop_root_xz}")
+        if self.lambda_energy_consistency < 0.0:
+            raise ValueError(f"lambda_energy_consistency must be >= 0, got {self.lambda_energy_consistency}")
         if self.temporal_span_seam_loss_weight < 0.0:
             raise ValueError(
                 "temporal_span_seam_loss_weight must be >= 0, got "
@@ -1554,11 +1558,12 @@ class GaussianDiffusion:
         if n_joints is None:
             raise ValueError("global energy conditioning requires y['n_joints'] metadata")
 
+        batch_size = int(x_start.shape[0])
+
         # Variable-length dataset samples precompute the exact physical-space
         # energy label before window resampling. Do not overwrite it with an
         # x_start-derived value from the stretched training window.
         if y.get('global_energy_cond') is not None:
-            batch_size = int(x_start.shape[0])
             global_energy_cond = th.as_tensor(
                 y['global_energy_cond'],
                 device=x_start.device,
@@ -1572,14 +1577,31 @@ class GaussianDiffusion:
                 raise ValueError(
                     f"global_energy_cond has batch dimension {global_energy_cond.shape[0]} but expected {batch_size}."
                 )
-            y['global_energy_cond'] = global_energy_cond
-            return
+        else:
+            global_energy_cond = GlobalEnergyExtractor.compute_global_energy_condition(
+                x_start.detach(),
+                n_joints=n_joints,
+                playspeed_cond=y.get('playspeed_cond'),
+            )
 
-        y['global_energy_cond'] = GlobalEnergyExtractor.compute_global_energy_condition(
-            x_start.detach(),
-            n_joints=n_joints,
-            playspeed_cond=y.get('playspeed_cond'),
-        )
+        # CFG: randomly drop the energy condition to the running mean so the
+        # model learns to actually respond to it rather than ignoring it
+        # (without a drop path, zero-initialized FiLM has no incentive to move
+        # away from identity). Record the mask explicitly: the running mean is
+        # mutated by the forward pass, so the consistency loss cannot reliably
+        # reverse-engineer which samples were dropped from float proximity.
+        drop_mask = th.zeros(batch_size, dtype=th.bool, device=x_start.device)
+        drop_prob = getattr(model_for_hooks, 'global_energy_cfg_drop_prob', 0.1)
+        if drop_prob > 0.0 and model_for_hooks.training:
+            drop_mask = th.rand(batch_size, device=x_start.device) < drop_prob
+            if drop_mask.any():
+                running_mean = model_for_hooks.global_energy_running_mean.to(
+                    device=x_start.device, dtype=x_start.dtype
+                )
+                global_energy_cond = global_energy_cond.clone()
+                global_energy_cond[drop_mask] = running_mean
+        y['global_energy_cond'] = global_energy_cond
+        y['global_energy_drop_mask'] = drop_mask
 
     def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
         """
@@ -1734,6 +1756,54 @@ class GaussianDiffusion:
                         actual_joints,
                     )
                     terms["loss"] = terms["loss"] + self.lambda_loop_root_xz * terms["loop_root_xz_loss"]
+
+                # Energy consistency loss: penalize the difference between the
+                # conditioned global energy and the energy of the model's
+                # denoised output. This gives a direct gradient signal to the
+                # FiLM weights, encouraging them to actually modulate features
+                # to match the target energy level.
+                unwrapped_model = self._unwrap_model_for_training_hooks(model)
+                if self.lambda_energy_consistency > 0.0 and getattr(unwrapped_model, 'global_energy_cond', False):
+                    y_kwargs = model_kwargs.get('y', {}) if isinstance(model_kwargs, dict) else {}
+                    ge_cond = y_kwargs.get('global_energy_cond')
+                    if ge_cond is not None:
+                        # model_output_denorm is already (B, J, F, T). Measure the
+                        # prediction's energy on the same cadence as the label by
+                        # passing playspeed_cond so a stretched training window is
+                        # resampled back to its physical frame rate first.
+                        output_energy = GlobalEnergyExtractor.compute_global_energy_condition(
+                            model_output_denorm,
+                            n_joints=actual_joints,
+                            playspeed_cond=y_kwargs.get('playspeed_cond'),
+                        )
+                        # Exclude CFG-dropped samples: their target was overwritten
+                        # with the running mean and carries no real energy label.
+                        drop_mask = y_kwargs.get('global_energy_drop_mask')
+                        if drop_mask is not None:
+                            active_mask = ~drop_mask.to(device=ge_cond.device)
+                        else:
+                            active_mask = th.ones(
+                                ge_cond.shape[0], dtype=th.bool, device=ge_cond.device
+                            )
+                        if active_mask.any():
+                            running_mean = unwrapped_model.global_energy_running_mean.to(
+                                device=ge_cond.device, dtype=ge_cond.dtype
+                            )
+                            running_std = th.sqrt(
+                                unwrapped_model.global_energy_running_var.to(
+                                    device=ge_cond.device, dtype=ge_cond.dtype
+                                ).clamp_min(1e-6)
+                            )
+                            # Normalize both to z-score space for fair comparison.
+                            active_ge_norm = (ge_cond[active_mask] - running_mean) / running_std
+                            active_out_norm = (output_energy[active_mask] - running_mean) / running_std
+                            terms["energy_consistency_loss"] = th.nn.functional.mse_loss(
+                                active_out_norm, active_ge_norm
+                            )
+                            terms["loss"] = (
+                                terms["loss"]
+                                + self.lambda_energy_consistency * terms["energy_consistency_loss"]
+                            )
 
         else:
             raise NotImplementedError(self.loss_type)

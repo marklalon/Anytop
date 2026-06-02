@@ -58,6 +58,11 @@ class AnyTop(nn.Module):
         self.global_energy_cond=bool(kargs.get('global_energy_cond', False))
         self.loop_cond_prob=float(kargs.get('loop_cond_prob', 0.0))
         self.global_energy_stats_momentum = 0.01
+        # CFG drop probability for global energy conditioning during training.
+        # When > 0, randomly replaces the energy condition with the running mean
+        # so the model learns to actually respond to it (otherwise zero-init
+        # FiLM has no incentive to move away from identity).
+        self.global_energy_cfg_drop_prob = float(kargs.get('global_energy_cfg_drop_prob', 0.1))
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
         if not 0.0 <= self.joint_mask_budget <= 1.0:

@@ -1175,6 +1175,8 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
                 time_embedding=cross_limb_time_embedding,
             )
         if global_energy_condition is not None:
-            x = self.norm_ref(self._apply_global_energy_cond(x, global_energy_condition))
+            # norm_ref normalizes BEFORE FiLM so the LayerNorm doesn't undo
+            # the gamma/beta modulation. FiLM operates on unit-variance features.
+            x = self._apply_global_energy_cond(self.norm_ref(x), global_energy_condition)
         x = self.norm3(x + self._ff_block(x))
         return x
