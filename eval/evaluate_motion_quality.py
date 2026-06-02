@@ -104,59 +104,6 @@ def _bar(score: float, width: int = 20) -> str:
     return "#" * filled + "." * (width - filled)
 
 
-def _print_report(report: DistributionEvalReport, use_color: bool) -> None:
-    clr = lambda value, text: _color(value, text, use_color)
-
-    def _round4_dict(values: dict) -> dict:
-        return {
-            key: (round(float(value), 4) if isinstance(value, (int, float, np.floating)) else value)
-            for key, value in values.items()
-        }
-
-    print()
-    print(f"{'=' * 74}")
-    print("  Low-Shot Weighted-Reference Motion Quality Report")
-    print(f"{'=' * 74}")
-    print(
-        f"  Object : {report.object_type or 'unknown'}  |  "
-        f"Action : {report.action_tags or 'unknown'}"
-    )
-    print(
-        f"  Query  : {report.n_input} clip(s) / {report.input_total_frames} frames  |  "
-        f"Reference : {report.n_reference} clip(s) / {report.reference_total_frames} frames"
-    )
-    print()
-
-    rows = [
-        ("Joint naturalness", report.overall_score, ""),
-    ]
-    for label, score, note in rows:
-        print(f"  {label:<32s} {clr(score, f'{score:.4f}')}  {_bar(score)}  {note}")
-
-    print()
-    print("  Reference species:")
-    for species in report.reference_species:
-        print(
-            "    "
-            f"{species['object_type']:<18} weight={species['species_weight']:.4f} "
-            f"distance={species['cosine_distance']:.4f} clips={species['clip_count']} frames={species['total_frames']}"
-        )
-    print()
-    component_scores = report.raw.get("component_scores")
-    if component_scores:
-        print(f"  Metric scores  : {json.dumps(_round4_dict(component_scores))}")
-    joint_group_scores = report.raw.get("joint_group_scores")
-    if joint_group_scores:
-        print(f"  Joint groups   : {json.dumps(_round4_dict(joint_group_scores), sort_keys=True)}")
-    print()
-
-
-def _write_json(report: DistributionEvalReport, path: str) -> None:
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(report.as_dict(), handle, indent=2)
-    print(f"[info] JSON report written -> {path}")
-
-
 def _print_per_file_summary(
     results: list[tuple[str, DistributionEvalReport]],
     use_color: bool,

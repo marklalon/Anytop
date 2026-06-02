@@ -1294,38 +1294,6 @@ def test_bridge_ignores_degenerate_zero_length_source_wrapper_bone(
         )
 
 
-@pytest.mark.skip(reason="_select_twist_axis_offset removed with G2 swing+twist revert")
-def test_select_twist_axis_prefers_chain_continuation_over_longer_side_branch() -> None:
-    """The twist axis must follow the chain continuation, not the longest child.
-
-    Regression for the Buffalo->Horse head/neck roll: a ``Neck`` carries
-    ``Clavicle`` side branches that are longer than the ``Neck1`` joint that
-    actually continues the spine. Selecting the longer clavicle as the twist axis
-    swings the neck about a sideways axis and injects a ~90 deg parasitic roll
-    that propagates up to the head (and the rigid reins hanging off it). The axis
-    must instead follow the continuation that is colinear with the incoming bone.
-    """
-    parents = np.array([-1, 0, 1, 1, 1], dtype=np.int32)
-    rest_offsets = np.array(
-        [
-            [0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],   # incoming to joint 1 points +Y
-            [1.0, 0.0, 0.0],   # longer "clavicle" side branch (+X), len 1.0
-            [-1.0, 0.0, 0.0],  # longer "clavicle" side branch (-X), len 1.0
-            [0.0, 0.6, 0.0],   # shorter "neck1" continuation (+Y), len 0.6
-        ],
-        dtype=np.float64,
-    )
-
-    axis, child = retarget_mod._select_twist_axis_offset(1, parents, rest_offsets)
-    assert child == 4, f"expected continuation child 4, got {child}"
-    np.testing.assert_allclose(axis, rest_offsets[4], atol=1e-9)
-
-    # Root joints (no incoming bone) keep the longest-child behavior.
-    root_axis, root_child = retarget_mod._select_twist_axis_offset(0, parents, rest_offsets)
-    assert root_child == 1  # only child of the root
-
-
 def test_root_promotion_shifts_descendant_chain_up_one_target_level(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
