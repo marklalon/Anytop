@@ -141,7 +141,6 @@ def create_gaussian_diffusion(args):
         lambda_vel=getattr(args, 'lambda_vel', 0.0),
         lambda_loop_wrap=getattr(args, 'lambda_loop_wrap', 0.0),
         lambda_loop_root_xz=getattr(args, 'lambda_loop_root_xz', 0.0),
-        lambda_energy_consistency=getattr(args, 'lambda_energy_consistency', 0.0),
         temporal_span_seam_loss_weight=getattr(args, 'temporal_span_seam_loss_weight', 0.0),
         temporal_span_seam_width=getattr(args, 'temporal_span_seam_width', 2),
     )

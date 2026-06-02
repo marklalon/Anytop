@@ -98,10 +98,6 @@ def add_model_options(parser):
     group.add_argument("--lambda_loop_root_xz", default=0.0, type=float,
                        help="Weight for loop-only translation-root XZ closure loss."
                            " Penalizes net X/Z velocity drift over the visible loop while preserving in-loop root motion.")
-    group.add_argument("--lambda_energy_consistency", default=0.0, type=float,
-                       help="Weight for the global-energy consistency loss (0.0=off; requires --global_energy_cond)."
-                           " Penalizes the z-scored gap between the conditioned [energy_mean, energy_std] and the"
-                           " energy of the model's denoised output, giving the FiLM weights a direct gradient.")
     group.add_argument("--loop_cond_prob", default=0.0, type=float,
                        help="Probability that a loop training clip stays loop-conditioned "
                             "(periodic resampling, circular phase, and loop-condition embedding)."
