@@ -980,10 +980,27 @@ def recover_animation_from_motion_np(
     )
     glob_rot             = positions_global(anim_rot)                  # (F, J, 3)
 
+    # Zero-offset leaf joints are appended leaf-rotation helpers: they are
+    # co-located with their parent leaf by construction (offset == 0) and only
+    # exist to make the leaf's rotation recoverable. Their RIC position channel is
+    # a redundant copy of the parent leaf's, so the model's small per-joint
+    # position error during generation must NOT be solved into a phantom local
+    # translation on a bone that has no length. Pin them to their rest offset.
+    parents_arr = np.asarray(parents)
+    offsets_arr = np.asarray(offsets)
+    joint_count = len(parents_arr)
+    is_leaf = np.ones(joint_count, dtype=bool)
+    is_leaf[parents_arr[parents_arr >= 0]] = False
+    zero_offset_leaf = is_leaf & (np.linalg.norm(offsets_arr, axis=-1) <= 1e-6)
+    zero_offset_leaf &= parents_arr >= 0
+    if translation_root_index is not None and 0 <= translation_root_index < joint_count:
+        zero_offset_leaf[translation_root_index] = False
+
     # joints whose FK-predicted global position drifts from the RIC truth
     per_joint_err = np.abs(target_global - glob_rot).max(axis=(0, 2)) # (J,)
     animated_joints = sorted(
-        j for j in range(len(parents)) if per_joint_err[j] > anim_pos_threshold
+        j for j in range(joint_count)
+        if per_joint_err[j] > anim_pos_threshold and not zero_offset_leaf[j]
     )
 
     if not animated_joints:
@@ -999,6 +1016,10 @@ def recover_animation_from_motion_np(
         position_match_threshold=1e-5,
         max_passes=2,
     )
+    # The direct solver above rewrites every joint, so re-pin the helpers it
+    # touched back onto their parent leaf.
+    if zero_offset_leaf.any():
+        new_pos[:, zero_offset_leaf] = offsets_arr[zero_offset_leaf]
 
     anim_fixed = Animation(anim_rot.rotations, new_pos, anim_rot.orients,
                            anim_rot.offsets, anim_rot.parents)
