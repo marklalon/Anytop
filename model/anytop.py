@@ -557,9 +557,7 @@ class GlobalEnergyExtractor:
 
     @staticmethod
     def _resample_motion_time_axis(motion, target_frame_count):
-        # Fallback global-energy paths may only have the internal-window clip
-        # plus playspeed_cond. Rebuild the inferred physical frame count first,
-        # then measure energy on that cadence instead of the stretched window.
+        """Linear resample along the time axis.  Input: (J, F, T)."""
         source_frame_count = int(motion.shape[-1])
         target_frame_count = int(target_frame_count)
         if target_frame_count <= 0:
@@ -567,6 +565,7 @@ class GlobalEnergyExtractor:
         if source_frame_count == target_frame_count:
             return motion
 
+        # (J, F, T) → (T, J, F)
         motion_tjf = motion.permute(2, 0, 1)
         src = torch.linspace(
             0.0,
@@ -655,24 +654,67 @@ class GlobalEnergyExtractor:
             ).reshape(batch_size)
             inferred_source_frames = torch.round(source_length_ratio * float(motion.shape[-1])).to(dtype=torch.long).clamp_min(1)
             if bool((inferred_source_frames != motion.shape[-1]).any()):
-                # Scaling rot_delta alone is not enough: the energy mean/std is
-                # also averaged across the wrong number of frames. Resample back
-                # to the inferred physical length before extracting statistics.
-                n_joints_tensor = torch.as_tensor(n_joints, device=motion.device, dtype=torch.long).reshape(batch_size)
-                sample_conditions = []
-                for batch_index in range(batch_size):
-                    sample_motion = motion[batch_index]
-                    sample_source_frames = int(inferred_source_frames[batch_index].item())
-                    if sample_source_frames != motion.shape[-1]:
-                        sample_motion = cls._resample_motion_time_axis(sample_motion, sample_source_frames)
-                    sample_conditions.append(
-                        cls.compute_global_energy_condition(
-                            sample_motion.unsqueeze(0),
-                            n_joints=n_joints_tensor[batch_index:batch_index + 1],
-                            playspeed_cond=None,
-                        )
+                # Batched resample + pad-to-max + masked statistics.
+                # Each sample may have a different target frame count, so we
+                # resample independently, pad to the maximum, and use a frame
+                # mask so the weighted mean/std ignores padding.
+                #
+                # Because _extract_joint_motion_inputs computes rot_delta as
+                # rot[:, 1:] - rot[:, :-1], the boundary between the last valid
+                # frame and the first zero-padded frame produces a spurious large
+                # delta. We mask out that boundary frame as well.
+                max_target = int(inferred_source_frames.max().item())
+                original_T = motion.shape[-1]
+
+                # Resample + pad in a single pass: resample to each sample's
+                # target frame count, replicate the last frame into the padding
+                # region (so rot_delta at boundary is zero), and build a frame
+                # mask that zeros padding during statistics.
+                padded_list = []
+                frame_mask_list = []
+                for i in range(batch_size):
+                    t_i = int(inferred_source_frames[i].item())
+                    s = (
+                        cls._resample_motion_time_axis(motion[i], t_i)
+                        if t_i != original_T
+                        else motion[i]
                     )
-                return torch.cat(sample_conditions, dim=0)
+                    pad = max_target - t_i
+                    if pad > 0:
+                        last_frame = s[:, :, -1:].expand(-1, -1, pad)
+                        s = torch.cat([s, last_frame], dim=2)
+                        fm = torch.cat([
+                            torch.ones(t_i, device=s.device, dtype=s.dtype),
+                            torch.zeros(pad, device=s.device, dtype=s.dtype),
+                        ])
+                    else:
+                        fm = torch.ones(max_target, device=s.device, dtype=s.dtype)
+                    padded_list.append(s)
+                    frame_mask_list.append(fm)
+
+                motion_padded = torch.stack(padded_list, dim=0)  # (B, J, F, max_T)
+                frame_mask = torch.stack(frame_mask_list, dim=0)  # (B, max_T)
+
+                # Compute energy statistics on padded motion with frame mask.
+                motion_inputs = cls._extract_joint_motion_inputs(motion_padded, n_joints)
+                dtype = motion_inputs['dtype']
+                valid_joints = motion_inputs['valid_joints']  # (B, J)
+                joint_motion_frame_features = motion_inputs['joint_motion_frame_features']  # (B, max_T, J, 4)
+
+                # Step 1: Apply joint mask via _masked_mean_and_std (dim=2 = joint).
+                # Result: (B, max_T, 4) — per-frame energy features averaged over joints.
+                global_mean, global_std = cls._masked_mean_and_std(
+                    joint_motion_frame_features,
+                    valid_joints.unsqueeze(1).expand(-1, max_target, -1).to(dtype),
+                )
+
+                # Step 2: Apply frame mask via weighted mean over time (dim=1 = time).
+                # frame_mask: (B, max_T) — 1 for valid frames, 0 for padding.
+                energy_profile = torch.cat([global_mean[..., 2:3], global_std[..., 2:3]], dim=-1)  # (B, max_T, 2)
+                frame_weights = frame_mask.unsqueeze(-1).to(dtype)  # (B, max_T, 1)
+                frame_weights_sum = frame_weights.sum(dim=1).clamp_min(1e-6)  # (B, 1)
+                result = (energy_profile * frame_weights).sum(dim=1) / frame_weights_sum  # (B, 2)
+                return result
 
         motion_inputs = cls._extract_joint_motion_inputs(motion, n_joints)
         dtype = motion_inputs['dtype']

@@ -233,6 +233,38 @@ def load(filename, start=None, end=None, order=None, world=True):
     return (Animation(quat_rotations, positions, orients, offsets, parents), names, frametime)
 
     
+_ALL_EULER_ORDERS = ('xyz', 'xzy', 'yxz', 'yzx', 'zxy', 'zyx')
+
+
+def _select_gimbal_safe_order(rotations, candidates=_ALL_EULER_ORDERS):
+    """Pick the uniform euler order that minimises per-channel temporal jitter.
+
+    A BVH rotation channel exhibits two kinds of frame-to-frame "jitter" that are
+    artifacts of the euler representation, not of the (smooth) orientation:
+
+      * gimbal-lock: when the middle rotation of the order hits +/-90 deg the two
+        outer angles become a degenerate coupled pair and split arbitrarily,
+        swinging huge amounts while the orientation barely moves.
+      * angle wrap: an outer angle crossing +/-180 deg jumps by 360 deg.
+
+    The wrap is benign and removed by temporal unwrapping (``np.unwrap``), which is
+    orientation-exact (angles are 2*pi periodic). True gimbal swings survive
+    unwrapping. We therefore score each candidate by its worst-case unwrapped
+    second difference over all joints/channels and pick the smallest — i.e. the
+    order whose channels are smoothest after wraps are removed. Choosing per-file
+    keeps a single uniform order (the only thing ``load`` supports), so it stays
+    fully round-trip safe; ``save`` applies the same unwrap when writing.
+    """
+    best_order, best_score = 'xyz', np.inf
+    for order in candidates:
+        e = np.unwrap(rotations.euler(order=order), axis=0)  # (F, J, 3), radians
+        # second difference along time = curvature; gimbal/residual artifacts spike it
+        score = float(np.max(np.abs(np.diff(e, axis=0, n=2)))) if e.shape[0] > 2 else 0.0
+        if score < best_score:
+            best_score, best_order = score, order
+    return best_order
+
+
 def save(filename, anim, names=None, frametime=1.0/30.0, order='xyz', positions=False, orients=True):
     """
     Saves an Animation to file as BVH
@@ -250,7 +282,9 @@ def save(filename, anim, names=None, frametime=1.0/30.0, order='xyz', positions=
     
     order : str
         Optional Specifier for joint rotation order, from left to right (not print order!).
-        Given as string E.G 'xyz', 'zxy'
+        Given as string E.G 'xyz', 'zxy'. Pass 'auto' to pick the uniform order
+        that keeps every joint farthest from euler gimbal-lock (see
+        _select_gimbal_safe_order).
     
     frametime : float
         Optional Animation Frame time
@@ -265,6 +299,8 @@ def save(filename, anim, names=None, frametime=1.0/30.0, order='xyz', positions=
         
     """
 
+    if order == 'auto':
+        order = _select_gimbal_safe_order(anim.rotations)
     print_order = order[::-1] # in a bvh file, rotations are printed from last to first
     if names is None:
         names = ["joint_" + str(i) for i in range(len(anim.parents))]
@@ -295,14 +331,26 @@ def save(filename, anim, names=None, frametime=1.0/30.0, order='xyz', positions=
         f.write("Frames: %i\n" % anim.shape[0]);
         f.write("Frame Time: %f\n" % frametime);
 
-        rots = np.degrees(anim.rotations.euler(order=order))
+        # Unwrap along the time axis so an outer angle crossing +/-180 deg does not
+        # leave a benign-but-ugly 360 deg jump in the channel curve. Unwrapping adds
+        # integer multiples of 2*pi, so it is orientation-exact and round-trips
+        # through ``load`` (from_euler is 2*pi periodic).
+        rots = np.degrees(np.unwrap(anim.rotations.euler(order=order), axis=0))
         poss = anim.positions
         end_sites_set = set(end_sites)
 
         # Vectorize MOTION data: build a single 2D float array and use
         # np.savetxt which runs in C and releases the GIL.
         n_frames, n_joints = anim.shape
-        p0, p1, p2 = ordermap[print_order[0]], ordermap[print_order[1]], ordermap[print_order[2]]
+        # ``rots`` (= euler(order=order)) is indexed by ORDER POSITION:
+        # rots[..., k] is the angle about axis ``order[k]`` (matching from_euler,
+        # which composes axis[order[0..2]]). A BVH file prints rotations in reverse
+        # application order, so the channel columns are rots[...,2], [...,1], [...,0].
+        # ``load`` reverses the file columns back to order-position before from_euler,
+        # so writing the reversed positions here keeps save/load consistent for ANY
+        # order. (For 'xyz' this equals the previous axis-indexed mapping, so existing
+        # 'xyz' exports are byte-identical.)
+        p0, p1, p2 = 2, 1, 0
 
         # Collect all float columns in BVH joint order (skip end sites)
         all_vals = np.empty((n_frames, 0), dtype=np.float64)

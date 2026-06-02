@@ -902,13 +902,15 @@ def recover_from_bvh_rot_np(
     cont6d_params = np.eye(3)[None, None].repeat(cont6d_params.shape[0], axis=0).repeat(cont6d_params.shape[1], axis=1)
     for j, p in enumerate(parents[1:], 1):
         cont6d_params[:, p] = cont6d_params_hml_order[:, j]
-    # Restore the root's own rotation. The scatter loop above writes each joint's
-    # rotation to its parent slot; since the root (0) is the parent of at least one
-    # joint, slot 0 always gets clobbered by an arbitrary root-child (last-child-wins),
-    # discarding the canonical root rotation that the encoder stored at hml index 0
-    # (see get_bvh_cont6d_params: cont_6d_params_reordered[:, 0] = get_6d_rep(r_rot)).
-    # Reassigning here makes this inverse symmetric with that forward convention.
-    cont6d_params[:, 0] = cont6d_params_hml_order[:, 0]
+    # NOTE: do NOT overwrite slot 0 with cont6d_params_hml_order[:, 0]. The encoder
+    # (get_bvh_cont6d_params) stores the *facing* r_rot (= identity under the
+    # orientation-quat normalization) at hml index 0, while the root's own LOCAL
+    # rotation is stored in the slots of the root's children. The scatter loop above
+    # therefore reconstructs the root local rotation into slot 0 correctly (every
+    # root-child slot holds parents[child]==0's rotation, so the value is consistent).
+    # Reassigning slot 0 to hml[0] would replace that reconstructed root rotation with
+    # the identity facing, freezing the source root (observed: dragon Cg 80deg->0deg in
+    # eval_retarget T6, killing source root motion).
     rotations = Quaternions.from_transforms(cont6d_params)
 
     # Normalize quaternion signs for roundtrip stability.

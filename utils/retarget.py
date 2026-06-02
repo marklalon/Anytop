@@ -1247,6 +1247,25 @@ def retarget_world_space_np(
 
     _EPS = 1e-8
 
+    def _stable_valid(bn):
+        """Per-frame direction validity, made temporally stable against flicker.
+
+        ``bn`` is the per-frame aligned source-bone length; a frame is normally
+        valid (direction transfer) when ``bn > _EPS`` and otherwise falls back to
+        the rest offset. A structurally near-zero source bone (e.g. a zero-length
+        helper like Bip01_Pelvis driving the dragon Spine) has a length that sits
+        in the numerical noise floor and STRADDLES ``_EPS`` — some frames above,
+        some below — so the per-frame choice flips every frame, snapping the mapped
+        target joint between two placements (visible as ~1-3 Hz jitter). When the
+        mask is mixed like that, the bone provides no reliable direction in any
+        frame, so we use the rest fallback consistently for the whole clip. A real
+        (even very short) bone stays consistently above ``_EPS`` and is untouched.
+        """
+        valid = bn > _EPS
+        if valid.any() and not valid.all():
+            valid[:] = False
+        return valid
+
     # Pre-compute source-side bone vectors and animated lengths (vectorized)
     # For root joints (parent < 0) these stay zero — they won't be used.
     parent_idx = np.where(src_parents >= 0, src_parents, 0)  # safe index
@@ -1283,7 +1302,7 @@ def retarget_world_space_np(
             # inserted gap joints do not peel sideways with the transport frame.
             tgt_rest_len = float(np.linalg.norm(tgt_rest_offsets[j]))
             bn = np.linalg.norm(src_bv_aligned[:, bridge_src_idx], axis=-1)
-            valid = bn > _EPS
+            valid = _stable_valid(bn)
             d = src_bv_aligned[:, bridge_src_idx] / np.where(valid, bn, 1.0)[:, None]
 
             src_rest_len = float(np.linalg.norm(src_rest_offsets[bridge_src_idx]))
@@ -1318,7 +1337,7 @@ def retarget_world_space_np(
             p1 = int(src_parents[ii])
             if p1 >= 0:
                 bn = np.linalg.norm(src_bv_aligned[:, ii], axis=-1)  # (F,)
-                valid = bn > _EPS
+                valid = _stable_valid(bn)
                 d = src_bv_aligned[:, ii] / np.where(valid, bn, 1.0)[:, None]
 
                 src_rest_len = float(np.linalg.norm(src_rest_offsets[ii]))
@@ -1806,6 +1825,7 @@ if __name__ == '__main__':
             BVH.save(
                 _out_bvh, _out_anim, _joint_names,
                 frametime=1.0 / _fps, positions=_has_pos,
+                order='auto',
             )
             print(f'[retarget CLI] Inspection BVH → {_out_bvh}')
     except Exception as _exc:
