@@ -54,11 +54,11 @@ echo.
 echo.
 
 REM ==================================================================
-REM  T3: Buffalo .npy -> Horse (cross-species, cond-free source)
+REM  T3: Buffalo .npy -> Bear (cross-species, cond-free source)
 REM ==================================================================
-echo --- T3: Buffalo .npy -^> Horse ^(cross-species, cond-free^) ---
+echo --- T3: Buffalo .npy -^> Bear ^(cross-species, cond-free^) ---
 echo.
-"%PYTHON_EXE%" -m Anytop.utils.retarget --source "%ANYTOP_ROOT%dataset\truebones\zoo\truebones_processed\motions\Buffalo_RunLoop_115.npy" --object_type Horse --output_dir "%OUTPUT_DIR%"
+"%PYTHON_EXE%" -m Anytop.utils.retarget --source "%ANYTOP_ROOT%dataset\truebones\zoo\truebones_processed\motions\Buffalo_RunLoop_115.npy" --object_type Bear --output_dir "%OUTPUT_DIR%"
 if !errorlevel! equ 0 (set /a PASS+=1 & echo [PASS] T3) else (set /a FAIL+=1 & echo [FAIL] T3  ^(exit !errorlevel!^))
 echo.
 echo.
