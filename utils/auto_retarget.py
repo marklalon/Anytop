@@ -103,17 +103,16 @@ def build_tpose_aligned_target_animation(retarget_result: dict, target_tp):
     """Convert a retarget result into the Animation form expected by get_motion.
 
     ``retarget_world_space_np`` works in target rest-composed world space so it
-    can preserve target rest roll while transferring relative twist. The returned
-    ``target_world_rotations`` are the world rotations of the feature Animation
-    reproduced by the exporter semantics, so recover total local rotations by a
-    direct parent-relative inverse. Non-root positions are reconstructed from the
-    pose-location channels when present, otherwise they stay at rest offsets.
+    can preserve target rest roll while transferring relative twist. For mapped
+    joints (and gap joints on the path to a mapped descendant), the local
+    rotation is recovered directly from the parent-relative world rotation. Pure
+    unmapped side-branch joints stay at local identity so large FBX rest
+    quaternions (e.g. dragon clavicles) do not leak into motion channels.
+    Non-root local positions are reconstructed from the pose-location channel
+    when present; otherwise the parent-relative world offset is taken directly.
     """
     from motion_lib.Animation import Animation
     from motion_lib.Quaternions import Quaternions
-    from data_loaders.truebones.truebones_utils.animation_utils import (
-        solve_local_positions_for_target_global,
-    )
     from utils.rotation_numpy import (
         quat_conjugate_wxyz_np,
         quat_multiply_wxyz_np,
@@ -128,53 +127,58 @@ def build_tpose_aligned_target_animation(retarget_result: dict, target_tp):
         retarget_result['target_world_rotations'],
         dtype=np.float64,
     )
+    target_bone_translations = retarget_result.get('bone_translations')
+    if target_bone_translations is not None:
+        target_bone_translations = np.asarray(target_bone_translations, dtype=np.float64)
     target_offsets = np.asarray(target_tp.offsets, dtype=np.float64)
     target_parents = np.asarray(target_tp.tpos_anim.parents, dtype=np.int32)
-    target_rest_rotations = np.asarray(target_tp.tpos_rots[0], dtype=np.float64)
+    src_to_tgt = np.asarray(retarget_result['src_to_tgt'], dtype=np.int32)
 
     frame_count, joint_count = target_world_positions.shape[:2]
+    target_rest_rotations = np.asarray(target_tp.tpos_rots[0], dtype=np.float64)
     identity_orients = np.zeros((joint_count, 4), dtype=np.float64)
     identity_orients[:, 0] = 1.0
     orient_quats = Quaternions(identity_orients)
+    mapped_target_mask = np.zeros(joint_count, dtype=bool)
+    for target_idx in src_to_tgt:
+        if int(target_idx) >= 0:
+            mapped_target_mask[int(target_idx)] = True
 
-    total_local_rotations = np.zeros((frame_count, joint_count, 4), dtype=np.float64)
-    total_local_rotations[:, :, 0] = 1.0
+    has_mapped_descendant = np.zeros(joint_count, dtype=bool)
+    for joint_idx in range(joint_count - 1, -1, -1):
+        parent_idx = int(target_parents[joint_idx])
+        if parent_idx >= 0 and (mapped_target_mask[joint_idx] or has_mapped_descendant[joint_idx]):
+            has_mapped_descendant[parent_idx] = True
+
+    local_rotations = np.zeros((frame_count, joint_count, 4), dtype=np.float64)
+    local_positions = np.zeros_like(target_world_positions)
+    local_rotations[:, :, 0] = 1.0
+
     for joint_idx in range(joint_count):
         parent_idx = int(target_parents[joint_idx])
         if parent_idx < 0:
-            total_local_rotations[:, joint_idx] = target_world_rotations[:, joint_idx]
-        else:
-            total_local_rotations[:, joint_idx] = quat_multiply_wxyz_np(
+            local_rotations[:, joint_idx] = target_world_rotations[:, joint_idx]
+            local_positions[:, joint_idx] = target_world_positions[:, joint_idx]
+            continue
+
+        if mapped_target_mask[joint_idx] or has_mapped_descendant[joint_idx]:
+            local_rotations[:, joint_idx] = quat_multiply_wxyz_np(
                 quat_conjugate_wxyz_np(target_world_rotations[:, parent_idx]),
                 target_world_rotations[:, joint_idx],
             )
 
-    local_positions = np.repeat(target_offsets[None, :, :], frame_count, axis=0)
-    bone_translations = retarget_result.get('bone_translations')
-    if bone_translations is not None:
-        bone_translations = np.asarray(bone_translations, dtype=np.float64)
-        for joint_idx in range(joint_count):
-            parent_idx = int(target_parents[joint_idx])
-            if parent_idx < 0:
-                continue
-            rest_rot = np.repeat(target_rest_rotations[joint_idx:joint_idx + 1], frame_count, axis=0)
+        if target_bone_translations is not None:
             local_positions[:, joint_idx] = target_offsets[joint_idx] + quat_rotate_wxyz_np(
-                rest_rot,
-                bone_translations[:, joint_idx],
+                np.repeat(target_rest_rotations[joint_idx:joint_idx + 1], frame_count, axis=0),
+                target_bone_translations[:, joint_idx],
             )
-    for joint_idx in range(joint_count):
-        parent_idx = int(target_parents[joint_idx])
-        if parent_idx < 0:
-            local_positions[:, joint_idx] = target_world_positions[:, joint_idx]
-    rotation_quats = Quaternions(total_local_rotations)
-    local_positions = solve_local_positions_for_target_global(
-        rotation_quats,
-        target_world_positions,
-        target_offsets,
-        target_parents,
-        orient_quats,
-        initial_positions=local_positions,
-    )
+        else:
+            local_positions[:, joint_idx] = quat_rotate_wxyz_np(
+                quat_conjugate_wxyz_np(target_world_rotations[:, parent_idx]),
+                target_world_positions[:, joint_idx] - target_world_positions[:, parent_idx],
+            )
+
+    rotation_quats = Quaternions(local_rotations)
 
     return Animation(
         rotation_quats,
