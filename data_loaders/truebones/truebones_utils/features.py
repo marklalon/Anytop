@@ -1045,6 +1045,15 @@ def recover_bvh_export_animation_from_motion_np(
         anim = recover_processed_animation_from_feature_animation(
             anim, tpose_rest_rotations,
         )
+        # Baking the rest rotations into the local rotations leaves the offsets in
+        # the feature (rest-removed) basis, so the solved local positions deviate
+        # from the rest offsets even when the pre-bake feature animation was pure
+        # rotation. ``has_animated_pos`` from the feature animation reflects a
+        # different basis; recompute it on the baked animation so BVH export writes
+        # the position channels the reconstructed pose actually needs. Without this,
+        # rotation-only BVH (positions=False) reconstructs a garbled pose for
+        # skeletons with non-identity rest rotations (e.g. GLB-derived references).
+        has_animated_pos = needs_bvh_position_channels(anim)
 
     anim, joint_names = reorder_animation_to_dfs(anim, joint_names)
     return anim, joint_names, has_animated_pos
