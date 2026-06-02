@@ -1608,3 +1608,61 @@ def test_infer_donor_consensus_effective_root_index_skip_corrupted(
     # Only the valid file should be counted
     assert result == 3
     assert len(call_log) == 1
+
+
+def _floating_anim(foot_height: float):
+    """A Root→Mid→Foot chain whose foot sits at y=foot_height (root at y=0).
+
+    Mirrors the reconstructed-animation form bake_foot_floor_offset operates on:
+    the root's local position is its world position, children hang below it.
+    """
+    from motion_lib.Animation import Animation
+
+    parents = np.array([-1, 0, 1], dtype=np.int32)
+    offsets = np.array(
+        [[0.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, -1.0, 0.0]], dtype=np.float64
+    )
+    frames = 4
+    positions = np.repeat(offsets[None], frames, axis=0)
+    # Lift the whole chain so the foot (joint 2) rests at foot_height: root local
+    # y carries the world placement (root world = its local position).
+    positions[:, 0, 1] = foot_height + 2.0  # foot world = root + (-1) + (-1)
+    rotations = Quaternions(np.tile(_identity_quat(3)[None], (frames, 1, 1)))
+    orients = Quaternions(_identity_quat(3))
+    return Animation(rotations, positions, orients, offsets, parents)
+
+
+def test_bake_foot_floor_offset_drops_lowest_contact_to_zero() -> None:
+    from motion_lib.Animation import positions_global
+    from Anytop.utils.auto_retarget import bake_foot_floor_offset
+
+    anim = _floating_anim(foot_height=0.75)
+    # Sanity: foot floats at 0.75 before flooring.
+    assert positions_global(anim)[:, 2, 1].min() == pytest.approx(0.75, abs=1e-6)
+
+    bake_foot_floor_offset(anim, foot_indices=[2])
+    gp = positions_global(anim)
+    assert gp[:, 2, 1].min() == pytest.approx(0.0, abs=1e-6)
+    # Root dropped by the float amount, leaving it 2 units above the floored foot.
+    assert gp[:, 0, 1].mean() == pytest.approx(2.0, abs=1e-6)
+
+
+def test_bake_foot_floor_offset_noop_without_contacts() -> None:
+    from motion_lib.Animation import positions_global
+    from Anytop.utils.auto_retarget import bake_foot_floor_offset
+
+    for foot_indices in (None, [], np.array([], dtype=np.int64)):
+        anim = _floating_anim(foot_height=0.75)
+        before = positions_global(anim).copy()
+        bake_foot_floor_offset(anim, foot_indices=foot_indices)
+        np.testing.assert_allclose(positions_global(anim), before, atol=1e-9)
+
+
+def test_bake_foot_floor_offset_lifts_sunken_skeleton() -> None:
+    # A foot below the floor (negative height) is lifted up to 0.
+    from motion_lib.Animation import positions_global
+    from Anytop.utils.auto_retarget import bake_foot_floor_offset
+
+    anim = _floating_anim(foot_height=-0.4)
+    bake_foot_floor_offset(anim, foot_indices=[2])
+    assert positions_global(anim)[:, 2, 1].min() == pytest.approx(0.0, abs=1e-6)

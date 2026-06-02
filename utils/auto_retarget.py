@@ -188,6 +188,55 @@ def build_tpose_aligned_target_animation(retarget_result: dict, target_tp):
         target_parents,
     )
 
+def bake_foot_floor_offset(anim, foot_indices, up_axis: int = 1):
+    """Lower the whole skeleton so its lowest foot-contact joint rests on y=0.
+
+    Applied to the *reconstructed* target animation (after
+    :func:`build_tpose_aligned_target_animation`), not to the retarget's
+    world-space positions: cross-species retarget rebuilds the body from
+    transferred rotations and a mostly-suppressed pose-location channel, so the
+    rebuilt foot height differs from the world-space positions the retarget
+    fitted. Measuring the floor here — on the geometry that is actually encoded
+    and exported — is the only place the contact really lands at y=0.
+
+    A single constant offset (the minimum contact height over the WHOLE clip)
+    is subtracted from the hierarchy root's local translation. The root has no
+    parent, so this is an exact world-space vertical shift of every joint; the
+    encoded ``root_height`` feature carries it identically regardless of which
+    ancestor it is baked into. Skeletons with no detected foot contact (snakes,
+    fish, …) pass an empty ``foot_indices`` and are left untouched.
+
+    Args:
+        anim: target ``Animation`` (modified in place and returned).
+        foot_indices: target-skeleton joint indices of foot-contact joints.
+        up_axis: world axis treated as height (default 1 = Y).
+
+    Returns:
+        The same ``anim`` instance.
+    """
+    from motion_lib.Animation import positions_global
+
+    if foot_indices is None or len(foot_indices) == 0:
+        return anim
+    joint_count = int(anim.positions.shape[1])
+    foot_idx = np.asarray(foot_indices, dtype=np.int64).reshape(-1)
+    foot_idx = foot_idx[(foot_idx >= 0) & (foot_idx < joint_count)]
+    if foot_idx.size == 0:
+        return anim
+
+    global_positions = positions_global(anim)
+    min_foot_height = float(np.min(global_positions[:, foot_idx, up_axis]))
+    if abs(min_foot_height) <= 1e-9:
+        return anim
+
+    parents = np.asarray(anim.parents)
+    root_candidates = np.flatnonzero(parents < 0)
+    if root_candidates.size == 0:
+        return anim
+    anim.positions[:, int(root_candidates[0]), up_axis] -= min_foot_height
+    return anim
+
+
 def retarget_features_npy_to_target(
     source_features: np.ndarray,
     source_cond: dict,
@@ -336,6 +385,13 @@ def retarget_features_npy_to_target(
     # NPY path retargets decoded feature rotations, so target_world_rotations are
     # already the world rotations of that T-pose-relative representation.
     tgt_anim = build_tpose_aligned_target_animation(retarget_result, target_tp)
+
+    # 6b. Drop the reconstructed skeleton onto the floor: lower it so the lowest
+    # foot-contact joint over the whole clip rests at y=0. Must run on the
+    # rebuilt geometry (the body is reconstructed from rotations, not the
+    # retarget's world positions), and before re-encoding so the offset rides
+    # in the encoded root height. Footless skeletons are left untouched.
+    tgt_anim = bake_foot_floor_offset(tgt_anim, getattr(target_tp, 'foot_indices', None))
 
     # 7. Re-encode target Animation → motion features
     squared_positions_error = {}

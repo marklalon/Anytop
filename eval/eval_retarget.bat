@@ -88,7 +88,7 @@ REM  T6: Horse .npy -> dragon (with --cond_path)
 REM ==================================================================
 echo --- T6: Horse .npy -^> dragon ^(with --cond_path^) ---
 echo.
-"%PYTHON_EXE%" -m Anytop.utils.retarget --source "%ANYTOP_ROOT%dataset\truebones\zoo\truebones_processed\motions\Horse_RunLoop_28.npy" --object_type dragon --cond_path "%ANYTOP_ROOT%outputs\new_skeleton\cond.npy" --output_dir "%OUTPUT_DIR%"
+"%PYTHON_EXE%" -m Anytop.utils.retarget --source "%ANYTOP_ROOT%dataset\truebones\zoo\truebones_processed\motions\Horse_SlowIdle_30.npy" --object_type dragon --cond_path "%ANYTOP_ROOT%outputs\new_skeleton\cond.npy" --output_dir "%OUTPUT_DIR%"
 if !errorlevel! equ 0 (set /a PASS+=1 & echo [PASS] T6) else (set /a FAIL+=1 & echo [FAIL] T6  ^(exit !errorlevel!^))
 echo.
 echo.
