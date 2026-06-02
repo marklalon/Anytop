@@ -1451,6 +1451,29 @@ def retarget_world_space_np(
             current_world_rot = parent_world_rot
             parent_idx = int(tgt_parents[current_child_idx])
 
+    # When tgt_effective_root_index is a non-root joint, pin all ancestor
+    # wrapper nodes to the hierarchy root's rest world position so that the
+    # effective root's local translation carries the full locomotion without
+    # being offset by wrapper rest offsets.  This keeps the wrapper chain
+    # semantically inert while preserving the FK relationship.
+    if (
+        tgt_effective_root_index is not None
+        and int(tgt_effective_root_index) >= 0
+        and int(tgt_parents[int(tgt_effective_root_index)]) >= 0
+    ):
+        _anchor_pos = tgt_rest_wpos[0, root_tgt_idx]  # (3,)
+        _anchor_rot = tgt_rest_wrot[0, root_tgt_idx]   # (4,)
+        _ancestor_list: list[int] = []
+        _cur = int(tgt_parents[int(tgt_effective_root_index)])
+        while _cur >= 0:
+            _ancestor_list.append(_cur)
+            _cur = int(tgt_parents[_cur])
+        for _aj in _ancestor_list:
+            target_wpos[:, _aj] = _anchor_pos[np.newaxis, :]
+            target_wrot[:, _aj] = np.repeat(
+                _anchor_rot[np.newaxis], F_q, axis=0
+            )
+
     # ── H) Inverse FK back to target local pose channels ──────────────────
     tgt_pose_rot = np.zeros((F, J_tgt, 4), dtype=np.float64)
     tgt_pose_rot[:] = identity_q
