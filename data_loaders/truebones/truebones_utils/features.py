@@ -902,6 +902,13 @@ def recover_from_bvh_rot_np(
     cont6d_params = np.eye(3)[None, None].repeat(cont6d_params.shape[0], axis=0).repeat(cont6d_params.shape[1], axis=1)
     for j, p in enumerate(parents[1:], 1):
         cont6d_params[:, p] = cont6d_params_hml_order[:, j]
+    # Restore the root's own rotation. The scatter loop above writes each joint's
+    # rotation to its parent slot; since the root (0) is the parent of at least one
+    # joint, slot 0 always gets clobbered by an arbitrary root-child (last-child-wins),
+    # discarding the canonical root rotation that the encoder stored at hml index 0
+    # (see get_bvh_cont6d_params: cont_6d_params_reordered[:, 0] = get_6d_rep(r_rot)).
+    # Reassigning here makes this inverse symmetric with that forward convention.
+    cont6d_params[:, 0] = cont6d_params_hml_order[:, 0]
     rotations = Quaternions.from_transforms(cont6d_params)
 
     # Normalize quaternion signs for roundtrip stability.

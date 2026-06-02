@@ -18,7 +18,8 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 # Bump this to invalidate all existing cache entries.
-CACHE_VERSION = "v1"
+# v2: bone_len precision increased from .2f to .4f, top_p=1.0 for determinism.
+CACHE_VERSION = "v2"
 
 # Cache directory — resolved relative to this file's location.
 # Points to: <Anytop>/dataset/truebones/zoo/truebones_processed/cache/retarget/

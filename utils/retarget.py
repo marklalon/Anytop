@@ -125,7 +125,11 @@ def _build_skeleton_text(
         parent_name = "root" if p < 0 else names[p]
         extras = []
         if bone_len_norm is not None and p >= 0:
-            extras.append(f"bone_len: {bone_len_norm[i]:.2f}")
+            # Use 4 decimals (was .2f): .2f was too coarse and collapsed genuinely
+            # distinct-but-similar bones onto the same string, producing false cache
+            # hits and wrong joint mappings. 4 decimals keeps such bones distinct
+            # in the LLM prompt / cache key.
+            extras.append(f"bone_len: {bone_len_norm[i]:.4f}")
         extras.append(f"children: {int(children_count[i])}")
         lines.append(f"- {name} (parent: {parent_name}, {', '.join(extras)})")
     return "\n".join(lines)
@@ -238,7 +242,7 @@ def _llm_joint_mapping(
             messages=messages,
             stream=False,
             temperature=0,
-            top_p=0.95,
+            top_p=1.0,
             max_tokens=8192,
             extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         )
