@@ -1062,11 +1062,6 @@ def retarget_world_space_np(
                 previous_tgt_for_effective = int(src_to_tgt[src_effective_root_index])
                 if current_locomotion_src_idx >= 0:
                     src_to_tgt[current_locomotion_src_idx] = -1
-                if (
-                    previous_tgt_for_effective >= 0
-                    and previous_tgt_for_effective != locomotion_tgt_idx
-                ):
-                    src_to_tgt[src_effective_root_index] = -1
                 src_to_tgt[src_effective_root_index] = locomotion_tgt_idx
                 should_shift_displaced_target = (
                     previous_tgt_for_effective >= 0
@@ -1162,14 +1157,6 @@ def retarget_world_space_np(
     if abs(scale - 1.0) < 0.001:
         scale = 1.0
 
-    root_in_common = None
-    for ci, fi in enumerate(common_tgt_idx):
-        if fi == locomotion_tgt_idx:
-            root_in_common = ci
-            break
-    if root_in_common is None:
-        root_in_common = 0
-
     # No rest-pose translation alignment: both source and target go through
     # process_anim() (root centered at XZ origin, feet grounded at y≈0, common
     # scale_factor), so any rest-based t_align tends to introduce drift rather
@@ -1237,7 +1224,6 @@ def retarget_world_space_np(
         fi = int(src_to_tgt[ii])
         if fi >= 0:
             src_for_tgt[fi] = ii
-    mapped_mask = src_for_tgt >= 0
     bridge_src_for_tgt = _build_target_bridge_source_indices(
         src_for_tgt,
         src_to_tgt,
