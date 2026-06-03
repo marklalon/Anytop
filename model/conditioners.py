@@ -269,16 +269,28 @@ def _resolve_t5_local_dir(name: str, t5_path: tp.Optional[str] = None) -> str:
 
     Resolution order:
     1. If *t5_path* is given and points to an existing directory, use it.
-    2. Resolve the canonical HF cache path::
+    2. Check the project-local ``.models/<name>/`` directory (relative to this file).
+    3. Resolve the canonical HF cache path::
          ~/.cache/huggingface/hub/models--<sanitized_name>/snapshots/<commit>/
-    3. Fall back to passing *name* as-is (handled by HF's internal cache lookup).
+    4. Fall back to passing *name* as-is (handled by HF's internal cache lookup).
     """
     import os as _os
 
+    # 1 — explicit t5_path override
     if t5_path and _os.path.isdir(t5_path):
         return _os.path.abspath(t5_path)
 
-    # Resolve through the standard HF cache layout
+    # 2 — project-local .models/<name>/  (checked-in model copies)
+    _PROJECT_MODELS = _os.path.abspath(
+        _os.path.join(_os.path.dirname(__file__), "..", ".models")
+    )
+    local_project_dir = _os.path.join(_PROJECT_MODELS, name)
+    if _os.path.isdir(local_project_dir) and _os.path.isfile(
+        _os.path.join(local_project_dir, "config.json")
+    ):
+        return local_project_dir
+
+    # 3 — standard HF cache layout
     sanitized = name.replace("/", "--")
     cache_root = _os.path.expanduser("~/.cache/huggingface/hub")
     model_dir = _os.path.join(cache_root, f"models--{sanitized}")
@@ -290,7 +302,7 @@ def _resolve_t5_local_dir(name: str, t5_path: tp.Optional[str] = None) -> str:
             if _os.path.isdir(snap_dir) and _os.path.isfile(_os.path.join(snap_dir, "config.json")):
                 return snap_dir
 
-    # Last resort — let HF handle it (don't raise, preserves backward compat)
+    # 4 — last resort, let HF handle it (preserves backward compat)
     return name
 
 
