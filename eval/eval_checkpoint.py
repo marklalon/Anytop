@@ -537,7 +537,7 @@ def run_task(
     log_path.write_text(f"# {display_cmd}\n" + stdout.getvalue(), encoding="utf-8", errors="replace")
 
     if returncode != 0:
-        record["status"] = f"generate.py failed (exit {returncode}) — see {log_path.name}"
+        record["status"] = f"generate.py failed (exit {returncode}) — see {log_path}"
         print(f"  [FAIL] {record['status']}")
         return record
 
@@ -912,12 +912,27 @@ def main() -> int:
         # $LAST_OUTPUT tracks the immediately preceding task's first clip.
         prev_first_npy = record["first_npy"]
 
+        # A task that fails (generate.py error, harness error, or
+        # unresolvable $LAST_OUTPUT) means the model / task config is broken.
+        # Stop immediately rather than cascading through dependent tasks.
+        if not record["status"].startswith("ok"):
+            remaining = total_tasks - task_num
+            if remaining:
+                print(f"    {remaining} task(s) not attempted")
+            break
+
     if not args.force:
         print(f"\n[increment] generated {n_generated} new task(s); reused {n_skipped} existing task(s)")
 
     all_scores: list[float] = []
     for r in records:
         all_scores.extend(r["scores"].values())
+
+    # Return non-zero if any task failed — skip report/overall scores.
+    failed = sum(1 for r in records if not r["status"].startswith("ok"))
+    if failed:
+        print(f"\n[FAIL] {failed} task(s) failed — exiting with code 1")
+        return 1
 
     report_path = root / "eval_report.html"
     write_html_report(report_path, model_path, run_name, model_name, records, all_scores)

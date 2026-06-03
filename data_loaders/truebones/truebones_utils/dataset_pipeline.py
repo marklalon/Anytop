@@ -328,6 +328,10 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
         tp.helper_metadata,
     )
     object_cond = dict()
+    # Provisional translation root from the T-pose animation. Will be refreshed
+    # by regenerate_dataset_artifacts._normalize_object_translation_roots, which
+    # aggregates per-motion translation_root_index values and picks the consensus.
+    object_cond['translation_root_index'] = int(_rest_translation_root_index)
     object_cond['tpos_first_frame'] = rest_pose_motion[0]
     object_cond['pose_base'] = 'rest_pose'
     joint_relations, joints_graph_dist = create_topology_edge_relations(tp.tpos_anim.parents, max_path_len=MAX_PATH_LEN)
