@@ -165,6 +165,7 @@ class GaussianDiffusion:
         rescale_timesteps=False,
         lambda_geo=0.,
         lambda_vel=0.,
+        lambda_energy=0.,
         lambda_loop_wrap=0.,
         lambda_loop_root_xz=0.,
         temporal_span_seam_loss_weight=0.0,
@@ -176,6 +177,7 @@ class GaussianDiffusion:
         self.rescale_timesteps = rescale_timesteps
         self.lambda_geo = lambda_geo
         self.lambda_vel = lambda_vel
+        self.lambda_energy = lambda_energy
         self.lambda_loop_wrap = float(lambda_loop_wrap)
         self.lambda_loop_root_xz = float(lambda_loop_root_xz)
         self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
@@ -458,6 +460,49 @@ class GaussianDiffusion:
         valid = valid_joints.expand(-1, -1, -1, loss.shape[-1])
         loss_val = (loss * valid).sum() / (valid.sum() * 3).clamp(min=1)
         return loss_val
+
+    def global_energy_consistency_loss(self, pred_xstart, x_start_clean, n_joints, drop_mask):
+        """Resample-free auxiliary loss giving the global-energy FiLM branch a
+        dedicated gradient that does not vanish as the backbone learns to
+        reconstruct from x_t (counters the gradient starvation that makes the
+        energy condition fade in late training).
+
+        Mathematical self-consistency: both the prediction energy and the target
+        energy are produced by the *same* operator
+        ``GlobalEnergyExtractor.compute_global_energy_condition(..., playspeed_cond=None)``
+        applied to tensors in the *same* normalized feature space and the *same*
+        training-window time base. Passing ``playspeed_cond=None`` takes the fully
+        vectorized branch and never enters the per-sample resample loop, so this
+        is resample-free by construction. Because pred and target share base and
+        units, the squared difference is dimensionally well-posed.
+
+        Note (intentional design): the FiLM condition itself may have been built
+        in a *source* time base (speed/phase-invariant) when playspeed augmentation
+        is active, whereas this loss supervises the *window-base* energy of the
+        clean target x_start. The two coincide without playspeed augmentation and
+        differ only by a per-sample monotone speed factor otherwise, so the
+        gradient direction stays correct. We deliberately keep the window base to
+        stay resample-free rather than re-derive the source base on pred_xstart.
+
+        Dropped samples (CFG: condition replaced by the running mean) are excluded:
+        there the condition no longer encodes the true energy, so supervising them
+        would teach the model to ignore the condition.
+
+        :param pred_xstart: model x0 prediction, normalized, (B, J, F, T).
+        :param x_start_clean: ground-truth x0, normalized, (B, J, F, T).
+        :param n_joints: per-sample valid joint counts, (B,).
+        :param drop_mask: bool (B,), True where the energy condition was dropped.
+        """
+        pred_energy = GlobalEnergyExtractor.compute_global_energy_condition(
+            pred_xstart, n_joints=n_joints, playspeed_cond=None
+        )  # (B, 1), carries grad into the network (incl. FiLM)
+        with th.no_grad():
+            target_energy = GlobalEnergyExtractor.compute_global_energy_condition(
+                x_start_clean, n_joints=n_joints, playspeed_cond=None
+            )  # (B, 1)
+        per_sample = ((pred_energy - target_energy) ** 2).mean(dim=-1)  # (B,)
+        keep = (~drop_mask).to(per_sample.dtype)
+        return (per_sample * keep).sum() / keep.sum().clamp_min(1.0)
 
     def _coerce_bool_batch(self, value, batch_size, device, default=False):
         if value is None:
@@ -1733,6 +1778,23 @@ class GaussianDiffusion:
                         model_output_denorm, joints_padding_mask_fp32, actual_joints_fp32, (model_kwargs or {}).get('y', {})
                     )
                     terms["loss"] = terms["loss"] + self.lambda_vel * terms["vel_loss"]
+
+                # Auxiliary global-energy consistency loss. Only valid when the
+                # model directly predicts x0 (START_X): then model_output_fp32 is
+                # pred_x0 and target_fp32 is x_start, both in normalized window
+                # base -- exactly what the resample-free energy operator expects.
+                # drop_mask is present only when global_energy_cond is enabled.
+                energy_drop_mask = model_kwargs.get('y', {}).get('global_energy_drop_mask') \
+                    if isinstance(model_kwargs, dict) else None
+                if (
+                    self.lambda_energy > 0.
+                    and self.model_mean_type == ModelMeanType.START_X
+                    and energy_drop_mask is not None
+                ):
+                    terms["energy_loss"] = self.global_energy_consistency_loss(
+                        model_output_fp32, target_fp32, actual_joints, energy_drop_mask
+                    )
+                    terms["loss"] = terms["loss"] + self.lambda_energy * terms["energy_loss"]
 
                 if self.lambda_loop_wrap > 0.0:
                     y = model_kwargs.get('y', {}) if isinstance(model_kwargs, dict) else {}

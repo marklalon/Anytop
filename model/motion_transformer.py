@@ -1045,6 +1045,15 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             self.global_energy_film = nn.Linear(self.d_model, self.d_model * 2)
             nn.init.zeros_(self.global_energy_film.weight)
             nn.init.zeros_(self.global_energy_film.bias)
+            # Widen the multiplicative FiLM range from tanh's native (-1, 1) to
+            # (-scale, scale). With the old unit range, any target |gamma| >= 1
+            # could only be approached by pushing the pre-activation into tanh
+            # saturation, where the gradient dies and the branch locks up (a
+            # contributor to the energy condition fading in late training). With
+            # scale=3 the model reaches strong modulation at moderate, non-
+            # saturated pre-activations. Zero-init still starts FiLM at identity
+            # (gamma=0) regardless of scale.
+            self.global_energy_film_gamma_scale = 3.0
         # norm_ref is applied by the global-energy FiLM path.
         self.norm_ref = nn.LayerNorm(d_model)
         # The cross-limb pathway is owned by GraphMotionDecoder (one block per
@@ -1129,7 +1138,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             )
         cond = global_energy_condition.to(device=x.device, dtype=x.dtype)
         gamma, beta = self.global_energy_film(cond).chunk(2, dim=-1)
-        gamma = torch.tanh(gamma).view(1, bs, 1, feats)
+        gamma = (self.global_energy_film_gamma_scale * torch.tanh(gamma)).view(1, bs, 1, feats)
         beta = beta.view(1, bs, 1, feats)
         return x * (1.0 + gamma) + beta
     

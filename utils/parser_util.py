@@ -93,6 +93,11 @@ def add_model_options(parser):
                        help="Weight for velocity-position consistency loss (0.0=off)."
                             " Penalizes |pos[t+1]-pos[t] - vel[t]|^2 on denormalized outputs."
                             " Couples position and velocity feature groups to prevent independent memorization.")
+    group.add_argument("--lambda_energy", default=0.0, type=float,
+                       help="Weight for the global-energy consistency loss (0.0=off)."
+                            " Resample-free: matches the energy of pred_x0 to the clean target in the"
+                            " normalized window base, on non-CFG-dropped samples. Gives the energy FiLM"
+                            " branch a dedicated gradient to counter late-training condition fade.")
     group.add_argument("--lambda_loop_wrap", default=0.0, type=float,
                        help="Weight for loop-only wrap loss on denormalized pose/rotation/terminal_vel channels.")
     group.add_argument("--lambda_loop_root_xz", default=0.0, type=float,
@@ -275,14 +280,10 @@ def add_generate_options(parser):
                            "When combined with --inpaint_*, the skip is applied "
                            "only inside the masked region by starting that region from an img2img-noised reference, while "
                           "the unmasked region stays clamped to the original reference throughout denoising.")
-    group.add_argument("--global_energy_mean", default=None, type=float,
-                       help="Override the clip-level global energy mean in normalized (Z-score) space. "
+    group.add_argument("--global_energy", default=None, type=float,
+                       help="Override the clip-level global energy in normalized (Z-score) space. "
                            "0.0 = training average intensity, 1.0 = 1 std above average, -0.5 = half std below average. "
                            "If omitted, generation defaults to the checkpoint's running mean (equivalent to 0.0).")
-    group.add_argument("--global_energy_std", default=None, type=float,
-                       help="Override the clip-level global energy std in normalized (Z-score) space. "
-                           "0.0 = training average intensity variation, 1.0 = 1 std above average variation. "
-                           "If omitted, generation defaults to the checkpoint's running std proxy (equivalent to 0.0).")
     group.add_argument("--inpaint_joints", default="", type=str,
                        help="Motion inpainting (mask painting): comma-separated joint names whose motion is "
                             "REGENERATED while the rest is held to --reference_motion. Names accept any of the "

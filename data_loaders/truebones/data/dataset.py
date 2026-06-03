@@ -198,9 +198,7 @@ def _compute_global_energy_condition_np(motion: np.ndarray, n_joints: int) -> np
     energy = np.sqrt(velocity_norm * velocity_norm + rotation_delta_norm * rotation_delta_norm + 1e-6)
 
     frame_mean = energy.mean(axis=1)
-    frame_second_moment = (energy * energy).mean(axis=1)
-    frame_std = np.sqrt(np.maximum(frame_second_moment - frame_mean * frame_mean, 0.0) + 1e-6)
-    return np.asarray([frame_mean.mean(), frame_std.mean()], dtype=np.float32)
+    return np.asarray([frame_mean.mean()], dtype=np.float32)
 
 
 def _circular_roll_motion(motion, offset):

@@ -203,20 +203,16 @@ def prepare_generation_runtime(args=None, cond_dict=None):
 def validate_reference_configuration(
     reference_motion_path=None,
     skip_timesteps=0,
-    global_energy_mean=None,
-    global_energy_std=None,
+    global_energy=None,
 ):
     # Global energy is auto-extracted from the reference, so an explicit
-    # --global_energy_mean/--global_energy_std cannot be combined with
-    # --reference_motion. (Without a reference, e.g. pure-random generation, the
-    # CLI values remain the only source and are allowed.)
-    if reference_motion_path is not None and (
-        global_energy_mean is not None or global_energy_std is not None
-    ):
+    # --global_energy cannot be combined with --reference_motion. (Without a
+    # reference, e.g. pure-random generation, the CLI value remains the only
+    # source and is allowed.)
+    if reference_motion_path is not None and global_energy is not None:
         raise ValueError(
-            "--global_energy_mean / --global_energy_std cannot be combined with "
-            "--reference_motion; global energy is automatically extracted from the "
-            "reference motion."
+            "--global_energy cannot be combined with --reference_motion; "
+            "global energy is automatically extracted from the reference motion."
         )
     return int(skip_timesteps) if skip_timesteps is not None else 0
 
@@ -235,8 +231,8 @@ def _finalize_output_lengths(requested_frames, min_length, internal_num_frames):
     return requested_frames, requested_frames, playspeed
 
 
-def resolve_global_energy_condition(model, global_energy_mean, global_energy_std, batch_size):
-    if global_energy_mean is None and global_energy_std is None:
+def resolve_global_energy_condition(model, global_energy, batch_size):
+    if global_energy is None:
         return None
     if not model_supports_global_energy_conditioning(model):
         raise ValueError(
@@ -247,21 +243,13 @@ def resolve_global_energy_condition(model, global_energy_mean, global_energy_std
     running_mean = unwrapped_model.global_energy_running_mean.detach().to(device='cpu', dtype=torch.float32).clone()
     running_var = unwrapped_model.global_energy_running_var.detach().to(device='cpu', dtype=torch.float32).clone()
     running_std = torch.sqrt(running_var.clamp_min(1e-6))
-    # CLI values are in normalized space (Z-score against training distribution).
+    # CLI value is in normalized space (Z-score against training distribution).
     # De-normalize to raw space so that downstream _build_global_energy_token
-    # re-normalizes them correctly: raw = norm * running_std + running_mean.
+    # re-normalizes it correctly: raw = norm * running_std + running_mean.
     raw = running_mean.clone()
-    if global_energy_mean is not None:
-        raw[0] = float(global_energy_mean) * running_std[0] + running_mean[0]
-    if global_energy_std is not None:
-        raw[1] = float(global_energy_std) * running_std[1] + running_mean[1]
+    raw[0] = float(global_energy) * running_std[0] + running_mean[0]
     if not torch.isfinite(raw).all():
-        raise ValueError("--global_energy_mean/--global_energy_std must be finite")
-    if float(raw[1]) < 0.0:
-        raise ValueError(
-            "--global_energy_std resolves to a negative raw energy std "
-            f"({float(raw[1]):.4f}) after de-normalization; choose a less negative value"
-        )
+        raise ValueError("--global_energy must be finite")
     return raw.unsqueeze(0).expand(batch_size, -1).clone()
 
 
@@ -269,8 +257,8 @@ def _compute_global_energy_from_reference(ref_motion, n_joints, playspeed_cond=N
     """Extract raw global energy [mean, std] from a reference motion tensor.
 
     ``ref_motion`` must be a (B, J, F, T) tensor in the model feature space.
-    Returns a (B, 2) float32 tensor on the same device with columns
-    ``[global_mean, global_std]`` ready for ``_build_global_energy_token``.
+    Returns a (B, 1) float32 tensor on the same device with column
+    ``[global_energy]`` ready for ``_build_global_energy_token``.
     """
     from Anytop.model.anytop import GlobalEnergyExtractor
 
@@ -1134,8 +1122,7 @@ def main(args=None, cond_dict=None, runtime=None):
         skip_timesteps = validate_reference_configuration(
             reference_motion_path=getattr(args, 'reference_motion', None),
             skip_timesteps=skip_timesteps_raw,
-            global_energy_mean=getattr(args, 'global_energy_mean', None),
-            global_energy_std=getattr(args, 'global_energy_std', None),
+            global_energy=getattr(args, 'global_energy', None),
         )
     except ValueError as exc:
         sys.exit(f"ERROR: {exc}")
@@ -1201,8 +1188,7 @@ def main(args=None, cond_dict=None, runtime=None):
     try:
         global_energy_condition = resolve_global_energy_condition(
             model,
-            getattr(args, 'global_energy_mean', None),
-            getattr(args, 'global_energy_std', None),
+            getattr(args, 'global_energy', None),
             args.batch_size,
         )
     except ValueError as exc:
@@ -1521,9 +1507,9 @@ def main(args=None, cond_dict=None, runtime=None):
             else:
                 print(f'    skip_timesteps: {skip_timesteps} (higher = more faithful to reference)')
             # ── Auto-extract global energy from the reference ────────────────
-            # --global_energy_mean/--global_energy_std cannot be combined with
-            # --reference_motion (enforced above), so when a reference is loaded
-            # we always have `global_energy_condition is None` here.
+            # --global_energy cannot be combined with --reference_motion
+            # (enforced above), so when a reference is loaded we always have
+            # `global_energy_condition is None` here.
             if ref_motion is not None:
                 if model_supports_global_energy_conditioning(model):
                     _ref_n_joints = torch.full(
@@ -1537,20 +1523,17 @@ def main(args=None, cond_dict=None, runtime=None):
                         playspeed_cond=float(reference_source_frame_count) / float(output_frame_count),
                     )
                     if global_energy_condition is not None:
-                        ge_mean = float(global_energy_condition[0, 0])
-                        ge_std = float(global_energy_condition[0, 1])
+                        ge_raw = float(global_energy_condition[0, 0])
                         # Normalize using the model's running stats for display
                         _uw_model = unwrap_anytop_model(model)
                         _rm = _uw_model.global_energy_running_mean.to(device='cpu', dtype=torch.float32)
                         _rs = torch.sqrt(
                             _uw_model.global_energy_running_var.to(device='cpu', dtype=torch.float32).clamp_min(1e-6)
                         )
-                        ge_mean_norm = (ge_mean - float(_rm[0])) / float(_rs[0])
-                        ge_std_norm = (ge_std - float(_rm[1])) / float(_rs[1])
+                        ge_norm = (ge_raw - float(_rm[0])) / float(_rs[0])
                         print(
                             f'    Global energy auto-extracted from reference: '
-                            f'mean={ge_mean_norm:.4f}, std={ge_std_norm:.4f}'
-                            f' (normalized z-score)'
+                            f'{ge_norm:.4f} (normalized z-score)'
                         )
                 
         if (user_inpaint_active or outpaint_active) and ref_motion is None:

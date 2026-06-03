@@ -87,13 +87,13 @@ class AnyTop(nn.Module):
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, dropout_prob=self.dropout)
         if self.global_energy_cond:
             self.global_energy_projection = nn.Sequential(
-                nn.LayerNorm(2),
-                nn.Linear(2, self.latent_dim),
+                nn.LayerNorm(1),
+                nn.Linear(1, self.latent_dim),
                 nn.GELU(),
                 nn.Linear(self.latent_dim, self.latent_dim),
             )
-            self.register_buffer('global_energy_running_mean', torch.zeros(2, dtype=torch.float32))
-            self.register_buffer('global_energy_running_var', torch.ones(2, dtype=torch.float32))
+            self.register_buffer('global_energy_running_mean', torch.zeros(1, dtype=torch.float32))
+            self.register_buffer('global_energy_running_var', torch.ones(1, dtype=torch.float32))
             self.register_buffer('global_energy_running_count', torch.zeros((), dtype=torch.long))
         else:
             self.global_energy_projection = None
@@ -162,12 +162,12 @@ class AnyTop(nn.Module):
             raw_global_energy_cond = raw_global_energy_cond.unsqueeze(0)
         elif raw_global_energy_cond.dim() != 2:
             raise ValueError(
-                "global_energy_cond must have shape (2,) or (B, 2), got "
+                "global_energy_cond must have shape (1,) or (B, 1), got "
                 f"{tuple(raw_global_energy_cond.shape)}"
             )
-        if raw_global_energy_cond.shape[1] != 2:
+        if raw_global_energy_cond.shape[1] != 1:
             raise ValueError(
-                "global_energy_cond must provide [energy_mean, energy_std], got "
+                "global_energy_cond must provide [energy], got "
                 f"shape {tuple(raw_global_energy_cond.shape)}"
             )
         if raw_global_energy_cond.shape[0] == 1 and batch_size != 1:
@@ -703,17 +703,17 @@ class GlobalEnergyExtractor:
 
                 # Step 1: Apply joint mask via _masked_mean_and_std (dim=2 = joint).
                 # Result: (B, max_T, 4) — per-frame energy features averaged over joints.
-                global_mean, global_std = cls._masked_mean_and_std(
+                global_mean, _ = cls._masked_mean_and_std(
                     joint_motion_frame_features,
                     valid_joints.unsqueeze(1).expand(-1, max_target, -1).to(dtype),
                 )
 
                 # Step 2: Apply frame mask via weighted mean over time (dim=1 = time).
                 # frame_mask: (B, max_T) — 1 for valid frames, 0 for padding.
-                energy_profile = torch.cat([global_mean[..., 2:3], global_std[..., 2:3]], dim=-1)  # (B, max_T, 2)
+                energy_profile = global_mean[..., 2:3]  # (B, max_T, 1)
                 frame_weights = frame_mask.unsqueeze(-1).to(dtype)  # (B, max_T, 1)
                 frame_weights_sum = frame_weights.sum(dim=1).clamp_min(1e-6)  # (B, 1)
-                result = (energy_profile * frame_weights).sum(dim=1) / frame_weights_sum  # (B, 2)
+                result = (energy_profile * frame_weights).sum(dim=1) / frame_weights_sum  # (B, 1)
                 return result
 
         motion_inputs = cls._extract_joint_motion_inputs(motion, n_joints)
@@ -721,11 +721,11 @@ class GlobalEnergyExtractor:
         frame_count = motion_inputs['frame_count']
         valid_joints = motion_inputs['valid_joints']
         joint_motion_frame_features = motion_inputs['joint_motion_frame_features']
-        global_mean, global_std = cls._masked_mean_and_std(
+        global_mean, _ = cls._masked_mean_and_std(
             joint_motion_frame_features,
             valid_joints[:, None, :].expand(-1, frame_count, -1).to(dtype),
         )
-        global_energy_profile = torch.cat([global_mean[..., 2:3], global_std[..., 2:3]], dim=-1)
+        global_energy_profile = global_mean[..., 2:3]
         return global_energy_profile.mean(dim=1)
 
 class OutputProcess(nn.Module):

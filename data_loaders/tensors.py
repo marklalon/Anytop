@@ -98,7 +98,7 @@ def truebones_collate(batch):
             )
         cond['y'].update({
             'global_energy_cond': torch.stack([
-                torch.as_tensor(batch_item['global_energy_cond'], dtype=torch.float32).reshape(2)
+                torch.as_tensor(batch_item['global_energy_cond'], dtype=torch.float32).reshape(1)
                 for batch_item in notnone_batches
             ]),
         })

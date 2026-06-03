@@ -3,12 +3,12 @@
   "tasks": [
     { "category": "Basic", "args": ["--object_type", "Buffalo"] },
 
-    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "30", "--global_energy_mean", "1", "--loop"] },
-    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "30", "--global_energy_mean", "-1", "--loop"] },
-    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "60", "--global_energy_mean", "1", "--loop"] },
-    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "60", "--global_energy_mean", "-1", "--loop"] },
-    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "120", "--global_energy_mean", "1", "--loop"] },
-    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "120", "--global_energy_mean", "-1", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "30", "--global_energy", "1", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "30", "--global_energy", "-1", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "60", "--global_energy", "1", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "60", "--global_energy", "-1", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "120", "--global_energy", "1", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "120", "--global_energy", "-1", "--loop"] },
 
     { "category": "ConvertLoop", "args": ["--reference_motion", "outputs/test/Buffalo_Run_Noloop.npy", "--skip_timesteps", "90", "--loop"] },
 

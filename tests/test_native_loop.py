@@ -155,7 +155,7 @@ class NativeLoopTests(unittest.TestCase):
     def test_truebones_collate_rejects_mixed_global_energy_condition(self):
         with self.assertRaises(ValueError):
             truebones_batch_collate([
-                _make_batch_item(True, True, global_energy_cond=[0.7, 0.2]),
+                _make_batch_item(True, True, global_energy_cond=[0.7]),
                 _make_batch_item(False, False),
             ])
 
