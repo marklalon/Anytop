@@ -86,8 +86,13 @@ class AnyTop(nn.Module):
 
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, dropout_prob=self.dropout)
         if self.global_energy_cond:
+            # NOTE: do NOT prepend nn.LayerNorm(1) here. LayerNorm over a
+            # size-1 feature dim maps every scalar input to a constant (mean=x
+            # => x-mean=0), which silently collapses the energy condition so
+            # --global_energy has no effect. The input is already Z-scored
+            # against the running stats in _build_global_energy_token, so no
+            # normalization layer is needed.
             self.global_energy_projection = nn.Sequential(
-                nn.LayerNorm(1),
                 nn.Linear(1, self.latent_dim),
                 nn.GELU(),
                 nn.Linear(self.latent_dim, self.latent_dim),

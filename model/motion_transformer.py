@@ -1050,10 +1050,10 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             # could only be approached by pushing the pre-activation into tanh
             # saturation, where the gradient dies and the branch locks up (a
             # contributor to the energy condition fading in late training). With
-            # scale=3 the model reaches strong modulation at moderate, non-
+            # scale=2 the model reaches strong modulation at moderate, non-
             # saturated pre-activations. Zero-init still starts FiLM at identity
             # (gamma=0) regardless of scale.
-            self.global_energy_film_gamma_scale = 3.0
+            self.global_energy_film_gamma_scale = 2.0
         # norm_ref is applied by the global-energy FiLM path.
         self.norm_ref = nn.LayerNorm(d_model)
         # The cross-limb pathway is owned by GraphMotionDecoder (one block per
