@@ -139,8 +139,6 @@ def create_gaussian_diffusion(args):
         rescale_timesteps=rescale_timesteps,
         lambda_geo=args.lambda_geo,
         lambda_vel=getattr(args, 'lambda_vel', 0.0),
-        lambda_energy=getattr(args, 'lambda_energy', 0.0),
-        lambda_bone=getattr(args, 'lambda_bone', 0.0),
         lambda_loop_wrap=getattr(args, 'lambda_loop_wrap', 0.0),
         lambda_loop_root_xz=getattr(args, 'lambda_loop_root_xz', 0.0),
         temporal_span_seam_loss_weight=getattr(args, 'temporal_span_seam_loss_weight', 0.0),

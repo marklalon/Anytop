@@ -93,16 +93,6 @@ def add_model_options(parser):
                        help="Weight for velocity-position consistency loss (0.0=off)."
                             " Penalizes |pos[t+1]-pos[t] - vel[t]|^2 on denormalized outputs."
                             " Couples position and velocity feature groups to prevent independent memorization.")
-    group.add_argument("--lambda_energy", default=0.0, type=float,
-                       help="Weight for the global-energy consistency loss (0.0=off)."
-                            " Resample-free: matches the energy of pred_x0 to the clean target in the"
-                            " normalized window base, on non-CFG-dropped samples. Gives the energy FiLM"
-                            " branch a dedicated gradient to counter late-training condition fade.")
-    group.add_argument("--lambda_bone", default=0.0, type=float,
-                       help="Weight for the target-relative bone-length consistency loss (0.0=off)."
-                            " Matches predicted parent->child bone length to the ground-truth length on"
-                            " denormalized RIC position channels. Target-relative: supervises toward the"
-                            " true (possibly varying) length, so legitimately-stretchy joints are not penalized.")
     group.add_argument("--lambda_loop_wrap", default=0.0, type=float,
                        help="Weight for loop-only wrap loss on denormalized pose/rotation/terminal_vel channels.")
     group.add_argument("--lambda_loop_root_xz", default=0.0, type=float,

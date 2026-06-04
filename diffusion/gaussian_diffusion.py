@@ -165,8 +165,6 @@ class GaussianDiffusion:
         rescale_timesteps=False,
         lambda_geo=0.,
         lambda_vel=0.,
-        lambda_energy=0.,
-        lambda_bone=0.,
         lambda_loop_wrap=0.,
         lambda_loop_root_xz=0.,
         temporal_span_seam_loss_weight=0.0,
@@ -178,8 +176,6 @@ class GaussianDiffusion:
         self.rescale_timesteps = rescale_timesteps
         self.lambda_geo = lambda_geo
         self.lambda_vel = lambda_vel
-        self.lambda_energy = lambda_energy
-        self.lambda_bone = lambda_bone
         self.lambda_loop_wrap = float(lambda_loop_wrap)
         self.lambda_loop_root_xz = float(lambda_loop_root_xz)
         self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
@@ -462,98 +458,6 @@ class GaussianDiffusion:
         valid = valid_joints.expand(-1, -1, -1, loss.shape[-1])
         loss_val = (loss * valid).sum() / (valid.sum() * 3).clamp(min=1)
         return loss_val
-
-    def bone_length_consistency_loss(self, target_denorm, model_output_denorm, parents, spat_mask, eps_frac=0.05):
-        """Relative bone-length consistency loss on denormalized RIC positions.
-
-        Penalizes the relative (pred - gt) / gt parent->child bone length error
-        on position channels (feature slots 0:3).  The RIC->world recovery is a
-        per-frame rigid map, so the parent-child distance is the physical bone
-        length.  The error is divided by the target length (floored at
-        ``eps_frac`` of the per-sample characteristic bone length) to make the
-        loss dimensionless and scale-invariant across species and bone sizes.
-        Matches the GT length per-frame, so legitimate length variation is never
-        penalized (the global minimum is the GT motion).
-
-        :param target_denorm: GT x0, denormalized, ``(B, J, F, T)``.
-        :param model_output_denorm: predicted x0, denormalized, ``(B, J, F, T)``.
-        :param parents: list of length B; each entry holds that sample's per-joint
-            parent indices (length <= J, ``-1`` marks a root).
-        :param spat_mask: joint padding mask, ``(B, 1, 1, J)``, 1 for valid joints.
-        :param eps_frac: denominator floor as a fraction of the per-sample mean
-            target bone length (guards against tiny/zero-length helper bones).
-        """
-        B, J, _F, T = model_output_denorm.shape
-        device = model_output_denorm.device
-
-        pos_pred = model_output_denorm[:, :, 0:3, :]   # (B, J, 3, T)
-        pos_tgt = target_denorm[:, :, 0:3, :]          # (B, J, 3, T)
-
-        valid_joint = spat_mask.reshape(B, J).bool()   # (B, J)
-        # Pad variable-length parents to a uniform (B, J) tensor so all
-        # subsequent ops are fully vectorized (5-8x faster on GPU than a
-        # per-batch Python loop).  Entries beyond each sample's actual parent
-        # list are filled with -1 and will be masked out by bone_valid.
-        # Strategy: pre-allocate (B, J) int64 with np.full, then fill via
-        # direct list-slice assignment -- avoids np.pad + np.stack overhead.
-        arr = np.full((B, J), -1, dtype=np.int64)
-        for bi, p in enumerate(parents):
-            n = min(len(p), J)
-            if n > 0:
-                arr[bi, :n] = p[:n]
-        parents_pad = th.from_numpy(arr).to(device=device, dtype=th.long)
-        has_parent = parents_pad >= 0                               # (B, J)
-        parent_idx = parents_pad.clamp_min(0)                        # (B, J)
-        # A bone is supervised only when both endpoints are valid (non-padded)
-        # joints and the child actually has a parent.
-        parent_ok = th.gather(valid_joint, 1, parent_idx)           # (B, J)
-        bone_valid = has_parent & valid_joint & parent_ok            # (B, J)
-
-        gather_idx = parent_idx[:, :, None, None].expand(-1, -1, 3, T)  # (B, J, 3, T)
-        pos_pred_parent = th.gather(pos_pred, 1, gather_idx)
-        pos_tgt_parent = th.gather(pos_tgt, 1, gather_idx)
-
-        len_pred = th.linalg.vector_norm(pos_pred - pos_pred_parent, dim=2)  # (B, J, T)
-        len_tgt = th.linalg.vector_norm(pos_tgt - pos_tgt_parent, dim=2)     # (B, J, T)
-
-        mask = bone_valid[:, :, None].to(len_tgt.dtype)    # (B, J, 1)
-        # Per-sample characteristic bone length -> a scale-invariant floor for the
-        # relative denominator (so tiny/zero-length helper bones can't blow up).
-        per_sample_bones = (mask.sum(dim=(1, 2)) * T).clamp(min=1)          # (B,)
-        char_len = (len_tgt * mask).sum(dim=(1, 2)) / per_sample_bones      # (B,)
-        floor = (eps_frac * char_len).clamp_min(1e-6).view(B, 1, 1)        # (B, 1, 1)
-        denom = th.maximum(len_tgt, floor)                                  # (B, J, T)
-
-        rel2 = ((len_pred - len_tgt) / denom) ** 2         # (B, J, T) dimensionless
-        count = (mask.sum() * T).clamp(min=1)
-        return (rel2 * mask).sum() / count
-
-    def global_energy_consistency_loss(self, pred_xstart, x_start_clean, n_joints, drop_mask):
-        """Global-energy FiLM auxiliary loss (resample-free).
-
-        Both pred and target energy are computed by the same operator
-        (``GlobalEnergyExtractor.compute_global_energy_condition``) in the same
-        normalized feature space and training-window time base, so the squared
-        difference is dimensionally well-posed.  This gives the FiLM branch a
-        dedicated gradient that prevents it from fading in late training.
-        Samples where the condition was CFG-dropped (``drop_mask=True``) are
-        excluded since the condition no longer encodes the true energy.
-
-        :param pred_xstart: model x0 prediction, normalized, (B, J, F, T).
-        :param x_start_clean: ground-truth x0, normalized, (B, J, F, T).
-        :param n_joints: per-sample valid joint counts, (B,).
-        :param drop_mask: bool (B,), True where the energy condition was dropped.
-        """
-        pred_energy = GlobalEnergyExtractor.compute_global_energy_condition(
-            pred_xstart, n_joints=n_joints, playspeed_cond=None
-        )  # (B, 1), carries grad into the network (incl. FiLM)
-        with th.no_grad():
-            target_energy = GlobalEnergyExtractor.compute_global_energy_condition(
-                x_start_clean, n_joints=n_joints, playspeed_cond=None
-            )  # (B, 1)
-        per_sample = ((pred_energy - target_energy) ** 2).mean(dim=-1)  # (B,)
-        keep = (~drop_mask).to(per_sample.dtype)
-        return (per_sample * keep).sum() / keep.sum().clamp_min(1.0)
 
     def _coerce_bool_batch(self, value, batch_size, device, default=False):
         if value is None:
@@ -1829,36 +1733,6 @@ class GaussianDiffusion:
                         model_output_denorm, joints_padding_mask_fp32, actual_joints_fp32, (model_kwargs or {}).get('y', {})
                     )
                     terms["loss"] = terms["loss"] + self.lambda_vel * terms["vel_loss"]
-
-                # Auxiliary global-energy consistency loss. Only valid when the
-                # model directly predicts x0 (START_X): then model_output_fp32 is
-                # pred_x0 and target_fp32 is x_start, both in normalized window
-                # base -- exactly what the resample-free energy operator expects.
-                # drop_mask is present only when global_energy_cond is enabled.
-                energy_drop_mask = model_kwargs.get('y', {}).get('global_energy_drop_mask') \
-                    if isinstance(model_kwargs, dict) else None
-                if (
-                    self.lambda_energy > 0.
-                    and self.model_mean_type == ModelMeanType.START_X
-                    and energy_drop_mask is not None
-                ):
-                    terms["energy_loss"] = self.global_energy_consistency_loss(
-                        model_output_fp32, target_fp32, actual_joints, energy_drop_mask
-                    )
-                    terms["loss"] = terms["loss"] + self.lambda_energy * terms["energy_loss"]
-
-                # Target-relative bone-length consistency. Operates on the
-                # denormalized RIC position channels so the parent->child distance
-                # is a physical bone length, and matches it to the GT length
-                # (never to a rigid prior, so legitimate length variation is safe).
-                if self.lambda_bone > 0.:
-                    y = model_kwargs.get('y', {}) if isinstance(model_kwargs, dict) else {}
-                    bone_parents = y.get('parents')
-                    if bone_parents is not None:
-                        terms["bone_loss"] = self.bone_length_consistency_loss(
-                            target_denorm, model_output_denorm, bone_parents, joints_padding_mask_fp32
-                        )
-                        terms["loss"] = terms["loss"] + self.lambda_bone * terms["bone_loss"]
 
                 if self.lambda_loop_wrap > 0.0:
                     y = model_kwargs.get('y', {}) if isinstance(model_kwargs, dict) else {}
