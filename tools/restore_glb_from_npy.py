@@ -39,6 +39,22 @@ Usage:
                 --npy "D:/AI/.../Horse___RunToStop_29.npy" \
                 --output-glb "outputs/Horse___RunToStop_29.glb"
 
+        # HML space: keep the NPY's orientation/scale/placement (like the
+        # corresponding processed BVH) instead of the T-pose mesh's native space
+        python tools/restore_glb_from_npy.py \
+                --npy "D:/AI/.../Horse___RunToStop_29.npy" \
+                --restore-space hml \
+                --output-glb "outputs/Horse___RunToStop_29.glb"
+
+Two restore spaces (``--restore-space``):
+    fbx (default)  Align the recovered animation to the T-pose mesh's native
+                   orientation / scale / translation.
+    hml            Reverse-align the T-pose mesh onto the NPY: re-apply the
+                   forward preprocessing similarity (scale_factor + orientation
+                   quat) to the imported rig so the GLB keeps the NPY's
+                   orientation, scale, and centered placement, with skin + rest
+                   pose bound correctly.
+
 """
 
 import argparse
@@ -773,6 +789,7 @@ def restore_glb(
     root_translation_xz: np.ndarray | None = None,
     fullbody_ik: bool = False,
     stretch_factor: float = _DEFAULT_IK_STRETCH_FACTOR,
+    restore_space: str = "fbx",
 ) -> str:
     """Restore a preprocessed NPY motion file to a skinned GLB.
 
@@ -797,6 +814,14 @@ def restore_glb(
                              Each edge may stretch/compress by ±stretch_factor
                              (e.g. 0.1 = ±10 %).  Default is {_DEFAULT_IK_STRETCH_FACTOR}.
                              Only effective when fullbody_ik is True.
+        restore_space:        Output coordinate space:
+                             ``"fbx"`` (default) aligns the animation to the
+                             T-pose mesh's native orientation/scale/translation
+                             (the prior behavior).  ``"hml"`` reverse-aligns the
+                             T-pose mesh onto the NPY so the GLB keeps the NPY's
+                             orientation, scale, and centered placement (like the
+                             corresponding processed BVH), with skin + rest pose
+                             bound correctly.
 
     Returns:
         The absolute path of the written GLB file.
@@ -811,6 +836,8 @@ def restore_glb(
     output_glb = os.path.abspath(output_glb)
     if stretch_factor < 0 or stretch_factor > 1.0:
         raise ValueError(f"stretch_factor must be in [0, 1], got {stretch_factor}")
+    if restore_space not in ("fbx", "hml"):
+        raise ValueError(f"restore_space must be 'fbx' or 'hml', got {restore_space!r}")
 
     # ── Load cond.npy ─────────────────────────────────────────────────────────
     cond_npy_path = cond_npy or _DEFAULT_COND_NPY
@@ -989,6 +1016,31 @@ def restore_glb(
 
     os.makedirs(os.path.dirname(output_glb) or ".", exist_ok=True)
 
+    # ── HML reverse-alignment (restore_space="hml") ─────────────────────────
+    # In "fbx" mode the recovered animation is exported in the T-pose mesh's
+    # native space. In "hml" mode we instead reverse-align the rig onto the NPY
+    # by re-applying the forward preprocessing similarity (scale + orientation)
+    # to the imported mesh/armature, so the GLB lands in the same space as the
+    # NPY / corresponding processed BVH.
+    global_similarity = None
+    if restore_space == "hml":
+        hml_scale = restore_ctx.get("scale_factor")
+        hml_orientation = restore_ctx.get("orientation_quat")
+        if hml_orientation is not None:
+            hml_orientation = np.asarray(hml_orientation, dtype=np.float64).reshape(-1)
+        if (hml_scale is None or abs(float(hml_scale) - 1.0) < 1e-8) and hml_orientation is None:
+            print(
+                "restore_space='hml' requested but neither scale_factor nor "
+                "orientation_quat is available; output matches 'fbx' space."
+            )
+        else:
+            print(
+                "Reverse-aligning rig into HML/npy space "
+                f"(scale={float(hml_scale) if hml_scale else 1.0:.6f}, "
+                f"orientation_quat={'set' if hml_orientation is not None else 'identity'})"
+            )
+        global_similarity = (hml_scale, hml_orientation)
+
     # ── Export skinned GLB + BVH ────────────────────────────────────────────
     exporter = AnimationExporter(skeleton, fps=fps)
     print(f"Exporting skinned GLB → {output_glb}")
@@ -1000,6 +1052,7 @@ def restore_glb(
         mesh_path=tpose_mesh,
         bone_translations=bone_translations,
         rotation_channel_mask=rotation_channel_mask,
+        global_similarity=global_similarity,
     )
 
     return os.path.abspath(output_glb)
@@ -1086,6 +1139,17 @@ def main() -> None:
             "i.e. ±10 %).  Only effective when --fullbody-ik is enabled."
         ),
     )
+    parser.add_argument(
+        "--restore-space",
+        choices=("fbx", "hml"),
+        default="fbx",
+        help=(
+            "Output coordinate space. 'fbx' (default) aligns the animation to the "
+            "T-pose mesh's native orientation/scale/translation. 'hml' reverse-aligns "
+            "the T-pose mesh onto the NPY so the GLB keeps the NPY's orientation, "
+            "scale, and centered placement (like the corresponding processed BVH)."
+        ),
+    )
 
 
     args = parser.parse_args()
@@ -1120,6 +1184,7 @@ def main() -> None:
     print(f"FPS           : {args.fps or '(auto)'}")
     print(f"Root XZ       : {args.root_translation_xz or '(centered default)'}")
     print(f"Stretch factor: {args.stretch_factor}")
+    print(f"Restore space : {args.restore_space}")
     print()
 
     restore_glb(
@@ -1132,6 +1197,7 @@ def main() -> None:
         root_translation_xz=args.root_translation_xz,
         fullbody_ik=args.fullbody_ik,
         stretch_factor=args.stretch_factor,
+        restore_space=args.restore_space,
     )
 
     _run_bone_length_check(args.output_glb, cond_npy_path, args.object_type)

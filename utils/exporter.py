@@ -188,6 +188,71 @@ def _normalize_imported_armature_and_meshes(bpy, armature) -> None:
         mesh.matrix_world = delta @ mesh_worlds_old[mesh.name]
 
 
+def _apply_gltf_output_space_similarity(
+    bpy,
+    armature,
+    scale_factor: float | None,
+    orientation_quat_wxyz: Optional[np.ndarray],
+) -> None:
+    """Reverse-align an imported rig into HML/npy space (skinned restore mode 2).
+
+    The skinned-GLB output lives in glTF output space (Y-up), which is the same
+    space the source FBX/GLB rig occupies after export. The preprocessing that
+    produced the NPY mapped that raw rig space into HML space with a single
+    global similarity ``G = Scale(scale_factor) · Rot(orientation_quat)`` (the
+    XZ-centering is a per-clip root translation already carried by the recovered
+    animation, and the descendant-Y bake is present in both spaces). Applying
+    ``G`` here therefore reverse-aligns the *rig* onto the NPY/HML frame instead
+    of aligning the animation onto the rig, so the exported GLB keeps the NPY's
+    orientation, scale, and centered placement (like the corresponding BVH).
+
+    ``G`` is expressed in glTF output space; the armature object lives in
+    Blender's Z-up space, so it is conjugated by the ``export_yup`` axis change
+    ``C`` (Blender Z-up -> glTF Y-up): ``D_blender = C⁻¹ · G · C``. The same
+    rigid + uniform-scale delta is applied to the armature and every bound mesh,
+    which preserves each mesh's armature-relative bind transform exactly.
+    """
+    from mathutils import Matrix, Quaternion
+
+    # Blender (Z-up) -> glTF (Y-up): (x, y, z) -> (x, z, -y). Matches export_yup=True.
+    C = Matrix((
+        (1.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 1.0, 0.0),
+        (0.0, -1.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 1.0),
+    ))
+
+    s = float(scale_factor) if scale_factor else 1.0
+    if s <= 0.0:
+        raise ValueError(f"scale_factor must be positive, got {s}")
+    G = Matrix.Scale(s, 4)
+    if orientation_quat_wxyz is not None:
+        q = np.asarray(orientation_quat_wxyz, dtype=np.float64).reshape(-1)
+        if q.shape != (4,):
+            raise ValueError(f"orientation_quat must have shape (4,), got {q.shape}")
+        rotation = Quaternion((float(q[0]), float(q[1]), float(q[2]), float(q[3]))).to_matrix().to_4x4()
+        G = G @ rotation
+
+    if s == 1.0 and (orientation_quat_wxyz is None):
+        return
+
+    delta = C.inverted() @ G @ C
+
+    related_meshes = []
+    for obj in bpy.data.objects:
+        if obj.type != "MESH":
+            continue
+        if obj.parent == armature or any(
+            mod.type == "ARMATURE" and mod.object == armature for mod in obj.modifiers
+        ):
+            related_meshes.append(obj)
+
+    mesh_worlds_old = {m.name: m.matrix_world.copy() for m in related_meshes}
+    armature.matrix_world = delta @ armature.matrix_world
+    for mesh in related_meshes:
+        mesh.matrix_world = delta @ mesh_worlds_old[mesh.name]
+
+
 class AnimationExporter:
     """Export optimised joint rotations to GLB, BVH."""
 
@@ -374,6 +439,7 @@ class AnimationExporter:
         mesh_path: Optional[str] = None,
         bone_translations: Optional[Tensor] = None,
         rotation_channel_mask: Optional[Tensor | np.ndarray] = None,
+        global_similarity: Optional[tuple[float | None, Optional[np.ndarray]]] = None,
     ) -> None:
         """Export GLB directly through bpy in the current Python process.
 
@@ -394,6 +460,12 @@ class AnimationExporter:
             rotation_channel_mask: Optional per-joint boolean mask. ``True`` keeps
                 writing animated rotation channels for that joint; ``False`` leaves
                 the imported/created rest rotation unkeyed for that joint.
+            global_similarity: Optional ``(scale_factor, orientation_quat_wxyz)``
+                forward HML similarity. When provided alongside *mesh_path*, the
+                imported rig (armature + bound meshes) is reverse-aligned into
+                HML/npy space so the exported GLB keeps the NPY's orientation,
+                scale, and centered placement (skinned restore mode 2). See
+                :func:`_apply_gltf_output_space_similarity`.
         """
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
@@ -454,6 +526,13 @@ class AnimationExporter:
                 raise RuntimeError(f"No armature found after importing mesh_path: {mesh_path}")
             if mesh_path_lower.endswith(".fbx"):
                 _normalize_imported_armature_and_meshes(bpy, armature)
+            if global_similarity is not None:
+                _apply_gltf_output_space_similarity(bpy, armature, *global_similarity)
+        elif global_similarity is not None:
+            raise ValueError(
+                "global_similarity (HML reverse-alignment) requires a mesh_path; "
+                "it has no effect on skeleton-only GLB export."
+            )
         else:
             armature = self._create_armature_from_skeleton(bpy, skeleton=export_skeleton)
 
