@@ -33,7 +33,7 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--eval_during_training ^
 	--eval_interval 500 ^
 	--dropout_prob 0.1 ^
-	--joint_mask_prob 0.3 ^
+	--joint_mask_prob 0.5 ^
 	--joint_mask_budget 0.15 ^
 	--temporal_window 41 ^
 	--temporal_span_mask_prob 0.3 ^
