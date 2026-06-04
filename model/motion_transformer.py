@@ -1042,18 +1042,14 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         self.temporal_attn = SelectiveMultiheadAttention(self.d_model, nhead, dropout=dropout)
         self.embed_timesteps = nn.Linear(d_model, d_model)
         if global_energy_cond:
-            self.global_energy_film = nn.Linear(self.d_model, self.d_model * 2)
+            # multiplicative-only FiLM: x * (1 + γ).  β is intentionally
+            # omitted — energy is motion magnitude so γ is the natural
+            # sufficient mechanism; β would inject a static per-feature
+            # offset that flows through the output head as a constant
+            # per-joint position bias (bone compression).
+            self.global_energy_film = nn.Linear(self.d_model, self.d_model)
             nn.init.zeros_(self.global_energy_film.weight)
             nn.init.zeros_(self.global_energy_film.bias)
-            # Widen the multiplicative FiLM range from tanh's native (-1, 1) to
-            # (-scale, scale). With the old unit range, any target |gamma| >= 1
-            # could only be approached by pushing the pre-activation into tanh
-            # saturation, where the gradient dies and the branch locks up (a
-            # contributor to the energy condition fading in late training). With
-            # scale=2 the model reaches strong modulation at moderate, non-
-            # saturated pre-activations. Zero-init still starts FiLM at identity
-            # (gamma=0) regardless of scale.
-            self.global_energy_film_gamma_scale = 2.0
         # norm_ref is applied by the global-energy FiLM path.
         self.norm_ref = nn.LayerNorm(d_model)
         # The cross-limb pathway is owned by GraphMotionDecoder (one block per
@@ -1137,10 +1133,9 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
                 f"{global_energy_condition.shape[0]} for batch {bs}"
             )
         cond = global_energy_condition.to(device=x.device, dtype=x.dtype)
-        gamma, beta = self.global_energy_film(cond).chunk(2, dim=-1)
-        gamma = (self.global_energy_film_gamma_scale * torch.tanh(gamma)).view(1, bs, 1, feats)
-        beta = beta.view(1, bs, 1, feats)
-        return x * (1.0 + gamma) + beta
+        gamma = self.global_energy_film(cond)
+        gamma = torch.tanh(gamma).view(1, bs, 1, feats)
+        return x * (1.0 + gamma)
     
     def forward(self,
         tgt: Tensor,
@@ -1185,7 +1180,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             )
         if global_energy_condition is not None:
             # norm_ref normalizes BEFORE FiLM so the LayerNorm doesn't undo
-            # the gamma/beta modulation. FiLM operates on unit-variance features.
+            # the γ modulation. FiLM operates on unit-variance features.
             x = self._apply_global_energy_cond(self.norm_ref(x), global_energy_condition)
         x = self.norm3(x + self._ff_block(x))
         return x

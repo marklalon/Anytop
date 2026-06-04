@@ -463,32 +463,25 @@ class GaussianDiffusion:
         loss_val = (loss * valid).sum() / (valid.sum() * 3).clamp(min=1)
         return loss_val
 
-    def bone_length_consistency_loss(self, target_denorm, model_output_denorm, parents, spat_mask):
-        """Target-relative bone-length consistency loss.
+    def bone_length_consistency_loss(self, target_denorm, model_output_denorm, parents, spat_mask, eps_frac=0.05):
+        """Relative bone-length consistency loss on denormalized RIC positions.
 
-        Penalizes the squared difference between the predicted and ground-truth
-        parent->child bone length, computed on the denormalized RIC position
-        channels (feature slots ``0:3``). The RIC->world recovery is a per-frame
-        rigid map (a shared facing rotation plus a shared root XZ translation),
-        so the parent-child distance in the ``[0:3]`` channels equals the
-        physical world-space bone length: ``||pos_j - pos_parent||`` is a
-        geometric quantity in real units.
-
-        The loss is *target-relative*: it matches the prediction to the GT bone
-        length whatever that length is. Joints whose length legitimately varies
-        in the data (translation roots, naturally stretchy rigs) are supervised
-        toward their true per-frame trajectory rather than toward a rigid prior,
-        so this never penalizes legitimate length change -- the global minimum is
-        the ground-truth motion itself. This complements ``l_simple``, which
-        penalizes each joint's absolute position independently and therefore
-        under-constrains the *relative* (parent->child) coordinate that
-        determines bone length.
+        Penalizes the relative (pred - gt) / gt parent->child bone length error
+        on position channels (feature slots 0:3).  The RIC->world recovery is a
+        per-frame rigid map, so the parent-child distance is the physical bone
+        length.  The error is divided by the target length (floored at
+        ``eps_frac`` of the per-sample characteristic bone length) to make the
+        loss dimensionless and scale-invariant across species and bone sizes.
+        Matches the GT length per-frame, so legitimate length variation is never
+        penalized (the global minimum is the GT motion).
 
         :param target_denorm: GT x0, denormalized, ``(B, J, F, T)``.
         :param model_output_denorm: predicted x0, denormalized, ``(B, J, F, T)``.
         :param parents: list of length B; each entry holds that sample's per-joint
             parent indices (length <= J, ``-1`` marks a root).
         :param spat_mask: joint padding mask, ``(B, 1, 1, J)``, 1 for valid joints.
+        :param eps_frac: denominator floor as a fraction of the per-sample mean
+            target bone length (guards against tiny/zero-length helper bones).
         """
         B, J, _F, T = model_output_denorm.shape
         device = model_output_denorm.device
@@ -523,37 +516,28 @@ class GaussianDiffusion:
         len_pred = th.linalg.vector_norm(pos_pred - pos_pred_parent, dim=2)  # (B, J, T)
         len_tgt = th.linalg.vector_norm(pos_tgt - pos_tgt_parent, dim=2)     # (B, J, T)
 
-        diff2 = (len_pred - len_tgt) ** 2                # (B, J, T)
-        mask = bone_valid[:, :, None].to(diff2.dtype)    # (B, J, 1)
-        denom = (mask.sum() * T).clamp(min=1)
-        return (diff2 * mask).sum() / denom
+        mask = bone_valid[:, :, None].to(len_tgt.dtype)    # (B, J, 1)
+        # Per-sample characteristic bone length -> a scale-invariant floor for the
+        # relative denominator (so tiny/zero-length helper bones can't blow up).
+        per_sample_bones = (mask.sum(dim=(1, 2)) * T).clamp(min=1)          # (B,)
+        char_len = (len_tgt * mask).sum(dim=(1, 2)) / per_sample_bones      # (B,)
+        floor = (eps_frac * char_len).clamp_min(1e-6).view(B, 1, 1)        # (B, 1, 1)
+        denom = th.maximum(len_tgt, floor)                                  # (B, J, T)
+
+        rel2 = ((len_pred - len_tgt) / denom) ** 2         # (B, J, T) dimensionless
+        count = (mask.sum() * T).clamp(min=1)
+        return (rel2 * mask).sum() / count
 
     def global_energy_consistency_loss(self, pred_xstart, x_start_clean, n_joints, drop_mask):
-        """Resample-free auxiliary loss giving the global-energy FiLM branch a
-        dedicated gradient that does not vanish as the backbone learns to
-        reconstruct from x_t (counters the gradient starvation that makes the
-        energy condition fade in late training).
+        """Global-energy FiLM auxiliary loss (resample-free).
 
-        Mathematical self-consistency: both the prediction energy and the target
-        energy are produced by the *same* operator
-        ``GlobalEnergyExtractor.compute_global_energy_condition(..., playspeed_cond=None)``
-        applied to tensors in the *same* normalized feature space and the *same*
-        training-window time base. Passing ``playspeed_cond=None`` takes the fully
-        vectorized branch and never enters the per-sample resample loop, so this
-        is resample-free by construction. Because pred and target share base and
-        units, the squared difference is dimensionally well-posed.
-
-        Note (intentional design): the FiLM condition itself may have been built
-        in a *source* time base (speed/phase-invariant) when playspeed augmentation
-        is active, whereas this loss supervises the *window-base* energy of the
-        clean target x_start. The two coincide without playspeed augmentation and
-        differ only by a per-sample monotone speed factor otherwise, so the
-        gradient direction stays correct. We deliberately keep the window base to
-        stay resample-free rather than re-derive the source base on pred_xstart.
-
-        Dropped samples (CFG: condition replaced by the running mean) are excluded:
-        there the condition no longer encodes the true energy, so supervising them
-        would teach the model to ignore the condition.
+        Both pred and target energy are computed by the same operator
+        (``GlobalEnergyExtractor.compute_global_energy_condition``) in the same
+        normalized feature space and training-window time base, so the squared
+        difference is dimensionally well-posed.  This gives the FiLM branch a
+        dedicated gradient that prevents it from fading in late training.
+        Samples where the condition was CFG-dropped (``drop_mask=True``) are
+        excluded since the condition no longer encodes the true energy.
 
         :param pred_xstart: model x0 prediction, normalized, (B, J, F, T).
         :param x_start_clean: ground-truth x0, normalized, (B, J, F, T).

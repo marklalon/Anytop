@@ -71,12 +71,15 @@ def test_compressed_bone_matches_hand_computation():
     pred[0, 2] = np.array([1.0, 1.5, 0.0])[:, None]  # compresses bone 1->2 to 1.5
 
     out = _loss().bone_length_consistency_loss(
-        _feature_tensor(pred), _feature_tensor(tgt), parents, _spat_mask(1, 3, [3])
+        _feature_tensor(tgt), _feature_tensor(pred), parents, _spat_mask(1, 3, [3])
     )
-    # Two valid bones (0->1 unchanged, 1->2 off by 0.5). Mean over (bone, frame):
-    # bone 0->1 err = 0; bone 1->2 err = (2.0-1.5)^2 = 0.25, over all T frames.
-    # mean = (0 + 0.25) / 2 = 0.125
-    assert out.item() == pytest.approx(0.125, abs=1e-6)
+    # Relative (dimensionless) form. Two valid bones: 0->1 (len 1, exact) and
+    # 1->2 (tgt len 2, pred 1.5). char_len = mean(1, 2) = 1.5; floor = 0.05*1.5
+    # = 0.075, so denom for bone 1->2 = max(2, 0.075) = 2.
+    #   bone 0->1 rel_err = 0
+    #   bone 1->2 rel_err = (1.5-2)/2 = -0.25 -> 0.0625
+    # mean over (bone, frame) = (0 + 0.0625) / 2 = 0.03125
+    assert out.item() == pytest.approx(0.03125, abs=1e-6)
 
 
 def test_legitimate_length_variation_not_penalized():
@@ -110,9 +113,13 @@ def test_rigid_prediction_against_varying_target_is_penalized():
     pred[0, 1, 1, :] = 1.0                              # rigid prediction at len 1.0
 
     out = _loss().bone_length_consistency_loss(
-        _feature_tensor(pred), _feature_tensor(tgt), parents, _spat_mask(1, 2, [2])
+        _feature_tensor(tgt), _feature_tensor(pred), parents, _spat_mask(1, 2, [2])
     )
-    expected = float(np.mean((np.linspace(1.0, 2.0, T) - 1.0) ** 2))
+    # Relative form: single bone 0->1, tgt len varies, pred len = 1.0.
+    # char_len = mean(linspace) = 1.5, floor = 0.075; all tgt lens >= 1 so
+    # denom = tgt len. rel_err per frame = (1 - tgt)/tgt.
+    tgt_len = np.linspace(1.0, 2.0, T)
+    expected = float(np.mean(((1.0 - tgt_len) / tgt_len) ** 2))
     assert out.item() == pytest.approx(expected, abs=1e-6)
 
 
@@ -130,7 +137,7 @@ def test_padded_joints_excluded():
     tgt[0, 3] = -999.0
 
     out = _loss().bone_length_consistency_loss(
-        _feature_tensor(pred), _feature_tensor(tgt), parents, _spat_mask(1, 4, [3])
+        _feature_tensor(tgt), _feature_tensor(pred), parents, _spat_mask(1, 4, [3])
     )
     assert out.item() == pytest.approx(0.0, abs=1e-7)
 
@@ -153,12 +160,14 @@ def test_per_sample_parents_and_masks():
     pred = _feature_tensor(pred_pos)
 
     out = _loss().bone_length_consistency_loss(
-        pred, tgt, parents, _spat_mask(2, 3, [3, 2])
+        tgt, pred, parents, _spat_mask(2, 3, [3, 2])
     )
-    # Valid bones: sample0 has 2 (both exact), sample1 has 1 (err (3-2)^2=1 each T).
-    # total valid bones across batch = 3; sum of squared err over frames = 1*T.
-    # denom = (#valid bones) * T = 3*T; numerator = 1*T -> 1/3.
-    assert out.item() == pytest.approx(1.0 / 3.0, abs=1e-6)
+    # Relative form, per-sample char_len. sample0: 2 bones, both exact -> 0.
+    # sample1: 1 bone, tgt len 3, pred 2; char_len=3, floor=0.15, denom=max(3,..)=3;
+    # rel_err = (2-3)/3 = -1/3 -> (1/3)^2 = 1/9 per frame, T=2 frames.
+    # total = 2 * 1/9; count = (#valid bones across batch=3) * T(=2) = 6.
+    # loss = (2/9) / 6 = 1/27.
+    assert out.item() == pytest.approx(1.0 / 27.0, abs=1e-6)
 
 
 if __name__ == "__main__":
