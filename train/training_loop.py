@@ -616,7 +616,8 @@ class TrainLoop:
         #clip_grad_value_(self.model.parameters(), clip_value=1.5)
         took_step = self.mp_trainer.optimize(self.opt, self.lr_scheduler)
         if took_step and self.model_avg is not None:
-            update_ema(self.model_avg.parameters(), self.model.parameters())
+            update_ema(self.model_avg.parameters(), self.model.parameters(),
+                       rate=self.args.ema_rate)
         self._anneal_lr()
         self.log_step()
 

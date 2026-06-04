@@ -215,6 +215,8 @@ def add_training_options(parser):
                        help="If not empty, will start from the specified checkpoint (path to model###.pt file).")
     group.add_argument("--use_ema", action='store_true',
                        help="If True, will use EMA model averaging.")
+    group.add_argument("--ema_rate", default=0.99, type=float,
+                       help="EMA decay rate (closer to 1 = slower updates). Default 0.99.")
     group.add_argument("--balanced", action='store_true',
                        help="Use balancing sampler for fairness between topologies")
     group.add_argument("--drop_last", action='store_true', default=False,
