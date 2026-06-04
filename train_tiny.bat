@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=quadropeds_locomotion_retarget_v4
+set RUN_NAME=quadropeds_locomotion_retarget_v5
 
 pushd "%SCRIPT_DIR%"
 
@@ -42,7 +42,8 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--lambda_loop_root_xz 0.2 ^
 	--lambda_vel 0.5 ^
 	--lambda_geo 0.5 ^
-	--lambda_energy 0.1 ^
+	--lambda_bone 0.1 ^
+	--lambda_energy 0.05 ^
 	--motion_cache_size 512 ^
 	--amp_dtype bf16 ^
 	--main_process_prefetch_batches 64

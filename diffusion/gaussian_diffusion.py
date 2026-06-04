@@ -166,6 +166,7 @@ class GaussianDiffusion:
         lambda_geo=0.,
         lambda_vel=0.,
         lambda_energy=0.,
+        lambda_bone=0.,
         lambda_loop_wrap=0.,
         lambda_loop_root_xz=0.,
         temporal_span_seam_loss_weight=0.0,
@@ -178,6 +179,7 @@ class GaussianDiffusion:
         self.lambda_geo = lambda_geo
         self.lambda_vel = lambda_vel
         self.lambda_energy = lambda_energy
+        self.lambda_bone = lambda_bone
         self.lambda_loop_wrap = float(lambda_loop_wrap)
         self.lambda_loop_root_xz = float(lambda_loop_root_xz)
         self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
@@ -460,6 +462,71 @@ class GaussianDiffusion:
         valid = valid_joints.expand(-1, -1, -1, loss.shape[-1])
         loss_val = (loss * valid).sum() / (valid.sum() * 3).clamp(min=1)
         return loss_val
+
+    def bone_length_consistency_loss(self, target_denorm, model_output_denorm, parents, spat_mask):
+        """Target-relative bone-length consistency loss.
+
+        Penalizes the squared difference between the predicted and ground-truth
+        parent->child bone length, computed on the denormalized RIC position
+        channels (feature slots ``0:3``). The RIC->world recovery is a per-frame
+        rigid map (a shared facing rotation plus a shared root XZ translation),
+        so the parent-child distance in the ``[0:3]`` channels equals the
+        physical world-space bone length: ``||pos_j - pos_parent||`` is a
+        geometric quantity in real units.
+
+        The loss is *target-relative*: it matches the prediction to the GT bone
+        length whatever that length is. Joints whose length legitimately varies
+        in the data (translation roots, naturally stretchy rigs) are supervised
+        toward their true per-frame trajectory rather than toward a rigid prior,
+        so this never penalizes legitimate length change -- the global minimum is
+        the ground-truth motion itself. This complements ``l_simple``, which
+        penalizes each joint's absolute position independently and therefore
+        under-constrains the *relative* (parent->child) coordinate that
+        determines bone length.
+
+        :param target_denorm: GT x0, denormalized, ``(B, J, F, T)``.
+        :param model_output_denorm: predicted x0, denormalized, ``(B, J, F, T)``.
+        :param parents: list of length B; each entry holds that sample's per-joint
+            parent indices (length <= J, ``-1`` marks a root).
+        :param spat_mask: joint padding mask, ``(B, 1, 1, J)``, 1 for valid joints.
+        """
+        B, J, _F, T = model_output_denorm.shape
+        device = model_output_denorm.device
+
+        pos_pred = model_output_denorm[:, :, 0:3, :]   # (B, J, 3, T)
+        pos_tgt = target_denorm[:, :, 0:3, :]          # (B, J, 3, T)
+
+        valid_joint = spat_mask.reshape(B, J).bool()   # (B, J)
+        # Pad variable-length parents to a uniform (B, J) tensor so all
+        # subsequent ops are fully vectorized (5-8x faster on GPU than a
+        # per-batch Python loop).  Entries beyond each sample's actual parent
+        # list are filled with -1 and will be masked out by bone_valid.
+        # Strategy: pre-allocate (B, J) int64 with np.full, then fill via
+        # direct list-slice assignment -- avoids np.pad + np.stack overhead.
+        arr = np.full((B, J), -1, dtype=np.int64)
+        for bi, p in enumerate(parents):
+            n = min(len(p), J)
+            if n > 0:
+                arr[bi, :n] = p[:n]
+        parents_pad = th.from_numpy(arr).to(device=device, dtype=th.long)
+        has_parent = parents_pad >= 0                               # (B, J)
+        parent_idx = parents_pad.clamp_min(0)                        # (B, J)
+        # A bone is supervised only when both endpoints are valid (non-padded)
+        # joints and the child actually has a parent.
+        parent_ok = th.gather(valid_joint, 1, parent_idx)           # (B, J)
+        bone_valid = has_parent & valid_joint & parent_ok            # (B, J)
+
+        gather_idx = parent_idx[:, :, None, None].expand(-1, -1, 3, T)  # (B, J, 3, T)
+        pos_pred_parent = th.gather(pos_pred, 1, gather_idx)
+        pos_tgt_parent = th.gather(pos_tgt, 1, gather_idx)
+
+        len_pred = th.linalg.vector_norm(pos_pred - pos_pred_parent, dim=2)  # (B, J, T)
+        len_tgt = th.linalg.vector_norm(pos_tgt - pos_tgt_parent, dim=2)     # (B, J, T)
+
+        diff2 = (len_pred - len_tgt) ** 2                # (B, J, T)
+        mask = bone_valid[:, :, None].to(diff2.dtype)    # (B, J, 1)
+        denom = (mask.sum() * T).clamp(min=1)
+        return (diff2 * mask).sum() / denom
 
     def global_energy_consistency_loss(self, pred_xstart, x_start_clean, n_joints, drop_mask):
         """Resample-free auxiliary loss giving the global-energy FiLM branch a
@@ -1795,6 +1862,19 @@ class GaussianDiffusion:
                         model_output_fp32, target_fp32, actual_joints, energy_drop_mask
                     )
                     terms["loss"] = terms["loss"] + self.lambda_energy * terms["energy_loss"]
+
+                # Target-relative bone-length consistency. Operates on the
+                # denormalized RIC position channels so the parent->child distance
+                # is a physical bone length, and matches it to the GT length
+                # (never to a rigid prior, so legitimate length variation is safe).
+                if self.lambda_bone > 0.:
+                    y = model_kwargs.get('y', {}) if isinstance(model_kwargs, dict) else {}
+                    bone_parents = y.get('parents')
+                    if bone_parents is not None:
+                        terms["bone_loss"] = self.bone_length_consistency_loss(
+                            target_denorm, model_output_denorm, bone_parents, joints_padding_mask_fp32
+                        )
+                        terms["loss"] = terms["loss"] + self.lambda_bone * terms["bone_loss"]
 
                 if self.lambda_loop_wrap > 0.0:
                     y = model_kwargs.get('y', {}) if isinstance(model_kwargs, dict) else {}
