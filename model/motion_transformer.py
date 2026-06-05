@@ -954,6 +954,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                 temporal_mask: Optional[Tensor] = None, tgt_key_padding_mask: Optional[Tensor] = None,
             memory_key_padding_mask: Optional[Tensor] = None, y=None,
             global_energy_condition: Optional[Tensor] = None,
+            global_energy_active: Optional[Tensor] = None,
             temporal_template: Optional[Tensor] = None,
             cross_limb_unreliable_mask: Optional[Tensor] = None,
             loop_phase_mask: Optional[Tensor] = None,
@@ -1014,6 +1015,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             output = mod(
                     output, timesteps_embs, topology_rel, edge_rel, self.edge_key_emb, self.edge_query_emb, edge_value_emb, self.topology_key_emb, self.topology_query_emb, topology_value_emb, spatial_mask, temporal_mask,
                     tgt_key_padding_mask, memory_key_padding_mask, y, global_energy_condition,
+                    global_energy_active=global_energy_active,
                     temporal_template=temporal_template, cross_limb_block=cl_block,
                     cross_limb_unreliable_mask=cross_limb_unreliable_mask,
                     loop_phase_mask=loop_phase_mask_batch,
@@ -1154,6 +1156,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         memory_key_padding_mask: Optional[Tensor] = None, #for future use
         y = None,
         global_energy_condition: Optional[Tensor] = None,
+        global_energy_active: Optional[Tensor] = None,
         temporal_template: Optional[Tensor] = None,
         cross_limb_block: Optional[nn.Module] = None,
         cross_limb_unreliable_mask: Optional[Tensor] = None,
@@ -1181,6 +1184,16 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         if global_energy_condition is not None:
             # norm_ref normalizes BEFORE FiLM so the LayerNorm doesn't undo
             # the γ modulation. FiLM operates on unit-variance features.
-            x = self._apply_global_energy_cond(self.norm_ref(x), global_energy_condition)
+            modulated = self._apply_global_energy_cond(self.norm_ref(x), global_energy_condition)
+            if global_energy_active is not None:
+                # Per-sample hard-null CFG: unconditional (dropped) samples
+                # bypass norm_ref + FiLM entirely so their path is byte-identical
+                # to a global_energy_cond=False model. The discarded modulated
+                # rows also carry no gradient into the FiLM, so dropped samples
+                # never train the energy projection.
+                active = global_energy_active.view(1, x.shape[1], 1, 1)
+                x = torch.where(active, modulated, x)
+            else:
+                x = modulated
         x = self.norm3(x + self._ff_block(x))
         return x

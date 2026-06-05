@@ -1548,6 +1548,7 @@ class GaussianDiffusion:
         model_for_hooks = self._unwrap_model_for_training_hooks(model)
         if not getattr(model_for_hooks, 'global_energy_cond', False):
             y.pop('global_energy_cond', None)
+            y.pop('global_energy_active', None)
             return
 
         n_joints = y.get('n_joints')
@@ -1580,24 +1581,20 @@ class GaussianDiffusion:
                 playspeed_cond=y.get('playspeed_cond'),
             )
 
-        # CFG: randomly drop the energy condition to the running mean so the
-        # model learns to actually respond to it rather than ignoring it
-        # (without a drop path, zero-initialized FiLM has no incentive to move
-        # away from identity). Record the mask explicitly: the running mean is
-        # mutated by the forward pass, so the consistency loss cannot reliably
-        # reverse-engineer which samples were dropped from float proximity.
-        drop_mask = th.zeros(batch_size, dtype=th.bool, device=x_start.device)
+        # CFG (hard null): randomly mark samples as unconditional this step. A
+        # dropped sample bypasses the energy sublayer entirely in the forward
+        # (no norm_ref, no FiLM, excluded from running-stats) -- byte-identical
+        # to a global_energy_cond=False model -- so the model learns a genuine
+        # unconditional path rather than "average energy". Without a drop path,
+        # zero-initialized FiLM has no incentive to move away from identity.
+        # We pass an explicit per-sample active mask instead of mutating the
+        # energy value, so the raw label is preserved for the conditional rows.
+        global_energy_active = th.ones(batch_size, dtype=th.bool, device=x_start.device)
         drop_prob = getattr(model_for_hooks, 'global_energy_cfg_drop_prob', 0.1)
         if drop_prob > 0.0 and model_for_hooks.training:
-            drop_mask = th.rand(batch_size, device=x_start.device) < drop_prob
-            if drop_mask.any():
-                running_mean = model_for_hooks.global_energy_running_mean.to(
-                    device=x_start.device, dtype=x_start.dtype
-                )
-                global_energy_cond = global_energy_cond.clone()
-                global_energy_cond[drop_mask] = running_mean
+            global_energy_active = th.rand(batch_size, device=x_start.device) >= drop_prob
         y['global_energy_cond'] = global_energy_cond
-        y['global_energy_drop_mask'] = drop_mask
+        y['global_energy_active'] = global_energy_active
 
     def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
         """

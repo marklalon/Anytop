@@ -141,11 +141,17 @@ class AnyTop(nn.Module):
         """
         return torch.arange(njoints, device=device)[None, :] >= n_joints[:, None]
 
-    def _update_global_energy_running_stats(self, raw_global_energy_cond):
+    def _update_global_energy_running_stats(self, raw_global_energy_cond, energy_active=None):
         if not self.global_energy_cond or raw_global_energy_cond.numel() == 0:
             return
 
         batch_stats = raw_global_energy_cond.detach().to(dtype=torch.float32)
+        if energy_active is not None:
+            # CFG-dropped samples are unconditional this step: they must not
+            # leak into the running stats (the model sees no energy for them).
+            batch_stats = batch_stats[energy_active]
+            if batch_stats.numel() == 0:
+                return
         batch_mean = batch_stats.mean(dim=0)
         batch_var = batch_stats.var(dim=0, unbiased=False).clamp_min(1e-6)
         with torch.no_grad():
@@ -158,8 +164,10 @@ class AnyTop(nn.Module):
             self.global_energy_running_count.add_(int(batch_stats.shape[0]))
 
     def _coerce_global_energy_condition(self, raw_global_energy_cond, batch_size, device, dtype):
-        if raw_global_energy_cond is None:
-            raw_global_energy_cond = self.global_energy_running_mean.unsqueeze(0)
+        # raw_global_energy_cond is never None here: _build_global_energy_token
+        # short-circuits to the unconditional (no-token) path before calling
+        # this. We intentionally do NOT fall back to the running mean -- a
+        # missing condition means "no energy token at all", not "average energy".
         if not torch.is_tensor(raw_global_energy_cond):
             raw_global_energy_cond = torch.as_tensor(raw_global_energy_cond)
         raw_global_energy_cond = raw_global_energy_cond.to(device=device, dtype=dtype)
@@ -186,8 +194,15 @@ class AnyTop(nn.Module):
             raise ValueError("global_energy_cond must be finite")
         return raw_global_energy_cond
 
-    def _build_global_energy_token(self, raw_global_energy_cond, batch_size, device, dtype):
+    def _build_global_energy_token(self, raw_global_energy_cond, batch_size, device, dtype, energy_active=None):
         if not self.global_energy_cond or self.global_energy_projection is None:
+            return None
+        if raw_global_energy_cond is None:
+            # True unconditional path: emit no energy token at all, so the FiLM
+            # sublayer is bypassed downstream (byte-identical to a model built
+            # with global_energy_cond=False). Hit at inference when
+            # --global_energy is omitted. Nothing is observed, so running stats
+            # are left untouched.
             return None
 
         raw_global_energy_cond = self._coerce_global_energy_condition(
@@ -197,11 +212,28 @@ class AnyTop(nn.Module):
             dtype,
         )
         if self.training:
-            self._update_global_energy_running_stats(raw_global_energy_cond)
+            self._update_global_energy_running_stats(raw_global_energy_cond, energy_active)
         running_mean = self.global_energy_running_mean.to(device=device, dtype=dtype)
         running_std = torch.sqrt(self.global_energy_running_var.to(device=device, dtype=dtype).clamp_min(1e-6))
         normalized_global_energy = (raw_global_energy_cond - running_mean.unsqueeze(0)) / running_std.unsqueeze(0)
         return self.global_energy_projection(normalized_global_energy)
+
+    def _coerce_energy_active(self, raw_energy_active, batch_size, device):
+        # Per-sample CFG mask: True == conditional (apply FiLM), False == this
+        # sample is unconditional this step and must bypass the energy sublayer
+        # entirely. None means "all samples conditional" (e.g. inference with an
+        # explicit --global_energy, where no per-sample drop occurs).
+        if raw_energy_active is None:
+            return None
+        energy_active = torch.as_tensor(raw_energy_active, device=device, dtype=torch.bool).reshape(-1)
+        if energy_active.numel() == 1 and batch_size != 1:
+            energy_active = energy_active.expand(batch_size)
+        elif energy_active.numel() != batch_size:
+            raise ValueError(
+                "global_energy_active batch dimension must match the motion batch size, got "
+                f"{energy_active.numel()} for batch {batch_size}"
+            )
+        return energy_active
 
     def _coerce_loop_condition(self, raw_loop_cond, batch_size, device, dtype):
         if raw_loop_cond is None:
@@ -434,12 +466,19 @@ class AnyTop(nn.Module):
         else:
             temporal_template = None
 
+        global_energy_active = None
         if self.global_energy_cond:
+            global_energy_active = self._coerce_energy_active(
+                y.get('global_energy_active'),
+                batch_size=bs,
+                device=x.device,
+            )
             global_energy_condition = self._build_global_energy_token(
                 y.get('global_energy_cond'),
                 batch_size=bs,
                 device=x.device,
                 dtype=x.dtype,
+                energy_active=global_energy_active,
             )
 
         cross_limb_unreliable_mask = None
@@ -471,6 +510,7 @@ class AnyTop(nn.Module):
             tgt_key_padding_mask=joint_key_padding_mask,
             y=y,
             global_energy_condition=global_energy_condition,
+            global_energy_active=global_energy_active,
             temporal_template=temporal_template,
             cross_limb_unreliable_mask=cross_limb_unreliable_mask,
             loop_phase_mask=loop_phase_mask,
