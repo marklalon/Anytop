@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import sys
 from typing import Optional
 
 import numpy as np
@@ -657,16 +658,41 @@ class AnimationExporter:
         armature.select_set(True)
         bpy.ops.object.mode_set(mode="POSE")
 
-        for f in range(num_frames):
-            scene.frame_set(f)
+        # ── Build per-channel value arrays (vectorised over frames) ───
+        # Instead of setting properties + keyframe_insert F×J×3 times (tens of
+        # thousands of Python→C calls), we establish the fcurve structure with a
+        # single frame-0 keyframe per channel (so masking / root handling stays
+        # byte-for-byte identical to the per-frame path), then bulk-fill every
+        # frame in one ``foreach_set`` per fcurve. ``data_path_value_arrays``
+        # maps each fcurve's (data_path, array_index) to its length-F samples.
+        F = num_frames
+        jr_np = np.asarray(jr, dtype=np.float64) if F else None
+        rt_np = np.asarray(rt, dtype=np.float64) if F else None
+        rr_np = np.asarray(rr, dtype=np.float64) if F else None
+        bt_np = np.asarray(bt, dtype=np.float64) if (bt is not None and F) else None
+        zeros_f3 = np.zeros((F, 3), dtype=np.float64) if F else None
+        ones_f3 = np.ones((F, 3), dtype=np.float64) if F else None
+
+        data_path_value_arrays: dict[tuple[str, int], np.ndarray] = {}
+
+        def _record(base_path: str, arr: np.ndarray) -> None:
+            # arr has shape (F, C); register one entry per component column.
+            for c in range(arr.shape[1]):
+                data_path_value_arrays[(base_path, c)] = np.ascontiguousarray(arr[:, c])
+
+        if F:
             if not mesh_path:
-                armature.location = (rt[f][0], rt[f][1], rt[f][2])
                 armature.rotation_mode = "QUATERNION"
-                armature.rotation_quaternion = (rr[f][0], rr[f][1], rr[f][2], rr[f][3])
+                armature.location = tuple(rt_np[0])
+                armature.rotation_quaternion = tuple(rr_np[0])
                 armature.scale = (1.0, 1.0, 1.0)
-                armature.keyframe_insert(data_path="location", frame=f)
-                armature.keyframe_insert(data_path="rotation_quaternion", frame=f)
-                armature.keyframe_insert(data_path="scale", frame=f)
+                armature.keyframe_insert(data_path="location", frame=0)
+                armature.keyframe_insert(data_path="rotation_quaternion", frame=0)
+                armature.keyframe_insert(data_path="scale", frame=0)
+                _record(armature.path_from_id("location"), rt_np)
+                _record(armature.path_from_id("rotation_quaternion"), rr_np)
+                _record(armature.path_from_id("scale"), ones_f3)
+
             for j, bname in enumerate(bone_names):
                 pbone = armature.pose.bones.get(bname)
                 if pbone is None:
@@ -679,47 +705,61 @@ class AnimationExporter:
                     parent_id = self.skeleton.bones[j].parent_id if self.skeleton.bones[j].parent_id is not None else -1
                 is_root = parent_id < 0
                 if is_root and mesh_path:
-                    loc_val = rt[f]
-                    rot_val = rr[f]
-                    pbone.location = (loc_val[0], loc_val[1], loc_val[2])
+                    loc_arr = rt_np
+                    rot_arr = rr_np
                 else:
-                    rot_val = jr[f][j]
-                    if bt is not None:
-                        loc_val = bt[f][j] if not is_root else (0.0, 0.0, 0.0)
-                        pbone.location = (loc_val[0], loc_val[1], loc_val[2])
+                    rot_arr = jr_np[:, j, :]
+                    if bt_np is not None and not is_root:
+                        loc_arr = bt_np[:, j, :]
                     else:
-                        pbone.location = (0.0, 0.0, 0.0)
+                        loc_arr = zeros_f3
 
                 write_rotation_channel = (
                     True if rotation_channel_mask_np is None else bool(rotation_channel_mask_np[j])
                 )
                 pbone.rotation_mode = "QUATERNION"
+                pbone.location = tuple(loc_arr[0])
                 if write_rotation_channel:
-                    pbone.rotation_quaternion = (rot_val[0], rot_val[1], rot_val[2], rot_val[3])
+                    pbone.rotation_quaternion = tuple(rot_arr[0])
                 else:
                     pbone.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
                 pbone.scale = (1.0, 1.0, 1.0)
-                pbone.keyframe_insert(data_path="location", frame=f)
+                pbone.keyframe_insert(data_path="location", frame=0)
                 if write_rotation_channel:
-                    pbone.keyframe_insert(data_path="rotation_quaternion", frame=f)
-                pbone.keyframe_insert(data_path="scale", frame=f)
+                    pbone.keyframe_insert(data_path="rotation_quaternion", frame=0)
+                pbone.keyframe_insert(data_path="scale", frame=0)
+
+                _record(pbone.path_from_id("location"), loc_arr)
+                if write_rotation_channel:
+                    _record(pbone.path_from_id("rotation_quaternion"), rot_arr)
+                _record(pbone.path_from_id("scale"), ones_f3)
 
         bpy.ops.object.mode_set(mode="OBJECT")
 
-        # ── Force LINEAR interpolation ────────────────────────────────
-        if action is not None:
-            all_fcurves = []
-            if hasattr(action, "fcurves"):
-                all_fcurves = list(action.fcurves)
-            elif hasattr(action, "layers"):
-                for layer in action.layers:
-                    for strip in layer.strips:
-                        if hasattr(strip, "channelbags"):
-                            for channelbag in strip.channelbags:
-                                all_fcurves.extend(channelbag.fcurves)
-            for fcurve in all_fcurves:
-                for kp in fcurve.keyframe_points:
-                    kp.interpolation = "LINEAR"
+        # ── Bulk-fill every frame on each fcurve via foreach_set ──────
+        if F and action is not None and data_path_value_arrays:
+            frames = np.arange(F, dtype=np.float64)
+            channelbags = []
+            for layer in getattr(action, "layers", []):
+                for strip in layer.strips:
+                    channelbags.extend(getattr(strip, "channelbags", []))
+            # LINEAR interpolation enum maps to integer 1 (CONSTANT=0, BEZIER=2).
+            linear_codes = np.ones(F, dtype=np.int32)
+            for cb in channelbags:
+                for fc in cb.fcurves:
+                    values = data_path_value_arrays.get((fc.data_path, fc.array_index))
+                    if values is None:
+                        continue
+                    existing = len(fc.keyframe_points)
+                    if existing < F:
+                        fc.keyframe_points.add(F - existing)
+                    co = np.empty(2 * F, dtype=np.float64)
+                    co[0::2] = frames
+                    co[1::2] = values
+                    fc.keyframe_points.foreach_set("co", co)
+                    # Force LINEAR (replaces the former per-keyframe Python loop).
+                    fc.keyframe_points.foreach_set("interpolation", linear_codes)
+                    fc.update()
 
         # ── Export GLB ────────────────────────────────────────────────
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
