@@ -102,7 +102,7 @@ def get_gmdm_args(args):
             'temporal_span_mask_min_frames': getattr(args, 'temporal_span_mask_min_frames', 4),
             'temporal_span_mask_max_frames': getattr(args, 'temporal_span_mask_max_frames', 12),
             'global_energy_cond': getattr(args, 'global_energy_cond', False),
-            'global_energy_cfg_drop_prob': getattr(args, 'global_energy_cfg_drop_prob', 0.3),
+            'global_energy_cfg_drop_prob': getattr(args, 'global_energy_cfg_drop_prob', 0.1),
             'loop_cond_prob': getattr(args, 'loop_cond_prob', 0.0),
             'root_input_feats': 13}
 
