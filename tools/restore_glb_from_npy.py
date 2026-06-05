@@ -59,6 +59,7 @@ Two restore spaces (``--restore-space``):
 
 import argparse
 import importlib.util
+import math
 import os
 import subprocess
 import sys
@@ -777,6 +778,69 @@ def _invert_preprocess_transform(
     )
 
 
+def _resample_frame_indices(
+    frame_count: int,
+    src_fps: float,
+    tgt_fps: float,
+    min_length: int | None = None,
+) -> list[float]:
+    """Fractional source-frame indices that resample ``frame_count`` to ``tgt_fps``.
+
+    The indices span ``[0, frame_count - 1]`` spaced ``src_fps / tgt_fps`` frames
+    apart, so a clip sampled at ``src_fps`` plays back at ``tgt_fps`` over the same
+    time span (e.g. 136 frames at 30fps → 68 indices at 15fps).  When ``min_length``
+    is given and the resampled clip is shorter, the whole clip is instead
+    *time-stretched* to exactly ``min_length`` frames — ``min_length`` indices
+    spread evenly across the source range — so a short motion is interpolated
+    (slowed down) to fill the minimum length with no looping/seam jump.  Returns
+    plain ``range(frame_count)`` when resampling is impossible/unnecessary.
+    """
+    if frame_count < 1:
+        return []
+    if src_fps and tgt_fps and src_fps > 0 and tgt_fps > 0 and frame_count >= 2:
+        step = src_fps / tgt_fps
+        n = int(math.floor((frame_count - 1) / step + 1e-6)) + 1 if step > 0 else frame_count
+        times = [i * step for i in range(max(n, 1))]
+    else:
+        times = [float(i) for i in range(frame_count)]
+    if min_length and len(times) < min_length:
+        times = np.linspace(0.0, float(frame_count - 1), min_length).tolist()
+    return times
+
+
+def _resample_animation(animation, frame_times):
+    """Resample an Animation in time at fractional ``frame_times`` (source-frame units).
+
+    Positions are linearly interpolated and rotations are slerped between the two
+    bracketing source frames; the rest pose (orients/offsets/parents) is unchanged.
+    Integer-ratio downsampling (e.g. 30→15fps) lands exactly on source frames, so
+    it is plain decimation with no interpolation error.
+    """
+    from motion_lib.Animation import Animation
+    from motion_lib.Quaternions import Quaternions
+
+    frame_count = animation.shape[0]
+    times = np.clip(np.asarray(frame_times, dtype=np.float64), 0.0, frame_count - 1)
+    lo = np.floor(times).astype(np.int64)
+    hi = np.minimum(lo + 1, frame_count - 1)
+    alpha = (times - lo)[:, None]   # (T, 1) — broadcasts over joints in slerp/lerp
+
+    positions = np.asarray(animation.positions, dtype=np.float64)
+    new_positions = (
+        positions[lo] * (1.0 - alpha[..., None]) + positions[hi] * alpha[..., None]
+    )
+    new_rotations = Quaternions.slerp(
+        animation.rotations[lo], animation.rotations[hi], alpha
+    )
+    return Animation(
+        new_rotations,
+        new_positions,
+        animation.orients.copy(),
+        animation.offsets.copy(),
+        animation.parents.copy(),
+    )
+
+
 # ── Main restore function ─────────────────────────────────────────────────────
 
 def restore_glb(
@@ -791,6 +855,8 @@ def restore_glb(
     stretch_factor: float = _DEFAULT_IK_STRETCH_FACTOR,
     restore_space: str = "fbx",
     use_image_search: bool = False,
+    resample_fps: float | None = None,
+    resample_min_length: int | None = None,
 ) -> str:
     """Restore a preprocessed NPY motion file to a skinned GLB.
 
@@ -829,6 +895,16 @@ def restore_glb(
                              matching diffuse/alpha texture from the mesh's
                              ``tex/`` folder onto any main character mesh still
                              lacking one. Default False (no texture resolution).
+        resample_fps:         If set (and > 0), resample the recovered motion in
+                             time from its native rate (``fps``) to this rate
+                             before export, and write the GLB at this rate
+                             (positions lerped, rotations slerped; integer ratios
+                             are exact decimation).  Default None (no resample —
+                             the GLB keeps the NPY's native frame count at ``fps``).
+        resample_min_length:  When resampling, if the resampled clip is shorter
+                             than this, time-stretch the whole clip to exactly this
+                             many frames (even interpolation, no looping).  Only
+                             effective when ``resample_fps`` is set.  Default None.
 
     Returns:
         The absolute path of the written GLB file.
@@ -1009,6 +1085,27 @@ def restore_glb(
                 "unobservable leaf joints before export."
             )
 
+    # ── Resample in time (optional) ─────────────────────────────────────────
+    # Off by default: the GLB keeps the NPY's native frame count at ``fps``.
+    # When resample_fps is set, retime the recovered motion from ``fps`` (native)
+    # to resample_fps and write the GLB at resample_fps, so downstream consumers
+    # (e.g. render_images_from_glb.py) can render every keyframe as-is instead of
+    # resampling at render time.
+    output_fps = fps
+    if resample_fps is not None and resample_fps > 0:
+        src_frames = export_anim.shape[0]
+        frame_times = _resample_frame_indices(
+            src_frames, fps, resample_fps, min_length=resample_min_length
+        )
+        export_anim = _resample_animation(export_anim, frame_times)
+        output_fps = resample_fps
+        print(
+            f"Resampled motion {src_frames} -> {export_anim.shape[0]} frames "
+            f"({fps:g}fps -> {resample_fps:g}fps"
+            + (f", min_length={resample_min_length}" if resample_min_length else "")
+            + ")"
+        )
+
     # ── Build skeleton for exporter ─────────────────────────────────────────
     skeleton = build_skeleton(
         export_joint_names,
@@ -1049,7 +1146,7 @@ def restore_glb(
         global_similarity = (hml_scale, hml_orientation)
 
     # ── Export skinned GLB + BVH ────────────────────────────────────────────
-    exporter = AnimationExporter(skeleton, fps=fps)
+    exporter = AnimationExporter(skeleton, fps=output_fps)
     print(f"Exporting skinned GLB → {output_glb}")
     exporter.export_glb(
         joint_rotations,
@@ -1169,6 +1266,25 @@ def main() -> None:
             "character mesh still missing one. Disabled by default."
         ),
     )
+    parser.add_argument(
+        "--resample-fps",
+        type=float,
+        default=None,
+        help=(
+            "Resample the recovered motion in time from its native rate (--fps) to "
+            "this rate before export, and write the GLB at this rate. Disabled by "
+            "default (the GLB keeps the NPY's native frame count)."
+        ),
+    )
+    parser.add_argument(
+        "--resample-min-length",
+        type=int,
+        default=None,
+        help=(
+            "When --resample-fps is set, loop (tile) the resampled clip so it has "
+            "at least this many frames. Default: no looping."
+        ),
+    )
 
 
     args = parser.parse_args()
@@ -1218,6 +1334,8 @@ def main() -> None:
         stretch_factor=args.stretch_factor,
         restore_space=args.restore_space,
         use_image_search=args.use_image_search,
+        resample_fps=args.resample_fps,
+        resample_min_length=args.resample_min_length,
     )
 
     _run_bone_length_check(args.output_glb, cond_npy_path, args.object_type)
