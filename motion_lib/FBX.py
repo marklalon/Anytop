@@ -160,11 +160,16 @@ def patch_fbx_light_import():
     mod.blen_read_light = _patched_blen_read_light
 
 
-def import_fbx(filepath: str) -> None:
+def import_fbx(filepath: str, use_image_search: bool = False) -> None:
     """Import an FBX file into the current Blender scene.
 
     Always imports with ``ignore_leaf_bones=False`` so that leaf bones carrying
     animation (tail tips, hair, halter, etc.) are preserved.
+
+    ``use_image_search`` (default ``False``) lets the importer recursively look
+    for texture files in directories near the FBX when the embedded texture
+    path does not resolve — useful for assets whose textures ship in a sibling
+    ``tex/`` folder but whose baked-in paths are stale.
     """
     import bpy
 
@@ -176,7 +181,7 @@ def import_fbx(filepath: str) -> None:
         automatic_bone_orientation=False,
         bake_space_transform=False,
         use_custom_normals=False,
-        use_image_search=False,
+        use_image_search=use_image_search,
     )
 
 

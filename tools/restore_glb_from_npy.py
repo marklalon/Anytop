@@ -790,6 +790,7 @@ def restore_glb(
     fullbody_ik: bool = False,
     stretch_factor: float = _DEFAULT_IK_STRETCH_FACTOR,
     restore_space: str = "fbx",
+    use_image_search: bool = False,
 ) -> str:
     """Restore a preprocessed NPY motion file to a skinned GLB.
 
@@ -822,6 +823,12 @@ def restore_glb(
                              orientation, scale, and centered placement (like the
                              corresponding processed BVH), with skin + rest pose
                              bound correctly.
+        use_image_search:     If True, resolve textures for the skinned mesh:
+                             the FBX importer first searches directories near
+                             the source mesh, then a fallback resolver wires a
+                             matching diffuse/alpha texture from the mesh's
+                             ``tex/`` folder onto any main character mesh still
+                             lacking one. Default False (no texture resolution).
 
     Returns:
         The absolute path of the written GLB file.
@@ -1053,6 +1060,7 @@ def restore_glb(
         bone_translations=bone_translations,
         rotation_channel_mask=rotation_channel_mask,
         global_similarity=global_similarity,
+        use_image_search=use_image_search,
     )
 
     return os.path.abspath(output_glb)
@@ -1150,6 +1158,17 @@ def main() -> None:
             "scale, and centered placement (like the corresponding processed BVH)."
         ),
     )
+    parser.add_argument(
+        "--use-image-search",
+        action="store_true",
+        default=False,
+        help=(
+            "Resolve textures for the skinned mesh: the FBX importer searches "
+            "directories near the source mesh, then a fallback wires a matching "
+            "diffuse/alpha texture from the mesh's tex/ folder onto any main "
+            "character mesh still missing one. Disabled by default."
+        ),
+    )
 
 
     args = parser.parse_args()
@@ -1198,6 +1217,7 @@ def main() -> None:
         fullbody_ik=args.fullbody_ik,
         stretch_factor=args.stretch_factor,
         restore_space=args.restore_space,
+        use_image_search=args.use_image_search,
     )
 
     _run_bone_length_check(args.output_glb, cond_npy_path, args.object_type)

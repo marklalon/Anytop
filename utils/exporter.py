@@ -27,6 +27,7 @@ from .retarget import (
     _batch_internal_pose_fk_np,
     retarget_world_space_np,
 )
+from .texture_resolve import resolve_main_character_textures
 
 
 __all__ = [
@@ -440,6 +441,7 @@ class AnimationExporter:
         bone_translations: Optional[Tensor] = None,
         rotation_channel_mask: Optional[Tensor | np.ndarray] = None,
         global_similarity: Optional[tuple[float | None, Optional[np.ndarray]]] = None,
+        use_image_search: bool = False,
     ) -> None:
         """Export GLB directly through bpy in the current Python process.
 
@@ -466,6 +468,13 @@ class AnimationExporter:
                 HML/npy space so the exported GLB keeps the NPY's orientation,
                 scale, and centered placement (skinned restore mode 2). See
                 :func:`_apply_gltf_output_space_similarity`.
+            use_image_search: When ``True`` (and *mesh_path* is an FBX), import
+                textures by recursively searching directories near the source
+                mesh (bpy's own resolver), then fall back to
+                :func:`_auto_resolve_main_character_textures` for any main
+                character mesh still left without a usable base-color texture.
+                When ``False`` (default), neither texture-resolution path runs
+                and the importer's behavior is unchanged.
         """
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
@@ -512,7 +521,7 @@ class AnimationExporter:
                 # to identity so pose-bone keyframes operate in armature space
                 # instead of double-counting the importer transform.
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                    import_fbx(mesh_path)
+                    import_fbx(mesh_path, use_image_search=use_image_search)
             elif mesh_path_lower.endswith((".glb", ".gltf")):
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     bpy.ops.import_scene.gltf(filepath=mesh_path)
@@ -524,6 +533,12 @@ class AnimationExporter:
             armature = next((o for o in bpy.data.objects if o.type == "ARMATURE"), None)
             if armature is None:
                 raise RuntimeError(f"No armature found after importing mesh_path: {mesh_path}")
+            # When texture resolution is requested, bpy's image search above
+            # handles the common case; fall back to our own resolver for any
+            # main-character mesh still missing a usable base-color texture.
+            # Best-effort and gated so default exports are unchanged.
+            if use_image_search:
+                resolve_main_character_textures(bpy, armature, mesh_path)
             if mesh_path_lower.endswith(".fbx"):
                 _normalize_imported_armature_and_meshes(bpy, armature)
             if global_similarity is not None:
