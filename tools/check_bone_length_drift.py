@@ -76,6 +76,10 @@ from eval.motion_quality.bone_length_drift import (
 
 
 from Anytop.utils.misc import normalize_bone_key as _normalize_bone_key
+from Anytop.utils.misc import normalize_identifier as _normalize_identifier
+from Anytop.data_loaders.truebones.truebones_utils.animation_utils import (
+    refresh_joint_metadata_in_object_cond,
+)
 
 
 _DEFAULT_COND_NPY = os.path.realpath(
@@ -89,6 +93,10 @@ class ReferenceSkeleton:
     bone_names: list[str]
     parents: np.ndarray
     offsets: np.ndarray
+    # Canonical AnyTop joint names, aligned 1:1 with ``bone_names``. Lets edge
+    # resolution also match HML-restored GLBs whose bones carry canonical names
+    # (e.g. "Tail 01") instead of the cond.npy raw names (e.g. "Tail01").
+    canonical_bone_names: list[str] | None = None
 
 
 @dataclass
@@ -157,11 +165,28 @@ def _load_reference_skeleton(object_type: str, cond_entry: dict[str, Any]) -> Re
             f"cond offsets shape mismatch for '{object_type}': expected ({len(bone_names)}, 3), got {offsets.shape}"
         )
 
+    # Derive canonical joint names so edge resolution can also match motions
+    # whose bones use canonical names (HML-restored GLBs). Best-effort: fall
+    # back to raw names if canonicalization is unavailable.
+    canonical_bone_names = cond_entry.get("canonical_joint_names")
+    if canonical_bone_names is None:
+        try:
+            derived = dict(cond_entry)
+            refresh_joint_metadata_in_object_cond(derived)
+            canonical_bone_names = derived.get("canonical_joint_names")
+        except Exception:  # noqa: BLE001 — matching is best-effort
+            canonical_bone_names = None
+    if canonical_bone_names is not None:
+        canonical_bone_names = [str(name) for name in canonical_bone_names]
+        if len(canonical_bone_names) != len(bone_names):
+            canonical_bone_names = None
+
     return ReferenceSkeleton(
         object_type=str(object_type),
         bone_names=bone_names,
         parents=parents,
         offsets=offsets,
+        canonical_bone_names=canonical_bone_names,
     )
 
 
@@ -386,7 +411,9 @@ def _load_motion(input_path: str, reference: ReferenceSkeleton) -> MotionWorldDa
 
 
 def _build_canonical_index(names: list[str]) -> dict[str, int]:
-    return {_normalize_bone_key(name): idx for idx, name in enumerate(names)}
+    # Strip non-alphanumerics so the spaced ("Tail 01") and BVH ("Tail01")
+    # canonical variants — and underscore differences — all unify to one key.
+    return {_normalize_identifier(name): idx for idx, name in enumerate(names)}
 
 
 def _compute_reference_rest_positions(offsets: np.ndarray, parents: np.ndarray) -> np.ndarray:
@@ -408,7 +435,24 @@ def _resolve_comparison_edges(
     Uses canonical bone name matching to align reference edges to motion joints.
     """
     motion_index = _build_canonical_index(motion.bone_names)
-    reference_canon = [_normalize_bone_key(name) for name in reference.bone_names]
+    # Each reference joint may be matched by its raw cond.npy name or its
+    # canonical name (HML-restored GLBs carry canonical bone names). Try the
+    # canonical key first, then fall back to the raw key. Keys use the same
+    # non-alphanumeric-stripping normalization as the motion index.
+    reference_raw_keys = [_normalize_identifier(name) for name in reference.bone_names]
+    if reference.canonical_bone_names is not None:
+        reference_canonical_keys = [
+            _normalize_identifier(name) for name in reference.canonical_bone_names
+        ]
+    else:
+        reference_canonical_keys = reference_raw_keys
+
+    def _motion_joint_for(joint_idx: int) -> int | None:
+        for key in (reference_canonical_keys[joint_idx], reference_raw_keys[joint_idx]):
+            motion_idx = motion_index.get(key)
+            if motion_idx is not None:
+                return motion_idx
+        return None
 
     # Use shared edge resolution for the reference skeleton
     ref_parent_arr, ref_child_arr = resolve_comparison_edges(
@@ -424,10 +468,8 @@ def _resolve_comparison_edges(
         child_idx = int(ref_child_arr[edge_idx])
         parent_idx = int(ref_parent_arr[edge_idx])
 
-        child_canon = reference_canon[child_idx]
-        parent_canon = reference_canon[parent_idx]
-        motion_child_idx = motion_index.get(child_canon)
-        motion_parent_idx = motion_index.get(parent_canon)
+        motion_child_idx = _motion_joint_for(child_idx)
+        motion_parent_idx = _motion_joint_for(parent_idx)
         if motion_child_idx is None or motion_parent_idx is None:
             continue
 

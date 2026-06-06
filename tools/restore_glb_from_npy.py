@@ -1158,6 +1158,8 @@ def restore_glb(
         rotation_channel_mask=rotation_channel_mask,
         global_similarity=global_similarity,
         use_image_search=use_image_search,
+        rename_bones_to_canonical=(restore_space == "hml"),
+        prune_unmapped_bones=(restore_space == "hml"),
     )
 
     return os.path.abspath(output_glb)
