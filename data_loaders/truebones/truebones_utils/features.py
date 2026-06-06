@@ -50,8 +50,6 @@ from .animation_utils import (
     get_rest_body_max_span,
     compute_scale_factor,
     scale_anim,
-    build_leaf_rotation_helper_metadata,
-    append_leaf_rotation_helpers_to_animation,
     compute_rots_from_tpos,
     solve_local_positions_for_target_global,
 )
@@ -175,8 +173,8 @@ def get_motion_features(ric_positions, rotations, foot_contact, velocity, termin
 
 
 """ returns cont6d params, including joints rotations, root rotation and rotational velocity,
-linear velocity and positions. Unlike BVH (and accordingly, Animation object) in which the parent holds the rotagtion of the child joint,
-in our data structure each joints holds it's own rotation (similar to humanML3D data structure and FK model)"""
+linear velocity and positions. Each joint stores its own local rotation directly
+(unlike BVH where the parent holds the rotation of the child joint)."""
 def get_bvh_cont6d_params(anim, object_type, orientation_quat, translation_root_index=0):
     positions = positions_global(anim)
     quat_params = anim.rotations
@@ -193,12 +191,8 @@ def get_bvh_cont6d_params(anim, object_type, orientation_quat, translation_root_
     # is retained as a parameter for call-site/signature compatibility and is
     # still stored separately in cond for metadata/retarget consumers.
     r_rot = Quaternions.id(positions.shape[0])
-    '''Quaternion to continuous 6D'''
+    '''Quaternion to continuous 6D — each joint stores its own local rotation'''
     cont_6d_params = get_6d_rep(quat_params)
-    cont_6d_params_reordered = np.zeros_like(cont_6d_params)
-    for j, p in enumerate(anim.parents[1:], 1):
-        cont_6d_params_reordered[:, j] = cont_6d_params[:, p]
-    cont_6d_params_reordered[:, 0] = get_6d_rep(r_rot)
     # (seq_len, 4)
     '''Root Linear Velocity'''
     # (seq_len - 1, 3)
@@ -208,7 +202,7 @@ def get_bvh_cont6d_params(anim, object_type, orientation_quat, translation_root_
     # (seq_len - 1, 4)
     r_velocity = r_rot[1:] * -r_rot[:-1]
     # (seq_len, joints_num, 4)
-    return cont_6d_params_reordered, r_velocity, velocity, r_rot, positions
+    return cont_6d_params, r_velocity, velocity, r_rot, positions
 
 
 """" process anim object """
@@ -379,7 +373,6 @@ def get_common_features_from_rest_pose(
     object_type,
     face_joints=None,
     *,
-    augment_leaf_rotation_helpers=False,
     max_joints=MAX_JOINTS,
 ):
     loaded_anim, rest_pose_names, _rest_pose_frame_time = FBX.load(rest_pose_path)
@@ -410,19 +403,7 @@ def get_common_features_from_rest_pose(
         rest_pose_orientation_quat,
         scale_factor=scale_factor,
     )
-    scaled_rest_offsets = offsets_from_positions(positions_global(scaled)[0], scaled.parents)
-    helper_metadata = build_leaf_rotation_helper_metadata(
-        rest_pose_names,
-        scaled.parents,
-        offsets=scaled_rest_offsets,
-        max_joints=max_joints if augment_leaf_rotation_helpers else len(scaled.parents),
-    )
-    if augment_leaf_rotation_helpers and helper_metadata['helper_joint_count'] > 0:
-        scaled, rest_pose_names = append_leaf_rotation_helpers_to_animation(
-            scaled,
-            rest_pose_names,
-            helper_metadata,
-        )
+    # Under own-rotation encoding, no leaf rotation helpers are needed.
     scaled_positions = positions_global(scaled)
     scaled_rest_positions = scaled_positions[0]
     offsets = offsets_from_positions(scaled_rest_positions, scaled.parents)
@@ -444,7 +425,6 @@ def get_common_features_from_rest_pose(
         forward_base_joint_index=forward_base_joint_index,
         contact_joint_source=contact_joint_source,
         axial_avg_len=axial_avg_len,
-        helper_metadata=helper_metadata,
     )
 
 
@@ -472,7 +452,6 @@ class TPoseFeatures:
     forward_base_joint_index: int
     contact_joint_source: str
     axial_avg_len: float
-    helper_metadata: dict[str, object]
 
 
 def extract_motion_features_from_aligned_anims(
@@ -551,7 +530,7 @@ def extract_motion_features_from_aligned_anims(
 
 
 """ processes animation, and returns a new animation that aligns with humanML3D in terms of orientation and scale"""
-def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squared_positions_error, *, scale_factor, foot_indices=None, orientation_quat, slice_inds=None, preloaded=None, helper_metadata=None, animation_input_is_tpose_aligned=True):
+def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squared_positions_error, *, scale_factor, foot_indices=None, orientation_quat, slice_inds=None, preloaded=None, animation_input_is_tpose_aligned=True):
     if not isinstance(fbx_path_or_anim, Animation):
         if preloaded is not None:
             raw_anim, names = preloaded
@@ -578,19 +557,10 @@ def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squa
         root_translation_xz = None
 
     if processed_anim.positions.shape[1] != offsets.shape[0]:
-        if helper_metadata is None:
-            raise ValueError(
-                f'Processed animation joint count {processed_anim.positions.shape[1]} does not match '
-                f'offset count {offsets.shape[0]} without helper metadata'
-            )
-        if not names:
-            raise ValueError('Cannot append helper joints to an Animation input without joint names')
-        processed_anim, names = append_leaf_rotation_helpers_to_animation(
-            processed_anim,
-            names,
-            helper_metadata,
+        raise ValueError(
+            f'Processed animation joint count {processed_anim.positions.shape[1]} does not match '
+            f'offset count {offsets.shape[0]}'
         )
-        frames_num = len(processed_anim)
 
     ## create new animation object in which the rotations are w.r.t the rest pose
     tpos_rots_correct_shape  = tpos_rots[None, 0].repeat(frames_num, axis = 0)
@@ -628,7 +598,7 @@ def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squa
 
 
 """ get motion feature representation"""
-def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joints, offsets, foot_indices, tpos_rots, squared_positions_error, *, scale_factor, orientation_quat, slice_inds=None, preloaded=None, helper_metadata=None, animation_input_is_tpose_aligned=True):
+def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joints, offsets, foot_indices, tpos_rots, squared_positions_error, *, scale_factor, orientation_quat, slice_inds=None, preloaded=None, animation_input_is_tpose_aligned=True):
     try:
         new_anim, export_anim, names, root_translation_xz = get_hml_aligned_anim(
             fbx_path_or_anim,
@@ -641,7 +611,6 @@ def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joint
             orientation_quat=orientation_quat,
             slice_inds=slice_inds,
             preloaded=preloaded,
-            helper_metadata=helper_metadata,
             animation_input_is_tpose_aligned=animation_input_is_tpose_aligned,
         )
         translation_root_index = resolve_detected_translation_root_index(
@@ -744,15 +713,11 @@ def recover_root_quat_and_pos_np(
     else:
         raise ValueError(f"Expected feature tensor with shape (F, C) or (F, J, C), got {motion.shape}.")
 
-    # joint row 0 stores the root-facing rotation used by the representation.
-    r_rot_quat = Quaternions.from_transforms(rotation_6d_to_matrix_np(root_features[:, 3:9]))
-
-    # Normalize sign: ensure w >= 0 for each frame.
-    # SciPy Rotation.from_matrix may return q or -q arbitrarily;
-    # a consistent sign is required for the downstream ``-r_rot_quat * ...``
-    # adjustment in ``recover_from_bvh_rot_np``.
-    mask = r_rot_quat.qs[..., 0:1] < 0
-    r_rot_quat.qs = np.where(mask, -r_rot_quat.qs, r_rot_quat.qs)
+    # Under the own-rotation encoding, slot 0 stores the root's own local
+    # rotation (used for FK).  The RIC representation was encoded with
+    # identity-facing (r_rot = identity after canonicalization), so
+    # de-rotation / velocity recovery must also use identity here.
+    r_rot_quat = Quaternions.id(motion.shape[0])
 
     r_pos = np.zeros(root_features.shape[:-1] + (3,))
     r_pos[..., 1:, [0, 2]] = translation_features[..., :-1, [9, 11]]
@@ -893,25 +858,12 @@ def recover_from_bvh_rot_np(
         motion_metadata=motion_metadata,
         allow_infer=allow_infer,
     )
-    r_rot_cont6d = get_6d_rep(r_rot_quat)
-    start_indx = 3
-    end_indx = 9
-    cont6d_params = data[..., 1:, start_indx:end_indx]
-    cont6d_params = np.concatenate([r_rot_cont6d[:, None, :], cont6d_params], axis=-2)
-    cont6d_params_hml_order = rotation_6d_to_matrix_np(cont6d_params)
-    cont6d_params = np.eye(3)[None, None].repeat(cont6d_params.shape[0], axis=0).repeat(cont6d_params.shape[1], axis=1)
-    for j, p in enumerate(parents[1:], 1):
-        cont6d_params[:, p] = cont6d_params_hml_order[:, j]
-    # NOTE: do NOT overwrite slot 0 with cont6d_params_hml_order[:, 0]. The encoder
-    # (get_bvh_cont6d_params) stores the *facing* r_rot (= identity under the
-    # orientation-quat normalization) at hml index 0, while the root's own LOCAL
-    # rotation is stored in the slots of the root's children. The scatter loop above
-    # therefore reconstructs the root local rotation into slot 0 correctly (every
-    # root-child slot holds parents[child]==0's rotation, so the value is consistent).
-    # Reassigning slot 0 to hml[0] would replace that reconstructed root rotation with
-    # the identity facing, freezing the source root (observed: dragon Cg 80deg->0deg in
-    # eval_retarget T6, killing source root motion).
+    # Under the own-rotation encoding, each feature slot j stores joint j's
+    # own local rotation as 6D continuous parameters (channels 3:9).
+    cont6d_params = rotation_6d_to_matrix_np(np.asarray(data[:, :, 3:9], dtype=np.float64))
     rotations = Quaternions.from_transforms(cont6d_params)
+    # NOTE: slot 0 now stores the root joint's own local rotation, so it is
+    # recovered directly alongside every other joint — no scatter required.
 
     # Normalize quaternion signs for roundtrip stability.
     # Without this, SciPy's Rotation.from_matrix may return q or -q
@@ -989,12 +941,9 @@ def recover_animation_from_motion_np(
     )
     glob_rot             = positions_global(anim_rot)                  # (F, J, 3)
 
-    # Zero-offset leaf joints are appended leaf-rotation helpers: they are
-    # co-located with their parent leaf by construction (offset == 0) and only
-    # exist to make the leaf's rotation recoverable. Their RIC position channel is
-    # a redundant copy of the parent leaf's, so the model's small per-joint
+    # Zero-offset leaf joints have no bone length, so the model's small per-joint
     # position error during generation must NOT be solved into a phantom local
-    # translation on a bone that has no length. Pin them to their rest offset.
+    # translation on them. Pin them to their (zero) rest offset instead.
     parents_arr = np.asarray(parents)
     offsets_arr = np.asarray(offsets)
     joint_count = len(parents_arr)
@@ -1025,8 +974,8 @@ def recover_animation_from_motion_np(
         position_match_threshold=1e-5,
         max_passes=2,
     )
-    # The direct solver above rewrites every joint, so re-pin the helpers it
-    # touched back onto their parent leaf.
+    # The direct solver above rewrites every joint, so re-pin the zero-offset
+    # leaf joints back onto their rest offset.
     if zero_offset_leaf.any():
         new_pos[:, zero_offset_leaf] = offsets_arr[zero_offset_leaf]
 

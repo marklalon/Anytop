@@ -27,9 +27,6 @@ from .animation_utils import (
     # BVH export
     needs_bvh_position_channels,
     reorder_animation_to_dfs,
-    # Leaf rotation helpers
-    build_leaf_rotation_helper_metadata,
-    append_leaf_rotation_helpers_to_animation,
 )
 
 # ── features (feature extraction & motion recovery) ─────────────────────

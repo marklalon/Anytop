@@ -52,9 +52,6 @@ from truebones_utils.param_utils import MOTION_DIR, get_dataset_dir  # noqa: E40
 from truebones_utils.physics_joint_annotation import (  # noqa: E402
     build_semantic_metadata,
 )
-from truebones_utils.animation_utils import (  # noqa: E402
-    extend_semantic_metadata_with_leaf_helpers,
-)
 
 
 from Anytop.utils.misc import normalize_identifier as _normalize_identifier
@@ -157,22 +154,9 @@ def _recompute_contact_joints(rebuilt_cond: dict[str, dict]) -> None:
         parents = np.asarray(object_cond["parents"], dtype=np.int64)
         offsets = np.asarray(object_cond["offsets"], dtype=np.float64)
         joint_names = list(object_cond["joints_names"])
-        original_joint_count = int(object_cond.get("original_joint_count", len(parents)))
 
-        base_names = joint_names[:original_joint_count]
-        base_parents = parents[:original_joint_count]
-        base_offsets = offsets[:original_joint_count]
-
-        base_semantic_metadata = build_semantic_metadata(
-            base_names, base_parents, base_offsets
-        )
-        semantic_metadata = extend_semantic_metadata_with_leaf_helpers(
-            base_semantic_metadata,
-            joint_names,
-            {
-                "helper_joint_indices": list(object_cond.get("helper_joint_indices") or []),
-                "helper_source_leaf_indices": list(object_cond.get("helper_source_leaf_indices") or []),
-            },
+        semantic_metadata = build_semantic_metadata(
+            joint_names, parents, offsets
         )
 
         old_contact = list(object_cond.get("contact_joints", []))

@@ -359,39 +359,12 @@ def _build_retarget_cond_dict(cond_dict, source_type, default_cond_cache=None):
 
 
 def _reference_skeleton_from_tpose(tp):
-    """Return (names, parents) of the original (un-augmented) reference skeleton.
+    """Return (names, parents) of the reference skeleton.
 
-    ``tp.names`` / ``tp.tpos_anim`` already include the appended leaf-rotation
-    helper joints. The raw reference animation must match the skeleton *before*
-    that augmentation, so we slice the leading ``original_joint_count`` entries
-    (helpers are always appended at the end). ``helper_metadata`` records
-    ``original_joint_count`` authoritatively; we use it directly rather than
-    inferring ``len(names) - helper_joint_count`` so a missing/zero helper count
-    cannot silently promote the helper-augmented list to the "expected" skeleton.
+    Under own-rotation encoding no leaf rotation helpers are appended,
+    so the full tp.names list is the reference skeleton.
     """
-    helper_metadata = tp.helper_metadata
-    if not isinstance(helper_metadata, dict):
-        raise RuntimeError(
-            "Reference T-pose features are missing helper_metadata; cannot determine "
-            "the reference skeleton's original joint count."
-        )
-
-    total = len(tp.names)
-    original_joint_count = int(
-        helper_metadata.get(
-            'original_joint_count',
-            total - int(helper_metadata.get('helper_joint_count', 0)),
-        )
-    )
-    if not 0 < original_joint_count <= total:
-        raise RuntimeError(
-            f"Invalid reference original_joint_count={original_joint_count} for a "
-            f"{total}-joint T-pose; cannot validate the input skeleton."
-        )
-
-    expected_names = list(tp.names[:original_joint_count])
-    expected_parents = np.asarray(tp.tpos_anim.parents[:original_joint_count], dtype=np.int32)
-    return expected_names, expected_parents
+    return list(tp.names), np.asarray(tp.tpos_anim.parents, dtype=np.int32)
 
 
 def _reindex_animation_subset(raw_anim, names, keep_indices):
@@ -535,7 +508,6 @@ def _prepare_reference_motion_path(
         tpose_path,
         source_type,
         face_joints=source_cond.get('face_joint_names') or None,
-        augment_leaf_rotation_helpers=True,
         max_joints=preprocess_max_joints,
     )
     scale_factor = float(source_cond.get('scale_factor', source_tp.scale_factor))
@@ -566,7 +538,6 @@ def _prepare_reference_motion_path(
         orientation_quat=source_tp.orientation_quat,
         slice_inds=[0, anim_len],
         preloaded=(raw_anim, names),
-        helper_metadata=source_tp.helper_metadata,
     )
     if source_features is None:
         raise RuntimeError(
@@ -682,7 +653,6 @@ def _retarget_reference_motion(
 
     tgt_tp = get_common_features_from_T_pose(
         tgt_tpose_path, target_type,
-        augment_leaf_rotation_helpers=True,
         max_joints=opt.max_joints,
     )
 
@@ -782,7 +752,6 @@ def _retarget_reference_motion_from_file(
 
     tgt_tp = get_common_features_from_T_pose(
         tgt_tpose_path, target_type,
-        augment_leaf_rotation_helpers=True,
         max_joints=opt.max_joints,
     )
 

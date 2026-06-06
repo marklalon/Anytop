@@ -1736,7 +1736,6 @@ if __name__ == '__main__':
 
     _tgt_tp = get_common_features_from_T_pose(
         _tgt_tpose_path, _target_type,
-        augment_leaf_rotation_helpers=True,
         max_joints=_max_joints,
     )
 

@@ -51,10 +51,6 @@ from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
     _SPECIES_LINEAGE_TAGS,
 )
 
-# Mirrors data_loaders...animation_utils.LEAF_ROTATION_HELPER_SUFFIX. Duplicated
-# (not imported) to keep this module torch-free; the token format is stable.
-LEAF_ROTATION_HELPER_SUFFIX = "__rot_helper"
-
 # Case-insensitive object_type -> frozenset of lineage tags. Built once.
 _LINEAGE_TAGS_LOWER: dict[str, frozenset] = {
     key.lower(): frozenset(tags) for key, tags in _SPECIES_LINEAGE_TAGS.items()
@@ -112,15 +108,12 @@ def normalize_match_name(name: str) -> str:
 
 
 def strip_helper_names(names: Sequence[str]) -> set:
-    """Joint names excluding leaf-rotation / budget-dependent helper joints.
+    """Joint names for skeleton similarity.
 
-    Leaf helpers are training-time augmentation joints whose count varies with
-    the max_joints budget; they must never participate in similarity scoring.
+    Under own-rotation encoding no leaf rotation helpers exist.
+    Returns all names unchanged for backward compatibility.
     """
-    return {
-        n for n in names
-        if not str(n).endswith(LEAF_ROTATION_HELPER_SUFFIX) and " Helper" not in str(n)
-    }
+    return set(names)
 
 
 def require_canonical_joint_names(

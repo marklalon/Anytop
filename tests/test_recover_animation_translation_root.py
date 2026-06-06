@@ -17,7 +17,6 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     ROOT_XZ_STRIP_THRESHOLD,
     find_translation_root,
     xz_locomotion_extent,
-    get_6d_rep,
     get_common_features_from_T_pose,
     get_hml_aligned_anim,
     get_motion,
@@ -25,10 +24,8 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     move_xz_to_origin,
     positions_global,
     recover_animation_from_motion_np,
-    recover_root_quat_and_pos_np,
 )
 from data_loaders.truebones.truebones_utils import features as features_module
-from utils.rotation_conversions import rotation_6d_to_matrix_np
 
 
 def _identity_cont6d() -> np.ndarray:
@@ -209,7 +206,6 @@ def test_raw_tpose_animation_input_reapplies_tpose_normalization():
     tp = get_common_features_from_T_pose(
         tpose_fbx,
         'Buffalo',
-        augment_leaf_rotation_helpers=True,
         max_joints=53,
     )
 
@@ -223,7 +219,6 @@ def test_raw_tpose_animation_input_reapplies_tpose_normalization():
         scale_factor=float(tp.scale_factor),
         foot_indices=tp.foot_indices,
         orientation_quat=np.asarray(tp.orientation_quat, dtype=np.float64),
-        helper_metadata=tp.helper_metadata,
         animation_input_is_tpose_aligned=False,
     )
 
@@ -273,28 +268,14 @@ def _find_motion_file(motion_dir: str, pattern: str) -> tuple[str, str]:
 
 
 def _recover_pre_normalized_bvh_rotations(raw: np.ndarray, cond, motion_metadata) -> Quaternions:
-    parents = np.asarray(cond['parents'], dtype=np.int64)
-    offsets = np.asarray(cond['offsets'], dtype=np.float64)
-    r_rot_quat, _r_pos = recover_root_quat_and_pos_np(
-        raw,
-        parents=parents,
-        offsets=offsets,
-        motion_metadata=motion_metadata,
-    )
+    """Recover BVH rotations directly from own-rotation feature encoding.
 
-    r_rot_cont6d = get_6d_rep(r_rot_quat)
-    cont6d_params = np.asarray(raw[..., 1:, 3:9], dtype=np.float64)
-    cont6d_params = np.concatenate([r_rot_cont6d[:, None, :], cont6d_params], axis=-2)
-    cont6d_params_hml_order = rotation_6d_to_matrix_np(cont6d_params)
+    Each slot stores the joint's own local rotation — no parent-child scatter needed.
+    """
+    from utils.rotation_conversions import rotation_6d_to_matrix_np as _r6d_to_mat
 
-    joint_matrices = np.broadcast_to(
-        np.eye(3, dtype=np.float64),
-        (cont6d_params.shape[0], cont6d_params.shape[1], 3, 3),
-    ).copy()
-    for joint_idx, parent_idx in enumerate(parents[1:], start=1):
-        joint_matrices[:, parent_idx] = cont6d_params_hml_order[:, joint_idx]
-
-    return Quaternions.from_transforms(joint_matrices)
+    cont6d_params_hml_order = _r6d_to_mat(np.asarray(raw[..., :, 3:9], dtype=np.float64))
+    return Quaternions.from_transforms(cont6d_params_hml_order)
 
 
 @pytest.mark.parametrize(
@@ -330,7 +311,6 @@ def test_feature_roundtrip_preserves_dataset_motion_features(object_type: str, m
     tp = get_common_features_from_T_pose(
         cond['orientation_reference_fbx_path'],
         object_type,
-        augment_leaf_rotation_helpers=True,
         max_joints=len(cond['parents']),
     )
     squared_positions_error: dict[str, float] = {}
@@ -345,7 +325,6 @@ def test_feature_roundtrip_preserves_dataset_motion_features(object_type: str, m
         squared_positions_error,
         scale_factor=float(cond['scale_factor']),
         orientation_quat=np.asarray(cond['orientation_quat'], dtype=np.float64),
-        helper_metadata=tp.helper_metadata,
     )
 
     assert rebuilt is not None
