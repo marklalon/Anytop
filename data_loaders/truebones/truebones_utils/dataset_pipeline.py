@@ -65,9 +65,19 @@ def get_mean_std(data):
         Std[1:, 3:9] = Std[1:, 3:9].mean() / 1.0 # all joints except root rotation
         Std[1:, 9:12] = Std[1:, 9:12].mean() / 1.0 # all joints except root local velocity
         if len(Std[:, 12][Std[:, 12]!=0]) > 0:
-            Std[:, 12][Std[:, 12]!=0] = Std[:, 12][Std[:, 12]!=0].mean() / 1.0 
+            Std[:, 12][Std[:, 12]!=0] = Std[:, 12][Std[:, 12]!=0].mean() / 1.0
         Std[:, 12][Std[:, 12]==0] = 1.0 # replace zeros with ones
-        
+
+        # Universal guard for constant (zero-variance) channels across ALL
+        # channels. The own-rotation encoding leaves the root joint's 6D
+        # rotation constant, so its block-averaged std collapses to 0 above.
+        # A ~zero divisor is meaningless and dangerous: it leaves the motion at
+        # 0 but amplifies tpos_first_frame normalization, (tpos - mean) / std,
+        # to ~1e6, which drives the spatial-attention graph bias to ~1e5 and
+        # yields NaN gradients under bf16. Treat any sub-1e-5 std as unit
+        # variance (mirrors the std_safe floor in data/dataset.py:Truebones).
+        Std = np.where(Std < 1e-5, 1.0, Std)
+
         return Mean, Std
 
 
