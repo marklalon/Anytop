@@ -501,7 +501,7 @@ class TrainLoop:
         if not self.args.eval_during_training or self.eval_data is None:
             return
         cond_dict = self.data.dataset.motion_dataset.cond_dict
-        infer_model = self.model_avg if self.model_avg is not None else self.model
+        infer_model = self.model  # use raw model (not EMA) to observe real val performance
         motion_groups = {}
         missing_action_tag_count = 0
         target_batch = int(self.args.eval_batch_size)
