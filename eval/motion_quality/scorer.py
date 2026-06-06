@@ -659,7 +659,29 @@ class DistributionMotionQualityScorer:
     def __init__(self, dataset_root: Optional[str] = None):
         self.dataset_root = dataset_root
         self._cond_lookup = load_cond_dict(dataset_root)
+        self._query_cond_lookup = dict(self._cond_lookup)
+        self._custom_cond_keys: set[str] = set()
         self._joint_group_cache: Dict[Tuple[str, int], Tuple[Dict[str, np.ndarray], str]] = {}
+
+    def register_cond(self, cond_dict: dict) -> None:
+        """Register query skeleton metadata from a custom cond.npy.
+
+        Custom entries are used to interpret query skeletons, but the dataset
+        reference baseline remains the default cond.npy loaded by the scorer.
+        """
+        for key, entry in cond_dict.items():
+            key_str = str(key)
+            lowered = key_str.strip().lower()
+            target_key = key_str
+            for existing_key in self._query_cond_lookup:
+                if str(existing_key).strip().lower() == lowered:
+                    target_key = str(existing_key)
+                    break
+            self._query_cond_lookup[target_key] = entry
+            self._custom_cond_keys.add(target_key)
+            for cache_key in list(self._joint_group_cache):
+                if cache_key[0] == target_key:
+                    del self._joint_group_cache[cache_key]
 
     def evaluate(
         self,
@@ -682,12 +704,17 @@ class DistributionMotionQualityScorer:
 
         object_key = self._resolve_object_type_key(object_type)
         query_joint_groups, joint_group_source = self._resolve_joint_groups(object_key, next(iter(query_joint_counts)))
+        reference_kwargs: Dict[str, object] = {}
+        if object_key in self._custom_cond_keys:
+            reference_kwargs["cond_lookup"] = self._cond_lookup
+            reference_kwargs["query_cond"] = self._query_cond_lookup[object_key]
         reference_bank = build_weighted_reference_bank(
             object_type=object_key,
             action_tags=action_tags,
             dataset_root=self.dataset_root,
             top_k_species=top_k_species,
             min_frames=_MIN_CLIP_FRAMES,
+            **reference_kwargs,
         )
 
         min_t = min(
@@ -721,6 +748,9 @@ class DistributionMotionQualityScorer:
                 {
                     "object_type": species.object_type,
                     "cosine_distance": round(species.cosine_distance, 4),
+                    "topology_distance": round(species.topology_distance, 4),
+                    "combined_distance": round(species.combined_distance, 4),
+                    "same_group": species.same_group,
                     "species_weight": round(species.species_weight, 4),
                     "clip_count": species.clip_count,
                     "total_frames": species.total_frames,
@@ -741,10 +771,10 @@ class DistributionMotionQualityScorer:
         )
 
     def _resolve_object_type_key(self, object_type: str) -> str:
-        if object_type in self._cond_lookup:
+        if object_type in self._query_cond_lookup:
             return object_type
         lowered = str(object_type).strip().lower()
-        for key in self._cond_lookup:
+        for key in self._query_cond_lookup:
             if str(key).lower() == lowered:
                 return str(key)
         raise KeyError(f"Unknown object_type {object_type!r} in cond.npy")
@@ -754,7 +784,7 @@ class DistributionMotionQualityScorer:
         if cache_key in self._joint_group_cache:
             return self._joint_group_cache[cache_key]
 
-        cond = self._cond_lookup.get(object_type)
+        cond = self._query_cond_lookup.get(object_type)
         if cond is not None and len(cond.get("parents", [])) != n_joints:
             raise ValueError(
                 f"Object type {object_type!r} expects {len(cond.get('parents', []))} joints, got {n_joints}"
@@ -803,12 +833,12 @@ class DistributionMotionQualityScorer:
             })
 
         # Bone length scoring: use FK-based drift directly (no reference comparison)
-        query_cond = self._cond_lookup.get(object_key)
+        query_cond = self._query_cond_lookup.get(object_key)
         if query_cond is None:
             raise KeyError(
                 f"Object type {object_key!r} not found in cond.npy. "
                 f"Bone-length drift scoring requires a matching skeleton definition. "
-                f"Available types: {sorted(self._cond_lookup.keys())}"
+                f"Available types: {sorted(self._query_cond_lookup.keys())}"
             )
 
         q_parents = np.asarray(query_cond["parents"], dtype=np.int32)

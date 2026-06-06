@@ -16,7 +16,7 @@ from copy import deepcopy
 from diffusion import logger
 from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood, geodesic_distance
-from model.anytop import ReferencePriorEncoder
+from model.anytop import GlobalEnergyExtractor
 from utils.rotation_conversions import rotation_6d_to_matrix_safe
 
 
@@ -344,6 +344,34 @@ class GaussianDiffusion:
             return None
         return seam_weights
 
+    def temporal_span_seam_acceleration_loss(
+        self, target, model_output, temporal_span_seam_weights, spat_mask
+    ):
+        # target / model_output: [bs, njoints, nfeats, nframes] (denormalized).
+        # Penalize the prediction's second-order temporal difference
+        # (acceleration) of the position channel against the target's, weighted
+        # by the seam band. This is target-relative on purpose: l_simple already
+        # matches per-frame values and vel_loss only enforces pos/vel channel
+        # self-consistency (a synchronized jump satisfies it), so neither stops
+        # the inpainting seam from injecting an acceleration spike absent from
+        # ground truth. Matching GT acceleration kills that spike without
+        # over-smoothing genuinely sharp motion.
+        n_frames = model_output.shape[-1]
+        if n_frames < 3 or model_output.shape[2] < 3:
+            return None
+        pos_pred = model_output[:, :, 0:3, :]
+        pos_target = target[:, :, 0:3, :]
+        acc_pred = pos_pred[:, :, :, 2:] - 2.0 * pos_pred[:, :, :, 1:-1] + pos_pred[:, :, :, :-2]
+        acc_target = pos_target[:, :, :, 2:] - 2.0 * pos_target[:, :, :, 1:-1] + pos_target[:, :, :, :-2]
+        # Acceleration at interior index k is centered on frame k+1, so drop the
+        # two edge frames from the time weights.
+        center_weights = temporal_span_seam_weights[:, :, :, 1:-1]
+        joint_valid = spat_mask.transpose(1, 3)  # [bs, njoints, 1, 1]
+        weights = center_weights * joint_valid  # [bs, njoints, 1, nframes-2]
+        if not bool((weights > 0).any()):
+            return None
+        return self.weighted_feature_l2(acc_pred, acc_target, weights)
+
     def quat_to_mat(self, qs):
         r = qs[..., 0]
         i = qs[..., 1]
@@ -585,10 +613,10 @@ class GaussianDiffusion:
         :return: A tuple (mean, variance, log_variance), all of x_start's shape.
         """
         mean = (
-            _extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
+            extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
         )
-        variance = _extract_into_tensor(1.0 - self.alphas_cumprod, t, x_start.shape)
-        log_variance = _extract_into_tensor(
+        variance = extract_into_tensor(1.0 - self.alphas_cumprod, t, x_start.shape)
+        log_variance = extract_into_tensor(
             self.log_one_minus_alphas_cumprod, t, x_start.shape
         )
         return mean, variance, log_variance
@@ -608,8 +636,8 @@ class GaussianDiffusion:
             noise = th.randn_like(x_start)
         assert noise.shape == x_start.shape
         return (
-            _extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
-            + _extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape)
+            extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
+            + extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape)
             * noise
         )
 
@@ -622,11 +650,11 @@ class GaussianDiffusion:
         """
         assert x_start.shape == x_t.shape
         posterior_mean = (
-            _extract_into_tensor(self.posterior_mean_coef1, t, x_t.shape) * x_start
-            + _extract_into_tensor(self.posterior_mean_coef2, t, x_t.shape) * x_t
+            extract_into_tensor(self.posterior_mean_coef1, t, x_t.shape) * x_start
+            + extract_into_tensor(self.posterior_mean_coef2, t, x_t.shape) * x_t
         )
-        posterior_variance = _extract_into_tensor(self.posterior_variance, t, x_t.shape)
-        posterior_log_variance_clipped = _extract_into_tensor(
+        posterior_variance = extract_into_tensor(self.posterior_variance, t, x_t.shape)
+        posterior_log_variance_clipped = extract_into_tensor(
             self.posterior_log_variance_clipped, t, x_t.shape
         )
         assert (
@@ -674,10 +702,10 @@ class GaussianDiffusion:
                 model_log_variance = model_var_values.float()
                 model_variance = th.exp(model_log_variance)
             else:
-                min_log = _extract_into_tensor(
+                min_log = extract_into_tensor(
                     self.posterior_log_variance_clipped, t, x.shape
                 )
-                max_log = _extract_into_tensor(np.log(self.betas), t, x.shape)
+                max_log = extract_into_tensor(np.log(self.betas), t, x.shape)
                 # The model_var_values is [-1, 1] for [min_var, max_var].
                 frac = (model_var_values.float() + 1) / 2
                 model_log_variance = frac * max_log + (1 - frac) * min_log
@@ -702,8 +730,8 @@ class GaussianDiffusion:
             # print('self.model_var_type', self.model_var_type)
 
 
-            model_variance = _extract_into_tensor(model_variance, t, x.shape)
-            model_log_variance = _extract_into_tensor(model_log_variance, t, x.shape)
+            model_variance = extract_into_tensor(model_variance, t, x.shape)
+            model_log_variance = extract_into_tensor(model_log_variance, t, x.shape)
 
         def process_xstart(x):
             if denoised_fn is not None:
@@ -744,15 +772,15 @@ class GaussianDiffusion:
     def _predict_xstart_from_eps(self, x_t, t, eps):
         assert x_t.shape == eps.shape
         return (
-            _extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t
-            - _extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape) * eps
+            extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t
+            - extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape) * eps
         )
 
     def _predict_xstart_from_xprev(self, x_t, t, xprev):
         assert x_t.shape == xprev.shape
         return (  # (xprev - coef2*x_t) / coef1
-            _extract_into_tensor(1.0 / self.posterior_mean_coef1, t, x_t.shape) * xprev
-            - _extract_into_tensor(
+            extract_into_tensor(1.0 / self.posterior_mean_coef1, t, x_t.shape) * xprev
+            - extract_into_tensor(
                 self.posterior_mean_coef2 / self.posterior_mean_coef1, t, x_t.shape
             )
             * x_t
@@ -760,9 +788,9 @@ class GaussianDiffusion:
 
     def _predict_eps_from_xstart(self, x_t, t, pred_xstart):
         return (
-            _extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t
+            extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t
             - pred_xstart
-        ) / _extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape)
+        ) / extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape)
 
     def _scale_timesteps(self, t):
         if self.rescale_timesteps:
@@ -809,7 +837,7 @@ class GaussianDiffusion:
         Unlike condition_mean(), this instead uses the conditioning strategy
         from Song et al (2020).
         """
-        alpha_bar = _extract_into_tensor(self.alphas_cumprod, t, x.shape)
+        alpha_bar = extract_into_tensor(self.alphas_cumprod, t, x.shape)
 
         eps = self._predict_eps_from_xstart(x, t, p_mean_var["pred_xstart"])
         eps = eps - (1 - alpha_bar).sqrt() * cond_fn(
@@ -833,7 +861,7 @@ class GaussianDiffusion:
         Unlike condition_mean(), this instead uses the conditioning strategy
         from Song et al (2020).
         """
-        alpha_bar = _extract_into_tensor(self.alphas_cumprod, t, x.shape)
+        alpha_bar = extract_into_tensor(self.alphas_cumprod, t, x.shape)
 
         eps = self._predict_eps_from_xstart(x, t, p_mean_var["pred_xstart"])
         eps = eps - (1 - alpha_bar).sqrt() * cond_fn(
@@ -953,7 +981,7 @@ class GaussianDiffusion:
         return {"sample": sample, "pred_xstart": out["pred_xstart"].detach()}
 
     def _inpaint_project(self, sample, i, shape, device, inpaint_mask, inpaint_reference):
-        """RePaint-style imputation: replace the known (unmasked) region of the
+        """Imputation: replace the known (unmasked) region of the
         just-produced x_{i-1} with the reference forward-noised to step i-1.
 
         inpaint_mask is 1.0 where the region is regenerated (free) and 0.0
@@ -974,54 +1002,6 @@ class GaussianDiffusion:
             )
         return inpaint_mask * sample + (1.0 - inpaint_mask) * known
 
-    def _build_repaint_schedule(self, start_t, jump_length, jump_n_sample):
-        """Build a RePaint jump/time-travel schedule over state timesteps x_t.
-
-        Returns a list like [T-1, T-2, T-1, T-2, ... , 0, -1]. Consecutive
-        entries differ by exactly one timestep; descending transitions are
-        denoising steps, ascending transitions are forward noising (time
-        travel). The terminal -1 sentinel preserves the final t=0 denoise step
-        from the original monotonic sampler.
-        """
-        schedule = [start_t]
-        if start_t <= 0 or jump_length <= 0 or jump_n_sample <= 1:
-            schedule.extend(range(start_t - 1, -1, -1))
-            schedule.append(-1)
-            return schedule
-
-        max_anchor = start_t - jump_length
-        if max_anchor < jump_length:
-            schedule.extend(range(start_t - 1, -1, -1))
-            schedule.append(-1)
-            return schedule
-
-        jumps = {
-            t: jump_n_sample - 1
-            for t in range(jump_length, max_anchor + 1, jump_length)
-        }
-        t = start_t
-        while t > 0:
-            t -= 1
-            schedule.append(t)
-            repeats_left = jumps.get(t, 0)
-            if repeats_left > 0:
-                jumps[t] = repeats_left - 1
-                for _ in range(jump_length):
-                    t += 1
-                    schedule.append(t)
-        schedule.append(-1)
-        return schedule
-
-    def _repaint_time_travel(self, sample, t, const_noise=False):
-        """Sample one exact forward diffusion step q(x_t | x_{t-1})."""
-        noise = th.randn_like(sample)
-        if const_noise:
-            noise = noise[[0]].repeat(sample.shape[0], 1, 1, 1)
-        return (
-            _extract_into_tensor(self.sqrt_alphas, t, sample.shape) * sample
-            + _extract_into_tensor(self.sqrt_betas, t, sample.shape) * noise
-        )
-
     def p_sample_loop(
         self,
         model,
@@ -1041,8 +1021,6 @@ class GaussianDiffusion:
         const_noise=False,
         inpaint_mask=None,
         inpaint_reference=None,
-        repaint_jump_length=0,
-        repaint_jump_n_sample=1,
     ):
         """
         Generate samples from the model.
@@ -1085,8 +1063,6 @@ class GaussianDiffusion:
             const_noise=const_noise,
             inpaint_mask=inpaint_mask,
             inpaint_reference=inpaint_reference,
-            repaint_jump_length=repaint_jump_length,
-            repaint_jump_n_sample=repaint_jump_n_sample,
         )):
             final = sample
             if dump_steps is not None and i in dump_steps:
@@ -1114,8 +1090,6 @@ class GaussianDiffusion:
         const_noise=False,
         inpaint_mask=None,
         inpaint_reference=None,
-        repaint_jump_length=0,
-        repaint_jump_n_sample=1,
     ):
         """
         Generate samples from the model and yield intermediate samples from
@@ -1142,16 +1116,8 @@ class GaussianDiffusion:
             my_t = th.ones([shape[0]], device=device, dtype=th.long) * indices[0]
             img = self.q_sample(init_image, my_t, img)
 
-        # Keep the original final t=0 denoise step in the transition-based
-        # sampler by ending the monotonic schedule with a single sentinel.
-        repaint_schedule = indices + [-1]
-        if inpaint_mask is not None and inpaint_reference is not None:
-            repaint_schedule = self._build_repaint_schedule(
-                start_t=indices[0],
-                jump_length=repaint_jump_length,
-                jump_n_sample=repaint_jump_n_sample,
-            )
-        transitions = list(zip(repaint_schedule[:-1], repaint_schedule[1:]))
+        schedule = indices + [-1]
+        transitions = list(zip(schedule[:-1], schedule[1:]))
 
         if progress:
             # Lazy import so that we don't depend on tqdm.
@@ -1160,13 +1126,6 @@ class GaussianDiffusion:
             transitions = tqdm(transitions)
 
         for current_i, next_i in transitions:
-            if next_i > current_i:
-                t_forward = th.tensor([next_i] * shape[0], device=device)
-                img = self._repaint_time_travel(
-                    img, t_forward, const_noise=const_noise
-                )
-                continue
-
             t = th.tensor([current_i] * shape[0], device=device)
             if randomize_class and 'y' in model_kwargs:
                 model_kwargs['y'] = th.randint(low=0, high=model.num_classes,
@@ -1224,8 +1183,8 @@ class GaussianDiffusion:
         # in case we used x_start or x_prev prediction.
         eps = self._predict_eps_from_xstart(x, t, out["pred_xstart"])
 
-        alpha_bar = _extract_into_tensor(self.alphas_cumprod, t, x.shape)
-        alpha_bar_prev = _extract_into_tensor(self.alphas_cumprod_prev, t, x.shape)
+        alpha_bar = extract_into_tensor(self.alphas_cumprod, t, x.shape)
+        alpha_bar_prev = extract_into_tensor(self.alphas_cumprod_prev, t, x.shape)
         sigma = (
             eta
             * th.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar))
@@ -1281,8 +1240,8 @@ class GaussianDiffusion:
         # in case we used x_start or x_prev prediction.
         eps = self._predict_eps_from_xstart(x, t, out["pred_xstart"])
 
-        alpha_bar = _extract_into_tensor(self.alphas_cumprod, t, x.shape)
-        alpha_bar_prev = _extract_into_tensor(self.alphas_cumprod_prev, t, x.shape)
+        alpha_bar = extract_into_tensor(self.alphas_cumprod, t, x.shape)
+        alpha_bar_prev = extract_into_tensor(self.alphas_cumprod_prev, t, x.shape)
         sigma = (
             eta
             * th.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar))
@@ -1325,10 +1284,10 @@ class GaussianDiffusion:
         # Usually our model outputs epsilon, but we re-derive it
         # in case we used x_start or x_prev prediction.
         eps = (
-            _extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x.shape) * x
+            extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x.shape) * x
             - out["pred_xstart"]
-        ) / _extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x.shape)
-        alpha_bar_next = _extract_into_tensor(self.alphas_cumprod_next, t, x.shape)
+        ) / extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x.shape)
+        alpha_bar_next = extract_into_tensor(self.alphas_cumprod_next, t, x.shape)
 
         # Equation 12. reversed
         mean_pred = (
@@ -1358,8 +1317,6 @@ class GaussianDiffusion:
         const_noise=False,
         inpaint_mask=None,
         inpaint_reference=None,
-        repaint_jump_length=0,
-        repaint_jump_n_sample=1,
     ):
         """
         Generate samples from the model using DDIM.
@@ -1389,8 +1346,6 @@ class GaussianDiffusion:
             cond_fn_with_grad=cond_fn_with_grad,
             inpaint_mask=inpaint_mask,
             inpaint_reference=inpaint_reference,
-            repaint_jump_length=repaint_jump_length,
-            repaint_jump_n_sample=repaint_jump_n_sample,
         ):
             final = sample
         return final["sample"]
@@ -1413,8 +1368,6 @@ class GaussianDiffusion:
         cond_fn_with_grad=False,
         inpaint_mask=None,
         inpaint_reference=None,
-        repaint_jump_length=0,
-        repaint_jump_n_sample=1,
     ):
         """
         Use DDIM to sample from the model and yield intermediate samples from
@@ -1439,16 +1392,8 @@ class GaussianDiffusion:
             my_t = th.ones([shape[0]], device=device, dtype=th.long) * indices[0]
             img = self.q_sample(init_image, my_t, img)
 
-        # Keep the original final t=0 denoise step in the transition-based
-        # sampler by ending the monotonic schedule with a single sentinel.
-        repaint_schedule = indices + [-1]
-        if inpaint_mask is not None and inpaint_reference is not None:
-            repaint_schedule = self._build_repaint_schedule(
-                start_t=indices[0],
-                jump_length=repaint_jump_length,
-                jump_n_sample=repaint_jump_n_sample,
-            )
-        transitions = list(zip(repaint_schedule[:-1], repaint_schedule[1:]))
+        schedule = indices + [-1]
+        transitions = list(zip(schedule[:-1], schedule[1:]))
 
         if progress:
             # Lazy import so that we don't depend on tqdm.
@@ -1457,11 +1402,6 @@ class GaussianDiffusion:
             transitions = tqdm(transitions)
 
         for current_i, next_i in transitions:
-            if next_i > current_i:
-                t_forward = th.tensor([next_i] * shape[0], device=device)
-                img = self._repaint_time_travel(img, t_forward)
-                continue
-
             t = th.tensor([current_i] * shape[0], device=device)
             if randomize_class and 'y' in model_kwargs:
                 model_kwargs['y'] = th.randint(low=0, high=model.num_classes,
@@ -1526,7 +1466,7 @@ class GaussianDiffusion:
     ):
         """Re-noise selected joints / spans without altering attention masks.
 
-        Training-time structured corruption is meant to mimic RePaint's mixed
+        Training-time structured corruption is meant to mimic the mixed
         reliability at the model input, not to hide tokens from attention.
         The selected joints / frames keep participating in attention; only
         their x_t features are replaced by q_sample(x_0, t_random).
@@ -1600,50 +1540,6 @@ class GaussianDiffusion:
             unwrapped_model = next_model
         return unwrapped_model
 
-    @staticmethod
-    def _sample_structured_dropout_mask(batch_size, drop_prob, device):
-        if drop_prob <= 0.0 or batch_size <= 0:
-            return th.zeros(batch_size, device=device, dtype=th.bool)
-        expected = float(drop_prob) * float(batch_size)
-        drop_count = int(math.floor(expected))
-        if expected > drop_count and th.rand((), device=device).item() < (expected - drop_count):
-            drop_count += 1
-        drop_count = min(max(drop_count, 0), batch_size)
-        if drop_count == 0:
-            return th.zeros(batch_size, device=device, dtype=th.bool)
-        drop_mask = th.zeros(batch_size, device=device, dtype=th.bool)
-        drop_mask[th.randperm(batch_size, device=device)[:drop_count]] = True
-        return drop_mask
-
-    def _build_reference_conditioning(self, model, x_start, model_kwargs):
-        y = model_kwargs.get('y') if model_kwargs is not None else None
-        if y is None:
-            return
-
-        model_for_hooks = self._unwrap_model_for_training_hooks(model)
-        if not getattr(model_for_hooks, 'reference_cond', False):
-            y.pop('reference_motion', None)
-            y.pop('reference_cond_mask', None)
-            return
-
-        batch_size = x_start.shape[0]
-        device = x_start.device
-
-        uncond_drop_prob = 1.0 - float(getattr(model_for_hooks, 'reference_cond_prob', 0.3))
-        dropout_mask = self._sample_structured_dropout_mask(
-            batch_size, uncond_drop_prob, device,
-        )
-        cond_mask = ~dropout_mask
-        if not bool(cond_mask.any()):
-            y['reference_motion'] = None
-            y['reference_cond_mask'] = cond_mask
-            return
-
-        # Reuse x_start storage to avoid a per-step clone; callers must not
-        # mutate x_start in-place after building reference conditioning.
-        y['reference_motion'] = x_start.detach()
-        y['reference_cond_mask'] = cond_mask
-
     def _build_global_energy_conditioning(self, model, x_start, model_kwargs):
         y = model_kwargs.get('y') if model_kwargs is not None else None
         if y is None:
@@ -1652,17 +1548,19 @@ class GaussianDiffusion:
         model_for_hooks = self._unwrap_model_for_training_hooks(model)
         if not getattr(model_for_hooks, 'global_energy_cond', False):
             y.pop('global_energy_cond', None)
+            y.pop('global_energy_active', None)
             return
 
         n_joints = y.get('n_joints')
         if n_joints is None:
             raise ValueError("global energy conditioning requires y['n_joints'] metadata")
 
+        batch_size = int(x_start.shape[0])
+
         # Variable-length dataset samples precompute the exact physical-space
         # energy label before window resampling. Do not overwrite it with an
         # x_start-derived value from the stretched training window.
         if y.get('global_energy_cond') is not None:
-            batch_size = int(x_start.shape[0])
             global_energy_cond = th.as_tensor(
                 y['global_energy_cond'],
                 device=x_start.device,
@@ -1676,14 +1574,27 @@ class GaussianDiffusion:
                 raise ValueError(
                     f"global_energy_cond has batch dimension {global_energy_cond.shape[0]} but expected {batch_size}."
                 )
-            y['global_energy_cond'] = global_energy_cond
-            return
+        else:
+            global_energy_cond = GlobalEnergyExtractor.compute_global_energy_condition(
+                x_start.detach(),
+                n_joints=n_joints,
+                playspeed_cond=y.get('playspeed_cond'),
+            )
 
-        y['global_energy_cond'] = ReferencePriorEncoder.compute_global_energy_condition(
-            x_start.detach(),
-            n_joints=n_joints,
-            playspeed_cond=y.get('playspeed_cond'),
-        )
+        # CFG (hard null): randomly mark samples as unconditional this step. A
+        # dropped sample bypasses the energy sublayer entirely in the forward
+        # (no norm_ref, no FiLM, excluded from running-stats) -- byte-identical
+        # to a global_energy_cond=False model -- so the model learns a genuine
+        # unconditional path rather than "average energy". Without a drop path,
+        # zero-initialized FiLM has no incentive to move away from identity.
+        # We pass an explicit per-sample active mask instead of mutating the
+        # energy value, so the raw label is preserved for the conditional rows.
+        global_energy_active = th.ones(batch_size, dtype=th.bool, device=x_start.device)
+        drop_prob = getattr(model_for_hooks, 'global_energy_cfg_drop_prob', 0.1)
+        if drop_prob > 0.0 and model_for_hooks.training:
+            global_energy_active = th.rand(batch_size, device=x_start.device) >= drop_prob
+        y['global_energy_cond'] = global_energy_cond
+        y['global_energy_active'] = global_energy_active
 
     def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
         """
@@ -1712,19 +1623,18 @@ class GaussianDiffusion:
         x_t = self.q_sample(x_start, t, noise=noise)
 
         # Subtree perturbation: when the model selects a subset of joints
-        # (via joint_mask_prob), replace those joints' x_t slice with
+        # (via joint_mask_prob and joint_mask_budget), replace those joints' x_t slice with
         # q_sample(x_0, t_random, fresh_noise) -- same x_0 ground truth (so
         # the loss target is unchanged) but at a random independent timestep
         # with fresh independent noise. The selected joints continue to
         # participate in attention normally; the model must learn to denoise
         # them despite their noise level disagreeing with the rest of the
-        # batch sample, which is exactly what RePaint clamping produces at
+        # batch sample, which is exactly what inpaint clamping produces at
         # inference (clamped joints are at a fixed reference's q_sample state
         # that's uncorrelated with the in-flight masked joint's trajectory).
         x_t, temporal_span_mask = self._apply_joint_mask_training_perturbation(
             model, x_start, x_t, t, model_kwargs
         )
-        self._build_reference_conditioning(model, x_start, model_kwargs)
         self._build_global_energy_conditioning(model, x_start, model_kwargs)
 
         terms = {}
@@ -1788,28 +1698,26 @@ class GaussianDiffusion:
                 )
                 terms["loss"] = terms["l_simple"].clone()
 
-                temporal_span_seam_weights = self._build_temporal_span_seam_weights(
-                    temporal_span_mask
-                )
-                if (
-                    self.temporal_span_seam_loss_weight > 0.0
-                    and temporal_span_seam_weights is not None
-                ):
-                    seam_weights = (
-                        temporal_span_seam_weights
-                        * joints_padding_mask_fp32.transpose(1, 3)
-                    )
-                    if bool(seam_weights.any()):
-                        terms["temporal_span_seam_loss"] = self.weighted_feature_l2(
-                            target_fp32, model_output_fp32, seam_weights
-                        )
-                        terms["loss"] = (
-                            terms["loss"]
-                            + self.temporal_span_seam_loss_weight * terms["temporal_span_seam_loss"]
-                        )
-
                 target_denorm = (target_fp32 * std_fp32) + mean_fp32
                 model_output_denorm = (model_output_fp32 * std_fp32) + mean_fp32
+
+                if self.temporal_span_seam_loss_weight > 0.0:
+                    temporal_span_seam_weights = self._build_temporal_span_seam_weights(
+                        temporal_span_mask
+                    )
+                    if temporal_span_seam_weights is not None:
+                        seam_acc_loss = self.temporal_span_seam_acceleration_loss(
+                            target_denorm,
+                            model_output_denorm,
+                            temporal_span_seam_weights,
+                            joints_padding_mask_fp32,
+                        )
+                        if seam_acc_loss is not None:
+                            terms["temporal_span_seam_loss"] = seam_acc_loss
+                            terms["loss"] = (
+                                terms["loss"]
+                                + self.temporal_span_seam_loss_weight * terms["temporal_span_seam_loss"]
+                            )
 
                 if self.lambda_geo > 0.:
                     terms["geodesic_loss"] = self.geodesic_loss(
@@ -1847,7 +1755,7 @@ class GaussianDiffusion:
 
         return terms
 
-def _extract_into_tensor(arr, timesteps, broadcast_shape):
+def extract_into_tensor(arr, timesteps, broadcast_shape):
     """
     Extract values from a 1-D numpy array for a batch of indices.
 

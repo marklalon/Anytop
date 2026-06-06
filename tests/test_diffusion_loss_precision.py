@@ -14,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
-from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType, _extract_into_tensor  # noqa: E402
+from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType, extract_into_tensor  # noqa: E402
 from diffusion.respace import SpacedDiffusion, space_timesteps  # noqa: E402
 from model.anytop import AnyTop  # noqa: E402
 from model.joint_mask_utils import sample_subtree_joint_mask  # noqa: E402
@@ -151,7 +151,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         arr = np.array([0.25, 0.5, 0.75], dtype=np.float64)
         timesteps = torch.tensor([2, 0], dtype=torch.long)
 
-        result = _extract_into_tensor(arr, timesteps, (2, 3, 4))
+        result = extract_into_tensor(arr, timesteps, (2, 3, 4))
 
         self.assertEqual(result.dtype, torch.float32)
         self.assertEqual(tuple(result.shape), (2, 3, 4))
@@ -283,7 +283,9 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertTrue(torch.equal(model_kwargs["y"]["cross_limb_unreliable_mask"], expected_unreliable))
 
     def test_training_losses_adds_temporal_span_seam_loss(self):
-        batch_size, n_joints, n_feats, n_frames = 1, 1, 1, 6
+        # Seam loss is now a target-relative acceleration penalty on the
+        # position channel (features 0:3), restricted to the seam band.
+        batch_size, n_joints, n_feats, n_frames = 1, 1, 3, 6
         diffusion = self._make_diffusion(
             model_var_type=ModelVarType.FIXED_LARGE,
             temporal_span_seam_loss_weight=0.75,
@@ -297,8 +299,12 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             temporal_span_mask=temporal_span_mask,
             output_mode="zero",
         )
+        # Position profile per frame (broadcast across the 3 position channels):
+        # [0, 0, 1, 1, 0, 0]. With a zero prediction, the residual acceleration
+        # at interior frames 1..4 is |target acc| = 1 everywhere, so the
+        # seam-band weighted mean squared acceleration error equals 1.0.
         x_start = torch.zeros(batch_size, n_joints, n_feats, n_frames, dtype=torch.float32)
-        x_start[..., 1:5] = 1.0
+        x_start[:, :, 0:3, 2:4] = 1.0
         t = torch.tensor([1], dtype=torch.int64)
         model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
 
@@ -311,9 +317,12 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         )
 
         self.assertIn("temporal_span_seam_loss", terms)
-        self.assertAlmostEqual(float(terms["l_simple"].item()), 4.0 / 6.0, places=5)
         self.assertAlmostEqual(float(terms["temporal_span_seam_loss"].item()), 1.0, places=5)
-        self.assertAlmostEqual(float(terms["loss"].item()), (4.0 / 6.0) + 0.75, places=5)
+        self.assertAlmostEqual(
+            float(terms["loss"].item()),
+            float(terms["l_simple"].item()) + 0.75 * 1.0,
+            places=5,
+        )
 
     def test_build_temporal_span_seam_weights_peaks_at_boundaries(self):
         diffusion = self._make_diffusion(
@@ -409,6 +418,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             dropout=0.0,
             cross_limb=True,
             joint_mask_prob=1.0,
+            joint_mask_budget=1.0,
         )
         capture_decoder = _CaptureDecoder()
         model.seqTransDecoder = capture_decoder
@@ -565,7 +575,8 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             num_heads=2,
             dropout=0.0,
             cross_limb=False,
-            joint_mask_prob=0.5,
+            joint_mask_prob=1.0,
+            joint_mask_budget=0.5,
         )
         model.train()
 
@@ -598,7 +609,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             per_sample_mask = sample_subtree_joint_mask(
                 parents=parents[batch_index, :valid_joint_count].tolist(),
                 candidate_root_mask=candidate_root_mask[batch_index, :valid_joint_count].numpy(),
-                joint_mask_prob=0.5,
+                joint_mask_budget=0.5,
                 rng=np.random,
             )
             if per_sample_mask is not None:
@@ -650,4 +661,3 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -17,12 +17,22 @@ for _path in [_REPO_ROOT, _ANYTOP_ROOT]:
 
 
 import eval.motion_quality.scorer as scorer_mod
-from eval.motion_quality.reference_bank import ReferenceClip
+import eval.motion_quality.reference_bank as reference_bank_mod
+from eval.motion_quality.reference_bank import ReferenceClip, ReferenceSpeciesSummary, WeightedReferenceBank
 
 
 def _make_random_motion(seed: int, t_len: int, joint_count: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
     return rng.standard_normal((t_len, joint_count, 13), dtype=np.float32)
+
+
+def _make_cond_entry(embedding: np.ndarray, joint_count: int = 2) -> dict:
+    return {
+        "parents": np.array([-1, 0], dtype=np.int32)[:joint_count],
+        "offsets": np.zeros((joint_count, 3), dtype=np.float64),
+        "joints_names": ["root", "RightThigh"][:joint_count],
+        "joints_names_embs": np.tile(np.asarray(embedding, dtype=np.float64), (joint_count, 1)),
+    }
 
 
 def test_bone_length_score_keeps_valid_zero_drift_clips(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -107,6 +117,101 @@ def test_compute_features_batch_matches_single_for_mixed_shapes() -> None:
             np.testing.assert_allclose(batch_features[key], single_features[key], rtol=1e-5, atol=1e-7)
 
 
+def test_reference_species_selection_accepts_external_query_cond() -> None:
+    baseline_cond = {
+        "horse": _make_cond_entry(np.array([1.0, 0.0], dtype=np.float64)),
+        "snake": _make_cond_entry(np.array([0.0, 1.0], dtype=np.float64)),
+    }
+    query_cond = _make_cond_entry(np.array([0.0, 1.0], dtype=np.float64))
+
+    selected = reference_bank_mod._select_species_weights(
+        query_object_type="dragon",
+        action_tags="locomotion",
+        action_paths_by_species={"horse": ["horse.npy"], "snake": ["snake.npy"]},
+        cond_lookup=baseline_cond,
+        top_k_species=1,
+        query_cond=query_cond,
+    )
+
+    assert len(selected) == 1
+    assert selected[0].name == "snake"
+    assert selected[0].semantic_distance == pytest.approx(0.0)
+    assert selected[0].weight == pytest.approx(1.0)
+
+
+def test_registered_cond_is_query_only_reference_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline_cond = {"horse": _make_cond_entry(np.array([1.0, 0.0], dtype=np.float64))}
+    custom_cond = {"dragon": _make_cond_entry(np.array([0.0, 1.0], dtype=np.float64))}
+
+    scorer = object.__new__(scorer_mod.DistributionMotionQualityScorer)
+    scorer.dataset_root = None
+    scorer._cond_lookup = dict(baseline_cond)
+    scorer._query_cond_lookup = dict(baseline_cond)
+    scorer._custom_cond_keys = set()
+    scorer._joint_group_cache = {}
+    scorer.register_cond(custom_cond)
+
+    captured: dict[str, object] = {}
+
+    def fake_build_weighted_reference_bank(**kwargs) -> WeightedReferenceBank:
+        captured.update(kwargs)
+        return WeightedReferenceBank(
+            dataset_root="test",
+            object_type=str(kwargs["object_type"]),
+            action_tags=str(kwargs["action_tags"]),
+            top_k_species=int(kwargs["top_k_species"]),
+            clips=[
+                ReferenceClip(
+                    path="horse.npy",
+                    object_type="horse",
+                    motion_name="horse",
+                    n_frames=8,
+                    weight=1.0,
+                    motion=np.zeros((8, 2, 13), dtype=np.float32),
+                )
+            ],
+            species=[
+                ReferenceSpeciesSummary(
+                    object_type="horse",
+                    cosine_distance=0.0,
+                    species_weight=1.0,
+                    clip_count=1,
+                    total_frames=8,
+                )
+            ],
+        )
+
+    def fake_compute_low_shot(*_args, **_kwargs) -> dict:
+        return {
+            "score": 1.0,
+            "component_scores": {
+                "spectral_flatness": 1.0,
+                "jerk_norm": 1.0,
+                "snap_norm": 1.0,
+                "bone_length": 1.0,
+            },
+            "raw": {},
+        }
+
+    monkeypatch.setattr(scorer_mod, "build_weighted_reference_bank", fake_build_weighted_reference_bank)
+    monkeypatch.setattr(scorer_mod.DistributionMotionQualityScorer, "_compute_low_shot", fake_compute_low_shot)
+
+    report = scorer.evaluate(
+        motions=[np.zeros((8, 2, 13), dtype=np.float32)],
+        object_type="dragon",
+        action_tags="locomotion",
+        top_k_species=1,
+    )
+
+    assert report.object_type == "dragon"
+    assert "dragon" not in scorer._cond_lookup
+    assert captured["cond_lookup"] is scorer._cond_lookup
+    assert "dragon" not in captured["cond_lookup"]
+    assert captured["query_cond"] is scorer._query_cond_lookup["dragon"]
+
+
 def test_low_shot_bone_length_is_global_but_contributes_to_score(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -123,6 +228,7 @@ def test_low_shot_bone_length_is_global_but_contributes_to_score(
             ),
         }
     }
+    scorer._query_cond_lookup = dict(scorer._cond_lookup)
     scorer._resolve_joint_groups = lambda _object_type, _n_joints: (
         {
             "root": np.array([0], dtype=np.int64),

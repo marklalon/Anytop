@@ -23,12 +23,12 @@ from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import (
     Truebones,
     _circular_roll_motion,
-    _resample_motion_features,
+    resample_motion_features,
     _tile_loop_motion,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_process import infer_translation_root_index_from_features
-from model.anytop import ReferencePriorEncoder
+from model.anytop import GlobalEnergyExtractor
 
 
 def _find_motion(pattern: str) -> str:
@@ -93,7 +93,7 @@ def _resample_raw_then_normalize(
     *,
     loop_terminal: bool = False,
 ) -> np.ndarray:
-    resampled = _resample_motion_features(raw, target_frames, loop_terminal=loop_terminal)
+    resampled = resample_motion_features(raw, target_frames, loop_terminal=loop_terminal)
     return _normalize_motion(resampled, cond)
 
 
@@ -145,7 +145,7 @@ def test_speed_resample_preserves_velocity_and_keeps_contact_binary() -> None:
     source[:, :, 11] = 0.0
     source[:, :, 12] = np.array([0.0, 1.0, 0.0, 1.0], dtype=np.float32)[:, None]
 
-    resampled = _resample_motion_features(source, 7)
+    resampled = resample_motion_features(source, 7)
 
     expected_vel = _expected_resampled_velocity(source, 7)
 
@@ -158,12 +158,12 @@ def test_speed_resample_preserves_global_energy_magnitude() -> None:
     source = np.zeros((4, 2, 13), dtype=np.float32)
     source[:, :, 9:12] = np.array([1.25, 0.0, 0.0], dtype=np.float32)
 
-    resampled = _resample_motion_features(source, 7)
+    resampled = resample_motion_features(source, 7)
     source_tensor = torch.from_numpy(source).permute(1, 2, 0).unsqueeze(0)
     resampled_tensor = torch.from_numpy(resampled).permute(1, 2, 0).unsqueeze(0)
 
-    source_energy = ReferencePriorEncoder.compute_global_energy_condition(source_tensor, torch.tensor([2]))
-    resampled_energy = ReferencePriorEncoder.compute_global_energy_condition(resampled_tensor, torch.tensor([2]))
+    source_energy = GlobalEnergyExtractor.compute_global_energy_condition(source_tensor, torch.tensor([2]))
+    resampled_energy = GlobalEnergyExtractor.compute_global_energy_condition(resampled_tensor, torch.tensor([2]))
 
     assert_close("global energy after window stretch", resampled_energy.numpy(), source_energy.numpy())
 
@@ -172,12 +172,12 @@ def test_speed_resample_preserves_rotation_only_global_energy_with_playspeed() -
     source = np.zeros((4, 2, 13), dtype=np.float32)
     source[:, :, 3] = np.arange(4, dtype=np.float32)[:, None]
 
-    resampled = _resample_motion_features(source, 7)
+    resampled = resample_motion_features(source, 7)
     source_tensor = torch.from_numpy(source).permute(1, 2, 0).unsqueeze(0)
     resampled_tensor = torch.from_numpy(resampled).permute(1, 2, 0).unsqueeze(0)
 
-    source_energy = ReferencePriorEncoder.compute_global_energy_condition(source_tensor, torch.tensor([2]))
-    resampled_energy = ReferencePriorEncoder.compute_global_energy_condition(
+    source_energy = GlobalEnergyExtractor.compute_global_energy_condition(source_tensor, torch.tensor([2]))
+    resampled_energy = GlobalEnergyExtractor.compute_global_energy_condition(
         resampled_tensor,
         torch.tensor([2]),
         playspeed_cond=torch.tensor([4.0 / 7.0], dtype=torch.float32),
@@ -197,7 +197,7 @@ def test_loop_speed_resample_rebuilds_terminal_velocity_from_wrap_delta() -> Non
         dtype=np.float32,
     )
 
-    resampled = _resample_motion_features(source, 6, loop_terminal=True)
+    resampled = resample_motion_features(source, 6, loop_terminal=True)
     expected_vel = _expected_resampled_velocity(source, 6, loop_terminal=True)
 
     assert_close("loop visible velocity", resampled[:-1, :, 9:12], expected_vel[:-1])
@@ -283,15 +283,23 @@ def test_loop_padding_random_offset_wraps_without_truncation() -> None:
     offset = raw_len - 4
 
     with patch.object(motion_dataset, '_sample_loop_tile_count', return_value=1):
-        motion, m_length, *_rest = motion_dataset.prepare_sample_by_name(
+        sample = motion_dataset.prepare_sample_by_name(
             LOOP_MOTION,
             target_num_frames=NUM_FRAMES,
             loop_offset=offset,
         )
-    expected = _resample_raw_then_normalize(_circular_roll_motion(raw, offset), cond, NUM_FRAMES, loop_terminal=True)
+    motion, m_length, *_rest, mean, std, _max_joints, _motion_metadata, _name, _joint_mask_dict = sample
+    rolled_raw = _circular_roll_motion(raw, offset)
+    expected_raw = resample_motion_features(rolled_raw, NUM_FRAMES, loop_terminal=True)
+    expected = _normalize_motion(expected_raw, cond)
+    raw_motion = motion * std[None, :, :] + mean[None, :, :]
     assert motion.shape[0] == NUM_FRAMES, f"expected random-offset loop fill to keep {NUM_FRAMES} frames"
     assert m_length == NUM_FRAMES, f"effective length should remain {NUM_FRAMES}, got {m_length}"
     assert_close("loop-filled motion with wraparound offset", motion, expected, atol=3e-5)
+    # Pure circular roll preserves the velocity ring; the terminal velocity
+    # (channels 9-12, i.e. the wrap-around delta) must equal the expected
+    # terminal velocity after resample — it is NOT forced to zero/copy.
+    assert_close("rolled loop terminal velocity", raw_motion[-1, :, 9:12], expected_raw[-1, :, 9:12], atol=3e-5)
 
 
 def test_explicit_window_start_respects_requested_crop() -> None:
@@ -306,10 +314,13 @@ def test_explicit_window_start_respects_requested_crop() -> None:
 
     motion_dataset = dataset.motion_dataset
     window_start = 7
+    # Pick a NON-loop motion: loop motions get circular-roll + tile augmentation
+    # before the crop, so their window would not match a direct raw crop.
     long_motion_name = next(
         name
         for name, length in zip(motion_dataset.name_list, motion_dataset.length_arr)
         if NUM_FRAMES + window_start <= int(length) <= NUM_FRAMES * 2
+        and not bool(motion_dataset.data_dict[name].get('motion_metadata', {}).get('is_loop'))
     )
 
     motion, m_length, *_rest, _motion_metadata, name, _joint_mask_dict = motion_dataset.prepare_sample_by_name(

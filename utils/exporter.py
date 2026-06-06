@@ -10,13 +10,14 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import sys
 from typing import Optional
 
 import numpy as np
 import torch
 from torch import Tensor
 
-from motion_lib.FBX import _extract_armature_skeleton_data, import_fbx, remove_lights_and_cameras
+from motion_lib.FBX import extract_armature_skeleton_data, import_fbx, remove_lights_and_cameras
 from data_loaders.truebones.truebones_utils.animation_utils import refresh_joint_metadata_in_object_cond
 from .rotation_numpy import (
     quat_conjugate_wxyz_np,
@@ -27,6 +28,7 @@ from .retarget import (
     _batch_internal_pose_fk_np,
     retarget_world_space_np,
 )
+from .texture_resolve import resolve_main_character_textures
 
 
 __all__ = [
@@ -135,15 +137,25 @@ def _normalize_imported_armature_and_meshes(bpy, armature) -> None:
     """Normalize imported FBX object scale while preserving the axis wrapper.
 
     FBX import commonly leaves a +90deg X axis wrapper and a 0.01 object scale
-    on the armature object. The skinned meshes inherit the same world transform
-    via parenting / armature modifiers. We want to remove the importer scale and
-    stale parent-inverse state, but we must keep the axis wrapper rotation: the
+    on the armature object. We want to remove the importer scale and stale
+    parent-inverse state, but we must keep the axis wrapper rotation: the
     imported bone and mesh local data still live in the FBX armature's Y-up
     object space, so stripping the rotation would roll the character 90 degrees.
 
-    Normalize the imported objects back to unit scale while preserving their
-    world translation and world rotation, keeping armature-local mesh/bone data
-    unchanged and still aligned to Blender's world up axis.
+    Dropping the armature's object scale re-interprets its armature-local bone
+    data (centimetre units) as world units, which is what aligns the exported
+    skeleton with the centimetre-scale NPY animation. The skinned meshes must
+    move with that change so they stay glued to the skeleton — but they do NOT
+    necessarily share the armature's object scale: a mesh parented *under* the
+    armature inherits an extra scale factor (e.g. armature scale 0.01 + mesh
+    basis 0.01 -> mesh world scale 0.0001). Resetting every object to unit scale
+    independently therefore detaches such a mesh (it ends up 100x too large).
+
+    Instead, compute the world-space delta that maps the armature's old world
+    frame onto its normalized (scale-dropped) frame, then apply that *same*
+    delta to every bound mesh. This preserves each mesh's transform relative to
+    the armature exactly, so the skin stays aligned regardless of how the mesh's
+    own object scale differs from the armature's.
     """
     from mathutils import Matrix
 
@@ -156,18 +168,91 @@ def _normalize_imported_armature_and_meshes(bpy, armature) -> None:
         ):
             related_meshes.append(obj)
 
-    objects_to_normalize = [armature] + related_meshes
-    world_transforms = {
-        obj.name: obj.matrix_world.copy()
-        for obj in objects_to_normalize
-    }
+    arm_world_old = armature.matrix_world.copy()
+    # Normalized armature frame: keep world translation + rotation, drop scale/shear.
+    arm_position = arm_world_old.translation.copy()
+    arm_rotation = arm_world_old.to_quaternion().to_matrix().to_4x4()
+    arm_world_new = Matrix.Translation(arm_position) @ arm_rotation
 
-    for obj in objects_to_normalize:
-        world_matrix = world_transforms[obj.name]
-        world_position = world_matrix.translation.copy()
-        world_rotation = world_matrix.to_quaternion().to_matrix().to_4x4()
-        obj.matrix_parent_inverse = Matrix.Identity(4)
-        obj.matrix_world = Matrix.Translation(world_position) @ world_rotation
+    # World-space delta carrying the old armature frame onto the normalized one.
+    # Applying it to a bound mesh preserves arm_world_new.inverted() @ mesh_world
+    # == arm_world_old.inverted() @ mesh_world_old, i.e. the mesh-in-armature
+    # bind transform the armature modifier relies on.
+    delta = arm_world_new @ arm_world_old.inverted()
+
+    mesh_worlds_old = {m.name: m.matrix_world.copy() for m in related_meshes}
+
+    armature.matrix_parent_inverse = Matrix.Identity(4)
+    armature.matrix_world = arm_world_new
+
+    for mesh in related_meshes:
+        mesh.matrix_parent_inverse = Matrix.Identity(4)
+        mesh.matrix_world = delta @ mesh_worlds_old[mesh.name]
+
+
+def _apply_gltf_output_space_similarity(
+    bpy,
+    armature,
+    scale_factor: float | None,
+    orientation_quat_wxyz: Optional[np.ndarray],
+) -> None:
+    """Reverse-align an imported rig into HML/npy space (skinned restore mode 2).
+
+    The skinned-GLB output lives in glTF output space (Y-up), which is the same
+    space the source FBX/GLB rig occupies after export. The preprocessing that
+    produced the NPY mapped that raw rig space into HML space with a single
+    global similarity ``G = Scale(scale_factor) · Rot(orientation_quat)`` (the
+    XZ-centering is a per-clip root translation already carried by the recovered
+    animation, and the descendant-Y bake is present in both spaces). Applying
+    ``G`` here therefore reverse-aligns the *rig* onto the NPY/HML frame instead
+    of aligning the animation onto the rig, so the exported GLB keeps the NPY's
+    orientation, scale, and centered placement (like the corresponding BVH).
+
+    ``G`` is expressed in glTF output space; the armature object lives in
+    Blender's Z-up space, so it is conjugated by the ``export_yup`` axis change
+    ``C`` (Blender Z-up -> glTF Y-up): ``D_blender = C⁻¹ · G · C``. The same
+    rigid + uniform-scale delta is applied to the armature and every bound mesh,
+    which preserves each mesh's armature-relative bind transform exactly.
+    """
+    from mathutils import Matrix, Quaternion
+
+    # Blender (Z-up) -> glTF (Y-up): (x, y, z) -> (x, z, -y). Matches export_yup=True.
+    C = Matrix((
+        (1.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 1.0, 0.0),
+        (0.0, -1.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 1.0),
+    ))
+
+    s = float(scale_factor) if scale_factor else 1.0
+    if s <= 0.0:
+        raise ValueError(f"scale_factor must be positive, got {s}")
+    G = Matrix.Scale(s, 4)
+    if orientation_quat_wxyz is not None:
+        q = np.asarray(orientation_quat_wxyz, dtype=np.float64).reshape(-1)
+        if q.shape != (4,):
+            raise ValueError(f"orientation_quat must have shape (4,), got {q.shape}")
+        rotation = Quaternion((float(q[0]), float(q[1]), float(q[2]), float(q[3]))).to_matrix().to_4x4()
+        G = G @ rotation
+
+    if s == 1.0 and (orientation_quat_wxyz is None):
+        return
+
+    delta = C.inverted() @ G @ C
+
+    related_meshes = []
+    for obj in bpy.data.objects:
+        if obj.type != "MESH":
+            continue
+        if obj.parent == armature or any(
+            mod.type == "ARMATURE" and mod.object == armature for mod in obj.modifiers
+        ):
+            related_meshes.append(obj)
+
+    mesh_worlds_old = {m.name: m.matrix_world.copy() for m in related_meshes}
+    armature.matrix_world = delta @ armature.matrix_world
+    for mesh in related_meshes:
+        mesh.matrix_world = delta @ mesh_worlds_old[mesh.name]
 
 
 class AnimationExporter:
@@ -356,6 +441,8 @@ class AnimationExporter:
         mesh_path: Optional[str] = None,
         bone_translations: Optional[Tensor] = None,
         rotation_channel_mask: Optional[Tensor | np.ndarray] = None,
+        global_similarity: Optional[tuple[float | None, Optional[np.ndarray]]] = None,
+        use_image_search: bool = False,
     ) -> None:
         """Export GLB directly through bpy in the current Python process.
 
@@ -376,6 +463,19 @@ class AnimationExporter:
             rotation_channel_mask: Optional per-joint boolean mask. ``True`` keeps
                 writing animated rotation channels for that joint; ``False`` leaves
                 the imported/created rest rotation unkeyed for that joint.
+            global_similarity: Optional ``(scale_factor, orientation_quat_wxyz)``
+                forward HML similarity. When provided alongside *mesh_path*, the
+                imported rig (armature + bound meshes) is reverse-aligned into
+                HML/npy space so the exported GLB keeps the NPY's orientation,
+                scale, and centered placement (skinned restore mode 2). See
+                :func:`_apply_gltf_output_space_similarity`.
+            use_image_search: When ``True`` (and *mesh_path* is an FBX), import
+                textures by recursively searching directories near the source
+                mesh (bpy's own resolver), then fall back to
+                :func:`_auto_resolve_main_character_textures` for any main
+                character mesh still left without a usable base-color texture.
+                When ``False`` (default), neither texture-resolution path runs
+                and the importer's behavior is unchanged.
         """
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
@@ -422,7 +522,7 @@ class AnimationExporter:
                 # to identity so pose-bone keyframes operate in armature space
                 # instead of double-counting the importer transform.
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                    import_fbx(mesh_path)
+                    import_fbx(mesh_path, use_image_search=use_image_search)
             elif mesh_path_lower.endswith((".glb", ".gltf")):
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     bpy.ops.import_scene.gltf(filepath=mesh_path)
@@ -434,8 +534,21 @@ class AnimationExporter:
             armature = next((o for o in bpy.data.objects if o.type == "ARMATURE"), None)
             if armature is None:
                 raise RuntimeError(f"No armature found after importing mesh_path: {mesh_path}")
+            # When texture resolution is requested, bpy's image search above
+            # handles the common case; fall back to our own resolver for any
+            # main-character mesh still missing a usable base-color texture.
+            # Best-effort and gated so default exports are unchanged.
+            if use_image_search:
+                resolve_main_character_textures(bpy, armature, mesh_path)
             if mesh_path_lower.endswith(".fbx"):
                 _normalize_imported_armature_and_meshes(bpy, armature)
+            if global_similarity is not None:
+                _apply_gltf_output_space_similarity(bpy, armature, *global_similarity)
+        elif global_similarity is not None:
+            raise ValueError(
+                "global_similarity (HML reverse-alignment) requires a mesh_path; "
+                "it has no effect on skeleton-only GLB export."
+            )
         else:
             armature = self._create_armature_from_skeleton(bpy, skeleton=export_skeleton)
 
@@ -445,7 +558,7 @@ class AnimationExporter:
         # ``Anytop.utils.retarget`` so non-Blender callers can share it.
         # ────────────────────────────────────────────────────────────────
         if mesh_path:
-            fbx_names, fbx_parents, fbx_offsets, fbx_rest_rots = _extract_armature_skeleton_data(armature)
+            fbx_names, fbx_parents, fbx_offsets, fbx_rest_rots = extract_armature_skeleton_data(armature)
             J_fbx = len(fbx_names)
 
             rest_rot_input = np.array([
@@ -545,16 +658,41 @@ class AnimationExporter:
         armature.select_set(True)
         bpy.ops.object.mode_set(mode="POSE")
 
-        for f in range(num_frames):
-            scene.frame_set(f)
+        # ── Build per-channel value arrays (vectorised over frames) ───
+        # Instead of setting properties + keyframe_insert F×J×3 times (tens of
+        # thousands of Python→C calls), we establish the fcurve structure with a
+        # single frame-0 keyframe per channel (so masking / root handling stays
+        # byte-for-byte identical to the per-frame path), then bulk-fill every
+        # frame in one ``foreach_set`` per fcurve. ``data_path_value_arrays``
+        # maps each fcurve's (data_path, array_index) to its length-F samples.
+        F = num_frames
+        jr_np = np.asarray(jr, dtype=np.float64) if F else None
+        rt_np = np.asarray(rt, dtype=np.float64) if F else None
+        rr_np = np.asarray(rr, dtype=np.float64) if F else None
+        bt_np = np.asarray(bt, dtype=np.float64) if (bt is not None and F) else None
+        zeros_f3 = np.zeros((F, 3), dtype=np.float64) if F else None
+        ones_f3 = np.ones((F, 3), dtype=np.float64) if F else None
+
+        data_path_value_arrays: dict[tuple[str, int], np.ndarray] = {}
+
+        def _record(base_path: str, arr: np.ndarray) -> None:
+            # arr has shape (F, C); register one entry per component column.
+            for c in range(arr.shape[1]):
+                data_path_value_arrays[(base_path, c)] = np.ascontiguousarray(arr[:, c])
+
+        if F:
             if not mesh_path:
-                armature.location = (rt[f][0], rt[f][1], rt[f][2])
                 armature.rotation_mode = "QUATERNION"
-                armature.rotation_quaternion = (rr[f][0], rr[f][1], rr[f][2], rr[f][3])
+                armature.location = tuple(rt_np[0])
+                armature.rotation_quaternion = tuple(rr_np[0])
                 armature.scale = (1.0, 1.0, 1.0)
-                armature.keyframe_insert(data_path="location", frame=f)
-                armature.keyframe_insert(data_path="rotation_quaternion", frame=f)
-                armature.keyframe_insert(data_path="scale", frame=f)
+                armature.keyframe_insert(data_path="location", frame=0)
+                armature.keyframe_insert(data_path="rotation_quaternion", frame=0)
+                armature.keyframe_insert(data_path="scale", frame=0)
+                _record(armature.path_from_id("location"), rt_np)
+                _record(armature.path_from_id("rotation_quaternion"), rr_np)
+                _record(armature.path_from_id("scale"), ones_f3)
+
             for j, bname in enumerate(bone_names):
                 pbone = armature.pose.bones.get(bname)
                 if pbone is None:
@@ -567,47 +705,61 @@ class AnimationExporter:
                     parent_id = self.skeleton.bones[j].parent_id if self.skeleton.bones[j].parent_id is not None else -1
                 is_root = parent_id < 0
                 if is_root and mesh_path:
-                    loc_val = rt[f]
-                    rot_val = rr[f]
-                    pbone.location = (loc_val[0], loc_val[1], loc_val[2])
+                    loc_arr = rt_np
+                    rot_arr = rr_np
                 else:
-                    rot_val = jr[f][j]
-                    if bt is not None:
-                        loc_val = bt[f][j] if not is_root else (0.0, 0.0, 0.0)
-                        pbone.location = (loc_val[0], loc_val[1], loc_val[2])
+                    rot_arr = jr_np[:, j, :]
+                    if bt_np is not None and not is_root:
+                        loc_arr = bt_np[:, j, :]
                     else:
-                        pbone.location = (0.0, 0.0, 0.0)
+                        loc_arr = zeros_f3
 
                 write_rotation_channel = (
                     True if rotation_channel_mask_np is None else bool(rotation_channel_mask_np[j])
                 )
                 pbone.rotation_mode = "QUATERNION"
+                pbone.location = tuple(loc_arr[0])
                 if write_rotation_channel:
-                    pbone.rotation_quaternion = (rot_val[0], rot_val[1], rot_val[2], rot_val[3])
+                    pbone.rotation_quaternion = tuple(rot_arr[0])
                 else:
                     pbone.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
                 pbone.scale = (1.0, 1.0, 1.0)
-                pbone.keyframe_insert(data_path="location", frame=f)
+                pbone.keyframe_insert(data_path="location", frame=0)
                 if write_rotation_channel:
-                    pbone.keyframe_insert(data_path="rotation_quaternion", frame=f)
-                pbone.keyframe_insert(data_path="scale", frame=f)
+                    pbone.keyframe_insert(data_path="rotation_quaternion", frame=0)
+                pbone.keyframe_insert(data_path="scale", frame=0)
+
+                _record(pbone.path_from_id("location"), loc_arr)
+                if write_rotation_channel:
+                    _record(pbone.path_from_id("rotation_quaternion"), rot_arr)
+                _record(pbone.path_from_id("scale"), ones_f3)
 
         bpy.ops.object.mode_set(mode="OBJECT")
 
-        # ── Force LINEAR interpolation ────────────────────────────────
-        if action is not None:
-            all_fcurves = []
-            if hasattr(action, "fcurves"):
-                all_fcurves = list(action.fcurves)
-            elif hasattr(action, "layers"):
-                for layer in action.layers:
-                    for strip in layer.strips:
-                        if hasattr(strip, "channelbags"):
-                            for channelbag in strip.channelbags:
-                                all_fcurves.extend(channelbag.fcurves)
-            for fcurve in all_fcurves:
-                for kp in fcurve.keyframe_points:
-                    kp.interpolation = "LINEAR"
+        # ── Bulk-fill every frame on each fcurve via foreach_set ──────
+        if F and action is not None and data_path_value_arrays:
+            frames = np.arange(F, dtype=np.float64)
+            channelbags = []
+            for layer in getattr(action, "layers", []):
+                for strip in layer.strips:
+                    channelbags.extend(getattr(strip, "channelbags", []))
+            # LINEAR interpolation enum maps to integer 1 (CONSTANT=0, BEZIER=2).
+            linear_codes = np.ones(F, dtype=np.int32)
+            for cb in channelbags:
+                for fc in cb.fcurves:
+                    values = data_path_value_arrays.get((fc.data_path, fc.array_index))
+                    if values is None:
+                        continue
+                    existing = len(fc.keyframe_points)
+                    if existing < F:
+                        fc.keyframe_points.add(F - existing)
+                    co = np.empty(2 * F, dtype=np.float64)
+                    co[0::2] = frames
+                    co[1::2] = values
+                    fc.keyframe_points.foreach_set("co", co)
+                    # Force LINEAR (replaces the former per-keyframe Python loop).
+                    fc.keyframe_points.foreach_set("interpolation", linear_codes)
+                    fc.update()
 
         # ── Export GLB ────────────────────────────────────────────────
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
@@ -684,4 +836,3 @@ class AnimationExporter:
 
         bpy.ops.object.mode_set(mode="OBJECT")
         return armature_obj
-

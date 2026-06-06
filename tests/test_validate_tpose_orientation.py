@@ -15,7 +15,7 @@ for _path in [_REPO_ROOT, _ANYTOP_ROOT, os.path.join(_ANYTOP_ROOT, 'utils')]:
 
 
 from motion_lib.Quaternions import Quaternions
-from validate_anytop_dataset import _summarize_tpose_orientation_axis_alignment
+from validate_anytop_dataset import summarize_tpose_orientation_axis_alignment
 
 
 class ValidateTPoseOrientationTest(unittest.TestCase):
@@ -25,7 +25,7 @@ class ValidateTPoseOrientationTest(unittest.TestCase):
             np.array([[0.0, 0.0, 1.0]], dtype=np.float64),
         )[0]
 
-        best_axis, delta_deg = _summarize_tpose_orientation_axis_alignment(
+        best_axis, delta_deg = summarize_tpose_orientation_axis_alignment(
             'BuzzardLike',
             {'orientation_quat': orientation_quat.qs},
         )
@@ -41,7 +41,7 @@ class ValidateTPoseOrientationTest(unittest.TestCase):
             np.array([[0.0, 0.0, 1.0]], dtype=np.float64),
         )[0]
 
-        best_axis, delta_deg = _summarize_tpose_orientation_axis_alignment(
+        best_axis, delta_deg = summarize_tpose_orientation_axis_alignment(
             'DiagonalLike',
             {'orientation_quat': orientation_quat.qs},
         )

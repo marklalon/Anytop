@@ -13,6 +13,12 @@ python eval/evaluate_motion_quality.py \
     --motions "outputs/trial_00/*.npy" \
     --object-type Buffalo \
     --action-tags locomotion,attack
+
+python eval/evaluate_motion_quality.py \
+    --motions "outputs/new_skeleton/*.npy" \
+    --object-type dragon \
+    --action-tags locomotion \
+    --cond-path outputs/new_skeleton/cond.npy
 """
 
 from __future__ import annotations
@@ -65,6 +71,22 @@ def _validate_motion(path: str) -> Optional[np.ndarray]:
     return motion.astype(np.float32)
 
 
+def _register_cond_path(scorer: DistributionMotionQualityScorer, cond_path: str) -> Path:
+    """Register an optional custom cond.npy for novel query species."""
+    resolved = Path(cond_path).expanduser()
+    if not resolved.is_absolute():
+        resolved = resolved.resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"cond.npy not found: {resolved}")
+
+    cond_dict = np.load(resolved, allow_pickle=True).item()
+    if not isinstance(cond_dict, dict):
+        raise ValueError(f"Expected cond.npy to contain a dict, got {type(cond_dict).__name__}")
+
+    scorer.register_cond(cond_dict)
+    return resolved
+
+
 def _color(score: float, text: str, use_color: bool) -> str:
     if not use_color:
         return text
@@ -80,59 +102,6 @@ def _color(score: float, text: str, use_color: bool) -> str:
 def _bar(score: float, width: int = 20) -> str:
     filled = round(score * width)
     return "#" * filled + "." * (width - filled)
-
-
-def _print_report(report: DistributionEvalReport, use_color: bool) -> None:
-    clr = lambda value, text: _color(value, text, use_color)
-
-    def _round4_dict(values: dict) -> dict:
-        return {
-            key: (round(float(value), 4) if isinstance(value, (int, float, np.floating)) else value)
-            for key, value in values.items()
-        }
-
-    print()
-    print(f"{'=' * 74}")
-    print("  Low-Shot Weighted-Reference Motion Quality Report")
-    print(f"{'=' * 74}")
-    print(
-        f"  Object : {report.object_type or 'unknown'}  |  "
-        f"Action : {report.action_tags or 'unknown'}"
-    )
-    print(
-        f"  Query  : {report.n_input} clip(s) / {report.input_total_frames} frames  |  "
-        f"Reference : {report.n_reference} clip(s) / {report.reference_total_frames} frames"
-    )
-    print()
-
-    rows = [
-        ("Joint naturalness", report.overall_score, ""),
-    ]
-    for label, score, note in rows:
-        print(f"  {label:<32s} {clr(score, f'{score:.4f}')}  {_bar(score)}  {note}")
-
-    print()
-    print("  Reference species:")
-    for species in report.reference_species:
-        print(
-            "    "
-            f"{species['object_type']:<18} weight={species['species_weight']:.4f} "
-            f"distance={species['cosine_distance']:.4f} clips={species['clip_count']} frames={species['total_frames']}"
-        )
-    print()
-    component_scores = report.raw.get("component_scores")
-    if component_scores:
-        print(f"  Metric scores  : {json.dumps(_round4_dict(component_scores))}")
-    joint_group_scores = report.raw.get("joint_group_scores")
-    if joint_group_scores:
-        print(f"  Joint groups   : {json.dumps(_round4_dict(joint_group_scores), sort_keys=True)}")
-    print()
-
-
-def _write_json(report: DistributionEvalReport, path: str) -> None:
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(report.as_dict(), handle, indent=2)
-    print(f"[info] JSON report written -> {path}")
 
 
 def _print_per_file_summary(
@@ -296,8 +265,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--object_type", "--object-type",
         default=None,
         metavar="TYPE",
-        help="Object type key present in cond.npy, e.g. Buffalo or Horse. "
-             "Auto-inferred from motion filenames when omitted.",
+        help="Object type key present in the default cond.npy or in --cond-path, "
+             "e.g. Buffalo or dragon. Auto-inferred from motion filenames when omitted.",
+    )
+    parser.add_argument(
+        "--cond_path", "--cond-path",
+        default=None,
+        metavar="FILE",
+        help="Optional custom cond.npy for novel query species. This is used only for query-side skeleton metadata; "
+             "reference action distributions still come from the default dataset cond.npy.",
     )
     parser.add_argument(
         "--action_tags", "--action-tags",
@@ -347,27 +323,39 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("[error] No query motion files found.", file=sys.stderr)
         return 1
 
-    # ── Auto-infer object_type from filenames ──────────────────────────────
-    if args.object_type is None:
-        inferred = infer_object_type_from_filename(motion_paths[0])
-        if inferred is not None:
-            args.object_type = inferred
-            print(f"Auto-detected object_type: {inferred}")
-        else:
-            print(
-                f"[error] Cannot auto-detect object_type from '{os.path.basename(motion_paths[0])}'.\n"
-                f"  Pass --object_type explicitly.",
-                file=sys.stderr,
-            )
-            return 1
+    # ── Resolve object_type strategy ────────────────────────────────────────
+    # An explicit --object_type applies to every file. Otherwise the type is
+    # inferred per file from its name, so a single end-of-workflow run can score
+    # a mixed output tree containing several species. The reference prior is
+    # cached per (object_type, action_tags), so files that share a type only pay
+    # the dataset-loading cost once.
+    explicit_object_type = args.object_type
 
     # ── Evaluate each motion file independently ────────────────────────────
     scorer = DistributionMotionQualityScorer(dataset_root=args.dataset_root)
+    if args.cond_path:
+        try:
+            _register_cond_path(scorer, args.cond_path)
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            print(f"[error] failed to load --cond-path: {exc}", file=sys.stderr)
+            return 1
     results: list[tuple[str, DistributionEvalReport]] = []
     skipped = 0
 
     print(f"Evaluating {len(motion_paths)} motion(s) ...")
     for path in motion_paths:
+        if explicit_object_type is not None:
+            object_type = explicit_object_type
+        else:
+            object_type = infer_object_type_from_filename(path)
+            if object_type is None:
+                print(
+                    f"[warn] cannot auto-detect object_type from "
+                    f"'{os.path.basename(path)}' - skipping (pass --object_type to override)",
+                    file=sys.stderr,
+                )
+                skipped += 1
+                continue
         motion = _validate_motion(path)
         if motion is None:
             skipped += 1
@@ -375,7 +363,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         try:
             report = scorer.evaluate(
                 motions=[motion],
-                object_type=args.object_type,
+                object_type=object_type,
                 action_tags=args.action_tags,
                 top_k_species=args.top_k_species,
             )

@@ -62,9 +62,9 @@ from utils.misc import infer_object_type_from_filename
 from utils.npy_roundtrip_utils import coerce_feature_payload, recover_from_features
 from Anytop.motion_lib.Animation import positions_global
 from Anytop.motion_lib.FBX import (
-    _extract_armature_skeleton_data,
-    _get_action_sample_times,
-    _set_scene_time,
+    extract_armature_skeleton_data,
+    get_action_sample_times,
+    set_scene_time,
     clear_scene,
     remove_lights_and_cameras,
 )
@@ -334,7 +334,7 @@ def _collect_armature_world_positions(armature, sample_frames: list[float], bone
     armature_world = armature.matrix_world.copy()
 
     for frame_idx, sample_frame in enumerate(sample_frames):
-        _set_scene_time(scene, float(sample_frame))
+        set_scene_time(scene, float(sample_frame))
         bpy.context.view_layer.update()
         for bone_idx, pose_bone in enumerate(ordered_pose_bones):
             if pose_bone is None:
@@ -360,8 +360,8 @@ def _load_glb_motion(glb_path: str) -> MotionWorldData:
     if armature is None:
         raise RuntimeError(f"No armature found in GLB: {glb_path}")
 
-    bone_names, parents, _offsets, _rest_rotations = _extract_armature_skeleton_data(armature)
-    sample_frames = [float(frame) for frame in _get_action_sample_times(armature)]
+    bone_names, parents, _offsets, _rest_rotations = extract_armature_skeleton_data(armature)
+    sample_frames = [float(frame) for frame in get_action_sample_times(armature)]
     if not sample_frames:
         sample_frames = [float(bpy.context.scene.frame_current)]
 
@@ -553,7 +553,7 @@ def _summarize_length_drift(
     }
 
 
-def _compute_drift_report(reference: ReferenceSkeleton, motion: MotionWorldData) -> dict[str, Any]:
+def compute_drift_report(reference: ReferenceSkeleton, motion: MotionWorldData) -> dict[str, Any]:
     edge_names, motion_parent_idx, motion_child_idx = _resolve_comparison_edges(reference, motion)
 
     motion_lengths = np.linalg.norm(
@@ -699,7 +699,7 @@ def main() -> None:
     print(f"[Info] loading      : {_format_path(input_path)}")
 
     motion = _load_motion(input_path, reference)
-    report = _compute_drift_report(reference, motion)
+    report = compute_drift_report(reference, motion)
 
     print()
     _print_summary(motion, report, max(args.top_k, 0))

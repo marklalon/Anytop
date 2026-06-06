@@ -159,7 +159,7 @@ def main() -> None:
     import numpy as np
 
     from Anytop.utils.exporter import AnimationExporter
-    from Anytop.utils.retarget import _batch_forward_kinematics_np
+    from Anytop.utils.retarget import batch_forward_kinematics_np
     from Anytop.utils.rotation_numpy import quat_rotate_wxyz_np
 
     device = torch.device("cpu")
@@ -223,7 +223,7 @@ def main() -> None:
         loaded_positions = anim.positions[:, :J_loaded]       # (F, J, 3)
         loaded_parents   = anim.parents[:J_loaded]             # (J,)
 
-        loaded_wpos, loaded_wrot = _batch_forward_kinematics_np(
+        loaded_wpos, loaded_wrot = batch_forward_kinematics_np(
             loaded_rotations,
             loaded_positions,
             loaded_parents,

@@ -16,7 +16,7 @@ for _path in [_REPO_ROOT, _ANYTOP_ROOT]:
         sys.path.insert(0, _path)
 
 
-from tools.check_bone_length_drift import MotionWorldData, ReferenceSkeleton, _compute_drift_report
+from tools.check_bone_length_drift import MotionWorldData, ReferenceSkeleton, compute_drift_report
 
 
 def test_drift_report_uses_animation_first_frame_as_main_baseline() -> None:
@@ -47,7 +47,7 @@ def test_drift_report_uses_animation_first_frame_as_main_baseline() -> None:
         sample_frames=[0.0, 1.0],
     )
 
-    report = _compute_drift_report(reference, motion)
+    report = compute_drift_report(reference, motion)
     drift = report["drift"]
 
     assert drift["reference_basis"] == "animation_first_frame"
@@ -90,7 +90,7 @@ def test_drift_report_includes_first_frame_reference_stats() -> None:
         sample_frames=[0.0, 1.0],
     )
 
-    report = _compute_drift_report(reference, motion)
+    report = compute_drift_report(reference, motion)
     first_frame_reference = report["first_frame_reference"]
 
     assert first_frame_reference["frame_index"] == 0

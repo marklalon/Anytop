@@ -25,7 +25,7 @@ def test_sample_subtree_joint_mask_respects_budget_and_root_visibility() -> None
     mask = sample_subtree_joint_mask(
         parents=parents,
         candidate_root_mask=_candidate_root_mask(1, 5, 7),
-        joint_mask_prob=0.5,
+        joint_mask_budget=0.5,
         rng=np.random.default_rng(0),
     )
 
@@ -48,7 +48,7 @@ def test_sample_subtree_joint_mask_biases_toward_larger_subtrees() -> None:
         mask = sample_subtree_joint_mask(
             parents=parents,
             candidate_root_mask=_candidate_root_mask(1, 5, 7),
-            joint_mask_prob=0.5,
+            joint_mask_budget=0.5,
             rng=np.random.default_rng(seed),
         )
 
@@ -71,7 +71,7 @@ def test_sample_subtree_joint_mask_supports_restored_global_numpy_state() -> Non
     first_mask = sample_subtree_joint_mask(
         parents=parents,
         candidate_root_mask=candidate_root_mask,
-        joint_mask_prob=0.5,
+        joint_mask_budget=0.5,
         rng=np.random,
     )
 
@@ -80,7 +80,7 @@ def test_sample_subtree_joint_mask_supports_restored_global_numpy_state() -> Non
     second_mask = sample_subtree_joint_mask(
         parents=parents,
         candidate_root_mask=candidate_root_mask,
-        joint_mask_prob=0.5,
+        joint_mask_budget=0.5,
         rng=np.random,
     )
 
@@ -112,7 +112,8 @@ def test_sample_subtree_joint_mask_batch_matches_sequential_sampling() -> None:
         candidate_root_mask_batch=candidate_root_mask_batch,
         n_joints=n_joints,
         max_joints=9,
-        joint_mask_prob=0.5,
+        joint_mask_prob=1.0,
+        joint_mask_budget=0.5,
         rng=np.random,
     )
 
@@ -123,7 +124,7 @@ def test_sample_subtree_joint_mask_batch_matches_sequential_sampling() -> None:
         per_sample_mask = sample_subtree_joint_mask(
             parents=parents_batch[batch_index, :valid_joint_count].tolist(),
             candidate_root_mask=candidate_root_mask_batch[batch_index, :valid_joint_count],
-            joint_mask_prob=0.5,
+            joint_mask_budget=0.5,
             rng=np.random,
         )
         if per_sample_mask is not None:
@@ -132,3 +133,21 @@ def test_sample_subtree_joint_mask_batch_matches_sequential_sampling() -> None:
     assert batch_mask is not None
     assert np.array_equal(batch_mask, expected)
     assert not np.any(batch_mask[1, int(n_joints[1]):])
+
+
+def test_sample_subtree_joint_mask_batch_respects_probability_gate() -> None:
+    parents_batch = np.asarray([[-1, 0, 1, 2, 3, 0, 5, 0, 7]], dtype=np.int64)
+    candidate_root_mask_batch = np.stack([_candidate_root_mask(1, 5, 7)], axis=0)
+    n_joints = np.asarray([9], dtype=np.int64)
+
+    mask = sample_subtree_joint_mask_batch(
+        parents_batch=parents_batch,
+        candidate_root_mask_batch=candidate_root_mask_batch,
+        n_joints=n_joints,
+        max_joints=9,
+        joint_mask_prob=0.0,
+        joint_mask_budget=0.5,
+        rng=np.random.default_rng(0),
+    )
+
+    assert mask is None

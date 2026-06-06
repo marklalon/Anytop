@@ -6,8 +6,31 @@ inverse-FK math originally embedded inside ``AnimationExporter.export_glb``.
 Lifting it out means callers other than the GLB export pipeline — e.g. the
 cross-species reference-motion path in ``sample/generate.py`` — can run the
 same retargeting without depending on ``bpy``.
+
+Usage as CLI::
+
+    python -m Anytop.utils.retarget --source <path> --object_type <Type>
 """
 from __future__ import annotations
+
+# When run directly (``python utils/retarget.py``), relative imports fail
+# because __package__ is None.  Auto-relaunch via ``python -m`` so the
+# package context is correct.
+import sys as _sys
+if __name__ == '__main__' and __package__ is None:
+    import os as __os
+    import subprocess as __sp
+    _ANYTOP_PARENT = __os.path.dirname(__os.path.dirname(__os.path.abspath(__file__)))
+    _relaunch_env = __os.environ.copy()
+    _existing_pythonpath = _relaunch_env.get('PYTHONPATH', '')
+    _parts = [p for p in (_ANYTOP_PARENT, _existing_pythonpath) if p]
+    _relaunch_env['PYTHONPATH'] = __os.pathsep.join(_parts)
+    _sys.exit(__sp.call(
+        [_sys.executable, '-m', 'Anytop.utils.retarget'] + _sys.argv[1:],
+        cwd=_ANYTOP_PARENT,
+        env=_relaunch_env,
+    ))
+del _sys
 
 import json
 import os
@@ -102,7 +125,11 @@ def _build_skeleton_text(
         parent_name = "root" if p < 0 else names[p]
         extras = []
         if bone_len_norm is not None and p >= 0:
-            extras.append(f"bone_len: {bone_len_norm[i]:.2f}")
+            # Use 4 decimals (was .2f): .2f was too coarse and collapsed genuinely
+            # distinct-but-similar bones onto the same string, producing false cache
+            # hits and wrong joint mappings. 4 decimals keeps such bones distinct
+            # in the LLM prompt / cache key.
+            extras.append(f"bone_len: {bone_len_norm[i]:.4f}")
         extras.append(f"children: {int(children_count[i])}")
         lines.append(f"- {name} (parent: {parent_name}, {', '.join(extras)})")
     return "\n".join(lines)
@@ -215,7 +242,7 @@ def _llm_joint_mapping(
             messages=messages,
             stream=False,
             temperature=0,
-            top_p=0.95,
+            top_p=1.0,
             max_tokens=8192,
             extra_body={"chat_template_kwargs": {"enable_thinking": False}},
         )
@@ -308,7 +335,7 @@ def _llm_joint_mapping(
 # ---------------------------------------------------------------------------
 
 
-def _generate_coordinate_candidates_np():
+def generate_coordinate_candidates_np():
     """Generate candidate 3x3 rotation/flip matrices for auto-detection."""
     I = np.eye(3, dtype=np.float64)
 
@@ -407,7 +434,7 @@ def _build_target_bridge_source_indices(
     return bridge_src_for_tgt
 
 
-def _batch_forward_kinematics_np(
+def batch_forward_kinematics_np(
     local_rotations: np.ndarray,
     local_positions: np.ndarray,
     parents: np.ndarray,
@@ -572,6 +599,7 @@ def retarget_world_space_np(
     src_match_names: list[str],
     tgt_match_names: list[str],
     src_effective_root_index: int | None = None,
+    tgt_effective_root_index: int | None = None,
     src_bone_translations: Optional[np.ndarray] = None,
     coordinate_search: bool = True,
     verbose: bool = True,
@@ -669,6 +697,14 @@ def retarget_world_space_np(
             if current_idx == int(ancestor_idx):
                 return True
             current_idx = int(src_parents[current_idx])
+        return False
+
+    def _is_target_ancestor(ancestor_idx: int, descendant_idx: int) -> bool:
+        current_idx = int(descendant_idx)
+        while current_idx >= 0:
+            if current_idx == int(ancestor_idx):
+                return True
+            current_idx = int(tgt_parents[current_idx])
         return False
 
     def _chain_root(name: str) -> str:
@@ -1003,42 +1039,63 @@ def retarget_world_space_np(
     # accidentally swap unrelated joints).
     root_tgt_indices = np.flatnonzero(tgt_parents < 0)
     root_tgt_idx = int(root_tgt_indices[0]) if root_tgt_indices.size > 0 else -1
+    locomotion_tgt_idx = root_tgt_idx
+    if tgt_effective_root_index is not None:
+        tgt_effective_root_index = int(tgt_effective_root_index)
+        if 0 <= tgt_effective_root_index < J_tgt:
+            locomotion_tgt_idx = tgt_effective_root_index
     if (
         src_effective_root_index is not None
-        and root_tgt_idx >= 0
+        and locomotion_tgt_idx >= 0
     ):
         src_effective_root_index = int(src_effective_root_index)
         if 0 <= src_effective_root_index < J_src:
-            current_root_src = np.flatnonzero(src_to_tgt == root_tgt_idx)
-            current_root_src_idx = int(current_root_src[0]) if current_root_src.size > 0 else -1
-            should_promote_effective_root = (
-                current_root_src_idx < 0
-                or _is_source_ancestor(current_root_src_idx, src_effective_root_index)
+            current_locomotion_src = np.flatnonzero(src_to_tgt == locomotion_tgt_idx)
+            current_locomotion_src_idx = (
+                int(current_locomotion_src[0]) if current_locomotion_src.size > 0 else -1
             )
-            if should_promote_effective_root and current_root_src_idx != src_effective_root_index:
+            should_promote_effective_root = (
+                current_locomotion_src_idx < 0
+                or _is_source_ancestor(current_locomotion_src_idx, src_effective_root_index)
+                or _is_source_ancestor(src_effective_root_index, current_locomotion_src_idx)
+            )
+            if (
+                should_promote_effective_root
+                and current_locomotion_src_idx != src_effective_root_index
+            ):
                 previous_tgt_for_effective = int(src_to_tgt[src_effective_root_index])
-                if current_root_src_idx >= 0:
-                    src_to_tgt[current_root_src_idx] = -1
-                if previous_tgt_for_effective >= 0 and previous_tgt_for_effective != root_tgt_idx:
-                    src_to_tgt[src_effective_root_index] = -1
-                src_to_tgt[src_effective_root_index] = root_tgt_idx
-                if previous_tgt_for_effective >= 0 and previous_tgt_for_effective != root_tgt_idx:
+                if current_locomotion_src_idx >= 0:
+                    src_to_tgt[current_locomotion_src_idx] = -1
+                src_to_tgt[src_effective_root_index] = locomotion_tgt_idx
+                should_shift_displaced_target = (
+                    previous_tgt_for_effective >= 0
+                    and previous_tgt_for_effective != locomotion_tgt_idx
+                    and not _is_target_ancestor(previous_tgt_for_effective, locomotion_tgt_idx)
+                )
+                if should_shift_displaced_target:
                     _shift_descendant_chain_after_root_promotion(
                         src_effective_root_index,
                         previous_tgt_for_effective,
                     )
                 if verbose:
                     replaced_name = (
-                        src_match_names[current_root_src_idx]
-                        if current_root_src_idx >= 0 else '<none>'
+                        src_match_names[current_locomotion_src_idx]
+                        if current_locomotion_src_idx >= 0 else '<none>'
                     )
                     displaced_name = (
                         tgt_match_names[previous_tgt_for_effective]
-                        if previous_tgt_for_effective >= 0 and previous_tgt_for_effective != root_tgt_idx else '<none>'
+                        if (
+                            previous_tgt_for_effective >= 0
+                            and previous_tgt_for_effective != locomotion_tgt_idx
+                        ) else '<none>'
+                    )
+                    target_label = (
+                        'target effective root'
+                        if locomotion_tgt_idx != root_tgt_idx else 'target root'
                     )
                     print(
                         f"[retarget] Promoting source effective root "
-                        f"{src_match_names[src_effective_root_index]!r} to target root "
+                        f"{src_match_names[src_effective_root_index]!r} to {target_label} "
                         f"(replacing {replaced_name!r}, displaced target match {displaced_name!r})"
                     )
 
@@ -1104,14 +1161,6 @@ def retarget_world_space_np(
     if abs(scale - 1.0) < 0.001:
         scale = 1.0
 
-    root_in_common = None
-    for ci, fi in enumerate(common_tgt_idx):
-        if fi == root_tgt_idx:
-            root_in_common = ci
-            break
-    if root_in_common is None:
-        root_in_common = 0
-
     # No rest-pose translation alignment: both source and target go through
     # process_anim() (root centered at XZ origin, feet grounded at y≈0, common
     # scale_factor), so any rest-based t_align tends to introduce drift rather
@@ -1120,7 +1169,7 @@ def retarget_world_space_np(
     t_align = np.zeros(3, dtype=np.float64)
     pos_src_rest_st = pos_src_rest * scale
 
-    candidates = _generate_coordinate_candidates_np() if coordinate_search else [
+    candidates = generate_coordinate_candidates_np() if coordinate_search else [
         ("identity", np.eye(3, dtype=np.float64))
     ]
     best_R = np.eye(3, dtype=np.float64)
@@ -1179,7 +1228,6 @@ def retarget_world_space_np(
         fi = int(src_to_tgt[ii])
         if fi >= 0:
             src_for_tgt[fi] = ii
-    mapped_mask = src_for_tgt >= 0
     bridge_src_for_tgt = _build_target_bridge_source_indices(
         src_for_tgt,
         src_to_tgt,
@@ -1198,6 +1246,25 @@ def retarget_world_space_np(
     target_wpos = np.zeros((F_q, J_tgt, 3), dtype=np.float64)
 
     _EPS = 1e-8
+
+    def _stable_valid(bn):
+        """Per-frame direction validity, made temporally stable against flicker.
+
+        ``bn`` is the per-frame aligned source-bone length; a frame is normally
+        valid (direction transfer) when ``bn > _EPS`` and otherwise falls back to
+        the rest offset. A structurally near-zero source bone (e.g. a zero-length
+        helper like Bip01_Pelvis driving the dragon Spine) has a length that sits
+        in the numerical noise floor and STRADDLES ``_EPS`` — some frames above,
+        some below — so the per-frame choice flips every frame, snapping the mapped
+        target joint between two placements (visible as ~1-3 Hz jitter). When the
+        mask is mixed like that, the bone provides no reliable direction in any
+        frame, so we use the rest fallback consistently for the whole clip. A real
+        (even very short) bone stays consistently above ``_EPS`` and is untouched.
+        """
+        valid = bn > _EPS
+        if valid.any() and not valid.all():
+            valid[:] = False
+        return valid
 
     # Pre-compute source-side bone vectors and animated lengths (vectorized)
     # For root joints (parent < 0) these stay zero — they won't be used.
@@ -1235,7 +1302,7 @@ def retarget_world_space_np(
             # inserted gap joints do not peel sideways with the transport frame.
             tgt_rest_len = float(np.linalg.norm(tgt_rest_offsets[j]))
             bn = np.linalg.norm(src_bv_aligned[:, bridge_src_idx], axis=-1)
-            valid = bn > _EPS
+            valid = _stable_valid(bn)
             d = src_bv_aligned[:, bridge_src_idx] / np.where(valid, bn, 1.0)[:, None]
 
             src_rest_len = float(np.linalg.norm(src_rest_offsets[bridge_src_idx]))
@@ -1270,7 +1337,7 @@ def retarget_world_space_np(
             p1 = int(src_parents[ii])
             if p1 >= 0:
                 bn = np.linalg.norm(src_bv_aligned[:, ii], axis=-1)  # (F,)
-                valid = bn > _EPS
+                valid = _stable_valid(bn)
                 d = src_bv_aligned[:, ii] / np.where(valid, bn, 1.0)[:, None]
 
                 src_rest_len = float(np.linalg.norm(src_rest_offsets[ii]))
@@ -1351,9 +1418,18 @@ def retarget_world_space_np(
     # chain, not just the mapped child itself. Back-propagate the mapped root's
     # desired world transform through the wrapper rest chain so inverse-FK can
     # emit a non-zero target root wrapper transform that Blender can reproduce.
+    # Feature-space retarget callers can opt out by naming a non-root target
+    # effective root: in that case locomotion should stay on that joint's local
+    # translation, leaving wrapper ancestors static.
     for tgt_joint_idx in range(J_tgt):
         src_joint_idx = int(src_for_tgt[tgt_joint_idx])
         if src_joint_idx < 0 or int(src_parents[src_joint_idx]) >= 0:
+            continue
+        if (
+            tgt_effective_root_index is not None
+            and int(tgt_joint_idx) == int(tgt_effective_root_index)
+            and int(tgt_parents[tgt_joint_idx]) >= 0
+        ):
             continue
 
         current_child_idx = int(tgt_joint_idx)
@@ -1393,6 +1469,29 @@ def retarget_world_space_np(
             current_world_pos = parent_world_pos
             current_world_rot = parent_world_rot
             parent_idx = int(tgt_parents[current_child_idx])
+
+    # When tgt_effective_root_index is a non-root joint, pin all ancestor
+    # wrapper nodes to the hierarchy root's rest world position so that the
+    # effective root's local translation carries the full locomotion without
+    # being offset by wrapper rest offsets.  This keeps the wrapper chain
+    # semantically inert while preserving the FK relationship.
+    if (
+        tgt_effective_root_index is not None
+        and int(tgt_effective_root_index) >= 0
+        and int(tgt_parents[int(tgt_effective_root_index)]) >= 0
+    ):
+        _anchor_pos = tgt_rest_wpos[0, root_tgt_idx]  # (3,)
+        _anchor_rot = tgt_rest_wrot[0, root_tgt_idx]   # (4,)
+        _ancestor_list: list[int] = []
+        _cur = int(tgt_parents[int(tgt_effective_root_index)])
+        while _cur >= 0:
+            _ancestor_list.append(_cur)
+            _cur = int(tgt_parents[_cur])
+        for _aj in _ancestor_list:
+            target_wpos[:, _aj] = _anchor_pos[np.newaxis, :]
+            target_wrot[:, _aj] = np.repeat(
+                _anchor_rot[np.newaxis], F_q, axis=0
+            )
 
     # ── H) Inverse FK back to target local pose channels ──────────────────
     tgt_pose_rot = np.zeros((F, J_tgt, 4), dtype=np.float64)
@@ -1438,6 +1537,19 @@ def retarget_world_space_np(
     _POSE_LOCATION_EPS = 1e-5
     for j in range(J_tgt):
         if int(tgt_parents[j]) < 0:
+            continue
+
+        # The locomotion joint (an effective root sitting under static wrapper
+        # joints, e.g. a Bip01 hierarchy's Bip01 below Hips→Ctrl) must keep its
+        # full inverse-FK local translation: that translation IS the character's
+        # global locomotion. The source carries locomotion in its root-translation
+        # channel, not a per-joint pose-location channel, so the suppression test
+        # below (which only inspects the source pose-location channel) sees ~0 and
+        # would wrongly zero it — freezing the whole character at its rest offset
+        # (sinking it below the floor). When the effective root is itself the
+        # hierarchy root the ``tgt_parents[j] < 0`` guard already skips it, so this
+        # only matters for the wrapped case and is otherwise a no-op.
+        if j == locomotion_tgt_idx:
             continue
 
         controller_src_idx = int(src_for_tgt[j])
@@ -1498,3 +1610,223 @@ def retarget_world_space_np(
         alignment_scale=scale,
         alignment_translation=t_align,
     )
+
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == '__main__':
+    import argparse
+    import sys
+    import os as _os
+
+    # Ensure both the Anytop dir and its parent are on sys.path so the
+    # bare ``utils.*`` / ``data_loaders.*`` / ``motion_lib.*`` imports
+    # resolve regardless of CWD.
+    _ANYTOP_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    _REPO_ROOT = _os.path.dirname(_ANYTOP_ROOT)
+    sys.path.insert(0, _REPO_ROOT)
+    sys.path.insert(0, _ANYTOP_ROOT)
+
+    _PARSER = argparse.ArgumentParser(
+        description='Cross-skeleton motion retargeting — retarget an animation '
+                    '(.npy/.glb/.fbx) onto a target skeleton.'
+    )
+    _PARSER.add_argument(
+        '--source', required=True, type=str,
+        help='Path to source animation file (.npy / .glb / .fbx).',
+    )
+    _PARSER.add_argument(
+        '--object_type', required=True, type=str,
+        help='Target object type name (e.g. Horse, Buffalo, Dragon). '
+             'Must match a key in the cond.npy dataset.',
+    )
+    _PARSER.add_argument(
+        '--cond_path', default=None, type=str,
+        help='Optional path to an additional cond.npy file. Entries in this '
+             'file are merged into the default training cond (not replaced). '
+             'Useful for providing cond entries for skeletons not in the '
+             'training set.',
+    )
+    _PARSER.add_argument(
+        '--output_dir', default=None, type=str,
+        help='Output directory for retargeted .npy and inspection .bvh files. '
+             'Default: Anytop/outputs/retarget_output',
+    )
+
+    _cli_args = _PARSER.parse_args()
+
+    # ── Resolve paths ─────────────────────────────────────────────────────
+    _source_path = _os.path.abspath(_cli_args.source)
+    if not _os.path.isfile(_source_path):
+        _PARSER.error(f'--source file not found: {_source_path}')
+
+    _suffix = _os.path.splitext(_source_path)[1].lower()
+    if _suffix not in {'.npy', '.glb', '.fbx', '.gltf'}:
+        _PARSER.error(
+            f'Unsupported source format "{_suffix}". '
+            f'Supported: .npy, .glb, .fbx, .gltf'
+        )
+
+    _default_cond = _os.path.join(
+        _ANYTOP_ROOT, 'dataset', 'truebones', 'zoo',
+        'truebones_processed', 'cond.npy',
+    )
+    if _cli_args.cond_path:
+        _extra_cond_path = _os.path.abspath(_cli_args.cond_path)
+        if not _os.path.isfile(_extra_cond_path):
+            _PARSER.error(f'--cond_path file not found: {_extra_cond_path}')
+    else:
+        _extra_cond_path = None
+
+    if _cli_args.output_dir:
+        _output_dir = _os.path.abspath(_cli_args.output_dir)
+    else:
+        _output_dir = _os.path.join(_ANYTOP_ROOT, 'outputs', 'retarget_output')
+    _os.makedirs(_output_dir, exist_ok=True)
+
+    # ── Load cond ──────────────────────────────────────────────────────────
+    if not _os.path.isfile(_default_cond):
+        _PARSER.error(
+            f'Default training cond not found at {_default_cond}. '
+            f'Run preprocessing first or provide --cond_path.'
+        )
+
+    _cond_dict = dict(np.load(_default_cond, allow_pickle=True).item())
+
+    if _extra_cond_path:
+        _extra_cond = dict(np.load(_extra_cond_path, allow_pickle=True).item())
+        # Merge: extra entries override/add to default, but don't replace
+        # keys that already exist in default — we only add new object_types.
+        for _key, _val in _extra_cond.items():
+            if _key not in _cond_dict:
+                _cond_dict[_key] = _val
+        print(f'[retarget CLI] Merged {len(_extra_cond)} extra cond entries '
+              f'(total: {len(_cond_dict)}).')
+
+    _target_type = _cli_args.object_type
+    if _target_type not in _cond_dict:
+        _PARSER.error(
+            f'Target object_type "{_target_type}" not found in cond. '
+            f'Available: {sorted(_cond_dict.keys())}'
+        )
+
+    _tgt_cond = dict(_cond_dict[_target_type])
+    _max_joints = max(
+        len(np.asarray(_cond_dict[_k]['parents']))
+        for _k in _cond_dict
+    )
+
+    # ── Retarget ───────────────────────────────────────────────────────────
+    from data_loaders.truebones.truebones_utils.features import (
+        get_common_features_from_T_pose,
+    )
+    from data_loaders.truebones.truebones_utils.motion_process import (
+        recover_bvh_export_animation_from_motion_np,
+    )
+    from motion_lib import BVH
+
+    _base_name = _os.path.splitext(_os.path.basename(_source_path))[0]
+
+    _tgt_tpose_path = _tgt_cond.get('orientation_reference_fbx_path')
+    if not _tgt_tpose_path or not _os.path.isfile(_tgt_tpose_path):
+        _PARSER.error(
+            f'Target T-pose file not found for "{_target_type}": '
+            f'{_tgt_tpose_path!r}'
+        )
+
+    _tgt_tp = get_common_features_from_T_pose(
+        _tgt_tpose_path, _target_type,
+        augment_leaf_rotation_helpers=True,
+        max_joints=_max_joints,
+    )
+
+    # Resolve FPS from target cond (used for BVH export frametime).
+    _fps = float(_tgt_cond.get('fps', 30.0))
+
+    if _suffix == '.npy':
+        # Feature-space .npy source: infer source object_type from filename,
+        # then delegate to retarget_features_npy_to_target.
+        from utils.misc import infer_object_type_from_filename
+        from Anytop.utils.auto_retarget import retarget_features_npy_to_target
+
+        _src_type = infer_object_type_from_filename(
+            _source_path,
+            valid_types=set(_cond_dict.keys()),
+        )
+        if _src_type is None:
+            _PARSER.error(
+                f'Could not infer source object_type from filename '
+                f'"{_base_name}". For .npy sources the filename must contain '
+                f'a known object_type (e.g. Horse___Run_01.npy).'
+            )
+        if _src_type == _target_type:
+            # Same skeleton — no retarget needed; copy source features as-is.
+            print(f'[retarget CLI] Source and target are the same type '
+                  f'("{_src_type}") — skipping retarget.')
+            _target_features = np.load(_source_path).astype(np.float32)
+        else:
+            _src_cond = dict(_cond_dict[_src_type])
+            _src_features = np.load(_source_path).astype(np.float32)
+
+            print(f'[retarget CLI] Retargeting {_src_type} → {_target_type} '
+                  f'(source: {_src_features.shape})')
+
+            _target_features = retarget_features_npy_to_target(
+                _src_features,
+                _src_cond,
+                _src_type,
+                _tgt_tp,
+                _target_type,
+                _max_joints,
+                source_tp=None,
+                target_cond=_tgt_cond,
+            )
+    else:
+        # Raw animation file (.glb/.fbx/.gltf): cond-free on the source side.
+        from Anytop.utils.auto_retarget import retarget_animation_file_to_target
+
+        print(f'[retarget CLI] Retargeting {_source_path} → {_target_type}')
+
+        _target_features = retarget_animation_file_to_target(
+            _source_path,
+            _tgt_tp,
+            _target_type,
+            _max_joints,
+            _tgt_cond,
+        )
+
+    if _target_features is None:
+        sys.exit(
+            f'ERROR: Retargeting failed ({_source_path} → {_target_type}). '
+            f'Check joint-name overlap between source and target skeletons.'
+        )
+
+    # ── Save outputs ───────────────────────────────────────────────────────
+    _out_npy = _os.path.join(
+        _output_dir,
+        f'_retargeted_to_{_target_type}__{_base_name}.npy',
+    )
+    np.save(_out_npy, _target_features)
+    print(f'[retarget CLI] Retargeted features {_target_features.shape} → {_out_npy}')
+
+    # Inspection BVH
+    try:
+        _out_bvh = _out_npy[:-4] + '.bvh'
+        _out_anim, _joint_names, _has_pos = recover_bvh_export_animation_from_motion_np(
+            _target_features,
+            np.asarray(_tgt_cond['parents'], dtype=np.int32),
+            np.asarray(_tgt_cond['offsets'], dtype=np.float32),
+            list(_tgt_cond.get('canonical_bvh_joint_names',
+                               _tgt_cond['joints_names'])),
+            allow_infer=True,
+            tpose_rest_rotations=_tgt_tp.tpos_rots[0],
+        )
+        if _out_anim is not None:
+            BVH.save(
+                _out_bvh, _out_anim, _joint_names,
+                frametime=1.0 / _fps, positions=_has_pos,
+                order='auto',
+            )
+            print(f'[retarget CLI] Inspection BVH → {_out_bvh}')
+    except Exception as _exc:
+        print(f'[retarget CLI] WARNING: Failed to write inspection BVH: {_exc}')

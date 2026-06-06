@@ -42,9 +42,13 @@ from data_loaders.truebones.truebones_utils.features import (
 )
 from data_loaders.truebones.truebones_utils.animation_utils import find_translation_root
 import Anytop.utils.retarget as retarget_mod
-from Anytop.utils.auto_retarget import _build_tpose_aligned_target_animation
+from Anytop.utils.auto_retarget import build_tpose_aligned_target_animation
 from Anytop.utils.auto_retarget import retarget_features_npy_to_target
-from Anytop.utils.rotation_numpy import quat_multiply_wxyz_np, quat_rotate_wxyz_np
+from Anytop.utils.rotation_numpy import (
+    quat_conjugate_wxyz_np,
+    quat_multiply_wxyz_np,
+    quat_rotate_wxyz_np,
+)
 
 
 def _quat_x(angle_deg: float) -> np.ndarray:
@@ -377,7 +381,7 @@ def test_build_target_animation_preserves_world_rotations_across_gap() -> None:
         tpos_rots=_identity_quat(3)[None, :, :],
     )
 
-    anim = _build_tpose_aligned_target_animation(retarget_result, target_tp)
+    anim = build_tpose_aligned_target_animation(retarget_result, target_tp)
 
     np.testing.assert_allclose(
         rotations_global(anim).qs,
@@ -392,7 +396,7 @@ def test_build_target_animation_preserves_world_rotations_across_gap() -> None:
     np.testing.assert_allclose(anim.rotations.qs[0, 1], gap_world, atol=1e-6)
 
 
-def test_build_target_animation_keeps_pure_unmapped_branch_at_identity() -> None:
+def test_build_target_animation_preserves_pure_unmapped_branch_rotations() -> None:
     parents = np.array([-1, 0, 1], dtype=np.int32)
     offsets = np.array(
         [
@@ -403,7 +407,8 @@ def test_build_target_animation_keeps_pure_unmapped_branch_at_identity() -> None
         dtype=np.float64,
     )
     branch_world = _quat_z(177.0)
-    leaf_world = quat_multiply_wxyz_np(branch_world[None, :], _quat_x(25.0)[None, :])[0]
+    branch_leaf_local = _quat_x(25.0)
+    leaf_world = quat_multiply_wxyz_np(branch_world[None, :], branch_leaf_local[None, :])[0]
     retarget_result = {
         'joint_rotations': np.tile(np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64), (1, 3, 1)),
         'target_world_positions': np.array(
@@ -430,10 +435,15 @@ def test_build_target_animation_keeps_pure_unmapped_branch_at_identity() -> None
         tpos_rots=_identity_quat(3)[None, :, :],
     )
 
-    anim = _build_tpose_aligned_target_animation(retarget_result, target_tp)
+    anim = build_tpose_aligned_target_animation(retarget_result, target_tp)
 
-    np.testing.assert_allclose(anim.rotations.qs[0, 1], np.array([1.0, 0.0, 0.0, 0.0]), atol=1e-6)
-    np.testing.assert_allclose(anim.rotations.qs[0, 2], np.array([1.0, 0.0, 0.0, 0.0]), atol=1e-6)
+    # Joint 0 is mapped root — keeps world rotation directly
+    np.testing.assert_allclose(anim.rotations.qs[0, 0], [1.0, 0.0, 0.0, 0.0], atol=1e-6)
+    # Joints 1 and 2 are pure unmapped side branches with no mapped
+    # descendant — stay at local identity so large rest quaternions do not
+    # leak into the BVH motion channels.
+    np.testing.assert_allclose(anim.rotations.qs[0, 1], [1.0, 0.0, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(anim.rotations.qs[0, 2], [1.0, 0.0, 0.0, 0.0], atol=1e-6)
 
 
 def test_tpose_aligned_roundtrip_preserves_gap_chain_and_rest_side_branch() -> None:
@@ -506,7 +516,7 @@ def test_tpose_aligned_roundtrip_preserves_gap_chain_and_rest_side_branch() -> N
         helper_metadata=None,
     )
 
-    baseline_anim = _build_tpose_aligned_target_animation(retarget_result, target_tp)
+    baseline_anim = build_tpose_aligned_target_animation(retarget_result, target_tp)
     baseline_world_rot = rotations_global(baseline_anim).qs
     baseline_world_pos = positions_global(baseline_anim)
 
@@ -540,12 +550,15 @@ def test_tpose_aligned_roundtrip_preserves_gap_chain_and_rest_side_branch() -> N
             assert _quat_angle_deg(recovered_world_rot[frame_idx, joint_idx], baseline_world_rot[frame_idx, joint_idx]) < 1e-5
         np.testing.assert_allclose(recovered_world_pos[:, joint_idx], baseline_world_pos[:, joint_idx], atol=1e-5)
 
+    for frame_idx in range(2):
+        assert _quat_angle_deg(recovered_world_rot[frame_idx, 4], baseline_world_rot[frame_idx, 4]) < 1e-5
     for joint_idx in (4, 5):
-        np.testing.assert_allclose(
-            recovered_anim.rotations.qs[:, joint_idx],
-            np.tile(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64), (2, 1)),
-            atol=1e-6,
-        )
+        np.testing.assert_allclose(recovered_world_pos[:, joint_idx], baseline_world_pos[:, joint_idx], atol=1e-5)
+    np.testing.assert_allclose(
+        recovered_anim.rotations.qs[:, 5],
+        np.tile(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64), (2, 1)),
+        atol=1e-6,
+    )
 
 
 def _fk_world_positions(
@@ -654,7 +667,7 @@ def test_tpose_aligned_roundtrip_with_nontrivial_rest_rotations() -> None:
         helper_metadata=None,
     )
 
-    baseline_anim = _build_tpose_aligned_target_animation(retarget_result, target_tp)
+    baseline_anim = build_tpose_aligned_target_animation(retarget_result, target_tp)
     baseline_world_rot = rotations_global(baseline_anim).qs
 
     # Sanity: the built Animation's FK must already reproduce mapped + gap
@@ -714,7 +727,14 @@ def test_tpose_aligned_roundtrip_with_nontrivial_rest_rotations() -> None:
             )
 
 
-def test_retarget_features_npy_to_target_uses_tpose_aligned_motion_path(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_retarget_features_npy_to_target_encodes_feature_space_animation_directly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """get_motion must preserve the retargeted feature-space rotations.
+
+    Source NPY retargeting decodes and transfers the T-pose-relative feature
+    animation. ``_build_tpose_aligned_target_animation`` therefore already emits
+    local rotations in that feature basis, and get_motion must not remove the
+    target T-pose rest rotations a second time.
+    """
     import importlib
     import Anytop.utils.auto_retarget as auto_retarget_mod
     import Anytop.utils.exporter as exporter_mod
@@ -762,7 +782,7 @@ def test_retarget_features_npy_to_target_uses_tpose_aligned_motion_path(monkeypa
     }
 
     monkeypatch.setattr(features_mod, 'recover_animation_from_motion_np', lambda *args, **kwargs: (object(), False))
-    monkeypatch.setattr(roundtrip_common_mod, '_build_skeleton', lambda *args, **kwargs: object())
+    monkeypatch.setattr(roundtrip_common_mod, 'build_skeleton', lambda *args, **kwargs: object())
     monkeypatch.setattr(
         exporter_mod,
         'animation_to_exporter_inputs',
@@ -775,7 +795,7 @@ def test_retarget_features_npy_to_target_uses_tpose_aligned_motion_path(monkeypa
     )
     monkeypatch.setattr(auto_retarget_mod, 'find_translation_root', lambda anim: 0)
     monkeypatch.setattr(retarget_mod, 'retarget_world_space_np', lambda **kwargs: {'src_to_tgt': np.array([0, 1], dtype=np.int32)})
-    monkeypatch.setattr(auto_retarget_mod, '_build_tpose_aligned_target_animation', lambda *args, **kwargs: sentinel_anim)
+    monkeypatch.setattr(auto_retarget_mod, 'build_tpose_aligned_target_animation', lambda *args, **kwargs: sentinel_anim)
 
     captured: dict[str, object] = {}
 
@@ -845,7 +865,7 @@ def test_retarget_features_npy_to_target_uses_effective_root_override(
     }
 
     monkeypatch.setattr(features_mod, 'recover_animation_from_motion_np', lambda *args, **kwargs: (object(), False))
-    monkeypatch.setattr(roundtrip_common_mod, '_build_skeleton', lambda *args, **kwargs: object())
+    monkeypatch.setattr(roundtrip_common_mod, 'build_skeleton', lambda *args, **kwargs: object())
     monkeypatch.setattr(
         exporter_mod,
         'animation_to_exporter_inputs',
@@ -857,7 +877,7 @@ def test_retarget_features_npy_to_target_uses_effective_root_override(
         ),
     )
     monkeypatch.setattr(auto_retarget_mod, 'find_translation_root', lambda anim: 0)
-    monkeypatch.setattr(auto_retarget_mod, '_build_tpose_aligned_target_animation', lambda *args, **kwargs: sentinel_anim)
+    monkeypatch.setattr(auto_retarget_mod, 'build_tpose_aligned_target_animation', lambda *args, **kwargs: sentinel_anim)
 
     captured: dict[str, object] = {}
 
@@ -1043,6 +1063,73 @@ def test_retarget_promotes_matched_effective_root_over_wrapper_root(
     assert int(result['src_to_tgt'][0]) == -1
 
 
+def test_retarget_promotes_source_root_to_nonroot_target_effective_root() -> None:
+    result = retarget_mod.retarget_world_space_np(
+        src_parents=np.array([-1, 0], dtype=np.int32),
+        src_rest_offsets=np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 0.4, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        src_rest_rotations=_identity_quat(2),
+        tgt_parents=np.array([-1, 0], dtype=np.int32),
+        tgt_rest_offsets=np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 0.4, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        tgt_rest_rotations=_identity_quat(2),
+        src_joint_rotations=np.tile(_identity_quat(2)[None, :, :], (2, 1, 1)),
+        src_root_translation=np.array(
+            [
+                [0.0, 0.4, 0.0],
+                [1.0, 0.4, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        src_root_rotation=np.tile(
+            np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64),
+            (2, 1),
+        ),
+        src_effective_root_index=0,
+        tgt_effective_root_index=1,
+        src_bone_translations=None,
+        src_match_names=['Hips', 'Pelvis'],
+        tgt_match_names=['Hips', 'Pelvis'],
+        coordinate_search=False,
+        verbose=False,
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(result['target_world_positions'], dtype=np.float64)[:, 0],
+        np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        np.asarray(result['target_world_positions'], dtype=np.float64)[:, 1],
+        np.array(
+            [
+                [0.0, 0.4, 0.0],
+                [1.0, 0.4, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        atol=1e-6,
+    )
+    assert int(result['src_to_tgt'][0]) == 1
+    assert int(result['src_to_tgt'][1]) == -1
+
+
 def test_bridge_gap_joint_uses_source_anchor_rotation_to_avoid_spine_translation_jitter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1101,13 +1188,110 @@ def test_bridge_gap_joint_uses_source_anchor_rotation_to_avoid_spine_translation
         tpos_anim=SimpleNamespace(parents=tgt_parents),
         tpos_rots=_identity_quat(3)[None, :, :],
     )
-    anim = _build_tpose_aligned_target_animation(result, target_tp)
+    anim = build_tpose_aligned_target_animation(result, target_tp)
 
     np.testing.assert_allclose(
         anim.positions[0, 2],
         tgt_rest_offsets[2],
         atol=1e-6,
     )
+
+
+def test_bridge_ignores_degenerate_zero_length_source_wrapper_bone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A near-zero-length source bone must not drive a target wrapper chain.
+
+    Regression for the Buffalo->Horse corruption: 3ds Max "Bip01" rigs place a
+    near-zero-offset wrapper bone (root ``Hips`` coincident with ``Pelvis``).
+    When the target inserts unmapped single-child wrappers (``Ctrl``/``Bip01``)
+    between its root and that pelvis, the bridge distributes the source bone's
+    direction across the wrapper chain. A degenerate-rest bone has no meaningful
+    direction and an ill-defined stretch ratio (``anim_len / rest_len`` blows up
+    when ``rest_len`` is a negligible fraction of the skeleton), so the wrappers
+    used to swing wildly (80-90 deg/frame), scrambling the whole body below.
+
+    Here the degenerate ``Hips->Pelvis`` rest bone (1e-4 vs ~0.5 typical) carries
+    a large per-frame pose-location swing. Before the scale-relative degeneracy
+    gate, ``Ctrl`` swung ~90 deg/frame; now it (and the rest of the wrapper
+    chain) stays rigid relative to its parent.
+    """
+    monkeypatch.setattr(
+        retarget_mod,
+        '_llm_joint_mapping',
+        lambda *_args, **_kwargs: {'Hips': 'Hips', 'Pelvis': 'Pelvis'},
+    )
+
+    # Source: Hips -> Pelvis (degenerate, ~zero offset) -> Spine (real bone, so
+    # the skeleton's typical bone length is O(1) and the pelvis bone reads as a
+    # negligible fraction of it).
+    src_parents = np.array([-1, 0, 1], dtype=np.int32)
+    src_rest_offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0e-4, 0.0],  # degenerate Bip01-style wrapper bone
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+
+    # Target: Hips -> Ctrl -> Bip01 -> Pelvis (two unmapped single-child wrappers).
+    tgt_parents = np.array([-1, 0, 1, 2], dtype=np.int32)
+    tgt_rest_offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.3, 0.0],
+            [0.0, 0.4, 0.0],
+            [0.0, 0.5, 0.0],
+        ],
+        dtype=np.float64,
+    )
+
+    # Two frames. The root stays put; only the degenerate pelvis bone gets a
+    # large pose-location that swings 90 deg between frames. Distributing that
+    # through a degenerate rest bone is exactly what produced the corruption.
+    joint_rotations = np.tile(_identity_quat(3)[None, :, :], (2, 1, 1))
+    bone_translations = np.zeros((2, 3, 3), dtype=np.float64)
+    bone_translations[0, 1] = np.array([0.0, 0.5, 0.0], dtype=np.float64)
+    bone_translations[1, 1] = np.array([0.5, 0.0, 0.0], dtype=np.float64)
+
+    result = retarget_mod.retarget_world_space_np(
+        src_parents=src_parents,
+        src_rest_offsets=src_rest_offsets,
+        src_rest_rotations=_identity_quat(3),
+        tgt_parents=tgt_parents,
+        tgt_rest_offsets=tgt_rest_offsets,
+        tgt_rest_rotations=_identity_quat(4),
+        src_joint_rotations=joint_rotations,
+        src_root_translation=np.zeros((2, 3), dtype=np.float64),
+        src_root_rotation=np.tile(np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float64), (2, 1)),
+        src_bone_translations=bone_translations,
+        src_match_names=['Hips', 'Pelvis', 'Spine'],
+        tgt_match_names=['Hips', 'Ctrl', 'Bip01', 'Pelvis'],
+        coordinate_search=False,
+        verbose=False,
+    )
+
+    # Ctrl (1) and Bip01 (2) are the unmapped wrappers bridged from src Pelvis.
+    src_to_tgt = np.asarray(result['src_to_tgt'], dtype=np.int32)
+    assert src_to_tgt[0] == 0  # Hips -> Hips
+    assert src_to_tgt[1] == 3  # Pelvis -> Pelvis (deep), forcing the wrapper bridge
+    assert 1 not in src_to_tgt and 2 not in src_to_tgt  # Ctrl/Bip01 unmapped
+
+    wrot = np.asarray(result['target_world_rotations'], dtype=np.float64)
+    for wrapper_idx in (1, 2):
+        parent_idx = int(tgt_parents[wrapper_idx])
+        rel = [
+            quat_multiply_wxyz_np(
+                quat_conjugate_wxyz_np(wrot[f, parent_idx]),
+                wrot[f, wrapper_idx],
+            )
+            for f in range(2)
+        ]
+        assert _quat_angle_deg(rel[0], rel[1]) < 1.0, (
+            f"wrapper joint {wrapper_idx} swung "
+            f"{_quat_angle_deg(rel[0], rel[1]):.1f} deg/frame from a degenerate source bone"
+        )
 
 
 def test_root_promotion_shifts_descendant_chain_up_one_target_level(
@@ -1257,8 +1441,8 @@ def test_build_target_animation_prefers_retarget_bone_translations() -> None:
         'target_world_positions': np.array(
             [[
                 [0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [2.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 1.5, 0.0],
             ]],
             dtype=np.float64,
         ),
@@ -1267,11 +1451,45 @@ def test_build_target_animation_prefers_retarget_bone_translations() -> None:
         'bone_translations': np.zeros((1, 3, 3), dtype=np.float64),
     }
 
-    anim = _build_tpose_aligned_target_animation(retarget_result, target_tp)
+    anim = build_tpose_aligned_target_animation(retarget_result, target_tp)
 
     np.testing.assert_allclose(anim.positions[0, 0], np.array([0.0, 0.0, 0.0], dtype=np.float64), atol=1e-6)
     np.testing.assert_allclose(anim.positions[0, 1], np.array([0.0, 1.0, 0.0], dtype=np.float64), atol=1e-6)
     np.testing.assert_allclose(anim.positions[0, 2], np.array([0.0, 0.5, 0.0], dtype=np.float64), atol=1e-6)
+
+
+def test_build_target_animation_matches_target_world_positions() -> None:
+    target_tp = SimpleNamespace(
+        offsets=np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        tpos_anim=SimpleNamespace(parents=np.array([-1, 0], dtype=np.int32)),
+        tpos_rots=np.array([_identity_quat(2)], dtype=np.float64),
+    )
+
+    retarget_result = {
+        'target_world_positions': np.array(
+            [[
+                [0.0, 0.0, 0.0],
+                [0.2, 1.0, 0.0],
+            ]],
+            dtype=np.float64,
+        ),
+        'target_world_rotations': np.array([_identity_quat(2)], dtype=np.float64),
+        'src_to_tgt': np.array([0, 1], dtype=np.int32),
+        'bone_translations': None,
+    }
+
+    anim = build_tpose_aligned_target_animation(retarget_result, target_tp)
+    np.testing.assert_allclose(
+        positions_global(anim),
+        retarget_result['target_world_positions'],
+        atol=1e-6,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1391,3 +1609,103 @@ def test_infer_donor_consensus_effective_root_index_skip_corrupted(
     assert result == 3
     assert len(call_log) == 1
 
+
+def _floating_anim(foot_height: float):
+    """A Root→Mid→Foot chain whose foot sits at y=foot_height (root at y=0).
+
+    Mirrors the reconstructed-animation form bake_foot_floor_offset operates on:
+    the root's local position is its world position, children hang below it.
+    """
+    from motion_lib.Animation import Animation
+
+    parents = np.array([-1, 0, 1], dtype=np.int32)
+    offsets = np.array(
+        [[0.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, -1.0, 0.0]], dtype=np.float64
+    )
+    frames = 4
+    positions = np.repeat(offsets[None], frames, axis=0)
+    # Lift the whole chain so the foot (joint 2) rests at foot_height: root local
+    # y carries the world placement (root world = its local position).
+    positions[:, 0, 1] = foot_height + 2.0  # foot world = root + (-1) + (-1)
+    rotations = Quaternions(np.tile(_identity_quat(3)[None], (frames, 1, 1)))
+    orients = Quaternions(_identity_quat(3))
+    return Animation(rotations, positions, orients, offsets, parents)
+
+
+def test_bake_foot_floor_offset_single_foot_still_aligns_to_zero() -> None:
+    from motion_lib.Animation import positions_global
+    from Anytop.utils.auto_retarget import bake_foot_floor_offset
+
+    anim = _floating_anim(foot_height=0.75)
+    # Sanity: foot floats at 0.75 before flooring.
+    assert positions_global(anim)[:, 2, 1].min() == pytest.approx(0.75, abs=1e-6)
+
+    bake_foot_floor_offset(anim, foot_indices=[2])
+    gp = positions_global(anim)
+    assert gp[:, 2, 1].min() == pytest.approx(0.0, abs=1e-6)
+    # Root dropped by the float amount, leaving it 2 units above the floored foot.
+    assert gp[:, 0, 1].mean() == pytest.approx(2.0, abs=1e-6)
+
+
+def test_bake_foot_floor_offset_noop_without_contacts() -> None:
+    from motion_lib.Animation import positions_global
+    from Anytop.utils.auto_retarget import bake_foot_floor_offset
+
+    for foot_indices in (None, [], np.array([], dtype=np.int64)):
+        anim = _floating_anim(foot_height=0.75)
+        before = positions_global(anim).copy()
+        bake_foot_floor_offset(anim, foot_indices=foot_indices)
+        np.testing.assert_allclose(positions_global(anim), before, atol=1e-9)
+
+
+def test_bake_foot_floor_offset_lifts_sunken_skeleton() -> None:
+    # A foot below the floor (negative height) is lifted up to 0.
+    from motion_lib.Animation import positions_global
+    from Anytop.utils.auto_retarget import bake_foot_floor_offset
+
+    anim = _floating_anim(foot_height=-0.4)
+    bake_foot_floor_offset(anim, foot_indices=[2])
+    assert positions_global(anim)[:, 2, 1].min() == pytest.approx(0.0, abs=1e-6)
+
+
+def test_bake_foot_floor_offset_uses_median_of_per_joint_mins() -> None:
+    # Two feet at different heights: the median of per-joint minimums aligns.
+    from motion_lib.Animation import Animation, positions_global
+    from Anytop.utils.auto_retarget import bake_foot_floor_offset
+
+    # 5-joint skeleton: Root(0) -> LeftMid(1) -> LeftFoot(2), Root -> RightMid(3) -> RightFoot(4)
+    parents = np.array([-1, 0, 1, 0, 3], dtype=np.int32)
+    # LeftMid at (0,-1,0), LeftFoot at (0,-1,0) relative to LeftMid -> world y = root_y - 2
+    # RightMid at (0,-1.5,0), RightFoot at (0,-0.5,0) relative to RightMid -> world y = root_y - 2
+    offsets = np.zeros((5, 3), dtype=np.float64)
+    offsets[1, 1] = -1.0  # LeftMid
+    offsets[2, 1] = -1.0  # LeftFoot
+    offsets[3, 1] = -1.0  # RightMid
+    offsets[4, 1] = -1.0  # RightFoot
+
+    frames = 4
+    positions = np.repeat(offsets[None], frames, axis=0)
+    # root_y = 3.0 => both feet at world y = 3 - 1 - 1 = 1
+    # We'll vary: shift LeftFoot extra down by 0.5 on all frames so its min = 0.5
+    positions[:, 0, 1] = 3.0  # root local y
+    # LeftFoot world y = 3 - 1 - 1 = 1, RightFoot world y = 3 - 1 - 1 = 1
+    # To make them different, add local offset to LeftFoot
+    positions[:, 2, 1] = -1.5  # LeftFoot local y = -1.5, world = 3 - 1 - 1.5 = 0.5
+    # RightFoot stays at -1.0, world = 3 - 1 - 1 = 1.0
+
+    rotations = Quaternions(np.tile(_identity_quat(5)[None], (frames, 1, 1)))
+    orients = Quaternions(_identity_quat(5))
+    anim = Animation(rotations, positions, orients, offsets, parents)
+
+    gp = positions_global(anim)
+    left_foot_min = gp[:, 2, 1].min()   # 0.5
+    right_foot_min = gp[:, 4, 1].min()  # 1.0
+    expected_median = float(np.median([left_foot_min, right_foot_min]))  # 0.75
+
+    bake_foot_floor_offset(anim, foot_indices=[2, 4])
+    gp_after = positions_global(anim)
+
+    # Left foot min should be at 0.5 - 0.75 = -0.25
+    assert gp_after[:, 2, 1].min() == pytest.approx(-0.25, abs=1e-6)
+    # Right foot min should be at 1.0 - 0.75 = 0.25
+    assert gp_after[:, 4, 1].min() == pytest.approx(0.25, abs=1e-6)

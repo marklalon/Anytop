@@ -33,6 +33,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import build_joint_embedding_texts
+from utils.skeleton_similarity import lineage_tags
 
 def l2_normalize(emb: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     norm = float(np.linalg.norm(emb))
@@ -46,16 +47,16 @@ def l2_normalize(emb: np.ndarray, eps: float = 1e-12) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 GROUP_COLORS = {
-    "quadruped":  "#4e79a7",
-    "biped":      "#f28e2b",
-    "flying":     "#59a14f",
-    "millipede":  "#e15759",
-    "snake":      "#76b7b2",
-    "fish":       "#edc948",
+    "Mammal":     "#4e79a7",
+    "Reptile":    "#f28e2b",
+    "Flying":     "#59a14f",
+    "Arthropod":  "#e15759",
+    "Bird":       "#76b7b2",
+    "Fish":       "#edc948",
     "unknown":    "#b07aa1",
 }
 
-GROUP_ORDER = ["quadruped", "biped", "flying", "millipede", "snake", "fish", "unknown"]
+GROUP_ORDER = ["Mammal", "Reptile", "Flying", "Arthropod", "Bird", "Fish", "unknown"]
 
 
 def load_cond(path: str) -> dict:
@@ -122,7 +123,8 @@ def per_animal_embedding(cond: dict, normalize_means: bool) -> dict:
 
         mean_emb = joint_embs.mean(axis=0)
         plot_emb = l2_normalize(mean_emb) if normalize_means else mean_emb
-        group = object_cond.get("species_group", "unknown")
+        tags = lineage_tags(a)
+        group = next((g for g in GROUP_ORDER if g in tags), "unknown")
         result[a] = {
             "mean_emb": mean_emb,
             "plot_emb": plot_emb,

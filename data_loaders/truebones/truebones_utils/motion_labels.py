@@ -6,23 +6,8 @@ from pathlib import Path
 from typing import Iterable
 
 from data_loaders.truebones.truebones_utils.param_utils import (
-    BIPEDS,
-    FISH,
-    FLYING,
-    MILLIPEDS,
     MOTION_METADATA_FILE,
-    QUADROPEDS,
-    SNAKES,
 )
-
-# Pre-built lower-case lookup sets for case-insensitive species inference.
-# These are built once at import time so that infer_species_group is O(1).
-_BIPEDS_LOWER = {t.lower() for t in BIPEDS}
-_QUADROPEDS_LOWER = {t.lower() for t in QUADROPEDS}
-_MILLIPEDS_LOWER = {t.lower() for t in MILLIPEDS}
-_SNAKES_LOWER = {t.lower() for t in SNAKES}
-_FISH_LOWER = {t.lower() for t in FISH}
-_FLYING_LOWER = {t.lower() for t in FLYING}
 
 
 MOTION_METADATA_SCHEMA_VERSION = 2
@@ -79,30 +64,6 @@ def _collect_action_category_matches(tokens: list[str]) -> list[tuple[str, int, 
     return matches
 
 
-def infer_species_group(object_type: str) -> str:
-    """Infer species group from object_type (case-insensitive).
-
-    The object_type may come from filenames (e.g. "BEAR-TPOSE.fbx" → "BEAR"),
-    user CLI flags, or training data keys — none guarantee consistent casing.
-    The canonical lists (QUADROPEDS, BIPEDS, ...) use title-case entries like
-    "Bear", so we compare case-insensitively.
-    """
-    lower = object_type.lower()
-    if lower in _BIPEDS_LOWER:
-        return "biped"
-    if lower in _QUADROPEDS_LOWER:
-        return "quadruped"
-    if lower in _MILLIPEDS_LOWER:
-        return "millipede"
-    if lower in _SNAKES_LOWER:
-        return "snake"
-    if lower in _FISH_LOWER:
-        return "fish"
-    if lower in _FLYING_LOWER:
-        return "flying"
-    return "other"
-
-
 def infer_species_label(object_type: str) -> str:
     base = _strip_species_variant(object_type)
     tokens = _split_identifier_tokens(base)
@@ -146,7 +107,6 @@ def infer_action_category(action_name: str) -> str:
 def build_object_labels(object_type: str) -> dict[str, str]:
     return {
         "species_label": infer_species_label(object_type),
-        "species_group": infer_species_group(object_type),
     }
 
 

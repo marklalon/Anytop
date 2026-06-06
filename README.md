@@ -19,7 +19,6 @@ This fork includes significant improvements over the original repository while p
 - **Preprocessing + Validation Workflow** — Unified CLI (`preprocess_and_validate.py`) chains preprocessing with immediate validation.
 
 ### Training Enhancements
-- **Generation During Training** — `--gen_during_training` generates sample motions at each save interval.
 - **EMA Model Averaging** — `--use_ema` for improved generalization.
 - **StepLR Scheduler** — Configurable learning rate decay (`--lr_scheduler_step_size`, `--lr_scheduler_gamma`).
 - **Balanced Sampler** — `--balanced` for fair sampling across topologies.
@@ -164,7 +163,7 @@ python -m sample.generate  --model_path <model_path> --object_type <skeleton_nam
 **You may also define:**
 * `--device` id.
 * `--seed` to sample different seeds.
-* `--motion_length` (text-to-motion only) in seconds (maximum is 9.8[sec]).
+* `--motion_frames` number of frames in the sampled motion (default 60).
 
 **Running those will get you:**
 
@@ -199,12 +198,10 @@ python -m train.train_anytop --model_prefix millipeds_snakes --objects_subset mi
 
 To reproduce the flying animals paper model, run:
 ```shell
-python -m train.train_anytop --model_prefix flying --objects_subset flying --lambda_geo 1.0 --auto_resume --gen_during_training --balanced
+python -m train.train_anytop --model_prefix flying --objects_subset flying --lambda_geo 1.0 --auto_resume --balanced
 ```
 * **General instructions** Checkout './utils/parser_utils.py' to view all configurable parameters and default settings. '--balanced' flag is used to activate the balancing sampler, ensuring fair sampling of all skeletons. Use '--auto_resume' if you want the script to continue from the latest checkpoint in save_dir. Without it, training starts fresh and overwrites existing checkpoints in save_dir. 
 * Use `--action_tags` to keep only motions whose `motion_metadata.json` `action_tags` contain one of the requested tags. Example: `--action_tags locomotion` or `--action_tags locomotion,attack`.
-* **Recommended:** Add `--gen_during_training` to generate motions for each saved checkpoint. 
-  This will slow down training but will give you better monitoring.
 * **Recommended:** Add `--use_ema` for Exponential Moving Average to improve performance.
 * Use `--diffusion_steps 50` to train the faster model with less diffusion steps.
 * Use `--device` to define GPU id.

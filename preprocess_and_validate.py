@@ -18,6 +18,7 @@ Options:
     --object-workers N                   Concurrent characters to preprocess (default: 16)
     --sample-count N                     Limit file validation to first N motions (0=all, default: 0)
     --orientation-threshold-deg DEG      Maximum allowed T-pose face-orientation delta from the nearest cardinal XZ axis (+x/-x/+z/-z) before warning (default: 15.0)
+    --motion-orientation-threshold DEG   Maximum allowed first/last-frame recovered-facing delta from T-pose facing before warning (default: 45.0)
 
 Examples:
     # Full workflow: full refresh for objects-subset=all -> validate
@@ -246,6 +247,8 @@ def run_preprocessing(
     object_workers: int,
     raw_data_dir: str = "",
     dataset_dir: str = "",
+    filter_min_length: int = 10,
+    resample_min_length: int = 20,
 ) -> int:
     """Run the AnyTop dataset preprocessing in-process."""
     print("\n" + "=" * 70)
@@ -265,6 +268,8 @@ def run_preprocessing(
             objects=list(OBJECT_SUBSETS_DICT[objects_subset]),
             dataset_dir=dataset_dir or None,
             raw_data_dir=raw_data_dir or None,
+            filter_min_length=filter_min_length,
+            resample_min_length=resample_min_length,
             object_workers=object_workers,
         )
         return 0
@@ -323,6 +328,7 @@ def run_validation(
     orientation_threshold_deg: float,
     sample_count: int,
     dataset_dir: str = "",
+    motion_orientation_threshold: float = 45.0,
 ) -> int:
     """Run dataset validation."""
     print("\n" + "=" * 70)
@@ -336,52 +342,58 @@ def run_validation(
     # Import and call validate_anytop_dataset.py main() directly instead of subprocess
     sys.path.insert(0, str(ANYTOP_DIR / "utils"))
     from validate_anytop_dataset import (
-        _resolve_dataset_dir,
-        _print_ok,
-        _print_warn,
-        _require,
+        resolve_dataset_dir,
+        print_ok,
+        print_warn,
         ValidationError,
     )
     from data_loaders.truebones.truebones_utils.motion_process import ROOT_XZ_STRIP_THRESHOLD
 
     # Resolve dataset directory
-    dataset_dir = _resolve_dataset_dir(dataset_dir or None)
+    dataset_dir = resolve_dataset_dir(dataset_dir or None)
 
-    _print_ok(f"dataset_dir: {dataset_dir}")
-    _print_ok(f"objects_subset: {objects_subset}")
-    _print_ok(f"file_validation_scope: {'all files' if sample_count == 0 else f'first {sample_count} files'}")
+    print_ok(f"dataset_dir: {dataset_dir}")
+    print_ok(f"objects_subset: {objects_subset}")
+    print_ok(f"file_validation_scope: {'all files' if sample_count == 0 else f'first {sample_count} files'}")
 
     from validate_anytop_dataset import (
-        _prepare_dataset_for_validation,
-        _read_required_artifacts,
-        _validate_metadata,
-        _validate_cond_file,
-        _validate_motion_files,
-        _validate_motion_metadata,
-        _validate_positions_error_file,
+        prepare_dataset_for_validation,
+        read_required_artifacts,
+        validate_metadata,
+        validate_cond_file,
+        validate_motion_files,
+        validate_motion_metadata,
+        validate_positions_error_file,
     )
 
     try:
-        _prepare_dataset_for_validation(
+        prepare_dataset_for_validation(
             dataset_dir,
             objects_subset,
             sample_count,
         )
 
-        motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path = _read_required_artifacts(dataset_dir)
-        cond = _validate_cond_file(cond_path, objects_subset)
+        motions_dir, bvhs_dir, cond_path, metadata_path, positions_error_path = read_required_artifacts(dataset_dir)
+        cond = validate_cond_file(cond_path, objects_subset)
         motion_files = sorted(motions_dir.glob("*.npy"))
-        _validate_metadata(metadata_path, motion_files, cond)
-        _validate_motion_metadata(dataset_dir, motion_files, cond)
-        _validate_motion_files(motions_dir, bvhs_dir, cond, sample_count, ROOT_XZ_STRIP_THRESHOLD)
+        validate_metadata(metadata_path, motion_files, cond)
+        validate_motion_metadata(dataset_dir, motion_files, cond)
+        validate_motion_files(
+            motions_dir,
+            bvhs_dir,
+            cond,
+            sample_count,
+            ROOT_XZ_STRIP_THRESHOLD,
+            motion_orientation_threshold=motion_orientation_threshold,
+        )
 
         if skip_orientation_check:
-            _print_warn("skipping T-pose face-orientation validation by request")
+            print_warn("skipping T-pose face-orientation validation by request")
         else:
-            from validate_anytop_dataset import _validate_tpose_orientation
-            _validate_tpose_orientation(cond, orientation_threshold_deg)
+            from validate_anytop_dataset import validate_tpose_orientation
+            validate_tpose_orientation(cond, orientation_threshold_deg)
 
-        _validate_positions_error_file(positions_error_path)
+        validate_positions_error_file(positions_error_path)
 
         print(f"[OK] total motions: {len(motion_files)}")
         print("[PASS] dataset validation completed successfully")
@@ -430,6 +442,12 @@ def parse_args() -> argparse.Namespace:
         help="Skip T-pose face-orientation validation during dataset checks.",
     )
     parser.add_argument(
+        "--motion-orientation-threshold",
+        default=45.0,
+        type=float,
+        help="Maximum allowed first/last-frame recovered-facing delta from T-pose facing before warning. Defaults to 45.0.",
+    )
+    parser.add_argument(
         "--objects-subset",
         default="all",
         choices=sorted(OBJECT_SUBSETS_DICT.keys()),
@@ -465,6 +483,18 @@ def parse_args() -> argparse.Namespace:
         type=str,
         help="Output directory for processed dataset. If not specified, uses default path.",
     )
+    parser.add_argument(
+        "--filter-min-length",
+        default=10,
+        type=int,
+        help="Minimum number of frames a motion clip must have; shorter clips are filtered out. Defaults to 10.",
+    )
+    parser.add_argument(
+        "--resample-min-length",
+        default=20,
+        type=int,
+        help="When a motion has >= filter-min-length but < resample-min-length frames, resample it to resample-min-length frames. 0 disables. Defaults to 20.",
+    )
     return parser.parse_args()
 
 
@@ -475,6 +505,18 @@ def main() -> int:
         return 1
     if args.orientation_threshold_deg < 0:
         print("ERROR: --orientation-threshold-deg must be >= 0")
+        return 1
+    if args.filter_min_length < 0:
+        print("ERROR: --filter-min-length must be >= 0")
+        return 1
+    if args.resample_min_length < 0:
+        print("ERROR: --resample-min-length must be >= 0")
+        return 1
+    if args.resample_min_length > 0 and args.resample_min_length <= args.filter_min_length:
+        print("ERROR: --resample-min-length must be > --filter-min-length")
+        return 1
+    if args.motion_orientation_threshold < 0:
+        print("ERROR: --motion-orientation-threshold must be >= 0")
         return 1
 
     # Handle re-encode joint names only mode
@@ -502,6 +544,8 @@ def main() -> int:
             args.object_workers,
             args.raw_data_dir,
             args.dataset_dir,
+            filter_min_length=args.filter_min_length,
+            resample_min_length=args.resample_min_length,
         )
         if ret != 0:
             print("\n[FAIL] Preprocessing failed, aborting workflow.")
@@ -525,6 +569,7 @@ def main() -> int:
             args.orientation_threshold_deg,
             args.sample_count,
             args.dataset_dir,
+            motion_orientation_threshold=args.motion_orientation_threshold,
         )
         # Don't return on validation failure - continue to next step
         steps_completed.append("Validate")
@@ -539,3 +584,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

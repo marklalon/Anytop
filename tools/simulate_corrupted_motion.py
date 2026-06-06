@@ -4,7 +4,7 @@ Simulate Corrupted Motion — Freeze Specified Joint Subtrees
 Loads a raw motion NPY ``(T, J, 13)``, freezes the channels of the requested
 joints (and, by default, their subtrees) by setting them to the dataset's
 per-joint mean — the exact corruption signal the model sees during training
-when ``joint_mask_prob`` masks a subtree — and writes both the corrupted NPY
+when joint-mask subtree perturbation is enabled — and writes both the corrupted NPY
 and a BVH preview.
 
 The joint name resolution follows the same alias rules as
@@ -144,7 +144,7 @@ def parse_args() -> argparse.Namespace:
             "Freeze specified joints (and their subtrees) in a raw motion NPY "
             "by replacing their channels with the dataset's per-joint mean — "
             "matching the corruption signal seen during training when "
-            "joint_mask_prob masks a subtree."
+            "joint-mask subtree perturbation is enabled."
         )
     )
     p.add_argument("--motion", required=True,
@@ -166,10 +166,10 @@ def parse_args() -> argparse.Namespace:
                    help="Directory to write the corrupted NPY + BVH preview.")
     p.add_argument("--output-stem", default="",
                    help="Override the output filename stem.")
-    p.add_argument("--noise-std", type=float, default=0.0,
-                   help="Std of i.i.d. Gaussian noise added to frozen joints in "
-                        "normalized space (on top of the mean-fill). 0 disables "
-                        "noise; 1.0 matches the unit-normal scale of the data.")
+    p.add_argument("--noise-std", type=float, default=0.1,
+                   help="Std of i.i.d. Gaussian noise added to all joints in "
+                        "normalized space. 0 disables noise; "
+                        "1.0 matches the unit-normal scale of the data.")
     p.add_argument("--noise-seed", type=int, default=0,
                    help="RNG seed for the noise sampler (default: 0).")
     return p.parse_args()
@@ -287,14 +287,13 @@ def main() -> int:
     motion_norm[:, freeze_mask, :] = 0.0
     if args.noise_std > 0.0:
         rng = np.random.default_rng(int(args.noise_seed))
-        n_frozen = int(freeze_mask.sum())
         noise = rng.standard_normal(
-            size=(T, n_frozen, motion_norm.shape[2]),
+            size=(T, J, motion_norm.shape[2]),
         ).astype(np.float32) * np.float32(args.noise_std)
-        motion_norm[:, freeze_mask, :] += noise
+        motion_norm += noise
         print(
             f"[INFO] Added i.i.d. Gaussian noise (std={args.noise_std}, "
-            f"seed={args.noise_seed}) on top of mean-fill for frozen joints."
+            f"seed={args.noise_seed}) to ALL joints."
         )
     motion_corrupted = (
         motion_norm * std_safe[None, :, :] + mean[None, :, :]

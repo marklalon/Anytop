@@ -29,11 +29,39 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     needs_bvh_position_channels,
     reorder_animation_to_dfs,
 )
+from data_loaders.truebones.truebones_utils.features import (
+    recover_animation_from_motion_np,
+)
 from tools.restore_glb_from_npy import (
     _bare_feature_rotation_channel_mask,
     _strip_appended_helper_joints,
 )
 from utils.npy_roundtrip_utils import recover_from_features
+
+
+def _encode_bare_features(aug_anim):
+    """Encode an Animation into the production (F, J, 13) feature tensor."""
+    frame_count, joint_count = aug_anim.shape[0], aug_anim.shape[1]
+    cont_6d_params, _r_velocity, _velocity, r_rot, global_positions = get_bvh_cont6d_params(
+        aug_anim,
+        "TestCreature",
+        np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+        translation_root_index=0,
+    )
+    ric_positions = get_rifke(global_positions, r_rot, translation_root_index=0)
+    local_vel = np.repeat(r_rot[1:, None], global_positions.shape[1], axis=1) * (
+        global_positions[1:] - global_positions[:-1]
+    )
+    features, _max_joints = get_motion_features(
+        ric_positions,
+        cont_6d_params,
+        np.zeros((frame_count - 1, joint_count), dtype=np.float64),
+        local_vel,
+        np.zeros((joint_count, 3), dtype=np.float64),
+        np.zeros((joint_count,), dtype=np.float64),
+        max_joints=joint_count,
+    )
+    return np.asarray(features).copy()
 
 
 def test_leaf_rotation_helper_budget_uses_dfs_leaf_order() -> None:
@@ -315,6 +343,54 @@ def test_helper_covered_leaf_rotation_roundtrips_through_bare_features() -> None
         atol=1e-6,
     )
 
+
+
+def test_recover_pins_helper_local_position_despite_perturbed_ric() -> None:
+    # A leaf rotation helper is a zero-offset child co-located with its parent
+    # leaf. During generation the model predicts the helper's RIC position
+    # channel slightly off from the leaf's; the recovery must not bake that gap
+    # into a phantom local translation (the "offset animation" artifact). It must
+    # pin the helper onto its rest offset regardless of whether the position
+    # solver runs.
+    joint_names = ["Root", "Joint", "Leaf"]
+    parents = np.array([-1, 0, 1], dtype=np.int32)
+    offsets = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        dtype=np.float64,
+    )
+    helper_metadata = build_leaf_rotation_helper_metadata(joint_names, parents, max_joints=4)
+
+    for animate_leaf_translation in (False, True):
+        positions = np.repeat(offsets[None, :, :], 4, axis=0)
+        positions[:, 0, :] = 0.0
+        if animate_leaf_translation:
+            # force a genuinely position-animated joint so the solver path runs
+            positions[:, 2, 0] += np.array([0.0, 0.3, 0.6, 0.9], dtype=np.float64)
+        rotations = Quaternions.id((4, 3))
+        rotations[:, 1] = Quaternions.from_angle_axis(
+            np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float64),
+            np.array([[0.0, 0.0, 1.0]] * 4, dtype=np.float64),
+        )
+        anim = Animation(rotations, positions, Quaternions.id(3), offsets, parents)
+        aug_anim, _names = append_leaf_rotation_helpers_to_animation(anim, joint_names, helper_metadata)
+
+        features = _encode_bare_features(aug_anim)
+        helper_idx = aug_anim.shape[1] - 1
+        features[:, helper_idx, :3] += np.array([0.05, -0.04, 0.06], dtype=np.float64)
+
+        recovered, _has_pos = recover_animation_from_motion_np(
+            features,
+            parents=aug_anim.parents,
+            offsets=aug_anim.offsets,
+            translation_root_index=0,
+        )
+
+        helper_drift = np.abs(
+            recovered.positions[:, helper_idx, :] - aug_anim.offsets[helper_idx]
+        ).max()
+        assert helper_drift < 1e-9, (
+            f"helper drifted by {helper_drift} (animate_leaf_translation={animate_leaf_translation})"
+        )
 
 
 def test_strip_appended_helper_joints_restores_original_joint_count() -> None:

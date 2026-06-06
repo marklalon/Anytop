@@ -17,7 +17,6 @@ from diffusion.nn import update_ema
 from diffusion.resample import LossAwareSampler
 from tqdm import tqdm
 from diffusion.resample import create_named_schedule_sampler
-from sample.generate import main as generate
 import copy
 from utils.model_util import load_model
 from utils.model_util import create_model_and_diffusion_general_skeleton
@@ -326,11 +325,6 @@ class TrainLoop:
 
                 if self._should_save(completed_step):
                     self.save(completed_step)
-
-                    self.model.eval()
-                    self.generate_during_training(completed_step)
-                    self.model.train()
-
                     # Run for a finite amount of time in integration tests.
                     if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
                         return
@@ -495,25 +489,6 @@ class TrainLoop:
             reduced[key] = float((value.detach() * weights).mean().item())
         return reduced
 
-    def generate_during_training(self, completed_step):
-        if not self.args.gen_during_training:
-            return
-        gen_args = copy.deepcopy(self.args)
-        checkpoint_name = self.ckpt_file_name(completed_step)
-        gen_args.model_path = os.path.join(self.save_dir, checkpoint_name)
-        gen_args.output_dir = os.path.join(self.save_dir, f'{checkpoint_name}.samples')
-        gen_args.num_samples = self.args.gen_num_samples
-        gen_args.num_repetitions = self.args.gen_num_repetitions
-        gen_args.motion_length = 6.0 #None  # length is taken from the dataset
-        gen_args.load_from_model_name = True
-        all_objects = self.data.dataset.motion_dataset.cond_dict.keys() 
-        selection_rng = random.Random(int(completed_step))
-        gen_args.object_type = selection_rng.sample(list(all_objects), gen_args.num_samples)
-        all_sample_save_path = generate(gen_args, self.data.dataset.motion_dataset.cond_dict)
-        self.train_platform.report_media(title='Motion', series='Predicted Motion', iteration=completed_step,
-                                         local_path=all_sample_save_path)
-        
-    
     def total_step(self):
         total_step = self.step
         if self.resume_step:
@@ -526,7 +501,7 @@ class TrainLoop:
         if not self.args.eval_during_training or self.eval_data is None:
             return
         cond_dict = self.data.dataset.motion_dataset.cond_dict
-        infer_model = self.model_avg if self.model_avg is not None else self.model
+        infer_model = self.model  # use raw model (not EMA) to observe real val performance
         motion_groups = {}
         missing_action_tag_count = 0
         target_batch = int(self.args.eval_batch_size)
@@ -641,7 +616,8 @@ class TrainLoop:
         #clip_grad_value_(self.model.parameters(), clip_value=1.5)
         took_step = self.mp_trainer.optimize(self.opt, self.lr_scheduler)
         if took_step and self.model_avg is not None:
-            update_ema(self.model_avg.parameters(), self.model.parameters())
+            update_ema(self.model_avg.parameters(), self.model.parameters(),
+                       rate=self.args.ema_rate)
         self._anneal_lr()
         self.log_step()
 

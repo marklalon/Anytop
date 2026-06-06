@@ -66,7 +66,7 @@ class _SimpleSkeleton:
             ))
 
 
-def _build_skeleton(
+def build_skeleton(
     bone_names, offsets, parents, rest_rotations=None, device=None,
 ) -> _SimpleSkeleton:
     if device is None:
@@ -91,12 +91,12 @@ def _build_skeleton(
 
 # ── FBX loading helpers ──────────────────────────────────────────────────────
 
-def _load_fbx_skeleton_metadata(
+def load_fbx_skeleton_metadata(
     fbx_path: str,
 ) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
-    from ..motion_lib.FBX import _load_fbx_scene, _extract_armature_skeleton_data
-    armature = _load_fbx_scene(fbx_path)
-    return _extract_armature_skeleton_data(armature)
+    from ..motion_lib.FBX import load_fbx_scene, extract_armature_skeleton_data
+    armature = load_fbx_scene(fbx_path)
+    return extract_armature_skeleton_data(armature)
 
 
 # ── Identity rest rotations ────────────────────────────────────────────────
@@ -106,5 +106,3 @@ def identity_rest_rotations(joint_count: int) -> np.ndarray:
     rest_rotations = np.zeros((joint_count, 4), dtype=np.float32)
     rest_rotations[:, 0] = 1.0
     return rest_rotations
-
-

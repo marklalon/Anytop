@@ -17,6 +17,7 @@ from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanT
 from sample.generate import (  # noqa: E402
     _close_loop_root_xz_via_velocity,
     _contiguous_frame_runs,
+    _finalize_output_lengths,
     _map_frame_ranges_to_internal,
     _parse_frame_ranges,
     _prepare_img2img_reference_bundle,
@@ -101,6 +102,55 @@ def test_map_frame_ranges_to_internal_preserves_contiguous_spans() -> None:
     assert _map_frame_ranges_to_internal("0-19", 20, 60) == "0-59"
     assert _map_frame_ranges_to_internal("10-20", 30, 60) == "20-41"
     assert _map_frame_ranges_to_internal("0-119", 120, 60) == "0-59"
+
+
+def test_finalize_output_lengths_returns_frames_and_playspeed() -> None:
+    requested, target, playspeed = _finalize_output_lengths(
+        requested_frames=90, min_length=20, internal_num_frames=60
+    )
+    assert requested == 90
+    assert target == 90
+    assert playspeed == pytest.approx(90.0 / 60.0)
+
+
+def test_finalize_output_lengths_rejects_out_of_window() -> None:
+    with pytest.raises(SystemExit):
+        _finalize_output_lengths(requested_frames=10, min_length=20, internal_num_frames=60)
+    with pytest.raises(SystemExit):
+        _finalize_output_lengths(requested_frames=121, min_length=20, internal_num_frames=60)
+
+
+def test_prepare_reference_bundle_uses_preloaded_cropped_features() -> None:
+    # Crop path: feed exactly M=40 frames (as main() does for R > M). The bundle
+    # must consume the preloaded array verbatim (no disk load) and not re-trim it.
+    n_joints, feat = 3, 13
+    cond = _make_full_cond_entry(n_joints, feature_len=feat)
+    preloaded = np.random.default_rng(0).normal(
+        size=(40, n_joints, feat)
+    ).astype(np.float32)
+
+    bundle = _prepare_img2img_reference_bundle(
+        reference_motion_path="/nonexistent/should_not_be_loaded.npy",
+        target_type="Horse",
+        target_cond=cond,
+        max_joints=n_joints,
+        target_feature_len=feat,
+        batch_size=2,
+        requested_output_frame_count=60,
+        requested_visible_frame_count=40,
+        preloaded_features=preloaded,
+    )
+
+    assert bundle["loaded_reference_frame_count"] == 40
+    assert bundle["loaded_reference_joint_count"] == n_joints
+    # The model is a fixed-window model trained only at num_frames. The bundle
+    # always runs at that native window (requested_output_frame_count=60) and
+    # resamples the shorter reference up to it; the requested output length is
+    # honored later by resampling the sampled motion. reference_source_frame_count
+    # records the pre-resample reference length (40) for playspeed/energy.
+    assert bundle["output_frame_count"] == 60
+    assert bundle["reference_source_frame_count"] == 40
+    assert tuple(bundle["reference_motion"].shape) == (2, n_joints, feat, 60)
 
 
 def test_build_inpaint_mask_uses_all_real_joints_for_selected_frames() -> None:
@@ -191,33 +241,6 @@ def test_sample_batch_routes_inpainting_through_ddpm_from_pure_noise() -> None:
     assert torch.equal(diffusion.last_kwargs["inpaint_reference"], reference_motion)
     assert torch.equal(diffusion.last_kwargs["inpaint_mask"], inpaint_mask)
     assert tuple(diffusion.last_kwargs["noise"].shape) == sample_shape
-
-
-def test_sample_batch_forwards_repaint_resampling_args_to_ddim() -> None:
-    diffusion = _CaptureDiffusion()
-    sample_shape = (1, 3, 13, 4)
-    reference_motion = torch.ones(sample_shape, dtype=torch.float32)
-    inpaint_mask = torch.zeros((1, 3, 1, 4), dtype=torch.float32)
-
-    result = _sample_batch(
-        diffusion=diffusion,
-        model=_DummyModel(),
-        model_kwargs={},
-        sampling_method="ddim",
-        sample_shape=sample_shape,
-        ddim_eta=0.0,
-        seed=123,
-        device=torch.device("cpu"),
-        reference_motion=reference_motion,
-        skip_timesteps=0,
-        inpaint_mask=inpaint_mask,
-        repaint_jump_length=2,
-        repaint_jump_n_sample=3,
-    )
-
-    assert result == "ddim"
-    assert diffusion.last_kwargs["repaint_jump_length"] == 2
-    assert diffusion.last_kwargs["repaint_jump_n_sample"] == 3
 
 
 def test_sample_batch_injects_cross_limb_unreliable_mask_for_single_inpaint_pass() -> None:
@@ -368,51 +391,6 @@ def test_p_sample_loop_visits_final_timestep_without_inpaint(monkeypatch: pytest
     )
 
     assert reverse_ts == [3, 2, 1, 0]
-
-
-def test_build_repaint_schedule_revisits_anchor_timesteps_and_keeps_final_step() -> None:
-    diffusion = _make_diffusion(num_steps=4)
-
-    schedule = diffusion._build_repaint_schedule(
-        start_t=3,
-        jump_length=1,
-        jump_n_sample=2,
-    )
-
-    assert schedule == [3, 2, 3, 2, 1, 2, 1, 0, -1]
-
-
-def test_p_sample_loop_uses_repaint_time_travel(monkeypatch: pytest.MonkeyPatch) -> None:
-    diffusion = _make_diffusion(num_steps=4)
-    sample = torch.zeros((1, 1, 1, 1), dtype=torch.float32)
-    reverse_ts: list[int] = []
-    forward_ts: list[int] = []
-
-    def fake_p_sample(model, x, t, clip_denoised=True, denoised_fn=None, cond_fn=None, model_kwargs=None, const_noise=False):
-        reverse_ts.append(int(t.item()))
-        return {"sample": sample.clone(), "pred_xstart": torch.zeros_like(sample)}
-
-    def fake_repaint_time_travel(sample_in, t, const_noise=False):
-        forward_ts.append(int(t.item()))
-        return sample_in
-
-    monkeypatch.setattr(diffusion, "p_sample", fake_p_sample)
-    monkeypatch.setattr(diffusion, "_repaint_time_travel", fake_repaint_time_travel)
-
-    diffusion.p_sample_loop(
-        _DummyModel(),
-        shape=tuple(sample.shape),
-        noise=torch.zeros_like(sample),
-        device=torch.device("cpu"),
-        progress=False,
-        inpaint_mask=torch.ones((1, 1, 1, 1), dtype=torch.float32),
-        inpaint_reference=torch.zeros_like(sample),
-        repaint_jump_length=1,
-        repaint_jump_n_sample=2,
-    )
-
-    assert reverse_ts == [3, 3, 2, 2, 1, 0]
-    assert forward_ts == [3, 2]
 
 
 def test_ddim_sample_loop_returns_projected_final_sample(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -635,37 +613,3 @@ def test_close_loop_root_xz_noop_for_invalid_root():
     _close_loop_root_xz_via_velocity(motion, translation_root_index=5)
 
     np.testing.assert_array_equal(motion, original)
-
-
-def test_ddim_sample_loop_uses_repaint_time_travel(monkeypatch: pytest.MonkeyPatch) -> None:
-    diffusion = _make_diffusion(num_steps=4)
-    sample = torch.zeros((1, 1, 1, 1), dtype=torch.float32)
-    reverse_ts: list[int] = []
-    forward_ts: list[int] = []
-
-    def fake_ddim_sample(model, x, t, clip_denoised=True, denoised_fn=None, cond_fn=None, model_kwargs=None, eta=0.0):
-        reverse_ts.append(int(t.item()))
-        return {"sample": sample.clone(), "pred_xstart": torch.zeros_like(sample)}
-
-    def fake_repaint_time_travel(sample_in, t, const_noise=False):
-        forward_ts.append(int(t.item()))
-        return sample_in
-
-    monkeypatch.setattr(diffusion, "ddim_sample", fake_ddim_sample)
-    monkeypatch.setattr(diffusion, "_repaint_time_travel", fake_repaint_time_travel)
-
-    diffusion.ddim_sample_loop(
-        _DummyModel(),
-        shape=tuple(sample.shape),
-        noise=torch.zeros_like(sample),
-        device=torch.device("cpu"),
-        progress=False,
-        eta=0.0,
-        inpaint_mask=torch.ones((1, 1, 1, 1), dtype=torch.float32),
-        inpaint_reference=torch.zeros_like(sample),
-        repaint_jump_length=1,
-        repaint_jump_n_sample=2,
-    )
-
-    assert reverse_ts == [3, 3, 2, 2, 1, 0]
-    assert forward_ts == [3, 2]

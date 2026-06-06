@@ -18,7 +18,8 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 # Bump this to invalidate all existing cache entries.
-CACHE_VERSION = "v1"
+# v2: bone_len precision increased from .2f to .4f, top_p=1.0 for determinism.
+CACHE_VERSION = "v2"
 
 # Cache directory — resolved relative to this file's location.
 # Points to: <Anytop>/dataset/truebones/zoo/truebones_processed/cache/retarget/
@@ -40,13 +41,13 @@ def get_from_memory(system_msg: str, user_msg: str) -> Optional[dict[str, Option
 
     Uses the same hash key as the disk cache so both layers stay consistent.
     """
-    key = get_cache_path(system_msg, user_msg)
+    key = _get_cache_path(system_msg, user_msg)
     return _in_memory_cache.get(key)
 
 
 def set_in_memory(system_msg: str, user_msg: str, result: dict[str, Optional[str]]):
     """Store a mapping in the in-memory cache."""
-    key = get_cache_path(system_msg, user_msg)
+    key = _get_cache_path(system_msg, user_msg)
     _in_memory_cache[key] = result
 
 
@@ -55,7 +56,7 @@ def set_in_memory(system_msg: str, user_msg: str, result: dict[str, Optional[str
 # ---------------------------------------------------------------------------
 
 
-def get_cache_path(system_msg: str, user_msg: str) -> str:
+def _get_cache_path(system_msg: str, user_msg: str) -> str:
     """Compute the file path for a cache entry based on prompt+message content."""
     raw = f"{CACHE_VERSION}|{system_msg}|{user_msg}"
     key = hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -64,7 +65,7 @@ def get_cache_path(system_msg: str, user_msg: str) -> str:
 
 def load_from_disk(system_msg: str, user_msg: str) -> Optional[dict[str, Optional[str]]]:
     """Load a cached LLM joint mapping from disk, or return None if not found."""
-    path = get_cache_path(system_msg, user_msg)
+    path = _get_cache_path(system_msg, user_msg)
     if not os.path.isfile(path):
         return None
     try:
@@ -87,7 +88,7 @@ def save_to_disk(system_msg: str, user_msg: str, result: dict[str, Optional[str]
     Silently ignores I/O errors — the in-memory cache still works.
     """
     os.makedirs(_CACHE_DIR, exist_ok=True)
-    path = get_cache_path(system_msg, user_msg)
+    path = _get_cache_path(system_msg, user_msg)
     data = {
         "_version": CACHE_VERSION,
         "_mapping": result,

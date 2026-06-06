@@ -42,11 +42,11 @@ for _path in [_REPO_ROOT, _ANYTOP_ROOT]:
         sys.path.insert(0, _path)
 
 
-from Anytop.utils.roundtrip_common import _build_skeleton, _load_fbx_skeleton_metadata
+from Anytop.utils.roundtrip_common import build_skeleton, load_fbx_skeleton_metadata
 from Anytop.motion_lib import FBX
-from Anytop.motion_lib.FBX import _fbx_to_animation
+from Anytop.motion_lib.FBX import fbx_to_animation
 from Anytop.utils.exporter import AnimationExporter, animation_to_exporter_inputs
-from tools.compare_motions import _compare_motions, _compute_mesh_surface_error, _detect_and_align, _load_motion, _print_summary
+from tools.compare_motions import compare_motions, compute_mesh_surface_error, detect_and_align, load_motion, print_summary
 
 
 _DEFAULT_FBX = os.path.join(
@@ -84,13 +84,13 @@ def _assert_compatible(label: str, motion_a, motion_b) -> None:
 
 
 def _export_variants_from_fbx(fbx_path: str, work_dir: str, skip_bvh: bool = False) -> dict[str, Any]:
-    meta_bone_names, parents, offsets, rest_rotations = _load_fbx_skeleton_metadata(fbx_path)
-    animation, anim_bone_names, fps = _fbx_to_animation(fbx_path)
+    meta_bone_names, parents, offsets, rest_rotations = load_fbx_skeleton_metadata(fbx_path)
+    animation, anim_bone_names, fps = fbx_to_animation(fbx_path)
     assert meta_bone_names == anim_bone_names, (
         "FBX animation bone order does not match extracted skeleton metadata"
     )
 
-    skeleton = _build_skeleton(meta_bone_names, offsets, parents, rest_rotations)
+    skeleton = build_skeleton(meta_bone_names, offsets, parents, rest_rotations)
     exporter = AnimationExporter(skeleton, fps=fps)
 
     joint_rotations, root_translation, root_rotation, bone_translations = (
@@ -225,8 +225,8 @@ def _compare_export_to_fbx(
     mesh_mean_tolerance_pct_char: float,
     mesh_p99_tolerance_pct_char: float,
 ) -> dict[str, Any]:
-    motion_a = _load_motion(source_fbx)
-    motion_b = _load_motion(exported_path)
+    motion_a = load_motion(source_fbx)
+    motion_b = load_motion(exported_path)
 
     _assert_compatible(label, motion_a, motion_b)
 
@@ -237,13 +237,13 @@ def _compare_export_to_fbx(
     if label == "SkinnedGLB" and not motion_b.has_skinned_mesh:
         errors.append(f"{label}: expected exported GLB to include skinned mesh")
 
-    motion_b_aligned, alignment = _detect_and_align(motion_a, motion_b)
-    result = _compare_motions(motion_a, motion_b_aligned, alignment)
+    motion_b_aligned, alignment = detect_and_align(motion_a, motion_b)
+    result = compare_motions(motion_a, motion_b_aligned, alignment)
 
     print(f"\n{'=' * 78}")
     print(f"[Compare] FBX vs {label}: {_fmt_path(exported_path)}")
     print(f"{'=' * 78}")
-    _print_summary(motion_a, motion_b, alignment, result)
+    print_summary(motion_a, motion_b, alignment, result)
 
     pos_result = result["position"]
     rot_result = result["rotation"]
@@ -279,7 +279,7 @@ def _compare_export_to_fbx(
     mesh_mean_pct_char = None
     mesh_p99_pct_char = None
     if motion_a.has_skinned_mesh and motion_b.has_skinned_mesh:
-        mesh_result = _compute_mesh_surface_error(motion_a, motion_b_aligned, alignment)
+        mesh_result = compute_mesh_surface_error(motion_a, motion_b_aligned, alignment)
         if mesh_result is None:
             errors.append(f"{label}: expected mesh surface stats")
         else:

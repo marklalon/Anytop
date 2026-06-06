@@ -1,7 +1,7 @@
 """Feature extraction & motion recovery.
 
 Middle layer of the motion-processing pipeline. Extracts feature tensors from
-animations, recovers animations from features, analyses T-poses, and infers
+animations, recovers animations from features, analyses rest poses, and infers
 translation root indices.
 
 Depends on: animation_utils.py
@@ -34,6 +34,8 @@ from .face_orientation import (
 
 from .animation_utils import (
     ROOT_XZ_STRIP_THRESHOLD,
+    LOOP_DETECTION_ROOT_XZ_TOLERANCE,
+    LOOP_DETECTION_STEP_MIN,
     detect_motion_loop,
     find_translation_root,
     bake_descendant_y_into_translation_root,
@@ -352,63 +354,80 @@ def infer_translation_root_index_from_features(data, parents, offsets, anim_pos_
     return int(best_candidate)
 
 
-################## T-Pose & Motion Extraction #####################
+################## Rest Pose & Motion Extraction #####################
 
-""" get object_type common characteristics, extracted from T-pose FBX"""
-def get_common_features_from_T_pose(
-    t_pose_path,
+def _rest_pose_animation_from_loaded_anim(anim):
+    """Return a one-frame bind/rest-pose Animation from a loaded FBX animation."""
+    rest_rotations = np.asarray(anim.orients.qs, dtype=np.float64)
+    if rest_rotations.shape[0] != anim.offsets.shape[0]:
+        raise ValueError(
+            f"Loaded animation has {anim.offsets.shape[0]} offsets but "
+            f"{rest_rotations.shape[0]} rest rotations"
+        )
+    return Animation(
+        Quaternions(rest_rotations[None].copy()),
+        np.asarray(anim.offsets, dtype=np.float64)[None].copy(),
+        anim.orients.copy(),
+        np.asarray(anim.offsets, dtype=np.float64).copy(),
+        np.asarray(anim.parents, dtype=np.int32).copy(),
+    )
+
+
+""" get object_type common characteristics, extracted from an FBX/GLB bind/rest pose"""
+def get_common_features_from_rest_pose(
+    rest_pose_path,
     object_type,
     face_joints=None,
     *,
     augment_leaf_rotation_helpers=False,
     max_joints=MAX_JOINTS,
 ):
-    t_pose_anim, t_pos_names, _t_pose_frame_time = FBX.load(t_pose_path)
-    reference_anim = t_pose_anim[:1] if len(t_pose_anim) > 1 else t_pose_anim
-    face_joints = resolve_face_joints(object_type, t_pos_names, reference_anim.parents, face_joints=face_joints)
+    loaded_anim, rest_pose_names, _rest_pose_frame_time = FBX.load(rest_pose_path)
+    reference_anim = _rest_pose_animation_from_loaded_anim(loaded_anim)
+    face_joints = resolve_face_joints(object_type, rest_pose_names, reference_anim.parents, face_joints=face_joints)
     forward_joint_index, forward_base_joint_index = resolve_forward_reference_joints(
-        t_pos_names,
+        rest_pose_names,
         reference_anim.parents,
         object_type=object_type,
     )
 
     reference_positions = positions_global(reference_anim)
-    t_pose_orientation_quat = calculate_root_quat(reference_positions, object_type, face_joint_indx=face_joints, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)[0]
+    rest_pose_orientation_quat = calculate_root_quat(reference_positions, object_type, face_joint_indx=face_joints, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)[0]
 
-    # Pre-compute the per-character scale factor once from the raw T-pose
+    # Pre-compute the per-character scale factor once from the raw rest-pose
     # offsets and reuse it for every motion clip of the same character.
-    _tpose_side_labels = []
-    for name in t_pos_names:
+    _rest_pose_side_labels = []
+    for name in rest_pose_names:
         detected = detect_joint_side(name)
-        _tpose_side_labels.append(detected if detected in ('left', 'right') else 'center')
-    axial_avg_len = get_average_axial_bone_length(reference_anim.offsets, reference_anim.parents, _tpose_side_labels)
+        _rest_pose_side_labels.append(detected if detected in ('left', 'right') else 'center')
+    axial_avg_len = get_average_axial_bone_length(reference_anim.offsets, reference_anim.parents, _rest_pose_side_labels)
     reference_body_max_span = get_rest_body_max_span(reference_anim.offsets, reference_anim.parents)
     scale_factor = compute_scale_factor(axial_avg_len, body_max_span=reference_body_max_span)
 
     scaled, _root_xz_center, scale_factor = process_anim(
         reference_anim,
         object_type,
-        t_pose_orientation_quat,
+        rest_pose_orientation_quat,
         scale_factor=scale_factor,
     )
     scaled_rest_offsets = offsets_from_positions(positions_global(scaled)[0], scaled.parents)
     helper_metadata = build_leaf_rotation_helper_metadata(
-        t_pos_names,
+        rest_pose_names,
         scaled.parents,
         offsets=scaled_rest_offsets,
         max_joints=max_joints if augment_leaf_rotation_helpers else len(scaled.parents),
     )
     if augment_leaf_rotation_helpers and helper_metadata['helper_joint_count'] > 0:
-        scaled, t_pos_names = append_leaf_rotation_helpers_to_animation(
+        scaled, rest_pose_names = append_leaf_rotation_helpers_to_animation(
             scaled,
-            t_pos_names,
+            rest_pose_names,
             helper_metadata,
         )
     scaled_positions = positions_global(scaled)
     scaled_rest_positions = scaled_positions[0]
     offsets = offsets_from_positions(scaled_rest_positions, scaled.parents)
     suspected_foot_indices, contact_joint_source = infer_contact_joints(
-        t_pos_names,
+        rest_pose_names,
         scaled.parents,
         scaled_rest_positions,
     )
@@ -417,10 +436,10 @@ def get_common_features_from_T_pose(
         offsets=offsets,
         foot_indices=suspected_foot_indices,
         tpos_rots=scaled.rotations,
-        names=t_pos_names,
+        names=rest_pose_names,
         tpos_anim=scaled,
         face_joints=face_joints,
-        orientation_quat=t_pose_orientation_quat,
+        orientation_quat=rest_pose_orientation_quat,
         forward_joint_index=forward_joint_index,
         forward_base_joint_index=forward_base_joint_index,
         contact_joint_source=contact_joint_source,
@@ -429,9 +448,18 @@ def get_common_features_from_T_pose(
     )
 
 
+def get_common_features_from_T_pose(*args, **kwargs):
+    """Backward-compatible name; the returned base now comes from bind/rest pose."""
+    return get_common_features_from_rest_pose(*args, **kwargs)
+
+
 @dataclass
 class TPoseFeatures:
-    """Packaged return from get_common_features_from_T_pose."""
+    """Packaged return from get_common_features_from_rest_pose.
+
+    Field names keep the legacy ``tpos_*`` spelling because cond.npy/model code
+    consumes them, but the values are rest-pose based.
+    """
     scale_factor: float
     offsets: np.ndarray
     foot_indices: list
@@ -447,7 +475,7 @@ class TPoseFeatures:
     helper_metadata: dict[str, object]
 
 
-def _extract_motion_features_from_aligned_anims(
+def extract_motion_features_from_aligned_anims(
     new_anim,
     export_anim,
     foot_contact_vel_thresh,
@@ -463,6 +491,24 @@ def _extract_motion_features_from_aligned_anims(
     motion_export_anim = export_anim
     xz_extent = xz_locomotion_extent(export_anim, feature_translation_root_index)
     has_locomotion = xz_extent > ROOT_XZ_STRIP_THRESHOLD
+
+    # Additional check: if xz_extent falls in the ambiguous band between loop
+    # tolerance and strip threshold, treat clips with a small endpoint gap as
+    # loop locomotion and also strip the root XZ.  The endpoint gap is evaluated
+    # in root-relative global positions (translation-root XZ subtracted) so that
+    # the wrap gap reflects per-joint closure rather than overall scene translation.
+    if (
+        not has_locomotion
+        and LOOP_DETECTION_ROOT_XZ_TOLERANCE <= xz_extent <= ROOT_XZ_STRIP_THRESHOLD
+    ):
+        root_rel_pos = positions_global(export_anim).copy()
+        root_rel_pos[..., 0] -= root_rel_pos[:, feature_translation_root_index:feature_translation_root_index + 1, 0]
+        root_rel_pos[..., 2] -= root_rel_pos[:, feature_translation_root_index:feature_translation_root_index + 1, 2]
+        endpoint_delta = np.linalg.norm(root_rel_pos[-1] - root_rel_pos[0], axis=-1)
+        wrap_gap_p75 = float(np.percentile(endpoint_delta, 75))
+        if wrap_gap_p75 < LOOP_DETECTION_STEP_MIN:
+            has_locomotion = True
+
     if has_locomotion:
         motion_anim = strip_translation_root_xz(new_anim, feature_translation_root_index)
         motion_export_anim = strip_translation_root_xz(export_anim, feature_translation_root_index)
@@ -475,8 +521,12 @@ def _extract_motion_features_from_aligned_anims(
     )
     foot_contact = get_contact_state(global_positions, foot_indices, foot_contact_vel_thresh)
     positions = get_rifke(global_positions, r_rot, translation_root_index=feature_translation_root_index)
-    is_loop = detect_motion_loop(positions)
     local_vel = np.repeat(r_rot[1:, None], global_positions.shape[1], axis=1) * (global_positions[1:] - global_positions[:-1])
+    is_loop = detect_motion_loop(
+        positions,
+        root_xz_velocity=local_vel,
+        translation_root_index=feature_translation_root_index,
+    )
     prev_velocity = local_vel[-1] if local_vel.shape[0] > 0 else None
     terminal_local_vel = _compute_terminal_local_velocity(global_positions, r_rot, is_loop, prev_frame_velocity=prev_velocity)
     if has_locomotion:
@@ -542,16 +592,16 @@ def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squa
         )
         frames_num = len(processed_anim)
 
-    ## create new animation object in which the rotations are w.r.t the actual Tpos
+    ## create new animation object in which the rotations are w.r.t the rest pose
     tpos_rots_correct_shape  = tpos_rots[None, 0].repeat(frames_num, axis = 0)
     if isinstance(fbx_path_or_anim, Animation) and animation_input_is_tpose_aligned:
         # Recovered / retargeted feature animations are already expressed in the
-        # T-pose-relative local frame. Re-applying the T-pose transform would
+        # rest-pose-relative local frame. Re-applying the rest-pose transform would
         # double-transform them.
         rots = processed_anim.rotations.copy()
     else:
-        # FBX input and raw T-pose Animation inputs still carry FBX-local rest
-        # rotations and must be reparameterized against the character T-pose.
+        # FBX input and raw rest-pose Animation inputs still carry FBX-local rest
+        # rotations and must be reparameterized against the character rest pose.
         rots = compute_rots_from_tpos(tpos_rots_correct_shape, processed_anim.rotations, processed_anim.parents)
     anim_positions = offsets.copy()[None, :].repeat(frames_num, axis = 0)
     anim_positions[:, 0] = processed_anim.positions[:, 0]
@@ -564,7 +614,7 @@ def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squa
         processed_anim.orients,
         initial_positions=anim_positions,
     )
-    # create animation object which is defined over correct tpos
+    # create animation object which is defined over the correct rest-pose base
     new_anim = Animation(rots, anim_positions, processed_anim.orients, offsets, processed_anim.parents)
 
     new_global_pos = positions_global(new_anim)
@@ -599,7 +649,7 @@ def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joint
             find_translation_root(export_anim),
             object_type,
         )
-        features, max_joints, motion_anim, motion_export_anim, is_loop = _extract_motion_features_from_aligned_anims(
+        features, max_joints, motion_anim, motion_export_anim, is_loop = extract_motion_features_from_aligned_anims(
             new_anim,
             export_anim,
             foot_contact_vel_thresh,
@@ -852,6 +902,15 @@ def recover_from_bvh_rot_np(
     cont6d_params = np.eye(3)[None, None].repeat(cont6d_params.shape[0], axis=0).repeat(cont6d_params.shape[1], axis=1)
     for j, p in enumerate(parents[1:], 1):
         cont6d_params[:, p] = cont6d_params_hml_order[:, j]
+    # NOTE: do NOT overwrite slot 0 with cont6d_params_hml_order[:, 0]. The encoder
+    # (get_bvh_cont6d_params) stores the *facing* r_rot (= identity under the
+    # orientation-quat normalization) at hml index 0, while the root's own LOCAL
+    # rotation is stored in the slots of the root's children. The scatter loop above
+    # therefore reconstructs the root local rotation into slot 0 correctly (every
+    # root-child slot holds parents[child]==0's rotation, so the value is consistent).
+    # Reassigning slot 0 to hml[0] would replace that reconstructed root rotation with
+    # the identity facing, freezing the source root (observed: dragon Cg 80deg->0deg in
+    # eval_retarget T6, killing source root motion).
     rotations = Quaternions.from_transforms(cont6d_params)
 
     # Normalize quaternion signs for roundtrip stability.
@@ -930,10 +989,27 @@ def recover_animation_from_motion_np(
     )
     glob_rot             = positions_global(anim_rot)                  # (F, J, 3)
 
+    # Zero-offset leaf joints are appended leaf-rotation helpers: they are
+    # co-located with their parent leaf by construction (offset == 0) and only
+    # exist to make the leaf's rotation recoverable. Their RIC position channel is
+    # a redundant copy of the parent leaf's, so the model's small per-joint
+    # position error during generation must NOT be solved into a phantom local
+    # translation on a bone that has no length. Pin them to their rest offset.
+    parents_arr = np.asarray(parents)
+    offsets_arr = np.asarray(offsets)
+    joint_count = len(parents_arr)
+    is_leaf = np.ones(joint_count, dtype=bool)
+    is_leaf[parents_arr[parents_arr >= 0]] = False
+    zero_offset_leaf = is_leaf & (np.linalg.norm(offsets_arr, axis=-1) <= 1e-6)
+    zero_offset_leaf &= parents_arr >= 0
+    if translation_root_index is not None and 0 <= translation_root_index < joint_count:
+        zero_offset_leaf[translation_root_index] = False
+
     # joints whose FK-predicted global position drifts from the RIC truth
     per_joint_err = np.abs(target_global - glob_rot).max(axis=(0, 2)) # (J,)
     animated_joints = sorted(
-        j for j in range(len(parents)) if per_joint_err[j] > anim_pos_threshold
+        j for j in range(joint_count)
+        if per_joint_err[j] > anim_pos_threshold and not zero_offset_leaf[j]
     )
 
     if not animated_joints:
@@ -949,6 +1025,10 @@ def recover_animation_from_motion_np(
         position_match_threshold=1e-5,
         max_passes=2,
     )
+    # The direct solver above rewrites every joint, so re-pin the helpers it
+    # touched back onto their parent leaf.
+    if zero_offset_leaf.any():
+        new_pos[:, zero_offset_leaf] = offsets_arr[zero_offset_leaf]
 
     anim_fixed = Animation(anim_rot.rotations, new_pos, anim_rot.orients,
                            anim_rot.offsets, anim_rot.parents)
@@ -975,7 +1055,7 @@ def recover_bvh_export_animation_from_motion_np(
     recovery without changing the base function's semantics.
 
     When *tpose_rest_rotations* is provided (``(J, 4)`` quaternion array in
-    ``[w, x, y, z]`` order), the recovered T-pose-relative rotations are baked
+    ``[w, x, y, z]`` order), the recovered rest-pose-relative rotations are baked
     back into total local rotations (rest ⊗ pose) so the BVH displays correctly
     for skeletons with non-identity rest rotations (e.g. GLB-derived skeletons).
     """
@@ -995,7 +1075,15 @@ def recover_bvh_export_animation_from_motion_np(
         anim = recover_processed_animation_from_feature_animation(
             anim, tpose_rest_rotations,
         )
+        # Baking the rest rotations into the local rotations leaves the offsets in
+        # the feature (rest-removed) basis, so the solved local positions deviate
+        # from the rest offsets even when the pre-bake feature animation was pure
+        # rotation. ``has_animated_pos`` from the feature animation reflects a
+        # different basis; recompute it on the baked animation so BVH export writes
+        # the position channels the reconstructed pose actually needs. Without this,
+        # rotation-only BVH (positions=False) reconstructs a garbled pose for
+        # skeletons with non-identity rest rotations (e.g. GLB-derived references).
+        has_animated_pos = needs_bvh_position_channels(anim)
 
     anim, joint_names = reorder_animation_to_dfs(anim, joint_names)
     return anim, joint_names, has_animated_pos
-

@@ -39,30 +39,20 @@ def _warn(msg: str):
 # HML-normalised units) before we consider a clip locomotion and forcibly zero
 # the root XZ. Clips are centred on the effective translation root's initial XZ
 # position before this threshold is evaluated.
-ROOT_XZ_STRIP_THRESHOLD = 1
+ROOT_XZ_STRIP_THRESHOLD = 0.6
 
-# Mean L2 distance (per joint, in HML-normalised units) between first and last
-# frame poses below which a clip is classified as looping.
+# Loop detection judges the wrap-around gap (last frame -> first frame) against
+# the clip's own frame-to-frame motion distribution. A high percentile gives a
+# compact robust envelope without tying tolerance to skeleton size.
 #
-# The threshold is intentionally relaxed (0.1 instead of a stricter ~0.05).
-# Most clips in the 0.05-0.1 band are quasi-periodic locomotion (Run, Walk,
-# etc.) whose first/last frames are already close but not perfectly closed.
-# Treating them as loops:
-#   1. Routes them through periodic resample + random phase offset, which
-#      preserves their natural gait structure better than a naive random crop.
-#   2. Applies circular temporal mask / circular phase embedding, giving the
-#      model consistent cyclic conditioning.
-#   3. Engages loop wrap loss (pose / rotation / terminal-velocity closure) —
-#      this produces smoother, more periodic generations and trains the model
-#      to repair imperfect seams on the few truly non-looping clips that cross
-#      the threshold (e.g. RunToStop transitions).
-# In practice, this improves validation metrics (Jerk, Snap, SpectralFlatness)
-# without harming non-periodic motion quality.
-LOOP_DETECTION_POS_THRESHOLD = 0.1
+# A clip loops only when the endpoint gap fits inside that transition envelope
+# and the translation root's accumulated XZ displacement returns to the start.
+LOOP_DETECTION_GAP_RATIO = 2.2
+LOOP_DETECTION_STEP_MIN = 0.02
+LOOP_DETECTION_STEP_MAX = 0.08
+LOOP_DETECTION_ROOT_XZ_TOLERANCE = 0.08
 
 LEAF_ROTATION_HELPER_SUFFIX = '__rot_helper'
-
-
 
 
 ################## Joint Name Canonicalization #####################
@@ -434,12 +424,94 @@ def attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base', writ
 
 ################## Animation Transform Utilities #####################
 
-def detect_motion_loop(positions):
-    """Return True if the last frame's root-relative pose is close to the first frame's."""
-    if positions.shape[0] < 2:
-        return False
-    per_joint_dist = np.linalg.norm(positions[-1] - positions[0], axis=-1)
-    return bool(np.mean(per_joint_dist) < LOOP_DETECTION_POS_THRESHOLD)
+def compute_motion_loop_diagnostics(positions, root_xz_velocity=None, translation_root_index=0):
+    """Return loop diagnostics on the exact runtime boundary used by detect_motion_loop.
+
+    The endpoint gap is compared against a robust upper envelope of the clip's
+    own per-frame motion. When ``root_xz_velocity`` is provided, the translation
+    root's accumulated XZ displacement must also close for the clip to count as
+    a loop.
+    """
+    positions = np.asarray(positions, dtype=np.float64)
+    if positions.shape[0] < 3:
+        return {
+            'wrap_gap': 0.0,
+            'transition_envelope': 0.0,
+            'effective_tolerance': 0.0,
+            'root_xz_total_disp': 0.0,
+            'root_xz_is_closed': True,
+            'is_loop': False,
+        }
+
+    # wrap_gap: p75 of per-joint endpoint distance — robust against a single
+    # outlier joint while still capturing the bulk of the discontinuity.
+    wrap_gap = float(np.percentile(np.linalg.norm(positions[-1] - positions[0], axis=-1), 75))
+
+    # Use only frames near the clip boundaries to estimate the "normal transition"
+    # envelope. The wrap_gap measures the jump from last frame -> first frame, so
+    # it should be compared against the typical motion amplitude at the clip edges
+    # rather than the peak motion in the middle (e.g., a fast swing or stride).
+    frame_steps = np.linalg.norm(np.diff(positions, axis=0), axis=-1)  # (T-1, J)
+    boundary_ratio = 0.15  # consider the outer 15% at each end
+    boundary_count = max(1, int(np.ceil((frame_steps.shape[0] - 1) * boundary_ratio)))
+    boundary_steps = np.concatenate([
+        frame_steps[:boundary_count],
+        frame_steps[-boundary_count:],
+    ], axis=0)
+    transition_envelope = float(np.percentile(boundary_steps, 65.0))  # p65 — tighter than p75 wrap_gap
+    effective_tolerance = min(
+        max(
+            LOOP_DETECTION_GAP_RATIO * transition_envelope,
+            LOOP_DETECTION_STEP_MIN,
+        ),
+        LOOP_DETECTION_STEP_MAX,
+    )
+
+    root_xz_total_disp = 0.0
+    root_xz_is_closed = True
+
+    if root_xz_velocity is not None:
+        velocity = np.asarray(root_xz_velocity, dtype=np.float64)
+        if velocity.ndim != 3 or velocity.shape[2] < 3:
+            raise ValueError(
+                f"root_xz_velocity must have shape (T, J, 3), got {velocity.shape}"
+            )
+
+        translation_root_index = int(translation_root_index)
+        if not 0 <= translation_root_index < velocity.shape[1]:
+            raise ValueError(
+                f"translation_root_index {translation_root_index} is out of bounds for {velocity.shape[1]} joints"
+            )
+
+        root_velocity = velocity[:, translation_root_index, :]
+        if velocity.shape[0] == positions.shape[0]:
+            root_velocity = root_velocity[:-1]
+        elif velocity.shape[0] != positions.shape[0] - 1:
+            raise ValueError(
+                f"root_xz_velocity frame count must be T or T-1 relative to positions, "
+                f"got {velocity.shape[0]} vs positions T={positions.shape[0]}"
+            )
+
+        root_xz_steps = np.linalg.norm(root_velocity[:, [0, 2]], axis=-1)
+        root_xz_total_disp = float(np.linalg.norm(np.sum(root_velocity[:, [0, 2]], axis=0)))
+        root_xz_is_closed = bool(root_xz_total_disp <= LOOP_DETECTION_ROOT_XZ_TOLERANCE)
+
+    return {
+        'wrap_gap': wrap_gap,
+        'transition_envelope': float(transition_envelope),
+        'effective_tolerance': float(effective_tolerance),
+        'root_xz_total_disp': float(root_xz_total_disp),
+        'root_xz_is_closed': bool(root_xz_is_closed),
+        'is_loop': bool(wrap_gap <= effective_tolerance and root_xz_is_closed),
+    }
+
+
+def detect_motion_loop(positions, root_xz_velocity=None, translation_root_index=0):
+    return compute_motion_loop_diagnostics(
+        positions,
+        root_xz_velocity=root_xz_velocity,
+        translation_root_index=translation_root_index,
+    )['is_loop']
 
 
 def _translation_root_candidate_chain(parents, max_depth=5):
@@ -1184,7 +1256,7 @@ def extend_semantic_metadata_with_leaf_helpers(base_semantic_metadata, joint_nam
 def coerce_single_orientation_quat(orientation_quat):
     if orientation_quat is None:
         raise ValueError(
-            "orientation_quat must be precomputed from the reference T-pose and provided to downstream motion processing"
+            "orientation_quat must be precomputed from the reference rest pose and provided to downstream motion processing"
         )
 
     orientation_qs = getattr(orientation_quat, 'qs', orientation_quat)

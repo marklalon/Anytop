@@ -11,13 +11,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (
     infer_motion_labels_from_motion_name,
     load_motion_metadata,
 )
-
-
-def _l2_normalize(vector: np.ndarray, eps: float = 1e-12) -> np.ndarray:
-    norm = float(np.linalg.norm(vector))
-    if norm <= eps:
-        return vector.copy()
-    return vector / norm
+from utils.skeleton_similarity import SpeciesSimilarity, rank_species
 
 
 def _resolve_lookup_key(name: str, lookup: Mapping[str, object]) -> str:
@@ -47,6 +41,9 @@ class ReferenceSpeciesSummary:
     species_weight: float
     clip_count: int
     total_frames: int
+    topology_distance: float = 0.0
+    combined_distance: float = 0.0
+    same_group: bool = False
 
 
 @dataclass(frozen=True)
@@ -75,13 +72,6 @@ class WeightedReferenceBank:
         if denom <= 0.0:
             return 0.0
         return float(1.0 / denom)
-
-
-def _embedding_for_object(cond: Mapping[str, object]) -> np.ndarray:
-    joint_embs = np.asarray(cond.get("joints_names_embs"), dtype=np.float64)
-    if joint_embs.ndim != 2 or joint_embs.shape[0] == 0 or joint_embs.shape[1] == 0:
-        raise ValueError("cond entry is missing valid joints_names_embs")
-    return _l2_normalize(joint_embs.mean(axis=0))
 
 
 def _normalize_motion_action_tags(raw_action_tags) -> set[str]:
@@ -162,43 +152,40 @@ def _select_species_weights(
     action_paths_by_species: Mapping[str, Sequence[str]],
     cond_lookup: Mapping[str, Mapping[str, object]],
     top_k_species: int,
-) -> List[tuple[str, float, float]]:
+    query_cond: Optional[Mapping[str, object]] = None,
+) -> List[SpeciesSimilarity]:
     if top_k_species <= 0:
         raise ValueError("top_k_species must be >= 1")
-    query_key = _resolve_lookup_key(query_object_type, cond_lookup)
-    query_emb = _embedding_for_object(cond_lookup[query_key])
+    if query_cond is None:
+        query_key = _resolve_lookup_key(query_object_type, cond_lookup)
+        query_cond_obj: Mapping[str, object] = cond_lookup[query_key]
+    else:
+        query_cond_obj = query_cond
 
-    candidates: List[tuple[str, float]] = []
-    for object_type, paths in action_paths_by_species.items():
-        if not paths:
-            continue
-        ref_emb = _embedding_for_object(cond_lookup[object_type])
-        cosine_similarity = float(np.clip(np.dot(query_emb, ref_emb), -1.0, 1.0))
-        cosine_distance = float(max(0.0, 1.0 - cosine_similarity))
-        candidates.append((object_type, cosine_distance))
-
-    if not candidates:
+    candidate_conds = {
+        object_type: cond_lookup[object_type]
+        for object_type, paths in action_paths_by_species.items()
+        if paths
+    }
+    if not candidate_conds:
         raise ValueError(
             f"No dataset reference motions found for action_tags={action_tags!r}"
         )
 
-    candidates.sort(key=lambda item: (item[1], item[0]))
-    selected = candidates[: min(top_k_species, len(candidates))]
-    if len(selected) == 1:
-        return [(selected[0][0], selected[0][1], 1.0)]
+    return rank_species(
+        query_cond_obj,
+        candidate_conds,
+        query_hint=query_object_type,
+        top_k=top_k_species,
+    )
 
-    distances = np.asarray([item[1] for item in selected], dtype=np.float64)
-    positive = distances[distances > 1e-8]
-    temperature = float(np.median(positive)) if positive.size else 0.03
-    temperature = max(temperature, 0.03)
-    logits = -distances / temperature
-    logits -= logits.max()
-    weights = np.exp(logits)
-    weights /= weights.sum()
-    return [
-        (species_name, float(distance), float(weight))
-        for (species_name, distance), weight in zip(selected, weights)
-    ]
+
+_REFERENCE_BANK_CACHE: Dict[tuple, WeightedReferenceBank] = {}
+
+
+def clear_reference_bank_cache() -> None:
+    """Drop all memoized reference banks (frees the loaded clip arrays)."""
+    _REFERENCE_BANK_CACHE.clear()
 
 
 def build_weighted_reference_bank(
@@ -207,10 +194,67 @@ def build_weighted_reference_bank(
     dataset_root: Optional[str] = None,
     top_k_species: int = 5,
     min_frames: int = 8,
+    use_cache: bool = True,
+    cond_lookup: Optional[Mapping[str, Mapping[str, object]]] = None,
+    query_cond: Optional[Mapping[str, object]] = None,
+) -> WeightedReferenceBank:
+    """Build (or fetch from cache) the weighted reference prior.
+
+    Assembling the bank loads every matching reference clip from disk, which is
+    the dominant cost when scoring many query clips that share the same
+    (object_type, action_tags, top_k_species) prior. The result is memoized on
+    the resolved dataset root plus the normalized request so repeated calls
+    reuse the already-loaded clips. The returned bank is treated as read-only by
+    all callers; do not mutate its clips in place.
+    """
+    if cond_lookup is not None or query_cond is not None or not use_cache:
+        return _build_weighted_reference_bank(
+            object_type,
+            action_tags,
+            dataset_root,
+            top_k_species,
+            min_frames,
+            cond_lookup=cond_lookup,
+            query_cond=query_cond,
+        )
+
+    dataset_root_key = str(resolve_dataset_root(dataset_root))
+    action_tags_key = frozenset(
+        token.strip().lower()
+        for token in str(action_tags or "").replace(";", ",").split(",")
+        if token.strip()
+    )
+    cache_key = (
+        dataset_root_key,
+        str(object_type).strip().lower(),
+        action_tags_key,
+        int(top_k_species),
+        int(min_frames),
+    )
+    cached = _REFERENCE_BANK_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    bank = _build_weighted_reference_bank(
+        object_type, action_tags, dataset_root, top_k_species, min_frames
+    )
+    _REFERENCE_BANK_CACHE[cache_key] = bank
+    return bank
+
+
+def _build_weighted_reference_bank(
+    object_type: str,
+    action_tags: str,
+    dataset_root: Optional[str] = None,
+    top_k_species: int = 5,
+    min_frames: int = 8,
+    cond_lookup: Optional[Mapping[str, Mapping[str, object]]] = None,
+    query_cond: Optional[Mapping[str, object]] = None,
 ) -> WeightedReferenceBank:
     dataset_root_path = resolve_dataset_root(dataset_root)
-    cond_lookup = load_cond_dict(dataset_root_path)
-    object_key = _resolve_lookup_key(object_type, cond_lookup)
+    if cond_lookup is None:
+        cond_lookup = load_cond_dict(dataset_root_path)
+    object_key = str(object_type) if query_cond is not None else _resolve_lookup_key(object_type, cond_lookup)
     action_tags_str = str(action_tags or "").strip()
     if not action_tags_str:
         raise ValueError("action_tags must be a non-empty string")
@@ -222,11 +266,13 @@ def build_weighted_reference_bank(
         action_paths_by_species,
         cond_lookup,
         top_k_species,
+        query_cond=query_cond,
     )
 
     clips: List[ReferenceClip] = []
     species_summaries: List[ReferenceSpeciesSummary] = []
-    for species_name, cosine_distance, species_weight in selected_species:
+    for ranked in selected_species:
+        species_name = ranked.name
         candidate_paths = action_paths_by_species.get(species_name, [])
         loaded: List[tuple[str, np.ndarray]] = []
         total_frames = 0
@@ -242,7 +288,7 @@ def build_weighted_reference_bank(
 
         for path, motion in loaded:
             motion_name = Path(path).name
-            clip_weight = species_weight * (float(motion.shape[0]) / float(total_frames))
+            clip_weight = ranked.weight * (float(motion.shape[0]) / float(total_frames))
             clips.append(
                 ReferenceClip(
                     path=path,
@@ -257,10 +303,13 @@ def build_weighted_reference_bank(
         species_summaries.append(
             ReferenceSpeciesSummary(
                 object_type=species_name,
-                cosine_distance=float(cosine_distance),
-                species_weight=float(species_weight),
+                cosine_distance=float(ranked.semantic_distance),
+                species_weight=float(ranked.weight),
                 clip_count=len(loaded),
                 total_frames=int(total_frames),
+                topology_distance=float(ranked.topology_distance),
+                combined_distance=float(ranked.combined_distance),
+                same_group=bool(ranked.same_group),
             )
         )
 
@@ -291,6 +340,9 @@ def build_weighted_reference_bank(
                 species_weight=float(species.species_weight / total_weight),
                 clip_count=species.clip_count,
                 total_frames=species.total_frames,
+                topology_distance=species.topology_distance,
+                combined_distance=species.combined_distance,
+                same_group=species.same_group,
             )
             for species in species_summaries
         ]

@@ -105,7 +105,7 @@ def create_temporal_mask_for_window(window, max_len, circular=False):
     return mask
 
 
-def _resample_motion_features(motion, target_num_frames, *, loop_terminal=False):
+def resample_motion_features(motion, target_num_frames, *, loop_terminal=False):
     source_frames = int(motion.shape[0])
     target_num_frames = int(target_num_frames)
     if source_frames <= 0:
@@ -166,7 +166,7 @@ def _resample_motion_features(motion, target_num_frames, *, loop_terminal=False)
 
 def _resample_normalized_motion_features(motion, target_num_frames, mean, std, *, loop_terminal=False):
     raw_motion = motion * std[None, :, :] + mean[None, :, :]
-    raw_resampled = _resample_motion_features(
+    raw_resampled = resample_motion_features(
         raw_motion,
         target_num_frames,
         loop_terminal=loop_terminal,
@@ -198,9 +198,7 @@ def _compute_global_energy_condition_np(motion: np.ndarray, n_joints: int) -> np
     energy = np.sqrt(velocity_norm * velocity_norm + rotation_delta_norm * rotation_delta_norm + 1e-6)
 
     frame_mean = energy.mean(axis=1)
-    frame_second_moment = (energy * energy).mean(axis=1)
-    frame_std = np.sqrt(np.maximum(frame_second_moment - frame_mean * frame_mean, 0.0) + 1e-6)
-    return np.asarray([frame_mean.mean(), frame_std.mean()], dtype=np.float32)
+    return np.asarray([frame_mean.mean()], dtype=np.float32)
 
 
 def _circular_roll_motion(motion, offset):
@@ -763,7 +761,8 @@ class MotionDataset(data.Dataset):
         # _circular_roll_motion for consistency guarantees).
         if is_loop:
             loop_phase_offset = self._sample_loop_offset(m_length, loop_offset=loop_offset)
-            motion = _circular_roll_motion(motion, loop_phase_offset)
+            if loop_phase_offset != 0:
+                motion = _circular_roll_motion(motion, loop_phase_offset)
             loop_tile_count = self._sample_loop_tile_count(m_length, max_source_length)
             motion = _tile_loop_motion(motion, loop_tile_count)
             m_length = int(motion.shape[0])
@@ -826,7 +825,7 @@ class MotionDataset(data.Dataset):
             )
             m_length = target_num_frames
 
-        if loop_condition_active and m_length == target_num_frames:
+        if loop_condition_active:
             loop_full_cycle = True
             loop_applied = True
 

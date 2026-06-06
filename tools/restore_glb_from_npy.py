@@ -39,10 +39,27 @@ Usage:
                 --npy "D:/AI/.../Horse___RunToStop_29.npy" \
                 --output-glb "outputs/Horse___RunToStop_29.glb"
 
+        # HML space: keep the NPY's orientation/scale/placement (like the
+        # corresponding processed BVH) instead of the T-pose mesh's native space
+        python tools/restore_glb_from_npy.py \
+                --npy "D:/AI/.../Horse___RunToStop_29.npy" \
+                --restore-space hml \
+                --output-glb "outputs/Horse___RunToStop_29.glb"
+
+Two restore spaces (``--restore-space``):
+    fbx (default)  Align the recovered animation to the T-pose mesh's native
+                   orientation / scale / translation.
+    hml            Reverse-align the T-pose mesh onto the NPY: re-apply the
+                   forward preprocessing similarity (scale_factor + orientation
+                   quat) to the imported rig so the GLB keeps the NPY's
+                   orientation, scale, and centered placement, with skin + rest
+                   pose bound correctly.
+
 """
 
 import argparse
 import importlib.util
+import math
 import os
 import subprocess
 import sys
@@ -77,8 +94,8 @@ _load_utils_module("utils.misc")
 
 from utils.misc import infer_object_type_from_filename
 from utils.npy_roundtrip_utils import recover_from_features
-from Anytop.utils.roundtrip_common import _load_fbx_skeleton_metadata
-from Anytop.motion_lib.FBX import _collapse_root_skeleton
+from Anytop.utils.roundtrip_common import load_fbx_skeleton_metadata
+from Anytop.motion_lib.FBX import collapse_root_skeleton
 
 # ── Default cond.npy path ─────────────────────────────────────────────────────
 
@@ -110,12 +127,12 @@ def _load_tpose_restore_metadata(
         tp_kwargs["max_joints"] = len(cond_parents) if cond_parents is not None else 0
 
     tp: TPoseFeatures = get_common_features_from_T_pose(tpose_mesh, object_type, **tp_kwargs)
-    raw_joint_names, raw_parents, raw_offsets, raw_rest_rotations = _load_fbx_skeleton_metadata(tpose_mesh)
+    raw_joint_names, raw_parents, raw_offsets, raw_rest_rotations = load_fbx_skeleton_metadata(tpose_mesh)
     raw_parents = np.asarray(raw_parents, dtype=np.int32)
     raw_offsets = np.asarray(raw_offsets, dtype=np.float32)
     raw_rest_rotations = np.asarray(raw_rest_rotations, dtype=np.float32)
     collapsed_joint_names, collapsed_parents, collapsed_offsets, collapsed_rest_rotations = (
-        _collapse_root_skeleton(
+        collapse_root_skeleton(
             raw_joint_names,
             raw_parents,
             raw_offsets,
@@ -153,7 +170,7 @@ def _warn_on_missing_mesh_joints(
     re-loading the FBX.
     """
     if mesh_bone_names is None:
-        mesh_bone_names, _mesh_parents, _mesh_offsets, _mesh_rest_rots = _load_fbx_skeleton_metadata(
+        mesh_bone_names, _mesh_parents, _mesh_offsets, _mesh_rest_rots = load_fbx_skeleton_metadata(
             tpose_mesh
         )
 
@@ -761,6 +778,69 @@ def _invert_preprocess_transform(
     )
 
 
+def _resample_frame_indices(
+    frame_count: int,
+    src_fps: float,
+    tgt_fps: float,
+    min_length: int | None = None,
+) -> list[float]:
+    """Fractional source-frame indices that resample ``frame_count`` to ``tgt_fps``.
+
+    The indices span ``[0, frame_count - 1]`` spaced ``src_fps / tgt_fps`` frames
+    apart, so a clip sampled at ``src_fps`` plays back at ``tgt_fps`` over the same
+    time span (e.g. 136 frames at 30fps → 68 indices at 15fps).  When ``min_length``
+    is given and the resampled clip is shorter, the whole clip is instead
+    *time-stretched* to exactly ``min_length`` frames — ``min_length`` indices
+    spread evenly across the source range — so a short motion is interpolated
+    (slowed down) to fill the minimum length with no looping/seam jump.  Returns
+    plain ``range(frame_count)`` when resampling is impossible/unnecessary.
+    """
+    if frame_count < 1:
+        return []
+    if src_fps and tgt_fps and src_fps > 0 and tgt_fps > 0 and frame_count >= 2:
+        step = src_fps / tgt_fps
+        n = int(math.floor((frame_count - 1) / step + 1e-6)) + 1 if step > 0 else frame_count
+        times = [i * step for i in range(max(n, 1))]
+    else:
+        times = [float(i) for i in range(frame_count)]
+    if min_length and len(times) < min_length:
+        times = np.linspace(0.0, float(frame_count - 1), min_length).tolist()
+    return times
+
+
+def _resample_animation(animation, frame_times):
+    """Resample an Animation in time at fractional ``frame_times`` (source-frame units).
+
+    Positions are linearly interpolated and rotations are slerped between the two
+    bracketing source frames; the rest pose (orients/offsets/parents) is unchanged.
+    Integer-ratio downsampling (e.g. 30→15fps) lands exactly on source frames, so
+    it is plain decimation with no interpolation error.
+    """
+    from motion_lib.Animation import Animation
+    from motion_lib.Quaternions import Quaternions
+
+    frame_count = animation.shape[0]
+    times = np.clip(np.asarray(frame_times, dtype=np.float64), 0.0, frame_count - 1)
+    lo = np.floor(times).astype(np.int64)
+    hi = np.minimum(lo + 1, frame_count - 1)
+    alpha = (times - lo)[:, None]   # (T, 1) — broadcasts over joints in slerp/lerp
+
+    positions = np.asarray(animation.positions, dtype=np.float64)
+    new_positions = (
+        positions[lo] * (1.0 - alpha[..., None]) + positions[hi] * alpha[..., None]
+    )
+    new_rotations = Quaternions.slerp(
+        animation.rotations[lo], animation.rotations[hi], alpha
+    )
+    return Animation(
+        new_rotations,
+        new_positions,
+        animation.orients.copy(),
+        animation.offsets.copy(),
+        animation.parents.copy(),
+    )
+
+
 # ── Main restore function ─────────────────────────────────────────────────────
 
 def restore_glb(
@@ -773,6 +853,10 @@ def restore_glb(
     root_translation_xz: np.ndarray | None = None,
     fullbody_ik: bool = False,
     stretch_factor: float = _DEFAULT_IK_STRETCH_FACTOR,
+    restore_space: str = "fbx",
+    use_image_search: bool = False,
+    resample_fps: float | None = None,
+    resample_min_length: int | None = None,
 ) -> str:
     """Restore a preprocessed NPY motion file to a skinned GLB.
 
@@ -797,12 +881,36 @@ def restore_glb(
                              Each edge may stretch/compress by ±stretch_factor
                              (e.g. 0.1 = ±10 %).  Default is {_DEFAULT_IK_STRETCH_FACTOR}.
                              Only effective when fullbody_ik is True.
+        restore_space:        Output coordinate space:
+                             ``"fbx"`` (default) aligns the animation to the
+                             T-pose mesh's native orientation/scale/translation
+                             (the prior behavior).  ``"hml"`` reverse-aligns the
+                             T-pose mesh onto the NPY so the GLB keeps the NPY's
+                             orientation, scale, and centered placement (like the
+                             corresponding processed BVH), with skin + rest pose
+                             bound correctly.
+        use_image_search:     If True, resolve textures for the skinned mesh:
+                             the FBX importer first searches directories near
+                             the source mesh, then a fallback resolver wires a
+                             matching diffuse/alpha texture from the mesh's
+                             ``tex/`` folder onto any main character mesh still
+                             lacking one. Default False (no texture resolution).
+        resample_fps:         If set (and > 0), resample the recovered motion in
+                             time from its native rate (``fps``) to this rate
+                             before export, and write the GLB at this rate
+                             (positions lerped, rotations slerped; integer ratios
+                             are exact decimation).  Default None (no resample —
+                             the GLB keeps the NPY's native frame count at ``fps``).
+        resample_min_length:  When resampling, if the resampled clip is shorter
+                             than this, time-stretch the whole clip to exactly this
+                             many frames (even interpolation, no looping).  Only
+                             effective when ``resample_fps`` is set.  Default None.
 
     Returns:
         The absolute path of the written GLB file.
     """
     from Anytop.utils.exporter import AnimationExporter, animation_to_exporter_inputs
-    from Anytop.utils.roundtrip_common import _build_skeleton
+    from Anytop.utils.roundtrip_common import build_skeleton
     from data_loaders.truebones.truebones_utils.motion_process import (
         find_translation_root,
         recover_processed_animation_from_feature_animation,
@@ -811,6 +919,8 @@ def restore_glb(
     output_glb = os.path.abspath(output_glb)
     if stretch_factor < 0 or stretch_factor > 1.0:
         raise ValueError(f"stretch_factor must be in [0, 1], got {stretch_factor}")
+    if restore_space not in ("fbx", "hml"):
+        raise ValueError(f"restore_space must be 'fbx' or 'hml', got {restore_space!r}")
 
     # ── Load cond.npy ─────────────────────────────────────────────────────────
     cond_npy_path = cond_npy or _DEFAULT_COND_NPY
@@ -975,8 +1085,29 @@ def restore_glb(
                 "unobservable leaf joints before export."
             )
 
+    # ── Resample in time (optional) ─────────────────────────────────────────
+    # Off by default: the GLB keeps the NPY's native frame count at ``fps``.
+    # When resample_fps is set, retime the recovered motion from ``fps`` (native)
+    # to resample_fps and write the GLB at resample_fps, so downstream consumers
+    # (e.g. render_images_from_glb.py) can render every keyframe as-is instead of
+    # resampling at render time.
+    output_fps = fps
+    if resample_fps is not None and resample_fps > 0:
+        src_frames = export_anim.shape[0]
+        frame_times = _resample_frame_indices(
+            src_frames, fps, resample_fps, min_length=resample_min_length
+        )
+        export_anim = _resample_animation(export_anim, frame_times)
+        output_fps = resample_fps
+        print(
+            f"Resampled motion {src_frames} -> {export_anim.shape[0]} frames "
+            f"({fps:g}fps -> {resample_fps:g}fps"
+            + (f", min_length={resample_min_length}" if resample_min_length else "")
+            + ")"
+        )
+
     # ── Build skeleton for exporter ─────────────────────────────────────────
-    skeleton = _build_skeleton(
+    skeleton = build_skeleton(
         export_joint_names,
         export_offsets,
         export_parents,
@@ -989,8 +1120,33 @@ def restore_glb(
 
     os.makedirs(os.path.dirname(output_glb) or ".", exist_ok=True)
 
+    # ── HML reverse-alignment (restore_space="hml") ─────────────────────────
+    # In "fbx" mode the recovered animation is exported in the T-pose mesh's
+    # native space. In "hml" mode we instead reverse-align the rig onto the NPY
+    # by re-applying the forward preprocessing similarity (scale + orientation)
+    # to the imported mesh/armature, so the GLB lands in the same space as the
+    # NPY / corresponding processed BVH.
+    global_similarity = None
+    if restore_space == "hml":
+        hml_scale = restore_ctx.get("scale_factor")
+        hml_orientation = restore_ctx.get("orientation_quat")
+        if hml_orientation is not None:
+            hml_orientation = np.asarray(hml_orientation, dtype=np.float64).reshape(-1)
+        if (hml_scale is None or abs(float(hml_scale) - 1.0) < 1e-8) and hml_orientation is None:
+            print(
+                "restore_space='hml' requested but neither scale_factor nor "
+                "orientation_quat is available; output matches 'fbx' space."
+            )
+        else:
+            print(
+                "Reverse-aligning rig into HML/npy space "
+                f"(scale={float(hml_scale) if hml_scale else 1.0:.6f}, "
+                f"orientation_quat={'set' if hml_orientation is not None else 'identity'})"
+            )
+        global_similarity = (hml_scale, hml_orientation)
+
     # ── Export skinned GLB + BVH ────────────────────────────────────────────
-    exporter = AnimationExporter(skeleton, fps=fps)
+    exporter = AnimationExporter(skeleton, fps=output_fps)
     print(f"Exporting skinned GLB → {output_glb}")
     exporter.export_glb(
         joint_rotations,
@@ -1000,6 +1156,8 @@ def restore_glb(
         mesh_path=tpose_mesh,
         bone_translations=bone_translations,
         rotation_channel_mask=rotation_channel_mask,
+        global_similarity=global_similarity,
+        use_image_search=use_image_search,
     )
 
     return os.path.abspath(output_glb)
@@ -1086,6 +1244,47 @@ def main() -> None:
             "i.e. ±10 %).  Only effective when --fullbody-ik is enabled."
         ),
     )
+    parser.add_argument(
+        "--restore-space",
+        choices=("fbx", "hml"),
+        default="fbx",
+        help=(
+            "Output coordinate space. 'fbx' (default) aligns the animation to the "
+            "T-pose mesh's native orientation/scale/translation. 'hml' reverse-aligns "
+            "the T-pose mesh onto the NPY so the GLB keeps the NPY's orientation, "
+            "scale, and centered placement (like the corresponding processed BVH)."
+        ),
+    )
+    parser.add_argument(
+        "--use-image-search",
+        action="store_true",
+        default=False,
+        help=(
+            "Resolve textures for the skinned mesh: the FBX importer searches "
+            "directories near the source mesh, then a fallback wires a matching "
+            "diffuse/alpha texture from the mesh's tex/ folder onto any main "
+            "character mesh still missing one. Disabled by default."
+        ),
+    )
+    parser.add_argument(
+        "--resample-fps",
+        type=float,
+        default=None,
+        help=(
+            "Resample the recovered motion in time from its native rate (--fps) to "
+            "this rate before export, and write the GLB at this rate. Disabled by "
+            "default (the GLB keeps the NPY's native frame count)."
+        ),
+    )
+    parser.add_argument(
+        "--resample-min-length",
+        type=int,
+        default=None,
+        help=(
+            "When --resample-fps is set, loop (tile) the resampled clip so it has "
+            "at least this many frames. Default: no looping."
+        ),
+    )
 
 
     args = parser.parse_args()
@@ -1120,6 +1319,7 @@ def main() -> None:
     print(f"FPS           : {args.fps or '(auto)'}")
     print(f"Root XZ       : {args.root_translation_xz or '(centered default)'}")
     print(f"Stretch factor: {args.stretch_factor}")
+    print(f"Restore space : {args.restore_space}")
     print()
 
     restore_glb(
@@ -1132,6 +1332,10 @@ def main() -> None:
         root_translation_xz=args.root_translation_xz,
         fullbody_ik=args.fullbody_ik,
         stretch_factor=args.stretch_factor,
+        restore_space=args.restore_space,
+        use_image_search=args.use_image_search,
+        resample_fps=args.resample_fps,
+        resample_min_length=args.resample_min_length,
     )
 
     _run_bone_length_check(args.output_glb, cond_npy_path, args.object_type)
@@ -1163,4 +1367,3 @@ def _run_bone_length_check(glb_path: str, cond_npy: str, object_type: str | None
 
 if __name__ == "__main__":
     main()
-

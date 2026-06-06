@@ -170,21 +170,50 @@ _CANONICAL_NAME_PREFIXES = (
     'jt',
     'Elk',
 )
-_CANONICAL_NAME_REPLACEMENTS = {
+_JAPANESE_NAME_REPLACEMENTS = {
     'momo': 'Thigh',
     'sippo': 'Tail',
+    'shippo': 'Tail',
     'mune': 'Chest',
     'hiza': 'Knee',
     'hara': 'Stomach',
     'ashi': 'Leg',
     'hiji': 'Elbow',
     'koshi': 'Hips',
-    'te': 'Hand',
     'kubi': 'Neck',
     'atama': 'Head',
     'ago': 'Jaw',
     'kata': 'Shoulder',
+    'munabire': 'Pectoral Fin',
+    'sebire': 'Dorsal Fin',
+    'harabire': 'Pelvic Fin',
+    'shiribire': 'Anal Fin',
+    'shirihire': 'Anal Fin',
+    'obire': 'Caudal Fin',
     'tai': 'Tail',
+}
+
+# Joint-name tokens that unambiguously signal Japanese romaji rig naming. Used
+# only as *evidence* that a skeleton is Japanese-style; deliberately excludes
+# short/ambiguous tokens (e.g. "te", "o") so a single coincidental match in an
+# otherwise non-Japanese rig cannot flip on the gated replacements below.
+_JAPANESE_EVIDENCE_TOKENS = frozenset({
+    'momo', 'sippo', 'shippo', 'mune', 'hiza', 'hara', 'ashi', 'hiji',
+    'koshi', 'kubi', 'atama', 'ago', 'kata',
+    'munabire', 'sebire', 'harabire', 'shiribire', 'shirihire', 'obire',
+})
+_JAPANESE_EVIDENCE_MIN_DISTINCT = 3
+
+# Replacements that are only safe to apply once a skeleton is confirmed to use
+# Japanese romaji naming. "kao" (face → head) and "kosi" (hips, the unaspirated
+# spelling of "koshi") would rarely collide elsewhere, but "o" (tail, 尾) is a
+# single character that must never be mapped globally.
+_JAPANESE_GATED_REPLACEMENTS = {
+    'kao': 'Head',
+    'kosi': 'Hips',
+    'o': 'Tail',
+    'te': 'Hand',
+    'era': 'Gill',
 }
 _EMBED_TEXT_SKIP_TOKENS = {
     'mid',
@@ -275,13 +304,15 @@ _SPECIES_LINEAGE_TAGS = {
     'Lion': ('Mammal', 'Felid'),
     'Lynx': ('Mammal', 'Felid'),
     'Mammoth': ('Mammal', 'Proboscidean'),
+    'Monkey': ('Mammal', 'Biped'),
     'Ostrich': ('Bird', 'Biped'),
     'Parrot': ('Flying', 'Bird'),
     'Parrot2': ('Flying', 'Bird'),
     'Pigeon': ('Flying', 'Bird'),
+    'Pirrana': ('Fish', 'Snake'),
     'PolarBear': ('Mammal', 'Ursid'),
     'PolarBearB': ('Mammal', 'Ursid'),
-    'Pteranodon': ('Reptile', 'Pterosaur'),
+    'Pteranodon': ('Flying', 'Reptile'),
     'Puppy': ('Mammal', 'Canid'),
     'Raindeer': ('Mammal', 'Cervid'),
     'Raptor': ('Reptile', 'Dinosaur'),
@@ -291,9 +322,10 @@ _SPECIES_LINEAGE_TAGS = {
     'Rhino': ('Mammal', 'Megafauna'),
     'Roach': ('Arthropod', 'Insect'),
     'SabreToothTiger': ('Mammal', 'Felid'),
-    'SandMouse': ('Mammal', 'Felid'),
+    'SandMouse': ('Mammal', 'Rodent'),
     'Scorpion': ('Arthropod', 'Arachnid'),
     'Scorpion-2': ('Arthropod', 'Arachnid'),
+    'Skunk': ('Mammal', 'Canid'),
     'Spider': ('Arthropod', 'Arachnid'),
     'SpiderG': ('Arthropod', 'Arachnid'),
     'Stego': ('Reptile', 'Dinosaur'),
@@ -324,7 +356,39 @@ def strip_joint_name_prefix(name):
     return stripped
 
 
-def _canonicalize_joint_name(name):
+def is_japanese_style_naming(joint_names):
+    """True when the joint name set shows clear Japanese romaji rig naming.
+
+    Requires at least ``_JAPANESE_EVIDENCE_MIN_DISTINCT`` distinct unambiguous
+    romaji tokens so that a single coincidental match cannot trigger the gated
+    Japanese-only replacements.
+    """
+    if not joint_names:
+        return False
+    seen = set()
+    for name in joint_names:
+        for token in normalize_joint_name(name).split():
+            if token in _JAPANESE_EVIDENCE_TOKENS:
+                seen.add(token)
+                if len(seen) >= _JAPANESE_EVIDENCE_MIN_DISTINCT:
+                    return True
+    return False
+
+
+def effective_canonical_replacements(joint_names):
+    """Base canonical replacements, plus Japanese-only entries when warranted.
+
+    Falls back to the shared ``_JAPANESE_NAME_REPLACEMENTS`` object (no copy)
+    unless the skeleton is confirmed Japanese-style, in which case the gated
+    ``kao``/``kosi``/``o`` mappings are merged in.
+    """
+    if is_japanese_style_naming(joint_names):
+        return {**_JAPANESE_NAME_REPLACEMENTS, **_JAPANESE_GATED_REPLACEMENTS}
+    return _JAPANESE_NAME_REPLACEMENTS
+
+
+def _canonicalize_joint_name(name, replacements=None):
+    replacements = _JAPANESE_NAME_REPLACEMENTS if replacements is None else replacements
     split_name = normalize_joint_name(strip_joint_name_prefix(name))
     canonical_parts = []
     for part in split_name.split():
@@ -335,8 +399,8 @@ def _canonicalize_joint_name(name):
             canonical_parts.append('Left')
         elif clean_part in ('r', 'right'):
             canonical_parts.append('Right')
-        elif clean_part in _CANONICAL_NAME_REPLACEMENTS:
-            canonical_parts.append(_CANONICAL_NAME_REPLACEMENTS[clean_part])
+        elif clean_part in replacements:
+            canonical_parts.append(replacements[clean_part])
         elif len(clean_part) == 1:
             # Skip single letters (except digits which are preserved for disambiguation)
             if not clean_part.isdigit():
@@ -378,9 +442,20 @@ def _collapse_solitary_head_feature_indices(canonical_joint_names):
     return collapsed_names
 
 
+# Lazy lowercase→tags mapping for case-insensitive species lookup
+_SPECIES_LINEAGE_TAGS_LOWER = None
+
+
 def _species_lineage_tokens(object_cond):
+    global _SPECIES_LINEAGE_TAGS_LOWER
     object_type = str(object_cond.get('object_type') or '').strip()
-    return list(_SPECIES_LINEAGE_TAGS.get(object_type, ()))
+    if not object_type:
+        return []
+    if _SPECIES_LINEAGE_TAGS_LOWER is None:
+        _SPECIES_LINEAGE_TAGS_LOWER = {
+            key.lower(): tags for key, tags in _SPECIES_LINEAGE_TAGS.items()
+        }
+    return list(_SPECIES_LINEAGE_TAGS_LOWER.get(object_type.lower(), ()))
 
 
 def _refine_joint_embedding_name(name):
@@ -875,7 +950,7 @@ def infer_contact_joints(joint_names, parents, rest_positions):
     if contact_joints:
         return contact_joints, 'names'
 
-    return _infer_end_effector_joints(parents, joint_names=joint_names, rest_positions=rest_positions), 'end_effectors'
+    return [], 'none'
 
 
 def _joint_depths(parents):
@@ -1086,7 +1161,8 @@ def _infer_is_symmetric(symmetric_joint_pairs, joint_side_labels):
 def build_semantic_metadata(joint_names, parents, offsets, rest_positions=None):
     parents = np.asarray(parents, dtype=np.int64)
     rest_positions = rest_positions_from_offsets(offsets, parents) if rest_positions is None else np.asarray(rest_positions, dtype=np.float64)
-    canonical_joint_names = [_canonicalize_joint_name(name) for name in joint_names]
+    replacements = effective_canonical_replacements(joint_names)
+    canonical_joint_names = [_canonicalize_joint_name(name, replacements) for name in joint_names]
     canonical_joint_names = _collapse_solitary_head_feature_indices(canonical_joint_names)
     contact_joints, contact_joint_source = infer_contact_joints(
         joint_names,

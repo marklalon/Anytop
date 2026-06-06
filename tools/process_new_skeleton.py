@@ -12,8 +12,8 @@ face-joints-names - Optional manual override for four joints defining skeleton o
             When omitted, preprocessing tries to infer them from semantic joint names. If inference is ambiguous,
             pass the four joint names explicitly. 
 save-dir - Output directory.
-tpos-path - An FBX/GLB/GLTF file of the character's natural rest pose for meaningful rotation learning.
-        If missing, the code selects a pose from the provided files in --anim-dir.
+tpos-path - An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base.
+    If missing, the code selects a reference carrier from the provided files in --anim-dir.
 update - Incremental update flag. Without it, --save-dir is wiped and rebuilt from scratch.
         With it, the existing dataset is kept and motions are added/replaced:
     --anim-dir merges the newly processed clips into the existing dataset,
@@ -85,14 +85,14 @@ def main():
     else:
         os.makedirs(save_dir, exist_ok=True)
 
-    # Resolve tpose_path: auto-select from anim_dir when not provided
+    # Resolve tpose_path: auto-select a rest-pose reference carrier from anim_dir when not provided
     tpose_path = args.tpos_path
     if tpose_path is None or tpose_path == '':
         if args.anim_dir is None:
             raise FileNotFoundError(
                 "Either --tpos-path or --anim-dir must be provided. "
-                "--tpos-path is required for T-pose-only mode, and --anim-dir "
-                "is required to auto-select a T-pose reference."
+                "--tpos-path is required for rest-pose-only mode, and --anim-dir "
+                "is required to auto-select a rest-pose reference."
             )
         anim_files = sorted([
             os.path.join(args.anim_dir, f)
@@ -104,19 +104,19 @@ def main():
                 f"No animation files (.fbx/.glb/.gltf) found in --anim-dir '{args.anim_dir}'."
             )
         tpose_path = find_tpose_reference_path(anim_files)
-        print(f"Auto-selected T-pose reference: {tpose_path}")
+        print(f"Auto-selected rest-pose reference carrier: {tpose_path}")
 
     object_type = args.object_type
     if object_type is None:
         object_type = infer_object_type_from_filename(tpose_path)
         if object_type is None:
             raise FileNotFoundError(
-                f"Cannot infer object-type from T-pose file '{tpose_path}'."
+                f"Cannot infer object-type from reference file '{tpose_path}'."
             )
         print(f"Auto-detected object_type: {object_type}")
 
     # If --tpos-path is given without --retarget-top-k, default to retarget-top-k 1
-    # (prefer retarget over T-pose-only mode with no motions)
+    # (prefer retarget over rest-pose-only mode with no motions)
     # If --donor-skeletons is given, also default to 1 but suppress the log
     # since the user is explicitly configuring retarget.
     retarget_top_k = args.retarget_top_k

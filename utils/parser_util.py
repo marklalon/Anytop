@@ -5,11 +5,11 @@ import json
 import copy
 import sys
 
-def parse_and_load_from_model(parser):
+def parse_and_load_from_model(parser, argv=None):
     # args according to the loaded model
     # do not try to specify them from cmd line since they will be overwritten
     add_model_options(parser)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     args_to_overwrite = []
     for group_name in ['dataset', 'model', 'diffusion']:
         args_to_overwrite += get_args_per_group_name(parser, args, group_name)
@@ -88,7 +88,7 @@ def add_model_options(parser):
                        help="Number of layers.")
     group.add_argument("--latent_dim", default=128, type=int,
                        help="Transformer/GRU width.")
-    group.add_argument("--lambda_geo", default=0.0, type=float, help="Foot contact loss.")
+    group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
     group.add_argument("--lambda_vel", default=0.0, type=float,
                        help="Weight for velocity-position consistency loss (0.0=off)."
                             " Penalizes |pos[t+1]-pos[t] - vel[t]|^2 on denormalized outputs."
@@ -120,28 +120,12 @@ def add_model_options(parser):
                             "cross-limb parameter count.")
     group.add_argument("--dropout_prob", default=0.1, type=float,
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
-    group.add_argument("--reference_cond", action='store_true',
-                       help="Enable ControlNet-style reference conditioning through a dedicated reference encoder and decoder cross-attention path.")
     group.add_argument("--global_energy_cond", action='store_true',
                        help="Enable an always-on clip-level global energy condition derived from the training motion's global energy mean/std.")
-    group.add_argument("--reference_encoder_layers", default=1, type=int,
-                       help="Number of temporal self-attention layers in the reference encoder (0 = InputProcess only).")
-    group.add_argument("--reference_cond_prob", default=0.3, type=float,
-                       help="Probability of keeping reference conditioning during training "
-                            "(1.0 = always conditioned, 0.0 = never).")
-    group.add_argument("--reference_residual_gate", default=1.0, type=float,
-                       help="Scalar gate applied to the decoder's reference residual path. "
-                            "1.0 keeps the current behavior, 0.0 disables the residual entirely, "
-                            "and intermediate values damp the reference branch without changing checkpoints.")
-    group.add_argument("--reference_token_dropout_prob", default=0.25, type=float,
-                       help="Per-prior-token dropout probability inside the reference encoder. Applied only during training.")
-    group.add_argument("--reference_token_noise_std", default=0.15, type=float,
-                       help="Additive Gaussian noise std applied to surviving reference prior tokens during training.")
-    group.add_argument("--reference_cond_last_n", default=0, type=int,
-                       help="Apply reference cross-attention only on the last N decoder layers "
-                            "(0 = all layers). Mirrors cross_limb_last_n semantics: only active "
-                            "layers allocate a ReferenceCrossAttnBlock, so this controls both "
-                            "reference MHA compute and checkpoint size.")
+    group.add_argument("--global_energy_cfg_drop_prob", default=0.1, type=float,
+                       help="CFG drop probability for global energy during training. Randomly replaces "
+                           "the energy condition with the running mean, forcing the model to learn "
+                           "to actually respond to it. Default 0.1.")
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')
@@ -204,10 +188,12 @@ def add_training_options(parser):
                        help="Prefetch this many batches on background thread for main-thread data loading to overlap with GPU compute. 0 disables it.")
     group.add_argument("--detect_anomaly", action='store_true',
                        help="Enable PyTorch autograd anomaly detection. Useful for debugging, but significantly slows training.")
-    group.add_argument("--joint_mask_prob", default=0.0, type=float,
-                       help="Probability of sampling each non-root joint into a training-time subtree perturbation. "
+    group.add_argument("--joint_mask_prob", default=0.5, type=float,
+                       help="Per-sample probability of applying a training-time subtree joint perturbation. "
                            "Selected joints keep their supervision loss and remain visible to attention, but their x_t "
-                           "features are re-noised at an independent timestep to mimic RePaint-style mixed reliability.")
+                           "features are re-noised at an independent timestep to mimic mixed reliability during inpainting.")
+    group.add_argument("--joint_mask_budget", default=0.15, type=float,
+                       help="Maximum fraction of non-root joints to include in each sampled subtree perturbation.")
     group.add_argument("--temporal_span_mask_prob", default=0.0, type=float,
                        help="Probability of sampling a contiguous training-time temporal span perturbation. "
                             "Selected frames are re-noised for all real joints to teach native frame inpainting.")
@@ -217,19 +203,15 @@ def add_training_options(parser):
                        help="Maximum length of each sampled training-time temporal span perturbation. "
                             "Must be >= temporal_span_mask_min_frames.")
     group.add_argument("--temporal_span_seam_loss_weight", default=0.0, type=float,
-                       help="Additional reconstruction loss weight applied around sampled temporal-span boundaries. Uses a Gaussian seam band centered on each boundary frame. 0 disables it.")
+                       help="Weight of a target-relative acceleration (2nd temporal difference) penalty on the position channel, applied in a Gaussian seam band around sampled temporal-span boundaries. Suppresses inpainting-seam acceleration spikes that l_simple and vel_loss do not catch. 0 disables it.")
     group.add_argument("--temporal_span_seam_width", default=2, type=int,
                        help="Radius of the Gaussian seam band on each side of a sampled temporal-span boundary frame.")
     group.add_argument("--resume_checkpoint", default="", type=str,
                        help="If not empty, will start from the specified checkpoint (path to model###.pt file).")
-    group.add_argument("--gen_during_training", action='store_true',
-                       help="If True, will generate motions during training, on each save interval.")
-    group.add_argument("--gen_num_samples", default=3, type=int,
-                       help="Number of samples to sample while generating")
-    group.add_argument("--gen_num_repetitions", default=2, type=int,
-                       help="Number of repetitions, per sample (text prompt/action)")
     group.add_argument("--use_ema", action='store_true',
                        help="If True, will use EMA model averaging.")
+    group.add_argument("--ema_rate", default=0.99, type=float,
+                       help="EMA decay rate (closer to 1 = slower updates). Default 0.99.")
     group.add_argument("--balanced", action='store_true',
                        help="Use balancing sampler for fairness between topologies")
     group.add_argument("--drop_last", action='store_true', default=False,
@@ -261,9 +243,13 @@ def add_sampling_options(parser):
 
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')
-    group.add_argument("--motion_length", default=2.0, type=float,
-                       help="The length of the sampled motion [in seconds]. "
-                            "Maximum is 9.8 for HumanML3D (text-to-motion), and 2.0 for HumanAct12 (action-to-motion)")
+    group.add_argument("--motion_frames", default=None, type=int,
+                       help="The number of frames in the sampled motion. "
+                            "If omitted with --reference_motion, defaults to the "
+                            "reference's native length (R frames); otherwise defaults to 60. "
+                            "When specified with --reference_motion: if R < M the tail "
+                            "is auto-outpainted, if R > M the reference is cropped to M. "
+                            "Valid range: [min_length, 2*num_frames] of the checkpoint.")
     group.add_argument("--object_type", default=None, type=str,
                        help="Target object type. Optional if --reference_motion is provided "
                             "(inferred from filename). Required for pure-random generation. "
@@ -285,27 +271,16 @@ def add_generate_options(parser):
                            "is used as a fallback. "
                             "Omit for pure random generation.")
     group.add_argument("--skip_timesteps", default=None, type=int,
-                       help="Number of timesteps to skip when using --reference_motion. Higher = more faithful to reference. "
-                           "Range: 0~sampling_steps. Default: required when using img2img without --inpaint_*; "
+                       help="Number of timesteps to skip when using --reference_motion (img2img). Higher = more faithful to reference. "
+                           "Range: 0~sampling_steps. Default: required when using --reference_motion without --inpaint_*; "
                            "default: 0 when combined with --inpaint_* (disabled; use --skip_timesteps N to enable). "
                            "When combined with --inpaint_*, the skip is applied "
                            "only inside the masked region by starting that region from an img2img-noised reference, while "
-                          "the unmasked region stays clamped to the original reference throughout denoising. "
-                           "When --reference_mode controlnet is selected, this must be 0.")
-    group.add_argument("--reference_mode", default="img2img", choices=["img2img", "controlnet"],
-                       help="How to use --reference_motion. img2img = noise the reference into x_t. controlnet = keep the diffusion state on the full schedule and feed the reference through a separate conditioning branch. When source and target skeletons differ, the reference is retargeted into the target skeleton first (both modes).")
-    group.add_argument("--reference_scale", default=None, type=float,
-                       help="Classifier-free guidance scale for --reference_mode controlnet (default: 1.0). "
-                            "1.0 = single conditioned forward pass; >1 amplifies the reference signal. "
-                            "Only effective in controlnet mode; will error if set in img2img mode.")
-    group.add_argument("--global_energy_mean", default=None, type=float,
-                       help="Override the clip-level global energy mean in normalized (Z-score) space. "
+                          "the unmasked region stays clamped to the original reference throughout denoising.")
+    group.add_argument("--global_energy", default=None, type=float,
+                       help="Override the clip-level global energy in normalized (Z-score) space. "
                            "0.0 = training average intensity, 1.0 = 1 std above average, -0.5 = half std below average. "
                            "If omitted, generation defaults to the checkpoint's running mean (equivalent to 0.0).")
-    group.add_argument("--global_energy_std", default=None, type=float,
-                       help="Override the clip-level global energy std in normalized (Z-score) space. "
-                           "0.0 = training average intensity variation, 1.0 = 1 std above average variation. "
-                           "If omitted, generation defaults to the checkpoint's running std proxy (equivalent to 0.0).")
     group.add_argument("--inpaint_joints", default="", type=str,
                        help="Motion inpainting (mask painting): comma-separated joint names whose motion is "
                             "REGENERATED while the rest is held to --reference_motion. Names accept any of the "
@@ -325,16 +300,7 @@ def add_generate_options(parser):
                             "(inclusive, clipped to the reference length). Empty = all frames. Combined with "
                             "--inpaint_joints, the regenerated region is selected-joints x selected-frames; "
                             "everything else is clamped to --reference_motion. Requires --reference_motion.")
-    group.add_argument("--repaint_jump_length", default=0, type=int,
-                       help="RePaint resampling jump/time-travel length for motion inpainting. 0 disables "
-                           "resampling (default; single reverse pass). Positive values revisit later noisy "
-                           "states and can improve mask-boundary quality at the cost of extra runtime. Only "
-                           "used when --inpaint_* is set.")
-    group.add_argument("--repaint_jump_n_sample", default=1, type=int,
-                       help="RePaint resampling revisit count for each jump anchor. 1 disables extra revisits. "
-                           "Larger values perform more jump/time-travel cycles (slower, often smoother). "
-                           "Only used when --inpaint_* is set. Even with --sampling_method ddim --ddim_eta 0, "
-                           "enabling this adds fresh forward noise and makes sampling stochastic.")
+
     group.add_argument("--score", action='store_true',
                        help="After generation, automatically run the motion quality scorer on the output "
                             "and print a quality report. Uses --action_tags (already supported for training) "
@@ -368,14 +334,14 @@ def train_args():
     return parser.parse_args()
 
 
-def generate_args():
+def generate_args(argv=None):
     parser = ArgumentParser()
     # args specified by the user: (all other will be loaded from the model)
     add_base_options(parser)
     add_data_options(parser)
     add_sampling_options(parser)
     add_generate_options(parser)
-    args = parse_and_load_from_model(parser)
+    args = parse_and_load_from_model(parser, argv=argv)
     return args
 
 def process_new_skeleton_args():
@@ -394,9 +360,9 @@ def process_new_skeleton_args():
                        help="Optional manual override for the four orientation joints ([right hip, left hip, right shoulder, left shoulder] or equivalent). \
                            When omitted, preprocessing tries to infer them from semantic joint names.")
     group.add_argument("--tpos-path", default=None, type=str,
-                       help="An FBX/GLB/GLTF file of the character's natural rest pose for meaningful rotation learning. "
-                            "If omitted, the code will auto-select one from --anim-dir using filename heuristics "
-                            "(T-pose > idle > walk > first file).")
+                       help="An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base. "
+                           "If omitted, the code will auto-select one from --anim-dir using filename heuristics "
+                           "(T-pose/rest/bind > idle > walk > first file).")
     group.add_argument("--retarget-top-k", default=None, type=int,
                        help="Auto-select the top-k most similar training skeletons as motion donors, "
                             "retarget all their motions to the new skeleton, and use those coarse motions "

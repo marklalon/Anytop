@@ -11,12 +11,15 @@ import re
 import typing as tp
 import warnings
 from num2words import num2words
-import spacy
-from transformers import T5EncoderModel, T5Tokenizer  
 import torch
 from torch import nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pad_sequence
+
+# Heavy imports deferred to where they are actually used:
+#   spacy       -> WhiteSpaceTokenizer.__init__  (only when normalize_text=True)
+#   transformers -> T5Conditioner.__init__ / _resolve_t5_local_dir
+#   safetensors  -> T5Conditioner.__init__  (direct weight loading)
 
 CUDA_LAUNCH_BLOCKING=1
 
@@ -105,11 +108,12 @@ class WhiteSpaceTokenizer(Tokenizer):
         self.pad_idx = pad_idx
         self.lemma = lemma
         self.stopwords = stopwords
+        import spacy as _spacy  # lazy import — only paid when WhiteSpaceTokenizer is constructed
         try:
-            self.nlp = spacy.load(language)
+            self.nlp = _spacy.load(language)
         except IOError:
-            spacy.cli.download(language)  # type: ignore
-            self.nlp = spacy.load(language)
+            _spacy.cli.download(language)  # type: ignore
+            self.nlp = _spacy.load(language)
 
     @tp.no_type_check
     def __call__(self, texts: tp.List[tp.Optional[str]],
@@ -256,8 +260,59 @@ KNOWN_ACTION_TAGS = [
 class TextConditioner(BaseConditioner):
     ...
 
+def _resolve_t5_local_dir(name: str, t5_path: tp.Optional[str] = None) -> str:
+    """Resolve a T5 model name to a local filesystem directory.
+
+    Returns an absolute path that can be passed directly to
+    ``T5Tokenizer.from_pretrained(dir)`` / ``T5EncoderModel.from_pretrained(dir)``,
+    which bypasses all HuggingFace Hub resolution entirely.
+
+    Resolution order:
+    1. If *t5_path* is given and points to an existing directory, use it.
+    2. Check the project-local ``.models/<name>/`` directory (relative to this file).
+    3. Resolve the canonical HF cache path::
+         ~/.cache/huggingface/hub/models--<sanitized_name>/snapshots/<commit>/
+    4. Fall back to passing *name* as-is (handled by HF's internal cache lookup).
+    """
+    import os as _os
+
+    # 1 — explicit t5_path override
+    if t5_path and _os.path.isdir(t5_path):
+        return _os.path.abspath(t5_path)
+
+    # 2 — project-local .models/<name>/  (checked-in model copies)
+    _PROJECT_MODELS = _os.path.abspath(
+        _os.path.join(_os.path.dirname(__file__), "..", ".models")
+    )
+    local_project_dir = _os.path.join(_PROJECT_MODELS, name)
+    if _os.path.isdir(local_project_dir) and _os.path.isfile(
+        _os.path.join(local_project_dir, "config.json")
+    ):
+        return local_project_dir
+
+    # 3 — standard HF cache layout
+    sanitized = name.replace("/", "--")
+    cache_root = _os.path.expanduser("~/.cache/huggingface/hub")
+    model_dir = _os.path.join(cache_root, f"models--{sanitized}")
+    snapshots_dir = _os.path.join(model_dir, "snapshots")
+    if _os.path.isdir(snapshots_dir):
+        commits = sorted(_os.listdir(snapshots_dir))
+        for commit in reversed(commits):
+            snap_dir = _os.path.join(snapshots_dir, commit)
+            if _os.path.isdir(snap_dir) and _os.path.isfile(_os.path.join(snap_dir, "config.json")):
+                return snap_dir
+
+    # 4 — last resort, let HF handle it (preserves backward compat)
+    return name
+
+
 class T5Conditioner(TextConditioner):
     """T5-based TextConditioner.
+
+    T5 weights are loaded directly from the local HuggingFace cache using
+    ``safetensors`` + ``T5Config`` + ``T5EncoderModel``, bypassing the
+    HuggingFace Hub API entirely.  The tokenizer is loaded from the same
+    local directory.
 
     Args:
         name (str): Name of the T5 model.
@@ -309,7 +364,8 @@ class T5Conditioner(TextConditioner):
         self.name = name
         self.finetune = finetune
         self.word_dropout = word_dropout
-        self.t5_path = t5_path  # local path override for model loading
+        self.t5_path = t5_path
+
         resolved_autocast_dtype = self.AUTOCAST_DTYPES.get(autocast_dtype)
         if autocast_dtype not in self.AUTOCAST_DTYPES:
             raise ValueError(f"Unsupported T5 autocast dtype: {autocast_dtype}")
@@ -318,23 +374,42 @@ class T5Conditioner(TextConditioner):
         else:
             print(f"T5 will be evaluated with autocast as {autocast_dtype}")
             self.autocast = TorchAutocast(enabled=True, device_type=self.device, dtype=resolved_autocast_dtype)
-        # Let's disable logging temporarily because T5 will vomit some errors otherwise.
-        # thanks https://gist.github.com/simon-weber/7853144
+
+        # ── resolve local directory, then load WITHOUT touching HF Hub ──
+        local_dir = _resolve_t5_local_dir(name, t5_path)
+
+        # Lazy import: transformers is only pulled in when T5Conditioner is
+        # actually constructed, not when conditioners.py is first imported.
+        from transformers import T5Config, T5EncoderModel, T5Tokenizer
+
         previous_level = logging.root.manager.disable
         logging.disable(logging.ERROR)
-        # Use local path if provided, otherwise fall back to model name
-        model_path = t5_path if t5_path else name
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            try:
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                # Tokenizer — directly from local directory (no hub resolution)
                 self.t5_tokenizer = T5Tokenizer.from_pretrained(
-                    model_path, local_files_only=local_files_only
+                    local_dir, local_files_only=True
                 )
-                t5 = T5EncoderModel.from_pretrained(
-                    model_path, local_files_only=local_files_only
-                ).train(mode=finetune)
-            finally:
-                logging.disable(previous_level)
+                # Weights — safetensors direct read, bypasses HF Hub metadata
+                # and file discovery. Falls back to from_pretrained if no
+                # safetensors file exists.
+                import os as _os
+                st_path = _os.path.join(local_dir, "model.safetensors")
+                if _os.path.isfile(st_path):
+                    import safetensors.torch as _st
+                    config = T5Config.from_pretrained(local_dir, local_files_only=True)
+                    t5 = T5EncoderModel(config)
+                    state_dict = _st.load_file(st_path)
+                    t5.load_state_dict(state_dict, strict=False)
+                    t5.train(mode=finetune)
+                else:
+                    t5 = T5EncoderModel.from_pretrained(
+                        local_dir, local_files_only=True
+                    ).train(mode=finetune)
+        finally:
+            logging.disable(previous_level)
+
         if finetune:
             self.t5 = t5
         else:

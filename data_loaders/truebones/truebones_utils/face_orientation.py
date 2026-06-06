@@ -5,7 +5,13 @@ import re
 from motion_lib.Quaternions import Quaternions
 from motion_lib.Animation import Animation
 from .param_utils import CHAIN_FORWARD_JOINTS
-from .physics_joint_annotation import normalize_joint_name, detect_joint_side, _joint_depths, strip_joint_name_prefix
+from .physics_joint_annotation import (
+    normalize_joint_name,
+    detect_joint_side,
+    _joint_depths,
+    strip_joint_name_prefix,
+    effective_canonical_replacements,
+)
 
 
 _EMITTED_DEGENERATE_FACING_WARNINGS = set()
@@ -64,18 +70,26 @@ _BODY_AXIS_BASE_PRIORITIES = (
     ('tail',),
 )
 
-def _canonicalize_joint_name(name):
+def _canonicalize_joint_name(name, replacements=None):
     """Canonicalize a joint name using shared constants from physics_joint_annotation.
 
     Note: drops single-character tokens (including isolated digits), unlike the
     sibling implementation in physics_joint_annotation which preserves digits.
     This preserves existing face-orientation matching behavior.
+
+    ``replacements`` lets callers pass the skeleton-aware replacement table from
+    ``effective_canonical_replacements`` so Japanese-only mappings (kao/kosi/o)
+    apply only when the rig is confirmed Japanese-style; defaults to the base
+    table otherwise.
     """
-    from .physics_joint_annotation import _CANONICAL_NAME_PREFIXES, _CANONICAL_NAME_REPLACEMENTS
-    
+    from .physics_joint_annotation import _JAPANESE_NAME_REPLACEMENTS
+
+    if replacements is None:
+        replacements = _JAPANESE_NAME_REPLACEMENTS
+
     # Strip prefix using the shared utility
     stripped = strip_joint_name_prefix(name)
-    
+
     # Normalize and canonicalize
     split_name = normalize_joint_name(stripped)
     canonical_parts = []
@@ -87,8 +101,8 @@ def _canonicalize_joint_name(name):
             canonical_parts.append('Left')
         elif clean_part in ('r', 'right'):
             canonical_parts.append('Right')
-        elif clean_part in _CANONICAL_NAME_REPLACEMENTS:
-            canonical_parts.append(_CANONICAL_NAME_REPLACEMENTS[clean_part])
+        elif clean_part in replacements:
+            canonical_parts.append(replacements[clean_part])
         elif len(clean_part) == 1:
             continue
         else:
@@ -96,9 +110,9 @@ def _canonicalize_joint_name(name):
     return ' '.join(canonical_parts) if canonical_parts else name.strip()
 
 
-def _joint_signature(name):
+def _joint_signature(name, replacements=None):
     signature_tokens = [
-        token for token in _canonicalize_joint_name(name).lower().split()
+        token for token in _canonicalize_joint_name(name, replacements).lower().split()
         if token not in ('left', 'right', 'lf', 'rf')
     ]
     if signature_tokens:
@@ -120,13 +134,14 @@ def _face_joint_name_allowed(name):
 
 def _find_semantic_joint_pair(joint_names, parents, priorities, *, exclude_near_root=True):
     depths = _joint_depths(parents)
+    replacements = effective_canonical_replacements(joint_names)
     candidates = {'right': [], 'left': []}
     paired_candidates = {}
 
     for joint_index, joint_name in enumerate(joint_names):
         if not _face_joint_name_allowed(joint_name):
             continue
-        normalized = normalize_joint_name(_canonicalize_joint_name(joint_name))
+        normalized = normalize_joint_name(_canonicalize_joint_name(joint_name, replacements))
         if exclude_near_root and any(token in normalized for token in _FACE_JOINT_NEAR_ROOT_EXCLUDE_TOKENS):
             continue
 
@@ -145,7 +160,7 @@ def _find_semantic_joint_pair(joint_names, parents, priorities, *, exclude_near_
         candidate = (priority_index, depths[joint_index], joint_index)
         candidates[side].append(candidate)
 
-        signature = _joint_signature(joint_name)
+        signature = _joint_signature(joint_name, replacements)
         if signature:
             if signature not in paired_candidates:
                 paired_candidates[signature] = {'right': [], 'left': []}
@@ -184,10 +199,11 @@ def _find_semantic_joint_pair(joint_names, parents, priorities, *, exclude_near_
 
 def _find_forward_reference_joint(joint_names, parents):
     depths = _joint_depths(parents)
+    replacements = effective_canonical_replacements(joint_names)
     candidates = []
 
     for joint_index, joint_name in enumerate(joint_names):
-        normalized = normalize_joint_name(_canonicalize_joint_name(joint_name))
+        normalized = normalize_joint_name(_canonicalize_joint_name(joint_name, replacements))
         if 'nub' in normalized:
             continue
         priority_index = None
@@ -207,13 +223,14 @@ def _find_forward_reference_joint(joint_names, parents):
 
 def _find_centerline_reference_joint(joint_names, parents, priorities, *, prefer_deepest):
     depths = _joint_depths(parents)
+    replacements = effective_canonical_replacements(joint_names)
     candidates = []
 
     for joint_index, joint_name in enumerate(joint_names):
         if detect_joint_side(joint_name) is not None:
             continue
 
-        normalized = normalize_joint_name(_canonicalize_joint_name(joint_name))
+        normalized = normalize_joint_name(_canonicalize_joint_name(joint_name, replacements))
         normalized_tokens = set(normalized.split())
         priority_index = None
         for current_priority, keyword_group in enumerate(priorities):
@@ -541,6 +558,43 @@ def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints
     return []
 
 
+_Y_AXIS = np.array([0.0, 1.0, 0.0])
+
+
+def _forward_to_y_angle(forward):
+    """Angle (rad) about +Y that rotates +Z onto the given XZ-plane forward."""
+    forward = np.asarray(forward, dtype=np.float64).reshape(-1, 3)
+    return np.arctan2(forward[:, 0], forward[:, 2])
+
+
+def _snap_angle_to_quarter_turn(angles):
+    """Round each angle (rad) to the nearest multiple of 90 degrees."""
+    quarter = np.pi / 2.0
+    return np.round(np.asarray(angles, dtype=np.float64) / quarter) * quarter
+
+
+def _y_rotation_quat(angles):
+    """Pure +Y rotation quaternion for each angle (rad)."""
+    angles = np.atleast_1d(np.asarray(angles, dtype=np.float64))
+    axis = np.broadcast_to(_Y_AXIS, (angles.shape[0], 3))
+    return Quaternions.from_angle_axis(angles, axis)
+
+
+def snap_forward_alignment_quat(source_forward, target_forward):
+    """Quaternion aligning ``source``'s dominant axis onto ``target``'s.
+
+    Both forwards must already be projected onto the XZ plane.  Each forward is
+    snapped to its nearest cardinal axis (+X/-X/+Z/-Z) before the rotation is
+    measured, so the result is restricted to a multiple of 90 degrees about +Y.
+    Using snapped angles (instead of ``Quaternions.between`` on the snapped
+    vectors) also avoids the degenerate zero-quaternion that ``between`` returns
+    for antiparallel vectors, e.g. the 180-degree case.
+    """
+    source = _snap_angle_to_quarter_turn(_forward_to_y_angle(source_forward))
+    target = _snap_angle_to_quarter_turn(_forward_to_y_angle(target_forward))
+    return _y_rotation_quat(target - source)
+
+
 def calculate_root_quat(joints, object_type, face_joint_indx=None, forward_joint_index=None, forward_base_joint_index=None, emit_warnings=True):
     if face_joint_indx is None:
         face_joint_indx = resolve_face_joints(object_type)
@@ -554,9 +608,10 @@ def calculate_root_quat(joints, object_type, face_joint_indx=None, forward_joint
     )
     if forward is None:
         forward = np.array([[0.0, 0.0, 1.0]]).repeat(len(joints), axis=0)
-    target = np.array([[0, 0, 1]]).repeat(len(forward), axis=0)
-    root_quat = Quaternions.between(forward, target)
-    return root_quat
+    # Align the body's dominant axis to +Z using only a 90-degree-multiple turn,
+    # collapsing the saved orientation_quat to one of four possible values.
+    snapped = _snap_angle_to_quarter_turn(_forward_to_y_angle(forward))
+    return _y_rotation_quat(-snapped)
 
 
 def rotate_to_hml_orientation(anim, orientation_quat):
