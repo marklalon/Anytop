@@ -205,15 +205,11 @@ def validate_reference_configuration(
     skip_timesteps=0,
     global_energy=None,
 ):
-    # Global energy is auto-extracted from the reference, so an explicit
-    # --global_energy cannot be combined with --reference_motion. (Without a
-    # reference, e.g. pure-random generation, the CLI value remains the only
-    # source and is allowed.)
-    if reference_motion_path is not None and global_energy is not None:
-        raise ValueError(
-            "--global_energy cannot be combined with --reference_motion; "
-            "global energy is automatically extracted from the reference motion."
-        )
+    # --global_energy is optional with --reference_motion. When omitted,
+    # the model uses the global-energy CFG drop path (unconditional energy
+    # token, FiLM sublayer bypassed). When provided, it overrides with the
+    # explicit z-score value — useful for controlled energy sweeps on
+    # reference-guided generation.
     return int(skip_timesteps) if skip_timesteps is not None else 0
 
 
@@ -1475,11 +1471,17 @@ def main(args=None, cond_dict=None, runtime=None):
                       'skip_timesteps=0, denoising full schedule from pure noise)')
             else:
                 print(f'    skip_timesteps: {skip_timesteps} (higher = more faithful to reference)')
-            # ── Auto-extract global energy from the reference ────────────────
-            # --global_energy cannot be combined with --reference_motion
-            # (enforced above), so when a reference is loaded we always have
-            # `global_energy_condition is None` here.
-            if ref_motion is not None:
+            # Global energy conditioning: when --global_energy is not
+            # explicitly provided alongside --reference_motion, auto-extract
+            # it from the reference. When explicitly provided, it overrides
+            # with the user-supplied z-score — useful for controlled energy
+            # sweeps on reference-guided generation.
+            if ref_motion is not None and global_energy_condition is not None:
+                print(
+                    f'    Using explicit --global_energy={getattr(args, "global_energy", None):.4f} '
+                    f'(z-score, reference-guided generation)'
+                )
+            elif ref_motion is not None:
                 if model_supports_global_energy_conditioning(model):
                     _ref_n_joints = torch.full(
                         (args.batch_size,),
