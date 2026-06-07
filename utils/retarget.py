@@ -1337,22 +1337,38 @@ def retarget_world_space_np(
             p1 = int(src_parents[ii])
             if p1 >= 0:
                 bn = np.linalg.norm(src_bv_aligned[:, ii], axis=-1)  # (F,)
-                valid = _stable_valid(bn)
-                d = src_bv_aligned[:, ii] / np.where(valid, bn, 1.0)[:, None]
-
                 src_rest_len = float(np.linalg.norm(src_rest_offsets[ii]))
-                if src_rest_len > _EPS:
-                    stretch = src_anim_len[:, ii] / src_rest_len      # (F,)
-                else:
-                    stretch = np.ones(F_q, dtype=np.float64)
-                L = tgt_rest_len * stretch                     # (F,)
 
-                # Per-frame: use direction transfer where valid, rest fallback where degenerate
-                dir_pos = target_wpos[:, p] + L[:, None] * d
-                rest_pos = target_wpos[:, p] + quat_rotate_wxyz_np(
-                    transport[:, p], rest_off_j,
-                )
-                target_wpos[:, j] = np.where(valid[:, None], dir_pos, rest_pos)
+                if src_rest_len > _EPS:
+                    # Structurally real source bone: always transfer the source's
+                    # animated direction × stretch, with no rest fallback. The
+                    # transferred length L = tgt_rest_len · (src_anim_len /
+                    # src_rest_len) goes to zero exactly when the source bone is
+                    # animated onto its parent (e.g. a control bone like C_ctrl
+                    # pulled onto Hips), so the target joint correctly coincides
+                    # with its parent. Falling back to the rest offset here would
+                    # discard that pure-translation animation and lift the whole
+                    # subtree off the ground. Normalize defensively on the rare
+                    # exactly-degenerate frame; L≈0 there makes the direction
+                    # irrelevant.
+                    safe = bn > _EPS
+                    d = src_bv_aligned[:, ii] / np.where(safe, bn, 1.0)[:, None]
+                    stretch = src_anim_len[:, ii] / src_rest_len      # (F,)
+                    L = tgt_rest_len * stretch                     # (F,)
+                    target_wpos[:, j] = target_wpos[:, p] + L[:, None] * d
+                else:
+                    # Structurally degenerate source helper bone (≈0 rest length,
+                    # e.g. a zero-length locator): the direction is meaningless and
+                    # may flicker frame to frame, so fall back to the target's rest
+                    # offset consistently for the whole clip.
+                    valid = _stable_valid(bn)
+                    d = src_bv_aligned[:, ii] / np.where(valid, bn, 1.0)[:, None]
+                    L = tgt_rest_len                               # stretch == 1
+                    dir_pos = target_wpos[:, p] + L * d
+                    rest_pos = target_wpos[:, p] + quat_rotate_wxyz_np(
+                        transport[:, p], rest_off_j,
+                    )
+                    target_wpos[:, j] = np.where(valid[:, None], dir_pos, rest_pos)
             if p1 < 0:
                 # Source joint is the root but the target joint sits under one or
                 # more synthetic wrapper roots. Preserve the source root's world
