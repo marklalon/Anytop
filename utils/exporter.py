@@ -37,14 +37,22 @@ __all__ = [
 ]
 
 
-def _build_canonical_match_names(
+def _build_canonical_name_variants(
     joint_names: list[str],
     parents: np.ndarray,
     offsets: np.ndarray,
     *,
     log_hint: str,
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
     """Derive canonical joint names from raw skeleton data.
+
+    Returns ``(match_names, bvh_names)``:
+
+    * ``match_names`` — ``canonical_joint_names`` (e.g. ``"Tail 01"``), the
+      semantic names used for src↔tgt retarget matching.
+    * ``bvh_names`` — ``canonical_bvh_joint_names`` (e.g. ``"Tail01"``), the
+      BVH-compatible variant used to name the exported GLB's bones so the GLB
+      and the processed BVH share one joint-name set.
 
     *log_hint* is only used in error messages to identify which skeleton
     failed to canonicalize; it does not affect the matching logic.
@@ -56,18 +64,33 @@ def _build_canonical_match_names(
         "offsets": np.asarray(offsets, dtype=np.float64),
     }
     refresh_joint_metadata_in_object_cond(object_cond)
-    canonical_joint_names = object_cond.get("canonical_joint_names")
-    if canonical_joint_names is None:
+    match_names = object_cond.get("canonical_joint_names")
+    bvh_names = object_cond.get("canonical_bvh_joint_names")
+    if match_names is None or bvh_names is None:
         raise ValueError(
-            f"Unable to derive canonical_joint_names ({log_hint})"
+            f"Unable to derive canonical joint names ({log_hint})"
         )
-    canonical_joint_names = list(canonical_joint_names)
-    if len(canonical_joint_names) != len(joint_names):
+    match_names = list(match_names)
+    bvh_names = list(bvh_names)
+    if len(match_names) != len(joint_names) or len(bvh_names) != len(joint_names):
         raise ValueError(
-            f"Derived canonical_joint_names length mismatch ({log_hint}): "
-            f"{len(canonical_joint_names)} vs {len(joint_names)}"
+            f"Derived canonical joint name length mismatch ({log_hint}): "
+            f"match={len(match_names)} bvh={len(bvh_names)} vs {len(joint_names)}"
         )
-    return canonical_joint_names
+    return match_names, bvh_names
+
+
+def _build_canonical_match_names(
+    joint_names: list[str],
+    parents: np.ndarray,
+    offsets: np.ndarray,
+    *,
+    log_hint: str,
+) -> list[str]:
+    """Return the semantic canonical match names (``canonical_joint_names``)."""
+    return _build_canonical_name_variants(
+        joint_names, parents, offsets, log_hint=log_hint
+    )[0]
 
 
 def animation_to_exporter_inputs(animation, skeleton) -> tuple[Tensor, Tensor, Tensor, Optional[Tensor]]:
@@ -253,6 +276,168 @@ def _apply_gltf_output_space_similarity(
     armature.matrix_world = delta @ armature.matrix_world
     for mesh in related_meshes:
         mesh.matrix_world = delta @ mesh_worlds_old[mesh.name]
+
+
+def _prune_unmapped_armature_bones(
+    bpy,
+    armature,
+    keep_bone_names,
+) -> list[str]:
+    """Remove armature bones that are not part of the kept (AnyTop) joint set.
+
+    The restore imports the full source rig (for its mesh + skin weights), which
+    typically carries wrapper bones above the AnyTop root and dead side-branches
+    that AnyTop's preprocessing collapses away (so they are absent from the
+    NPY / processed BVH). Those bones leak into the exported GLB. This removes
+    every bone whose name is not in *keep_bone_names*.
+
+    Called at rest, before any animation is keyed: Blender's edit-mode
+    reparenting preserves each kept bone's world rest, so no per-frame transform
+    baking is needed. A removed bone's children are reparented to the nearest
+    kept ancestor (or made roots), and any skin weight it carries is merged into
+    that ancestor's vertex group so deformation is preserved.
+
+    Returns the list of bone names actually removed.
+    """
+    keep = set(keep_bone_names)
+    data_bones = armature.data.bones
+    all_names = [b.name for b in data_bones]
+    remove_names = [name for name in all_names if name not in keep]
+    if not remove_names:
+        return []
+
+    # Map every bone to its nearest kept ancestor (None → becomes a root).
+    parent_of = {b.name: (b.parent.name if b.parent else None) for b in data_bones}
+
+    def _nearest_kept_ancestor(name: str):
+        cursor = parent_of.get(name)
+        while cursor is not None and cursor not in keep:
+            cursor = parent_of.get(cursor)
+        return cursor
+
+    # Merge skin weights of removed bones into their nearest kept ancestor so
+    # deformation is preserved when a removed bone happened to carry weight.
+    related_meshes = [
+        obj
+        for obj in bpy.data.objects
+        if obj.type == "MESH"
+        and (
+            obj.parent == armature
+            or any(
+                mod.type == "ARMATURE" and mod.object == armature
+                for mod in obj.modifiers
+            )
+        )
+    ]
+    for mesh in related_meshes:
+        vertex_groups = mesh.vertex_groups
+        for remove_name in remove_names:
+            source_group = vertex_groups.get(remove_name)
+            if source_group is None:
+                continue
+            target_name = _nearest_kept_ancestor(remove_name)
+            if target_name is not None:
+                target_group = vertex_groups.get(target_name) or vertex_groups.new(
+                    name=target_name
+                )
+                source_index = source_group.index
+                for vert in mesh.data.vertices:
+                    weight = next(
+                        (g.weight for g in vert.groups if g.group == source_index),
+                        0.0,
+                    )
+                    if weight > 0.0:
+                        target_group.add([vert.index], weight, "ADD")
+            vertex_groups.remove(source_group)
+
+    # Reparent kept children of removed bones, then delete the removed bones.
+    # Editing edit_bones keeps each remaining bone's world head/tail fixed.
+    previous_active = bpy.context.view_layer.objects.active
+    bpy.context.view_layer.objects.active = armature
+    bpy.ops.object.mode_set(mode="EDIT")
+    edit_bones = armature.data.edit_bones
+    for name in all_names:
+        if name in keep:
+            edit_bone = edit_bones.get(name)
+            if edit_bone is None:
+                continue
+            ancestor_name = _nearest_kept_ancestor(name)
+            new_parent = edit_bones.get(ancestor_name) if ancestor_name else None
+            if edit_bone.parent is not new_parent:
+                edit_bone.use_connect = False
+                edit_bone.parent = new_parent
+    for name in remove_names:
+        edit_bone = edit_bones.get(name)
+        if edit_bone is not None:
+            edit_bones.remove(edit_bone)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    bpy.context.view_layer.objects.active = previous_active
+
+    return remove_names
+
+
+def _rename_armature_bones_to_canonical(
+    bpy,
+    armature,
+    name_pairs: list[tuple[str, str]],
+) -> None:
+    """Rename imported armature bones (and matching mesh vertex groups) to canonical names.
+
+    *name_pairs* is a list of ``(original_name, canonical_name)`` in any order.
+    Used for HML restore so the exported GLB carries canonical AnyTop joint
+    names instead of the source rig's native bone names. Canonical names are
+    already disambiguated to be unique upstream.
+
+    Vertex groups are renamed alongside the bones because Blender's armature
+    deform binds vertex group name → bone name; renaming bones without their
+    vertex groups would silently break skinning on export. A two-pass rename
+    (via unique temporary names) avoids transient collisions when a target
+    canonical name still belongs to a not-yet-renamed bone/group.
+    """
+    rename = [(old, new) for old, new in name_pairs if old != new]
+    if not rename:
+        return
+
+    data_bones = armature.data.bones
+    pending_bones: list[tuple[str, str]] = []
+    for index, (old_name, new_name) in enumerate(rename):
+        bone = data_bones.get(old_name)
+        if bone is None:
+            continue
+        temp_name = f"__canon_tmp_{index}"
+        bone.name = temp_name
+        pending_bones.append((temp_name, new_name))
+    for temp_name, new_name in pending_bones:
+        bone = data_bones.get(temp_name)
+        if bone is not None:
+            bone.name = new_name
+
+    related_meshes = [
+        obj
+        for obj in bpy.data.objects
+        if obj.type == "MESH"
+        and (
+            obj.parent == armature
+            or any(
+                mod.type == "ARMATURE" and mod.object == armature
+                for mod in obj.modifiers
+            )
+        )
+    ]
+    for mesh in related_meshes:
+        vertex_groups = mesh.vertex_groups
+        pending_groups: list[tuple[str, str]] = []
+        for index, (old_name, new_name) in enumerate(rename):
+            group = vertex_groups.get(old_name)
+            if group is None:
+                continue
+            temp_name = f"__canon_tmp_{index}"
+            group.name = temp_name
+            pending_groups.append((temp_name, new_name))
+        for temp_name, new_name in pending_groups:
+            group = vertex_groups.get(temp_name)
+            if group is not None:
+                group.name = new_name
 
 
 class AnimationExporter:
@@ -443,6 +628,8 @@ class AnimationExporter:
         rotation_channel_mask: Optional[Tensor | np.ndarray] = None,
         global_similarity: Optional[tuple[float | None, Optional[np.ndarray]]] = None,
         use_image_search: bool = False,
+        rename_bones_to_canonical: bool = False,
+        prune_unmapped_bones: bool = False,
     ) -> None:
         """Export GLB directly through bpy in the current Python process.
 
@@ -476,6 +663,19 @@ class AnimationExporter:
                 character mesh still left without a usable base-color texture.
                 When ``False`` (default), neither texture-resolution path runs
                 and the importer's behavior is unchanged.
+            rename_bones_to_canonical: When ``True`` (and *mesh_path* is given),
+                rename the exported armature's bones — and the bound meshes'
+                vertex groups — to the canonical BVH joint names (e.g. ``Tail01``)
+                so the GLB shares one joint-name set with the processed BVH
+                instead of the source rig's native bone names. Used by HML
+                restore.
+            prune_unmapped_bones: When ``True`` (and *mesh_path* is given), remove
+                armature bones the source rig carries above/outside the AnyTop
+                skeleton (wrapper roots, dead side-branches) that the AnyTop
+                preprocessing collapses away, so the exported GLB's joint set
+                matches the NPY / processed BVH. Bones are pruned at rest (no
+                per-frame baking); any skin weight is merged into the nearest
+                kept ancestor.
         """
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
@@ -590,28 +790,56 @@ class AnimationExporter:
                 rest_offsets_input,
                 log_hint="export source skeleton",
             )
-            tgt_match_names = _build_canonical_match_names(
-                fbx_names,
-                fbx_parents,
-                fbx_offsets,
-                log_hint=os.path.basename(mesh_path) if mesh_path else "export target armature",
-            )
 
-            retarget_result = retarget_world_space_np(
-                src_parents=parents_input,
-                src_rest_offsets=rest_offsets_input,
-                src_rest_rotations=rest_rot_input,
-                tgt_parents=fbx_parents,
-                tgt_rest_offsets=fbx_offsets,
-                tgt_rest_rotations=fbx_rest_rots,
-                src_joint_rotations=np.array(jr, dtype=np.float64),
-                src_root_translation=np.array(rt, dtype=np.float64),
-                src_root_rotation=np.array(rr, dtype=np.float64),
-                src_match_names=src_match_names,
-                tgt_match_names=tgt_match_names,
-                src_bone_translations=np.array(bt, dtype=np.float64) if bt is not None else None,
-                coordinate_search=coordinate_search,
-                verbose=True,
+            def _retarget_to_armature(names, parents, offsets, rest_rots, verbose):
+                tgt_names, tgt_bvh_names = _build_canonical_name_variants(
+                    names,
+                    parents,
+                    offsets,
+                    log_hint=os.path.basename(mesh_path) if mesh_path else "export target armature",
+                )
+                result = retarget_world_space_np(
+                    src_parents=parents_input,
+                    src_rest_offsets=rest_offsets_input,
+                    src_rest_rotations=rest_rot_input,
+                    tgt_parents=parents,
+                    tgt_rest_offsets=offsets,
+                    tgt_rest_rotations=rest_rots,
+                    src_joint_rotations=np.array(jr, dtype=np.float64),
+                    src_root_translation=np.array(rt, dtype=np.float64),
+                    src_root_rotation=np.array(rr, dtype=np.float64),
+                    src_match_names=src_match_names,
+                    tgt_match_names=tgt_names,
+                    src_bone_translations=np.array(bt, dtype=np.float64) if bt is not None else None,
+                    coordinate_search=coordinate_search,
+                    verbose=verbose,
+                )
+                return result, tgt_bvh_names
+
+            # Prune wrapper / dead-branch bones the source rig carries above or
+            # outside the AnyTop skeleton (absent from the NPY / processed BVH).
+            # A first mapping-only retarget identifies which armature bones the
+            # AnyTop joints actually map to; the rest are pruned at rest, then we
+            # retarget against the cleaned-up armature so indices stay consistent.
+            if prune_unmapped_bones:
+                mapping_result, _ = _retarget_to_armature(
+                    fbx_names, fbx_parents, fbx_offsets, fbx_rest_rots, verbose=False
+                )
+                src_to_tgt = mapping_result["src_to_tgt"]
+                keep_bone_names = {
+                    fbx_names[int(t)] for t in src_to_tgt if int(t) >= 0
+                }
+                removed = _prune_unmapped_armature_bones(bpy, armature, keep_bone_names)
+                if removed:
+                    preview = ", ".join(removed[:10]) + ("..." if len(removed) > 10 else "")
+                    print(f"Pruned {len(removed)} unmapped bone(s): {preview}")
+                    fbx_names, fbx_parents, fbx_offsets, fbx_rest_rots = (
+                        extract_armature_skeleton_data(armature)
+                    )
+                    J_fbx = len(fbx_names)
+
+            retarget_result, tgt_bvh_names = _retarget_to_armature(
+                fbx_names, fbx_parents, fbx_offsets, fbx_rest_rots, verbose=True
             )
 
             fbx_pose_rot = retarget_result["joint_rotations"]
@@ -635,6 +863,17 @@ class AnimationExporter:
             rt = retarget_result["root_translation"].tolist()
             bone_names = fbx_names
             bt = fbx_pose_loc.tolist() if fbx_pose_loc is not None else None
+
+            if rename_bones_to_canonical:
+                # Rename the imported rig's bones (and matching vertex groups) to
+                # the canonical BVH joint names so the GLB shares one joint-name
+                # set with the processed BVH (e.g. "Tail01") instead of the source
+                # rig's native names. The animation channels below are keyed by
+                # name, so update the lookup list to the canonical names too.
+                _rename_armature_bones_to_canonical(
+                    bpy, armature, list(zip(fbx_names, tgt_bvh_names))
+                )
+                bone_names = list(tgt_bvh_names)
 
         # ── Clear existing animation, create fresh action ─────────────
         if armature.animation_data:
