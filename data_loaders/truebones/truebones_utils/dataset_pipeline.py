@@ -31,7 +31,6 @@ from .fbx_filename_rules import (
 from .animation_utils import (
     canonical_name_for_bvh,
     attach_joint_name_embeddings_to_cond,
-    extend_semantic_metadata_with_leaf_helpers,
     needs_bvh_position_channels,
     reorder_animation_to_dfs,
     coerce_single_orientation_quat,
@@ -66,9 +65,19 @@ def get_mean_std(data):
         Std[1:, 3:9] = Std[1:, 3:9].mean() / 1.0 # all joints except root rotation
         Std[1:, 9:12] = Std[1:, 9:12].mean() / 1.0 # all joints except root local velocity
         if len(Std[:, 12][Std[:, 12]!=0]) > 0:
-            Std[:, 12][Std[:, 12]!=0] = Std[:, 12][Std[:, 12]!=0].mean() / 1.0 
+            Std[:, 12][Std[:, 12]!=0] = Std[:, 12][Std[:, 12]!=0].mean() / 1.0
         Std[:, 12][Std[:, 12]==0] = 1.0 # replace zeros with ones
-        
+
+        # Universal guard for constant (zero-variance) channels across ALL
+        # channels. The own-rotation encoding leaves the root joint's 6D
+        # rotation constant, so its block-averaged std collapses to 0 above.
+        # A ~zero divisor is meaningless and dangerous: it leaves the motion at
+        # 0 but amplifies tpos_first_frame normalization, (tpos - mean) / std,
+        # to ~1e6, which drives the spatial-attention graph bias to ~1e5 and
+        # yields NaN gradients under bf16. Treat any sub-1e-5 std as unit
+        # variance (mirrors the std_safe floor in data/dataset.py:Truebones).
+        Std = np.where(Std < 1e-5, 1.0, Std)
+
         return Mean, Std
 
 
@@ -181,7 +190,7 @@ def object_policy(obj):
 
 def _process_motion_file(file_path, object_type, max_joints,
                          offsets, foot_indices, tpos_rots, scale_factor,
-                         helper_metadata, orientation_quat):
+                         orientation_quat):
     local_errors = dict()
     # Load the animation file (FBX/GLB/GLTF) once; pass it as `preloaded` to every get_motion call so that
     raw_anim, names, frame_time = FBX.load(file_path)
@@ -210,7 +219,6 @@ def _process_motion_file(file_path, object_type, max_joints,
             orientation_quat=orientation_quat,
             slice_inds=[begin, slice_ind],
             preloaded=(raw_anim, names),
-            helper_metadata=helper_metadata,
         )
         current_begin = begin
         begin = slice_ind
@@ -296,7 +304,6 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
         rest_pose_path,
         object_type,
         face_joints=face_joints,
-        augment_leaf_rotation_helpers=True,
         max_joints=MAX_JOINTS,
     )
     character_scale_factor = float(tp.scale_factor)
@@ -311,21 +318,14 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
         squared_positions_error,
         scale_factor=character_scale_factor,
         orientation_quat=tp.orientation_quat,
-        helper_metadata=tp.helper_metadata,
         animation_input_is_tpose_aligned=False,
     )
     rest_positions = rest_positions_from_offsets(tp.offsets, parents)
-    original_joint_count = int(tp.helper_metadata['original_joint_count'])
-    base_semantic_metadata = build_semantic_metadata(
-        tp.names[:original_joint_count],
-        parents[:original_joint_count],
-        tp.offsets[:original_joint_count],
-        rest_positions=rest_positions[:original_joint_count],
-    )
-    semantic_metadata = extend_semantic_metadata_with_leaf_helpers(
-        base_semantic_metadata,
+    semantic_metadata = build_semantic_metadata(
         tp.names,
-        tp.helper_metadata,
+        parents,
+        tp.offsets,
+        rest_positions=rest_positions,
     )
     object_cond = dict()
     # Provisional translation root from the T-pose animation. Will be refreshed
@@ -365,14 +365,6 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
     object_cond['symmetric_joint_pairs'] = semantic_metadata['symmetric_joint_pairs']
     object_cond['symmetric_joint_pair_names'] = semantic_metadata['symmetric_joint_pair_names']
     object_cond['is_symmetric'] = semantic_metadata['is_symmetric']
-    object_cond['original_joint_count'] = int(tp.helper_metadata['original_joint_count'])
-    object_cond['original_leaf_joint_indices'] = list(tp.helper_metadata['original_leaf_joint_indices'])
-    object_cond['helper_joint_indices'] = list(tp.helper_metadata['helper_joint_indices'])
-    object_cond['helper_joint_names'] = list(tp.helper_metadata['helper_joint_names'])
-    object_cond['helper_joint_count'] = int(tp.helper_metadata['helper_joint_count'])
-    object_cond['helper_source_leaf_indices'] = list(tp.helper_metadata['helper_source_leaf_indices'])
-    object_cond['unaugmented_leaf_indices'] = list(tp.helper_metadata['unaugmented_leaf_indices'])
-    object_cond['leaf_rotation_helper_suffix'] = tp.helper_metadata['leaf_rotation_helper_suffix']
     object_cond['scale_factor'] = character_scale_factor
     object_cond['axial_avg_len'] = float(tp.axial_avg_len)
     object_cond['kinematic_chains'] = parents2kinchains(parents, object_policy(object_type))
@@ -479,7 +471,6 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             tp.foot_indices,
             tp.tpos_rots,
             character_scale_factor,
-            tp.helper_metadata,
             orientation_quat=tp.orientation_quat,
         )
 

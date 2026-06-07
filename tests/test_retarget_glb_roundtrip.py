@@ -179,7 +179,6 @@ def _run_retarget_glb_roundtrip(
         target_tp: TPoseFeatures = get_common_features_from_T_pose(
             tpose_fbx,
             target_type,
-            augment_leaf_rotation_helpers=True,
             max_joints=max_joints,
         )
 
@@ -346,7 +345,6 @@ def test_retarget_raw_fbx_matches_matching_npy_reference(target_type: str) -> No
     target_tp = get_common_features_from_T_pose(
         target_cond["orientation_reference_fbx_path"],
         target_type,
-        augment_leaf_rotation_helpers=True,
         max_joints=max_joints,
     )
 

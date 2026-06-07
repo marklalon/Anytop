@@ -117,16 +117,7 @@ def _load_tpose_restore_metadata(
     if not tpose_lower.endswith(('.fbx', '.glb', '.gltf')):
         raise ValueError(f"Unsupported T-pose mesh format: {tpose_mesh} - expected .fbx, .glb, or .gltf")
 
-    helper_joint_indices = []
-    if cond_entry is not None:
-        helper_joint_indices = list(cond_entry.get("helper_joint_indices") or [])
-    tp_kwargs = {}
-    if helper_joint_indices:
-        tp_kwargs["augment_leaf_rotation_helpers"] = True
-        cond_parents = cond_entry.get("parents") if cond_entry is not None else None
-        tp_kwargs["max_joints"] = len(cond_parents) if cond_parents is not None else 0
-
-    tp: TPoseFeatures = get_common_features_from_T_pose(tpose_mesh, object_type, **tp_kwargs)
+    tp: TPoseFeatures = get_common_features_from_T_pose(tpose_mesh, object_type)
     raw_joint_names, raw_parents, raw_offsets, raw_rest_rotations = load_fbx_skeleton_metadata(tpose_mesh)
     raw_parents = np.asarray(raw_parents, dtype=np.int32)
     raw_offsets = np.asarray(raw_offsets, dtype=np.float32)
@@ -155,7 +146,6 @@ def _load_tpose_restore_metadata(
         "collapsed_parents": np.asarray(collapsed_parents, dtype=np.int32),
         "collapsed_offsets": np.asarray(collapsed_offsets, dtype=np.float32),
         "collapsed_rest_rotations": np.asarray(collapsed_rest_rotations[0], dtype=np.float32),
-        "helper_metadata": dict(tp.helper_metadata),
     }
 
 
@@ -260,53 +250,17 @@ def _build_restore_context(
         parents = np.asarray(tpose_meta["parents"], dtype=np.int32)
         offsets = np.asarray(tpose_meta["offsets"], dtype=np.float32)
 
-    original_joint_count = len(joint_names)
-    helper_joint_indices = []
-    helper_source_leaf_indices = []
-    if cond_entry is not None:
-        original_joint_count = int(cond_entry.get("original_joint_count", len(joint_names)))
-        helper_joint_indices = [int(index) for index in list(cond_entry.get("helper_joint_indices") or [])]
-        helper_source_leaf_indices = [
-            int(index) for index in list(cond_entry.get("helper_source_leaf_indices") or [])
-        ]
-    if original_joint_count <= 0 or original_joint_count > len(joint_names):
+    # Under own-rotation encoding there are no appended helper joints, so the
+    # feature joint count must match the skeleton metadata exactly.
+    if feature_joint_count not in (0, len(joint_names)):
         raise ValueError(
-            f"original_joint_count must be within [1, {len(joint_names)}], got {original_joint_count}"
-        )
-
-    # Align feature joint count with available metadata.
-    # Helpers are appended at the end, so we can safely trim.
-    if feature_joint_count == original_joint_count and len(joint_names) != original_joint_count:
-        # NPY has no helpers — trim everything to original skeleton.
-        joint_names = list(joint_names[:original_joint_count])
-        parents = np.asarray(parents[:original_joint_count], dtype=np.int32)
-        offsets = np.asarray(offsets[:original_joint_count], dtype=np.float32)
-        helper_joint_indices = []
-        helper_source_leaf_indices = []
-    elif original_joint_count < feature_joint_count <= len(joint_names):
-        # NPY has some helpers (possibly fewer than cond.npy).
-        # Trim cond metadata to match the NPY's joint count.
-        joint_names = list(joint_names[:feature_joint_count])
-        parents = np.asarray(parents[:feature_joint_count], dtype=np.int32)
-        offsets = np.asarray(offsets[:feature_joint_count], dtype=np.float32)
-        helper_joint_indices = [
-            i for i in helper_joint_indices if i < feature_joint_count
-        ]
-        helper_source_leaf_indices = [
-            i for i in helper_source_leaf_indices if i < feature_joint_count
-        ]
-    elif feature_joint_count not in (0, len(joint_names)):
-        raise ValueError(
-            f"NPY has J={feature_joint_count} joints but restore metadata resolves to {len(joint_names)} "
-            f"joints for '{object_type}' (original_joint_count={original_joint_count})."
+            f"NPY has J={feature_joint_count} joints but restore metadata resolves to "
+            f"{len(joint_names)} joints for '{object_type}'."
         )
 
     # ── T-pose rest rotations ───────────────────────────────────────────
-    # The T-pose may have a different helper budget than the NPY (e.g., the
-    # cond.npy was built with a different _is_terminal_leaf_name filter or
-    # max_joints budget).  Build rest rotations by matching what the T-pose
-    # provides and filling identity quaternions for any helper joints the
-    # T-pose doesn't know about (helpers are zero-offset, identity-rotation dummies).
+    # Build rest rotations by matching the names the T-pose provides, filling
+    # identity quaternions for any joint the T-pose doesn't know about.
     tpose_joint_names = list(tpose_meta["joint_names"])
     tpose_rest_src = np.asarray(tpose_meta["tpose_rest_rotations"], dtype=np.float32)
     tpose_name_index = {name: idx for idx, name in enumerate(tpose_joint_names)}
@@ -329,12 +283,8 @@ def _build_restore_context(
     elif tpose_meta.get("orientation_quat") is not None:
         orientation_quat = np.asarray(tpose_meta["orientation_quat"], dtype=np.float64)
 
-    feature_rotation_channel_mask = _bare_feature_rotation_channel_mask(parents)
-    export_joint_names = list(joint_names[:original_joint_count])
-    export_rotation_channel_mask = np.asarray(
-        feature_rotation_channel_mask[:original_joint_count],
-        dtype=bool,
-    )
+    # Under own-rotation encoding, every joint has a valid rotation channel.
+    export_joint_names = list(joint_names)
 
     export_parents, export_offsets, export_rest_rotations = _remap_skeleton_metadata(
         list(tpose_meta["collapsed_joint_names"]),
@@ -353,85 +303,11 @@ def _build_restore_context(
         "tpose_rest_rotations": tpose_rest_rotations,
         "orientation_quat": orientation_quat,
         "scale_factor": scale_factor,
-        "original_joint_count": original_joint_count,
-        "helper_joint_indices": helper_joint_indices,
-        "helper_source_leaf_indices": helper_source_leaf_indices,
-        "rotation_channel_mask": export_rotation_channel_mask,
         "mesh_bone_names": list(tpose_meta["raw_joint_names"]),
         "export_parents": export_parents,
         "export_offsets": export_offsets,
         "export_rest_rotations": export_rest_rotations,
     }
-
-
-def _strip_appended_helper_joints(
-    animation,
-    *,
-    original_joint_count: int,
-):
-    from motion_lib.Animation import Animation
-
-    if original_joint_count <= 0:
-        raise ValueError(f"original_joint_count must be positive, got {original_joint_count}")
-    if animation.shape[1] < original_joint_count:
-        raise ValueError(
-            f"Animation joint count {animation.shape[1]} is smaller than original_joint_count {original_joint_count}"
-        )
-    if animation.shape[1] == original_joint_count:
-        return animation
-
-    return Animation(
-        animation.rotations[:, :original_joint_count].copy(),
-        animation.positions[:, :original_joint_count, :].copy(),
-        animation.orients[:original_joint_count].copy(),
-        animation.offsets[:original_joint_count].copy(),
-        animation.parents[:original_joint_count].copy(),
-    )
-
-
-def _bare_feature_rotation_channel_mask(parents: np.ndarray) -> np.ndarray:
-    parents = np.asarray(parents, dtype=np.int32)
-    joint_count = len(parents)
-    if joint_count == 0:
-        return np.zeros((0,), dtype=bool)
-
-    child_counts = np.bincount(parents[parents >= 0], minlength=joint_count)
-    rotation_channel_mask = child_counts > 0
-    rotation_channel_mask[0] = True
-    return rotation_channel_mask
-
-
-def _clamp_unobservable_joint_positions_to_rest(
-    animation,
-    *,
-    rest_offsets: np.ndarray,
-    rotation_channel_mask: np.ndarray,
-):
-    from motion_lib.Animation import Animation
-
-    rest_offsets = np.asarray(rest_offsets, dtype=np.float64)
-    rotation_channel_mask = np.asarray(rotation_channel_mask, dtype=bool)
-
-    if rest_offsets.shape != (animation.shape[1], 3):
-        raise ValueError(
-            f"rest_offsets must have shape ({animation.shape[1]}, 3), got {rest_offsets.shape}"
-        )
-    if rotation_channel_mask.shape != (animation.shape[1],):
-        raise ValueError(
-            f"rotation_channel_mask must have shape ({animation.shape[1]},), got {rotation_channel_mask.shape}"
-        )
-    if np.all(rotation_channel_mask):
-        return animation
-
-    clamped_positions = np.asarray(animation.positions, dtype=np.float64).copy()
-    clamped_positions[:, ~rotation_channel_mask, :] = rest_offsets[~rotation_channel_mask][None, :, :]
-    return Animation(
-        animation.rotations.copy(),
-        clamped_positions,
-        animation.orients.copy(),
-        animation.offsets.copy(),
-        animation.parents.copy(),
-    )
 
 
 def _coerce_root_translation_xz(root_translation_xz: np.ndarray) -> np.ndarray:
@@ -974,22 +850,13 @@ def restore_glb(
     export_parents = np.asarray(restore_ctx["export_parents"], dtype=np.int32)
     export_offsets = np.asarray(restore_ctx["export_offsets"], dtype=np.float32)
     export_rest_rotations = np.asarray(restore_ctx["export_rest_rotations"], dtype=np.float32)
-    rotation_channel_mask = np.asarray(restore_ctx["rotation_channel_mask"], dtype=bool)
-    original_joint_count = int(restore_ctx["original_joint_count"])
     translation_root_index = None
 
     # ── Resolve FPS ─────────────────────────────────────────────────────
     if fps is None:
         fps = 30.0
 
-    helper_joint_count = len(feature_joint_names) - len(export_joint_names)
-    if helper_joint_count > 0:
-        print(
-            f"Skeleton: {len(feature_joint_names)} feature joints "
-            f"({helper_joint_count} helper joints), export root='{export_joint_names[0]}'"
-        )
-    else:
-        print(f"Skeleton: {len(feature_joint_names)} joints, root='{feature_joint_names[0]}'")
+    print(f"Skeleton: {len(feature_joint_names)} joints, root='{feature_joint_names[0]}'")
 
     F, J, C = features.shape
     if J != len(feature_joint_names):
@@ -1040,10 +907,6 @@ def restore_glb(
         root_translation_xz=root_translation_xz,
         orientation_quat=restore_ctx.get("orientation_quat"),
     )
-    export_anim = _strip_appended_helper_joints(
-        export_anim,
-        original_joint_count=original_joint_count,
-    )
 
     if fullbody_ik:
         print(f"Force full-body IK reconstruction on export skeleton (stretch_factor={stretch_factor:.2f})...")
@@ -1065,25 +928,6 @@ def restore_glb(
         )
     else:
         print("Skipping IK (use --fullbody-ik to enable).")
-
-    if rotation_channel_mask is not None:
-        frozen_joint_indices = np.flatnonzero(~rotation_channel_mask).tolist()
-        if frozen_joint_indices:
-            preview = ", ".join(export_joint_names[index] for index in frozen_joint_indices[:10])
-            suffix = "..." if len(frozen_joint_indices) > 10 else ""
-            print(
-                f"\x1b[33m[WARN] Production features do not encode local rotations for {len(frozen_joint_indices)} "
-                f"leaf joints; exporting them at rest: {preview}{suffix}\x1b[0m"
-            )
-            export_anim = _clamp_unobservable_joint_positions_to_rest(
-                export_anim,
-                rest_offsets=export_offsets,
-                rotation_channel_mask=rotation_channel_mask,
-            )
-            print(
-                f"Clamped local translations to rest offsets for the same {len(frozen_joint_indices)} "
-                "unobservable leaf joints before export."
-            )
 
     # ── Resample in time (optional) ─────────────────────────────────────────
     # Off by default: the GLB keeps the NPY's native frame count at ``fps``.
@@ -1155,7 +999,6 @@ def restore_glb(
         output_glb,
         mesh_path=tpose_mesh,
         bone_translations=bone_translations,
-        rotation_channel_mask=rotation_channel_mask,
         global_similarity=global_similarity,
         use_image_search=use_image_search,
     )

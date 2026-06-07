@@ -29,7 +29,7 @@ generate.py flags — and the contents of any referenced motion/cond files — a
 checksummed into a ``task_params.json`` sidecar; if a task's parameters change
 (e.g. its entry in the task config is edited, or a reference file is modified
 in place), the stale output is wiped and the task is regenerated.  Pass
-``--force`` to wipe the output root and regenerate everything.
+``--overwrite`` to wipe the output root and regenerate everything.
 
 The task battery is loaded from a JSON config (``--task_config``, default
 ``eval/eval_tasks.json``) so it can be tuned without editing code. Each task is
@@ -41,7 +41,7 @@ Usage::
     python eval/eval_checkpoint.py --model_path save/quadropeds_locomotion_slim_v2/model000020000.pt
     python eval/eval_checkpoint.py --model_path .../model.pt --output_root <dir>
     python eval/eval_checkpoint.py --model_path .../model.pt --task_config my_tasks.json
-    python eval/eval_checkpoint.py --model_path .../model.pt --force
+    python eval/eval_checkpoint.py --model_path .../model.pt --overwrite
 """
 
 from __future__ import annotations
@@ -49,6 +49,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import datetime as _dt
+import fnmatch
 import hashlib
 import html
 import io
@@ -768,7 +769,7 @@ def main() -> int:
         help="Override the output root (default: Anytop/outputs/eval_checkpoint/<RUN_NAME>/<MODEL_NAME>).",
     )
     parser.add_argument(
-        "--force", action="store_true",
+        "--overwrite", action="store_true",
         help="Wipe the output root and regenerate all tasks from scratch. "
              "By default the evaluation is incremental: existing outputs are "
              "re-scored and only new tasks are generated.",
@@ -778,6 +779,12 @@ def main() -> int:
         help="Path to the JSON file defining the task battery (absolute, or "
              "relative to the current working directory, falling back to the "
              "Anytop dir). Default: eval/eval_tasks.json.",
+    )
+    parser.add_argument(
+        "--filter", default=None,
+        help="Wildcard pattern to filter tasks by category name (e.g. 'loop_*', "
+             "'convert*'). Uses fnmatch-style glob patterns. Without this flag, "
+             "all tasks are run.",
     )
     args = parser.parse_args()
 
@@ -806,8 +813,8 @@ def main() -> int:
     else:
         root = _ANYTOP_DIR / "outputs" / "eval_checkpoint" / run_name / model_name
 
-    # Default is incremental (keep existing outputs). --force wipes everything.
-    if args.force:
+    # Default is incremental (keep existing outputs). --overwrite wipes everything.
+    if args.overwrite:
         if root.exists():
             print(f"Cleaning output root: {root}")
             shutil.rmtree(root)
@@ -820,6 +827,15 @@ def main() -> int:
     print(f"Output root : {root}")
 
     tasks = build_tasks(task_config)
+
+    # Filter tasks by category wildcard pattern
+    if args.filter:
+        filtered = [(cat, task_args) for cat, task_args in tasks if fnmatch.fnmatch(cat, args.filter)]
+        if not filtered:
+            print(f"ERROR: no tasks match filter '{args.filter}'", file=sys.stderr)
+            return 1
+        print(f"Filter: {args.filter} → {len(filtered)}/{len(tasks)} tasks")
+        tasks = filtered
     total_tasks = len(tasks)
     # Per-category running index so dirs read task1, task2, ... within a category.
     cat_counter: dict[str, int] = {}
@@ -855,13 +871,13 @@ def main() -> int:
         # is legacy/pre-checksum output: reuse it and backfill the checksum so
         # later runs are guarded (we can't know the old params, so we assume the
         # output matches the current config rather than forcing a full regen).
-        # --force bypasses this check to regenerate everything.
+        # --overwrite bypasses this check to regenerate everything.
         current_hash = _task_param_hash(extra_args)
         stored_hash = _read_stored_hash(task_dir)
         output_exists = _first_output_npy(task_dir) is not None
         params_match = stored_hash is None or stored_hash == current_hash
 
-        if not args.force and output_exists and params_match:
+        if not args.overwrite and output_exists and params_match:
             print(f"\n=== {category}/task{index} ({task_num}/{total_tasks}) [reuse existing] ===")
             try:
                 record = _build_record_from_existing(task_dir, category, index, scorer, root)
@@ -887,7 +903,7 @@ def main() -> int:
         # Parameters changed since the recorded checksum: wipe the stale output
         # so the regenerated task dir contains only clips for the new params
         # (the new run may produce differently-named or fewer files).
-        if not args.force and output_exists:
+        if not args.overwrite and output_exists:
             print(f"  [regen] {category}/task{index}: task parameters changed; regenerating")
             shutil.rmtree(task_dir, ignore_errors=True)
 
@@ -921,7 +937,7 @@ def main() -> int:
                 print(f"    {remaining} task(s) not attempted")
             break
 
-    if not args.force:
+    if not args.overwrite:
         print(f"\n[increment] generated {n_generated} new task(s); reused {n_skipped} existing task(s)")
 
     all_scores: list[float] = []

@@ -607,6 +607,25 @@ class TrainLoop:
 
 
 
+    def _sync_ema_persistent_buffers(self):
+        """Copy persistent buffers (e.g. global_energy_running_mean/var) from
+        the live model into the EMA model.  update_ema only averages
+        .parameters(), so these running stats would otherwise stay at their
+        init values in the EMA checkpoint.  state_dict() keys select exactly
+        parameters + persistent buffers, so subtracting the parameter names
+        leaves the persistent buffers.  Non-persistent buffers (e.g.
+        _cached_time_emb) are absent from state_dict and must NOT be copied:
+        the EMA model is never forwarded, so its cache shape would mismatch the
+        live model's and copy_ would raise.
+        """
+        param_names = {name for name, _ in self.model_avg.named_parameters()}
+        avg_buffers = dict(self.model_avg.named_buffers())
+        model_buffers = dict(self.model.named_buffers())
+        for name in self.model_avg.state_dict():
+            if name in param_names:
+                continue
+            avg_buffers[name].copy_(model_buffers[name])
+
     def run_step(self, batch, cond, epoch=-1):
         if self.detect_anomaly:
             with torch.autograd.detect_anomaly():
@@ -618,6 +637,11 @@ class TrainLoop:
         if took_step and self.model_avg is not None:
             update_ema(self.model_avg.parameters(), self.model.parameters(),
                        rate=self.args.ema_rate)
+            # EMA ignores registered buffers by default (it only iterates
+            # .parameters()).  Sync persistent buffers (running statistics, e.g.
+            # global_energy_running_mean/var) so they are available in the EMA
+            # checkpoint at inference time.
+            self._sync_ema_persistent_buffers()
         self._anneal_lr()
         self.log_step()
 
@@ -697,7 +721,12 @@ class TrainLoop:
                 del_clip(state_dict)
 
                 if self.args.use_ema and self.model_avg is not None:
-                    # save both the model and the average model
+                    # save both the model and the average model.
+                    # Ensure the EMA model's running-stat buffers are synced
+                    # from the live model before serializing (belt-and-suspenders
+                    # with run_step, in case the final save happens before the
+                    # next optimizer step).
+                    self._sync_ema_persistent_buffers()
                     state_dict_avg = self.model_avg.state_dict()
                     del_clip(state_dict_avg)
                     state_dict = {'model': state_dict, 'model_avg': state_dict_avg}

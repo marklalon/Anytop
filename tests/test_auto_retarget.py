@@ -513,7 +513,6 @@ def test_tpose_aligned_roundtrip_preserves_gap_chain_and_rest_side_branch() -> N
         foot_indices=[],
         scale_factor=1.0,
         orientation_quat=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
-        helper_metadata=None,
     )
 
     baseline_anim = build_tpose_aligned_target_animation(retarget_result, target_tp)
@@ -531,7 +530,6 @@ def test_tpose_aligned_roundtrip_preserves_gap_chain_and_rest_side_branch() -> N
         squared_positions_error={},
         scale_factor=1.0,
         orientation_quat=target_tp.orientation_quat,
-        helper_metadata=None,
         animation_input_is_tpose_aligned=True,
     )
     assert features is not None
@@ -589,10 +587,9 @@ def test_tpose_aligned_roundtrip_with_nontrivial_rest_rotations() -> None:
         root(0) -> branch(5) -> branch_leaf(6)                       # pure unmapped side branch
 
     src_to_tgt maps source 0 -> target 0 (root) and source 1 -> target 3 (head),
-    so gap1/gap2 are gap joints (unmapped with mapped descendant), head_helper
-    plays the role of the leaf-rotation helper that the real pipeline appends
-    via ``augment_leaf_rotation_helpers`` so the mapped head's rotation gets
-    a child slot in the HumanML3D feature encoding.
+    so gap1/gap2 are gap joints (unmapped with mapped descendant). head_helper
+    is an extra leaf below head; under the own-rotation encoding every joint
+    (head included) stores its own local rotation directly in its own slot.
 
     Target world rotations follow the convention emitted by
     ``retarget_world_space_np``'s section G: unmapped joints sit at
@@ -664,7 +661,6 @@ def test_tpose_aligned_roundtrip_with_nontrivial_rest_rotations() -> None:
         foot_indices=[],
         scale_factor=1.0,
         orientation_quat=identity.copy(),
-        helper_metadata=None,
     )
 
     baseline_anim = build_tpose_aligned_target_animation(retarget_result, target_tp)
@@ -691,7 +687,6 @@ def test_tpose_aligned_roundtrip_with_nontrivial_rest_rotations() -> None:
         squared_positions_error={},
         scale_factor=1.0,
         orientation_quat=target_tp.orientation_quat,
-        helper_metadata=None,
         animation_input_is_tpose_aligned=True,
     )
     assert features is not None
@@ -768,7 +763,6 @@ def test_retarget_features_npy_to_target_encodes_feature_space_animation_directl
         foot_indices=[],
         scale_factor=1.0,
         orientation_quat=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
-        helper_metadata=None,
     )
     source_cond = {
         'object_type': 'Parrot',
@@ -851,7 +845,6 @@ def test_retarget_features_npy_to_target_uses_effective_root_override(
         foot_indices=[],
         scale_factor=1.0,
         orientation_quat=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
-        helper_metadata=None,
     )
     source_cond = {
         'object_type': 'Parrot',

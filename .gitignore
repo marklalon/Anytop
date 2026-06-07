@@ -45,6 +45,7 @@ dataset
 save
 save/
 logs/
+outputs
 outputs/
 tmp/
 

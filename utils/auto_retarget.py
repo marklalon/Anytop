@@ -314,7 +314,6 @@ def retarget_features_npy_to_target(
         source_tp = get_common_features_from_T_pose(
             src_tpose_fbx,
             source_object_type,
-            augment_leaf_rotation_helpers=False,
             max_joints=max_joints,
         )
     elif len(source_tp.names) != source_joint_count:
@@ -325,7 +324,6 @@ def retarget_features_npy_to_target(
         source_tp = get_common_features_from_T_pose(
             src_tpose_fbx,
             source_object_type,
-            augment_leaf_rotation_helpers=False,
             max_joints=max_joints,
         )
 
@@ -411,7 +409,6 @@ def retarget_features_npy_to_target(
         squared_positions_error,
         scale_factor=float(target_tp.scale_factor),
         orientation_quat=target_tp.orientation_quat,
-        helper_metadata=target_tp.helper_metadata,
         animation_input_is_tpose_aligned=True,
     )
 
@@ -484,7 +481,6 @@ def retarget_animation_file_to_target(
         get_average_axial_bone_length,
         get_rest_body_max_span,
         compute_scale_factor,
-        build_leaf_rotation_helper_metadata,
     )
     from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
         build_semantic_metadata,
@@ -627,7 +623,6 @@ def retarget_animation_file_to_target(
         target_source_tp = get_common_features_from_T_pose(
             target_tpose_path,
             target_object_type,
-            augment_leaf_rotation_helpers=False,
             max_joints=max_joints,
         )
         expected_names = list(target_source_tp.names)
@@ -673,7 +668,6 @@ def retarget_animation_file_to_target(
             orientation_quat=target_tp.orientation_quat,
             slice_inds=None,
             preloaded=(target_aligned_raw_anim, target_aligned_names),
-            helper_metadata=target_tp.helper_metadata,
             animation_input_is_tpose_aligned=False,
         )
         if source_features is None:
@@ -713,12 +707,6 @@ def retarget_animation_file_to_target(
         source_tpose_anim.parents,
         source_tpose_positions[0],
     )
-    source_helper_metadata = build_leaf_rotation_helper_metadata(
-        src_names,
-        source_tpose_anim.parents,
-        offsets=source_offsets,
-        max_joints=src_joint_count,
-    )
     source_tp = SimpleNamespace(
         scale_factor=source_scale_factor,
         offsets=source_offsets,
@@ -732,7 +720,6 @@ def retarget_animation_file_to_target(
         forward_base_joint_index=src_forward_base_joint,
         contact_joint_source=source_contact_source,
         axial_avg_len=axial_avg_len,
-        helper_metadata=source_helper_metadata,
     )
     source_cond = {
         'object_type': _SRC_FACE_HINT,
@@ -758,7 +745,6 @@ def retarget_animation_file_to_target(
         orientation_quat=Quaternions(src_orientation_quat[None]),
         slice_inds=None,
         preloaded=(raw_anim, src_names),
-        helper_metadata=source_helper_metadata,
         animation_input_is_tpose_aligned=False,
     )
     if source_features is None:
@@ -958,7 +944,6 @@ def auto_retarget_pipeline(
         source_tp = get_common_features_from_T_pose(
             donor_fbx,
             donor_name,
-            augment_leaf_rotation_helpers=False,
             max_joints=max_joints,
         )
         donor_effective_root_index = _infer_donor_consensus_effective_root_index(

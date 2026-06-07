@@ -132,20 +132,8 @@ def _recover_from_production_motion_features(
 ):
     """Recover production bare `(F, J, 13)` features from get_motion_features().
 
-    The training/export pipeline stores the root-facing quaternion on joint row 0
-    and stores each non-root row's parent local rotation in its 6D slot. That is
-    different from the self-contained debug payload path, where every row stores
-    its own local rotation directly.
-
-    Bare dataset tensors therefore need a different inverse:
-      - recover global joint positions from the RIFKE channels
-      - reconstruct each non-leaf joint's local rotation from any child row that
-        encodes it
-      - solve local positions back from the recovered target global positions
-
-    Leaf/helper joint local rotations are not explicitly encoded in the bare
-    tensor, so they stay at identity here. This still preserves world-space bone
-    heads and the encoded non-leaf rotations exactly.
+    Under the own-rotation encoding, each feature slot stores the joint's own
+    local rotation directly — no more parent-child scatter needed.
     """
     from motion_lib.Animation import Animation
     from motion_lib.Quaternions import Quaternions as Qcls
@@ -157,16 +145,8 @@ def _recover_from_production_motion_features(
     if channel_count != 13:
         raise ValueError(f"Expected 13 channels, got {channel_count}")
 
-    # Production bare features store each parent's local rotation on its child row.
-    rot_mats = np.repeat(
-        np.eye(3, dtype=np.float64)[None, None, :, :],
-        frame_count,
-        axis=0,
-    )
-    rot_mats = np.repeat(rot_mats, joint_count, axis=1)
-    parent_rot_mats = _r6d_to_mat(np.asarray(features_arr[:, 1:, 3:9], dtype=np.float64))
-    for child_idx, parent_idx in enumerate(parents[1:], start=1):
-        rot_mats[:, parent_idx] = parent_rot_mats[:, child_idx - 1]
+    # Each slot stores the joint's own local rotation directly.
+    rot_mats = _r6d_to_mat(np.asarray(features_arr[:, :, 3:9], dtype=np.float64))
 
     all_rots = Qcls.from_transforms(rot_mats)
     target_global = recover_from_bvh_ric_np(features_arr, translation_root_index=translation_root_index)
@@ -285,11 +265,9 @@ def recover_from_features(
             payload["initial_translation_root_xz"], dtype=np.float64,
         )
 
-    # ── 3. Root quaternion ──────────────────────────────────────────────
-    r_rot_6d = features_arr[:, 0, 3:9]
-    r_rot_mat = _r6d_to_mat(r_rot_6d)
+    # ── 3. Root quaternion (facing is identity after canonicalization) ──
     from motion_lib.Quaternions import Quaternions as Qcls
-    r_rot = Qcls.from_transforms(r_rot_mat)
+    r_rot = Qcls.id(frame_count)
 
     # ── 4. Root position from velocity integration + Y ──────────────────
     #   get_motion_features stores velocity[t] = displacement from t to t+1

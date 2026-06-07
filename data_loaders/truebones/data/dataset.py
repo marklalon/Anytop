@@ -958,7 +958,15 @@ class Truebones(data.Dataset):
         cond_dict = ensure_joint_name_embeddings(cond_dict, cond_source=opt.cond_file)
         for object_type, cond in cond_dict.items():
             mean = np.asarray(cond['mean'], dtype=np.float32)
-            std_safe = np.asarray(cond['std'], dtype=np.float32) + 1e-6
+            raw_std = np.asarray(cond['std'], dtype=np.float32)
+            # Channels with ~zero variance are constant (e.g. the root joint's
+            # own 6D rotation under the own-rotation encoding). A 1e-6 epsilon is
+            # far too small a divisor there: it leaves the motion at 0 but blows
+            # up tpos_first_frame_normalized = (tpos - mean) / std to ~1e6, which
+            # then drives the spatial-attention graph bias to ~1e5 and produces
+            # NaN gradients under bf16 autocast. Treat constant channels as
+            # unit-variance so they normalize to a sane O(1) range instead.
+            std_safe = np.where(raw_std < 1e-5, 1.0, raw_std + 1e-6).astype(np.float32)
             cond['mean'] = mean
             cond['std'] = np.asarray(cond['std'], dtype=np.float32)
             cond['std_safe'] = std_safe

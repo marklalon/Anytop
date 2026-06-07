@@ -19,7 +19,6 @@ for _path in [_REPO_ROOT, _ANYTOP_ROOT]:
 from motion_lib.Animation import Animation, positions_global
 from motion_lib.Quaternions import Quaternions
 from tools.restore_glb_from_npy import (
-    _clamp_unobservable_joint_positions_to_rest,
     _rebuild_fullbody_animation_with_ik,
 )
 from Anytop.utils.exporter import animation_to_exporter_inputs
@@ -146,59 +145,6 @@ def test_fullbody_ik_rebuild_zeroes_exporter_nonroot_translations() -> None:
     skeleton = build_skeleton(joint_names, rigid_offsets, parents, identity_rest_rotations)
     _joint_rotations, _root_translation, _root_rotation, bone_translations = (
         animation_to_exporter_inputs(rebuilt_anim, skeleton)
-    )
-
-    assert bone_translations is None
-
-
-def test_clamp_unobservable_joint_positions_to_rest_zeroes_leaf_exporter_translations() -> None:
-    joint_names = ["Root", "JointA", "Leaf"]
-    parents = np.array([-1, 0, 1], dtype=np.int32)
-    offsets = np.array(
-        [
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-        ],
-        dtype=np.float64,
-    )
-    local_positions = np.array(
-        [
-            [
-                [0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [0.0, 1.3, 0.0],
-            ],
-            [
-                [0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [0.0, 0.7, 0.0],
-            ],
-        ],
-        dtype=np.float64,
-    )
-    target_anim = Animation(
-        Quaternions.id((2, 3)),
-        local_positions,
-        Quaternions.id(0),
-        offsets,
-        parents,
-    )
-    rotation_channel_mask = np.array([True, True, False], dtype=bool)
-
-    clamped_anim = _clamp_unobservable_joint_positions_to_rest(
-        target_anim,
-        rest_offsets=offsets,
-        rotation_channel_mask=rotation_channel_mask,
-    )
-
-    assert np.allclose(clamped_anim.positions[:, 2, :], offsets[2][None, :])
-    identity_rest_rotations = np.zeros((3, 4), dtype=np.float32)
-    identity_rest_rotations[:, 0] = 1.0
-    skeleton = build_skeleton(joint_names, offsets, parents, identity_rest_rotations)
-    _joint_rotations, _root_translation, _root_rotation, bone_translations = animation_to_exporter_inputs(
-        clamped_anim,
-        skeleton,
     )
 
     assert bone_translations is None

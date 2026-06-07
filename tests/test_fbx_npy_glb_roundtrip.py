@@ -273,7 +273,6 @@ def _run_test_fbx_npy_glb_roundtrip(
         tp: TPoseFeatures = get_common_features_from_T_pose(
             tpose_fbx,
             object_type,
-            augment_leaf_rotation_helpers=True,
             max_joints=preprocess_max_joints,
         )
         if cond_entry is None or "scale_factor" not in cond_entry:
@@ -301,7 +300,6 @@ def _run_test_fbx_npy_glb_roundtrip(
             squared_positions_error,
             scale_factor=scale_factor,
             orientation_quat=tp.orientation_quat,
-            helper_metadata=tp.helper_metadata,
             preloaded=(source_anim, source_bone_names),
         )
 
