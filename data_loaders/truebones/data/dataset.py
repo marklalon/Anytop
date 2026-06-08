@@ -61,7 +61,6 @@ def filter_motion_names_by_action_tags(
     motion_names,
     raw_action_tags,
     motion_metadata_lookup,
-    object_types,
 ):
     requested_action_tags = set(parse_action_tags(raw_action_tags))
     if not requested_action_tags:
@@ -377,8 +376,6 @@ def _compute_filtered_split_counts(num_items: int) -> dict[str, int]:
 def ensure_split_manifests(data_root: str, motion_dir: str) -> dict[str, Path]:
     data_root_path = Path(data_root)
     split_paths = {split: data_root_path / f"{split}.txt" for split in SUPPORTED_SPLITS}
-    if all(path.exists() for path in split_paths.values()):
-        return split_paths
 
     # Group motion names by object_type (animal character)
     grouped_motion_names: dict[str, list[str]] = defaultdict(list)
@@ -428,7 +425,6 @@ def load_motion_names_for_split_with_action_tags(
     motion_dir: str,
     raw_action_tags,
     motion_metadata_lookup,
-    object_types,
 ) -> set[str]:
     requested_action_tags = set(parse_action_tags(raw_action_tags))
     if not requested_action_tags:
@@ -439,7 +435,6 @@ def load_motion_names_for_split_with_action_tags(
         all_motion_names,
         raw_action_tags,
         motion_metadata_lookup,
-        object_types,
     )
     if split == ALL_SPLIT_NAME:
         return filtered_motion_names
@@ -984,7 +979,6 @@ class Truebones(data.Dataset):
             opt.motion_dir,
             self.action_tags,
             motion_metadata_lookup,
-            cond_dict.keys(),
         )
         self.motion_dataset = MotionDataset(
             self.opt,

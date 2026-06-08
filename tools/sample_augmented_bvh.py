@@ -236,7 +236,6 @@ def main() -> int:
         opt.motion_dir,
         args.action_tags,
         motion_metadata_lookup,
-        cond_dict.keys(),
     )
     print(f"[INFO] Eligible motions in split '{args.split}': {len(allowed_motion_names)}")
 
