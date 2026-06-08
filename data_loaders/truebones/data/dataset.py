@@ -833,6 +833,9 @@ class MotionDataset(data.Dataset):
         motion_metadata['loop_full_cycle'] = bool(loop_full_cycle)
         motion_metadata['playspeed_cond'] = float(playspeed_cond)
         motion_metadata['global_energy_cond'] = global_energy_cond
+        motion_metadata['loop_data_aug_applied'] = bool(is_loop)
+        motion_metadata['loop_phase_offset'] = int(loop_phase_offset)
+        motion_metadata['loop_tile_count'] = int(loop_tile_count)
         # loop_phase_length: the expected single-cycle period in output frames.
         # When multiple tile copies were resampled to one target window the
         # effective cycle length is compressed proportionally.

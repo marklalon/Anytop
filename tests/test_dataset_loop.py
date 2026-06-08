@@ -532,6 +532,9 @@ def test_batch_collate_preserves_translation_root_index() -> None:
 
     assert int(cond["y"]["translation_root_index"][0]) == 0
     assert "playspeed_cond" in cond["y"]
+    assert "loop_phase_offset" in cond["y"]
+    assert "loop_tile_count" in cond["y"]
+    assert "loop_data_aug_applied" in cond["y"]
 
 
 def main() -> None:
