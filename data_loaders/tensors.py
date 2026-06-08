@@ -26,6 +26,21 @@ def create_padded_relation(relation_np, max_joints, n_joints):
     return padded_relation
 
 def truebones_collate(batch):
+    """Collate a list of motion items into a single (inp, cond) batch.
+
+    Each item in *batch* is a dict produced by ``truebones_batch_collate``
+    containing keys like ``'inp'``, ``'tpos_first_frame'``, ``'mean'``,
+    ``'std'``, ``'motion_start_frame'``, etc.
+
+    Returns
+    -------
+    inp : torch.Tensor
+        Concatenated motion input tensor.
+    cond : dict
+        Conditioning dictionary with ``'y'`` containing all metadata
+        (mask, lengths, T-pose, normalization stats, object type,
+        motion name, action tags, loop info, motion_start_frame, …).
+    """
     notnone_batches = [b for b in batch if b is not None]
     databatch = [b['inp'] for b in notnone_batches]
     tposfirstframebatch = [b['tpos_first_frame'] for b in notnone_batches]
@@ -91,6 +106,14 @@ def truebones_collate(batch):
             )
         })
 
+    if any('motion_start_frame' in batch_item for batch_item in notnone_batches):
+        cond['y'].update({
+            'motion_start_frame': torch.as_tensor(
+                [int(batch_item.get('motion_start_frame', 0)) for batch_item in notnone_batches],
+                dtype=torch.long,
+            )
+        })
+
     if any('global_energy_cond' in batch_item for batch_item in notnone_batches):
         if not all('global_energy_cond' in batch_item for batch_item in notnone_batches):
             raise ValueError(
@@ -131,10 +154,30 @@ def truebones_collate(batch):
 
     return motion, cond
 
-""" recieves list of tuples of the form: 
- motion, m_length, parents, tpos_first_frame, offsets, self.temporal_mask_template, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, max_joints
-"""
 def truebones_batch_collate(batch):
+    """Collate a raw batch from MotionDataset into the format for truebones_collate.
+
+    Each element ``b`` in *batch* is a tuple returned by
+    ``MotionDataset._prepare_sample`` with the following layout:
+
+        [0]  motion          – np.ndarray, (frames, n_joints, n_feats)
+        [1]  m_length        – int, motion length in frames
+        [2]  parents         – np.ndarray, parent indices
+        [3]  tpos_first_frame – np.ndarray, T-pose first frame features
+        [4]  offsets         – np.ndarray, bone offsets
+        [5]  temporal_mask   – np.ndarray, temporal attention mask
+        [6]  joints_graph_dist – np.ndarray, graph distance matrix
+        [7]  joints_relations  – np.ndarray, joint relation matrix
+        [8]  object_type     – str
+        [9]  joints_names_embs – np.ndarray, joint name embeddings
+        [10] crop_start      – int, starting frame index in source motion
+        [11] mean            – np.ndarray, per-joint normalization mean
+        [12] std             – np.ndarray, per-joint normalization std
+        [13] max_joints      – int
+        [14] motion_metadata – dict or None (action tags, loop info, etc.)
+        [15] name            – str, motion name
+        [16+] extras         – dicts (joint_mask_candidate_roots, aug info, …)
+    """
     max_joints = batch[0][13]
     adapted_batch = []
     for b in batch:  
@@ -178,7 +221,8 @@ def truebones_batch_collate(batch):
             'joints_names_embs': joints_names_embs,
             'tpos_first_frame': tpos_first_frame,
             'mean': mean,
-            'std': std
+            'std': std,
+            'motion_start_frame': int(b[10]),  # crop_start from _prepare_sample
         }
         if extra_cond is not None and 'joint_mask_candidate_roots' in extra_cond:
             raw_candidates = np.asarray(extra_cond['joint_mask_candidate_roots'], dtype=np.bool_)
