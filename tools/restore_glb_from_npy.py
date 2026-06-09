@@ -448,7 +448,7 @@ def restore_glb(
     fps: float | None = None,
     root_translation_xz: np.ndarray | None = None,
     fullbody_ik: bool = False,
-    stretch_factor: float = _DEFAULT_IK_STRETCH_FACTOR,
+    stretch_factor: float = DEFAULT_IK_STRETCH_FACTOR,
     restore_space: str = "fbx",
     use_image_search: bool = False,
     resample_fps: float | None = None,
@@ -475,7 +475,7 @@ def restore_glb(
                              recovered pose directly).
         stretch_factor:       Allowed bone-length elasticity ratio for IK.
                              Each edge may stretch/compress by ±stretch_factor
-                             (e.g. 0.1 = ±10 %).  Default is {_DEFAULT_IK_STRETCH_FACTOR}.
+                             (e.g. 0.1 = ±10 %).  Default is {DEFAULT_IK_STRETCH_FACTOR}.
                              Only effective when fullbody_ik is True.
         restore_space:        Output coordinate space:
                              ``"fbx"`` (default) aligns the animation to the
@@ -802,10 +802,10 @@ def main() -> None:
     parser.add_argument(
         "--stretch-factor",
         type=float,
-        default=_DEFAULT_IK_STRETCH_FACTOR,
+        default=DEFAULT_IK_STRETCH_FACTOR,
         help=(
             "Allowed bone-length elasticity ratio for IK.  Each edge may "
-            f"stretch/compress by ±stretch_factor (default: {_DEFAULT_IK_STRETCH_FACTOR}, "
+            f"stretch/compress by ±stretch_factor (default: {DEFAULT_IK_STRETCH_FACTOR}, "
             "i.e. ±10 %).  Only effective when --fullbody-ik is enabled."
         ),
     )
