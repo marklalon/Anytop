@@ -507,7 +507,9 @@ class CrossLimbTemporalBlock(nn.Module):
         zt_in = zt_in + self.time_emb_scale * time_emb
         tt = temporal_template.reshape(B, H, T, T)
         tt = tt.unsqueeze(1).expand(B, K, H, T, T).reshape(B * K * H, T, T)
+        zt_resid = zt_in
         zt, _ = self.temporal_attn(zt_in, zt_in, zt_in, attn_mask=tt, need_weights=False)
+        zt = zt_resid + zt
         zt = zt.reshape(T, B, K, d)
 
         # --- Cross-out: joints (query) attend over latents (key/value), per frame.

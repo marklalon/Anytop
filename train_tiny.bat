@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=quadropeds_locomotion_no_rot_helper_v1
+set RUN_NAME=quadropeds_locomotion_final_v1
 
 pushd "%SCRIPT_DIR%"
 
@@ -21,6 +21,7 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--global_energy_cond ^
 	--loop_cond_prob 0.5 ^
 	--cross_limb_dim 128 ^
+	--cross_limb_latents 4 ^
 	--cross_limb_last_n 4 ^
 	--diffusion_steps 100 ^
 	--num_frames 60 ^
