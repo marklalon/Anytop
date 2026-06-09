@@ -8,6 +8,19 @@ from . import AnimationStructure
 from .Quaternions import Quaternions
 
 
+def _rotation_matrices_from_transforms(transforms):
+    """Extract 3x3 rotation blocks for quaternion conversion.
+
+    Older call sites passed full 4x4 homogeneous transforms into
+    ``Quaternions.from_transforms``. The current rotation converter expects
+    ``(..., 3, 3)`` matrices, so slice the rotation block explicitly here.
+    """
+    transforms = np.asarray(transforms)
+    if transforms.shape[-2:] == (4, 4):
+        return transforms[..., :3, :3]
+    return transforms
+
+
 class BasicInverseKinematics:
     """
     Basic Inverse Kinematics Solver
@@ -78,7 +91,9 @@ class BasicInverseKinematics:
 
                 anim_transforms = Animation.transforms_global(self.animation)
                 anim_positions = anim_transforms[:,:,:3,3] # look at the translation vector inside a rotation matrix
-                anim_rotations = Quaternions.from_transforms(anim_transforms)
+                anim_rotations = Quaternions.from_transforms(
+                    _rotation_matrices_from_transforms(anim_transforms)
+                )
 
                 jdirs = anim_positions[:,c] - anim_positions[:,np.newaxis,j]  #  limb vectors given by animation
                 ddirs = self.positions[:,c] - self.positions[:,np.newaxis,j]  #  limb vectors given by input positions (target)
@@ -296,7 +311,7 @@ class JacobianInverseKinematics:
             gt = Animation.transforms_global(self.animation)
             gp = gt[:,:,:,3]
             gp = gp[:,:,:3] / gp[:,:,3,np.newaxis]
-            gr = Quaternions.from_transforms(gt)
+            gr = Quaternions.from_transforms(_rotation_matrices_from_transforms(gt))
             
             x = self.animation.rotations.euler().reshape(nf, -1)
             w = self.weights.repeat(3)
@@ -468,7 +483,7 @@ class ICP:
             gt = Animation.transforms_global(self.animation)
             gp = gt[:,:,:,3]
             gp = gp[:,:,:3] / gp[:,:,3,np.newaxis]
-            gr = Quaternions.from_transforms(gt)
+            gr = Quaternions.from_transforms(_rotation_matrices_from_transforms(gt))
             
             x = self.animation.rotations.euler().reshape(nf, -1)
             w = self.weights.repeat(3)
