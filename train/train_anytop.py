@@ -169,8 +169,6 @@ def run_training(args):
 
 def main():
     args = train_args()
-    if args.eval_during_training and not getattr(args, 'action_tags', '').strip():
-        raise SystemExit('--action_tags is required when --eval_during_training is set')
     run_training(args)
 
 if __name__ == "__main__":

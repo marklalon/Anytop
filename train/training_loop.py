@@ -514,6 +514,7 @@ class TrainLoop:
             # tiled up to fill eval_batch_size (each motion sampled repeat
             # times, may overshoot slightly when it doesn't divide evenly).
             for motion, cond in self.eval_data:
+                motion = self._move_batch_to_device(motion)
                 cond = self._move_cond_to_device(cond)
                 native_batch = motion.shape[0]
                 if native_batch < target_batch:
@@ -531,6 +532,8 @@ class TrainLoop:
                     model=infer_model,
                     shape=sample_shape,
                     noise=noise,
+                    init_image=motion,
+                    skip_timesteps=5,
                     clip_denoised=False,
                     model_kwargs=cond,
                     device=dist_util.dev(),
