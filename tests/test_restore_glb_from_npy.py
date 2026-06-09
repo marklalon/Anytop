@@ -18,8 +18,8 @@ for _path in [_REPO_ROOT, _ANYTOP_ROOT]:
 
 from motion_lib.Animation import Animation, positions_global
 from motion_lib.Quaternions import Quaternions
-from tools.restore_glb_from_npy import (
-    _rebuild_fullbody_animation_with_ik,
+from Anytop.utils.fullbody_ik import (
+    rebuild_fullbody_animation_with_ik,
 )
 from Anytop.utils.exporter import animation_to_exporter_inputs
 from Anytop.utils.roundtrip_common import build_skeleton
@@ -61,7 +61,7 @@ def test_fullbody_ik_rebuild_restores_rigid_local_positions() -> None:
         parents,
     )
 
-    rebuilt_anim, mean_error, max_error = _rebuild_fullbody_animation_with_ik(
+    rebuilt_anim, mean_error, max_error = rebuild_fullbody_animation_with_ik(
         target_anim,
         rigid_offsets=rigid_offsets,
         rigid_parents=parents,
@@ -89,7 +89,7 @@ def test_fullbody_ik_rebuild_requires_single_root() -> None:
     )
 
     with pytest.raises(ValueError, match="Expected exactly one root joint"):
-        _rebuild_fullbody_animation_with_ik(
+        rebuild_fullbody_animation_with_ik(
             target_anim,
             rigid_offsets=np.zeros((2, 3), dtype=np.float64),
             rigid_parents=np.array([-1, -1], dtype=np.int32),
@@ -133,7 +133,7 @@ def test_fullbody_ik_rebuild_zeroes_exporter_nonroot_translations() -> None:
         parents,
     )
 
-    rebuilt_anim, _mean_error, _max_error = _rebuild_fullbody_animation_with_ik(
+    rebuilt_anim, _mean_error, _max_error = rebuild_fullbody_animation_with_ik(
         target_anim,
         rigid_offsets=rigid_offsets,
         rigid_parents=parents,
@@ -186,7 +186,7 @@ def test_fullbody_ik_rebuild_can_preserve_selected_local_positions() -> None:
         parents,
     )
 
-    rebuilt_anim, mean_error, max_error = _rebuild_fullbody_animation_with_ik(
+    rebuilt_anim, mean_error, max_error = rebuild_fullbody_animation_with_ik(
         target_anim,
         rigid_offsets=rigid_offsets,
         rigid_parents=parents,
@@ -241,7 +241,7 @@ def test_fullbody_ik_rebuild_can_preserve_selected_local_rotations() -> None:
         parents,
     )
 
-    rebuilt_anim, mean_error, max_error = _rebuild_fullbody_animation_with_ik(
+    rebuilt_anim, mean_error, max_error = rebuild_fullbody_animation_with_ik(
         target_anim,
         rigid_offsets=rigid_offsets,
         rigid_parents=parents,
