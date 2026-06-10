@@ -27,14 +27,14 @@ from data_loaders.truebones.truebones_utils.physics_joint_annotation import JOIN
 # A clip with multiple action tags is attributed to its single highest-weighted
 # tag. Tags absent from this map default to weight 1.0. An empty dict ``{}``
 # disables tag weighting entirely (uniform sampling). Example: raise locomotion
-# to 3x the baseline draw rate while keeping everything else at 1.0.
+# to 2x the baseline draw rate while keeping everything else at 1.0.
 #
 # This triggers a weighted sampler even without --balanced. When --balanced is
 # also set, species stay equally weighted and these weights only redistribute
 # probability within each species.
 # ---------------------------------------------------------------------------
 ACTION_TAG_SAMPLE_WEIGHTS: dict[str, float] = {
-    "locomotion": 3.0,
+    "locomotion": 2.0,
 }
 
 
@@ -778,7 +778,7 @@ class MotionDataset(data.Dataset):
         loop_full_cycle = False
         loop_phase_offset = 0
         loop_tile_count = 1
-        loop_condition_active = bool(is_loop) and 'attack' not in motion_action_tags
+        loop_condition_active = bool(is_loop)
 
         max_source_length = target_num_frames * 2
         # ── Loop-aware data augmentation (applies to ALL is_loop motions) ──
