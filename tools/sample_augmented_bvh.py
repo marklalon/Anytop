@@ -26,7 +26,6 @@ Arguments
   --n                 Number of samples to export  (default: 10)
   --num-frames        Window length in frames, must match --num_frames in training (default: 60)
     --loop-only         Sample only motions marked as loop clips
-    --loop-uncond-prob  Probability to route loop clips through the non-loop training path
   --objects-subset    Subset name or single species name (default: "all")
   --action-tags       Comma-separated action tags to filter (default: "")
   --split             train / test / all (default: "train")
@@ -166,8 +165,6 @@ def parse_args() -> argparse.Namespace:
                    help="Temporal window length in frames (must match --num_frames in training).")
     p.add_argument("--loop-only", action="store_true",
                    help="Only sample/export motions whose metadata marks them as loop clips.")
-    p.add_argument("--loop-cond-prob", type=float, default=0.0,
-                   help="Probability that a loop clip follows the loop-conditioned path. Match --loop_cond_prob.")
     p.add_argument("--objects-subset", default="all",
                    help="Predefined subset name or single species (e.g. 'quadropeds_test', 'Horse').")
     p.add_argument("--action-tags", default="",
@@ -216,7 +213,6 @@ def main() -> int:
     opt.data_root = pjoin(".", opt.data_root)
 
     # Augmentation settings
-    opt.loop_cond_prob = args.loop_cond_prob
     opt.motion_cache_size = 0  # no cache needed for sampling
 
     output_dir = Path(args.output_dir).resolve()
@@ -306,7 +302,7 @@ def main() -> int:
                 motion_metadata,
                 _name,
                 _candidate_roots_info,
-                aug_info,     # dict: crop_start, loop_applied, playspeed_cond, loop_uncond
+                aug_info,     # dict: crop_start, loop_applied, playspeed_cond
             ) = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
 
             # ----------------------------------------------------------------
