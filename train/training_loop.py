@@ -119,7 +119,7 @@ class TrainLoop:
         # AMP runs under a single top-level torch.autocast context (see
         # _autocast_context), applied around every model forward. autocast's op
         # policy keeps softmax/layernorm in fp32 and runs linear/conv/matmul in
-        # bf16.
+        # bf16, and inductor fuses it cleanly under --compile.
         self._load_and_sync_parameters()
         if self.amp_enabled:
             logger.log(
@@ -175,8 +175,52 @@ class TrainLoop:
         self.use_ddp = False
         self.ddp_model = self.model
         self.forward_model = self.ddp_model
+        if getattr(self.args, 'compile', False):
+            self._compile_forward_model()
         self._interval_loss_sums = {}
         self._interval_loss_counts = {}
+
+    def _compile_forward_model(self):
+        """Wrap the training forward path with torch.compile.
+
+        Training is kernel-launch-bound: each step issues thousands of tiny
+        per-layer kernels and the GPU sits idle between launches. torch.compile
+        fuses the transformer decoder's ops, cutting launches.
+
+        We compile ``self.forward_model`` (a thin wrapper over ``self.model``)
+        and deliberately leave ``self.model`` itself untouched so the checkpoint
+        path (``mp_trainer`` master params, ``state_dict``) and EMA are byte-for-
+        byte identical to an uncompiled run -- the OptimizedModule never owns the
+        parameters, so resume compatibility is preserved in both directions.
+
+        Joint/frame dims are fixed across batches (joints pad to the global
+        ``opt.max_joints``, frames are resampled to ``num_frames``), so
+        ``dynamic=False`` is safe and avoids dynamic-shape tracing overhead; the
+        only shape that can vary is a trailing partial batch (use --drop_last to
+        avoid the one extra compile). The numpy/.item() conditioning in
+        AnyTop.forward triggers graph breaks, but the heavy decoder region
+        between breaks still compiles and fuses.
+        """
+        try:
+            import torch._dynamo as _dynamo
+            _dynamo.config.specialize_int = False
+            _dynamo.config.cache_size_limit = max(getattr(_dynamo.config, 'cache_size_limit', 8), 32)
+        except Exception:  # pragma: no cover - dynamo always present with compile
+            pass
+        torch.set_float32_matmul_precision('high')
+        try:
+            compiled = torch.compile(self.forward_model, dynamic=False)
+            self.forward_model = compiled
+        except Exception as exc:  # pragma: no cover - depends on build toolchain
+            logger.log(
+                f"torch.compile unavailable ({exc}); falling back to eager. "
+                "Ensure the MSVC build env is active (start_torch_compile_env.ps1)."
+            )
+            return
+        logger.log(
+            "torch.compile enabled (default mode, dynamic=False). The first step "
+            "pays a one-time compilation cost before steady-state speedup."
+        )
 
     def _load_and_sync_parameters(self):
         self.resume_checkpoint = self.find_resume_checkpoint() or self.resume_checkpoint
@@ -492,7 +536,7 @@ class TrainLoop:
         target_batch = int(self.args.eval_batch_size)
 
         infer_model.eval()
-        with torch.no_grad():
+        with torch.no_grad(), self._autocast_context():
             # Iterate the whole eval split so every unique motion is sampled
             # at least once. The loader batches by eval_batch_size, so full
             # batches sample each motion once; a smaller trailing batch is

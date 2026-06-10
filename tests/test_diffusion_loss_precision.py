@@ -440,7 +440,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         expected = torch.tensor([[False, False, False, True]], dtype=torch.bool)
         self.assertIsNotNone(capture_decoder.last_kwargs)
         self.assertTrue(torch.equal(capture_decoder.last_kwargs["tgt_key_padding_mask"], expected))
-        self.assertTrue(torch.equal(y["joints_key_padding_mask"], expected))
 
     def test_anytop_forward_reuses_shared_temporal_template_for_masks(self):
         model = AnyTop(

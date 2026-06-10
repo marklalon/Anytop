@@ -180,22 +180,43 @@ class AnyTop(nn.Module):
             return
 
         batch_stats = raw_global_energy_cond.detach().to(dtype=torch.float32)
-        if energy_active is not None:
-            # CFG-dropped samples are unconditional this step: they must not
-            # leak into the running stats (the model sees no energy for them).
-            batch_stats = batch_stats[energy_active]
-            if batch_stats.numel() == 0:
-                return
-        batch_mean = batch_stats.mean(dim=0)
-        batch_var = batch_stats.var(dim=0, unbiased=False).clamp_min(1e-6)
+        # CFG-dropped samples are unconditional this step: they must not leak
+        # into the running stats (the model sees no energy for them). Apply the
+        # mask as 0/1 weights rather than `batch_stats[energy_active]` -- boolean
+        # masked-select lowers to aten.nonzero, a data-dependent dynamic-shape op
+        # that forces a torch.compile graph break every step. The weighted
+        # moments below are identical to mean/var(unbiased=False) over the active
+        # rows, but keep static shapes.
+        if energy_active is None:
+            weight = torch.ones(batch_stats.shape[0], device=batch_stats.device, dtype=torch.float32)
+        else:
+            weight = energy_active.to(device=batch_stats.device, dtype=torch.float32).reshape(-1)
+        w = weight.unsqueeze(1)
+        count = weight.sum()
+        safe_count = count.clamp_min(1.0)
+        batch_mean = (batch_stats * w).sum(dim=0) / safe_count
+        batch_var = (((batch_stats - batch_mean.unsqueeze(0)) ** 2) * w).sum(dim=0) / safe_count
+        batch_var = batch_var.clamp_min(1e-6)
         with torch.no_grad():
-            if int(self.global_energy_running_count.item()) == 0:
-                self.global_energy_running_mean.copy_(batch_mean)
-                self.global_energy_running_var.copy_(batch_var)
-            else:
-                self.global_energy_running_mean.lerp_(batch_mean, self.global_energy_stats_momentum)
-                self.global_energy_running_var.lerp_(batch_var, self.global_energy_stats_momentum)
-            self.global_energy_running_count.add_(int(batch_stats.shape[0]))
+            # Keep this update entirely in tensor space so torch.compile does
+            # not graph-break/recompile on a changing Python scalar count. When
+            # no sample is active this step (count == 0), update_weight is forced
+            # to 0 so the running stats and count stay untouched.
+            has_obs = count > 0
+            is_first_batch = self.global_energy_running_count.eq(0)
+            momentum = torch.where(
+                is_first_batch,
+                torch.ones_like(batch_mean),
+                torch.full_like(batch_mean, self.global_energy_stats_momentum),
+            )
+            update_weight = torch.where(has_obs, momentum, torch.zeros_like(batch_mean))
+            self.global_energy_running_mean.copy_(
+                torch.lerp(self.global_energy_running_mean, batch_mean, update_weight)
+            )
+            self.global_energy_running_var.copy_(
+                torch.lerp(self.global_energy_running_var, batch_var, update_weight)
+            )
+            self.global_energy_running_count.add_(count.to(self.global_energy_running_count.dtype))
 
     def _coerce_global_energy_condition(self, raw_global_energy_cond, batch_size, device, dtype):
         # raw_global_energy_cond is never None here: _build_global_energy_token
@@ -224,7 +245,11 @@ class AnyTop(nn.Module):
                 "global_energy_cond batch dimension must match the motion batch size, got "
                 f"{raw_global_energy_cond.shape[0]} for batch {batch_size}"
             )
-        if not torch.isfinite(raw_global_energy_cond).all():
+        # Finiteness is a cheap sanity guard, but `.all()` in a python `if` is a
+        # data-dependent value that forces a torch.compile graph break every
+        # step. Skip it under compilation (eager eval/inference still validates;
+        # a non-finite condition would surface as a NaN loss anyway).
+        if not torch.compiler.is_compiling() and not torch.isfinite(raw_global_energy_cond).all():
             raise ValueError("global_energy_cond must be finite")
         return raw_global_energy_cond
 
@@ -303,7 +328,9 @@ class AnyTop(nn.Module):
                 "playspeed_cond batch dimension must match the motion batch size, got "
                 f"{raw_playspeed_cond.numel()} for batch {batch_size}"
             )
-        if not torch.isfinite(raw_playspeed_cond).all():
+        # See _coerce_global_energy_condition: skip the data-dependent finiteness
+        # guard under torch.compile to avoid a per-step graph break.
+        if not torch.compiler.is_compiling() and not torch.isfinite(raw_playspeed_cond).all():
             raise ValueError("playspeed_cond must be finite")
         return raw_playspeed_cond.to(dtype=dtype).view(batch_size, 1)
 
@@ -568,7 +595,6 @@ class AnyTop(nn.Module):
         if self.cross_limb:
             assert 'n_joints' in y, "cross_limb requires y['n_joints'] in the batch"
             temporal_template = temporal_template.reshape(-1, nframes + 1, nframes + 1)
-            y['joints_key_padding_mask'] = joint_key_padding_mask
         else:
             temporal_template = None
 

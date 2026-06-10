@@ -193,9 +193,6 @@ class SelectiveMultiheadAttention(nn.Module):
             scale=self.scaling,
         )
 
-    def _softmax_fp32(self, scores: Tensor) -> Tensor:
-        return torch.softmax(scores.float(), dim=-1)
-
     def forward(
         self,
         query: Tensor,
@@ -233,7 +230,7 @@ class SelectiveMultiheadAttention(nn.Module):
             scores = scores.float() * self.scaling
             scores = self._apply_attention_mask(scores, attn_mask)
             scores = self._apply_key_padding_mask(scores, key_padding_mask)
-            attn_weights_fp32 = self._softmax_fp32(scores)
+            attn_weights_fp32 = torch.softmax(scores, dim=-1)
             attn_weights_fp32 = F.dropout(attn_weights_fp32, p=self.dropout, training=self.training)
 
             attn_weights = attn_weights_fp32.to(dtype=v.dtype)
@@ -339,7 +336,11 @@ def _loop_aware_time_embedding(
             "loop_phase_mask batch dimension must match the motion batch size, got "
             f"{loop_phase_mask.numel()} for batch {batch_size}"
         )
-    if not bool(loop_phase_mask.any()):
+    # `bool(.any())` is an all-False fast path that skips the circular-embedding
+    # compute. Under torch.compile it forces a graph break, so skip the shortcut
+    # there and always take the torch.where path -- it returns `absolute` for
+    # every all-False entry, so the result is identical.
+    if not torch.compiler.is_compiling() and not bool(loop_phase_mask.any()):
         return absolute
     absolute = absolute.expand(-1, batch_size, -1)
     circular = circular_phase_embedding(length, dim, batch_size, device, dtype, lengths)
@@ -402,6 +403,10 @@ class CrossLimbTemporalBlock(nn.Module):
         device: torch.device,
         dtype: torch.dtype,
     ) -> Tensor:
+        if torch.compiler.is_compiling():
+            # Avoid persisting tensors created inside a compiled forward.
+            return _sin_time_embedding(length, self.latent_dim, device, dtype)
+
         cached = self._cached_time_emb
         if (
             cached.ndim == 2
@@ -740,9 +745,7 @@ class GraphMultiHeadAttention(nn.Module):
         d_v = self.att_size
         batch_size = q.size(0)
 
-        # Under an outer torch.autocast(bf16) context these matmuls run in bf16;
-        # graph_bias is accumulated in fp32 below to avoid catastrophic
-        # cancellation from summing the bf16 terms.
+
         q = self.linear_q(q).view(batch_size, -1, self.nheads, d_k)
         k = self.linear_k(k).view(batch_size, -1, self.nheads, d_k)
         v = self.linear_v(v).view(batch_size, -1, self.nheads, d_v)
@@ -783,6 +786,9 @@ class GraphMultiHeadAttention(nn.Module):
             1, num_edge_types, self.nheads, self.att_size
         ).transpose(1, 2)
 
+        # Under an outer torch.autocast(bf16) context these matmuls run in bf16;
+        # graph_bias is accumulated in fp32 below to avoid catastrophic
+        # cancellation from summing the bf16 terms.
         query_hop = torch.matmul(q, query_hop_emb.transpose(2, 3))
         query_hop = self._reshape_pairwise_tensor(query_hop, frames=relation_frames, base_batch=relation_batch)
         query_hop = torch.gather(query_hop, 4, distance_index).reshape(
@@ -856,6 +862,7 @@ class GraphMultiHeadAttention(nn.Module):
             value_edge_att = torch.scatter_add(
                 value_edge_att, 4, edge_index, x_for_scatter
             ).reshape(batch_size, self.nheads, sequence_length, num_edge_types)
+            x = x.to(dtype=v.dtype)
             x = torch.matmul(x, v)
             x = x + torch.matmul(value_hop_att, value_hop_emb) + torch.matmul(value_edge_att, value_edge_emb)
         x = x.transpose(1, 2).contiguous()
@@ -939,7 +946,11 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     "loop_phase_mask batch dimension must match the motion batch size, got "
                     f"{loop_phase_mask_batch.numel()} for batch {B}"
                 )
-            if bool(loop_phase_mask_batch.any()):
+            # Compiling: always build the (mask-zeroed) embedding so the per-layer
+            # fallback below never has to branch on `.any()`. All-False masks
+            # zero it out, so downstream additions are no-ops -- identical result,
+            # no graph break.
+            if torch.compiler.is_compiling() or bool(loop_phase_mask_batch.any()):
                 loop_phase_embedding = circular_phase_embedding(
                     T,
                     self.d_model,
@@ -1052,7 +1063,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             loop_phase_mask = torch.as_tensor(loop_phase_mask, device=x.device, dtype=torch.bool).reshape(-1)
             if loop_phase_mask.numel() == 1 and bs != 1:
                 loop_phase_mask = loop_phase_mask.expand(bs)
-            if bool(loop_phase_mask.any()):
+            if torch.compiler.is_compiling() or bool(loop_phase_mask.any()):
                 phase = circular_phase_embedding(frames, feats, bs, x.device, x.dtype, lengths)
                 phase = phase * loop_phase_mask.view(1, bs, 1)
                 x = x + self.temporal_phase_scale * phase.unsqueeze(2)
@@ -1139,7 +1150,7 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             x = cross_limb_block(
                 x,
                 temporal_template,
-                y['joints_key_padding_mask'],
+                tgt_key_padding_mask,
                 unreliable_mask=cross_limb_unreliable_mask,
                 loop_phase_mask=loop_phase_mask,
                 lengths=lengths,

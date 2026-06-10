@@ -1,7 +1,8 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=quadropeds_autocast_bf16
+set RUN_NAME=quadropeds_torch_compile
+set TORCH_LOGS=recompiles,graph_breaks
 
 pushd "%SCRIPT_DIR%"
 
@@ -39,6 +40,8 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--lambda_geo 0.5 ^
 	--motion_cache_size 512 ^
 	--amp_dtype bf16 ^
+	--compile ^
+	--drop_last ^
 	--main_process_prefetch_batches 64
 	
 popd
