@@ -234,5 +234,204 @@ class _MinimalFP16Model(nn.Module):
     def convert_to_fp16(self):
         return None
 
+
+
+class AttentionModuleTests(unittest.TestCase):
+    def test_selective_multihead_attention_need_weights_false_uses_sdpa_and_matches_manual_path(self):
+        attn = SelectiveMultiheadAttention(embed_dim=8, num_heads=2, dropout=0.0)
+
+        query = torch.randn(5, 3, 8, dtype=torch.float32)
+        attn_mask = torch.triu(torch.ones(3 * 2, 5, 5, dtype=torch.bool), diagonal=1)
+        key_padding_mask = torch.tensor(
+            [
+                [False, False, False, True, True],
+                [False, False, True, False, True],
+                [False, False, False, False, False],
+            ],
+            dtype=torch.bool,
+        )
+
+        with patch(
+            "model.motion_transformer.F.scaled_dot_product_attention",
+            wraps=F.scaled_dot_product_attention,
+        ) as sdpa:
+            sdpa_output, sdpa_weights = attn(
+                query,
+                query,
+                query,
+                attn_mask=attn_mask,
+                key_padding_mask=key_padding_mask,
+                need_weights=False,
+            )
+
+        manual_output, manual_weights = attn(
+            query,
+            query,
+            query,
+            attn_mask=attn_mask,
+            key_padding_mask=key_padding_mask,
+            need_weights=True,
+        )
+
+        sdpa.assert_called_once()
+        self.assertIsNone(sdpa_weights)
+        self.assertIsNotNone(manual_weights)
+        self.assertTrue(torch.allclose(sdpa_output, manual_output, atol=1e-5, rtol=1e-5))
+
+    def test_graph_multihead_attention_value_embeddings_keep_manual_softmax_path(self):
+        attn = GraphMultiHeadAttention(d_model=8, dropout=0.0, nheads=2)
+        attn.eval()
+
+        batch_size = 2
+        sequence_length = 4
+        q = torch.randn(batch_size, sequence_length, 8, dtype=torch.float32)
+        distance = torch.randint(0, 3, (batch_size, sequence_length, sequence_length), dtype=torch.long)
+        edge_attr = torch.randint(0, 4, (batch_size, sequence_length, sequence_length), dtype=torch.long)
+        query_hop_emb = torch.randn(3, 8, dtype=torch.float32)
+        query_edge_emb = torch.randn(4, 8, dtype=torch.float32)
+        key_hop_emb = torch.randn(3, 8, dtype=torch.float32)
+        key_edge_emb = torch.randn(4, 8, dtype=torch.float32)
+        value_hop_emb = torch.zeros(3, 8, dtype=torch.float32)
+        value_edge_emb = torch.zeros(4, 8, dtype=torch.float32)
+
+        with patch(
+            "model.motion_transformer.F.scaled_dot_product_attention",
+            wraps=F.scaled_dot_product_attention,
+        ) as sdpa:
+            output = attn(
+                q,
+                q,
+                q,
+                query_hop_emb,
+                query_edge_emb,
+                key_hop_emb,
+                key_edge_emb,
+                value_hop_emb,
+                value_edge_emb,
+                distance,
+                edge_attr,
+                None,
+            )
+
+        # With value embeddings present the module must take the manual
+        # scatter/gather softmax path rather than SDPA.
+        sdpa.assert_not_called()
+        self.assertEqual(output.dtype, torch.float32)
+
+    def test_graph_multihead_attention_sdpa_matches_manual_path_without_value_embeddings(self):
+        torch.manual_seed(0)
+        attn = GraphMultiHeadAttention(d_model=8, dropout=0.0, nheads=2)
+        attn.eval()
+
+        batch_size = 2
+        sequence_length = 4
+        q = torch.randn(batch_size, sequence_length, 8, dtype=torch.float32)
+        distance = torch.randint(0, 3, (batch_size, sequence_length, sequence_length), dtype=torch.long)
+        edge_attr = torch.randint(0, 4, (batch_size, sequence_length, sequence_length), dtype=torch.long)
+        spatial_mask = torch.zeros(batch_size, 2, sequence_length, sequence_length, dtype=torch.float32)
+        spatial_mask[1, :, :, -1] = -1e4
+        key_padding_mask = torch.tensor(
+            [
+                [False, False, False, True],
+                [False, False, True, False],
+            ],
+            dtype=torch.bool,
+        )
+        query_hop_emb = torch.randn(3, 8, dtype=torch.float32)
+        query_edge_emb = torch.randn(4, 8, dtype=torch.float32)
+        key_hop_emb = torch.randn(3, 8, dtype=torch.float32)
+        key_edge_emb = torch.randn(4, 8, dtype=torch.float32)
+        zero_value_hop_emb = torch.zeros(3, 8, dtype=torch.float32)
+        zero_value_edge_emb = torch.zeros(4, 8, dtype=torch.float32)
+
+        with patch(
+            "model.motion_transformer.F.scaled_dot_product_attention",
+            wraps=F.scaled_dot_product_attention,
+        ) as sdpa:
+            sdpa_output = attn(
+                q,
+                q,
+                q,
+                query_hop_emb,
+                query_edge_emb,
+                key_hop_emb,
+                key_edge_emb,
+                None,
+                None,
+                distance,
+                edge_attr,
+                spatial_mask,
+                key_padding_mask=key_padding_mask,
+            )
+
+        manual_output = attn(
+            q,
+            q,
+            q,
+            query_hop_emb,
+            query_edge_emb,
+            key_hop_emb,
+            key_edge_emb,
+            zero_value_hop_emb,
+            zero_value_edge_emb,
+            distance,
+            edge_attr,
+            spatial_mask,
+            key_padding_mask=key_padding_mask,
+        )
+
+        sdpa.assert_called_once()
+        self.assertTrue(torch.allclose(sdpa_output, manual_output, atol=1e-5, rtol=1e-5))
+
+    def test_graph_multihead_attention_broadcast_relations_and_masks_match_materialized_inputs(self):
+        torch.manual_seed(0)
+        attn = GraphMultiHeadAttention(d_model=8, dropout=0.0, nheads=2)
+        attn.eval()
+
+        frames = 3
+        batch_size = 2
+        sequence_length = 4
+        q = torch.randn(frames * batch_size, sequence_length, 8, dtype=torch.float32)
+        distance = torch.randint(0, 3, (batch_size, sequence_length, sequence_length), dtype=torch.long)
+        edge_attr = torch.randint(0, 4, (batch_size, sequence_length, sequence_length), dtype=torch.long)
+        spatial_mask = torch.zeros(batch_size, 2, sequence_length, sequence_length, dtype=torch.float32)
+        spatial_mask[1, :, :, -1] = -1e4
+        query_hop_emb = torch.randn(3, 8, dtype=torch.float32)
+        query_edge_emb = torch.randn(4, 8, dtype=torch.float32)
+        key_hop_emb = torch.randn(3, 8, dtype=torch.float32)
+        key_edge_emb = torch.randn(4, 8, dtype=torch.float32)
+
+        materialized_output = attn(
+            q,
+            q,
+            q,
+            query_hop_emb,
+            query_edge_emb,
+            key_hop_emb,
+            key_edge_emb,
+            None,
+            None,
+            distance.unsqueeze(0).repeat(frames, 1, 1, 1).reshape(-1, sequence_length, sequence_length),
+            edge_attr.unsqueeze(0).repeat(frames, 1, 1, 1).reshape(-1, sequence_length, sequence_length),
+            spatial_mask.unsqueeze(0).repeat(frames, 1, 1, 1, 1).reshape(-1, 2, sequence_length, sequence_length),
+        )
+        broadcast_output = attn(
+            q,
+            q,
+            q,
+            query_hop_emb,
+            query_edge_emb,
+            key_hop_emb,
+            key_edge_emb,
+            None,
+            None,
+            distance.unsqueeze(1).expand(-1, 2, -1, -1),
+            edge_attr.unsqueeze(1).expand(-1, 2, -1, -1),
+            spatial_mask,
+        )
+
+        self.assertTrue(torch.allclose(materialized_output, broadcast_output, atol=1e-5, rtol=1e-5))
+
+
 if __name__ == "__main__":
     unittest.main()
