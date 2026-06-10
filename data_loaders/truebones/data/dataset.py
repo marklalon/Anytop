@@ -714,6 +714,7 @@ class MotionDataset(data.Dataset):
 
         motion_metadata = _copy_required_motion_metadata(name, data.get('motion_metadata'))
         is_loop = bool(motion_metadata.get('is_loop'))
+        motion_action_tags = _normalize_motion_action_tags(motion_metadata.get('action_tags'))
 
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std = self._load_normalized_motion(data)
         ind = 0
@@ -721,8 +722,7 @@ class MotionDataset(data.Dataset):
         loop_full_cycle = False
         loop_phase_offset = 0
         loop_tile_count = 1
-        physical_loop_terminal = bool(is_loop)
-        loop_condition_active = bool(is_loop)
+        loop_condition_active = bool(is_loop) and 'attack' not in motion_action_tags
 
         max_source_length = target_num_frames * 2
         # ── Loop-aware data augmentation (applies to ALL is_loop motions) ──
@@ -754,9 +754,7 @@ class MotionDataset(data.Dataset):
                 )
             motion = motion[ind: ind + crop_length]
             m_length = int(motion.shape[0])
-            physical_loop_terminal = False
-            if loop_condition_active:
-                loop_condition_active = False
+            loop_condition_active = False
         elif m_length > max_source_length:
             # Long loops have been downgraded to non-loop above, so this path
             # is always a linear crop (no circular indexing needed).
@@ -776,7 +774,7 @@ class MotionDataset(data.Dataset):
                     )
             motion = motion[ind: ind + crop_length]
             m_length = int(motion.shape[0])
-            physical_loop_terminal = False
+            loop_condition_active = False
 
         source_len_for_playspeed = int(m_length)
         playspeed_cond = float(source_len_for_playspeed) / float(target_num_frames)
@@ -793,7 +791,7 @@ class MotionDataset(data.Dataset):
                 target_num_frames,
                 mean,
                 std,
-                loop_terminal=physical_loop_terminal,
+                loop_terminal=loop_condition_active,
             )
             m_length = target_num_frames
 

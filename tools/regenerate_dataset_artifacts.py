@@ -239,6 +239,14 @@ def _normalize_object_translation_roots(
                 f"from {dict(sorted(root_counts.items()))} to {canonical_root_index}"
             )
 
+    # Ensure every object in rebuilt_cond has a canonical root, even if no
+    # motion metadata existed (e.g., freshly created dataset or test fixtures).
+    for object_type in sorted(rebuilt_cond.keys()):
+        if object_type not in canonical_roots:
+            canonical_roots[object_type] = int(
+                rebuilt_cond[object_type].get("translation_root_index", 0)
+            )
+
     return canonical_roots
 
 

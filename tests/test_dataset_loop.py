@@ -457,6 +457,39 @@ def test_long_loop_crop_downgrades_to_non_loop(tmp_path) -> None:
     assert_close("long loop downgraded crop", motion, expected)
 
 
+def test_attack_tag_forces_loop_condition_inactive() -> None:
+    dataset = _build_truebones(
+        split="train",
+        temporal_window=31,
+        num_frames=NUM_FRAMES,
+        balanced=False,
+        objects_subset=LOOP_SUBSET,
+        motion_cache_size=2,
+    )
+
+    motion_dataset = dataset.motion_dataset
+    source_data = motion_dataset.data_dict[LOOP_MOTION]
+    attack_data = dict(source_data)
+    attack_data["motion_metadata"] = dict(source_data["motion_metadata"])
+    attack_data["motion_metadata"]["is_loop"] = True
+    attack_data["motion_metadata"]["action_tags"] = ["attack"]
+
+    with patch.object(motion_dataset, '_sample_loop_tile_count', return_value=1):
+        sample = motion_dataset._prepare_sample(
+            "synthetic_attack_loop.npy",
+            attack_data,
+            target_num_frames=NUM_FRAMES,
+            loop_offset=0,
+            return_aug_info=True,
+        )
+    _motion, m_length, *_rest, motion_metadata, _name, _joint_mask_dict, aug_info = sample
+
+    assert m_length == NUM_FRAMES
+    assert motion_metadata["is_loop"] is False
+    assert motion_metadata["loop_full_cycle"] is False
+    assert aug_info["loop_applied"] is False
+
+
 def test_batch_collate_preserves_translation_root_index() -> None:
     dataset = _build_truebones(
         split="train",
