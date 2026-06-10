@@ -10,23 +10,13 @@ from data_loaders.truebones.truebones_utils.param_utils import (
 )
 
 
-MOTION_METADATA_SCHEMA_VERSION = 2
+MOTION_METADATA_SCHEMA_VERSION = 4
 
 _TOKEN_PATTERN = re.compile(r"[A-Z]+(?=[A-Z][a-z]|\d|$)|[A-Z]?[a-z]+|\d+")
-_ACTION_CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("fall", ("fall", "falling", "fallen", "drop", "dropping")),
-    ("rise", ("rise", "rising", "recover", "recovery")),
-    ("death", ("death", "dead", "die", "dying", "collapse", "knockout")),
-    ("attack", ("attack", "bite", "sting", "slash", "strike", "kick", "punch", "peck", "gore", "hit", "whip", "swat")),
-    ("reaction", ("react", "recoil", "flinch", "hurt", "stagger", "impact")),
-    ("jump", ("jump", "hop", "leap", "vault", "pounce", "spring", "bound", "land", "landing")),
-    ("locomotion", ("walk", "run", "jog", "sprint", "trot", "gallop", "crawl", "creep", "move", "forward", "backward", "strafe", "turnwalk", "swim", "fly", "glide", "slither")),
-    ("turn", ("turn", "spin", "pivot", "rotate", "twist")),
-    ("pose", ("idle", "rest", "pose", "stand", "wait", "breath", "breathe", "tpose", "bindpose")),
-    ("posture", ("sit", "sleep", "lie", "crouch", "kneel")),
-    ("emote", ("dance", "roar", "taunt", "celebrate", "wave", "look")),
-)
 
+# ---------------------------------------------------------------------------
+# Tokenization helpers
+# ---------------------------------------------------------------------------
 
 def _split_identifier_tokens(value: str) -> list[str]:
     raw_parts = re.split(r"[^A-Za-z0-9]+", value)
@@ -49,20 +39,26 @@ def _strip_species_variant(object_type: str) -> str:
     return base
 
 
-def _match_action_rule(token: str, keywords: Iterable[str]) -> bool:
-    if len(token) <= 1:
-        return False
-    return any(token == keyword or keyword in token for keyword in keywords)
+# ---------------------------------------------------------------------------
+# LLM integration — keyword fallback has been removed.
+# All classification MUST go through the LLM; prefetch before querying.
+# ---------------------------------------------------------------------------
+
+def _get_llm_module():
+    """Import the LLM classifier module; raises ImportError if unavailable."""
+    from data_loaders.truebones.truebones_utils import motion_labels_llm
+    return motion_labels_llm
 
 
-def _collect_action_category_matches(tokens: list[str]) -> list[tuple[str, int, int, int]]:
-    matches: list[tuple[str, int, int, int]] = []
-    for rule_index, (category, keywords) in enumerate(_ACTION_CATEGORY_RULES):
-        matched_indices = [token_index for token_index, token in enumerate(tokens) if _match_action_rule(token, keywords)]
-        if matched_indices:
-            matches.append((category, matched_indices[0], matched_indices[-1], rule_index))
-    return matches
+def _llm_classify_batch(action_names: list[str]) -> dict[str, list[str]]:
+    if not action_names:
+        return {}
+    return _get_llm_module().classify_action_tags_batch(action_names)
 
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def infer_species_label(object_type: str) -> str:
     base = _strip_species_variant(object_type)
@@ -70,44 +66,66 @@ def infer_species_label(object_type: str) -> str:
     return " ".join(tokens) if tokens else object_type.lower()
 
 
-def infer_species_key(object_type: str) -> str:
-    return infer_species_label(object_type).replace(" ", "_")
-
-
 def normalize_action_label(action_name: str) -> str:
     tokens = _split_identifier_tokens(action_name)
     return " ".join(tokens) if tokens else action_name.strip().lower()
 
 
+def normalize_action_tags(raw_action_tags) -> list[str]:
+    if raw_action_tags is None:
+        return []
+    if isinstance(raw_action_tags, str):
+        values = [raw_action_tags]
+    elif isinstance(raw_action_tags, (list, tuple, set)):
+        values = raw_action_tags
+    else:
+        values = [raw_action_tags]
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        tag = str(value).strip().lower()
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        normalized.append(tag)
+    return normalized
+
+
 def infer_action_tags(action_name: str) -> list[str]:
-    tokens = _split_identifier_tokens(action_name)
-    if not tokens:
-        return ["other"]
+    """Return the resolved action tags for an action name (LLM-based).
 
-    matches = _collect_action_category_matches(tokens)
-    if not matches:
-        return ["other"]
-    ordered_matches = sorted(matches, key=lambda item: (item[1], item[2], item[3]))
-    return [category for category, _first_index, _last_index, _rule_index in ordered_matches]
+    First checks the in-memory / disk cache.  On a cache miss, issues a
+    single-name LLM call and caches the result.  Call
+    ``prefetch_action_tags`` upfront to avoid per-name LLM latency.
+
+    Returns ``["unknown"]`` if the LLM cannot classify the name.
+    """
+    results = _llm_classify_batch([action_name])
+    return normalize_action_tags(results.get(action_name, ["unknown"]))
 
 
-def infer_action_category(action_name: str) -> str:
-    tokens = _split_identifier_tokens(action_name)
-    if not tokens:
-        return "other"
+def prefetch_action_tags(action_names: list[str]) -> None:
+    """Pre-classify a batch of action names, filling the in-memory + disk cache.
 
-    matches = _collect_action_category_matches(tokens)
-    if not matches:
-        return "other"
+    Optional optimisation: call this once with all known action names before
+    looping over individual files.  ``infer_action_tags`` works correctly
+    without this — the cache ensures only the first cold query per name ever
+    reaches the LLM.
 
-    primary_match = max(matches, key=lambda item: (item[2], item[1], -item[3]))
-    return primary_match[0]
+    Raises ImportError if the LLM module is unavailable.
+    """
+    if not action_names:
+        return
+    _llm_classify_batch(action_names)
 
+
+# ---------------------------------------------------------------------------
+# Metadata builders
+# ---------------------------------------------------------------------------
 
 def build_object_labels(object_type: str) -> dict[str, str]:
-    return {
-        "species_label": infer_species_label(object_type),
-    }
+    return {"species_label": infer_species_label(object_type)}
 
 
 def build_motion_labels(
@@ -117,12 +135,10 @@ def build_motion_labels(
     source_file: str | None = None,
 ) -> dict[str, object]:
     action_label = normalize_action_label(action_name)
-    action_tags = infer_action_tags(action_name)
     payload: dict[str, object] = {
         "object_type": object_type,
         "action_label": action_label,
-        "action_category": infer_action_category(action_name),
-        "action_tags": action_tags,
+        "action_tags": infer_action_tags(action_name),
     }
     payload.update(build_object_labels(object_type))
     if motion_name is not None:
@@ -163,6 +179,20 @@ def infer_motion_labels_from_motion_name(
     )
 
 
+def _normalize_motion_metadata_entry(metadata: dict[str, object]) -> dict[str, object]:
+    normalized = dict(metadata)
+    legacy_action_category = normalized.pop("action_category", None)
+    raw_action_tags = normalized.get("action_tags")
+    if raw_action_tags is None and legacy_action_category is not None:
+        raw_action_tags = [legacy_action_category]
+    normalized["action_tags"] = normalize_action_tags(raw_action_tags)
+    return normalized
+
+
+# ---------------------------------------------------------------------------
+# I/O
+# ---------------------------------------------------------------------------
+
 def load_motion_metadata(dataset_dir: str | Path) -> dict[str, dict[str, object]]:
     metadata_path = Path(dataset_dir) / MOTION_METADATA_FILE
     if not metadata_path.exists():
@@ -178,7 +208,7 @@ def load_motion_metadata(dataset_dir: str | Path) -> dict[str, dict[str, object]
     normalized: dict[str, dict[str, object]] = {}
     for motion_name, metadata in motions.items():
         if isinstance(metadata, dict):
-            normalized[motion_name] = metadata
+            normalized[motion_name] = _normalize_motion_metadata_entry(metadata)
     return normalized
 
 
@@ -188,10 +218,15 @@ def write_motion_metadata(
     total_clips: int,
 ) -> Path:
     output_path = Path(save_dir) / MOTION_METADATA_FILE
+    sanitized_entries = {
+        motion_name: _normalize_motion_metadata_entry(metadata)
+        for motion_name, metadata in motion_entries.items()
+        if isinstance(metadata, dict)
+    }
     payload = {
         "schema_version": MOTION_METADATA_SCHEMA_VERSION,
         "total_clips": int(total_clips),
-        "motions": dict(sorted(motion_entries.items())),
+        "motions": dict(sorted(sanitized_entries.items())),
     }
     with open(output_path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2, sort_keys=True)

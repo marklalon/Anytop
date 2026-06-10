@@ -25,7 +25,7 @@ This fork includes significant improvements over the original repository while p
 
 ### Evaluation
 - **Distribution-Based Motion Quality Scorer** — Low-shot weighted-reference evaluation without autoencoders or discriminators. Scores macro distribution fidelity and local joint naturalness.
-- **Action Tag Filtering** — Train and evaluate on specific action categories via `--action_tags locomotion,attack`.
+- **Action Tag Filtering** — Train and evaluate on specific action tags via `--action_tags locomotion,attack`.
 - **Semantic Joint Groups** — Automatic root/axial/limbs grouping from skeleton metadata for per-group evaluation.
 
 ### Data Loading

@@ -251,11 +251,6 @@ class BaseConditioner(nn.Module):
         """
         raise NotImplementedError()
 
-KNOWN_ACTION_TAGS = [
-    'attack', 'death', 'emote', 'fall', 'jump', 'locomotion',
-    'other', 'pose', 'posture', 'reaction', 'rise', 'turn',
-]
-
 
 class TextConditioner(BaseConditioner):
     ...

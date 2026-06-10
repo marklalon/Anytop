@@ -28,6 +28,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import load_motion_met
 from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
     ROOT_XZ_STRIP_THRESHOLD,
 )
+from utils.misc import infer_object_type_from_filename  # noqa: E402
 
 
 class ValidationError(RuntimeError):
@@ -342,10 +343,12 @@ def _collect_motion_stats(motion_files: list[Path], cond: dict | None = None) ->
         if cond is not None:
             object_type = _match_object_type(motion_path.stem, cond)
         else:
-            from data_loaders.truebones.truebones_utils.motion_labels import infer_motion_labels_from_motion_name
-
             object_type = str(
-                infer_motion_labels_from_motion_name(motion_path.name, object_types=known_object_types).get("object_type")
+                infer_object_type_from_filename(
+                    motion_path.name,
+                    valid_types=set(known_object_types) if known_object_types is not None else None,
+                )
+                or motion_path.stem.split("_", 1)[0]
             )
         object_counts[object_type] += 1
         object_types.add(object_type)
@@ -706,7 +709,18 @@ def validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: 
             require_valid(motion_metadata.get("object_type") == object_type, f"object_type mismatch for {motion_name}")
             require_valid(bool(motion_metadata.get("species_label")), f"species_label missing for {motion_name}")
             require_valid(bool(motion_metadata.get("action_label")), f"action_label missing for {motion_name}")
-            require_valid(bool(motion_metadata.get("action_category")), f"action_category missing for {motion_name}")
+            raw_action_tags = motion_metadata.get("action_tags")
+            if isinstance(raw_action_tags, str):
+                normalized_action_tags = [raw_action_tags.strip().lower()] if raw_action_tags.strip() else []
+            elif isinstance(raw_action_tags, (list, tuple)):
+                normalized_action_tags = [
+                    str(tag).strip().lower()
+                    for tag in raw_action_tags
+                    if str(tag).strip()
+                ]
+            else:
+                normalized_action_tags = []
+            require_valid(bool(normalized_action_tags), f"action_tags missing for {motion_name}")
 
             require_valid("translation_root_index" in motion_metadata, f"translation_root_index missing for {motion_name}")
             translation_root_index = motion_metadata.get("translation_root_index")

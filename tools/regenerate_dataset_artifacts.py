@@ -24,6 +24,7 @@ Examples:
 
 import argparse
 import copy
+import re
 import shutil
 import sys
 import time
@@ -41,6 +42,7 @@ sys.path.insert(0, str(ANYTOP_DIR / "data_loaders" / "truebones"))
 from truebones_utils.motion_labels import (  # noqa: E402
     infer_motion_labels_from_motion_name,
     load_motion_metadata,
+    prefetch_action_tags,
     write_motion_metadata,
 )
 from truebones_utils.motion_process import (  # noqa: E402
@@ -54,7 +56,10 @@ from truebones_utils.physics_joint_annotation import (  # noqa: E402
 )
 
 
-from Anytop.utils.misc import normalize_identifier as _normalize_identifier
+from Anytop.utils.misc import (
+    infer_object_type_from_filename,
+    normalize_identifier as _normalize_identifier,
+)
 
 
 def _resolve_dataset_dir_path(dataset_dir: str | Path | None) -> Path:
@@ -115,6 +120,19 @@ def _rewrite_positions_error_file(dataset_dir_path: Path, motion_entries: dict[s
     positions_error_path.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
 
 
+def _infer_object_type_from_motion_name(
+    motion_name: str,
+    object_types: tuple[str, ...],
+) -> str:
+    resolved = infer_object_type_from_filename(
+        motion_name,
+        valid_types=set(object_types),
+    )
+    if resolved is None:
+        resolved = Path(motion_name).stem.split("_", 1)[0]
+    return str(resolved)
+
+
 def _recompute_object_stats(
     rebuilt_cond: dict[str, dict],
     motion_files: list[Path],
@@ -127,10 +145,9 @@ def _recompute_object_stats(
     for a fresh computation that matches what preprocessing would produce."""
     object_to_motions: dict[str, list[Path]] = {}
     for motion_path in motion_files:
-        object_type = str(
-            infer_motion_labels_from_motion_name(
-                motion_path.name, object_types=tuple(rebuilt_cond.keys())
-            ).get("object_type")
+        object_type = _infer_object_type_from_motion_name(
+            motion_path.name,
+            tuple(rebuilt_cond.keys()),
         )
         object_to_motions.setdefault(object_type, []).append(motion_path)
 
@@ -225,6 +242,45 @@ def _normalize_object_translation_roots(
     return canonical_roots
 
 
+def _collect_unique_action_names(
+    motion_files: list[Path],
+    object_types: tuple[str, ...],
+) -> list[str]:
+    """Extract action labels from motion file names without triggering LLM.
+
+    Mirrors the stem-extraction logic in
+    ``infer_motion_labels_from_motion_name`` but only returns the
+    ``action_stem`` strings so they can be batch-classified upfront.
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+    for motion_path in motion_files:
+        stem = motion_path.stem
+
+        # Resolve object_type from filename (same logic as infer_motion_labels_from_motion_name)
+        resolved = infer_object_type_from_filename(
+            motion_path.name,
+            valid_types=set(object_types),
+        )
+        if resolved is None:
+            resolved = stem.split("_", 1)[0]
+
+        # Strip object_type prefix
+        action_stem = stem
+        prefix = f"{resolved}_"
+        if action_stem.startswith(prefix):
+            action_stem = action_stem[len(prefix):]
+        action_stem = re.sub(r"_\d+$", "", action_stem).strip("_")
+        if not action_stem:
+            action_stem = stem
+
+        if action_stem not in seen:
+            seen.add(action_stem)
+            result.append(action_stem)
+
+    return result
+
+
 def regenerate_dataset_artifacts(
     dataset_dir: str | Path | None = None,
     t5_model: str = "t5-base",
@@ -249,7 +305,10 @@ def regenerate_dataset_artifacts(
     known_object_types = tuple(existing_cond.keys())
     active_object_types = sorted(
         {
-            str(infer_motion_labels_from_motion_name(motion_path.name, object_types=known_object_types).get("object_type"))
+            _infer_object_type_from_motion_name(
+                motion_path.name,
+                known_object_types,
+            )
             for motion_path in motion_files
         }
     )
@@ -269,6 +328,19 @@ def regenerate_dataset_artifacts(
             "[OK] pruned stale cond.npy object entries with no matching motions: "
             + ", ".join(stale_object_types)
         )
+
+    # Batch-classify all action names upfront so individual
+    # infer_motion_labels_from_motion_name calls hit the cache.
+    t0 = time.time()
+    unique_actions = _collect_unique_action_names(
+        motion_files,
+        tuple(active_cond.keys()),
+    )
+    prefetch_action_tags(unique_actions)
+    print(
+        f"[OK] action tags prefetched for {len(unique_actions)} unique action(s) "
+        f"in {time.time() - t0:.1f}s"
+    )
 
     rebuilt_cond = {
         object_type: copy.deepcopy(object_cond)
@@ -319,6 +391,7 @@ def regenerate_dataset_artifacts(
         max_joints = max(max_joints, int(motion.shape[1]))
 
         motion_entry = dict(existing_motion_metadata.get(motion_path.name, {}))
+        motion_entry.pop("action_category", None)
         motion_entry.update(
             infer_motion_labels_from_motion_name(motion_path.name, object_types=tuple(rebuilt_cond.keys()))
         )

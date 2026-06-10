@@ -27,6 +27,60 @@ def _make_cond_entry(object_type: str) -> dict[str, object]:
     }
 
 
+def test_write_motion_metadata_strips_action_category_and_normalizes_action_tags(tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir(parents=True)
+
+    write_motion_metadata(
+        dataset_dir,
+        {
+            "Cat_Run_001.npy": {
+                "object_type": "Cat",
+                "action_label": "run",
+                "action_category": "locomotion",
+                "action_tags": ["Locomotion", "attack", "locomotion"],
+                "species_label": "cat",
+                "motion_name": "Cat_Run_001.npy",
+            },
+        },
+        total_clips=1,
+    )
+
+    payload = json.loads((dataset_dir / "motion_metadata.json").read_text(encoding="utf-8"))
+    entry = payload["motions"]["Cat_Run_001.npy"]
+    assert payload["schema_version"] == 4
+    assert "action_category" not in entry
+    assert entry["action_tags"] == ["locomotion", "attack"]
+
+
+def test_load_motion_metadata_upgrades_legacy_action_category(tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir(parents=True)
+    (dataset_dir / "motion_metadata.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "total_clips": 1,
+                "motions": {
+                    "Cat_Run_001.npy": {
+                        "object_type": "Cat",
+                        "action_label": "run",
+                        "action_category": "locomotion",
+                        "species_label": "cat",
+                        "motion_name": "Cat_Run_001.npy",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_motion_metadata(dataset_dir)
+    entry = loaded["Cat_Run_001.npy"]
+    assert "action_category" not in entry
+    assert entry["action_tags"] == ["locomotion"]
+
+
 def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(monkeypatch, tmp_path):
     dataset_dir = tmp_path / "dataset"
     motions_dir = dataset_dir / "motions"
@@ -304,6 +358,58 @@ def test_regenerate_dataset_artifacts_uses_majority_root_not_minimum(monkeypatch
 
     motion_metadata = load_motion_metadata(dataset_dir)
     assert all(entry["translation_root_index"] == 1 for entry in motion_metadata.values())
+
+
+def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_inference(monkeypatch, tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    motions_dir = dataset_dir / "motions"
+    motions_dir.mkdir(parents=True)
+
+    np.save(motions_dir / "Cat_Run_001.npy", np.zeros((3, 2, 3), dtype=np.float32))
+    np.save(motions_dir / "Dog_Jump_002.npy", np.zeros((5, 2, 3), dtype=np.float32))
+    np.save(
+        dataset_dir / "cond.npy",
+        {
+            "Cat": _make_cond_entry("Cat"),
+            "Dog": _make_cond_entry("Dog"),
+        },
+    )
+
+    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True, force_reencode=True):
+        for object_cond in cond.values():
+            joint_count = len(object_cond["joints_names"])
+            object_cond["joints_names_embs"] = np.ones((joint_count, 1), dtype=np.float32)
+            object_cond["joints_names_embs_meta"] = {"t5_name": t5_name}
+
+    def fake_write_collision_report(cond, save_dir):
+        return []
+
+    calls: list[str] = []
+
+    def fake_infer_motion_labels_from_motion_name(motion_name, object_type=None, object_types=None):
+        calls.append(motion_name)
+        stem = Path(motion_name).stem
+        resolved_object_type = object_type or stem.split("_", 1)[0]
+        action_stem = stem[len(f"{resolved_object_type}_"):] if stem.startswith(f"{resolved_object_type}_") else stem
+        return {
+            "object_type": resolved_object_type,
+            "action_label": action_stem.lower(),
+            "action_tags": ["idle", "locomotion"],
+            "species_label": resolved_object_type.lower(),
+        }
+
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "prefetch_action_tags", lambda action_names: None)
+    monkeypatch.setattr(
+        regenerate_dataset_artifacts_module,
+        "infer_motion_labels_from_motion_name",
+        fake_infer_motion_labels_from_motion_name,
+    )
+
+    regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
+
+    assert calls == ["Cat_Run_001.npy", "Dog_Jump_002.npy"]
 
 
 def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch, tmp_path):
