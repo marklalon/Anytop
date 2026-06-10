@@ -22,7 +22,6 @@ from utils.model_util import load_model
 from utils.model_util import create_model_and_diffusion_general_skeleton
 import random
 from data_loaders.get_data import get_dataset_loader
-from model.selective_autocast import enable_selective_autocast
 from eval.motion_quality import DistributionMotionQualityScorer
 
 INITIAL_LOG_LOSS_SCALE = 20.0
@@ -117,27 +116,15 @@ class TrainLoop:
             self.autocast_dtype = torch.float16
         elif self.amp_dtype == 'bf16':
             self.autocast_dtype = torch.bfloat16
-        self.use_selective_autocast = self.amp_dtype == 'bf16'
-
+        # AMP runs under a single top-level torch.autocast context (see
+        # _autocast_context), applied around every model forward. autocast's op
+        # policy keeps softmax/layernorm in fp32 and runs linear/conv/matmul in
+        # bf16.
         self._load_and_sync_parameters()
-        if self.use_selective_autocast:
-            patched_modules = enable_selective_autocast(
-                self.model,
-                device_type=self.device.type,
-                autocast_dtype=self.autocast_dtype,
-            )
+        if self.amp_enabled:
             logger.log(
-                f"Selective {self.amp_dtype} autocast enabled for {patched_modules} linear/attention/conv modules; softmax and dropout stay fp32"
+                f"{self.amp_dtype} autocast enabled via torch.autocast; softmax/layernorm stay fp32"
             )
-            # The EMA model is what evaluate() samples from; patch it too so
-            # eval sampling runs under bf16 instead of fp32. Wrapping forwards
-            # leaves parameters untouched, so EMA updates are unaffected.
-            if self.model_avg is not None:
-                enable_selective_autocast(
-                    self.model_avg,
-                    device_type=self.device.type,
-                    autocast_dtype=self.autocast_dtype,
-                )
         self.mp_trainer = MixedPrecisionTrainer(
             model=self.model,
             use_fp16=False,
@@ -683,7 +670,7 @@ class TrainLoop:
             self.mp_trainer.backward(loss)
 
     def _autocast_context(self):
-        if not self.amp_enabled or self.use_selective_autocast:
+        if not self.amp_enabled:
             return torch.autocast(device_type=self.device.type, enabled=False)
         return torch.autocast(device_type=self.device.type, dtype=self.autocast_dtype)
 

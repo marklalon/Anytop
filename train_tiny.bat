@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=quadropeds_final_v2
+set RUN_NAME=quadropeds_autocast_bf16
 
 pushd "%SCRIPT_DIR%"
 

@@ -35,9 +35,6 @@ class SelectiveMultiheadAttention(nn.Module):
         self.dropout = float(dropout)
         self.head_dim = embed_dim // num_heads
         self.scaling = self.head_dim ** -0.5
-        self.autocast_dtype: torch.dtype | None = None
-        self.autocast_device_type = 'cuda'
-        self.use_selective_bf16 = False
 
         self.in_proj_weight = nn.Parameter(torch.empty(3 * embed_dim, embed_dim))
         if bias:
@@ -51,22 +48,6 @@ class SelectiveMultiheadAttention(nn.Module):
         nn.init.xavier_uniform_(self.in_proj_weight)
         if self.in_proj_bias is not None:
             nn.init.constant_(self.in_proj_bias, 0.0)
-
-    def configure_precision(self, *, device_type: str, autocast_dtype: torch.dtype | None) -> bool:
-        self.autocast_device_type = device_type
-        self.autocast_dtype = autocast_dtype
-        self.use_selective_bf16 = autocast_dtype == torch.bfloat16
-        return True
-
-    def _bf16_context(self, reference_tensor: Tensor):
-        device_type = reference_tensor.device.type if torch.is_tensor(reference_tensor) else self.autocast_device_type
-        if not self.use_selective_bf16:
-            return torch.autocast(device_type=device_type, enabled=False)
-        return torch.autocast(device_type=device_type, dtype=self.autocast_dtype)
-
-    def _project_bf16(self, inputs: Tensor, weight: Tensor, bias: Optional[Tensor]) -> Tensor:
-        with self._bf16_context(inputs):
-            return F.linear(inputs, weight, bias)
 
     def _apply_attention_mask(self, scores: Tensor, attn_mask: Optional[Tensor]) -> Tensor:
         if attn_mask is None:
@@ -234,9 +215,13 @@ class SelectiveMultiheadAttention(nn.Module):
         else:
             q_bias, k_bias, v_bias = self.in_proj_bias.chunk(3, dim=0)
 
-        q = self._project_bf16(query, q_weight, q_bias)
-        k = self._project_bf16(key, k_weight, k_bias)
-        v = self._project_bf16(value, v_weight, v_bias)
+        # Under an outer torch.autocast(bf16) context these linears/matmuls run in
+        # bf16 automatically; the explicit .float() casts below keep the softmax
+        # and score scaling in fp32 for numerical stability (autocast also keeps
+        # softmax fp32 by policy, but we make it explicit).
+        q = F.linear(query, q_weight, q_bias)
+        k = F.linear(key, k_weight, k_bias)
+        v = F.linear(value, v_weight, v_bias)
 
         q = q.transpose(0, 1).reshape(batch_size, tgt_len, self.num_heads, self.head_dim).transpose(1, 2)
         k = k.transpose(0, 1).reshape(batch_size, src_len, self.num_heads, self.head_dim).transpose(1, 2)
@@ -244,8 +229,7 @@ class SelectiveMultiheadAttention(nn.Module):
 
         attn_weights_fp32 = None
         if need_weights:
-            with self._bf16_context(q):
-                scores = torch.matmul(q, k.transpose(-2, -1))
+            scores = torch.matmul(q, k.transpose(-2, -1))
             scores = scores.float() * self.scaling
             scores = self._apply_attention_mask(scores, attn_mask)
             scores = self._apply_key_padding_mask(scores, key_padding_mask)
@@ -253,14 +237,13 @@ class SelectiveMultiheadAttention(nn.Module):
             attn_weights_fp32 = F.dropout(attn_weights_fp32, p=self.dropout, training=self.training)
 
             attn_weights = attn_weights_fp32.to(dtype=v.dtype)
-            with self._bf16_context(v):
-                attn_output = torch.matmul(attn_weights, v)
+            attn_output = torch.matmul(attn_weights, v)
         else:
             attn_output = self._scaled_dot_product_attention(q, k, v, attn_mask, key_padding_mask)
 
         attn_output = attn_output.transpose(1, 2).contiguous().reshape(batch_size, tgt_len, self.embed_dim)
         attn_output = attn_output.transpose(0, 1)
-        attn_output = self._project_bf16(attn_output, self.out_proj.weight, self.out_proj.bias).float()
+        attn_output = F.linear(attn_output, self.out_proj.weight, self.out_proj.bias).float()
 
         if not need_weights:
             return attn_output, None
@@ -527,9 +510,6 @@ class GraphMultiHeadAttention(nn.Module):
         super().__init__()
 
         self.nheads = nheads
-        self.autocast_dtype: torch.dtype | None = None
-        self.autocast_device_type = 'cuda'
-        self.use_selective_bf16 = False
 
         self.att_size = att_size = d_model // nheads
         self.scale = att_size ** -0.5
@@ -540,25 +520,6 @@ class GraphMultiHeadAttention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         self.output_layer = nn.Linear(nheads * att_size, d_model)
-
-    def configure_precision(self, *, device_type: str, autocast_dtype: torch.dtype | None) -> bool:
-        self.autocast_device_type = device_type
-        self.autocast_dtype = autocast_dtype
-        self.use_selective_bf16 = autocast_dtype == torch.bfloat16
-        return True
-
-    def _bf16_context(self, reference_tensor: Tensor):
-        device_type = reference_tensor.device.type if torch.is_tensor(reference_tensor) else self.autocast_device_type
-        if not self.use_selective_bf16:
-            return torch.autocast(device_type=device_type, enabled=False)
-        return torch.autocast(device_type=device_type, dtype=self.autocast_dtype)
-
-    def _project_bf16(self, inputs: Tensor, linear: nn.Linear) -> Tensor:
-        with self._bf16_context(inputs):
-            return F.linear(inputs, linear.weight, linear.bias)
-
-    def _softmax_fp32(self, scores: Tensor) -> Tensor:
-        return torch.softmax(scores.float(), dim=3)
 
     def _prepare_pairwise_index(
         self,
@@ -779,9 +740,12 @@ class GraphMultiHeadAttention(nn.Module):
         d_v = self.att_size
         batch_size = q.size(0)
 
-        q = self._project_bf16(q, self.linear_q).view(batch_size, -1, self.nheads, d_k)
-        k = self._project_bf16(k, self.linear_k).view(batch_size, -1, self.nheads, d_k)
-        v = self._project_bf16(v, self.linear_v).view(batch_size, -1, self.nheads, d_v)
+        # Under an outer torch.autocast(bf16) context these matmuls run in bf16;
+        # graph_bias is accumulated in fp32 below to avoid catastrophic
+        # cancellation from summing the bf16 terms.
+        q = self.linear_q(q).view(batch_size, -1, self.nheads, d_k)
+        k = self.linear_k(k).view(batch_size, -1, self.nheads, d_k)
+        v = self.linear_v(v).view(batch_size, -1, self.nheads, d_v)
 
         q = q.transpose(1, 2)  # [b, h, q_len, d_k]
         v = v.transpose(1, 2)  # [b, h, v_len, d_v]
@@ -819,30 +783,29 @@ class GraphMultiHeadAttention(nn.Module):
             1, num_edge_types, self.nheads, self.att_size
         ).transpose(1, 2)
 
-        with self._bf16_context(q):
-            query_hop = torch.matmul(q, query_hop_emb.transpose(2, 3))
-            query_hop = self._reshape_pairwise_tensor(query_hop, frames=relation_frames, base_batch=relation_batch)
-            query_hop = torch.gather(query_hop, 4, distance_index).reshape(
-                batch_size, self.nheads, sequence_length, sequence_length
-            )
-            query_edge = torch.matmul(q, query_edge_emb.transpose(2, 3))
-            query_edge = self._reshape_pairwise_tensor(query_edge, frames=edge_frames, base_batch=edge_batch)
-            query_edge = torch.gather(query_edge, 4, edge_index).reshape(
-                batch_size, self.nheads, sequence_length, sequence_length
-            )
+        query_hop = torch.matmul(q, query_hop_emb.transpose(2, 3))
+        query_hop = self._reshape_pairwise_tensor(query_hop, frames=relation_frames, base_batch=relation_batch)
+        query_hop = torch.gather(query_hop, 4, distance_index).reshape(
+            batch_size, self.nheads, sequence_length, sequence_length
+        )
+        query_edge = torch.matmul(q, query_edge_emb.transpose(2, 3))
+        query_edge = self._reshape_pairwise_tensor(query_edge, frames=edge_frames, base_batch=edge_batch)
+        query_edge = torch.gather(query_edge, 4, edge_index).reshape(
+            batch_size, self.nheads, sequence_length, sequence_length
+        )
 
-            key_hop = torch.matmul(k, key_hop_emb.transpose(2, 3))
-            key_hop = self._reshape_pairwise_tensor(key_hop, frames=relation_frames, base_batch=relation_batch)
-            key_hop = torch.gather(key_hop, 4, distance_index).reshape(
-                batch_size, self.nheads, sequence_length, sequence_length
-            )
-            key_edge = torch.matmul(k, key_edge_emb.transpose(2, 3))
-            key_edge = self._reshape_pairwise_tensor(key_edge, frames=edge_frames, base_batch=edge_batch)
-            key_edge = torch.gather(key_edge, 4, edge_index).reshape(
-                batch_size, self.nheads, sequence_length, sequence_length
-            )
-            if not use_sdpa:
-                qk = torch.matmul(q, k.transpose(2, 3))
+        key_hop = torch.matmul(k, key_hop_emb.transpose(2, 3))
+        key_hop = self._reshape_pairwise_tensor(key_hop, frames=relation_frames, base_batch=relation_batch)
+        key_hop = torch.gather(key_hop, 4, distance_index).reshape(
+            batch_size, self.nheads, sequence_length, sequence_length
+        )
+        key_edge = torch.matmul(k, key_edge_emb.transpose(2, 3))
+        key_edge = self._reshape_pairwise_tensor(key_edge, frames=edge_frames, base_batch=edge_batch)
+        key_edge = torch.gather(key_edge, 4, edge_index).reshape(
+            batch_size, self.nheads, sequence_length, sequence_length
+        )
+        if not use_sdpa:
+            qk = torch.matmul(q, k.transpose(2, 3))
 
         graph_bias = query_hop.float() + key_hop.float() + query_edge.float() + key_edge.float()
 
@@ -867,7 +830,7 @@ class GraphMultiHeadAttention(nn.Module):
                 else:
                     x = x + key_padding_mask.to(device=x.device, dtype=torch.float32)[:, None, None, :]
 
-            x = self._softmax_fp32(x)
+            x = torch.softmax(x.float(), dim=3)
             x = self.dropout(x)
             value_hop_emb = value_hop_emb.view(
                 1, num_hop_types, self.nheads, self.att_size
@@ -893,13 +856,12 @@ class GraphMultiHeadAttention(nn.Module):
             value_edge_att = torch.scatter_add(
                 value_edge_att, 4, edge_index, x_for_scatter
             ).reshape(batch_size, self.nheads, sequence_length, num_edge_types)
-            with self._bf16_context(v):
-                x = torch.matmul(x, v)
-                x = x + torch.matmul(value_hop_att, value_hop_emb) + torch.matmul(value_edge_att, value_edge_emb)
+            x = torch.matmul(x, v)
+            x = x + torch.matmul(value_hop_att, value_hop_emb) + torch.matmul(value_edge_att, value_edge_emb)
         x = x.transpose(1, 2).contiguous()
         x = x.view(batch_size, -1, self.nheads * d_v)
 
-        x = self._project_bf16(x, self.output_layer).float()
+        x = self.output_layer(x).float()
         assert x.size() == orig_q_size
         return x
 

@@ -128,28 +128,25 @@ def _configure_sampling_args(args):
     return sampling_method, sampling_steps
 
 
-def _enable_inference_amp(args, model):
+def _resolve_inference_amp_dtype(args):
+    """Resolve the effective AMP dtype for inference.
+
+    Sampling runs under a single top-level ``torch.autocast`` context (applied in
+    ``_sample_batch``); this only validates bf16 availability and returns the
+    effective dtype string ('bf16' or 'fp32'). It does not mutate the model.
+    """
     amp_dtype_arg = str(getattr(args, 'amp_dtype', 'fp32')).lower()
     if amp_dtype_arg != 'bf16':
         return amp_dtype_arg
     _amp_device = dist_util.dev()
     if _amp_device.type == 'cuda' and torch.cuda.is_bf16_supported():
-        from model.selective_autocast import enable_selective_autocast
-        patched = enable_selective_autocast(
-            model,
-            device_type='cuda',
-            autocast_dtype=torch.bfloat16,
-        )
-        print(
-            f'Selective bf16 autocast enabled for {patched} linear/attention/conv modules; '
-            'softmax stays fp32.'
-        )
-    else:
-        print(
-            '[generate] WARNING: --amp_dtype bf16 requested but the active device is CPU or lacks '
-            'bf16 support; falling back to fp32.'
-        )
-    return amp_dtype_arg
+        print('bf16 autocast enabled for sampling via torch.autocast; softmax/layernorm stay fp32.')
+        return 'bf16'
+    print(
+        '[generate] WARNING: --amp_dtype bf16 requested but the active device is CPU or lacks '
+        'bf16 support; falling back to fp32.'
+    )
+    return 'fp32'
 
 
 def prepare_generation_runtime(args=None, cond_dict=None):
@@ -183,7 +180,7 @@ def prepare_generation_runtime(args=None, cond_dict=None):
     )
     model.to(dist_util.dev())
     model.eval()
-    amp_dtype = _enable_inference_amp(args, model)
+    amp_dtype = _resolve_inference_amp_dtype(args)
 
     return GenerationRuntime(
         opt=opt,
@@ -910,6 +907,7 @@ def _sample_batch(
     reference_motion=None,
     skip_timesteps=0,
     inpaint_mask=None,
+    autocast_dtype=None,
 ):
     skip_timesteps = int(skip_timesteps) if skip_timesteps is not None else 0
 
@@ -955,6 +953,14 @@ def _sample_batch(
         loop_model_kwargs['y'] = loop_y
         return loop_model_kwargs
 
+    def _autocast_context():
+        # Single top-level autocast context around the reverse-diffusion loop;
+        # the model is invoked many times deep inside the diffusion sampler, so
+        # this is the natural call site to apply standard bf16 autocast.
+        if autocast_dtype is None:
+            return torch.autocast(device_type=device.type, enabled=False)
+        return torch.autocast(device_type=device.type, dtype=autocast_dtype)
+
     def _run_loop(noise, init_image, skip_ts, inpaint_mask_, inpaint_reference_, cross_limb_unreliable_mask_):
         common_kwargs = dict(
             model=model,
@@ -970,21 +976,22 @@ def _sample_batch(
         inpaint_kwargs = dict(
             inpaint_mask=inpaint_mask_, inpaint_reference=inpaint_reference_
         )
-        if sampling_method == 'ddim':
-            return diffusion.ddim_sample_loop(
-                progress=True,
-                eta=ddim_eta,
-                **inpaint_kwargs,
-                **common_kwargs,
-            )
-        if sampling_method in ('p', 'ddpm'):
-            return diffusion.p_sample_loop(
-                progress=True,
-                dump_steps=None,
-                const_noise=False,
-                **inpaint_kwargs,
-                **common_kwargs,
-            )
+        with _autocast_context():
+            if sampling_method == 'ddim':
+                return diffusion.ddim_sample_loop(
+                    progress=True,
+                    eta=ddim_eta,
+                    **inpaint_kwargs,
+                    **common_kwargs,
+                )
+            if sampling_method in ('p', 'ddpm'):
+                return diffusion.p_sample_loop(
+                    progress=True,
+                    dump_steps=None,
+                    const_noise=False,
+                    **inpaint_kwargs,
+                    **common_kwargs,
+                )
         raise ValueError(f'Unknown sampling_method: {sampling_method}')
 
     if inpainting and skip_timesteps > 0:
@@ -1113,6 +1120,7 @@ def main(args=None, cond_dict=None, runtime=None):
     diffusion = runtime.diffusion
     sampling_method = runtime.sampling_method
     sampling_steps = runtime.sampling_steps
+    inference_autocast_dtype = torch.bfloat16 if runtime.amp_dtype == 'bf16' else None
 
     out_path = args.output_dir
     name = os.path.basename(os.path.dirname(args.model_path))
@@ -1563,6 +1571,7 @@ def main(args=None, cond_dict=None, runtime=None):
                 reference_motion=reference_motion,
                 skip_timesteps=skip_ts,
                 inpaint_mask=inpaint_mask,
+                autocast_dtype=inference_autocast_dtype,
             )
 
         if two_pass_outpaint:
