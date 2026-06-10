@@ -62,6 +62,18 @@ class AnyTop(nn.Module):
         # so the model learns to actually respond to it (otherwise zero-init
         # FiLM has no incentive to move away from identity).
         self.global_energy_cfg_drop_prob = float(kargs.get('global_energy_cfg_drop_prob', 0.1))
+        # Action-tag conditioning. A multi-hot over the canonical action-tag
+        # vocabulary is projected and added to the timestep token (same additive
+        # pathway as loop/playspeed). When enabled, each sample's action
+        # condition is hard-dropped with probability action_tag_cfg_drop_prob
+        # during training — replaced by a learned null embedding so the model
+        # also learns an unconditional mode, enabling classifier-free guidance.
+        self.action_tag_cond = bool(kargs.get('action_tag_cond', False))
+        self.action_tag_cfg_drop_prob = float(kargs.get('action_tag_cfg_drop_prob', 0.3))
+        if not 0.0 <= self.action_tag_cfg_drop_prob <= 1.0:
+            raise ValueError(
+                f"action_tag_cfg_drop_prob must be in [0, 1], got {self.action_tag_cfg_drop_prob}"
+            )
         if not 0.0 <= self.joint_mask_prob <= 1.0:
             raise ValueError(f"joint_mask_prob must be in [0, 1], got {self.joint_mask_prob}")
         if not 0.0 <= self.joint_mask_budget <= 1.0:
@@ -113,6 +125,30 @@ class AnyTop(nn.Module):
             nn.GELU(),
             nn.Linear(self.latent_dim, self.latent_dim),
         )
+        if self.action_tag_cond:
+            # Import the canonical vocabulary lazily so the model module does not
+            # pull in the data-loader stack unless action conditioning is used.
+            from data_loaders.truebones.truebones_utils.motion_labels_llm import ACTION_TAGS
+            self.action_tag_vocab = list(ACTION_TAGS)
+            self.action_tag_to_index = {tag: i for i, tag in enumerate(self.action_tag_vocab)}
+            n_action_tags = len(self.action_tag_vocab)
+            # Linear over the multi-hot == sum of per-tag learned embeddings; the
+            # MLP lets active tags interact. The all-zero multi-hot ("no tag")
+            # maps to the projection's bias, which is intentionally distinct from
+            # the hard-dropped (null) state below.
+            self.action_tag_projection = nn.Sequential(
+                nn.Linear(n_action_tags, self.latent_dim),
+                nn.GELU(),
+                nn.Linear(self.latent_dim, self.latent_dim),
+            )
+            # Learned unconditional embedding substituted when the condition is
+            # hard-dropped. Zero-init so the unconditional mode starts identical
+            # to a model with no action conditioning.
+            self.action_tag_null_emb = nn.Parameter(torch.zeros(self.latent_dim))
+        else:
+            self.action_tag_vocab = []
+            self.action_tag_to_index = {}
+            self.action_tag_projection = None
 
         seqTransDecoderLayer = GraphMotionDecoderLayer(d_model=self.latent_dim,
                                                             nhead=self.num_heads,
@@ -271,6 +307,76 @@ class AnyTop(nn.Module):
             raise ValueError("playspeed_cond must be finite")
         return raw_playspeed_cond.to(dtype=dtype).view(batch_size, 1)
 
+    def _build_action_tag_multihot(self, raw_action_tags, batch_size, device, dtype):
+        """Multi-hot encode per-sample action tags over the canonical vocabulary.
+
+        ``raw_action_tags`` is the ``y['action_tags']`` entry: a length-B list
+        where each element is a list/set/str of normalized tag strings (or
+        ``None``). Unknown tags and ``None`` rows yield all-zero rows.
+        """
+        multihot = torch.zeros(batch_size, len(self.action_tag_vocab), device=device, dtype=dtype)
+        if raw_action_tags is None:
+            return multihot
+        for i in range(min(batch_size, len(raw_action_tags))):
+            tags = raw_action_tags[i]
+            if tags is None:
+                continue
+            if isinstance(tags, str):
+                tags = [tags]
+            for tag in tags:
+                idx = self.action_tag_to_index.get(str(tag).strip().lower())
+                if idx is not None:
+                    multihot[i, idx] = 1.0
+        return multihot
+
+    def _resolve_action_tag_active(self, raw_action_tag_active, batch_size, device):
+        """Per-sample CFG mask for action tags (True == conditional).
+
+        An explicit ``y['action_tag_active']`` wins (used at inference to force
+        the unconditional branch). Otherwise, training samples a Bernoulli keep
+        per sample so the condition is hard-dropped with probability
+        ``action_tag_cfg_drop_prob``; eval/inference keeps every sample.
+        """
+        if raw_action_tag_active is not None:
+            active = torch.as_tensor(raw_action_tag_active, device=device, dtype=torch.bool).reshape(-1)
+            if active.numel() == 1 and batch_size != 1:
+                active = active.expand(batch_size)
+            elif active.numel() != batch_size:
+                raise ValueError(
+                    "action_tag_active batch dimension must match the motion batch size, got "
+                    f"{active.numel()} for batch {batch_size}"
+                )
+            return active
+        if self.training and self.action_tag_cfg_drop_prob > 0.0:
+            return torch.rand(batch_size, device=device) >= self.action_tag_cfg_drop_prob
+        return torch.ones(batch_size, device=device, dtype=torch.bool)
+
+    def _build_action_tag_token(self, y, batch_size, device, dtype):
+        if not self.action_tag_cond or self.action_tag_projection is None:
+            return None
+        action_tag_multihot = self._build_action_tag_multihot(
+            y.get('action_tags'), batch_size, device, dtype
+        )
+        action_tag_emb = self.action_tag_projection(action_tag_multihot)
+        action_tag_active = self._resolve_action_tag_active(
+            y.get('action_tag_active'), batch_size, device
+        )
+        # A row with no recognized tags (missing/None/empty/all-out-of-vocab)
+        # carries no action information. Route it to the learned null embedding
+        # rather than feeding the all-zero multi-hot through the projection,
+        # whose bias output is an untrained region (every training clip carries
+        # >=1 tag, and hard-dropped rows already go to null_emb). This unifies
+        # "no tags" with the hard-dropped state, so omitting action_tags at
+        # inference yields the learned unconditional mode automatically.
+        has_tags = action_tag_multihot.any(dim=1)
+        action_tag_active = action_tag_active & has_tags
+        null_emb = self.action_tag_null_emb.to(device=device, dtype=dtype)
+        return torch.where(
+            action_tag_active.view(batch_size, 1),
+            action_tag_emb,
+            null_emb.unsqueeze(0).expand(batch_size, -1),
+        )
+
     def sample_subtree_joint_mask_train(self, y, njoints, device):
         """Select subtrees of joints to perturb during training.
 
@@ -420,6 +526,9 @@ class AnyTop(nn.Module):
             dtype=x.dtype,
         )
         timesteps_emb = timesteps_emb + self.loop_condition_projection(loop_condition)
+        action_tag_token = self._build_action_tag_token(y, bs, x.device, x.dtype)
+        if action_tag_token is not None:
+            timesteps_emb = timesteps_emb + action_tag_token
 
         loop_phase_mask = None
         raw_loop_phase_mask = y.get('is_loop')
