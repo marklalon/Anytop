@@ -106,6 +106,49 @@ def parse_action_tags(raw_action_tags):
                 tokens = raw_action_tags
         return tuple(token.strip().lower() for token in tokens if str(token).strip())
 
+
+def parse_action_tag_weights(raw_action_tag_weights):
+        """Parse per-action-tag sampling weights into ``{tag: float}``.
+
+        Accepts a ``'tag:weight,tag:weight'`` string (``;`` also allowed as a
+        separator) or an already-parsed mapping. Tag names are lower-cased and
+        stripped. Empty / ``None`` input yields an empty dict (uniform sampling).
+        Weights must be finite and non-negative.
+        """
+        if raw_action_tag_weights is None:
+                return {}
+        if isinstance(raw_action_tag_weights, dict):
+                items = raw_action_tag_weights.items()
+        else:
+                if isinstance(raw_action_tag_weights, str):
+                        tokens = raw_action_tag_weights.replace(';', ',').split(',')
+                else:
+                        tokens = raw_action_tag_weights
+                items = []
+                for token in tokens:
+                        token = str(token).strip()
+                        if not token:
+                                continue
+                        if ':' not in token:
+                                raise ValueError(
+                                        f"Invalid action_tag_weight '{token}', expected 'tag:weight'."
+                                )
+                        tag, weight = token.rsplit(':', 1)
+                        items.append((tag, weight))
+
+        weights = {}
+        for tag, weight in items:
+                tag = str(tag).strip().lower()
+                if not tag:
+                        continue
+                weight = float(weight)
+                if not np.isfinite(weight) or weight < 0:
+                        raise ValueError(
+                                f"action_tag_weight for '{tag}' must be finite and non-negative, got {weight}."
+                        )
+                weights[tag] = weight
+        return weights
+
 MAX_JOINTS=100
 FPS=30
 FEATS_LEN=13
