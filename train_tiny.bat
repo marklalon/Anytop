@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=quadropeds_final_v1
+set RUN_NAME=quadropeds_final_v2
 
 pushd "%SCRIPT_DIR%"
 
@@ -19,26 +19,22 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--layers 8 ^
 	--global_energy_cond ^
 	--cross_limb_dim 128 ^
-	--cross_limb_latents 4 ^
 	--cross_limb_last_n 4 ^
 	--diffusion_steps 100 ^
 	--num_frames 60 ^
 	--batch_size 16 ^
 	--lr 1e-4 ^
-	--lr_scheduler_gamma 0.90 ^
 	--use_ema ^
 	--ema_rate 0.995 ^
 	--num_steps 100000 ^
-	--eval_during_training ^
-	--eval_interval 1000 ^
 	--dropout_prob 0.1 ^
 	--joint_mask_prob 0.5 ^
 	--joint_mask_budget 0.15 ^
 	--temporal_window 41 ^
 	--temporal_span_mask_prob 0.3 ^
 	--temporal_span_seam_loss_weight 0.5 ^
-	--lambda_loop_wrap 0.2 ^
-	--lambda_loop_root_xz 0.2 ^
+	--lambda_loop_wrap 0.3 ^
+	--lambda_loop_root_xz 0.3 ^
 	--lambda_vel 0.5 ^
 	--lambda_geo 0.5 ^
 	--motion_cache_size 512 ^
