@@ -133,12 +133,15 @@ def build_motion_labels(
     action_name: str,
     motion_name: str | None = None,
     source_file: str | None = None,
+    action_tags: list[str] | None = None,
 ) -> dict[str, object]:
     action_label = normalize_action_label(action_name)
+    if action_tags is None:
+        action_tags = infer_action_tags(action_name)
     payload: dict[str, object] = {
         "object_type": object_type,
         "action_label": action_label,
-        "action_tags": infer_action_tags(action_name),
+        "action_tags": action_tags,
     }
     payload.update(build_object_labels(object_type))
     if motion_name is not None:

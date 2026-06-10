@@ -244,7 +244,7 @@ def _process_motion_file(file_path, object_type, max_joints,
             'root_translation_xz': root_translation_xz,
             'source_fbx_path': file_path,
             'slice_range': (current_begin, slice_ind),
-            'motion_labels': build_motion_labels(object_type, raw_action),
+            'motion_labels': build_motion_labels(object_type, raw_action, action_tags=["unknown"]),
         })
 
     return {

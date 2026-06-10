@@ -721,6 +721,8 @@ def validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: 
             else:
                 normalized_action_tags = []
             require_valid(bool(normalized_action_tags), f"action_tags missing for {motion_name}")
+            if normalized_action_tags == ["unknown"]:
+                print_warn(f"action_tags is ['unknown'] for {motion_name}")
 
             require_valid("translation_root_index" in motion_metadata, f"translation_root_index missing for {motion_name}")
             translation_root_index = motion_metadata.get("translation_root_index")
