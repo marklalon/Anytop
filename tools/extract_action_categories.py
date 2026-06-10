@@ -1,14 +1,44 @@
+import argparse
 import json
+import sys
 from pathlib import Path
 
+# Add project root so we can import from data_loaders
+_project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_project_root))
+from data_loaders.truebones.truebones_utils.param_utils import OBJECT_SUBSETS_DICT
+
+parser = argparse.ArgumentParser(description="Extract action category statistics from motion metadata.")
+parser.add_argument(
+    "--objects_subset",
+    type=str,
+    nargs="*",
+    default=None,
+    help="Filter by object_type(s). Supports group names (e.g. quadropeds bipeds flying) "
+         "from OBJECT_SUBSETS_DICT, or individual PascalCase names (e.g. Horse Buffalo Camel). "
+         "If omitted, all objects are included.",
+)
+args = parser.parse_args()
+
 # Load the metadata JSON file
-metadata_path = Path(__file__).resolve().parent.parent / 'dataset' / 'truebones' / 'zoo' / 'truebones_processed' / 'motion_metadata.json'
+metadata_path = _project_root / 'dataset' / 'truebones' / 'zoo' / 'truebones_processed' / 'motion_metadata.json'
 
 with open(metadata_path, 'r', encoding='utf-8') as handle:
     payload = json.load(handle)
 
 # Extract all action_tags values
 motions = payload.get('motions', payload)
+
+# --- Optional filter by object_type ---
+if args.objects_subset:
+    filter_set: set[str] = set()
+    for name in args.objects_subset:
+        if name in OBJECT_SUBSETS_DICT:
+            filter_set.update(OBJECT_SUBSETS_DICT[name])
+        else:
+            filter_set.add(name)
+    motions = {k: v for k, v in motions.items() if v.get("object_type") in filter_set}
+    print(f"Filtered to {len(motions)} motions matching object_type in {sorted(filter_set)}\n")
 
 # --- Compute per-tag statistics ---
 tag_stats = {}  # tag -> {"motion_count": int, "frame_count": int}
@@ -39,6 +69,10 @@ total_frames = sum(
     for entry in motions.values()
     if (sfr := entry.get("source_frame_range"))
 )
+
+if total_motions == 0:
+    print("No motions matched the filter. Nothing to report.")
+    sys.exit(0)
 
 print(f"{'Action Tag':<45s} {'Motions':>8s} {'%Motions':>9s} {'Frames':>8s} {'%Frames':>9s}")
 print("-" * 79)
