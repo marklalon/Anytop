@@ -1523,6 +1523,12 @@ def main(args=None, cond_dict=None, runtime=None):
 
         # Create condition with effective frame count (shared across passes).
         obj_batch = [object_type] * args.batch_size
+        _action_tags_raw = str(getattr(args, 'action_tags', '') or '').strip()
+        _action_tags_per_obj = None
+        if _action_tags_raw:
+            _tag_list = [t.strip() for t in _action_tags_raw.replace(';', ',').split(',') if t.strip()]
+            if _tag_list:
+                _action_tags_per_obj = [_tag_list] * args.batch_size
         _, model_kwargs = create_condition(
             obj_batch,
             cond_dict,
@@ -1531,6 +1537,7 @@ def main(args=None, cond_dict=None, runtime=None):
             max_joints=max_joints,
             feature_len=opt.feature_len,
             loop=getattr(args, 'loop', False),
+            action_tags=_action_tags_per_obj,
         )
         if global_energy_condition is not None:
             model_kwargs['y']['global_energy_cond'] = global_energy_condition.clone()
@@ -2051,12 +2058,19 @@ def build_inpaint_mask(
     return mask_t
 
 
-def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joints, feature_len, loop=False):
+def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joints, feature_len, loop=False, action_tags=None):
     """Build model_kwargs for a batch of object_types.
+
+    Parameters
+    ----------
+    action_tags : list of list[str] or None
+        Per-object action tag lists (e.g. ``[['locomotion', 'attack'], ...]``).
+        When provided, must have the same length as *object_types*. Each element
+        may be a list of tag strings, a single string, or ``None``.
     """
     batches = list()
     circular_mask = bool(loop)
-    for object_type in object_types:
+    for i, object_type in enumerate(object_types):
         if object_type not in cond_dict:
             available = ', '.join(sorted(cond_dict.keys()))
             raise KeyError(
@@ -2088,11 +2102,16 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joi
         batch.append(mean)
         batch.append(std)
         batch.append(max_joints)
-        batch.append({
+        metadata = {
             'is_loop': bool(loop),
             'loop_full_cycle': bool(loop),
             'translation_root_index': cond_dict[object_type].get('translation_root_index', 0),
-        })
+        }
+        if action_tags is not None and i < len(action_tags):
+            tags = action_tags[i]
+            if tags is not None:
+                metadata['action_tags'] = tags
+        batch.append(metadata)
         batch.append(object_type)
         batches.append(batch)
 

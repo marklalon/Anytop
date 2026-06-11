@@ -27,7 +27,7 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--lr 1e-4 ^
 	--use_ema ^
 	--ema_rate 0.995 ^
-	--num_steps 100000 ^
+	--num_steps 200000 ^
 	--dropout_prob 0.1 ^
 	--joint_mask_prob 0.5 ^
 	--joint_mask_budget 0.15 ^
