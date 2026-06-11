@@ -230,9 +230,6 @@ def add_training_options(parser):
                        help="EMA decay rate (closer to 1 = slower updates). Default 0.99.")
     group.add_argument("--balanced", action='store_true',
                        help="Use balancing sampler for fairness between topologies")
-    group.add_argument("--drop_last", action='store_true', default=False,
-                       help="Drop the last incomplete batch at the end of each epoch. "
-                            "False means the last batch may be smaller than the others.")
 
 
 def add_sampling_options(parser):

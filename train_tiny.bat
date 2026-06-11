@@ -47,7 +47,6 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--motion_cache_size 512 ^
 	--amp_dtype bf16 ^
 	--compile ^
-	--drop_last ^
 	--main_process_prefetch_batches 64
 	
 popd

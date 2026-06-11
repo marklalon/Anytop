@@ -128,7 +128,7 @@ def create_training_data_loader(args):
         balanced=args.balanced,
         objects_subset=args.objects_subset,
         sample_limit=args.sample_limit,
-        drop_last=getattr(args, 'drop_last', False),
+        drop_last=True,
         action_tags=getattr(args, 'action_tags', ''),
         motion_cache_size=getattr(args, 'motion_cache_size', 0),
         min_length=getattr(args, 'min_length', 20),

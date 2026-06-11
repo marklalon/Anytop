@@ -162,7 +162,7 @@ class TrainLoop:
                 objects_subset=self.args.objects_subset,
                 sample_limit=self.args.sample_limit,
                 shuffle=False,
-                drop_last=getattr(self.args, 'drop_last', False),
+                drop_last=True,
                 action_tags=getattr(self.args, 'action_tags', ''),
                 motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
                 min_length=getattr(self.args, 'min_length', 20),
@@ -198,8 +198,8 @@ class TrainLoop:
         Joint/frame dims are fixed across batches (joints pad to the global
         ``opt.max_joints``, frames are resampled to ``num_frames``), so
         ``dynamic=False`` is safe and avoids dynamic-shape tracing overhead; the
-        only shape that can vary is a trailing partial batch (use --drop_last to
-        avoid the one extra compile). The numpy/.item() conditioning in
+        only shape that can vary is a trailing partial batch (drop_last is
+        always True, avoiding the one extra compile). The numpy/.item() conditioning in
         AnyTop.forward triggers graph breaks, but the heavy decoder region
         between breaks still compiles and fuses.
         """
