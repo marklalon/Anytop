@@ -32,23 +32,18 @@ def test_sample_subtree_joint_mask_respects_budget_and_root_visibility() -> None
     assert mask is not None
     assert mask.shape == (len(parents),)
     assert not bool(mask[0])
-    # Single-subtree sampler: the size-4 limb {1,2,3,4} or one size-2 limb
-    # ({5,6} / {7,8}) — all <= budget of 4.
-    assert int(mask.sum()) in {2, 4}
+    assert int(mask.sum()) == 4
 
 
 def test_sample_subtree_joint_mask_biases_toward_larger_subtrees() -> None:
     parents = [-1, 0, 1, 2, 3, 0, 5, 0, 7]
     large_subtree_mask = np.zeros(9, dtype=bool)
     large_subtree_mask[[1, 2, 3, 4]] = True
-    small_a_mask = np.zeros(9, dtype=bool)
-    small_a_mask[[5, 6]] = True
-    small_b_mask = np.zeros(9, dtype=bool)
-    small_b_mask[[7, 8]] = True
+    combined_small_subtrees_mask = np.zeros(9, dtype=bool)
+    combined_small_subtrees_mask[[5, 6, 7, 8]] = True
 
     large_count = 0
-    small_a_count = 0
-    small_b_count = 0
+    small_count = 0
     for seed in range(2000):
         mask = sample_subtree_joint_mask(
             parents=parents,
@@ -60,20 +55,11 @@ def test_sample_subtree_joint_mask_biases_toward_larger_subtrees() -> None:
         assert mask is not None
         if np.array_equal(mask, large_subtree_mask):
             large_count += 1
-        elif np.array_equal(mask, small_a_mask):
-            small_a_count += 1
-        elif np.array_equal(mask, small_b_mask):
-            small_b_count += 1
-        else:
-            raise AssertionError(f"Unexpected mask at seed {seed}")
+            continue
+        assert np.array_equal(mask, combined_small_subtrees_mask)
+        small_count += 1
 
-    # Weight is size**2: 16 (size-4 limb) vs 4+4 (two size-2 limbs).
-    # The single large subtree should be chosen more often than both small
-    # subtrees combined.
-    assert large_count > small_a_count + small_b_count
-    # The two small subtrees have equal weight and should appear equally often.
-    total_small = small_a_count + small_b_count
-    assert abs(small_a_count - small_b_count) < max(1, total_small * 0.2)
+    assert large_count > small_count
 
 
 def test_sample_subtree_joint_mask_supports_restored_global_numpy_state() -> None:

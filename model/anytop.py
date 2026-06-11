@@ -3,7 +3,7 @@ torch.cuda.empty_cache()
 import torch.nn as nn
 import numpy as np
 from model.motion_transformer import GraphMotionDecoderLayer, GraphMotionDecoder
-from model.joint_mask_utils import sample_subtree_joint_mask_batch_torch
+from model.joint_mask_utils import sample_subtree_joint_mask_batch
 
 
 def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 10000,
@@ -460,64 +460,43 @@ class AnyTop(nn.Module):
         """
         if (not self.training) or self.joint_mask_prob <= 0.0 or self.joint_mask_budget <= 0.0:
             return None
-        return self._sample_subtree_joint_mask(y, njoints, device)
+        n_joints_cpu = torch.as_tensor(y['n_joints'], device='cpu', dtype=torch.int64).reshape(-1)
+        return self._sample_subtree_joint_mask(y, n_joints_cpu, njoints, device)
 
-    def _sample_subtree_joint_mask(self, y, njoints, device):
-        # Everything stays on ``device`` with no host<->device sync so the
-        # routine is CUDA-graph capturable. ``parents_padded`` is the static
-        # [B, J] tensor produced by the collate fn; we prefer it and fall back
-        # to assembling from the variable-length ``parents`` list (tests / older
-        # cond dicts), which is the only non-capturable branch.
-        n_joints = torch.as_tensor(y['n_joints'], device=device, dtype=torch.long).reshape(-1)
-        batch_size = n_joints.shape[0]
-        njoints = int(njoints)
-
-        parents_padded = y.get('parents_padded')
-        if parents_padded is not None:
-            padded_parents = parents_padded.to(device=device, dtype=torch.long)
-            if padded_parents.shape[1] != njoints:
-                fitted = torch.full((batch_size, njoints), -1, dtype=torch.long, device=device)
-                width = min(padded_parents.shape[1], njoints)
-                fitted[:, :width] = padded_parents[:, :width]
-                padded_parents = fitted
-        else:
-            parents_batch = y.get('parents')
-            if parents_batch is None:
-                return None
-            if torch.is_tensor(parents_batch):
-                padded_parents = torch.full((batch_size, njoints), -1, dtype=torch.long,
-                                            device=parents_batch.device)
-                width = min(parents_batch.shape[1], njoints)
-                padded_parents[:, :width] = parents_batch[:, :width].to(torch.long)
-                padded_parents = padded_parents.to(device)
-            else:
-                padded_parents_cpu = torch.full((batch_size, njoints), -1, dtype=torch.long)
-                for batch_index, parents in enumerate(parents_batch):
-                    parents = torch.as_tensor(np.asarray(parents, dtype=np.int64))
-                    width = min(parents.numel(), njoints)
-                    padded_parents_cpu[batch_index, :width] = parents[:width]
-                padded_parents = padded_parents_cpu.to(device)
-
-        joint_index = torch.arange(njoints, device=device)
-        valid_mask = joint_index[None, :] < n_joints[:, None]
-
+    def _sample_subtree_joint_mask(self, y, n_joints, njoints, device):
+        parents_batch = y.get('parents')
+        if parents_batch is None:
+            return None
         candidate_roots_batch = y.get('joint_mask_candidate_roots')
-        if candidate_roots_batch is not None:
-            candidate_roots_batch = candidate_roots_batch.to(device=device, dtype=torch.bool)
-            if candidate_roots_batch.shape[1] != njoints:
-                fitted = torch.zeros(batch_size, njoints, dtype=torch.bool, device=device)
-                width = min(candidate_roots_batch.shape[1], njoints)
-                fitted[:, :width] = candidate_roots_batch[:, :width]
-                candidate_roots_batch = fitted
+        if torch.is_tensor(n_joints):
+            n_joints_np = n_joints.detach().to(device='cpu', dtype=torch.int64).numpy()
+        else:
+            n_joints_np = np.asarray(n_joints, dtype=np.int64)
 
-        return sample_subtree_joint_mask_batch_torch(
-            parents_padded=padded_parents,
-            valid_mask=valid_mask,
-            candidate_root_mask=candidate_roots_batch,
-            n_joints=n_joints,
+        if torch.is_tensor(parents_batch):
+            parents_batch_np = parents_batch.detach().to(device='cpu', dtype=torch.int64).numpy()
+        else:
+            parents_batch_np = [np.asarray(parents, dtype=np.int64) for parents in parents_batch]
+
+        if candidate_roots_batch is None:
+            candidate_roots_np = None
+        elif torch.is_tensor(candidate_roots_batch):
+            candidate_roots_np = candidate_roots_batch.detach().to(device='cpu').numpy()
+        else:
+            candidate_roots_np = np.asarray(candidate_roots_batch, dtype=np.bool_)
+
+        subtree_joint_mask_np = sample_subtree_joint_mask_batch(
+            parents_batch=parents_batch_np,
+            candidate_root_mask_batch=candidate_roots_np,
+            n_joints=n_joints_np,
+            max_joints=njoints,
             joint_mask_prob=self.joint_mask_prob,
             joint_mask_budget=self.joint_mask_budget,
+            rng=np.random,
         )
+        if subtree_joint_mask_np is None:
+            return None
+        return torch.from_numpy(subtree_joint_mask_np).to(device=device)
 
     def sample_temporal_span_mask_train(self, y, njoints, nframes, device):
         """Select contiguous temporal spans to perturb during training.
@@ -576,8 +555,8 @@ class AnyTop(nn.Module):
             & joint_mask[:, :, None]
             & frame_mask[:, None, :]
         )                                                                         # [B, J, T]
-        # Always return the tensor (no host sync): an all-False mask is a no-op
-        # downstream and keeps control flow constant for CUDA graph capture.
+        if not bool(mask.any()):
+            return None
         return mask
 
     def forward(self, x, timesteps, y=None, train_step=None, **unused_kwargs):
