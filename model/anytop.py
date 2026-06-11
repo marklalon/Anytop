@@ -519,40 +519,45 @@ class AnyTop(nn.Module):
         if n_joints_batch is None:
             return None
 
-        if torch.is_tensor(n_joints_batch):
-            n_joints_np = n_joints_batch.detach().to(device='cpu', dtype=torch.int64).numpy().reshape(-1)
-        else:
-            n_joints_np = np.asarray(n_joints_batch, dtype=np.int64).reshape(-1)
-
-        batch_size = len(n_joints_np)
+        # Fully vectorized, on-device sampling: no host<->device sync and no
+        # Python loop, so this stays compile/cudagraph friendly. Shapes are
+        # static across batches (frames resampled to nframes, joints padded to
+        # njoints). Randomness uses torch RNG, which is checkpointed alongside
+        # the numpy RNG state, so resume reproducibility is preserved (the
+        # exact sample sequence differs from the previous numpy path).
+        n_joints_t = torch.as_tensor(n_joints_batch, device=device, dtype=torch.long).reshape(-1)
+        batch_size = n_joints_t.shape[0]
         if batch_size == 0 or nframes <= 0:
             return None
 
         min_span = min(self.temporal_span_mask_min_frames, nframes)
         max_span = max(min_span, min(self.temporal_span_mask_max_frames, nframes - 1))
 
-        temporal_span_mask_np = np.zeros((batch_size, njoints, nframes), dtype=np.bool_)
-        any_selected = False
-        for batch_index in range(batch_size):
-            valid_joints = min(int(n_joints_np[batch_index]), int(njoints))
-            if valid_joints <= 0:
-                continue
-            if np.random.random() >= self.temporal_span_mask_prob:
-                continue
+        valid_joints = n_joints_t.clamp(min=0, max=njoints)                       # [B]
+        active = (torch.rand(batch_size, device=device) < self.temporal_span_mask_prob) \
+            & (valid_joints > 0)                                                  # [B]
+        # randint(min_span, max_span + 1) per sample
+        span_length = torch.randint(min_span, max_span + 1, (batch_size,), device=device)  # [B]
+        start_hi = (nframes - span_length).clamp(min=0)                           # [B]
+        # randint(0, start_hi + 1): scale [0,1) by (start_hi+1) then floor,
+        # clamping guards the rare rand()==~1.0 rounding to start_hi+1.
+        span_start = (torch.rand(batch_size, device=device) * (start_hi + 1).float()).long()
+        span_start = torch.minimum(span_start, start_hi)                          # [B]
 
-            span_length = int(np.random.randint(min_span, max_span + 1))
-            start_hi = nframes - span_length
-            span_start = 0 if start_hi <= 0 else int(np.random.randint(0, start_hi + 1))
-            temporal_span_mask_np[
-                batch_index,
-                :valid_joints,
-                span_start:span_start + span_length,
-            ] = True
-            any_selected = True
+        frame_idx = torch.arange(nframes, device=device)                         # [T]
+        frame_mask = (frame_idx[None, :] >= span_start[:, None]) & \
+            (frame_idx[None, :] < (span_start + span_length)[:, None])           # [B, T]
+        joint_idx = torch.arange(njoints, device=device)                         # [J]
+        joint_mask = joint_idx[None, :] < valid_joints[:, None]                   # [B, J]
 
-        if not any_selected:
+        mask = (
+            active[:, None, None]
+            & joint_mask[:, :, None]
+            & frame_mask[:, None, :]
+        )                                                                         # [B, J, T]
+        if not bool(mask.any()):
             return None
-        return torch.from_numpy(temporal_span_mask_np).to(device=device)
+        return mask
 
     def forward(self, x, timesteps, y=None, train_step=None, **unused_kwargs):
         """

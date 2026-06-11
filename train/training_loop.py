@@ -134,7 +134,7 @@ class TrainLoop:
             fp16_scale_growth=self.fp16_scale_growth,
         )
         
-        self.opt = AdamW(self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay)
+        self.opt = AdamW(self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay, fused=True)
         self._optimizer_param_names = {id(param): name for name, param in self.model.named_parameters()}
         self.lr_scheduler = torch.optim.lr_scheduler.StepLR(self.opt,
                                                 step_size=getattr(self.args, 'lr_scheduler_step_size', 10000),
