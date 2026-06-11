@@ -195,6 +195,18 @@ def truebones_collate(batch):
     if 'parents' in notnone_batches[0]:
         parentsbatch = [b['parents'] for b in notnone_batches]
         cond['y'].update({'parents': parentsbatch})
+        # Padded [B, max_joints] long tensor (root/padding = -1) for the
+        # on-device subtree mask sampler. Keeping it a static-shape tensor (vs.
+        # the variable-length python list above) lets the sampler run entirely
+        # on-device with no per-step host assembly -- a prerequisite for CUDA
+        # graph capture.
+        max_joints = databatchTensor.shape[1]
+        parents_padded = torch.full((len(parentsbatch), max_joints), -1, dtype=torch.long)
+        for i, parents in enumerate(parentsbatch):
+            parents = torch.as_tensor(np.asarray(parents, dtype=np.int64))
+            width = min(parents.numel(), max_joints)
+            parents_padded[i, :width] = parents[:width]
+        cond['y'].update({'parents_padded': parents_padded})
           
     if 'joints_names_embs' in notnone_batches[0]:
         jointsnamesembsbatch = [b['joints_names_embs'] for b in notnone_batches]

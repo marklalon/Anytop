@@ -17,7 +17,6 @@ sys.path.insert(0, str(REPO_ROOT))
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType, extract_into_tensor  # noqa: E402
 from diffusion.respace import SpacedDiffusion, space_timesteps  # noqa: E402
 from model.anytop import AnyTop  # noqa: E402
-from model.joint_mask_utils import sample_subtree_joint_mask  # noqa: E402
 from utils.model_util import create_gaussian_diffusion  # noqa: E402
 
 
@@ -565,6 +564,11 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertTrue(torch.equal(y["cross_limb_unreliable_mask"], prepared_copy))
 
     def test_anytop_sample_subtree_joint_mask_train_matches_sequential_baseline(self):
+        # The simplified torch sampler masks at most ONE coherent subtree per
+        # sample (no budget-filling), chosen with probability proportional to
+        # size**2. It must still respect the structural guarantees: a complete
+        # subtree within budget, root/padding never masked, larger subtrees
+        # preferred.
         model = AnyTop(
             max_joints=9,
             feature_len=13,
@@ -599,23 +603,41 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             "joint_mask_candidate_roots": candidate_root_mask,
         }
 
-        np.random.seed(123)
-        batch_mask = model.sample_subtree_joint_mask_train(y, njoints=9, device=torch.device("cpu"))
-
-        np.random.seed(123)
-        expected = torch.zeros((2, 9), dtype=torch.bool)
-        for batch_index, valid_joint_count in enumerate((9, 5)):
-            per_sample_mask = sample_subtree_joint_mask(
-                parents=parents[batch_index, :valid_joint_count].tolist(),
-                candidate_root_mask=candidate_root_mask[batch_index, :valid_joint_count].numpy(),
-                joint_mask_budget=0.5,
-                rng=np.random,
+        # Sample 0 candidate subtrees (budget 4): the size-4 limb {1,2,3,4},
+        # or one of the size-2 subtrees {5,6} / {7,8} -- exactly one is masked.
+        # Sample 1 (budget 2): subtree of root 1 is size 3 (> budget), so only
+        # root 3's singleton {3} fits.
+        large = {1, 2, 3, 4}
+        sample0_large = 0
+        sample0_other = 0
+        for seed in range(400):
+            torch.manual_seed(seed)
+            batch_mask = model.sample_subtree_joint_mask_train(
+                y, njoints=9, device=torch.device("cpu")
             )
-            if per_sample_mask is not None:
-                expected[batch_index, :valid_joint_count] = torch.from_numpy(per_sample_mask)
+            self.assertIsNotNone(batch_mask)
+            self.assertEqual(batch_mask.shape, (2, 9))
+            self.assertEqual(batch_mask.dtype, torch.bool)
+            # root and padded joints are never selected
+            self.assertFalse(bool(batch_mask[0, 0]))
+            self.assertFalse(bool(batch_mask[1, 0]))
+            self.assertFalse(bool(batch_mask[1, 5:].any()))
+            # budgets respected
+            self.assertLessEqual(int(batch_mask[0].sum()), 4)
+            self.assertLessEqual(int(batch_mask[1].sum()), 2)
 
-        self.assertIsNotNone(batch_mask)
-        self.assertTrue(torch.equal(batch_mask.cpu(), expected))
+            sel0 = {int(i) for i in torch.nonzero(batch_mask[0]).flatten().tolist()}
+            sel1 = {int(i) for i in torch.nonzero(batch_mask[1]).flatten().tolist()}
+            self.assertIn(sel0, ({1, 2, 3, 4}, {5, 6}, {7, 8}))
+            self.assertEqual(sel1, {3})
+            if sel0 == large:
+                sample0_large += 1
+            else:
+                sample0_other += 1
+
+        # weight is size**2 (16 vs 4 vs 4), so the large limb dominates the two
+        # small subtrees combined.
+        self.assertGreater(sample0_large, sample0_other)
 
     def test_anytop_sample_temporal_span_mask_train_marks_contiguous_valid_joint_spans(self):
         model = AnyTop(

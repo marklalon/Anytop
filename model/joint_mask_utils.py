@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 import numpy as np
+import torch
 
 
 # ---------------------------------------------------------------------------
@@ -87,42 +88,17 @@ def sample_subtree_joint_mask(
     if not candidate_subtrees:
         return None
 
-    # Prefer larger connected regions so subtree masking more often removes
-    # a coherent limb/body part instead of accumulating many tiny subtrees.
-    mask = np.zeros(n_joints, dtype=bool)
-    remaining = budget
+    # Single-subtree selection: pick one candidate weighted by size**2 so larger
+    # limbs dominate, matching the behaviour of the torch graph-capturable
+    # sampler (sample_subtree_joint_mask_batch_torch).
     subtree_sizes = np.asarray([len(subtree) for subtree in candidate_subtrees], dtype=np.float64)
-    available = np.ones(len(candidate_subtrees), dtype=bool)
-    while remaining > 0:
-        compatible_positions = []
-        compatible_weights = []
-        for pos, subtree in enumerate(candidate_subtrees):
-            if not available[pos]:
-                continue
-            sz = int(subtree_sizes[pos])
-            if sz > remaining:
-                continue
-            if np.any(mask[subtree]):
-                continue
-            compatible_positions.append(pos)
-            compatible_weights.append(float(sz * sz))
+    weights = subtree_sizes ** 2
+    weights /= weights.sum()
+    chosen_pos = int(rng.choice(len(candidate_subtrees), p=weights))
+    subtree = candidate_subtrees[chosen_pos]
 
-        if not compatible_positions:
-            break
-
-        weights = np.asarray(compatible_weights, dtype=np.float64)
-        weights /= weights.sum()
-        chosen_pos = int(rng.choice(np.asarray(compatible_positions, dtype=np.int64), p=weights))
-        subtree = candidate_subtrees[chosen_pos]
-        sz = len(subtree)
-        mask[subtree] = True
-        remaining -= sz
-        available[chosen_pos] = False
-        if remaining == 0:
-            break
-
-    if not np.any(mask):
-        return None
+    mask = np.zeros(n_joints, dtype=bool)
+    mask[subtree] = True
     return mask
 
 
@@ -179,3 +155,116 @@ def sample_subtree_joint_mask_batch(
     if not any_masked:
         return None
     return subtree_joint_mask
+
+
+# ---------------------------------------------------------------------------
+# Batched subtree mask sampler (pure torch, on-device)
+# ---------------------------------------------------------------------------
+
+def sample_subtree_joint_mask_batch_torch(
+    parents_padded: "torch.Tensor",
+    valid_mask: "torch.Tensor",
+    candidate_root_mask: Optional["torch.Tensor"],
+    n_joints: "torch.Tensor",
+    joint_mask_prob: float,
+    joint_mask_budget: float,
+    generator: Optional["torch.Generator"] = None,
+) -> Optional["torch.Tensor"]:
+    """On-device, CUDA-graph-capturable subtree joint-mask sampler.
+
+    This is a *simplified* sampler (it intentionally does not reproduce the
+    NumPy greedy multi-subtree fill): each sample masks at most **one** coherent
+    subtree, chosen among the budget-fitting candidate roots with probability
+    proportional to ``size**2`` (so larger limbs dominate). That keeps the whole
+    routine free of the two things that break CUDA graph capture:
+
+      * **no host<->device sync** -- no ``.item()`` / ``bool(tensor)`` / ``.cpu()``;
+        the only control flow is the fixed-trip ancestor climb (a constant
+        number of kernels, captured once and replayed as a single graph launch);
+      * **no ``torch.multinomial``** -- the single weighted pick uses the
+        Gumbel-max trick (``argmax(log w + Gumbel)``), built from ``torch.rand``,
+        which is graph-capturable.
+
+    It always returns a ``[B, J]`` tensor (never ``None`` on the hot path); an
+    all-``False`` row -- sample gated off, or no budget-fitting candidate -- is a
+    numeric no-op downstream (the reliability bias multiplies it to zero), which
+    keeps the control flow constant across steps for capture.
+
+    Parameters
+    ----------
+    parents_padded : torch.Tensor
+        ``[B, J]`` long. Parent index per joint; root and padded slots use a
+        negative sentinel (``-1``). Padded/invalid columns are ignored.
+    valid_mask : torch.Tensor
+        ``[B, J]`` bool, ``True`` for real joints (``j < n_joints``).
+    candidate_root_mask : torch.Tensor or None
+        ``[B, J]`` bool — ``True`` where a joint may root a masked subtree.
+        ``None`` means every valid non-root joint is a candidate.
+    n_joints : torch.Tensor
+        ``[B]`` long, real joint count per sample.
+    joint_mask_prob, joint_mask_budget : float
+        Per-sample gate probability and budget fraction (of non-root joints).
+
+    Returns
+    -------
+    torch.Tensor or None
+        ``[B, J]`` bool mask (``True`` = joint selected). ``None`` only for the
+        config-time short-circuits (probability/budget disabled, empty batch),
+        which are constant across steps.
+    """
+    if joint_mask_prob <= 0.0 or joint_mask_budget <= 0.0:
+        return None
+
+    device = parents_padded.device
+    batch_size, n_joints_pad = parents_padded.shape
+    if batch_size == 0 or n_joints_pad == 0:
+        return None
+
+    n_joints = n_joints.to(device=device, dtype=torch.long).reshape(-1)
+    joint_index = torch.arange(n_joints_pad, device=device)
+
+    # --- subtree membership via bounded ancestor climb -------------------
+    # member[b, r, j] == True  <=>  r is an ancestor-or-self of j, i.e. the
+    # subtree rooted at r contains joint j (matches collect_subtree_indices).
+    # The loop trip count is the (static) joint dim, so it captures cleanly.
+    member = torch.zeros(batch_size, n_joints_pad, n_joints_pad, dtype=torch.bool, device=device)
+    current = joint_index[None, :].expand(batch_size, n_joints_pad).clone()  # each j starts at itself
+    ones_src = torch.ones(batch_size, 1, n_joints_pad, dtype=torch.bool, device=device)
+    for _ in range(n_joints_pad):  # depth is bounded by the joint count
+        write_index = current.clamp(0, n_joints_pad - 1).unsqueeze(1)        # [B, 1, J]
+        member.scatter_(1, write_index, ones_src)                            # member[b, current, j] = True
+        parent = parents_padded.gather(1, current.clamp(min=0))              # [B, J]
+        current = torch.where(parent >= 0, parent, current)                  # stop at root/padding
+
+    member = member & valid_mask[:, None, :] & valid_mask[:, :, None]
+    subtree_size = member.sum(-1)  # [B, J] — counts only valid joints
+
+    non_root = (n_joints - 1).clamp(min=0)
+    budget = torch.minimum(
+        (joint_mask_budget * non_root.to(torch.float64)).floor().to(torch.long),
+        non_root,
+    )  # [B] — int() truncation in float64 to match the NumPy budget
+
+    if candidate_root_mask is None:
+        candidate = valid_mask.clone()
+    else:
+        candidate = candidate_root_mask.to(device=device, dtype=torch.bool) & valid_mask
+    candidate = candidate & (joint_index[None, :] >= 1)  # root (index 0) is never a candidate
+
+    is_candidate = candidate & (subtree_size > 0) & (subtree_size <= budget[:, None])  # [B, J]
+
+    # --- one weighted pick per sample via Gumbel-max (weight = size**2) ---
+    gate = torch.rand(batch_size, device=device, generator=generator)
+    uniform = torch.rand(batch_size, n_joints_pad, device=device, generator=generator).clamp_(1e-9, 1.0 - 1e-9)
+    gumbel = -torch.log(-torch.log(uniform))
+    log_weight = 2.0 * torch.log(subtree_size.clamp(min=1).to(torch.float32))
+    neg_inf = torch.full_like(log_weight, float('-inf'))
+    keys = torch.where(is_candidate, log_weight + gumbel, neg_inf)  # [B, J]
+    chosen = keys.argmax(dim=-1)  # [B]
+
+    has_candidate = is_candidate.any(dim=-1)  # [B] (tensor reduction, not a host sync)
+    active = (gate < joint_mask_prob) & (n_joints > 1) & (budget > 0) & has_candidate
+
+    batch_arange = torch.arange(batch_size, device=device)
+    chosen_subtree = member[batch_arange, chosen]  # [B, J]
+    return chosen_subtree & active[:, None]
