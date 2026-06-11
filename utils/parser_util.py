@@ -164,10 +164,13 @@ def add_training_options(parser):
                        help="Choose platform to log results. NoPlatform means no logging.")
     group.add_argument("--amp_dtype", default='fp32', choices=['fp32', 'bf16'], type=str,
                        help="Autocast precision for training. fp32 disables AMP; bf16 uses selective autocast on linear and attention modules only.")
-    group.add_argument("--compile", action='store_true',
+    group.add_argument("--compile", default='None',
+                       choices=['None', 'default', 'max-autotune-no-cudagraphs'],
                        help="Wrap the transformer decoder with torch.compile to fuse the many tiny "
-                            "per-layer kernels (training is kernel-launch-bound). Requires the MSVC "
-                            "build env (start_torch_compile_env.ps1). First step pays a one-time compile "
+                            "per-layer kernels (training is kernel-launch-bound). "
+                            "Mode: 'None' (no compile), 'default' (torch.compile default), "
+                            "'max-autotune-no-cudagraphs'. Requires the MSVC build env "
+                            "(start_torch_compile_env.ps1). First step pays a one-time compile "
                             "cost; shapes are static so no recompile thrashing afterward.")
     group.add_argument("--lr", default=1e-4, type=float, help="Learning rate.")
     group.add_argument("--lr_scheduler_step_size", default=10000, type=int,

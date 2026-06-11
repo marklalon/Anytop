@@ -177,12 +177,13 @@ class TrainLoop:
         self.use_ddp = False
         self.ddp_model = self.model
         self.forward_model = self.ddp_model
-        if getattr(self.args, 'compile', False):
-            self._compile_forward_model()
+        compile_mode = getattr(self.args, 'compile', None)
+        if compile_mode and compile_mode != 'None':
+            self._compile_forward_model(compile_mode)
         self._interval_loss_sums = {}
         self._interval_loss_counts = {}
 
-    def _compile_forward_model(self):
+    def _compile_forward_model(self, mode='default'):
         """Wrap the training forward path with torch.compile.
 
         Training is kernel-launch-bound: each step issues thousands of tiny
@@ -211,7 +212,10 @@ class TrainLoop:
             pass
         torch.set_float32_matmul_precision('high')
         try:
-            compiled = torch.compile(self.forward_model, dynamic=False)
+            compile_kwargs = {'dynamic': False}
+            if mode and mode != 'default':
+                compile_kwargs['mode'] = mode
+            compiled = torch.compile(self.forward_model, **compile_kwargs)
             self.forward_model = compiled
         except Exception as exc:  # pragma: no cover - depends on build toolchain
             logger.log(
@@ -220,7 +224,7 @@ class TrainLoop:
             )
             return
         logger.log(
-            "torch.compile enabled (default mode, dynamic=False). The first step "
+            f"torch.compile enabled (mode={mode}, dynamic=False). The first step "
             "pays a one-time compilation cost before steady-state speedup."
         )
 
