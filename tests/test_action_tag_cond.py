@@ -11,6 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
+from data_loaders.tensors import truebones_collate  # noqa: E402
 from model.anytop import AnyTop  # noqa: E402
 
 
@@ -151,6 +152,54 @@ class ActionTagConditioningTest(unittest.TestCase):
             2, torch.device('cpu'), torch.float32)
         self.assertFalse(torch.allclose(token[0], model.action_tag_null_emb))
         self.assertTrue(torch.allclose(token[1], model.action_tag_null_emb))
+
+    def test_prebatched_action_tag_multihot_matches_python_tags_path(self):
+        model = _make_model(action_tag_cfg_drop_prob=0.0)
+        model.eval()
+        y = _make_y(action_tags=[['attack'], ['idle']])
+        token_from_python_tags = model._build_action_tag_token(
+            y, 2, torch.device('cpu'), torch.float32)
+        prebatched_y = dict(y)
+        prebatched_y['action_tag_multihot'] = model._build_action_tag_multihot(
+            y['action_tags'], 2, torch.device('cpu'), torch.float32)
+        token_from_prebatched_tensor = model._build_action_tag_token(
+            prebatched_y, 2, torch.device('cpu'), torch.float32)
+        self.assertTrue(torch.allclose(token_from_python_tags, token_from_prebatched_tensor))
+
+    def test_collate_precomputes_action_tag_multihot(self):
+        _, cond = truebones_collate([
+            {
+                'inp': torch.zeros(4, 13, 3, dtype=torch.float32),
+                'n_joints': 4,
+                'temporal_mask': torch.ones(4, 4, dtype=torch.float32),
+                'graph_dist': torch.zeros(4, 4, dtype=torch.float32),
+                'joints_relations': torch.zeros(4, 4, dtype=torch.float32),
+                'joints_names_embs': torch.zeros(4, 512, dtype=torch.float32),
+                'tpos_first_frame': torch.zeros(4, 13, dtype=torch.float32),
+                'mean': torch.zeros(4, 13, dtype=torch.float32),
+                'std': torch.ones(4, 13, dtype=torch.float32),
+                'action_tags': ['attack', 'locomotion'],
+            },
+            {
+                'inp': torch.zeros(4, 13, 3, dtype=torch.float32),
+                'n_joints': 4,
+                'temporal_mask': torch.ones(4, 4, dtype=torch.float32),
+                'graph_dist': torch.zeros(4, 4, dtype=torch.float32),
+                'joints_relations': torch.zeros(4, 4, dtype=torch.float32),
+                'joints_names_embs': torch.zeros(4, 512, dtype=torch.float32),
+                'tpos_first_frame': torch.zeros(4, 13, dtype=torch.float32),
+                'mean': torch.zeros(4, 13, dtype=torch.float32),
+                'std': torch.ones(4, 13, dtype=torch.float32),
+                'action_tags': None,
+            },
+        ])
+        multihot = cond['y']['action_tag_multihot']
+        model = _make_model()
+        idx = model.action_tag_to_index
+        self.assertEqual(multihot.shape, (2, len(model.action_tag_vocab)))
+        self.assertEqual(float(multihot[0, idx['attack']]), 1.0)
+        self.assertEqual(float(multihot[0, idx['locomotion']]), 1.0)
+        self.assertEqual(float(multihot[1].sum()), 0.0)
 
     def test_forward_adds_action_token_to_timestep_embedding(self):
         model = _make_model(action_tag_cfg_drop_prob=0.0)

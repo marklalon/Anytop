@@ -1,8 +1,12 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=quadropeds_torch_compile
+set RUN_NAME=quadropeds_action_tags_v1
 set TORCH_LOGS=recompiles,graph_breaks
+
+REM --compile builds Triton kernel launchers with MSVC cl.exe. Initialize
+REM the VS 2022 x64 dev env pinned to 14.41.
+call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" -vcvars_ver=14.41
 
 pushd "%SCRIPT_DIR%"
 
@@ -19,6 +23,7 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--latent_dim 256 ^
 	--layers 8 ^
 	--global_energy_cond ^
+	--action_tag_cond ^
 	--cross_limb_dim 128 ^
 	--cross_limb_last_n 4 ^
 	--diffusion_steps 100 ^

@@ -356,6 +356,38 @@ class AnyTop(nn.Module):
                     multihot[i, idx] = 1.0
         return multihot
 
+    def _coerce_action_tag_multihot(self, raw_action_tag_multihot, batch_size, device, dtype):
+        """Normalize pre-batched action-tag multi-hot tensors to ``[B, V]``.
+
+        The data loader can precompute this tensor so torch.compile sees a
+        stable tensor input instead of a Python ``list[list[str]]`` whose
+        structure/content varies across batches and triggers recompiles.
+        """
+        if raw_action_tag_multihot is None:
+            return None
+        action_tag_multihot = torch.as_tensor(raw_action_tag_multihot, device=device, dtype=dtype)
+        if action_tag_multihot.dim() == 1:
+            action_tag_multihot = action_tag_multihot.unsqueeze(0)
+        elif action_tag_multihot.dim() != 2:
+            raise ValueError(
+                "action_tag_multihot must have shape (V,) or (B, V), got "
+                f"{tuple(action_tag_multihot.shape)}"
+            )
+        expected_vocab_size = len(self.action_tag_vocab)
+        if action_tag_multihot.shape[1] != expected_vocab_size:
+            raise ValueError(
+                "action_tag_multihot vocab dimension must match the canonical action-tag vocabulary, got "
+                f"{action_tag_multihot.shape[1]} for vocab size {expected_vocab_size}"
+            )
+        if action_tag_multihot.shape[0] == 1 and batch_size != 1:
+            action_tag_multihot = action_tag_multihot.expand(batch_size, -1)
+        elif action_tag_multihot.shape[0] != batch_size:
+            raise ValueError(
+                "action_tag_multihot batch dimension must match the motion batch size, got "
+                f"{action_tag_multihot.shape[0]} for batch {batch_size}"
+            )
+        return action_tag_multihot
+
     def _resolve_action_tag_active(self, raw_action_tag_active, batch_size, device):
         """Per-sample CFG mask for action tags (True == conditional).
 
@@ -381,9 +413,13 @@ class AnyTop(nn.Module):
     def _build_action_tag_token(self, y, batch_size, device, dtype):
         if not self.action_tag_cond or self.action_tag_projection is None:
             return None
-        action_tag_multihot = self._build_action_tag_multihot(
-            y.get('action_tags'), batch_size, device, dtype
+        action_tag_multihot = self._coerce_action_tag_multihot(
+            y.get('action_tag_multihot'), batch_size, device, dtype
         )
+        if action_tag_multihot is None:
+            action_tag_multihot = self._build_action_tag_multihot(
+                y.get('action_tags'), batch_size, device, dtype
+            )
         action_tag_emb = self.action_tag_projection(action_tag_multihot)
         action_tag_active = self._resolve_action_tag_active(
             y.get('action_tag_active'), batch_size, device

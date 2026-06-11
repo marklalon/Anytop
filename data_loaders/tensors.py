@@ -1,6 +1,34 @@
 import torch
 import numpy as np
 
+
+_ACTION_TAG_VOCAB = None
+_ACTION_TAG_TO_INDEX = None
+
+
+def _get_action_tag_vocab():
+    global _ACTION_TAG_VOCAB, _ACTION_TAG_TO_INDEX
+    if _ACTION_TAG_VOCAB is None or _ACTION_TAG_TO_INDEX is None:
+        from data_loaders.truebones.truebones_utils.motion_labels_llm import ACTION_TAGS
+
+        _ACTION_TAG_VOCAB = list(ACTION_TAGS)
+        _ACTION_TAG_TO_INDEX = {tag: i for i, tag in enumerate(_ACTION_TAG_VOCAB)}
+    return _ACTION_TAG_VOCAB, _ACTION_TAG_TO_INDEX
+
+
+def _build_action_tag_multihot_batch(action_tags_batch):
+    vocab, tag_to_index = _get_action_tag_vocab()
+    multihot = torch.zeros((len(action_tags_batch), len(vocab)), dtype=torch.float32)
+    for row_index, raw_tags in enumerate(action_tags_batch):
+        if raw_tags is None:
+            continue
+        tags = [raw_tags] if isinstance(raw_tags, str) else raw_tags
+        for tag in tags:
+            idx = tag_to_index.get(str(tag).strip().lower())
+            if idx is not None:
+                multihot[row_index, idx] = 1.0
+    return multihot
+
 def n_joints_to_mask(n_joints, max_joints):
     mask = torch.arange(max_joints + 1, device=n_joints.device).expand(len(n_joints), max_joints + 1) < (n_joints.unsqueeze(1) + 1)
     mask = mask.unsqueeze(2).float() * mask.unsqueeze(1).float() 
@@ -82,9 +110,17 @@ def truebones_collate(batch):
         motionnamebatch = [b['motion_name'] for b in notnone_batches]
         cond['y'].update({'motion_name': motionnamebatch})
 
-    for key in ('action_tags', 'translation_root_index'):
-        if any(key in batch_item for batch_item in notnone_batches):
-            cond['y'].update({key: [batch_item.get(key) for batch_item in notnone_batches]})
+    if any('action_tags' in batch_item for batch_item in notnone_batches):
+        action_tags_batch = [batch_item.get('action_tags') for batch_item in notnone_batches]
+        cond['y'].update({
+            'action_tags': action_tags_batch,
+            'action_tag_multihot': _build_action_tag_multihot_batch(action_tags_batch),
+        })
+
+    if any('translation_root_index' in batch_item for batch_item in notnone_batches):
+        cond['y'].update({
+            'translation_root_index': [batch_item.get('translation_root_index') for batch_item in notnone_batches]
+        })
 
     for key in ('is_loop', 'loop_full_cycle'):
         if any(key in batch_item for batch_item in notnone_batches):
