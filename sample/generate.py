@@ -1528,7 +1528,23 @@ def main(args=None, cond_dict=None, runtime=None):
         if _action_tags_raw:
             _tag_list = [t.strip() for t in _action_tags_raw.replace(';', ',').split(',') if t.strip()]
             if _tag_list:
+                from data_loaders.truebones.truebones_utils.motion_labels_llm import ACTION_TAGS
+                _valid_tags = {t.lower() for t in ACTION_TAGS}
+                _unknown = [t for t in _tag_list if t.lower() not in _valid_tags]
+                if _unknown:
+                    sys.exit(
+                        f"ERROR: unknown action tag(s): {', '.join(sorted(set(_unknown)))}. "
+                        f"Valid tags: {', '.join(sorted(_valid_tags))}"
+                    )
                 _action_tags_per_obj = [_tag_list] * args.batch_size
+            # Fast-fail if the model was trained without action-tag conditioning.
+            if _action_tags_per_obj is not None:
+                _uw = unwrap_anytop_model(model)
+                if not getattr(_uw, 'action_tag_cond', False):
+                    sys.exit(
+                        'ERROR: --action_tags was passed but this checkpoint was trained '
+                        'without --action_tag_cond. Action tags will have no effect.'
+                    )
         _, model_kwargs = create_condition(
             obj_batch,
             cond_dict,

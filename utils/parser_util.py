@@ -5,7 +5,7 @@ import json
 import copy
 import sys
 
-def parse_and_load_from_model(parser, argv=None):
+def parse_and_load_from_model(parser, argv=None, preserve_cli_args=None):
     # args according to the loaded model
     # do not try to specify them from cmd line since they will be overwritten
     add_model_options(parser)
@@ -13,6 +13,10 @@ def parse_and_load_from_model(parser, argv=None):
     args_to_overwrite = []
     for group_name in ['dataset', 'model', 'diffusion']:
         args_to_overwrite += get_args_per_group_name(parser, args, group_name)
+
+    # Remove args that should NOT be overwritten by stored training defaults.
+    if preserve_cli_args:
+        args_to_overwrite = [a for a in args_to_overwrite if a not in preserve_cli_args]
 
     if isinstance(args.model_path, list) and len(args.model_path) == 1:
         args.model_path = args.model_path[0]
@@ -348,7 +352,9 @@ def generate_args(argv=None):
     add_data_options(parser)
     add_sampling_options(parser)
     add_generate_options(parser)
-    args = parse_and_load_from_model(parser, argv=argv)
+    # These CLI args are generation-time overrides and must NOT be
+    # overwritten by the training args.json (which stores their defaults).
+    args = parse_and_load_from_model(parser, argv=argv, preserve_cli_args={'action_tags'})
     return args
 
 def process_new_skeleton_args():
