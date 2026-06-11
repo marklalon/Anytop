@@ -352,6 +352,7 @@ class NativeLoopTests(unittest.TestCase):
             num_heads=2,
             dropout=0.0,
             cross_limb=True,
+            loop_cond_prob=1.0,
         )
         capture_decoder = _CaptureDecoder()
         model.seqTransDecoder = capture_decoder

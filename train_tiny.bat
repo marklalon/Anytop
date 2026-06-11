@@ -24,6 +24,7 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--layers 8 ^
 	--global_energy_cond ^
 	--action_tag_cond ^
+	--loop_cond_prob 0.5 ^
 	--cross_limb_dim 128 ^
 	--cross_limb_last_n 4 ^
 	--diffusion_steps 100 ^

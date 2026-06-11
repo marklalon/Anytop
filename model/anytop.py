@@ -56,6 +56,7 @@ class AnyTop(nn.Module):
         self.temporal_span_mask_min_frames=int(kargs.get('temporal_span_mask_min_frames', 4))
         self.temporal_span_mask_max_frames=int(kargs.get('temporal_span_mask_max_frames', 12))
         self.global_energy_cond=bool(kargs.get('global_energy_cond', False))
+        self.loop_cond_prob=float(kargs.get('loop_cond_prob', 1.0))
         self.global_energy_stats_momentum = 0.01
         # CFG drop probability for global energy conditioning during training.
         # When > 0, randomly replaces the energy condition with the running mean
@@ -113,13 +114,14 @@ class AnyTop(nn.Module):
             self.register_buffer('global_energy_running_count', torch.zeros((), dtype=torch.long))
         else:
             self.global_energy_projection = None
-        # Loop conditioning is always available: loop-labelled samples feed 1,
-        # non-loop samples feed 0.
-        self.loop_condition_projection = nn.Sequential(
-            nn.Linear(1, self.latent_dim),
-            nn.GELU(),
-            nn.Linear(self.latent_dim, self.latent_dim),
-        )
+        if self.loop_cond_prob > 0.0:
+            self.loop_condition_projection = nn.Sequential(
+                nn.Linear(1, self.latent_dim),
+                nn.GELU(),
+                nn.Linear(self.latent_dim, self.latent_dim),
+            )
+        else:
+            self.loop_condition_projection = None
         self.playspeed_projection = nn.Sequential(
             nn.Linear(1, self.latent_dim),
             nn.GELU(),
@@ -582,13 +584,14 @@ class AnyTop(nn.Module):
             dtype=x.dtype,
         )
         timesteps_emb = timesteps_emb + self.playspeed_projection(playspeed_condition)
-        loop_condition = self._coerce_loop_condition(
-            y.get('is_loop'),
-            batch_size=bs,
-            device=x.device,
-            dtype=x.dtype,
-        )
-        timesteps_emb = timesteps_emb + self.loop_condition_projection(loop_condition)
+        if self.loop_cond_prob > 0.0 and self.loop_condition_projection is not None:
+            loop_condition = self._coerce_loop_condition(
+                y.get('is_loop'),
+                batch_size=bs,
+                device=x.device,
+                dtype=x.dtype,
+            )
+            timesteps_emb = timesteps_emb + self.loop_condition_projection(loop_condition)
         action_tag_token = self._build_action_tag_token(y, bs, x.device, x.dtype)
         if action_tag_token is not None:
             timesteps_emb = timesteps_emb + action_tag_token

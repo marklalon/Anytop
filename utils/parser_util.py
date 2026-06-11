@@ -102,6 +102,11 @@ def add_model_options(parser):
     group.add_argument("--lambda_loop_root_xz", default=0.0, type=float,
                        help="Weight for loop-only translation-root XZ closure loss."
                            " Penalizes net X/Z velocity drift over the visible loop while preserving in-loop root motion.")
+    group.add_argument("--loop_cond_prob", default=1.0, type=float,
+                       help="Probability that a loop training clip stays loop-conditioned "
+                            "(periodic resampling, circular phase, and loop-condition embedding)."
+                            " 0.0 = all loop clips treated as non-loop; 1.0 = always keep loop path."
+                            " Controls both the model loop-condition projection and dataset loop processing.")
     group.add_argument("--t5_out_dim", default=0, type=int, help=argparse.SUPPRESS)
     group.add_argument("--temporal_window", default=31, type=int,
                        help="temporal window size")

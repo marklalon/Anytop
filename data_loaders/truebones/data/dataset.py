@@ -770,7 +770,27 @@ class MotionDataset(data.Dataset):
 
         motion_metadata = _copy_required_motion_metadata(name, data.get('motion_metadata'))
         is_loop = bool(motion_metadata.get('is_loop'))
-        motion_action_tags = _normalize_motion_action_tags(motion_metadata.get('action_tags'))
+        loop_cond_prob = float(getattr(self.opt, 'loop_cond_prob', 1.0) or 1.0)
+        if not 0.0 <= loop_cond_prob <= 1.0:
+            raise ValueError(f"loop_cond_prob must be in [0, 1], got {loop_cond_prob}.")
+        # loop_cond_prob: probability that a loop clip STAYS loop-conditioned.
+        # When the random draw succeeds, loop_uncond is False (loop path active).
+        # When it fails, loop_uncond is True — the motion is still physically a
+        # loop, but the model is *told* it is not (is_loop=False in metadata,
+        # no circular temporal mask).
+        #
+        # IMPORTANT: loop_uncond only controls the *label / conditioning*
+        # exposed to the model.  The data-level augmentations below (circular
+        # roll + tile for diverse phase coverage) apply to **all** is_loop
+        # motions regardless of loop_uncond.  This keeps training-data
+        # diversity high while the loop_uncond path trains the model to
+        # denoise loop-shaped data WITHOUT explicit loop priors.
+        loop_uncond = bool(
+            is_loop
+            and loop_offset is None
+            and loop_cond_prob < 1.0
+            and random.random() >= loop_cond_prob
+        )
 
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std = self._load_normalized_motion(data)
         ind = 0
@@ -778,7 +798,7 @@ class MotionDataset(data.Dataset):
         loop_full_cycle = False
         loop_phase_offset = 0
         loop_tile_count = 1
-        loop_condition_active = bool(is_loop)
+        loop_condition_active = bool(is_loop) and not loop_uncond
 
         max_source_length = target_num_frames * 2
         # ── Loop-aware data augmentation (applies to ALL is_loop motions) ──
@@ -799,6 +819,7 @@ class MotionDataset(data.Dataset):
 
         if loop_condition_active and m_length > max_source_length:
             loop_condition_active = False
+            loop_uncond = True
 
         if crop_start is not None and m_length > target_num_frames:
             crop_length = target_num_frames
@@ -810,6 +831,8 @@ class MotionDataset(data.Dataset):
                 )
             motion = motion[ind: ind + crop_length]
             m_length = int(motion.shape[0])
+            if loop_condition_active:
+                loop_uncond = True
             loop_condition_active = False
         elif m_length > max_source_length:
             # Long loops have been downgraded to non-loop above, so this path
@@ -884,6 +907,7 @@ class MotionDataset(data.Dataset):
                 'loop_phase_offset': int(loop_phase_offset),
                 'loop_tile_count': int(loop_tile_count),
                 'playspeed_cond': float(playspeed_cond),
+                'loop_uncond': bool(loop_uncond),
             }
         return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {
             'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
@@ -1006,6 +1030,7 @@ class Truebones(data.Dataset):
         self.opt.motion_cache_size = self.motion_cache_size
         self.opt.min_length = int(kwargs.get('min_length', getattr(self.opt, 'min_length', 20)))
 
+        self.opt.loop_cond_prob = kwargs.get('loop_cond_prob', 1.0)
         cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
         cond_dict = refresh_joint_metadata_in_cond_dict(cond_dict)
         # Support both predefined subsets and single species names
