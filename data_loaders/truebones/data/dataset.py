@@ -770,7 +770,7 @@ class MotionDataset(data.Dataset):
 
         motion_metadata = _copy_required_motion_metadata(name, data.get('motion_metadata'))
         is_loop = bool(motion_metadata.get('is_loop'))
-        loop_cond_prob = float(getattr(self.opt, 'loop_cond_prob', 1.0) or 1.0)
+        loop_cond_prob = float(getattr(self.opt, 'loop_cond_prob', 1.0))
         if not 0.0 <= loop_cond_prob <= 1.0:
             raise ValueError(f"loop_cond_prob must be in [0, 1], got {loop_cond_prob}.")
         # loop_cond_prob: probability that a loop clip STAYS loop-conditioned.
