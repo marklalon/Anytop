@@ -406,13 +406,6 @@ def regenerate_dataset_artifacts(
             infer_motion_labels_from_motion_name(motion_path.name, object_types=tuple(rebuilt_cond.keys()))
         )
         motion_entry["motion_name"] = motion_path.name
-        is_loop = motion_entry.setdefault("is_loop", False)
-        # Attack actions are inherently non-cyclic; force is_loop=False so the
-        # loop condition never activates at training or inference time.
-        motion_action_tags = motion_entry.get("action_tags") or []
-        if "attack" in motion_action_tags:
-            is_loop = False
-        motion_entry["is_loop"] = is_loop
         motion_entry["translation_root_index"] = int(
             canonical_translation_roots[str(motion_entry["object_type"])]
         )

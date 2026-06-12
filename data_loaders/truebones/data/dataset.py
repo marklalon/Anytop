@@ -13,7 +13,7 @@ import warnings
 from torch.utils.data._utils.collate import default_collate
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.param_utils import parse_action_tags, parse_action_tag_weights
-from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
+from data_loaders.truebones.truebones_utils.motion_labels import apply_attack_loop_override, load_motion_metadata
 from data_loaders.truebones.truebones_utils.motion_process import (
     refresh_joint_metadata_in_cond_dict,
 )
@@ -621,6 +621,10 @@ class MotionDataset(data.Dataset):
         all_object_types = self.cond_dict.keys()
         if motion_metadata_lookup is None:
             motion_metadata_lookup = load_motion_metadata(opt.data_root)
+        # Attack actions are non-cyclic: override is_loop=False in memory (the
+        # on-disk metadata file keeps its original value). Covers both training
+        # and reference-conditioned inference, which both flow through here.
+        apply_attack_loop_override(motion_metadata_lookup)
         new_name_list = []
         length_list = []
         motion_length_cache_path = _motion_length_cache_path(opt.data_root)
