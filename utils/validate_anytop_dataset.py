@@ -415,17 +415,34 @@ def _prune_excess_joint_motions(motions_dir: Path, bvhs_dir: Path, cond: dict, s
     return deleted_stems
 
 
+def _load_ignore_warnings(dataset_dir: Path) -> set[str]:
+    """Load motion stems (without .npy extension) to suppress known benign warnings."""
+    ignore_path = dataset_dir / "ignore_warnings.txt"
+    if not ignore_path.exists():
+        return set()
+    stems: set[str] = set()
+    for line in ignore_path.read_text("utf-8").splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            # Accept both "name.npy" and bare "name" forms.
+            stems.add(stripped.replace(".npy", ""))
+    return stems
+
+
 def _validate_root_motion_extent(
     motion: np.ndarray,
     object_type: str,
     motion_name: str,
     threshold: float,
     translation_root_index: int,
+    ignored_stems: set[str] | None = None,
 ) -> None:
     """Warn if the motion's translation-root XZ distance from origin exceeds the threshold.
 
     Uses the stored per-motion ``translation_root_index`` from motion metadata.
     """
+    if ignored_stems and Path(motion_name).stem in ignored_stems:
+        return
     try:
         from data_loaders.truebones.truebones_utils.motion_process import (
             recover_root_quat_and_pos_np,
@@ -453,6 +470,7 @@ def validate_motion_files(
     sample_limit: int,
     root_motion_threshold: float,
     motion_orientation_threshold: float = 45.0,
+    ignored_stems: set[str] | None = None,
 ) -> None:
     motion_files = sorted(motions_dir.glob("*.npy"))
     bvh_files = sorted(bvhs_dir.glob("*.bvh")) if bvhs_dir.exists() else []
@@ -462,6 +480,11 @@ def validate_motion_files(
     except ValidationError as e:
         print_warn(f"directory/naming validation failed: {e}")
         return
+
+    if ignored_stems is None:
+        ignored_stems = _load_ignore_warnings(motions_dir.parent)
+    if ignored_stems:
+        print_ok(f"loaded {len(ignored_stems)} ignored warning stem(s) from ignore_warnings.txt")
 
     has_paired_bvhs = False
     if bvh_files:
@@ -507,6 +530,7 @@ def validate_motion_files(
                 motion_path.name,
                 root_motion_threshold,
                 translation_root_index,
+                ignored_stems=ignored_stems,
             )
 
             _validate_motion_orientation(
@@ -516,6 +540,7 @@ def validate_motion_files(
                 motion_path.name,
                 motion_orientation_threshold,
                 translation_root_index,
+                ignored_stems=ignored_stems,
             )
         except ValidationError as e:
             print_warn(f"validation error: {motion_path.name}: {e}")
@@ -534,6 +559,7 @@ def _validate_motion_orientation(
     motion_name: str,
     threshold_deg: float,
     translation_root_index: int,
+    ignored_stems: set[str] | None = None,
 ) -> None:
     """Warn when both endpoint motion facings differ from the T-pose facing.
 
@@ -542,6 +568,8 @@ def _validate_motion_orientation(
     same face-orientation heuristic as preprocessing instead.  A clip passes
     when either its first or final frame faces close enough to the T-pose.
     """
+    if ignored_stems and Path(motion_name).stem in ignored_stems:
+        return
     try:
         from data_loaders.truebones.truebones_utils.features import recover_from_bvh_rot_np
         from data_loaders.truebones.truebones_utils.face_orientation import (
