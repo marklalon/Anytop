@@ -38,7 +38,7 @@ ACTION_TAG_SAMPLE_WEIGHTS: dict[str, float] = {
 }
 
 
-DEFAULT_SPLIT_RATIOS = {"train": 0.9, "val": 0.1, "test": 0.0}
+DEFAULT_SPLIT_RATIOS = {"train": 0.95, "val": 0.05, "test": 0.0}
 DEFAULT_SPLIT_SEED = 3407
 SUPPORTED_SPLITS = tuple(DEFAULT_SPLIT_RATIOS.keys())
 ALL_SPLIT_NAME = "all"
