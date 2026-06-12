@@ -566,14 +566,14 @@ def test_run_preprocessing_calls_create_data_samples_directly(monkeypatch):
     monkeypatch.setattr(motion_process_mod, 'create_data_samples', fake_create_data_samples)
 
     ret = preprocess_and_validate_module.run_preprocessing(
-        'all',
-        4,
+        object_filter='',
+        object_workers=4,
         raw_data_dir='raw_dir',
         dataset_dir='dataset_dir',
     )
 
     assert ret == 0
-    assert captured['objects'] == list(preprocess_and_validate_module.OBJECT_SUBSETS_DICT['all'])
+    assert set(captured['objects']) == set(preprocess_and_validate_module.ALL_OBJECTS)
     assert captured['dataset_dir'] == 'dataset_dir'
     assert captured['raw_data_dir'] == 'raw_dir'
     assert captured['object_workers'] == 4

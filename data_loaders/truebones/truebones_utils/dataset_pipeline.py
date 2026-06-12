@@ -33,6 +33,7 @@ from .animation_utils import (
     attach_joint_name_embeddings_to_cond,
     needs_bvh_position_channels,
     reorder_animation_to_dfs,
+    crop_animation_to_max_joints,
     coerce_single_orientation_quat,
 )
 
@@ -194,6 +195,17 @@ def _process_motion_file(file_path, object_type, max_joints,
     local_errors = dict()
     # Load the animation file (FBX/GLB/GLTF) once; pass it as `preloaded` to every get_motion call so that
     raw_anim, names, frame_time = FBX.load(file_path)
+    # Crop oversized skeletons to the model cap (deepest leaves first) so the loaded
+    # animation and its exported names match the cropped rest-pose offsets. The cap is
+    # the MAX_JOINTS constant, NOT the running ``max_joints`` (which is a growing
+    # dataset-wide maximum used only for padding/metadata). The crop is a deterministic
+    # function of the parent topology, so it removes the same joints the rest pose did.
+    raw_anim, names, _ = crop_animation_to_max_joints(
+        raw_anim,
+        names,
+        max_joints=MAX_JOINTS,
+        context=f"{object_type} '{os.path.basename(str(file_path))}'",
+    )
     anim_len = len(raw_anim)
     begin = 0
     file_max_joints = max_joints
@@ -544,17 +556,32 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     }
 
 
-"""Write a prepared object payload to disk with stable sequential clip naming."""
-def _write_object_outputs(save_dir, object_payload, files_counter):
+"""Write a prepared object payload to disk with stable per-(species, action) clip naming.
+
+The trailing clip number is a segment index counted *within* each
+`{object_type}_{action}` group (1, 2, 3, ...), not a global running counter.
+This keeps a clip's name stable when unrelated species are added/removed or when
+only a subset is reprocessed (e.g. --filter), so externally maintained, clip-name
+keyed sidecars (motion_tags.jsonl, motion_captions.jsonl) do not go stale.
+
+`files_counter` is still threaded through purely for the dataset-wide summary
+counts; it no longer participates in clip names. `action_start_counts` lets the
+incremental --update path continue numbering above existing clips of the same
+(object, action) group so freshly written clips never collide with retained ones.
+"""
+def _write_object_outputs(save_dir, object_payload, files_counter, action_start_counts=None):
     object_type = object_payload['object_type']
     frames_counter = 0
     motion_metadata = {}
+    action_counter = dict(action_start_counts or {})
 
     for result in object_payload['results']:
         motion = result['motion']
         files_counter += 1
         frames_counter += motion.shape[0]
-        name = object_type + "_" + result['action'] + "_" + str(files_counter)
+        action = result['action']
+        action_counter[action] = action_counter.get(action, 0) + 1
+        name = object_type + "_" + action + "_" + str(action_counter[action])
         motion_file_name = name + '.npy'
         np.save(pjoin(save_dir, MOTION_DIR, motion_file_name), motion)
         # Export the visually faithful processed animation rather than the
@@ -634,7 +661,7 @@ def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, fi
 
 """ creates processed tensors for all the files of a given object. Returens statistics and the object condition,
 which includes rest-pose/tpos-compatible conditioning, relation/distances matrices, offsets, parents, joints names, kinematic chains, mean and std"""    
-def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None):
+def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, action_start_counts=None):
     object_payload = _prepare_object_outputs(
         object_type,
         max_joints,
@@ -653,6 +680,7 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
         save_dir,
         object_payload,
         files_counter,
+        action_start_counts=action_start_counts,
     )
     frames_counter += object_frames_counter
 
@@ -848,19 +876,34 @@ def _update_anim_dir(object_name, face_joints, save_dir, tpose_path, anim_dir):
     existing_meta = load_motion_metadata(save_dir)
     validate_anim_dir_update_state(object_name, save_dir, existing_meta)
 
-    # Number new clips above every existing clip so they collide neither with
-    # retained donor clips nor with older anim-dir outputs still on disk during
-    # processing (matching-source clips are removed only after processing
-    # succeeds, so a failed reprocess leaves the existing dataset intact).
-    def _clip_index(name):
-        tail = os.path.splitext(name)[0].rsplit('_', 1)[-1]
-        return int(tail) if tail.isdigit() else 0
-    start_counter = max([_clip_index(n) for n in existing_meta] + [0])
+    # Clip numbers are per-(object, action) segment indices, so number new clips
+    # above the highest existing index *within each action group*. New clips then
+    # collide neither with retained donor clips nor with older anim-dir outputs
+    # still on disk during processing (matching-source clips are removed only
+    # after processing succeeds, so a failed reprocess leaves the existing
+    # dataset intact).
+    def _action_and_index(name):
+        stem = os.path.splitext(name)[0]
+        if not stem.startswith(object_name + '_'):
+            return None, 0
+        rest = stem[len(object_name) + 1:]
+        head, _, tail = rest.rpartition('_')
+        if not head or not tail.isdigit():
+            return None, 0
+        return head, int(tail)
+    action_start_counts = {}
+    for motion_name, entry in existing_meta.items():
+        if str(entry.get('object_type', '')) != object_name:
+            continue
+        action, index = _action_and_index(motion_name)
+        if action is None:
+            continue
+        action_start_counts[action] = max(action_start_counts.get(action, 0), index)
 
     squared_positions_error = dict()
     _, _, _, object_cond, new_meta = process_object(
         object_name,
-        start_counter,
+        0,
         0,
         23,
         squared_positions_error,
@@ -868,6 +911,7 @@ def _update_anim_dir(object_name, face_joints, save_dir, tpose_path, anim_dir):
         fbxs_dir=anim_dir,
         face_joints=face_joints,
         t_pos_path=tpose_path,
+        action_start_counts=action_start_counts,
     )
     if object_cond is None:
         print(f"[update] no valid animation data found in {anim_dir}; dataset unchanged")

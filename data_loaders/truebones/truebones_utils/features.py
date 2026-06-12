@@ -46,6 +46,7 @@ from .animation_utils import (
     resolve_detected_translation_root_index,
     needs_bvh_position_channels,
     reorder_animation_to_dfs,
+    crop_animation_to_max_joints,
     get_average_axial_bone_length,
     get_rest_body_max_span,
     compute_scale_factor,
@@ -377,6 +378,22 @@ def get_common_features_from_rest_pose(
 ):
     loaded_anim, rest_pose_names, _rest_pose_frame_time = FBX.load(rest_pose_path)
     reference_anim = _rest_pose_animation_from_loaded_anim(loaded_anim)
+    # Crop oversized skeletons down to max_joints (deepest leaves first) BEFORE any
+    # face/contact/offset inference, so every downstream rest-pose artifact is built
+    # on the cropped skeleton. Each motion clip crops independently from the same
+    # topology, yielding the identical joint set (validated by the offset-count guard
+    # in get_hml_aligned_anim).
+    reference_anim, rest_pose_names, _kept_joint_indices = crop_animation_to_max_joints(
+        reference_anim,
+        rest_pose_names,
+        max_joints=max_joints,
+        context=f"{object_type} rest pose '{os.path.basename(str(rest_pose_path))}'",
+    )
+    if _kept_joint_indices is not None and face_joints is not None:
+        # Remap caller-supplied explicit face-joint indices onto the cropped skeleton,
+        # dropping any that fell inside a cropped subtree.
+        _index_remap = {old: new for new, old in enumerate(_kept_joint_indices)}
+        face_joints = [_index_remap[j] for j in face_joints if j in _index_remap]
     face_joints = resolve_face_joints(object_type, rest_pose_names, reference_anim.parents, face_joints=face_joints)
     forward_joint_index, forward_base_joint_index = resolve_forward_reference_joints(
         rest_pose_names,

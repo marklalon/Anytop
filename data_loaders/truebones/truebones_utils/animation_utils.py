@@ -792,6 +792,139 @@ def needs_bvh_position_channels(anim, tol=1e-4):
     return bool(np.any(np.abs(nonroot_positions - rest_offsets) > tol))
 
 
+def _joint_depths_from_parents(parents):
+    """Return per-joint depth (root = 0) for a parent array.
+
+    Walks each joint up to its root, so it is correct regardless of whether the
+    array happens to be topologically (parent-before-child) ordered.
+    """
+    parents = np.asarray(parents, dtype=np.int64)
+    n = int(parents.shape[0])
+    depths = np.zeros((n,), dtype=np.int64)
+    for joint_index in range(n):
+        depth = 0
+        cursor = joint_index
+        while int(parents[cursor]) >= 0:
+            cursor = int(parents[cursor])
+            depth += 1
+        depths[joint_index] = depth
+    return depths
+
+
+def select_cropped_joint_indices(parents, max_joints):
+    """Pick the joints to KEEP so a skeleton fits within ``max_joints``.
+
+    Joints are removed one at a time, always taking the deepest current *leaf*
+    (a kept joint with no kept children); ties at equal depth are broken by the
+    larger joint index so trimming starts at the tail/rightmost branch. Because
+    only leaves are ever removed, the kept set stays ancestor-closed: every kept
+    non-root joint still has its parent, so parent remapping is always valid.
+    Roots are never removed.
+
+    Returns ``(keep_indices, removed_order)`` where ``keep_indices`` is sorted
+    ascending and ``removed_order`` lists removed joints deepest-first; returns
+    ``None`` when the skeleton already fits (no cropping needed).
+    """
+    parents = np.asarray(parents, dtype=np.int64)
+    n = int(parents.shape[0])
+    if n <= int(max_joints):
+        return None
+
+    depths = _joint_depths_from_parents(parents)
+    kept = [True] * n
+    child_count = [0] * n
+    for joint_index in range(n):
+        parent_index = int(parents[joint_index])
+        if parent_index >= 0:
+            child_count[parent_index] += 1
+
+    num_kept = n
+    removed_order = []
+    while num_kept > int(max_joints):
+        best = -1
+        best_depth = -1
+        for joint_index in range(n):
+            if not kept[joint_index]:
+                continue
+            if child_count[joint_index] != 0:
+                continue
+            if int(parents[joint_index]) < 0:
+                continue  # never remove a root
+            depth = int(depths[joint_index])
+            if depth > best_depth or (depth == best_depth and joint_index > best):
+                best_depth = depth
+                best = joint_index
+        if best < 0:
+            break  # only roots remain; cannot crop further
+        kept[best] = False
+        removed_order.append(best)
+        num_kept -= 1
+        parent_index = int(parents[best])
+        if parent_index >= 0:
+            child_count[parent_index] -= 1
+
+    keep_indices = [joint_index for joint_index in range(n) if kept[joint_index]]
+    return keep_indices, removed_order
+
+
+def crop_animation_to_max_joints(anim, names, max_joints=MAX_JOINTS, *, context=None):
+    """Crop ``anim``/``names`` to at most ``max_joints`` joints, deepest leaves first.
+
+    Returns ``(anim, names, keep_indices)``. When no cropping is needed the
+    inputs are returned unchanged with ``keep_indices=None``. When cropping
+    happens a yellow [WARN] log line names the dropped joints so the affected
+    clip/skeleton is easy to spot. The keep-set is a deterministic function of
+    the parent topology, so the rest-pose skeleton and every motion clip of the
+    same character crop to the identical joint set.
+    """
+    parents = np.asarray(anim.parents, dtype=np.int64)
+    n = int(parents.shape[0])
+    names = list(names)
+    if len(names) != n:
+        raise ValueError(
+            f"Expected {n} joint names to crop skeleton, got {len(names)}"
+        )
+
+    selection = select_cropped_joint_indices(parents, max_joints)
+    if selection is None:
+        return anim, names, None
+    keep_indices, removed_order = selection
+
+    old_to_new = -np.ones((n,), dtype=np.int64)
+    for new_index, old_index in enumerate(keep_indices):
+        old_to_new[old_index] = new_index
+    parent_dtype = getattr(anim.parents, 'dtype', np.int32)
+    new_parents = np.array(
+        [
+            int(old_to_new[parents[old_index]]) if parents[old_index] >= 0 else -1
+            for old_index in keep_indices
+        ],
+        dtype=parent_dtype,
+    )
+
+    keep_arr = np.asarray(keep_indices, dtype=np.int64)
+    orient_count = len(anim.orients)
+    if orient_count not in (0, n):
+        raise ValueError(
+            f"Expected 0 or {n} joint orients to crop skeleton, got {orient_count}"
+        )
+    new_orients = anim.orients.copy() if orient_count == 0 else anim.orients[keep_arr].copy()
+
+    cropped = Animation(
+        anim.rotations[:, keep_arr].copy(),
+        anim.positions[:, keep_arr].copy(),
+        new_orients,
+        anim.offsets[keep_arr].copy(),
+        new_parents,
+    )
+    new_names = [names[old_index] for old_index in keep_indices]
+
+    removed_names = [names[old_index] for old_index in removed_order]
+    label = f' for {context}' if context else ''
+    _warn(f'skeleton exceeds MAX_JOINTS ({n} > {max_joints}){label}')
+    return cropped, new_names, keep_indices
+
+
 def reorder_animation_to_dfs(anim, names):
     """Reindex an Animation into true DFS order for BVH export.
 

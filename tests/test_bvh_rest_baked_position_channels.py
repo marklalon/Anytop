@@ -157,7 +157,7 @@ def test_bvh_roundtrip_with_position_channels_after_baking():
 
 _BUFFALO_NPY = os.path.join(
     _ANYTOP_ROOT, "dataset", "truebones", "zoo", "truebones_processed",
-    "motions", "Buffalo_RunLoop_115.npy",
+    "motions", "Buffalo_RunLoop_1.npy",
 )
 _COND = os.path.join(
     _ANYTOP_ROOT, "dataset", "truebones", "zoo", "truebones_processed", "cond.npy",
