@@ -165,6 +165,21 @@ def _strip_legacy_label_fields(metadata: dict[str, object]) -> dict[str, object]
     }
 
 
+def _validate_action_tags(tags: list[str], clip: str, line_number: int) -> None:
+    """Validate that all tags are members of the canonical ``ACTION_TAGS`` vocabulary."""
+    import sys
+
+    invalid = [t for t in tags if t not in ACTION_TAGS]
+    if invalid:
+        print(
+            f"\n❌ {MOTION_TAGS_FILE}:{line_number}: clip '{clip}' contains invalid "
+            f"action tag(s): {invalid}. Valid tags are: {list(ACTION_TAGS)}",
+            file=sys.stderr,
+            flush=True,
+        )
+        sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # I/O
 # ---------------------------------------------------------------------------
@@ -207,7 +222,9 @@ def load_motion_tags(dataset_dir: str | Path) -> dict[str, list[str]]:
                 raise ValueError(
                     f"{MOTION_TAGS_FILE}:{line_number} is missing the 'clip' field"
                 )
-            motion_tags[str(clip)] = normalize_action_tags(entry.get("action_tags"))
+            normalized = normalize_action_tags(entry.get("action_tags"))
+            _validate_action_tags(normalized, clip, line_number)
+            motion_tags[str(clip)] = normalized
     return motion_tags
 
 
@@ -241,10 +258,16 @@ def load_motion_metadata(dataset_dir: str | Path) -> dict[str, dict[str, object]
     if missing_tags:
         preview = ", ".join(sorted(missing_tags)[:10])
         more = "" if len(missing_tags) <= 10 else f" (+{len(missing_tags) - 10} more)"
-        raise KeyError(
-            f"{MOTION_TAGS_FILE} is missing action_tags for {len(missing_tags)} "
-            f"clip(s): {preview}{more}. Add an entry for each clip."
+        import sys
+
+        msg = (
+            f"\n❌ {MOTION_TAGS_FILE} is missing action_tags for {len(missing_tags)} "
+            f"clip(s): {preview}{more}\n\n"
+            f"   Please open {MOTION_TAGS_FILE} and add an entry for each missing clip:\n"
+            f"   {{ \"clip_name.npy\": [\"action_tag1\", \"action_tag2\", ...] }}\n"
         )
+        print(msg, file=sys.stderr, flush=True)
+        sys.exit(1)
     return normalized
 
 
