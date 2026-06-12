@@ -65,23 +65,36 @@ def main():
     if update_mode:
         os.makedirs(save_dir, exist_ok=True)
     elif os.path.exists(save_dir):
-        # Ask for user confirmation before wiping existing data
-        reply = input(
-            f"WARNING: About to wipe all existing data in '{save_dir}' "
-            f"and rebuild from scratch.\n"
-            f"Proceed? [y/N]: "
-        )
-        if reply.strip().lower() not in ('y', 'yes'):
-            print("Aborted by user.")
-            sys.exit(0)
-        # Clear old files in the target directory before processing
-        for entry in os.listdir(save_dir):
-            entry_path = os.path.join(save_dir, entry)
-            if os.path.isdir(entry_path):
-                shutil.rmtree(entry_path)
-            else:
-                os.remove(entry_path)
-        print(f"Cleared existing files in {save_dir}")
+        # Clear known data subdirectories (motions/, bvhs/, etc.) but preserve
+        # top-level files (cond.npy, metadata.txt, motion_metadata.json, etc.).
+        # Aligns with preprocess_and_validate.py behavior.
+        known_subdirs = ['motions', 'bvhs', 'joint_name_inspection']
+        existing_subdirs = [
+            s for s in known_subdirs
+            if os.path.isdir(os.path.join(save_dir, s)) and os.listdir(os.path.join(save_dir, s))
+        ]
+
+        if existing_subdirs:
+            print("\n" + "=" * 70)
+            print("WARNING: Existing preprocessed data detected")
+            print("=" * 70)
+            print(f"Dataset directory: {save_dir}")
+            print(f"Subdirectories to clear ({len(existing_subdirs)}): {', '.join(existing_subdirs)}")
+            print("\nDo you want to delete the matching subdirectories and proceed?")
+            reply = input("Enter 'yes' to delete and continue, or 'no' to abort: ")
+            if reply.strip().lower() not in ('y', 'yes'):
+                print("\nAborted by user.")
+                sys.exit(0)
+
+            print("\nDeleting...")
+            cleared = []
+            for subdir in existing_subdirs:
+                subdir_path = os.path.join(save_dir, subdir)
+                shutil.rmtree(subdir_path)
+                cleared.append(subdir)
+            print(f"Done. Cleared: {', '.join(cleared)}\n")
+        else:
+            print(f"No existing data subdirectories found in {save_dir}")
     else:
         os.makedirs(save_dir, exist_ok=True)
 

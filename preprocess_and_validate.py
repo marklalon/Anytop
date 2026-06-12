@@ -74,13 +74,12 @@ class PreservedSideArtifacts:
     motion_metadata: dict[str, dict[str, object]] = field(default_factory=dict)
 
 
-def _resolve_dataset_paths(dataset_dir: str = "") -> tuple[Path, Path, Path, Path | None, Path]:
+def _resolve_dataset_paths(dataset_dir: str = "") -> tuple[Path, Path, Path, Path]:
     dataset_dir_path = Path(get_dataset_dir(dataset_dir or None))
     return (
         dataset_dir_path,
         dataset_dir_path / MOTION_DIR,
         dataset_dir_path / BVHS_DIR,
-        dataset_dir_path / "glb" if BVHS_DIR != "glb" else None,
         dataset_dir_path / "joint_name_inspection",
     )
 
@@ -191,11 +190,11 @@ def check_and_clean_old_data(objects_subset: str, dataset_dir: str = "") -> tupl
 
     Returns (should_proceed, preserved_side_artifacts).
     """
-    dataset_dir_path, motions_dir, bvhs_dir, legacy_glb_dir, joint_name_inspection_dir = _resolve_dataset_paths(dataset_dir)
+    dataset_dir_path, motions_dir, bvhs_dir, joint_name_inspection_dir = _resolve_dataset_paths(dataset_dir)
     is_full_refresh = objects_subset.strip().lower() == "all"
 
     if is_full_refresh:
-        paths_to_delete = _collect_nonempty_directories(motions_dir, bvhs_dir, legacy_glb_dir, joint_name_inspection_dir)
+        paths_to_delete = _collect_nonempty_directories(motions_dir, bvhs_dir, joint_name_inspection_dir)
         preserved = PreservedSideArtifacts()
         title = "WARNING: Old preprocessed data detected"
         summary = [
@@ -209,7 +208,6 @@ def check_and_clean_old_data(objects_subset: str, dataset_dir: str = "") -> tupl
         targeted = [
             ("motion file(s)", motions_dir, _collect_targeted_files(motions_dir, target_object_types)),
             ("BVH file(s)", bvhs_dir, _collect_targeted_files(bvhs_dir, target_object_types)),
-            ("legacy preview file(s)", legacy_glb_dir, _collect_targeted_files(legacy_glb_dir, target_object_types)),
             ("inspection file(s)", joint_name_inspection_dir, _collect_targeted_files(joint_name_inspection_dir, target_object_types)),
         ]
         paths_to_delete = [p for _, _, files in targeted for p in files]
