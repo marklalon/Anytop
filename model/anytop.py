@@ -130,7 +130,7 @@ class AnyTop(nn.Module):
         if self.action_tag_cond:
             # Import the canonical vocabulary lazily so the model module does not
             # pull in the data-loader stack unless action conditioning is used.
-            from data_loaders.truebones.truebones_utils.motion_labels_llm import ACTION_TAGS
+            from data_loaders.truebones.truebones_utils.motion_labels import ACTION_TAGS
             self.action_tag_vocab = list(ACTION_TAGS)
             self.action_tag_to_index = {tag: i for i, tag in enumerate(self.action_tag_vocab)}
             n_action_tags = len(self.action_tag_vocab)

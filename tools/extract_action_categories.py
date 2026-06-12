@@ -1,5 +1,4 @@
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -7,6 +6,7 @@ from pathlib import Path
 _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
 from data_loaders.truebones.truebones_utils.param_utils import OBJECT_SUBSETS_DICT
+from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
 
 parser = argparse.ArgumentParser(description="Extract action category statistics from motion metadata.")
 parser.add_argument(
@@ -20,14 +20,9 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-# Load the metadata JSON file
-metadata_path = _project_root / 'dataset' / 'truebones' / 'zoo' / 'truebones_processed' / 'motion_metadata.json'
-
-with open(metadata_path, 'r', encoding='utf-8') as handle:
-    payload = json.load(handle)
-
-# Extract all action_tags values
-motions = payload.get('motions', payload)
+# Load motion metadata; action_tags are merged in from motion_tags.jsonl.
+dataset_dir = _project_root / 'dataset' / 'truebones' / 'zoo' / 'truebones_processed'
+motions = load_motion_metadata(dataset_dir)
 
 # --- Optional filter by object_type ---
 if args.objects_subset:
@@ -45,8 +40,6 @@ tag_stats = {}  # tag -> {"motion_count": int, "frame_count": int}
 
 for motion_name, entry in motions.items():
     raw_tags = entry.get('action_tags')
-    if raw_tags is None and 'action_category' in entry:
-        raw_tags = [entry['action_category']]
     if isinstance(raw_tags, str):
         raw_tags = [raw_tags]
 
@@ -95,8 +88,6 @@ print(f"Total frames: {total_frames}")
 unknown_motions: list[str] = []
 for motion_name, entry in motions.items():
     raw_tags = entry.get('action_tags')
-    if raw_tags is None and 'action_category' in entry:
-        raw_tags = [entry['action_category']]
     if isinstance(raw_tags, str):
         raw_tags = [raw_tags]
     tags_clean = [str(t).strip() for t in (raw_tags or []) if str(t).strip()]
@@ -114,8 +105,6 @@ print("-" * 39)
 tag_count_dist: dict[int, int] = {}
 for motion_name, entry in motions.items():
     raw_tags = entry.get('action_tags')
-    if raw_tags is None and 'action_category' in entry:
-        raw_tags = [entry['action_category']]
     if isinstance(raw_tags, str):
         raw_tags = [raw_tags]
     tags_clean = [str(t).strip() for t in (raw_tags or []) if str(t).strip()]

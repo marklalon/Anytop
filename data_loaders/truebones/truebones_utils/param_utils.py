@@ -51,6 +51,7 @@ MOTION_DIR = "motions"
 GLB_DIR = "glb"
 BVHS_DIR = "bvhs"
 MOTION_METADATA_FILE = "motion_metadata.json"
+MOTION_TAGS_FILE = "motion_tags.jsonl"
 FOOT_CONTACT_HEIGHT_THRESH = 0.2
 FOOT_CONTACT_VEL_THRESH = 0.002
 MAX_PATH_LEN = 5.

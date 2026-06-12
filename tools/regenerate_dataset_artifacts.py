@@ -24,7 +24,6 @@ Examples:
 
 import argparse
 import copy
-import re
 import shutil
 import sys
 import time
@@ -42,7 +41,6 @@ sys.path.insert(0, str(ANYTOP_DIR / "data_loaders" / "truebones"))
 from truebones_utils.motion_labels import (  # noqa: E402
     infer_motion_labels_from_motion_name,
     load_motion_metadata,
-    prefetch_action_tags_by_species,
     write_motion_metadata,
 )
 from truebones_utils.motion_process import (  # noqa: E402
@@ -101,16 +99,13 @@ def _rewrite_positions_error_file(dataset_dir_path: Path, motion_entries: dict[s
         existing_entries.extend(line.strip() for line in existing_lines[1:] if line.strip())
 
     motion_signatures = [
-        (
-            _normalize_identifier(str(entry.get("object_type", ""))),
-            _normalize_identifier(str(entry.get("action_label", ""))),
-        )
+        _normalize_identifier(str(entry.get("object_type", "")))
         for entry in motion_entries.values()
     ]
     filtered_lines: list[str] = []
     for line in existing_entries:
         normalized_line = _normalize_identifier(line)
-        if any(obj and obj in normalized_line and (not action or action in normalized_line) for obj, action in motion_signatures):
+        if any(obj and obj in normalized_line for obj in motion_signatures):
             filtered_lines.append(line)
 
     output_lines = ["Position squared error per source clip:__artifact_regenerated__: 0.000000"]
@@ -250,43 +245,6 @@ def _normalize_object_translation_roots(
     return canonical_roots
 
 
-def _collect_unique_action_names_by_species(
-    motion_files: list[Path],
-    object_types: tuple[str, ...],
-) -> dict[str, list[str]]:
-    """Extract action labels grouped by species/object type.
-
-    Mirrors the stem-extraction logic in
-    ``infer_motion_labels_from_motion_name`` but returns a mapping of
-    ``{object_type: [action_stem, ...]}`` so each species can be
-    batch-classified with species context.
-    """
-    result: dict[str, set[str]] = {}
-    for motion_path in motion_files:
-        stem = motion_path.stem
-
-        # Resolve object_type from filename (same logic as infer_motion_labels_from_motion_name)
-        resolved = infer_object_type_from_filename(
-            motion_path.name,
-            valid_types=set(object_types),
-        )
-        if resolved is None:
-            resolved = stem.split("_", 1)[0]
-
-        # Strip object_type prefix
-        action_stem = stem
-        prefix = f"{resolved}_"
-        if action_stem.startswith(prefix):
-            action_stem = action_stem[len(prefix):]
-        action_stem = re.sub(r"_\d+$", "", action_stem).strip("_")
-        if not action_stem:
-            action_stem = stem
-
-        result.setdefault(resolved, set()).add(action_stem)
-
-    return {obj_type: sorted(names) for obj_type, names in result.items()}
-
-
 def regenerate_dataset_artifacts(
     dataset_dir: str | Path | None = None,
     t5_model: str = "t5-base",
@@ -334,23 +292,6 @@ def regenerate_dataset_artifacts(
             "[OK] pruned stale cond.npy object entries with no matching motions: "
             + ", ".join(stale_object_types)
         )
-
-    # Batch-classify all action names upfront so individual
-    # infer_motion_labels_from_motion_name calls hit the cache.
-    # Group by species so the LLM receives species context for each action,
-    # and query species concurrently (each species' names stay serial).
-    t0 = time.time()
-    unique_actions_by_species = _collect_unique_action_names_by_species(
-        motion_files,
-        tuple(active_cond.keys()),
-    )
-    prefetch_action_tags_by_species(unique_actions_by_species)
-    total_actions = sum(len(names) for names in unique_actions_by_species.values())
-    print(
-        f"[OK] action tags prefetched for {total_actions} unique action(s) "
-        f"across {len(unique_actions_by_species)} species "
-        f"in {time.time() - t0:.1f}s"
-    )
 
     rebuilt_cond = {
         object_type: copy.deepcopy(object_cond)
@@ -401,11 +342,9 @@ def regenerate_dataset_artifacts(
         max_joints = max(max_joints, int(motion.shape[1]))
 
         motion_entry = dict(existing_motion_metadata.get(motion_path.name, {}))
-        motion_entry.pop("action_category", None)
         motion_entry.update(
             infer_motion_labels_from_motion_name(motion_path.name, object_types=tuple(rebuilt_cond.keys()))
         )
-        motion_entry["motion_name"] = motion_path.name
         motion_entry["translation_root_index"] = int(
             canonical_translation_roots[str(motion_entry["object_type"])]
         )

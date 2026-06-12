@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 import torch
 
-from data_loaders.truebones.offline_reference_dataset import load_cond_dict, resolve_dataset_root
-from data_loaders.truebones.truebones_utils.motion_labels import infer_species_label, load_motion_metadata
+from data_loaders.truebones.offline_reference_dataset import load_cond_dict
 
 
 @dataclass(frozen=True)
@@ -31,32 +30,6 @@ class SkeletonMetadata:
     symmetry_right_indices: tuple[int, ...] = tuple()
     subtree_indices: tuple[tuple[int, ...], ...] = tuple()
     max_joint_depth: int = 1
-
-
-@dataclass(frozen=True)
-class LabelVocab:
-    labels: tuple[str, ...]
-    _mapping: dict[str, int] = field(init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "_mapping", {label: index for index, label in enumerate(self.labels)})
-
-    @property
-    def size(self) -> int:
-        return len(self.labels)
-
-    def to_dict(self) -> dict[str, int]:
-        return dict(self._mapping)
-
-    def encode_many(self, values: Sequence[str], *, device: torch.device) -> torch.Tensor:
-        unknown_index = self._mapping.get("unknown", 0)
-        encoded = [self._mapping.get(_normalize_label(value), unknown_index) for value in values]
-        return torch.as_tensor(encoded, dtype=torch.long, device=device)
-
-
-def _normalize_label(value: object) -> str:
-    text = str(value or "").strip().lower()
-    return text or "unknown"
 
 
 def _to_int_tuple(values: Iterable[object] | None) -> tuple[int, ...]:
@@ -153,27 +126,6 @@ def load_skeleton_metadata(
             max_joint_depth=max_joint_depth,
         )
     return metadata
-
-
-def build_label_vocabs(dataset_dir: str | Path | None = None) -> tuple[LabelVocab, LabelVocab]:
-    dataset_root = resolve_dataset_root(dataset_dir)
-    motion_metadata = load_motion_metadata(dataset_root)
-    cond_dict = load_cond_dict(dataset_root)
-
-    species_labels = {"unknown"}
-    action_labels = {"unknown"}
-
-    for object_type in cond_dict:
-        species_labels.add(_normalize_label(infer_species_label(object_type)))
-
-    for metadata in motion_metadata.values():
-        species_labels.add(_normalize_label(metadata.get("species_label")))
-        action_labels.add(_normalize_label(metadata.get("action_label")))
-
-    return (
-        LabelVocab(tuple(sorted(species_labels))),
-        LabelVocab(tuple(sorted(action_labels))),
-    )
 
 
 def metadata_feature_dim(max_joints: int) -> int:

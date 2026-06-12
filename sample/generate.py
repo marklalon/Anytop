@@ -1528,7 +1528,7 @@ def main(args=None, cond_dict=None, runtime=None):
         if _action_tags_raw:
             _tag_list = [t.strip() for t in _action_tags_raw.replace(';', ',').split(',') if t.strip()]
             if _tag_list:
-                from data_loaders.truebones.truebones_utils.motion_labels_llm import ACTION_TAGS
+                from data_loaders.truebones.truebones_utils.motion_labels import ACTION_TAGS
                 _valid_tags = {t.lower() for t in ACTION_TAGS}
                 _unknown = [t for t in _tag_list if t.lower() not in _valid_tags]
                 if _unknown:

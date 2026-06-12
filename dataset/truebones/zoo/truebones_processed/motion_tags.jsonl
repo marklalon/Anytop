@@ -1,0 +1,1070 @@
+{"clip": "Alligator_BigMouth_374.npy", "action_tags": ["emote"]}
+{"clip": "Alligator_Bite1_375.npy", "action_tags": ["attack"]}
+{"clip": "Alligator_Bite2_376.npy", "action_tags": ["attack"]}
+{"clip": "Alligator_Bite3_377.npy", "action_tags": ["attack"]}
+{"clip": "Alligator_Bite4_378.npy", "action_tags": ["attack"]}
+{"clip": "Alligator_Bite5_379.npy", "action_tags": ["attack"]}
+{"clip": "Alligator_Bite6_380.npy", "action_tags": ["attack"]}
+{"clip": "Alligator_Bite7_381.npy", "action_tags": ["attack"]}
+{"clip": "Alligator_Catch_382.npy", "action_tags": ["attack"]}
+{"clip": "Alligator_DIe_383.npy", "action_tags": ["death"]}
+{"clip": "Alligator_Dash2_385.npy", "action_tags": ["locomotion"]}
+{"clip": "Alligator_Dash_384.npy", "action_tags": ["locomotion"]}
+{"clip": "Alligator_DeadUp_386.npy", "action_tags": ["getup"]}
+{"clip": "Alligator_DieLoop_387.npy", "action_tags": ["death"]}
+{"clip": "Alligator_Shake_388.npy", "action_tags": ["interact"]}
+{"clip": "Alligator_StandIdle_389.npy", "action_tags": ["idle"]}
+{"clip": "Alligator_Throw2_391.npy", "action_tags": ["attack"]}
+{"clip": "Alligator_Throw_390.npy", "action_tags": ["attack"]}
+{"clip": "Alligator_Walk1_392.npy", "action_tags": ["locomotion"]}
+{"clip": "Alligator_Walk2_393.npy", "action_tags": ["locomotion"]}
+{"clip": "Alligator_Walk2_394.npy", "action_tags": ["locomotion"]}
+{"clip": "Alligator_Walk3_395.npy", "action_tags": ["locomotion"]}
+{"clip": "Anaconda_Attack_920.npy", "action_tags": ["attack"]}
+{"clip": "Anaconda_Bite2_922.npy", "action_tags": ["attack"]}
+{"clip": "Anaconda_Bite_921.npy", "action_tags": ["attack"]}
+{"clip": "Anaconda_Die_923.npy", "action_tags": ["death"]}
+{"clip": "Anaconda_Hiss_924.npy", "action_tags": ["emote"]}
+{"clip": "Anaconda_Idle2_926.npy", "action_tags": ["idle"]}
+{"clip": "Anaconda_Idle2_927.npy", "action_tags": ["idle"]}
+{"clip": "Anaconda_Idle_925.npy", "action_tags": ["idle"]}
+{"clip": "Anaconda_Rise2_929.npy", "action_tags": ["getup"]}
+{"clip": "Anaconda_Rise_928.npy", "action_tags": ["getup"]}
+{"clip": "Anaconda_Run_930.npy", "action_tags": ["locomotion"]}
+{"clip": "Anaconda_Sneaky_931.npy", "action_tags": ["locomotion"]}
+{"clip": "Anaconda_Sneaky_932.npy", "action_tags": ["locomotion"]}
+{"clip": "Anaconda_Spin_933.npy", "action_tags": ["turn"]}
+{"clip": "Anaconda_Strike2_935.npy", "action_tags": ["attack"]}
+{"clip": "Anaconda_Strike_934.npy", "action_tags": ["attack"]}
+{"clip": "Anaconda_StruckDie_936.npy", "action_tags": ["death"]}
+{"clip": "Anaconda_Tired_937.npy", "action_tags": ["interact"]}
+{"clip": "Anaconda_Twistrattle_938.npy", "action_tags": ["emote"]}
+{"clip": "Anaconda_WalkSLow_939.npy", "action_tags": ["locomotion"]}
+{"clip": "Ant_Attack_818.npy", "action_tags": ["attack"]}
+{"clip": "Ant_Cleaning_819.npy", "action_tags": ["interact"]}
+{"clip": "Ant_Die2_821.npy", "action_tags": ["death"]}
+{"clip": "Ant_DieLoop_822.npy", "action_tags": ["death"]}
+{"clip": "Ant_DieUp_823.npy", "action_tags": ["getup"]}
+{"clip": "Ant_Die_820.npy", "action_tags": ["death"]}
+{"clip": "Ant_Idle2_825.npy", "action_tags": ["idle"]}
+{"clip": "Ant_Idle3_826.npy", "action_tags": ["idle"]}
+{"clip": "Ant_Idle_824.npy", "action_tags": ["idle"]}
+{"clip": "Ant_JumpForward_827.npy", "action_tags": ["jump"]}
+{"clip": "Ant_KnockedBack_828.npy", "action_tags": ["gethurt"]}
+{"clip": "Ant_March_829.npy", "action_tags": ["locomotion"]}
+{"clip": "Ant_Shake_830.npy", "action_tags": ["interact"]}
+{"clip": "Ant_Sting2_832.npy", "action_tags": ["attack"]}
+{"clip": "Ant_Sting_831.npy", "action_tags": ["attack"]}
+{"clip": "Ant_Throw_833.npy", "action_tags": ["attack"]}
+{"clip": "Ant_Walk_834.npy", "action_tags": ["locomotion"]}
+{"clip": "Bat_AttackBite_961.npy", "action_tags": ["attack"]}
+{"clip": "Bat_Float_962.npy", "action_tags": ["fly"]}
+{"clip": "Bat_FlyGlide_964.npy", "action_tags": ["fly"]}
+{"clip": "Bat_FlyLoop_965.npy", "action_tags": ["fly"]}
+{"clip": "Bat_Fly_963.npy", "action_tags": ["fly"]}
+{"clip": "Bat_Kick_966.npy", "action_tags": ["attack"]}
+{"clip": "Bat_KnockedBack_967.npy", "action_tags": ["gethurt"]}
+{"clip": "Bat_Looking_968.npy", "action_tags": ["emote"]}
+{"clip": "Bat_SlowFly_969.npy", "action_tags": ["fly"]}
+{"clip": "Bat_Walk_970.npy", "action_tags": ["locomotion"]}
+{"clip": "Bear_AngerySwat_71.npy", "action_tags": ["attack", "emote"]}
+{"clip": "Bear_BackUp_72.npy", "action_tags": ["locomotion"]}
+{"clip": "Bear_BearRun_73.npy", "action_tags": ["locomotion"]}
+{"clip": "Bear_Bite_74.npy", "action_tags": ["attack"]}
+{"clip": "Bear_CatchFish_75.npy", "action_tags": ["interact"]}
+{"clip": "Bear_Feast_76.npy", "action_tags": ["interact"]}
+{"clip": "Bear_FishBite_77.npy", "action_tags": ["interact"]}
+{"clip": "Bear_GetUp_78.npy", "action_tags": ["getup"]}
+{"clip": "Bear_GroundPaw_79.npy", "action_tags": ["emote"]}
+{"clip": "Bear_Growl_80.npy", "action_tags": ["emote"]}
+{"clip": "Bear_IdlePant_82.npy", "action_tags": ["idle", "emote"]}
+{"clip": "Bear_Idle_81.npy", "action_tags": ["idle"]}
+{"clip": "Bear_JumpBite_83.npy", "action_tags": ["jump", "attack"]}
+{"clip": "Bear_LayDown_84.npy", "action_tags": ["rest"]}
+{"clip": "Bear_RiseRoar_85.npy", "action_tags": ["getup", "emote"]}
+{"clip": "Bear_RunningBear_86.npy", "action_tags": ["locomotion"]}
+{"clip": "Bear_SlowWalk_87.npy", "action_tags": ["locomotion"]}
+{"clip": "Bear_Stalking_88.npy", "action_tags": ["locomotion"]}
+{"clip": "Bear_Stand_89.npy", "action_tags": ["idle"]}
+{"clip": "Bear_SwatLeft_90.npy", "action_tags": ["attack"]}
+{"clip": "Bear_SwatRight_91.npy", "action_tags": ["attack"]}
+{"clip": "Bear_TipLeft_92.npy", "action_tags": ["turn"]}
+{"clip": "Bear_Trot_93.npy", "action_tags": ["locomotion"]}
+{"clip": "Bear_Trotting_94.npy", "action_tags": ["locomotion"]}
+{"clip": "Bear_Turn180_95.npy", "action_tags": ["turn"]}
+{"clip": "Bear_TurnLeft_96.npy", "action_tags": ["turn"]}
+{"clip": "Bear_WakeUp_97.npy", "action_tags": ["interact"]}
+{"clip": "Bear_WalkForward_98.npy", "action_tags": ["locomotion"]}
+{"clip": "Bear_WetShake_99.npy", "action_tags": ["interact"]}
+{"clip": "Bird_Attack2_986.npy", "action_tags": ["attack"]}
+{"clip": "Bird_Attack3_987.npy", "action_tags": ["attack"]}
+{"clip": "Bird_Attack4_988.npy", "action_tags": ["attack"]}
+{"clip": "Bird_Attack_985.npy", "action_tags": ["attack"]}
+{"clip": "Bird_CircleLand_989.npy", "action_tags": ["turn", "fly"]}
+{"clip": "Bird_CircleLand_990.npy", "action_tags": ["turn", "fly"]}
+{"clip": "Bird_Fallen_991.npy", "action_tags": ["fall"]}
+{"clip": "Bird_Falling_992.npy", "action_tags": ["fall"]}
+{"clip": "Bird_Floater_993.npy", "action_tags": ["fly"]}
+{"clip": "Bird_FlyFast_994.npy", "action_tags": ["fly"]}
+{"clip": "Bird_FlyLoop_995.npy", "action_tags": ["fly"]}
+{"clip": "Bird_FlySlow_996.npy", "action_tags": ["fly"]}
+{"clip": "Bird_Flying_997.npy", "action_tags": ["fly"]}
+{"clip": "Bird_GroundFlap_998.npy", "action_tags": ["emote"]}
+{"clip": "Bird_IdleLoop_999.npy", "action_tags": ["idle"]}
+{"clip": "Bird_Lander_1000.npy", "action_tags": ["fly"]}
+{"clip": "Bird_LookRight_1001.npy", "action_tags": ["emote"]}
+{"clip": "Bird_SlowLook_1002.npy", "action_tags": ["emote"]}
+{"clip": "Bird_TakeOff_1003.npy", "action_tags": ["fly"]}
+{"clip": "BrownBear_Attack2_131.npy", "action_tags": ["attack"]}
+{"clip": "BrownBear_Attack3_132.npy", "action_tags": ["attack"]}
+{"clip": "BrownBear_Attack_130.npy", "action_tags": ["attack"]}
+{"clip": "BrownBear_Charge_133.npy", "action_tags": ["locomotion", "attack"]}
+{"clip": "BrownBear_DeathLoop_134.npy", "action_tags": ["death"]}
+{"clip": "BrownBear_EatFish_135.npy", "action_tags": ["interact"]}
+{"clip": "BrownBear_EatFish_136.npy", "action_tags": ["interact"]}
+{"clip": "BrownBear_Falling_137.npy", "action_tags": ["fall"]}
+{"clip": "BrownBear_Idle_138.npy", "action_tags": ["idle"]}
+{"clip": "BrownBear_Limp_139.npy", "action_tags": ["gethurt"]}
+{"clip": "BrownBear_Limping_140.npy", "action_tags": ["locomotion", "gethurt"]}
+{"clip": "BrownBear_Ready_141.npy", "action_tags": ["idle"]}
+{"clip": "BrownBear_RiseAttack_143.npy", "action_tags": ["getup", "attack"]}
+{"clip": "BrownBear_RiseSwat_144.npy", "action_tags": ["getup", "attack"]}
+{"clip": "BrownBear_Rise_142.npy", "action_tags": ["getup"]}
+{"clip": "BrownBear_RunLoop_145.npy", "action_tags": ["locomotion"]}
+{"clip": "BrownBear_ScratchEar_146.npy", "action_tags": ["interact"]}
+{"clip": "BrownBear_SitClean_147.npy", "action_tags": ["rest", "interact"]}
+{"clip": "BrownBear_Sleepy_148.npy", "action_tags": ["rest"]}
+{"clip": "BrownBear_SlowWalk_149.npy", "action_tags": ["locomotion"]}
+{"clip": "BrownBear_Twitching_150.npy", "action_tags": ["emote"]}
+{"clip": "BrownBear_WalkLoop_151.npy", "action_tags": ["locomotion"]}
+{"clip": "Buffalo_AlertIdle_100.npy", "action_tags": ["idle"]}
+{"clip": "Buffalo_AngryAntlers_101.npy", "action_tags": ["emote", "attack"]}
+{"clip": "Buffalo_Attack1_103.npy", "action_tags": ["attack"]}
+{"clip": "Buffalo_Attack_102.npy", "action_tags": ["attack"]}
+{"clip": "Buffalo_ChargedUp_104.npy", "action_tags": ["idle"]}
+{"clip": "Buffalo_Cud_105.npy", "action_tags": ["interact"]}
+{"clip": "Buffalo_Cud_106.npy", "action_tags": ["interact"]}
+{"clip": "Buffalo_Die_107.npy", "action_tags": ["death"]}
+{"clip": "Buffalo_Fall_108.npy", "action_tags": ["fall"]}
+{"clip": "Buffalo_GetUp_109.npy", "action_tags": ["getup"]}
+{"clip": "Buffalo_GroundLoop_110.npy", "action_tags": ["locomotion"]}
+{"clip": "Buffalo_HoofScrape_111.npy", "action_tags": ["emote"]}
+{"clip": "Buffalo_Idle_112.npy", "action_tags": ["idle"]}
+{"clip": "Buffalo_Jump_113.npy", "action_tags": ["jump"]}
+{"clip": "Buffalo_LoweredHead_114.npy", "action_tags": ["emote"]}
+{"clip": "Buffalo_RunLoop_115.npy", "action_tags": ["locomotion"]}
+{"clip": "Buffalo_Shot_116.npy", "action_tags": ["gethurt"]}
+{"clip": "Buffalo_SleepUp_117.npy", "action_tags": ["getup"]}
+{"clip": "Buffalo_SleepUp_118.npy", "action_tags": ["getup"]}
+{"clip": "Buffalo_WalkLoop_119.npy", "action_tags": ["locomotion"]}
+{"clip": "Buzzard_Attack1_1004.npy", "action_tags": ["attack"]}
+{"clip": "Buzzard_Attack2_1005.npy", "action_tags": ["attack"]}
+{"clip": "Buzzard_Attack3_1006.npy", "action_tags": ["attack"]}
+{"clip": "Buzzard_Die1_1007.npy", "action_tags": ["death"]}
+{"clip": "Buzzard_Dying_1008.npy", "action_tags": ["death"]}
+{"clip": "Buzzard_FlyLoop_1009.npy", "action_tags": ["fly"]}
+{"clip": "Buzzard_SlowFly_1010.npy", "action_tags": ["fly"]}
+{"clip": "Buzzard_SlowLoop_1011.npy", "action_tags": ["fly"]}
+{"clip": "Buzzard_SlowtoLand_1012.npy", "action_tags": ["fly"]}
+{"clip": "Buzzard_Soaring_1013.npy", "action_tags": ["fly"]}
+{"clip": "Camel_Bite_53.npy", "action_tags": ["attack"]}
+{"clip": "Camel_Buck_54.npy", "action_tags": ["emote"]}
+{"clip": "Camel_DownLoop_55.npy", "action_tags": ["rest"]}
+{"clip": "Camel_Fall_56.npy", "action_tags": ["fall"]}
+{"clip": "Camel_IdleLoop_57.npy", "action_tags": ["idle"]}
+{"clip": "Camel_LayDown_58.npy", "action_tags": ["rest"]}
+{"clip": "Camel_Mope_59.npy", "action_tags": ["emote"]}
+{"clip": "Camel_Restless_60.npy", "action_tags": ["emote"]}
+{"clip": "Camel_RunFast_62.npy", "action_tags": ["locomotion"]}
+{"clip": "Camel_Run_61.npy", "action_tags": ["locomotion"]}
+{"clip": "Camel_ScrapeHoof_63.npy", "action_tags": ["emote"]}
+{"clip": "Camel_SlowWalk_64.npy", "action_tags": ["locomotion"]}
+{"clip": "Camel_Specail_65.npy", "action_tags": ["emote"]}
+{"clip": "Camel_StandUp_66.npy", "action_tags": ["getup"]}
+{"clip": "Camel_StopWalk_67.npy", "action_tags": ["locomotion"]}
+{"clip": "Camel_Trot_68.npy", "action_tags": ["locomotion"]}
+{"clip": "Camel_Wild1_69.npy", "action_tags": ["emote"]}
+{"clip": "Camel_Yell_70.npy", "action_tags": ["emote"]}
+{"clip": "Cat_IdlePurr_120.npy", "action_tags": ["idle", "emote"]}
+{"clip": "Cat_IdlePurr_121.npy", "action_tags": ["idle", "emote"]}
+{"clip": "Cat_IdlePurr_122.npy", "action_tags": ["idle", "emote"]}
+{"clip": "Cat_LickCleanIdle_123.npy", "action_tags": ["idle", "interact"]}
+{"clip": "Cat_LickCleanIdle_124.npy", "action_tags": ["idle", "interact"]}
+{"clip": "Cat_LickCleanIdle_125.npy", "action_tags": ["idle", "interact"]}
+{"clip": "Cat_StretchYawnIdle_126.npy", "action_tags": ["idle", "interact"]}
+{"clip": "Cat_StretchYawnIdle_127.npy", "action_tags": ["idle", "interact"]}
+{"clip": "Cat_StretchYawnIdle_128.npy", "action_tags": ["idle", "interact"]}
+{"clip": "Cat_Walk_129.npy", "action_tags": ["locomotion"]}
+{"clip": "Centipede_Attack1_798.npy", "action_tags": ["attack"]}
+{"clip": "Centipede_Attack2_799.npy", "action_tags": ["attack"]}
+{"clip": "Centipede_Attack_797.npy", "action_tags": ["attack"]}
+{"clip": "Centipede_Die_800.npy", "action_tags": ["death"]}
+{"clip": "Centipede_Idle2_802.npy", "action_tags": ["idle"]}
+{"clip": "Centipede_Idle3_803.npy", "action_tags": ["idle"]}
+{"clip": "Centipede_Idle_801.npy", "action_tags": ["idle"]}
+{"clip": "Centipede_Rearing_804.npy", "action_tags": ["emote"]}
+{"clip": "Centipede_Run_805.npy", "action_tags": ["locomotion"]}
+{"clip": "Centipede_Walk_806.npy", "action_tags": ["locomotion"]}
+{"clip": "Chicken_EggLaying_694.npy", "action_tags": ["interact"]}
+{"clip": "Chicken_IdlePecking_695.npy", "action_tags": ["idle", "interact"]}
+{"clip": "Chicken_Walk_696.npy", "action_tags": ["locomotion"]}
+{"clip": "Comodoa_Attack1_42.npy", "action_tags": ["attack"]}
+{"clip": "Comodoa_Attack2_43.npy", "action_tags": ["attack"]}
+{"clip": "Comodoa_Attack3_44.npy", "action_tags": ["attack"]}
+{"clip": "Comodoa_Die_45.npy", "action_tags": ["death"]}
+{"clip": "Comodoa_Idle2_48.npy", "action_tags": ["idle"]}
+{"clip": "Comodoa_Idle_46.npy", "action_tags": ["idle"]}
+{"clip": "Comodoa_Idle_47.npy", "action_tags": ["idle"]}
+{"clip": "Comodoa_Run_49.npy", "action_tags": ["locomotion"]}
+{"clip": "Comodoa_Walk_50.npy", "action_tags": ["locomotion"]}
+{"clip": "Comodoa_Yawn_51.npy", "action_tags": ["interact"]}
+{"clip": "Comodoa_Yawn_52.npy", "action_tags": ["interact"]}
+{"clip": "Coyote_Attack1_152.npy", "action_tags": ["attack"]}
+{"clip": "Coyote_Attack2_153.npy", "action_tags": ["attack"]}
+{"clip": "Coyote_Attack3_154.npy", "action_tags": ["attack"]}
+{"clip": "Coyote_Die_155.npy", "action_tags": ["death"]}
+{"clip": "Coyote_Howling_156.npy", "action_tags": ["emote"]}
+{"clip": "Coyote_Idle_157.npy", "action_tags": ["idle"]}
+{"clip": "Coyote_Restless_158.npy", "action_tags": ["emote"]}
+{"clip": "Coyote_Running_159.npy", "action_tags": ["locomotion"]}
+{"clip": "Coyote_Sniffing_160.npy", "action_tags": ["emote"]}
+{"clip": "Coyote_Walking_161.npy", "action_tags": ["locomotion"]}
+{"clip": "Crab_Attack1_788.npy", "action_tags": ["attack"]}
+{"clip": "Crab_Attack3_789.npy", "action_tags": ["attack"]}
+{"clip": "Crab_Attack4_790.npy", "action_tags": ["attack"]}
+{"clip": "Crab_Defeated_791.npy", "action_tags": ["death"]}
+{"clip": "Crab_Die_792.npy", "action_tags": ["death"]}
+{"clip": "Crab_Eat_793.npy", "action_tags": ["interact"]}
+{"clip": "Crab_HitBack_794.npy", "action_tags": ["attack"]}
+{"clip": "Crab_Strafe_795.npy", "action_tags": ["locomotion"]}
+{"clip": "Crab_Walk_796.npy", "action_tags": ["locomotion"]}
+{"clip": "Cricket_Attack1_707.npy", "action_tags": ["attack"]}
+{"clip": "Cricket_Attack2_708.npy", "action_tags": ["attack"]}
+{"clip": "Cricket_Attack3_709.npy", "action_tags": ["attack"]}
+{"clip": "Cricket_Attack4_710.npy", "action_tags": ["attack"]}
+{"clip": "Cricket_Burrough_711.npy", "action_tags": ["interact"]}
+{"clip": "Cricket_Die_712.npy", "action_tags": ["death"]}
+{"clip": "Cricket_IdlePissed_714.npy", "action_tags": ["idle", "emote"]}
+{"clip": "Cricket_Idle_713.npy", "action_tags": ["idle"]}
+{"clip": "Cricket_LookAround_715.npy", "action_tags": ["emote"]}
+{"clip": "Cricket_LookAround_716.npy", "action_tags": ["emote"]}
+{"clip": "Cricket_OutOfGround_717.npy", "action_tags": ["getup"]}
+{"clip": "Cricket_Running_718.npy", "action_tags": ["locomotion"]}
+{"clip": "Cricket_Walking_719.npy", "action_tags": ["locomotion"]}
+{"clip": "Crocodile_Attack_162.npy", "action_tags": ["attack"]}
+{"clip": "Crocodile_Bite_163.npy", "action_tags": ["attack"]}
+{"clip": "Crocodile_Bounce_164.npy", "action_tags": ["jump"]}
+{"clip": "Crocodile_Die_165.npy", "action_tags": ["death"]}
+{"clip": "Crocodile_GetUp_166.npy", "action_tags": ["getup"]}
+{"clip": "Crocodile_HeavyBreathe_167.npy", "action_tags": ["emote"]}
+{"clip": "Crocodile_Idle_168.npy", "action_tags": ["idle"]}
+{"clip": "Crocodile_NormalBreath_169.npy", "action_tags": ["idle"]}
+{"clip": "Crocodile_Running_170.npy", "action_tags": ["locomotion"]}
+{"clip": "Crocodile_SleepLoop_171.npy", "action_tags": ["rest"]}
+{"clip": "Crocodile_TailWhip_172.npy", "action_tags": ["attack"]}
+{"clip": "Crocodile_Yawning_173.npy", "action_tags": ["interact"]}
+{"clip": "Deer_Backing_187.npy", "action_tags": ["locomotion"]}
+{"clip": "Deer_Bleat_188.npy", "action_tags": ["emote"]}
+{"clip": "Deer_BuckShy_189.npy", "action_tags": ["emote"]}
+{"clip": "Deer_Charge_190.npy", "action_tags": ["locomotion", "attack"]}
+{"clip": "Deer_ComeDown_191.npy", "action_tags": ["fall"]}
+{"clip": "Deer_Gallop_192.npy", "action_tags": ["locomotion"]}
+{"clip": "Deer_GetUpAgain_194.npy", "action_tags": ["getup"]}
+{"clip": "Deer_GetUp_193.npy", "action_tags": ["getup"]}
+{"clip": "Deer_Grazing_195.npy", "action_tags": ["interact"]}
+{"clip": "Deer_Grazing_196.npy", "action_tags": ["interact"]}
+{"clip": "Deer_IdleEarFlik_207.npy", "action_tags": ["idle", "emote"]}
+{"clip": "Deer_IdleEarFlik_208.npy", "action_tags": ["idle", "emote"]}
+{"clip": "Deer_Idle_197.npy", "action_tags": ["idle"]}
+{"clip": "Deer_RearUp_198.npy", "action_tags": ["emote"]}
+{"clip": "Deer_Rutting_199.npy", "action_tags": ["emote"]}
+{"clip": "Deer_Squirly_200.npy", "action_tags": ["emote"]}
+{"clip": "Deer_TakeOff_201.npy", "action_tags": ["jump"]}
+{"clip": "Deer_Trot_202.npy", "action_tags": ["locomotion"]}
+{"clip": "Deer_TurnLeft_203.npy", "action_tags": ["turn"]}
+{"clip": "Deer_WalkBack_204.npy", "action_tags": ["locomotion"]}
+{"clip": "Deer_WalkCall_205.npy", "action_tags": ["locomotion", "emote"]}
+{"clip": "Deer_WalkForward_206.npy", "action_tags": ["locomotion"]}
+{"clip": "Eagle_EggSteal_1014.npy", "action_tags": ["interact"]}
+{"clip": "Eagle_FloatDown_1015.npy", "action_tags": ["fly"]}
+{"clip": "Eagle_FloattUp_1016.npy", "action_tags": ["fly"]}
+{"clip": "Eagle_FlyLoop_1017.npy", "action_tags": ["fly"]}
+{"clip": "Eagle_GlideLoop_1018.npy", "action_tags": ["fly"]}
+{"clip": "Eagle_IdleNest_1019.npy", "action_tags": ["idle"]}
+{"clip": "Eagle_Landing_1020.npy", "action_tags": ["fly"]}
+{"clip": "Eagle_RideWind_1021.npy", "action_tags": ["fly"]}
+{"clip": "Eagle_Shot_1022.npy", "action_tags": ["gethurt"]}
+{"clip": "Eagle_Strike1_1023.npy", "action_tags": ["attack"]}
+{"clip": "Eagle_Strike2_1024.npy", "action_tags": ["attack"]}
+{"clip": "Eagle_TakeOff_1025.npy", "action_tags": ["fly"]}
+{"clip": "Elephant_Atk1_174.npy", "action_tags": ["attack"]}
+{"clip": "Elephant_Atk2_175.npy", "action_tags": ["attack"]}
+{"clip": "Elephant_Die_176.npy", "action_tags": ["death"]}
+{"clip": "Elephant_DownIn_177.npy", "action_tags": ["rest"]}
+{"clip": "Elephant_DownLoop_178.npy", "action_tags": ["rest"]}
+{"clip": "Elephant_DownOut_179.npy", "action_tags": ["getup"]}
+{"clip": "Elephant_Firing_180.npy", "action_tags": ["emote"]}
+{"clip": "Elephant_Idle1_181.npy", "action_tags": ["idle"]}
+{"clip": "Elephant_Idle2_182.npy", "action_tags": ["idle"]}
+{"clip": "Elephant_Idle3_183.npy", "action_tags": ["idle"]}
+{"clip": "Elephant_Passout_184.npy", "action_tags": ["death"]}
+{"clip": "Elephant_Run_185.npy", "action_tags": ["locomotion"]}
+{"clip": "Elephant_Walk_186.npy", "action_tags": ["locomotion"]}
+{"clip": "FireAnt_AntAngry_764.npy", "action_tags": ["emote", "attack"]}
+{"clip": "FireAnt_AntAnnoyed_765.npy", "action_tags": ["emote"]}
+{"clip": "FireAnt_AntBackUp_766.npy", "action_tags": ["locomotion"]}
+{"clip": "FireAnt_AntBite_767.npy", "action_tags": ["attack"]}
+{"clip": "FireAnt_AntCreep_768.npy", "action_tags": ["locomotion"]}
+{"clip": "FireAnt_AntFeel_769.npy", "action_tags": ["emote"]}
+{"clip": "FireAnt_AntFightOff_770.npy", "action_tags": ["attack"]}
+{"clip": "FireAnt_AntForwardMarch_771.npy", "action_tags": ["locomotion"]}
+{"clip": "FireAnt_AntGesture_772.npy", "action_tags": ["emote"]}
+{"clip": "FireAnt_AntHit_773.npy", "action_tags": ["gethurt"]}
+{"clip": "FireAnt_AntHungry_774.npy", "action_tags": ["emote"]}
+{"clip": "FireAnt_AntIdle_775.npy", "action_tags": ["idle"]}
+{"clip": "FireAnt_AntJump_776.npy", "action_tags": ["jump"]}
+{"clip": "FireAnt_AntLeft_777.npy", "action_tags": ["locomotion"]}
+{"clip": "FireAnt_AntRight_778.npy", "action_tags": ["locomotion"]}
+{"clip": "FireAnt_AntRipFlesh2_781.npy", "action_tags": ["attack"]}
+{"clip": "FireAnt_AntRipFlesh_780.npy", "action_tags": ["attack"]}
+{"clip": "FireAnt_AntRip_779.npy", "action_tags": ["attack"]}
+{"clip": "FireAnt_AntRoar_782.npy", "action_tags": ["emote"]}
+{"clip": "FireAnt_AntSnap_783.npy", "action_tags": ["attack"]}
+{"clip": "FireAnt_AntTurnLeft_784.npy", "action_tags": ["turn"]}
+{"clip": "FireAnt_AntTurnRight_785.npy", "action_tags": ["turn"]}
+{"clip": "FireAnt_AntUpFromDown2_787.npy", "action_tags": ["getup"]}
+{"clip": "FireAnt_AntUpFromDown_786.npy", "action_tags": ["getup"]}
+{"clip": "Flamingo_BendIdle_550.npy", "action_tags": ["idle"]}
+{"clip": "Flamingo_Sleep_551.npy", "action_tags": ["rest"]}
+{"clip": "Flamingo_Walk_552.npy", "action_tags": ["locomotion"]}
+{"clip": "Fox_Atk1_209.npy", "action_tags": ["attack"]}
+{"clip": "Fox_Atk2_210.npy", "action_tags": ["attack"]}
+{"clip": "Fox_Atk3_211.npy", "action_tags": ["attack"]}
+{"clip": "Fox_Atk4_212.npy", "action_tags": ["attack"]}
+{"clip": "Fox_Die2_214.npy", "action_tags": ["death"]}
+{"clip": "Fox_Die_213.npy", "action_tags": ["death"]}
+{"clip": "Fox_Idle1_215.npy", "action_tags": ["idle"]}
+{"clip": "Fox_Idle2_216.npy", "action_tags": ["idle"]}
+{"clip": "Fox_Idle3_217.npy", "action_tags": ["idle"]}
+{"clip": "Fox_Idle3_218.npy", "action_tags": ["idle"]}
+{"clip": "Fox_Idle4_219.npy", "action_tags": ["idle"]}
+{"clip": "Fox_Idle4_220.npy", "action_tags": ["idle"]}
+{"clip": "Fox_Idle5_221.npy", "action_tags": ["idle"]}
+{"clip": "Fox_Idle5_222.npy", "action_tags": ["idle"]}
+{"clip": "Fox_Run_223.npy", "action_tags": ["locomotion"]}
+{"clip": "Fox_Walk_224.npy", "action_tags": ["locomotion"]}
+{"clip": "Gazelle_Alert_225.npy", "action_tags": ["emote"]}
+{"clip": "Gazelle_Alert_226.npy", "action_tags": ["emote"]}
+{"clip": "Gazelle_Atk1_235.npy", "action_tags": ["attack"]}
+{"clip": "Gazelle_Atk2_236.npy", "action_tags": ["attack"]}
+{"clip": "Gazelle_Atk3_237.npy", "action_tags": ["attack"]}
+{"clip": "Gazelle_Attack1_228.npy", "action_tags": ["attack"]}
+{"clip": "Gazelle_Attack_227.npy", "action_tags": ["attack"]}
+{"clip": "Gazelle_Die_238.npy", "action_tags": ["death"]}
+{"clip": "Gazelle_Fall_229.npy", "action_tags": ["fall"]}
+{"clip": "Gazelle_HeadPoke_230.npy", "action_tags": ["attack"]}
+{"clip": "Gazelle_Idle1_239.npy", "action_tags": ["idle"]}
+{"clip": "Gazelle_Idle2_240.npy", "action_tags": ["idle"]}
+{"clip": "Gazelle_Idle3_241.npy", "action_tags": ["idle"]}
+{"clip": "Gazelle_Idle3_242.npy", "action_tags": ["idle"]}
+{"clip": "Gazelle_IdleReady_232.npy", "action_tags": ["idle"]}
+{"clip": "Gazelle_Idle_231.npy", "action_tags": ["idle"]}
+{"clip": "Gazelle_Run_233.npy", "action_tags": ["locomotion"]}
+{"clip": "Gazelle_Run_243.npy", "action_tags": ["locomotion"]}
+{"clip": "Gazelle_Walk_234.npy", "action_tags": ["locomotion"]}
+{"clip": "Gazelle_Walk_244.npy", "action_tags": ["locomotion"]}
+{"clip": "Giantbee_Attack2_1027.npy", "action_tags": ["attack"]}
+{"clip": "Giantbee_Attack3_1028.npy", "action_tags": ["attack"]}
+{"clip": "Giantbee_Attack4_1029.npy", "action_tags": ["attack"]}
+{"clip": "Giantbee_Attack_1026.npy", "action_tags": ["attack"]}
+{"clip": "Giantbee_Die2_1031.npy", "action_tags": ["death"]}
+{"clip": "Giantbee_Die_1030.npy", "action_tags": ["death"]}
+{"clip": "Giantbee_Fly_1032.npy", "action_tags": ["fly"]}
+{"clip": "Giantbee_Idle2_1034.npy", "action_tags": ["idle"]}
+{"clip": "Giantbee_Idle_1033.npy", "action_tags": ["idle"]}
+{"clip": "Goat_Attack_245.npy", "action_tags": ["attack"]}
+{"clip": "Goat_Bleat_246.npy", "action_tags": ["emote"]}
+{"clip": "Goat_Die_247.npy", "action_tags": ["death"]}
+{"clip": "Goat_HeadButt2_249.npy", "action_tags": ["attack"]}
+{"clip": "Goat_HeadButt_248.npy", "action_tags": ["attack"]}
+{"clip": "Goat_HoofScrape_250.npy", "action_tags": ["emote"]}
+{"clip": "Goat_Idle_251.npy", "action_tags": ["idle"]}
+{"clip": "Goat_JumpKnock_252.npy", "action_tags": ["jump", "attack"]}
+{"clip": "Goat_Run_253.npy", "action_tags": ["locomotion"]}
+{"clip": "Goat_Walk_254.npy", "action_tags": ["locomotion"]}
+{"clip": "Hamster_Idle_396.npy", "action_tags": ["idle"]}
+{"clip": "Hamster_RollAttack_397.npy", "action_tags": ["attack"]}
+{"clip": "Hamster_Run_398.npy", "action_tags": ["locomotion"]}
+{"clip": "Hamster_Sniff_399.npy", "action_tags": ["emote"]}
+{"clip": "Hamster_Sniff_400.npy", "action_tags": ["emote"]}
+{"clip": "Hamster_Walk_401.npy", "action_tags": ["locomotion"]}
+{"clip": "HermitCrab_Die_835.npy", "action_tags": ["death"]}
+{"clip": "HermitCrab_Eat_836.npy", "action_tags": ["interact"]}
+{"clip": "HermitCrab_Expire_837.npy", "action_tags": ["death"]}
+{"clip": "HermitCrab_Fighting_838.npy", "action_tags": ["attack"]}
+{"clip": "HermitCrab_KnockedBack_839.npy", "action_tags": ["gethurt"]}
+{"clip": "HermitCrab_KnockedOut_840.npy", "action_tags": ["death"]}
+{"clip": "HermitCrab_OutofGround_841.npy", "action_tags": ["getup"]}
+{"clip": "HermitCrab_Pinchers_842.npy", "action_tags": ["emote"]}
+{"clip": "HermitCrab_SandBurrough_843.npy", "action_tags": ["interact"]}
+{"clip": "HermitCrab_Sleep_844.npy", "action_tags": ["rest"]}
+{"clip": "HermitCrab_Slowwalk_845.npy", "action_tags": ["locomotion"]}
+{"clip": "HermitCrab_Walk_846.npy", "action_tags": ["locomotion"]}
+{"clip": "Hippopotamus_Attack2_33.npy", "action_tags": ["attack"]}
+{"clip": "Hippopotamus_Attack3_34.npy", "action_tags": ["attack"]}
+{"clip": "Hippopotamus_Attack4_35.npy", "action_tags": ["attack"]}
+{"clip": "Hippopotamus_Attack_32.npy", "action_tags": ["attack"]}
+{"clip": "Hippopotamus_Die_36.npy", "action_tags": ["death"]}
+{"clip": "Hippopotamus_Idle2_38.npy", "action_tags": ["idle"]}
+{"clip": "Hippopotamus_Idle_37.npy", "action_tags": ["idle"]}
+{"clip": "Hippopotamus_Run_39.npy", "action_tags": ["locomotion"]}
+{"clip": "Hippopotamus_Walk_40.npy", "action_tags": ["locomotion"]}
+{"clip": "Hippopotamus_Yawn_41.npy", "action_tags": ["interact"]}
+{"clip": "Horse_Attack_1.npy", "action_tags": ["attack"]}
+{"clip": "Horse_BackUp_2.npy", "action_tags": ["locomotion"]}
+{"clip": "Horse_Bucking_3.npy", "action_tags": ["emote"]}
+{"clip": "Horse_Dying_4.npy", "action_tags": ["death"]}
+{"clip": "Horse_FeetUp_5.npy", "action_tags": ["emote"]}
+{"clip": "Horse_GetUp_6.npy", "action_tags": ["getup"]}
+{"clip": "Horse_HoofScrape2_9.npy", "action_tags": ["emote"]}
+{"clip": "Horse_HoofScrape_7.npy", "action_tags": ["emote"]}
+{"clip": "Horse_HoofScrape_8.npy", "action_tags": ["emote"]}
+{"clip": "Horse_Idle3_12.npy", "action_tags": ["idle"]}
+{"clip": "Horse_IdleEars_13.npy", "action_tags": ["idle"]}
+{"clip": "Horse_IdleEars_14.npy", "action_tags": ["idle"]}
+{"clip": "Horse_Idle_10.npy", "action_tags": ["idle"]}
+{"clip": "Horse_Idle_11.npy", "action_tags": ["idle"]}
+{"clip": "Horse_InAir_15.npy", "action_tags": ["jump"]}
+{"clip": "Horse_JumpLand_16.npy", "action_tags": ["jump"]}
+{"clip": "Horse_Jumping_17.npy", "action_tags": ["jump"]}
+{"clip": "Horse_KnockedBack_18.npy", "action_tags": ["gethurt"]}
+{"clip": "Horse_LandRun_19.npy", "action_tags": ["locomotion"]}
+{"clip": "Horse_LoneRanger_20.npy", "action_tags": ["idle"]}
+{"clip": "Horse_Lying_21.npy", "action_tags": ["rest"]}
+{"clip": "Horse_Rearing2_23.npy", "action_tags": ["emote"]}
+{"clip": "Horse_Rearing_22.npy", "action_tags": ["emote"]}
+{"clip": "Horse_Restless2_25.npy", "action_tags": ["emote"]}
+{"clip": "Horse_Restless3_26.npy", "action_tags": ["emote"]}
+{"clip": "Horse_Restless_24.npy", "action_tags": ["emote"]}
+{"clip": "Horse_RunJump_27.npy", "action_tags": ["locomotion", "jump"]}
+{"clip": "Horse_RunLoop_28.npy", "action_tags": ["locomotion"]}
+{"clip": "Horse_RunToStop_29.npy", "action_tags": ["locomotion"]}
+{"clip": "Horse_SlowIdle_30.npy", "action_tags": ["idle"]}
+{"clip": "Horse_SlowWalk_31.npy", "action_tags": ["locomotion"]}
+{"clip": "Hound_Attack_402.npy", "action_tags": ["attack"]}
+{"clip": "Hound_Bark1_403.npy", "action_tags": ["emote"]}
+{"clip": "Hound_Barking_404.npy", "action_tags": ["emote"]}
+{"clip": "Hound_DieLoop_406.npy", "action_tags": ["death"]}
+{"clip": "Hound_Die_405.npy", "action_tags": ["death"]}
+{"clip": "Hound_GetUp_407.npy", "action_tags": ["getup"]}
+{"clip": "Hound_Hit_408.npy", "action_tags": ["gethurt"]}
+{"clip": "Hound_Idle_409.npy", "action_tags": ["idle"]}
+{"clip": "Hound_Ready2_410.npy", "action_tags": ["idle"]}
+{"clip": "Hound_Restless_411.npy", "action_tags": ["emote"]}
+{"clip": "Hound_RunLoop_412.npy", "action_tags": ["locomotion"]}
+{"clip": "Hound_Sniff_413.npy", "action_tags": ["emote"]}
+{"clip": "Hound_WalkLoop_414.npy", "action_tags": ["locomotion"]}
+{"clip": "Isopetra_Attack2_756.npy", "action_tags": ["attack"]}
+{"clip": "Isopetra_Attack3_757.npy", "action_tags": ["attack"]}
+{"clip": "Isopetra_Attack_755.npy", "action_tags": ["attack"]}
+{"clip": "Isopetra_Die_758.npy", "action_tags": ["death"]}
+{"clip": "Isopetra_Idle2_760.npy", "action_tags": ["idle"]}
+{"clip": "Isopetra_Idle3_761.npy", "action_tags": ["idle"]}
+{"clip": "Isopetra_Idle_759.npy", "action_tags": ["idle"]}
+{"clip": "Isopetra_Run_762.npy", "action_tags": ["locomotion"]}
+{"clip": "Isopetra_Walk_763.npy", "action_tags": ["locomotion"]}
+{"clip": "Jaguar_Attack1_256.npy", "action_tags": ["attack"]}
+{"clip": "Jaguar_Attack2_257.npy", "action_tags": ["attack"]}
+{"clip": "Jaguar_Attack_255.npy", "action_tags": ["attack"]}
+{"clip": "Jaguar_Die1_258.npy", "action_tags": ["death"]}
+{"clip": "Jaguar_Die2_259.npy", "action_tags": ["death"]}
+{"clip": "Jaguar_GetUp_260.npy", "action_tags": ["getup"]}
+{"clip": "Jaguar_Idle_261.npy", "action_tags": ["idle"]}
+{"clip": "Jaguar_LieIdle_262.npy", "action_tags": ["rest"]}
+{"clip": "Jaguar_Low_263.npy", "action_tags": ["rest"]}
+{"clip": "Jaguar_Run_264.npy", "action_tags": ["locomotion"]}
+{"clip": "Jaguar_Sit_265.npy", "action_tags": ["rest"]}
+{"clip": "Jaguar_Sit_266.npy", "action_tags": ["rest"]}
+{"clip": "Jaguar_Stancing_267.npy", "action_tags": ["idle"]}
+{"clip": "Jaguar_Walk_268.npy", "action_tags": ["locomotion"]}
+{"clip": "KingCobra_Attack2_941.npy", "action_tags": ["attack"]}
+{"clip": "KingCobra_Attack_940.npy", "action_tags": ["attack"]}
+{"clip": "KingCobra_Bite_942.npy", "action_tags": ["attack"]}
+{"clip": "KingCobra_CircleBite_943.npy", "action_tags": ["turn", "locomotion", "attack"]}
+{"clip": "KingCobra_GetUp_944.npy", "action_tags": ["getup"]}
+{"clip": "KingCobra_IdleLoop_946.npy", "action_tags": ["idle"]}
+{"clip": "KingCobra_IdleLoop_947.npy", "action_tags": ["idle"]}
+{"clip": "KingCobra_Idle_945.npy", "action_tags": ["idle"]}
+{"clip": "KingCobra_Killed_948.npy", "action_tags": ["death"]}
+{"clip": "KingCobra_Steady_949.npy", "action_tags": ["idle"]}
+{"clip": "Leapord_Attack_415.npy", "action_tags": ["attack"]}
+{"clip": "Leapord_Bite_416.npy", "action_tags": ["attack"]}
+{"clip": "Leapord_Death_417.npy", "action_tags": ["death"]}
+{"clip": "Leapord_DieLoop_419.npy", "action_tags": ["death"]}
+{"clip": "Leapord_Die_418.npy", "action_tags": ["death"]}
+{"clip": "Leapord_Graze_420.npy", "action_tags": ["interact"]}
+{"clip": "Leapord_Graze_421.npy", "action_tags": ["interact"]}
+{"clip": "Leapord_Growl_422.npy", "action_tags": ["emote"]}
+{"clip": "Leapord_Idle_423.npy", "action_tags": ["idle"]}
+{"clip": "Leapord_JumpUp_424.npy", "action_tags": ["jump"]}
+{"clip": "Leapord_PounceSwipe_426.npy", "action_tags": ["jump", "attack"]}
+{"clip": "Leapord_Pounce_425.npy", "action_tags": ["jump", "attack"]}
+{"clip": "Leapord_Run_427.npy", "action_tags": ["locomotion"]}
+{"clip": "Leapord_Sick_428.npy", "action_tags": ["interact"]}
+{"clip": "Leapord_Walk_429.npy", "action_tags": ["locomotion"]}
+{"clip": "Lion_Attack1_431.npy", "action_tags": ["attack"]}
+{"clip": "Lion_Attack_430.npy", "action_tags": ["attack"]}
+{"clip": "Lion_DeathIdle_432.npy", "action_tags": ["death"]}
+{"clip": "Lion_Die2_434.npy", "action_tags": ["death"]}
+{"clip": "Lion_Die_433.npy", "action_tags": ["death"]}
+{"clip": "Lion_GetUp_435.npy", "action_tags": ["getup"]}
+{"clip": "Lion_Growl_436.npy", "action_tags": ["emote"]}
+{"clip": "Lion_JumpBite_437.npy", "action_tags": ["jump", "attack"]}
+{"clip": "Lion_LeapBite_438.npy", "action_tags": ["jump", "attack"]}
+{"clip": "Lion_Run_439.npy", "action_tags": ["locomotion"]}
+{"clip": "Lion_SlowIdle_440.npy", "action_tags": ["idle"]}
+{"clip": "Lion_Sniff_441.npy", "action_tags": ["emote"]}
+{"clip": "Lion_Swatting_442.npy", "action_tags": ["attack"]}
+{"clip": "Lion_Walk_443.npy", "action_tags": ["locomotion"]}
+{"clip": "Lion_Yawn_444.npy", "action_tags": ["interact"]}
+{"clip": "Lion_Yawn_445.npy", "action_tags": ["interact"]}
+{"clip": "Lynx_Attack2_270.npy", "action_tags": ["attack"]}
+{"clip": "Lynx_Attack3_271.npy", "action_tags": ["attack"]}
+{"clip": "Lynx_Attack_269.npy", "action_tags": ["attack"]}
+{"clip": "Lynx_Die2_273.npy", "action_tags": ["death"]}
+{"clip": "Lynx_DieLoop_274.npy", "action_tags": ["death"]}
+{"clip": "Lynx_Die_272.npy", "action_tags": ["death"]}
+{"clip": "Lynx_Idle2_276.npy", "action_tags": ["idle"]}
+{"clip": "Lynx_Idle3_277.npy", "action_tags": ["idle"]}
+{"clip": "Lynx_Idle_275.npy", "action_tags": ["idle"]}
+{"clip": "Lynx_Jump_278.npy", "action_tags": ["jump"]}
+{"clip": "Lynx_Run_279.npy", "action_tags": ["locomotion"]}
+{"clip": "Lynx_Stand_280.npy", "action_tags": ["idle"]}
+{"clip": "Lynx_Walk_281.npy", "action_tags": ["locomotion"]}
+{"clip": "Mammoth_Bellow_361.npy", "action_tags": ["emote"]}
+{"clip": "Mammoth_Bellow_362.npy", "action_tags": ["emote"]}
+{"clip": "Mammoth_DeathLoop_363.npy", "action_tags": ["death"]}
+{"clip": "Mammoth_Die2_365.npy", "action_tags": ["death"]}
+{"clip": "Mammoth_Die_364.npy", "action_tags": ["death"]}
+{"clip": "Mammoth_Gesture_366.npy", "action_tags": ["emote"]}
+{"clip": "Mammoth_GetUp_367.npy", "action_tags": ["getup"]}
+{"clip": "Mammoth_Idle2_369.npy", "action_tags": ["idle"]}
+{"clip": "Mammoth_Idle_368.npy", "action_tags": ["idle"]}
+{"clip": "Mammoth_Rise_370.npy", "action_tags": ["getup"]}
+{"clip": "Mammoth_Run_371.npy", "action_tags": ["locomotion"]}
+{"clip": "Mammoth_SideSwipe_372.npy", "action_tags": ["attack"]}
+{"clip": "Mammoth_Walk_373.npy", "action_tags": ["locomotion"]}
+{"clip": "Monkey_Atk1_350.npy", "action_tags": ["attack"]}
+{"clip": "Monkey_Atk2_351.npy", "action_tags": ["attack"]}
+{"clip": "Monkey_Atk3_352.npy", "action_tags": ["attack"]}
+{"clip": "Monkey_Atk4_353.npy", "action_tags": ["attack"]}
+{"clip": "Monkey_B01Die_343.npy", "action_tags": ["death"]}
+{"clip": "Monkey_B01Idle_344.npy", "action_tags": ["idle"]}
+{"clip": "Monkey_B01Idle_345.npy", "action_tags": ["idle"]}
+{"clip": "Monkey_B02Atk_346.npy", "action_tags": ["attack"]}
+{"clip": "Monkey_B02Die_347.npy", "action_tags": ["death"]}
+{"clip": "Monkey_B02Idle_348.npy", "action_tags": ["idle"]}
+{"clip": "Monkey_B02Idle_349.npy", "action_tags": ["idle"]}
+{"clip": "Monkey_Die_354.npy", "action_tags": ["death"]}
+{"clip": "Monkey_Idle1_355.npy", "action_tags": ["idle"]}
+{"clip": "Monkey_Idle2_356.npy", "action_tags": ["idle"]}
+{"clip": "Monkey_Idle3_357.npy", "action_tags": ["idle"]}
+{"clip": "Monkey_Idle3_358.npy", "action_tags": ["idle"]}
+{"clip": "Monkey_Run_359.npy", "action_tags": ["locomotion"]}
+{"clip": "Monkey_Walk_360.npy", "action_tags": ["locomotion"]}
+{"clip": "Ostrich_Attack2_540.npy", "action_tags": ["attack"]}
+{"clip": "Ostrich_Attack3_541.npy", "action_tags": ["attack"]}
+{"clip": "Ostrich_Attack4_542.npy", "action_tags": ["attack"]}
+{"clip": "Ostrich_Attack_539.npy", "action_tags": ["attack"]}
+{"clip": "Ostrich_Die_543.npy", "action_tags": ["death"]}
+{"clip": "Ostrich_Idle2_545.npy", "action_tags": ["idle"]}
+{"clip": "Ostrich_Idle3_546.npy", "action_tags": ["idle"]}
+{"clip": "Ostrich_Idle3_547.npy", "action_tags": ["idle"]}
+{"clip": "Ostrich_Idle_544.npy", "action_tags": ["idle"]}
+{"clip": "Ostrich_Run_548.npy", "action_tags": ["locomotion"]}
+{"clip": "Ostrich_Walk_549.npy", "action_tags": ["locomotion"]}
+{"clip": "Parrot2_IdleClean_1050.npy", "action_tags": ["idle", "interact"]}
+{"clip": "Parrot2_Idle_1049.npy", "action_tags": ["idle"]}
+{"clip": "Parrot2_Land_1051.npy", "action_tags": ["fly"]}
+{"clip": "Parrot2_Land_1052.npy", "action_tags": ["fly"]}
+{"clip": "Parrot_Attack_1035.npy", "action_tags": ["attack"]}
+{"clip": "Parrot_CircleFly_1036.npy", "action_tags": ["turn", "fly"]}
+{"clip": "Parrot_Die2_1038.npy", "action_tags": ["death"]}
+{"clip": "Parrot_Die3_1039.npy", "action_tags": ["death"]}
+{"clip": "Parrot_Die_1037.npy", "action_tags": ["death"]}
+{"clip": "Parrot_Fly_1040.npy", "action_tags": ["fly"]}
+{"clip": "Parrot_Hover_1041.npy", "action_tags": ["fly"]}
+{"clip": "Parrot_Idle2_1043.npy", "action_tags": ["idle"]}
+{"clip": "Parrot_Idle2_1044.npy", "action_tags": ["idle"]}
+{"clip": "Parrot_Idle_1042.npy", "action_tags": ["idle"]}
+{"clip": "Parrot_Land_1045.npy", "action_tags": ["fly"]}
+{"clip": "Parrot_Preen_1046.npy", "action_tags": ["interact"]}
+{"clip": "Parrot_Rise_1047.npy", "action_tags": ["getup"]}
+{"clip": "Parrot_Walk_1048.npy", "action_tags": ["locomotion"]}
+{"clip": "Pigeon_Circle_1053.npy", "action_tags": ["turn", "locomotion"]}
+{"clip": "Pigeon_Cooing_1054.npy", "action_tags": ["emote"]}
+{"clip": "Pigeon_FlyLoop_1055.npy", "action_tags": ["fly"]}
+{"clip": "Pigeon_IdleLoop_1057.npy", "action_tags": ["idle"]}
+{"clip": "Pigeon_IdleLoop_1058.npy", "action_tags": ["idle"]}
+{"clip": "Pigeon_Idle_1056.npy", "action_tags": ["idle"]}
+{"clip": "Pigeon_Land_1059.npy", "action_tags": ["fly"]}
+{"clip": "Pigeon_Left_1060.npy", "action_tags": ["emote"]}
+{"clip": "Pigeon_Peck_1061.npy", "action_tags": ["attack"]}
+{"clip": "Pigeon_Right_1062.npy", "action_tags": ["emote"]}
+{"clip": "Pigeon_TakeOff_1063.npy", "action_tags": ["fly"]}
+{"clip": "Pigeon_Walk_1064.npy", "action_tags": ["locomotion"]}
+{"clip": "Pirrana_Biting2_951.npy", "action_tags": ["attack"]}
+{"clip": "Pirrana_Biting_950.npy", "action_tags": ["attack"]}
+{"clip": "Pirrana_DeadFloat2_953.npy", "action_tags": ["death", "swim"]}
+{"clip": "Pirrana_DeadFloat_952.npy", "action_tags": ["death", "swim"]}
+{"clip": "Pirrana_DiveIn_954.npy", "action_tags": ["swim"]}
+{"clip": "Pirrana_Flopping_955.npy", "action_tags": ["emote"]}
+{"clip": "Pirrana_Jump2_956.npy", "action_tags": ["jump"]}
+{"clip": "Pirrana_MidSwim_957.npy", "action_tags": ["swim"]}
+{"clip": "Pirrana_RiseTop_958.npy", "action_tags": ["swim"]}
+{"clip": "Pirrana_SwimJump_960.npy", "action_tags": ["swim", "jump"]}
+{"clip": "Pirrana_Swim_959.npy", "action_tags": ["swim"]}
+{"clip": "PolarBearB_Die_446.npy", "action_tags": ["death"]}
+{"clip": "PolarBearB_Fall_453.npy", "action_tags": ["fall"]}
+{"clip": "PolarBearB_GetUp_454.npy", "action_tags": ["getup"]}
+{"clip": "PolarBearB_Idle1_447.npy", "action_tags": ["idle"]}
+{"clip": "PolarBearB_Idle2_448.npy", "action_tags": ["idle"]}
+{"clip": "PolarBearB_Idle2_456.npy", "action_tags": ["idle"]}
+{"clip": "PolarBearB_Idle3_449.npy", "action_tags": ["idle"]}
+{"clip": "PolarBearB_Idle_455.npy", "action_tags": ["idle"]}
+{"clip": "PolarBearB_Play_457.npy", "action_tags": ["emote"]}
+{"clip": "PolarBearB_Roar_450.npy", "action_tags": ["emote"]}
+{"clip": "PolarBearB_Run_451.npy", "action_tags": ["locomotion"]}
+{"clip": "PolarBearB_Run_458.npy", "action_tags": ["locomotion"]}
+{"clip": "PolarBearB_Walk_452.npy", "action_tags": ["locomotion"]}
+{"clip": "PolarBearB_Walk_459.npy", "action_tags": ["locomotion"]}
+{"clip": "PolarBear_Attack2_334.npy", "action_tags": ["attack"]}
+{"clip": "PolarBear_Attack3_335.npy", "action_tags": ["attack"]}
+{"clip": "PolarBear_Attack_333.npy", "action_tags": ["attack"]}
+{"clip": "PolarBear_Die_336.npy", "action_tags": ["death"]}
+{"clip": "PolarBear_Idle2_338.npy", "action_tags": ["idle"]}
+{"clip": "PolarBear_Idle3_339.npy", "action_tags": ["idle"]}
+{"clip": "PolarBear_Idle3_340.npy", "action_tags": ["idle"]}
+{"clip": "PolarBear_Idle_337.npy", "action_tags": ["idle"]}
+{"clip": "PolarBear_Run_341.npy", "action_tags": ["locomotion"]}
+{"clip": "PolarBear_Walk_342.npy", "action_tags": ["locomotion"]}
+{"clip": "Pteranodon_ArcLeft_1065.npy", "action_tags": ["turn", "fly"]}
+{"clip": "Pteranodon_ArcRight_1066.npy", "action_tags": ["turn", "fly"]}
+{"clip": "Pteranodon_Death2_1068.npy", "action_tags": ["death"]}
+{"clip": "Pteranodon_Death_1067.npy", "action_tags": ["death"]}
+{"clip": "Pteranodon_Fancy_1069.npy", "action_tags": ["emote"]}
+{"clip": "Pteranodon_Flapergasted_1070.npy", "action_tags": ["emote"]}
+{"clip": "Pteranodon_FlyLoop_1071.npy", "action_tags": ["fly"]}
+{"clip": "Pteranodon_GlideScream_1072.npy", "action_tags": ["fly", "emote"]}
+{"clip": "Pteranodon_Hit2_1074.npy", "action_tags": ["gethurt"]}
+{"clip": "Pteranodon_Hit_1073.npy", "action_tags": ["gethurt"]}
+{"clip": "Pteranodon_Lander_1075.npy", "action_tags": ["fly"]}
+{"clip": "Pteranodon_ScreamFly_1076.npy", "action_tags": ["fly", "emote"]}
+{"clip": "Puppy_IdleEnergetic_325.npy", "action_tags": ["idle"]}
+{"clip": "Puppy_IdleEnergetic_326.npy", "action_tags": ["idle"]}
+{"clip": "Puppy_IdleEnergetic_327.npy", "action_tags": ["idle"]}
+{"clip": "Puppy_IdleLayDown_328.npy", "action_tags": ["rest"]}
+{"clip": "Puppy_IdleLayDown_329.npy", "action_tags": ["rest"]}
+{"clip": "Puppy_IdleLayDown_330.npy", "action_tags": ["rest"]}
+{"clip": "Puppy_Run_331.npy", "action_tags": ["locomotion"]}
+{"clip": "Puppy_Walk_332.npy", "action_tags": ["locomotion"]}
+{"clip": "Raindeer_Attack2_317.npy", "action_tags": ["attack"]}
+{"clip": "Raindeer_Attack3_318.npy", "action_tags": ["attack"]}
+{"clip": "Raindeer_Attack_316.npy", "action_tags": ["attack"]}
+{"clip": "Raindeer_Die_319.npy", "action_tags": ["death"]}
+{"clip": "Raindeer_Idle_320.npy", "action_tags": ["idle"]}
+{"clip": "Raindeer_Run_321.npy", "action_tags": ["locomotion"]}
+{"clip": "Raindeer_Stance_322.npy", "action_tags": ["idle"]}
+{"clip": "Raindeer_Walk_323.npy", "action_tags": ["locomotion"]}
+{"clip": "Raindeer_Yell_324.npy", "action_tags": ["emote"]}
+{"clip": "Raptor2_BreatheIdle_566.npy", "action_tags": ["idle"]}
+{"clip": "Raptor2_Clean_567.npy", "action_tags": ["interact"]}
+{"clip": "Raptor2_Die2GetUp_569.npy", "action_tags": ["getup"]}
+{"clip": "Raptor2_DieGetUp_570.npy", "action_tags": ["getup"]}
+{"clip": "Raptor2_Die_568.npy", "action_tags": ["death"]}
+{"clip": "Raptor2_EatGrass_572.npy", "action_tags": ["interact"]}
+{"clip": "Raptor2_Eat_571.npy", "action_tags": ["interact"]}
+{"clip": "Raptor2_EggTend_573.npy", "action_tags": ["emote"]}
+{"clip": "Raptor2_FallGetUp_575.npy", "action_tags": ["fall", "getup"]}
+{"clip": "Raptor2_Fall_574.npy", "action_tags": ["fall"]}
+{"clip": "Raptor2_FenceClimbFall_576.npy", "action_tags": ["locomotion", "fall"]}
+{"clip": "Raptor2_IdleAlert_578.npy", "action_tags": ["idle", "emote"]}
+{"clip": "Raptor2_IdleBiteApple_579.npy", "action_tags": ["idle", "interact"]}
+{"clip": "Raptor2_IdleCurious_580.npy", "action_tags": ["idle", "emote"]}
+{"clip": "Raptor2_IdleCurious_581.npy", "action_tags": ["idle", "emote"]}
+{"clip": "Raptor2_IdleForward_582.npy", "action_tags": ["idle"]}
+{"clip": "Raptor2_IdleLeft_583.npy", "action_tags": ["idle"]}
+{"clip": "Raptor2_IdleLookLeft_584.npy", "action_tags": ["idle", "emote"]}
+{"clip": "Raptor2_IdleLookRight_585.npy", "action_tags": ["idle", "emote"]}
+{"clip": "Raptor2_IdleRight_586.npy", "action_tags": ["idle"]}
+{"clip": "Raptor2_Idle_577.npy", "action_tags": ["idle"]}
+{"clip": "Raptor2_JumpSpinRun_587.npy", "action_tags": ["jump", "turn", "locomotion"]}
+{"clip": "Raptor2_LeftHeadRun_588.npy", "action_tags": ["locomotion"]}
+{"clip": "Raptor2_LeftRunBite_589.npy", "action_tags": ["locomotion", "attack"]}
+{"clip": "Raptor2_ReverseRun_590.npy", "action_tags": ["locomotion"]}
+{"clip": "Raptor2_RightHeadRun_591.npy", "action_tags": ["locomotion"]}
+{"clip": "Raptor2_RightRunBite_592.npy", "action_tags": ["locomotion", "attack"]}
+{"clip": "Raptor2_RunFall_594.npy", "action_tags": ["locomotion", "fall"]}
+{"clip": "Raptor2_RunJumpBite_596.npy", "action_tags": ["locomotion", "jump", "attack"]}
+{"clip": "Raptor2_RunJumpFall_597.npy", "action_tags": ["locomotion", "jump", "fall"]}
+{"clip": "Raptor2_RunJumpLandBack_598.npy", "action_tags": ["locomotion", "jump"]}
+{"clip": "Raptor2_RunJumpRoll_599.npy", "action_tags": ["locomotion", "jump"]}
+{"clip": "Raptor2_RunJump_595.npy", "action_tags": ["locomotion", "jump"]}
+{"clip": "Raptor2_RunScreamJump_600.npy", "action_tags": ["locomotion", "jump", "emote"]}
+{"clip": "Raptor2_RunToStopRoar2_602.npy", "action_tags": ["locomotion", "emote"]}
+{"clip": "Raptor2_RunToStopRoar_601.npy", "action_tags": ["locomotion", "emote"]}
+{"clip": "Raptor2_Run_593.npy", "action_tags": ["locomotion"]}
+{"clip": "Raptor2_SpinRun_603.npy", "action_tags": ["turn", "locomotion"]}
+{"clip": "Raptor2_Stride_604.npy", "action_tags": ["locomotion"]}
+{"clip": "Raptor2_Walk_605.npy", "action_tags": ["locomotion"]}
+{"clip": "Raptor3_AttackRight_606.npy", "action_tags": ["attack"]}
+{"clip": "Raptor3_BarkForward_607.npy", "action_tags": ["emote"]}
+{"clip": "Raptor3_LeftPuke_608.npy", "action_tags": ["interact"]}
+{"clip": "Raptor3_MeanLEft_609.npy", "action_tags": ["emote", "attack"]}
+{"clip": "Raptor3_MeanRight_610.npy", "action_tags": ["emote", "attack"]}
+{"clip": "Raptor3_RoarLeft_611.npy", "action_tags": ["emote"]}
+{"clip": "Raptor3_RoarRight_612.npy", "action_tags": ["emote"]}
+{"clip": "Raptor3_Roarforward_617.npy", "action_tags": ["emote"]}
+{"clip": "Raptor3_Run_618.npy", "action_tags": ["locomotion"]}
+{"clip": "Raptor3_StepLeft_613.npy", "action_tags": ["locomotion"]}
+{"clip": "Raptor3_StepRight_614.npy", "action_tags": ["locomotion"]}
+{"clip": "Raptor3_StepRoar_615.npy", "action_tags": ["locomotion", "emote"]}
+{"clip": "Raptor3_Yell_616.npy", "action_tags": ["emote"]}
+{"clip": "Raptor_Attack_553.npy", "action_tags": ["attack"]}
+{"clip": "Raptor_Die_554.npy", "action_tags": ["death"]}
+{"clip": "Raptor_FastWalk_555.npy", "action_tags": ["locomotion"]}
+{"clip": "Raptor_HeadSmash_556.npy", "action_tags": ["attack"]}
+{"clip": "Raptor_Idle2_559.npy", "action_tags": ["idle"]}
+{"clip": "Raptor_Idle_557.npy", "action_tags": ["idle"]}
+{"clip": "Raptor_Idle_558.npy", "action_tags": ["idle"]}
+{"clip": "Raptor_LegScratch_560.npy", "action_tags": ["interact"]}
+{"clip": "Raptor_LegScratch_561.npy", "action_tags": ["interact"]}
+{"clip": "Raptor_Roar_562.npy", "action_tags": ["emote"]}
+{"clip": "Raptor_SlowWalk_563.npy", "action_tags": ["locomotion"]}
+{"clip": "Raptor_Yawn_564.npy", "action_tags": ["interact"]}
+{"clip": "Raptor_Yawn_565.npy", "action_tags": ["interact"]}
+{"clip": "Rat_AlertRun_460.npy", "action_tags": ["locomotion", "emote"]}
+{"clip": "Rat_Clean_461.npy", "action_tags": ["interact"]}
+{"clip": "Rat_Eat_462.npy", "action_tags": ["interact"]}
+{"clip": "Rat_Itch_463.npy", "action_tags": ["interact"]}
+{"clip": "Rat_Scamper_464.npy", "action_tags": ["locomotion"]}
+{"clip": "Rat_Trottle_465.npy", "action_tags": ["locomotion"]}
+{"clip": "Rhino_Attack2_467.npy", "action_tags": ["attack"]}
+{"clip": "Rhino_Attack3_468.npy", "action_tags": ["attack"]}
+{"clip": "Rhino_Attack_466.npy", "action_tags": ["attack"]}
+{"clip": "Rhino_Die_469.npy", "action_tags": ["death"]}
+{"clip": "Rhino_Idle2_470.npy", "action_tags": ["idle"]}
+{"clip": "Rhino_Idle3_471.npy", "action_tags": ["idle"]}
+{"clip": "Rhino_Idle3_472.npy", "action_tags": ["idle"]}
+{"clip": "Rhino_Idle_475.npy", "action_tags": ["idle"]}
+{"clip": "Rhino_Run_473.npy", "action_tags": ["locomotion"]}
+{"clip": "Rhino_Walk_474.npy", "action_tags": ["locomotion"]}
+{"clip": "Roach_Bristle_807.npy", "action_tags": ["emote", "attack"]}
+{"clip": "Roach_Fall_808.npy", "action_tags": ["fall"]}
+{"clip": "Roach_Hop_809.npy", "action_tags": ["jump"]}
+{"clip": "Roach_Left_810.npy", "action_tags": ["unknown"]}
+{"clip": "Roach_Move_811.npy", "action_tags": ["locomotion"]}
+{"clip": "Roach_Scurry_812.npy", "action_tags": ["locomotion"]}
+{"clip": "Roach_Shake_813.npy", "action_tags": ["interact"]}
+{"clip": "Roach_Smelling_814.npy", "action_tags": ["emote"]}
+{"clip": "Roach_TurnLeft_815.npy", "action_tags": ["turn"]}
+{"clip": "Roach_TurnRight_816.npy", "action_tags": ["turn"]}
+{"clip": "Roach_Uppity_817.npy", "action_tags": ["jump"]}
+{"clip": "SabreToothTiger_180Flip_476.npy", "action_tags": ["turn"]}
+{"clip": "SabreToothTiger_180RIght_477.npy", "action_tags": ["turn"]}
+{"clip": "SabreToothTiger_45TurnLeft_478.npy", "action_tags": ["turn"]}
+{"clip": "SabreToothTiger_Agitated_479.npy", "action_tags": ["emote"]}
+{"clip": "SabreToothTiger_Attack_480.npy", "action_tags": ["attack"]}
+{"clip": "SabreToothTiger_BackUp_481.npy", "action_tags": ["locomotion"]}
+{"clip": "SabreToothTiger_Backing_482.npy", "action_tags": ["locomotion"]}
+{"clip": "SabreToothTiger_Begg_483.npy", "action_tags": ["emote"]}
+{"clip": "SabreToothTiger_Bite_484.npy", "action_tags": ["attack"]}
+{"clip": "SabreToothTiger_CageBat_485.npy", "action_tags": ["attack"]}
+{"clip": "SabreToothTiger_Cowering2_487.npy", "action_tags": ["emote"]}
+{"clip": "SabreToothTiger_Cowering_486.npy", "action_tags": ["emote"]}
+{"clip": "SabreToothTiger_Eating_488.npy", "action_tags": ["interact"]}
+{"clip": "SabreToothTiger_GetUp2_490.npy", "action_tags": ["getup"]}
+{"clip": "SabreToothTiger_GetUpMad_491.npy", "action_tags": ["getup"]}
+{"clip": "SabreToothTiger_GetUp_489.npy", "action_tags": ["getup"]}
+{"clip": "SabreToothTiger_Growling_492.npy", "action_tags": ["emote"]}
+{"clip": "SabreToothTiger_Layout_493.npy", "action_tags": ["rest"]}
+{"clip": "SabreToothTiger_Leaper_494.npy", "action_tags": ["jump"]}
+{"clip": "SabreToothTiger_LeftTurn_495.npy", "action_tags": ["turn"]}
+{"clip": "SabreToothTiger_Mean_496.npy", "action_tags": ["emote", "attack"]}
+{"clip": "SabreToothTiger_PawSwatting_497.npy", "action_tags": ["attack"]}
+{"clip": "SabreToothTiger_PissedOff2_499.npy", "action_tags": ["emote", "attack"]}
+{"clip": "SabreToothTiger_PissedOff_498.npy", "action_tags": ["emote", "attack"]}
+{"clip": "SabreToothTiger_Raged_500.npy", "action_tags": ["emote", "attack"]}
+{"clip": "SabreToothTiger_Roaring_501.npy", "action_tags": ["emote"]}
+{"clip": "SabreToothTiger_Run2_503.npy", "action_tags": ["locomotion"]}
+{"clip": "SabreToothTiger_Run_502.npy", "action_tags": ["locomotion"]}
+{"clip": "SabreToothTiger_Sit_504.npy", "action_tags": ["rest"]}
+{"clip": "SabreToothTiger_Sitting2_506.npy", "action_tags": ["rest"]}
+{"clip": "SabreToothTiger_Sitting_505.npy", "action_tags": ["rest"]}
+{"clip": "SabreToothTiger_Slow180_507.npy", "action_tags": ["turn"]}
+{"clip": "SabreToothTiger_Snap_508.npy", "action_tags": ["attack"]}
+{"clip": "SabreToothTiger_Spin180_509.npy", "action_tags": ["turn"]}
+{"clip": "SabreToothTiger_Stablize_510.npy", "action_tags": ["emote"]}
+{"clip": "SabreToothTiger_Stalker_511.npy", "action_tags": ["locomotion"]}
+{"clip": "SabreToothTiger_StartLeft_512.npy", "action_tags": ["turn"]}
+{"clip": "SabreToothTiger_Startwalk_513.npy", "action_tags": ["locomotion"]}
+{"clip": "SabreToothTiger_SwatLft_514.npy", "action_tags": ["attack"]}
+{"clip": "SabreToothTiger_Swim_515.npy", "action_tags": ["swim"]}
+{"clip": "SabreToothTiger_TiredYawn_516.npy", "action_tags": ["interact"]}
+{"clip": "SabreToothTiger_Trot_517.npy", "action_tags": ["locomotion"]}
+{"clip": "SabreToothTiger_TurnLeft_518.npy", "action_tags": ["turn"]}
+{"clip": "SabreToothTiger_Warning_519.npy", "action_tags": ["emote"]}
+{"clip": "SandMouse_Attack2_302.npy", "action_tags": ["attack"]}
+{"clip": "SandMouse_Attack_301.npy", "action_tags": ["attack"]}
+{"clip": "SandMouse_Die2_304.npy", "action_tags": ["death"]}
+{"clip": "SandMouse_Die3_305.npy", "action_tags": ["death"]}
+{"clip": "SandMouse_Die_303.npy", "action_tags": ["death"]}
+{"clip": "SandMouse_DigIn_306.npy", "action_tags": ["interact"]}
+{"clip": "SandMouse_DigOut_307.npy", "action_tags": ["interact"]}
+{"clip": "SandMouse_Idle2_310.npy", "action_tags": ["idle"]}
+{"clip": "SandMouse_Idle3_311.npy", "action_tags": ["idle"]}
+{"clip": "SandMouse_Idle4_312.npy", "action_tags": ["idle"]}
+{"clip": "SandMouse_Idle4_313.npy", "action_tags": ["idle"]}
+{"clip": "SandMouse_Idle_308.npy", "action_tags": ["idle"]}
+{"clip": "SandMouse_Idle_309.npy", "action_tags": ["idle"]}
+{"clip": "SandMouse_Run_314.npy", "action_tags": ["locomotion"]}
+{"clip": "SandMouse_Walk_315.npy", "action_tags": ["locomotion"]}
+{"clip": "Scorpion-2_AttackRetreat_847.npy", "action_tags": ["attack", "locomotion"]}
+{"clip": "Scorpion-2_BackConfused_849.npy", "action_tags": ["emote"]}
+{"clip": "Scorpion-2_BackUp_848.npy", "action_tags": ["locomotion"]}
+{"clip": "Scorpion-2_BackingCrazy_850.npy", "action_tags": ["locomotion", "emote"]}
+{"clip": "Scorpion-2_BellyDeath1_852.npy", "action_tags": ["death"]}
+{"clip": "Scorpion-2_BellyDeath_851.npy", "action_tags": ["death"]}
+{"clip": "Scorpion-2_BiteAttack_853.npy", "action_tags": ["attack"]}
+{"clip": "Scorpion-2_BiteGrab_854.npy", "action_tags": ["attack"]}
+{"clip": "Scorpion-2_BlastedDeath_855.npy", "action_tags": ["death"]}
+{"clip": "Scorpion-2_Death2_856.npy", "action_tags": ["death"]}
+{"clip": "Scorpion-2_Death_857.npy", "action_tags": ["death"]}
+{"clip": "Scorpion-2_Death_858.npy", "action_tags": ["death"]}
+{"clip": "Scorpion-2_Flipped_859.npy", "action_tags": ["fall"]}
+{"clip": "Scorpion-2_Guns_860.npy", "action_tags": ["emote"]}
+{"clip": "Scorpion-2_HasppyFangs_861.npy", "action_tags": ["emote"]}
+{"clip": "Scorpion-2_HitAndSorr_862.npy", "action_tags": ["gethurt", "emote"]}
+{"clip": "Scorpion-2_JumpSting_863.npy", "action_tags": ["jump", "attack"]}
+{"clip": "Scorpion-2_LimpAlive_864.npy", "action_tags": ["locomotion", "gethurt"]}
+{"clip": "Scorpion-2_LungeForward_865.npy", "action_tags": ["attack"]}
+{"clip": "Scorpion-2_OnBackDying_866.npy", "action_tags": ["death"]}
+{"clip": "Scorpion-2_PissedFangs_867.npy", "action_tags": ["emote", "attack"]}
+{"clip": "Scorpion-2_RisingWalk_868.npy", "action_tags": ["locomotion"]}
+{"clip": "Scorpion-2_RunAttack_869.npy", "action_tags": ["locomotion", "attack"]}
+{"clip": "Scorpion-2_RunToAttrack_870.npy", "action_tags": ["locomotion", "attack"]}
+{"clip": "Scorpion-2_SettleBack_871.npy", "action_tags": ["rest"]}
+{"clip": "Scorpion-2_SlideBack_872.npy", "action_tags": ["locomotion"]}
+{"clip": "Scorpion-2_SlowIdle_873.npy", "action_tags": ["idle"]}
+{"clip": "Scorpion-2_StandAttack_874.npy", "action_tags": ["attack"]}
+{"clip": "Scorpion-2_StandReady_886.npy", "action_tags": ["idle"]}
+{"clip": "Scorpion-2_StandingRun_875.npy", "action_tags": ["locomotion"]}
+{"clip": "Scorpion-2_SteadyWalk_876.npy", "action_tags": ["locomotion"]}
+{"clip": "Scorpion-2_StingKill2_877.npy", "action_tags": ["attack"]}
+{"clip": "Scorpion-2_StingKill_878.npy", "action_tags": ["attack"]}
+{"clip": "Scorpion-2_StingYaYa_879.npy", "action_tags": ["attack"]}
+{"clip": "Scorpion-2_StingYa_880.npy", "action_tags": ["attack"]}
+{"clip": "Scorpion-2_StrafeLeft_881.npy", "action_tags": ["turn", "locomotion"]}
+{"clip": "Scorpion-2_StrafeRight_882.npy", "action_tags": ["turn", "locomotion"]}
+{"clip": "Scorpion-2_WalkAndRise_884.npy", "action_tags": ["locomotion"]}
+{"clip": "Scorpion-2_WalkForward_883.npy", "action_tags": ["locomotion"]}
+{"clip": "Scorpion-2_WildDeath_885.npy", "action_tags": ["death"]}
+{"clip": "Scorpion_Agitated_741.npy", "action_tags": ["emote"]}
+{"clip": "Scorpion_Attack1_742.npy", "action_tags": ["attack"]}
+{"clip": "Scorpion_BackUp_743.npy", "action_tags": ["locomotion"]}
+{"clip": "Scorpion_Defend_744.npy", "action_tags": ["emote"]}
+{"clip": "Scorpion_Defend_745.npy", "action_tags": ["emote"]}
+{"clip": "Scorpion_IdleLoop_746.npy", "action_tags": ["idle"]}
+{"clip": "Scorpion_Recoil2_748.npy", "action_tags": ["emote"]}
+{"clip": "Scorpion_Recoil_747.npy", "action_tags": ["emote"]}
+{"clip": "Scorpion_SlowForward_749.npy", "action_tags": ["locomotion"]}
+{"clip": "Scorpion_Stinger_750.npy", "action_tags": ["attack"]}
+{"clip": "Scorpion_StretchArms_751.npy", "action_tags": ["interact"]}
+{"clip": "Scorpion_TurnLeft_752.npy", "action_tags": ["turn"]}
+{"clip": "Scorpion_TurnRight_753.npy", "action_tags": ["turn"]}
+{"clip": "Scorpion_WalkForward_754.npy", "action_tags": ["locomotion"]}
+{"clip": "Skunk_Die_520.npy", "action_tags": ["death"]}
+{"clip": "Skunk_Idle2_522.npy", "action_tags": ["idle"]}
+{"clip": "Skunk_Idle3_523.npy", "action_tags": ["idle"]}
+{"clip": "Skunk_Idle_521.npy", "action_tags": ["idle"]}
+{"clip": "Skunk_Run_524.npy", "action_tags": ["locomotion"]}
+{"clip": "Skunk_Spray_525.npy", "action_tags": ["attack", "emote"]}
+{"clip": "Skunk_Walk_526.npy", "action_tags": ["locomotion"]}
+{"clip": "Skunk_Walk_527.npy", "action_tags": ["locomotion"]}
+{"clip": "SpiderG_Attack2_721.npy", "action_tags": ["attack"]}
+{"clip": "SpiderG_Attack3_722.npy", "action_tags": ["attack"]}
+{"clip": "SpiderG_Attack4_723.npy", "action_tags": ["attack"]}
+{"clip": "SpiderG_Attack5_724.npy", "action_tags": ["attack"]}
+{"clip": "SpiderG_Attack6_725.npy", "action_tags": ["attack"]}
+{"clip": "SpiderG_Attack7_726.npy", "action_tags": ["attack"]}
+{"clip": "SpiderG_Attack_720.npy", "action_tags": ["attack"]}
+{"clip": "SpiderG_Burrough_727.npy", "action_tags": ["interact"]}
+{"clip": "SpiderG_ComeOut_728.npy", "action_tags": ["locomotion"]}
+{"clip": "SpiderG_Die_729.npy", "action_tags": ["death"]}
+{"clip": "SpiderG_Die_730.npy", "action_tags": ["death"]}
+{"clip": "SpiderG_Fangs_731.npy", "action_tags": ["emote", "attack"]}
+{"clip": "SpiderG_Fangs_732.npy", "action_tags": ["emote", "attack"]}
+{"clip": "SpiderG_Idle2_734.npy", "action_tags": ["idle"]}
+{"clip": "SpiderG_Idle3_735.npy", "action_tags": ["idle"]}
+{"clip": "SpiderG_Idle3_736.npy", "action_tags": ["idle"]}
+{"clip": "SpiderG_Idle_733.npy", "action_tags": ["idle"]}
+{"clip": "SpiderG_Retreat_737.npy", "action_tags": ["locomotion"]}
+{"clip": "SpiderG_Run_738.npy", "action_tags": ["locomotion"]}
+{"clip": "SpiderG_Shiver_739.npy", "action_tags": ["emote"]}
+{"clip": "SpiderG_Walk_740.npy", "action_tags": ["locomotion"]}
+{"clip": "Spider_Attack1_887.npy", "action_tags": ["attack"]}
+{"clip": "Spider_Attack2_888.npy", "action_tags": ["attack"]}
+{"clip": "Spider_Attack4_889.npy", "action_tags": ["attack"]}
+{"clip": "Spider_Attack5_890.npy", "action_tags": ["attack"]}
+{"clip": "Spider_AttackLeft_891.npy", "action_tags": ["attack"]}
+{"clip": "Spider_Attackright_892.npy", "action_tags": ["attack"]}
+{"clip": "Spider_BackRear_893.npy", "action_tags": ["emote"]}
+{"clip": "Spider_BackitUp_894.npy", "action_tags": ["locomotion"]}
+{"clip": "Spider_Barking_913.npy", "action_tags": ["emote"]}
+{"clip": "Spider_Fangy_895.npy", "action_tags": ["emote", "attack"]}
+{"clip": "Spider_Fangy_896.npy", "action_tags": ["emote", "attack"]}
+{"clip": "Spider_Gliding_897.npy", "action_tags": ["fly"]}
+{"clip": "Spider_Hurt_898.npy", "action_tags": ["gethurt"]}
+{"clip": "Spider_Injuredwalk_914.npy", "action_tags": ["locomotion", "gethurt"]}
+{"clip": "Spider_Jump_899.npy", "action_tags": ["jump"]}
+{"clip": "Spider_LandinHAir_900.npy", "action_tags": ["fly"]}
+{"clip": "Spider_Landing_901.npy", "action_tags": ["fly"]}
+{"clip": "Spider_Rearing_902.npy", "action_tags": ["emote"]}
+{"clip": "Spider_RetreatInjured_904.npy", "action_tags": ["locomotion", "gethurt"]}
+{"clip": "Spider_RetreatSlow_905.npy", "action_tags": ["locomotion"]}
+{"clip": "Spider_Retreat_903.npy", "action_tags": ["locomotion"]}
+{"clip": "Spider_Riser_906.npy", "action_tags": ["getup"]}
+{"clip": "Spider_Rising_907.npy", "action_tags": ["getup"]}
+{"clip": "Spider_Runleft_915.npy", "action_tags": ["locomotion"]}
+{"clip": "Spider_Scary_908.npy", "action_tags": ["emote", "attack"]}
+{"clip": "Spider_Scramble_909.npy", "action_tags": ["locomotion"]}
+{"clip": "Spider_SlowIdle_910.npy", "action_tags": ["idle"]}
+{"clip": "Spider_TravelWeb_911.npy", "action_tags": ["locomotion"]}
+{"clip": "Spider_Walker_912.npy", "action_tags": ["locomotion"]}
+{"clip": "Spider_Walkleft_916.npy", "action_tags": ["locomotion"]}
+{"clip": "Spider_Walkloop_917.npy", "action_tags": ["locomotion"]}
+{"clip": "Spider_Weaver_918.npy", "action_tags": ["interact"]}
+{"clip": "Spider_Weaving_919.npy", "action_tags": ["interact"]}
+{"clip": "Stego_Attack2_292.npy", "action_tags": ["attack"]}
+{"clip": "Stego_Attack3_293.npy", "action_tags": ["attack"]}
+{"clip": "Stego_Attack_291.npy", "action_tags": ["attack"]}
+{"clip": "Stego_Fall_294.npy", "action_tags": ["fall"]}
+{"clip": "Stego_Idle2_296.npy", "action_tags": ["idle"]}
+{"clip": "Stego_Idle_295.npy", "action_tags": ["idle"]}
+{"clip": "Stego_Run_297.npy", "action_tags": ["locomotion"]}
+{"clip": "Stego_Shake_298.npy", "action_tags": ["interact"]}
+{"clip": "Stego_Slowwalk_299.npy", "action_tags": ["locomotion"]}
+{"clip": "Stego_TailWhip_300.npy", "action_tags": ["attack"]}
+{"clip": "Trex_BigRoarStep_619.npy", "action_tags": ["emote", "locomotion"]}
+{"clip": "Trex_Bite90Left_622.npy", "action_tags": ["attack"]}
+{"clip": "Trex_Bite90Right_623.npy", "action_tags": ["attack"]}
+{"clip": "Trex_BiteCloseLeft_624.npy", "action_tags": ["attack"]}
+{"clip": "Trex_BiteCloseRight_625.npy", "action_tags": ["attack"]}
+{"clip": "Trex_BiteStepBackForward_626.npy", "action_tags": ["attack", "locomotion"]}
+{"clip": "Trex_ChaseBiteLeft_627.npy", "action_tags": ["locomotion", "attack"]}
+{"clip": "Trex_ChaseBiteRight_628.npy", "action_tags": ["locomotion", "attack"]}
+{"clip": "Trex_ChaseBite_629.npy", "action_tags": ["locomotion", "attack"]}
+{"clip": "Trex_ChaseHeadButtLeft_630.npy", "action_tags": ["locomotion", "attack"]}
+{"clip": "Trex_ChaseRoarLeft_631.npy", "action_tags": ["locomotion", "emote"]}
+{"clip": "Trex_ChaseRoarRight_632.npy", "action_tags": ["locomotion", "emote"]}
+{"clip": "Trex_ChaseRoar_620.npy", "action_tags": ["locomotion", "emote"]}
+{"clip": "Trex_ClimbDown_633.npy", "action_tags": ["locomotion"]}
+{"clip": "Trex_ClimbUp_634.npy", "action_tags": ["locomotion"]}
+{"clip": "Trex_DeathShort_635.npy", "action_tags": ["death"]}
+{"clip": "Trex_Death_636.npy", "action_tags": ["death"]}
+{"clip": "Trex_HeadButtLeft_637.npy", "action_tags": ["attack"]}
+{"clip": "Trex_HitHead1_638.npy", "action_tags": ["gethurt"]}
+{"clip": "Trex_HitHead2_639.npy", "action_tags": ["gethurt"]}
+{"clip": "Trex_HitHead3_640.npy", "action_tags": ["gethurt"]}
+{"clip": "Trex_HitLeg2_641.npy", "action_tags": ["gethurt"]}
+{"clip": "Trex_HitLeg_642.npy", "action_tags": ["gethurt"]}
+{"clip": "Trex_HitTorsoLeft_643.npy", "action_tags": ["gethurt"]}
+{"clip": "Trex_HitTorsoRight_644.npy", "action_tags": ["gethurt"]}
+{"clip": "Trex_HumanBite_645.npy", "action_tags": ["attack"]}
+{"clip": "Trex_HumanKill_646.npy", "action_tags": ["attack"]}
+{"clip": "Trex_HumanShake_647.npy", "action_tags": ["attack"]}
+{"clip": "Trex_IdleAttackToRunLeft_648.npy", "action_tags": ["idle", "attack", "locomotion"]}
+{"clip": "Trex_IdleAttackToRunRight_649.npy", "action_tags": ["idle", "attack", "locomotion"]}
+{"clip": "Trex_IdleAttack_650.npy", "action_tags": ["idle", "attack"]}
+{"clip": "Trex_IdleInvestigaeOut_651.npy", "action_tags": ["idle", "emote"]}
+{"clip": "Trex_IdleInvestigateLoop_652.npy", "action_tags": ["idle", "emote"]}
+{"clip": "Trex_IdleInvestigate_653.npy", "action_tags": ["idle", "emote"]}
+{"clip": "Trex_IdleSneeze_654.npy", "action_tags": ["idle", "emote"]}
+{"clip": "Trex_IdleSneeze_655.npy", "action_tags": ["idle", "emote"]}
+{"clip": "Trex_IdleToRun_656.npy", "action_tags": ["idle", "locomotion"]}
+{"clip": "Trex_KillLong_657.npy", "action_tags": ["attack"]}
+{"clip": "Trex_KillLong_658.npy", "action_tags": ["attack"]}
+{"clip": "Trex_LongDeath_659.npy", "action_tags": ["death"]}
+{"clip": "Trex_LongDeath_660.npy", "action_tags": ["death"]}
+{"clip": "Trex_LongDeath_661.npy", "action_tags": ["death"]}
+{"clip": "Trex_LookForward2_662.npy", "action_tags": ["emote"]}
+{"clip": "Trex_LookForward_663.npy", "action_tags": ["emote"]}
+{"clip": "Trex_LookLeft_664.npy", "action_tags": ["emote"]}
+{"clip": "Trex_LookRight_665.npy", "action_tags": ["emote"]}
+{"clip": "Trex_MamaCaveBiteLoop_666.npy", "action_tags": ["attack"]}
+{"clip": "Trex_MamaCaveBiteOut_667.npy", "action_tags": ["attack"]}
+{"clip": "Trex_MamaCaveBite_668.npy", "action_tags": ["attack"]}
+{"clip": "Trex_RoarLeft_669.npy", "action_tags": ["emote"]}
+{"clip": "Trex_RoarRight_670.npy", "action_tags": ["emote"]}
+{"clip": "Trex_Roar_621.npy", "action_tags": ["emote"]}
+{"clip": "Trex_RunHeadButtRight_671.npy", "action_tags": ["locomotion", "attack"]}
+{"clip": "Trex_RunHeadLoop_672.npy", "action_tags": ["locomotion"]}
+{"clip": "Trex_RunHeadLow2_673.npy", "action_tags": ["locomotion"]}
+{"clip": "Trex_RunHeadLow_674.npy", "action_tags": ["locomotion"]}
+{"clip": "Trex_RunToStop_675.npy", "action_tags": ["locomotion"]}
+{"clip": "Trex_SprintHeadLeft_676.npy", "action_tags": ["locomotion"]}
+{"clip": "Trex_SprintHeadRight_677.npy", "action_tags": ["locomotion", "emote"]}
+{"clip": "Trex_SprintLoop_678.npy", "action_tags": ["locomotion"]}
+{"clip": "Trex_StepBack_679.npy", "action_tags": ["locomotion"]}
+{"clip": "Trex_Stunned_680.npy", "action_tags": ["gethurt"]}
+{"clip": "Trex_Stunned_681.npy", "action_tags": ["gethurt"]}
+{"clip": "Trex_Turn180Look_682.npy", "action_tags": ["turn", "emote"]}
+{"clip": "Trex_Turn180Right_683.npy", "action_tags": ["turn"]}
+{"clip": "Trex_Turn180TurnRight_684.npy", "action_tags": ["turn"]}
+{"clip": "Trex_Turn90Left_685.npy", "action_tags": ["turn"]}
+{"clip": "Trex_Turn90Right_686.npy", "action_tags": ["turn"]}
+{"clip": "Trex_WalkBack_687.npy", "action_tags": ["locomotion"]}
+{"clip": "Trex_WalkBite_688.npy", "action_tags": ["locomotion", "attack"]}
+{"clip": "Trex_WalkHeadLow_689.npy", "action_tags": ["locomotion", "emote"]}
+{"clip": "Trex_WalkLeftBite_690.npy", "action_tags": ["locomotion", "attack"]}
+{"clip": "Trex_WalkLoop_691.npy", "action_tags": ["locomotion"]}
+{"clip": "Trex_WalkRightBite_692.npy", "action_tags": ["locomotion", "attack"]}
+{"clip": "Trex_WalkSlowLoop_693.npy", "action_tags": ["locomotion"]}
+{"clip": "Tricera_Attack2_283.npy", "action_tags": ["attack"]}
+{"clip": "Tricera_Attack3_284.npy", "action_tags": ["attack"]}
+{"clip": "Tricera_Attack4_285.npy", "action_tags": ["attack"]}
+{"clip": "Tricera_Attack_282.npy", "action_tags": ["attack"]}
+{"clip": "Tricera_Fall_286.npy", "action_tags": ["fall"]}
+{"clip": "Tricera_Idle_287.npy", "action_tags": ["idle"]}
+{"clip": "Tricera_NoseDirt_288.npy", "action_tags": ["interact"]}
+{"clip": "Tricera_Run_289.npy", "action_tags": ["locomotion"]}
+{"clip": "Tricera_Walk_290.npy", "action_tags": ["locomotion"]}
+{"clip": "Tukan_FlyForward_1078.npy", "action_tags": ["fly"]}
+{"clip": "Tukan_FlyLoop_1079.npy", "action_tags": ["fly"]}
+{"clip": "Tukan_Fly_1077.npy", "action_tags": ["fly"]}
+{"clip": "Tukan_IdleLook_1080.npy", "action_tags": ["idle", "emote"]}
+{"clip": "Tukan_Shake_1081.npy", "action_tags": ["interact"]}
+{"clip": "Tukan_SlowDown_1082.npy", "action_tags": ["fly"]}
+{"clip": "Tukan_Sqwak_1083.npy", "action_tags": ["emote"]}
+{"clip": "Tukan_WingScratch_1084.npy", "action_tags": ["interact"]}
+{"clip": "Turtle_Attack2_529.npy", "action_tags": ["attack"]}
+{"clip": "Turtle_Attack3_530.npy", "action_tags": ["attack"]}
+{"clip": "Turtle_Attack_528.npy", "action_tags": ["attack"]}
+{"clip": "Turtle_Hide_531.npy", "action_tags": ["rest"]}
+{"clip": "Turtle_Idle2_533.npy", "action_tags": ["idle"]}
+{"clip": "Turtle_Idle_532.npy", "action_tags": ["idle"]}
+{"clip": "Turtle_Onback_534.npy", "action_tags": ["rest"]}
+{"clip": "Turtle_Run_535.npy", "action_tags": ["locomotion"]}
+{"clip": "Turtle_Walk_536.npy", "action_tags": ["locomotion"]}
+{"clip": "Turtle_Yawn_537.npy", "action_tags": ["interact"]}
+{"clip": "Turtle_Yawn_538.npy", "action_tags": ["interact"]}
+{"clip": "Tyranno_Attack2_698.npy", "action_tags": ["attack"]}
+{"clip": "Tyranno_Attack_697.npy", "action_tags": ["attack"]}
+{"clip": "Tyranno_Fall_699.npy", "action_tags": ["fall"]}
+{"clip": "Tyranno_HeadButt_700.npy", "action_tags": ["attack"]}
+{"clip": "Tyranno_Idle2_702.npy", "action_tags": ["idle"]}
+{"clip": "Tyranno_Idle_701.npy", "action_tags": ["idle"]}
+{"clip": "Tyranno_Roar_703.npy", "action_tags": ["emote"]}
+{"clip": "Tyranno_Run_704.npy", "action_tags": ["locomotion"]}
+{"clip": "Tyranno_TailWhip_705.npy", "action_tags": ["attack"]}
+{"clip": "Tyranno_Walk_706.npy", "action_tags": ["locomotion"]}

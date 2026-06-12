@@ -7,12 +7,51 @@ from typing import Iterable
 
 from data_loaders.truebones.truebones_utils.param_utils import (
     MOTION_METADATA_FILE,
+    MOTION_TAGS_FILE,
 )
 
 
-MOTION_METADATA_SCHEMA_VERSION = 4
+MOTION_METADATA_SCHEMA_VERSION = 5
 
 _TOKEN_PATTERN = re.compile(r"[A-Z]+(?=[A-Z][a-z]|\d|$)|[A-Z]?[a-z]+|\d+")
+
+# ---------------------------------------------------------------------------
+# Canonical action-tag vocabulary
+# ---------------------------------------------------------------------------
+# The full set of valid action tags. Order is significant: it defines the
+# multi-hot index layout the model conditions on, so trained checkpoints depend
+# on it staying stable. Tags themselves are maintained by hand in
+# ``motion_tags.jsonl`` (see ``load_motion_tags``); this module never generates
+# them automatically.
+
+ACTION_TAGS: tuple[str, ...] = (
+    "idle",
+    "locomotion",
+    "getup",
+    "swim",
+    "fly",
+    "jump",
+    "turn",
+    "attack",
+    "gethurt",
+    "rest",
+    "emote",
+    "interact",
+    "death",
+    "fall",
+    "unknown",
+)
+
+# Label fields that used to be baked into motion_metadata.json but are now
+# either sourced from motion_tags.jsonl (action_tags) or redundant
+# (action_label, motion_name == entry key). They are stripped on both load and
+# write so the metadata file stays free of them.
+_LEGACY_LABEL_FIELDS: tuple[str, ...] = (
+    "action_tags",
+    "action_label",
+    "action_category",
+    "motion_name",
+)
 
 # ---------------------------------------------------------------------------
 # Tokenization helpers
@@ -40,29 +79,6 @@ def _strip_species_variant(object_type: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# LLM integration — keyword fallback has been removed.
-# All classification MUST go through the LLM; prefetch before querying.
-# ---------------------------------------------------------------------------
-
-def _get_llm_module():
-    """Import the LLM classifier module; raises ImportError if unavailable."""
-    from data_loaders.truebones.truebones_utils import motion_labels_llm
-    return motion_labels_llm
-
-
-def _llm_classify_batch(
-    action_names: list[str],
-    *,
-    object_type: str | None = None,
-) -> dict[str, list[str]]:
-    if not action_names:
-        return {}
-    return _get_llm_module().classify_action_tags_batch(
-        action_names, object_type=object_type,
-    )
-
-
-# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -70,11 +86,6 @@ def infer_species_label(object_type: str) -> str:
     base = _strip_species_variant(object_type)
     tokens = _split_identifier_tokens(base)
     return " ".join(tokens) if tokens else object_type.lower()
-
-
-def normalize_action_label(action_name: str) -> str:
-    tokens = _split_identifier_tokens(action_name)
-    return " ".join(tokens) if tokens else action_name.strip().lower()
 
 
 def normalize_action_tags(raw_action_tags) -> list[str]:
@@ -98,81 +109,6 @@ def normalize_action_tags(raw_action_tags) -> list[str]:
     return normalized
 
 
-def infer_action_tags(
-    action_name: str,
-    *,
-    object_type: str | None = None,
-) -> list[str]:
-    """Return the resolved action tags for an action name (LLM-based).
-
-    First checks the in-memory / disk cache.  On a cache miss, issues a
-    single-name LLM call and caches the result.  Call
-    ``prefetch_action_tags`` upfront to avoid per-name LLM latency.
-
-    Args:
-        action_name: The action name to classify.
-        object_type: Optional species/object type for context-aware classification.
-
-    Returns ``["unknown"]`` if the LLM cannot classify the name.
-    """
-    results = _llm_classify_batch([action_name], object_type=object_type)
-    return normalize_action_tags(results.get(action_name, ["unknown"]))
-
-
-def prefetch_action_tags(
-    action_names: list[str],
-    *,
-    object_type: str | None = None,
-) -> None:
-    """Pre-classify a batch of action names, filling the in-memory + disk cache.
-
-    Optional optimisation: call this once with all known action names before
-    looping over individual files.  ``infer_action_tags`` works correctly
-    without this — the cache ensures only the first cold query per name ever
-    reaches the LLM.
-
-    Args:
-        action_names: List of action names to classify.
-        object_type: Optional species/object type for context-aware classification.
-            When provided, the LLM prompt includes the species info and the cache
-            is keyed by ``(action_name, object_type)``.
-
-    Raises ImportError if the LLM module is unavailable.
-    """
-    if not action_names:
-        return
-    _llm_classify_batch(action_names, object_type=object_type)
-
-
-def prefetch_action_tags_by_species(
-    action_names_by_species: dict[str, list[str]],
-    *,
-    max_concurrency: int = 4,
-) -> None:
-    """Pre-classify action names for several species, concurrently across species.
-
-    Multiple species are queried in parallel (up to ``max_concurrency``); the
-    names within a single species are still classified serially. Filling the
-    shared in-memory + disk cache so later ``infer_action_tags`` calls hit it.
-
-    Args:
-        action_names_by_species: Mapping ``object_type -> [action_name, ...]``.
-        max_concurrency: Maximum number of species queried in parallel (default 4).
-
-    Raises ImportError if the LLM module is unavailable.
-    """
-    filtered = {
-        object_type: names
-        for object_type, names in action_names_by_species.items()
-        if names
-    }
-    if not filtered:
-        return
-    _get_llm_module().classify_action_tags_by_species(
-        filtered, max_concurrency=max_concurrency,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Metadata builders
 # ---------------------------------------------------------------------------
@@ -183,19 +119,15 @@ def build_object_labels(object_type: str) -> dict[str, str]:
 
 def build_motion_labels(
     object_type: str,
-    action_name: str,
     motion_name: str | None = None,
     source_file: str | None = None,
-    action_tags: list[str] | None = None,
 ) -> dict[str, object]:
-    action_label = normalize_action_label(action_name)
-    if action_tags is None:
-        action_tags = infer_action_tags(action_name, object_type=object_type)
-    payload: dict[str, object] = {
-        "object_type": object_type,
-        "action_label": action_label,
-        "action_tags": action_tags,
-    }
+    """Build the (non-action) label fields for a motion clip.
+
+    Action tags are no longer produced here — they are maintained by hand in
+    ``motion_tags.jsonl`` and merged in by :func:`load_motion_metadata`.
+    """
+    payload: dict[str, object] = {"object_type": object_type}
     payload.update(build_object_labels(object_type))
     if motion_name is not None:
         payload["motion_name"] = motion_name
@@ -221,33 +153,63 @@ def infer_motion_labels_from_motion_name(
         if resolved_object_type is None:
             resolved_object_type = stem.split("_", 1)[0]
 
-    action_stem = stem
-    prefix = f"{resolved_object_type}_"
-    if action_stem.startswith(prefix):
-        action_stem = action_stem[len(prefix):]
-    action_stem = re.sub(r"_\d+$", "", action_stem).strip("_")
-    if not action_stem:
-        action_stem = stem
-    return build_motion_labels(
-        resolved_object_type,
-        action_stem,
-        motion_name=motion_name,
-    )
+    return build_motion_labels(resolved_object_type, motion_name=motion_name)
 
 
-def _normalize_motion_metadata_entry(metadata: dict[str, object]) -> dict[str, object]:
-    normalized = dict(metadata)
-    legacy_action_category = normalized.pop("action_category", None)
-    raw_action_tags = normalized.get("action_tags")
-    if raw_action_tags is None and legacy_action_category is not None:
-        raw_action_tags = [legacy_action_category]
-    normalized["action_tags"] = normalize_action_tags(raw_action_tags)
-    return normalized
+def _strip_legacy_label_fields(metadata: dict[str, object]) -> dict[str, object]:
+    """Return a copy of *metadata* with the deprecated label fields removed."""
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key not in _LEGACY_LABEL_FIELDS
+    }
 
 
 # ---------------------------------------------------------------------------
 # I/O
 # ---------------------------------------------------------------------------
+
+def load_motion_tags(dataset_dir: str | Path) -> dict[str, list[str]]:
+    """Load the hand-maintained ``motion_tags.jsonl`` sidecar.
+
+    Each line is a JSON object ``{"clip": "<name>.npy", "action_tags": [...]}``.
+    Returns a mapping ``clip -> [tag, ...]``. Raises ``FileNotFoundError`` if the
+    file is absent so callers fail fast rather than silently training without
+    action conditioning.
+    """
+    tags_path = Path(dataset_dir) / MOTION_TAGS_FILE
+    if not tags_path.exists():
+        raise FileNotFoundError(
+            f"{MOTION_TAGS_FILE} not found at {tags_path}. Action tags are now "
+            f"maintained by hand in this file (one "
+            f'{{"clip": "<name>.npy", "action_tags": [...]}} object per line).'
+        )
+
+    motion_tags: dict[str, list[str]] = {}
+    with open(tags_path, "r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"{MOTION_TAGS_FILE}:{line_number} is not valid JSON: {exc}"
+                ) from exc
+            if not isinstance(entry, dict):
+                raise ValueError(
+                    f"{MOTION_TAGS_FILE}:{line_number} must be a JSON object, "
+                    f"got {type(entry).__name__}"
+                )
+            clip = entry.get("clip")
+            if not clip:
+                raise ValueError(
+                    f"{MOTION_TAGS_FILE}:{line_number} is missing the 'clip' field"
+                )
+            motion_tags[str(clip)] = normalize_action_tags(entry.get("action_tags"))
+    return motion_tags
+
 
 def load_motion_metadata(dataset_dir: str | Path) -> dict[str, dict[str, object]]:
     metadata_path = Path(dataset_dir) / MOTION_METADATA_FILE
@@ -261,10 +223,28 @@ def load_motion_metadata(dataset_dir: str | Path) -> dict[str, dict[str, object]
     if not isinstance(motions, dict):
         return {}
 
+    motion_tags = load_motion_tags(dataset_dir)
+
     normalized: dict[str, dict[str, object]] = {}
+    missing_tags: list[str] = []
     for motion_name, metadata in motions.items():
-        if isinstance(metadata, dict):
-            normalized[motion_name] = _normalize_motion_metadata_entry(metadata)
+        if not isinstance(metadata, dict):
+            continue
+        tags = motion_tags.get(motion_name)
+        if tags is None:
+            missing_tags.append(motion_name)
+            continue
+        entry = _strip_legacy_label_fields(metadata)
+        entry["action_tags"] = list(tags)
+        normalized[motion_name] = entry
+
+    if missing_tags:
+        preview = ", ".join(sorted(missing_tags)[:10])
+        more = "" if len(missing_tags) <= 10 else f" (+{len(missing_tags) - 10} more)"
+        raise KeyError(
+            f"{MOTION_TAGS_FILE} is missing action_tags for {len(missing_tags)} "
+            f"clip(s): {preview}{more}. Add an entry for each clip."
+        )
     return normalized
 
 
@@ -295,7 +275,7 @@ def write_motion_metadata(
 ) -> Path:
     output_path = Path(save_dir) / MOTION_METADATA_FILE
     sanitized_entries = {
-        motion_name: _normalize_motion_metadata_entry(metadata)
+        motion_name: _strip_legacy_label_fields(metadata)
         for motion_name, metadata in motion_entries.items()
         if isinstance(metadata, dict)
     }

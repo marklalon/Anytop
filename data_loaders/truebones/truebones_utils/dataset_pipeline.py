@@ -244,7 +244,7 @@ def _process_motion_file(file_path, object_type, max_joints,
             'root_translation_xz': root_translation_xz,
             'source_fbx_path': file_path,
             'slice_range': (current_begin, slice_ind),
-            'motion_labels': build_motion_labels(object_type, raw_action, action_tags=["unknown"]),
+            'motion_labels': build_motion_labels(object_type),
         })
 
     return {
@@ -275,7 +275,6 @@ def _attach_orientation_reference_metadata(
 
 def _build_motion_metadata_entry(result, motion_file_name):
     motion_labels = dict(result['motion_labels'])
-    motion_labels['motion_name'] = motion_file_name
     motion_labels['is_loop'] = result.get('is_loop', False)
     motion_labels['motion_source'] = 'anim_dir'
 

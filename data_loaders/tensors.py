@@ -9,7 +9,7 @@ _ACTION_TAG_TO_INDEX = None
 def _get_action_tag_vocab():
     global _ACTION_TAG_VOCAB, _ACTION_TAG_TO_INDEX
     if _ACTION_TAG_VOCAB is None or _ACTION_TAG_TO_INDEX is None:
-        from data_loaders.truebones.truebones_utils.motion_labels_llm import ACTION_TAGS
+        from data_loaders.truebones.truebones_utils.motion_labels import ACTION_TAGS
 
         _ACTION_TAG_VOCAB = list(ACTION_TAGS)
         _ACTION_TAG_TO_INDEX = {tag: i for i, tag in enumerate(_ACTION_TAG_VOCAB)}
