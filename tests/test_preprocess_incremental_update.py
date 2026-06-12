@@ -400,7 +400,7 @@ def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_infe
 
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
-    monkeypatch.setattr(regenerate_dataset_artifacts_module, "prefetch_action_tags", lambda action_names: None)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "prefetch_action_tags_by_species", lambda action_names_by_species: None)
     monkeypatch.setattr(
         regenerate_dataset_artifacts_module,
         "infer_motion_labels_from_motion_name",

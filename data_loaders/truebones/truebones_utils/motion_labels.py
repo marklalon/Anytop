@@ -50,10 +50,16 @@ def _get_llm_module():
     return motion_labels_llm
 
 
-def _llm_classify_batch(action_names: list[str]) -> dict[str, list[str]]:
+def _llm_classify_batch(
+    action_names: list[str],
+    *,
+    object_type: str | None = None,
+) -> dict[str, list[str]]:
     if not action_names:
         return {}
-    return _get_llm_module().classify_action_tags_batch(action_names)
+    return _get_llm_module().classify_action_tags_batch(
+        action_names, object_type=object_type,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -92,20 +98,32 @@ def normalize_action_tags(raw_action_tags) -> list[str]:
     return normalized
 
 
-def infer_action_tags(action_name: str) -> list[str]:
+def infer_action_tags(
+    action_name: str,
+    *,
+    object_type: str | None = None,
+) -> list[str]:
     """Return the resolved action tags for an action name (LLM-based).
 
     First checks the in-memory / disk cache.  On a cache miss, issues a
     single-name LLM call and caches the result.  Call
     ``prefetch_action_tags`` upfront to avoid per-name LLM latency.
 
+    Args:
+        action_name: The action name to classify.
+        object_type: Optional species/object type for context-aware classification.
+
     Returns ``["unknown"]`` if the LLM cannot classify the name.
     """
-    results = _llm_classify_batch([action_name])
+    results = _llm_classify_batch([action_name], object_type=object_type)
     return normalize_action_tags(results.get(action_name, ["unknown"]))
 
 
-def prefetch_action_tags(action_names: list[str]) -> None:
+def prefetch_action_tags(
+    action_names: list[str],
+    *,
+    object_type: str | None = None,
+) -> None:
     """Pre-classify a batch of action names, filling the in-memory + disk cache.
 
     Optional optimisation: call this once with all known action names before
@@ -113,11 +131,46 @@ def prefetch_action_tags(action_names: list[str]) -> None:
     without this — the cache ensures only the first cold query per name ever
     reaches the LLM.
 
+    Args:
+        action_names: List of action names to classify.
+        object_type: Optional species/object type for context-aware classification.
+            When provided, the LLM prompt includes the species info and the cache
+            is keyed by ``(action_name, object_type)``.
+
     Raises ImportError if the LLM module is unavailable.
     """
     if not action_names:
         return
-    _llm_classify_batch(action_names)
+    _llm_classify_batch(action_names, object_type=object_type)
+
+
+def prefetch_action_tags_by_species(
+    action_names_by_species: dict[str, list[str]],
+    *,
+    max_concurrency: int = 4,
+) -> None:
+    """Pre-classify action names for several species, concurrently across species.
+
+    Multiple species are queried in parallel (up to ``max_concurrency``); the
+    names within a single species are still classified serially. Filling the
+    shared in-memory + disk cache so later ``infer_action_tags`` calls hit it.
+
+    Args:
+        action_names_by_species: Mapping ``object_type -> [action_name, ...]``.
+        max_concurrency: Maximum number of species queried in parallel (default 4).
+
+    Raises ImportError if the LLM module is unavailable.
+    """
+    filtered = {
+        object_type: names
+        for object_type, names in action_names_by_species.items()
+        if names
+    }
+    if not filtered:
+        return
+    _get_llm_module().classify_action_tags_by_species(
+        filtered, max_concurrency=max_concurrency,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +190,7 @@ def build_motion_labels(
 ) -> dict[str, object]:
     action_label = normalize_action_label(action_name)
     if action_tags is None:
-        action_tags = infer_action_tags(action_name)
+        action_tags = infer_action_tags(action_name, object_type=object_type)
     payload: dict[str, object] = {
         "object_type": object_type,
         "action_label": action_label,

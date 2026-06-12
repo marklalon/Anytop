@@ -42,7 +42,7 @@ sys.path.insert(0, str(ANYTOP_DIR / "data_loaders" / "truebones"))
 from truebones_utils.motion_labels import (  # noqa: E402
     infer_motion_labels_from_motion_name,
     load_motion_metadata,
-    prefetch_action_tags,
+    prefetch_action_tags_by_species,
     write_motion_metadata,
 )
 from truebones_utils.motion_process import (  # noqa: E402
@@ -250,18 +250,18 @@ def _normalize_object_translation_roots(
     return canonical_roots
 
 
-def _collect_unique_action_names(
+def _collect_unique_action_names_by_species(
     motion_files: list[Path],
     object_types: tuple[str, ...],
-) -> list[str]:
-    """Extract action labels from motion file names without triggering LLM.
+) -> dict[str, list[str]]:
+    """Extract action labels grouped by species/object type.
 
     Mirrors the stem-extraction logic in
-    ``infer_motion_labels_from_motion_name`` but only returns the
-    ``action_stem`` strings so they can be batch-classified upfront.
+    ``infer_motion_labels_from_motion_name`` but returns a mapping of
+    ``{object_type: [action_stem, ...]}`` so each species can be
+    batch-classified with species context.
     """
-    seen: set[str] = set()
-    result: list[str] = []
+    result: dict[str, set[str]] = {}
     for motion_path in motion_files:
         stem = motion_path.stem
 
@@ -282,11 +282,9 @@ def _collect_unique_action_names(
         if not action_stem:
             action_stem = stem
 
-        if action_stem not in seen:
-            seen.add(action_stem)
-            result.append(action_stem)
+        result.setdefault(resolved, set()).add(action_stem)
 
-    return result
+    return {obj_type: sorted(names) for obj_type, names in result.items()}
 
 
 def regenerate_dataset_artifacts(
@@ -339,14 +337,18 @@ def regenerate_dataset_artifacts(
 
     # Batch-classify all action names upfront so individual
     # infer_motion_labels_from_motion_name calls hit the cache.
+    # Group by species so the LLM receives species context for each action,
+    # and query species concurrently (each species' names stay serial).
     t0 = time.time()
-    unique_actions = _collect_unique_action_names(
+    unique_actions_by_species = _collect_unique_action_names_by_species(
         motion_files,
         tuple(active_cond.keys()),
     )
-    prefetch_action_tags(unique_actions)
+    prefetch_action_tags_by_species(unique_actions_by_species)
+    total_actions = sum(len(names) for names in unique_actions_by_species.values())
     print(
-        f"[OK] action tags prefetched for {len(unique_actions)} unique action(s) "
+        f"[OK] action tags prefetched for {total_actions} unique action(s) "
+        f"across {len(unique_actions_by_species)} species "
         f"in {time.time() - t0:.1f}s"
     )
 
