@@ -3,7 +3,7 @@
 Unified Preprocessing + Validation Workflow
 ============================================
 Automatically chains AnyTop dataset creation with validation:
-    1. Preprocessing: Incrementally refreshes the selected objects-subset; `all` falls back to a full dataset refresh
+    1. Preprocessing: Refreshes every object by default, or only the objects matching --filter (incremental)
     2. Validation: Validates the preprocessed dataset
 
 Usage:
@@ -14,14 +14,14 @@ Options:
     --re-encode-joint-names-only         Skip preprocessing and validation, only re-encode joint names into cond.npy
     --skip-validate                      Skip validation step (faster for CI)
     --skip-orientation-check             Skip T-pose face-orientation validation during dataset checks
-    --objects-subset SUBSET              Object subset to process incrementally; `all` uses full refresh (default: all)
+    --filter PATTERN                     Comma/semicolon-separated case-insensitive glob(s) selecting which object names to preprocess; omit for a full refresh (incremental when set)
     --object-workers N                   Concurrent characters to preprocess (default: 16)
     --sample-count N                     Limit file validation to first N motions (0=all, default: 0)
     --orientation-threshold-deg DEG      Maximum allowed T-pose face-orientation delta from the nearest cardinal XZ axis (+x/-x/+z/-z) before warning (default: 15.0)
     --motion-orientation-threshold DEG   Maximum allowed first/last-frame recovered-facing delta from T-pose facing before warning (default: 45.0)
 
 Examples:
-    # Full workflow: full refresh for objects-subset=all -> validate
+    # Full workflow: refresh every object -> validate
     python preprocess_and_validate.py
 
     # Validate only (assumes preprocessing already done)
@@ -36,17 +36,16 @@ Examples:
     # Re-encode joint names only (fast, no motion re-export)
     python preprocess_and_validate.py --re-encode-joint-names-only
 
-    # Incrementally refresh a specific object subset with custom settings
-    python preprocess_and_validate.py --objects-subset "bipeds" --object-workers 4
+    # Refresh only the objects matching a wildcard (incremental, preserves the rest)
+    python preprocess_and_validate.py --filter "Horse"
+    python preprocess_and_validate.py --filter "Raptor*,*Bear*" --object-workers 4
 
-    # Validate only a specific object subset
-    python preprocess_and_validate.py --validate-only --objects-subset "flying"
-
-    # Fast CI workflow (skip validation after subset/full refresh)
+    # Fast CI workflow (skip validation after refresh)
     python preprocess_and_validate.py --skip-validate
 """
 
 import argparse
+import fnmatch
 import os
 import sys
 import subprocess
@@ -67,6 +66,9 @@ for _path in (_TRUEBONES_DIR, _TRUEBONES_DIR / "truebones_utils"):
 from param_utils import BVHS_DIR, MOTION_DIR, OBJECT_SUBSETS_DICT, get_dataset_dir  # noqa: E402
 from truebones_utils.motion_labels import load_motion_metadata, write_motion_metadata  # noqa: E402
 
+# Full object universe. The workflow always operates over every object; --filter narrows it.
+ALL_OBJECTS: tuple[str, ...] = tuple(dict.fromkeys(str(obj) for obj in OBJECT_SUBSETS_DICT["all"]))
+
 
 @dataclass
 class PreservedSideArtifacts:
@@ -84,8 +86,24 @@ def _resolve_dataset_paths(dataset_dir: str = "") -> tuple[Path, Path, Path, Pat
     )
 
 
-def _resolve_target_object_types(objects_subset: str) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(str(obj) for obj in OBJECT_SUBSETS_DICT[objects_subset]))
+def _parse_filter_patterns(object_filter: str) -> list[str]:
+    """Split a comma/semicolon-separated wildcard filter into individual glob patterns."""
+    if not object_filter:
+        return []
+    return [p.strip() for p in object_filter.replace(";", ",").split(",") if p.strip()]
+
+
+def _matches_any(name: str, patterns: list[str]) -> bool:
+    """Case-insensitive fnmatch against any of the supplied glob patterns."""
+    name_lower = name.lower()
+    return any(fnmatch.fnmatch(name_lower, pattern.lower()) for pattern in patterns)
+
+
+def _resolve_target_object_types(object_filter: str = "") -> tuple[str, ...]:
+    patterns = _parse_filter_patterns(object_filter)
+    if not patterns:
+        return ALL_OBJECTS
+    return tuple(obj for obj in ALL_OBJECTS if _matches_any(obj, patterns))
 
 
 def _path_targets_object_type(path: Path, target_object_types: tuple[str, ...]) -> bool:
@@ -122,7 +140,9 @@ def _capture_preserved_side_artifacts(
         }
 
     motions_dir = dataset_dir_path / MOTION_DIR
-    for motion_name, entry in load_motion_metadata(dataset_dir_path).items():
+    # Tolerate clips that still lack hand-labeled action_tags: this is a preserve-only
+    # read, the strict tag check belongs to artifact regeneration / training, not here.
+    for motion_name, entry in load_motion_metadata(dataset_dir_path, require_action_tags=False).items():
         if not (motions_dir / motion_name).exists():
             continue
         object_type = str(entry.get("object_type") or Path(motion_name).stem.split("_", 1)[0])
@@ -147,7 +167,9 @@ def _merge_preserved_side_artifacts(dataset_dir_path: Path, preserved: Preserved
         np.save(cond_path, current_cond)
 
     motions_dir = dataset_dir_path / MOTION_DIR
-    current_metadata = load_motion_metadata(dataset_dir_path)
+    # Carry-forward read only; freshly preprocessed clips may not be hand-labeled yet.
+    # Artifact regeneration backfills inferred tags and re-applies the strict check.
+    current_metadata = load_motion_metadata(dataset_dir_path, require_action_tags=False)
     for motion_name, entry in preserved.motion_metadata.items():
         if motion_name in current_metadata:
             continue
@@ -183,15 +205,20 @@ def _delete_paths(paths: list[Path]) -> bool:
         return False
 
 
-def check_and_clean_old_data(objects_subset: str, dataset_dir: str = "") -> tuple[bool, PreservedSideArtifacts]:
+def check_and_clean_old_data(
+    dataset_dir: str = "",
+    object_filter: str = "",
+) -> tuple[bool, PreservedSideArtifacts]:
     """
-    Check for existing preprocessed data targeting the selected objects_subset.
-    For incremental subsets, capture artifacts for non-target objects so they can be merged back.
+    Check for existing preprocessed data.
+    Without a filter the whole dataset is refreshed. A non-empty ``object_filter`` runs
+    incrementally, capturing artifacts for non-matching objects so they can be merged back.
 
     Returns (should_proceed, preserved_side_artifacts).
     """
     dataset_dir_path, motions_dir, bvhs_dir, joint_name_inspection_dir = _resolve_dataset_paths(dataset_dir)
-    is_full_refresh = objects_subset.strip().lower() == "all"
+    # A filter narrows the run to matching objects; without one we do a full wipe.
+    is_full_refresh = not _parse_filter_patterns(object_filter)
 
     if is_full_refresh:
         paths_to_delete = _collect_nonempty_directories(motions_dir, bvhs_dir, joint_name_inspection_dir)
@@ -199,11 +226,11 @@ def check_and_clean_old_data(objects_subset: str, dataset_dir: str = "") -> tupl
         title = "WARNING: Old preprocessed data detected"
         summary = [
             f"Dataset directory: {dataset_dir_path}",
-            "objects-subset=all selected, using full dataset refresh",
+            "no --filter selected, using full dataset refresh",
             *[f"  - {p} contains existing data" for p in paths_to_delete],
         ]
     else:
-        target_object_types = _resolve_target_object_types(objects_subset)
+        target_object_types = _resolve_target_object_types(object_filter)
         preserved = _capture_preserved_side_artifacts(dataset_dir_path, target_object_types)
         targeted = [
             ("motion file(s)", motions_dir, _collect_targeted_files(motions_dir, target_object_types)),
@@ -241,17 +268,21 @@ def check_and_clean_old_data(objects_subset: str, dataset_dir: str = "") -> tupl
 
 
 def run_preprocessing(
-    objects_subset: str,
     object_workers: int,
     raw_data_dir: str = "",
     dataset_dir: str = "",
     filter_min_length: int = 10,
     resample_min_length: int = 20,
+    object_filter: str = "",
 ) -> int:
     """Run the AnyTop dataset preprocessing in-process."""
     print("\n" + "=" * 70)
     print("STEP 1: PREPROCESSING - Creating AnyTop dataset")
     print("=" * 70 + "\n")
+
+    objects = list(_resolve_target_object_types(object_filter))
+    if object_filter:
+        print(f"Filter '{object_filter}' selected {len(objects)} object(s): {', '.join(objects) or '(none)'}\n")
 
     if str(ANYTOP_DIR.parent) not in sys.path:
         sys.path.insert(0, str(ANYTOP_DIR.parent))
@@ -263,7 +294,7 @@ def run_preprocessing(
 
     try:
         create_data_samples(
-            objects=list(OBJECT_SUBSETS_DICT[objects_subset]),
+            objects=objects,
             dataset_dir=dataset_dir or None,
             raw_data_dir=raw_data_dir or None,
             filter_min_length=filter_min_length,
@@ -321,7 +352,6 @@ def run_re_encode_joint_names_only(
 
 
 def run_validation(
-    objects_subset: str,
     skip_orientation_check: bool,
     orientation_threshold_deg: float,
     sample_count: int,
@@ -332,6 +362,9 @@ def run_validation(
     print("\n" + "=" * 70)
     print("STEP 2: VALIDATION - Checking preprocessed dataset")
     print("=" * 70 + "\n")
+
+    # The workflow always operates over every object, so validate the whole dataset.
+    objects_subset = "all"
 
     # Ensure parent of Anytop/ is on sys.path so `from Anytop.utils...` imports work
     if str(ANYTOP_DIR.parent) not in sys.path:
@@ -446,16 +479,22 @@ def parse_args() -> argparse.Namespace:
         help="Maximum allowed first/last-frame recovered-facing delta from T-pose facing before warning. Defaults to 45.0.",
     )
     parser.add_argument(
-        "--objects-subset",
-        default="all",
-        choices=sorted(OBJECT_SUBSETS_DICT.keys()),
-        help="Object subset to preprocess incrementally; `all` falls back to full refresh.",
-    )
-    parser.add_argument(
         "--object-workers",
         default=16,
         type=int,
         help="Concurrent characters to preprocess. Defaults to 16.",
+    )
+    parser.add_argument(
+        "--filter",
+        dest="object_filter",
+        default="",
+        type=str,
+        help=(
+            "Comma/semicolon-separated case-insensitive glob pattern(s) selecting which object "
+            "names to preprocess (e.g. 'Horse', 'Raptor*', '*Bear*,Cat'). Without a filter every "
+            "object is refreshed; a non-empty filter runs incrementally, so non-matching objects' "
+            "artifacts are preserved."
+        ),
     )
     parser.add_argument(
         "--orientation-threshold-deg",
@@ -516,6 +555,14 @@ def main() -> int:
     if args.motion_orientation_threshold < 0:
         print("ERROR: --motion-orientation-threshold must be >= 0")
         return 1
+    if args.object_filter and not args.validate_only and not args.re_encode_joint_names_only:
+        matched = _resolve_target_object_types(args.object_filter)
+        if not matched:
+            print(
+                f"ERROR: --filter '{args.object_filter}' matched no objects.\n"
+                f"Available objects: {', '.join(sorted(ALL_OBJECTS))}"
+            )
+            return 1
 
     # Handle re-encode joint names only mode
     if args.re_encode_joint_names_only:
@@ -528,7 +575,9 @@ def main() -> int:
 
     # Check and clean old data before preprocessing
     if not args.validate_only:
-        should_proceed, preserved_side_artifacts = check_and_clean_old_data(args.objects_subset, args.dataset_dir)
+        should_proceed, preserved_side_artifacts = check_and_clean_old_data(
+            args.dataset_dir, args.object_filter
+        )
         if not should_proceed:
             print("\n" + "=" * 70)
             print("Preprocessing skipped due to user abort")
@@ -538,12 +587,12 @@ def main() -> int:
     # Preprocess if not validate-only
     if not args.validate_only:
         ret = run_preprocessing(
-            args.objects_subset,
             args.object_workers,
             args.raw_data_dir,
             args.dataset_dir,
             filter_min_length=args.filter_min_length,
             resample_min_length=args.resample_min_length,
+            object_filter=args.object_filter,
         )
         if ret != 0:
             print("\n[FAIL] Preprocessing failed, aborting workflow.")
@@ -562,7 +611,6 @@ def main() -> int:
     # Validate
     if not args.skip_validate:
         ret = run_validation(
-            args.objects_subset,
             args.skip_orientation_check,
             args.orientation_threshold_deg,
             args.sample_count,

@@ -98,6 +98,105 @@ def normalize_action_tags(raw_action_tags) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Action-tag fallback inference
+# ---------------------------------------------------------------------------
+# Action tags are normally hand-maintained in ``motion_tags.jsonl``, and
+# ``load_motion_tags`` hard-exits when a clip on disk has no entry. When clips are
+# added incrementally, hand-labeling lags behind, so callers can backfill missing
+# entries with a best-effort tag inferred from the Truebones ``Species_Action_id``
+# clip name. These guesses are HEURISTIC and meant to be reviewed by hand.
+
+# Tokens that, paired with a trailing "Up", denote a get-up recovery ("DeadUp",
+# "DieUp", "SleepUp", "StandUp"), which would otherwise mis-resolve to
+# death/rest/idle on the bare verb.
+_GETUP_UP_CONTEXT: frozenset[str] = frozenset(
+    {"dead", "die", "stand", "sleep", "get", "wake", "knock", "rise", "sit", "lay", "lie", "fall"}
+)
+
+# Ordered fallback rules: the first tag whose keyword set intersects the clip-name
+# tokens wins, so specific/event-like actions precede generic locomotion/idle.
+# Keyword sets were derived empirically from the hand-labeled ``motion_tags.jsonl``
+# vocabulary (~84% agreement with the existing labels; the rest surface as
+# ``unknown`` / review items).
+_FALLBACK_ACTION_RULES: tuple[tuple[str, frozenset[str]], ...] = (
+    ("getup", frozenset({"getup", "get", "rise", "rising", "wake", "waking", "revive", "recover", "standup"})),
+    ("death", frozenset({"die", "death", "dead", "dying", "dies", "deceased"})),
+    ("gethurt", frozenset({"hit", "hurt", "gethurt", "damage", "knock", "knocked", "knockback", "stunned",
+                           "stun", "shot", "recoil", "flinch", "pain", "wound", "injured", "limp", "sorr"})),
+    ("attack", frozenset({"attack", "atk", "bite", "sting", "strike", "kill", "swat", "swipe", "snap", "whip",
+                          "throw", "rip", "claw", "punch", "slash", "peck", "stab", "spit", "spear", "maul",
+                          "tail", "butt", "gore", "charge", "bash", "headbutt", "chomp", "tackle", "fang",
+                          "spray", "kick", "pounce", "catch", "smash", "slam", "grab"})),
+    ("fall", frozenset({"fall", "falling", "trip", "stumble", "fallen"})),
+    ("jump", frozenset({"jump", "leap", "hop"})),
+    ("swim", frozenset({"swim", "dive", "paddle"})),
+    ("fly", frozenset({"fly", "flying", "glide", "flap", "hover", "soar", "soaring", "takeoff", "take",
+                       "land", "lander", "wing", "float", "floater"})),
+    ("turn", frozenset({"turn", "spin", "rotate", "strafe", "circle", "pivot", "arc"})),
+    ("interact", frozenset({"eat", "drink", "fish", "egg", "dig", "burrow", "burrough", "graze", "feed", "feast"})),
+    ("rest", frozenset({"rest", "sleep", "sit", "lay", "lie", "lying", "relax", "down", "sleepy"})),
+    ("emote", frozenset({"emote", "roar", "yawn", "look", "shake", "growl", "yell", "scream", "hiss", "howl",
+                         "bark", "cry", "scratch", "sniff", "lick", "stretch", "scrape", "purr", "taunt",
+                         "celebrate", "dance", "nod", "listen", "alert", "angry", "pissed", "scared",
+                         "curious", "sneeze", "wag", "ear", "restless", "hoof", "rear", "mean", "scary",
+                         "pant", "twitch", "twitching", "buck", "mope", "wild", "special"})),
+    ("locomotion", frozenset({"walk", "run", "trot", "gallop", "sprint", "dash", "crawl", "move", "locomotion",
+                              "step", "chase", "retreat", "climb", "sneak", "prowl", "pace", "slide", "march",
+                              "strut", "wander", "roam", "scurry", "slither", "back", "backing", "forward",
+                              "backward", "slow", "fast", "slowwalk", "stalk", "stalking"})),
+    ("idle", frozenset({"idle", "stand", "ready", "breath", "breathe", "wait", "stance", "energetic",
+                        "tired", "steady", "clean", "cud"})),
+)
+
+# Sanity guard: every fallback tag must be a member of the canonical vocabulary so
+# inferred entries pass ``load_motion_tags`` validation.
+assert all(tag in ACTION_TAGS for tag, _ in _FALLBACK_ACTION_RULES), (
+    "fallback rules reference a tag outside ACTION_TAGS"
+)
+
+
+def _tokenize_action_name(clip_name: str) -> set[str]:
+    """Tokenize the action portion of a "Species_Action_id" clip name.
+
+    Drops the leading species token (so species names like 'Ant' don't pollute
+    keyword matching) and trailing numeric ids, lower-cases via the shared
+    :data:`_TOKEN_PATTERN`, and adds lightly stemmed variants (-ing/-ed/-er/-s) so
+    'Trotting' matches 'trot', etc.
+    """
+    stem = Path(clip_name).stem
+    parts = stem.split("_")
+    if len(parts) > 1:
+        parts = parts[1:]  # drop species token
+    tokens: set[str] = set()
+    for part in parts:
+        for match in _TOKEN_PATTERN.findall(part):
+            token = match.lower()
+            if token.isdigit():
+                continue
+            tokens.add(token)
+            for suffix in ("ing", "ed", "er", "s"):
+                if len(token) > len(suffix) + 2 and token.endswith(suffix):
+                    tokens.add(token[: -len(suffix)])
+    return tokens
+
+
+def infer_action_tags_from_clip_name(clip_name: str) -> list[str]:
+    """Best-effort single action tag inferred from a clip name; ``['unknown']`` if no rule fires.
+
+    Heuristic fallback for clips not yet hand-labeled in ``motion_tags.jsonl``; the
+    result is always a list of canonical :data:`ACTION_TAGS` members and is meant
+    to be reviewed by a human before use.
+    """
+    tokens = _tokenize_action_name(clip_name)
+    if "up" in tokens and (tokens & _GETUP_UP_CONTEXT):
+        return ["getup"]
+    for tag, keywords in _FALLBACK_ACTION_RULES:
+        if tokens & keywords:
+            return [tag]
+    return ["unknown"]
+
+
+# ---------------------------------------------------------------------------
 # Metadata builders
 # ---------------------------------------------------------------------------
 
@@ -185,7 +284,18 @@ def load_motion_tags(dataset_dir: str | Path) -> dict[str, list[str]]:
     return motion_tags
 
 
-def load_motion_metadata(dataset_dir: str | Path) -> dict[str, dict[str, object]]:
+def load_motion_metadata(
+    dataset_dir: str | Path,
+    require_action_tags: bool = True,
+) -> dict[str, dict[str, object]]:
+    """Load ``motion_metadata.json`` joined with per-clip ``action_tags``.
+
+    By default a clip present in the metadata but absent from ``motion_tags.jsonl``
+    is a fatal error (action tags are a required training-conditioning signal).
+    Pass ``require_action_tags=False`` for bookkeeping reads that only preserve /
+    carry-forward existing metadata (e.g. incremental preprocessing): missing-tag
+    clips are then kept as-is without an ``action_tags`` field instead of exiting.
+    """
     metadata_path = Path(dataset_dir) / MOTION_METADATA_FILE
     if not metadata_path.exists():
         return {}
@@ -207,12 +317,16 @@ def load_motion_metadata(dataset_dir: str | Path) -> dict[str, dict[str, object]
         tags = motion_tags.get(motion_name)
         if tags is None:
             missing_tags.append(motion_name)
+            if require_action_tags:
+                continue
+            # Tolerant mode: carry the entry forward untouched (no action_tags).
+            normalized[motion_name] = dict(metadata)
             continue
         entry = dict(metadata)
         entry["action_tags"] = list(tags)
         normalized[motion_name] = entry
 
-    if missing_tags:
+    if missing_tags and require_action_tags:
         preview = ", ".join(sorted(missing_tags)[:10])
         more = "" if len(missing_tags) <= 10 else f" (+{len(missing_tags) - 10} more)"
         import sys
