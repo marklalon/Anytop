@@ -37,7 +37,7 @@ def _write_motion_tags(dataset_dir, tags_by_clip):
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def test_write_motion_metadata_strips_legacy_label_fields(tmp_path):
+def test_write_motion_metadata_preserves_all_fields(tmp_path):
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir(parents=True)
 
@@ -60,14 +60,13 @@ def test_write_motion_metadata_strips_legacy_label_fields(tmp_path):
     payload = json.loads((dataset_dir / "motion_metadata.json").read_text(encoding="utf-8"))
     entry = payload["motions"]["Cat_Run_001.npy"]
     assert payload["schema_version"] == 5
-    # Action tags now live in motion_tags.jsonl; these fields are stripped on write.
-    assert "action_category" not in entry
-    assert "action_tags" not in entry
-    assert "action_label" not in entry
-    assert "motion_name" not in entry
     assert entry["object_type"] == "Cat"
     assert entry["species_label"] == "cat"
     assert entry["translation_root_index"] == 1
+    assert entry["action_label"] == "run"
+    assert entry["action_category"] == "locomotion"
+    assert entry["action_tags"] == ["locomotion", "attack"]
+    assert entry["motion_name"] == "Cat_Run_001.npy"
 
 
 def test_load_motion_metadata_merges_action_tags_from_sidecar(tmp_path):
@@ -114,7 +113,7 @@ def test_load_motion_metadata_fast_fails_when_tag_missing(tmp_path):
     # Sidecar exists but is missing the clip → must fail fast.
     _write_motion_tags(dataset_dir, {"Dog_Jump_002.npy": ["jump"]})
 
-    with pytest.raises(KeyError):
+    with pytest.raises(SystemExit):
         load_motion_metadata(dataset_dir)
 
 
@@ -428,6 +427,21 @@ def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_infe
             "Dog": _make_cond_entry("Dog"),
         },
     )
+    write_motion_metadata(
+        dataset_dir,
+        {
+            "Cat_Run_001.npy": {"object_type": "Cat", "translation_root_index": 0},
+            "Dog_Jump_002.npy": {"object_type": "Dog", "translation_root_index": 0},
+        },
+        total_clips=2,
+    )
+    _write_motion_tags(
+        dataset_dir,
+        {
+            "Cat_Run_001.npy": ["locomotion"],
+            "Dog_Jump_002.npy": ["locomotion"],
+        },
+    )
 
     def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True, force_reencode=True):
         for object_cond in cond.values():
@@ -440,24 +454,20 @@ def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_infe
 
     calls: list[str] = []
 
-    def fake_infer_motion_labels_from_motion_name(motion_name, object_type=None, object_types=None):
+    def fake_build_motion_labels(object_type, motion_name=None, source_file=None):
         calls.append(motion_name)
-        stem = Path(motion_name).stem
-        resolved_object_type = object_type or stem.split("_", 1)[0]
-        action_stem = stem[len(f"{resolved_object_type}_"):] if stem.startswith(f"{resolved_object_type}_") else stem
         return {
-            "object_type": resolved_object_type,
-            "action_label": action_stem.lower(),
-            "action_tags": ["idle", "locomotion"],
-            "species_label": resolved_object_type.lower(),
+            "object_type": object_type,
+            "species_label": str(object_type).lower(),
+            "motion_name": motion_name,
         }
 
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
     monkeypatch.setattr(
         regenerate_dataset_artifacts_module,
-        "infer_motion_labels_from_motion_name",
-        fake_infer_motion_labels_from_motion_name,
+        "build_motion_labels",
+        fake_build_motion_labels,
     )
 
     regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")

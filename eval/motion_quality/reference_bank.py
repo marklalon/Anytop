@@ -8,9 +8,9 @@ import numpy as np
 
 from data_loaders.truebones.offline_reference_dataset import get_motion_dir, load_cond_dict, resolve_dataset_root
 from data_loaders.truebones.truebones_utils.motion_labels import (
-    infer_motion_labels_from_motion_name,
     load_motion_metadata,
 )
+from utils.misc import infer_object_type_from_filename
 from utils.skeleton_similarity import SpeciesSimilarity, rank_species
 
 
@@ -128,18 +128,22 @@ def _collect_action_tags_paths(
         motion_name = path.name
         metadata = metadata_lookup.get(motion_name)
         if metadata is None:
-            metadata = infer_motion_labels_from_motion_name(motion_name, object_types=object_types)
-        
+            # No metadata means no action tags, so the clip can never match a
+            # requested tag — skip it rather than fabricating empty labels.
+            continue
+
         # Get motion's action tags and normalize to set
         motion_action_tags = _normalize_motion_action_tags(metadata.get("action_tags"))
-        
+
         # Check if motion has any of the requested tags
         if not motion_action_tags.intersection(requested_tags):
             continue
-        
+
         object_type = str(metadata.get("object_type") or "").strip()
         if not object_type:
-            object_type = infer_motion_labels_from_motion_name(motion_name, object_types=object_types)["object_type"]
+            object_type = infer_object_type_from_filename(
+                motion_name, valid_types=set(object_types)
+            ) or Path(motion_name).stem.split("_", 1)[0]
         object_type = _resolve_lookup_key(object_type, cond_lookup)
         grouped.setdefault(object_type, []).append(str(path))
 

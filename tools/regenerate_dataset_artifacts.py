@@ -39,7 +39,7 @@ sys.path.insert(0, str(ANYTOP_DIR))
 sys.path.insert(0, str(ANYTOP_DIR / "data_loaders" / "truebones"))
 
 from truebones_utils.motion_labels import (  # noqa: E402
-    infer_motion_labels_from_motion_name,
+    build_motion_labels,
     load_motion_metadata,
     write_motion_metadata,
 )
@@ -48,7 +48,11 @@ from truebones_utils.motion_process import (  # noqa: E402
     write_joint_name_collision_report,
     get_mean_std,
 )
-from truebones_utils.param_utils import MOTION_DIR, get_dataset_dir  # noqa: E402
+from truebones_utils.param_utils import (  # noqa: E402
+    MOTION_DIR,
+    MOTION_METADATA_FILE,
+    get_dataset_dir,
+)
 from truebones_utils.physics_joint_annotation import (  # noqa: E402
     build_semantic_metadata,
 )
@@ -264,6 +268,21 @@ def regenerate_dataset_artifacts(
     if not motion_files:
         raise RuntimeError(f"no motion files found under {motions_dir}")
 
+    # Fast-fail: motion_metadata.json must exist.  Without it, load_motion_metadata
+    # returns {} and the rebuilt metadata will be missing is_loop, source_file,
+    # translation_root_index, and other per-clip fields.  (action_tags are always
+    # sourced from motion_tags.jsonl at load time and stripped on write, so that
+    # file is handled by load_motion_metadata / load_motion_tags internally.)
+    metadata_path = dataset_dir_path / MOTION_METADATA_FILE
+    if not metadata_path.exists():
+        raise RuntimeError(
+            f"{MOTION_METADATA_FILE} not found at {metadata_path}.\n"
+            f"This script requires an existing motion_metadata.json to preserve "
+            f"is_loop, source_file, translation_root_index, and other per-clip metadata.\n"
+            f"If you've deleted it, re-run preprocess_and_validate.py to regenerate "
+            f"the full dataset, or restore it from a backup."
+        )
+
     existing_cond = dict(np.load(cond_path, allow_pickle=True).item())
     existing_motion_metadata = load_motion_metadata(dataset_dir_path)
     known_object_types = tuple(existing_cond.keys())
@@ -342,9 +361,10 @@ def regenerate_dataset_artifacts(
         max_joints = max(max_joints, int(motion.shape[1]))
 
         motion_entry = dict(existing_motion_metadata.get(motion_path.name, {}))
-        motion_entry.update(
-            infer_motion_labels_from_motion_name(motion_path.name, object_types=tuple(rebuilt_cond.keys()))
+        object_type = _infer_object_type_from_motion_name(
+            motion_path.name, tuple(rebuilt_cond.keys())
         )
+        motion_entry.update(build_motion_labels(object_type, motion_name=motion_path.name))
         motion_entry["translation_root_index"] = int(
             canonical_translation_roots[str(motion_entry["object_type"])]
         )

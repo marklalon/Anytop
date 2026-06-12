@@ -17,7 +17,7 @@ import random
 import bisect
 from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, get_raw_data_dir
 from pathlib import Path
-from .motion_labels import build_motion_labels, build_object_labels, infer_motion_labels_from_motion_name, write_motion_metadata, load_motion_metadata
+from .motion_labels import build_motion_labels, build_object_labels, write_motion_metadata, load_motion_metadata
 from .physics_joint_annotation import (
     build_semantic_metadata,
     rest_positions_from_offsets,
@@ -934,9 +934,7 @@ def _update_retarget(object_name, save_dir, motions_from_npys, target_cond_parti
     new_meta = {}
     for motion_path, motion in zip(motions_from_npys, all_motions):
         motion_name = os.path.basename(motion_path)
-        motion_labels = infer_motion_labels_from_motion_name(
-            motion_name, object_type=object_name,
-        )
+        motion_labels = build_motion_labels(object_name, motion_name=motion_name)
         motion_labels['translation_root_index'] = int(
             infer_translation_root_index_from_features(motion, parents, offsets)
         )
@@ -978,10 +976,7 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
         offsets = np.asarray(object_cond['offsets'], dtype=np.float64)
         for motion_path, motion in zip(motions_from_npys, all_motions):
             motion_name = os.path.basename(motion_path)
-            motion_labels = infer_motion_labels_from_motion_name(
-                motion_name,
-                object_type=object_name,
-            )
+            motion_labels = build_motion_labels(object_name, motion_name=motion_name)
             motion_labels['translation_root_index'] = int(
                 infer_translation_root_index_from_features(
                     motion,

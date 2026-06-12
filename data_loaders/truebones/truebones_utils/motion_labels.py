@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Iterable
 
 from data_loaders.truebones.truebones_utils.param_utils import (
     MOTION_METADATA_FILE,
@@ -40,17 +39,6 @@ ACTION_TAGS: tuple[str, ...] = (
     "death",
     "fall",
     "unknown",
-)
-
-# Label fields that used to be baked into motion_metadata.json but are now
-# either sourced from motion_tags.jsonl (action_tags) or redundant
-# (action_label, motion_name == entry key). They are stripped on both load and
-# write so the metadata file stays free of them.
-_LEGACY_LABEL_FIELDS: tuple[str, ...] = (
-    "action_tags",
-    "action_label",
-    "action_category",
-    "motion_name",
 )
 
 # ---------------------------------------------------------------------------
@@ -132,37 +120,6 @@ def build_motion_labels(
     if motion_name is not None:
         payload["motion_name"] = motion_name
     return payload
-
-
-def infer_motion_labels_from_motion_name(
-    motion_name: str,
-    object_type: str | None = None,
-    object_types: Iterable[str] | None = None,
-) -> dict[str, object]:
-    try:
-        from utils.misc import infer_object_type_from_filename
-    except ImportError:
-        from Anytop.utils.misc import infer_object_type_from_filename
-
-    stem = Path(motion_name).stem
-    resolved_object_type = object_type
-    if resolved_object_type is None:
-        resolved_object_type = infer_object_type_from_filename(
-            motion_name, valid_types=set(object_types) if object_types is not None else None
-        )
-        if resolved_object_type is None:
-            resolved_object_type = stem.split("_", 1)[0]
-
-    return build_motion_labels(resolved_object_type, motion_name=motion_name)
-
-
-def _strip_legacy_label_fields(metadata: dict[str, object]) -> dict[str, object]:
-    """Return a copy of *metadata* with the deprecated label fields removed."""
-    return {
-        key: value
-        for key, value in metadata.items()
-        if key not in _LEGACY_LABEL_FIELDS
-    }
 
 
 def _validate_action_tags(tags: list[str], clip: str, line_number: int) -> None:
@@ -251,7 +208,7 @@ def load_motion_metadata(dataset_dir: str | Path) -> dict[str, dict[str, object]
         if tags is None:
             missing_tags.append(motion_name)
             continue
-        entry = _strip_legacy_label_fields(metadata)
+        entry = dict(metadata)
         entry["action_tags"] = list(tags)
         normalized[motion_name] = entry
 
@@ -298,7 +255,7 @@ def write_motion_metadata(
 ) -> Path:
     output_path = Path(save_dir) / MOTION_METADATA_FILE
     sanitized_entries = {
-        motion_name: _strip_legacy_label_fields(metadata)
+        motion_name: dict(metadata)
         for motion_name, metadata in motion_entries.items()
         if isinstance(metadata, dict)
     }

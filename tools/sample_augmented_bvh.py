@@ -61,7 +61,6 @@ from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.param_utils import OBJECT_SUBSETS_DICT
 from data_loaders.truebones.truebones_utils.motion_labels import (
     load_motion_metadata,
-    infer_motion_labels_from_motion_name,
 )
 from data_loaders.truebones.data.dataset import (
     MotionDataset,
