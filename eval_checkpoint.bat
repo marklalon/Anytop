@@ -13,7 +13,7 @@ REM   - Forwards all args to eval/eval_checkpoint.py.
 REM ----------------------------------------------------------------------
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=quadropeds_action_tags_v1
+set RUN_NAME=quadropeds_final_v3
 
 pushd "%SCRIPT_DIR%"
 

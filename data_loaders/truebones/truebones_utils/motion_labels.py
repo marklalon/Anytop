@@ -342,26 +342,6 @@ def load_motion_metadata(
     return normalized
 
 
-def apply_attack_loop_override(
-    motion_metadata_lookup: dict[str, dict[str, object]],
-) -> dict[str, dict[str, object]]:
-    """Force ``is_loop=False`` for attack actions, in memory only.
-
-    Attack actions are inherently non-cyclic, so the loop condition must never
-    activate for them at training or inference time. We deliberately do *not*
-    persist this to the metadata file (the on-disk ``is_loop`` value is kept
-    untouched); instead callers apply this override after loading the metadata.
-    Mutates the entries in place and returns the same lookup for convenience.
-    """
-    for entry in motion_metadata_lookup.values():
-        if not isinstance(entry, dict):
-            continue
-        action_tags = entry.get("action_tags") or []
-        if "attack" in action_tags:
-            entry["is_loop"] = False
-    return motion_metadata_lookup
-
-
 def write_motion_metadata(
     save_dir: str | Path,
     motion_entries: dict[str, dict[str, object]],
