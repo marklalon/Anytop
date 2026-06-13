@@ -25,13 +25,17 @@ class QKNorm(nn.Module):
     def __init__(self, head_dim: int, eps: float = 1e-6):
         super().__init__()
         self.eps = eps
+        self.normalized_shape = (head_dim,)
         self.weight = nn.Parameter(torch.ones(head_dim))
 
     def forward(self, x: Tensor) -> Tensor:
         in_dtype = x.dtype
-        xf = x.float()
-        xf = xf * torch.rsqrt(xf.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-        return (xf * self.weight.float()).to(in_dtype)
+        return F.rms_norm(
+            x.float(),
+            self.normalized_shape,
+            self.weight.float(),
+            self.eps,
+        ).to(in_dtype)
 
 
 class _AttentionOutProjection(nn.Module):
