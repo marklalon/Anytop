@@ -2123,6 +2123,8 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joi
             'loop_full_cycle': bool(loop),
             'translation_root_index': cond_dict[object_type].get('translation_root_index', 0),
         }
+        if 'species_emb' in cond_dict[object_type]:
+            metadata['species_emb'] = cond_dict[object_type]['species_emb']
         if action_tags is not None and i < len(action_tags):
             tags = action_tags[i]
             if tags is not None:

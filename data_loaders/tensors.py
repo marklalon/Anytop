@@ -301,6 +301,8 @@ def truebones_batch_collate(batch):
             for key in ('action_tags', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'global_energy_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count'):
                 if key in motion_metadata:
                     item[key] = motion_metadata[key]
+            if 'species_emb' in motion_metadata:
+                item['species_emb'] = torch.from_numpy(np.asarray(motion_metadata['species_emb'], dtype=np.float32))
         if motion_name is not None:
             item['motion_name'] = motion_name
         adapted_batch.append(item)
