@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=quadropeds_final_v6
+set RUN_NAME=truebones_zoo_v2
 REM ----------------------------------------------------------------------
 REM Combination rules for target skeleton + reference motion (passed via %* to sample/generate.py):
 REM   1) --object_type Horse only                          : random generation for Horse
@@ -14,7 +14,7 @@ REM Supports zero-shot inference on object types not seen during training.
 REM ----------------------------------------------------------------------
 set BATCH_SIZE=8
 
-rem set MODEL_FILE=model000020000.pt
+rem set MODEL_FILE=model000010000.pt
 
 pushd "%SCRIPT_DIR%"
 
