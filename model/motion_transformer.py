@@ -7,6 +7,33 @@ import torch.nn.functional as F
 CUDA_LAUNCH_BLOCKING=1
 
 
+class QKNorm(nn.Module):
+    """Per-head RMS normalization of query/key vectors before the attention
+    dot product.
+
+    Normalizes over the head_dim axis so the attention logit magnitude is
+    decoupled from the Q/K projection weight norm. Without this, the linear_q /
+    linear_k weights grow unbounded late in training (nothing in the loss or the
+    constant 1/sqrt(d) scaling restrains them); once the logits get large the
+    softmax saturates, its gradient explodes, that pushes Q/K larger still, and
+    the run diverges in a positive-feedback loop. Bounding the per-head norm of
+    q and k caps the logits regardless of weight magnitude, which is the
+    standard cure (a.k.a. QK-LayerNorm / QK-norm). Computed in fp32 for
+    stability and cast back to the input dtype.
+    """
+
+    def __init__(self, head_dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(head_dim))
+
+    def forward(self, x: Tensor) -> Tensor:
+        in_dtype = x.dtype
+        xf = x.float()
+        xf = xf * torch.rsqrt(xf.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        return (xf * self.weight.float()).to(in_dtype)
+
+
 class _AttentionOutProjection(nn.Module):
     def __init__(self, embed_dim: int, bias: bool = True):
         super().__init__()
@@ -35,6 +62,8 @@ class SelectiveMultiheadAttention(nn.Module):
         self.dropout = float(dropout)
         self.head_dim = embed_dim // num_heads
         self.scaling = self.head_dim ** -0.5
+        self.q_norm = QKNorm(self.head_dim)
+        self.k_norm = QKNorm(self.head_dim)
 
         self.in_proj_weight = nn.Parameter(torch.empty(3 * embed_dim, embed_dim))
         if bias:
@@ -223,6 +252,10 @@ class SelectiveMultiheadAttention(nn.Module):
         q = q.transpose(0, 1).reshape(batch_size, tgt_len, self.num_heads, self.head_dim).transpose(1, 2)
         k = k.transpose(0, 1).reshape(batch_size, src_len, self.num_heads, self.head_dim).transpose(1, 2)
         v = v.transpose(0, 1).reshape(batch_size, src_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+        # QK-norm: bound per-head q/k magnitude so logits can't run away.
+        q = self.q_norm(q)
+        k = self.k_norm(k)
 
         attn_weights_fp32 = None
         if need_weights:
@@ -518,6 +551,8 @@ class GraphMultiHeadAttention(nn.Module):
 
         self.att_size = att_size = d_model // nheads
         self.scale = att_size ** -0.5
+        self.q_norm = QKNorm(att_size)
+        self.k_norm = QKNorm(att_size)
 
         self.linear_q = nn.Linear(d_model, nheads * att_size)
         self.linear_k = nn.Linear(d_model, nheads * att_size)
@@ -753,6 +788,12 @@ class GraphMultiHeadAttention(nn.Module):
         q = q.transpose(1, 2)  # [b, h, q_len, d_k]
         v = v.transpose(1, 2)  # [b, h, v_len, d_v]
         k = k.transpose(1, 2)  # [b, h, k_len, d_k]
+
+        # QK-norm: bound per-head q/k magnitude before they feed both the
+        # content dot-product and the GRPE hop/edge bias terms, so attention
+        # logits can't run away into softmax saturation.
+        q = self.q_norm(q)
+        k = self.k_norm(k)
 
         sequence_length = v.shape[2]
         use_sdpa = value_hop_emb is None and value_edge_emb is None

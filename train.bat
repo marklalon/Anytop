@@ -32,6 +32,7 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--num_frames 60 ^
 	--batch_size 16 ^
 	--lr 1e-4 ^
+	--weight_decay 0.01 ^
 	--use_ema ^
 	--ema_rate 0.995 ^
 	--num_steps 100000 ^
@@ -49,5 +50,5 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--amp_dtype bf16 ^
 	--compile default ^
 	--main_process_prefetch_batches 64
-	
+
 popd

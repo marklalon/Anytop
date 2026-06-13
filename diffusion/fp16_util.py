@@ -293,6 +293,10 @@ class MixedPrecisionTrainer:
         self.master_params = self.model_params
         self.param_groups_and_shapes = None
         self.lg_loss_scale = initial_lg_loss_scale
+        # Pre-clip total gradient norm of the most recent optimize() call.
+        # float('inf') marks a step skipped for non-finite gradients; None means
+        # optimize() has not run yet. Read by the trainer's spike-capture probe.
+        self.last_grad_norm = None
         scaler_enabled = self.amp_enabled and self.amp_dtype == 'fp16' and self.device_type == 'cuda'
         self.scaler = th.amp.GradScaler('cuda', enabled=scaler_enabled)
 
@@ -358,6 +362,7 @@ class MixedPrecisionTrainer:
             max_norm=1.0,
         )
         if clipped_norm is None:
+            self.last_grad_norm = float('inf')
             grad_stats = count_nonfinite_gradients(self.model_params)
             logger.log(
                 "Skipping optimizer step due to non-finite gradients under AMP "
@@ -369,6 +374,7 @@ class MixedPrecisionTrainer:
             self.zero_grad()
             return False
 
+        self.last_grad_norm = clipped_norm
         self._abort_on_large_finite_grad_norm(clipped_norm, mode_label="AMP")
         if self.log_norms:
             logger.logkv_mean("grad_norm", clipped_norm)
@@ -385,11 +391,13 @@ class MixedPrecisionTrainer:
         model_grads_to_master_grads(self.param_groups_and_shapes, self.master_params)
         grad_norm, param_norm = self._compute_norms(grad_scale=2 ** self.lg_loss_scale)
         if check_overflow(grad_norm):
+            self.last_grad_norm = float('inf')
             self.lg_loss_scale -= 1
             logger.log(f"Found NaN, decreased lg_loss_scale to {self.lg_loss_scale}")
             zero_master_grads(self.master_params)
             return False
 
+        self.last_grad_norm = grad_norm
         self._abort_on_large_finite_grad_norm(grad_norm, mode_label="FP16")
 
         if self.log_norms:
@@ -410,6 +418,7 @@ class MixedPrecisionTrainer:
             max_norm=1.0,
         )
         if clipped_norm is None:
+            self.last_grad_norm = float('inf')
             grad_stats = count_nonfinite_gradients(self.master_params)
             logger.log(
                 "Skipping optimizer step due to non-finite gradients "
@@ -418,6 +427,7 @@ class MixedPrecisionTrainer:
             zero_master_grads(self.master_params)
             return False
 
+        self.last_grad_norm = clipped_norm
         self._abort_on_large_finite_grad_norm(clipped_norm)
         if self.log_norms:
             logger.logkv_mean("grad_norm", clipped_norm)

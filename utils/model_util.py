@@ -72,7 +72,13 @@ def model_supports_global_energy_conditioning(model) -> bool:
 def load_model(model, state_dict):
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     assert len(unexpected_keys) == 0, f"Unexpected keys in checkpoint: {unexpected_keys}"
-    assert len(missing_keys) == 0, f"Missing keys in checkpoint: {missing_keys}"
+    # QK-norm params (added to bound attention logits) are absent from older
+    # checkpoints. They are freshly constructed at their identity init (weight=1),
+    # which is exactly what we want when resuming a pre-QK-norm model, so tolerate
+    # them as missing. Any other missing key is still a hard error.
+    tolerated_suffixes = ('.q_norm.weight', '.k_norm.weight')
+    unresolved = [k for k in missing_keys if not k.endswith(tolerated_suffixes)]
+    assert len(unresolved) == 0, f"Missing keys in checkpoint: {unresolved}"
 
 def create_model_and_diffusion_general_skeleton(args):
     model = AnyTop(**get_gmdm_args(args))

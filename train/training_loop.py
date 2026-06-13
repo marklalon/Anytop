@@ -111,6 +111,17 @@ class TrainLoop:
         self.non_blocking = self.device.type == 'cuda'
         self.detect_anomaly = bool(getattr(self.args, 'detect_anomaly', False))
         self.load_optimizer_state = bool(getattr(self.args, 'load_optimizer_state', True))
+        # Spike-capture probe: when a step's pre-clip grad_norm exceeds a
+        # threshold, dump the offending batch + top per-parameter grad norms.
+        # See _maybe_capture_spike. Hardcoded always-on, and always serializes
+        # the offending batch (.pt) alongside the JSON summary. Threshold / dump
+        # cap stay tunable via args.
+        self.spike_capture = True
+        self.spike_save_batch = True
+        self.spike_grad_threshold = float(getattr(self.args, 'spike_grad_threshold', 50.0))
+        self.spike_max_dumps = int(getattr(self.args, 'spike_max_dumps', 10))
+        self.spike_dumps_written = 0
+        self._spike_ctx = None
         self.autocast_dtype = None
         if self.amp_dtype == 'fp16':
             self.autocast_dtype = torch.float16
@@ -712,6 +723,8 @@ class TrainLoop:
             self.forward_backward(batch, cond, epoch)
         #clip_grad_value_(self.model.parameters(), clip_value=1.5)
         took_step = self.mp_trainer.optimize(self.opt, self.lr_scheduler)
+        if self.spike_capture:
+            self._maybe_capture_spike(batch, cond)
         if took_step and self.model_avg is not None:
             update_ema(self.model_avg.parameters(), self.model.parameters(),
                        rate=self.args.ema_rate)
@@ -758,7 +771,170 @@ class TrainLoop:
             loss = (losses["loss"] * weights).mean()
             self._accumulate_interval_losses({k: v * weights for k, v in losses.items()})
             self._accumulate_per_family_l_simple(losses, weights, micro_cond)
+            if self.spike_capture:
+                self._stash_spike_ctx(losses, t)
             self.mp_trainer.backward(loss)
+
+    def _stash_spike_ctx(self, losses, t):
+        """Keep detached, on-device references to the just-computed per-sample
+        losses and timesteps so _maybe_capture_spike can inspect them after the
+        optimizer step. Cheap: no host sync here, tensors stay on the GPU."""
+        reserved = ('loss', 'l_simple')
+        l_simple = losses.get('l_simple', losses['loss'])
+        self._spike_ctx = {
+            'loss': losses['loss'].detach(),
+            'l_simple': l_simple.detach(),
+            't': t.detach(),
+            'aux': {k: v.detach() for k, v in losses.items() if k not in reserved},
+        }
+
+    def _top_param_grad_norms(self, k=25):
+        """Per-parameter L2 grad norms (top-k), to localize which layer's
+        gradient dominates a spike. Called only on trigger. The grads here are
+        post-clip (clip_grad_norm_ rescales them uniformly to total norm
+        max_norm), so absolute values are scaled but the *ranking* across
+        params is identical to pre-clip -- which is what localizes the layer.
+        One host sync total (norms are stacked, then moved to CPU once)."""
+        names, norms = [], []
+        for name, p in self.model.named_parameters():
+            if p.grad is None:
+                continue
+            names.append(name)
+            norms.append(p.grad.detach().norm())
+        if not norms:
+            return None, []
+        norms_t = torch.stack(norms).float().cpu()
+        total_postclip = float(norms_t.norm())
+        order = torch.argsort(norms_t, descending=True)[:k].tolist()
+        top = [{'param': names[i], 'grad_norm_postclip': float(norms_t[i])} for i in order]
+        return total_postclip, top
+
+    def _maybe_capture_spike(self, batch, cond):
+        """If this step's pre-clip grad_norm exceeds spike_grad_threshold, dump
+        the offending batch (clip names, per-sample t / loss / loss-components,
+        augmentation flags) plus the top per-parameter grad norms to
+        <save_dir>/spikes so the trigger AND the dominant layer of a spike can be
+        identified post-hoc. Grad-norm is the sole trigger (it is already a host
+        float from optimize(), so this probe adds no per-step sync)."""
+        ctx = self._spike_ctx
+        self._spike_ctx = None
+        if ctx is None:
+            return
+
+        grad_norm = self.mp_trainer.last_grad_norm
+        grad_trip = grad_norm is not None and (
+            not np.isfinite(grad_norm) or grad_norm > self.spike_grad_threshold
+        )
+        if not grad_trip:
+            return
+
+        completed_step = self.total_step() + 1
+        if self.spike_max_dumps and self.spike_dumps_written >= self.spike_max_dumps:
+            if self.spike_dumps_written == self.spike_max_dumps:
+                tqdm.write(
+                    f'[spike] step {completed_step}: spike detected but --spike_max_dumps '
+                    f'({self.spike_max_dumps}) reached; not writing further dumps.'
+                )
+                self.spike_dumps_written += 1  # advance once so the notice prints only once
+            return
+
+        y = cond['y']
+
+        def field_list(key):
+            v = y.get(key)
+            if v is None:
+                return None
+            if torch.is_tensor(v):
+                return v.detach().cpu().tolist()
+            return list(v)
+
+        names = field_list('motion_name')
+        species = field_list('object_type')
+        action_tags = y.get('action_tags')
+        flag_keys = (
+            'is_loop', 'loop_full_cycle', 'loop_data_aug_applied', 'loop_tile_count',
+            'loop_phase_offset', 'motion_start_frame', 'playspeed_cond', 'n_joints',
+        )
+        flags = {k: field_list(k) for k in flag_keys}
+        gec = y.get('global_energy_cond')
+        flags['global_energy_cond'] = gec.detach().cpu().reshape(-1).tolist() if torch.is_tensor(gec) else None
+
+        loss_np = ctx['loss'].float().cpu().numpy()
+        lsimple_np = ctx['l_simple'].float().cpu().numpy()
+        t_np = ctx['t'].cpu().numpy()
+        bs = loss_np.shape[0]
+
+        per_sample_aux, scalar_aux = {}, {}
+        for k, v in ctx['aux'].items():
+            if v.ndim == 0:
+                scalar_aux[k] = float(v.item())
+            else:
+                per_sample_aux[k] = v.float().cpu().numpy().reshape(-1)
+
+        samples = []
+        for i in range(bs):
+            rec = {
+                'idx': i,
+                'loss': float(loss_np[i]),
+                'l_simple': float(lsimple_np[i]),
+                't': int(t_np[i]),
+                'name': names[i] if names else None,
+                'species': species[i] if species else None,
+                'action_tags': action_tags[i] if action_tags else None,
+            }
+            for k, arr in flags.items():
+                rec[k] = arr[i] if (arr is not None and i < len(arr)) else None
+            if per_sample_aux:
+                rec['aux'] = {k: float(arr[i]) for k, arr in per_sample_aux.items() if i < len(arr)}
+            samples.append(rec)
+        samples.sort(key=lambda r: r['loss'], reverse=True)
+
+        total_postclip, top_param_grads = self._top_param_grad_norms()
+
+        record = {
+            'completed_step': completed_step,
+            'grad_norm_preclip': (None if grad_norm is None else float(grad_norm)),
+            'grad_clip_max_norm': 1.0,
+            'grad_norm_postclip_total': total_postclip,
+            'amp_dtype': self.amp_dtype,
+            'trigger': {'grad': bool(grad_trip)},
+            'thresholds': {'grad': self.spike_grad_threshold},
+            'batch_mean_loss': float(loss_np.mean()),
+            'batch_max_loss': float(loss_np.max()),
+            'scalar_losses': scalar_aux,
+            'top_param_grad_norms': top_param_grads,
+            'samples': samples,
+        }
+
+        spike_dir = pjoin(self.save_dir, 'spikes')
+        os.makedirs(spike_dir, exist_ok=True)
+        json_path = pjoin(spike_dir, f'spike_step{completed_step:09d}.json')
+        with open(json_path, 'w') as f:
+            json.dump(record, f, indent=2, default=str)
+
+        if self.spike_save_batch:
+            payload = {
+                'completed_step': completed_step,
+                'motion': batch.detach().cpu(),
+                't': ctx['t'].cpu(),
+                'motion_name': names,
+                'object_type': species,
+                'action_tags': action_tags,
+            }
+            for k in flag_keys:
+                v = y.get(k)
+                if torch.is_tensor(v):
+                    payload[k] = v.detach().cpu()
+            torch.save(payload, pjoin(spike_dir, f'spike_step{completed_step:09d}.pt'))
+
+        self.spike_dumps_written += 1
+        top_param = top_param_grads[0]['param'] if top_param_grads else '?'
+        tqdm.write(
+            f'[spike] step {completed_step}: grad_norm(pre-clip)='
+            f'{"inf" if grad_norm is None or not np.isfinite(grad_norm) else f"{grad_norm:.1f}"}, '
+            f'batch_mean_loss={record["batch_mean_loss"]:.3f}, '
+            f'top-grad param={top_param} -> {json_path}'
+        )
 
     def _autocast_context(self):
         if not self.amp_enabled:

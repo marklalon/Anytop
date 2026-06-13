@@ -212,6 +212,14 @@ def add_training_options(parser):
                        help="Prefetch this many batches on background thread for main-thread data loading to overlap with GPU compute. 0 disables it.")
     group.add_argument("--detect_anomaly", action='store_true',
                        help="Enable PyTorch autograd anomaly detection. Useful for debugging, but significantly slows training.")
+    # Spike-capture probe is always on (hardcoded in TrainLoop) and always
+    # serializes the offending batch (.pt) + top per-parameter grad norms next to
+    # the JSON summary. It dumps to <save_dir>/spikes whenever a step's pre-clip
+    # grad_norm exceeds the threshold below. Only the threshold / dump cap tune.
+    group.add_argument("--spike_grad_threshold", default=50.0, type=float,
+                       help="Pre-clip grad_norm above this value triggers a spike dump.")
+    group.add_argument("--spike_max_dumps", default=10, type=int,
+                       help="Stop writing spike dumps after this many, to bound disk usage. 0 = unlimited.")
     group.add_argument("--joint_mask_prob", default=0.5, type=float,
                        help="Per-sample probability of applying a training-time subtree joint perturbation. "
                            "Selected joints keep their supervision loss and remain visible to attention, but their x_t "
