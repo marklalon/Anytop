@@ -514,15 +514,15 @@ class TrainLoop:
         family_sets = getattr(self, '_family_species_sets', None)
         if family_sets is None:
             from data_loaders.truebones.truebones_utils.param_utils import (
-                QUADROPEDS, BIPEDS, MILLIPEDS, SNAKES, FISH, FLYING,
+                OBJECT_SUBSETS_DICT,
             )
             family_sets = {
-                'quad': set(QUADROPEDS),
-                'biped': set(BIPEDS),
-                'milliped': set(MILLIPEDS),
-                'snake': set(SNAKES),
-                'fish': set(FISH),
-                'flying': set(FLYING),
+                'quad': set(OBJECT_SUBSETS_DICT['quadruped']),
+                'biped': set(OBJECT_SUBSETS_DICT['biped']),
+                'milliped': set(OBJECT_SUBSETS_DICT['multiped']),
+                'snake': set(OBJECT_SUBSETS_DICT['serpentine']),
+                'fish': set(OBJECT_SUBSETS_DICT['aquatic']),
+                'flying': set(OBJECT_SUBSETS_DICT['winged']),
             }
             self._family_species_sets = family_sets
         l_simple = (losses["l_simple"] * weights).detach().float()

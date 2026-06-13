@@ -152,7 +152,7 @@ def add_data_options(parser):
                        dest='train_split',
                        help="Data split to use for training. 'train'=training set, 'val'=validation set, 'test'=test set, 'all'=use all data.")
     group.add_argument("--objects_subset", default='all', type=str,
-                       help="Object subset. Can be a predefined category (e.g. 'all', 'quadropeds', 'flying', 'bipeds', 'millipeds', etc.) or a single species name (e.g. 'Horse', 'Dragon').")
+                       help="Object subset. Can be a predefined category (e.g. 'all', 'quadruped', 'winged', 'biped', 'multiped', etc.) or a single species name (e.g. 'Horse', 'Dragon').")
     group.add_argument("--action_tags", default='', type=str,
                        help="Comma-separated action tags, e.g. 'locomotion,attack'. During training, filters "
                             "kept motions whose metadata tags match. During generation with --score, filters "

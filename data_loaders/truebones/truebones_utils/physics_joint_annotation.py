@@ -5,6 +5,10 @@ from collections import Counter
 import numpy as np
 import re
 
+from data_loaders.truebones.truebones_utils.param_utils import (
+    SPECIES_MOTION_TAGS as _SPECIES_MOTION_TAGS,
+)
+
 
 # End effector joint detection tokens
 _END_EFFECTOR_DISTAL_TOKENS = (
@@ -270,7 +274,9 @@ _CHAIN_INDEX_ORDINAL_TOKENS = {
 #   col 3 – locomotion  : Stalking / Trotting / Galloping / Lumbering / Crawling / etc.
 # Single source of truth for the per-species signal: it feeds both the
 # per-species condition (--species_cond, via build_species_embedding_text) and
-# the retarget candidate-ranking group discount (utils/skeleton_similarity).
+# the retarget candidate-ranking group discount (utils/skeleton_similarity), and
+# its first column also drives the ``--object_subsets`` groupings
+# (param_utils.OBJECT_SUBSETS_DICT).
 # These tags describe HOW the animal moves -- the axis that actually matters for
 # a motion model and that the skeleton geometry alone does not give (e.g. an
 # agile felid vs a heavy megafauna on a similar quadruped topology). Phylogeny
@@ -279,91 +285,11 @@ _CHAIN_INDEX_ORDINAL_TOKENS = {
 # similar movers together and novel species can reuse the same tokens. Every
 # registered species MUST appear here (assert_species_motion_tags_cover enforces
 # this at preprocessing and training time) -- there is no fallback.
-_SPECIES_MOTION_TAGS = {
-    # Quadrupeds — Small/Medium/Large + Stalking (felids)
-    'Cat': ('Quadruped', 'Small', 'Stalking'),
-    'Jaguar': ('Quadruped', 'Medium', 'Stalking'),
-    'Lynx': ('Quadruped', 'Medium', 'Stalking'),
-    'Leapord': ('Quadruped', 'Medium', 'Stalking'),
-    'Lion': ('Quadruped', 'Medium', 'Stalking'),
-    'SabreToothTiger': ('Quadruped', 'Large', 'Stalking'),
-    # Quadrupeds — Small/Medium + Trotting (canids)
-    'Coyote': ('Quadruped', 'Small', 'Trotting'),
-    'Fox': ('Quadruped', 'Small', 'Trotting'),
-    'Hound': ('Quadruped', 'Medium', 'Trotting'),
-    'Puppy': ('Quadruped', 'Small', 'Trotting'),
-    # Quadrupeds — Medium/Large + Galloping (ungulates)
-    'Horse': ('Quadruped', 'Large', 'Galloping'),
-    'Gazelle': ('Quadruped', 'Medium', 'Galloping'),
-    'Deer': ('Quadruped', 'Large', 'Galloping'),
-    'Raindeer': ('Quadruped', 'Medium', 'Galloping'),
-    'Goat': ('Quadruped', 'Medium', 'Climbing'),
-    'Camel': ('Quadruped', 'Large', 'Plodding'),
-    # Quadrupeds — Heavy + Lumbering (megafauna / bears)
-    'Elephant': ('Quadruped', 'Heavy', 'Lumbering'),
-    'Mammoth': ('Quadruped', 'Heavy', 'Lumbering'),
-    'Rhino': ('Quadruped', 'Heavy', 'Lumbering'),
-    'Hippopotamus': ('Quadruped', 'Large', 'Lumbering'),
-    'Buffalo': ('Quadruped', 'Large', 'Lumbering'),
-    'Bear': ('Quadruped', 'Large', 'Lumbering'),
-    'BrownBear': ('Quadruped', 'Large', 'Lumbering'),
-    'PolarBear': ('Quadruped', 'Large', 'Lumbering'),
-    'PolarBearB': ('Quadruped', 'Large', 'Lumbering'),
-    'Tricera': ('Quadruped', 'Heavy', 'Lumbering'),
-    'Stego': ('Quadruped', 'Heavy', 'Lumbering'),
-    # Quadrupeds — Small + Scurrying (rodents / small mammals)
-    'Rat': ('Quadruped', 'Small', 'Scurrying'),
-    'Hamster': ('Quadruped', 'Small', 'Scurrying'),
-    'SandMouse': ('Quadruped', 'Small', 'Scurrying'),
-    'Skunk': ('Quadruped', 'Small', 'Scurrying'),
-    # Quadrupeds — Large/Heavy + Crawling (sprawled reptiles)
-    'Crocodile': ('Quadruped', 'Large', 'Crawling'),
-    'Alligator': ('Quadruped', 'Medium', 'Crawling'),
-    'Comodoa': ('Quadruped', 'Medium', 'Crawling'),
-    'Turtle': ('Quadruped', 'Medium', 'Crawling'),
-    # Quadruped in this dataset's rig (climbs), not bipedal
-    'Monkey': ('Quadruped', 'Medium', 'Climbing'),
-    # Bipeds — Large/Medium/Small + Striding/Wading (ground birds)
-    'Ostrich': ('Biped', 'Large', 'Striding'),
-    'Flamingo': ('Biped', 'Medium', 'Wading'),
-    'Chicken': ('Biped', 'Small', 'Striding'),
-    # Bipeds — Medium/Heavy + Running/Striding (theropods)
-    'Raptor': ('Biped', 'Medium', 'Running'),
-    'Raptor2': ('Biped', 'Large', 'Running'),
-    'Raptor3': ('Biped', 'Large', 'Running'),
-    'Trex': ('Biped', 'Heavy', 'Striding'),
-    'Tyranno': ('Biped', 'Heavy', 'Striding'),
-    # Multiped — Small + Scuttling/Crawling/Undulating/Sideways (arthropods)
-    'Ant': ('Multiped', 'Small', 'Scuttling'),
-    'FireAnt': ('Multiped', 'Small', 'Scuttling'),
-    'Roach': ('Multiped', 'Small', 'Scuttling'),
-    'Cricket': ('Multiped', 'Small', 'Scuttling'),
-    'Spider': ('Multiped', 'Small', 'Crawling'),
-    'SpiderG': ('Multiped', 'Medium', 'Crawling'),
-    'Scorpion': ('Multiped', 'Small', 'Crawling'),
-    'Scorpion-2': ('Multiped', 'Small', 'Crawling'),
-    'Centipede': ('Multiped', 'Small', 'Undulating'),
-    'Isopetra': ('Multiped', 'Small', 'Scuttling'),
-    'Crab': ('Multiped', 'Small', 'Sideways'),
-    'HermitCrab': ('Multiped', 'Small', 'Sideways'),
-    # Serpentine — Large + Slithering
-    'Anaconda': ('Serpentine', 'Medium', 'Slithering'),
-    'KingCobra': ('Serpentine', 'Medium', 'Slithering'),
-    # Aquatic — Small + Swimming
-    'Pirrana': ('Aquatic', 'Small', 'Swimming'),
-    # Winged — Small/Medium/Large/Heavy + Flapping/Soaring/Hovering
-    'Bird': ('Winged', 'Small', 'Flapping'),
-    'Parrot': ('Winged', 'Small', 'Flapping'),
-    'Parrot2': ('Winged', 'Small', 'Flapping'),
-    'Pigeon': ('Winged', 'Small', 'Flapping'),
-    'Tukan': ('Winged', 'Small', 'Flapping'),
-    'Bat': ('Winged', 'Small', 'Flapping'),
-    'Dragon': ('Winged', 'Heavy', 'Flapping'),
-    'Giantbee': ('Winged', 'Small', 'Hovering'),
-    'Eagle': ('Winged', 'Medium', 'Soaring'),
-    'Buzzard': ('Winged', 'Medium', 'Soaring'),
-    'Pteranodon': ('Winged', 'Large', 'Soaring'),
-}
+#
+# The mapping itself lives in the JSONL sidecar SPECIES_MOTION_TAGS_FILE
+# (dataset/.../species_motion_tags.jsonl) and is loaded by param_utils; edit that
+# file to add or refine a species. ``_SPECIES_MOTION_TAGS`` is imported above as
+# an alias so existing references keep working.
 
 
 def normalize_joint_name(name):

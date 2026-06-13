@@ -14,7 +14,12 @@ import os
 from os.path import join as pjoin
 import re
 import torch
-from data_loaders.truebones.truebones_utils.param_utils import HML_REF_AXIAL_BONE_LENGTH, HML_REF_MAX_SPAN, MAX_JOINTS, FLYING, FISH, SCALE_BODY_SPAN_BLEND_WEIGHT, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
+from data_loaders.truebones.truebones_utils.param_utils import HML_REF_AXIAL_BONE_LENGTH, HML_REF_MAX_SPAN, MAX_JOINTS, OBJECT_SUBSETS_DICT, SCALE_BODY_SPAN_BLEND_WEIGHT, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
+
+# Body-plan groups used by the vertical clamp; sourced from the species motion
+# tags (winged == old FLYING, aquatic == old FISH) so they never drift.
+FLYING = frozenset(OBJECT_SUBSETS_DICT['winged'])
+FISH = frozenset(OBJECT_SUBSETS_DICT['aquatic'])
 from .physics_joint_annotation import (
     build_semantic_metadata,
     normalize_joint_name,

@@ -280,7 +280,7 @@ def main():
     ap.add_argument("--ckpt2", required=True, help="second checkpoint .pt")
     ap.add_argument("--num_clips", type=int, default=500)
     ap.add_argument("--batch_size", type=int, default=16)
-    ap.add_argument("--objects_subset", default="quadropeds")
+    ap.add_argument("--objects_subset", default="quadruped")
     ap.add_argument("--split", default="train")
     ap.add_argument("--timestep", type=int, default=0,
                     help="diffusion t to probe at (0 = clean motion). >0 noises via q_sample.")

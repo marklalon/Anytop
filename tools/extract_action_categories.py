@@ -14,7 +14,7 @@ parser.add_argument(
     type=str,
     nargs="*",
     default=None,
-    help="Filter by object_type(s). Supports group names (e.g. quadropeds bipeds flying) "
+    help="Filter by object_type(s). Supports group names (e.g. quadruped biped winged) "
          "from OBJECT_SUBSETS_DICT, or individual PascalCase names (e.g. Horse Buffalo Camel). "
          "If omitted, all objects are included.",
 )

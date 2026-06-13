@@ -63,11 +63,19 @@ for _path in (_TRUEBONES_DIR, _TRUEBONES_DIR / "truebones_utils"):
     if _path_str not in sys.path:
         sys.path.insert(0, _path_str)
 
-from param_utils import BVHS_DIR, MOTION_DIR, OBJECT_SUBSETS_DICT, get_dataset_dir  # noqa: E402
+from param_utils import BVHS_DIR, MOTION_DIR, get_dataset_dir, get_raw_data_dir  # noqa: E402
 from truebones_utils.motion_labels import load_motion_metadata, write_motion_metadata  # noqa: E402
 
-# Full object universe. The workflow always operates over every object; --filter narrows it.
-ALL_OBJECTS: tuple[str, ...] = tuple(dict.fromkeys(str(obj) for obj in OBJECT_SUBSETS_DICT["all"]))
+
+def _discover_all_objects(raw_data_dir: str = "") -> tuple[str, ...]:
+    """Full object universe, discovered by scanning the raw source data directory.
+
+    Each top-level subdirectory of the raw Truebones folder is one object type.
+    This is the same enumeration ``create_data_samples`` uses, so the workflow
+    operates over exactly the objects present on disk; ``--filter`` narrows it.
+    """
+    resolved_raw_data_dir = Path(get_raw_data_dir(raw_data_dir or None))
+    return tuple(sorted(p.name for p in resolved_raw_data_dir.iterdir() if p.is_dir()))
 
 
 @dataclass
@@ -99,11 +107,12 @@ def _matches_any(name: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(name_lower, pattern.lower()) for pattern in patterns)
 
 
-def _resolve_target_object_types(object_filter: str = "") -> tuple[str, ...]:
+def _resolve_target_object_types(object_filter: str = "", raw_data_dir: str = "") -> tuple[str, ...]:
+    all_objects = _discover_all_objects(raw_data_dir)
     patterns = _parse_filter_patterns(object_filter)
     if not patterns:
-        return ALL_OBJECTS
-    return tuple(obj for obj in ALL_OBJECTS if _matches_any(obj, patterns))
+        return all_objects
+    return tuple(obj for obj in all_objects if _matches_any(obj, patterns))
 
 
 def _path_targets_object_type(path: Path, target_object_types: tuple[str, ...]) -> bool:
@@ -208,6 +217,7 @@ def _delete_paths(paths: list[Path]) -> bool:
 def check_and_clean_old_data(
     dataset_dir: str = "",
     object_filter: str = "",
+    raw_data_dir: str = "",
 ) -> tuple[bool, PreservedSideArtifacts]:
     """
     Check for existing preprocessed data.
@@ -230,7 +240,7 @@ def check_and_clean_old_data(
             *[f"  - {p} contains existing data" for p in paths_to_delete],
         ]
     else:
-        target_object_types = _resolve_target_object_types(object_filter)
+        target_object_types = _resolve_target_object_types(object_filter, raw_data_dir)
         preserved = _capture_preserved_side_artifacts(dataset_dir_path, target_object_types)
         targeted = [
             ("motion file(s)", motions_dir, _collect_targeted_files(motions_dir, target_object_types)),
@@ -280,7 +290,7 @@ def run_preprocessing(
     print("STEP 1: PREPROCESSING - Creating AnyTop dataset")
     print("=" * 70 + "\n")
 
-    objects = list(_resolve_target_object_types(object_filter))
+    objects = list(_resolve_target_object_types(object_filter, raw_data_dir))
     if object_filter:
         print(f"Filter '{object_filter}' selected {len(objects)} object(s): {', '.join(objects) or '(none)'}\n")
 
@@ -556,11 +566,11 @@ def main() -> int:
         print("ERROR: --motion-orientation-threshold must be >= 0")
         return 1
     if args.object_filter and not args.validate_only and not args.re_encode_joint_names_only:
-        matched = _resolve_target_object_types(args.object_filter)
+        matched = _resolve_target_object_types(args.object_filter, args.raw_data_dir)
         if not matched:
             print(
                 f"ERROR: --filter '{args.object_filter}' matched no objects.\n"
-                f"Available objects: {', '.join(sorted(ALL_OBJECTS))}"
+                f"Available objects: {', '.join(_discover_all_objects(args.raw_data_dir))}"
             )
             return 1
 
@@ -576,7 +586,7 @@ def main() -> int:
     # Check and clean old data before preprocessing
     if not args.validate_only:
         should_proceed, preserved_side_artifacts = check_and_clean_old_data(
-            args.dataset_dir, args.object_filter
+            args.dataset_dir, args.object_filter, args.raw_data_dir
         )
         if not should_proceed:
             print("\n" + "=" * 70)
