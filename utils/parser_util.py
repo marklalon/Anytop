@@ -130,6 +130,11 @@ def add_model_options(parser):
                        help="CFG drop probability for global energy during training. Randomly replaces "
                            "the energy condition with the running mean, forcing the model to learn "
                            "to actually respond to it. Default 0.1.")
+    group.add_argument("--species_cond", action='store_true',
+                       help="Enable per-species conditioning: a clean T5-derived species descriptor "
+                            "(separate from per-joint name embeddings) is projected (zero-init, "
+                            "near-no-regret) and added to the timestep token, which every decoder "
+                            "layer re-injects. Requires cond.npy regenerated with per-species 'species_emb'.")
     group.add_argument("--action_tag_cond", action='store_true',
                        help="Enable action-tag conditioning: a multi-hot over the canonical action-tag "
                             "vocabulary is projected and added to the timestep token.")

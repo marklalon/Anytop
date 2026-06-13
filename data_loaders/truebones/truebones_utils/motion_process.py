@@ -19,7 +19,7 @@ from .animation_utils import (
     refresh_joint_metadata_in_object_cond,
     write_joint_name_collision_report,
     refresh_joint_metadata_in_cond_dict,
-    attach_joint_name_embeddings_to_cond,
+    attach_t5_embeddings_to_cond,
     # Animation transforms
     find_translation_root,
     xz_locomotion_extent,

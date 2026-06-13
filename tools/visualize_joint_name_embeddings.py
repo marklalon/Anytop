@@ -4,7 +4,10 @@ Joint Name Embedding Distribution Visualizer
 Description:
     Loads precomputed joint-name embeddings from cond.npy, aggregates per-animal,
     then produces:
-      1. t-SNE scatter plot — animals colored by species group
+      1. t-SNE scatter plot — per-animal mean joint-name embeddings, colored by group
+      2. t-SNE scatter plot — species embeddings (species_emb), colored by group
+      3. t-SNE scatter plot — concatenated species_emb + mean joint-name embeddings,
+         colored by group
 
     A similarity report is also written so cosine neighbors and embedding norms
     can be inspected directly instead of relying only on 2D layout.
@@ -33,7 +36,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import build_joint_embedding_texts
-from utils.skeleton_similarity import lineage_tags
+from utils.skeleton_similarity import group_tags
 
 def l2_normalize(emb: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     norm = float(np.linalg.norm(emb))
@@ -47,16 +50,16 @@ def l2_normalize(emb: np.ndarray, eps: float = 1e-12) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 GROUP_COLORS = {
-    "Mammal":     "#4e79a7",
-    "Reptile":    "#f28e2b",
-    "Flying":     "#59a14f",
-    "Arthropod":  "#e15759",
-    "Bird":       "#76b7b2",
-    "Fish":       "#edc948",
-    "unknown":    "#b07aa1",
+    "Quadruped":   "#4e79a7",
+    "Biped":       "#f28e2b",
+    "Multiped":    "#59a14f",
+    "Winged":      "#e15759",
+    "Serpentine":  "#76b7b2",
+    "Aquatic":     "#edc948",
+    "unknown":     "#b07aa1",
 }
 
-GROUP_ORDER = ["Mammal", "Reptile", "Flying", "Arthropod", "Bird", "Fish", "unknown"]
+GROUP_ORDER = ["Quadruped", "Biped", "Multiped", "Winged", "Serpentine", "Aquatic", "unknown"]
 
 
 def load_cond(path: str) -> dict:
@@ -76,6 +79,9 @@ def _embedding_source_description(cond: dict) -> str:
     model_names = []
     schema_versions = []
     dims = []
+    species_model_names = []
+    species_schema_versions = []
+    species_dims = []
     for object_cond in cond.values():
         meta = object_cond.get("joints_names_embs_meta") or {}
         if meta.get("t5_name") is not None:
@@ -85,14 +91,20 @@ def _embedding_source_description(cond: dict) -> str:
         if meta.get("embedding_dim") is not None:
             dims.append(str(meta["embedding_dim"]))
 
-    parts = ["source: cond.npy precomputed joints_names_embs"]
+        smeta = object_cond.get("species_emb_meta") or {}
+        if smeta.get("t5_name") is not None:
+            species_model_names.append(str(smeta["t5_name"]))
+        if smeta.get("schema_version") is not None:
+            species_schema_versions.append(str(smeta["schema_version"]))
+        if smeta.get("embedding_dim") is not None:
+            species_dims.append(str(smeta["embedding_dim"]))
+
+    lines = ["source: cond.npy precomputed embeddings"]
     if model_names:
-        parts.append(f"model={sorted(set(model_names))}")
-    if schema_versions:
-        parts.append(f"schema={sorted(set(schema_versions))}")
-    if dims:
-        parts.append(f"dim={sorted(set(dims))}")
-    return " | ".join(parts)
+        lines.append(f"joint model={sorted(set(model_names))} schema={sorted(set(schema_versions))} dim={sorted(set(dims))}")
+    if species_model_names:
+        lines.append(f"species model={sorted(set(species_model_names))} schema={sorted(set(species_schema_versions))} dim={sorted(set(species_dims))}")
+    return " | ".join(lines)
 
 
 def per_animal_embedding(cond: dict, normalize_means: bool) -> dict:
@@ -123,7 +135,7 @@ def per_animal_embedding(cond: dict, normalize_means: bool) -> dict:
 
         mean_emb = joint_embs.mean(axis=0)
         plot_emb = l2_normalize(mean_emb) if normalize_means else mean_emb
-        tags = lineage_tags(a)
+        tags = group_tags(a)
         group = next((g for g in GROUP_ORDER if g in tags), "unknown")
         result[a] = {
             "mean_emb": mean_emb,
@@ -138,7 +150,46 @@ def per_animal_embedding(cond: dict, normalize_means: bool) -> dict:
     return result
 
 
-def plot_tsne(animal_embs: dict, output_dir: Path, perplexity: int):
+def per_animal_species_embedding(cond: dict, normalize: bool) -> dict:
+    """
+    Returns per-animal species embeddings (species_emb) from cond.npy.
+
+    Each animal has exactly one species_emb vector encoding its motion-relevant
+    body-plan descriptor (e.g. "Quadruped Small Stalking").
+    """
+    animals = sorted(cond.keys())
+
+    result = {}
+    for a in animals:
+        object_cond = cond[a]
+        species_emb = object_cond.get("species_emb")
+        if species_emb is None:
+            print(f"Warning: {a} is missing species_emb in cond.npy, skipping.")
+            continue
+
+        species_emb = np.asarray(species_emb, dtype=np.float32)
+        if species_emb.ndim != 1 or species_emb.shape[0] == 0:
+            print(f"Warning: {a} has invalid species_emb shape {species_emb.shape}, skipping.")
+            continue
+
+        species_meta = object_cond.get("species_emb_meta") or {}
+        embedding_text = str(species_meta.get("embedding_text") or "")
+
+        plot_emb = l2_normalize(species_emb) if normalize else species_emb.copy()
+        tags = group_tags(a)
+        group = next((g for g in GROUP_ORDER if g in tags), "unknown")
+        result[a] = {
+            "species_emb": species_emb,
+            "plot_emb": plot_emb,
+            "group": group,
+            "embedding_text": embedding_text,
+            "norm": float(np.linalg.norm(species_emb)),
+        }
+
+    return result
+
+
+def plot_tsne(animal_embs: dict, output_dir: Path, perplexity: int, suffix: str = "joint_embeddings"):
     from sklearn.manifold import TSNE
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
@@ -147,7 +198,7 @@ def plot_tsne(animal_embs: dict, output_dir: Path, perplexity: int):
     embs = np.stack([animal_embs[a]["plot_emb"] for a in animals])
     groups = [animal_embs[a]["group"] for a in animals]
 
-    print("Running t-SNE …")
+    print(f"Running t-SNE ({suffix}) …")
     coords = TSNE(n_components=2, perplexity=perplexity, random_state=42,
                   init="pca", learning_rate="auto").fit_transform(embs)
 
@@ -176,13 +227,45 @@ def plot_tsne(animal_embs: dict, output_dir: Path, perplexity: int):
         for g in GROUP_ORDER if any(grp == g for grp in groups)
     ]
     ax.legend(handles=legend_handles, loc="best", fontsize=9)
-    ax.set_title("t-SNE of L2-Normalized Per-Animal Semantic Joint-Text T5 Embeddings", fontsize=13)
+
+    # Choose title based on suffix
+    if suffix == "species_emb":
+        title = "t-SNE of L2-Normalized Per-Animal Species T5 Embeddings"
+    elif suffix == "concat_species_joint":
+        title = "t-SNE of L2-Normalized Concatenated [Species + Joint-Name Mean] T5 Embeddings"
+    else:
+        title = "t-SNE of L2-Normalized Per-Animal Semantic Joint-Text T5 Embeddings"
+    ax.set_title(title, fontsize=13)
     ax.axis("off")
     fig.tight_layout()
-    out = output_dir / "tsne_joint_embeddings.png"
+    out = output_dir / f"tsne_{suffix}.png"
     fig.savefig(out, dpi=150)
     plt.close(fig)
     print(f"  Saved: {out}")
+
+
+def build_concat_embeddings(species_embs: dict, joint_embs: dict, normalize: bool) -> dict:
+    """Concatenate species_emb and per-animal mean joint-name embedding.
+
+    Both halves are independently L2-normalized before concatenation so neither
+    dominates the t-SNE layout.
+    """
+    common = sorted(set(species_embs.keys()) & set(joint_embs.keys()))
+    if not common:
+        print("Warning: no animals have both species_emb and joint name embeddings.")
+        return {}
+
+    result = {}
+    for a in common:
+        s_emb = l2_normalize(species_embs[a]["species_emb"])
+        j_emb = l2_normalize(joint_embs[a]["mean_emb"])
+        concat = np.concatenate([s_emb, j_emb])
+        plot_emb = l2_normalize(concat) if normalize else concat
+        result[a] = {
+            "plot_emb": plot_emb,
+            "group": species_embs[a]["group"],
+        }
+    return result
 
 
 def save_similarity_report(animal_embs: dict, output_dir: Path, top_k: int = 8):
@@ -274,7 +357,7 @@ def main():
     parser.add_argument("--tsne-perplexity", type=int, default=15,
                         help="t-SNE perplexity (default: 15; try 5-30 for <100 animals)")
     parser.add_argument("--raw-means", action="store_true",
-                        help="Use unnormalized per-animal mean embeddings for t-SNE. By default means are L2-normalized first.")
+                        help="Use unnormalized embeddings for t-SNE. By default embeddings are L2-normalized first.")
     args = parser.parse_args()
 
     # Auto-detect cond.npy
@@ -300,11 +383,29 @@ def main():
     print(f"Loaded {len(cond)} animals.")
     print(_embedding_source_description(cond))
 
-    animal_embs = per_animal_embedding(cond, normalize_means=not args.raw_means)
-
     print("\n--- Generating plots ---")
-    plot_tsne(animal_embs, output_dir, args.tsne_perplexity)
-    save_similarity_report(animal_embs, output_dir)
+
+    # 1. Joint-name mean embedding t-SNE (original plot)
+    animal_embs_joint = per_animal_embedding(cond, normalize_means=not args.raw_means)
+    plot_tsne(animal_embs_joint, output_dir, args.tsne_perplexity, suffix="joint_embeddings")
+
+    # 2. Species embedding t-SNE
+    animal_embs_species = per_animal_species_embedding(cond, normalize=not args.raw_means)
+    if animal_embs_species:
+        plot_tsne(animal_embs_species, output_dir, args.tsne_perplexity, suffix="species_emb")
+    else:
+        print("  Skipped species_emb t-SNE: no species embeddings found in cond.npy.")
+
+    # 3. Concatenated species + joint-name mean embedding t-SNE
+    if animal_embs_species and animal_embs_joint:
+        concat_embs = build_concat_embeddings(animal_embs_species, animal_embs_joint,
+                                              normalize=not args.raw_means)
+        if concat_embs:
+            plot_tsne(concat_embs, output_dir, args.tsne_perplexity, suffix="concat_species_joint")
+    else:
+        print("  Skipped concat t-SNE: need both species_emb and joint embeddings.")
+
+    save_similarity_report(animal_embs_joint, output_dir)
 
     print(f"\nDone. Outputs in: {output_dir.resolve()}")
 

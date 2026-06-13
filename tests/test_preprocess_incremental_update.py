@@ -181,7 +181,7 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
         encoding="utf-8",
     )
 
-    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True, force_reencode=True):
+    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True):
         inspection_output_dir = Path(save_dir) / "joint_name_inspection"
         inspection_output_dir.mkdir(parents=True, exist_ok=True)
         for object_type, object_cond in cond.items():
@@ -206,7 +206,7 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
         )
         return []
 
-    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_t5_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
 
     dataset_dir_path = regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
@@ -290,7 +290,7 @@ def test_regenerate_dataset_artifacts_unifies_translation_root_index_per_object(
         {"Cat_Run_001.npy": ["locomotion"], "Cat_Idle_002.npy": ["idle"]},
     )
 
-    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True, force_reencode=True):
+    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True):
         for object_cond in cond.values():
             joint_count = len(object_cond["joints_names"])
             object_cond["joints_names_embs"] = np.ones((joint_count, 1), dtype=np.float32)
@@ -299,7 +299,7 @@ def test_regenerate_dataset_artifacts_unifies_translation_root_index_per_object(
     def fake_write_collision_report(cond, save_dir):
         return []
 
-    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_t5_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
 
     regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
@@ -342,7 +342,7 @@ def test_regenerate_dataset_artifacts_rebuilds_translation_root_when_metadata_mi
     )
     _write_motion_tags(dataset_dir, {"Cat_Run_001.npy": ["locomotion"]})
 
-    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True, force_reencode=True):
+    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True):
         for object_cond in cond.values():
             joint_count = len(object_cond["joints_names"])
             object_cond["joints_names_embs"] = np.ones((joint_count, 1), dtype=np.float32)
@@ -351,7 +351,7 @@ def test_regenerate_dataset_artifacts_rebuilds_translation_root_when_metadata_mi
     def fake_write_collision_report(cond, save_dir):
         return []
 
-    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_t5_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
 
     regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
@@ -392,7 +392,7 @@ def test_regenerate_dataset_artifacts_uses_majority_root_not_minimum(monkeypatch
         {f"Bear_Run_{idx:03d}.npy": ["locomotion"] for idx in range(4)},
     )
 
-    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True, force_reencode=True):
+    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True):
         for object_cond in cond.values():
             joint_count = len(object_cond["joints_names"])
             object_cond["joints_names_embs"] = np.ones((joint_count, 1), dtype=np.float32)
@@ -401,7 +401,7 @@ def test_regenerate_dataset_artifacts_uses_majority_root_not_minimum(monkeypatch
     def fake_write_collision_report(cond, save_dir):
         return []
 
-    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_t5_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
 
     regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
@@ -443,7 +443,7 @@ def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_infe
         },
     )
 
-    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True, force_reencode=True):
+    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True):
         for object_cond in cond.values():
             joint_count = len(object_cond["joints_names"])
             object_cond["joints_names_embs"] = np.ones((joint_count, 1), dtype=np.float32)
@@ -462,7 +462,7 @@ def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_infe
             "motion_name": motion_name,
         }
 
-    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_t5_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
     monkeypatch.setattr(
         regenerate_dataset_artifacts_module,

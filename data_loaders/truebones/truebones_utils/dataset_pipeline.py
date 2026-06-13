@@ -30,7 +30,7 @@ from .fbx_filename_rules import (
 
 from .animation_utils import (
     canonical_name_for_bvh,
-    attach_joint_name_embeddings_to_cond,
+    attach_t5_embeddings_to_cond,
     needs_bvh_position_channels,
     reorder_animation_to_dfs,
     crop_animation_to_max_joints,
@@ -638,7 +638,7 @@ def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, m
 
     _write_positions_error_file(save_dir, squared_positions_error)
 
-    attach_joint_name_embeddings_to_cond(cond, save_dir)
+    attach_t5_embeddings_to_cond(cond, save_dir)
     np.save(pjoin(save_dir, "cond.npy"), cond)
     write_motion_metadata(save_dir, motion_metadata, files_counter)
 

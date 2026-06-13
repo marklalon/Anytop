@@ -249,7 +249,7 @@ _EMBED_TEXT_HEAD_FEATURE_TOKENS = {
     'tongue',
 }
 
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 7
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 8
 
 _CHAIN_INDEX_ORDINAL_TOKENS = {
     1: 'First',
@@ -263,77 +263,106 @@ _CHAIN_INDEX_ORDINAL_TOKENS = {
     9: 'Ninth',
     10: 'Tenth',
 }
-_SPECIES_LINEAGE_TAGS = {
-    'Alligator': ('Reptile', 'Crocodilian'),
-    'Anaconda': ('Reptile', 'Snake'),
-    'Ant': ('Arthropod', 'Insect'),
-    'Bat': ('Flying', 'Mammal'),
-    'Bear': ('Mammal', 'Ursid'),
-    'Bird': ('Flying', 'Bird'),
-    'BrownBear': ('Mammal', 'Ursid'),
-    'Buffalo': ('Mammal', 'Bovid'),
-    'Buzzard': ('Flying', 'Bird'),
-    'Camel': ('Mammal', 'Megafauna'),
-    'Cat': ('Mammal', 'Felid'),
-    'Centipede': ('Arthropod', 'Myriapod'),
-    'Chicken': ('Bird', 'Biped'),
-    'Comodoa': ('Reptile', 'Lizard'),
-    'Coyote': ('Mammal', 'Canid'),
-    'Crab': ('Arthropod', 'Crustacean'),
-    'Cricket': ('Arthropod', 'Insect'),
-    'Crocodile': ('Reptile', 'Crocodilian'),
-    'Deer': ('Mammal', 'Cervid'),
-    'Dragon': ('Flying', 'Reptile'),
-    'Eagle': ('Flying', 'Bird'),
-    'Elephant': ('Mammal', 'Proboscidean'),
-    'FireAnt': ('Arthropod', 'Insect'),
-    'Flamingo': ('Bird', 'Biped'),
-    'Fox': ('Mammal', 'Canid'),
-    'Gazelle': ('Mammal', 'Bovid'),
-    'Giantbee': ('Flying', 'Insect'),
-    'Goat': ('Mammal', 'Bovid'),
-    'Hamster': ('Mammal', 'Rodent'),
-    'HermitCrab': ('Arthropod', 'Crustacean'),
-    'Hippopotamus': ('Mammal', 'Megafauna'),
-    'Horse': ('Mammal', 'Megafauna'),
-    'Hound': ('Mammal', 'Canid'),
-    'Isopetra': ('Arthropod', 'Myriapod'),
-    'Jaguar': ('Mammal', 'Felid'),
-    'KingCobra': ('Reptile', 'Snake'),
-    'Leapord': ('Mammal', 'Felid'),
-    'Lion': ('Mammal', 'Felid'),
-    'Lynx': ('Mammal', 'Felid'),
-    'Mammoth': ('Mammal', 'Proboscidean'),
-    'Monkey': ('Mammal', 'Biped'),
-    'Ostrich': ('Bird', 'Biped'),
-    'Parrot': ('Flying', 'Bird'),
-    'Parrot2': ('Flying', 'Bird'),
-    'Pigeon': ('Flying', 'Bird'),
-    'Pirrana': ('Fish', 'Snake'),
-    'PolarBear': ('Mammal', 'Ursid'),
-    'PolarBearB': ('Mammal', 'Ursid'),
-    'Pteranodon': ('Flying', 'Reptile'),
-    'Puppy': ('Mammal', 'Canid'),
-    'Raindeer': ('Mammal', 'Cervid'),
-    'Raptor': ('Reptile', 'Dinosaur'),
-    'Raptor2': ('Reptile', 'Dinosaur'),
-    'Raptor3': ('Reptile', 'Dinosaur'),
-    'Rat': ('Mammal', 'Rodent'),
-    'Rhino': ('Mammal', 'Megafauna'),
-    'Roach': ('Arthropod', 'Insect'),
-    'SabreToothTiger': ('Mammal', 'Felid'),
-    'SandMouse': ('Mammal', 'Rodent'),
-    'Scorpion': ('Arthropod', 'Arachnid'),
-    'Scorpion-2': ('Arthropod', 'Arachnid'),
-    'Skunk': ('Mammal', 'Canid'),
-    'Spider': ('Arthropod', 'Arachnid'),
-    'SpiderG': ('Arthropod', 'Arachnid'),
-    'Stego': ('Reptile', 'Dinosaur'),
-    'Trex': ('Reptile', 'Dinosaur'),
-    'Tricera': ('Reptile', 'Dinosaur'),
-    'Tukan': ('Flying', 'Bird'),
-    'Turtle': ('Reptile', 'Chelonian'),
-    'Tyranno': ('Reptile', 'Dinosaur'),
+# Motion-relevant species descriptor: (body-plan, size/build, locomotion).
+# Three orthogonal dimensions so T5 can cluster by each axis independently:
+#   col 1 – body-plan  : Quadruped / Biped / Multiped / Serpentine / Aquatic / Winged
+#   col 2 – size/build  : Heavy / Large / Medium / Small
+#   col 3 – locomotion  : Stalking / Trotting / Galloping / Lumbering / Crawling / etc.
+# Single source of truth for the per-species signal: it feeds both the
+# per-species condition (--species_cond, via build_species_embedding_text) and
+# the retarget candidate-ranking group discount (utils/skeleton_similarity).
+# These tags describe HOW the animal moves -- the axis that actually matters for
+# a motion model and that the skeleton geometry alone does not give (e.g. an
+# agile felid vs a heavy megafauna on a similar quadruped topology). Phylogeny
+# that misleads motion is deliberately dropped (a Bat is "Winged Flapping", not
+# "Mammal"). Keep the vocabulary small and shared across species so T5 places
+# similar movers together and novel species can reuse the same tokens. Every
+# registered species MUST appear here (assert_species_motion_tags_cover enforces
+# this at preprocessing and training time) -- there is no fallback.
+_SPECIES_MOTION_TAGS = {
+    # Quadrupeds — Small/Medium/Large + Stalking (felids)
+    'Cat': ('Quadruped', 'Small', 'Stalking'),
+    'Jaguar': ('Quadruped', 'Medium', 'Stalking'),
+    'Lynx': ('Quadruped', 'Medium', 'Stalking'),
+    'Leapord': ('Quadruped', 'Medium', 'Stalking'),
+    'Lion': ('Quadruped', 'Medium', 'Stalking'),
+    'SabreToothTiger': ('Quadruped', 'Large', 'Stalking'),
+    # Quadrupeds — Small/Medium + Trotting (canids)
+    'Coyote': ('Quadruped', 'Small', 'Trotting'),
+    'Fox': ('Quadruped', 'Small', 'Trotting'),
+    'Hound': ('Quadruped', 'Medium', 'Trotting'),
+    'Puppy': ('Quadruped', 'Small', 'Trotting'),
+    # Quadrupeds — Medium/Large + Galloping (ungulates)
+    'Horse': ('Quadruped', 'Large', 'Galloping'),
+    'Gazelle': ('Quadruped', 'Medium', 'Galloping'),
+    'Deer': ('Quadruped', 'Large', 'Galloping'),
+    'Raindeer': ('Quadruped', 'Medium', 'Galloping'),
+    'Goat': ('Quadruped', 'Medium', 'Climbing'),
+    'Camel': ('Quadruped', 'Large', 'Plodding'),
+    # Quadrupeds — Heavy + Lumbering (megafauna / bears)
+    'Elephant': ('Quadruped', 'Heavy', 'Lumbering'),
+    'Mammoth': ('Quadruped', 'Heavy', 'Lumbering'),
+    'Rhino': ('Quadruped', 'Heavy', 'Lumbering'),
+    'Hippopotamus': ('Quadruped', 'Large', 'Lumbering'),
+    'Buffalo': ('Quadruped', 'Large', 'Lumbering'),
+    'Bear': ('Quadruped', 'Large', 'Lumbering'),
+    'BrownBear': ('Quadruped', 'Large', 'Lumbering'),
+    'PolarBear': ('Quadruped', 'Large', 'Lumbering'),
+    'PolarBearB': ('Quadruped', 'Large', 'Lumbering'),
+    'Tricera': ('Quadruped', 'Heavy', 'Lumbering'),
+    'Stego': ('Quadruped', 'Heavy', 'Lumbering'),
+    # Quadrupeds — Small + Scurrying (rodents / small mammals)
+    'Rat': ('Quadruped', 'Small', 'Scurrying'),
+    'Hamster': ('Quadruped', 'Small', 'Scurrying'),
+    'SandMouse': ('Quadruped', 'Small', 'Scurrying'),
+    'Skunk': ('Quadruped', 'Small', 'Scurrying'),
+    # Quadrupeds — Large/Heavy + Crawling (sprawled reptiles)
+    'Crocodile': ('Quadruped', 'Large', 'Crawling'),
+    'Alligator': ('Quadruped', 'Medium', 'Crawling'),
+    'Comodoa': ('Quadruped', 'Medium', 'Crawling'),
+    'Turtle': ('Quadruped', 'Medium', 'Crawling'),
+    # Quadruped in this dataset's rig (climbs), not bipedal
+    'Monkey': ('Quadruped', 'Medium', 'Climbing'),
+    # Bipeds — Large/Medium/Small + Striding/Wading (ground birds)
+    'Ostrich': ('Biped', 'Large', 'Striding'),
+    'Flamingo': ('Biped', 'Medium', 'Wading'),
+    'Chicken': ('Biped', 'Small', 'Striding'),
+    # Bipeds — Medium/Heavy + Running/Striding (theropods)
+    'Raptor': ('Biped', 'Medium', 'Running'),
+    'Raptor2': ('Biped', 'Large', 'Running'),
+    'Raptor3': ('Biped', 'Large', 'Running'),
+    'Trex': ('Biped', 'Heavy', 'Striding'),
+    'Tyranno': ('Biped', 'Heavy', 'Striding'),
+    # Multiped — Small + Scuttling/Crawling/Undulating/Sideways (arthropods)
+    'Ant': ('Multiped', 'Small', 'Scuttling'),
+    'FireAnt': ('Multiped', 'Small', 'Scuttling'),
+    'Roach': ('Multiped', 'Small', 'Scuttling'),
+    'Cricket': ('Multiped', 'Small', 'Scuttling'),
+    'Spider': ('Multiped', 'Small', 'Crawling'),
+    'SpiderG': ('Multiped', 'Medium', 'Crawling'),
+    'Scorpion': ('Multiped', 'Small', 'Crawling'),
+    'Scorpion-2': ('Multiped', 'Small', 'Crawling'),
+    'Centipede': ('Multiped', 'Small', 'Undulating'),
+    'Isopetra': ('Multiped', 'Small', 'Scuttling'),
+    'Crab': ('Multiped', 'Small', 'Sideways'),
+    'HermitCrab': ('Multiped', 'Small', 'Sideways'),
+    # Serpentine — Large + Slithering
+    'Anaconda': ('Serpentine', 'Medium', 'Slithering'),
+    'KingCobra': ('Serpentine', 'Medium', 'Slithering'),
+    # Aquatic — Small + Swimming
+    'Pirrana': ('Aquatic', 'Small', 'Swimming'),
+    # Winged — Small/Medium/Large/Heavy + Flapping/Soaring/Hovering
+    'Bird': ('Winged', 'Small', 'Flapping'),
+    'Parrot': ('Winged', 'Small', 'Flapping'),
+    'Parrot2': ('Winged', 'Small', 'Flapping'),
+    'Pigeon': ('Winged', 'Small', 'Flapping'),
+    'Tukan': ('Winged', 'Small', 'Flapping'),
+    'Bat': ('Winged', 'Small', 'Flapping'),
+    'Dragon': ('Winged', 'Heavy', 'Flapping'),
+    'Giantbee': ('Winged', 'Small', 'Hovering'),
+    'Eagle': ('Winged', 'Medium', 'Soaring'),
+    'Buzzard': ('Winged', 'Medium', 'Soaring'),
+    'Pteranodon': ('Winged', 'Large', 'Soaring'),
 }
 
 
@@ -443,19 +472,70 @@ def _collapse_solitary_head_feature_indices(canonical_joint_names):
 
 
 # Lazy lowercase→tags mapping for case-insensitive species lookup
-_SPECIES_LINEAGE_TAGS_LOWER = None
+_SPECIES_MOTION_TAGS_LOWER = None
 
 
-def _species_lineage_tokens(object_cond):
-    global _SPECIES_LINEAGE_TAGS_LOWER
+def _motion_tags_lower():
+    global _SPECIES_MOTION_TAGS_LOWER
+    if _SPECIES_MOTION_TAGS_LOWER is None:
+        _SPECIES_MOTION_TAGS_LOWER = {
+            key.lower(): tags for key, tags in _SPECIES_MOTION_TAGS.items()
+        }
+    return _SPECIES_MOTION_TAGS_LOWER
+
+
+def _species_motion_tokens(object_cond):
     object_type = str(object_cond.get('object_type') or '').strip()
     if not object_type:
         return []
-    if _SPECIES_LINEAGE_TAGS_LOWER is None:
-        _SPECIES_LINEAGE_TAGS_LOWER = {
-            key.lower(): tags for key, tags in _SPECIES_LINEAGE_TAGS.items()
-        }
-    return list(_SPECIES_LINEAGE_TAGS_LOWER.get(object_type.lower(), ()))
+    return list(_motion_tags_lower().get(object_type.lower(), ()))
+
+
+def assert_species_motion_tags_cover(object_types):
+    """Fast-fail unless every ``object_type`` has an entry in ``_SPECIES_MOTION_TAGS``.
+
+    ``_SPECIES_MOTION_TAGS`` is the single source of truth for the per-species
+    descriptor (``build_species_embedding_text``) and the retarget group
+    discount, and it carries no fallback. Call this at preprocessing and before
+    training so a newly added species without motion tags surfaces immediately
+    rather than silently degrading the species condition.
+    """
+    tags_lower = _motion_tags_lower()
+    missing = sorted(
+        {str(object_type) for object_type in object_types
+         if str(object_type).strip()
+         and str(object_type).strip().lower() not in tags_lower}
+    )
+    if missing:
+        raise ValueError(
+            "_SPECIES_MOTION_TAGS is missing motion tags for object_type(s): "
+            f"{', '.join(missing)}. Add them in "
+            "data_loaders/truebones/truebones_utils/physics_joint_annotation.py "
+            "(_SPECIES_MOTION_TAGS) before preprocessing or training."
+        )
+
+
+def build_species_embedding_text(object_cond):
+    """Return the text describing a species as a whole, encoded once per object
+    type into a single ``species_emb`` (T5) vector that conditions the whole
+    network -- as opposed to ``build_joint_embedding_texts``, which describes
+    each joint. This is the one place to refine the species descriptor; keep it
+    open-vocabulary text so novel species still map into the same T5 space.
+
+    Returns the motion-relevant body-plan/dynamics tags (_SPECIES_MOTION_TAGS),
+    which describe how the animal moves -- the axis that matters for motion and
+    that topology alone can't supply. There is no fallback: every species MUST
+    be registered in _SPECIES_MOTION_TAGS (enforced by
+    assert_species_motion_tags_cover at preprocessing/training time).
+    """
+    motion_tokens = _species_motion_tokens(object_cond)
+    if not motion_tokens:
+        object_type = str(object_cond.get('object_type') or '').strip() or '<empty>'
+        raise ValueError(
+            f"No _SPECIES_MOTION_TAGS entry for object_type '{object_type}'. "
+            "Register it in physics_joint_annotation._SPECIES_MOTION_TAGS."
+        )
+    return ' '.join(motion_tokens)
 
 
 def _refine_joint_embedding_name(name):
@@ -580,7 +660,6 @@ def build_joint_embedding_texts(object_cond):
     if not base_joint_names:
         return []
 
-    lineage_tokens = _species_lineage_tokens(object_cond)
     joint_side_labels = list(object_cond.get('joint_side_labels') or ['center'] * len(base_joint_names))
     contact_joints = {int(joint_index) for joint_index in list(object_cond.get('contact_joints') or [])}
     end_effector_joints = {int(joint_index) for joint_index in list(object_cond.get('end_effector_joints') or [])}
@@ -596,7 +675,6 @@ def build_joint_embedding_texts(object_cond):
             continue
 
         semantic_tokens = list()
-        semantic_tokens.extend(lineage_tokens)
         semantic_tokens.extend(refined_tokens)
         semantic_tokens.extend(chain_relative_tokens[joint_index])
 

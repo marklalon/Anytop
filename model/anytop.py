@@ -56,6 +56,7 @@ class AnyTop(nn.Module):
         self.temporal_span_mask_min_frames=int(kargs.get('temporal_span_mask_min_frames', 4))
         self.temporal_span_mask_max_frames=int(kargs.get('temporal_span_mask_max_frames', 12))
         self.global_energy_cond=bool(kargs.get('global_energy_cond', False))
+        self.species_cond=bool(kargs.get('species_cond', False))
         self.loop_cond_prob=float(kargs.get('loop_cond_prob', 1.0))
         self.global_energy_stats_momentum = 0.01
         # CFG drop probability for global energy conditioning during training.
@@ -151,6 +152,23 @@ class AnyTop(nn.Module):
             self.action_tag_vocab = []
             self.action_tag_to_index = {}
             self.action_tag_projection = None
+
+        # Per-species condition: a clean, T5-derived species descriptor
+        # (separate from the per-joint name embeddings) added to the timestep
+        # embedding, which every decoder layer re-injects via embed_timesteps
+        # -> deep, per-layer modulation. The final linear is zero-initialized so
+        # the species condition starts at 0 (identity to the baseline), giving a
+        # near-no-regret addition that only deviates if it lowers the loss.
+        if self.species_cond:
+            self.species_projection = nn.Sequential(
+                nn.Linear(t5_out_dim, self.latent_dim),
+                nn.GELU(),
+                nn.Linear(self.latent_dim, self.latent_dim),
+            )
+            nn.init.zeros_(self.species_projection[-1].weight)
+            nn.init.zeros_(self.species_projection[-1].bias)
+        else:
+            self.species_projection = None
 
         seqTransDecoderLayer = GraphMotionDecoderLayer(d_model=self.latent_dim,
                                                             nhead=self.num_heads,
@@ -559,6 +577,30 @@ class AnyTop(nn.Module):
             return None
         return mask
 
+    def _build_species_token(self, y, batch_size, device, dtype):
+        """Project the per-species T5 descriptor into a [B, latent_dim] token
+        added to the timestep embedding. Returns None when species
+        conditioning is disabled."""
+        if self.species_projection is None:
+            return None
+        raw_species_emb = y.get('species_emb') if y is not None else None
+        if raw_species_emb is None:
+            raise ValueError(
+                "species_cond is enabled but y['species_emb'] is missing. "
+                "Regenerate cond.npy so each species carries 'species_emb'."
+            )
+        species_emb = torch.as_tensor(raw_species_emb, device=device, dtype=dtype)
+        if species_emb.dim() == 1:
+            species_emb = species_emb.unsqueeze(0)
+        if species_emb.shape[0] == 1 and batch_size != 1:
+            species_emb = species_emb.expand(batch_size, -1)
+        elif species_emb.shape[0] != batch_size:
+            raise ValueError(
+                "species_emb batch dimension must match the motion batch size, got "
+                f"{species_emb.shape[0]} for batch {batch_size}"
+            )
+        return self.species_projection(species_emb)
+
     def forward(self, x, timesteps, y=None, train_step=None, **unused_kwargs):
         """
         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
@@ -600,6 +642,9 @@ class AnyTop(nn.Module):
         action_tag_token = self._build_action_tag_token(y, bs, x.device, x.dtype)
         if action_tag_token is not None:
             timesteps_emb = timesteps_emb + action_tag_token
+        species_token = self._build_species_token(y, bs, x.device, x.dtype)
+        if species_token is not None:
+            timesteps_emb = timesteps_emb + species_token
 
         loop_phase_mask = None
         raw_loop_phase_mask = y.get('is_loop')

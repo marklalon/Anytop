@@ -17,7 +17,10 @@ from data_loaders.truebones.truebones_utils.motion_labels import load_motion_met
 from data_loaders.truebones.truebones_utils.motion_process import (
     refresh_joint_metadata_in_cond_dict,
 )
-from data_loaders.truebones.truebones_utils.physics_joint_annotation import JOINT_NAME_EMBEDDING_SCHEMA_VERSION
+from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
+    JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
+    assert_species_motion_tags_cover,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -901,6 +904,7 @@ class MotionDataset(data.Dataset):
         if return_aug_info:
             return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {
                 'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
+                'species_emb': self.cond_dict[object_type].get('species_emb'),
             }, {
                 'crop_start': int(ind),
                 'loop_applied': bool(loop_applied),
@@ -911,6 +915,7 @@ class MotionDataset(data.Dataset):
             }
         return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {
             'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
+            'species_emb': self.cond_dict[object_type].get('species_emb'),
         }
     
     def _load_normalized_motion(self, data):
@@ -1040,6 +1045,9 @@ class Truebones(data.Dataset):
             # Treat as a single species name
             subset = [self.objects_subset]
         cond_dict = {k:cond_dict[k] for k in subset if k in cond_dict}
+        # Fast-fail before training if any species being trained lacks a motion
+        # tag (the per-species condition has no fallback).
+        assert_species_motion_tags_cover(cond_dict.keys())
         cond_dict = ensure_joint_name_embeddings(cond_dict, cond_source=opt.cond_file)
         for object_type, cond in cond_dict.items():
             mean = np.asarray(cond['mean'], dtype=np.float32)

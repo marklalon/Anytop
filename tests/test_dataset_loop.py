@@ -44,7 +44,7 @@ def _find_motion(pattern: str) -> str:
 
 
 LOOP_MOTION = _find_motion("Ostrich_Run_*.npy")
-LOOP_SUBSET = "bipeds_clean"
+LOOP_SUBSET = "bipeds"
 NUM_FRAMES = 60
 _ENRICHED_MOTION_METADATA_LOOKUP = None
 

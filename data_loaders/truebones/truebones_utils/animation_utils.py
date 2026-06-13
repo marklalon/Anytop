@@ -20,6 +20,8 @@ from .physics_joint_annotation import (
     normalize_joint_name,
     strip_joint_name_prefix,
     build_joint_embedding_texts,
+    build_species_embedding_text,
+    assert_species_motion_tags_cover,
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
 )
 
@@ -286,87 +288,69 @@ def refresh_joint_metadata_in_cond_dict(cond_dict):
     return cond_dict
 
 
-def _joint_name_embeddings_are_current(object_cond, embedding_texts, t5_name):
-    joint_names = list(object_cond.get('joints_names') or [])
-    embs = object_cond.get('joints_names_embs')
-    meta = object_cond.get('joints_names_embs_meta')
-
-    if embs is None or not isinstance(meta, dict):
-        return False
-
-    embs = np.asarray(embs)
-    if embs.ndim != 2:
-        return False
-    if len(joint_names) != len(embedding_texts) or embs.shape[0] != len(joint_names):
-        return False
-
-    try:
-        schema_version = int(meta.get('schema_version'))
-        embedding_dim = int(meta.get('embedding_dim'))
-    except (TypeError, ValueError):
-        return False
-
-    if meta.get('t5_name') != t5_name:
-        return False
-    if schema_version != JOINT_NAME_EMBEDDING_SCHEMA_VERSION:
-        return False
-    if embedding_dim != int(embs.shape[1]):
-        return False
-    if list(meta.get('embedding_texts') or []) != list(embedding_texts):
-        return False
-
-    return True
-
-
-def attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collision_report=True, force_reencode=True):
+def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collision_report=True):
 
     if not cond:
         return
+
+    # Fast-fail before any encoding: the per-species descriptor has no fallback,
+    # so a species missing from _SPECIES_MOTION_TAGS must surface here.
+    assert_species_motion_tags_cover(cond.keys())
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     inspection_dir = pjoin(save_dir, 'joint_name_inspection')
     os.makedirs(inspection_dir, exist_ok=True)
 
     embedding_texts_by_object = {}
-    object_types_to_encode = []
     for object_type in sorted(cond):
         object_cond = cond[object_type]
         refresh_joint_metadata_in_object_cond(object_cond)
         embedding_texts = build_joint_embedding_texts(object_cond)
         embedding_texts_by_object[object_type] = embedding_texts
-        if force_reencode or not _joint_name_embeddings_are_current(object_cond, embedding_texts, t5_name):
-            object_types_to_encode.append(object_type)
 
-    if object_types_to_encode:
-        from model.conditioners import T5Conditioner
+    object_types_to_encode = sorted(cond)
+    joint_count = len(object_types_to_encode)
+    print(f'Loading T5 model {t5_name} on {device.upper()} ...')
+    from model.conditioners import T5Conditioner
+    t5_conditioner = T5Conditioner(
+        name=t5_name,
+        finetune=False,
+        word_dropout=0.0,
+        normalize_text=False,
+        device=device,
+        autocast_dtype=None,
+        local_files_only=True,
+    )
+    print(f'Encoding joint-name embeddings for {joint_count} object types ...')
 
-        print(f'Encoding joint names into cond.npy with {t5_name} on {device.upper()}')
-        t5_conditioner = T5Conditioner(
-            name=t5_name,
-            finetune=False,
-            word_dropout=0.0,
-            normalize_text=False,
-            device=device,
-            autocast_dtype=None,
-            local_files_only=True,
-        )
+    with torch.no_grad():
+        for object_type in object_types_to_encode:
+            object_cond = cond[object_type]
+            embedding_texts = embedding_texts_by_object[object_type]
+            names_tokens = t5_conditioner.tokenize_entries(embedding_texts)
+            embs = t5_conditioner(names_tokens).detach().cpu().numpy().astype(np.float32, copy=False)
+            object_cond['joints_names_embs'] = embs
+            object_cond['joints_names_embs_meta'] = {
+                't5_name': t5_name,
+                'schema_version': JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
+                'embedding_dim': int(embs.shape[1]) if embs.ndim == 2 else 0,
+                'embedding_texts': list(embedding_texts),
+            }
 
-        with torch.no_grad():
-            for object_type in object_types_to_encode:
-                object_cond = cond[object_type]
-                embedding_texts = embedding_texts_by_object[object_type]
-                names_tokens = t5_conditioner.tokenize_entries(embedding_texts)
-                embs = t5_conditioner(names_tokens).detach().cpu().numpy().astype(np.float32, copy=False)
-                object_cond['joints_names_embs'] = embs
-                object_cond['joints_names_embs_meta'] = {
-                    't5_name': t5_name,
-                    'schema_version': JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
-                    'embedding_dim': int(embs.shape[1]) if embs.ndim == 2 else 0,
-                    'embedding_texts': list(embedding_texts),
-                }
-    else:
-        #print(f'Reusing cached joint-name embeddings from cond.npy for {len(cond)} object types ({t5_name})')
-        pass
+    print(f'Encoding species embeddings for {joint_count} object types ...')
+    with torch.no_grad():
+        for object_type in object_types_to_encode:
+            object_cond = cond[object_type]
+            species_text = build_species_embedding_text(object_cond)
+            species_tokens = t5_conditioner.tokenize_entries([species_text])
+            species_emb = t5_conditioner(species_tokens).detach().cpu().numpy().astype(np.float32, copy=False)
+            object_cond['species_emb'] = species_emb[0]
+            object_cond['species_emb_meta'] = {
+                't5_name': t5_name,
+                'schema_version': JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
+                'embedding_dim': int(species_emb.shape[1]) if species_emb.ndim == 2 else 0,
+                'embedding_text': species_text,
+            }
 
     for object_type in sorted(cond):
         object_cond = cond[object_type]

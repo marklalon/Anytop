@@ -47,7 +47,7 @@ from truebones_utils.motion_labels import (  # noqa: E402
     write_motion_metadata,
 )
 from truebones_utils.motion_process import (  # noqa: E402
-    attach_joint_name_embeddings_to_cond,
+    attach_t5_embeddings_to_cond,
     write_joint_name_collision_report,
     get_mean_std,
 )
@@ -318,7 +318,6 @@ def _normalize_object_translation_roots(
 def regenerate_dataset_artifacts(
     dataset_dir: str | Path | None = None,
     t5_model: str = "t5-base",
-    force_reencode: bool = False,
     recompute_stats: bool = False,
 ) -> Path:
     dataset_dir_path = _resolve_dataset_dir_path(dataset_dir)
@@ -409,12 +408,11 @@ def regenerate_dataset_artifacts(
     if collision_report_path.exists():
         collision_report_path.unlink()
 
-    attach_joint_name_embeddings_to_cond(
+    attach_t5_embeddings_to_cond(
         rebuilt_cond,
         str(dataset_dir_path),
         t5_name=t5_model,
         write_collision_report=False,
-        force_reencode=force_reencode,
     )
     print(f"[OK] T5 embeddings attached in {time.time() - t0:.1f}s")
     write_joint_name_collision_report(rebuilt_cond, str(dataset_dir_path))

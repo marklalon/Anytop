@@ -348,10 +348,11 @@ class TrainLoop:
                     for k, v in [*interval_loss_metrics.items(), *logger_metrics]:
                         if k == 'loss':
                             tqdm.write('step[{}]: loss[{:0.5f}]'.format(completed_step, v))
-                        if k in ['step', 'samples'] or '_q' in k:
+                        elif k.startswith('l_simple_'):
+                            tqdm.write('step[{}]: {}[{:0.5f}]'.format(completed_step, k, v))
+                        if k in ['step', 'samples']:
                             continue
-                        else:
-                            self.train_platform.report_scalar(name=k, value=v, iteration=completed_step, group_name='Loss')
+                        self.train_platform.report_scalar(name=k, value=v, iteration=completed_step, group_name='Loss')
 
                 if self._should_validate(completed_step):
                     self.model.eval()
@@ -485,6 +486,45 @@ class TrainLoop:
                 'Detected non-finite optimizer state at '
                 f'step {completed_step} ({format_nonfinite_stats(state_stats)})'
             )
+
+    def _accumulate_per_family_l_simple(self, losses, weights, cond):
+        """Track l_simple broken down by topology family.
+
+        Maps the per-family difficulty landscape (quad/biped/millipede/snake/
+        fish/flying) and shows how negative transfer hits each family. Same
+        weighting convention as the aggregate l_simple metric, so all of these
+        are directly comparable to it and to a single-family run.
+        """
+        if "l_simple" not in losses:
+            return
+        object_types = cond.get('y', {}).get('object_type', None)
+        if not object_types:
+            return
+        family_sets = getattr(self, '_family_species_sets', None)
+        if family_sets is None:
+            from data_loaders.truebones.truebones_utils.param_utils import (
+                QUADROPEDS, BIPEDS, MILLIPEDS, SNAKES, FISH, FLYING,
+            )
+            family_sets = {
+                'quad': set(QUADROPEDS),
+                'biped': set(BIPEDS),
+                'milliped': set(MILLIPEDS),
+                'snake': set(SNAKES),
+                'fish': set(FISH),
+                'flying': set(FLYING),
+            }
+            self._family_species_sets = family_sets
+        l_simple = (losses["l_simple"] * weights).detach().float()
+        metrics = {}
+        for family, species in family_sets.items():
+            mask = torch.tensor(
+                [ot in species for ot in object_types],
+                device=l_simple.device, dtype=torch.bool,
+            )
+            if bool(mask.any()):
+                metrics[f'l_simple_{family}'] = l_simple[mask].mean()
+        if metrics:
+            self._accumulate_interval_losses(metrics)
 
     def _accumulate_interval_losses(self, losses):
         for key, value in losses.items():
@@ -717,6 +757,7 @@ class TrainLoop:
 
             loss = (losses["loss"] * weights).mean()
             self._accumulate_interval_losses({k: v * weights for k, v in losses.items()})
+            self._accumulate_per_family_l_simple(losses, weights, micro_cond)
             self.mp_trainer.backward(loss)
 
     def _autocast_context(self):

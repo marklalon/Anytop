@@ -62,10 +62,6 @@ MAX_PATH_LEN = 5.
 VERTICAL_CLAMP_MIN_RATIO = 0.3
 VERTICAL_CLAMP_MAX_RATIO = 0.5
 
-COSMETICS = ["PolarBearB", "KingCobra", "Hamster", "Skunk", "Comodoa", "Hippopotamus", "Leapord", "Rhino", "Hound"]
-NO_HANDS = ["Raptor", "Anaconda"]
-MILLIPEDS = ["Cricket", "SpiderG" , "Scorpion", "Isopetra", "FireAnt", "Crab", "Centipede", "Roach", "Ant", "HermitCrab", "Scorpion-2", "Spider"]
-SNAKES = ["Anaconda", "KingCobra"]
 # Maps object_type -> joint index tuple used to compute the forward direction for
 # creatures without usable limb pairs (snakes, fish).
 # 2-tuple (neck, head)        -> forward = head - neck
@@ -75,26 +71,22 @@ CHAIN_FORWARD_JOINTS = {
     'KingCobra': (4, 8),
     'Pirrana': (9, 2, 3),   # kosi → mune → atama (tail to head)
 }
+
+MILLIPEDS = ["Cricket", "SpiderG" , "Scorpion", "Isopetra", "FireAnt", "Crab", "Centipede", "Roach", "Ant", "HermitCrab", "Scorpion-2", "Spider"]
+SNAKES = ["Anaconda", "KingCobra"]
 FLYING = ["Bat", "Dragon", "Bird", "Buzzard", "Eagle", "Giantbee", "Parrot", "Parrot2", "Pigeon", "Pteranodon", "Tukan"]
-CONNECTED_TO_GROUND = ["Bear", "Camel", "Hippopotamus", "Horse", "Pirrana", "Pteranodon", "Raptor3", "Rat", "SabreToothTiger", "Scorpion-2", "Spider", "Trex", "Tukan", "Pirrana"]
 FISH = ["Pirrana"]
 BIPEDS = ["Ostrich", "Flamingo", "Raptor", "Raptor2", "Raptor3", "Trex", "Chicken", "Tyranno"]
 QUADROPEDS = ["Horse", "Hippopotamus", "Comodoa", "Camel", "Bear", "Buffalo", "Cat", "BrownBear", "Coyote", "Crocodile", "Elephant", "Deer", "Fox", "Gazelle", 
            "Goat", "Jaguar","Lynx", "Tricera", "Stego" , "SandMouse", "Raindeer", "Puppy", "PolarBear", "Monkey", "Mammoth", "Alligator", "Hamster", 
            "Hound", "Leapord", "Lion", "PolarBearB", "Rat", "Rhino", "SabreToothTiger", "Skunk", "Turtle"]
-QUADROPEDS_TEST = ["Horse"]
+
 OBJECT_SUBSETS_DICT = {"all" : QUADROPEDS + BIPEDS + MILLIPEDS + SNAKES + FISH + FLYING,
                        "quadropeds": QUADROPEDS,
-                       "quadropeds_test": QUADROPEDS_TEST,
                        "flying": FLYING,
                        "bipeds": BIPEDS, 
                        "millipeds": MILLIPEDS,
-                       "millipeds_snakes": MILLIPEDS + SNAKES, 
-                       "quadropeds_clean": [quad for quad in QUADROPEDS if quad not in CONNECTED_TO_GROUND], 
-                       "millipeds_clean": [mill for mill in MILLIPEDS if mill not in CONNECTED_TO_GROUND], 
-                       "bipeds_clean": [bip for bip in BIPEDS if bip not in CONNECTED_TO_GROUND], 
-                       "flying_clean": [fly for fly in FLYING if fly not in CONNECTED_TO_GROUND], 
-                       "all_clean": [obj for obj in  QUADROPEDS + BIPEDS + MILLIPEDS + SNAKES + FISH + FLYING if obj not in CONNECTED_TO_GROUND] 
+                       "others": SNAKES + FISH,
                        }
 
 
