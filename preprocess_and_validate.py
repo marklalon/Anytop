@@ -3,7 +3,9 @@
 Unified Preprocessing + Validation Workflow
 ============================================
 Automatically chains AnyTop dataset creation with validation:
-    1. Preprocessing: Refreshes every object by default, or only the objects matching --filter (incremental)
+    1. Preprocessing: Incremental by default - keyed on source anim files, so only newly
+       added animations are processed while clips already on disk are kept (mean/std are
+       recomputed over the merged set). --overwrite forces a full (re)build of the target set.
     2. Validation: Validates the preprocessed dataset
 
 Usage:
@@ -14,15 +16,19 @@ Options:
     --re-encode-joint-names-only         Skip preprocessing and validation, only re-encode joint names into cond.npy
     --skip-validate                      Skip validation step (faster for CI)
     --skip-orientation-check             Skip T-pose face-orientation validation during dataset checks
-    --filter PATTERN                     Comma/semicolon-separated case-insensitive glob(s) selecting which object names to preprocess; omit for a full refresh (incremental when set)
+    --overwrite                          Reprocess every targeted object, deleting existing outputs first (a full wipe when no --filter is set). Without it, already-processed objects are skipped.
+    --filter PATTERN                     Comma/semicolon-separated case-insensitive glob(s) restricting which object names are considered for processing
     --object-workers N                   Concurrent characters to preprocess (default: 16)
     --sample-count N                     Limit file validation to first N motions (0=all, default: 0)
     --orientation-threshold-deg DEG      Maximum allowed T-pose face-orientation delta from the nearest cardinal XZ axis (+x/-x/+z/-z) before warning (default: 15.0)
     --motion-orientation-threshold DEG   Maximum allowed first/last-frame recovered-facing delta from T-pose facing before warning (default: 45.0)
 
 Examples:
-    # Full workflow: refresh every object -> validate
+    # Default workflow: process only newly added source animations -> validate
     python preprocess_and_validate.py
+
+    # Force a full rebuild of every object
+    python preprocess_and_validate.py --overwrite
 
     # Validate only (assumes preprocessing already done)
     python preprocess_and_validate.py --validate-only
@@ -36,11 +42,13 @@ Examples:
     # Re-encode joint names only (fast, no motion re-export)
     python preprocess_and_validate.py --re-encode-joint-names-only
 
-    # Refresh only the objects matching a wildcard (incremental, preserves the rest)
+    # Incrementally add new animations for matching objects (e.g. new Horse clips)
     python preprocess_and_validate.py --filter "Horse"
-    python preprocess_and_validate.py --filter "Raptor*,*Bear*" --object-workers 4
 
-    # Fast CI workflow (skip validation after refresh)
+    # Force-rebuild only the objects matching a wildcard, preserving the rest
+    python preprocess_and_validate.py --overwrite --filter "Raptor*,*Bear*" --object-workers 4
+
+    # Fast CI workflow (skip validation after preprocessing)
     python preprocess_and_validate.py --skip-validate
 """
 
@@ -218,17 +226,49 @@ def check_and_clean_old_data(
     dataset_dir: str = "",
     object_filter: str = "",
     raw_data_dir: str = "",
-) -> tuple[bool, PreservedSideArtifacts]:
+    overwrite: bool = False,
+) -> tuple[bool, PreservedSideArtifacts, tuple[str, ...]]:
     """
-    Check for existing preprocessed data.
-    Without a filter the whole dataset is refreshed. A non-empty ``object_filter`` runs
-    incrementally, capturing artifacts for non-matching objects so they can be merged back.
+    Resolve which object types to (re)process and clean up stale outputs.
 
-    Returns (should_proceed, preserved_side_artifacts).
+    Default (incremental): processing is keyed on source anim files - only objects with
+    at least one not-yet-processed source file need work, and create_data_samples skips
+    the already-processed source files within them while self-merging the existing
+    dataset (so nothing is deleted and no side artifacts are preserved here). ``--overwrite``
+    instead (re)builds the whole target set, deleting matching outputs first (a full wipe
+    when no ``--filter`` is set). A non-empty ``object_filter`` narrows the target universe
+    in both modes.
+
+    Returns (should_proceed, preserved_side_artifacts, objects_to_process).
     """
     dataset_dir_path, motions_dir, bvhs_dir, joint_name_inspection_dir = _resolve_dataset_paths(dataset_dir)
-    # A filter narrows the run to matching objects; without one we do a full wipe.
+    target_object_types = _resolve_target_object_types(object_filter, raw_data_dir)
+
+    if not overwrite:
+        # Incremental: a cheap (no-geometry) scan finds objects with new source files.
+        if str(ANYTOP_DIR.parent) not in sys.path:
+            sys.path.insert(0, str(ANYTOP_DIR.parent))
+        from data_loaders.truebones.truebones_utils.motion_process import find_new_source_files
+
+        new_sources = find_new_source_files(
+            target_object_types, str(dataset_dir_path), raw_data_dir or None
+        )
+        objects_to_process = tuple(obj for obj in target_object_types if obj in new_sources)
+        up_to_date = [obj for obj in target_object_types if obj not in new_sources]
+        if up_to_date:
+            print(f"\nUp to date (no new source files): {len(up_to_date)} object(s) skipped.")
+        if objects_to_process:
+            total_new = sum(len(new_sources[obj]) for obj in objects_to_process)
+            print(
+                f"Incremental: {total_new} new source file(s) across "
+                f"{len(objects_to_process)} object(s): {', '.join(objects_to_process)}\n"
+            )
+        # create_data_samples self-merges the existing dataset, so no preservation needed.
+        return True, PreservedSideArtifacts(), objects_to_process
+
+    # Overwrite: a filter narrows the run to matching objects; without one we do a full wipe.
     is_full_refresh = not _parse_filter_patterns(object_filter)
+    objects_to_process = target_object_types
 
     if is_full_refresh:
         paths_to_delete = _collect_nonempty_directories(motions_dir, bvhs_dir, joint_name_inspection_dir)
@@ -236,11 +276,10 @@ def check_and_clean_old_data(
         title = "WARNING: Old preprocessed data detected"
         summary = [
             f"Dataset directory: {dataset_dir_path}",
-            "no --filter selected, using full dataset refresh",
+            "--overwrite with no --filter selected, using full dataset rebuild",
             *[f"  - {p} contains existing data" for p in paths_to_delete],
         ]
     else:
-        target_object_types = _resolve_target_object_types(object_filter, raw_data_dir)
         preserved = _capture_preserved_side_artifacts(dataset_dir_path, target_object_types)
         targeted = [
             ("motion file(s)", motions_dir, _collect_targeted_files(motions_dir, target_object_types)),
@@ -251,12 +290,12 @@ def check_and_clean_old_data(
         title = "WARNING: Existing preprocessed files detected for selected object types"
         summary = [
             f"Dataset directory: {dataset_dir_path}",
-            f"Object types to refresh ({len(target_object_types)}): {', '.join(target_object_types)}",
+            f"Object types to rebuild ({len(target_object_types)}): {', '.join(target_object_types)}",
             *[f"  - {dir_path}: {len(files)} matching {label}" for label, dir_path, files in targeted if files],
         ]
 
     if not paths_to_delete:
-        return True, preserved
+        return True, preserved, objects_to_process
 
     print("\n" + "=" * 70)
     print(title)
@@ -267,32 +306,32 @@ def check_and_clean_old_data(
 
     if not _confirm_yes_no("Enter 'yes' to delete and continue, or 'no' to abort: "):
         print("\nPreprocessing aborted.")
-        return False, preserved
+        return False, preserved, objects_to_process
 
     print("\nDeleting...")
     if not _delete_paths(paths_to_delete):
         print("Aborting preprocessing.")
-        return False, preserved
+        return False, preserved, objects_to_process
     print("Done.\n")
-    return True, preserved
+    return True, preserved, objects_to_process
 
 
 def run_preprocessing(
+    objects: list[str],
     object_workers: int,
     raw_data_dir: str = "",
     dataset_dir: str = "",
     filter_min_length: int = 10,
     resample_min_length: int = 20,
-    object_filter: str = "",
+    incremental: bool = False,
 ) -> int:
-    """Run the AnyTop dataset preprocessing in-process."""
+    """Run the AnyTop dataset preprocessing in-process over the given object list."""
     print("\n" + "=" * 70)
     print("STEP 1: PREPROCESSING - Creating AnyTop dataset")
     print("=" * 70 + "\n")
 
-    objects = list(_resolve_target_object_types(object_filter, raw_data_dir))
-    if object_filter:
-        print(f"Filter '{object_filter}' selected {len(objects)} object(s): {', '.join(objects) or '(none)'}\n")
+    objects = list(objects)
+    print(f"Preprocessing {len(objects)} object(s): {', '.join(objects) or '(none)'}\n")
 
     if str(ANYTOP_DIR.parent) not in sys.path:
         sys.path.insert(0, str(ANYTOP_DIR.parent))
@@ -310,6 +349,7 @@ def run_preprocessing(
             filter_min_length=filter_min_length,
             resample_min_length=resample_min_length,
             object_workers=object_workers,
+            incremental=incremental,
         )
         return 0
     except DatasetPreprocessingError:
@@ -321,12 +361,20 @@ def run_preprocessing(
         return 1
 
 
-def run_re_encode_joint_names_only(
+def run_regenerate_side_artifacts(
     dataset_dir: str = "",
     preserved_side_artifacts: PreservedSideArtifacts | None = None,
     t5_model: str = "t5-base",
+    recompute_stats: bool = False,
+    recompute_stats_objects: tuple[str, ...] = (),
 ) -> int:
-    """Regenerate non-motion dataset artifacts without re-preprocessing motions."""
+    """Regenerate non-motion dataset artifacts without re-preprocessing motions.
+
+    ``recompute_stats`` rebuilds per-object mean/std over every clip on disk; required
+    after incremental preprocessing, where create_data_samples only saw the newly added
+    clips and therefore wrote provisional stats. ``recompute_stats_objects`` scopes that
+    recompute to the touched objects so an incremental run does not re-read every other
+    species' clips (their carried-forward stats are unchanged)."""
 
     try:
         dataset_dir_path = Path(get_dataset_dir(dataset_dir or None))
@@ -344,6 +392,10 @@ def run_re_encode_joint_names_only(
             "--t5-model",
             t5_model,
         ]
+        if recompute_stats:
+            cmd.append("--recompute-stats")
+            if recompute_stats_objects:
+                cmd += ["--recompute-stats-objects", ",".join(recompute_stats_objects)]
 
         env = os.environ.copy()
         existing_pythonpath = env.get("PYTHONPATH", "")
@@ -483,6 +535,15 @@ def parse_args() -> argparse.Namespace:
         help="Skip T-pose face-orientation validation during dataset checks.",
     )
     parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "Reprocess every targeted object, deleting existing outputs first (a full "
+            "wipe when no --filter is set). Without it, preprocessing is incremental: only "
+            "newly added source animations are processed; clips already on disk are kept."
+        ),
+    )
+    parser.add_argument(
         "--motion-orientation-threshold",
         default=45.0,
         type=float,
@@ -500,10 +561,10 @@ def parse_args() -> argparse.Namespace:
         default="",
         type=str,
         help=(
-            "Comma/semicolon-separated case-insensitive glob pattern(s) selecting which object "
-            "names to preprocess (e.g. 'Horse', 'Raptor*', '*Bear*,Cat'). Without a filter every "
-            "object is refreshed; a non-empty filter runs incrementally, so non-matching objects' "
-            "artifacts are preserved."
+            "Comma/semicolon-separated case-insensitive glob pattern(s) restricting which object "
+            "names are considered for processing (e.g. 'Horse', 'Raptor*', '*Bear*,Cat'). Without "
+            "a filter every object is considered. Non-matching objects' artifacts are always "
+            "preserved. Combine with --overwrite to force-rebuild only the matching objects."
         ),
     )
     parser.add_argument(
@@ -576,17 +637,18 @@ def main() -> int:
 
     # Handle re-encode joint names only mode
     if args.re_encode_joint_names_only:
-        return run_re_encode_joint_names_only(
+        return run_regenerate_side_artifacts(
             args.dataset_dir,
         )
 
     steps_completed = []
     preserved_side_artifacts = PreservedSideArtifacts()
+    objects_to_process: tuple[str, ...] = ()
 
     # Check and clean old data before preprocessing
     if not args.validate_only:
-        should_proceed, preserved_side_artifacts = check_and_clean_old_data(
-            args.dataset_dir, args.object_filter, args.raw_data_dir
+        should_proceed, preserved_side_artifacts, objects_to_process = check_and_clean_old_data(
+            args.dataset_dir, args.object_filter, args.raw_data_dir, overwrite=args.overwrite
         )
         if not should_proceed:
             print("\n" + "=" * 70)
@@ -594,29 +656,43 @@ def main() -> int:
             print("=" * 70)
             return 1
 
-    # Preprocess if not validate-only
+    # Preprocess if not validate-only and there is something new to process.
     if not args.validate_only:
-        ret = run_preprocessing(
-            args.object_workers,
-            args.raw_data_dir,
-            args.dataset_dir,
-            filter_min_length=args.filter_min_length,
-            resample_min_length=args.resample_min_length,
-            object_filter=args.object_filter,
-        )
-        if ret != 0:
-            print("\n[FAIL] Preprocessing failed, aborting workflow.")
-            return ret
+        if not objects_to_process:
+            if args.overwrite:
+                print("\nNo objects to process (filter matched no objects).")
+            else:
+                print("\nNo objects to process: every targeted object is up to date "
+                      "(no new source files). Use --overwrite to force a rebuild.")
+        else:
+            incremental = not args.overwrite
+            ret = run_preprocessing(
+                list(objects_to_process),
+                args.object_workers,
+                args.raw_data_dir,
+                args.dataset_dir,
+                filter_min_length=args.filter_min_length,
+                resample_min_length=args.resample_min_length,
+                incremental=incremental,
+            )
+            if ret != 0:
+                print("\n[FAIL] Preprocessing failed, aborting workflow.")
+                return ret
 
-        ret = run_re_encode_joint_names_only(
-            args.dataset_dir,
-            preserved_side_artifacts=preserved_side_artifacts,
-        )
-        if ret != 0:
-            print("\n[FAIL] Side artifact regeneration failed, aborting workflow.")
-            return ret
+            # Incremental preprocessing wrote provisional mean/std (new clips only), so
+            # recompute them during regeneration - but only for the touched objects, since
+            # untouched species' clips are unchanged and their stats carry forward intact.
+            ret = run_regenerate_side_artifacts(
+                args.dataset_dir,
+                preserved_side_artifacts=preserved_side_artifacts,
+                recompute_stats=incremental,
+                recompute_stats_objects=objects_to_process if incremental else (),
+            )
+            if ret != 0:
+                print("\n[FAIL] Side artifact regeneration failed, aborting workflow.")
+                return ret
 
-        steps_completed.append("Preprocess")
+            steps_completed.append("Preprocess")
 
     # Validate
     if not args.skip_validate:

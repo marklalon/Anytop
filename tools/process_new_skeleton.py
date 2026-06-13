@@ -194,7 +194,10 @@ def main():
         from regenerate_dataset_artifacts import regenerate_dataset_artifacts
         print("[process_new_skeleton] --update: rebuilding side artifacts "
               "(embeddings, mean/std, metadata)")
-        regenerate_dataset_artifacts(args.save_dir, recompute_stats=True)
+        # Only this object's clips changed, so scope the mean/std recompute to it.
+        regenerate_dataset_artifacts(
+            args.save_dir, recompute_stats=True, recompute_stats_objects={object_type}
+        )
 
 if __name__ == '__main__':
     try:

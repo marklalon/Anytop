@@ -201,13 +201,19 @@ def _infer_object_type_from_motion_name(
 def _recompute_object_stats(
     rebuilt_cond: dict[str, dict],
     motion_files: list[Path],
+    only_objects: set[str] | None = None,
 ) -> None:
     """Recompute per-object mean/std over every motion clip on disk.
 
     regenerate_dataset_artifacts() otherwise preserves the mean/std deep-copied
     from the existing cond.npy. After an incremental update that adds clips, the
     preserved stats are stale, so --recompute-stats / recompute_stats=True asks
-    for a fresh computation that matches what preprocessing would produce."""
+    for a fresh computation that matches what preprocessing would produce.
+
+    ``only_objects`` scopes the (expensive, clip-loading) recompute to the objects
+    actually touched by an incremental run. Untouched objects keep their carried-forward
+    stats, which are byte-identical to a recompute since their clips did not change, so
+    skipping them avoids re-reading every other species' clips for nothing."""
     object_to_motions: dict[str, list[Path]] = {}
     for motion_path in motion_files:
         object_type = _infer_object_type_from_motion_name(
@@ -218,6 +224,8 @@ def _recompute_object_stats(
 
     for object_type, paths in sorted(object_to_motions.items()):
         if object_type not in rebuilt_cond:
+            continue
+        if only_objects is not None and object_type not in only_objects:
             continue
         clips = [np.load(path).astype(np.float32) for path in paths]
         mean, std = get_mean_std(np.concatenate(clips, axis=0))
@@ -319,6 +327,7 @@ def regenerate_dataset_artifacts(
     dataset_dir: str | Path | None = None,
     t5_model: str = "t5-base",
     recompute_stats: bool = False,
+    recompute_stats_objects: set[str] | None = None,
 ) -> Path:
     dataset_dir_path = _resolve_dataset_dir_path(dataset_dir)
     motions_dir = dataset_dir_path / MOTION_DIR
@@ -417,7 +426,14 @@ def regenerate_dataset_artifacts(
     print(f"[OK] T5 embeddings attached in {time.time() - t0:.1f}s")
     write_joint_name_collision_report(rebuilt_cond, str(dataset_dir_path))
     if recompute_stats:
-        _recompute_object_stats(rebuilt_cond, motion_files)
+        only_objects = None
+        if recompute_stats_objects:
+            only_objects = {obj for obj in recompute_stats_objects if obj in rebuilt_cond}
+            ignored = sorted(set(recompute_stats_objects) - only_objects)
+            if ignored:
+                print(f"[WARN] --recompute-stats-objects names not in dataset, ignored: {', '.join(ignored)}")
+            print(f"[OK] recomputing mean/std for {len(only_objects)} touched object(s) only")
+        _recompute_object_stats(rebuilt_cond, motion_files, only_objects=only_objects)
     np.save(str(cond_path), rebuilt_cond)
 
     rebuilt_motion_metadata: dict[str, dict[str, object]] = {}
@@ -481,17 +497,33 @@ def main() -> int:
              "of preserving the stats from the existing cond.npy. Use this after "
              "incrementally adding motions so normalization reflects the new clips.",
     )
+    parser.add_argument(
+        "--recompute-stats-objects",
+        default="",
+        type=str,
+        help="Comma/semicolon-separated object names to scope --recompute-stats to "
+             "(e.g. after `--filter Buffalo`, only Buffalo's clips are re-read). "
+             "Untouched objects keep their carried-forward stats, which are identical "
+             "to a recompute since their clips are unchanged. Empty = recompute all.",
+    )
     args = parser.parse_args()
-    
+
+    recompute_stats_objects = {
+        token.strip()
+        for token in args.recompute_stats_objects.replace(";", ",").split(",")
+        if token.strip()
+    } or None
+
     print("\n" + "=" * 70)
     print("Regenerating dataset sidecar artifacts")
     print("=" * 70 + "\n")
-    
+
     try:
         dataset_dir_path = regenerate_dataset_artifacts(
             args.dataset_dir,
             t5_model=args.t5_model,
             recompute_stats=args.recompute_stats,
+            recompute_stats_objects=recompute_stats_objects,
         )
         cond_path = dataset_dir_path / "cond.npy"
         cond = dict(np.load(cond_path, allow_pickle=True).item())

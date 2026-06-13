@@ -8,6 +8,7 @@ Depends on: features.py, animation_utils.py
 """
 
 from motion_lib import BVH, FBX
+import json
 import numpy as np
 import os
 import sys
@@ -15,7 +16,7 @@ from os.path import join as pjoin
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import random
 import bisect
-from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, get_raw_data_dir
+from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, MOTION_METADATA_FILE, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, get_raw_data_dir
 from pathlib import Path
 from .motion_labels import build_motion_labels, build_object_labels, write_motion_metadata, load_motion_metadata
 from .physics_joint_annotation import (
@@ -434,8 +435,14 @@ def _resample_animation(anim, target_len):
     return Animation(new_rot, new_pos, anim.orients, anim.offsets, anim.parents)
 
 
-"""Prepare processed tensors for all the files of a given object without writing them to disk yet."""
-def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20):
+"""Prepare processed tensors for all the files of a given object without writing them to disk yet.
+
+``skip_source_paths`` (incremental preprocessing): realpaths of source anim files that
+already produced clips on disk. Matching files are dropped from this run so only newly
+added source files are (re)processed. The rest-pose reference carrier is still selected
+from the full file list, so the per-object cond stays stable regardless of which clips
+are new. Returns None when no source files remain to process (object fully up to date)."""
+def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None):
     object_cond = dict()
     if fbxs_dir is None:
         fbxs_dir = pjoin(get_raw_data_dir(raw_data_dir), object_type)
@@ -461,6 +468,19 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     if len(anim_files) == 0:
         print(f'skipping {object_type}: no valid animation files after filtering')
         return None
+
+    # Incremental: drop source files that already produced clips, so only newly added
+    # animations are processed. Done before the (expensive) rest-pose cond build below.
+    if skip_source_paths:
+        skip_norm = {os.path.realpath(p) for p in skip_source_paths}
+        kept = [f for f in anim_files if os.path.realpath(f) not in skip_norm]
+        skipped = len(anim_files) - len(kept)
+        if skipped:
+            print(f'{object_type}: skipping {skipped} already-processed source file(s), {len(kept)} new to process')
+        anim_files = kept
+        if len(anim_files) == 0:
+            print(f'skipping {object_type}: all source files already processed')
+            return None
 
     squared_positions_error = dict()
     object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints = _build_rest_pose_cond(
@@ -648,7 +668,7 @@ def _resolve_preprocessing_workers(objects, object_workers=8):
     return min(object_count, max(1, int(object_workers)))
 
 
-def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, filter_min_length=10, resample_min_length=20):
+def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None):
     return _prepare_object_outputs(
         object_type,
         max_joints=23,
@@ -656,6 +676,7 @@ def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, fi
         raw_data_dir=raw_data_dir,
         filter_min_length=filter_min_length,
         resample_min_length=resample_min_length,
+        skip_source_paths=skip_source_paths,
     )
 
 
@@ -687,13 +708,22 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
     return files_counter, frames_counter, max_joints, object_payload['object_cond'], object_motion_metadata
 
 
-""" create dataset """
-def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, raw_data_dir=None, object_workers=8, filter_min_length=10, resample_min_length=20):
+""" create dataset
+
+``incremental``: keep already-processed clips on disk and only process source anim
+files that have not produced clips yet (per-object, keyed on source_fbx_path). New
+clips number above retained ones within each (object, action) group. The rewritten
+cond.npy / motion_metadata.json are seeded from the existing dataset so untouched
+objects survive. Provisional mean/std are computed over the newly processed clips only;
+the caller must finalize them with regenerate_dataset_artifacts(recompute_stats=True).
+Without ``incremental`` the prior full-build behavior is unchanged (callers wipe
+outputs first). """
+def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, raw_data_dir=None, object_workers=8, filter_min_length=10, resample_min_length=20, incremental=False):
     ## prepare
     target_dataset_dir = dataset_dir or DEFAULT_DATASET_DIR
     os.makedirs(pjoin(target_dataset_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(target_dataset_dir, BVHS_DIR), exist_ok=True)
-    
+
     ## process
     if objects is None:
         resolved_raw_data_dir = get_raw_data_dir(raw_data_dir)
@@ -702,11 +732,27 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
             if os.path.isdir(pjoin(resolved_raw_data_dir, obj))
         )
 
+    # Incremental: read the existing dataset so we can skip done source files, continue
+    # clip numbering above retained clips, and seed the merged cond/metadata.
+    existing_cond = {}
+    existing_meta = {}
+    per_object_skip = {}
+    per_object_action_start = {}
+    if incremental:
+        existing_meta = _load_motion_metadata_raw(target_dataset_dir)
+        cond_path = pjoin(target_dataset_dir, 'cond.npy')
+        if os.path.exists(cond_path):
+            existing_cond = dict(np.load(cond_path, allow_pickle=True).item())
+        for object_type in objects:
+            per_object_skip[object_type] = _object_processed_sources(existing_meta, object_type)
+            per_object_action_start[object_type] = _object_action_start_counts(existing_meta, object_type)
+
     obj_workers = _resolve_preprocessing_workers(
         objects,
         object_workers=object_workers,
     )
-    print(f'Preprocessing {len(objects)} characters with {obj_workers} object workers')
+    print(f'Preprocessing {len(objects)} characters with {obj_workers} object workers'
+          f"{' (incremental)' if incremental else ''}")
 
     payloads = [None] * len(objects)
     if obj_workers <= 1:
@@ -718,6 +764,7 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
                 raw_data_dir=raw_data_dir,
                 filter_min_length=filter_min_length,
                 resample_min_length=resample_min_length,
+                skip_source_paths=per_object_skip.get(object_type),
             )
     else:
         with ProcessPoolExecutor(max_workers=obj_workers) as executor:
@@ -729,6 +776,7 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
                     raw_data_dir,
                     filter_min_length,
                     resample_min_length,
+                    per_object_skip.get(object_type),
                 ): idx
                 for idx, object_type in enumerate(objects)
             }
@@ -741,8 +789,10 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
     max_joints = 23
     objects_counter = dict()
     squared_positions_error = dict()
-    cond = dict()
-    motion_metadata = {}
+    # Seed from the existing dataset in incremental mode so objects/clips we do not touch
+    # this run survive the cond.npy / motion_metadata rewrite below.
+    cond = dict(existing_cond)
+    motion_metadata = dict(existing_meta)
 
     all_motion_errors = []
     for idx, object_type in enumerate(objects):
@@ -757,6 +807,7 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
             target_dataset_dir,
             payload,
             files_counter,
+            action_start_counts=per_object_action_start.get(object_type),
         )
         frames_counter += object_frames
         cond[object_type] = payload['object_cond']
@@ -772,12 +823,14 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
         print(f"{'=' * 70}\n")
         raise DatasetPreprocessingError(all_motion_errors)
 
+    # total_clips reflects the full merged set on disk (seeded entries + freshly written).
+    total_clips = len(motion_metadata) if incremental else files_counter
     _write_preprocess_seed_artifacts(
         target_dataset_dir,
         cond,
         motion_metadata,
         max_joints,
-        files_counter,
+        total_clips,
         frames_counter,
         squared_positions_error,
     )
@@ -810,6 +863,99 @@ def _normalized_source_fbx_path(entry):
     if not source_fbx_path:
         return None
     return os.path.realpath(str(source_fbx_path))
+
+
+def _load_motion_metadata_raw(dataset_dir):
+    """Read motion_metadata.json's per-clip entries directly, without joining action_tags.
+
+    Unlike load_motion_metadata this never requires the motion_tags.jsonl sidecar, so the
+    incremental path can read source/numbering bookkeeping on datasets that have not been
+    hand-tagged yet. Returns {} when the file is absent or malformed."""
+    metadata_path = pjoin(str(dataset_dir), MOTION_METADATA_FILE)
+    if not os.path.exists(metadata_path):
+        return {}
+    with open(metadata_path, 'r', encoding='utf-8') as handle:
+        payload = json.load(handle)
+    motions = payload.get('motions', payload)
+    if not isinstance(motions, dict):
+        return {}
+    return {name: dict(entry) for name, entry in motions.items() if isinstance(entry, dict)}
+
+
+def _parse_action_and_index(object_name, motion_name):
+    """Split a clip file name into its (action, per-action index) pair.
+
+    Clip names are ``{object_name}_{action}_{index}.npy``; the trailing index is a
+    per-(object, action) segment counter. Returns (None, 0) for names that do not
+    belong to this object or lack the trailing numeric index."""
+    stem = os.path.splitext(motion_name)[0]
+    if not stem.startswith(object_name + '_'):
+        return None, 0
+    rest = stem[len(object_name) + 1:]
+    head, _, tail = rest.rpartition('_')
+    if not head or not tail.isdigit():
+        return None, 0
+    return head, int(tail)
+
+
+def _object_processed_sources(existing_meta, object_name):
+    """Realpaths of source anim files that already produced clips for this object."""
+    sources = set()
+    for entry in existing_meta.values():
+        if str(entry.get('object_type', '')) != object_name:
+            continue
+        src = _normalized_source_fbx_path(entry)
+        if src:
+            sources.add(src)
+    return sources
+
+
+def _object_action_start_counts(existing_meta, object_name):
+    """Highest existing clip index per action, so new clips number above retained ones."""
+    action_start_counts = {}
+    for motion_name, entry in existing_meta.items():
+        if str(entry.get('object_type', '')) != object_name:
+            continue
+        action, index = _parse_action_and_index(object_name, motion_name)
+        if action is None:
+            continue
+        action_start_counts[action] = max(action_start_counts.get(action, 0), index)
+    return action_start_counts
+
+
+def list_object_source_files(object_type, raw_data_dir=None):
+    """Source anim files create_data_samples would consider for an object (post name-filter).
+
+    Mirrors the enumeration in _prepare_object_outputs (same extensions + should_skip_anim
+    filter) so callers can detect newly added animations without loading any geometry."""
+    fbxs_dir = pjoin(get_raw_data_dir(raw_data_dir), object_type)
+    if not os.path.isdir(fbxs_dir):
+        return []
+    anim_files = sorted(
+        pjoin(fbxs_dir, f) for f in os.listdir(fbxs_dir)
+        if f.lower().endswith(('.fbx', '.glb', '.gltf'))
+    )
+    return [f for f in anim_files if not should_skip_anim(f, object_type)]
+
+
+def find_new_source_files(objects, dataset_dir=None, raw_data_dir=None):
+    """Map each object with >=1 not-yet-processed source anim file to those new files.
+
+    Objects whose every current source file already produced clips are omitted. Used by
+    the incremental preprocessing path to decide which objects need any work at all
+    (cheap: reads motion_metadata.json + lists raw dirs, no geometry loading)."""
+    target_dataset_dir = dataset_dir or DEFAULT_DATASET_DIR
+    existing_meta = _load_motion_metadata_raw(target_dataset_dir)
+    result = {}
+    for object_type in objects:
+        processed = _object_processed_sources(existing_meta, object_type)
+        new_files = [
+            f for f in list_object_source_files(object_type, raw_data_dir)
+            if os.path.realpath(f) not in processed
+        ]
+        if new_files:
+            result[object_type] = new_files
+    return result
 
 
 def validate_anim_dir_update_state(object_name, save_dir, existing_meta=None):
@@ -882,23 +1028,7 @@ def _update_anim_dir(object_name, face_joints, save_dir, tpose_path, anim_dir):
     # still on disk during processing (matching-source clips are removed only
     # after processing succeeds, so a failed reprocess leaves the existing
     # dataset intact).
-    def _action_and_index(name):
-        stem = os.path.splitext(name)[0]
-        if not stem.startswith(object_name + '_'):
-            return None, 0
-        rest = stem[len(object_name) + 1:]
-        head, _, tail = rest.rpartition('_')
-        if not head or not tail.isdigit():
-            return None, 0
-        return head, int(tail)
-    action_start_counts = {}
-    for motion_name, entry in existing_meta.items():
-        if str(entry.get('object_type', '')) != object_name:
-            continue
-        action, index = _action_and_index(motion_name)
-        if action is None:
-            continue
-        action_start_counts[action] = max(action_start_counts.get(action, 0), index)
+    action_start_counts = _object_action_start_counts(existing_meta, object_name)
 
     squared_positions_error = dict()
     _, _, _, object_cond, new_meta = process_object(
