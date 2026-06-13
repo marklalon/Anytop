@@ -23,23 +23,24 @@ from utils.skeleton_similarity import (  # noqa: E402
 
 # ── group_tags helper ────────────────────────────────────────────────────────
 def test_group_tags_are_case_insensitive() -> None:
-    assert group_tags("Cat") == frozenset({"Quadruped", "Agile", "Stalking"})
+    assert group_tags("Cat") == frozenset({"Quadruped", "Small", "Stalking"})
     assert group_tags("cat") == group_tags("CAT") == group_tags("Cat")
 
 
 def test_group_overlap_is_graded() -> None:
-    cat = group_tags("Cat")
-    # Identical mover -> 3 shared tags; same body-plan + one trait -> 2;
-    # unrelated -> 0.
-    assert len(cat & group_tags("Lion")) == 3
-    assert len(cat & group_tags("Horse")) == 2  # {Quadruped, Agile}
-    assert len(cat & group_tags("Eagle")) == 0
+    jaguar = group_tags("Jaguar")
+    # Identical mover (Jaguar/Lynx share all 3 tags) -> 3;
+    # same body-plan + one trait (Cat/Lion: Quadruped + Stalking) -> 2;
+    # unrelated (Cat/Eagle) -> 0.
+    assert len(jaguar & group_tags("Lynx")) == 3
+    assert len(group_tags("Cat") & group_tags("Lion")) == 2  # {Quadruped, Stalking}
+    assert len(group_tags("Cat") & group_tags("Eagle")) == 0
 
 
 def test_newly_registered_species_reuse_existing_tags() -> None:
-    assert group_tags("Monkey") == frozenset({"Quadruped", "Agile", "Climbing"})
+    assert group_tags("Monkey") == frozenset({"Quadruped", "Medium", "Climbing"})
     assert group_tags("Skunk") == frozenset({"Quadruped", "Small", "Scurrying"})
-    assert group_tags("Pirrana") == frozenset({"Aquatic", "Swimming", "Undulating"})
+    assert group_tags("Pirrana") == frozenset({"Aquatic", "Small", "Swimming"})
 
 
 def test_sandmouse_is_a_small_scurrier() -> None:
@@ -66,10 +67,10 @@ def test_graded_group_discount_orders_and_scales_distance() -> None:
     query = _cond([-1, 0, 1], ["Hip", "RightThigh", "RightCalf"])
     template = _cond([-1, 0, 1, 2], ["Spine", "Neck", "Head", "Beak"])
     candidate_conds = {
-        # Cat -> (Quadruped, Agile, Stalking)
-        "Lion": copy.deepcopy(template),   # (Quadruped, Agile, Stalking) -> overlap 3
-        "Horse": copy.deepcopy(template),  # (Quadruped, Galloping, Agile) -> overlap 2
-        "Eagle": copy.deepcopy(template),  # (Winged, Soaring, Flying)    -> overlap 0
+        # Cat -> (Quadruped, Small, Stalking)
+        "Lion": copy.deepcopy(template),   # (Quadruped, Medium, Stalking)  -> overlap 2
+        "Horse": copy.deepcopy(template),  # (Quadruped, Large, Galloping)  -> overlap 1
+        "Eagle": copy.deepcopy(template),  # (Winged, Medium, Soaring)      -> overlap 0
     }
 
     ranked = rank_species(query, candidate_conds, query_hint="Cat", top_k=None)
@@ -80,15 +81,16 @@ def test_graded_group_discount_orders_and_scales_distance() -> None:
 
     # All three share the same pre-discount base, so the ratios of the final
     # combined distances must equal the ratios of the graded group factors
-    # (arity 3: Lion 3/3, Horse 2/3, Eagle 0/3).
+    # (Cat vs candidates: Lion overlap 2/3, Horse overlap 1/3, Eagle overlap 0/3).
     bonus = DEFAULT_WEIGHTS.group_bonus
     base = by_name["Eagle"].combined_distance          # factor 1.0
     assert base > 0
-    assert np.isclose(by_name["Lion"].combined_distance, base * (1.0 - bonus))
-    assert np.isclose(by_name["Horse"].combined_distance, base * (1.0 - bonus * 2.0 / 3.0))
+    assert np.isclose(by_name["Lion"].combined_distance, base * (1.0 - bonus * 2.0 / 3.0))
+    assert np.isclose(by_name["Horse"].combined_distance, base * (1.0 - bonus * 1.0 / 3.0))
 
     # same_group means "identical motion descriptor" (full overlap).
-    assert by_name["Lion"].same_group is True
+    # Lion shares 2/3 tags with Cat (Medium vs Small mismatch) — not full overlap.
+    assert by_name["Lion"].same_group is False
     assert by_name["Horse"].same_group is False
     assert by_name["Eagle"].same_group is False
 

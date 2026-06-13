@@ -99,9 +99,6 @@ def add_model_options(parser):
                             " Couples position and velocity feature groups to prevent independent memorization.")
     group.add_argument("--lambda_loop_wrap", default=0.0, type=float,
                        help="Weight for loop-only wrap loss on denormalized pose/rotation/terminal_vel channels.")
-    group.add_argument("--lambda_loop_root_xz", default=0.0, type=float,
-                       help="Weight for loop-only translation-root XZ closure loss."
-                           " Penalizes net X/Z velocity drift over the visible loop while preserving in-loop root motion.")
     group.add_argument("--loop_cond_prob", default=1.0, type=float,
                        help="Probability that a loop training clip stays loop-conditioned "
                             "(periodic resampling, circular phase, and loop-condition embedding)."

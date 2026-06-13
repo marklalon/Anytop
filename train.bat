@@ -43,7 +43,6 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--temporal_span_mask_prob 0.3 ^
 	--temporal_span_seam_loss_weight 0.5 ^
 	--lambda_loop_wrap 0.1 ^
-	--lambda_loop_root_xz 0.2 ^
 	--lambda_vel 0.5 ^
 	--lambda_geo 0.5 ^
 	--motion_cache_size 512 ^
