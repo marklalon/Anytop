@@ -95,7 +95,7 @@ def get_gmdm_args(args):
     feature_len=13
 
     return {'njoints': njoints, 'nfeats': nfeats, 't5_out_dim': t5_out_dim,
-            'latent_dim': args.latent_dim, 'ff_size': 1024, 'num_layers': args.layers, 'num_heads': 4,
+            'latent_dim': args.latent_dim, 'ff_size': getattr(args, 'ff_size', 1024), 'num_layers': args.layers, 'num_heads': 4,
             'dropout': getattr(args, 'dropout_prob', 0.1), 'activation': "gelu", 'cond_mode': cond_mode,
             'max_joints': max_joints, 
             'feature_len':feature_len,  'value_emb': args.value_emb,

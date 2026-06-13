@@ -92,6 +92,10 @@ def add_model_options(parser):
                        help="Number of layers.")
     group.add_argument("--latent_dim", default=128, type=int,
                        help="Transformer/GRU width.")
+    group.add_argument("--ff_size", default=1024, type=int,
+                       help="Feed-forward hidden dimension in each decoder layer. "
+                            "Controls the bottleneck size of the two-layer FFN "
+                            "inside each GraphMotionDecoderLayer.")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
     group.add_argument("--lambda_vel", default=0.0, type=float,
                        help="Weight for velocity-position consistency loss (0.0=off)."
