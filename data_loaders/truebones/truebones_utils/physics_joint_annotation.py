@@ -6,7 +6,7 @@ import numpy as np
 import re
 
 from data_loaders.truebones.truebones_utils.param_utils import (
-    SPECIES_MOTION_TAGS as _SPECIES_MOTION_TAGS,
+    SPECIES_TAGS as _SPECIES_TAGS,
 )
 
 
@@ -267,31 +267,6 @@ _CHAIN_INDEX_ORDINAL_TOKENS = {
     9: 'Ninth',
     10: 'Tenth',
 }
-# Motion-relevant species descriptor: (body-plan, size/build, locomotion).
-# Three orthogonal dimensions so T5 can cluster by each axis independently:
-#   col 1 – body-plan  : Quadruped / Biped / Multiped / Serpentine / Aquatic / Winged
-#   col 2 – size/build  : Heavy / Large / Medium / Small
-#   col 3 – locomotion  : Stalking / Trotting / Galloping / Lumbering / Crawling / etc.
-# Single source of truth for the per-species signal: it feeds both the
-# per-species condition (--species_cond, via build_species_embedding_text) and
-# the retarget candidate-ranking group discount (utils/skeleton_similarity), and
-# its first column also drives the ``--object_subsets`` groupings
-# (param_utils.OBJECT_SUBSETS_DICT).
-# These tags describe HOW the animal moves -- the axis that actually matters for
-# a motion model and that the skeleton geometry alone does not give (e.g. an
-# agile felid vs a heavy megafauna on a similar quadruped topology). Phylogeny
-# that misleads motion is deliberately dropped (a Bat is "Winged Flapping", not
-# "Mammal"). Keep the vocabulary small and shared across species so T5 places
-# similar movers together and novel species can reuse the same tokens. Every
-# registered species MUST appear here (assert_species_motion_tags_cover enforces
-# this at preprocessing and training time) -- there is no fallback.
-#
-# The mapping itself lives in the JSONL sidecar SPECIES_MOTION_TAGS_FILE
-# (dataset/.../species_motion_tags.jsonl) and is loaded by param_utils; edit that
-# file to add or refine a species. ``_SPECIES_MOTION_TAGS`` is imported above as
-# an alias so existing references keep working.
-
-
 def normalize_joint_name(name):
     # Split on lowercase→UPPER (e.g. "ElkRFemur" → "Elk RFemur")
     split_name = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', name)
@@ -398,16 +373,16 @@ def _collapse_solitary_head_feature_indices(canonical_joint_names):
 
 
 # Lazy lowercase→tags mapping for case-insensitive species lookup
-_SPECIES_MOTION_TAGS_LOWER = None
+_SPECIES_TAGS_LOWER = None
 
 
 def _motion_tags_lower():
-    global _SPECIES_MOTION_TAGS_LOWER
-    if _SPECIES_MOTION_TAGS_LOWER is None:
-        _SPECIES_MOTION_TAGS_LOWER = {
-            key.lower(): tags for key, tags in _SPECIES_MOTION_TAGS.items()
+    global _SPECIES_TAGS_LOWER
+    if _SPECIES_TAGS_LOWER is None:
+        _SPECIES_TAGS_LOWER = {
+            key.lower(): tags for key, tags in _SPECIES_TAGS.items()
         }
-    return _SPECIES_MOTION_TAGS_LOWER
+    return _SPECIES_TAGS_LOWER
 
 
 def _species_motion_tokens(object_cond):
@@ -417,10 +392,10 @@ def _species_motion_tokens(object_cond):
     return list(_motion_tags_lower().get(object_type.lower(), ()))
 
 
-def assert_species_motion_tags_cover(object_types):
-    """Fast-fail unless every ``object_type`` has an entry in ``_SPECIES_MOTION_TAGS``.
+def assert_species_tags_cover(object_types):
+    """Fast-fail unless every ``object_type`` has an entry in ``_SPECIES_TAGS``.
 
-    ``_SPECIES_MOTION_TAGS`` is the single source of truth for the per-species
+    ``_SPECIES_TAGS`` is the single source of truth for the per-species
     descriptor (``build_species_embedding_text``) and the retarget group
     discount, and it carries no fallback. Call this at preprocessing and before
     training so a newly added species without motion tags surfaces immediately
@@ -434,10 +409,10 @@ def assert_species_motion_tags_cover(object_types):
     )
     if missing:
         raise ValueError(
-            "_SPECIES_MOTION_TAGS is missing motion tags for object_type(s): "
+            "_SPECIES_TAGS is missing motion tags for object_type(s): "
             f"{', '.join(missing)}. Add them in "
             "data_loaders/truebones/truebones_utils/physics_joint_annotation.py "
-            "(_SPECIES_MOTION_TAGS) before preprocessing or training."
+            "(_SPECIES_TAGS) before preprocessing or training."
         )
 
 
@@ -448,18 +423,18 @@ def build_species_embedding_text(object_cond):
     each joint. This is the one place to refine the species descriptor; keep it
     open-vocabulary text so novel species still map into the same T5 space.
 
-    Returns the motion-relevant body-plan/dynamics tags (_SPECIES_MOTION_TAGS),
+    Returns the motion-relevant body-plan/dynamics tags (_SPECIES_TAGS),
     which describe how the animal moves -- the axis that matters for motion and
     that topology alone can't supply. There is no fallback: every species MUST
-    be registered in _SPECIES_MOTION_TAGS (enforced by
-    assert_species_motion_tags_cover at preprocessing/training time).
+    be registered in _SPECIES_TAGS (enforced by
+    assert_species_tags_cover at preprocessing/training time).
     """
     motion_tokens = _species_motion_tokens(object_cond)
     if not motion_tokens:
         object_type = str(object_cond.get('object_type') or '').strip() or '<empty>'
         raise ValueError(
-            f"No _SPECIES_MOTION_TAGS entry for object_type '{object_type}'. "
-            "Register it in physics_joint_annotation._SPECIES_MOTION_TAGS."
+            f"No _SPECIES_TAGS entry for object_type '{object_type}'. "
+            "Register it in physics_joint_annotation._SPECIES_TAGS."
         )
     return ' '.join(motion_tokens)
 

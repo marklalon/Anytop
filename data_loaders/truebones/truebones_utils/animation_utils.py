@@ -26,7 +26,7 @@ from .physics_joint_annotation import (
     strip_joint_name_prefix,
     build_joint_embedding_texts,
     build_species_embedding_text,
-    assert_species_motion_tags_cover,
+    assert_species_tags_cover,
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
 )
 
@@ -299,8 +299,8 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collis
         return
 
     # Fast-fail before any encoding: the per-species descriptor has no fallback,
-    # so a species missing from _SPECIES_MOTION_TAGS must surface here.
-    assert_species_motion_tags_cover(cond.keys())
+    # so a species missing from _SPECIES_TAGS must surface here.
+    assert_species_tags_cover(cond.keys())
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     inspection_dir = pjoin(save_dir, 'joint_name_inspection')

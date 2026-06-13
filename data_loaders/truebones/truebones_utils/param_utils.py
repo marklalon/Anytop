@@ -58,7 +58,7 @@ MOTION_TAGS_FILE = "motion_tags.jsonl"
 #   {"species": "Cat", "motion_tags": ["Quadruped", "Small", "Stalking"]}
 # This is the single source of truth for the species condition and for the
 # object subsets below; do not duplicate the species->tags mapping in code.
-SPECIES_MOTION_TAGS_FILE = "species_motion_tags.jsonl"
+SPECIES_TAGS_FILE = "species_tags.jsonl"
 FOOT_CONTACT_HEIGHT_THRESH = 0.2
 FOOT_CONTACT_VEL_THRESH = 0.002
 MAX_PATH_LEN = 5.
@@ -79,15 +79,15 @@ CHAIN_FORWARD_JOINTS = {
     'Pirrana': (9, 2, 3),   # kosi → mune → atama (tail to head)
 }
 
-def load_species_motion_tags(dataset_dir=None):
-        """Load the per-species motion descriptor from ``SPECIES_MOTION_TAGS_FILE``.
+def load_species_tags(dataset_dir=None):
+        """Load the per-species motion descriptor from ``SPECIES_TAGS_FILE``.
 
         Returns an insertion-ordered ``{species: (tag, ...)}`` mapping. The file is
         the single source of truth for the species condition and for
         ``OBJECT_SUBSETS_DICT`` -- there is no in-code fallback, so a missing or
         malformed file fails loudly rather than silently degrading.
         """
-        tags_path = Path(get_dataset_dir(dataset_dir)) / SPECIES_MOTION_TAGS_FILE
+        tags_path = Path(get_dataset_dir(dataset_dir)) / SPECIES_TAGS_FILE
         if not tags_path.is_file():
                 raise FileNotFoundError(
                         f"Species motion tags file not found at: {tags_path}\n"
@@ -104,7 +104,7 @@ def load_species_motion_tags(dataset_dir=None):
                         motion_tags = tuple(str(tag).strip() for tag in record["motion_tags"])
                         if not species or not motion_tags:
                                 raise ValueError(
-                                        f"{SPECIES_MOTION_TAGS_FILE}:{line_no} has an empty species or motion_tags."
+                                        f"{SPECIES_TAGS_FILE}:{line_no} has an empty species or motion_tags."
                                 )
                         species_tags[species] = motion_tags
         return species_tags
@@ -124,12 +124,12 @@ def build_object_subsets_dict(species_tags):
         return subsets
 
 
-SPECIES_MOTION_TAGS = load_species_motion_tags()
+SPECIES_TAGS = load_species_tags()
 
 # Body-plan groupings for ``--object_subsets``. Keys are ``"all"`` plus the
 # lower-cased body-plan tag (quadruped / biped / multiped / serpentine /
-# aquatic / winged); values are derived from SPECIES_MOTION_TAGS.
-OBJECT_SUBSETS_DICT = build_object_subsets_dict(SPECIES_MOTION_TAGS)
+# aquatic / winged); values are derived from SPECIES_TAGS.
+OBJECT_SUBSETS_DICT = build_object_subsets_dict(SPECIES_TAGS)
 
 
 def parse_action_tags(raw_action_tags):

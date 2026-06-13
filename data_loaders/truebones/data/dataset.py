@@ -19,7 +19,7 @@ from data_loaders.truebones.truebones_utils.motion_process import (
 )
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
-    assert_species_motion_tags_cover,
+    assert_species_tags_cover,
 )
 
 
@@ -1047,7 +1047,7 @@ class Truebones(data.Dataset):
         cond_dict = {k:cond_dict[k] for k in subset if k in cond_dict}
         # Fast-fail before training if any species being trained lacks a motion
         # tag (the per-species condition has no fallback).
-        assert_species_motion_tags_cover(cond_dict.keys())
+        assert_species_tags_cover(cond_dict.keys())
         cond_dict = ensure_joint_name_embeddings(cond_dict, cond_source=opt.cond_file)
         for object_type, cond in cond_dict.items():
             mean = np.asarray(cond['mean'], dtype=np.float32)

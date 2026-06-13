@@ -50,12 +50,12 @@ import numpy as np
 # heavy __init__ side effects, so importing the constant keeps this module
 # lightweight.
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
-    _SPECIES_MOTION_TAGS,
+    _SPECIES_TAGS,
 )
 
 # Case-insensitive object_type -> frozenset of motion tags. Built once.
 _GROUP_TAGS_LOWER: dict[str, frozenset] = {
-    key.lower(): frozenset(tags) for key, tags in _SPECIES_MOTION_TAGS.items()
+    key.lower(): frozenset(tags) for key, tags in _SPECIES_TAGS.items()
 }
 # Every registered species carries this many motion tags; the graded group
 # discount normalises overlap by it (full overlap -> full bonus).
@@ -242,7 +242,7 @@ def topology_descriptor(object_cond: Mapping[str, object]) -> np.ndarray:
 def group_tags(object_type: object) -> frozenset:
     """Motion descriptor tags ``(body-plan, gait/dynamics, refinement)`` for an object_type.
 
-    Case-insensitive; species absent from ``_SPECIES_MOTION_TAGS`` (e.g. a
+    Case-insensitive; species absent from ``_SPECIES_TAGS`` (e.g. a
     novel retarget target the user has not registered) return an empty set,
     which yields no group discount.
     """

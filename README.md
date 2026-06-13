@@ -137,7 +137,7 @@ Note that face_joints_names are marked in blue and feet joints that are consider
 We categorize Truebones skeletons by body plan into the following `--object_subsets`: `quadruped`, `biped`, `multiped`, `serpentine`, `aquatic`, and `winged`.
 In addition to a unified model trained on the entire dataset, we also trained specialized models per body plan.
 
-The skeleton-to-subset mapping is derived from the first column (body plan) of `dataset/truebones/zoo/truebones_processed/species_motion_tags.jsonl`, which is the single source of truth for both the per-species motion descriptor and the `--object_subsets` groupings.
+The skeleton-to-subset mapping is derived from the first column (body plan) of `dataset/truebones/zoo/truebones_processed/species_tags.jsonl`, which is the single source of truth for both the per-species motion descriptor and the `--object_subsets` groupings.
 
 If you'd like to synthesize motion using our pre-trained models, ensure that all model checkpoint files are located in the ./save directory (this should already be the case if you've completed Step 3: Download Pretrained Models).
 
