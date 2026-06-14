@@ -529,11 +529,8 @@ def main() -> int:
         cond = dict(np.load(cond_path, allow_pickle=True).item())
 
         print(f"Regenerated dataset artifacts under {dataset_dir_path}")
-        print(f"Saved cond.npy with {len(cond)} objects: {', '.join(sorted(cond.keys()))}")
-        
-        print("\n" + "=" * 70)
+        print(f"Saved cond.npy with {len(cond)} objects: {', '.join(sorted(cond.keys()))}")        
         print("[PASS] Dataset sidecar regeneration completed successfully")
-        print("=" * 70)
         return 0
     except Exception as e:
         print(f"ERROR: Failed to regenerate dataset artifacts: {e}")

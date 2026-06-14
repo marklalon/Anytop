@@ -99,6 +99,139 @@ class PreservedSideArtifacts:
     motion_metadata: dict[str, dict[str, object]] = field(default_factory=dict)
 
 
+# ---------------------------------------------------------------------------
+# Warning collector — captures [WARN] / [warn] lines during preprocessing
+# and prints a summary before STEP 1 finishes.
+# ---------------------------------------------------------------------------
+class _WarnCollector:
+    """Collect [WARN] messages by patching known warning emitters.
+
+    Usage::
+
+        collector = _WarnCollector()
+        collector.install()
+        try:
+            ...  # preprocessing code that may emit [WARN]
+        finally:
+            collector.summarize()
+            collector.uninstall()
+    """
+
+    def __init__(self):
+        self.messages: list[str] = []
+        self._patches: list[tuple[object, str, object]] = []  # (module, attr, original)
+        self._summarizing = False  # gate to prevent recursive capture during summarize()
+
+    def install(self):
+        """Patch known warning emitters to silently collect (no immediate print)."""
+        import sys as _sys
+
+        # 1) animation_utils._warn  →  suppress & collect
+        try:
+            from data_loaders.truebones.truebones_utils import animation_utils as _au
+            self._patches.append((_au, '_warn', _au._warn))
+            _au._warn = lambda msg: self.messages.append(msg)
+        except Exception:
+            pass
+
+        # 2) face_orientation._emit_degenerate_facing_warning  →  suppress & collect
+        try:
+            from data_loaders.truebones.truebones_utils import face_orientation as _fo
+            self._patches.append((_fo, '_emit_degenerate_facing_warning', _fo._emit_degenerate_facing_warning))
+            _fo._emit_degenerate_facing_warning = lambda ot, wk, msg: self.messages.append(msg)
+        except Exception:
+            pass
+
+        # 3) Anything else printed to stdout containing "[WARN]"  →  swallow & collect.
+        self._stdout_patch = _StdoutWarnCapture(self)
+        self._stdout_patch.install()
+
+    def uninstall(self):
+        """Restore all original emitters."""
+        for mod, attr, original in self._patches:
+            try:
+                setattr(mod, attr, original)
+            except Exception:
+                pass
+        self._patches.clear()
+        if hasattr(self, '_stdout_patch'):
+            self._stdout_patch.uninstall()
+
+    def summarize(self):
+        """Print a summary block of every collected warning at the end of STEP 1.
+
+        Temporarily disables the stdout wrapper so the summary itself is not
+        re-captured recursively.
+        """
+        if not self.messages:
+            return
+        # Prevent recursive capture of our own [WARN] output
+        self._summarizing = True
+        if hasattr(self, '_stdout_patch'):
+            self._stdout_patch.uninstall()
+        try:
+            self._print_summary()
+        finally:
+            if hasattr(self, '_stdout_patch'):
+                self._stdout_patch.install()
+            self._summarizing = False
+
+    def _print_summary(self):
+        seen: set[str] = set()
+        print()
+        print('=' * 70)
+        print(f"  PREPROCESSING WARNINGS ({len(self.messages)} total)")
+        print('=' * 70)
+        for msg in self.messages:
+            key = msg.strip().lower()
+            if key not in seen:
+                print(f"  \x1b[33m[WARN]\x1b[0m {msg}")
+                seen.add(key)
+
+
+class _StdoutWarnCapture:
+    """Wraps sys.stdout.  Lines containing '[WARN]' are swallowed (not shown)
+    and collected; all other output passes through transparently."""
+
+    def __init__(self, collector: _WarnCollector):
+        self._collector = collector
+        self._original = None
+
+    def install(self):
+        import sys as _sys
+        self._original = _sys.stdout
+        _sys.stdout = self
+
+    def uninstall(self):
+        import sys as _sys
+        if self._original is not None and _sys.stdout is self:
+            _sys.stdout = self._original
+        self._original = None
+
+    def write(self, text: str):
+        if self._collector._summarizing:
+            # Pass through unchanged during summary printing
+            if self._original is not None:
+                self._original.write(text)
+            return
+        if '[WARN]' in text.upper():
+            # Suppress & collect — do NOT forward to original stdout.
+            # Strip ANSI escapes first, then the [WARN] annotation, so
+            # summarize() can add a clean uniform prefix.
+            import re as _re
+            clean = _re.sub(r'\x1b\[[0-9;]*m', '', text)          # strip ANSI
+            clean = _re.sub(r'(?i)\[WARN\]\s*', '', clean).strip()  # strip [WARN]
+            if clean:
+                self._collector.messages.append(clean)
+        else:
+            if self._original is not None:
+                self._original.write(text)
+
+    def flush(self):
+        if self._original is not None:
+            self._original.flush()
+
+
 def _resolve_dataset_paths(dataset_dir: str = "") -> tuple[Path, Path, Path, Path]:
     dataset_dir_path = Path(get_dataset_dir(dataset_dir or None))
     return (
@@ -348,6 +481,8 @@ def run_preprocessing(
         create_data_samples,
     )
 
+    collector = _WarnCollector()
+    collector.install()
     try:
         create_data_samples(
             objects=objects,
@@ -358,14 +493,19 @@ def run_preprocessing(
             object_workers=object_workers,
             incremental=incremental,
         )
+        collector.summarize()
         return 0
     except DatasetPreprocessingError:
+        collector.summarize()
         return 1
     except Exception as e:
         print(f"ERROR: Failed to preprocess dataset: {e}")
         import traceback
         traceback.print_exc()
+        collector.summarize()
         return 1
+    finally:
+        collector.uninstall()
 
 
 def _load_jsonl(path: Path) -> list[dict[str, object]]:

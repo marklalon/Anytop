@@ -79,6 +79,30 @@ def remove_lights_and_cameras() -> None:
 
 # ── FBX/GLB loading helpers ──────────────────────────────────────────────────
 
+@contextlib.contextmanager
+def _silence_os_std():
+    """Context manager that redirects OS-level fd 1 & 2 to /dev/null.
+
+    bpy's C-level perfmon writes directly to OS file descriptors, bypassing
+    Python's sys.stdout/stderr.  Use this as a complement to
+    ``contextlib.redirect_stdout`` when both Python-level and OS-level output
+    must be suppressed.
+    """
+    _devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    _saved_out = os.dup(1)
+    _saved_err = os.dup(2)
+    try:
+        os.dup2(_devnull_fd, 1)
+        os.dup2(_devnull_fd, 2)
+        yield
+    finally:
+        os.dup2(_saved_out, 1)
+        os.dup2(_saved_err, 2)
+        os.close(_saved_out)
+        os.close(_saved_err)
+        os.close(_devnull_fd)
+
+
 def _load_scene(filepath: str):
     """Import an FBX/GLB/GLTF file into a fresh Blender scene and return the armature."""
     import bpy
@@ -92,7 +116,7 @@ def _load_scene(filepath: str):
     suffix = Path(path).suffix.lower()
 
     clear_scene()
-    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), _silence_os_std():
         if suffix == ".fbx":
             import_fbx(path)
         elif suffix in {".glb", ".gltf"}:
