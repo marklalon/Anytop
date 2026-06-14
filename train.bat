@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=truebones_zoo_species_v2
+set RUN_NAME=truebones_zoo_species_v2_morphology
 set TORCH_LOGS=recompiles,graph_breaks
 
 REM --compile builds Triton kernel launchers with MSVC cl.exe. Initialize
@@ -14,6 +14,9 @@ REM 使用 --objects_subset Horse 指定单个物种的所有动作作为训练�
 REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 %PYTHON_EXE% train/train_anytop.py ^
 	--save_dir save/%RUN_NAME% ^
+	--resume_checkpoint save/truebones_zoo_species_v2/model000060000.pt ^
+	--morphology_expert ^
+	--morphology_expert_lr_mult 3 ^
 	--save_interval 5000 ^
 	--log_interval 100 ^
 	--auto_resume ^
@@ -24,6 +27,7 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--ff_size 2048 ^
 	--layers 8 ^
 	--global_energy_cond ^
+	--global_energy_cfg_drop_prob 0.3 ^
 	--action_tag_cond ^
 	--species_cond ^
 	--loop_cond_prob 0.5 ^

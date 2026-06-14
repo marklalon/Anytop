@@ -147,6 +147,36 @@ def run_training(args):
     ml_platform = ml_platform_type(save_dir=args.save_dir)
     ml_platform.report_args(args, name='Args')
 
+    if getattr(args, 'morphology_expert', False):
+        # Freeze the object_type -> group_id routing table (and registry order)
+        # into args.json so this checkpoint always routes the way it was
+        # trained, independent of later edits to the live species_tags.jsonl.
+        # On resume (args.json already present in save_dir) reuse the frozen
+        # table verbatim; only a fresh run resolves it from the tags file.
+        from model.morphology_expert import (
+            resolve_morphology_ids,
+            validate_morphology_registry,
+        )
+        existing_args_path = os.path.join(save_dir, 'args.json')
+        frozen_groups, frozen_mapping = None, None
+        if os.path.exists(existing_args_path):
+            with open(existing_args_path, 'r') as fr:
+                prev_args = json.load(fr)
+            frozen_groups = prev_args.get('morphology_groups')
+            frozen_mapping = prev_args.get('morphology_object_type_to_group_id')
+        if frozen_mapping:
+            validate_morphology_registry(frozen_groups)
+            args.morphology_groups = frozen_groups
+            args.morphology_object_type_to_group_id = frozen_mapping
+            print('[INFO] Reusing frozen morphology routing table from existing args.json '
+                  f'({len(frozen_mapping)} object_types).')
+        else:
+            tags_path = getattr(args, 'morphology_tags_path', '') or None
+            groups, mapping = resolve_morphology_ids(tags_path)
+            args.morphology_groups = list(groups)
+            args.morphology_object_type_to_group_id = mapping
+            print(f'[INFO] Froze morphology routing table ({len(mapping)} object_types) into args.json.')
+
     args_path = os.path.join(save_dir, 'args.json')
     with open(args_path, 'w') as fw:
         json.dump(vars(args), fw, indent=4, sort_keys=True)

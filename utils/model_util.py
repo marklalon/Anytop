@@ -77,7 +77,22 @@ def load_model(model, state_dict):
     # which is exactly what we want when resuming a pre-QK-norm model, so tolerate
     # them as missing. Any other missing key is still a hard error.
     tolerated_suffixes = ('.q_norm.weight', '.k_norm.weight')
-    unresolved = [k for k in missing_keys if not k.endswith(tolerated_suffixes)]
+    # Morphology group-expert adapters are new params absent from pre-expert
+    # checkpoints. Tolerate them as missing ONLY when warm-starting from a
+    # checkpoint that carries no morphology params at all -- then they are
+    # freshly zero-init (residual == 0 at step 0), byte-identical to baseline.
+    # If the checkpoint already has ANY morphology key, a missing one signals a
+    # partial/corrupt save that would silently zero-init that adapter, so treat
+    # it as a hard error and require the full set.
+    morphology_marker = 'morphology_expert_banks'
+    checkpoint_has_morphology = any(morphology_marker in k for k in state_dict.keys())
+    unresolved = []
+    for k in missing_keys:
+        if k.endswith(tolerated_suffixes):
+            continue
+        if morphology_marker in k and not checkpoint_has_morphology:
+            continue
+        unresolved.append(k)
     assert len(unresolved) == 0, f"Missing keys in checkpoint: {unresolved}"
 
 def create_model_and_diffusion_general_skeleton(args):
@@ -113,6 +128,13 @@ def get_gmdm_args(args):
             'action_tag_cond': getattr(args, 'action_tag_cond', False),
             'action_tag_cfg_drop_prob': getattr(args, 'action_tag_cfg_drop_prob', 0.3),
             'loop_cond_prob': getattr(args, 'loop_cond_prob', 1.0),
+            'morphology_expert': getattr(args, 'morphology_expert', False),
+            'morphology_expert_bottleneck': getattr(args, 'morphology_expert_bottleneck', 64),
+            'morphology_expert_layers': getattr(args, 'morphology_expert_layers', 'last4'),
+            'morphology_expert_dropout': getattr(args, 'morphology_expert_dropout', 0.05),
+            'morphology_tags_path': (getattr(args, 'morphology_tags_path', '') or None),
+            'morphology_groups': getattr(args, 'morphology_groups', None),
+            'morphology_object_type_to_group_id': getattr(args, 'morphology_object_type_to_group_id', None),
             'root_input_feats': 13}
 
 def create_gaussian_diffusion(args):

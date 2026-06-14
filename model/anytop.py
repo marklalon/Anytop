@@ -4,6 +4,13 @@ import torch.nn as nn
 import numpy as np
 from model.motion_transformer import GraphMotionDecoderLayer, GraphMotionDecoder
 from model.joint_mask_utils import sample_subtree_joint_mask_batch
+from model.morphology_expert import (
+    resolve_morphology_ids,
+    object_types_to_group_id_tensor,
+    validate_morphology_registry,
+    validate_object_type_to_group_id,
+    MORPHOLOGY_GROUPS,
+)
 
 
 def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 10000,
@@ -57,6 +64,35 @@ class AnyTop(nn.Module):
         self.temporal_span_mask_max_frames=int(kargs.get('temporal_span_mask_max_frames', 12))
         self.global_energy_cond=bool(kargs.get('global_energy_cond', False))
         self.species_cond=bool(kargs.get('species_cond', False))
+        # Morphology (form-class) expert: per-group bottleneck adapters routed
+        # by object_type. Structural condition (always on, not part of CFG).
+        self.morphology_expert=bool(kargs.get('morphology_expert', False))
+        self.morphology_expert_bottleneck=int(kargs.get('morphology_expert_bottleneck', 64))
+        self.morphology_expert_layers=str(kargs.get('morphology_expert_layers', 'last4'))
+        self.morphology_expert_dropout=float(kargs.get('morphology_expert_dropout', 0.05))
+        self.morphology_tags_path=kargs.get('morphology_tags_path', None)
+        # A checkpoint freezes its object_type -> group_id table (and registry
+        # order) into args.json. When that frozen mapping is supplied, use it
+        # verbatim -- so the live species_tags.jsonl can be edited/moved without
+        # silently re-routing an existing checkpoint -- and validate the saved
+        # registry is still a prefix of the (append-only) MORPHOLOGY_GROUPS
+        # constant. Only a fresh run with no frozen mapping reads the tags file.
+        saved_groups = kargs.get('morphology_groups', None)
+        saved_mapping = kargs.get('morphology_object_type_to_group_id', None)
+        if self.morphology_expert:
+            if saved_mapping:
+                self.morphology_groups = validate_morphology_registry(
+                    saved_groups if saved_groups else MORPHOLOGY_GROUPS
+                )
+                self.object_type_to_group_id = validate_object_type_to_group_id(
+                    saved_mapping, len(self.morphology_groups)
+                )
+            else:
+                self.morphology_groups, self.object_type_to_group_id = resolve_morphology_ids(
+                    self.morphology_tags_path
+                )
+        else:
+            self.morphology_groups, self.object_type_to_group_id = (), {}
         self.loop_cond_prob=float(kargs.get('loop_cond_prob', 1.0))
         self.global_energy_stats_momentum = 0.01
         # CFG drop probability for global energy conditioning during training.
@@ -181,7 +217,12 @@ class AnyTop(nn.Module):
                                                         cross_limb=self.cross_limb,
                                                         cross_limb_latents=self.cross_limb_latents,
                                                         cross_limb_dim=self.cross_limb_dim,
-                                                        cross_limb_last_n=self.cross_limb_last_n)
+                                                        cross_limb_last_n=self.cross_limb_last_n,
+                                                        morphology_expert=self.morphology_expert,
+                                                        morphology_num_groups=len(self.morphology_groups),
+                                                        morphology_expert_bottleneck=self.morphology_expert_bottleneck,
+                                                        morphology_expert_layers=self.morphology_expert_layers,
+                                                        morphology_expert_dropout=self.morphology_expert_dropout)
             
         
         self.output_process = OutputProcess(self.feature_len, self.root_input_feats, self.max_joints, self.latent_dim)
@@ -722,6 +763,31 @@ class AnyTop(nn.Module):
 
         loop_phase_lengths = y.get('loop_phase_lengths', y.get('lengths'))
 
+        group_ids = None
+        if self.morphology_expert:
+            # Prefer a precomputed tensor (compile-friendly); otherwise resolve
+            # from the per-sample object_type strings via the fixed registry.
+            raw_group_ids = y.get('group_ids')
+            if raw_group_ids is not None:
+                group_ids = torch.as_tensor(raw_group_ids, device=x.device, dtype=torch.long).reshape(-1)
+            else:
+                object_types = y.get('object_type')
+                if object_types is None:
+                    raise ValueError(
+                        "morphology_expert is enabled but y['object_type'] is missing; "
+                        "cannot route to a morphology group."
+                    )
+                group_ids = object_types_to_group_id_tensor(
+                    object_types, self.object_type_to_group_id, x.device
+                )
+            if group_ids.numel() == 1 and bs != 1:
+                group_ids = group_ids.expand(bs)
+            elif group_ids.numel() != bs:
+                raise ValueError(
+                    "group_ids batch dimension must match the motion batch size, got "
+                    f"{group_ids.numel()} for batch {bs}"
+                )
+
         output = self.seqTransDecoder(
             tgt=x,
             timesteps_embs=timesteps_emb,
@@ -736,6 +802,7 @@ class AnyTop(nn.Module):
             cross_limb_unreliable_mask=cross_limb_unreliable_mask,
             loop_phase_mask=loop_phase_mask,
             lengths=loop_phase_lengths,
+            group_ids=group_ids,
         )
         output = self.output_process(output) # Applies linear layer on each frame to convert it back to feature len dim
         return output

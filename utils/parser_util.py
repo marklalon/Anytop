@@ -143,6 +143,32 @@ def add_model_options(parser):
                        help="Per-sample probability of hard-dropping the action-tag condition during "
                             "training (replaced by a learned null embedding), enabling classifier-free "
                             "guidance over action tags. Default 0.3.")
+    group.add_argument("--morphology_expert", action='store_true',
+                       help="Enable per-morphology-group bottleneck adapters. Every object_type is "
+                            "routed to one of the fixed morphology groups (Quadruped/Biped/Multiped/"
+                            "Winged/Serpentine/Aquatic) via species_tags.jsonl; each group gets a small "
+                            "zero-init residual adapter on the last N decoder layers. Structural "
+                            "condition (always on, not part of CFG). Byte-identical to baseline at step 0.")
+    group.add_argument("--morphology_expert_bottleneck", default=64, type=int,
+                       help="Bottleneck width of each group adapter (~latent_dim/4). Default 64.")
+    group.add_argument("--morphology_expert_layers", default='last4', type=str,
+                       help="Which decoder layers carry a group adapter: 'lastN' (e.g. last4) or "
+                            "'allN'/'all'. Default last4.")
+    group.add_argument("--morphology_expert_dropout", default=0.05, type=float,
+                       help="Dropout inside each group adapter. Set 0.0 with abundant per-group data. "
+                            "Default 0.05.")
+    group.add_argument("--morphology_expert_lr_mult", default=5.0, type=float,
+                       help="LR multiplier for group-adapter params relative to the backbone base lr "
+                            "(adapter lr = base_lr * mult). Plan recommends 3x-10x. Default 5.0.")
+    group.add_argument("--morphology_tags_path", default='', type=str,
+                       help="Path to species_tags.jsonl used for object_type->morphology-group routing. "
+                            "Empty uses the default dataset path.")
+    # Frozen routing state, written into args.json at train time and restored by
+    # extract_args at inference/resume. Not set from the CLI -- the dict/list
+    # values come straight from the saved json. Keeping them as (suppressed)
+    # model-group args is what makes extract_args carry them into generation.
+    group.add_argument("--morphology_groups", default=None, help=argparse.SUPPRESS)
+    group.add_argument("--morphology_object_type_to_group_id", default=None, help=argparse.SUPPRESS)
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')

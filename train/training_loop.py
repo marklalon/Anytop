@@ -23,6 +23,7 @@ from utils.model_util import create_model_and_diffusion_general_skeleton
 import random
 from data_loaders.get_data import get_dataset_loader
 from eval.motion_quality import DistributionMotionQualityScorer
+from model.morphology_expert import object_types_to_group_id_tensor
 
 INITIAL_LOG_LOSS_SCALE = 20.0
 EXP_AVG_SQ_CHECKPOINT_ALERT_THRESHOLD = 1e20
@@ -145,8 +146,11 @@ class TrainLoop:
             fp16_scale_growth=self.fp16_scale_growth,
         )
         
-        self.opt = AdamW(self.mp_trainer.master_params, lr=self.lr, weight_decay=self.weight_decay, fused=True)
         self._optimizer_param_names = {id(param): name for name, param in self.model.named_parameters()}
+        self.opt = AdamW(self._build_optimizer_param_groups(), lr=self.lr, weight_decay=self.weight_decay, fused=True)
+        # Per-group initial lrs, so _anneal_lr scales each group relative to its
+        # own configured lr instead of flattening the backbone/expert ratio.
+        self._initial_param_group_lrs = [group['lr'] for group in self.opt.param_groups]
         self.lr_scheduler = torch.optim.lr_scheduler.StepLR(self.opt,
                                                 step_size=getattr(self.args, 'lr_scheduler_step_size', 10000),
                                                 gamma=getattr(self.args, 'lr_scheduler_gamma', 0.99))
@@ -267,6 +271,38 @@ class TrainLoop:
                     # in case we load from a legacy checkpoint, just copy the model
                     print('loading model_avg from model')
                     self.model_avg.load_state_dict(self.model.state_dict())
+
+    def _build_optimizer_param_groups(self):
+        """Split params into backbone vs morphology-group-expert groups.
+
+        Morphology-adapter params (name contains 'morphology_expert_banks') get
+        ``lr = base_lr * morphology_expert_lr_mult`` so the experts absorb the
+        morphology residual fast while the backbone keeps the base lr. Returns
+        the plain master_params list when morphology expert is off or the
+        multiplier is 1.0, preserving the original single-group behavior.
+        """
+        master_params = list(self.mp_trainer.master_params)
+        lr_mult = float(getattr(self.args, 'morphology_expert_lr_mult', 1.0))
+        if not getattr(self.args, 'morphology_expert', False) or lr_mult == 1.0:
+            return master_params
+        expert_params, base_params = [], []
+        for param in master_params:
+            name = self._optimizer_param_names.get(id(param), '')
+            (expert_params if 'morphology_expert_banks' in name else base_params).append(param)
+        if not expert_params:
+            logger.log(
+                "morphology_expert_lr_mult set but no morphology_expert_banks params found; "
+                "using a single optimizer param group"
+            )
+            return master_params
+        logger.log(
+            f"optimizer: {len(base_params)} backbone params @ lr={self.lr}, "
+            f"{len(expert_params)} group-expert params @ lr={self.lr * lr_mult} (mult={lr_mult})"
+        )
+        return [
+            {'params': base_params, 'lr': self.lr},
+            {'params': expert_params, 'lr': self.lr * lr_mult},
+        ]
 
     def _load_optimizer_state(self):
         opt_checkpoint = self.find_resume_opt_checkpoint()
@@ -400,7 +436,28 @@ class TrainLoop:
     def _with_train_step(self, cond, train_step):
         updated = {'y': dict(cond['y'])}
         updated['train_step'] = int(train_step)
+        self._ensure_group_ids(updated['y'])
         return updated
+
+    def _ensure_group_ids(self, y):
+        """Resolve object_type strings -> a (B,) group-id tensor in eager Python.
+
+        Done here (outside the compiled forward) so torch.compile never traces
+        the per-sample string comparisons. Otherwise Dynamo bakes each species
+        name into a guard (y['object_type'][0] == 'HermitCrab', ...) and
+        recompiles forward once per object_type seen -- the recompile storm in
+        the training log. With group_ids precomputed as a tensor the compiled
+        forward takes its tensor fast path and the guards disappear."""
+        if not getattr(self.model, 'morphology_expert', False):
+            return
+        if y.get('group_ids') is not None:
+            return
+        object_types = y.get('object_type')
+        if object_types is None:
+            return
+        y['group_ids'] = object_types_to_group_id_tensor(
+            object_types, self.model.object_type_to_group_id, device='cpu'
+        )
 
     def _should_save(self, completed_step):
         return completed_step % self.save_interval == 0 or completed_step == self.num_steps
@@ -946,9 +1003,11 @@ class TrainLoop:
         if not self.lr_anneal_steps:
             return
         frac_done = (self.step + self.resume_step) / self.lr_anneal_steps
-        lr = self.lr * (1 - frac_done)
-        for param_group in self.opt.param_groups:
-            param_group["lr"] = lr
+        scale = 1 - frac_done
+        initial_lrs = getattr(self, '_initial_param_group_lrs', None)
+        for i, param_group in enumerate(self.opt.param_groups):
+            base = initial_lrs[i] if initial_lrs is not None else self.lr
+            param_group["lr"] = base * scale
 
     def log_step(self):
         logger.logkv("step", self.step + self.resume_step)

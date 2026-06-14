@@ -4,6 +4,7 @@ import torch.nn as nn
 from typing import Optional, Union, Callable, Tuple
 from torch import Tensor
 import torch.nn.functional as F
+from model.morphology_expert import MorphologyExpertBank, _normalize_layers_spec
 CUDA_LAUNCH_BLOCKING=1
 
 
@@ -920,12 +921,36 @@ class GraphMultiHeadAttention(nn.Module):
 class GraphMotionDecoder(nn.TransformerDecoder):
     def __init__(self, decoder_layer, num_layers, norm=None, max_path_len=5, value_emb=False,
                  cross_limb=True, cross_limb_latents=8, cross_limb_dim=64,
-                 cross_limb_last_n=0):
+                 cross_limb_last_n=0,
+                 morphology_expert=False, morphology_num_groups=0,
+                 morphology_expert_bottleneck=64, morphology_expert_layers='last4',
+                 morphology_expert_dropout=0.05):
                 # multi head attention
         super().__init__(decoder_layer, num_layers, norm)
 
         self.d_model = decoder_layer.d_model
         self.nheads = decoder_layer.heads
+        # Morphology experts: one independent bank per *active* layer
+        # (held here, not on the layer, mirroring cross_limb_blocks so only the
+        # trailing N layers carry one). Passed into each layer's forward.
+        self.morphology_expert = bool(morphology_expert)
+        if self.morphology_expert:
+            if morphology_num_groups <= 0:
+                raise ValueError("morphology_expert requires morphology_num_groups > 0")
+            n_expert_layers = _normalize_layers_spec(morphology_expert_layers, num_layers)
+            self.morphology_first_layer = num_layers - n_expert_layers
+            self.morphology_expert_banks = nn.ModuleList([
+                MorphologyExpertBank(
+                    self.d_model,
+                    num_groups=morphology_num_groups,
+                    bottleneck=morphology_expert_bottleneck,
+                    dropout=morphology_expert_dropout,
+                )
+                for _ in range(n_expert_layers)
+            ])
+        else:
+            self.morphology_first_layer = num_layers
+            self.morphology_expert_banks = None
         # 0 -> apply at every layer; N>0 -> only the last N layers. Each active
         # layer gets its own independent block, so this also scales the
         # cross-limb parameter count.
@@ -974,7 +999,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             temporal_template: Optional[Tensor] = None,
             cross_limb_unreliable_mask: Optional[Tensor] = None,
             loop_phase_mask: Optional[Tensor] = None,
-            lengths: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
+            lengths: Optional[Tensor] = None,
+            group_ids: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
         topology_rel = self._expand_relation_heads(y['graph_dist'].to(device=tgt.device, dtype=torch.long))
         edge_rel = self._expand_relation_heads(y['joints_relations'].to(device=tgt.device, dtype=torch.long))
         output = tgt
@@ -1032,6 +1058,10 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                 cl_block = self.cross_limb_blocks[layer_ind - first_cl_layer]
             else:
                 cl_block = None
+            if self.morphology_expert_banks is not None and layer_ind >= self.morphology_first_layer:
+                morphology_expert_bank = self.morphology_expert_banks[layer_ind - self.morphology_first_layer]
+            else:
+                morphology_expert_bank = None
             output = mod(
                     output, timesteps_embs, topology_rel, edge_rel, self.edge_key_emb, self.edge_query_emb, edge_value_emb, self.topology_key_emb, self.topology_query_emb, topology_value_emb, spatial_mask, temporal_mask,
                     tgt_key_padding_mask, memory_key_padding_mask, y, global_energy_condition,
@@ -1041,7 +1071,9 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                     loop_phase_mask=loop_phase_mask_batch,
                     lengths=lengths,
                     loop_phase_embedding=loop_phase_embedding,
-                    cross_limb_time_embedding=cross_limb_time_embedding)
+                    cross_limb_time_embedding=cross_limb_time_embedding,
+                    morphology_expert_bank=morphology_expert_bank,
+                    group_ids=group_ids)
         if self.norm is not None:
             output = self.norm(output)
         return output
@@ -1183,7 +1215,9 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         loop_phase_mask: Optional[Tensor] = None,
         lengths: Optional[Tensor] = None,
         loop_phase_embedding: Optional[Tensor] = None,
-        cross_limb_time_embedding: Optional[Tensor] = None) -> Tensor:
+        cross_limb_time_embedding: Optional[Tensor] = None,
+        morphology_expert_bank: Optional[nn.Module] = None,
+        group_ids: Optional[Tensor] = None) -> Tensor:
         x = tgt #(frames, bs, njoints, feature_len)
         bs = x.shape[1]
         x = x + self.embed_timesteps(timesteps_emb).view(1, bs, 1, self.d_model)
@@ -1216,4 +1250,10 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
             else:
                 x = modulated
         x = self.norm3(x + self._ff_block(x))
+        if morphology_expert_bank is not None:
+            # Morphology residual on the shared layer output. Zero-init +
+            # fixed scale 1.0 => no-op at step 0. Note: this delta feeds the next
+            # shared layer's attention, so its effect accumulates across layers
+            # (it is not a pure output-only residual).
+            x = x + morphology_expert_bank(x, group_ids)
         return x
