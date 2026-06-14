@@ -35,10 +35,10 @@ def import_fbx(filepath: str, use_image_search: bool = False) -> None:
     Always imports with ``ignore_leaf_bones=False`` so that leaf bones carrying
     animation (tail tips, hair, halter, etc.) are preserved.
 
-    .. deprecated::
-        The ``use_image_search`` parameter is accepted for backward compatibility
-        but **ignored** — the extension-based ``wm.fbx_import`` operator does not
-        expose it.  It will be removed in a future version.
+    When ``use_image_search`` is true, run Blender's missing-file search after
+    import so external textures in sibling folders such as ``tex/`` are
+    resolved for the new ``wm.fbx_import`` operator, which does not expose the
+    old add-on importer's ``use_image_search`` parameter directly.
     """
     import bpy
 
@@ -48,6 +48,10 @@ def import_fbx(filepath: str, use_image_search: bool = False) -> None:
         use_custom_normals=False,
         use_anim=True,
     )
+    if use_image_search:
+        bpy.ops.file.find_missing_files(
+            directory=os.path.dirname(os.path.abspath(filepath))
+        )
 
 
 def import_gltf(filepath: str) -> None:
