@@ -48,12 +48,19 @@ Examples:
     # Force-rebuild only the objects matching a wildcard, preserving the rest
     python preprocess_and_validate.py --overwrite --filter "Raptor*,*Bear*" --object-workers 4
 
+    # Remove motions matching a wildcard pattern from the dataset
+    python preprocess_and_validate.py --rm "Horse_Run*"
+
+    # Remove motions within a specific species only, and purge species if emptied
+    python preprocess_and_validate.py --rm "Horse_Run*;Dog_Jump*" --filter "Horse,Dog"
+
     # Fast CI workflow (skip validation after preprocessing)
     python preprocess_and_validate.py --skip-validate
 """
 
 import argparse
 import fnmatch
+import json
 import os
 import sys
 import subprocess
@@ -71,7 +78,7 @@ for _path in (_TRUEBONES_DIR, _TRUEBONES_DIR / "truebones_utils"):
     if _path_str not in sys.path:
         sys.path.insert(0, _path_str)
 
-from param_utils import BVHS_DIR, MOTION_DIR, get_dataset_dir, get_raw_data_dir  # noqa: E402
+from param_utils import BVHS_DIR, MOTION_DIR, MOTION_TAGS_FILE, SPECIES_TAGS_FILE, get_dataset_dir, get_raw_data_dir  # noqa: E402
 from truebones_utils.motion_labels import load_motion_metadata, write_motion_metadata  # noqa: E402
 
 
@@ -361,6 +368,236 @@ def run_preprocessing(
         return 1
 
 
+def _load_jsonl(path: Path) -> list[dict[str, object]]:
+    """Load a JSONL file as a list of dicts. Returns empty list if missing."""
+    if not path.exists():
+        return []
+    entries: list[dict[str, object]] = []
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if line:
+                entries.append(json.loads(line))
+    return entries
+
+
+def _write_jsonl(path: Path, entries: list[dict[str, object]]) -> None:
+    """Write a list of dicts as a JSONL file."""
+    with open(path, "w", encoding="utf-8") as handle:
+        for entry in entries:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def _collect_species_from_motions(motions_dir: Path) -> dict[str, set[str]]:
+    """Return {species: {motion_filename, ...}} for all .npy files in motions_dir."""
+    species_map: dict[str, set[str]] = {}
+    if not motions_dir.exists():
+        return species_map
+    for p in motions_dir.glob("*.npy"):
+        stem = p.stem
+        species = stem.split("_", 1)[0]
+        species_map.setdefault(species, set()).add(p.name)
+    return species_map
+
+
+def run_remove_motions(
+    dataset_dir: str = "",
+    object_filter: str = "",
+    rm_pattern: str = "",
+    raw_data_dir: str = "",
+) -> int:
+    """Remove motions matching *rm_pattern* from the preprocessed dataset.
+
+    Supports fnmatch wildcards against motion filenames (e.g. ``Horse_Run*``,
+    ``Dog_*``, ``*Dead*``). Combine with ``--filter`` to scope to specific species.
+    When **all** motions of a species are deleted the species entry is also purged
+    from ``cond.npy``, ``species_tags.jsonl``, ``joint_name_inspection/``, and the
+    dataset ``cache/`` files.
+    """
+
+    dataset_dir_path, motions_dir, bvhs_dir, joint_name_inspection_dir = _resolve_dataset_paths(dataset_dir)
+    target_species = _resolve_target_object_types(object_filter, raw_data_dir)
+
+    patterns = _parse_filter_patterns(rm_pattern)
+    if not patterns:
+        print("ERROR: --rm requires a non-empty pattern (e.g. --rm 'Horse_Run*')")
+        return 1
+
+    # Gather all motions currently on disk, scoped by --filter if provided.
+    all_species_motions = _collect_species_from_motions(motions_dir)
+    if object_filter:
+        all_species_motions = {s: m for s, m in all_species_motions.items() if s in target_species}
+
+    # Match motions against rm_pattern
+    to_delete: list[str] = []
+    for species, motions in sorted(all_species_motions.items()):
+        for mname in sorted(motions):
+            if _matches_any(mname, patterns):
+                to_delete.append(mname)
+
+    if not to_delete:
+        print(f"No motions matched pattern '{rm_pattern}'" + (f" within species: {', '.join(target_species)}" if object_filter else ""))
+        return 0
+
+    # --- Summary ---
+    affected_species = sorted({m.split("_", 1)[0] for m in to_delete})
+    species_remaining: dict[str, int] = {}
+    empty_species: set[str] = set()
+    for species in affected_species:
+        total = len(all_species_motions.get(species, set()))
+        deleted = sum(1 for m in to_delete if m.startswith(f"{species}_"))
+        remaining = total - deleted
+        species_remaining[species] = remaining
+        if remaining <= 0:
+            empty_species.add(species)
+
+    print("\n" + "=" * 70)
+    print("MOTIONS TO REMOVE")
+    print("=" * 70)
+    print(f"Dataset directory : {dataset_dir_path}")
+    print(f"Pattern           : {rm_pattern}")
+    if object_filter:
+        print(f"Species filter    : {object_filter}  ->  {', '.join(target_species)}")
+    print(f"Motions to delete : {len(to_delete)}")
+    print(f"Affected species  : {', '.join(affected_species)}")
+    if empty_species:
+        print(f"\n⚠  Species that will be EMPTIED (ALL motions removed): {', '.join(sorted(empty_species))}")
+        print("   Their cond.npy entries, species_tags.jsonl, inspection files,")
+        print("   and cache files will also be purged.")
+    print()
+
+    # List a preview
+    preview_n = min(len(to_delete), 20)
+    for m in to_delete[:preview_n]:
+        print(f"  - {m}")
+    if len(to_delete) > preview_n:
+        print(f"  ... and {len(to_delete) - preview_n} more")
+    print()
+
+    if not _confirm_yes_no("Enter 'yes' to delete these motions, or 'no' to abort: "):
+        print("\nRemoval aborted.")
+        return 0
+
+    # --- Delete motion .npy files ---
+    print("\nDeleting motion files...")
+    deleted_count = 0
+    for mname in to_delete:
+        mp = motions_dir / mname
+        if mp.exists():
+            mp.unlink()
+            deleted_count += 1
+    print(f"  [OK] Deleted {deleted_count} motion file(s)")
+
+    # --- Delete corresponding .bvh files ---
+    if bvhs_dir.exists():
+        bvh_deleted = 0
+        for mname in to_delete:
+            bvh_name = Path(mname).stem + ".bvh"
+            bp = bvhs_dir / bvh_name
+            if bp.exists():
+                bp.unlink()
+                bvh_deleted += 1
+        if bvh_deleted:
+            print(f"  [OK] Deleted {bvh_deleted} BVH file(s)")
+
+    # --- Delete corresponding inspection files ---
+    if joint_name_inspection_dir.exists():
+        insp_deleted = 0
+        for mname in to_delete:
+            insp_name = Path(mname).stem + ".png"
+            ip = joint_name_inspection_dir / insp_name
+            if ip.exists():
+                ip.unlink()
+                insp_deleted += 1
+        if insp_deleted:
+            print(f"  [OK] Deleted {insp_deleted} inspection file(s)")
+
+    # --- Update motion_metadata.json ---
+    metadata = load_motion_metadata(dataset_dir_path, require_action_tags=False)
+    if metadata:
+        removed_meta = 0
+        for mname in to_delete:
+            if mname in metadata:
+                del metadata[mname]
+                removed_meta += 1
+        total_clips = sum(1 for _ in motions_dir.glob("*.npy")) if motions_dir.exists() else 0
+        write_motion_metadata(dataset_dir_path, metadata, total_clips)
+        if removed_meta:
+            print(f"  [OK] Removed {removed_meta} entries from motion_metadata.json (total: {total_clips})")
+
+    # --- Update motion_tags.jsonl ---
+    tags_path = dataset_dir_path / MOTION_TAGS_FILE
+    if tags_path.exists():
+        entries = _load_jsonl(tags_path)
+        delete_set = set(to_delete)
+        new_entries = [e for e in entries if e.get("clip", "") not in delete_set]
+        if len(new_entries) != len(entries):
+            _write_jsonl(tags_path, new_entries)
+            print(f"  [OK] Removed {len(entries) - len(new_entries)} entries from motion_tags.jsonl")
+
+    # --- Handle species that became empty ---
+    if empty_species:
+        print(f"\nCleaning up emptied species: {', '.join(sorted(empty_species))}")
+
+        # cond.npy
+        cond_path = dataset_dir_path / "cond.npy"
+        if cond_path.exists():
+            cond = dict(np.load(cond_path, allow_pickle=True).item())
+            cond_removed = 0
+            for species in empty_species:
+                if species in cond:
+                    del cond[species]
+                    cond_removed += 1
+            if cond_removed:
+                if cond:
+                    np.save(cond_path, cond)
+                else:
+                    cond_path.unlink()
+                print(f"  [OK] Removed {cond_removed} species from cond.npy" + (" (deleted — no species remaining)" if not cond else ""))
+
+        # species_tags.jsonl
+        st_path = dataset_dir_path / SPECIES_TAGS_FILE
+        if st_path.exists():
+            st_entries = _load_jsonl(st_path)
+            new_st = [e for e in st_entries if e.get("species", "") not in empty_species]
+            if len(new_st) != len(st_entries):
+                _write_jsonl(st_path, new_st)
+                print(f"  [OK] Removed {len(st_entries) - len(new_st)} species from species_tags.jsonl")
+
+        # joint_name_inspection/ per-species .json files
+        if joint_name_inspection_dir.exists():
+            for species in empty_species:
+                sp = joint_name_inspection_dir / f"{species}.json"
+                if sp.exists():
+                    sp.unlink()
+                    print(f"  [OK] Deleted joint_name_inspection/{species}.json")
+
+        # Cache: delete action_tags_cache.json (it will be regenerated)
+        cache_dir = dataset_dir_path / "cache"
+        if cache_dir.exists():
+            at_cache = cache_dir / "action_tags_cache.json"
+            if at_cache.exists():
+                at_cache.unlink()
+                print(f"  [OK] Deleted cache/action_tags_cache.json (will be regenerated)")
+            ml_cache = cache_dir / "motion_lengths.npy"
+            if ml_cache.exists():
+                ml_cache.unlink()
+                print(f"  [OK] Deleted cache/motion_lengths.npy (will be regenerated)")
+
+    # --- Regenerate side artifacts to recompute mean/std after deletion ---
+    print("\nRegenerating dataset side artifacts...")
+    ret = run_regenerate_side_artifacts(
+        dataset_dir,
+        recompute_stats=bool(deleted_count),
+        recompute_stats_objects=tuple(affected_species) if deleted_count else (),
+    )
+    if ret != 0:
+        print("\n[WARN] Side artifact regeneration returned non-zero exit code.")
+
+    print("\n[OK] Removal complete.")
+    return 0
+
+
 def run_regenerate_side_artifacts(
     dataset_dir: str = "",
     preserved_side_artifacts: PreservedSideArtifacts | None = None,
@@ -603,6 +840,19 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="When a motion has >= filter-min-length but < resample-min-length frames, resample it to resample-min-length frames. 0 disables. Defaults to 20.",
     )
+    parser.add_argument(
+        "--rm",
+        dest="rm_pattern",
+        default="",
+        type=str,
+        help=(
+            "Remove motions matching the wildcard pattern from the preprocessed dataset. "
+            "Supports fnmatch globs against motion filenames (e.g. 'Horse_Run*', 'Dog_*', "
+            "'*Dead*'). Combine with --filter to scope to specific species. When all "
+            "motions of a species are deleted, the species is also removed from cond.npy, "
+            "species_tags.jsonl, inspection files, and cache files."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -639,6 +889,15 @@ def main() -> int:
     if args.re_encode_joint_names_only:
         return run_regenerate_side_artifacts(
             args.dataset_dir,
+        )
+
+    # Handle remove motions mode
+    if args.rm_pattern:
+        return run_remove_motions(
+            args.dataset_dir,
+            args.object_filter,
+            args.rm_pattern,
+            args.raw_data_dir,
         )
 
     steps_completed = []

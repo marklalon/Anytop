@@ -935,6 +935,12 @@ def list_object_source_files(object_type, raw_data_dir=None):
         pjoin(fbxs_dir, f) for f in os.listdir(fbxs_dir)
         if f.lower().endswith(('.fbx', '.glb', '.gltf'))
     )
+    # Mirror _prepare_object_outputs: a dedicated T-pose/rest reference file is consumed
+    # as the encoding base (find_tpose_reference_path removes it from anim_files in place)
+    # and never produces a clip, so it never lands in motion_metadata.json. Drop it here
+    # too — otherwise every object carrying a *-TPOSE.fbx would perpetually report one
+    # unprocessed source file and get needlessly reprocessed on every incremental run.
+    find_tpose_reference_path(anim_files)
     return [f for f in anim_files if not should_skip_anim(f, object_type)]
 
 
