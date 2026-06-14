@@ -13,7 +13,7 @@ REM   - Forwards all args to eval/eval_checkpoint.py.
 REM ----------------------------------------------------------------------
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=truebones_zoo_v2
+set RUN_NAME=truebones_zoo_species_v2
 
 pushd "%SCRIPT_DIR%"
 

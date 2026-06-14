@@ -373,6 +373,7 @@ def _collapse_solitary_head_feature_indices(canonical_joint_names):
 
 
 # Lazy lowercase→tags mapping for case-insensitive species lookup
+# (SPECIES_TAGS is loaded from species_tags.jsonl by param_utils).
 _SPECIES_TAGS_LOWER = None
 
 
@@ -393,13 +394,13 @@ def _species_motion_tokens(object_cond):
 
 
 def assert_species_tags_cover(object_types):
-    """Fast-fail unless every ``object_type`` has an entry in ``_SPECIES_TAGS``.
+    """Fast-fail unless every ``object_type`` has an entry in ``species_tags.jsonl``.
 
-    ``_SPECIES_TAGS`` is the single source of truth for the per-species
-    descriptor (``build_species_embedding_text``) and the retarget group
-    discount, and it carries no fallback. Call this at preprocessing and before
-    training so a newly added species without motion tags surfaces immediately
-    rather than silently degrading the species condition.
+    ``species_tags.jsonl`` (loaded via ``param_utils.SPECIES_TAGS``) is the single
+    source of truth for the per-species descriptor (``build_species_embedding_text``)
+    and the retarget group discount, and it carries no fallback. Call this at
+    preprocessing and before training so a newly added species without motion tags
+    surfaces immediately rather than silently degrading the species condition.
     """
     tags_lower = _motion_tags_lower()
     missing = sorted(
@@ -408,12 +409,12 @@ def assert_species_tags_cover(object_types):
          and str(object_type).strip().lower() not in tags_lower}
     )
     if missing:
-        raise ValueError(
-            "_SPECIES_TAGS is missing motion tags for object_type(s): "
-            f"{', '.join(missing)}. Add them in "
-            "data_loaders/truebones/truebones_utils/physics_joint_annotation.py "
-            "(_SPECIES_TAGS) before preprocessing or training."
+        message = (
+            "\033[93mspecies_tags.jsonl is missing tags for object_type(s): "
+            f"{', '.join(missing)}. Add them in the "
+            "species_tags.jsonl sidecar before preprocessing or training.\033[0m"
         )
+        raise SystemExit(message)
 
 
 def build_species_embedding_text(object_cond):
@@ -423,18 +424,18 @@ def build_species_embedding_text(object_cond):
     each joint. This is the one place to refine the species descriptor; keep it
     open-vocabulary text so novel species still map into the same T5 space.
 
-    Returns the motion-relevant body-plan/dynamics tags (_SPECIES_TAGS),
+    Returns the motion-relevant body-plan/dynamics tags from ``species_tags.jsonl``,
     which describe how the animal moves -- the axis that matters for motion and
     that topology alone can't supply. There is no fallback: every species MUST
-    be registered in _SPECIES_TAGS (enforced by
+    be registered in ``species_tags.jsonl`` (enforced by
     assert_species_tags_cover at preprocessing/training time).
     """
     motion_tokens = _species_motion_tokens(object_cond)
     if not motion_tokens:
         object_type = str(object_cond.get('object_type') or '').strip() or '<empty>'
-        raise ValueError(
-            f"No _SPECIES_TAGS entry for object_type '{object_type}'. "
-            "Register it in physics_joint_annotation._SPECIES_TAGS."
+        raise SystemExit(
+            f"\033[93mNo species_tags.jsonl entry for object_type '{object_type}'. "
+            "Register it in the species_tags.jsonl sidecar.\033[0m"
         )
     return ' '.join(motion_tokens)
 

@@ -144,6 +144,20 @@ class FaceOrientationChainForwardTest(unittest.TestCase):
         self.assertEqual(forward_joint_index, 2)
         self.assertIsNone(forward_base_joint_index)
 
+    def test_numeric_zoo_rigs_use_chain_forward_joints(self):
+        jaws_positions = np.zeros((1, 16, 3), dtype=np.float64)
+        jaws_positions[:, 15] = np.array([-0.8, 0.0, 0.0], dtype=np.float64)
+        jaws_positions[:, 3] = np.array([0.3, 0.0, 0.0], dtype=np.float64)
+        jaws_candidates = _get_facing_candidates(jaws_positions, 'Jaws')
+
+        crow_positions = np.zeros((1, 24, 3), dtype=np.float64)
+        crow_positions[:, 8] = np.array([-0.4, 0.0, 0.0], dtype=np.float64)
+        crow_positions[:, 22] = np.array([0.6, 0.0, 0.0], dtype=np.float64)
+        crow_candidates = _get_facing_candidates(crow_positions, 'Crow')
+
+        np.testing.assert_allclose(jaws_candidates['chain'][0], np.array([1.0, 0.0, 0.0]), atol=1e-8)
+        np.testing.assert_allclose(crow_candidates['chain'][0], np.array([1.0, 0.0, 0.0]), atol=1e-8)
+
     def test_across_forward_is_projected_to_xz(self):
         joints = np.zeros((1, 4, 3), dtype=np.float64)
         joints[:, 0] = np.array([1.0, 2.0, 0.0], dtype=np.float64)

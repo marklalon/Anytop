@@ -68,3 +68,6 @@
 {"species": "Eagle", "motion_tags": ["Winged", "Medium", "Soaring"]}
 {"species": "Buzzard", "motion_tags": ["Winged", "Medium", "Soaring"]}
 {"species": "Pteranodon", "motion_tags": ["Winged", "Large", "Soaring"]}
+{"species": "Crow", "motion_tags": ["Winged", "Small", "Flapping"]}
+{"species": "Dog-2", "motion_tags": ["Quadruped", "Small", "Trotting"]}
+{"species": "Jaws", "motion_tags": ["Aquatic", "Large", "Swimming"]}

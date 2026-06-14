@@ -75,6 +75,8 @@ VERTICAL_CLAMP_MAX_RATIO = 0.5
 # 3-tuple (base, neck, head)  -> forward = (head - neck) + (neck - base)
 CHAIN_FORWARD_JOINTS = {
     'Anaconda': (22, 24),
+    'Crow': (8, 22),
+    'Jaws': (15, 3),
     'KingCobra': (4, 8),
     'Pirrana': (9, 2, 3),   # kosi → mune → atama (tail to head)
 }
