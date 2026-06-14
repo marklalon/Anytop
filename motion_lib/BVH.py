@@ -11,10 +11,12 @@ try:
     from .Animation import Animation
     from . import AnimationStructure
     from .Quaternions import Quaternions
+    from .root_collapse import collapse_root_skeleton
 except:
     from Animation import Animation
     import AnimationStructure
     from Quaternions import Quaternions
+    from root_collapse import collapse_root_skeleton
 
 channelmap = {
     'Xrotation' : 'x',
@@ -34,7 +36,7 @@ ordermap = {
     'z' : 2,
 }
 
-def load(filename, start=None, end=None, order=None, world=True):
+def load(filename, start=None, end=None, order=None, world=True, collapse_root=True):
     """
     Reads a BVH file and constructs an animation
     
@@ -57,6 +59,10 @@ def load(filename, start=None, end=None, order=None, world=True):
         If set to true euler angles are applied
         together in world space rather than local
         space
+
+    collapse_root : bool, default True
+        When False, skips redundant root joint removal and wrapper root
+        collapsing. Mirrors ``motion_lib.FBX.load``.
 
     Returns
     -------
@@ -203,31 +209,17 @@ def load(filename, start=None, end=None, order=None, world=True):
 
     rotations = rotations[..., ::-1]
     quat_rotations = Quaternions.from_euler(np.radians(rotations), order=order, world=world)
-    # added for handling truebones common problem of redundant root joint
-    if np.isclose(offsets[1], 0).all():
-        if len(parents[parents == 1]) == 0: # redundant joint #1, just remove
-            offsets[1] = offsets[0]
-            offsets = offsets[1:]
-            quat_rotations[:, 1] = quat_rotations[:, 0]
-            quat_rotations = quat_rotations[:, 1:]
-            positions[:, 1] = positions[:, 0]
-            positions = positions[:, 1:]
-            orients = orients[1:]
-            parents = parents[1:] - 1
-            parents[1:][parents[1:] < 0] = 0
-            names[1] = names[0]
-            names = names[1:]
-        elif len(parents[parents == 0]) == 1: # remove root joint by composing rots, adding pos & offs
-            parent_rots = quat_rotations[:, 0]  # save before composing rotations
-            offsets[1] = offsets[0] + (parent_rots[0:1] * offsets[1:2])[0]  # apply canonical rotation to static offset
-            offsets=offsets[1:]
-            quat_rotations[:, 1] = quat_rotations[:, 0] * quat_rotations[:, 1]
-            quat_rotations = quat_rotations[:, 1: ]
-            positions[:, 1] = positions[:, 0] + parent_rots * positions[:, 1]  # apply parent rotation per-frame
-            positions = positions[:, 1:]
-            orients = orients[1:]
-            parents = parents[1:] - 1
-            names = names[1:]
+    if collapse_root:
+        names, parents, offsets, rotations_qs, positions, orients = collapse_root_skeleton(
+            names,
+            parents,
+            offsets,
+            quat_rotations.qs,
+            positions,
+            orients,
+            warn_path=filename,
+        )
+        quat_rotations = Quaternions(rotations_qs)
 
 
     return (Animation(quat_rotations, positions, orients, offsets, parents), names, frametime)
@@ -237,7 +229,7 @@ _ALL_EULER_ORDERS = ('xyz', 'xzy', 'yxz', 'yzx', 'zxy', 'zyx')
 
 
 def _select_gimbal_safe_order(rotations, candidates=_ALL_EULER_ORDERS):
-    """Pick the uniform euler order that minimises per-channel temporal jitter.
+    """Pick the uniform euler order that round-trips exactly and minimises jitter.
 
     A BVH rotation channel exhibits two kinds of frame-to-frame "jitter" that are
     artifacts of the euler representation, not of the (smooth) orientation:
@@ -251,21 +243,41 @@ def _select_gimbal_safe_order(rotations, candidates=_ALL_EULER_ORDERS):
     orientation-exact (angles are 2*pi periodic). True gimbal swings survive
     unwrapping. We therefore score each candidate by its worst-case unwrapped
     second difference over all joints/channels and pick the smallest — i.e. the
-    order whose channels are smoothest after wraps are removed. Choosing per-file
-    keeps a single uniform order (the only thing ``load`` supports), so it stays
-    fully round-trip safe; ``save`` applies the same unwrap when writing.
+    order whose channels are smoothest after wraps are removed.
+
+    CRITICAL round-trip constraint: ``save`` writes euler via
+    ``Quaternions.euler(order)`` and ``load`` reads it back via
+    ``Quaternions.from_euler(order, world=True)``. These are exact inverses for
+    *generic* rotations, but right ON an order's gimbal singularity (e.g. a joint
+    whose orientation is an exact 90-deg multiple, common in canonicalized rest
+    poses) the closed-form ``euler`` extraction and ``from_euler`` disagree, so the
+    clip would round-trip to a *different* orientation — silently flipping a whole
+    sub-chain's facing by 90 deg. The jitter score does not always catch this
+    (a static pose sitting on the singularity has zero temporal jitter). We
+    therefore explicitly verify the quaternion round-trip per candidate and only
+    consider orders that reconstruct every joint exactly; among those we pick the
+    smoothest. If no candidate round-trips (should not happen), fall back to the
+    overall-smoothest order so behaviour degrades gracefully.
     """
-    best_order, best_score = 'xyz', np.inf
+    best_order, best_score = None, np.inf
+    fallback_order, fallback_score = 'xyz', np.inf
     for order in candidates:
-        e = np.unwrap(rotations.euler(order=order), axis=0)  # (F, J, 3), radians
+        e = rotations.euler(order=order)  # (F, J, 3), radians
+        # Verify save->load is orientation-exact for this order (see docstring).
+        q_round = Quaternions.from_euler(e, order=order, world=True)
+        roundtrip_dot = np.abs(np.sum(rotations.qs * q_round.qs, axis=-1))
+        roundtrip_ok = bool(roundtrip_dot.size == 0 or np.min(roundtrip_dot) > 1.0 - 1e-4)
+        e_unwrapped = np.unwrap(e, axis=0)
         # second difference along time = curvature; gimbal/residual artifacts spike it
-        score = float(np.max(np.abs(np.diff(e, axis=0, n=2)))) if e.shape[0] > 2 else 0.0
-        if score < best_score:
+        score = float(np.max(np.abs(np.diff(e_unwrapped, axis=0, n=2)))) if e.shape[0] > 2 else 0.0
+        if score < fallback_score:
+            fallback_score, fallback_order = score, order
+        if roundtrip_ok and score < best_score:
             best_score, best_order = score, order
-    return best_order
+    return best_order if best_order is not None else fallback_order
 
 
-def save(filename, anim, names=None, frametime=1.0/30.0, order='xyz', positions=False, orients=True):
+def save(filename, anim, names=None, frametime=1.0/30.0, order='auto', positions=False, orients=True):
     """
     Saves an Animation to file as BVH
     
@@ -282,9 +294,11 @@ def save(filename, anim, names=None, frametime=1.0/30.0, order='xyz', positions=
     
     order : str
         Optional Specifier for joint rotation order, from left to right (not print order!).
-        Given as string E.G 'xyz', 'zxy'. Pass 'auto' to pick the uniform order
-        that keeps every joint farthest from euler gimbal-lock (see
-        _select_gimbal_safe_order).
+        Given as string E.G 'xyz', 'zxy'. Defaults to 'auto', which picks the
+        uniform order that round-trips exactly and keeps every joint farthest from
+        euler gimbal-lock (see _select_gimbal_safe_order). Pass an explicit order
+        only when a fixed channel order is required; note that fixed orders are not
+        gimbal-safe for skeletons whose joints sit on that order's singularity.
     
     frametime : float
         Optional Animation Frame time
