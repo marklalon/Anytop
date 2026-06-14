@@ -315,6 +315,25 @@ def _prune_unmapped_armature_bones(
             cursor = parent_of.get(cursor)
         return cursor
 
+    # Objects can be parented directly to a bone, independently of armature
+    # deform vertex groups. If the bone is removed, Blender's dependency graph
+    # repeatedly warns about missing "Bone Parent" relations. Redirect those
+    # object parents before deleting the bones, preserving their rest transform.
+    for obj in bpy.data.objects:
+        if obj.parent != armature or obj.parent_type != "BONE":
+            continue
+        if obj.parent_bone not in remove_names:
+            continue
+        world_matrix = obj.matrix_world.copy()
+        target_name = _nearest_kept_ancestor(obj.parent_bone)
+        if target_name is None:
+            obj.parent_type = "OBJECT"
+            obj.parent_bone = ""
+        else:
+            obj.parent_type = "BONE"
+            obj.parent_bone = target_name
+        obj.matrix_world = world_matrix
+
     # Merge skin weights of removed bones into their nearest kept ancestor so
     # deformation is preserved when a removed bone happened to carry weight.
     related_meshes = [
@@ -397,6 +416,7 @@ def _rename_armature_bones_to_canonical(
     rename = [(old, new) for old, new in name_pairs if old != new]
     if not rename:
         return
+    rename_map = dict(rename)
 
     data_bones = armature.data.bones
     pending_bones: list[tuple[str, str]] = []
@@ -411,6 +431,14 @@ def _rename_armature_bones_to_canonical(
         bone = data_bones.get(temp_name)
         if bone is not None:
             bone.name = new_name
+
+    for obj in bpy.data.objects:
+        if obj.parent == armature and obj.parent_type == "BONE":
+            new_parent_bone = rename_map.get(obj.parent_bone)
+            if new_parent_bone is not None:
+                world_matrix = obj.matrix_world.copy()
+                obj.parent_bone = new_parent_bone
+                obj.matrix_world = world_matrix
 
     related_meshes = [
         obj
@@ -740,7 +768,13 @@ class AnimationExporter:
             # Best-effort and gated so default exports are unchanged.
             if use_image_search:
                 resolve_main_character_textures(bpy, armature, mesh_path)
-            if mesh_path_lower.endswith(".fbx"):
+            # GLB/GLTF T-poses can also carry Blender's 0.01 armature wrapper
+            # scale. In HML restore we need raw rig units before applying the
+            # dataset scale_factor, otherwise the output is 100x too small.
+            if mesh_path_lower.endswith(".fbx") or (
+                global_similarity is not None
+                and mesh_path_lower.endswith((".glb", ".gltf"))
+            ):
                 _normalize_imported_armature_and_meshes(bpy, armature)
             if global_similarity is not None:
                 _apply_gltf_output_space_similarity(bpy, armature, *global_similarity)

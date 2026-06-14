@@ -42,12 +42,13 @@ def import_fbx(filepath: str, use_image_search: bool = False) -> None:
     """
     import bpy
 
-    bpy.ops.wm.fbx_import(
-        filepath=filepath,
-        ignore_leaf_bones=False,
-        use_custom_normals=False,
-        use_anim=True,
-    )
+    with _silence_os_std():
+        bpy.ops.wm.fbx_import(
+            filepath=filepath,
+            ignore_leaf_bones=False,
+            use_custom_normals=False,
+            use_anim=True,
+        )
     if use_image_search:
         bpy.ops.file.find_missing_files(
             directory=os.path.dirname(os.path.abspath(filepath))
@@ -116,7 +117,7 @@ def _load_scene(filepath: str):
     suffix = Path(path).suffix.lower()
 
     clear_scene()
-    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), _silence_os_std():
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         if suffix == ".fbx":
             import_fbx(path)
         elif suffix in {".glb", ".gltf"}:
