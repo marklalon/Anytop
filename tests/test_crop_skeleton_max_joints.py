@@ -15,13 +15,16 @@ from data_loaders.truebones.truebones_utils.animation_utils import (
 )
 
 
-def _make_anim(parents, frames=3):
+def _make_anim(parents, frames=3, offsets=None):
     parents = np.asarray(parents, dtype=np.int32)
     n = len(parents)
     rots = Quaternions(np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (frames, n, 1)))
     orients = Quaternions(np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (n, 1)))
     positions = np.arange(frames * n * 3, dtype=np.float64).reshape(frames, n, 3)
-    offsets = np.arange(n * 3, dtype=np.float64).reshape(n, 3)
+    if offsets is None:
+        offsets = np.arange(n * 3, dtype=np.float64).reshape(n, 3)
+    else:
+        offsets = np.asarray(offsets, dtype=np.float64)
     return Animation(rots, positions, orients, offsets, parents)
 
 
@@ -39,6 +42,39 @@ def test_select_tiebreak_prefers_larger_index():
     keep, removed = select_cropped_joint_indices(parents, max_joints=3)
     assert removed == [3]
     assert keep == [0, 1, 2]
+
+
+def test_select_same_depth_prefers_shorter_bone():
+    parents = [-1, 0, 1, 1]
+    offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.2, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    keep, removed = select_cropped_joint_indices(parents, max_joints=3, offsets=offsets)
+    assert removed == [2]
+    assert keep == [0, 1, 3]
+
+
+def test_select_protects_longer_than_average_bones():
+    parents = [-1, 0, 1, 1, 1]
+    offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.2, 0.0, 0.0],
+            [0.3, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    keep, removed = select_cropped_joint_indices(parents, max_joints=3, offsets=offsets)
+    assert removed == [2, 3]
+    assert keep == [0, 1, 4]
 
 
 def test_select_returns_none_when_within_cap():
@@ -89,8 +125,21 @@ def test_rest_pose_and_motion_crop_to_identical_set():
     # Same topology loaded independently for rest pose vs. a motion clip must crop
     # to the same joint set so the offset-count guard in get_hml_aligned_anim holds.
     parents = [-1, 0, 1, 2, 3, 4, 1, 2]
-    rest = _make_anim(parents, frames=1)
-    motion = _make_anim(parents, frames=10)
+    offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.8, 0.0, 0.0],
+            [0.6, 0.0, 0.0],
+            [0.4, 0.0, 0.0],
+            [0.2, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [0.1, 0.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    rest = _make_anim(parents, frames=1, offsets=offsets)
+    motion = _make_anim(parents, frames=10, offsets=offsets)
     names = [f"j{i}" for i in range(len(parents))]
 
     _, _, keep_rest = crop_animation_to_max_joints(rest, names, max_joints=6)

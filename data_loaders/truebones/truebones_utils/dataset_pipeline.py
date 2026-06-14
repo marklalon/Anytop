@@ -196,11 +196,14 @@ def _process_motion_file(file_path, object_type, max_joints,
     local_errors = dict()
     # Load the animation file (FBX/GLB/GLTF) once; pass it as `preloaded` to every get_motion call so that
     raw_anim, names, frame_time = FBX.load(file_path)
-    # Crop oversized skeletons to the model cap (deepest leaves first) so the loaded
-    # animation and its exported names match the cropped rest-pose offsets. The cap is
+    # Crop oversized skeletons to the model cap so the loaded animation and its
+    # exported names match the cropped rest-pose offsets. Leaves are peeled from
+    # deepest to shallowest; ties at the same depth prefer shorter bones first,
+    # while longer-than-average bones are preserved whenever possible. The cap is
     # the MAX_JOINTS constant, NOT the running ``max_joints`` (which is a growing
-    # dataset-wide maximum used only for padding/metadata). The crop is a deterministic
-    # function of the parent topology, so it removes the same joints the rest pose did.
+    # dataset-wide maximum used only for padding/metadata). The crop stays
+    # deterministic for a given skeleton (same topology and offsets), so it
+    # removes the same joints the rest pose did.
     raw_anim, names, _ = crop_animation_to_max_joints(
         raw_anim,
         names,

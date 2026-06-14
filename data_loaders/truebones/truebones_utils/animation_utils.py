@@ -800,15 +800,18 @@ def _joint_depths_from_parents(parents):
     return depths
 
 
-def select_cropped_joint_indices(parents, max_joints):
+def select_cropped_joint_indices(parents, max_joints, offsets=None):
     """Pick the joints to KEEP so a skeleton fits within ``max_joints``.
 
     Joints are removed one at a time, always taking the deepest current *leaf*
-    (a kept joint with no kept children); ties at equal depth are broken by the
-    larger joint index so trimming starts at the tail/rightmost branch. Because
-    only leaves are ever removed, the kept set stays ancestor-closed: every kept
-    non-root joint still has its parent, so parent remapping is always valid.
-    Roots are never removed.
+    (a kept joint with no kept children). When ``offsets`` are provided, ties at
+    equal depth prefer the *shortest* bone first; only exact ties fall back to
+    the larger joint index so trimming stays deterministic. Non-root joints
+    whose bone length exceeds the mean non-root bone length are treated as
+    protected and are skipped unless no unprotected leaf remains and cropping
+    still must continue. Because only leaves are ever removed, the kept set
+    stays ancestor-closed: every kept non-root joint still has its parent, so
+    parent remapping is always valid. Roots are never removed.
 
     Returns ``(keep_indices, removed_order)`` where ``keep_indices`` is sorted
     ascending and ``removed_order`` lists removed joints deepest-first; returns
@@ -818,6 +821,20 @@ def select_cropped_joint_indices(parents, max_joints):
     n = int(parents.shape[0])
     if n <= int(max_joints):
         return None
+
+    if offsets is not None:
+        offsets = np.asarray(offsets, dtype=np.float64)
+        if offsets.shape[0] != n:
+            raise ValueError(
+                f"Expected {n} joint offsets to crop skeleton, got {offsets.shape[0]}"
+            )
+        bone_lengths = np.linalg.norm(offsets, axis=-1)
+        nonroot_lengths = bone_lengths[parents >= 0]
+        mean_bone_length = float(nonroot_lengths.mean()) if nonroot_lengths.size else 0.0
+        protected = (parents >= 0) & (bone_lengths > mean_bone_length)
+    else:
+        bone_lengths = np.zeros((n,), dtype=np.float64)
+        protected = np.zeros((n,), dtype=bool)
 
     depths = _joint_depths_from_parents(parents)
     kept = [True] * n
@@ -832,6 +849,10 @@ def select_cropped_joint_indices(parents, max_joints):
     while num_kept > int(max_joints):
         best = -1
         best_depth = -1
+        best_length = float("inf")
+        protected_best = -1
+        protected_best_depth = -1
+        protected_best_length = float("inf")
         for joint_index in range(n):
             if not kept[joint_index]:
                 continue
@@ -840,9 +861,45 @@ def select_cropped_joint_indices(parents, max_joints):
             if int(parents[joint_index]) < 0:
                 continue  # never remove a root
             depth = int(depths[joint_index])
-            if depth > best_depth or (depth == best_depth and joint_index > best):
+            bone_length = float(bone_lengths[joint_index])
+            is_better = (
+                depth > best_depth
+                or (
+                    depth == best_depth
+                    and (
+                        bone_length < best_length
+                        or (
+                            np.isclose(bone_length, best_length)
+                            and joint_index > best
+                        )
+                    )
+                )
+            )
+            if protected[joint_index]:
+                protected_is_better = (
+                    depth > protected_best_depth
+                    or (
+                        depth == protected_best_depth
+                        and (
+                            bone_length < protected_best_length
+                            or (
+                                np.isclose(bone_length, protected_best_length)
+                                and joint_index > protected_best
+                            )
+                        )
+                    )
+                )
+                if protected_is_better:
+                    protected_best_depth = depth
+                    protected_best_length = bone_length
+                    protected_best = joint_index
+                continue
+            if is_better:
                 best_depth = depth
+                best_length = bone_length
                 best = joint_index
+        if best < 0:
+            best = protected_best
         if best < 0:
             break  # only roots remain; cannot crop further
         kept[best] = False
@@ -857,14 +914,20 @@ def select_cropped_joint_indices(parents, max_joints):
 
 
 def crop_animation_to_max_joints(anim, names, max_joints=MAX_JOINTS, *, context=None):
-    """Crop ``anim``/``names`` to at most ``max_joints`` joints, deepest leaves first.
+    """Crop ``anim``/``names`` to at most ``max_joints`` joints.
+
+    Cropping always removes current leaves first. Deeper leaves are removed
+    before shallower ones; at the same depth, shorter bones are trimmed before
+    longer ones. Non-root joints whose rest-offset length exceeds the mean
+    non-root bone length are preserved whenever possible and are only dropped as
+    a last resort when the cap still cannot be met.
 
     Returns ``(anim, names, keep_indices)``. When no cropping is needed the
     inputs are returned unchanged with ``keep_indices=None``. When cropping
     happens a yellow [WARN] log line names the dropped joints so the affected
     clip/skeleton is easy to spot. The keep-set is a deterministic function of
-    the parent topology, so the rest-pose skeleton and every motion clip of the
-    same character crop to the identical joint set.
+    the parent topology and rest-pose offsets, so the rest-pose skeleton and
+    every motion clip of the same character crop to the identical joint set.
     """
     parents = np.asarray(anim.parents, dtype=np.int64)
     n = int(parents.shape[0])
@@ -874,7 +937,7 @@ def crop_animation_to_max_joints(anim, names, max_joints=MAX_JOINTS, *, context=
             f"Expected {n} joint names to crop skeleton, got {len(names)}"
         )
 
-    selection = select_cropped_joint_indices(parents, max_joints)
+    selection = select_cropped_joint_indices(parents, max_joints, offsets=anim.offsets)
     if selection is None:
         return anim, names, None
     keep_indices, removed_order = selection
