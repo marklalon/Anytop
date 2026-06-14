@@ -29,55 +29,24 @@ except ImportError:
 
 # ── FBX import utilities (merged from utils/fbx.py) ─────────────────────────
 
-def patch_fbx_light_import():
-    """Monkey-patch the FBX importer's blen_read_light to handle Blender 5.0."""
-    import sys
-    import importlib
-
-    mod = sys.modules.get("io_scene_fbx.import_fbx")
-    if mod is None:
-        try:
-            mod = importlib.import_module("io_scene_fbx.import_fbx")
-        except ImportError:
-            return
-    if mod is None or not hasattr(mod, "blen_read_light"):
-        return
-
-    original_fn = mod.blen_read_light
-
-    def _patched_blen_read_light(fbx_tmpl, fbx_obj, settings, _orig=original_fn):
-        try:
-            return _orig(fbx_tmpl, fbx_obj, settings)
-        except AttributeError as exc:
-            if "cast_shadow" in str(exc):
-                return None
-            raise
-
-    mod.blen_read_light = _patched_blen_read_light
-
-
 def import_fbx(filepath: str, use_image_search: bool = False) -> None:
     """Import an FBX file into the current Blender scene.
 
     Always imports with ``ignore_leaf_bones=False`` so that leaf bones carrying
     animation (tail tips, hair, halter, etc.) are preserved.
 
-    ``use_image_search`` (default ``False``) lets the importer recursively look
-    for texture files in directories near the FBX when the embedded texture
-    path does not resolve — useful for assets whose textures ship in a sibling
-    ``tex/`` folder but whose baked-in paths are stale.
+    .. deprecated::
+        The ``use_image_search`` parameter is accepted for backward compatibility
+        but **ignored** — the extension-based ``wm.fbx_import`` operator does not
+        expose it.  It will be removed in a future version.
     """
     import bpy
 
-    patch_fbx_light_import()
-    bpy.ops.import_scene.fbx(
+    bpy.ops.wm.fbx_import(
         filepath=filepath,
         ignore_leaf_bones=False,
-        force_connect_children=False,
-        automatic_bone_orientation=False,
-        bake_space_transform=False,
         use_custom_normals=False,
-        use_image_search=use_image_search,
+        use_anim=True,
     )
 
 
