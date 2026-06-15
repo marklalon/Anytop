@@ -1357,14 +1357,29 @@ def retarget_world_space_np(
                     L = tgt_rest_len * stretch                     # (F,)
                     target_wpos[:, j] = target_wpos[:, p] + L[:, None] * d
                 else:
-                    # Structurally degenerate source helper bone (≈0 rest length,
-                    # e.g. a zero-length locator): the direction is meaningless and
-                    # may flicker frame to frame, so fall back to the target's rest
-                    # offset consistently for the whole clip.
+                    # Structurally degenerate source bone (≈0 rest length, e.g. a
+                    # zero-length locator / control bone). Two sub-cases:
+                    #   (a) the bone is also ≈0 animated, or its length flickers
+                    #       across the _EPS noise floor frame-to-frame — the
+                    #       direction is meaningless, so fall back to the target's
+                    #       rest offset consistently for the whole clip (the
+                    #       _stable_valid jitter fix; e.g. a zero-len Bip01_Pelvis
+                    #       driving the dragon Spine).
+                    #   (b) the bone has a CONSISTENT, real animated length despite
+                    #       its ≈0 rest length — e.g. a zero-rest control bone
+                    #       ('C_ctrl' under Hips) that carries a pure *translation*
+                    #       lifting the whole body during locomotion. That motion
+                    #       lives only in the animated offset, not in any rest bone
+                    #       length, so it cannot be expressed as tgt_rest_len·dir:
+                    #       tgt_rest_len ≈ 0 would collapse the joint onto its parent
+                    #       and sink the whole subtree below the floor (manifested as
+                    #       restored Run-gait feet punching through the ground while
+                    #       calm clips, whose control bone stays inert, were fine).
+                    #       Transfer the source's animated world offset verbatim —
+                    #       exact for self-retarget, and the only faithful option
+                    #       when there is no rest proportion to scale from.
                     valid = _stable_valid(bn)
-                    d = src_bv_aligned[:, ii] / np.where(valid, bn, 1.0)[:, None]
-                    L = tgt_rest_len                               # stretch == 1
-                    dir_pos = target_wpos[:, p] + L * d
+                    dir_pos = target_wpos[:, p] + src_bv_aligned[:, ii]
                     rest_pos = target_wpos[:, p] + quat_rotate_wxyz_np(
                         transport[:, p], rest_off_j,
                     )
