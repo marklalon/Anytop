@@ -811,10 +811,11 @@ class InputProcess(nn.Module):
         self.joint_embedding = nn.Linear(self.input_feats, self.latent_dim)
         self.tpos_joint_embedding = nn.Linear(self.input_feats, self.latent_dim)
         self.joints_names_dropout = nn.Dropout(p=dropout_prob)
-        # When --species_joint_cond, the species descriptor is broadcast across
-        # joints and concatenated onto each joint-name T5 embedding before projection,
-        # so the fused token carries both joint identity and body-plan context.
-        text_in_dim = 2 * t5_output_dim if species_joint_cond else t5_output_dim
+        # When --species_joint_cond, the species descriptor is projected into the
+        # joint-name T5 space and added to each per-joint embedding, shifting the
+        # joint's semantic identity toward the body-plan context of the species.
+        text_in_dim = t5_output_dim
+        self.species_proj = nn.Linear(t5_output_dim, t5_output_dim) if species_joint_cond else None
         self.text_embedding = nn.Linear(text_in_dim, self.latent_dim)
     def forward(self, x, tpos_first_frame, joints_embedded_names, species_emb=None):
         # x.shape = [batch_size, joints, 13, frames]
@@ -835,7 +836,7 @@ class InputProcess(nn.Module):
                 )
             # joints_embedded_names: [B, J, t5]; species_emb: [B, t5] -> broadcast to [B, J, t5]
             species_broadcast = species_emb.to(x.device).unsqueeze(1).expand(-1, joints_embedded_names.shape[1], -1)
-            joints_embedded_names = torch.cat([joints_embedded_names, species_broadcast], dim=-1)
+            joints_embedded_names = joints_embedded_names + self.species_proj(species_broadcast)
         joints_embedded_names = self.text_embedding(joints_embedded_names)
         x = x + joints_embedded_names[None, ...]# [frames, batch_size, n_joints, d]
         positions = torch.arange(x.shape[0], device=x.device).view(1, -1, 1).repeat(x.shape[1], 1, 1)

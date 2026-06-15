@@ -142,9 +142,10 @@ def add_model_options(parser):
                             "classifier-free guidance over the species descriptor. Default 0.15.")
     group.add_argument("--species_joint_cond", action='store_true',
                        help="Also fuse the species descriptor into the per-joint name embedding: "
-                            "broadcast species_emb across joints, concat with the joint-name T5 embedding, "
-                            "and project together (Linear 2*t5->latent). Per-joint structural conditioning, "
-                            "orthogonal to (and combinable with) the --species_cond FiLM. Requires 'species_emb'.")
+                            "project species_emb through a Linear(D->D) and add it to each joint-name T5 "
+                            "embedding, shifting joint semantics toward the body-plan context of the "
+                            "species. Per-joint structural conditioning, orthogonal to (and combinable "
+                            "with) the --species_cond FiLM. Requires 'species_emb'.")
     group.add_argument("--action_tag_cond", action='store_true',
                        help="Enable action-tag conditioning: a multi-hot over the canonical action-tag "
                             "vocabulary is projected and added to the timestep token.")
