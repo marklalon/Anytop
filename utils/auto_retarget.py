@@ -803,6 +803,7 @@ def auto_retarget_pipeline(
     donor_skeletons_override=None,
     max_joints: int = MAX_JOINTS,
     fps: float = FPS,
+    crop_enabled: bool = True,
 ) -> dict:
     """Auto-retarget motions from top-k similar training donors onto the target.
 
@@ -850,7 +851,8 @@ def auto_retarget_pipeline(
         _scale,
         _sq_err,
         max_joints_tgt,
-    ) = build_tpose_cond(target_object_type, target_tpose_path, face_joints_names)
+    ) = build_tpose_cond(target_object_type, target_tpose_path, face_joints_names,
+                          crop_enabled=crop_enabled)
     max_joints = max(max_joints, max_joints_tgt)
     target_effective_root_index = infer_object_consensus_effective_root_index(
         training_motions_dir,
@@ -944,7 +946,7 @@ def auto_retarget_pipeline(
         source_tp = get_common_features_from_T_pose(
             donor_fbx,
             donor_name,
-            max_joints=max_joints,
+            max_joints=MAX_JOINTS if crop_enabled else 2 ** 16,
         )
         donor_effective_root_index = _infer_donor_consensus_effective_root_index(
             donor_npys,

@@ -192,24 +192,26 @@ def object_policy(obj):
 
 def _process_motion_file(file_path, object_type, max_joints,
                          offsets, foot_indices, tpos_rots, scale_factor,
-                         orientation_quat):
+                         orientation_quat, crop_enabled=True):
     local_errors = dict()
+    _crop_max = MAX_JOINTS if crop_enabled else 2 ** 16
     # Load the animation file (FBX/GLB/GLTF) once; pass it as `preloaded` to every get_motion call so that
     raw_anim, names, frame_time = FBX.load(file_path)
-    # Crop oversized skeletons to the model cap so the loaded animation and its
+    # Crop oversized skeletons to the crop cap so the loaded animation and its
     # exported names match the cropped rest-pose offsets. Leaves are peeled from
     # deepest to shallowest; ties at the same depth prefer shorter bones first,
-    # while longer-than-average bones are preserved whenever possible. The cap is
-    # the MAX_JOINTS constant, NOT the running ``max_joints`` (which is a growing
-    # dataset-wide maximum used only for padding/metadata). The crop stays
-    # deterministic for a given skeleton (same topology and offsets), so it
-    # removes the same joints the rest pose did.
-    raw_anim, names, _ = crop_animation_to_max_joints(
-        raw_anim,
-        names,
-        max_joints=MAX_JOINTS,
-        context=f"{object_type} '{os.path.basename(str(file_path))}'",
-    )
+    # while longer-than-average bones are preserved whenever possible. The cap
+    # is ``_crop_max`` (defaults to MAX_JOINTS for training); the running
+    # ``max_joints`` is a dataset-wide maximum used only for padding/metadata.
+    # The crop stays deterministic for a given skeleton (same topology and
+    # offsets), so it removes the same joints the rest pose did.
+    if crop_enabled:
+        raw_anim, names, _ = crop_animation_to_max_joints(
+            raw_anim,
+            names,
+            max_joints=_crop_max,
+            context=f"{object_type} '{os.path.basename(str(file_path))}'",
+        )
     anim_len = len(raw_anim)
     begin = 0
     file_max_joints = max_joints
@@ -313,13 +315,15 @@ def _build_motion_metadata_entry(result, motion_file_name):
 
 
 """Load a reference FBX/GLB, build rest-pose-based cond, and return all caller values."""
-def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=MAX_JOINTS):
+def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=MAX_JOINTS,
+                          crop_enabled=True):
     squared_positions_error = dict()
+    _crop_max = MAX_JOINTS if crop_enabled else 2 ** 16
     tp = get_common_features_from_rest_pose(
         rest_pose_path,
         object_type,
         face_joints=face_joints,
-        max_joints=MAX_JOINTS,
+        max_joints=_crop_max,
     )
     character_scale_factor = float(tp.scale_factor)
     rest_pose_motion, parents, max_joints, new_anim, _export_anim, _rest_is_loop, _rest_translation_root_index, _rest_root_translation_xz = get_motion(
@@ -393,9 +397,9 @@ def build_tpose_cond(*args, **kwargs):
 
 
 """Build the rest-pose cond dict from a single FBX/GLB file (no motion files needed)."""
-def _build_rest_pose_only_cond(object_type, rest_pose_path, face_joints):
+def _build_rest_pose_only_cond(object_type, rest_pose_path, face_joints, crop_enabled=True):
     object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints = _build_rest_pose_cond(
-        object_type, rest_pose_path, face_joints,
+        object_type, rest_pose_path, face_joints, crop_enabled=crop_enabled,
     )
     num_joints = len(parents)
 
@@ -445,7 +449,7 @@ already produced clips on disk. Matching files are dropped from this run so only
 added source files are (re)processed. The rest-pose reference carrier is still selected
 from the full file list, so the per-object cond stays stable regardless of which clips
 are new. Returns None when no source files remain to process (object fully up to date)."""
-def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None):
+def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, crop_enabled=True):
     object_cond = dict()
     if fbxs_dir is None:
         fbxs_dir = pjoin(get_raw_data_dir(raw_data_dir), object_type)
@@ -487,7 +491,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
 
     squared_positions_error = dict()
     object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints = _build_rest_pose_cond(
-        object_type, t_pos_path, face_joints, max_joints=max_joints,
+        object_type, t_pos_path, face_joints, max_joints=max_joints, crop_enabled=crop_enabled,
     )
     all_tensors = list()
 
@@ -506,6 +510,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             tp.tpos_rots,
             character_scale_factor,
             orientation_quat=tp.orientation_quat,
+            crop_enabled=crop_enabled,
         )
 
     file_outputs = [process_file(file_path) for file_path in anim_files]
@@ -685,7 +690,7 @@ def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, fi
 
 """ creates processed tensors for all the files of a given object. Returens statistics and the object condition,
 which includes rest-pose/tpos-compatible conditioning, relation/distances matrices, offsets, parents, joints names, kinematic chains, mean and std"""    
-def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, action_start_counts=None):
+def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, action_start_counts=None, crop_enabled=True):
     object_payload = _prepare_object_outputs(
         object_type,
         max_joints,
@@ -694,6 +699,7 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
         t_pos_path=t_pos_path,
         max_files=max_files,
         raw_data_dir=raw_data_dir,
+        crop_enabled=crop_enabled,
     )
     if object_payload is None:
         return files_counter, frames_counter, max_joints, None, {}
@@ -1133,7 +1139,8 @@ def _update_retarget(object_name, save_dir, motions_from_npys, target_cond_parti
 
 
 def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=None,
-                     motions_from_npys=None, target_cond_partial=None, update=False):
+                     motions_from_npys=None, target_cond_partial=None, update=False,
+                     crop_enabled=True):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(save_dir, BVHS_DIR), exist_ok=True)
@@ -1202,6 +1209,7 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
             object_name,
             tpose_path,
             face_joints,
+            crop_enabled=crop_enabled,
         )
         cond[object_name] = object_cond
         _write_dataset_artifacts(
@@ -1227,6 +1235,7 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
         fbxs_dir=anim_dir,
         face_joints=face_joints,
         t_pos_path=tpose_path,
+        crop_enabled=crop_enabled,
     )
     if object_cond is None:
         print(f"No valid animation data found for '{object_name}', aborting.")
