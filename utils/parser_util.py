@@ -132,10 +132,19 @@ def add_model_options(parser):
                            "the energy condition with the running mean, forcing the model to learn "
                            "to actually respond to it. Default 0.1.")
     group.add_argument("--species_cond", action='store_true',
-                       help="Enable per-species conditioning: a clean T5-derived species descriptor "
-                            "(separate from per-joint name embeddings) is projected (zero-init, "
-                            "near-no-regret) and added to the timestep token, which every decoder "
-                            "layer re-injects. Requires cond.npy regenerated with per-species 'species_emb'.")
+                       help="Enable per-species FiLM conditioning: the T5-derived species descriptor "
+                            "modulates the timestep token multiplicatively (gamma=1+res, beta; zero-init "
+                            "so it starts at identity), which every decoder layer re-injects. CFG-droppable "
+                            "(see --species_cfg_drop_prob). Requires cond.npy regenerated with 'species_emb'.")
+    group.add_argument("--species_cfg_drop_prob", default=0.15, type=float,
+                       help="Per-sample probability of hard-dropping the species FiLM condition during "
+                            "training (replaced by identity modulation gamma=1, beta=0), enabling "
+                            "classifier-free guidance over the species descriptor. Default 0.15.")
+    group.add_argument("--species_joint_cond", action='store_true',
+                       help="Also fuse the species descriptor into the per-joint name embedding: "
+                            "broadcast species_emb across joints, concat with the joint-name T5 embedding, "
+                            "and project together (Linear 2*t5->latent). Per-joint structural conditioning, "
+                            "orthogonal to (and combinable with) the --species_cond FiLM. Requires 'species_emb'.")
     group.add_argument("--action_tag_cond", action='store_true',
                        help="Enable action-tag conditioning: a multi-hot over the canonical action-tag "
                             "vocabulary is projected and added to the timestep token.")

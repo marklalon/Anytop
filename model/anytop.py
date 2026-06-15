@@ -57,6 +57,12 @@ class AnyTop(nn.Module):
         self.temporal_span_mask_max_frames=int(kargs.get('temporal_span_mask_max_frames', 12))
         self.global_energy_cond=bool(kargs.get('global_energy_cond', False))
         self.species_cond=bool(kargs.get('species_cond', False))
+        self.species_cfg_drop_prob=float(kargs.get('species_cfg_drop_prob', 0.15))
+        if not 0.0 <= self.species_cfg_drop_prob <= 1.0:
+            raise ValueError(
+                f"species_cfg_drop_prob must be in [0, 1], got {self.species_cfg_drop_prob}"
+            )
+        self.species_joint_cond=bool(kargs.get('species_joint_cond', False))
         self.loop_cond_prob=float(kargs.get('loop_cond_prob', 1.0))
         self.global_energy_stats_momentum = 0.01
         # CFG drop probability for global energy conditioning during training.
@@ -97,7 +103,7 @@ class AnyTop(nn.Module):
                 f"(got min={self.temporal_span_mask_min_frames}, max={self.temporal_span_mask_max_frames})"
             )
 
-        self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, dropout_prob=self.dropout)
+        self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, dropout_prob=self.dropout, species_joint_cond=self.species_joint_cond)
         if self.global_energy_cond:
             # NOTE: do NOT prepend nn.LayerNorm(1) here. LayerNorm over a
             # size-1 feature dim maps every scalar input to a constant (mean=x
@@ -153,22 +159,28 @@ class AnyTop(nn.Module):
             self.action_tag_to_index = {}
             self.action_tag_projection = None
 
-        # Per-species condition: a clean, T5-derived species descriptor
-        # (separate from the per-joint name embeddings) added to the timestep
-        # embedding, which every decoder layer re-injects via embed_timesteps
-        # -> deep, per-layer modulation. The final linear is zero-initialized so
-        # the species condition starts at 0 (identity to the baseline), giving a
-        # near-no-regret addition that only deviates if it lowers the loss.
+        # Per-species condition: a T5-derived species descriptor that FiLM-modulates
+        # the timestep embedding (which every decoder layer re-injects via
+        # embed_timesteps -> deep, per-layer modulation). The head emits
+        # (gamma_residual, beta); the effective scale is gamma = 1 + gamma_residual.
+        # The final linear is zero-initialized so the condition starts at *identity*
+        # (gamma=1, beta=0) -- a no-regret start. Unlike a zero-init *additive* token
+        # (which collapses to dead when the signal is recoverable from the per-joint
+        # name path -- see species_cond_no_lsimple_effect), the multiplicative form can
+        # express scalings the additive joint path cannot, so the two stay orthogonal
+        # even when --species_joint_cond also injects the descriptor per joint.
+        # CFG-droppable: hard-dropped samples bypass to identity (NOT a running-mean
+        # substitute), so the model learns a true unconditional mode for guidance.
         if self.species_cond:
-            self.species_projection = nn.Sequential(
+            self.species_film = nn.Sequential(
                 nn.Linear(t5_out_dim, self.latent_dim),
                 nn.GELU(),
-                nn.Linear(self.latent_dim, self.latent_dim),
+                nn.Linear(self.latent_dim, 2 * self.latent_dim),
             )
-            nn.init.zeros_(self.species_projection[-1].weight)
-            nn.init.zeros_(self.species_projection[-1].bias)
+            nn.init.zeros_(self.species_film[-1].weight)
+            nn.init.zeros_(self.species_film[-1].bias)
         else:
-            self.species_projection = None
+            self.species_film = None
 
         seqTransDecoderLayer = GraphMotionDecoderLayer(d_model=self.latent_dim,
                                                             nhead=self.num_heads,
@@ -577,16 +589,13 @@ class AnyTop(nn.Module):
             return None
         return mask
 
-    def _build_species_token(self, y, batch_size, device, dtype):
-        """Project the per-species T5 descriptor into a [B, latent_dim] token
-        added to the timestep embedding. Returns None when species
-        conditioning is disabled."""
-        if self.species_projection is None:
-            return None
+    def _coerce_species_emb(self, y, batch_size, device, dtype):
+        """Pull y['species_emb'] and broadcast it to [B, t5_out_dim]. Shared by the
+        FiLM head (--species_cond) and the per-joint fusion (--species_joint_cond)."""
         raw_species_emb = y.get('species_emb') if y is not None else None
         if raw_species_emb is None:
             raise ValueError(
-                "species_cond is enabled but y['species_emb'] is missing. "
+                "species conditioning is enabled but y['species_emb'] is missing. "
                 "Regenerate cond.npy so each species carries 'species_emb'."
             )
         species_emb = torch.as_tensor(raw_species_emb, device=device, dtype=dtype)
@@ -599,7 +608,43 @@ class AnyTop(nn.Module):
                 "species_emb batch dimension must match the motion batch size, got "
                 f"{species_emb.shape[0]} for batch {batch_size}"
             )
-        return self.species_projection(species_emb)
+        return species_emb
+
+    def _resolve_species_active(self, raw_species_active, batch_size, device):
+        """Per-sample keep mask for the species FiLM condition. An explicit
+        y['species_active'] (e.g. the unconditional branch at sampling) overrides;
+        otherwise training samples a Bernoulli keep so the condition is hard-dropped
+        with probability species_cfg_drop_prob; eval/inference keeps every sample."""
+        if raw_species_active is not None:
+            active = torch.as_tensor(raw_species_active, device=device, dtype=torch.bool).reshape(-1)
+            if active.numel() == 1 and batch_size != 1:
+                active = active.expand(batch_size)
+            elif active.numel() != batch_size:
+                raise ValueError(
+                    "species_active batch dimension must match the motion batch size, got "
+                    f"{active.numel()} for batch {batch_size}"
+                )
+            return active
+        if self.training and self.species_cfg_drop_prob > 0.0:
+            return torch.rand(batch_size, device=device) >= self.species_cfg_drop_prob
+        return torch.ones(batch_size, device=device, dtype=torch.bool)
+
+    def _apply_species_film(self, timesteps_emb, y, batch_size, device, dtype):
+        """FiLM-modulate the timestep embedding by the species descriptor:
+        out = gamma * t + beta with gamma = 1 + gamma_residual (zero-init -> identity
+        at start). Hard-dropped/unconditional samples bypass to identity (gamma=1,
+        beta=0) rather than a running-mean substitute. No-op when disabled."""
+        if self.species_film is None:
+            return timesteps_emb
+        species_emb = self._coerce_species_emb(y, batch_size, device, dtype)
+        gamma_residual, beta = self.species_film(species_emb).chunk(2, dim=-1)
+        gamma = 1.0 + gamma_residual
+        active = self._resolve_species_active(
+            y.get('species_active') if y is not None else None, batch_size, device
+        ).view(batch_size, 1)
+        gamma = torch.where(active, gamma, torch.ones_like(gamma))
+        beta = torch.where(active, beta, torch.zeros_like(beta))
+        return gamma * timesteps_emb + beta
 
     def forward(self, x, timesteps, y=None, train_step=None, **unused_kwargs):
         """
@@ -624,6 +669,10 @@ class AnyTop(nn.Module):
         # cross-joint pathway to denoise robustly against per-joint timestep
         # disagreement (matching inpaint clamp behavior at inference).
         timesteps_emb = create_sin_embedding(timesteps.view(1, -1, 1), self.latent_dim)[0]
+        # Species FiLM modulates the base time signal *before* the additive
+        # condition tokens (action/loop/playspeed) are summed, so each conditioning
+        # channel stays independent and the additive tokens are not scaled by it.
+        timesteps_emb = self._apply_species_film(timesteps_emb, y, bs, x.device, x.dtype)
         playspeed_condition = self._coerce_playspeed_cond(
             y.get('playspeed_cond'),
             batch_size=bs,
@@ -642,9 +691,6 @@ class AnyTop(nn.Module):
         action_tag_token = self._build_action_tag_token(y, bs, x.device, x.dtype)
         if action_tag_token is not None:
             timesteps_emb = timesteps_emb + action_tag_token
-        species_token = self._build_species_token(y, bs, x.device, x.dtype)
-        if species_token is not None:
-            timesteps_emb = timesteps_emb + species_token
 
         loop_phase_mask = None
         raw_loop_phase_mask = y.get('is_loop')
@@ -669,7 +715,10 @@ class AnyTop(nn.Module):
                     )
                 loop_phase_mask = loop_phase_mask & loop_full_cycle_mask
 
-        x = self.input_process(x, tpos_first_frame, y['joints_names_embs']) # applies linear layer on each frame to convert it to latent dim
+        species_emb_for_joints = (
+            self._coerce_species_emb(y, bs, x.device, x.dtype) if self.species_joint_cond else None
+        )
+        x = self.input_process(x, tpos_first_frame, y['joints_names_embs'], species_emb_for_joints) # applies linear layer on each frame to convert it to latent dim
         spatial_mask = (1.0 - joints_padding_mask[:, 0, 0, 1:, 1:].float()) * -1e4
         spatial_mask = spatial_mask.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
 
@@ -751,18 +800,23 @@ class AnyTop(nn.Module):
 # in the case of GMDM, the input process is as follows: 
 # embed each joint of each frame of each motion in batch by the same MLP, separately ! 
 class InputProcess(nn.Module):
-    def __init__(self, input_feats, root_input_feats, latent_dim, t5_output_dim, dropout_prob=0):
+    def __init__(self, input_feats, root_input_feats, latent_dim, t5_output_dim, dropout_prob=0, species_joint_cond=False):
         super().__init__()
         self.input_feats = input_feats
         self.latent_dim = latent_dim
         self.root_input_feats = root_input_feats
+        self.species_joint_cond = species_joint_cond
         self.root_embedding = nn.Linear(self.root_input_feats, self.latent_dim)
         self.tpos_root_embedding = nn.Linear(self.root_input_feats, self.latent_dim)
         self.joint_embedding = nn.Linear(self.input_feats, self.latent_dim)
         self.tpos_joint_embedding = nn.Linear(self.input_feats, self.latent_dim)
         self.joints_names_dropout = nn.Dropout(p=dropout_prob)
-        self.text_embedding = nn.Linear(t5_output_dim, self.latent_dim)
-    def forward(self, x, tpos_first_frame, joints_embedded_names):
+        # When --species_joint_cond, the species descriptor is broadcast across
+        # joints and concatenated onto each joint-name T5 embedding before projection,
+        # so the fused token carries both joint identity and body-plan context.
+        text_in_dim = 2 * t5_output_dim if species_joint_cond else t5_output_dim
+        self.text_embedding = nn.Linear(text_in_dim, self.latent_dim)
+    def forward(self, x, tpos_first_frame, joints_embedded_names, species_emb=None):
         # x.shape = [batch_size, joints, 13, frames]
         x = x.permute(3, 0, 1, 2) # [frames, batch_size, n_joints, features_len]
         tpos_all_joints_except_root = self.tpos_joint_embedding(tpos_first_frame[:, :, 1:])
@@ -772,7 +826,17 @@ class InputProcess(nn.Module):
         tpos_embedded = torch.cat([tpos_root_data, tpos_all_joints_except_root], dim=2)
         x_embedded = torch.cat([root_data, all_joints_except_root], dim=2)
         x = torch.cat([tpos_embedded, x_embedded], dim=0)
-        joints_embedded_names = self.text_embedding(self.joints_names_dropout(joints_embedded_names.to(x.device)))
+        joints_embedded_names = self.joints_names_dropout(joints_embedded_names.to(x.device))
+        if self.species_joint_cond:
+            if species_emb is None:
+                raise ValueError(
+                    "species_joint_cond is enabled but species_emb was not passed to "
+                    "InputProcess (expected y['species_emb'])."
+                )
+            # joints_embedded_names: [B, J, t5]; species_emb: [B, t5] -> broadcast to [B, J, t5]
+            species_broadcast = species_emb.to(x.device).unsqueeze(1).expand(-1, joints_embedded_names.shape[1], -1)
+            joints_embedded_names = torch.cat([joints_embedded_names, species_broadcast], dim=-1)
+        joints_embedded_names = self.text_embedding(joints_embedded_names)
         x = x + joints_embedded_names[None, ...]# [frames, batch_size, n_joints, d]
         positions = torch.arange(x.shape[0], device=x.device).view(1, -1, 1).repeat(x.shape[1], 1, 1)
         pos_emb = create_sin_embedding(positions, self.latent_dim)[0]

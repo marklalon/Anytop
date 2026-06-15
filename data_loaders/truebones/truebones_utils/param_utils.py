@@ -133,6 +133,15 @@ SPECIES_TAGS = load_species_tags()
 # aquatic / winged); values are derived from SPECIES_TAGS.
 OBJECT_SUBSETS_DICT = build_object_subsets_dict(SPECIES_TAGS)
 
+# Composite subset: all footed creatures (有足动物), excluding serpentine & aquatic.
+# Combines quadruped + biped + multiped + winged.
+OBJECT_SUBSETS_DICT["podata"] = (
+        OBJECT_SUBSETS_DICT["quadruped"]
+        + OBJECT_SUBSETS_DICT["biped"]
+        + OBJECT_SUBSETS_DICT["multiped"]
+        + OBJECT_SUBSETS_DICT["winged"]
+)
+
 
 def parse_action_tags(raw_action_tags):
         if raw_action_tags is None:

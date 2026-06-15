@@ -110,6 +110,8 @@ def get_gmdm_args(args):
             'global_energy_cond': getattr(args, 'global_energy_cond', False),
             'global_energy_cfg_drop_prob': getattr(args, 'global_energy_cfg_drop_prob', 0.1),
             'species_cond': getattr(args, 'species_cond', False),
+            'species_cfg_drop_prob': getattr(args, 'species_cfg_drop_prob', 0.15),
+            'species_joint_cond': getattr(args, 'species_joint_cond', False),
             'action_tag_cond': getattr(args, 'action_tag_cond', False),
             'action_tag_cfg_drop_prob': getattr(args, 'action_tag_cfg_drop_prob', 0.3),
             'loop_cond_prob': getattr(args, 'loop_cond_prob', 1.0),
