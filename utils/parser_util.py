@@ -416,6 +416,10 @@ def process_new_skeleton_args():
     group.add_argument("--donor-skeletons", default=None, type=str,
                        help="Comma-separated donor skeleton names to use instead of auto-selection, "
                             "e.g. 'Bison,Cow,Horse'. Only effective with --retarget-top-k.")
+    group.add_argument("--crop-enabled", action='store_true', default=False,
+                       help="Enable automatic skeleton cropping to MAX_JOINTS=100. "
+                            "Off by default because inference has no joint cap; "
+                            "enable for training-compatible preprocessing.")
     group.add_argument("--update", action='store_true',
                        help="Incremental update mode. Instead of clearing --save-dir and rebuilding "
                            "from scratch, merge the current --anim-dir batch into the existing "
