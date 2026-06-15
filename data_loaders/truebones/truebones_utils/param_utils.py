@@ -78,7 +78,7 @@ CHAIN_FORWARD_JOINTS = {
     'Crow': (8, 22),
     'Jaws': (15, 3),
     'KingCobra': (4, 8),
-    'Pirrana': (9, 2, 3),   # kosi → mune → atama (tail to head)
+    'Pirrana': (10, 3, 4),  # kosi → mune(Chest) → atama(Head) (tail to head); indices are collapsed-skeleton order
 }
 
 def load_species_tags(dataset_dir=None):

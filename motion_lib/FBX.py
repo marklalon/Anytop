@@ -38,7 +38,9 @@ def import_fbx(filepath: str, use_image_search: bool = False) -> None:
     When ``use_image_search`` is true, run Blender's missing-file search after
     import so external textures in sibling folders such as ``tex/`` are
     resolved for the new ``wm.fbx_import`` operator, which does not expose the
-    old add-on importer's ``use_image_search`` parameter directly.
+    old add-on importer's ``use_image_search`` parameter directly, then repair
+    any image datablocks whose pixels never loaded (see
+    :func:`_reload_unloaded_images`).
     """
     import bpy
 
@@ -53,6 +55,52 @@ def import_fbx(filepath: str, use_image_search: bool = False) -> None:
         bpy.ops.file.find_missing_files(
             directory=os.path.dirname(os.path.abspath(filepath))
         )
+        _reload_unloaded_images(bpy)
+
+
+def _reload_unloaded_images(bpy) -> None:
+    """Force-load image datablocks whose pixels failed to populate at import.
+
+    ``wm.fbx_import`` creates image datablocks pointing at the FBX's embedded
+    ``.fbm`` cache path; when that cache is absent the pixels never load
+    (``size == (0, 0)``).  ``find_missing_files`` relinks the *filepath* to the
+    real texture on disk but does **not** repopulate the pixels, and
+    ``Image.reload()`` cannot revive such a datablock.  The glTF exporter embeds
+    images by their loaded pixel data, so an unloaded image is silently dropped
+    from the GLB — the restored mesh loses its diffuse (texture wiring is
+    otherwise correct).
+
+    For each image that has a readable on-disk filepath but no loaded pixels,
+    load a fresh datablock (``check_existing=False`` — a matching path would
+    otherwise hand back the same broken datablock) and remap every user
+    (material nodes, etc.) onto it.  Healthy images (already-loaded or packed)
+    are left untouched, so the normal path is unaffected.
+    """
+    for image in list(bpy.data.images):
+        if tuple(image.size) != (0, 0):
+            continue
+        if image.packed_file is not None:
+            continue
+        abspath = bpy.path.abspath(image.filepath_raw or image.filepath)
+        if not abspath or not os.path.isfile(abspath):
+            continue
+        try:
+            fresh = bpy.data.images.load(abspath, check_existing=False)
+        except RuntimeError:
+            continue
+        if tuple(fresh.size) == (0, 0):
+            bpy.data.images.remove(fresh)
+            continue
+        # Preserve the original colorspace so base-color vs. data (normal/
+        # alpha) textures keep their correct interpretation after the swap.
+        try:
+            fresh.colorspace_settings.name = image.colorspace_settings.name
+        except (RuntimeError, TypeError):
+            pass
+        name = image.name
+        image.user_remap(fresh)
+        bpy.data.images.remove(image)
+        fresh.name = name
 
 
 def import_gltf(filepath: str) -> None:
