@@ -680,7 +680,8 @@ def _retarget_reference_motion(
             np.asarray(tgt_cond['parents'], dtype=np.int32),
             np.asarray(tgt_cond['offsets'], dtype=np.float32),
             list(tgt_cond.get('canonical_bvh_joint_names', tgt_cond['joints_names'])),
-            allow_infer=True,
+            translation_root_index=tgt_cond.get('translation_root_index'),
+            allow_infer=tgt_cond.get('translation_root_index') is None,
             tpose_rest_rotations=tgt_tp.tpos_rots[0],
         )
         if out_anim is not None:
@@ -775,7 +776,8 @@ def _retarget_reference_motion_from_file(
             np.asarray(tgt_cond['parents'], dtype=np.int32),
             np.asarray(tgt_cond['offsets'], dtype=np.float32),
             list(tgt_cond.get('canonical_bvh_joint_names', tgt_cond['joints_names'])),
-            allow_infer=True,
+            translation_root_index=tgt_cond.get('translation_root_index'),
+            allow_infer=tgt_cond.get('translation_root_index') is None,
             tpose_rest_rotations=tgt_tp.tpos_rots[0],
         )
         if out_anim is not None:
@@ -874,13 +876,14 @@ def _prepare_img2img_reference_bundle(
 
 
 def _export_motion(task):
-    motion_np, parents_np, offsets, npy_name, joint_names, out_path, fps, tpose_rest_rotations = task
+    motion_np, parents_np, offsets, npy_name, joint_names, out_path, fps, tpose_rest_rotations, translation_root_index = task
     out_anim, joint_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
         motion_np,
         parents_np,
         offsets,
         joint_names,
-        allow_infer=True,
+        translation_root_index=translation_root_index,
+        allow_infer=translation_root_index is None,
         tpose_rest_rotations=tpose_rest_rotations,
     )
     np.save(pjoin(out_path, npy_name), motion_np)
@@ -1667,14 +1670,23 @@ def main(args=None, cond_dict=None, runtime=None):
                     target_output_frames,
                 )
 
+            # Resolve the known per-species translation root index (the joint that
+            # carries the locomotion XZ velocity). This MUST be passed explicitly to
+            # BVH export: inferring it from the generated features (allow_infer) is
+            # unreliable for skeletons whose translation root is not joint 0 (e.g.
+            # Horse Bip01 at index 2). A wrong index integrates the wrong joint's
+            # velocity channels — for non-translation-root joints those channels are
+            # degenerate (zero-variance, std floored to 1.0), so the model emits
+            # ~N(0,1) noise there and the wrong integration produces large root drift.
+            translation_root_index = _get_batch_translation_root_index(
+                model_kwargs,
+                sample_idx,
+                fallback=cond_dict[object_type].get('translation_root_index', 0),
+            )
+
             if inpaint_y_spans:
                 _reanchor_inpaint_root_y_via_velocity(motion_np, inpaint_y_spans)
             if getattr(args, 'loop', False):
-                translation_root_index = _get_batch_translation_root_index(
-                    model_kwargs,
-                    sample_idx,
-                    fallback=cond_dict[object_type].get('translation_root_index', 0),
-                )
                 _close_loop_root_xz_via_velocity(motion_np, translation_root_index)
 
             offsets = cond_dict[object_type]['offsets']
@@ -1689,6 +1701,7 @@ def main(args=None, cond_dict=None, runtime=None):
                 out_path,
                 fps,
                 _tpose_rest_rotations,
+                translation_root_index,
             ))
 
         # Parallel export using ThreadPoolExecutor.
