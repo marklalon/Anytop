@@ -6,7 +6,7 @@ Description:
     then produces:
       1. t-SNE scatter plot — per-animal mean joint-name embeddings, colored by group
       2. t-SNE scatter plot — species embeddings (species_emb), colored by group
-      3. t-SNE scatter plot — concatenated species_emb + mean joint-name embeddings,
+      3. t-SNE scatter plot — additive species_emb + mean joint-name embeddings,
          colored by group
 
     A similarity report is also written so cosine neighbors and embedding norms
@@ -27,7 +27,9 @@ Usage:
 """
 
 import argparse
+import io
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import numpy as np
@@ -216,9 +218,11 @@ def plot_tsne(animal_embs: dict, output_dir: Path, perplexity: int, suffix: str 
     # Use adjustText to automatically reposition overlapping labels
     try:
         from adjustText import adjust_text
-        adjust_text(texts, arrowprops=dict(arrowstyle="-", lw=0.5, color="gray", alpha=0.4),
-                   ax=ax, expand_points=(1.5, 1.5), force_points=(0.5, 0.5),
-                   avoid_points=False)
+        # adjustText v1.3 has a stray print() in _explode_repeated; suppress it.
+        with redirect_stdout(io.StringIO()):
+            adjust_text(texts, arrowprops=dict(arrowstyle="-", lw=0.5, color="gray", alpha=0.4),
+                       ax=ax, expand_points=(1.5, 1.5), force_points=(0.5, 0.5),
+                       avoid_points=False)
     except ImportError:
         print("Warning: adjustText not installed, labels may overlap. Install with: pip install adjustText")
 
@@ -231,8 +235,8 @@ def plot_tsne(animal_embs: dict, output_dir: Path, perplexity: int, suffix: str 
     # Choose title based on suffix
     if suffix == "species_emb":
         title = "t-SNE of L2-Normalized Per-Animal Species T5 Embeddings"
-    elif suffix == "concat_species_joint":
-        title = "t-SNE of L2-Normalized Concatenated [Species + Joint-Name Mean] T5 Embeddings"
+    elif suffix == "add_species_joint":
+        title = "t-SNE of L2-Normalized Additive [Species + Joint-Name Mean] T5 Embeddings"
     else:
         title = "t-SNE of L2-Normalized Per-Animal Semantic Joint-Text T5 Embeddings"
     ax.set_title(title, fontsize=13)
@@ -244,11 +248,13 @@ def plot_tsne(animal_embs: dict, output_dir: Path, perplexity: int, suffix: str 
     print(f"  Saved: {out}")
 
 
-def build_concat_embeddings(species_embs: dict, joint_embs: dict, normalize: bool) -> dict:
-    """Concatenate species_emb and per-animal mean joint-name embedding.
+def build_additive_embeddings(species_embs: dict, joint_embs: dict, normalize: bool) -> dict:
+    """Add species_emb to per-animal mean joint-name embedding.
 
-    Both halves are independently L2-normalized before concatenation so neither
-    dominates the t-SNE layout.
+    Matches training behaviour in InputProcess.forward where species_emb is
+    projected and added to joints_embedded_names (broadcast per-joint).
+    Both halves are independently L2-normalized before addition so neither
+    dominates the sum.
     """
     common = sorted(set(species_embs.keys()) & set(joint_embs.keys()))
     if not common:
@@ -259,8 +265,8 @@ def build_concat_embeddings(species_embs: dict, joint_embs: dict, normalize: boo
     for a in common:
         s_emb = l2_normalize(species_embs[a]["species_emb"])
         j_emb = l2_normalize(joint_embs[a]["mean_emb"])
-        concat = np.concatenate([s_emb, j_emb])
-        plot_emb = l2_normalize(concat) if normalize else concat
+        additive = s_emb + j_emb
+        plot_emb = l2_normalize(additive) if normalize else additive
         result[a] = {
             "plot_emb": plot_emb,
             "group": species_embs[a]["group"],
@@ -396,14 +402,14 @@ def main():
     else:
         print("  Skipped species_emb t-SNE: no species embeddings found in cond.npy.")
 
-    # 3. Concatenated species + joint-name mean embedding t-SNE
+    # 3. Additive species + joint-name mean embedding t-SNE
     if animal_embs_species and animal_embs_joint:
-        concat_embs = build_concat_embeddings(animal_embs_species, animal_embs_joint,
-                                              normalize=not args.raw_means)
-        if concat_embs:
-            plot_tsne(concat_embs, output_dir, args.tsne_perplexity, suffix="concat_species_joint")
+        additive_embs = build_additive_embeddings(animal_embs_species, animal_embs_joint,
+                                                  normalize=not args.raw_means)
+        if additive_embs:
+            plot_tsne(additive_embs, output_dir, args.tsne_perplexity, suffix="add_species_joint")
     else:
-        print("  Skipped concat t-SNE: need both species_emb and joint embeddings.")
+        print("  Skipped additive t-SNE: need both species_emb and joint embeddings.")
 
     save_similarity_report(animal_embs_joint, output_dir)
 

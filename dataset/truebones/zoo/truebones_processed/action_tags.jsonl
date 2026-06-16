@@ -535,15 +535,15 @@
 {"clip": "Ostrich_Walk_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Pirrana_Biting2_1.npy", "action_tags": ["attack"]}
 {"clip": "Pirrana_Biting_1.npy", "action_tags": ["attack"]}
-{"clip": "Pirrana_DeadFloat2_1.npy", "action_tags": ["death", "swim"]}
-{"clip": "Pirrana_DeadFloat_1.npy", "action_tags": ["death", "swim"]}
-{"clip": "Pirrana_DiveIn_1.npy", "action_tags": ["swim"]}
+{"clip": "Pirrana_DeadFloat2_1.npy", "action_tags": ["death"]}
+{"clip": "Pirrana_DeadFloat_1.npy", "action_tags": ["death"]}
+{"clip": "Pirrana_DiveIn_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Pirrana_Flopping_1.npy", "action_tags": ["emote"]}
 {"clip": "Pirrana_Jump2_1.npy", "action_tags": ["jump"]}
-{"clip": "Pirrana_MidSwim_1.npy", "action_tags": ["swim"]}
-{"clip": "Pirrana_RiseTop_1.npy", "action_tags": ["swim"]}
-{"clip": "Pirrana_SwimJump_1.npy", "action_tags": ["swim", "jump"]}
-{"clip": "Pirrana_Swim_1.npy", "action_tags": ["swim"]}
+{"clip": "Pirrana_MidSwim_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Pirrana_RiseTop_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Pirrana_SwimJump_1.npy", "action_tags": ["locomotion", "jump"]}
+{"clip": "Pirrana_Swim_1.npy", "action_tags": ["locomotion"]}
 {"clip": "PolarBearB_Die_1.npy", "action_tags": ["death"]}
 {"clip": "PolarBearB_Fall_1.npy", "action_tags": ["fall"]}
 {"clip": "PolarBearB_GetUp_1.npy", "action_tags": ["getup"]}
@@ -1131,11 +1131,11 @@
 {"clip": "Jaws_SharkBiteRight_1.npy", "action_tags": ["attack"]}
 {"clip": "Jaws_SharkDeadLoop_1.npy", "action_tags": ["death"]}
 {"clip": "Jaws_SharkDead_1.npy", "action_tags": ["death"]}
-{"clip": "Jaws_SharkSwim180_1.npy", "action_tags": ["swim"]}
-{"clip": "Jaws_SharkSwimAt_1.npy", "action_tags": ["swim"]}
-{"clip": "Jaws_SharkSwimLeft_1.npy", "action_tags": ["swim"]}
-{"clip": "Jaws_SharkSwimRight_1.npy", "action_tags": ["swim"]}
-{"clip": "Jaws_SharkSwim_1.npy", "action_tags": ["swim"]}
+{"clip": "Jaws_SharkSwim180_1.npy", "action_tags": ["locomotion", "turn"]}
+{"clip": "Jaws_SharkSwimAt_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Jaws_SharkSwimLeft_1.npy", "action_tags": ["locomotion", "turn"]}
+{"clip": "Jaws_SharkSwimRight_1.npy", "action_tags": ["locomotion", "turn"]}
+{"clip": "Jaws_SharkSwim_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Dog_Attack_1.npy", "action_tags": ["attack"]}
 {"clip": "Dog_BackAway_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Dog_BarkJump_1.npy", "action_tags": ["jump"]}
