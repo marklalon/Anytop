@@ -135,10 +135,10 @@ def add_model_options(parser):
     group.add_argument("--action_tag_cond", action='store_true',
                        help="Enable action-tag conditioning: a multi-hot over the canonical action-tag "
                             "vocabulary is projected and added to the timestep token.")
-    group.add_argument("--action_tag_cfg_drop_prob", default=0.3, type=float,
+    group.add_argument("--action_tag_cfg_drop_prob", default=0.2, type=float,
                        help="Per-sample probability of hard-dropping the action-tag condition during "
                             "training (replaced by a learned null embedding), enabling classifier-free "
-                            "guidance over action tags. Default 0.3.")
+                            "guidance over action tags. Default 0.2.")
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')

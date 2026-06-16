@@ -77,7 +77,7 @@ class AnyTop(nn.Module):
         # during training — replaced by a learned null embedding so the model
         # also learns an unconditional mode, enabling classifier-free guidance.
         self.action_tag_cond = bool(kargs.get('action_tag_cond', False))
-        self.action_tag_cfg_drop_prob = float(kargs.get('action_tag_cfg_drop_prob', 0.3))
+        self.action_tag_cfg_drop_prob = float(kargs.get('action_tag_cfg_drop_prob', 0.2))
         if not 0.0 <= self.action_tag_cfg_drop_prob <= 1.0:
             raise ValueError(
                 f"action_tag_cfg_drop_prob must be in [0, 1], got {self.action_tag_cfg_drop_prob}"
