@@ -164,7 +164,7 @@ python -m sample.generate  --model_path <model_path> --object_type <skeleton_nam
 **You may also define:**
 * `--device` id.
 * `--seed` to sample different seeds.
-* `--motion_frames` number of frames in the sampled motion (default 60).
+* `--num_frames` number of frames in the sampled motion (default 60).
 
 **Running those will get you:**
 

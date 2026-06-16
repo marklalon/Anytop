@@ -42,13 +42,6 @@ def extract_args(args, args_to_overwrite, model_path):
             setattr(args, a, model_args[a])
         elif not hasattr(args, a):
             setattr(args, a, default)
-
-    # backward compatibility
-    if isinstance(args.emb_trans_dec, bool):
-        if args.emb_trans_dec:
-            args.emb_trans_dec = 'cls_tcond_cross_tcond'
-        else: 
-            args.emb_trans_dec = 'cls_none_cross_tcond'
     return args
 
 def get_args_per_group_name(parser, args, group_name):
@@ -69,7 +62,6 @@ def get_model_path_from_args():
 
 def add_base_options(parser):
     group = parser.add_argument_group('base')
-    group.add_argument("--cuda", default=True, type=bool, help="Use cuda device, otherwise use CPU.")
     group.add_argument("--device", default=0, type=int, help="Device id to use.")
     group.add_argument("--seed", default=10, type=int, help="For fixing random seed.")
     group.add_argument("--batch_size", default=16, type=int, help="Batch size during training.")
@@ -82,12 +74,6 @@ def add_base_options(parser):
 
 def add_model_options(parser):
     group = parser.add_argument_group('model')
-    group.add_argument("--arch", default='trans_enc',
-                       choices=['trans_enc', 'trans_dec', 'gru'], type=str,
-                       help="Architecture types as reported in the paper.")
-    group.add_argument("--emb_trans_dec", default=False, type=bool,
-                       help="For trans_dec architecture only, if true, will inject condition as a class token"
-                            " (in addition to cross-attention).")
     group.add_argument("--layers", default=4, type=int,
                        help="Number of layers.")
     group.add_argument("--latent_dim", default=128, type=int,
@@ -156,8 +142,6 @@ def add_model_options(parser):
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')
-    group.add_argument("--data_dir", default="", type=str,
-                       help="If empty, will use defaults according to the specified dataset.")
     group.add_argument("--train_split", default='train', choices=['train', 'val', 'test', 'all'], type=str,
                        dest='train_split',
                        help="Data split to use for training. 'train'=training set, 'val'=validation set, 'test'=test set, 'all'=use all data.")
@@ -266,11 +250,6 @@ def add_sampling_options(parser):
     group.add_argument("--output_dir", default='', type=str,
                        help="Path to results dir (auto created by the script). "
                             "If empty, will create dir in parallel to checkpoint.")
-    group.add_argument("--num_samples", default=10, type=int,
-                       help="Maximal number of prompts to sample, "
-                            "if loading dataset from file, this field will be ignored.")
-    group.add_argument("--num_repetitions", default=3, type=int,
-                       help="Number of repetitions, per sample (text prompt/action)")
     group.add_argument("--cond_path", default='', type=str,
                        help="provide cond.py path in case you wish to generate motion for skeleton not included in Truebones dataset.")
     group.add_argument("--amp_dtype", default='fp32', choices=['fp32', 'bf16'], type=str,
@@ -283,7 +262,7 @@ def add_sampling_options(parser):
 
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')
-    group.add_argument("--motion_frames", default=None, type=int,
+    group.add_argument("--num_frames", default=None, type=int,
                        help="The number of frames in the sampled motion. "
                             "If omitted with --reference_motion, defaults to the "
                             "reference's native length (R frames); otherwise defaults to 60. "
@@ -341,29 +320,6 @@ def add_generate_options(parser):
                             "--inpaint_joints, the regenerated region is selected-joints x selected-frames; "
                             "everything else is clamped to --reference_motion. Requires --reference_motion.")
 
-    group.add_argument("--score", action='store_true',
-                       help="After generation, automatically run the motion quality scorer on the output "
-                            "and print a quality report. Uses --action_tags (already supported for training) "
-                            "to filter the scorer's reference prior, e.g. 'locomotion,attack'.")
-
-def add_render_options(parser):
-    group = parser.add_argument_group('render')
-    group.add_argument('--bvh_path', type=str, default='assets/Truebones_Chicken', help='path of animation bvh file')
-    group.add_argument('--save_dir', type=str, default='save/render_out', help='')
-    group.add_argument('--scale', type=float, default=0.7, help='')
-    group.add_argument('--cylinder_radius', type=float, default=0.42, help='')
-    group.add_argument('--sphere_radius', type=float, default=0.56, help='')
-    group.add_argument("--subset", default='bipeds', choices=['quadropeds' , 'flying', 'bipeds', 'millipeds_snakes'], type=str, help="Object subset.")
-
-
-def add_evaluation_options(parser):
-    group = parser.add_argument_group('eval')
-    group.add_argument("--eval_mode", default='npy_loc',type=str, choices=['npy_rot', 'npy_loc'], help="Path to gt dir.")
-    group.add_argument("--benchmark_path", default='eval/benchmarks/benchmark_all.txt', type=str,  help="Path to benchmark character names. If empty, will use all excluding the characters_to_exclude")
-    group.add_argument("--eval_gt_dir", default='dataset/truebones/zoo/truebones_processed/motions', type=str, help="Path to gt dir.")
-    group.add_argument("--eval_gen_dir", required=True, type=str, help="Path to gen dir.")
-    group.add_argument("--characters_to_exclude", default='MouseyNoFingers,Mousey_m,Trex,SabreToothTiger,Raptor2', type=str, help="Comma separated list of characters to exclude. The default is character with more than 40 motions.")
-    group.add_argument("--unique_str", default='', type=str, help="A string to be added to the file name to identify a specific change. Should start with '_'.")
 
 def train_args():
     parser = ArgumentParser()
@@ -434,18 +390,5 @@ def process_new_skeleton_args():
     args = parser.parse_args()
     return args
 
-def evaluation_parser():
-    parser = ArgumentParser()
-    add_base_options(parser)
-    add_evaluation_options(parser)
-    return parser.parse_args()
 
-def render_parser():
-    parser = ArgumentParser()
-    add_render_options(parser)
-    if "--" not in sys.argv:
-        argv = []
-    else:
-        argv = sys.argv[sys.argv.index("--") + 1:]
-    return parser.parse_args(argv)
 
