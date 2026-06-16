@@ -110,11 +110,11 @@ class SpeciesHybridTest(unittest.TestCase):
             model._apply_species_film(torch.randn(2, 8), _make_y(), 2,
                                       torch.device('cpu'), torch.float32)
 
-    def test_joint_cond_widens_text_embedding(self):
+    def test_joint_cond_additive_fusion_keeps_text_embedding_dim(self):
         plain = _make_model()
         fused = _make_model(species_joint_cond=True)
         self.assertEqual(plain.input_process.text_embedding.in_features, T5_DIM)
-        self.assertEqual(fused.input_process.text_embedding.in_features, 2 * T5_DIM)
+        self.assertEqual(fused.input_process.text_embedding.in_features, T5_DIM)
 
     def test_joint_cond_requires_species_emb(self):
         model = _make_model(species_joint_cond=True)

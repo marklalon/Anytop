@@ -27,9 +27,9 @@ def _make_cond_entry(object_type: str) -> dict[str, object]:
     }
 
 
-def _write_motion_tags(dataset_dir, tags_by_clip):
-    """Write the hand-maintained motion_tags.jsonl sidecar for a temp dataset."""
-    path = Path(dataset_dir) / "motion_tags.jsonl"
+def _write_action_tags(dataset_dir, tags_by_clip):
+    """Write the hand-maintained action_tags.jsonl sidecar for a temp dataset."""
+    path = Path(dataset_dir) / "action_tags.jsonl"
     lines = [
         json.dumps({"clip": clip, "action_tags": list(tags)})
         for clip, tags in tags_by_clip.items()
@@ -87,7 +87,7 @@ def test_load_motion_metadata_merges_action_tags_from_sidecar(tmp_path):
         ),
         encoding="utf-8",
     )
-    _write_motion_tags(dataset_dir, {"Cat_Run_001.npy": ["Locomotion", "attack", "locomotion"]})
+    _write_action_tags(dataset_dir, {"Cat_Run_001.npy": ["Locomotion", "attack", "locomotion"]})
 
     loaded = load_motion_metadata(dataset_dir)
     entry = loaded["Cat_Run_001.npy"]
@@ -111,7 +111,7 @@ def test_load_motion_metadata_fast_fails_when_tag_missing(tmp_path):
         encoding="utf-8",
     )
     # Sidecar exists but is missing the clip → must fail fast.
-    _write_motion_tags(dataset_dir, {"Dog_Jump_002.npy": ["jump"]})
+    _write_action_tags(dataset_dir, {"Dog_Jump_002.npy": ["jump"]})
 
     with pytest.raises(SystemExit):
         load_motion_metadata(dataset_dir)
@@ -156,7 +156,7 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
         },
         total_clips=3,
     )
-    _write_motion_tags(
+    _write_action_tags(
         dataset_dir,
         {
             "Cat_Run_001.npy": ["locomotion"],
@@ -285,7 +285,7 @@ def test_regenerate_dataset_artifacts_unifies_translation_root_index_per_object(
         },
         total_clips=2,
     )
-    _write_motion_tags(
+    _write_action_tags(
         dataset_dir,
         {"Cat_Run_001.npy": ["locomotion"], "Cat_Idle_002.npy": ["idle"]},
     )
@@ -340,7 +340,7 @@ def test_regenerate_dataset_artifacts_rebuilds_translation_root_when_metadata_mi
         },
         total_clips=1,
     )
-    _write_motion_tags(dataset_dir, {"Cat_Run_001.npy": ["locomotion"]})
+    _write_action_tags(dataset_dir, {"Cat_Run_001.npy": ["locomotion"]})
 
     def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True):
         for object_cond in cond.values():
@@ -387,7 +387,7 @@ def test_regenerate_dataset_artifacts_uses_majority_root_not_minimum(monkeypatch
         {f"Bear_Run_{idx:03d}.npy": {"object_type": "Bear", "translation_root_index": 1} for idx in range(4)},
         total_clips=4,
     )
-    _write_motion_tags(
+    _write_action_tags(
         dataset_dir,
         {f"Bear_Run_{idx:03d}.npy": ["locomotion"] for idx in range(4)},
     )
@@ -435,7 +435,7 @@ def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_infe
         },
         total_clips=2,
     )
-    _write_motion_tags(
+    _write_action_tags(
         dataset_dir,
         {
             "Cat_Run_001.npy": ["locomotion"],
@@ -517,7 +517,7 @@ def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch,
     assert sorted(seed_cond) == ['Cat']
     assert 'joints_names_embs' not in seed_cond['Cat']
 
-    _write_motion_tags(dataset_dir, {"Cat_Run_001.npy": ["locomotion"]})
+    _write_action_tags(dataset_dir, {"Cat_Run_001.npy": ["locomotion"]})
     motion_metadata = load_motion_metadata(dataset_dir)
     assert motion_metadata['Cat_Run_001.npy']['translation_root_index'] == 1
 
@@ -800,7 +800,7 @@ def test_update_anim_dir_preserves_other_objects(monkeypatch, tmp_path):
         },
         total_clips=2,
     )
-    _write_motion_tags(
+    _write_action_tags(
         dataset_dir,
         {
             'Cat_Run_001.npy': ['locomotion'],
@@ -861,7 +861,7 @@ def test_update_anim_dir_replaces_only_matching_sources(monkeypatch, tmp_path):
         },
         total_clips=2,
     )
-    _write_motion_tags(
+    _write_action_tags(
         dataset_dir,
         {
             'Dragon_A_001.npy': ['locomotion'],
@@ -948,7 +948,7 @@ def test_update_anim_dir_full_rerun_replaces_old_versions(monkeypatch, tmp_path)
         },
         total_clips=2,
     )
-    _write_motion_tags(
+    _write_action_tags(
         dataset_dir,
         {
             'Dragon_A_001.npy': ['locomotion'],
@@ -1047,6 +1047,7 @@ def test_process_new_skeleton_rejects_unsafe_anim_dir_update(monkeypatch, tmp_pa
         retarget_top_k=None,
         donor_skeletons=None,
         training_cond_path='unused',
+        crop_enabled=False,
     )
 
     monkeypatch.setattr(process_new_skeleton_module, 'process_new_skeleton_args', lambda: args)

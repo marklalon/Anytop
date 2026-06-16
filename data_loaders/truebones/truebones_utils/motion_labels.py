@@ -6,7 +6,7 @@ from pathlib import Path
 
 from data_loaders.truebones.truebones_utils.param_utils import (
     MOTION_METADATA_FILE,
-    MOTION_TAGS_FILE,
+    ACTION_TAGS_FILE,
 )
 
 
@@ -20,7 +20,7 @@ _TOKEN_PATTERN = re.compile(r"[A-Z]+(?=[A-Z][a-z]|\d|$)|[A-Z]?[a-z]+|\d+")
 # The full set of valid action tags. Order is significant: it defines the
 # multi-hot index layout the model conditions on, so trained checkpoints depend
 # on it staying stable. Tags themselves are maintained by hand in
-# ``motion_tags.jsonl`` (see ``load_motion_tags``); this module never generates
+# ``action_tags.jsonl`` (see ``load_action_tags``); this module never generates
 # them automatically.
 
 ACTION_TAGS: tuple[str, ...] = (
@@ -100,8 +100,8 @@ def normalize_action_tags(raw_action_tags) -> list[str]:
 # ---------------------------------------------------------------------------
 # Action-tag fallback inference
 # ---------------------------------------------------------------------------
-# Action tags are normally hand-maintained in ``motion_tags.jsonl``, and
-# ``load_motion_tags`` hard-exits when a clip on disk has no entry. When clips are
+# Action tags are normally hand-maintained in ``action_tags.jsonl``, and
+# ``load_action_tags`` hard-exits when a clip on disk has no entry. When clips are
 # added incrementally, hand-labeling lags behind, so callers can backfill missing
 # entries with a best-effort tag inferred from the Truebones ``Species_Action_id``
 # clip name. These guesses are HEURISTIC and meant to be reviewed by hand.
@@ -115,7 +115,7 @@ _GETUP_UP_CONTEXT: frozenset[str] = frozenset(
 
 # Ordered fallback rules: the first tag whose keyword set intersects the clip-name
 # tokens wins, so specific/event-like actions precede generic locomotion/idle.
-# Keyword sets were derived empirically from the hand-labeled ``motion_tags.jsonl``
+# Keyword sets were derived empirically from the hand-labeled ``action_tags.jsonl``
 # vocabulary (~84% agreement with the existing labels; the rest surface as
 # ``unknown`` / review items).
 _FALLBACK_ACTION_RULES: tuple[tuple[str, frozenset[str]], ...] = (
@@ -149,7 +149,7 @@ _FALLBACK_ACTION_RULES: tuple[tuple[str, frozenset[str]], ...] = (
 )
 
 # Sanity guard: every fallback tag must be a member of the canonical vocabulary so
-# inferred entries pass ``load_motion_tags`` validation.
+# inferred entries pass ``load_action_tags`` validation.
 assert all(tag in ACTION_TAGS for tag, _ in _FALLBACK_ACTION_RULES), (
     "fallback rules reference a tag outside ACTION_TAGS"
 )
@@ -183,7 +183,7 @@ def _tokenize_action_name(clip_name: str) -> set[str]:
 def infer_action_tags_from_clip_name(clip_name: str) -> list[str]:
     """Best-effort single action tag inferred from a clip name; ``['unknown']`` if no rule fires.
 
-    Heuristic fallback for clips not yet hand-labeled in ``motion_tags.jsonl``; the
+    Heuristic fallback for clips not yet hand-labeled in ``action_tags.jsonl``; the
     result is always a list of canonical :data:`ACTION_TAGS` members and is meant
     to be reviewed by a human before use.
     """
@@ -212,7 +212,7 @@ def build_motion_labels(
     """Build the (non-action) label fields for a motion clip.
 
     Action tags are no longer produced here — they are maintained by hand in
-    ``motion_tags.jsonl`` and merged in by :func:`load_motion_metadata`.
+    ``action_tags.jsonl`` and merged in by :func:`load_motion_metadata`.
     """
     payload: dict[str, object] = {"object_type": object_type}
     payload.update(build_object_labels(object_type))
@@ -228,7 +228,7 @@ def _validate_action_tags(tags: list[str], clip: str, line_number: int) -> None:
     invalid = [t for t in tags if t not in ACTION_TAGS]
     if invalid:
         print(
-            f"\n❌ {MOTION_TAGS_FILE}:{line_number}: clip '{clip}' contains invalid "
+            f"\n❌ {ACTION_TAGS_FILE}:{line_number}: clip '{clip}' contains invalid "
             f"action tag(s): {invalid}. Valid tags are: {list(ACTION_TAGS)}",
             file=sys.stderr,
             flush=True,
@@ -240,23 +240,23 @@ def _validate_action_tags(tags: list[str], clip: str, line_number: int) -> None:
 # I/O
 # ---------------------------------------------------------------------------
 
-def load_motion_tags(dataset_dir: str | Path) -> dict[str, list[str]]:
-    """Load the hand-maintained ``motion_tags.jsonl`` sidecar.
+def load_action_tags(dataset_dir: str | Path) -> dict[str, list[str]]:
+    """Load the hand-maintained ``action_tags.jsonl`` sidecar.
 
     Each line is a JSON object ``{"clip": "<name>.npy", "action_tags": [...]}``.
     Returns a mapping ``clip -> [tag, ...]``. Raises ``FileNotFoundError`` if the
     file is absent so callers fail fast rather than silently training without
     action conditioning.
     """
-    tags_path = Path(dataset_dir) / MOTION_TAGS_FILE
+    tags_path = Path(dataset_dir) / ACTION_TAGS_FILE
     if not tags_path.exists():
         raise FileNotFoundError(
-            f"{MOTION_TAGS_FILE} not found at {tags_path}. Action tags are now "
+            f"{ACTION_TAGS_FILE} not found at {tags_path}. Action tags are now "
             f"maintained by hand in this file (one "
             f'{{"clip": "<name>.npy", "action_tags": [...]}} object per line).'
         )
 
-    motion_tags: dict[str, list[str]] = {}
+    action_tags: dict[str, list[str]] = {}
     with open(tags_path, "r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
             line = line.strip()
@@ -266,22 +266,22 @@ def load_motion_tags(dataset_dir: str | Path) -> dict[str, list[str]]:
                 entry = json.loads(line)
             except json.JSONDecodeError as exc:
                 raise ValueError(
-                    f"{MOTION_TAGS_FILE}:{line_number} is not valid JSON: {exc}"
+                    f"{ACTION_TAGS_FILE}:{line_number} is not valid JSON: {exc}"
                 ) from exc
             if not isinstance(entry, dict):
                 raise ValueError(
-                    f"{MOTION_TAGS_FILE}:{line_number} must be a JSON object, "
+                    f"{ACTION_TAGS_FILE}:{line_number} must be a JSON object, "
                     f"got {type(entry).__name__}"
                 )
             clip = entry.get("clip")
             if not clip:
                 raise ValueError(
-                    f"{MOTION_TAGS_FILE}:{line_number} is missing the 'clip' field"
+                    f"{ACTION_TAGS_FILE}:{line_number} is missing the 'clip' field"
                 )
             normalized = normalize_action_tags(entry.get("action_tags"))
             _validate_action_tags(normalized, clip, line_number)
-            motion_tags[str(clip)] = normalized
-    return motion_tags
+            action_tags[str(clip)] = normalized
+    return action_tags
 
 
 def load_motion_metadata(
@@ -290,7 +290,7 @@ def load_motion_metadata(
 ) -> dict[str, dict[str, object]]:
     """Load ``motion_metadata.json`` joined with per-clip ``action_tags``.
 
-    By default a clip present in the metadata but absent from ``motion_tags.jsonl``
+    By default a clip present in the metadata but absent from ``action_tags.jsonl``
     is a fatal error (action tags are a required training-conditioning signal).
     Pass ``require_action_tags=False`` for bookkeeping reads that only preserve /
     carry-forward existing metadata (e.g. incremental preprocessing): missing-tag
@@ -307,14 +307,14 @@ def load_motion_metadata(
     if not isinstance(motions, dict):
         return {}
 
-    motion_tags = load_motion_tags(dataset_dir)
+    action_tags = load_action_tags(dataset_dir)
 
     normalized: dict[str, dict[str, object]] = {}
     missing_tags: list[str] = []
     for motion_name, metadata in motions.items():
         if not isinstance(metadata, dict):
             continue
-        tags = motion_tags.get(motion_name)
+        tags = action_tags.get(motion_name)
         if tags is None:
             missing_tags.append(motion_name)
             if require_action_tags:
@@ -332,9 +332,9 @@ def load_motion_metadata(
         import sys
 
         msg = (
-            f"\n❌ {MOTION_TAGS_FILE} is missing action_tags for {len(missing_tags)} "
+            f"\n❌ {ACTION_TAGS_FILE} is missing action_tags for {len(missing_tags)} "
             f"clip(s): {preview}{more}\n\n"
-            f"   Please open {MOTION_TAGS_FILE} and add an entry for each missing clip:\n"
+            f"   Please open {ACTION_TAGS_FILE} and add an entry for each missing clip:\n"
             f"   {{ \"clip_name.npy\": [\"action_tag1\", \"action_tag2\", ...] }}\n"
         )
         print(msg, file=sys.stderr, flush=True)

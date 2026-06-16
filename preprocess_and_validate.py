@@ -78,7 +78,7 @@ for _path in (_TRUEBONES_DIR, _TRUEBONES_DIR / "truebones_utils"):
     if _path_str not in sys.path:
         sys.path.insert(0, _path_str)
 
-from param_utils import BVHS_DIR, MOTION_DIR, MOTION_TAGS_FILE, SPECIES_TAGS_FILE, get_dataset_dir, get_raw_data_dir  # noqa: E402
+from param_utils import BVHS_DIR, MOTION_DIR, ACTION_TAGS_FILE, SPECIES_TAGS_FILE, get_dataset_dir, get_raw_data_dir  # noqa: E402
 from truebones_utils.motion_labels import load_motion_metadata, write_motion_metadata  # noqa: E402
 
 
@@ -665,15 +665,15 @@ def run_remove_motions(
         if removed_meta:
             print(f"  [OK] Removed {removed_meta} entries from motion_metadata.json (total: {total_clips})")
 
-    # --- Update motion_tags.jsonl ---
-    tags_path = dataset_dir_path / MOTION_TAGS_FILE
+    # --- Update action_tags.jsonl ---
+    tags_path = dataset_dir_path / ACTION_TAGS_FILE
     if tags_path.exists():
         entries = _load_jsonl(tags_path)
         delete_set = set(to_delete)
         new_entries = [e for e in entries if e.get("clip", "") not in delete_set]
         if len(new_entries) != len(entries):
             _write_jsonl(tags_path, new_entries)
-            print(f"  [OK] Removed {len(entries) - len(new_entries)} entries from motion_tags.jsonl")
+            print(f"  [OK] Removed {len(entries) - len(new_entries)} entries from action_tags.jsonl")
 
     # --- Handle species that became empty ---
     if empty_species:

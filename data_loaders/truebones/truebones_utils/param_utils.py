@@ -52,10 +52,10 @@ MOTION_DIR = "motions"
 GLB_DIR = "glb"
 BVHS_DIR = "bvhs"
 MOTION_METADATA_FILE = "motion_metadata.json"
-MOTION_TAGS_FILE = "motion_tags.jsonl"
+ACTION_TAGS_FILE = "action_tags.jsonl"
 # Per-species motion descriptor (body-plan, size/build, locomotion), maintained as
-# a JSONL sidecar alongside motion_tags.jsonl. One object per line:
-#   {"species": "Cat", "motion_tags": ["Quadruped", "Small", "Stalking"]}
+# a JSONL sidecar alongside action_tags.jsonl. One object per line:
+#   {"species": "Cat", "species_tags": ["Quadruped", "Small", "Stalking"]}
 # This is the single source of truth for the species condition and for the
 # object subsets below; do not duplicate the species->tags mapping in code.
 SPECIES_TAGS_FILE = "species_tags.jsonl"
@@ -103,12 +103,12 @@ def load_species_tags(dataset_dir=None):
                                 continue
                         record = json.loads(line)
                         species = str(record["species"]).strip()
-                        motion_tags = tuple(str(tag).strip() for tag in record["motion_tags"])
-                        if not species or not motion_tags:
+                        species_tags_tuple = tuple(str(tag).strip() for tag in record["species_tags"])
+                        if not species or not species_tags_tuple:
                                 raise ValueError(
-                                        f"{SPECIES_TAGS_FILE}:{line_no} has an empty species or motion_tags."
+                                        f"{SPECIES_TAGS_FILE}:{line_no} has an empty species or species_tags."
                                 )
-                        species_tags[species] = motion_tags
+                        species_tags[species] = species_tags_tuple
         return species_tags
 
 
@@ -120,8 +120,8 @@ def build_object_subsets_dict(species_tags):
         species motion tags so the mapping never drifts from the descriptor.
         """
         subsets = {"all": list(species_tags.keys())}
-        for species, motion_tags in species_tags.items():
-                body_plan = motion_tags[0].strip().lower()
+        for species, tags in species_tags.items():
+                body_plan = tags[0].strip().lower()
                 subsets.setdefault(body_plan, []).append(species)
         return subsets
 

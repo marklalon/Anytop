@@ -20,7 +20,7 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-# Load motion metadata; action_tags are merged in from motion_tags.jsonl.
+# Load motion metadata; action_tags are merged in from action_tags.jsonl.
 dataset_dir = _project_root / 'dataset' / 'truebones' / 'zoo' / 'truebones_processed'
 motions = load_motion_metadata(dataset_dir)
 

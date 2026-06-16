@@ -21,13 +21,13 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     MOTION_DIR,
     BVHS_DIR,
     MOTION_METADATA_FILE,
-    MOTION_TAGS_FILE,
+    ACTION_TAGS_FILE,
     OBJECT_SUBSETS_DICT,
     get_dataset_dir,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     load_motion_metadata,
-    load_motion_tags,
+    load_action_tags,
 )
 from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
     ROOT_XZ_STRIP_THRESHOLD,
@@ -733,9 +733,9 @@ def validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: 
         actual_motion_names = set(motions.keys())
         require_valid(actual_motion_names == expected_motion_names, f"{MOTION_METADATA_FILE} entries mismatch with motions directory")
 
-        # Action tags now live in the hand-maintained motion_tags.jsonl sidecar.
-        require_valid((dataset_dir / MOTION_TAGS_FILE).exists(), f"{MOTION_TAGS_FILE} missing")
-        motion_tags = load_motion_tags(dataset_dir)
+        # Action tags now live in the hand-maintained action_tags.jsonl sidecar.
+        require_valid((dataset_dir / ACTION_TAGS_FILE).exists(), f"{ACTION_TAGS_FILE} missing")
+        action_tags = load_action_tags(dataset_dir)
 
         for motion_path in motion_files:
             motion_name = motion_path.name
@@ -743,9 +743,9 @@ def validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: 
             object_type = _match_object_type(motion_path.stem, cond)
             require_valid(motion_metadata.get("object_type") == object_type, f"object_type mismatch for {motion_name}")
             require_valid(bool(motion_metadata.get("species_label")), f"species_label missing for {motion_name}")
-            normalized_action_tags = motion_tags.get(motion_name)
-            require_valid(normalized_action_tags is not None, f"action_tags missing in {MOTION_TAGS_FILE} for {motion_name}")
-            require_valid(bool(normalized_action_tags), f"action_tags empty in {MOTION_TAGS_FILE} for {motion_name}")
+            normalized_action_tags = action_tags.get(motion_name)
+            require_valid(normalized_action_tags is not None, f"action_tags missing in {ACTION_TAGS_FILE} for {motion_name}")
+            require_valid(bool(normalized_action_tags), f"action_tags empty in {ACTION_TAGS_FILE} for {motion_name}")
             if not silent and normalized_action_tags == ["unknown"]:
                 print_warn(f"action_tags is ['unknown'] for {motion_name}")
 

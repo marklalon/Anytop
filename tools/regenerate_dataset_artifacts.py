@@ -43,7 +43,7 @@ from truebones_utils.motion_labels import (  # noqa: E402
     build_motion_labels,
     infer_action_tags_from_clip_name,
     load_motion_metadata,
-    load_motion_tags,
+    load_action_tags,
     write_motion_metadata,
 )
 from truebones_utils.motion_process import (  # noqa: E402
@@ -54,7 +54,7 @@ from truebones_utils.motion_process import (  # noqa: E402
 from truebones_utils.param_utils import (  # noqa: E402
     MOTION_DIR,
     MOTION_METADATA_FILE,
-    MOTION_TAGS_FILE,
+    ACTION_TAGS_FILE,
     get_dataset_dir,
 )
 from truebones_utils.physics_joint_annotation import (  # noqa: E402
@@ -71,8 +71,8 @@ from Anytop.utils.misc import (
 # ---------------------------------------------------------------------------
 # Action-tag fallback backfill (I/O + reporting)
 # ---------------------------------------------------------------------------
-# Action tags are normally hand-maintained in motion_tags.jsonl, and
-# load_motion_metadata() / load_motion_tags() hard-exit when any clip on disk is
+# Action tags are normally hand-maintained in action_tags.jsonl, and
+# load_motion_metadata() / load_action_tags() hard-exit when any clip on disk is
 # missing an entry. When clips are added incrementally, hand-labeling lags behind,
 # so we backfill missing entries with a best-effort tag inferred from the clip
 # name (the inference itself lives in motion_labels.infer_action_tags_from_clip_name).
@@ -87,17 +87,17 @@ def _ensure_action_tags_fallback(
     dataset_dir_path: Path,
     motion_files: list[Path],
 ) -> list[tuple[str, list[str]]]:
-    """Backfill clips absent from motion_tags.jsonl with clip-name-inferred tags.
+    """Backfill clips absent from action_tags.jsonl with clip-name-inferred tags.
 
     Returns the list of (clip, inferred_tags) that were appended (empty if every
     clip already had an entry). Only clips with *no* entry are backfilled — an
-    explicitly empty action_tags list is left untouched (load_motion_tags treats
+    explicitly empty action_tags list is left untouched (load_action_tags treats
     absence, not emptiness, as the fatal case). The file is created if missing.
     """
-    tags_path = dataset_dir_path / MOTION_TAGS_FILE
+    tags_path = dataset_dir_path / ACTION_TAGS_FILE
     existing_clips: set[str] = set()
     if tags_path.exists():
-        existing_clips = set(load_motion_tags(dataset_dir_path).keys())
+        existing_clips = set(load_action_tags(dataset_dir_path).keys())
 
     fallbacks = [
         (motion_path.name, infer_action_tags_from_clip_name(motion_path.name))
@@ -112,7 +112,7 @@ def _ensure_action_tags_fallback(
             handle.write(json.dumps({"clip": clip, "action_tags": inferred}) + "\n")
     print(
         f"[OK] backfilled {len(fallbacks)} missing action_tags entr"
-        f"{'y' if len(fallbacks) == 1 else 'ies'} into {MOTION_TAGS_FILE}"
+        f"{'y' if len(fallbacks) == 1 else 'ies'} into {ACTION_TAGS_FILE}"
     )
     return fallbacks
 
@@ -122,7 +122,7 @@ def _print_action_tag_fallback_report(fallbacks: list[tuple[str, list[str]]]) ->
     print(
         f"\n{_COLOR_YELLOW}{'=' * 70}\n"
         f"[REVIEW] {len(fallbacks)} clip(s) had no hand-labeled action_tags; tags below "
-        f"were auto-inferred from the clip name and written to {MOTION_TAGS_FILE}.\n"
+        f"were auto-inferred from the clip name and written to {ACTION_TAGS_FILE}.\n"
         f"Please verify them by hand (especially any 'unknown'):{_COLOR_RESET}"
     )
     for clip, inferred in sorted(fallbacks):
@@ -345,7 +345,7 @@ def regenerate_dataset_artifacts(
     # Fast-fail: motion_metadata.json must exist.  Without it, load_motion_metadata
     # returns {} and the rebuilt metadata will be missing is_loop, source_file,
     # translation_root_index, and other per-clip fields.  (action_tags are sourced
-    # from motion_tags.jsonl at load time and stripped on write; any clip missing
+    # from action_tags.jsonl at load time and stripped on write; any clip missing
     # an entry there is backfilled by _ensure_action_tags_fallback below before
     # load_motion_metadata runs, so the load no longer hard-exits on new clips.)
     metadata_path = dataset_dir_path / MOTION_METADATA_FILE
@@ -358,7 +358,7 @@ def regenerate_dataset_artifacts(
             f"the full dataset, or restore it from a backup."
         )
 
-    # Backfill any clips missing from motion_tags.jsonl BEFORE load_motion_metadata,
+    # Backfill any clips missing from action_tags.jsonl BEFORE load_motion_metadata,
     # which otherwise hard-exits when a clip on disk has no action_tags entry.
     action_tag_fallbacks = _ensure_action_tags_fallback(dataset_dir_path, motion_files)
 

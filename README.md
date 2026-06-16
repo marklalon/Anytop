@@ -202,7 +202,7 @@ To reproduce the flying animals paper model, run:
 python -m train.train_anytop --model_prefix winged --objects_subset winged --lambda_geo 1.0 --auto_resume --balanced
 ```
 * **General instructions** Checkout './utils/parser_utils.py' to view all configurable parameters and default settings. '--balanced' flag is used to activate the balancing sampler, ensuring fair sampling of all skeletons. Use '--auto_resume' if you want the script to continue from the latest checkpoint in save_dir. Without it, training starts fresh and overwrites existing checkpoints in save_dir. 
-* Use `--action_tags` to keep only motions whose `action_tags` contain one of the requested tags. Action tags are maintained by hand in `motion_tags.jsonl` (one `{"clip": "<name>.npy", "action_tags": [...]}` object per line) alongside `motion_metadata.json`. Example: `--action_tags locomotion` or `--action_tags locomotion,attack`.
+* Use `--action_tags` to keep only motions whose `action_tags` contain one of the requested tags. Action tags are maintained by hand in `action_tags.jsonl` (one `{"clip": "<name>.npy", "action_tags": [...]}` object per line) alongside `motion_metadata.json`. Example: `--action_tags locomotion` or `--action_tags locomotion,attack`.
 * **Recommended:** Add `--use_ema` for Exponential Moving Average to improve performance.
 * Use `--diffusion_steps 50` to train the faster model with less diffusion steps.
 * Use `--device` to define GPU id.
