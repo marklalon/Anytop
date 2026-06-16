@@ -1058,6 +1058,145 @@ def _sample_batch(
     )
 
 
+def _generate_all_species(
+    cond_dict,
+    cond_max_joints,
+    opt,
+    args,
+    n_frames,
+    playspeed_cond_value,
+    target_output_frames,
+    global_energy_condition,
+    model,
+    diffusion,
+    sampling_method,
+    inference_autocast_dtype,
+    out_path,
+    fps,
+):
+    """Generate exactly one motion per species in mixed-species batches.
+
+    Each batch packs up to ``args.batch_size`` different species into a single
+    forward pass.  The model and sampler are batch-agnostic — all conditioning
+    is per-sample — so this is both correct and more efficient than looping
+    over species one at a time.
+    """
+    all_species = sorted(cond_dict.keys())
+    batch_size = int(args.batch_size)
+    species_batches = [all_species[i:i + batch_size] for i in range(0, len(all_species), batch_size)]
+
+    output_frame_count = int(n_frames)
+    total_species = len(all_species)
+    print(f'\n### Multi-species generation: {total_species} species, '
+          f'{len(species_batches)} batch(es) of batch_size={batch_size}')
+    print(f'  All species: {", ".join(all_species)}')
+
+    num_workers = 8
+    export_pool = concurrent.futures.ThreadPoolExecutor(max_workers=num_workers)
+    try:
+        for batch_idx, batch_species in enumerate(species_batches, 1):
+            actual_bs = len(batch_species)
+            batch_max_joints = max(
+                len(np.asarray(cond_dict[sp]['parents'])) for sp in batch_species
+            )
+            if batch_max_joints > cond_max_joints:
+                raise RuntimeError(
+                    f"Batch {batch_idx} max_joints={batch_max_joints} exceeds "
+                    f"cond/model max_joints={cond_max_joints}"
+                )
+
+            print(f'\n--- Batch {batch_idx}/{len(species_batches)} ({actual_bs} species, '
+                  f'max_joints={batch_max_joints}): {", ".join(batch_species)} ---')
+
+            # Build model kwargs for this heterogeneous batch.
+            _, model_kwargs = create_condition(
+                list(batch_species),
+                cond_dict,
+                output_frame_count,
+                args.temporal_window,
+                max_joints=batch_max_joints,
+                feature_len=opt.feature_len,
+                loop=getattr(args, 'loop', False),
+            )
+            if global_energy_condition is not None:
+                model_kwargs['y']['global_energy_cond'] = (
+                    global_energy_condition[:actual_bs].clone()
+                )
+            model_kwargs['y']['playspeed_cond'] = torch.full(
+                (actual_bs,), playspeed_cond_value, dtype=torch.float32, device=dist_util.dev(),
+            )
+
+            # Sample the whole batch in one forward pass.
+            print(f'  Sampling {actual_bs} species × 1 motion each ...')
+            sample = _sample_batch(
+                diffusion=diffusion,
+                model=model,
+                model_kwargs=model_kwargs,
+                sampling_method=sampling_method,
+                sample_shape=(actual_bs, batch_max_joints, model.feature_len, output_frame_count),
+                ddim_eta=float(getattr(args, 'ddim_eta', 0.0)),
+                seed=args.seed,
+                device=dist_util.dev(),
+                autocast_dtype=inference_autocast_dtype,
+            )
+
+            # ── Per-sample export with per-species metadata ──────────
+            export_tasks = []
+            for sample_idx, motion in enumerate(sample):
+                sp = batch_species[sample_idx]
+                sp_entry = cond_dict[sp]
+                n_joints = model_kwargs['y']['n_joints'][sample_idx].item()
+                motion = motion[:n_joints]
+                parents = model_kwargs['y']['parents'][sample_idx]
+                motion_np = (motion.cpu().permute(2, 0, 1).numpy()
+                             * sp_entry['std'][None, :] + sp_entry['mean'][None, :])
+
+                if target_output_frames != output_frame_count:
+                    motion_np = resample_motion_features(motion_np, target_output_frames)
+
+                translation_root_index = _get_batch_translation_root_index(
+                    model_kwargs, sample_idx,
+                    fallback=sp_entry.get('translation_root_index', 0),
+                )
+                if _root_xz_locomotion_is_degenerate(
+                    sp_entry['std'], translation_root_index
+                ):
+                    _suppress_degenerate_root_xz_velocity(motion_np, translation_root_index)
+                if getattr(args, 'loop', False):
+                    _close_loop_root_xz_via_velocity(motion_np, translation_root_index)
+
+                joint_names = sp_entry.get(
+                    'canonical_bvh_joint_names', sp_entry['joints_names'],
+                )
+
+                # T-pose rest rotations (per-species)
+                _tpose_rr = None
+                _tff = sp_entry.get('tpos_first_frame')
+                if _tff is not None:
+                    from utils.rotation_conversions import rotation_6d_to_matrix_np
+                    from motion_lib.Quaternions import Quaternions as _QQ
+                    _rot6d = np.asarray(_tff[:, 3:9], dtype=np.float64)
+                    _tpose_rr = _QQ.from_transforms(rotation_6d_to_matrix_np(_rot6d)).qs
+
+                # Count existing outputs so repeated runs don't overwrite.
+                existing = [f for f in os.listdir(out_path)
+                            if f.startswith(sp) and f.endswith('.npy')]
+                npy_name = f'{sp}_#{(len(existing))}.npy'
+                export_tasks.append((
+                    motion_np, parents, sp_entry['offsets'], npy_name, joint_names,
+                    out_path, fps, _tpose_rr, translation_root_index,
+                ))
+
+            results = list(
+                tqdm(export_pool.map(_export_motion, export_tasks),
+                     total=len(export_tasks), desc=f'batch {batch_idx} export')
+            )
+            for npy_name in results:
+                print(f'    Created: {npy_name}')
+    finally:
+        export_pool.shutdown(wait=True)
+
+
 def main(args=None, cond_dict=None, runtime=None):
     if args is None:
         args = generate_args()
@@ -1192,6 +1331,31 @@ def main(args=None, cond_dict=None, runtime=None):
         )
 
     # (inpaint-requires-reference is enforced early, before the model load)
+
+    # ── Multi-species "all" mode ─────────────────────────────────────────
+    if str(explicit_object_type or '').lower() == 'all':
+        if reference_motion_path:
+            sys.exit(
+                "ERROR: --object_type all is incompatible with --reference_motion. "
+                "Pass --object_type <Species> for reference-guided generation."
+            )
+        _generate_all_species(
+            cond_dict=cond_dict,
+            cond_max_joints=cond_max_joints,
+            opt=opt,
+            args=args,
+            n_frames=n_frames,
+            playspeed_cond_value=playspeed_cond_value,
+            target_output_frames=target_output_frames,
+            global_energy_condition=global_energy_condition,
+            model=model,
+            diffusion=diffusion,
+            sampling_method=sampling_method,
+            inference_autocast_dtype=inference_autocast_dtype,
+            out_path=out_path,
+            fps=fps,
+        )
+        return out_path
 
     # 1) Resolve target object_type
     if explicit_object_type:
@@ -1684,6 +1848,14 @@ def main(args=None, cond_dict=None, runtime=None):
                 fallback=cond_dict[object_type].get('translation_root_index', 0),
             )
 
+            # In-place species (zero XZ locomotion in training) have a floored
+            # root-velocity std; the model emits noise there that would integrate
+            # into root drift. Suppress it so the export stays in-place.
+            if _root_xz_locomotion_is_degenerate(
+                cond_dict[object_type]['std'], translation_root_index
+            ):
+                _suppress_degenerate_root_xz_velocity(motion_np, translation_root_index)
+
             if inpaint_y_spans:
                 _reanchor_inpaint_root_y_via_velocity(motion_np, inpaint_y_spans)
             if getattr(args, 'loop', False):
@@ -1920,6 +2092,44 @@ def _reanchor_inpaint_root_y_via_velocity(motion_np, spans):
         pos_y[a:b + 1] = (integrated + adjust[None, :] * ramp).astype(
             pos_y.dtype, copy=False,
         )
+
+
+def _root_xz_locomotion_is_degenerate(std, translation_root_index):
+    """True when the species has no XZ locomotion to generate.
+
+    ``get_mean_std`` floors any sub-1e-5 (zero-variance) std block to 1.0. A
+    species whose translation root never translates in XZ during training (e.g.
+    Tukan — all clips are in-place fly/idle, raw root XZ velocity is exactly 0)
+    therefore ends up with the root XZ velocity std floored to 1.0 instead of a
+    genuine ~0.01 scale value. At generation the model has no signal to learn on
+    those channels and emits ~N(0,1) noise; denormalizing with std=1.0 turns that
+    noise into a full unit-per-frame velocity, which integrates into large root
+    drift. Real locomotion stds in this scaled feature space are ~0.001–0.015, so
+    a value at/near the 1.0 floor is an unambiguous "no locomotion" marker.
+    """
+    std = np.asarray(std)
+    root_index = int(translation_root_index)
+    if std.ndim != 2 or std.shape[1] < 12 or root_index < 0 or root_index >= std.shape[0]:
+        return False
+    return bool(np.all(std[root_index, [9, 11]] >= 0.5))
+
+
+def _suppress_degenerate_root_xz_velocity(motion_np, translation_root_index):
+    """Zero the generated root XZ velocity for in-place species (see
+    :func:`_root_xz_locomotion_is_degenerate`). Operates in-place on ``motion_np``
+    so both the saved .npy and the exported BVH stay consistent (in-place, no
+    drift). The locomotion-root RIC X/Z channels (0, 2) are zero by construction
+    under RIFKE, so they are pinned too for cleanliness."""
+    if motion_np.ndim != 3:
+        return
+    _, joint_count, feature_count = motion_np.shape
+    root_index = int(translation_root_index)
+    if feature_count < 12 or root_index < 0 or root_index >= joint_count:
+        return
+    motion_np[:, root_index, 0] = 0.0
+    motion_np[:, root_index, 2] = 0.0
+    motion_np[:, root_index, 9] = 0.0
+    motion_np[:, root_index, 11] = 0.0
 
 
 def _close_loop_root_xz_via_velocity(motion_np, translation_root_index):
