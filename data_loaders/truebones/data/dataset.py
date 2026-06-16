@@ -905,9 +905,16 @@ class MotionDataset(data.Dataset):
         return self.prepare_sample_by_name(name)
 
 class TruebonesSampler(WeightedRandomSampler):
-    """Weighted sampler for species balancing.
+    """Sub-balanced weighted sampler for species fairness.
 
-    Each species gets an equal share, split uniformly across its clips.
+    Each species' total sampling mass is proportional to the square root of its
+    clip count, then normalized across all non-empty species; within a species
+    the mass is split uniformly across its clips. This is a softer middle ground
+    than full per-species balancing: a species with 9 clips is sampled 3x
+    (=sqrt(9)) as often as a single-clip species, rather than equally (full
+    balance) or 9x (uniform per-clip). The clip count is taken over the already
+    split/action_tags-filtered ``name_list``, so it reflects only the clips
+    actually present in this training subset.
     """
     def __init__(self, data_source):
         motion_dataset = data_source.motion_dataset
@@ -930,11 +937,14 @@ class TruebonesSampler(WeightedRandomSampler):
             raise RuntimeError(f"No samples found for any object type in split with pointer={pointer}. "
                              f"Available samples: {[name_list[i] for i in range(pointer, min(pointer+5, len(name_list)))]}")
 
-        object_share = 1.0 / len(non_empty_types)
-        for object_type, object_indices in non_empty_types:
+        # Per-species mass ~ sqrt(clip count over this filtered subset).
+        species_shares = [np.sqrt(len(object_indices)) for _, object_indices in non_empty_types]
+        total_share = float(np.sum(species_shares))
+
+        for (object_type, object_indices), share in zip(non_empty_types, species_shares):
             indices = np.asarray(object_indices)
             n = len(indices)
-            weights[indices] = object_share / n
+            weights[indices] = (share / total_share) / n
 
         super().__init__(num_samples=num_samples, weights=weights)
     

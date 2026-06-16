@@ -21,6 +21,7 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--objects_subset all ^
 	--action_tags locomotion,fly,swim ^
 	--train_split train ^
+	--balanced ^
 	--latent_dim 256 ^
 	--ff_size 2048 ^
 	--layers 8 ^
