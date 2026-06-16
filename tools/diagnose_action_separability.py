@@ -50,7 +50,6 @@ import torch
 from data_loaders.get_data import get_dataset
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import (
-    ACTION_TAG_SAMPLE_WEIGHTS,
     _normalize_motion_action_tags,
 )
 from data_loaders.truebones.truebones_utils.param_utils import OBJECT_SUBSETS_DICT
@@ -73,17 +72,12 @@ for _subset_name, _type_set in OBJECT_SUBSETS_DICT.items():
 def primary_action_tag(raw_tags):
     """Reduce a clip's (possibly multi-)action_tags to one display label.
 
-    Mirrors the dataset's "attribute the clip to its highest-weighted tag"
-    rule so the labelling matches how training actually samples the clip.
-    Falls back to alphabetical first tag when no weight map is configured.
+    Returns the alphabetically first tag when multiple tags are present.
     """
     tags = _normalize_motion_action_tags(raw_tags)  # set[str], lowercased
     if not tags:
         return "unknown"
-    ordered = sorted(tags)
-    if ACTION_TAG_SAMPLE_WEIGHTS:
-        return max(ordered, key=lambda t: ACTION_TAG_SAMPLE_WEIGHTS.get(t, 1.0))
-    return ordered[0]
+    return sorted(tags)[0]
 
 
 # ----------------------------------------------------------------------------

@@ -12,7 +12,7 @@ from typing import Optional
 import warnings
 from torch.utils.data._utils.collate import default_collate
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
-from data_loaders.truebones.truebones_utils.param_utils import parse_action_tags, parse_action_tag_weights
+from data_loaders.truebones.truebones_utils.param_utils import parse_action_tags
 from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
 from data_loaders.truebones.truebones_utils.motion_process import (
     refresh_joint_metadata_in_cond_dict,
@@ -22,23 +22,6 @@ from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
     assert_species_tags_cover,
 )
 
-
-# ---------------------------------------------------------------------------
-# Per-action-tag training sampling weights (edit here — not exposed via CLI).
-#
-# Each training clip is drawn with probability proportional to its tag weight.
-# A clip with multiple action tags is attributed to its single highest-weighted
-# tag. Tags absent from this map default to weight 1.0. An empty dict ``{}``
-# disables tag weighting entirely (uniform sampling). Example: raise locomotion
-# to 2x the baseline draw rate while keeping everything else at 1.0.
-#
-# This triggers a weighted sampler even without --balanced. When --balanced is
-# also set, species stay equally weighted and these weights only redistribute
-# probability within each species.
-# ---------------------------------------------------------------------------
-ACTION_TAG_SAMPLE_WEIGHTS: dict[str, float] = {
-    "locomotion": 2.0,
-}
 
 
 DEFAULT_SPLIT_RATIOS = {"train": 0.95, "val": 0.05, "test": 0.0}
@@ -76,36 +59,6 @@ def _require_motion_metadata_entry(
     motion_metadata_lookup: dict[str, dict[str, object]],
 ) -> dict[str, object]:
     return _copy_required_motion_metadata(motion_name, motion_metadata_lookup.get(motion_name))
-
-
-def primary_action_tag_weight(motion_action_tags, action_tag_weights, default_weight=1.0):
-    """Sampling weight for a clip given the per-tag weight map.
-
-    The clip is attributed to its single highest-weighted tag (per the user's
-    "assign to the highest-probability tag" rule), so the returned weight is the
-    max configured weight across the clip's tags. Tags absent from the map fall
-    back to ``default_weight``. A clip with no tags uses the explicit ``unknown``
-    weight if provided, else ``default_weight``.
-    """
-    if not action_tag_weights:
-        return float(default_weight)
-    if not motion_action_tags:
-        return float(action_tag_weights.get('unknown', default_weight))
-    return float(max(action_tag_weights.get(tag, default_weight) for tag in motion_action_tags))
-
-
-def compute_action_tag_sample_weights(name_list, data_dict, action_tag_weights, default_weight=1.0):
-    """Per-clip sampling weights aligned with ``name_list`` (uniform if no map)."""
-    weights = np.ones(len(name_list), dtype=np.float64)
-    if not action_tag_weights:
-        return weights
-    for i, name in enumerate(name_list):
-        motion_metadata = data_dict[name].get('motion_metadata') or {}
-        motion_action_tags = _normalize_motion_action_tags(motion_metadata.get('action_tags'))
-        weights[i] = primary_action_tag_weight(
-            motion_action_tags, action_tag_weights, default_weight=default_weight
-        )
-    return weights
 
 
 def filter_motion_names_by_action_tags(
@@ -604,7 +557,7 @@ def ensure_joint_name_embeddings(
 
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, temporal_window, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_tag_weights: Optional[dict[str, float]] = None):
+    def __init__(self, opt, cond_dict, temporal_window, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None):
         self.opt = opt
         self.temporal_window = int(temporal_window)
         self.min_length = int(getattr(opt, 'min_length', 20))
@@ -612,11 +565,10 @@ class MotionDataset(data.Dataset):
         self.max_motion_length = num_frames
         self.cond_dict = cond_dict
         self.balanced = balanced
-        self.action_tag_weights = dict(action_tag_weights or {})
-        # A weighted sampler drives indexing whenever species are balanced or
-        # action-tag weights are configured; both yield absolute name_list
-        # indices, so __getitem__ must skip the pointer offset in that case.
-        self.use_weighted_sampler = bool(self.balanced) or bool(self.action_tag_weights)
+        # A weighted sampler drives indexing when species are balanced; it yields
+        # absolute name_list indices, so __getitem__ must skip the pointer offset
+        # in that case.
+        self.use_weighted_sampler = bool(self.balanced)
         self.sample_limit = max(0, int(sample_limit))
         self.motion_cache_size = max(0, int(getattr(opt, 'motion_cache_size', 0)))
         self.motion_cache = OrderedDict()
@@ -697,9 +649,6 @@ class MotionDataset(data.Dataset):
         self.max_available_length = int(self.length_arr.max()) if len(self.length_arr) > 0 else 0
         self.data_dict = data_dict
         self.name_list = name_list
-        self.tag_sample_weights = compute_action_tag_sample_weights(
-            self.name_list, self.data_dict, self.action_tag_weights
-        )
         self.temporal_mask_template = create_temporal_mask_for_window(self.temporal_window, self.max_motion_length)
         self.circular_temporal_mask_template = create_temporal_mask_for_window(
             self.temporal_window,
@@ -956,15 +905,9 @@ class MotionDataset(data.Dataset):
         return self.prepare_sample_by_name(name)
 
 class TruebonesSampler(WeightedRandomSampler):
-    """Weighted sampler for species balancing and/or per-action-tag weighting.
+    """Weighted sampler for species balancing.
 
-    Three modes, selected by what ``motion_dataset`` carries:
-      * ``balanced`` only — each species gets an equal share, split uniformly
-        across its clips (the original behaviour).
-      * ``action_tag_weights`` only — purely global: each clip is drawn in
-        proportion to its tag weight, ignoring species.
-      * both — species stay equally weighted, and the tag weights redistribute
-        each species' share across its own clips.
+    Each species gets an equal share, split uniformly across its clips.
     """
     def __init__(self, data_source):
         motion_dataset = data_source.motion_dataset
@@ -972,21 +915,7 @@ class TruebonesSampler(WeightedRandomSampler):
         name_list = motion_dataset.name_list
         total_samples = len(name_list)
         pointer = motion_dataset.pointer
-        balanced = bool(motion_dataset.balanced)
-        # Clips below the length pointer are excluded; tag weights default to 1.0.
-        tag_weights = np.asarray(motion_dataset.tag_sample_weights, dtype=np.float64)
         weights = np.zeros(total_samples, dtype=np.float64)
-
-        if not balanced:
-            # Pure global tag weighting over the eligible (>= pointer) clips.
-            active = np.arange(pointer, total_samples)
-            if active.size == 0:
-                raise RuntimeError(f"No samples found in split with pointer={pointer}.")
-            weights[active] = tag_weights[active]
-            if not np.any(weights[active] > 0):
-                weights[active] = 1.0
-            super().__init__(num_samples=num_samples, weights=weights)
-            return
 
         object_types = motion_dataset.cond_dict.keys()
         # Collect all object types that have samples
@@ -1004,14 +933,8 @@ class TruebonesSampler(WeightedRandomSampler):
         object_share = 1.0 / len(non_empty_types)
         for object_type, object_indices in non_empty_types:
             indices = np.asarray(object_indices)
-            within = tag_weights[indices]
-            within_total = within.sum()
-            if within_total <= 0:
-                # Degenerate (all-zero) tag weights for this species: fall back
-                # to a uniform split so the species keeps its full share.
-                within = np.ones_like(within)
-                within_total = within.sum()
-            weights[indices] = object_share * within / within_total
+            n = len(indices)
+            weights[indices] = object_share / n
 
         super().__init__(num_samples=num_samples, weights=weights)
     
@@ -1028,8 +951,6 @@ class Truebones(data.Dataset):
         self.balanced = kwargs['balanced']
         self.objects_subset = kwargs['objects_subset']
         self.action_tags = kwargs.get('action_tags', '')
-        # Per-action-tag sampling weights are an in-code constant, not a CLI arg.
-        self.action_tag_weights = parse_action_tag_weights(ACTION_TAG_SAMPLE_WEIGHTS)
         self.sample_limit = kwargs.get('sample_limit', 0)
         self.motion_cache_size = kwargs.get('motion_cache_size', 0)
         self.opt.motion_cache_size = self.motion_cache_size
@@ -1084,7 +1005,6 @@ class Truebones(data.Dataset):
             sample_limit=self.sample_limit,
             allowed_motion_names=allowed_motion_names,
             motion_metadata_lookup=motion_metadata_lookup,
-            action_tag_weights=self.action_tag_weights,
         )
         assert len(self.motion_dataset) > 0, 'You loaded an empty dataset, ' \
                                           'it is probably because your data dir has only texts and no motions.\n' \
