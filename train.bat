@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=podata_species_cond_v1
+set RUN_NAME=truebones_zoo_turn_jump_v1
 set TORCH_LOGS=recompiles,graph_breaks
 
 REM --compile builds Triton kernel launchers with MSVC cl.exe. Initialize
@@ -18,10 +18,11 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--log_interval 100 ^
 	--auto_resume ^
 	--ml_platform_type TensorboardPlatform ^
-	--objects_subset podata ^
+	--objects_subset all ^
+	--action_tags turn,jump ^
 	--train_split train ^
-	--latent_dim 384 ^
-	--ff_size 1536 ^
+	--latent_dim 256 ^
+	--ff_size 1024 ^
 	--layers 8 ^
 	--global_energy_cond ^
 	--global_energy_cfg_drop_prob 0.3 ^
@@ -38,9 +39,9 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--weight_decay 0.01 ^
 	--use_ema ^
 	--ema_rate 0.995 ^
-	--num_steps 200000 ^
+	--num_steps 100000 ^
 	--dropout_prob 0.1 ^
-	--joint_mask_prob 0.5 ^
+	--joint_mask_prob 0.3 ^
 	--joint_mask_budget 0.15 ^
 	--temporal_window 41 ^
 	--temporal_span_mask_prob 0.3 ^
