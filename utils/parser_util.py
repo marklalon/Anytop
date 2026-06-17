@@ -37,11 +37,15 @@ def extract_args(args, args_to_overwrite, model_path):
         if a in model_args.keys():
             setattr(args, a, model_args[a])
 
-    for a, default in (('num_frames', 60), ('min_length', 20)):
+    for a, default in (('min_length', 20),):
         if a in model_args:
             setattr(args, a, model_args[a])
         elif not hasattr(args, a):
             setattr(args, a, default)
+    # num_frames is intentionally NOT overridden here — it is a per-generation
+    # parameter (output frame count) and must preserve the generate parser's
+    # default of None so the caller can distinguish "user explicitly requested
+    # N frames" from "use reference native length / checkpoint default".
     return args
 
 def get_args_per_group_name(parser, args, group_name):

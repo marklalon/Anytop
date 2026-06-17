@@ -3,6 +3,7 @@
 Generate a large batch of image samples from a model and save them as a large
 numpy array. This can be used to produce samples for FID evaluation.
 """
+import json
 import os
 import sys
 from dataclasses import dataclass
@@ -1259,16 +1260,31 @@ def main(args=None, cond_dict=None, runtime=None):
     name = os.path.basename(os.path.dirname(args.model_path))
     niter = os.path.basename(args.model_path).replace('model', '').replace('.pt', '')
     fps = opt.fps
-    internal_num_frames = int(getattr(args, 'num_frames', 60))
+
+    # Model native window: read directly from checkpoint args.json (NOT from
+    # args.num_frames, which represents the user's output-length intent and
+    # may be None = "use reference native length").
+    _ckpt_args_path = os.path.join(os.path.dirname(args.model_path), 'args.json')
+    _ckpt_num_frames = 60
+    if os.path.isfile(_ckpt_args_path):
+        with open(_ckpt_args_path, 'r') as _f:
+            _ckpt_args = json.load(_f)
+        _ckpt_num_frames = int(_ckpt_args.get('num_frames', 60))
+
+    internal_num_frames = _ckpt_num_frames
     min_length = int(getattr(args, 'min_length', 20))
     n_frames = internal_num_frames
     cond_max_joints = opt.max_joints
 
     reference_present = bool(getattr(args, 'reference_motion', None))
+    # args.num_frames is now NOT overwritten by extract_args; it is None when
+    # the user omits --num_frames, and the code below falls through to the
+    # reference-length path.
     motion_frames = getattr(args, 'num_frames', None)
     if motion_frames is None and not reference_present:
-        # Pure-random generation with no --num_frames defaults to 60 frames.
-        motion_frames = 60
+        # Pure-random generation with no --num_frames defaults to the
+        # checkpoint's native window size.
+        motion_frames = _ckpt_num_frames
 
     # Output lengths are finalized here when --num_frames is known. When it
     # is omitted together with --reference_motion they are deferred until the
