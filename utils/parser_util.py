@@ -368,7 +368,9 @@ def process_new_skeleton_args():
     group.add_argument("--retarget-top-k", default=None, type=int,
                        help="Auto-select the top-k most similar training skeletons as motion donors, "
                             "retarget all their motions to the new skeleton, and use those coarse motions "
-                            "to compute proper mean/std for cond.npy. Mutually exclusive with --anim-dir.")
+                            "to compute proper mean/std for cond.npy. Mutually exclusive with --anim-dir. "
+                            "Set to 0 for rest-pose-only mode (graph metadata from --tpos-path skeleton "
+                            "alone, no donor retargeting, no motions/).")
     group.add_argument("--training-cond-path",
                        default="dataset/truebones/zoo/truebones_processed/cond.npy",
                        type=str,
@@ -377,6 +379,7 @@ def process_new_skeleton_args():
     group.add_argument("--donor-skeletons", default=None, type=str,
                        help="Comma-separated donor skeleton names to use instead of auto-selection, "
                             "e.g. 'Bison,Cow,Horse'. Only effective with --retarget-top-k.")
+
     group.add_argument("--crop-enabled", action='store_true', default=False,
                        help="Enable automatic skeleton cropping to MAX_JOINTS=100. "
                             "Off by default because inference has no joint cap; "

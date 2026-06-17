@@ -146,7 +146,20 @@ def main():
     crop_enabled = args.crop_enabled
 
     retarget_top_k = args.retarget_top_k
-    if retarget_top_k is None and args.anim_dir is None:
+    if retarget_top_k == 0 and (args.donor_skeletons or args.anim_dir):
+        raise SystemExit(
+            "Error: --retarget-top-k 0 (rest-pose-only) is mutually exclusive with "
+            "--donor-skeletons and --anim-dir (it builds graph metadata from the "
+            "--tpos-path skeleton alone, with no motions)."
+        )
+
+    if retarget_top_k == 0:
+        # Rest-pose-only: no donor retargeting, no motions/. Graph metadata is a
+        # pure function of the skeleton topology; the donors only ever fed the
+        # position mean/std, which Video2Pose no longer consumes.
+        print("[process_new_skeleton] --retarget-top-k 0: rest-pose-only build "
+              "(graph metadata from --tpos-path, no donor motions)")
+    elif retarget_top_k is None and args.anim_dir is None:
         retarget_top_k = 1
         if args.donor_skeletons is None or args.donor_skeletons.strip() == '':
             print(f"[process_new_skeleton] No --retarget-top-k specified, defaulting to 1")
