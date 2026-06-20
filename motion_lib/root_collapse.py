@@ -60,6 +60,12 @@ def collapse_root_skeleton(
         collapsed_local_positions[:, 1] = collapsed_local_positions[:, 0]
         collapsed_local_positions = collapsed_local_positions[:, 1:]
         if collapsed_orients is not None:
+            # Mirror the per-frame rotation handling above: the child inherits the
+            # dropped root's rest orientation. Without this the bind/rest pose loses
+            # the root's orientation while the animation keeps it, leaving the
+            # rest-pose-derived cond t-pose rotated relative to the motion.
+            _oq = collapsed_orients.qs if hasattr(collapsed_orients, "qs") else collapsed_orients
+            _oq[1] = _oq[0]
             collapsed_orients = collapsed_orients[1:]
         collapsed_parents = collapsed_parents[1:] - 1
         collapsed_parents[1:][collapsed_parents[1:] < 0] = 0
@@ -94,6 +100,13 @@ def collapse_root_skeleton(
         )
         collapsed_local_positions = collapsed_local_positions[:, 1:]
         if collapsed_orients is not None:
+            # Mirror the per-frame rotation fold above (root ⊗ child): the dropped
+            # root's rest orientation must be composed into the child's, otherwise
+            # the bind/rest pose loses the root rotation (the animation keeps it via
+            # local_rotations), leaving the rest-derived cond t-pose rolled relative
+            # to the motion — observed as a 90° roll for Alligator/Scorpion/Deer.
+            _oq = collapsed_orients.qs if hasattr(collapsed_orients, "qs") else collapsed_orients
+            _oq[1] = quat_multiply_wxyz_np(_oq[0:1], _oq[1:2])[0]
             collapsed_orients = collapsed_orients[1:]
         collapsed_parents = collapsed_parents[1:] - 1
         collapsed_names = collapsed_names[1:]

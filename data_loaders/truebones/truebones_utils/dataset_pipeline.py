@@ -677,15 +677,34 @@ def _resolve_preprocessing_workers(objects, object_workers=8):
 
 
 def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None):
-    return _prepare_object_outputs(
-        object_type,
-        max_joints=23,
-        max_files=max_files,
-        raw_data_dir=raw_data_dir,
-        filter_min_length=filter_min_length,
-        resample_min_length=resample_min_length,
-        skip_source_paths=skip_source_paths,
-    )
+    # ── Install a local warning collector inside the worker process ──────
+    # The parent's _WarnCollector monkey-patches do NOT propagate into
+    # ProcessPoolExecutor children.  Capture _warn() / degenerate-facing
+    # calls here and return them so the parent can print a deduplicated
+    # summary via its own collector.
+    from . import animation_utils as _au
+    from . import face_orientation as _fo
+    _warn_messages: list[str] = []
+    _original_warn = _au._warn
+    _original_emit = _fo._emit_degenerate_facing_warning
+    _au._warn = lambda msg: _warn_messages.append(msg)
+    _fo._emit_degenerate_facing_warning = lambda ot, wk, msg: _warn_messages.append(msg)
+    try:
+        payload = _prepare_object_outputs(
+            object_type,
+            max_joints=23,
+            max_files=max_files,
+            raw_data_dir=raw_data_dir,
+            filter_min_length=filter_min_length,
+            resample_min_length=resample_min_length,
+            skip_source_paths=skip_source_paths,
+        )
+        if payload is not None:
+            payload['_warn_messages'] = _warn_messages
+        return payload
+    finally:
+        _au._warn = _original_warn
+        _fo._emit_degenerate_facing_warning = _original_emit
 
 
 """ creates processed tensors for all the files of a given object. Returens statistics and the object condition,
@@ -804,6 +823,7 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
     motion_metadata = dict(existing_meta)
 
     all_motion_errors = []
+    all_warn_messages: list[str] = []
     for idx, object_type in enumerate(objects):
         payload = payloads[idx]
         if payload is None:
@@ -811,6 +831,7 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
         squared_positions_error.update(payload['errors'])
         max_joints = max(max_joints, payload['max_joints'])
         all_motion_errors.extend(payload.get('motion_errors', []))
+        all_warn_messages.extend(payload.pop('_warn_messages', []))
         cur_counter = files_counter
         files_counter, object_frames, object_motion_metadata = _write_object_outputs(
             target_dataset_dir,
@@ -822,6 +843,14 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
         cond[object_type] = payload['object_cond']
         objects_counter[object_type] = files_counter - cur_counter
         motion_metadata.update(object_motion_metadata)
+
+    # ── Re-emit worker-collected warnings through _warn so the parent's
+    # _WarnCollector (which patches _warn) picks them up and prints a
+    # single deduplicated summary at the end of STEP 1.
+    if all_warn_messages:
+        from .animation_utils import _warn as _au_warn
+        for msg in all_warn_messages:
+            _au_warn(msg)
 
     if all_motion_errors:
         print(f"\n{'=' * 70}")

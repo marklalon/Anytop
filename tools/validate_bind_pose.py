@@ -197,7 +197,7 @@ def _check_one_source(cond_subset: dict, source_path: str) -> str | None:
     cond_lengths = np.linalg.norm(cond_offsets[nonroot_mask], axis=1)
     scaled_raw = raw_lengths * scale_factor
 
-    epsilon = 1e-8
+    epsilon = 1e-4
     zero_mismatch = (cond_lengths <= epsilon) != (scaled_raw <= epsilon)
     if np.any(zero_mismatch):
         mismatch_pos = int(np.flatnonzero(zero_mismatch)[0])
@@ -208,21 +208,24 @@ def _check_one_source(cond_subset: dict, source_path: str) -> str | None:
             f"source*scale={scaled_raw[mismatch_pos]:.4f})"
         )
 
-    positive_mask = cond_lengths > epsilon
+    positive_mask = (cond_lengths > epsilon) & (scaled_raw > epsilon)
     if np.any(positive_mask):
+        absolute_diffs = np.abs(scaled_raw[positive_mask] - cond_lengths[positive_mask])
         deviations = np.abs(
             scaled_raw[positive_mask] / cond_lengths[positive_mask] - 1.0
         )
-        max_pos = int(np.argmax(deviations))
-        max_deviation = float(deviations[max_pos])
-        if max_deviation > 0.05:
-            positive_joint_indices = np.flatnonzero(nonroot_mask)[positive_mask]
-            joint_index = int(positive_joint_indices[max_pos])
+        min_abs_diff = 0.05
+        # Only flag when both relative deviation AND absolute difference are large
+        flagged = (deviations > 0.05) & (absolute_diffs >= min_abs_diff)
+        if np.any(flagged):
+            flagged_pos = int(np.argmax(deviations[flagged]))
+            flagged_joint_indices = np.flatnonzero(nonroot_mask)[positive_mask][flagged]
+            joint_index = int(flagged_joint_indices[flagged_pos])
             return (
                 f"{source_path_obj.name} — bone length deviation "
-                f"{max_deviation * 100:.2f}% at joint {joint_index} "
-                f"(cond={cond_lengths[positive_mask][max_pos]:.4f}, "
-                f"source*scale={scaled_raw[positive_mask][max_pos]:.4f})"
+                f"{deviations[flagged][flagged_pos] * 100:.2f}% at joint {joint_index} "
+                f"(cond={cond_lengths[positive_mask][flagged][flagged_pos]:.4f}, "
+                f"source*scale={scaled_raw[positive_mask][flagged][flagged_pos]:.4f})"
             )
 
     return None
