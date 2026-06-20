@@ -1,6 +1,7 @@
+import json
 import os
 from pathlib import Path
-import statistics 
+import statistics
 import numpy as np
 
 
@@ -51,7 +52,13 @@ MOTION_DIR = "motions"
 GLB_DIR = "glb"
 BVHS_DIR = "bvhs"
 MOTION_METADATA_FILE = "motion_metadata.json"
-MOTION_TAGS_FILE = "motion_tags.jsonl"
+ACTION_TAGS_FILE = "action_tags.jsonl"
+# Per-species motion descriptor (body-plan, size/build, locomotion), maintained as
+# a JSONL sidecar alongside action_tags.jsonl. One object per line:
+#   {"species": "Cat", "species_tags": ["Quadruped", "Small", "Stalking"]}
+# This is the single source of truth for the species condition and for the
+# object subsets below; do not duplicate the species->tags mapping in code.
+SPECIES_TAGS_FILE = "species_tags.jsonl"
 FOOT_CONTACT_HEIGHT_THRESH = 0.2
 FOOT_CONTACT_VEL_THRESH = 0.002
 MAX_PATH_LEN = 5.
@@ -62,40 +69,78 @@ MAX_PATH_LEN = 5.
 VERTICAL_CLAMP_MIN_RATIO = 0.3
 VERTICAL_CLAMP_MAX_RATIO = 0.5
 
-COSMETICS = ["PolarBearB", "KingCobra", "Hamster", "Skunk", "Comodoa", "Hippopotamus", "Leapord", "Rhino", "Hound"]
-NO_HANDS = ["Raptor", "Anaconda"]
-MILLIPEDS = ["Cricket", "SpiderG" , "Scorpion", "Isopetra", "FireAnt", "Crab", "Centipede", "Roach", "Ant", "HermitCrab", "Scorpion-2", "Spider"]
-SNAKES = ["Anaconda", "KingCobra"]
 # Maps object_type -> joint index tuple used to compute the forward direction for
 # creatures without usable limb pairs (snakes, fish).
 # 2-tuple (neck, head)        -> forward = head - neck
 # 3-tuple (base, neck, head)  -> forward = (head - neck) + (neck - base)
 CHAIN_FORWARD_JOINTS = {
     'Anaconda': (22, 24),
+    'Crow': (8, 22),
+    'Jaws': (15, 3),
     'KingCobra': (4, 8),
-    'Pirrana': (9, 2, 3),   # kosi → mune → atama (tail to head)
+    'Pirrana': (10, 3, 4),  # kosi → mune(Chest) → atama(Head) (tail to head); indices are collapsed-skeleton order
 }
-FLYING = ["Bat", "Dragon", "Bird", "Buzzard", "Eagle", "Giantbee", "Parrot", "Parrot2", "Pigeon", "Pteranodon", "Tukan"]
-CONNECTED_TO_GROUND = ["Bear", "Camel", "Hippopotamus", "Horse", "Pirrana", "Pteranodon", "Raptor3", "Rat", "SabreToothTiger", "Scorpion-2", "Spider", "Trex", "Tukan", "Pirrana"]
-FISH = ["Pirrana"]
-BIPEDS = ["Ostrich", "Flamingo", "Raptor", "Raptor2", "Raptor3", "Trex", "Chicken", "Tyranno"]
-QUADROPEDS = ["Horse", "Hippopotamus", "Comodoa", "Camel", "Bear", "Buffalo", "Cat", "BrownBear", "Coyote", "Crocodile", "Elephant", "Deer", "Fox", "Gazelle", 
-           "Goat", "Jaguar","Lynx", "Tricera", "Stego" , "SandMouse", "Raindeer", "Puppy", "PolarBear", "Monkey", "Mammoth", "Alligator", "Hamster", 
-           "Hound", "Leapord", "Lion", "PolarBearB", "Rat", "Rhino", "SabreToothTiger", "Skunk", "Turtle"]
-QUADROPEDS_TEST = ["Horse"]
-OBJECT_SUBSETS_DICT = {"all" : QUADROPEDS + BIPEDS + MILLIPEDS + SNAKES + FISH + FLYING,
-                       "quadropeds": QUADROPEDS,
-                       "quadropeds_test": QUADROPEDS_TEST,
-                       "flying": FLYING,
-                       "bipeds": BIPEDS, 
-                       "millipeds": MILLIPEDS,
-                       "millipeds_snakes": MILLIPEDS + SNAKES, 
-                       "quadropeds_clean": [quad for quad in QUADROPEDS if quad not in CONNECTED_TO_GROUND], 
-                       "millipeds_clean": [mill for mill in MILLIPEDS if mill not in CONNECTED_TO_GROUND], 
-                       "bipeds_clean": [bip for bip in BIPEDS if bip not in CONNECTED_TO_GROUND], 
-                       "flying_clean": [fly for fly in FLYING if fly not in CONNECTED_TO_GROUND], 
-                       "all_clean": [obj for obj in  QUADROPEDS + BIPEDS + MILLIPEDS + SNAKES + FISH + FLYING if obj not in CONNECTED_TO_GROUND] 
-                       }
+
+def load_species_tags(dataset_dir=None):
+        """Load the per-species motion descriptor from ``SPECIES_TAGS_FILE``.
+
+        Returns an insertion-ordered ``{species: (tag, ...)}`` mapping. The file is
+        the single source of truth for the species condition and for
+        ``OBJECT_SUBSETS_DICT`` -- there is no in-code fallback, so a missing or
+        malformed file fails loudly rather than silently degrading.
+        """
+        tags_path = Path(get_dataset_dir(dataset_dir)) / SPECIES_TAGS_FILE
+        if not tags_path.is_file():
+                raise FileNotFoundError(
+                        f"Species motion tags file not found at: {tags_path}\n"
+                        f"It is the single source of truth for species tags and object subsets."
+                )
+        species_tags = {}
+        with open(tags_path, "r", encoding="utf-8") as f:
+                for line_no, line in enumerate(f, start=1):
+                        line = line.strip()
+                        if not line:
+                                continue
+                        record = json.loads(line)
+                        species = str(record["species"]).strip()
+                        species_tags_tuple = tuple(str(tag).strip() for tag in record["species_tags"])
+                        if not species or not species_tags_tuple:
+                                raise ValueError(
+                                        f"{SPECIES_TAGS_FILE}:{line_no} has an empty species or species_tags."
+                                )
+                        species_tags[species] = species_tags_tuple
+        return species_tags
+
+
+def build_object_subsets_dict(species_tags):
+        """Group species by body-plan (the first motion tag) into ``--object_subsets`` keys.
+
+        Keeps the existing ``OBJECT_SUBSETS_DICT`` contract -- ``"all"`` plus a
+        lower-cased key per body-plan -- but sources the membership from the
+        species motion tags so the mapping never drifts from the descriptor.
+        """
+        subsets = {"all": list(species_tags.keys())}
+        for species, tags in species_tags.items():
+                body_plan = tags[0].strip().lower()
+                subsets.setdefault(body_plan, []).append(species)
+        return subsets
+
+
+SPECIES_TAGS = load_species_tags()
+
+# Body-plan groupings for ``--object_subsets``. Keys are ``"all"`` plus the
+# lower-cased body-plan tag (quadruped / biped / multiped / serpentine /
+# aquatic / winged); values are derived from SPECIES_TAGS.
+OBJECT_SUBSETS_DICT = build_object_subsets_dict(SPECIES_TAGS)
+
+# Composite subset: all footed creatures (有足动物), excluding serpentine & aquatic.
+# Combines quadruped + biped + multiped + winged.
+OBJECT_SUBSETS_DICT["podata"] = (
+        OBJECT_SUBSETS_DICT["quadruped"]
+        + OBJECT_SUBSETS_DICT["biped"]
+        + OBJECT_SUBSETS_DICT["multiped"]
+        + OBJECT_SUBSETS_DICT["winged"]
+)
 
 
 def parse_action_tags(raw_action_tags):
@@ -107,48 +152,6 @@ def parse_action_tags(raw_action_tags):
                 tokens = raw_action_tags
         return tuple(token.strip().lower() for token in tokens if str(token).strip())
 
-
-def parse_action_tag_weights(raw_action_tag_weights):
-        """Parse per-action-tag sampling weights into ``{tag: float}``.
-
-        Accepts a ``'tag:weight,tag:weight'`` string (``;`` also allowed as a
-        separator) or an already-parsed mapping. Tag names are lower-cased and
-        stripped. Empty / ``None`` input yields an empty dict (uniform sampling).
-        Weights must be finite and non-negative.
-        """
-        if raw_action_tag_weights is None:
-                return {}
-        if isinstance(raw_action_tag_weights, dict):
-                items = raw_action_tag_weights.items()
-        else:
-                if isinstance(raw_action_tag_weights, str):
-                        tokens = raw_action_tag_weights.replace(';', ',').split(',')
-                else:
-                        tokens = raw_action_tag_weights
-                items = []
-                for token in tokens:
-                        token = str(token).strip()
-                        if not token:
-                                continue
-                        if ':' not in token:
-                                raise ValueError(
-                                        f"Invalid action_tag_weight '{token}', expected 'tag:weight'."
-                                )
-                        tag, weight = token.rsplit(':', 1)
-                        items.append((tag, weight))
-
-        weights = {}
-        for tag, weight in items:
-                tag = str(tag).strip().lower()
-                if not tag:
-                        continue
-                weight = float(weight)
-                if not np.isfinite(weight) or weight < 0:
-                        raise ValueError(
-                                f"action_tag_weight for '{tag}' must be finite and non-negative, got {weight}."
-                        )
-                weights[tag] = weight
-        return weights
 
 MAX_JOINTS=100
 FPS=30

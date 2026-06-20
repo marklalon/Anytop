@@ -37,18 +37,15 @@ def extract_args(args, args_to_overwrite, model_path):
         if a in model_args.keys():
             setattr(args, a, model_args[a])
 
-    for a, default in (('num_frames', 60), ('min_length', 20)):
+    for a, default in (('min_length', 20),):
         if a in model_args:
             setattr(args, a, model_args[a])
         elif not hasattr(args, a):
             setattr(args, a, default)
-
-    # backward compatibility
-    if isinstance(args.emb_trans_dec, bool):
-        if args.emb_trans_dec:
-            args.emb_trans_dec = 'cls_tcond_cross_tcond'
-        else: 
-            args.emb_trans_dec = 'cls_none_cross_tcond'
+    # num_frames is intentionally NOT overridden here — it is a per-generation
+    # parameter (output frame count) and must preserve the generate parser's
+    # default of None so the caller can distinguish "user explicitly requested
+    # N frames" from "use reference native length / checkpoint default".
     return args
 
 def get_args_per_group_name(parser, args, group_name):
@@ -69,7 +66,6 @@ def get_model_path_from_args():
 
 def add_base_options(parser):
     group = parser.add_argument_group('base')
-    group.add_argument("--cuda", default=True, type=bool, help="Use cuda device, otherwise use CPU.")
     group.add_argument("--device", default=0, type=int, help="Device id to use.")
     group.add_argument("--seed", default=10, type=int, help="For fixing random seed.")
     group.add_argument("--batch_size", default=16, type=int, help="Batch size during training.")
@@ -82,16 +78,14 @@ def add_base_options(parser):
 
 def add_model_options(parser):
     group = parser.add_argument_group('model')
-    group.add_argument("--arch", default='trans_enc',
-                       choices=['trans_enc', 'trans_dec', 'gru'], type=str,
-                       help="Architecture types as reported in the paper.")
-    group.add_argument("--emb_trans_dec", default=False, type=bool,
-                       help="For trans_dec architecture only, if true, will inject condition as a class token"
-                            " (in addition to cross-attention).")
     group.add_argument("--layers", default=4, type=int,
                        help="Number of layers.")
     group.add_argument("--latent_dim", default=128, type=int,
                        help="Transformer/GRU width.")
+    group.add_argument("--ff_size", default=1024, type=int,
+                       help="Feed-forward hidden dimension in each decoder layer. "
+                            "Controls the bottleneck size of the two-layer FFN "
+                            "inside each GraphMotionDecoderLayer.")
     group.add_argument("--lambda_geo", default=0.0, type=float, help="Geodesic rotation loss weight (SO(3) distance between predicted and target rotations).")
     group.add_argument("--lambda_vel", default=0.0, type=float,
                        help="Weight for velocity-position consistency loss (0.0=off)."
@@ -99,9 +93,6 @@ def add_model_options(parser):
                             " Couples position and velocity feature groups to prevent independent memorization.")
     group.add_argument("--lambda_loop_wrap", default=0.0, type=float,
                        help="Weight for loop-only wrap loss on denormalized pose/rotation/terminal_vel channels.")
-    group.add_argument("--lambda_loop_root_xz", default=0.0, type=float,
-                       help="Weight for loop-only translation-root XZ closure loss."
-                           " Penalizes net X/Z velocity drift over the visible loop while preserving in-loop root motion.")
     group.add_argument("--loop_cond_prob", default=1.0, type=float,
                        help="Probability that a loop training clip stays loop-conditioned "
                             "(periodic resampling, circular phase, and loop-condition embedding)."
@@ -130,23 +121,36 @@ def add_model_options(parser):
                        help="CFG drop probability for global energy during training. Randomly replaces "
                            "the energy condition with the running mean, forcing the model to learn "
                            "to actually respond to it. Default 0.1.")
+    group.add_argument("--species_cond", action='store_true',
+                       help="Enable per-species FiLM conditioning: the T5-derived species descriptor "
+                            "modulates the timestep token multiplicatively (gamma=1+res, beta; zero-init "
+                            "so it starts at identity), which every decoder layer re-injects. CFG-droppable "
+                            "(see --species_cfg_drop_prob). Requires cond.npy regenerated with 'species_emb'.")
+    group.add_argument("--species_cfg_drop_prob", default=0.15, type=float,
+                       help="Per-sample probability of hard-dropping the species FiLM condition during "
+                            "training (replaced by identity modulation gamma=1, beta=0), enabling "
+                            "classifier-free guidance over the species descriptor. Default 0.15.")
+    group.add_argument("--species_joint_cond", action='store_true',
+                       help="Also fuse the species descriptor into the per-joint name embedding: "
+                            "project species_emb through a Linear(D->D) and add it to each joint-name T5 "
+                            "embedding, shifting joint semantics toward the body-plan context of the "
+                            "species. Per-joint structural conditioning, orthogonal to (and combinable "
+                            "with) the --species_cond FiLM. Requires 'species_emb'.")
     group.add_argument("--action_tag_cond", action='store_true',
                        help="Enable action-tag conditioning: a multi-hot over the canonical action-tag "
                             "vocabulary is projected and added to the timestep token.")
-    group.add_argument("--action_tag_cfg_drop_prob", default=0.3, type=float,
+    group.add_argument("--action_tag_cfg_drop_prob", default=0.2, type=float,
                        help="Per-sample probability of hard-dropping the action-tag condition during "
                             "training (replaced by a learned null embedding), enabling classifier-free "
-                            "guidance over action tags. Default 0.3.")
+                            "guidance over action tags. Default 0.2.")
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')
-    group.add_argument("--data_dir", default="", type=str,
-                       help="If empty, will use defaults according to the specified dataset.")
     group.add_argument("--train_split", default='train', choices=['train', 'val', 'test', 'all'], type=str,
                        dest='train_split',
                        help="Data split to use for training. 'train'=training set, 'val'=validation set, 'test'=test set, 'all'=use all data.")
     group.add_argument("--objects_subset", default='all', type=str,
-                       help="Object subset. Can be a predefined category (e.g. 'all', 'quadropeds', 'flying', 'bipeds', 'millipeds', etc.) or a single species name (e.g. 'Horse', 'Dragon').")
+                       help="Object subset. Can be a predefined category (e.g. 'all', 'quadruped', 'winged', 'biped', 'multiped', etc.) or a single species name (e.g. 'Horse', 'Dragon').")
     group.add_argument("--action_tags", default='', type=str,
                        help="Comma-separated action tags, e.g. 'locomotion,attack'. During training, filters "
                             "kept motions whose metadata tags match. During generation with --score, filters "
@@ -207,6 +211,14 @@ def add_training_options(parser):
                        help="Prefetch this many batches on background thread for main-thread data loading to overlap with GPU compute. 0 disables it.")
     group.add_argument("--detect_anomaly", action='store_true',
                        help="Enable PyTorch autograd anomaly detection. Useful for debugging, but significantly slows training.")
+    # Spike-capture probe is always on (hardcoded in TrainLoop) and always
+    # serializes the offending batch (.pt) + top per-parameter grad norms next to
+    # the JSON summary. It dumps to <save_dir>/spikes whenever a step's pre-clip
+    # grad_norm exceeds the threshold below. Only the threshold / dump cap tune.
+    group.add_argument("--spike_grad_threshold", default=50.0, type=float,
+                       help="Pre-clip grad_norm above this value triggers a spike dump.")
+    group.add_argument("--spike_max_dumps", default=10, type=int,
+                       help="Stop writing spike dumps after this many, to bound disk usage. 0 = unlimited.")
     group.add_argument("--joint_mask_prob", default=0.5, type=float,
                        help="Per-sample probability of applying a training-time subtree joint perturbation. "
                            "Selected joints keep their supervision loss and remain visible to attention, but their x_t "
@@ -242,11 +254,6 @@ def add_sampling_options(parser):
     group.add_argument("--output_dir", default='', type=str,
                        help="Path to results dir (auto created by the script). "
                             "If empty, will create dir in parallel to checkpoint.")
-    group.add_argument("--num_samples", default=10, type=int,
-                       help="Maximal number of prompts to sample, "
-                            "if loading dataset from file, this field will be ignored.")
-    group.add_argument("--num_repetitions", default=3, type=int,
-                       help="Number of repetitions, per sample (text prompt/action)")
     group.add_argument("--cond_path", default='', type=str,
                        help="provide cond.py path in case you wish to generate motion for skeleton not included in Truebones dataset.")
     group.add_argument("--amp_dtype", default='fp32', choices=['fp32', 'bf16'], type=str,
@@ -259,7 +266,7 @@ def add_sampling_options(parser):
 
 def add_generate_options(parser):
     group = parser.add_argument_group('generate')
-    group.add_argument("--motion_frames", default=None, type=int,
+    group.add_argument("--num_frames", default=None, type=int,
                        help="The number of frames in the sampled motion. "
                             "If omitted with --reference_motion, defaults to the "
                             "reference's native length (R frames); otherwise defaults to 60. "
@@ -317,29 +324,6 @@ def add_generate_options(parser):
                             "--inpaint_joints, the regenerated region is selected-joints x selected-frames; "
                             "everything else is clamped to --reference_motion. Requires --reference_motion.")
 
-    group.add_argument("--score", action='store_true',
-                       help="After generation, automatically run the motion quality scorer on the output "
-                            "and print a quality report. Uses --action_tags (already supported for training) "
-                            "to filter the scorer's reference prior, e.g. 'locomotion,attack'.")
-
-def add_render_options(parser):
-    group = parser.add_argument_group('render')
-    group.add_argument('--bvh_path', type=str, default='assets/Truebones_Chicken', help='path of animation bvh file')
-    group.add_argument('--save_dir', type=str, default='save/render_out', help='')
-    group.add_argument('--scale', type=float, default=0.7, help='')
-    group.add_argument('--cylinder_radius', type=float, default=0.42, help='')
-    group.add_argument('--sphere_radius', type=float, default=0.56, help='')
-    group.add_argument("--subset", default='bipeds', choices=['quadropeds' , 'flying', 'bipeds', 'millipeds_snakes'], type=str, help="Object subset.")
-
-
-def add_evaluation_options(parser):
-    group = parser.add_argument_group('eval')
-    group.add_argument("--eval_mode", default='npy_loc',type=str, choices=['npy_rot', 'npy_loc'], help="Path to gt dir.")
-    group.add_argument("--benchmark_path", default='eval/benchmarks/benchmark_all.txt', type=str,  help="Path to benchmark character names. If empty, will use all excluding the characters_to_exclude")
-    group.add_argument("--eval_gt_dir", default='dataset/truebones/zoo/truebones_processed/motions', type=str, help="Path to gt dir.")
-    group.add_argument("--eval_gen_dir", required=True, type=str, help="Path to gen dir.")
-    group.add_argument("--characters_to_exclude", default='MouseyNoFingers,Mousey_m,Trex,SabreToothTiger,Raptor2', type=str, help="Comma separated list of characters to exclude. The default is character with more than 40 motions.")
-    group.add_argument("--unique_str", default='', type=str, help="A string to be added to the file name to identify a specific change. Should start with '_'.")
 
 def train_args():
     parser = ArgumentParser()
@@ -384,7 +368,9 @@ def process_new_skeleton_args():
     group.add_argument("--retarget-top-k", default=None, type=int,
                        help="Auto-select the top-k most similar training skeletons as motion donors, "
                             "retarget all their motions to the new skeleton, and use those coarse motions "
-                            "to compute proper mean/std for cond.npy. Mutually exclusive with --anim-dir.")
+                            "to compute proper mean/std for cond.npy. Mutually exclusive with --anim-dir. "
+                            "Set to 0 for rest-pose-only mode (graph metadata from --tpos-path skeleton "
+                            "alone, no donor retargeting, no motions/).")
     group.add_argument("--training-cond-path",
                        default="dataset/truebones/zoo/truebones_processed/cond.npy",
                        type=str,
@@ -393,6 +379,11 @@ def process_new_skeleton_args():
     group.add_argument("--donor-skeletons", default=None, type=str,
                        help="Comma-separated donor skeleton names to use instead of auto-selection, "
                             "e.g. 'Bison,Cow,Horse'. Only effective with --retarget-top-k.")
+
+    group.add_argument("--crop-enabled", action='store_true', default=False,
+                       help="Enable automatic skeleton cropping to MAX_JOINTS=100. "
+                            "Off by default because inference has no joint cap; "
+                            "enable for training-compatible preprocessing.")
     group.add_argument("--update", action='store_true',
                        help="Incremental update mode. Instead of clearing --save-dir and rebuilding "
                            "from scratch, merge the current --anim-dir batch into the existing "
@@ -406,18 +397,5 @@ def process_new_skeleton_args():
     args = parser.parse_args()
     return args
 
-def evaluation_parser():
-    parser = ArgumentParser()
-    add_base_options(parser)
-    add_evaluation_options(parser)
-    return parser.parse_args()
 
-def render_parser():
-    parser = ArgumentParser()
-    add_render_options(parser)
-    if "--" not in sys.argv:
-        argv = []
-    else:
-        argv = sys.argv[sys.argv.index("--") + 1:]
-    return parser.parse_args(argv)
 

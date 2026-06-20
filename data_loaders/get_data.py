@@ -112,8 +112,7 @@ def get_dataset_loader(
     )
     collate = truebones_batch_collate
     sampler = None
-    # A weighted sampler is needed for species balancing (--balanced) and/or for
-    # the in-code per-action-tag sampling weights (ACTION_TAG_SAMPLE_WEIGHTS).
+    # A weighted sampler is needed for species balancing (--balanced).
     if dataset.motion_dataset.use_weighted_sampler:
         from data_loaders.truebones.data.dataset import TruebonesSampler
         sampler = TruebonesSampler(dataset)

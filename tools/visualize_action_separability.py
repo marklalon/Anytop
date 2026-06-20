@@ -1,5 +1,5 @@
 """Diagnose how well an AnyTop checkpoint's internal representation separates
-different action types (action_tags), and compare two checkpoints side by side.
+different action types (action_tags) and species groups (objects_subset).
 
 Motivation
 ----------
@@ -9,30 +9,29 @@ embedding. So "do different actions overlap in the same activation region?"
 is tested by probing intermediate decoder-layer activations, labelling each
 clip by its primary action tag, and measuring separability.
 
-Pipeline (per checkpoint)
--------------------------
-1. Pick N random QUADROPEDS clips (same indices for both checkpoints).
+The same analysis is also performed for species groups (objects_subset, e.g.
+quadruped / biped / serpentine) to assess whether different broader creature
+categories are linearly separable in the latent space.
+
+Pipeline
+--------
+1. Pick N random clips from the configured objects_subset.
 2. Feed each clip to the model at a fixed diffusion timestep (default t=0,
    i.e. the clean normalized motion) and capture every decoder layer's
    latent via forward hooks; masked-mean-pool over valid joints + frames
    -> one D-dim vector per clip per layer.
-3. Quantify separability of the action tags in that latent space:
+3. Quantify separability of both action_tags and species groups:
       * leave-one-out kNN accuracy  (no model fitting; non-linear sensitive)
       * silhouette score            (cluster compactness vs separation)
-   Both are reported per layer.
-4. Render a UMAP (fallback t-SNE) 2-D scatter coloured by action tag for a
-   chosen layer, two checkpoints side by side.
-
-The two numbers per layer are only meaningful *relative to each other*:
-compare the loco-only checkpoint against the full-action checkpoint. If the
-full model's separability is markedly lower, that is evidence of
-representation interference from mixing action types.
+   Two tables are printed (one per label type).
+4. Render two UMAP (fallback t-SNE) 2-D scatters for the chosen layer:
+   one coloured by action tag, one coloured by species group.
 
 Usage
 -----
-    python tools/diagnose_action_separability.py \
-        --ckpt1  save/quadropeds_locomotion_no_rot_helper_v1/model000100000.pt \
-        --ckpt2  save/quadropeds_final_v1/model000100000.pt \
+    python tools/visualize_action_separability.py \
+        --ckpt  save/quadropeds_final_v1/model000100000.pt \
+        --objects_subset all \
         --num_clips 100 --device 0 --out_dir save/_action_separability
 """
 import argparse
@@ -51,12 +50,20 @@ import torch
 from data_loaders.get_data import get_dataset
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import (
-    ACTION_TAG_SAMPLE_WEIGHTS,
     _normalize_motion_action_tags,
 )
+from data_loaders.truebones.truebones_utils.param_utils import OBJECT_SUBSETS_DICT
 from sample.generate import prepare_generation_runtime
 from utils.model_util import unwrap_anytop_model
 from utils.parser_util import generate_args
+
+# Reverse mapping: object_type → objects_subset name (e.g. "Horse" → "quadruped")
+_OBJECT_TYPE_TO_SUBSET = {}
+for _subset_name, _type_set in OBJECT_SUBSETS_DICT.items():
+    if _subset_name == "all":
+        continue
+    for _t in _type_set:
+        _OBJECT_TYPE_TO_SUBSET[_t.lower()] = _subset_name
 
 
 # ----------------------------------------------------------------------------
@@ -65,17 +72,12 @@ from utils.parser_util import generate_args
 def primary_action_tag(raw_tags):
     """Reduce a clip's (possibly multi-)action_tags to one display label.
 
-    Mirrors the dataset's "attribute the clip to its highest-weighted tag"
-    rule so the labelling matches how training actually samples the clip.
-    Falls back to alphabetical first tag when no weight map is configured.
+    Returns the alphabetically first tag when multiple tags are present.
     """
     tags = _normalize_motion_action_tags(raw_tags)  # set[str], lowercased
     if not tags:
         return "unknown"
-    ordered = sorted(tags)
-    if ACTION_TAG_SAMPLE_WEIGHTS:
-        return max(ordered, key=lambda t: ACTION_TAG_SAMPLE_WEIGHTS.get(t, 1.0))
-    return ordered[0]
+    return sorted(tags)[0]
 
 
 # ----------------------------------------------------------------------------
@@ -97,11 +99,12 @@ def extract_layer_activations(runtime, dataset, names, batch_size, timestep, dev
 
     Returns
     -------
-    layer_feats : dict[int, np.ndarray]   layer_idx -> (N, D)
-    labels      : list[str]               primary action tag per clip (len N)
+    layer_feats    : dict[int, np.ndarray]   layer_idx -> (N, D)
+    action_labels  : list[str]               primary action tag per clip (len N)
+    species_labels : list[str]               object_type per clip (len N)
     """
-    # Reseed so any random crop inside prepare_sample_by_name is identical
-    # across the two checkpoints (same name order -> same crops -> same input).
+    # Reseed so random crop inside prepare_sample_by_name is deterministic
+    # for the given name list (same seed -> same crops -> reproducible input).
     np.random.seed(seed)
     motion_dataset = dataset.motion_dataset
 
@@ -122,7 +125,8 @@ def extract_layer_activations(runtime, dataset, names, batch_size, timestep, dev
     handles = [decoder_layers[i].register_forward_hook(make_hook(i)) for i in range(num_layers)]
 
     layer_feats = {i: [] for i in range(num_layers)}
-    labels = []
+    action_labels = []
+    species_labels = []
     try:
         for start in range(0, len(names), batch_size):
             batch_names = names[start:start + batch_size]
@@ -158,13 +162,18 @@ def extract_layer_activations(runtime, dataset, names, batch_size, timestep, dev
 
             raw_tag_list = y.get("action_tags") or [None] * bs
             for raw_tags in raw_tag_list:
-                labels.append(primary_action_tag(raw_tags))
+                action_labels.append(primary_action_tag(raw_tags))
+
+            species_list = y.get("object_type") or ["unknown"] * bs
+            for sp in species_list:
+                sp_key = str(sp).strip().lower() if sp is not None else "unknown"
+                species_labels.append(_OBJECT_TYPE_TO_SUBSET.get(sp_key, sp_key))
     finally:
         for h in handles:
             h.remove()
 
     layer_feats = {i: np.concatenate(v, axis=0) for i, v in layer_feats.items()}
-    return layer_feats, labels
+    return layer_feats, action_labels, species_labels
 
 
 # ----------------------------------------------------------------------------
@@ -232,35 +241,28 @@ def embed_2d(features, seed=0):
         return reducer.fit_transform(X), "t-SNE"
 
 
-def plot_comparison(emb_a, labels_a, title_a, emb_b, labels_b, title_b, method, out_path):
+def plot_single(emb, labels, title, method, suptitle, out_path):
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    all_tags = sorted(set(labels_a) | set(labels_b))
+    all_tags = sorted(set(labels))
     cmap = plt.get_cmap("tab20" if len(all_tags) > 10 else "tab10")
     color = {tag: cmap(i % cmap.N) for i, tag in enumerate(all_tags)}
 
-    fig, axes = plt.subplots(1, 2, figsize=(16, 7), sharex=False, sharey=False)
-    for ax, emb, labels, title in (
-        (axes[0], emb_a, labels_a, title_a),
-        (axes[1], emb_b, labels_b, title_b),
-    ):
-        labels = np.asarray(labels)
-        for tag in all_tags:
-            m = labels == tag
-            if not m.any():
-                continue
-            ax.scatter(emb[m, 0], emb[m, 1], s=28, alpha=0.8, color=color[tag], label=tag)
-        ax.set_title(title)
-        ax.set_xlabel(f"{method}-1")
-        ax.set_ylabel(f"{method}-2")
-    handles, lbls = axes[0].get_legend_handles_labels()
-    if not handles:
-        handles, lbls = axes[1].get_legend_handles_labels()
-    fig.legend(handles, lbls, loc="upper center", ncol=min(len(all_tags), 8), fontsize=9)
-    fig.suptitle(f"Action-tag separability of decoder latents ({method})", y=1.02, fontsize=13)
+    fig, ax = plt.subplots(1, 1, figsize=(9, 7))
+    labels = np.asarray(labels)
+    for tag in all_tags:
+        m = labels == tag
+        if not m.any():
+            continue
+        ax.scatter(emb[m, 0], emb[m, 1], s=28, alpha=0.8, color=color[tag], label=tag)
+    ax.set_title(title)
+    ax.set_xlabel(f"{method}-1")
+    ax.set_ylabel(f"{method}-2")
+    fig.legend(loc="upper center", ncol=min(len(all_tags), 8), fontsize=9)
+    fig.suptitle(suptitle, y=1.02, fontsize=13)
     fig.tight_layout()
     fig.savefig(out_path, dpi=140, bbox_inches="tight")
     plt.close(fig)
@@ -276,11 +278,10 @@ def load_runtime(ckpt_path, device):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--ckpt1", required=True, help="first checkpoint .pt")
-    ap.add_argument("--ckpt2", required=True, help="second checkpoint .pt")
+    ap.add_argument("--ckpt", required=True, help="checkpoint .pt to evaluate")
     ap.add_argument("--num_clips", type=int, default=500)
     ap.add_argument("--batch_size", type=int, default=16)
-    ap.add_argument("--objects_subset", default="quadropeds")
+    ap.add_argument("--objects_subset", default="all")
     ap.add_argument("--split", default="train")
     ap.add_argument("--timestep", type=int, default=0,
                     help="diffusion t to probe at (0 = clean motion). >0 noises via q_sample.")
@@ -293,101 +294,108 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     device = torch.device(f"cuda:{args.device}" if torch.cuda.is_available() else "cpu")
 
-    # --- Load both checkpoints (each reads its own args.json architecture) ---
-    print(f"\n=== Loading checkpoint 1 ===\n{args.ckpt1}")
-    loco_rt, loco_args = load_runtime(args.ckpt1, args.device)
-    print(f"\n=== Loading checkpoint 2 ===\n{args.ckpt2}")
-    full_rt, full_args = load_runtime(args.ckpt2, args.device)
+    # --- Load checkpoint ---
+    print(f"\n=== Loading checkpoint ===\n{args.ckpt}")
+    rt, model_args = load_runtime(args.ckpt, args.device)
 
-    # --- Build the clip set (same motion indices fed to both models) ---
-    # Use each model's own num_frames/temporal_window for the dataset resample,
-    # but the SAME random indices so both see the same underlying motions/tags.
+    # --- Build the clip set ---
     rng = np.random.default_rng(args.seed)
-
-    def build_dataset(model_args):
-        return get_dataset(
-            num_frames=int(getattr(model_args, "num_frames", 60)),
-            split=args.split,
-            temporal_window=int(getattr(model_args, "temporal_window", 31)),
-            balanced=False,
-            objects_subset=args.objects_subset,
-        )
-
-    loco_ds = build_dataset(loco_args)
-    full_ds = build_dataset(full_args)
-    # Sample clip NAMES (not indices) so both models see identical motions even
-    # if their datasets order/length differently; drop any name missing from the
-    # full-action dataset (should not happen for the same subset/split).
-    loco_names = list(loco_ds.motion_dataset.name_list)
-    full_name_set = set(full_ds.motion_dataset.name_list)
-    shared = [nm for nm in loco_names if nm in full_name_set]
-    n = min(args.num_clips, len(shared))
-    names = list(rng.choice(np.asarray(shared, dtype=object), size=n, replace=False))
-    print(f"\nSampled {n} clips from '{args.objects_subset}' split='{args.split}' "
-          f"(shared pool={len(shared)}).")
-
-    # --- Extract activations (same names + same seed -> identical inputs) ---
-    print("\n[extract] model 1 ...")
-    loco_feats, loco_labels = extract_layer_activations(
-        loco_rt, loco_ds, names, args.batch_size, args.timestep, device, args.seed
+    ds = get_dataset(
+        num_frames=int(getattr(model_args, "num_frames", 60)),
+        split=args.split,
+        temporal_window=int(getattr(model_args, "temporal_window", 31)),
+        balanced=False,
+        objects_subset=args.objects_subset,
     )
-    print("[extract] model 2 ...")
-    full_feats, full_labels = extract_layer_activations(
-        full_rt, full_ds, names, args.batch_size, args.timestep, device, args.seed
+    all_names = list(ds.motion_dataset.name_list)
+    n = min(args.num_clips, len(all_names))
+    names = list(rng.choice(np.asarray(all_names, dtype=object), size=n, replace=False))
+    print(f"\nSampled {n} clips from '{args.objects_subset}' split='{args.split}'.")
+
+    # --- Extract activations ---
+    print("\n[extract] ...")
+    feats, action_labels, species_labels = extract_layer_activations(
+        rt, ds, names, args.batch_size, args.timestep, device, args.seed
     )
 
-    # labels are identical (same indices); sanity-report the tag distribution.
-    tags, tag_counts = np.unique(np.asarray(loco_labels), return_counts=True)
+    # Report the tag / species distribution.
+    tags, tag_counts = np.unique(np.asarray(action_labels), return_counts=True)
     print("\nAction-tag distribution in the probe set:")
     for tag, c in sorted(zip(tags, tag_counts), key=lambda kv: -kv[1]):
         print(f"  {tag:<24s} {c}")
+    if args.objects_subset == "all":
+        sps, sp_counts = np.unique(np.asarray(species_labels), return_counts=True)
+        print("\nSpecies (objects_subset) distribution in the probe set:")
+        for sp, c in sorted(zip(sps, sp_counts), key=lambda kv: -kv[1]):
+            print(f"  {sp:<24s} {c}")
 
-    # --- Per-layer separability table ---
-    num_layers = len(loco_feats)
-    print("\n" + "=" * 74)
-    print(f"{'layer':>5s} | {'ckpt1 kNN':>9s} {'ckpt1 sil':>9s} | {'ckpt2 kNN':>9s} {'ckpt2 sil':>9s}")
-    print("-" * 74)
-    loco_metrics, full_metrics = {}, {}
+    num_layers = len(feats)
+
+    # --- Per-layer separability table: action tags ---
+    print("\n" + "=" * 55)
+    print(f"{'layer':>5s} | {'kNN acc':>9s} {'silhouette':>9s}  <- ACTION tags")
+    print("-" * 55)
+    action_metrics = {}
     for layer in range(num_layers):
-        lm = separability_metrics(loco_feats[layer], loco_labels)
-        fm = separability_metrics(full_feats[layer], full_labels)
-        loco_metrics[layer], full_metrics[layer] = lm, fm
-        print(
-            f"{layer:>5d} | {lm['knn_acc']:>9.3f} {lm['silhouette']:>9.3f} | "
-            f"{fm['knn_acc']:>9.3f} {fm['silhouette']:>9.3f}"
-        )
-    print("-" * 74)
-    print(f"(majority-class chance kNN baseline = {loco_metrics[0]['chance']:.3f}, "
-          f"n_classes = {loco_metrics[0]['n_classes']})")
-    print("=" * 74)
+        m = separability_metrics(feats[layer], action_labels)
+        action_metrics[layer] = m
+        print(f"{layer:>5d} | {m['knn_acc']:>9.3f} {m['silhouette']:>9.3f}")
+    print("-" * 55)
+    print(f"(majority-class chance kNN baseline = {action_metrics[0]['chance']:.3f}, "
+          f"n_classes = {action_metrics[0]['n_classes']})")
+    print("=" * 55)
+
+    # --- Per-layer separability table: species (objects_subset) ---
+    species_metrics = {}
+    if args.objects_subset == "all":
+        print("\n" + "=" * 55)
+        print(f"{'layer':>5s} | {'kNN acc':>9s} {'silhouette':>9s}  <- SPECIES (objects_subset)")
+        print("-" * 55)
+        for layer in range(num_layers):
+            m = separability_metrics(feats[layer], species_labels)
+            species_metrics[layer] = m
+            print(f"{layer:>5d} | {m['knn_acc']:>9.3f} {m['silhouette']:>9.3f}")
+        print("-" * 55)
+        print(f"(majority-class chance kNN baseline = {species_metrics[0]['chance']:.3f}, "
+              f"n_classes = {species_metrics[0]['n_classes']})")
+        print("=" * 55)
     print(
-        "\nReading: higher kNN/silhouette = action tags are better separated in "
-        "that layer.\nIf ckpt2 columns are markedly lower than ckpt1 at "
-        "the same layer,\nthat is evidence of representation interference from "
-        "mixing action types."
+        "\nReading: higher kNN/silhouette = labels are better separated in that layer."
     )
 
-    # --- 2-D scatter for the chosen layer ---
+    # --- 2-D scatters for the chosen layer ---
     plot_layer = args.plot_layer if args.plot_layer >= 0 else num_layers - 1
-    emb_loco, method = embed_2d(loco_feats[plot_layer], seed=args.seed)
-    emb_full, _ = embed_2d(full_feats[plot_layer], seed=args.seed)
-    out_png = os.path.join(
+    emb, method = embed_2d(feats[plot_layer], seed=args.seed)
+
+    out_png_action = os.path.join(
         args.out_dir, f"action_separability_layer{plot_layer}_t{args.timestep}.png"
     )
-    plot_comparison(
-        emb_loco, loco_labels,
-        f"ckpt1  (layer {plot_layer}, kNN={loco_metrics[plot_layer]['knn_acc']:.3f})",
-        emb_full, full_labels,
-        f"ckpt2  (layer {plot_layer}, kNN={full_metrics[plot_layer]['knn_acc']:.3f})",
-        method, out_png,
+    plot_single(
+        emb, action_labels,
+        f"layer {plot_layer}, kNN={action_metrics[plot_layer]['knn_acc']:.3f}",
+        method,
+        f"Action-tag separability of decoder latents ({method})",
+        out_png_action,
     )
+
+    if args.objects_subset == "all":
+        out_png_species = os.path.join(
+            args.out_dir, f"species_separability_layer{plot_layer}_t{args.timestep}.png"
+        )
+        plot_single(
+            emb, species_labels,
+            f"layer {plot_layer}, kNN={species_metrics[plot_layer]['knn_acc']:.3f}",
+            method,
+            f"Species (objects_subset) separability of decoder latents ({method})",
+            out_png_species,
+        )
 
     # --- Persist raw numbers for follow-up analysis ---
     np.savez(
         os.path.join(args.out_dir, f"action_separability_t{args.timestep}.npz"),
-        labels=np.asarray(loco_labels),
-        **{f"loco_layer{l}": loco_feats[l] for l in range(num_layers)},
-        **{f"full_layer{l}": full_feats[l] for l in range(num_layers)},
+        action_labels=np.asarray(action_labels),
+        species_labels=np.asarray(species_labels),
+        **{f"layer{l}": feats[l] for l in range(num_layers)},
     )
     print(f"[data]  saved raw latents -> {args.out_dir}")
 

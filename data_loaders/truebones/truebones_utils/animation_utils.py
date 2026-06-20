@@ -14,12 +14,22 @@ import os
 from os.path import join as pjoin
 import re
 import torch
-from data_loaders.truebones.truebones_utils.param_utils import HML_REF_AXIAL_BONE_LENGTH, HML_REF_MAX_SPAN, MAX_JOINTS, FLYING, FISH, SCALE_BODY_SPAN_BLEND_WEIGHT, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
+from data_loaders.truebones.truebones_utils.param_utils import HML_REF_AXIAL_BONE_LENGTH, HML_REF_MAX_SPAN, MAX_JOINTS, OBJECT_SUBSETS_DICT, SCALE_BODY_SPAN_BLEND_WEIGHT, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
+from data_loaders.truebones.truebones_utils.skeleton_cropping import (
+    select_cropped_joint_indices,
+)
+
+# Body-plan groups used by the vertical clamp; sourced from the species motion
+# tags (winged == old FLYING, aquatic == old FISH) so they never drift.
+FLYING = frozenset(OBJECT_SUBSETS_DICT['winged'])
+FISH = frozenset(OBJECT_SUBSETS_DICT['aquatic'])
 from .physics_joint_annotation import (
     build_semantic_metadata,
     normalize_joint_name,
     strip_joint_name_prefix,
     build_joint_embedding_texts,
+    build_species_embedding_text,
+    assert_species_tags_cover,
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
 )
 
@@ -286,87 +296,69 @@ def refresh_joint_metadata_in_cond_dict(cond_dict):
     return cond_dict
 
 
-def _joint_name_embeddings_are_current(object_cond, embedding_texts, t5_name):
-    joint_names = list(object_cond.get('joints_names') or [])
-    embs = object_cond.get('joints_names_embs')
-    meta = object_cond.get('joints_names_embs_meta')
-
-    if embs is None or not isinstance(meta, dict):
-        return False
-
-    embs = np.asarray(embs)
-    if embs.ndim != 2:
-        return False
-    if len(joint_names) != len(embedding_texts) or embs.shape[0] != len(joint_names):
-        return False
-
-    try:
-        schema_version = int(meta.get('schema_version'))
-        embedding_dim = int(meta.get('embedding_dim'))
-    except (TypeError, ValueError):
-        return False
-
-    if meta.get('t5_name') != t5_name:
-        return False
-    if schema_version != JOINT_NAME_EMBEDDING_SCHEMA_VERSION:
-        return False
-    if embedding_dim != int(embs.shape[1]):
-        return False
-    if list(meta.get('embedding_texts') or []) != list(embedding_texts):
-        return False
-
-    return True
-
-
-def attach_joint_name_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collision_report=True, force_reencode=True):
+def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collision_report=True):
 
     if not cond:
         return
+
+    # Fast-fail before any encoding: the per-species descriptor has no fallback,
+    # so a species missing from _SPECIES_TAGS must surface here.
+    assert_species_tags_cover(cond.keys())
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     inspection_dir = pjoin(save_dir, 'joint_name_inspection')
     os.makedirs(inspection_dir, exist_ok=True)
 
     embedding_texts_by_object = {}
-    object_types_to_encode = []
     for object_type in sorted(cond):
         object_cond = cond[object_type]
         refresh_joint_metadata_in_object_cond(object_cond)
         embedding_texts = build_joint_embedding_texts(object_cond)
         embedding_texts_by_object[object_type] = embedding_texts
-        if force_reencode or not _joint_name_embeddings_are_current(object_cond, embedding_texts, t5_name):
-            object_types_to_encode.append(object_type)
 
-    if object_types_to_encode:
-        from model.conditioners import T5Conditioner
+    object_types_to_encode = sorted(cond)
+    joint_count = len(object_types_to_encode)
+    print(f'Loading T5 model {t5_name} on {device.upper()} ...')
+    from model.conditioners import T5Conditioner
+    t5_conditioner = T5Conditioner(
+        name=t5_name,
+        finetune=False,
+        word_dropout=0.0,
+        normalize_text=False,
+        device=device,
+        autocast_dtype=None,
+        local_files_only=True,
+    )
+    print(f'Encoding joint-name embeddings for {joint_count} object types ...')
 
-        print(f'Encoding joint names into cond.npy with {t5_name} on {device.upper()}')
-        t5_conditioner = T5Conditioner(
-            name=t5_name,
-            finetune=False,
-            word_dropout=0.0,
-            normalize_text=False,
-            device=device,
-            autocast_dtype=None,
-            local_files_only=True,
-        )
+    with torch.no_grad():
+        for object_type in object_types_to_encode:
+            object_cond = cond[object_type]
+            embedding_texts = embedding_texts_by_object[object_type]
+            names_tokens = t5_conditioner.tokenize_entries(embedding_texts)
+            embs = t5_conditioner(names_tokens).detach().cpu().numpy().astype(np.float32, copy=False)
+            object_cond['joints_names_embs'] = embs
+            object_cond['joints_names_embs_meta'] = {
+                't5_name': t5_name,
+                'schema_version': JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
+                'embedding_dim': int(embs.shape[1]) if embs.ndim == 2 else 0,
+                'embedding_texts': list(embedding_texts),
+            }
 
-        with torch.no_grad():
-            for object_type in object_types_to_encode:
-                object_cond = cond[object_type]
-                embedding_texts = embedding_texts_by_object[object_type]
-                names_tokens = t5_conditioner.tokenize_entries(embedding_texts)
-                embs = t5_conditioner(names_tokens).detach().cpu().numpy().astype(np.float32, copy=False)
-                object_cond['joints_names_embs'] = embs
-                object_cond['joints_names_embs_meta'] = {
-                    't5_name': t5_name,
-                    'schema_version': JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
-                    'embedding_dim': int(embs.shape[1]) if embs.ndim == 2 else 0,
-                    'embedding_texts': list(embedding_texts),
-                }
-    else:
-        #print(f'Reusing cached joint-name embeddings from cond.npy for {len(cond)} object types ({t5_name})')
-        pass
+    print(f'Encoding species embeddings for {joint_count} object types ...')
+    with torch.no_grad():
+        for object_type in object_types_to_encode:
+            object_cond = cond[object_type]
+            species_text = build_species_embedding_text(object_cond)
+            species_tokens = t5_conditioner.tokenize_entries([species_text])
+            species_emb = t5_conditioner(species_tokens).detach().cpu().numpy().astype(np.float32, copy=False)
+            object_cond['species_emb'] = species_emb[0]
+            object_cond['species_emb_meta'] = {
+                't5_name': t5_name,
+                'schema_version': JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
+                'embedding_dim': int(species_emb.shape[1]) if species_emb.ndim == 2 else 0,
+                'embedding_text': species_text,
+            }
 
     for object_type in sorted(cond):
         object_cond = cond[object_type]
@@ -792,90 +784,21 @@ def needs_bvh_position_channels(anim, tol=1e-4):
     return bool(np.any(np.abs(nonroot_positions - rest_offsets) > tol))
 
 
-def _joint_depths_from_parents(parents):
-    """Return per-joint depth (root = 0) for a parent array.
-
-    Walks each joint up to its root, so it is correct regardless of whether the
-    array happens to be topologically (parent-before-child) ordered.
-    """
-    parents = np.asarray(parents, dtype=np.int64)
-    n = int(parents.shape[0])
-    depths = np.zeros((n,), dtype=np.int64)
-    for joint_index in range(n):
-        depth = 0
-        cursor = joint_index
-        while int(parents[cursor]) >= 0:
-            cursor = int(parents[cursor])
-            depth += 1
-        depths[joint_index] = depth
-    return depths
-
-
-def select_cropped_joint_indices(parents, max_joints):
-    """Pick the joints to KEEP so a skeleton fits within ``max_joints``.
-
-    Joints are removed one at a time, always taking the deepest current *leaf*
-    (a kept joint with no kept children); ties at equal depth are broken by the
-    larger joint index so trimming starts at the tail/rightmost branch. Because
-    only leaves are ever removed, the kept set stays ancestor-closed: every kept
-    non-root joint still has its parent, so parent remapping is always valid.
-    Roots are never removed.
-
-    Returns ``(keep_indices, removed_order)`` where ``keep_indices`` is sorted
-    ascending and ``removed_order`` lists removed joints deepest-first; returns
-    ``None`` when the skeleton already fits (no cropping needed).
-    """
-    parents = np.asarray(parents, dtype=np.int64)
-    n = int(parents.shape[0])
-    if n <= int(max_joints):
-        return None
-
-    depths = _joint_depths_from_parents(parents)
-    kept = [True] * n
-    child_count = [0] * n
-    for joint_index in range(n):
-        parent_index = int(parents[joint_index])
-        if parent_index >= 0:
-            child_count[parent_index] += 1
-
-    num_kept = n
-    removed_order = []
-    while num_kept > int(max_joints):
-        best = -1
-        best_depth = -1
-        for joint_index in range(n):
-            if not kept[joint_index]:
-                continue
-            if child_count[joint_index] != 0:
-                continue
-            if int(parents[joint_index]) < 0:
-                continue  # never remove a root
-            depth = int(depths[joint_index])
-            if depth > best_depth or (depth == best_depth and joint_index > best):
-                best_depth = depth
-                best = joint_index
-        if best < 0:
-            break  # only roots remain; cannot crop further
-        kept[best] = False
-        removed_order.append(best)
-        num_kept -= 1
-        parent_index = int(parents[best])
-        if parent_index >= 0:
-            child_count[parent_index] -= 1
-
-    keep_indices = [joint_index for joint_index in range(n) if kept[joint_index]]
-    return keep_indices, removed_order
-
-
 def crop_animation_to_max_joints(anim, names, max_joints=MAX_JOINTS, *, context=None):
-    """Crop ``anim``/``names`` to at most ``max_joints`` joints, deepest leaves first.
+    """Crop ``anim``/``names`` to at most ``max_joints`` joints.
+
+    Cropping always removes current leaves first. Deeper leaves are removed
+    before shallower ones; at the same depth, shorter bones are trimmed before
+    longer ones. Non-root joints whose rest-offset length exceeds the mean
+    non-root bone length are preserved whenever possible and are only dropped as
+    a last resort when the cap still cannot be met.
 
     Returns ``(anim, names, keep_indices)``. When no cropping is needed the
     inputs are returned unchanged with ``keep_indices=None``. When cropping
     happens a yellow [WARN] log line names the dropped joints so the affected
     clip/skeleton is easy to spot. The keep-set is a deterministic function of
-    the parent topology, so the rest-pose skeleton and every motion clip of the
-    same character crop to the identical joint set.
+    the parent topology and rest-pose offsets, so the rest-pose skeleton and
+    every motion clip of the same character crop to the identical joint set.
     """
     parents = np.asarray(anim.parents, dtype=np.int64)
     n = int(parents.shape[0])
@@ -885,7 +808,7 @@ def crop_animation_to_max_joints(anim, names, max_joints=MAX_JOINTS, *, context=
             f"Expected {n} joint names to crop skeleton, got {len(names)}"
         )
 
-    selection = select_cropped_joint_indices(parents, max_joints)
+    selection = select_cropped_joint_indices(parents, max_joints, offsets=anim.offsets)
     if selection is None:
         return anim, names, None
     keep_indices, removed_order = selection

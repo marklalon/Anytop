@@ -766,7 +766,6 @@ def test_retarget_features_npy_to_target_encodes_feature_space_animation_directl
     )
     source_cond = {
         'object_type': 'Parrot',
-        'original_joint_count': 2,
         'canonical_joint_names': ['Root', 'Head'],
         'orientation_reference_fbx_path': 'unused',
     }
@@ -848,7 +847,6 @@ def test_retarget_features_npy_to_target_uses_effective_root_override(
     )
     source_cond = {
         'object_type': 'Parrot',
-        'original_joint_count': 2,
         'canonical_joint_names': ['Root', 'Head'],
         'orientation_reference_fbx_path': 'unused',
     }

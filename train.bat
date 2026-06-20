@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=truebones_zoo_v2
+set RUN_NAME=truebones_zoo_locomotion_v1
 set TORCH_LOGS=recompiles,graph_breaks
 
 REM --compile builds Triton kernel launchers with MSVC cl.exe. Initialize
@@ -19,11 +19,17 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--auto_resume ^
 	--ml_platform_type TensorboardPlatform ^
 	--objects_subset all ^
+	--action_tags locomotion,fly,swim ^
 	--train_split train ^
-	--latent_dim 512 ^
+	--balanced ^
+	--latent_dim 256 ^
+	--ff_size 2048 ^
 	--layers 8 ^
 	--global_energy_cond ^
+	--global_energy_cfg_drop_prob 0.3 ^
 	--action_tag_cond ^
+	--species_cond ^
+	--species_joint_cond ^
 	--loop_cond_prob 0.5 ^
 	--cross_limb_dim 128 ^
 	--cross_limb_last_n 4 ^
@@ -31,22 +37,22 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--num_frames 60 ^
 	--batch_size 16 ^
 	--lr 1e-4 ^
+	--weight_decay 0.01 ^
 	--use_ema ^
 	--ema_rate 0.995 ^
 	--num_steps 100000 ^
 	--dropout_prob 0.1 ^
-	--joint_mask_prob 0.5 ^
+	--joint_mask_prob 0.3 ^
 	--joint_mask_budget 0.15 ^
 	--temporal_window 41 ^
 	--temporal_span_mask_prob 0.3 ^
 	--temporal_span_seam_loss_weight 0.5 ^
 	--lambda_loop_wrap 0.1 ^
-	--lambda_loop_root_xz 0.1 ^
 	--lambda_vel 0.5 ^
 	--lambda_geo 0.5 ^
-	--motion_cache_size 512 ^
+	--motion_cache_size 32768 ^
 	--amp_dtype bf16 ^
-	--compile default ^
-	--main_process_prefetch_batches 64
-	
+	--main_process_prefetch_batches 64 ^
+	--compile default
+
 popd

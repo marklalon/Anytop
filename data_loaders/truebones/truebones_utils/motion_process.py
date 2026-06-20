@@ -19,7 +19,7 @@ from .animation_utils import (
     refresh_joint_metadata_in_object_cond,
     write_joint_name_collision_report,
     refresh_joint_metadata_in_cond_dict,
-    attach_joint_name_embeddings_to_cond,
+    attach_t5_embeddings_to_cond,
     # Animation transforms
     find_translation_root,
     xz_locomotion_extent,
@@ -53,6 +53,7 @@ from .features import (
 from .dataset_pipeline import (
     DatasetPreprocessingError,
     create_data_samples,
+    find_new_source_files,
     process_skeleton,
     get_mean_std,
     validate_anim_dir_update_state,

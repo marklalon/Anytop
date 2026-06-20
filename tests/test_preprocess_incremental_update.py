@@ -27,9 +27,9 @@ def _make_cond_entry(object_type: str) -> dict[str, object]:
     }
 
 
-def _write_motion_tags(dataset_dir, tags_by_clip):
-    """Write the hand-maintained motion_tags.jsonl sidecar for a temp dataset."""
-    path = Path(dataset_dir) / "motion_tags.jsonl"
+def _write_action_tags(dataset_dir, tags_by_clip):
+    """Write the hand-maintained action_tags.jsonl sidecar for a temp dataset."""
+    path = Path(dataset_dir) / "action_tags.jsonl"
     lines = [
         json.dumps({"clip": clip, "action_tags": list(tags)})
         for clip, tags in tags_by_clip.items()
@@ -87,7 +87,7 @@ def test_load_motion_metadata_merges_action_tags_from_sidecar(tmp_path):
         ),
         encoding="utf-8",
     )
-    _write_motion_tags(dataset_dir, {"Cat_Run_001.npy": ["Locomotion", "attack", "locomotion"]})
+    _write_action_tags(dataset_dir, {"Cat_Run_001.npy": ["Locomotion", "attack", "locomotion"]})
 
     loaded = load_motion_metadata(dataset_dir)
     entry = loaded["Cat_Run_001.npy"]
@@ -111,7 +111,7 @@ def test_load_motion_metadata_fast_fails_when_tag_missing(tmp_path):
         encoding="utf-8",
     )
     # Sidecar exists but is missing the clip → must fail fast.
-    _write_motion_tags(dataset_dir, {"Dog_Jump_002.npy": ["jump"]})
+    _write_action_tags(dataset_dir, {"Dog_Jump_002.npy": ["jump"]})
 
     with pytest.raises(SystemExit):
         load_motion_metadata(dataset_dir)
@@ -156,7 +156,7 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
         },
         total_clips=3,
     )
-    _write_motion_tags(
+    _write_action_tags(
         dataset_dir,
         {
             "Cat_Run_001.npy": ["locomotion"],
@@ -181,7 +181,7 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
         encoding="utf-8",
     )
 
-    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True, force_reencode=True):
+    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True):
         inspection_output_dir = Path(save_dir) / "joint_name_inspection"
         inspection_output_dir.mkdir(parents=True, exist_ok=True)
         for object_type, object_cond in cond.items():
@@ -206,7 +206,7 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
         )
         return []
 
-    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_t5_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
 
     dataset_dir_path = regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
@@ -285,12 +285,12 @@ def test_regenerate_dataset_artifacts_unifies_translation_root_index_per_object(
         },
         total_clips=2,
     )
-    _write_motion_tags(
+    _write_action_tags(
         dataset_dir,
         {"Cat_Run_001.npy": ["locomotion"], "Cat_Idle_002.npy": ["idle"]},
     )
 
-    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True, force_reencode=True):
+    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True):
         for object_cond in cond.values():
             joint_count = len(object_cond["joints_names"])
             object_cond["joints_names_embs"] = np.ones((joint_count, 1), dtype=np.float32)
@@ -299,7 +299,7 @@ def test_regenerate_dataset_artifacts_unifies_translation_root_index_per_object(
     def fake_write_collision_report(cond, save_dir):
         return []
 
-    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_t5_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
 
     regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
@@ -340,9 +340,9 @@ def test_regenerate_dataset_artifacts_rebuilds_translation_root_when_metadata_mi
         },
         total_clips=1,
     )
-    _write_motion_tags(dataset_dir, {"Cat_Run_001.npy": ["locomotion"]})
+    _write_action_tags(dataset_dir, {"Cat_Run_001.npy": ["locomotion"]})
 
-    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True, force_reencode=True):
+    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True):
         for object_cond in cond.values():
             joint_count = len(object_cond["joints_names"])
             object_cond["joints_names_embs"] = np.ones((joint_count, 1), dtype=np.float32)
@@ -351,7 +351,7 @@ def test_regenerate_dataset_artifacts_rebuilds_translation_root_when_metadata_mi
     def fake_write_collision_report(cond, save_dir):
         return []
 
-    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_t5_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
 
     regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
@@ -387,12 +387,12 @@ def test_regenerate_dataset_artifacts_uses_majority_root_not_minimum(monkeypatch
         {f"Bear_Run_{idx:03d}.npy": {"object_type": "Bear", "translation_root_index": 1} for idx in range(4)},
         total_clips=4,
     )
-    _write_motion_tags(
+    _write_action_tags(
         dataset_dir,
         {f"Bear_Run_{idx:03d}.npy": ["locomotion"] for idx in range(4)},
     )
 
-    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True, force_reencode=True):
+    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True):
         for object_cond in cond.values():
             joint_count = len(object_cond["joints_names"])
             object_cond["joints_names_embs"] = np.ones((joint_count, 1), dtype=np.float32)
@@ -401,7 +401,7 @@ def test_regenerate_dataset_artifacts_uses_majority_root_not_minimum(monkeypatch
     def fake_write_collision_report(cond, save_dir):
         return []
 
-    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_t5_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
 
     regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
@@ -435,7 +435,7 @@ def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_infe
         },
         total_clips=2,
     )
-    _write_motion_tags(
+    _write_action_tags(
         dataset_dir,
         {
             "Cat_Run_001.npy": ["locomotion"],
@@ -443,7 +443,7 @@ def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_infe
         },
     )
 
-    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True, force_reencode=True):
+    def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True):
         for object_cond in cond.values():
             joint_count = len(object_cond["joints_names"])
             object_cond["joints_names_embs"] = np.ones((joint_count, 1), dtype=np.float32)
@@ -462,7 +462,7 @@ def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_infe
             "motion_name": motion_name,
         }
 
-    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_joint_name_embeddings_to_cond", fake_attach)
+    monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_t5_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
     monkeypatch.setattr(
         regenerate_dataset_artifacts_module,
@@ -478,7 +478,7 @@ def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_infe
 def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch, tmp_path):
     dataset_dir = tmp_path / "dataset"
 
-    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20):
+    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None):
         return {
             'object_type': object_type,
             'object_cond': _make_cond_entry(object_type),
@@ -491,7 +491,7 @@ def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch,
             'motion_errors': [],
         }
 
-    def fake_write_object_outputs(save_dir, object_payload, files_counter):
+    def fake_write_object_outputs(save_dir, object_payload, files_counter, action_start_counts=None):
         motions_dir = Path(save_dir) / 'motions'
         motion_name = f"{object_payload['object_type']}_Run_001.npy"
         np.save(motions_dir / motion_name, np.zeros((3, 2, 3), dtype=np.float32))
@@ -517,7 +517,7 @@ def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch,
     assert sorted(seed_cond) == ['Cat']
     assert 'joints_names_embs' not in seed_cond['Cat']
 
-    _write_motion_tags(dataset_dir, {"Cat_Run_001.npy": ["locomotion"]})
+    _write_action_tags(dataset_dir, {"Cat_Run_001.npy": ["locomotion"]})
     motion_metadata = load_motion_metadata(dataset_dir)
     assert motion_metadata['Cat_Run_001.npy']['translation_root_index'] == 1
 
@@ -532,7 +532,7 @@ def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch,
 def test_create_data_samples_raises_preprocess_error_instead_of_exit(monkeypatch, tmp_path):
     dataset_dir = tmp_path / 'dataset'
 
-    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20):
+    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None):
         return {
             'object_type': object_type,
             'object_cond': _make_cond_entry(object_type),
@@ -566,17 +566,158 @@ def test_run_preprocessing_calls_create_data_samples_directly(monkeypatch):
     monkeypatch.setattr(motion_process_mod, 'create_data_samples', fake_create_data_samples)
 
     ret = preprocess_and_validate_module.run_preprocessing(
-        object_filter='',
+        ['Horse', 'Raptor'],
         object_workers=4,
         raw_data_dir='raw_dir',
         dataset_dir='dataset_dir',
+        incremental=True,
     )
 
     assert ret == 0
-    assert set(captured['objects']) == set(preprocess_and_validate_module.ALL_OBJECTS)
+    assert list(captured['objects']) == ['Horse', 'Raptor']
     assert captured['dataset_dir'] == 'dataset_dir'
     assert captured['raw_data_dir'] == 'raw_dir'
     assert captured['object_workers'] == 4
+    assert captured['incremental'] is True
+
+
+def test_find_new_source_files_detects_only_unprocessed_sources(monkeypatch, tmp_path):
+    raw = tmp_path / 'raw'
+    (raw / 'Cat').mkdir(parents=True)
+    (raw / 'Dog').mkdir(parents=True)
+    for name in ('Cat_Walk.fbx', 'Cat_Run.fbx'):
+        (raw / 'Cat' / name).write_text('x')
+    (raw / 'Dog' / 'Dog_Idle.fbx').write_text('x')
+
+    # Bypass filename heuristics so the test exercises source-dedup, not name rules.
+    monkeypatch.setattr(dataset_pipeline_mod, 'should_skip_anim', lambda f, o: False)
+
+    dataset_dir = tmp_path / 'dataset'
+    dataset_dir.mkdir()
+    # Cat_Walk.fbx already produced a clip; Cat_Run.fbx is new; Dog is entirely new.
+    processed_src = str(raw / 'Cat' / 'Cat_Walk.fbx')
+    write_motion_metadata(
+        dataset_dir,
+        {'Cat_Walk_1.npy': {'object_type': 'Cat', 'source_fbx_path': processed_src}},
+        1,
+    )
+
+    result = dataset_pipeline_mod.find_new_source_files(['Cat', 'Dog'], str(dataset_dir), str(raw))
+
+    assert set(result) == {'Cat', 'Dog'}
+    assert [os.path.basename(p) for p in result['Cat']] == ['Cat_Run.fbx']
+    assert [os.path.basename(p) for p in result['Dog']] == ['Dog_Idle.fbx']
+
+
+def test_find_new_source_files_omits_fully_processed_objects(monkeypatch, tmp_path):
+    raw = tmp_path / 'raw'
+    (raw / 'Cat').mkdir(parents=True)
+    (raw / 'Cat' / 'Cat_Walk.fbx').write_text('x')
+    monkeypatch.setattr(dataset_pipeline_mod, 'should_skip_anim', lambda f, o: False)
+
+    dataset_dir = tmp_path / 'dataset'
+    dataset_dir.mkdir()
+    write_motion_metadata(
+        dataset_dir,
+        {'Cat_Walk_1.npy': {'object_type': 'Cat', 'source_fbx_path': str(raw / 'Cat' / 'Cat_Walk.fbx')}},
+        1,
+    )
+
+    assert dataset_pipeline_mod.find_new_source_files(['Cat'], str(dataset_dir), str(raw)) == {}
+
+
+def test_recompute_object_stats_scopes_to_only_objects(tmp_path):
+    motions = tmp_path / 'motions'
+    motions.mkdir()
+    cat = motions / 'Cat_Walk_1.npy'
+    dog = motions / 'Dog_Idle_1.npy'
+    # Motion tensors are (frames, joints, 13); get_mean_std indexes the 13-feature layout.
+    np.save(cat, np.ones((4, 2, 13), dtype=np.float32))
+    np.save(dog, np.ones((4, 2, 13), dtype=np.float32) * 5.0)
+
+    dog_sentinel = np.array([[222.0]])
+    rebuilt = {
+        'Cat': {'mean': np.array([[111.0]]), 'std': np.array([[111.0]])},
+        'Dog': {'mean': dog_sentinel.copy(), 'std': dog_sentinel.copy()},
+    }
+
+    regenerate_dataset_artifacts_module._recompute_object_stats(
+        rebuilt, [cat, dog], only_objects={'Cat'}
+    )
+
+    # Cat was recomputed over its clip (mean now has the real (J, feat) shape) ...
+    assert rebuilt['Cat']['mean'].shape == (2, 13)
+    # ... while untouched Dog keeps its carried-forward sentinel untouched.
+    assert np.array_equal(rebuilt['Dog']['mean'], dog_sentinel)
+
+
+def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypatch, tmp_path):
+    dataset_dir = tmp_path / 'dataset'
+    (dataset_dir / 'motions').mkdir(parents=True)
+    (dataset_dir / 'bvhs').mkdir(parents=True)
+
+    # Existing dataset: Cat (Walk_1 from Cat_Walk.fbx) and an untouched Dog object.
+    done_source = str(tmp_path / 'raw' / 'Cat' / 'Cat_Walk.fbx')
+    np.save(
+        dataset_dir / 'cond.npy',
+        {'Cat': _make_cond_entry('Cat'), 'Dog': _make_cond_entry('Dog')},
+    )
+    write_motion_metadata(
+        dataset_dir,
+        {
+            'Cat_Walk_1.npy': {'object_type': 'Cat', 'source_fbx_path': done_source, 'motion_name': 'Cat_Walk_1.npy'},
+            'Dog_Idle_1.npy': {'object_type': 'Dog', 'source_fbx_path': str(tmp_path / 'raw' / 'Dog' / 'Dog_Idle.fbx'), 'motion_name': 'Dog_Idle_1.npy'},
+        },
+        2,
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_prepare(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None,
+                     max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20,
+                     skip_source_paths=None):
+        captured['skip_source_paths'] = set(skip_source_paths or set())
+        return {
+            'object_type': object_type,
+            'object_cond': _make_cond_entry(object_type),
+            'errors': {},
+            'max_joints': 2,
+            'results': [],
+            'files_counter': 0,
+            'frames_counter': 0,
+            'face_joints': face_joints,
+            'motion_errors': [],
+        }
+
+    def fake_write(save_dir, payload, files_counter, action_start_counts=None):
+        captured['action_start_counts'] = dict(action_start_counts or {})
+        obj = payload['object_type']
+        idx = (action_start_counts or {}).get('Walk', 0) + 1
+        name = f"{obj}_Walk_{idx}.npy"
+        np.save(Path(save_dir) / 'motions' / name, np.zeros((3, 2, 3), dtype=np.float32))
+        return files_counter + 1, 3, {name: {'object_type': obj, 'motion_name': name}}
+
+    monkeypatch.setattr(dataset_pipeline_mod, '_prepare_object_outputs', fake_prepare)
+    monkeypatch.setattr(dataset_pipeline_mod, '_write_object_outputs', fake_write)
+
+    dataset_pipeline_mod.create_data_samples(
+        objects=['Cat'],
+        dataset_dir=str(dataset_dir),
+        object_workers=1,
+        incremental=True,
+    )
+
+    # Already-processed source handed to the worker as a skip, numbered above existing clip.
+    assert captured['skip_source_paths'] == {os.path.realpath(done_source)}
+    assert captured['action_start_counts'] == {'Walk': 1}
+
+    # cond.npy keeps the untouched Dog and refreshes Cat.
+    merged_cond = dict(np.load(dataset_dir / 'cond.npy', allow_pickle=True).item())
+    assert sorted(merged_cond) == ['Cat', 'Dog']
+
+    # Existing clips preserved; the new clip is appended without colliding.
+    merged_meta = dataset_pipeline_mod._load_motion_metadata_raw(dataset_dir)
+    assert set(merged_meta) == {'Cat_Walk_1.npy', 'Cat_Walk_2.npy', 'Dog_Idle_1.npy'}
 
 
 def test_process_skeleton_retarget_branch_writes_translation_root_metadata(monkeypatch, tmp_path):
@@ -659,7 +800,7 @@ def test_update_anim_dir_preserves_other_objects(monkeypatch, tmp_path):
         },
         total_clips=2,
     )
-    _write_motion_tags(
+    _write_action_tags(
         dataset_dir,
         {
             'Cat_Run_001.npy': ['locomotion'],
@@ -720,7 +861,7 @@ def test_update_anim_dir_replaces_only_matching_sources(monkeypatch, tmp_path):
         },
         total_clips=2,
     )
-    _write_motion_tags(
+    _write_action_tags(
         dataset_dir,
         {
             'Dragon_A_001.npy': ['locomotion'],
@@ -807,7 +948,7 @@ def test_update_anim_dir_full_rerun_replaces_old_versions(monkeypatch, tmp_path)
         },
         total_clips=2,
     )
-    _write_motion_tags(
+    _write_action_tags(
         dataset_dir,
         {
             'Dragon_A_001.npy': ['locomotion'],
@@ -906,6 +1047,7 @@ def test_process_new_skeleton_rejects_unsafe_anim_dir_update(monkeypatch, tmp_pa
         retarget_top_k=None,
         donor_skeletons=None,
         training_cond_path='unused',
+        crop_enabled=False,
     )
 
     monkeypatch.setattr(process_new_skeleton_module, 'process_new_skeleton_args', lambda: args)

@@ -200,6 +200,10 @@ def truebones_collate(batch):
         jointsnamesembsbatch = [b['joints_names_embs'] for b in notnone_batches]
         jointsnamesembsbatchTensor = collate_tensors(jointsnamesembsbatch)
         cond['y'].update({'joints_names_embs': jointsnamesembsbatchTensor})
+
+    if 'species_emb' in notnone_batches[0]:
+        speciesembbatch = [b['species_emb'] for b in notnone_batches]
+        cond['y'].update({'species_emb': torch.stack(speciesembbatch)})
         
     if 'joints_relations' in notnone_batches[0]:
         jointsrelationsbatch = [b['joints_relations'] for b in notnone_batches]
@@ -291,10 +295,14 @@ def truebones_batch_collate(batch):
             if candidate_count > 0:
                 padded_candidate_roots[:candidate_count] = torch.from_numpy(raw_candidates[:candidate_count])
             item['joint_mask_candidate_roots'] = padded_candidate_roots
+        if extra_cond is not None and extra_cond.get('species_emb') is not None:
+            item['species_emb'] = torch.from_numpy(np.asarray(extra_cond['species_emb'], dtype=np.float32))
         if motion_metadata is not None:
             for key in ('action_tags', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'global_energy_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count'):
                 if key in motion_metadata:
                     item[key] = motion_metadata[key]
+            if 'species_emb' in motion_metadata:
+                item['species_emb'] = torch.from_numpy(np.asarray(motion_metadata['species_emb'], dtype=np.float32))
         if motion_name is not None:
             item['motion_name'] = motion_name
         adapted_batch.append(item)

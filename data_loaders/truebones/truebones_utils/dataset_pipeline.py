@@ -8,6 +8,7 @@ Depends on: features.py, animation_utils.py
 """
 
 from motion_lib import BVH, FBX
+import json
 import numpy as np
 import os
 import sys
@@ -15,7 +16,7 @@ from os.path import join as pjoin
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import random
 import bisect
-from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, get_raw_data_dir
+from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, MOTION_METADATA_FILE, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, get_raw_data_dir
 from pathlib import Path
 from .motion_labels import build_motion_labels, build_object_labels, write_motion_metadata, load_motion_metadata
 from .physics_joint_annotation import (
@@ -30,7 +31,7 @@ from .fbx_filename_rules import (
 
 from .animation_utils import (
     canonical_name_for_bvh,
-    attach_joint_name_embeddings_to_cond,
+    attach_t5_embeddings_to_cond,
     needs_bvh_position_channels,
     reorder_animation_to_dfs,
     crop_animation_to_max_joints,
@@ -191,21 +192,26 @@ def object_policy(obj):
 
 def _process_motion_file(file_path, object_type, max_joints,
                          offsets, foot_indices, tpos_rots, scale_factor,
-                         orientation_quat):
+                         orientation_quat, crop_enabled=True):
     local_errors = dict()
+    _crop_max = MAX_JOINTS if crop_enabled else 2 ** 16
     # Load the animation file (FBX/GLB/GLTF) once; pass it as `preloaded` to every get_motion call so that
     raw_anim, names, frame_time = FBX.load(file_path)
-    # Crop oversized skeletons to the model cap (deepest leaves first) so the loaded
-    # animation and its exported names match the cropped rest-pose offsets. The cap is
-    # the MAX_JOINTS constant, NOT the running ``max_joints`` (which is a growing
-    # dataset-wide maximum used only for padding/metadata). The crop is a deterministic
-    # function of the parent topology, so it removes the same joints the rest pose did.
-    raw_anim, names, _ = crop_animation_to_max_joints(
-        raw_anim,
-        names,
-        max_joints=MAX_JOINTS,
-        context=f"{object_type} '{os.path.basename(str(file_path))}'",
-    )
+    # Crop oversized skeletons to the crop cap so the loaded animation and its
+    # exported names match the cropped rest-pose offsets. Leaves are peeled from
+    # deepest to shallowest; ties at the same depth prefer shorter bones first,
+    # while longer-than-average bones are preserved whenever possible. The cap
+    # is ``_crop_max`` (defaults to MAX_JOINTS for training); the running
+    # ``max_joints`` is a dataset-wide maximum used only for padding/metadata.
+    # The crop stays deterministic for a given skeleton (same topology and
+    # offsets), so it removes the same joints the rest pose did.
+    if crop_enabled:
+        raw_anim, names, _ = crop_animation_to_max_joints(
+            raw_anim,
+            names,
+            max_joints=_crop_max,
+            context=f"{object_type} '{os.path.basename(str(file_path))}'",
+        )
     anim_len = len(raw_anim)
     begin = 0
     file_max_joints = max_joints
@@ -309,13 +315,15 @@ def _build_motion_metadata_entry(result, motion_file_name):
 
 
 """Load a reference FBX/GLB, build rest-pose-based cond, and return all caller values."""
-def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=MAX_JOINTS):
+def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=MAX_JOINTS,
+                          crop_enabled=True):
     squared_positions_error = dict()
+    _crop_max = MAX_JOINTS if crop_enabled else 2 ** 16
     tp = get_common_features_from_rest_pose(
         rest_pose_path,
         object_type,
         face_joints=face_joints,
-        max_joints=MAX_JOINTS,
+        max_joints=_crop_max,
     )
     character_scale_factor = float(tp.scale_factor)
     rest_pose_motion, parents, max_joints, new_anim, _export_anim, _rest_is_loop, _rest_translation_root_index, _rest_root_translation_xz = get_motion(
@@ -389,9 +397,9 @@ def build_tpose_cond(*args, **kwargs):
 
 
 """Build the rest-pose cond dict from a single FBX/GLB file (no motion files needed)."""
-def _build_rest_pose_only_cond(object_type, rest_pose_path, face_joints):
+def _build_rest_pose_only_cond(object_type, rest_pose_path, face_joints, crop_enabled=True):
     object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints = _build_rest_pose_cond(
-        object_type, rest_pose_path, face_joints,
+        object_type, rest_pose_path, face_joints, crop_enabled=crop_enabled,
     )
     num_joints = len(parents)
 
@@ -434,8 +442,14 @@ def _resample_animation(anim, target_len):
     return Animation(new_rot, new_pos, anim.orients, anim.offsets, anim.parents)
 
 
-"""Prepare processed tensors for all the files of a given object without writing them to disk yet."""
-def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20):
+"""Prepare processed tensors for all the files of a given object without writing them to disk yet.
+
+``skip_source_paths`` (incremental preprocessing): realpaths of source anim files that
+already produced clips on disk. Matching files are dropped from this run so only newly
+added source files are (re)processed. The rest-pose reference carrier is still selected
+from the full file list, so the per-object cond stays stable regardless of which clips
+are new. Returns None when no source files remain to process (object fully up to date)."""
+def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, crop_enabled=True):
     object_cond = dict()
     if fbxs_dir is None:
         fbxs_dir = pjoin(get_raw_data_dir(raw_data_dir), object_type)
@@ -462,9 +476,22 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
         print(f'skipping {object_type}: no valid animation files after filtering')
         return None
 
+    # Incremental: drop source files that already produced clips, so only newly added
+    # animations are processed. Done before the (expensive) rest-pose cond build below.
+    if skip_source_paths:
+        skip_norm = {os.path.realpath(p) for p in skip_source_paths}
+        kept = [f for f in anim_files if os.path.realpath(f) not in skip_norm]
+        skipped = len(anim_files) - len(kept)
+        if skipped:
+            print(f'{object_type}: skipping {skipped} already-processed source file(s), {len(kept)} new to process')
+        anim_files = kept
+        if len(anim_files) == 0:
+            print(f'skipping {object_type}: all source files already processed')
+            return None
+
     squared_positions_error = dict()
     object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints = _build_rest_pose_cond(
-        object_type, t_pos_path, face_joints, max_joints=max_joints,
+        object_type, t_pos_path, face_joints, max_joints=max_joints, crop_enabled=crop_enabled,
     )
     all_tensors = list()
 
@@ -483,6 +510,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             tp.tpos_rots,
             character_scale_factor,
             orientation_quat=tp.orientation_quat,
+            crop_enabled=crop_enabled,
         )
 
     file_outputs = [process_file(file_path) for file_path in anim_files]
@@ -562,7 +590,7 @@ The trailing clip number is a segment index counted *within* each
 `{object_type}_{action}` group (1, 2, 3, ...), not a global running counter.
 This keeps a clip's name stable when unrelated species are added/removed or when
 only a subset is reprocessed (e.g. --filter), so externally maintained, clip-name
-keyed sidecars (motion_tags.jsonl, motion_captions.jsonl) do not go stale.
+keyed sidecars (action_tags.jsonl, motion_captions.jsonl) do not go stale.
 
 `files_counter` is still threaded through purely for the dataset-wide summary
 counts; it no longer participates in clip names. `action_start_counts` lets the
@@ -638,7 +666,7 @@ def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, m
 
     _write_positions_error_file(save_dir, squared_positions_error)
 
-    attach_joint_name_embeddings_to_cond(cond, save_dir)
+    attach_t5_embeddings_to_cond(cond, save_dir)
     np.save(pjoin(save_dir, "cond.npy"), cond)
     write_motion_metadata(save_dir, motion_metadata, files_counter)
 
@@ -648,20 +676,40 @@ def _resolve_preprocessing_workers(objects, object_workers=8):
     return min(object_count, max(1, int(object_workers)))
 
 
-def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, filter_min_length=10, resample_min_length=20):
-    return _prepare_object_outputs(
-        object_type,
-        max_joints=23,
-        max_files=max_files,
-        raw_data_dir=raw_data_dir,
-        filter_min_length=filter_min_length,
-        resample_min_length=resample_min_length,
-    )
+def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None):
+    # ── Install a local warning collector inside the worker process ──────
+    # The parent's _WarnCollector monkey-patches do NOT propagate into
+    # ProcessPoolExecutor children.  Capture _warn() / degenerate-facing
+    # calls here and return them so the parent can print a deduplicated
+    # summary via its own collector.
+    from . import animation_utils as _au
+    from . import face_orientation as _fo
+    _warn_messages: list[str] = []
+    _original_warn = _au._warn
+    _original_emit = _fo._emit_degenerate_facing_warning
+    _au._warn = lambda msg: _warn_messages.append(msg)
+    _fo._emit_degenerate_facing_warning = lambda ot, wk, msg: _warn_messages.append(msg)
+    try:
+        payload = _prepare_object_outputs(
+            object_type,
+            max_joints=23,
+            max_files=max_files,
+            raw_data_dir=raw_data_dir,
+            filter_min_length=filter_min_length,
+            resample_min_length=resample_min_length,
+            skip_source_paths=skip_source_paths,
+        )
+        if payload is not None:
+            payload['_warn_messages'] = _warn_messages
+        return payload
+    finally:
+        _au._warn = _original_warn
+        _fo._emit_degenerate_facing_warning = _original_emit
 
 
 """ creates processed tensors for all the files of a given object. Returens statistics and the object condition,
 which includes rest-pose/tpos-compatible conditioning, relation/distances matrices, offsets, parents, joints names, kinematic chains, mean and std"""    
-def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, action_start_counts=None):
+def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, action_start_counts=None, crop_enabled=True):
     object_payload = _prepare_object_outputs(
         object_type,
         max_joints,
@@ -670,6 +718,7 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
         t_pos_path=t_pos_path,
         max_files=max_files,
         raw_data_dir=raw_data_dir,
+        crop_enabled=crop_enabled,
     )
     if object_payload is None:
         return files_counter, frames_counter, max_joints, None, {}
@@ -687,13 +736,22 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
     return files_counter, frames_counter, max_joints, object_payload['object_cond'], object_motion_metadata
 
 
-""" create dataset """
-def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, raw_data_dir=None, object_workers=8, filter_min_length=10, resample_min_length=20):
+""" create dataset
+
+``incremental``: keep already-processed clips on disk and only process source anim
+files that have not produced clips yet (per-object, keyed on source_fbx_path). New
+clips number above retained ones within each (object, action) group. The rewritten
+cond.npy / motion_metadata.json are seeded from the existing dataset so untouched
+objects survive. Provisional mean/std are computed over the newly processed clips only;
+the caller must finalize them with regenerate_dataset_artifacts(recompute_stats=True).
+Without ``incremental`` the prior full-build behavior is unchanged (callers wipe
+outputs first). """
+def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, raw_data_dir=None, object_workers=8, filter_min_length=10, resample_min_length=20, incremental=False):
     ## prepare
     target_dataset_dir = dataset_dir or DEFAULT_DATASET_DIR
     os.makedirs(pjoin(target_dataset_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(target_dataset_dir, BVHS_DIR), exist_ok=True)
-    
+
     ## process
     if objects is None:
         resolved_raw_data_dir = get_raw_data_dir(raw_data_dir)
@@ -702,11 +760,27 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
             if os.path.isdir(pjoin(resolved_raw_data_dir, obj))
         )
 
+    # Incremental: read the existing dataset so we can skip done source files, continue
+    # clip numbering above retained clips, and seed the merged cond/metadata.
+    existing_cond = {}
+    existing_meta = {}
+    per_object_skip = {}
+    per_object_action_start = {}
+    if incremental:
+        existing_meta = _load_motion_metadata_raw(target_dataset_dir)
+        cond_path = pjoin(target_dataset_dir, 'cond.npy')
+        if os.path.exists(cond_path):
+            existing_cond = dict(np.load(cond_path, allow_pickle=True).item())
+        for object_type in objects:
+            per_object_skip[object_type] = _object_processed_sources(existing_meta, object_type)
+            per_object_action_start[object_type] = _object_action_start_counts(existing_meta, object_type)
+
     obj_workers = _resolve_preprocessing_workers(
         objects,
         object_workers=object_workers,
     )
-    print(f'Preprocessing {len(objects)} characters with {obj_workers} object workers')
+    print(f'Preprocessing {len(objects)} characters with {obj_workers} object workers'
+          f"{' (incremental)' if incremental else ''}")
 
     payloads = [None] * len(objects)
     if obj_workers <= 1:
@@ -718,6 +792,7 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
                 raw_data_dir=raw_data_dir,
                 filter_min_length=filter_min_length,
                 resample_min_length=resample_min_length,
+                skip_source_paths=per_object_skip.get(object_type),
             )
     else:
         with ProcessPoolExecutor(max_workers=obj_workers) as executor:
@@ -729,6 +804,7 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
                     raw_data_dir,
                     filter_min_length,
                     resample_min_length,
+                    per_object_skip.get(object_type),
                 ): idx
                 for idx, object_type in enumerate(objects)
             }
@@ -741,10 +817,13 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
     max_joints = 23
     objects_counter = dict()
     squared_positions_error = dict()
-    cond = dict()
-    motion_metadata = {}
+    # Seed from the existing dataset in incremental mode so objects/clips we do not touch
+    # this run survive the cond.npy / motion_metadata rewrite below.
+    cond = dict(existing_cond)
+    motion_metadata = dict(existing_meta)
 
     all_motion_errors = []
+    all_warn_messages: list[str] = []
     for idx, object_type in enumerate(objects):
         payload = payloads[idx]
         if payload is None:
@@ -752,16 +831,26 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
         squared_positions_error.update(payload['errors'])
         max_joints = max(max_joints, payload['max_joints'])
         all_motion_errors.extend(payload.get('motion_errors', []))
+        all_warn_messages.extend(payload.pop('_warn_messages', []))
         cur_counter = files_counter
         files_counter, object_frames, object_motion_metadata = _write_object_outputs(
             target_dataset_dir,
             payload,
             files_counter,
+            action_start_counts=per_object_action_start.get(object_type),
         )
         frames_counter += object_frames
         cond[object_type] = payload['object_cond']
         objects_counter[object_type] = files_counter - cur_counter
         motion_metadata.update(object_motion_metadata)
+
+    # ── Re-emit worker-collected warnings through _warn so the parent's
+    # _WarnCollector (which patches _warn) picks them up and prints a
+    # single deduplicated summary at the end of STEP 1.
+    if all_warn_messages:
+        from .animation_utils import _warn as _au_warn
+        for msg in all_warn_messages:
+            _au_warn(msg)
 
     if all_motion_errors:
         print(f"\n{'=' * 70}")
@@ -772,12 +861,14 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
         print(f"{'=' * 70}\n")
         raise DatasetPreprocessingError(all_motion_errors)
 
+    # total_clips reflects the full merged set on disk (seeded entries + freshly written).
+    total_clips = len(motion_metadata) if incremental else files_counter
     _write_preprocess_seed_artifacts(
         target_dataset_dir,
         cond,
         motion_metadata,
         max_joints,
-        files_counter,
+        total_clips,
         frames_counter,
         squared_positions_error,
     )
@@ -810,6 +901,105 @@ def _normalized_source_fbx_path(entry):
     if not source_fbx_path:
         return None
     return os.path.realpath(str(source_fbx_path))
+
+
+def _load_motion_metadata_raw(dataset_dir):
+    """Read motion_metadata.json's per-clip entries directly, without joining action_tags.
+
+    Unlike load_motion_metadata this never requires the action_tags.jsonl sidecar, so the
+    incremental path can read source/numbering bookkeeping on datasets that have not been
+    hand-tagged yet. Returns {} when the file is absent or malformed."""
+    metadata_path = pjoin(str(dataset_dir), MOTION_METADATA_FILE)
+    if not os.path.exists(metadata_path):
+        return {}
+    with open(metadata_path, 'r', encoding='utf-8') as handle:
+        payload = json.load(handle)
+    motions = payload.get('motions', payload)
+    if not isinstance(motions, dict):
+        return {}
+    return {name: dict(entry) for name, entry in motions.items() if isinstance(entry, dict)}
+
+
+def _parse_action_and_index(object_name, motion_name):
+    """Split a clip file name into its (action, per-action index) pair.
+
+    Clip names are ``{object_name}_{action}_{index}.npy``; the trailing index is a
+    per-(object, action) segment counter. Returns (None, 0) for names that do not
+    belong to this object or lack the trailing numeric index."""
+    stem = os.path.splitext(motion_name)[0]
+    if not stem.startswith(object_name + '_'):
+        return None, 0
+    rest = stem[len(object_name) + 1:]
+    head, _, tail = rest.rpartition('_')
+    if not head or not tail.isdigit():
+        return None, 0
+    return head, int(tail)
+
+
+def _object_processed_sources(existing_meta, object_name):
+    """Realpaths of source anim files that already produced clips for this object."""
+    sources = set()
+    for entry in existing_meta.values():
+        if str(entry.get('object_type', '')) != object_name:
+            continue
+        src = _normalized_source_fbx_path(entry)
+        if src:
+            sources.add(src)
+    return sources
+
+
+def _object_action_start_counts(existing_meta, object_name):
+    """Highest existing clip index per action, so new clips number above retained ones."""
+    action_start_counts = {}
+    for motion_name, entry in existing_meta.items():
+        if str(entry.get('object_type', '')) != object_name:
+            continue
+        action, index = _parse_action_and_index(object_name, motion_name)
+        if action is None:
+            continue
+        action_start_counts[action] = max(action_start_counts.get(action, 0), index)
+    return action_start_counts
+
+
+def list_object_source_files(object_type, raw_data_dir=None):
+    """Source anim files create_data_samples would consider for an object (post name-filter).
+
+    Mirrors the enumeration in _prepare_object_outputs (same extensions + should_skip_anim
+    filter) so callers can detect newly added animations without loading any geometry."""
+    fbxs_dir = pjoin(get_raw_data_dir(raw_data_dir), object_type)
+    if not os.path.isdir(fbxs_dir):
+        return []
+    anim_files = sorted(
+        pjoin(fbxs_dir, f) for f in os.listdir(fbxs_dir)
+        if f.lower().endswith(('.fbx', '.glb', '.gltf'))
+    )
+    # Mirror _prepare_object_outputs: a dedicated T-pose/rest reference file is consumed
+    # as the encoding base (find_tpose_reference_path removes it from anim_files in place)
+    # and never produces a clip, so it never lands in motion_metadata.json. Drop it here
+    # too — otherwise every object carrying a *-TPOSE.fbx would perpetually report one
+    # unprocessed source file and get needlessly reprocessed on every incremental run.
+    find_tpose_reference_path(anim_files)
+    return [f for f in anim_files if not should_skip_anim(f, object_type)]
+
+
+def find_new_source_files(objects, dataset_dir=None, raw_data_dir=None):
+    """Map each object with >=1 not-yet-processed source anim file to those new files.
+
+    Objects whose every current source file already produced clips are omitted. Used by
+    the incremental preprocessing path to decide which objects need any work at all
+    (cheap: reads motion_metadata.json + lists raw dirs, no geometry loading)."""
+    target_dataset_dir = dataset_dir or DEFAULT_DATASET_DIR
+    existing_meta = _load_motion_metadata_raw(target_dataset_dir)
+    result = {}
+    for object_type in objects:
+        processed = _object_processed_sources(existing_meta, object_type)
+        new_files = [
+            f for f in list_object_source_files(object_type, raw_data_dir)
+            if os.path.realpath(f) not in processed
+        ]
+        if new_files:
+            result[object_type] = new_files
+    return result
 
 
 def validate_anim_dir_update_state(object_name, save_dir, existing_meta=None):
@@ -882,23 +1072,7 @@ def _update_anim_dir(object_name, face_joints, save_dir, tpose_path, anim_dir):
     # still on disk during processing (matching-source clips are removed only
     # after processing succeeds, so a failed reprocess leaves the existing
     # dataset intact).
-    def _action_and_index(name):
-        stem = os.path.splitext(name)[0]
-        if not stem.startswith(object_name + '_'):
-            return None, 0
-        rest = stem[len(object_name) + 1:]
-        head, _, tail = rest.rpartition('_')
-        if not head or not tail.isdigit():
-            return None, 0
-        return head, int(tail)
-    action_start_counts = {}
-    for motion_name, entry in existing_meta.items():
-        if str(entry.get('object_type', '')) != object_name:
-            continue
-        action, index = _action_and_index(motion_name)
-        if action is None:
-            continue
-        action_start_counts[action] = max(action_start_counts.get(action, 0), index)
+    action_start_counts = _object_action_start_counts(existing_meta, object_name)
 
     squared_positions_error = dict()
     _, _, _, object_cond, new_meta = process_object(
@@ -994,7 +1168,8 @@ def _update_retarget(object_name, save_dir, motions_from_npys, target_cond_parti
 
 
 def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=None,
-                     motions_from_npys=None, target_cond_partial=None, update=False):
+                     motions_from_npys=None, target_cond_partial=None, update=False,
+                     crop_enabled=True):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(save_dir, BVHS_DIR), exist_ok=True)
@@ -1063,6 +1238,7 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
             object_name,
             tpose_path,
             face_joints,
+            crop_enabled=crop_enabled,
         )
         cond[object_name] = object_cond
         _write_dataset_artifacts(
@@ -1088,6 +1264,7 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
         fbxs_dir=anim_dir,
         face_joints=face_joints,
         t_pos_path=tpose_path,
+        crop_enabled=crop_enabled,
     )
     if object_cond is None:
         print(f"No valid animation data found for '{object_name}', aborting.")

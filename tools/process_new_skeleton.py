@@ -1,41 +1,50 @@
-""" 
-We provide a preprocessing code for skeletons outside the Truebones dataset. 
-While designed to be as generic as possible, some skeleton-specific adjustments may be needed since it 
-was originally tailored for Truebones. For example, it relies on joint names for foot classification 
-and specific velocity/height thresholds for foot contact detection. However, we have tested it on FBX 
-files from Mixamo and other sources to ensure its generalizability.
+"""
+Inference-Time Skeleton Preprocessing
+=======================================
+Prepares a skeleton outside the Truebones dataset for AnyTop *inference* (generation).
+The output cond.npy is designed to be passed via ``--cond-path`` to ``generate.py``.
+
+.. warning::
+   The generated data is **not suitable for training**. Skeleton cropping
+   (MAX_JOINTS=100) is disabled by default (``--crop-enabled`` to enable), and the
+   mean/std statistics are computed from retargeted donor motions or a limited set of
+   input animations, which do not reflect the training distribution. Use
+   ``preprocess_and_validate.py`` for training dataset creation.
+
+While designed to be as generic as possible, some skeleton-specific adjustments may be
+needed since it was originally tailored for Truebones (joint-name-based foot classification,
+velocity/height thresholds for foot contact detection). Tested on FBX from Mixamo and other
+sources.
 
 Input Arguments:
-object_type - A character's species/type name (e.g., "Dog"). Optional — inferred from filenames when omitted.
-anim-dir - Directory containing animation files (FBX/GLB/GLTF) of the skeleton. More files improve statistical accuracy for motion denormalization.
-face-joints-names - Optional manual override for four joints defining skeleton orientation ([right hip, left hip, right shoulder, left shoulder] or equivalent). 
-            When omitted, preprocessing tries to infer them from semantic joint names. If inference is ambiguous,
-            pass the four joint names explicitly. 
-save-dir - Output directory.
-tpos-path - An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base.
-    If missing, the code selects a reference carrier from the provided files in --anim-dir.
-update - Incremental update flag. Without it, --save-dir is wiped and rebuilt from scratch.
-        With it, the existing dataset is kept and motions are added/replaced:
-    --anim-dir merges the newly processed clips into the existing dataset,
-    replacing only prior clips from the same source files (untouched clips kept);
-        --retarget-top-k adds the newly generated donor clips alongside existing ones.
-        Side artifacts (cond.npy embeddings + mean/std, motion_metadata.json, metadata.txt)
-    are then rebuilt over the merged clip set. Requires an existing --save-dir/cond.npy;
-    for --anim-dir, existing target clips must also be tracked in motion_metadata.json
-    with explicit source metadata, otherwise the script exits instead of mixing old and
-    new target motions. Falls back to a full build only when no dataset exists yet.
+object_type       - Species/type name (e.g. "Dragon"). Inferred from filenames when omitted.
+anim-dir          - Directory with animation files (FBX/GLB/GLTF) of the skeleton.
+                    More files improve mean/std accuracy for motion denormalization.
+                    Mutually exclusive with --retarget-top-k.
+tpos-path         - An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base.
+                    When omitted (and --anim-dir given), auto-selects a reference carrier
+                    from anim files (T-pose/rest/bind > idle > walk > first).
+face-joints-names - Manual override for the four orientation joints
+                    ([right hip, left hip, right shoulder, left shoulder] or equivalent).
+save-dir          - Output directory (required).
+retarget-top-k    - Auto-select the top-k most similar training skeletons as motion donors,
+                    retarget their motions to the new skeleton, and use those coarse motions
+                    to compute mean/std. Mutually exclusive with --anim-dir.
+training-cond-path - Path to the training dataset's cond.npy for donor selection when
+                     --retarget-top-k is set. (default: dataset/truebones/.../cond.npy)
+donor-skeletons   - Comma-separated donor names to use instead of auto-selection,
+                    e.g. 'Bison,Cow,Horse'. Only effective with --retarget-top-k.
+crop-enabled      - Enable skeleton cropping to MAX_JOINTS=100.
+                    Off by default (inference has no joint cap).
+update            - Incremental mode: merge new clips into the existing dataset instead of
+                    wiping --save-dir. Requires an existing dataset at --save-dir.
+                    Supports both --anim-dir and --retarget-top-k.
 
-Output:
-The code will create the following under save_dir:
-save_dir/
-        |_motions
-        |_bvhs
-        cond.npy
-1. In motions directory, you will find npy files, which are the processed motion features of each input clip. 
-This is useful in case you would like to use this data for training. 
-2. In bvhs directory you can find BVH previews exported from the processed animation representation.
-3. cond.npy contains the skeletons representation, including joints names embeddings and graph conditions,
-which is given as input to AnyTop during inference. Please follow sampling instructions in README. 
+Output (under save_dir/):
+  motions/    - .npy files of processed motion features for each input clip.
+  bvhs/       - BVH previews exported from the processed animation representation.
+  cond.npy    - Skeleton representation (joint name embeddings, graph conditions, mean/std)
+                consumed by AnyTop inference via ``--cond-path``.
 """
 import sys, os, shutil
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -132,8 +141,25 @@ def main():
     # (prefer retarget over rest-pose-only mode with no motions)
     # If --donor-skeletons is given, also default to 1 but suppress the log
     # since the user is explicitly configuring retarget.
+    # Skeleton cropping: off by default (inference has no joint cap).
+    # Use --crop-enabled to enable MAX_JOINTS=100 cropping.
+    crop_enabled = args.crop_enabled
+
     retarget_top_k = args.retarget_top_k
-    if retarget_top_k is None and args.anim_dir is None:
+    if retarget_top_k == 0 and (args.donor_skeletons or args.anim_dir):
+        raise SystemExit(
+            "Error: --retarget-top-k 0 (rest-pose-only) is mutually exclusive with "
+            "--donor-skeletons and --anim-dir (it builds graph metadata from the "
+            "--tpos-path skeleton alone, with no motions)."
+        )
+
+    if retarget_top_k == 0:
+        # Rest-pose-only: no donor retargeting, no motions/. Graph metadata is a
+        # pure function of the skeleton topology; the donors only ever fed the
+        # position mean/std, which Video2Pose no longer consumes.
+        print("[process_new_skeleton] --retarget-top-k 0: rest-pose-only build "
+              "(graph metadata from --tpos-path, no donor motions)")
+    elif retarget_top_k is None and args.anim_dir is None:
         retarget_top_k = 1
         if args.donor_skeletons is None or args.donor_skeletons.strip() == '':
             print(f"[process_new_skeleton] No --retarget-top-k specified, defaulting to 1")
@@ -166,6 +192,7 @@ def main():
                 [s.strip() for s in args.donor_skeletons.split(',')]
                 if args.donor_skeletons else None
             ),
+            crop_enabled=crop_enabled,
         )
         process_skeleton(
             object_type,
@@ -175,6 +202,7 @@ def main():
             motions_from_npys=result['retargeted_npys'],
             target_cond_partial=result['target_cond'],
             update=update_mode,
+            crop_enabled=crop_enabled,
         )
     else:
         process_skeleton(
@@ -184,6 +212,7 @@ def main():
             tpose_path,
             args.anim_dir,
             update=update_mode,
+            crop_enabled=crop_enabled,
         )
 
     # In --update mode process_skeleton only writes motions plus a provisional
@@ -194,7 +223,10 @@ def main():
         from regenerate_dataset_artifacts import regenerate_dataset_artifacts
         print("[process_new_skeleton] --update: rebuilding side artifacts "
               "(embeddings, mean/std, metadata)")
-        regenerate_dataset_artifacts(args.save_dir, recompute_stats=True)
+        # Only this object's clips changed, so scope the mean/std recompute to it.
+        regenerate_dataset_artifacts(
+            args.save_dir, recompute_stats=True, recompute_stats_objects={object_type}
+        )
 
 if __name__ == '__main__':
     try:

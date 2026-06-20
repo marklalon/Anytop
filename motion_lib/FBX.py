@@ -21,144 +21,13 @@ from typing import Any
 
 import numpy as np
 
-from utils.rotation_numpy import quat_multiply_wxyz_np, quat_rotate_wxyz_np
-
-
-# Common root joint names — when the root already carries a semantic name
-# like these, it is a real skeleton root and should NOT be collapsed.
-_COMMON_ROOT_NAMES = frozenset(
-    n.lower()
-    for n in (
-        "hips", "hip", "pelvis", "root", "cog",
-        "spine", "spine1", "body",
-        "bip", "bip01",
-        "koshi",  # Japanese for hips
-    )
-)
-
-
-def collapse_root_skeleton(
-    joint_names: list[str],
-    parents: np.ndarray,
-    offsets: np.ndarray,
-    local_rotations: np.ndarray,
-    local_positions: np.ndarray,
-    orients: Any | None = None,
-    *,
-    warn_path: str | None = None,
-) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray, np.ndarray, Any | None]:
-    """Collapse redundant/wrapper roots using the FBX loader's production rules.
-
-    The same structural rules apply to both sampled animation channels and a
-    one-frame rest pose represented as local rotations/positions.
-    """
-    collapsed_names = list(joint_names)
-    collapsed_parents = np.asarray(parents, dtype=np.int32).copy()
-    collapsed_offsets = np.asarray(offsets).copy()
-    collapsed_local_rotations = np.asarray(local_rotations).copy()
-    collapsed_local_positions = np.asarray(local_positions).copy()
-    collapsed_orients = orients
-
-    def _drop_redundant_joint_one() -> None:
-        nonlocal collapsed_names, collapsed_parents, collapsed_offsets
-        nonlocal collapsed_local_rotations, collapsed_local_positions, collapsed_orients
-
-        collapsed_offsets[1] = collapsed_offsets[0]
-        collapsed_offsets = collapsed_offsets[1:]
-        collapsed_local_rotations[:, 1] = collapsed_local_rotations[:, 0]
-        collapsed_local_rotations = collapsed_local_rotations[:, 1:]
-        collapsed_local_positions[:, 1] = collapsed_local_positions[:, 0]
-        collapsed_local_positions = collapsed_local_positions[:, 1:]
-        if collapsed_orients is not None:
-            collapsed_orients = collapsed_orients[1:]
-        collapsed_parents = collapsed_parents[1:] - 1
-        collapsed_parents[1:][collapsed_parents[1:] < 0] = 0
-        collapsed_names[1] = collapsed_names[0]
-        collapsed_names = collapsed_names[1:]
-
-    def _promote_child_root(*, emit_warning: bool) -> None:
-        nonlocal collapsed_names, collapsed_parents, collapsed_offsets
-        nonlocal collapsed_local_rotations, collapsed_local_positions, collapsed_orients
-
-        if emit_warning and warn_path is not None:
-            print(
-                f"\033[33m[WARN] {Path(warn_path).name}: collapsing root joint "
-                f"'{collapsed_names[0]}' (all-zero offset, single child) → promoting child '{collapsed_names[1]}'\033[0m"
-            )
-
-        parent_rots = collapsed_local_rotations[:, 0]
-        collapsed_offsets[1] = collapsed_offsets[0] + quat_rotate_wxyz_np(
-            parent_rots[0:1],
-            collapsed_offsets[1:2],
-        )[0]
-        collapsed_offsets = collapsed_offsets[1:]
-        collapsed_local_rotations[:, 1] = quat_multiply_wxyz_np(
-            collapsed_local_rotations[:, 0],
-            collapsed_local_rotations[:, 1],
-        )
-        collapsed_local_rotations = collapsed_local_rotations[:, 1:]
-        collapsed_local_positions[:, 1] = collapsed_local_positions[:, 0] + quat_rotate_wxyz_np(
-            parent_rots,
-            collapsed_local_positions[:, 1],
-        )
-        collapsed_local_positions = collapsed_local_positions[:, 1:]
-        if collapsed_orients is not None:
-            collapsed_orients = collapsed_orients[1:]
-        collapsed_parents = collapsed_parents[1:] - 1
-        collapsed_names = collapsed_names[1:]
-
-    if len(collapsed_names) > 1 and np.isclose(collapsed_offsets[1], 0).all():
-        if len(collapsed_parents[collapsed_parents == 1]) == 0:
-            _drop_redundant_joint_one()
-        elif len(collapsed_parents[collapsed_parents == 0]) == 1:
-            _promote_child_root(emit_warning=False)
-
-    while (
-        len(collapsed_names) > 1
-        and np.isclose(collapsed_offsets[0], 0).all()
-        and len(collapsed_parents[collapsed_parents == 0]) == 1
-        and collapsed_names[0].lower() not in _COMMON_ROOT_NAMES
-    ):
-        _promote_child_root(emit_warning=False)
-
-    return (
-        collapsed_names,
-        collapsed_parents,
-        collapsed_offsets,
-        collapsed_local_rotations,
-        collapsed_local_positions,
-        collapsed_orients,
-    )
+try:
+    from .root_collapse import collapse_root_skeleton
+except ImportError:
+    from root_collapse import collapse_root_skeleton
 
 
 # ── FBX import utilities (merged from utils/fbx.py) ─────────────────────────
-
-def patch_fbx_light_import():
-    """Monkey-patch the FBX importer's blen_read_light to handle Blender 5.0."""
-    import sys
-    import importlib
-
-    mod = sys.modules.get("io_scene_fbx.import_fbx")
-    if mod is None:
-        try:
-            mod = importlib.import_module("io_scene_fbx.import_fbx")
-        except ImportError:
-            return
-    if mod is None or not hasattr(mod, "blen_read_light"):
-        return
-
-    original_fn = mod.blen_read_light
-
-    def _patched_blen_read_light(fbx_tmpl, fbx_obj, settings, _orig=original_fn):
-        try:
-            return _orig(fbx_tmpl, fbx_obj, settings)
-        except AttributeError as exc:
-            if "cast_shadow" in str(exc):
-                return None
-            raise
-
-    mod.blen_read_light = _patched_blen_read_light
-
 
 def import_fbx(filepath: str, use_image_search: bool = False) -> None:
     """Import an FBX file into the current Blender scene.
@@ -166,23 +35,72 @@ def import_fbx(filepath: str, use_image_search: bool = False) -> None:
     Always imports with ``ignore_leaf_bones=False`` so that leaf bones carrying
     animation (tail tips, hair, halter, etc.) are preserved.
 
-    ``use_image_search`` (default ``False``) lets the importer recursively look
-    for texture files in directories near the FBX when the embedded texture
-    path does not resolve — useful for assets whose textures ship in a sibling
-    ``tex/`` folder but whose baked-in paths are stale.
+    When ``use_image_search`` is true, run Blender's missing-file search after
+    import so external textures in sibling folders such as ``tex/`` are
+    resolved for the new ``wm.fbx_import`` operator, which does not expose the
+    old add-on importer's ``use_image_search`` parameter directly, then repair
+    any image datablocks whose pixels never loaded (see
+    :func:`_reload_unloaded_images`).
     """
     import bpy
 
-    patch_fbx_light_import()
-    bpy.ops.import_scene.fbx(
-        filepath=filepath,
-        ignore_leaf_bones=False,
-        force_connect_children=False,
-        automatic_bone_orientation=False,
-        bake_space_transform=False,
-        use_custom_normals=False,
-        use_image_search=use_image_search,
-    )
+    with _silence_os_std():
+        bpy.ops.wm.fbx_import(
+            filepath=filepath,
+            ignore_leaf_bones=False,
+            use_custom_normals=False,
+            use_anim=True,
+        )
+    if use_image_search:
+        bpy.ops.file.find_missing_files(
+            directory=os.path.dirname(os.path.abspath(filepath))
+        )
+        _reload_unloaded_images(bpy)
+
+
+def _reload_unloaded_images(bpy) -> None:
+    """Force-load image datablocks whose pixels failed to populate at import.
+
+    ``wm.fbx_import`` creates image datablocks pointing at the FBX's embedded
+    ``.fbm`` cache path; when that cache is absent the pixels never load
+    (``size == (0, 0)``).  ``find_missing_files`` relinks the *filepath* to the
+    real texture on disk but does **not** repopulate the pixels, and
+    ``Image.reload()`` cannot revive such a datablock.  The glTF exporter embeds
+    images by their loaded pixel data, so an unloaded image is silently dropped
+    from the GLB — the restored mesh loses its diffuse (texture wiring is
+    otherwise correct).
+
+    For each image that has a readable on-disk filepath but no loaded pixels,
+    load a fresh datablock (``check_existing=False`` — a matching path would
+    otherwise hand back the same broken datablock) and remap every user
+    (material nodes, etc.) onto it.  Healthy images (already-loaded or packed)
+    are left untouched, so the normal path is unaffected.
+    """
+    for image in list(bpy.data.images):
+        if tuple(image.size) != (0, 0):
+            continue
+        if image.packed_file is not None:
+            continue
+        abspath = bpy.path.abspath(image.filepath_raw or image.filepath)
+        if not abspath or not os.path.isfile(abspath):
+            continue
+        try:
+            fresh = bpy.data.images.load(abspath, check_existing=False)
+        except RuntimeError:
+            continue
+        if tuple(fresh.size) == (0, 0):
+            bpy.data.images.remove(fresh)
+            continue
+        # Preserve the original colorspace so base-color vs. data (normal/
+        # alpha) textures keep their correct interpretation after the swap.
+        try:
+            fresh.colorspace_settings.name = image.colorspace_settings.name
+        except (RuntimeError, TypeError):
+            pass
+        name = image.name
+        image.user_remap(fresh)
+        bpy.data.images.remove(image)
+        fresh.name = name
 
 
 def import_gltf(filepath: str) -> None:
@@ -209,6 +127,30 @@ def remove_lights_and_cameras() -> None:
 
 
 # ── FBX/GLB loading helpers ──────────────────────────────────────────────────
+
+@contextlib.contextmanager
+def _silence_os_std():
+    """Context manager that redirects OS-level fd 1 & 2 to /dev/null.
+
+    bpy's C-level perfmon writes directly to OS file descriptors, bypassing
+    Python's sys.stdout/stderr.  Use this as a complement to
+    ``contextlib.redirect_stdout`` when both Python-level and OS-level output
+    must be suppressed.
+    """
+    _devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    _saved_out = os.dup(1)
+    _saved_err = os.dup(2)
+    try:
+        os.dup2(_devnull_fd, 1)
+        os.dup2(_devnull_fd, 2)
+        yield
+    finally:
+        os.dup2(_saved_out, 1)
+        os.dup2(_saved_err, 2)
+        os.close(_saved_out)
+        os.close(_saved_err)
+        os.close(_devnull_fd)
+
 
 def _load_scene(filepath: str):
     """Import an FBX/GLB/GLTF file into a fresh Blender scene and return the armature."""

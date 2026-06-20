@@ -380,13 +380,9 @@ def test_retarget_raw_fbx_matches_matching_npy_reference(target_type: str) -> No
     )
 
     if target_type == _DEFAULT_SOURCE_TYPE:
-        original_joint_count = int(source_cond.get("original_joint_count") or source_features.shape[1])
-        self_diff = np.abs(
-            npy_features[:, :original_joint_count, :] -
-            source_features[:, :original_joint_count, :]
-        )
+        self_diff = np.abs(npy_features - source_features)
         assert float(self_diff.max()) <= 1e-3, (
-            "NPY self-retarget should preserve original-joint feature channels: "
+            "NPY self-retarget should preserve all feature channels: "
             f"max={float(self_diff.max()):.8g}, mean={float(self_diff.mean()):.8g}, "
             f"argmax={np.unravel_index(int(np.argmax(self_diff)), self_diff.shape)}"
         )

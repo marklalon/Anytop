@@ -5,6 +5,10 @@ from collections import Counter
 import numpy as np
 import re
 
+from data_loaders.truebones.truebones_utils.param_utils import (
+    SPECIES_TAGS as _SPECIES_TAGS,
+)
+
 
 # End effector joint detection tokens
 _END_EFFECTOR_DISTAL_TOKENS = (
@@ -249,7 +253,7 @@ _EMBED_TEXT_HEAD_FEATURE_TOKENS = {
     'tongue',
 }
 
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 7
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 8
 
 _CHAIN_INDEX_ORDINAL_TOKENS = {
     1: 'First',
@@ -263,80 +267,6 @@ _CHAIN_INDEX_ORDINAL_TOKENS = {
     9: 'Ninth',
     10: 'Tenth',
 }
-_SPECIES_LINEAGE_TAGS = {
-    'Alligator': ('Reptile', 'Crocodilian'),
-    'Anaconda': ('Reptile', 'Snake'),
-    'Ant': ('Arthropod', 'Insect'),
-    'Bat': ('Flying', 'Mammal'),
-    'Bear': ('Mammal', 'Ursid'),
-    'Bird': ('Flying', 'Bird'),
-    'BrownBear': ('Mammal', 'Ursid'),
-    'Buffalo': ('Mammal', 'Bovid'),
-    'Buzzard': ('Flying', 'Bird'),
-    'Camel': ('Mammal', 'Megafauna'),
-    'Cat': ('Mammal', 'Felid'),
-    'Centipede': ('Arthropod', 'Myriapod'),
-    'Chicken': ('Bird', 'Biped'),
-    'Comodoa': ('Reptile', 'Lizard'),
-    'Coyote': ('Mammal', 'Canid'),
-    'Crab': ('Arthropod', 'Crustacean'),
-    'Cricket': ('Arthropod', 'Insect'),
-    'Crocodile': ('Reptile', 'Crocodilian'),
-    'Deer': ('Mammal', 'Cervid'),
-    'Dragon': ('Flying', 'Reptile'),
-    'Eagle': ('Flying', 'Bird'),
-    'Elephant': ('Mammal', 'Proboscidean'),
-    'FireAnt': ('Arthropod', 'Insect'),
-    'Flamingo': ('Bird', 'Biped'),
-    'Fox': ('Mammal', 'Canid'),
-    'Gazelle': ('Mammal', 'Bovid'),
-    'Giantbee': ('Flying', 'Insect'),
-    'Goat': ('Mammal', 'Bovid'),
-    'Hamster': ('Mammal', 'Rodent'),
-    'HermitCrab': ('Arthropod', 'Crustacean'),
-    'Hippopotamus': ('Mammal', 'Megafauna'),
-    'Horse': ('Mammal', 'Megafauna'),
-    'Hound': ('Mammal', 'Canid'),
-    'Isopetra': ('Arthropod', 'Myriapod'),
-    'Jaguar': ('Mammal', 'Felid'),
-    'KingCobra': ('Reptile', 'Snake'),
-    'Leapord': ('Mammal', 'Felid'),
-    'Lion': ('Mammal', 'Felid'),
-    'Lynx': ('Mammal', 'Felid'),
-    'Mammoth': ('Mammal', 'Proboscidean'),
-    'Monkey': ('Mammal', 'Biped'),
-    'Ostrich': ('Bird', 'Biped'),
-    'Parrot': ('Flying', 'Bird'),
-    'Parrot2': ('Flying', 'Bird'),
-    'Pigeon': ('Flying', 'Bird'),
-    'Pirrana': ('Fish', 'Snake'),
-    'PolarBear': ('Mammal', 'Ursid'),
-    'PolarBearB': ('Mammal', 'Ursid'),
-    'Pteranodon': ('Flying', 'Reptile'),
-    'Puppy': ('Mammal', 'Canid'),
-    'Raindeer': ('Mammal', 'Cervid'),
-    'Raptor': ('Reptile', 'Dinosaur'),
-    'Raptor2': ('Reptile', 'Dinosaur'),
-    'Raptor3': ('Reptile', 'Dinosaur'),
-    'Rat': ('Mammal', 'Rodent'),
-    'Rhino': ('Mammal', 'Megafauna'),
-    'Roach': ('Arthropod', 'Insect'),
-    'SabreToothTiger': ('Mammal', 'Felid'),
-    'SandMouse': ('Mammal', 'Rodent'),
-    'Scorpion': ('Arthropod', 'Arachnid'),
-    'Scorpion-2': ('Arthropod', 'Arachnid'),
-    'Skunk': ('Mammal', 'Canid'),
-    'Spider': ('Arthropod', 'Arachnid'),
-    'SpiderG': ('Arthropod', 'Arachnid'),
-    'Stego': ('Reptile', 'Dinosaur'),
-    'Trex': ('Reptile', 'Dinosaur'),
-    'Tricera': ('Reptile', 'Dinosaur'),
-    'Tukan': ('Flying', 'Bird'),
-    'Turtle': ('Reptile', 'Chelonian'),
-    'Tyranno': ('Reptile', 'Dinosaur'),
-}
-
-
 def normalize_joint_name(name):
     # Split on lowercase→UPPER (e.g. "ElkRFemur" → "Elk RFemur")
     split_name = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', name)
@@ -443,19 +373,71 @@ def _collapse_solitary_head_feature_indices(canonical_joint_names):
 
 
 # Lazy lowercase→tags mapping for case-insensitive species lookup
-_SPECIES_LINEAGE_TAGS_LOWER = None
+# (SPECIES_TAGS is loaded from species_tags.jsonl by param_utils).
+_SPECIES_TAGS_LOWER = None
 
 
-def _species_lineage_tokens(object_cond):
-    global _SPECIES_LINEAGE_TAGS_LOWER
+def _motion_tags_lower():
+    global _SPECIES_TAGS_LOWER
+    if _SPECIES_TAGS_LOWER is None:
+        _SPECIES_TAGS_LOWER = {
+            key.lower(): tags for key, tags in _SPECIES_TAGS.items()
+        }
+    return _SPECIES_TAGS_LOWER
+
+
+def _species_motion_tokens(object_cond):
     object_type = str(object_cond.get('object_type') or '').strip()
     if not object_type:
         return []
-    if _SPECIES_LINEAGE_TAGS_LOWER is None:
-        _SPECIES_LINEAGE_TAGS_LOWER = {
-            key.lower(): tags for key, tags in _SPECIES_LINEAGE_TAGS.items()
-        }
-    return list(_SPECIES_LINEAGE_TAGS_LOWER.get(object_type.lower(), ()))
+    return list(_motion_tags_lower().get(object_type.lower(), ()))
+
+
+def assert_species_tags_cover(object_types):
+    """Fast-fail unless every ``object_type`` has an entry in ``species_tags.jsonl``.
+
+    ``species_tags.jsonl`` (loaded via ``param_utils.SPECIES_TAGS``) is the single
+    source of truth for the per-species descriptor (``build_species_embedding_text``)
+    and the retarget group discount, and it carries no fallback. Call this at
+    preprocessing and before training so a newly added species without motion tags
+    surfaces immediately rather than silently degrading the species condition.
+    """
+    tags_lower = _motion_tags_lower()
+    missing = sorted(
+        {str(object_type) for object_type in object_types
+         if str(object_type).strip()
+         and str(object_type).strip().lower() not in tags_lower}
+    )
+    if missing:
+        message = (
+            "\033[93mspecies_tags.jsonl is missing tags for object_type(s): "
+            f"{', '.join(missing)}. Add them in the "
+            "species_tags.jsonl sidecar before preprocessing or training.\033[0m"
+        )
+        raise SystemExit(message)
+
+
+def build_species_embedding_text(object_cond):
+    """Return the text describing a species as a whole, encoded once per object
+    type into a single ``species_emb`` (T5) vector that conditions the whole
+    network -- as opposed to ``build_joint_embedding_texts``, which describes
+    each joint. This is the one place to refine the species descriptor; keep it
+    open-vocabulary text so novel species still map into the same T5 space.
+
+    Returns the motion-relevant body-plan/dynamics tags from ``species_tags.jsonl``,
+    which describe how the animal moves -- the axis that matters for motion and
+    that topology alone can't supply. There is no fallback: every species MUST
+    be registered in ``species_tags.jsonl`` (enforced by
+    assert_species_tags_cover at preprocessing/training time).
+    """
+    motion_tokens = _species_motion_tokens(object_cond)
+    if not motion_tokens:
+        object_type = str(object_cond.get('object_type') or '').strip() or '<empty>'
+        raise SystemExit(
+            f"\033[93mNo species_tags.jsonl entry for object_type '{object_type}'. "
+            "Register it in the species_tags.jsonl sidecar.\033[0m"
+        )
+    return ' '.join(motion_tokens)
 
 
 def _refine_joint_embedding_name(name):
@@ -580,7 +562,6 @@ def build_joint_embedding_texts(object_cond):
     if not base_joint_names:
         return []
 
-    lineage_tokens = _species_lineage_tokens(object_cond)
     joint_side_labels = list(object_cond.get('joint_side_labels') or ['center'] * len(base_joint_names))
     contact_joints = {int(joint_index) for joint_index in list(object_cond.get('contact_joints') or [])}
     end_effector_joints = {int(joint_index) for joint_index in list(object_cond.get('end_effector_joints') or [])}
@@ -596,7 +577,6 @@ def build_joint_embedding_texts(object_cond):
             continue
 
         semantic_tokens = list()
-        semantic_tokens.extend(lineage_tokens)
         semantic_tokens.extend(refined_tokens)
         semantic_tokens.extend(chain_relative_tokens[joint_index])
 

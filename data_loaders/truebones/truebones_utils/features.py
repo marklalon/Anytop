@@ -378,11 +378,13 @@ def get_common_features_from_rest_pose(
 ):
     loaded_anim, rest_pose_names, _rest_pose_frame_time = FBX.load(rest_pose_path)
     reference_anim = _rest_pose_animation_from_loaded_anim(loaded_anim)
-    # Crop oversized skeletons down to max_joints (deepest leaves first) BEFORE any
-    # face/contact/offset inference, so every downstream rest-pose artifact is built
-    # on the cropped skeleton. Each motion clip crops independently from the same
-    # topology, yielding the identical joint set (validated by the offset-count guard
-    # in get_hml_aligned_anim).
+    # Crop oversized skeletons down to max_joints BEFORE any face/contact/offset
+    # inference, so every downstream rest-pose artifact is built on the cropped
+    # skeleton. Leaves are removed deepest-first, same-depth ties prefer shorter
+    # bones, and longer-than-average bones are preserved whenever possible. Each
+    # motion clip crops independently from the same skeleton definition
+    # (same topology and offsets), yielding the identical joint set (validated
+    # by the offset-count guard in get_hml_aligned_anim).
     reference_anim, rest_pose_names, _kept_joint_indices = crop_animation_to_max_joints(
         reference_anim,
         rest_pose_names,

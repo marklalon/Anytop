@@ -294,16 +294,10 @@ def retarget_features_npy_to_target(
         )
         return list(canonical_joint_names[:resolved_count])
 
-    # Retarget against the donor's original skeleton only. Leaf helpers are a
-    # training-time augmentation whose count varies with the joint budget, so
-    # carrying them into retarget can desynchronize motion features from the
-    # runtime T-pose skeleton.
+    # Current own-rotation features use exactly the joints in the runtime
+    # T-pose skeleton; no leaf helper joints are appended.
     source_features = np.asarray(source_features, dtype=np.float32)
-    source_joint_count = int(source_cond.get('original_joint_count') or source_features.shape[1])
-    if source_joint_count <= 0 or source_joint_count > source_features.shape[1]:
-        source_joint_count = int(source_features.shape[1])
-    if source_joint_count < source_features.shape[1]:
-        source_features = source_features[:, :source_joint_count, :]
+    source_joint_count = int(source_features.shape[1])
 
     # 1. Load source T-pose metadata (once per donor via source_tp)
     if source_tp is None:
@@ -498,7 +492,6 @@ def retarget_animation_file_to_target(
 
     src_parents = np.asarray(raw_anim.parents, dtype=np.int32)
     src_offsets = np.asarray(raw_anim.offsets, dtype=np.float64)
-    src_joint_count = len(src_parents)
     src_rest_rotations = np.asarray(raw_anim.orients.qs, dtype=np.float64)
 
     # 2. Source canonical match names — same canonicalization the dataset cond
@@ -672,13 +665,9 @@ def retarget_animation_file_to_target(
         )
         if source_features is None:
             return None
-        target_helper_source_cond = dict(target_cond)
-        target_helper_source_cond['original_joint_count'] = int(
-            target_cond.get('original_joint_count') or len(np.asarray(target_cond['parents']))
-        )
         return _retarget_encoded_source_features(
             source_features,
-            target_helper_source_cond,
+            target_cond,
             target_object_type,
             target_tp,
             source_effective_root_index,
@@ -725,7 +714,6 @@ def retarget_animation_file_to_target(
         'object_type': _SRC_FACE_HINT,
         'parents': np.asarray(source_tpose_anim.parents, dtype=np.int32),
         'offsets': np.asarray(source_offsets, dtype=np.float32),
-        'original_joint_count': src_joint_count,
         'canonical_joint_names': src_match_names,
         'orientation_quat': src_orientation_quat.astype(np.float32),
         'scale_factor': float(source_scale_factor),
@@ -803,6 +791,7 @@ def auto_retarget_pipeline(
     donor_skeletons_override=None,
     max_joints: int = MAX_JOINTS,
     fps: float = FPS,
+    crop_enabled: bool = True,
 ) -> dict:
     """Auto-retarget motions from top-k similar training donors onto the target.
 
@@ -850,7 +839,8 @@ def auto_retarget_pipeline(
         _scale,
         _sq_err,
         max_joints_tgt,
-    ) = build_tpose_cond(target_object_type, target_tpose_path, face_joints_names)
+    ) = build_tpose_cond(target_object_type, target_tpose_path, face_joints_names,
+                          crop_enabled=crop_enabled)
     max_joints = max(max_joints, max_joints_tgt)
     target_effective_root_index = infer_object_consensus_effective_root_index(
         training_motions_dir,
@@ -860,7 +850,7 @@ def auto_retarget_pipeline(
     if target_effective_root_index is not None:
         target_cond['translation_root_index'] = int(target_effective_root_index)
 
-    n_joints = int(target_cond.get('original_joint_count') or len(target_parents))
+    n_joints = len(target_parents)
     n_chains = len(target_cond.get('kinematic_chains', []))
     print(
         f"[auto_retarget] Target: {target_object_type} "
@@ -907,7 +897,7 @@ def auto_retarget_pipeline(
         d_norm = {_normalize_match_name(n) for n in d_names}
         union = max(1, len(t_norm | d_norm))
         jaccard = len(t_norm & d_norm) / union
-        d_joints = int(donor_cond.get('original_joint_count') or len(donor_cond['parents']))
+        d_joints = len(donor_cond['parents'])
         d_chains = len(donor_cond.get('kinematic_chains', []))
         print(
             f"  {rank}. {donor_name:<22} score={score:.1f}  "
@@ -944,7 +934,7 @@ def auto_retarget_pipeline(
         source_tp = get_common_features_from_T_pose(
             donor_fbx,
             donor_name,
-            max_joints=max_joints,
+            max_joints=MAX_JOINTS if crop_enabled else 2 ** 16,
         )
         donor_effective_root_index = _infer_donor_consensus_effective_root_index(
             donor_npys,

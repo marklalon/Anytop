@@ -43,18 +43,18 @@ from truebones_utils.motion_labels import (  # noqa: E402
     build_motion_labels,
     infer_action_tags_from_clip_name,
     load_motion_metadata,
-    load_motion_tags,
+    load_action_tags,
     write_motion_metadata,
 )
 from truebones_utils.motion_process import (  # noqa: E402
-    attach_joint_name_embeddings_to_cond,
+    attach_t5_embeddings_to_cond,
     write_joint_name_collision_report,
     get_mean_std,
 )
 from truebones_utils.param_utils import (  # noqa: E402
     MOTION_DIR,
     MOTION_METADATA_FILE,
-    MOTION_TAGS_FILE,
+    ACTION_TAGS_FILE,
     get_dataset_dir,
 )
 from truebones_utils.physics_joint_annotation import (  # noqa: E402
@@ -71,8 +71,8 @@ from Anytop.utils.misc import (
 # ---------------------------------------------------------------------------
 # Action-tag fallback backfill (I/O + reporting)
 # ---------------------------------------------------------------------------
-# Action tags are normally hand-maintained in motion_tags.jsonl, and
-# load_motion_metadata() / load_motion_tags() hard-exit when any clip on disk is
+# Action tags are normally hand-maintained in action_tags.jsonl, and
+# load_motion_metadata() / load_action_tags() hard-exit when any clip on disk is
 # missing an entry. When clips are added incrementally, hand-labeling lags behind,
 # so we backfill missing entries with a best-effort tag inferred from the clip
 # name (the inference itself lives in motion_labels.infer_action_tags_from_clip_name).
@@ -87,17 +87,17 @@ def _ensure_action_tags_fallback(
     dataset_dir_path: Path,
     motion_files: list[Path],
 ) -> list[tuple[str, list[str]]]:
-    """Backfill clips absent from motion_tags.jsonl with clip-name-inferred tags.
+    """Backfill clips absent from action_tags.jsonl with clip-name-inferred tags.
 
     Returns the list of (clip, inferred_tags) that were appended (empty if every
     clip already had an entry). Only clips with *no* entry are backfilled — an
-    explicitly empty action_tags list is left untouched (load_motion_tags treats
+    explicitly empty action_tags list is left untouched (load_action_tags treats
     absence, not emptiness, as the fatal case). The file is created if missing.
     """
-    tags_path = dataset_dir_path / MOTION_TAGS_FILE
+    tags_path = dataset_dir_path / ACTION_TAGS_FILE
     existing_clips: set[str] = set()
     if tags_path.exists():
-        existing_clips = set(load_motion_tags(dataset_dir_path).keys())
+        existing_clips = set(load_action_tags(dataset_dir_path).keys())
 
     fallbacks = [
         (motion_path.name, infer_action_tags_from_clip_name(motion_path.name))
@@ -112,7 +112,7 @@ def _ensure_action_tags_fallback(
             handle.write(json.dumps({"clip": clip, "action_tags": inferred}) + "\n")
     print(
         f"[OK] backfilled {len(fallbacks)} missing action_tags entr"
-        f"{'y' if len(fallbacks) == 1 else 'ies'} into {MOTION_TAGS_FILE}"
+        f"{'y' if len(fallbacks) == 1 else 'ies'} into {ACTION_TAGS_FILE}"
     )
     return fallbacks
 
@@ -122,7 +122,7 @@ def _print_action_tag_fallback_report(fallbacks: list[tuple[str, list[str]]]) ->
     print(
         f"\n{_COLOR_YELLOW}{'=' * 70}\n"
         f"[REVIEW] {len(fallbacks)} clip(s) had no hand-labeled action_tags; tags below "
-        f"were auto-inferred from the clip name and written to {MOTION_TAGS_FILE}.\n"
+        f"were auto-inferred from the clip name and written to {ACTION_TAGS_FILE}.\n"
         f"Please verify them by hand (especially any 'unknown'):{_COLOR_RESET}"
     )
     for clip, inferred in sorted(fallbacks):
@@ -201,13 +201,19 @@ def _infer_object_type_from_motion_name(
 def _recompute_object_stats(
     rebuilt_cond: dict[str, dict],
     motion_files: list[Path],
+    only_objects: set[str] | None = None,
 ) -> None:
     """Recompute per-object mean/std over every motion clip on disk.
 
     regenerate_dataset_artifacts() otherwise preserves the mean/std deep-copied
     from the existing cond.npy. After an incremental update that adds clips, the
     preserved stats are stale, so --recompute-stats / recompute_stats=True asks
-    for a fresh computation that matches what preprocessing would produce."""
+    for a fresh computation that matches what preprocessing would produce.
+
+    ``only_objects`` scopes the (expensive, clip-loading) recompute to the objects
+    actually touched by an incremental run. Untouched objects keep their carried-forward
+    stats, which are byte-identical to a recompute since their clips did not change, so
+    skipping them avoids re-reading every other species' clips for nothing."""
     object_to_motions: dict[str, list[Path]] = {}
     for motion_path in motion_files:
         object_type = _infer_object_type_from_motion_name(
@@ -218,6 +224,8 @@ def _recompute_object_stats(
 
     for object_type, paths in sorted(object_to_motions.items()):
         if object_type not in rebuilt_cond:
+            continue
+        if only_objects is not None and object_type not in only_objects:
             continue
         clips = [np.load(path).astype(np.float32) for path in paths]
         mean, std = get_mean_std(np.concatenate(clips, axis=0))
@@ -318,8 +326,8 @@ def _normalize_object_translation_roots(
 def regenerate_dataset_artifacts(
     dataset_dir: str | Path | None = None,
     t5_model: str = "t5-base",
-    force_reencode: bool = False,
     recompute_stats: bool = False,
+    recompute_stats_objects: set[str] | None = None,
 ) -> Path:
     dataset_dir_path = _resolve_dataset_dir_path(dataset_dir)
     motions_dir = dataset_dir_path / MOTION_DIR
@@ -337,7 +345,7 @@ def regenerate_dataset_artifacts(
     # Fast-fail: motion_metadata.json must exist.  Without it, load_motion_metadata
     # returns {} and the rebuilt metadata will be missing is_loop, source_file,
     # translation_root_index, and other per-clip fields.  (action_tags are sourced
-    # from motion_tags.jsonl at load time and stripped on write; any clip missing
+    # from action_tags.jsonl at load time and stripped on write; any clip missing
     # an entry there is backfilled by _ensure_action_tags_fallback below before
     # load_motion_metadata runs, so the load no longer hard-exits on new clips.)
     metadata_path = dataset_dir_path / MOTION_METADATA_FILE
@@ -350,7 +358,7 @@ def regenerate_dataset_artifacts(
             f"the full dataset, or restore it from a backup."
         )
 
-    # Backfill any clips missing from motion_tags.jsonl BEFORE load_motion_metadata,
+    # Backfill any clips missing from action_tags.jsonl BEFORE load_motion_metadata,
     # which otherwise hard-exits when a clip on disk has no action_tags entry.
     action_tag_fallbacks = _ensure_action_tags_fallback(dataset_dir_path, motion_files)
 
@@ -409,17 +417,23 @@ def regenerate_dataset_artifacts(
     if collision_report_path.exists():
         collision_report_path.unlink()
 
-    attach_joint_name_embeddings_to_cond(
+    attach_t5_embeddings_to_cond(
         rebuilt_cond,
         str(dataset_dir_path),
         t5_name=t5_model,
         write_collision_report=False,
-        force_reencode=force_reencode,
     )
     print(f"[OK] T5 embeddings attached in {time.time() - t0:.1f}s")
     write_joint_name_collision_report(rebuilt_cond, str(dataset_dir_path))
     if recompute_stats:
-        _recompute_object_stats(rebuilt_cond, motion_files)
+        only_objects = None
+        if recompute_stats_objects:
+            only_objects = {obj for obj in recompute_stats_objects if obj in rebuilt_cond}
+            ignored = sorted(set(recompute_stats_objects) - only_objects)
+            if ignored:
+                print(f"[WARN] --recompute-stats-objects names not in dataset, ignored: {', '.join(ignored)}")
+            print(f"[OK] recomputing mean/std for {len(only_objects)} touched object(s) only")
+        _recompute_object_stats(rebuilt_cond, motion_files, only_objects=only_objects)
     np.save(str(cond_path), rebuilt_cond)
 
     rebuilt_motion_metadata: dict[str, dict[str, object]] = {}
@@ -483,27 +497,40 @@ def main() -> int:
              "of preserving the stats from the existing cond.npy. Use this after "
              "incrementally adding motions so normalization reflects the new clips.",
     )
+    parser.add_argument(
+        "--recompute-stats-objects",
+        default="",
+        type=str,
+        help="Comma/semicolon-separated object names to scope --recompute-stats to "
+             "(e.g. after `--filter Buffalo`, only Buffalo's clips are re-read). "
+             "Untouched objects keep their carried-forward stats, which are identical "
+             "to a recompute since their clips are unchanged. Empty = recompute all.",
+    )
     args = parser.parse_args()
-    
+
+    recompute_stats_objects = {
+        token.strip()
+        for token in args.recompute_stats_objects.replace(";", ",").split(",")
+        if token.strip()
+    } or None
+
     print("\n" + "=" * 70)
     print("Regenerating dataset sidecar artifacts")
     print("=" * 70 + "\n")
-    
+
     try:
         dataset_dir_path = regenerate_dataset_artifacts(
             args.dataset_dir,
             t5_model=args.t5_model,
             recompute_stats=args.recompute_stats,
+            recompute_stats_objects=recompute_stats_objects,
         )
         cond_path = dataset_dir_path / "cond.npy"
         cond = dict(np.load(cond_path, allow_pickle=True).item())
 
         print(f"Regenerated dataset artifacts under {dataset_dir_path}")
-        print(f"Saved cond.npy with {len(cond)} objects: {', '.join(sorted(cond.keys()))}")
-        
-        print("\n" + "=" * 70)
+        print(f"Saved cond.npy with {len(cond)} objects: {', '.join(sorted(cond.keys()))}")        
         print("[PASS] Dataset sidecar regeneration completed successfully")
-        print("=" * 70)
         return 0
     except Exception as e:
         print(f"ERROR: Failed to regenerate dataset artifacts: {e}")

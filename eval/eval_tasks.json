@@ -3,12 +3,12 @@
   "tasks": [
     { "category": "Basic", "args": ["--object_type", "Buffalo"] },
 
-    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "30", "--global_energy", "1", "--loop"] },
-    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "30", "--global_energy", "-1", "--loop"] },
-    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "60", "--global_energy", "1", "--loop"] },
-    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "60", "--global_energy", "-1", "--loop"] },
-    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "120", "--global_energy", "1", "--loop"] },
-    { "category": "Basic", "args": ["--object_type", "Buffalo", "--motion_frames", "120", "--global_energy", "-1", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--num_frames", "30", "--global_energy", "1", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--num_frames", "30", "--global_energy", "-1", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--num_frames", "60", "--global_energy", "1", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--num_frames", "60", "--global_energy", "-1", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--num_frames", "120", "--global_energy", "1", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--num_frames", "120", "--global_energy", "-1", "--loop"] },
 
     { "category": "ConvertLoop", "args": ["--reference_motion", "outputs/test/Buffalo_Run_Noloop.npy", "--skip_timesteps", "90", "--loop"] },
 
@@ -20,7 +20,7 @@
 
     { "category": "InpaintJoints", "args": ["--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Buffalo_RunLoop_1.npy", "--inpaint_joints", "RightThigh,LeftThigh", "--loop"] },
 
-    { "category": "Outpaint", "args": ["--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Buffalo_RunLoop_1.npy", "--motion_frames", "120", "--skip_timesteps", "90"] },
+    { "category": "Outpaint", "args": ["--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Buffalo_RunLoop_1.npy", "--num_frames", "120", "--skip_timesteps", "90"] },
 
     { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--object_type", "dragon"] },
     { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--object_type", "dragon", "--global_energy", "1", "--loop"] },

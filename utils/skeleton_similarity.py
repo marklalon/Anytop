@@ -24,16 +24,17 @@ Similarity blends three complementary signals (see ``SimilarityWeights``):
     computed from the *biological* skeleton (helper/augmentation leaves and
     padding dropped).
 
-Plus a graded ``lineage_tags`` discount: each species carries a coarse-to-fine
-``(clade, family)`` tag pair (e.g. Cat -> ('Mammal', 'Felid')); the more tags
-two skeletons share, the larger the fractional discount on their combined
-distance.
+Plus a graded ``group_tags`` discount: each species carries a small motion
+descriptor ``(body-plan, gait/dynamics, refinement)`` tag triple (e.g. Cat ->
+('Quadruped', 'Agile', 'Stalking')); the more tags two skeletons share, the
+larger the fractional discount on their combined distance. Grouping by *how an
+animal moves* (rather than phylogeny) matches what a motion model cares about.
 
 The module is intentionally numpy-only so the lightweight motion-quality
 scorer does not pull in torch/motion_lib. Components degrade gracefully: a
 skeleton missing ``joints_names_embs`` (e.g. a freshly built retarget target)
 simply drops the embedding term and the remaining weights are renormalised;
-a species absent from the lineage table simply gets no group discount.
+a species absent from the motion-tag table simply gets no group discount.
 """
 
 from __future__ import annotations
@@ -43,21 +44,22 @@ from typing import List, Mapping, Optional, Sequence
 
 import numpy as np
 
-# Single source of truth for the coarse-to-fine biological lineage tags
-# ((clade, family) per species). physics_joint_annotation is torch-free
-# (numpy/collections/re only) and its package path carries no heavy __init__
-# side effects, so importing the constant keeps this module lightweight.
+# Single source of truth for the per-species motion descriptor tags
+# ((body-plan, gait/dynamics, refinement) per species). physics_joint_annotation
+# is torch-free (numpy/collections/re only) and its package path carries no
+# heavy __init__ side effects, so importing the constant keeps this module
+# lightweight.
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
-    _SPECIES_LINEAGE_TAGS,
+    _SPECIES_TAGS,
 )
 
-# Case-insensitive object_type -> frozenset of lineage tags. Built once.
-_LINEAGE_TAGS_LOWER: dict[str, frozenset] = {
-    key.lower(): frozenset(tags) for key, tags in _SPECIES_LINEAGE_TAGS.items()
+# Case-insensitive object_type -> frozenset of motion tags. Built once.
+_GROUP_TAGS_LOWER: dict[str, frozenset] = {
+    key.lower(): frozenset(tags) for key, tags in _SPECIES_TAGS.items()
 }
-# Every registered species carries this many lineage tags; the graded group
+# Every registered species carries this many motion tags; the graded group
 # discount normalises overlap by it (full overlap -> full bonus).
-_LINEAGE_TAG_ARITY = 2
+_GROUP_TAG_ARITY = 3
 
 
 # ── Canonical joint-name normalisation (for Jaccard) ─────────────────────────
@@ -178,14 +180,8 @@ _TOPO_FEATURE_DIM = 8
 
 
 def skeleton_parents(object_cond: Mapping[str, object]) -> np.ndarray:
-    """Parent array of the biological skeleton (no helper leaves / padding)."""
-    parents = np.asarray(object_cond.get("parents"), dtype=np.int64).reshape(-1)
-    n_real = object_cond.get("original_joint_count")
-    if n_real is not None:
-        n = int(np.asarray(n_real))
-        if 0 < n <= parents.size:
-            parents = parents[:n]
-    return parents
+    """Return the complete parent array stored for the skeleton."""
+    return np.asarray(object_cond.get("parents"), dtype=np.int64).reshape(-1)
 
 
 def node_depths(parents: np.ndarray) -> np.ndarray:
@@ -237,14 +233,14 @@ def topology_descriptor(object_cond: Mapping[str, object]) -> np.ndarray:
     ], dtype=np.float64)
 
 
-def lineage_tags(object_type: object) -> frozenset:
-    """Biological lineage tags ``(clade, family)`` for an object_type.
+def group_tags(object_type: object) -> frozenset:
+    """Motion descriptor tags ``(body-plan, gait/dynamics, refinement)`` for an object_type.
 
-    Case-insensitive; species absent from ``_SPECIES_LINEAGE_TAGS`` (e.g. a
+    Case-insensitive; species absent from ``_SPECIES_TAGS`` (e.g. a
     novel retarget target the user has not registered) return an empty set,
     which yields no group discount.
     """
-    return _LINEAGE_TAGS_LOWER.get(str(object_type).strip().lower(), frozenset())
+    return _GROUP_TAGS_LOWER.get(str(object_type).strip().lower(), frozenset())
 
 
 # ── Combined similarity ──────────────────────────────────────────────────────
@@ -255,8 +251,8 @@ class SimilarityWeights:
     ``jaccard`` + ``embedding`` + ``topology`` need not sum to 1: only their
     ratios matter, and inactive terms (e.g. missing embeddings) are dropped
     with the rest renormalised. ``group_bonus`` is the *maximum* fractional
-    discount, applied at full lineage-tag overlap (same family); partial
-    overlap (same clade only) gets a proportional share.
+    discount, applied at full motion-tag overlap (identical mover); partial
+    overlap (e.g. same body-plan only) gets a proportional share.
     """
 
     topology: float = 0.5
@@ -275,7 +271,7 @@ class SpeciesSimilarity:
     semantic_distance: float      # 1 - embedding cosine (nan if embedding inactive)
     topology_distance: float      # z-scored descriptor euclidean (pool-relative)
     combined_distance: float
-    same_group: bool            # same lineage family (full tag overlap)
+    same_group: bool            # identical motion descriptor (full tag overlap)
     weight: float = 0.0
 
 
@@ -307,23 +303,23 @@ def rank_species(
 
     query_names = joint_name_set(query_cond, query_hint)
     query_desc = topology_descriptor(query_cond)
-    # Lineage tags drive a graded group discount. The dict key (``name`` /
+    # Motion tags drive a graded group discount. The dict key (``name`` /
     # ``query_hint``) is the object_type; prefer an explicit cond field if set.
-    query_tags = lineage_tags(query_cond.get("object_type") or query_hint)
+    query_tags = group_tags(query_cond.get("object_type") or query_hint)
     query_emb = embedding_for_object(query_cond) if has_embedding(query_cond) else None
 
     jaccard_arr = np.zeros(len(names), dtype=np.float64)
     semantic_arr = np.full(len(names), np.nan, dtype=np.float64)
     descriptors: List[np.ndarray] = []
-    lineage_overlap = np.zeros(len(names), dtype=np.int64)
+    group_overlap = np.zeros(len(names), dtype=np.int64)
     for i, name in enumerate(names):
         cond = candidate_conds[name]
         cand_names = joint_name_set(cond, name)
         union = len(query_names | cand_names)
         jaccard_arr[i] = (len(query_names & cand_names) / union) if union else 0.0
         descriptors.append(topology_descriptor(cond))
-        cand_tags = lineage_tags(cond.get("object_type") or name)
-        lineage_overlap[i] = len(query_tags & cand_tags)
+        cand_tags = group_tags(cond.get("object_type") or name)
+        group_overlap[i] = len(query_tags & cand_tags)
         if query_emb is not None and has_embedding(cond):
             cos = float(np.clip(np.dot(query_emb, embedding_for_object(cond)), -1.0, 1.0))
             semantic_arr[i] = max(0.0, 1.0 - cos)
@@ -357,13 +353,13 @@ def rank_species(
     for weight, distance in terms:
         combined += (weight / total_weight) * _pool_scale(distance)
 
-    # Graded lineage discount: shared (clade, family) tags fractionally shrink
-    # the combined distance. Full overlap (same family, e.g. Cat/Lion) gets the
-    # full bonus; partial overlap (same clade only, e.g. Cat/Horse) gets a
+    # Graded motion-group discount: shared motion tags fractionally shrink the
+    # combined distance. Full overlap (identical mover, e.g. Cat/Lion) gets the
+    # full bonus; partial overlap (e.g. same body-plan only, Cat/Horse) gets a
     # proportional share; no shared tag (or an unregistered species) -> no
-    # discount. ``same_group`` now means "same family" (full overlap).
-    same_group = lineage_overlap >= _LINEAGE_TAG_ARITY
-    group_factor = 1.0 - weights.group_bonus * (lineage_overlap / _LINEAGE_TAG_ARITY)
+    # discount. ``same_group`` means "identical motion descriptor" (full overlap).
+    same_group = group_overlap >= _GROUP_TAG_ARITY
+    group_factor = 1.0 - weights.group_bonus * (group_overlap / _GROUP_TAG_ARITY)
     combined = combined * group_factor
 
     order = sorted(range(len(names)), key=lambda i: (combined[i], names[i]))
