@@ -29,7 +29,7 @@ Pipeline
 
 Usage
 -----
-    python tools/diagnose_action_separability.py \
+    python tools/visualize_action_separability.py \
         --ckpt  save/quadropeds_final_v1/model000100000.pt \
         --objects_subset all \
         --num_clips 100 --device 0 --out_dir save/_action_separability
