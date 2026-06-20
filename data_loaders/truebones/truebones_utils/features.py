@@ -212,7 +212,11 @@ def process_anim(anim, object_type, orientation_quat, root_xz_center=None, *, sc
     baked = bake_descendant_y_into_translation_root(rotated)
     centered, root_xz_center_ = move_xz_to_origin(baked, root_xz_center)
     scaled = scale_anim(centered, scale_factor)
-    return scaled, root_xz_center_, scale_factor
+    # Keep rest-pose conditioning and motion clips on the same normalized
+    # geometry.  Both paths pass through process_anim, while only raw motion
+    # files continue through the loading branch in get_hml_aligned_anim.
+    processed = clamp_vertical_trajectory(scaled, object_type)
+    return processed, root_xz_center_, scale_factor
 
 
 ################## Translation Root Resolution #####################
@@ -567,8 +571,6 @@ def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squa
             orientation_quat,
             scale_factor=scale_factor,
         )
-        ## clamp vertical trajectory for flying/fish creatures (after scale, in HML units)
-        processed_anim = clamp_vertical_trajectory(processed_anim, object_type)
     else:
         names = list()
         processed_anim = fbx_path_or_anim

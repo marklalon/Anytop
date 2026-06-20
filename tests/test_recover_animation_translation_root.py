@@ -260,6 +260,55 @@ def test_common_features_use_bind_pose_not_sampled_frame_zero(monkeypatch):
     np.testing.assert_allclose(tp.tpos_anim.positions[0, 1:], tp.offsets[1:], atol=1e-8)
 
 
+def test_common_features_apply_vertical_clamp(monkeypatch):
+    parents = np.array([-1, 0, 1], dtype=np.int32)
+    offsets = np.array(
+        [
+            [0.0, 2.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    loaded_anim = Animation(
+        Quaternions.id((1, 3)),
+        offsets[None].copy(),
+        Quaternions.id(3),
+        offsets,
+        parents,
+    )
+
+    monkeypatch.setattr(
+        features_module.FBX,
+        "load",
+        lambda _path: (loaded_anim, ["Root", "Spine", "Head"], 1.0 / 30.0),
+    )
+
+    clamp_calls = []
+
+    def fake_clamp(anim, object_type):
+        clamp_calls.append((object_type, anim.positions.copy()))
+        positions = anim.positions.copy()
+        positions[:, 0, 1] += 7.0
+        return Animation(
+            anim.rotations.copy(),
+            positions,
+            anim.orients.copy(),
+            anim.offsets.copy(),
+            anim.parents.copy(),
+        )
+
+    monkeypatch.setattr(features_module, "clamp_vertical_trajectory", fake_clamp)
+
+    tp = features_module.get_common_features_from_rest_pose("fake.fbx", "Bird")
+
+    assert len(clamp_calls) == 1
+    assert clamp_calls[0][0] == "Bird"
+    assert tp.tpos_anim.positions[0, 0, 1] == pytest.approx(
+        clamp_calls[0][1][0, 0, 1] + 7.0
+    )
+
+
 def _find_motion_file(motion_dir: str, pattern: str) -> tuple[str, str]:
     """Find a motion file by glob pattern, returning (full_path, basename)."""
     files = sorted(glob.glob(os.path.join(motion_dir, pattern)))
