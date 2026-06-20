@@ -117,10 +117,13 @@ class _WarnCollector:
             collector.uninstall()
     """
 
-    def __init__(self):
+    def __init__(self, dataset_dir: Path | None = None):
         self.messages: list[str] = []
         self._patches: list[tuple[object, str, object]] = []  # (module, attr, original)
         self._summarizing = False  # gate to prevent recursive capture during summarize()
+        self._dataset_dir = dataset_dir
+        self._suppress_patterns: list[str] = []
+        self._suppress_loaded = False
 
     def install(self):
         """Patch known warning emitters to silently collect (no immediate print)."""
@@ -176,8 +179,30 @@ class _WarnCollector:
                 self._stdout_patch.install()
             self._summarizing = False
 
+    def _load_suppress_patterns(self):
+        """Load comment-line suppress patterns from ignore_warnings.txt.
+
+        Lines starting with ``#`` are treated as case-insensitive substring
+        patterns; if any pattern matches a warning message, that warning is
+        suppressed from the summary output.
+        """
+        if self._suppress_loaded or self._dataset_dir is None:
+            return
+        self._suppress_loaded = True
+        ignore_path = self._dataset_dir / "ignore_warnings.txt"
+        if not ignore_path.exists():
+            return
+        for line in ignore_path.read_text("utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                pattern = stripped[1:].strip()
+                if pattern:
+                    self._suppress_patterns.append(pattern.lower())
+
     def _print_summary(self):
+        self._load_suppress_patterns()
         seen: set[str] = set()
+        suppressed_count = 0
         print()
         print('=' * 70)
         print(f"  PREPROCESSING WARNINGS ({len(self.messages)} total)")
@@ -185,8 +210,16 @@ class _WarnCollector:
         for msg in self.messages:
             key = msg.strip().lower()
             if key not in seen:
+                if self._suppress_patterns and any(
+                    pat in key for pat in self._suppress_patterns
+                ):
+                    suppressed_count += 1
+                    seen.add(key)  # still dedupe
+                    continue
                 print(f"  \x1b[33m[WARN]\x1b[0m {msg}")
                 seen.add(key)
+        if suppressed_count:
+            print(f"  \x1b[90m({suppressed_count} suppressed by ignore_warnings.txt patterns)\x1b[0m")
 
 
 class _StdoutWarnCapture:
@@ -481,7 +514,7 @@ def run_preprocessing(
         create_data_samples,
     )
 
-    collector = _WarnCollector()
+    collector = _WarnCollector(dataset_dir=Path(get_dataset_dir(dataset_dir or None)))
     collector.install()
     try:
         create_data_samples(

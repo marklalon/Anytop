@@ -14,3 +14,8 @@ Scorpion-2_Death_2
 Scorpion-2_OnBackDying_1
 Spider_Gliding_1
 SpiderG_Die_2
+# Bat: orientation calculation fell back to the across-vector heuristic
+# Crab: orientation calculation fell back to the across-vector heuristic
+# skeleton exceeds MAX_JOINTS (143 > 100) for Dragon
+# Pigeon: no head/neck forward reference was found; falling back to tail->spine body-axis orientation
+# Scorpion: no head/neck forward reference was found; falling back to tail->spine body-axis orientation
