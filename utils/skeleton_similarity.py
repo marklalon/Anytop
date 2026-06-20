@@ -180,14 +180,8 @@ _TOPO_FEATURE_DIM = 8
 
 
 def skeleton_parents(object_cond: Mapping[str, object]) -> np.ndarray:
-    """Parent array of the biological skeleton (no helper leaves / padding)."""
-    parents = np.asarray(object_cond.get("parents"), dtype=np.int64).reshape(-1)
-    n_real = object_cond.get("original_joint_count")
-    if n_real is not None:
-        n = int(np.asarray(n_real))
-        if 0 < n <= parents.size:
-            parents = parents[:n]
-    return parents
+    """Return the complete parent array stored for the skeleton."""
+    return np.asarray(object_cond.get("parents"), dtype=np.int64).reshape(-1)
 
 
 def node_depths(parents: np.ndarray) -> np.ndarray:

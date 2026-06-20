@@ -301,13 +301,12 @@ def _build_joint_mask_candidate_roots(object_cond) -> np.ndarray:
         return candidate_roots
 
     helper_joint_indices = {int(joint_index) for joint_index in object_cond.get('helper_joint_indices') or []}
-    original_joint_count = int(object_cond.get('original_joint_count', joint_count) or joint_count)
     canonical_joint_names = list(object_cond.get('canonical_joint_names') or object_cond.get('joints_names') or [])
 
     for joint_index, parent_index in enumerate(parents):
         if joint_index == 0 or parent_index < 0:
             continue
-        if joint_index in helper_joint_indices or joint_index >= original_joint_count:
+        if joint_index in helper_joint_indices:
             continue
         joint_name = canonical_joint_names[joint_index] if joint_index < len(canonical_joint_names) else ''
         if _is_anatomical_non_helper_joint_name(joint_name):
@@ -316,11 +315,11 @@ def _build_joint_mask_candidate_roots(object_cond) -> np.ndarray:
     if np.any(candidate_roots):
         return candidate_roots
 
-    # Fallback: keep all non-root non-helper original joints if the semantic filter is too strict.
+    # Fallback: keep all non-root non-helper joints if the semantic filter is too strict.
     for joint_index, parent_index in enumerate(parents):
         if joint_index == 0 or parent_index < 0:
             continue
-        if joint_index in helper_joint_indices or joint_index >= original_joint_count:
+        if joint_index in helper_joint_indices:
             continue
         candidate_roots[joint_index] = True
     return candidate_roots
