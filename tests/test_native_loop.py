@@ -296,7 +296,7 @@ class NativeLoopTests(unittest.TestCase):
         y = {
             'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
             'mask': torch.ones(2, 1, 1, 4, 4, dtype=torch.float32),
-            'tpos_first_frame': torch.randn(2, 4, 13, dtype=torch.float32),
+            'rest_pose': torch.randn(2, 4, 13, dtype=torch.float32),
             'n_joints': torch.tensor([4, 3], dtype=torch.int64),
             'joints_names_embs': torch.zeros(2, 4, 512, dtype=torch.float32),
             'is_loop': torch.tensor([True, False]),
@@ -328,7 +328,7 @@ class NativeLoopTests(unittest.TestCase):
         y = {
             'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
             'mask': torch.ones(2, 1, 1, 4, 4, dtype=torch.float32),
-            'tpos_first_frame': torch.randn(2, 4, 13, dtype=torch.float32),
+            'rest_pose': torch.randn(2, 4, 13, dtype=torch.float32),
             'n_joints': torch.tensor([4, 3], dtype=torch.int64),
             'joints_names_embs': torch.zeros(2, 4, 512, dtype=torch.float32),
             'is_loop': torch.tensor([True, True]),

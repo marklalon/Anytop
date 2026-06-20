@@ -743,7 +743,7 @@ class MotionDataset(data.Dataset):
             and random.random() >= loop_cond_prob
         )
 
-        motion, m_length, object_type, parents, joints_graph_dist, joints_relations, tpos_first_frame, offsets, joints_names_embs, kinematic_chains, mean, std = self._load_normalized_motion(data)
+        motion, m_length, object_type, parents, joints_graph_dist, joints_relations, rest_pose, offsets, joints_names_embs, kinematic_chains, mean, std = self._load_normalized_motion(data)
         ind = 0
         loop_applied = False
         loop_full_cycle = False
@@ -850,7 +850,7 @@ class MotionDataset(data.Dataset):
         temporal_mask = self._get_temporal_mask(target_num_frames, circular=circular_mask)
 
         if return_aug_info:
-            return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {
+            return motion, m_length, parents, rest_pose, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {
                 'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
                 'species_emb': self.cond_dict[object_type].get('species_emb'),
             }, {
@@ -861,7 +861,7 @@ class MotionDataset(data.Dataset):
                 'playspeed_cond': float(playspeed_cond),
                 'loop_uncond': bool(loop_uncond),
             }
-        return motion, m_length, parents, tpos_first_frame, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {
+        return motion, m_length, parents, rest_pose, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {
             'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
             'species_emb': self.cond_dict[object_type].get('species_emb'),
         }
@@ -888,9 +888,9 @@ class MotionDataset(data.Dataset):
         m_length = motion.shape[0]
         mean = self.cond_dict[object_type]['mean']
         std = self.cond_dict[object_type]['std_safe']
-        tpos_first_frame = cond['tpos_first_frame_normalized']
+        rest_pose = cond['rest_pose_normalized']
         offsets = cond['offsets']
-        return (motion, m_length, object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], tpos_first_frame, offsets, cond['joints_names_embs'], cond['kinematic_chains'], mean, std)
+        return (motion, m_length, object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], rest_pose, offsets, cond['joints_names_embs'], cond['kinematic_chains'], mean, std)
         
     def __len__(self):
         return len(self.name_list) - self.pointer
@@ -985,7 +985,7 @@ class Truebones(data.Dataset):
             # Channels with ~zero variance are constant (e.g. the root joint's
             # own 6D rotation under the own-rotation encoding). A 1e-6 epsilon is
             # far too small a divisor there: it leaves the motion at 0 but blows
-            # up tpos_first_frame_normalized = (tpos - mean) / std to ~1e6, which
+            # up rest_pose_normalized = (rest_pose - mean) / std to ~1e6, which
             # then drives the spatial-attention graph bias to ~1e5 and produces
             # NaN gradients under bf16 autocast. Treat constant channels as
             # unit-variance so they normalize to a sane O(1) range instead.
@@ -993,7 +993,7 @@ class Truebones(data.Dataset):
             cond['mean'] = mean
             cond['std'] = np.asarray(cond['std'], dtype=np.float32)
             cond['std_safe'] = std_safe
-            cond['tpos_first_frame_normalized'] = np.nan_to_num((np.asarray(cond['tpos_first_frame'], dtype=np.float32) - mean) / std_safe).astype(np.float32, copy=False)
+            cond['rest_pose_normalized'] = np.nan_to_num((np.asarray(cond['rest_pose'], dtype=np.float32) - mean) / std_safe).astype(np.float32, copy=False)
             cond['joint_mask_candidate_roots'] = _build_joint_mask_candidate_roots(cond)
             
         motion_metadata_lookup = load_motion_metadata(opt.data_root)

@@ -460,8 +460,8 @@ def get_common_features_from_T_pose(*args, **kwargs):
 class TPoseFeatures:
     """Packaged return from get_common_features_from_rest_pose.
 
-    Field names keep the legacy ``tpos_*`` spelling because cond.npy/model code
-    consumes them, but the values are rest-pose based.
+    Field names keep the legacy ``tpos_*`` spelling for internal pipeline use;
+    all values are computed from the file bind/rest pose.
     """
     scale_factor: float
     offsets: np.ndarray

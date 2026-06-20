@@ -191,7 +191,7 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
         objects_to_validate = cond_keys
 
     required_keys = {
-        "tpos_first_frame",
+        "rest_pose",
         "joint_relations",
         "joints_graph_dist",
         "object_type",
@@ -215,7 +215,7 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
 
             parents = np.asarray(object_cond["parents"])
             offsets = np.asarray(object_cond["offsets"])
-            tpos_first_frame = np.asarray(object_cond["tpos_first_frame"])
+            rest_pose = np.asarray(object_cond["rest_pose"])
             mean = np.asarray(object_cond["mean"])
             std = np.asarray(object_cond["std"])
             joint_relations = np.asarray(object_cond["joint_relations"])
@@ -230,8 +230,8 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
             if offsets.shape != (n_joints, 3):
                 msg = f"{object_type} offsets shape mismatch: {offsets.shape}"
                 print_warn(f"validation error: {msg}")
-            if tpos_first_frame.shape != (n_joints, FEATS_LEN):
-                msg = f"{object_type} tpos_first_frame shape mismatch: {tpos_first_frame.shape}"
+            if rest_pose.shape != (n_joints, FEATS_LEN):
+                msg = f"{object_type} rest_pose shape mismatch: {rest_pose.shape}"
                 print_warn(f"validation error: {msg}")
             if mean.shape != (n_joints, FEATS_LEN):
                 msg = f"{object_type} mean shape mismatch: {mean.shape}"
@@ -254,8 +254,8 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
             if not np.isfinite(offsets).all():
                 msg = f"{object_type} offsets contain NaN/Inf"
                 print_warn(f"validation error: {msg}")
-            if not np.isfinite(tpos_first_frame).all():
-                msg = f"{object_type} tpos_first_frame contains NaN/Inf"
+            if not np.isfinite(rest_pose).all():
+                msg = f"{object_type} rest_pose contains NaN/Inf"
                 print_warn(f"validation error: {msg}")
             if not np.isfinite(mean).all():
                 msg = f"{object_type} mean contains NaN/Inf"
@@ -580,7 +580,7 @@ def _validate_motion_orientation(
 
         parents = np.asarray(object_cond["parents"], dtype=np.int64)
         offsets = np.asarray(object_cond["offsets"], dtype=np.float64)
-        tpose_features = np.asarray(object_cond["tpos_first_frame"], dtype=np.float64)
+        tpose_features = np.asarray(object_cond["rest_pose"], dtype=np.float64)
         joint_names = list(object_cond.get("joints_names", []))
 
         face_joints = object_cond.get("face_joints")

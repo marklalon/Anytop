@@ -654,7 +654,7 @@ class AnyTop(nn.Module):
 
         joints_padding_mask = y['joints_padding_mask'].to(x.device)
         temp_mask = y['mask'].to(x.device)
-        tpos_first_frame = y['tpos_first_frame'].to(x.device).unsqueeze(0)
+        rest_pose = y['rest_pose'].to(x.device).unsqueeze(0)
 
         bs, njoints, nfeats, nframes = x.shape
         n_joints = torch.as_tensor(y['n_joints'], device=x.device).reshape(-1)
@@ -718,7 +718,7 @@ class AnyTop(nn.Module):
         species_emb_for_joints = (
             self._coerce_species_emb(y, bs, x.device, x.dtype) if self.species_joint_cond else None
         )
-        x = self.input_process(x, tpos_first_frame, y['joints_names_embs'], species_emb_for_joints) # applies linear layer on each frame to convert it to latent dim
+        x = self.input_process(x, rest_pose, y['joints_names_embs'], species_emb_for_joints) # applies linear layer on each frame to convert it to latent dim
         spatial_mask = (1.0 - joints_padding_mask[:, 0, 0, 1:, 1:].float()) * -1e4
         spatial_mask = spatial_mask.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
 
@@ -817,14 +817,14 @@ class InputProcess(nn.Module):
         text_in_dim = t5_output_dim
         self.species_proj = nn.Linear(t5_output_dim, t5_output_dim) if species_joint_cond else None
         self.text_embedding = nn.Linear(text_in_dim, self.latent_dim)
-    def forward(self, x, tpos_first_frame, joints_embedded_names, species_emb=None):
+    def forward(self, x, rest_pose, joints_embedded_names, species_emb=None):
         # x.shape = [batch_size, joints, 13, frames]
         x = x.permute(3, 0, 1, 2) # [frames, batch_size, n_joints, features_len]
-        tpos_all_joints_except_root = self.tpos_joint_embedding(tpos_first_frame[:, :, 1:])
-        tpos_root_data = self.tpos_root_embedding(tpos_first_frame[:, :, 0:1])
+        rest_pose_all_joints_except_root = self.tpos_joint_embedding(rest_pose[:, :, 1:])
+        rest_pose_root_data = self.tpos_root_embedding(rest_pose[:, :, 0:1])
         all_joints_except_root = self.joint_embedding(x[:, :, 1:])
         root_data = self.root_embedding(x[:, :, 0:1])
-        tpos_embedded = torch.cat([tpos_root_data, tpos_all_joints_except_root], dim=2)
+        tpos_embedded = torch.cat([rest_pose_root_data, rest_pose_all_joints_except_root], dim=2)
         x_embedded = torch.cat([root_data, all_joints_except_root], dim=2)
         x = torch.cat([tpos_embedded, x_embedded], dim=0)
         joints_embedded_names = self.joints_names_dropout(joints_embedded_names.to(x.device))

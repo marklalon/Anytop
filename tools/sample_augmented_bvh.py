@@ -103,8 +103,8 @@ def _build_cond_dict(opt, objects_subset: str) -> dict:
         cond["mean"] = mean
         cond["std"] = std
         cond["std_safe"] = std_safe
-        cond["tpos_first_frame_normalized"] = np.nan_to_num(
-            (np.asarray(cond["tpos_first_frame"], dtype=np.float32) - mean) / std_safe
+        cond["rest_pose_normalized"] = np.nan_to_num(
+            (np.asarray(cond["rest_pose"], dtype=np.float32) - mean) / std_safe
         ).astype(np.float32, copy=False)
         # Stub T5 embeddings — only used by the model, not needed for BVH export.
         n_joints = np.asarray(cond["parents"]).shape[0]
@@ -291,7 +291,7 @@ def main() -> int:
                 motion_norm,  # (num_frames, J, 13) — normalized
                 m_length,     # actual frames (before padding)
                 parents,
-                tpos_first_frame,
+                rest_pose,
                 offsets,
                 _temporal_mask,
                 _joints_graph_dist,

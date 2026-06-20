@@ -1168,7 +1168,7 @@ def _generate_all_species(
 
                 # T-pose rest rotations (per-species)
                 _tpose_rr = None
-                _tff = sp_entry.get('tpos_first_frame')
+                _tff = sp_entry.get('rest_pose')
                 if _tff is not None:
                     from utils.rotation_conversions import rotation_6d_to_matrix_np
                     from motion_lib.Quaternions import Quaternions as _QQ
@@ -1795,7 +1795,7 @@ def main(args=None, cond_dict=None, runtime=None):
     )
 
     # Extract T-pose rest rotations (6D → quaternion)
-    _tff = cond_dict[object_type].get('tpos_first_frame')
+    _tff = cond_dict[object_type].get('rest_pose')
     _tpose_rest_rotations = None
     if _tff is not None:
         from utils.rotation_conversions import rotation_6d_to_matrix_np
@@ -2289,9 +2289,9 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joi
         n_joints = len(parents)
         mean = cond_dict[object_type]['mean']
         std = cond_dict[object_type]['std']
-        tpos_first_frame = cond_dict[object_type]['tpos_first_frame']
-        tpos_first_frame = (tpos_first_frame - mean) / (std + 1e-6)
-        tpos_first_frame = np.nan_to_num(tpos_first_frame)
+        rest_pose = cond_dict[object_type]['rest_pose']
+        rest_pose = (rest_pose - mean) / (std + 1e-6)
+        rest_pose = np.nan_to_num(rest_pose)
         joint_relations = cond_dict[object_type]['joint_relations']
         joints_graph_dist = cond_dict[object_type]['joints_graph_dist']
         offsets = cond_dict[object_type]['offsets']
@@ -2299,7 +2299,7 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joi
         batch.append(np.zeros((n_frames, n_joints, feature_len)))
         batch.append(n_frames)
         batch.append(parents)
-        batch.append(tpos_first_frame)
+        batch.append(rest_pose)
         batch.append(offsets)
         batch.append(create_temporal_mask_for_window(temporal_window, n_frames, circular=circular_mask))
         batch.append(joints_graph_dist)

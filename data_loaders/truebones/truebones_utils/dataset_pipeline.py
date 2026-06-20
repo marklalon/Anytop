@@ -74,7 +74,7 @@ def get_mean_std(data):
         # channels. The own-rotation encoding leaves the root joint's 6D
         # rotation constant, so its block-averaged std collapses to 0 above.
         # A ~zero divisor is meaningless and dangerous: it leaves the motion at
-        # 0 but amplifies tpos_first_frame normalization, (tpos - mean) / std,
+        # 0 but amplifies rest_pose normalization, (rest_pose - mean) / std,
         # to ~1e6, which drives the spatial-attention graph bias to ~1e5 and
         # yields NaN gradients under bf16. Treat any sub-1e-5 std as unit
         # variance (mirrors the std_safe floor in data/dataset.py:Truebones).
@@ -351,7 +351,7 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
     # by regenerate_dataset_artifacts._normalize_object_translation_roots, which
     # aggregates per-motion translation_root_index values and picks the consensus.
     object_cond['translation_root_index'] = int(_rest_translation_root_index)
-    object_cond['tpos_first_frame'] = rest_pose_motion[0]
+    object_cond['rest_pose'] = rest_pose_motion[0]
     object_cond['pose_base'] = 'rest_pose'
     joint_relations, joints_graph_dist = create_topology_edge_relations(tp.tpos_anim.parents, max_path_len=MAX_PATH_LEN)
     object_cond['joint_relations'] = joint_relations

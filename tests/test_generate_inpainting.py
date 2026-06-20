@@ -75,7 +75,7 @@ def _make_full_cond_entry(n_joints: int, feature_len: int = 13) -> dict:
         "parents": parents,
         "mean": np.zeros((n_joints, feature_len), dtype=np.float32),
         "std": np.ones((n_joints, feature_len), dtype=np.float32),
-        "tpos_first_frame": np.zeros((n_joints, feature_len), dtype=np.float32),
+        "rest_pose": np.zeros((n_joints, feature_len), dtype=np.float32),
         "joint_relations": np.zeros((n_joints, n_joints), dtype=np.int64),
         "joints_graph_dist": np.zeros((n_joints, n_joints), dtype=np.int64),
         "offsets": np.zeros((n_joints, 3), dtype=np.float32),
