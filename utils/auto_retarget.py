@@ -301,7 +301,7 @@ def retarget_features_npy_to_target(
 
     # 1. Load source T-pose metadata (once per donor via source_tp)
     if source_tp is None:
-        src_tpose_fbx = source_cond.get('orientation_reference_fbx_path')
+        src_tpose_fbx = _resolved_ref_fbx(source_cond)
         if not src_tpose_fbx or not os.path.isfile(src_tpose_fbx):
             print(f"  [WARN] source T-pose FBX not found: {src_tpose_fbx!r}")
             return None
@@ -311,7 +311,7 @@ def retarget_features_npy_to_target(
             max_joints=max_joints,
         )
     elif len(source_tp.names) != source_joint_count:
-        src_tpose_fbx = source_cond.get('orientation_reference_fbx_path')
+        src_tpose_fbx = _resolved_ref_fbx(source_cond)
         if not src_tpose_fbx or not os.path.isfile(src_tpose_fbx):
             print(f"  [WARN] source T-pose FBX not found: {src_tpose_fbx!r}")
             return None
@@ -610,7 +610,7 @@ def retarget_animation_file_to_target(
     target_source_tp = None
     target_aligned_raw_anim = None
     target_aligned_names = None
-    target_tpose_path = target_cond.get('orientation_reference_fbx_path')
+    target_tpose_path = _resolved_ref_fbx(target_cond)
     if (
         target_tpose_path
         and os.path.isfile(target_tpose_path)
@@ -752,6 +752,13 @@ def retarget_animation_file_to_target(
 # ---------------------------------------------------------------------------
 # Donor ranking
 # ---------------------------------------------------------------------------
+
+def _resolved_ref_fbx(cond: dict):
+    """Resolve a cond entry's ``orientation_reference_fbx_path`` (portable or
+    legacy-absolute) to a local path via the shared resolver."""
+    from utils.misc import resolve_dataset_path
+    return resolve_dataset_path(cond.get('orientation_reference_fbx_path'))
+
 
 def rank_donors(
     target_cond: dict,
@@ -917,7 +924,7 @@ def auto_retarget_pipeline(
     # 4. For each donor, retarget all motion files
     for donor_name, donor_score in selected_donors:
         donor_cond = training_cond_dict[donor_name]
-        donor_fbx = donor_cond.get('orientation_reference_fbx_path')
+        donor_fbx = _resolved_ref_fbx(donor_cond)
 
         if not donor_fbx or not os.path.isfile(donor_fbx):
             print(f"\n[auto_retarget] {donor_name}: T-pose FBX not found ({donor_fbx!r}), skipping donor")

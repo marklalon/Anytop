@@ -99,7 +99,7 @@ _load_utils_module("utils.rotation_conversions")
 _load_utils_module("utils.npy_roundtrip_utils")
 _load_utils_module("utils.misc")
 
-from utils.misc import infer_object_type_from_filename
+from utils.misc import infer_object_type_from_filename, resolve_dataset_path
 from utils.npy_roundtrip_utils import recover_from_features
 from Anytop.utils.roundtrip_common import load_fbx_skeleton_metadata
 from Anytop.motion_lib.FBX import collapse_root_skeleton
@@ -610,7 +610,7 @@ def restore_glb(
     else:
         if tpose_mesh is None:
             if isinstance(cond_entry.get('orientation_reference_fbx_path'), str):
-                tpose_mesh = cond_entry['orientation_reference_fbx_path']
+                tpose_mesh = resolve_dataset_path(cond_entry['orientation_reference_fbx_path'])
                 print(f"Resolved T-pose mesh from cond.npy: {tpose_mesh}")
             else:
                 raise ValueError(

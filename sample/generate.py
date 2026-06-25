@@ -48,7 +48,7 @@ from utils.model_util import (
     unwrap_anytop_model,
 )
 from utils.parser_util import generate_args
-from utils.misc import infer_object_type_from_filename
+from utils.misc import infer_object_type_from_filename, resolve_dataset_path
 
 
 _REFERENCE_MOTION_PREPROCESS_SUFFIXES = {'.fbx', '.glb', '.gltf'}
@@ -493,7 +493,7 @@ def _prepare_reference_motion_path(
             "Cannot preprocess non-NPY reference motion."
         )
 
-    tpose_path = source_cond.get('orientation_reference_fbx_path')
+    tpose_path = resolve_dataset_path(source_cond.get('orientation_reference_fbx_path'))
     if not tpose_path or not os.path.isfile(tpose_path):
         raise FileNotFoundError(
             f"Reference motion preprocessing requires a valid orientation_reference_fbx_path "
@@ -634,8 +634,8 @@ def _retarget_reference_motion(
     src_cond = cond_dict[source_type]
     tgt_cond = dict(cond_dict[target_type])
 
-    src_tpose_path = src_cond.get('orientation_reference_fbx_path')
-    tgt_tpose_path = tgt_cond.get('orientation_reference_fbx_path')
+    src_tpose_path = resolve_dataset_path(src_cond.get('orientation_reference_fbx_path'))
+    tgt_tpose_path = resolve_dataset_path(tgt_cond.get('orientation_reference_fbx_path'))
     for label, path in (('source', src_tpose_path), ('target', tgt_tpose_path)):
         if not path or not os.path.isfile(path):
             raise FileNotFoundError(
@@ -732,7 +732,7 @@ def _retarget_reference_motion_from_file(
     from data_loaders.truebones.truebones_utils.features import get_common_features_from_T_pose
 
     tgt_cond = dict(cond_dict[target_type])
-    tgt_tpose_path = tgt_cond.get('orientation_reference_fbx_path')
+    tgt_tpose_path = resolve_dataset_path(tgt_cond.get('orientation_reference_fbx_path'))
     if not tgt_tpose_path or not os.path.isfile(tgt_tpose_path):
         raise FileNotFoundError(
             f"Reference retarget requires the target T-pose file "
@@ -1189,7 +1189,7 @@ def _generate_all_species(
                 # Count existing outputs so repeated runs don't overwrite.
                 existing = [f for f in os.listdir(out_path)
                             if f.startswith(sp) and f.endswith('.npy')]
-                npy_name = f'{sp}_#{(len(existing))}.npy'
+                npy_name = f'{sp}_{(len(existing))}.npy'
                 export_tasks.append((
                     motion_np, parents, sp_entry['offsets'], npy_name, joint_names,
                     out_path, fps, _tpose_rr, translation_root_index,
@@ -1874,7 +1874,7 @@ def main(args=None, cond_dict=None, runtime=None):
 
         offsets = cond_dict[object_type]['offsets']
 
-        npy_name = f'{object_type}_#{base_index + sample_idx}.npy'
+        npy_name = f'{object_type}_{base_index + sample_idx}.npy'
         export_tasks.append((
             motion_np,
             parents,  # already np.ndarray, shared in-process

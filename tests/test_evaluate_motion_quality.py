@@ -29,7 +29,7 @@ def _make_cond_entry(embedding: np.ndarray) -> dict:
 
 
 def test_main_registers_cond_path_for_novel_query_species(tmp_path, monkeypatch) -> None:
-    motion_path = tmp_path / "dragon_#0.npy"
+    motion_path = tmp_path / "dragon_0.npy"
     cond_path = tmp_path / "cond.npy"
 
     np.save(motion_path, np.zeros((8, 2, 13), dtype=np.float32))

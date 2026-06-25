@@ -284,10 +284,11 @@ def _attach_orientation_reference_metadata(
     object_cond['orientation_quat'] = orientation_qs.reshape(4)
     object_cond['forward_joint_index'] = int(forward_joint_index) if forward_joint_index is not None else None
     object_cond['forward_base_joint_index'] = int(forward_base_joint_index) if forward_base_joint_index is not None else None
-    object_cond['orientation_reference_fbx_path'] = (
-        os.path.abspath(orientation_reference_fbx_path)
-        if orientation_reference_fbx_path
-        else None
+    # Store a repo-root-relative POSIX path so cond.npy stays portable across
+    # machines / containers (resolve via utils.misc.resolve_dataset_path).
+    from utils.misc import to_portable_dataset_path
+    object_cond['orientation_reference_fbx_path'] = to_portable_dataset_path(
+        orientation_reference_fbx_path
     )
 
 

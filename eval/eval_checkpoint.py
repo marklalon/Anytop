@@ -18,7 +18,7 @@ Output layout::
 
     Anytop/outputs/eval_checkpoint/<RUN_NAME>/<MODEL_NAME>/
         <Category>/task<N>/        # one dir per generation task
-            <ObjectType>_#0.npy / .bvh ...
+            <ObjectType>_0.npy / .bvh ...
             generate.log
             scores.json            # machine-readable per-clip scores
         eval_report.html
@@ -218,7 +218,7 @@ def _write_task_hash(task_dir: Path, extra_args: list[str], digest: str) -> None
 
 
 def _first_output_npy(task_dir: Path) -> Path | None:
-    """The 'first' generated motion: prefer ``*_#0.npy``, else the lexically
+    """The 'first' generated motion: prefer ``*_0.npy``, else the lexically
     first .npy (excluding intermediate ``_reference_*`` / ``_retargeted_*``
     helpers written by generate.py)."""
     npys = sorted(
@@ -228,7 +228,7 @@ def _first_output_npy(task_dir: Path) -> Path | None:
     if not npys:
         return None
     for p in npys:
-        if p.name.endswith("_#0.npy"):
+        if p.name.endswith("_0.npy"):
             return p
     return npys[0]
 
@@ -236,15 +236,15 @@ def _first_output_npy(task_dir: Path) -> Path | None:
 def _extract_object_type(npy_path: Path) -> str | None:
     """Extract the object type from a generated .npy filename.
 
-    Standard output files are named ``<ObjectType>_#<idx>.npy``.
+    Standard output files are named ``<ObjectType>_<idx>.npy``.
     Intermediate helpers (``_reference_*``, ``_retargeted_*``) are excluded
     by the caller.
 
     Strategy:
-    1. Match ``<name>_#<digit>.npy`` — take ``<name>``.
+    1. Match ``<name>_<digit>.npy`` — take ``<name>``.
     2. Fallback: strip ``.npy`` suffix and use the full stem.
     """
-    m = re.match(r'^(.+)_#\d+\.npy$', npy_path.name)
+    m = re.match(r'^(.+)_\d+\.npy$', npy_path.name)
     if m:
         return m.group(1)
     # Fallback: just the stem (shouldn't happen for standard outputs).

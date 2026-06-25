@@ -125,6 +125,73 @@ def infer_object_type_from_filename(
     return None
 
 
+# ── Dataset asset path portability ─────────────────────────────────────────
+# cond.npy stores asset paths such as ``orientation_reference_fbx_path``.
+# Historically these were absolute paths, which break when the repo/dataset is
+# moved to another machine or mounted into a container at a different prefix
+# (e.g. a Windows ``D:\...`` path inside a Linux container). New cond.npy stores
+# a *repo-root-relative POSIX* path via ``to_portable_dataset_path``; both forms
+# (and legacy foreign-absolute paths) are resolved back to a local path by
+# ``resolve_dataset_path``.
+
+def repo_root_dir() -> str:
+    """Absolute path of the repository root (the parent of the ``Anytop`` dir)."""
+    return _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+
+
+def to_portable_dataset_path(path: str | None) -> str | None:
+    """Return a portable form of *path* for storage in cond.npy.
+
+    Paths inside the repo become repo-root-relative POSIX paths; paths outside
+    the repo (or on a different Windows drive) are kept as a normalised absolute
+    path. ``None``/empty input returns ``None``.
+    """
+    if not path:
+        return None
+    abs_path = _os.path.abspath(path)
+    root = repo_root_dir()
+    try:
+        rel = _os.path.relpath(abs_path, root)
+    except ValueError:
+        return abs_path  # different drive on Windows — cannot be made relative
+    if rel.startswith(_os.pardir):
+        return abs_path  # outside the repo tree
+    return rel.replace(_os.sep, "/")
+
+
+def resolve_dataset_path(stored, *, extra_roots=None) -> str | None:
+    """Resolve a cond.npy asset path (repo-root-relative or absolute) to a
+    local path.
+
+    Resolution order:
+      1. ``None``/empty → ``None``.
+      2. An absolute path that exists as-is → returned unchanged.
+      3. A relative path → joined against the repo root (and any *extra_roots*).
+
+    Raises ``FileNotFoundError`` if no candidate exists.
+    """
+    if not stored:
+        return None
+    raw = str(stored)
+    if _os.path.isabs(raw) and _os.path.isfile(raw):
+        return raw
+
+    roots = [repo_root_dir()]
+    if extra_roots:
+        roots.extend(r for r in extra_roots if r)
+
+    if not _os.path.isabs(raw):
+        rel = raw.replace("/", _os.sep)
+        for root in roots:
+            candidate = _os.path.join(root, rel)
+            if _os.path.isfile(candidate):
+                return candidate
+
+    raise FileNotFoundError(
+        f"Dataset path not found: {stored!r} (searched roots: {roots})"
+    )
+
+
 # ── String normalisation helpers (shared across tools) ───────────────────
 
 def normalize_bone_key(name: str) -> str:

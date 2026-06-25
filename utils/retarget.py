@@ -1758,7 +1758,8 @@ if __name__ == '__main__':
 
     _base_name = _os.path.splitext(_os.path.basename(_source_path))[0]
 
-    _tgt_tpose_path = _tgt_cond.get('orientation_reference_fbx_path')
+    from utils.misc import resolve_dataset_path as _resolve_dataset_path
+    _tgt_tpose_path = _resolve_dataset_path(_tgt_cond.get('orientation_reference_fbx_path'))
     if not _tgt_tpose_path or not _os.path.isfile(_tgt_tpose_path):
         _PARSER.error(
             f'Target T-pose file not found for "{_target_type}": '
