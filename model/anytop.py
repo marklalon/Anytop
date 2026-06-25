@@ -1,5 +1,4 @@
 import torch
-torch.cuda.empty_cache()
 import torch.nn as nn
 import numpy as np
 from model.motion_transformer import GraphMotionDecoderLayer, GraphMotionDecoder

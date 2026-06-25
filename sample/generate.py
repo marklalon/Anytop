@@ -159,17 +159,29 @@ def prepare_generation_runtime(args=None, cond_dict=None):
     _raise_opt_max_joints_for_cond(opt, cond_dict)
 
     print('Creating model and diffusion...')
-    resolve_t5_out_dim(args, cond_source=actual_cond_file)
+    # Pass cond_dict (already in memory) instead of the file path to avoid a
+    # second np.load() of cond.npy.
+    resolve_t5_out_dim(args, cond_source=cond_dict)
     sampling_method, sampling_steps = _configure_sampling_args(args)
     model, diffusion = create_model_and_diffusion_general_skeleton(args)
 
     print(f'Loading checkpoints from [{args.model_path}]...')
-    state_dict = torch.load(args.model_path, map_location='cpu')
+    # Load checkpoint directly to the target device when CUDA is available,
+    # otherwise fall back to CPU to avoid device(=None) surprises.
+    device = dist_util.dev()
+    if device is None or device.type != 'cuda':
+        device = torch.device('cpu')
+    state_dict = torch.load(args.model_path, map_location=device)
     if 'model_avg' in state_dict:
         print('EMA checkpoint detected, loading model_avg weights.')
         state_dict = state_dict['model_avg']
     elif 'model' in state_dict:
         state_dict = state_dict['model']
+    assert model is not None, 'BUG: create_model_and_diffusion_general_skeleton returned None for model'
+    # NOTE: model.to(device) can return None in some PyTorch builds
+    # (observed with CUDA 12.8 + torch 2.7.1). The parameter move is
+    # in-place on nn.Module, so we must NOT capture the return value.
+    model.to(device)
     load_model(model, state_dict)
 
     print('Validating precomputed joint-name embeddings from cond.npy...')
@@ -178,7 +190,6 @@ def prepare_generation_runtime(args=None, cond_dict=None):
         expected_embedding_dim=args.t5_out_dim,
         cond_source=actual_cond_file,
     )
-    model.to(dist_util.dev())
     model.eval()
     amp_dtype = _resolve_inference_amp_dtype(args)
 
