@@ -237,5 +237,75 @@ class FaceOrientationChainForwardTest(unittest.TestCase):
         self.assertLess(candidates['across'][0, 2], 0.0)
 
 
+    def test_fills_missing_hip_slot_from_generic_pair(self):
+        # Mirrors a renamer output where the left thigh was left "Unknown": the
+        # hip keyword search finds only the right side, but calves/arms are
+        # symmetric. The lateral axis must still resolve (no blind +Z warning).
+        joint_names = [
+            'Hips', 'Spine', 'Head',
+            'LeftClavicle', 'RightClavicle',
+            'LeftCalf', 'RightCalf',
+            'Unknown.004', 'RightThigh',
+        ]
+        parents = np.array([-1, 0, 1, 1, 1, 7, 8, 0, 0], dtype=np.int64)
+
+        with patch('builtins.print') as mock_print:
+            face_joints = resolve_face_joints('Horse', joint_names, parents)
+
+        self.assertEqual(len(face_joints), 4)
+        # Upper slot keeps the semantic clavicle pair; hip slot is filled by a
+        # generic homologous pair (calf), not left empty.
+        self.assertEqual((face_joints[2], face_joints[3]), (4, 3))
+        self.assertNotIn(
+            '[WARN] Horse: no left-right joint pairs found; using default +Z orientation. '
+            'Provide --face-joints-names explicitly if a different orientation is needed.',
+            [call.args[0] for call in mock_print.call_args_list],
+        )
+
+    def test_single_upper_pair_alone_resolves(self):
+        joint_names = ['Hips', 'Spine', 'LeftClavicle', 'RightClavicle']
+        parents = np.array([-1, 0, 1, 1], dtype=np.int64)
+
+        face_joints = resolve_face_joints('OneGirdle', joint_names, parents)
+
+        self.assertEqual(face_joints, [3, 2, 3, 2])
+
+    def test_geometric_mirror_fallback_for_unnamed_skeleton(self):
+        # No L/R tokens anywhere; the lateral axis must come from rest-pose
+        # bilateral symmetry. Limbs spread along X, head forward along +Z.
+        positions = np.array([
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 1.0],
+            [0.8, 0.0, 0.2], [-0.8, 0.0, 0.2],
+            [0.6, 0.0, -0.5], [-0.6, 0.0, -0.5],
+            [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0],
+        ], dtype=np.float64)
+        joint_names = [f'j{i}' for i in range(len(positions))]
+        parents = np.array([-1, 0, 0, 0, 0, 0, 2, 3], dtype=np.int64)
+
+        with patch('builtins.print') as mock_print:
+            face_joints = resolve_face_joints(
+                'Unnamed', joint_names, parents, rest_positions=positions
+            )
+
+        # Strongest mirror pair is the widest one (the hands at +/-1.0 on X).
+        self.assertEqual(face_joints, [6, 7, 6, 7])
+        warnings = [call.args[0] for call in mock_print.call_args_list]
+        self.assertTrue(any('mirror symmetry' in w for w in warnings))
+
+    def test_truly_asymmetric_skeleton_still_warns_and_returns_empty(self):
+        joint_names = ['Root', 'LegA', 'LegB', 'LegC']
+        parents = np.array([-1, 0, 1, 2], dtype=np.int64)
+
+        with patch('builtins.print') as mock_print:
+            face_joints = resolve_face_joints('LegsOnly', joint_names, parents)
+
+        self.assertEqual(face_joints, [])
+        mock_print.assert_called_once_with(
+            '[WARN] LegsOnly: no left-right joint pairs found; using default +Z orientation. '
+            'Provide --face-joints-names explicitly if a different orientation is needed.'
+        )
+
+
 if __name__ == '__main__':
     unittest.main()

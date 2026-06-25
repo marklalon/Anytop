@@ -512,7 +512,9 @@ def retarget_animation_file_to_target(
     )
     bind_positions = positions_global(bind_anim)  # (1, J, 3)
     _SRC_FACE_HINT = '__retarget_source_from_file__'
-    src_face_joints = resolve_face_joints(_SRC_FACE_HINT, src_names, src_parents, None)
+    src_face_joints = resolve_face_joints(
+        _SRC_FACE_HINT, src_names, src_parents, None, rest_positions=bind_positions
+    )
     src_forward_joint, src_forward_base_joint = resolve_forward_reference_joints(
         src_names, src_parents, object_type=_SRC_FACE_HINT,
     )

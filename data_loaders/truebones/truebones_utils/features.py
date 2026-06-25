@@ -400,14 +400,19 @@ def get_common_features_from_rest_pose(
         # dropping any that fell inside a cropped subtree.
         _index_remap = {old: new for new, old in enumerate(_kept_joint_indices)}
         face_joints = [_index_remap[j] for j in face_joints if j in _index_remap]
-    face_joints = resolve_face_joints(object_type, rest_pose_names, reference_anim.parents, face_joints=face_joints)
+    reference_positions = positions_global(reference_anim)
+    face_joints = resolve_face_joints(
+        object_type,
+        rest_pose_names,
+        reference_anim.parents,
+        face_joints=face_joints,
+        rest_positions=reference_positions,
+    )
     forward_joint_index, forward_base_joint_index = resolve_forward_reference_joints(
         rest_pose_names,
         reference_anim.parents,
         object_type=object_type,
     )
-
-    reference_positions = positions_global(reference_anim)
     rest_pose_orientation_quat = calculate_root_quat(reference_positions, object_type, face_joint_indx=face_joints, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)[0]
 
     # Pre-compute the per-character scale factor once from the raw rest-pose

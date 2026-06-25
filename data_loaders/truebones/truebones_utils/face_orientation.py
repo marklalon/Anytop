@@ -523,7 +523,158 @@ def _get_facing_forward(
     return forward
 
 
-def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints=None):
+def _collect_homologous_pairs(joint_names, parents, *, allow_noisy):
+    """All left/right homologous joint pairs, grouped by shared signature.
+
+    Returns ``[(pair_depth, right_index, left_index), ...]`` sorted shallowest
+    first (closest to the root). Any joint with a detectable side and a non-empty
+    signature qualifies, so calves, hands, wings, etc. count even when they miss
+    the narrow hip/shoulder keyword lists. ``allow_noisy=False`` skips the distal
+    / unreliable joints (feet, toes, ears, ...) filtered by
+    ``_face_joint_name_allowed``; ``True`` keeps them as a last resort, since even
+    a foot pair still pins the left-right axis.
+    """
+    depths = _joint_depths(parents)
+    replacements = effective_canonical_replacements(joint_names)
+    by_signature = {}
+
+    for joint_index, joint_name in enumerate(joint_names):
+        if not allow_noisy and not _face_joint_name_allowed(joint_name):
+            continue
+        side = detect_joint_side(joint_name)
+        if side is None:
+            continue
+        signature = _joint_signature(joint_name, replacements)
+        if not signature:
+            continue
+        bucket = by_signature.setdefault(signature, {'right': [], 'left': []})
+        bucket[side].append((depths[joint_index], joint_index))
+
+    pairs = []
+    for sides in by_signature.values():
+        if not sides['right'] or not sides['left']:
+            continue
+        right_depth, right_index = min(sides['right'])
+        left_depth, left_index = min(sides['left'])
+        pairs.append((max(right_depth, left_depth), right_index, left_index))
+
+    pairs.sort()
+    return pairs
+
+
+def _rest_positions_2d(rest_positions):
+    """Coerce rest positions to a finite ``(J, 3)`` array, or None."""
+    if rest_positions is None:
+        return None
+    pos = np.asarray(rest_positions, dtype=np.float64)
+    if pos.ndim == 3:
+        pos = pos[0]
+    if pos.ndim != 2 or pos.shape[0] < 2 or pos.shape[1] != 3 or not np.isfinite(pos).all():
+        return None
+    return pos
+
+
+def _find_generic_lateral_pairs(joint_names, parents, rest_positions=None):
+    """Two homologous L/R pairs (lower, upper) when the semantic search misses.
+
+    Falls back from name-keyword matching to *any* symmetric pair. When rest
+    positions are available the pairs are ranked by their right-left separation
+    (a wider gap is a stronger, less noise-sensitive lateral signal); otherwise
+    by hierarchy depth. Returns ``(lower_pair, upper_pair)`` where each pair is
+    ``(right_index, left_index)``, or ``(None, None)`` when nothing is found.
+    """
+    pairs = _collect_homologous_pairs(joint_names, parents, allow_noisy=False)
+    if not pairs:
+        pairs = _collect_homologous_pairs(joint_names, parents, allow_noisy=True)
+    if not pairs:
+        return None, None
+
+    pos = _rest_positions_2d(rest_positions)
+    if pos is not None:
+        pairs = sorted(
+            pairs,
+            key=lambda pair: float(np.linalg.norm(pos[pair[1]] - pos[pair[2]])),
+            reverse=True,
+        )
+
+    primary = pairs[0]
+    upper = (primary[1], primary[2])
+
+    # A second, distinct pair stabilizes the averaged across-vector; reuse the
+    # primary pair when the skeleton only exposes one symmetric pair.
+    lower = upper
+    for candidate in pairs[1:]:
+        if candidate[1] != primary[1] and candidate[2] != primary[2]:
+            lower = (candidate[1], candidate[2])
+            break
+    return lower, upper
+
+
+def _find_mirror_symmetry_pair(rest_positions):
+    """Estimate the lateral axis from bilateral symmetry of the rest pose.
+
+    Name-independent last resort: searches candidate sagittal-plane normals in
+    the XZ (ground) plane and keeps the one under which joints best mirror onto
+    one another, returning ``(right_index, left_index)`` of the widest reliable
+    mirror pair (or None when no usable symmetry exists). Right/left is assigned
+    by the sign of the lateral coordinate — arbitrary but internally consistent.
+    The head/tail forward references, not this sign, fix the final facing; the
+    across-vector derived from this pair is only consulted as a last resort, so a
+    flipped guess cannot silently reverse a skeleton that has a head reference.
+    """
+    pos = _rest_positions_2d(rest_positions)
+    if pos is None:
+        return None
+
+    centered = pos - pos.mean(axis=0, keepdims=True)
+    scale = float(np.linalg.norm(centered, axis=1).max())
+    if scale < 1e-8:
+        return None
+    n_joints = centered.shape[0]
+
+    best_score = None
+    best_pair = None
+    # The plane normal and its negation are equivalent, so [0, pi) covers every
+    # orientation; 1-degree steps are ample for a 90-degree-snapped result.
+    for theta in np.linspace(0.0, np.pi, 180, endpoint=False):
+        axis = np.array([np.cos(theta), 0.0, np.sin(theta)])
+        lateral = centered @ axis
+        reflected = centered - 2.0 * lateral[:, None] * axis[None, :]
+
+        total_err = 0.0
+        matched = 0
+        widest_sep = -1.0
+        widest_pair = None
+        for i in range(n_joints):
+            if abs(lateral[i]) < 0.05 * scale:
+                continue  # on the midline: no lateral information
+            distances = np.linalg.norm(centered - reflected[i][None, :], axis=1)
+            distances[i] = np.inf
+            j = int(np.argmin(distances))
+            if lateral[i] * lateral[j] >= 0:
+                continue  # mirror partner must sit on the opposite side
+            err = float(distances[j]) / scale
+            if err > 0.15:
+                continue
+            total_err += err
+            matched += 1
+            separation = abs(lateral[i]) + abs(lateral[j])
+            if separation > widest_sep:
+                widest_sep = separation
+                widest_pair = (i, j) if lateral[i] >= lateral[j] else (j, i)
+
+        if widest_pair is None:
+            continue
+        # Prefer planes that explain more joints at lower average error.
+        score = (total_err / matched, -matched)
+        if best_score is None or score < best_score:
+            best_score = score
+            best_pair = widest_pair
+
+    return best_pair
+
+
+def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints=None, rest_positions=None):
     if face_joints:
         if joint_names is not None and isinstance(face_joints[0], str):
             return [joint_names.index(name) for name in face_joints]
@@ -537,13 +688,42 @@ def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints
     if joint_names is not None and parents is not None:
         hip_pair = _find_semantic_joint_pair(joint_names, parents, _FACE_JOINT_HIP_PRIORITIES)
         upper_pair = _find_semantic_joint_pair(joint_names, parents, _FACE_JOINT_UPPER_PRIORITIES)
+
+        # Either girdle alone already pins a valid lateral axis. When one (or
+        # both) keyword-based pairs is missing, fill the empty slot from any
+        # homologous left/right pair (calves, hands, wings, ...) so a partially
+        # or oddly named skeleton still yields an orientation instead of the
+        # blind +Z fallback. Armless animals (e.g. Raptor in NO_HANDS) naturally
+        # resolve here by reusing their leg pair for the upper slot.
+        if hip_pair is None or upper_pair is None:
+            generic_lower, generic_upper = _find_generic_lateral_pairs(
+                joint_names, parents, rest_positions=rest_positions
+            )
+            if hip_pair is None:
+                hip_pair = generic_lower or generic_upper
+            if upper_pair is None:
+                upper_pair = generic_upper or generic_lower
+
         if hip_pair is not None and upper_pair is not None:
             return [hip_pair[0], hip_pair[1], upper_pair[0], upper_pair[1]]
-        # Armless animals (e.g. Raptor in NO_HANDS) have no shoulder joints.
-        # Reuse the hip pair as the upper pair so the across-vector and torso
-        # direction still work (forward = nose → hip_center remains valid).
         if hip_pair is not None:
             return [hip_pair[0], hip_pair[1], hip_pair[0], hip_pair[1]]
+        if upper_pair is not None:
+            return [upper_pair[0], upper_pair[1], upper_pair[0], upper_pair[1]]
+
+        # No named sides anywhere: recover the lateral axis from the rest pose's
+        # bilateral symmetry directly. Strictly better than a blind +Z guess —
+        # the axis is correct even though right/left is arbitrary.
+        mirror_pair = _find_mirror_symmetry_pair(rest_positions)
+        if mirror_pair is not None:
+            _emit_degenerate_facing_warning(
+                object_type,
+                'geometric_mirror',
+                f"{object_type}: no named left-right joint pairs found; estimated the "
+                "lateral axis from rest-pose mirror symmetry. Pass --face-joints-names "
+                "if the facing looks wrong.",
+            )
+            return [mirror_pair[0], mirror_pair[1], mirror_pair[0], mirror_pair[1]]
 
     # Asymmetric or incomplete skeletons (e.g., legs-only procedural test
     # rigs) have no left-right pairs at all.  Fall back to an empty list so
