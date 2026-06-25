@@ -12,15 +12,11 @@ Pipeline:
         → animation_to_exporter_inputs(...)
         → AnimationExporter + T-pose FBX → skinned GLB
 
-Metadata is resolved from two sources in descending priority:
-
-    1. cond.npy entry  — dataset-wide metadata indexed by object_type
-                         (e.g. "Horse"), stores joints_names, parents,
-                         offsets, rest_rotations, etc.
-    2. T-pose FBX fallback — computed on demand via
-                              get_common_features_from_T_pose(); most
-                              expensive, only loaded when cond.npy lacks
-                              the needed fields.
+Metadata is resolved from cond.npy (dataset-wide metadata indexed by
+object_type).  The T-pose mesh is loaded to obtain collapsed skeleton
+info for the exporter and T-pose rest rotations; all structural fields
+(joints_names, parents, offsets, scale_factor, orientation_quat) must
+be present in cond.npy — missing fields will cause an error.
 
 Note: locomotion XZ stripped during preprocessing cannot be recovered from a
 plain feature tensor alone. Non-locomotion clips also stay in their centred
@@ -54,6 +50,17 @@ Two restore spaces (``--restore-space``):
                    quat) to the imported rig so the GLB keeps the NPY's
                    orientation, scale, and centered placement, with skin + rest
                    pose bound correctly.
+
+Skeleton-only mode (``--skeleton-only``):
+        Exports a skeleton-only GLB in HML preprocessed space with no mesh or
+        skinning.  No T-pose mesh required — all metadata comes from cond.npy.
+        ``--restore-space`` is forced to ``hml``.
+
+        Usage:
+            python tools/restore_glb_from_npy.py \\
+                    --npy "D:/AI/.../Horse___RunToStop_29.npy" \\
+                    --skeleton-only \\
+                    --output-glb "outputs/Horse___RunToStop_29_skeleton.glb"
 
 """
 
@@ -111,7 +118,6 @@ from Anytop.utils.fullbody_ik import (
 def _load_tpose_restore_metadata(
     tpose_mesh: str,
     object_type: str,
-    cond_entry: dict | None = None,
 ) -> dict[str, object]:
     from data_loaders.truebones.truebones_utils.motion_process import get_common_features_from_T_pose, TPoseFeatures
 
@@ -224,68 +230,43 @@ def _build_restore_context(
     raw_npy,
     object_type: str,
     tpose_mesh: str,
-    cond_entry: dict | None = None,
+    cond_entry: dict,
 ) -> dict[str, object]:
     features = np.asarray(raw_npy)
     feature_joint_count = int(features.shape[1]) if features.ndim >= 2 else 0
 
-    # ── Check availability across two tiers ─────────────────────────────
-    #   Tier 1: cond.npy entry (dataset-wide metadata)
-    #   Tier 2: T-pose FBX (fallback, most expensive)
-    cond_has_skeleton = cond_entry is not None and all(
-        key in cond_entry for key in ("joints_names", "parents", "offsets")
-    )
-    cond_has_scale = cond_entry is not None and "scale_factor" in cond_entry
+    # ── Require all fields from cond.npy ────────────────────────────────
+    for key in ("joints_names", "parents", "offsets", "scale_factor", "orientation_quat"):
+        if key not in cond_entry:
+            raise ValueError(
+                f"cond.npy entry for '{object_type}' is missing required field '{key}'."
+            )
 
-    # Determine the effective joint count from the NPY and align all
-    # metadata (cond entry, T-pose) to that count.  Helpers are always
-    # appended at the end of the joint array.
-    tpose_meta = _load_tpose_restore_metadata(tpose_mesh, object_type, cond_entry=cond_entry)
+    tpose_meta = _load_tpose_restore_metadata(tpose_mesh, object_type)
 
-    # ── Skeleton info (joint_names / parents / offsets) ─────────────────
-    if cond_has_skeleton:
-        joint_names = list(cond_entry["joints_names"])
-        parents = np.asarray(cond_entry["parents"], dtype=np.int32)
-        offsets = np.asarray(cond_entry["offsets"], dtype=np.float32)
-    else:
-        joint_names = list(tpose_meta["joint_names"])
-        parents = np.asarray(tpose_meta["parents"], dtype=np.int32)
-        offsets = np.asarray(tpose_meta["offsets"], dtype=np.float32)
+    joint_names = list(cond_entry["joints_names"])
+    parents = np.asarray(cond_entry["parents"], dtype=np.int32)
+    offsets = np.asarray(cond_entry["offsets"], dtype=np.float32)
 
-    # Under own-rotation encoding there are no appended helper joints, so the
-    # feature joint count must match the skeleton metadata exactly.
     if feature_joint_count not in (0, len(joint_names)):
         raise ValueError(
-            f"NPY has J={feature_joint_count} joints but restore metadata resolves to "
+            f"NPY has J={feature_joint_count} joints but cond.npy has "
             f"{len(joint_names)} joints for '{object_type}'."
         )
 
-    # ── T-pose rest rotations ───────────────────────────────────────────
-    # Build rest rotations by matching the names the T-pose provides, filling
-    # identity quaternions for any joint the T-pose doesn't know about.
+    # ── T-pose rest rotations (from T-pose mesh) ────────────────────────
     tpose_joint_names = list(tpose_meta["joint_names"])
     tpose_rest_src = np.asarray(tpose_meta["tpose_rest_rotations"], dtype=np.float32)
     tpose_name_index = {name: idx for idx, name in enumerate(tpose_joint_names)}
     tpose_rest_rotations = np.zeros((len(joint_names), 4), dtype=np.float32)
-    tpose_rest_rotations[:, 0] = 1.0  # default identity quaternion
+    tpose_rest_rotations[:, 0] = 1.0
     for j, name in enumerate(joint_names):
         if name in tpose_name_index:
             tpose_rest_rotations[j] = tpose_rest_src[tpose_name_index[name]]
 
-    # ── Scale factor ────────────────────────────────────────────────────
-    scale_factor = None
-    if cond_has_scale:
-        scale_factor = float(cond_entry["scale_factor"])
-    elif tpose_meta is not None and tpose_meta.get("scale_factor") is not None:
-        scale_factor = float(tpose_meta["scale_factor"])
+    scale_factor = float(cond_entry["scale_factor"])
+    orientation_quat = np.asarray(cond_entry["orientation_quat"], dtype=np.float64)
 
-    orientation_quat = None
-    if cond_entry is not None and cond_entry.get("orientation_quat") is not None:
-        orientation_quat = np.asarray(cond_entry["orientation_quat"], dtype=np.float64)
-    elif tpose_meta.get("orientation_quat") is not None:
-        orientation_quat = np.asarray(tpose_meta["orientation_quat"], dtype=np.float64)
-
-    # Under own-rotation encoding, every joint has a valid rotation channel.
     export_joint_names = list(joint_names)
 
     export_parents, export_offsets, export_rest_rotations = _remap_skeleton_metadata(
@@ -312,6 +293,63 @@ def _build_restore_context(
     }
 
 
+def _build_skeleton_only_context(
+    raw_npy,
+    object_type: str,
+    cond_entry: dict,
+) -> dict[str, object]:
+    """Build restore context from cond.npy only — no T-pose mesh required.
+
+    All skeleton metadata (joint_names, parents, offsets, scale_factor,
+    orientation_quat) comes from *cond_entry*.  Rest rotations are identity
+    (no T-pose mesh to supply real ones), and export metadata is a direct
+    copy of the cond.npy data with no remapping.
+
+    The exported GLB lives in HML preprocessed space (centred, oriented,
+    scaled) — ``_invert_preprocess_transform`` must be skipped.
+    """
+    features = np.asarray(raw_npy)
+    feature_joint_count = int(features.shape[1]) if features.ndim >= 2 else 0
+
+    # ── Require all fields from cond.npy ────────────────────────────────
+    for key in ("joints_names", "parents", "offsets", "scale_factor", "orientation_quat"):
+        if key not in cond_entry:
+            raise ValueError(
+                f"cond.npy entry for '{object_type}' is missing required field '{key}'."
+            )
+
+    joint_names = list(cond_entry["joints_names"])
+    parents = np.asarray(cond_entry["parents"], dtype=np.int32)
+    offsets = np.asarray(cond_entry["offsets"], dtype=np.float32)
+    scale_factor = float(cond_entry["scale_factor"])
+    orientation_quat = np.asarray(cond_entry["orientation_quat"], dtype=np.float64)
+
+    if feature_joint_count not in (0, len(joint_names)):
+        raise ValueError(
+            f"NPY has J={feature_joint_count} joints but cond.npy has "
+            f"{len(joint_names)} joints for '{object_type}'."
+        )
+
+    # Identity rest rotations — no T-pose mesh available
+    identity_rest = np.zeros((len(joint_names), 4), dtype=np.float32)
+    identity_rest[:, 0] = 1.0
+
+    return {
+        "features": features,
+        "joint_names": joint_names,
+        "export_joint_names": list(joint_names),
+        "parents": parents,
+        "offsets": offsets,
+        "tpose_rest_rotations": identity_rest,
+        "orientation_quat": orientation_quat,
+        "scale_factor": scale_factor,
+        "mesh_bone_names": list(joint_names),
+        "export_parents": parents.copy(),
+        "export_offsets": offsets.copy(),
+        "export_rest_rotations": identity_rest.copy(),
+    }
+
+
 def _coerce_root_translation_xz(root_translation_xz: np.ndarray) -> np.ndarray:
     root_translation_xz = np.asarray(root_translation_xz, dtype=np.float64).reshape(-1)
     if root_translation_xz.size == 3:
@@ -329,9 +367,9 @@ def _coerce_root_translation_xz(root_translation_xz: np.ndarray) -> np.ndarray:
 def _invert_preprocess_transform(
     processed_anim,
     *,
-    scale_factor: float | None,
+    scale_factor: float,
     root_translation_xz: np.ndarray | None,
-    orientation_quat: np.ndarray | None,
+    orientation_quat: np.ndarray,
 ):
     from motion_lib.Animation import Animation
     from motion_lib.Quaternions import Quaternions
@@ -340,30 +378,28 @@ def _invert_preprocess_transform(
     offsets = processed_anim.offsets.copy().astype(np.float64, copy=False)
     rotations = processed_anim.rotations.copy()
 
-    if scale_factor is not None:
-        scale_factor = float(scale_factor)
-        if scale_factor <= 0.0:
-            raise ValueError(f"scale_factor must be positive, got {scale_factor}")
-        if abs(scale_factor - 1.0) > 1e-8:
-            inv_scale = 1.0 / scale_factor
-            positions *= inv_scale
-            offsets *= inv_scale
+    scale_factor = float(scale_factor)
+    if scale_factor <= 0.0:
+        raise ValueError(f"scale_factor must be positive, got {scale_factor}")
+    if abs(scale_factor - 1.0) > 1e-8:
+        inv_scale = 1.0 / scale_factor
+        positions *= inv_scale
+        offsets *= inv_scale
 
     if root_translation_xz is not None:
         root_offset = _coerce_root_translation_xz(root_translation_xz)
         positions[:, 0] += root_offset
         offsets[0] += root_offset
 
-    if orientation_quat is not None:
-        orientation_quat = np.asarray(orientation_quat, dtype=np.float64)
-        if orientation_quat.ndim > 1:
-            orientation_quat = orientation_quat[0]
-        if orientation_quat.shape != (4,):
-            raise ValueError(f"orientation_quat must have shape (4,), got {orientation_quat.shape}")
-        inverse_orientation = -Quaternions(orientation_quat[None, :])
-        inverse_orientation = inverse_orientation.repeat(processed_anim.shape[0], axis=0)
-        rotations[:, 0] = inverse_orientation * rotations[:, 0]
-        positions[:, 0] = inverse_orientation * positions[:, 0]
+    orientation_quat = np.asarray(orientation_quat, dtype=np.float64)
+    if orientation_quat.ndim > 1:
+        orientation_quat = orientation_quat[0]
+    if orientation_quat.shape != (4,):
+        raise ValueError(f"orientation_quat must have shape (4,), got {orientation_quat.shape}")
+    inverse_orientation = -Quaternions(orientation_quat[None, :])
+    inverse_orientation = inverse_orientation.repeat(processed_anim.shape[0], axis=0)
+    rotations[:, 0] = inverse_orientation * rotations[:, 0]
+    positions[:, 0] = inverse_orientation * positions[:, 0]
 
     return Animation(
         rotations,
@@ -453,13 +489,20 @@ def restore_glb(
     use_image_search: bool = False,
     resample_fps: float | None = None,
     resample_min_length: int | None = None,
+    skeleton_only: bool = False,
 ) -> str:
-    """Restore a preprocessed NPY motion file to a skinned GLB.
+    """Restore a preprocessed NPY motion file to a GLB.
+
+    When *skeleton_only* is ``False`` (default), the output is a skinned GLB
+    using a T-pose FBX/GLB as the mesh/rig source.  When *skeleton_only* is
+    ``True``, the output is a skeleton-only GLB in HML space with no mesh or
+    skinning — ``restore_space`` is forced to ``"hml"``.
 
     Args:
         npy_path:            Path to the preprocessed .npy motion file.
         output_glb:          Path for the output .glb file.
         tpose_mesh:          Path to the T-pose FBX (provides skin + armature).
+                             Ignored when *skeleton_only* is True.
         cond_npy:            Path to cond.npy; defaults to the dataset default.
         object_type:         Character type key (e.g. "Horse").  Auto-detected
                              from the NPY filename if None.
@@ -468,7 +511,8 @@ def restore_glb(
         root_translation_xz: Optional explicit XZ translation to add back after
                      inverse scale and before inverse orientation. When
                      omitted, restore keeps the clip in centred
-                     preprocessed space.
+                     preprocessed space.  Ignored when *skeleton_only* is True
+                     (always stays in centred HML space).
         fullbody_ik:          If True, perform a full-body IK reconstruction
                              on the raw export skeleton after recovering the
                              animation.  Default is False (skip IK, use
@@ -479,12 +523,12 @@ def restore_glb(
                              Only effective when fullbody_ik is True.
         restore_space:        Output coordinate space:
                              ``"fbx"`` (default) aligns the animation to the
-                             T-pose mesh's native orientation/scale/translation
-                             (the prior behavior).  ``"hml"`` reverse-aligns the
-                             T-pose mesh onto the NPY so the GLB keeps the NPY's
-                             orientation, scale, and centered placement (like the
-                             corresponding processed BVH), with skin + rest pose
-                             bound correctly.
+                             T-pose mesh's native orientation/scale/translation.
+                             ``"hml"`` reverse-aligns the T-pose mesh onto the
+                             NPY so the GLB keeps the NPY's orientation, scale,
+                             and centered placement (like the corresponding
+                             processed BVH).  Ignored when *skeleton_only* is
+                             True (always ``"hml"``).
         use_image_search:     If True, resolve textures for the skinned mesh:
                              the FBX importer first searches directories near
                              the source mesh, then a fallback resolver wires a
@@ -501,6 +545,9 @@ def restore_glb(
                              than this, time-stretch the whole clip to exactly this
                              many frames (even interpolation, no looping).  Only
                              effective when ``resample_fps`` is set.  Default None.
+        skeleton_only:        If True, export a skeleton-only GLB (no mesh, no
+                             skinning) in HML preprocessed space.  The T-pose
+                             mesh is not required.  Default False.
 
     Returns:
         The absolute path of the written GLB file.
@@ -515,7 +562,10 @@ def restore_glb(
     output_glb = os.path.abspath(output_glb)
     if stretch_factor < 0 or stretch_factor > 1.0:
         raise ValueError(f"stretch_factor must be in [0, 1], got {stretch_factor}")
-    if restore_space not in ("fbx", "hml"):
+    if skeleton_only:
+        restore_space = "hml"
+        print("Skeleton-only mode: restore_space forced to 'hml'")
+    elif restore_space not in ("fbx", "hml"):
         raise ValueError(f"restore_space must be 'fbx' or 'hml', got {restore_space!r}")
 
     # ── Load cond.npy ─────────────────────────────────────────────────────────
@@ -540,36 +590,55 @@ def restore_glb(
             f"  Available: {list(cond.keys())}"
         )
 
-    # ── Resolve T-pose mesh ───────────────────────────────────────────────────
-    cond_entry = cond.get(object_type)
-    if tpose_mesh is None:
-        if cond_entry is not None and isinstance(cond_entry.get('orientation_reference_fbx_path'), str):
-            tpose_mesh = cond_entry['orientation_reference_fbx_path']
-            print(f"Resolved T-pose mesh from cond.npy: {tpose_mesh}")
-        else:
-            raise ValueError(
-                f"No --tpose-mesh provided and cond.npy entry for '{object_type}' "
-                f"does not contain 'orientation_reference_fbx_path'."
-            )
+    # ── Resolve T-pose mesh / Build context ──────────────────────────────────
+    cond_entry = cond[object_type]
+    if skeleton_only:
+        raw = np.load(npy_path)
+        ctx = _build_skeleton_only_context(raw, object_type, cond_entry)
+        features = ctx["features"]
+        feature_joint_names: list[str] = ctx["joint_names"]
+        export_joint_names: list[str] = ctx["export_joint_names"]
+        parents = ctx["parents"]
+        offsets_hml = ctx["offsets"]
+        tpose_rest_rotations = ctx["tpose_rest_rotations"]
+        export_parents = np.asarray(ctx["export_parents"], dtype=np.int32)
+        export_offsets = np.asarray(ctx["export_offsets"], dtype=np.float32)
+        export_rest_rotations = np.asarray(ctx["export_rest_rotations"], dtype=np.float32)
+        scale_factor_val = ctx["scale_factor"]
+        orientation_quat_val = ctx["orientation_quat"]
+        tpose_mesh_resolved = None
+    else:
+        if tpose_mesh is None:
+            if isinstance(cond_entry.get('orientation_reference_fbx_path'), str):
+                tpose_mesh = cond_entry['orientation_reference_fbx_path']
+                print(f"Resolved T-pose mesh from cond.npy: {tpose_mesh}")
+            else:
+                raise ValueError(
+                    f"No --tpose-mesh provided and cond.npy entry for '{object_type}' "
+                    f"does not contain 'orientation_reference_fbx_path'."
+                )
 
-    # ── Load NPY features ─────────────────────────────────────────────────────
-    raw = np.load(npy_path)
-    restore_ctx = _build_restore_context(
-        raw,
-        object_type,
-        tpose_mesh,
-        cond_entry=cond_entry,
-    )
+        raw = np.load(npy_path)
+        restore_ctx = _build_restore_context(
+            raw,
+            object_type,
+            tpose_mesh,
+            cond_entry=cond_entry,
+        )
 
-    features = restore_ctx["features"]
-    feature_joint_names: list[str] = restore_ctx["joint_names"]
-    export_joint_names: list[str] = restore_ctx["export_joint_names"]
-    parents = restore_ctx["parents"]
-    offsets_hml = restore_ctx["offsets"]
-    tpose_rest_rotations = restore_ctx["tpose_rest_rotations"]
-    export_parents = np.asarray(restore_ctx["export_parents"], dtype=np.int32)
-    export_offsets = np.asarray(restore_ctx["export_offsets"], dtype=np.float32)
-    export_rest_rotations = np.asarray(restore_ctx["export_rest_rotations"], dtype=np.float32)
+        features = restore_ctx["features"]
+        feature_joint_names: list[str] = restore_ctx["joint_names"]
+        export_joint_names: list[str] = restore_ctx["export_joint_names"]
+        parents = restore_ctx["parents"]
+        offsets_hml = restore_ctx["offsets"]
+        tpose_rest_rotations = restore_ctx["tpose_rest_rotations"]
+        export_parents = np.asarray(restore_ctx["export_parents"], dtype=np.int32)
+        export_offsets = np.asarray(restore_ctx["export_offsets"], dtype=np.float32)
+        export_rest_rotations = np.asarray(restore_ctx["export_rest_rotations"], dtype=np.float32)
+        scale_factor_val = float(restore_ctx["scale_factor"])
+        orientation_quat_val = np.asarray(restore_ctx["orientation_quat"], dtype=np.float64)
+        tpose_mesh_resolved = tpose_mesh
+
     translation_root_index = None
 
     # ── Resolve FPS ─────────────────────────────────────────────────────
@@ -588,8 +657,7 @@ def restore_glb(
 
     print(f"NPY: {F} frames, {J} joints, {C} channels")
 
-    if restore_ctx["scale_factor"] is not None:
-        print(f"T-pose preprocessing scale_factor: {restore_ctx['scale_factor']:.6f}")
+    print(f"T-pose preprocessing scale_factor: {scale_factor_val:.6f}")
     if root_translation_xz is None:
         print("Root translation XZ: keeping centred preprocessed placement")
     else:
@@ -600,9 +668,12 @@ def restore_glb(
         )
         root_translation_xz = coerced_root_translation_xz
 
-    _warn_on_missing_mesh_joints(
-        export_joint_names, tpose_mesh, mesh_bone_names=restore_ctx.get("mesh_bone_names")
-    )
+    if not skeleton_only:
+        _warn_on_missing_mesh_joints(
+            export_joint_names,
+            tpose_mesh_resolved,
+            mesh_bone_names=restore_ctx["mesh_bone_names"],
+        )
 
     # ── Recover Animation (in HML feature space) ──────────────────────────────
     print("Recovering feature-space animation from NPY...")
@@ -621,12 +692,15 @@ def restore_glb(
         tpose_rest_rotations,
     )
 
-    export_anim = _invert_preprocess_transform(
-        export_anim,
-        scale_factor=restore_ctx.get("scale_factor"),
-        root_translation_xz=root_translation_xz,
-        orientation_quat=restore_ctx.get("orientation_quat"),
-    )
+    if skeleton_only:
+        print("Skeleton-only: staying in HML space (skipping inverse preprocess transform)")
+    else:
+        export_anim = _invert_preprocess_transform(
+            export_anim,
+            scale_factor=scale_factor_val,
+            root_translation_xz=root_translation_xz,
+            orientation_quat=orientation_quat_val,
+        )
 
     if fullbody_ik:
         print(f"Force full-body IK reconstruction on export skeleton (stretch_factor={stretch_factor:.2f})...")
@@ -690,34 +764,29 @@ def restore_glb(
     # by re-applying the forward preprocessing similarity (scale + orientation)
     # to the imported mesh/armature, so the GLB lands in the same space as the
     # NPY / corresponding processed BVH.
+    # In skeleton-only mode we are already in HML space — no reverse-alignment.
     global_similarity = None
-    if restore_space == "hml":
-        hml_scale = restore_ctx.get("scale_factor")
-        hml_orientation = restore_ctx.get("orientation_quat")
-        if hml_orientation is not None:
-            hml_orientation = np.asarray(hml_orientation, dtype=np.float64).reshape(-1)
-        if (hml_scale is None or abs(float(hml_scale) - 1.0) < 1e-8) and hml_orientation is None:
-            print(
-                "restore_space='hml' requested but neither scale_factor nor "
-                "orientation_quat is available; output matches 'fbx' space."
-            )
-        else:
-            print(
-                "Reverse-aligning rig into HML/npy space "
-                f"(scale={float(hml_scale) if hml_scale else 1.0:.6f}, "
-                f"orientation_quat={'set' if hml_orientation is not None else 'identity'})"
-            )
+    if restore_space == "hml" and not skeleton_only:
+        hml_scale = scale_factor_val
+        hml_orientation = np.asarray(orientation_quat_val, dtype=np.float64).reshape(-1)
+        print(
+            "Reverse-aligning rig into HML/npy space "
+            f"(scale={float(hml_scale):.6f}, orientation_quat set)"
+        )
         global_similarity = (hml_scale, hml_orientation)
 
-    # ── Export skinned GLB + BVH ────────────────────────────────────────────
+    # ── Export GLB ──────────────────────────────────────────────────────────
     exporter = AnimationExporter(skeleton, fps=output_fps)
-    print(f"Exporting skinned GLB → {output_glb}")
+    if skeleton_only:
+        print(f"Exporting skeleton-only GLB → {output_glb}")
+    else:
+        print(f"Exporting skinned GLB → {output_glb}")
     exporter.export_glb(
         joint_rotations,
         root_translation,
         root_rotation,
         output_glb,
-        mesh_path=tpose_mesh,
+        mesh_path=tpose_mesh_resolved,
         bone_translations=bone_translations,
         global_similarity=global_similarity,
         use_image_search=use_image_search,
@@ -733,8 +802,9 @@ def restore_glb(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Restore a preprocessed Anytop NPY motion to a skinned GLB "
-            "using a T-pose FBX as the rig/skin source."
+            "Restore a preprocessed Anytop NPY motion to a GLB.\n"
+            "  Default: skinned GLB using a T-pose FBX as the rig/skin source.\n"
+            "  Use --skeleton-only for a skeleton-only GLB in HML space."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
@@ -850,6 +920,16 @@ def main() -> None:
             "at least this many frames. Default: no looping."
         ),
     )
+    parser.add_argument(
+        "--skeleton-only",
+        action="store_true",
+        default=False,
+        help=(
+            "Export a skeleton-only GLB (no mesh, no skinning) in HML "
+            "preprocessed space.  No T-pose mesh required.  "
+            "Forces --restore-space to hml."
+        ),
+    )
 
 
     args = parser.parse_args()
@@ -861,7 +941,7 @@ def main() -> None:
             f"Expected a .npy file, got: {args.npy}\n"
             f"  This tool restores preprocessed NPY motion features, not raw BVH/FBX files."
         )
-    if args.tpose_mesh is not None and not os.path.isfile(args.tpose_mesh):
+    if args.tpose_mesh is not None and not args.skeleton_only and not os.path.isfile(args.tpose_mesh):
         parser.error(f"T-pose mesh not found: {args.tpose_mesh}")
 
     if args.output_glb is None:
@@ -885,6 +965,7 @@ def main() -> None:
     print(f"Root XZ       : {args.root_translation_xz or '(centered default)'}")
     print(f"Stretch factor: {args.stretch_factor}")
     print(f"Restore space : {args.restore_space}")
+    print(f"Skeleton-only : {args.skeleton_only}")
     print()
 
     restore_glb(
@@ -901,9 +982,11 @@ def main() -> None:
         use_image_search=args.use_image_search,
         resample_fps=args.resample_fps,
         resample_min_length=args.resample_min_length,
+        skeleton_only=args.skeleton_only,
     )
 
-    _run_bone_length_check(args.output_glb, cond_npy_path, args.object_type)
+    if not args.skeleton_only:
+        _run_bone_length_check(args.output_glb, cond_npy_path, args.object_type)
 
 
 def _run_bone_length_check(glb_path: str, cond_npy: str, object_type: str | None) -> None:
