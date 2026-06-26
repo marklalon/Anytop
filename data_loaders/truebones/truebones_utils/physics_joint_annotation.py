@@ -410,7 +410,7 @@ def assert_species_tags_cover(object_types):
     )
     if missing:
         message = (
-            "\033[93mspecies_tags.jsonl is missing tags for object_type(s): "
+            "\033[91mspecies_tags.jsonl is missing tags for object_type(s): "
             f"{', '.join(missing)}. Add them in the "
             "species_tags.jsonl sidecar before preprocessing or training.\033[0m"
         )
@@ -434,7 +434,7 @@ def build_species_embedding_text(object_cond):
     if not motion_tokens:
         object_type = str(object_cond.get('object_type') or '').strip() or '<empty>'
         raise SystemExit(
-            f"\033[93mNo species_tags.jsonl entry for object_type '{object_type}'. "
+            f"\033[91mNo species_tags.jsonl entry for object_type '{object_type}'. "
             "Register it in the species_tags.jsonl sidecar.\033[0m"
         )
     return ' '.join(motion_tokens)

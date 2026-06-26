@@ -394,6 +394,9 @@ def process_new_skeleton_args():
                            "file is present in the update batch are force-replaced. Supports both "
                            "--anim-dir updates and --retarget-top-k updates, and requires an existing "
                            "--save-dir when updating in place.")
+    group.add_argument("--yes", action='store_true', default=False,
+                       help="Skip all interactive confirmation prompts (e.g. existing data "
+                            "overwrite prompt). Useful for headless / automated calls.")
     args = parser.parse_args()
     return args
 

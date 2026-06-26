@@ -84,16 +84,19 @@ def main():
         ]
 
         if existing_subdirs:
-            print("\n" + "=" * 70)
-            print("WARNING: Existing preprocessed data detected")
-            print("=" * 70)
-            print(f"Dataset directory: {save_dir}")
-            print(f"Subdirectories to clear ({len(existing_subdirs)}): {', '.join(existing_subdirs)}")
-            print("\nDo you want to delete the matching subdirectories and proceed?")
-            reply = input("Enter 'yes' to delete and continue, or 'no' to abort: ")
-            if reply.strip().lower() not in ('y', 'yes'):
-                print("\nAborted by user.")
-                sys.exit(0)
+            if not getattr(args, 'yes', False):
+                print("\n" + "=" * 70)
+                print("WARNING: Existing preprocessed data detected")
+                print("=" * 70)
+                print(f"Dataset directory: {save_dir}")
+                print(f"Subdirectories to clear ({len(existing_subdirs)}): {', '.join(existing_subdirs)}")
+                print("\nDo you want to delete the matching subdirectories and proceed?")
+                reply = input("Enter 'yes' to delete and continue, or 'no' to abort: ")
+                if reply.strip().lower() not in ('y', 'yes'):
+                    print("\nAborted by user.")
+                    sys.exit(0)
+            else:
+                print(f"[process_new_skeleton] clearing {len(existing_subdirs)} subdirectories...")
 
             print("\nDeleting...")
             cleared = []
@@ -194,6 +197,32 @@ def main():
             ),
             crop_enabled=crop_enabled,
         )
+
+        # ── Species tags fallback ──────────────────────────────────────────
+        # If object_type is not registered in species_tags.jsonl, use the top
+        # auto-retarget donor's species tags so downstream cond building
+        # (attach_t5_embeddings_to_cond -> build_species_embedding_text) does
+        # not fail.  Log a warning so the user knows to add the entry later.
+        import data_loaders.truebones.truebones_utils.physics_joint_annotation as _pja
+        if object_type.lower() not in {k.lower() for k in _pja._SPECIES_TAGS}:
+            # Only possible in the retarget branch (donors_used has entries).
+            donors_used = result.get('donors_used', [])
+            if donors_used:
+                top_donor = donors_used[0][0]
+                # Case-insensitive lookup of the donor in _SPECIES_TAGS
+                donor_key_map = {k.lower(): k for k in _pja._SPECIES_TAGS}
+                donor_key = donor_key_map.get(top_donor.lower())
+                if donor_key is not None:
+                    donor_tags = _pja._SPECIES_TAGS[donor_key]
+                    _pja._SPECIES_TAGS[object_type] = donor_tags
+                    _pja._SPECIES_TAGS_LOWER = None  # invalidate lazy cache
+                    print(
+                        f"[process_new_skeleton] WARNING: '{object_type}' not found in "
+                        f"species_tags.jsonl. Using species tags from donor "
+                        f"'{top_donor}': {donor_tags}"
+                    )
+        # ───────────────────────────────────────────────────────────────────
+
         process_skeleton(
             object_type,
             args.face_joints_names,
