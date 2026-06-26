@@ -394,6 +394,12 @@ def process_new_skeleton_args():
                            "file is present in the update batch are force-replaced. Supports both "
                            "--anim-dir updates and --retarget-top-k updates, and requires an existing "
                            "--save-dir when updating in place.")
+    group.add_argument("--species-tags", default=None, type=str,
+                       help="Comma-separated species tags to explicitly assign to --object-type, "
+                            "e.g. 'Quadruped,Large,Lumbering'. Takes precedence over both "
+                            "species_tags.jsonl and the auto-donor fallback — the given tags "
+                            "are used unconditionally at runtime without modifying "
+                            "species_tags.jsonl.")
     group.add_argument("--yes", action='store_true', default=False,
                        help="Skip all interactive confirmation prompts (e.g. existing data "
                             "overwrite prompt). Useful for headless / automated calls.")

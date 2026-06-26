@@ -34,6 +34,11 @@ training-cond-path - Path to the training dataset's cond.npy for donor selection
                      --retarget-top-k is set. (default: dataset/truebones/.../cond.npy)
 donor-skeletons   - Comma-separated donor names to use instead of auto-selection,
                     e.g. 'Bison,Cow,Horse'. Only effective with --retarget-top-k.
+species-tags      - Comma-separated explicit species tags for --object-type,
+                    e.g. 'Quadruped,Large,Lumbering'. When specified, takes
+                    precedence over both species_tags.jsonl and the auto-donor
+                    fallback — the given tags are used unconditionally at
+                    runtime without modifying species_tags.jsonl.
 crop-enabled      - Enable skeleton cropping to MAX_JOINTS=100.
                     Off by default (inference has no joint cap).
 update            - Incremental mode: merge new clips into the existing dataset instead of
@@ -167,6 +172,29 @@ def main():
         if args.donor_skeletons is None or args.donor_skeletons.strip() == '':
             print(f"[process_new_skeleton] No --retarget-top-k specified, defaulting to 1")
 
+    # ── Species tags (apply early, consumed by ALL code paths) ────────────
+    # If --species-tags is given explicitly, use those regardless of whether
+    # the object_type is already registered in species_tags.jsonl. Otherwise
+    # the retarget branch may fall back to the top donor's tags.
+    import data_loaders.truebones.truebones_utils.physics_joint_annotation as _pja
+    if args.species_tags is not None:
+        parsed_tags = tuple(
+            t.strip() for t in args.species_tags.split(',') if t.strip()
+        )
+        if parsed_tags:
+            _pja._SPECIES_TAGS[object_type] = parsed_tags
+            _pja._SPECIES_TAGS_LOWER = None  # invalidate lazy cache
+            print(
+                f"[process_new_skeleton] Using explicit --species-tags for "
+                f"'{object_type}': {parsed_tags}"
+            )
+        else:
+            print(
+                f"[process_new_skeleton] WARNING: --species-tags was specified but "
+                f"parsed as empty; falling through to donor-based fallback."
+            )
+    # ──────────────────────────────────────────────────────────────────────
+
     if update_mode and args.anim_dir:
         try:
             validate_anim_dir_update_state(object_type, save_dir)
@@ -198,12 +226,7 @@ def main():
             crop_enabled=crop_enabled,
         )
 
-        # ── Species tags fallback ──────────────────────────────────────────
-        # If object_type is not registered in species_tags.jsonl, use the top
-        # auto-retarget donor's species tags so downstream cond building
-        # (attach_t5_embeddings_to_cond -> build_species_embedding_text) does
-        # not fail.  Log a warning so the user knows to add the entry later.
-        import data_loaders.truebones.truebones_utils.physics_joint_annotation as _pja
+        # ── Species tags fallback (only if not already set by --species-tags) ─
         if object_type.lower() not in {k.lower() for k in _pja._SPECIES_TAGS}:
             # Only possible in the retarget branch (donors_used has entries).
             donors_used = result.get('donors_used', [])
