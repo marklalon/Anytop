@@ -1048,6 +1048,7 @@ def test_process_new_skeleton_rejects_unsafe_anim_dir_update(monkeypatch, tmp_pa
         donor_skeletons=None,
         training_cond_path='unused',
         crop_enabled=False,
+        species_tags=None,
     )
 
     monkeypatch.setattr(process_new_skeleton_module, 'process_new_skeleton_args', lambda: args)

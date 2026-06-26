@@ -342,8 +342,13 @@ def test_retarget_raw_fbx_matches_matching_npy_reference(target_type: str) -> No
         len(np.asarray(source_cond["parents"])),
         len(np.asarray(target_cond["parents"])),
     )
+    # cond.npy stores orientation_reference_fbx_path as a path relative to the
+    # repo root (parent of the Anytop directory). Resolve to an absolute path.
+    _ref_path = str(target_cond["orientation_reference_fbx_path"])
+    if not os.path.isabs(_ref_path):
+        _ref_path = os.path.join(_REPO_ROOT, _ref_path)
     target_tp = get_common_features_from_T_pose(
-        target_cond["orientation_reference_fbx_path"],
+        _ref_path,
         target_type,
         max_joints=max_joints,
     )

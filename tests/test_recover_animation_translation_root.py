@@ -357,8 +357,14 @@ def test_feature_roundtrip_preserves_dataset_motion_features(object_type: str, m
         motion_metadata=motion_metadata,
     )
 
+    # cond.npy stores orientation_reference_fbx_path as a path relative to the
+    # repo root (parent of the Anytop directory). Resolve to an absolute path.
+    _ref_path = str(cond['orientation_reference_fbx_path'])
+    if not os.path.isabs(_ref_path):
+        _repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        _ref_path = os.path.join(_repo_root, _ref_path)
     tp = get_common_features_from_T_pose(
-        cond['orientation_reference_fbx_path'],
+        _ref_path,
         object_type,
         max_joints=len(cond['parents']),
     )
