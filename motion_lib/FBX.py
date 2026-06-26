@@ -203,11 +203,19 @@ def _armature_yup_correction(armature):
     the skeleton loads lying on its side, defeating AnyTop's yaw-only facing
     canonicalization.
 
-    Composing ``Rx(-90) @ matrix_world`` makes extraction independent of where the
-    conversion lives: the object case collapses to identity (bit-identical to the
-    old behaviour, so the whole dataset is untouched), while the baked-in-bone case
-    is pitched from Z-up to Y-up. Applying it to the hierarchy root alone is
-    sufficient — every other joint is parent-relative and rides along through FK.
+    Composing ``Rx(-90) @ R`` (where ``R`` is the *rotation* of ``matrix_world``)
+    makes extraction independent of where the conversion lives: the object case
+    collapses to identity (bit-identical to the old behaviour, so the whole dataset
+    is untouched), while the baked-in-bone case is pitched from Z-up to Y-up.
+    Applying it to the hierarchy root alone is sufficient — every other joint is
+    parent-relative and rides along through FK.
+
+    Only the rotation of ``matrix_world`` is used: Truebones armature objects carry
+    a 0.01 object scale (``matrix_world == 0.01 * Rx(+90)``), and that scale is
+    handled separately downstream via the preprocessing ``scale_factor``. The
+    historical armature-LOCAL read never saw the object scale, so folding it in here
+    would shrink the root by 100x. Stripping it via ``to_quaternion().to_matrix()``
+    keeps the object case collapsing exactly to identity.
 
     Returns a 4x4 ``mathutils.Matrix`` to left-multiply onto the root's matrix, or
     ``None`` when the correction is identity (so the common path skips it entirely).
@@ -223,7 +231,9 @@ def _armature_yup_correction(armature):
     except ImportError:
         return None
 
-    rotation = armature.matrix_world.to_3x3()
+    # Use only the rotation of matrix_world (drop object scale/shear); the 0.01
+    # Truebones object scale is applied separately via the preprocessing scale_factor.
+    rotation = armature.matrix_world.to_quaternion().to_matrix()
     correction = mathutils.Matrix.Rotation(math.radians(-90.0), 3, "X") @ rotation
     identity = mathutils.Matrix.Identity(3)
     max_diff = max(
