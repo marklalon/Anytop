@@ -104,8 +104,6 @@ The script accepts the following input Arguments:
 please make sure the object name you choose does not already exist in Truebones charachters names. 
 All of Truebones characters names can be found in Truebones_skeletons.txt file. 
 *bvh_dir* - Directory containing BVH files of the skeleton. More files improve statistical accuracy for motion denormalization.
-*face_joints_names* - Four joints defining skeleton orientation ([right hip, left hip, right shoulder, left shoulder] or equivalent). 
-Used to align the skeleton to Z+ and XZ plane. Accepts joints names rather than indices since joints indices might change at loading.
 *save_dir* - Output directory.
 *tpos_bvh* - A BVH file of the character's natural rest pose for meaningful rotation learning. 
 If missing, the code will search for a good candidate pose from the provided BVH files. 
@@ -113,7 +111,7 @@ If missing, the code will search for a good candidate pose from the provided BVH
 Finally, you can run the command: 
 
 ```shell
-python -m utils.process_new_skeleton --object_name Chicken --bvh_dir assets/Truebones_Chicken --save_dir dataset/truebones/zoo/Chicken --face_joints_names Bip01_R_Thigh Bip01_L_Thigh BN_Finger_R_01 BN_Finger_L_01 --tpos_bvh assets/Truebones_Chicken/Chicken_TPOSE.bvh
+python -m utils.process_new_skeleton --object_name Chicken --bvh_dir assets/Truebones_Chicken --save_dir dataset/truebones/zoo/Chicken --tpos_bvh assets/Truebones_Chicken/Chicken_TPOSE.bvh
 ```
 
 The code will create the following under save_dir:
@@ -125,8 +123,7 @@ save_dir/
 1. In motions directory, you will find npy files, which are the processed motion features of each bvh file. 
 This is useful in case you would like to use this data for training.  Note that motions longer than 240 frames wil be splited into separate npy files (this statement holds for the following outputs as well). 
 2. In animation directory, you will find mp4 files corresponding to each of the processed bvhs.  
-This is a good sanity check that everything worked as expected. 
-Note that face_joints_names are marked in blue and feet joints that are considered touching the ground are marked in green.
+This is a good sanity check that everything worked as expected.
 3. In bvhs dir you can find the processed bvhs (with the new orientation, scale etc.)
 4. cond.npy contains the skeletons representation, including joints names ambeddings and graph conditions, which is a required input for motion synthesis. 
        

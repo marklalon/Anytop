@@ -796,7 +796,6 @@ def auto_retarget_pipeline(
     save_dir: str,
     top_k: int,
     training_cond_path: str,
-    face_joints_names=None,
     donor_skeletons_override=None,
     max_joints: int = MAX_JOINTS,
     fps: float = FPS,
@@ -848,7 +847,7 @@ def auto_retarget_pipeline(
         _scale,
         _sq_err,
         max_joints_tgt,
-    ) = build_tpose_cond(target_object_type, target_tpose_path, face_joints_names,
+    ) = build_tpose_cond(target_object_type, target_tpose_path, None,
                           crop_enabled=crop_enabled)
     max_joints = max(max_joints, max_joints_tgt)
     target_effective_root_index = infer_object_consensus_effective_root_index(

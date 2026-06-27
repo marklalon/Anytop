@@ -24,8 +24,6 @@ anim-dir          - Directory with animation files (FBX/GLB/GLTF) of the skeleto
 tpos-path         - An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base.
                     When omitted (and --anim-dir given), auto-selects a reference carrier
                     from anim files (T-pose/rest/bind > idle > walk > first).
-face-joints-names - Manual override for the four orientation joints
-                    ([right hip, left hip, right shoulder, left shoulder] or equivalent).
 save-dir          - Output directory (required).
 retarget-top-k    - Auto-select the top-k most similar training skeletons as motion donors,
                     retarget their motions to the new skeleton, and use those coarse motions
@@ -218,7 +216,6 @@ def main():
             save_dir=args.save_dir,
             top_k=retarget_top_k,
             training_cond_path=args.training_cond_path,
-            face_joints_names=args.face_joints_names,
             donor_skeletons_override=(
                 [s.strip() for s in args.donor_skeletons.split(',')]
                 if args.donor_skeletons else None
@@ -248,7 +245,7 @@ def main():
 
         process_skeleton(
             object_type,
-            args.face_joints_names,
+            None,
             args.save_dir,
             tpose_path,
             motions_from_npys=result['retargeted_npys'],
@@ -259,7 +256,7 @@ def main():
     else:
         process_skeleton(
             object_type,
-            args.face_joints_names,
+            None,
             args.save_dir,
             tpose_path,
             args.anim_dir,

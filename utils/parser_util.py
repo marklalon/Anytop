@@ -358,9 +358,6 @@ def process_new_skeleton_args():
                             "If omitted, defaults to the parent directory of --tpos-path.")
     group.add_argument("--save-dir", required=True, type=str,
                        help="Output directory.")
-    group.add_argument("--face-joints-names", default=None, type=str, nargs=4,
-                       help="Optional manual override for the four orientation joints ([right hip, left hip, right shoulder, left shoulder] or equivalent). \
-                           When omitted, preprocessing tries to infer them from semantic joint names.")
     group.add_argument("--tpos-path", default=None, type=str,
                        help="An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base. "
                            "If omitted, the code will auto-select one from --anim-dir using filename heuristics "
