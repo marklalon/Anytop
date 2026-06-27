@@ -187,61 +187,56 @@ def load_fbx_scene(fbx_path: str):
     return _load_scene(fbx_path)
 
 def _armature_yup_correction(armature):
-    """Return a root-space correction that recovers the armature's Y-up frame.
+    """Return a 4x4 matrix that corrects the root bone from armature‑local to Y‑up.
 
-    Blender's world is Z-up; AnyTop expects Y-up. The true world orientation of
-    the skeleton is ``armature.matrix_world @ (armature-local bone pose)``, so its
-    Y-up form is ``Rx(-90) @ matrix_world @ (...)``.
+    Two things live in ``matrix_world`` that the historical armature‑local read
+    silently drops:
 
-    Historically this loader read bones purely in armature-LOCAL space, silently
-    dropping ``matrix_world``. That happens to yield the correct Y-up frame *only*
-    when the importer parks the up-axis (+90deg X) conversion on the armature
-    OBJECT — i.e. ``matrix_world == Rx(+90)`` — which is the case for every
-    Truebones dataset asset (FBX and GLB alike). When an exporter instead bakes
-    the +90deg X into the ROOT BONE's rest pose and leaves the object at identity
-    (seen with some Blender glTF exports), the armature-local frame stays Z-up and
-    the skeleton loads lying on its side, defeating AnyTop's yaw-only facing
-    canonicalization.
+    1. **Rotation** — ``Rx(+90)`` for Z‑up → Y‑up conversion.  When the importer
+       parks this on the armature OBJECT (Truebones FBX/GLB) the correction is
+       identity and we return ``None``.  When a glTF exporter bakes it into the
+       root bone instead, the correction applies ``Rx(-90)`` so the skeleton
+       stands upright in AnyTop's Y‑up frame.
 
-    Composing ``Rx(-90) @ R`` (where ``R`` is the *rotation* of ``matrix_world``)
-    makes extraction independent of where the conversion lives: the object case
-    collapses to identity (bit-identical to the old behaviour, so the whole dataset
-    is untouched), while the baked-in-bone case is pitched from Z-up to Y-up.
-    Applying it to the hierarchy root alone is sufficient — every other joint is
-    parent-relative and rides along through FK.
+    2. **Translation** — some exporters place the armature at a non‑zero world
+       position (e.g. ``(0, 0, 0.501)``).  ``bone.matrix_local`` is armature‑local
+       and misses this, while ``pose_bone.matrix`` (used for per‑frame animation
+       positions) is world‑space and includes it.  Baking the translation into the
+       rest offsets makes the rest skeleton and per‑frame positions share one
+       coordinate frame.
 
-    Only the rotation of ``matrix_world`` is used: Truebones armature objects carry
-    a 0.01 object scale (``matrix_world == 0.01 * Rx(+90)``), and that scale is
-    handled separately downstream via the preprocessing ``scale_factor``. The
-    historical armature-LOCAL read never saw the object scale, so folding it in here
-    would shrink the root by 100x. Stripping it via ``to_quaternion().to_matrix()``
-    keeps the object case collapsing exactly to identity.
+    Both are composed into a single 4×4 matrix: ``Rx(-90) @ T_world @ R_world``,
+    where the object scale is stripped (the 0.01 Truebones scale is handled
+    separately via the preprocessing ``scale_factor``).
 
-    Returns a 4x4 ``mathutils.Matrix`` to left-multiply onto the root's matrix, or
-    ``None`` when the correction is identity (so the common path skips it entirely).
-    Returns ``None`` also when called outside Blender (e.g. unit tests with fake
-    armature objects that have no ``matrix_world`` or ``mathutils``).
+    The correction is applied to the hierarchy **root only** — every other joint
+    is parent‑relative and rides along through FK.
+
+    Returns ``None`` when the correction is identity‑4×4 (common Truebones path),
+    and when called outside a live Blender session.
     """
-    # Guard: in non-Blender contexts (unit tests, import-time) mathutils may be
-    # unavailable, and fake armature objects won't have matrix_world.
+    import mathutils
+
     if not hasattr(armature, "matrix_world"):
         return None
-    try:
-        import mathutils
-    except ImportError:
-        return None
 
-    # Use only the rotation of matrix_world (drop object scale/shear); the 0.01
-    # Truebones object scale is applied separately via the preprocessing scale_factor.
-    rotation = armature.matrix_world.to_quaternion().to_matrix()
-    correction = mathutils.Matrix.Rotation(math.radians(-90.0), 3, "X") @ rotation
-    identity = mathutils.Matrix.Identity(3)
+    # Decompose matrix_world: R = rotation, T = translation, drop scale/shear
+    world_t = armature.matrix_world.to_translation()
+    world_r = armature.matrix_world.to_quaternion().to_matrix().to_4x4()
+    world_transform = mathutils.Matrix.Translation(world_t) @ world_r
+
+    yup_base = mathutils.Matrix.Rotation(math.radians(-90.0), 4, "X")
+    correction = yup_base @ world_transform
+
+    identity_4 = mathutils.Matrix.Identity(4)
     max_diff = max(
-        abs(correction[i][j] - identity[i][j]) for i in range(3) for j in range(3)
+        abs(correction[i][j] - identity_4[i][j])
+        for i in range(4)
+        for j in range(4)
     )
     if max_diff < 1e-6:
         return None
-    return correction.to_4x4()
+    return correction
 
 
 def extract_armature_skeleton_data(
@@ -303,9 +298,10 @@ def extract_armature_skeleton_data(
     rest_rotations = np.zeros((joint_count, 4), dtype=np.float64)
     name_to_idx = {name: idx for idx, name in enumerate(bone_names)}
 
-    # Z-up (Blender world) -> Y-up (AnyTop) correction applied to the hierarchy
-    # root; identity (None) for assets whose up-conversion lives on the object.
-    yup_correction = _armature_yup_correction(armature)
+    # Unified 4×4 correction: rotation (Z‑up → Y‑up) + world translation,
+    # applied to the root bone only so its rest offset matches the per‑frame
+    # pose_bone.matrix (world‑space) coordinate frame.
+    root_correction = _armature_yup_correction(armature)
 
     for joint_idx, bone in enumerate(ordered_bones):
         if bone.parent is not None and bone.parent.name in name_to_idx:
@@ -314,8 +310,8 @@ def extract_armature_skeleton_data(
             rest_local = bone.parent.matrix_local.inverted_safe() @ bone.matrix_local
         else:
             rest_local = bone.matrix_local.copy()
-            if yup_correction is not None:
-                rest_local = yup_correction @ rest_local
+            if root_correction is not None:
+                rest_local = root_correction @ rest_local
 
         rest_translation = rest_local.translation
         rest_quat = rest_local.to_quaternion()
@@ -403,9 +399,13 @@ def _scene_to_animation(scene_path: str, collapse_root: bool = True) -> tuple[An
     bpy.context.view_layer.objects.active = armature
     bpy.ops.object.mode_set(mode="POSE")
 
-    # Same Z-up -> Y-up root correction as the rest pose, so animated frames and
-    # the rest skeleton share one frame (None = identity for object-converted assets).
-    yup_correction = _armature_yup_correction(armature)
+    # Reuse the root correction from the rest pose, but strip the translation:
+    # pose_bone.matrix is world-space (already includes armature object translation),
+    # so only the rotation correction Rx(-90) @ R_world needs to be applied here.
+    root_correction = _armature_yup_correction(armature)
+    root_correction_rot = (
+        root_correction.to_3x3().to_4x4() if root_correction is not None else None
+    )
 
     # Pre-build ordered pose_bone list to avoid repeated dict lookups
     pose_bones = armature.pose.bones
@@ -436,10 +436,8 @@ def _scene_to_animation(scene_path: str, collapse_root: bool = True) -> tuple[An
             parent_inverse = parent_inverse_matrices[joint_idx]
             if parent_inverse is None:
                 local_matrix = pose_matrix
-                # Z-up -> Y-up root correction (same matrix as rest pose above,
-                # recomputed here for clarity; cached in yup_correction).
-                if yup_correction is not None:
-                    local_matrix = yup_correction @ local_matrix
+                if root_correction_rot is not None:
+                    local_matrix = root_correction_rot @ local_matrix
             else:
                 local_matrix = parent_inverse @ pose_matrix
 
