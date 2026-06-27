@@ -863,7 +863,7 @@ def auto_retarget_pipeline(
     n_chains = len(target_cond.get('kinematic_chains', []))
     print(
         f"[auto_retarget] Target: {target_object_type} "
-        f"({n_joints} joints"
+        f"({n_joints} joints)"
     )
     if target_effective_root_index is not None:
         print(
