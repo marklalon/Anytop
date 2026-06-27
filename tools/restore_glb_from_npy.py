@@ -930,6 +930,15 @@ def main() -> None:
             "Forces --restore-space to hml."
         ),
     )
+    parser.add_argument(
+        "--check-bone-length",
+        action="store_true",
+        default=False,
+        help=(
+            "Run check_bone_length_drift on the restored GLB after export. "
+            "Disabled by default."
+        ),
+    )
 
 
     args = parser.parse_args()
@@ -985,7 +994,7 @@ def main() -> None:
         skeleton_only=args.skeleton_only,
     )
 
-    if not args.skeleton_only:
+    if args.check_bone_length and not args.skeleton_only:
         _run_bone_length_check(args.output_glb, cond_npy_path, args.object_type)
 
 

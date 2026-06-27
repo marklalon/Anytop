@@ -75,11 +75,14 @@ def _get_llm_client_and_model() -> tuple:
             "Install it with: pip install openai"
         )
 
-    base_url = os.environ.get("RETARGET_LLM_BASE_URL", "http://127.0.0.1:8066/v1")
-    api_key = os.environ.get("RETARGET_LLM_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
+    base_url = os.environ.get("PCVG_LLM_ENDPOINT", "http://127.0.0.1:8066/v1")
+    api_key = os.environ.get("PCVG_LLM_API_KEY", "")
     _LLM_CLIENT = OpenAI(base_url=base_url, api_key=api_key or "sk-dummy")
 
-    model_override = os.environ.get("RETARGET_LLM_MODEL", "")
+    model_override = os.environ.get(
+        "PCVG_LLM_MODEL",
+        os.environ.get("RETARGET_LLM_MODEL", ""),
+    )
     if model_override:
         _LLM_MODEL = model_override
         print(f"[retarget] LLM model set from env: {_LLM_MODEL}  endpoint: {base_url}")
@@ -88,7 +91,7 @@ def _get_llm_client_and_model() -> tuple:
         if not models:
             raise RuntimeError(
                 f"LLM endpoint {base_url} returned no models. "
-                "Set RETARGET_LLM_MODEL to specify a model explicitly."
+                "Set PCVG_LLM_MODEL or RETARGET_LLM_MODEL to specify a model explicitly."
             )
         _LLM_MODEL = models[0].id
         print(f"[retarget] LLM model auto-discovered: {_LLM_MODEL}  endpoint: {base_url}")
@@ -237,15 +240,20 @@ def _llm_joint_mapping(
         if attempt > 0:
             print(f"[retarget] LLM retry {attempt}/{_MAX_RETRIES} after parse error")
 
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            stream=False,
-            temperature=0,
-            top_p=1.0,
-            max_tokens=8192,
-            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-        )
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                stream=False,
+                temperature=0,
+                top_p=1.0,
+                max_tokens=8192,
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            )
+        except Exception as conn_err:
+            print(f"[retarget] LLM connection failed: {conn_err}")
+            print("[retarget] Aborting — fix the LLM endpoint and retry.")
+            _sys.exit(1)
         raw = response.choices[0].message.content or ""
 
         # Strip optional markdown fences the model may emit despite instructions
