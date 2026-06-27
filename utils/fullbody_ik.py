@@ -7,6 +7,8 @@ directions.  It supports:
 
 * Frozen rotation indices — joints whose rotation is preserved as-is.
 * Bone stretch correction — elastic per-edge scaling to reduce IK residual.
+* Constrained IK targets — projecting noisy world-space targets back onto a
+  plausible rigid skeleton before solving.
 * Seed position construction — resetting non-root joints to rest offsets
   while preserving trusted position channels.
 
@@ -157,6 +159,173 @@ def build_fullbody_ik_seed_positions(
         )
 
     return seed_positions
+
+
+def _safe_normalize_vectors(
+    vectors: np.ndarray,
+    *,
+    fallback: np.ndarray,
+    eps: float = 1e-8,
+) -> np.ndarray:
+    lengths = np.linalg.norm(vectors, axis=-1, keepdims=True)
+    return np.divide(vectors, lengths, out=fallback.copy(), where=lengths > eps)
+
+
+def _orthogonal_unit_vectors(directions: np.ndarray) -> np.ndarray:
+    axes = np.zeros_like(directions)
+    abs_dirs = np.abs(directions)
+    use_x = (abs_dirs[..., 0] <= abs_dirs[..., 1]) & (
+        abs_dirs[..., 0] <= abs_dirs[..., 2]
+    )
+    use_y = (~use_x) & (abs_dirs[..., 1] <= abs_dirs[..., 2])
+    axes[use_x, 0] = 1.0
+    axes[use_y, 1] = 1.0
+    axes[~use_x & ~use_y, 2] = 1.0
+    orthogonal = np.cross(directions, axes)
+    return _safe_normalize_vectors(
+        orthogonal,
+        fallback=np.broadcast_to(np.array([1.0, 0.0, 0.0]), directions.shape),
+    )
+
+
+def _limit_direction_deviation(
+    reference_dirs: np.ndarray,
+    target_dirs: np.ndarray,
+    *,
+    max_degrees: float,
+) -> np.ndarray:
+    """Clamp target directions to a cone around reference directions."""
+    if max_degrees >= 180.0:
+        return target_dirs
+    if max_degrees <= 0.0:
+        return reference_dirs
+
+    max_radians = np.deg2rad(float(max_degrees))
+    dots = np.sum(reference_dirs * target_dirs, axis=-1, keepdims=True).clip(-1.0, 1.0)
+    angles = np.arccos(dots)
+    limited = target_dirs.copy()
+    mask = (angles[..., 0] > max_radians) & (angles[..., 0] > 1e-8)
+    if not np.any(mask):
+        return limited
+
+    ref = reference_dirs[mask]
+    tgt = target_dirs[mask]
+    theta = angles[mask]
+    sin_theta = np.sin(theta)
+    limited_values = np.empty_like(ref)
+
+    opposite = np.abs(sin_theta[..., 0]) <= 1e-6
+    if np.any(opposite):
+        ref_opposite = ref[opposite]
+        ortho = _orthogonal_unit_vectors(ref_opposite)
+        limited_values[opposite] = (
+            np.cos(max_radians) * ref_opposite
+            + np.sin(max_radians) * ortho
+        )
+
+    regular = ~opposite
+    if np.any(regular):
+        t = max_radians / theta[regular]
+        ref_regular = ref[regular]
+        tgt_regular = tgt[regular]
+        theta_regular = theta[regular]
+        sin_regular = sin_theta[regular]
+        values = (
+            np.sin((1.0 - t) * theta_regular) / sin_regular * ref_regular
+            + np.sin(t * theta_regular) / sin_regular * tgt_regular
+        )
+        limited_values[regular] = _safe_normalize_vectors(
+            values,
+            fallback=ref_regular,
+        )
+
+    limited[mask] = limited_values
+    return limited
+
+
+def constrain_fullbody_ik_targets(
+    target_anim: Animation,
+    reference_anim: Animation,
+    *,
+    rest_offsets: np.ndarray,
+    parents: np.ndarray,
+    root_index: int,
+    preserved_position_indices: np.ndarray,
+    stretch_factor: float,
+) -> np.ndarray:
+    """Project noisy IK targets onto plausible per-edge directions and lengths.
+
+    Generated motions can contain non-root local translations that make sibling
+    edges under a branching joint disagree strongly.  Basic IK then tries to
+    explain those translation residuals as rotations, producing folded joints.
+    This projection keeps the useful world-space pose signal, but clamps every
+    non-preserved edge to the same length limits the solver may actually output
+    and to a cone around the rigid-offset pose implied by the current rotations.
+    """
+    rest_offsets = np.asarray(rest_offsets, dtype=np.float64)
+    parents = np.asarray(parents, dtype=np.int32)
+    raw_positions = positions_global(target_anim).astype(np.float64, copy=False)
+    reference_positions = positions_global(reference_anim).astype(
+        np.float64, copy=False
+    )
+    if raw_positions.shape != reference_positions.shape:
+        raise ValueError(
+            "target/reference global positions shape mismatch: "
+            f"{raw_positions.shape} vs {reference_positions.shape}"
+        )
+
+    projected = np.empty_like(raw_positions)
+    projected[:, root_index, :] = raw_positions[:, root_index, :]
+    preserved_lookup = {int(index) for index in preserved_position_indices.tolist()}
+
+    children: list[list[int]] = [[] for _ in range(len(parents))]
+    for joint_index, parent_index in enumerate(parents):
+        if parent_index >= 0:
+            children[int(parent_index)].append(int(joint_index))
+
+    stretch = min(1.0, max(0.0, float(stretch_factor)))
+
+    def visit(parent_index: int) -> None:
+        for joint_index in children[parent_index]:
+            if joint_index in preserved_lookup:
+                projected[:, joint_index, :] = raw_positions[:, joint_index, :]
+                visit(joint_index)
+                continue
+
+            raw_edge = raw_positions[:, joint_index] - raw_positions[:, parent_index]
+            raw_length = np.linalg.norm(raw_edge, axis=-1, keepdims=True)
+            reference_edge = (
+                reference_positions[:, joint_index]
+                - reference_positions[:, parent_index]
+            )
+            reference_dirs = _safe_normalize_vectors(
+                reference_edge,
+                fallback=np.zeros_like(reference_edge),
+            )
+            raw_dirs = _safe_normalize_vectors(raw_edge, fallback=reference_dirs)
+            target_dirs = _limit_direction_deviation(
+                reference_dirs,
+                raw_dirs,
+                max_degrees=45.0,
+            )
+
+            rest_length = float(np.linalg.norm(rest_offsets[joint_index]))
+            if rest_length > 1e-8:
+                target_length = np.clip(
+                    raw_length,
+                    rest_length * (1.0 - stretch),
+                    rest_length * (1.0 + stretch),
+                )
+            else:
+                target_length = raw_length
+
+            projected[:, joint_index, :] = (
+                projected[:, parent_index, :] + target_dirs * target_length
+            )
+            visit(joint_index)
+
+    visit(root_index)
+    return projected
 
 
 def apply_bone_stretch_correction(
@@ -323,11 +492,10 @@ def rebuild_fullbody_animation_with_ik(
 ) -> tuple[Animation, float, float]:
     """Force a full-body IK rebuild against the current world-space motion.
 
-    The restore path intentionally discards all non-root local translations and
-    reconstructs the entire pose as a rigid skeleton animation on the requested
-    skeleton definition.  This lets restore target the raw export skeleton
-    directly instead of rigidizing the intermediate processed skeleton, while
-    optionally preserving trusted local pose channels on selected joints.
+    Non-preserved local translations are reset to the requested rigid skeleton
+    offsets before IK.  The world-space IK target is first projected onto
+    plausible per-edge directions and the same bone-length stretch limits
+    the rebuilt animation may output.
 
     Parameters
     ----------
@@ -381,8 +549,14 @@ def rebuild_fullbody_animation_with_ik(
         parents.copy(),
     )
 
-    target_global_positions = positions_global(target_anim).astype(
-        np.float64, copy=False
+    target_global_positions = constrain_fullbody_ik_targets(
+        target_anim,
+        ik_seed,
+        rest_offsets=rest_offsets,
+        parents=parents,
+        root_index=root_index,
+        preserved_position_indices=preserved_position_indices,
+        stretch_factor=stretch_factor,
     )
     rebuilt_anim = run_basic_inverse_kinematics_with_constraints(
         ik_seed,

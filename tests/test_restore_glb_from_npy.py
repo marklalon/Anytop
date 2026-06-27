@@ -48,7 +48,7 @@ def test_fullbody_ik_rebuild_restores_rigid_local_positions() -> None:
             [
                 [2.0, 0.0, 0.0],
                 [1.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
             ]
         ],
         dtype=np.float64,
@@ -255,3 +255,49 @@ def test_fullbody_ik_rebuild_can_preserve_selected_local_rotations() -> None:
         atol=1e-6,
     )
     assert mean_error == pytest.approx(0.0, abs=1e-5)
+
+
+def test_fullbody_ik_rebuild_can_constrain_inconsistent_branch_targets() -> None:
+    parents = np.array([-1, 0, 1, 1], dtype=np.int32)
+    rest_offsets = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    local_positions = rest_offsets[None].copy()
+    local_positions[:, 2, :] = np.array([[0.0, 0.45, 0.0]], dtype=np.float64)
+    local_positions[:, 3, :] = np.array([[-0.5, 0.5, 0.0]], dtype=np.float64)
+    target_anim = Animation(
+        Quaternions.id((1, 4)),
+        local_positions,
+        Quaternions.id(0),
+        rest_offsets,
+        parents,
+    )
+
+    rebuilt_anim, mean_error, max_error = rebuild_fullbody_animation_with_ik(
+        target_anim,
+        rigid_offsets=rest_offsets,
+        rigid_parents=parents,
+        stretch_factor=0.1,
+        iterations=10,
+    )
+
+    assert not np.allclose(rebuilt_anim.positions[:, 2:, :], local_positions[:, 2:, :])
+    np.testing.assert_allclose(
+        np.linalg.norm(rebuilt_anim.positions[:, 2:, :], axis=-1),
+        0.9,
+        atol=1e-6,
+    )
+    assert mean_error < 0.3
+    assert max_error < 0.5
+
+    # The branch outlier is clamped instead of being converted into a fold.
+    max_joint_angle = np.degrees(
+        2.0 * np.arccos(np.abs(rebuilt_anim.rotations.qs[:, 1:, 0])).max()
+    )
+    assert max_joint_angle <= 45.0 + 1e-4
