@@ -157,22 +157,27 @@ def animation_to_exporter_inputs(animation, skeleton) -> tuple[Tensor, Tensor, T
 
 
 def _normalize_imported_armature_and_meshes(bpy, armature) -> None:
-    """Normalize imported FBX object scale while preserving the axis wrapper.
+    """Normalize imported mesh-source wrappers while preserving the axis wrapper.
 
     FBX import commonly leaves a +90deg X axis wrapper and a 0.01 object scale
-    on the armature object. We want to remove the importer scale and stale
+    on the armature object. GLB/GLTF T-pose assets can also carry a stale
+    object-level translation (for example a character parked half a metre above
+    the origin). We want to remove those object-level wrappers and stale
     parent-inverse state, but we must keep the axis wrapper rotation: the
     imported bone and mesh local data still live in the FBX armature's Y-up
     object space, so stripping the rotation would roll the character 90 degrees.
 
     Dropping the armature's object scale re-interprets its armature-local bone
     data (centimetre units) as world units, which is what aligns the exported
-    skeleton with the centimetre-scale NPY animation. The skinned meshes must
-    move with that change so they stay glued to the skeleton — but they do NOT
+    skeleton with the centimetre-scale NPY animation. Dropping the armature's
+    object translation is equally important for mesh-source restores: the
+    restored motion should determine world placement, not an arbitrary static
+    offset baked into the T-pose asset. The skinned meshes must move with those
+    wrapper removals so they stay glued to the skeleton — but they do NOT
     necessarily share the armature's object scale: a mesh parented *under* the
     armature inherits an extra scale factor (e.g. armature scale 0.01 + mesh
-    basis 0.01 -> mesh world scale 0.0001). Resetting every object to unit scale
-    independently therefore detaches such a mesh (it ends up 100x too large).
+    basis 0.01 -> mesh world scale 0.0001). Resetting every object independently
+    therefore detaches such a mesh.
 
     Instead, compute the world-space delta that maps the armature's old world
     frame onto its normalized (scale-dropped) frame, then apply that *same*
@@ -192,10 +197,11 @@ def _normalize_imported_armature_and_meshes(bpy, armature) -> None:
             related_meshes.append(obj)
 
     arm_world_old = armature.matrix_world.copy()
-    # Normalized armature frame: keep world translation + rotation, drop scale/shear.
-    arm_position = arm_world_old.translation.copy()
+    # Normalized armature frame: keep only the world rotation wrapper. Any
+    # object-level translation/scale on a mesh-source armature is static asset
+    # placement, not part of the recovered motion.
     arm_rotation = arm_world_old.to_quaternion().to_matrix().to_4x4()
-    arm_world_new = Matrix.Translation(arm_position) @ arm_rotation
+    arm_world_new = arm_rotation
 
     # World-space delta carrying the old armature frame onto the normalized one.
     # Applying it to a bound mesh preserves arm_world_new.inverted() @ mesh_world
@@ -812,12 +818,19 @@ class AnimationExporter:
             # Blender will re-emit on export. Running the internal rest-pose
             # coordinate search there can spuriously add an extra rigid basis
             # rotation (Horse picked R_y(+90°), which re-imports as a visible
-            # whole-character Z rotation). Keep GLB/GTLF retargeting in the
-            # rig's existing basis and reserve the broader coordinate search
-            # for FBX sources.
-            coordinate_search = not (
+            # whole-character Z rotation), so plain GLB->GLB retargeting keeps
+            # the rig's existing basis.
+            #
+            # HML restore is different: ``global_similarity`` has already
+            # reverse-aligned the imported GLB rig into NPY/HML space while the
+            # recovered source animation still arrives in raw export space. In
+            # that case disabling coordinate search pins the alignment to
+            # identity and cancels the intended 90-degree facing change, so we
+            # re-enable the search only for the reverse-aligned path.
+            is_gltf_mesh = bool(
                 mesh_path_lower and mesh_path_lower.endswith((".glb", ".gltf"))
             )
+            coordinate_search = (not is_gltf_mesh) or (global_similarity is not None)
             src_match_names = _build_canonical_match_names(
                 bone_names,
                 parents_input,
