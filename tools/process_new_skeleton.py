@@ -252,6 +252,7 @@ def main():
             target_cond_partial=result['target_cond'],
             update=update_mode,
             crop_enabled=crop_enabled,
+            skip_t5=args.skip_t5_embeddings,
         )
     else:
         process_skeleton(
@@ -262,6 +263,7 @@ def main():
             args.anim_dir,
             update=update_mode,
             crop_enabled=crop_enabled,
+            skip_t5=args.skip_t5_embeddings,
         )
 
     # In --update mode process_skeleton only writes motions plus a provisional

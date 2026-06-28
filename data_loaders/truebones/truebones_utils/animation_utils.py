@@ -296,16 +296,12 @@ def refresh_joint_metadata_in_cond_dict(cond_dict):
     return cond_dict
 
 
-def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collision_report=True):
+def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collision_report=True,
+                                  t5_conditioner=None):
 
     if not cond:
         return
 
-    # Fast-fail before any encoding: the per-species descriptor has no fallback,
-    # so a species missing from _SPECIES_TAGS must surface here.
-    assert_species_tags_cover(cond.keys())
-
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     inspection_dir = pjoin(save_dir, 'joint_name_inspection')
     os.makedirs(inspection_dir, exist_ok=True)
 
@@ -318,17 +314,26 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collis
 
     object_types_to_encode = sorted(cond)
     joint_count = len(object_types_to_encode)
-    print(f'Loading T5 model {t5_name} on {device.upper()} ...')
-    from model.conditioners import T5Conditioner
-    t5_conditioner = T5Conditioner(
-        name=t5_name,
-        finetune=False,
-        word_dropout=0.0,
-        normalize_text=False,
-        device=device,
-        autocast_dtype=None,
-        local_files_only=True,
-    )
+
+    if t5_conditioner is None:
+        # Fast-fail before any encoding: the per-species descriptor has no fallback,
+        # so a species missing from _SPECIES_TAGS must surface here.
+        assert_species_tags_cover(cond.keys())
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        print(f'Loading T5 model {t5_name} on {device.upper()} ...')
+        from model.conditioners import T5Conditioner
+        t5_conditioner = T5Conditioner(
+            name=t5_name,
+            finetune=False,
+            word_dropout=0.0,
+            normalize_text=False,
+            device=device,
+            autocast_dtype=None,
+            local_files_only=True,
+        )
+    else:
+        print(f'Using pre-loaded T5 conditioner ({t5_name}) ...')
+
     print(f'Encoding joint-name embeddings for {joint_count} object types ...')
 
     with torch.no_grad():

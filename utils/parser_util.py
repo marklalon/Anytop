@@ -397,6 +397,9 @@ def process_new_skeleton_args():
                             "species_tags.jsonl and the auto-donor fallback — the given tags "
                             "are used unconditionally at runtime without modifying "
                             "species_tags.jsonl.")
+    group.add_argument("--skip-t5-embeddings", action='store_true', default=False,
+                       help="Skip T5 embedding computation (caller will inject via "
+                            "attach_t5_embeddings_to_cond with a pre-loaded conditioner).")
     group.add_argument("--yes", action='store_true', default=False,
                        help="Skip all interactive confirmation prompts (e.g. existing data "
                             "overwrite prompt). Useful for headless / automated calls.")

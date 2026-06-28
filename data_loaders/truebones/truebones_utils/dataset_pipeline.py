@@ -655,7 +655,7 @@ def _write_preprocess_seed_artifacts(save_dir, cond, motion_metadata, max_joints
     write_motion_metadata(save_dir, motion_metadata, files_counter)
 
 
-def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, max_joints, files_counter, frames_counter, squared_positions_error):
+def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, max_joints, files_counter, frames_counter, squared_positions_error, skip_t5=False):
     _print_dataset_summary(max_joints, files_counter, frames_counter)
     with open(pjoin(save_dir, 'metadata.txt'), 'w', encoding='utf-8') as text_file:
         text_file.write('max joints: %d\n' %(max_joints))
@@ -667,7 +667,8 @@ def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, m
 
     _write_positions_error_file(save_dir, squared_positions_error)
 
-    attach_t5_embeddings_to_cond(cond, save_dir)
+    if not skip_t5:
+        attach_t5_embeddings_to_cond(cond, save_dir)
     np.save(pjoin(save_dir, "cond.npy"), cond)
     write_motion_metadata(save_dir, motion_metadata, files_counter)
 
@@ -1170,7 +1171,7 @@ def _update_retarget(object_name, save_dir, motions_from_npys, target_cond_parti
 
 def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=None,
                      motions_from_npys=None, target_cond_partial=None, update=False,
-                     crop_enabled=True):
+                     crop_enabled=True, skip_t5=False):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(save_dir, BVHS_DIR), exist_ok=True)
@@ -1217,6 +1218,7 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
             len(all_motions),                             # files_counter
             sum(m.shape[0] for m in all_motions),         # frames_counter
             {},                                           # squared_positions_error
+            skip_t5=skip_t5,
         )
         return
 
@@ -1251,6 +1253,7 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
             files_counter,
             frames_counter,
             squared_positions_error,
+            skip_t5=skip_t5,
         )
         return
 
@@ -1283,4 +1286,5 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
         files_counter,
         frames_counter,
         squared_positions_error,
+        skip_t5=skip_t5,
     )
