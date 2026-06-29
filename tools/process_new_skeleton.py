@@ -50,6 +50,7 @@ Output (under save_dir/):
                 consumed by AnyTop inference via ``--cond-path``.
 """
 import sys, os, shutil
+from typing import Any
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_loaders.truebones.truebones_utils.motion_process import (
@@ -57,13 +58,78 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     validate_anim_dir_update_state,
 )
 from data_loaders.truebones.truebones_utils.fbx_filename_rules import find_tpose_reference_path
-from utils.misc import infer_object_type_from_filename
+from utils.misc import infer_object_type_from_filename, resolve_dataset_path
 from utils.parser_util import process_new_skeleton_args
 
+_ANYTOP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DEFAULT_TRAINING_COND_REL = "dataset/truebones/zoo/truebones_processed/cond.npy"
+DEFAULT_TRAINING_COND_PATH = os.path.join(_ANYTOP_DIR, _DEFAULT_TRAINING_COND_REL)
 
-def main():
-    args = process_new_skeleton_args()
+
+def _resolve_training_cond_path(path: str | None) -> str:
+    """Resolve training cond.npy using the project's existing dataset-path rules."""
+    if path is None or path == "":
+        path = _DEFAULT_TRAINING_COND_REL
+
+    expanded = os.path.expanduser(path)
+    if os.path.isabs(expanded):
+        return os.path.abspath(expanded)
+
+    cwd_candidate = os.path.abspath(expanded)
+    if os.path.isfile(cwd_candidate):
+        return cwd_candidate
+
+    try:
+        return resolve_dataset_path(expanded, extra_roots=[_ANYTOP_DIR])
+    except FileNotFoundError:
+        # Keep the final error readable for explicit caller-supplied relative paths.
+        if os.path.normpath(expanded) == os.path.normpath(_DEFAULT_TRAINING_COND_REL):
+            return os.path.abspath(DEFAULT_TRAINING_COND_PATH)
+        return cwd_candidate
+
+
+def process_new_skeleton(
+    *,
+    save_dir: str,
+    object_type: str | None = None,
+    anim_dir: str | None = None,
+    tpos_path: str | None = None,
+    retarget_top_k: int | None = None,
+    training_cond_path: str = _DEFAULT_TRAINING_COND_REL,
+    donor_skeletons: str | None = None,
+    crop_enabled: bool = False,
+    update: bool = False,
+    species_tags: str | None = None,
+    skip_t5_embeddings: bool = False,
+    yes: bool = False,
+) -> dict[str, Any]:
+    """Process a new skeleton for AnyTop inference and return resolved metadata.
+
+    This is the programmatic equivalent of the CLI entry point and keeps the
+    CLI behaviour unchanged while allowing server-side worker reuse.
+    """
+    args = type("ProcessNewSkeletonArgs", (), {
+        "save_dir": save_dir,
+        "object_type": object_type,
+        "anim_dir": anim_dir,
+        "tpos_path": tpos_path,
+        "retarget_top_k": retarget_top_k,
+        "training_cond_path": training_cond_path,
+        "donor_skeletons": donor_skeletons,
+        "crop_enabled": crop_enabled,
+        "update": update,
+        "species_tags": species_tags,
+        "skip_t5_embeddings": skip_t5_embeddings,
+        "yes": yes,
+    })()
+    return _process_new_skeleton_from_args(args)
+
+
+def _process_new_skeleton_from_args(args) -> dict[str, Any]:
     save_dir = args.save_dir
+    args.training_cond_path = _resolve_training_cond_path(
+        getattr(args, "training_cond_path", _DEFAULT_TRAINING_COND_REL)
+    )
 
     # --update: incremental mode. Keeps the existing dataset and adds/replaces
     # motions instead of wiping --save-dir. Works for both the --anim-dir path
@@ -278,6 +344,20 @@ def main():
         regenerate_dataset_artifacts(
             args.save_dir, recompute_stats=True, recompute_stats_objects={object_type}
         )
+
+    return {
+        "save_dir": save_dir,
+        "object_type": object_type,
+        "tpose_path": tpose_path,
+        "retarget_top_k": retarget_top_k,
+        "update": update_mode,
+        "cond_npy": os.path.join(save_dir, "cond.npy"),
+    }
+
+
+def main():
+    args = process_new_skeleton_args()
+    _process_new_skeleton_from_args(args)
 
 if __name__ == '__main__':
     try:
