@@ -53,6 +53,11 @@ GLB_DIR = "glb"
 BVHS_DIR = "bvhs"
 MOTION_METADATA_FILE = "motion_metadata.json"
 ACTION_TAGS_FILE = "action_tags.jsonl"
+# Sidecar mapping object_type -> portable skinned-mesh T-pose reference path. Kept
+# out of cond.npy (no inference path reads it); consumed only by the offline dataset
+# GLB tool (data_bridge.restore_glb_from_anytop). Written/refreshed by the dataset
+# preprocessing save path and by regenerate_dataset_artifacts.
+TPOSE_REFERENCE_SIDECAR = "tpose_reference_paths.npy"
 # Per-species motion descriptor (body-plan, size/build, locomotion), maintained as
 # a JSONL sidecar alongside action_tags.jsonl. One object per line:
 #   {"species": "Cat", "species_tags": ["Quadruped", "Small", "Stalking"]}

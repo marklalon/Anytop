@@ -1757,7 +1757,7 @@ if __name__ == '__main__':
 
     # ── Retarget ───────────────────────────────────────────────────────────
     from data_loaders.truebones.truebones_utils.features import (
-        get_common_features_from_T_pose,
+        tpose_features_from_cond,
     )
     from data_loaders.truebones.truebones_utils.motion_process import (
         recover_bvh_export_animation_from_motion_np,
@@ -1766,18 +1766,8 @@ if __name__ == '__main__':
 
     _base_name = _os.path.splitext(_os.path.basename(_source_path))[0]
 
-    from utils.misc import resolve_dataset_path as _resolve_dataset_path
-    _tgt_tpose_path = _resolve_dataset_path(_tgt_cond.get('orientation_reference_fbx_path'))
-    if not _tgt_tpose_path or not _os.path.isfile(_tgt_tpose_path):
-        _PARSER.error(
-            f'Target T-pose file not found for "{_target_type}": '
-            f'{_tgt_tpose_path!r}'
-        )
-
-    _tgt_tp = get_common_features_from_T_pose(
-        _tgt_tpose_path, _target_type,
-        max_joints=_max_joints,
-    )
+    # Target rest-pose skeleton reconstructed from cond — no T-pose mesh read.
+    _tgt_tp = tpose_features_from_cond(_tgt_cond, _target_type)
 
     # Resolve FPS from target cond (used for BVH export frametime).
     _fps = float(_tgt_cond.get('fps', 30.0))

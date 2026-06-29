@@ -18,6 +18,7 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     find_translation_root,
     xz_locomotion_extent,
     get_common_features_from_T_pose,
+    tpose_features_from_cond,
     get_hml_aligned_anim,
     get_motion,
     infer_translation_root_index_from_features,
@@ -337,6 +338,8 @@ def _recover_pre_normalized_bvh_rotations(raw: np.ndarray, cond, motion_metadata
 def test_feature_roundtrip_preserves_dataset_motion_features(object_type: str, motion_pattern: str):
     opt = get_opt(None)
     cond = np.load(opt.cond_file, allow_pickle=True).item()[object_type]
+    if 'tpose_rest_rotations' not in cond:
+        pytest.skip("cond.npy predates the baked 'tpose_rest_rotations' field; regenerate cond")
 
     motion_dir = opt.motion_dir
     if not os.path.isabs(motion_dir):
@@ -357,17 +360,8 @@ def test_feature_roundtrip_preserves_dataset_motion_features(object_type: str, m
         motion_metadata=motion_metadata,
     )
 
-    # cond.npy stores orientation_reference_fbx_path as a path relative to the
-    # repo root (parent of the Anytop directory). Resolve to an absolute path.
-    _ref_path = str(cond['orientation_reference_fbx_path'])
-    if not os.path.isabs(_ref_path):
-        _repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        _ref_path = os.path.join(_repo_root, _ref_path)
-    tp = get_common_features_from_T_pose(
-        _ref_path,
-        object_type,
-        max_joints=len(cond['parents']),
-    )
+    # Rest-pose features come straight from cond (no T-pose mesh access).
+    tp = tpose_features_from_cond(cond, object_type)
     squared_positions_error: dict[str, float] = {}
     rebuilt, _parents, _max_joints, _feature_anim, _export_anim, _is_loop, _translation_root_index, _root_translation_xz = get_motion(
         anim,

@@ -482,6 +482,7 @@ def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch,
         return {
             'object_type': object_type,
             'object_cond': _make_cond_entry(object_type),
+            'tpose_reference_path': None,
             'errors': {'Cat run clip': 0.010000},
             'max_joints': 2,
             'results': [],
@@ -536,6 +537,7 @@ def test_create_data_samples_raises_preprocess_error_instead_of_exit(monkeypatch
         return {
             'object_type': object_type,
             'object_cond': _make_cond_entry(object_type),
+            'tpose_reference_path': None,
             'errors': {},
             'max_joints': 2,
             'results': [],
@@ -680,6 +682,7 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
         return {
             'object_type': object_type,
             'object_cond': _make_cond_entry(object_type),
+            'tpose_reference_path': None,
             'errors': {},
             'max_joints': 2,
             'results': [],
@@ -737,7 +740,7 @@ def test_process_skeleton_retarget_branch_writes_translation_root_metadata(monke
 
     captured: dict[str, object] = {}
 
-    def fake_write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, max_joints, files_counter, frames_counter, squared_positions_error):
+    def fake_write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, max_joints, files_counter, frames_counter, squared_positions_error, skip_t5=False, tpose_refs=None):
         captured['save_dir'] = save_dir
         captured['cond'] = cond
         captured['motion_metadata'] = motion_metadata
@@ -818,7 +821,7 @@ def test_update_anim_dir_preserves_other_objects(monkeypatch, tmp_path):
                 'source_fbx_path': 'cat-new.fbx',
                 'motion_source': 'anim_dir',
             }
-        }
+        }, None
 
     monkeypatch.setattr(dataset_pipeline_mod, 'process_object', fake_process_object)
 
@@ -887,7 +890,7 @@ def test_update_anim_dir_replaces_only_matching_sources(monkeypatch, tmp_path):
                 'source_fbx_path': str((tmp_path / 'C.fbx').resolve()),
                 'motion_source': 'anim_dir',
             },
-        }
+        }, None
 
     monkeypatch.setattr(dataset_pipeline_mod, 'process_object', fake_process_object)
 
@@ -982,7 +985,7 @@ def test_update_anim_dir_full_rerun_replaces_old_versions(monkeypatch, tmp_path)
                 'source_fbx_path': source_c,
                 'motion_source': 'anim_dir',
             },
-        }
+        }, None
 
     monkeypatch.setattr(dataset_pipeline_mod, 'process_object', fake_process_object)
 

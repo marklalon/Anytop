@@ -257,17 +257,17 @@ def retarget_features_npy_to_target(
 
     Args:
         source_features:    (F, J_src, 13) motion feature array, already loaded.
-        source_cond:        Donor's cond.npy entry (parents / offsets /
-                            orientation_reference_fbx_path, etc.).
-        source_object_type: Donor object-type name (for get_common_features_from_T_pose).
+        source_cond:        Donor's cond.npy entry (parents / offsets / rest_pose
+                            / orientation_quat / scale_factor, etc.).
+        source_object_type: Donor object-type name.
         target_tp:          Pre-loaded TPoseFeatures for the target skeleton.
                             Pass the same object for every clip of a given target
-                            to avoid repeated FBX parsing.
+                            to avoid rebuilding it from cond per clip.
         target_object_type: Target object-type name (passed to get_motion).
         max_joints:         Maximum joint count for feature padding.
         source_tp:          Optional pre-loaded TPoseFeatures for the source donor.
-                            If None, loaded lazily from
-                            source_cond['orientation_reference_fbx_path'].
+                            If None, reconstructed from ``source_cond`` via
+                            tpose_features_from_cond (no T-pose mesh read).
         target_cond:        Optional target cond entry carrying semantic
                     ``canonical_joint_names`` for name matching.
 
@@ -278,7 +278,7 @@ def retarget_features_npy_to_target(
     from utils.exporter import animation_to_exporter_inputs
     from utils.roundtrip_common import build_skeleton
     from data_loaders.truebones.truebones_utils.features import (
-        get_common_features_from_T_pose,
+        tpose_features_from_cond,
         get_motion,
         recover_animation_from_motion_np,
     )
@@ -299,27 +299,11 @@ def retarget_features_npy_to_target(
     source_features = np.asarray(source_features, dtype=np.float32)
     source_joint_count = int(source_features.shape[1])
 
-    # 1. Load source T-pose metadata (once per donor via source_tp)
-    if source_tp is None:
-        src_tpose_fbx = _resolved_ref_fbx(source_cond)
-        if not src_tpose_fbx or not os.path.isfile(src_tpose_fbx):
-            print(f"  [WARN] source T-pose FBX not found: {src_tpose_fbx!r}")
-            return None
-        source_tp = get_common_features_from_T_pose(
-            src_tpose_fbx,
-            source_object_type,
-            max_joints=max_joints,
-        )
-    elif len(source_tp.names) != source_joint_count:
-        src_tpose_fbx = _resolved_ref_fbx(source_cond)
-        if not src_tpose_fbx or not os.path.isfile(src_tpose_fbx):
-            print(f"  [WARN] source T-pose FBX not found: {src_tpose_fbx!r}")
-            return None
-        source_tp = get_common_features_from_T_pose(
-            src_tpose_fbx,
-            source_object_type,
-            max_joints=max_joints,
-        )
+    # 1. Source rest-pose metadata reconstructed from the donor cond entry — no
+    #    original T-pose FBX/GLB mesh is read. The caller reuses one source_tp
+    #    across a donor's clips; rebuild from cond when absent or stale.
+    if source_tp is None or len(source_tp.names) != source_joint_count:
+        source_tp = tpose_features_from_cond(source_cond, source_object_type)
 
     if len(source_tp.names) != source_joint_count:
         raise ValueError(
@@ -462,7 +446,6 @@ def retarget_animation_file_to_target(
     from motion_lib.Quaternions import Quaternions
     from data_loaders.truebones.truebones_utils.features import (
         get_motion,
-        get_common_features_from_T_pose,
         calculate_root_quat,
         process_anim,
     )
@@ -607,46 +590,38 @@ def retarget_animation_file_to_target(
         return None
 
     target_source_basis_available = False
-    target_source_tp = None
     target_aligned_raw_anim = None
     target_aligned_names = None
-    target_tpose_path = _resolved_ref_fbx(target_cond)
-    if (
-        target_tpose_path
-        and os.path.isfile(target_tpose_path)
-    ):
-        target_source_tp = get_common_features_from_T_pose(
-            target_tpose_path,
-            target_object_type,
-            max_joints=max_joints,
-        )
-        expected_names = list(target_source_tp.names)
-        expected_parents = np.asarray(target_source_tp.tpos_anim.parents, dtype=np.int32)
-        aligned = _align_raw_to_expected_original_skeleton(
-            raw_anim,
-            src_names,
-            expected_names,
-            expected_parents,
-        )
-        if aligned is not None:
-            target_aligned_raw_anim, target_aligned_names = aligned
+    # The target's expected raw skeleton (names + topology) comes from the
+    # cond-derived target_tp — no original T-pose FBX/GLB mesh is read. The
+    # source skeleton/motion below is still the user-provided animation file.
+    expected_names = list(target_tp.names)
+    expected_parents = np.asarray(target_tp.tpos_anim.parents, dtype=np.int32)
+    aligned = _align_raw_to_expected_original_skeleton(
+        raw_anim,
+        src_names,
+        expected_names,
+        expected_parents,
+    )
+    if aligned is not None:
+        target_aligned_raw_anim, target_aligned_names = aligned
 
-        target_orientation_quat = np.asarray(
-            getattr(target_tp.orientation_quat, 'qs', target_tp.orientation_quat),
-            dtype=np.float64,
-        ).reshape(-1)
-        target_orientation_quat = target_orientation_quat / max(
-            float(np.linalg.norm(target_orientation_quat)),
-            1e-12,
-        )
-        source_orientation_unit = src_orientation_quat / max(
-            float(np.linalg.norm(src_orientation_quat)),
-            1e-12,
-        )
-        target_source_basis_available = (
-            target_aligned_raw_anim is not None
-            and abs(float(np.dot(source_orientation_unit, target_orientation_quat))) > 1.0 - 1e-4
-        )
+    target_orientation_quat = np.asarray(
+        getattr(target_tp.orientation_quat, 'qs', target_tp.orientation_quat),
+        dtype=np.float64,
+    ).reshape(-1)
+    target_orientation_quat = target_orientation_quat / max(
+        float(np.linalg.norm(target_orientation_quat)),
+        1e-12,
+    )
+    source_orientation_unit = src_orientation_quat / max(
+        float(np.linalg.norm(src_orientation_quat)),
+        1e-12,
+    )
+    target_source_basis_available = (
+        target_aligned_raw_anim is not None
+        and abs(float(np.dot(source_orientation_unit, target_orientation_quat))) > 1.0 - 1e-4
+    )
 
     if target_source_basis_available:
         squared_positions_error = {}
@@ -753,13 +728,6 @@ def retarget_animation_file_to_target(
 # Donor ranking
 # ---------------------------------------------------------------------------
 
-def _resolved_ref_fbx(cond: dict):
-    """Resolve a cond entry's ``orientation_reference_fbx_path`` (portable or
-    legacy-absolute) to a local path via the shared resolver."""
-    from utils.misc import resolve_dataset_path
-    return resolve_dataset_path(cond.get('orientation_reference_fbx_path'))
-
-
 def rank_donors(
     target_cond: dict,
     training_cond_dict: dict,
@@ -817,7 +785,7 @@ def auto_retarget_pipeline(
           'donors_used'      -- list of (name, score, n_success) tuples
     """
     from data_loaders.truebones.truebones_utils.dataset_pipeline import build_tpose_cond
-    from data_loaders.truebones.truebones_utils.features import get_common_features_from_T_pose
+    from data_loaders.truebones.truebones_utils.features import tpose_features_from_cond
     from data_loaders.truebones.truebones_utils.motion_process import (
         recover_bvh_export_animation_from_motion_np,
     )
@@ -923,12 +891,6 @@ def auto_retarget_pipeline(
     # 4. For each donor, retarget all motion files
     for donor_name, donor_score in selected_donors:
         donor_cond = training_cond_dict[donor_name]
-        donor_fbx = _resolved_ref_fbx(donor_cond)
-
-        if not donor_fbx or not os.path.isfile(donor_fbx):
-            print(f"\n[auto_retarget] {donor_name}: T-pose FBX not found ({donor_fbx!r}), skipping donor")
-            donors_used.append((donor_name, donor_score, 0))
-            continue
 
         donor_npys = sorted(glob.glob(pjoin(training_motions_dir, f"{donor_name}_*.npy")))
         print(f"\n[auto_retarget] {donor_name}: {len(donor_npys)} motion files found, retargeting...")
@@ -938,12 +900,8 @@ def auto_retarget_pipeline(
             donors_used.append((donor_name, donor_score, 0))
             continue
 
-        # Pre-load source T-pose once per donor
-        source_tp = get_common_features_from_T_pose(
-            donor_fbx,
-            donor_name,
-            max_joints=MAX_JOINTS if crop_enabled else 2 ** 16,
-        )
+        # Source rest-pose skeleton reconstructed from the donor cond — no FBX/GLB.
+        source_tp = tpose_features_from_cond(donor_cond, donor_name)
         donor_effective_root_index = _infer_donor_consensus_effective_root_index(
             donor_npys,
             donor_cond,

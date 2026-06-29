@@ -702,7 +702,12 @@ def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints
             if hip_pair is None:
                 hip_pair = generic_lower or generic_upper
             if upper_pair is None:
-                upper_pair = generic_upper or generic_lower
+                # When a semantic hip pair is already found, reuse it for the
+                # upper (shoulder) slot rather than taking the widest generic
+                # homologous pair, which may be a distal limb tip (leg 末端)
+                # whose global position shifts dramatically during motion and
+                # corrupts the torso_head forward calculation.
+                upper_pair = hip_pair if hip_pair is not None else (generic_upper or generic_lower)
 
         if hip_pair is not None and upper_pair is not None:
             return [hip_pair[0], hip_pair[1], upper_pair[0], upper_pair[1]]

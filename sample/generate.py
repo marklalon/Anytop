@@ -30,7 +30,7 @@ from data_loaders.truebones.data.dataset import (
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_process import (
     FOOT_CONTACT_VEL_THRESH,
-    get_common_features_from_T_pose,
+    tpose_features_from_cond,
     get_motion,
     recover_bvh_export_animation_from_motion_np,
 )
@@ -48,7 +48,7 @@ from utils.model_util import (
     unwrap_anytop_model,
 )
 from utils.parser_util import generate_args
-from utils.misc import infer_object_type_from_filename, resolve_dataset_path
+from utils.misc import infer_object_type_from_filename
 
 
 _REFERENCE_MOTION_PREPROCESS_SUFFIXES = {'.fbx', '.glb', '.gltf'}
@@ -493,27 +493,14 @@ def _prepare_reference_motion_path(
             "Cannot preprocess non-NPY reference motion."
         )
 
-    tpose_path = resolve_dataset_path(source_cond.get('orientation_reference_fbx_path'))
-    if not tpose_path or not os.path.isfile(tpose_path):
-        raise FileNotFoundError(
-            f"Reference motion preprocessing requires a valid orientation_reference_fbx_path "
-            f"for '{source_type}', not found: {tpose_path!r}"
-        )
-
     cond_parents = source_cond.get('parents')
     preprocess_max_joints = len(cond_parents) if cond_parents is not None else int(opt.max_joints)
 
     print(f"  Preprocessing reference motion {suffix} -> .npy using object_type={source_type}")
-    # Pass the cond entry's recorded face joints so the reproduced orientation_quat
-    # matches the feature space the dataset (and the model's mean/std) were built in;
-    # omitting it would silently fall back to default face joints for any object_type
-    # that was authored with custom ones, misaligning the reference.
-    source_tp = get_common_features_from_T_pose(
-        tpose_path,
-        source_type,
-        face_joints=source_cond.get('face_joint_names') or None,
-        max_joints=preprocess_max_joints,
-    )
+    # The source character's rest-pose feature skeleton (offsets, rest rotations,
+    # orientation_quat, face joints, scale, contact joints) is reconstructed
+    # directly from the cond entry — no original FBX/GLB T-pose mesh is read.
+    source_tp = tpose_features_from_cond(source_cond, source_type)
     scale_factor = float(source_cond.get('scale_factor', source_tp.scale_factor))
 
     # Defense: align the raw reference skeleton to the dataset's canonical skeleton
@@ -629,20 +616,9 @@ def _retarget_reference_motion(
     from Anytop.utils.auto_retarget import (
         retarget_features_npy_to_target,
     )
-    from data_loaders.truebones.truebones_utils.features import get_common_features_from_T_pose
 
     src_cond = cond_dict[source_type]
     tgt_cond = dict(cond_dict[target_type])
-
-    src_tpose_path = resolve_dataset_path(src_cond.get('orientation_reference_fbx_path'))
-    tgt_tpose_path = resolve_dataset_path(tgt_cond.get('orientation_reference_fbx_path'))
-    for label, path in (('source', src_tpose_path), ('target', tgt_tpose_path)):
-        if not path or not os.path.isfile(path):
-            raise FileNotFoundError(
-                f"Cross-species retarget requires {label} T-pose file "
-                f"(cond_dict['{source_type if label == 'source' else target_type}']"
-                f"['orientation_reference_fbx_path']), not found: {path!r}"
-            )
 
     print(f"\n### Cross-species retarget: {source_type} → {target_type}")
 
@@ -655,10 +631,10 @@ def _retarget_reference_motion(
         context='Cross-species reference retarget',
     )
 
-    tgt_tp = get_common_features_from_T_pose(
-        tgt_tpose_path, target_type,
-        max_joints=opt.max_joints,
-    )
+    # Both source and target rest-pose skeletons are reconstructed from cond —
+    # no original T-pose FBX/GLB mesh is read for either side.
+    src_tp = tpose_features_from_cond(src_cond, source_type)
+    tgt_tp = tpose_features_from_cond(tgt_cond, target_type)
 
     target_features = retarget_features_npy_to_target(
         ref_raw,
@@ -667,14 +643,14 @@ def _retarget_reference_motion(
         tgt_tp,
         target_type,
         opt.max_joints,
-        source_tp=None,  # loaded lazily from src_cond['orientation_reference_fbx_path']
+        source_tp=src_tp,
         target_cond=tgt_cond,
     )
 
     if target_features is None:
         raise RuntimeError(
             f"retarget_features_npy_to_target returned None "
-            f"({source_type} → {target_type}). Check source T-pose FBX and joint overlap."
+            f"({source_type} → {target_type}). Check source/target cond entries and joint overlap."
         )
 
     # Save retargeted .npy
@@ -729,16 +705,8 @@ def _retarget_reference_motion_from_file(
     from Anytop.utils.auto_retarget import (
         retarget_animation_file_to_target,
     )
-    from data_loaders.truebones.truebones_utils.features import get_common_features_from_T_pose
 
     tgt_cond = dict(cond_dict[target_type])
-    tgt_tpose_path = resolve_dataset_path(tgt_cond.get('orientation_reference_fbx_path'))
-    if not tgt_tpose_path or not os.path.isfile(tgt_tpose_path):
-        raise FileNotFoundError(
-            f"Reference retarget requires the target T-pose file "
-            f"(cond_dict['{target_type}']['orientation_reference_fbx_path']), "
-            f"not found: {tgt_tpose_path!r}"
-        )
 
     # Source label is for output naming only — never used to look up cond or to
     # drive any object_type-dependent processing on the source.
@@ -755,10 +723,10 @@ def _retarget_reference_motion_from_file(
         context='Cond-free reference retarget',
     )
 
-    tgt_tp = get_common_features_from_T_pose(
-        tgt_tpose_path, target_type,
-        max_joints=opt.max_joints,
-    )
+    # Target rest-pose skeleton from cond — no T-pose mesh read. The source
+    # skeleton/motion still comes from the user-provided animation file inside
+    # retarget_animation_file_to_target (that file is the actual input motion).
+    tgt_tp = tpose_features_from_cond(tgt_cond, target_type)
 
     target_features = retarget_animation_file_to_target(
         reference_motion_path,
@@ -771,7 +739,7 @@ def _retarget_reference_motion_from_file(
     if target_features is None:
         raise RuntimeError(
             f"retarget_animation_file_to_target returned None "
-            f"({reference_motion_path} → {target_type}). Check target T-pose FBX "
+            f"({reference_motion_path} → {target_type}). Check the target cond entry "
             f"and joint-name overlap with the source file."
         )
 

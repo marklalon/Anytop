@@ -99,7 +99,7 @@ _load_utils_module("utils.rotation_conversions")
 _load_utils_module("utils.npy_roundtrip_utils")
 _load_utils_module("utils.misc")
 
-from utils.misc import infer_object_type_from_filename, resolve_dataset_path
+from utils.misc import infer_object_type_from_filename
 from utils.npy_roundtrip_utils import recover_from_features
 from Anytop.utils.roundtrip_common import load_fbx_skeleton_metadata
 from Anytop.motion_lib.FBX import collapse_root_skeleton
@@ -493,10 +493,14 @@ def restore_glb(
 ) -> str:
     """Restore a preprocessed NPY motion file to a GLB.
 
-    When *skeleton_only* is ``False`` (default), the output is a skinned GLB
-    using a T-pose FBX/GLB as the mesh/rig source.  When *skeleton_only* is
-    ``True``, the output is a skeleton-only GLB in HML space with no mesh or
-    skinning — ``restore_space`` is forced to ``"hml"``.
+    A skinned GLB is produced **only** when the caller explicitly supplies
+    *tpose_mesh* (the user-provided skinned mesh). When no explicit mesh is given
+    and *skeleton_only* is left ``False``, restore falls back to a skeleton-only
+    GLB — no FBX/GLB asset is ever read. cond.npy carries no T-pose mesh path,
+    so there is no implicit dataset-mesh resolution.
+
+    When *skeleton_only* is ``True``, the output is a skeleton-only GLB in HML
+    space with no mesh or skinning — ``restore_space`` is forced to ``"hml"``.
 
     Args:
         npy_path:            Path to the preprocessed .npy motion file.
@@ -562,6 +566,15 @@ def restore_glb(
     output_glb = os.path.abspath(output_glb)
     if stretch_factor < 0 or stretch_factor > 1.0:
         raise ValueError(f"stretch_factor must be in [0, 1], got {stretch_factor}")
+
+    # No implicit dataset-mesh resolution: a skinned GLB requires an explicit
+    # user-provided mesh.  Absent one, fall back to a skeleton-only export.
+    if not skeleton_only and tpose_mesh is None:
+        print(
+            "No T-pose mesh provided: falling back to skeleton-only export."
+        )
+        skeleton_only = True
+
     if skeleton_only:
         restore_space = "hml"
         print("Skeleton-only mode: restore_space forced to 'hml'")
@@ -608,16 +621,8 @@ def restore_glb(
         orientation_quat_val = ctx["orientation_quat"]
         tpose_mesh_resolved = None
     else:
-        if tpose_mesh is None:
-            if isinstance(cond_entry.get('orientation_reference_fbx_path'), str):
-                tpose_mesh = resolve_dataset_path(cond_entry['orientation_reference_fbx_path'])
-                print(f"Resolved T-pose mesh from cond.npy: {tpose_mesh}")
-            else:
-                raise ValueError(
-                    f"No --tpose-mesh provided and cond.npy entry for '{object_type}' "
-                    f"does not contain 'orientation_reference_fbx_path'."
-                )
-
+        # Reached only with an explicit user-provided tpose_mesh (the fallback
+        # above flips skeleton_only on when none is given).
         raw = np.load(npy_path)
         restore_ctx = _build_restore_context(
             raw,
@@ -803,8 +808,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Restore a preprocessed Anytop NPY motion to a GLB.\n"
-            "  Default: skinned GLB using a T-pose FBX as the rig/skin source.\n"
-            "  Use --skeleton-only for a skeleton-only GLB in HML space."
+            "  Default: skeleton-only GLB in HML space, no mesh access."
+            "\n"
+            "  Pass --tpose-mesh <file> for a skinned GLB using that mesh as the"
+            "\n"
+            "  rig/skin source."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
@@ -817,9 +825,8 @@ def main() -> None:
         "--tpose-mesh",
         default=None,
         help=(
-            "Path to the T-pose FBX/GLB/GLTF that provides skin weights + armature. "
-            "If not specified, the path is read from cond.npy "
-            "(orientation_reference_fbx_path)."
+            "Path to the T-pose FBX/GLB/GLTF that provides skin weights + armature "
+            "for a skinned GLB.  If omitted, restore stays skeleton-only."
         ),
     )
     parser.add_argument(
@@ -927,7 +934,8 @@ def main() -> None:
         help=(
             "Export a skeleton-only GLB (no mesh, no skinning) in HML "
             "preprocessed space.  No T-pose mesh required.  "
-            "Forces --restore-space to hml."
+            "Forces --restore-space to hml.  This is also the automatic "
+            "fallback when no --tpose-mesh is given."
         ),
     )
     parser.add_argument(

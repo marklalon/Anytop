@@ -126,11 +126,12 @@ def infer_object_type_from_filename(
 
 
 # ── Dataset asset path portability ─────────────────────────────────────────
-# cond.npy stores asset paths such as ``orientation_reference_fbx_path``.
-# Historically these were absolute paths, which break when the repo/dataset is
-# moved to another machine or mounted into a container at a different prefix
-# (e.g. a Windows ``D:\...`` path inside a Linux container). New cond.npy stores
-# a *repo-root-relative POSIX* path via ``to_portable_dataset_path``; both forms
+# Dataset sidecars store asset paths such as the ``tpose_reference_path`` in the
+# tpose_reference_paths sidecar. Historically these were absolute paths, which
+# break when the repo/dataset is moved to another machine or mounted into a
+# container at a different prefix (e.g. a Windows ``D:\...`` path inside a Linux
+# container). They are now stored as a *repo-root-relative POSIX* path via
+# ``to_portable_dataset_path``; both forms
 # (and legacy foreign-absolute paths) are resolved back to a local path by
 # ``resolve_dataset_path``.
 

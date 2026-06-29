@@ -666,11 +666,9 @@ def validate_tpose_orientation(cond: dict, threshold_deg: float) -> None:
             if best_delta_deg <= threshold_deg:
                 continue
 
-            reference_path = cond[object_type].get("orientation_reference_fbx_path")
-            reference_label = Path(reference_path).name if isinstance(reference_path, str) and reference_path.strip() else "orientation reference"
             print_warn(
                 f"{object_type} T-pose face orientation is {best_delta_deg:.2f} deg away from the nearest cardinal XZ axis "
-                f"({best_axis_label}) using {reference_label}"
+                f"({best_axis_label})"
             )
             warned_count += 1
         except ValidationError as e:

@@ -75,6 +75,7 @@ from Anytop.motion_lib import FBX
 from data_loaders.truebones.offline_reference_dataset import load_cond_dict
 from data_loaders.truebones.truebones_utils.motion_process import (
     get_common_features_from_T_pose,
+    tpose_features_from_cond,
     TPoseFeatures,
 )
 from utils.auto_retarget import retarget_animation_file_to_target, retarget_features_npy_to_target
@@ -337,21 +338,17 @@ def test_retarget_raw_fbx_matches_matching_npy_reference(target_type: str) -> No
     target_cond = cond_dict.get(target_type)
     _require_or_skip(source_cond is not None, f"cond.npy is missing '{_DEFAULT_SOURCE_TYPE}'")
     _require_or_skip(target_cond is not None, f"cond.npy is missing '{target_type}'")
+    _require_or_skip(
+        'tpose_rest_rotations' in target_cond,
+        "cond.npy predates the baked 'tpose_rest_rotations' field; regenerate cond",
+    )
 
     max_joints = max(
         len(np.asarray(source_cond["parents"])),
         len(np.asarray(target_cond["parents"])),
     )
-    # cond.npy stores orientation_reference_fbx_path as a path relative to the
-    # repo root (parent of the Anytop directory). Resolve to an absolute path.
-    _ref_path = str(target_cond["orientation_reference_fbx_path"])
-    if not os.path.isabs(_ref_path):
-        _ref_path = os.path.join(_REPO_ROOT, _ref_path)
-    target_tp = get_common_features_from_T_pose(
-        _ref_path,
-        target_type,
-        max_joints=max_joints,
-    )
+    # Target rest-pose features come straight from cond (no T-pose mesh access).
+    target_tp = tpose_features_from_cond(target_cond, target_type)
 
     raw_file_features = retarget_animation_file_to_target(
         _DEFAULT_SOURCE,

@@ -265,9 +265,6 @@ def _collect_unique_sources(
             "parents": object_cond["parents"],
             "offsets": object_cond["offsets"],
             "scale_factor": object_cond.get("scale_factor", 1.0),
-            "orientation_reference_fbx_path": object_cond.get(
-                "orientation_reference_fbx_path", ""
-            ),
         }
         tasks.append((str(object_type), str(source_path), slim_cond))
 
@@ -358,38 +355,6 @@ def validate_source_bind_pose(
                 f"({object_type}) — {warn_msg}"
             )
             warn_count += 1
-
-    # T-pose filename check — per species (deduplicated), only for mismatched
-    tpose_warn_count = 0
-    checked_object_types: set[str] = set()
-    for idx, (object_type, source_path, cond_subset) in enumerate(tasks):
-        warn_msg = results[idx]
-        if warn_msg is None:
-            continue
-        if object_type in checked_object_types:
-            continue
-        checked_object_types.add(object_type)
-        tpose_path = cond_subset.get("orientation_reference_fbx_path", "")
-        if tpose_path:
-            tpose_name = Path(tpose_path).name
-            name_upper = tpose_name.upper()
-            if "TPOSE" not in name_upper and "TPOS" not in name_upper:
-                _print_warn(
-                    f"{tpose_name} ({object_type}) — T-pose source "
-                    f"filename does not contain 'TPOSE'/'TPOS', may not "
-                    f"be a proper T-pose"
-                )
-                tpose_warn_count += 1
-
-    if len(checked_object_types) > 0 and tpose_warn_count == 0:
-        _print_ok(
-            "T-pose filename check passed for all mismatched species"
-        )
-    elif tpose_warn_count > 0:
-        _print_warn(
-            f"{tpose_warn_count} mismatched species T-pose source filename(s) "
-            f"do not contain 'TPOSE'/'TPOS'"
-        )
 
     return warn_count, total
 

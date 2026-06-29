@@ -38,6 +38,7 @@ from .features import (
     process_anim,
     infer_translation_root_index_from_features,
     get_common_features_from_T_pose,
+    tpose_features_from_cond,
     TPoseFeatures,
     get_hml_aligned_anim,
     get_motion,

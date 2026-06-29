@@ -461,6 +461,73 @@ def get_common_features_from_T_pose(*args, **kwargs):
     return get_common_features_from_rest_pose(*args, **kwargs)
 
 
+def tpose_features_from_cond(cond_entry, object_type=None):
+    """Reconstruct TPoseFeatures from a prebuilt cond.npy entry — no mesh access.
+
+    Every field the retarget / reference-preprocessing paths consume is already
+    baked into cond at dataset-build time, so the original bind/rest pose
+    FBX/GLB does not need to be re-loaded at inference time:
+
+      offsets, parents, joint names, bind-pose local rotations
+      (``tpose_rest_rotations``), orientation_quat, forward joint indices, face
+      joints, contact (foot) joints, per-character scale factor and axial bone
+      length.
+
+    Note ``tpose_rest_rotations`` (the scaled/oriented skeleton's per-joint bind
+    LOCAL rotations) is a distinct quantity from ``rest_pose[:, 3:9]`` (the
+    feature-space rest rotations) and is what the retargeter needs; it is baked
+    separately into cond because it is not derivable from rest_pose or offsets.
+
+    The result is duck-typed to :class:`TPoseFeatures` (identical attributes).
+    ``tpos_anim`` is a minimal one-frame rest-pose Animation carrying topology
+    (parents/offsets) and rest rotations; the only attribute downstream
+    consumers read from it is ``parents``.
+    """
+    from .physics_joint_annotation import rest_positions_from_offsets
+
+    parents = np.asarray(cond_entry['parents'], dtype=np.int32)
+    offsets = np.asarray(cond_entry['offsets'], dtype=np.float32)
+    names = list(cond_entry['joints_names'])
+    joint_count = len(parents)
+
+    rest_rots = cond_entry.get('tpose_rest_rotations')
+    if rest_rots is None:
+        raise KeyError(
+            f"cond entry for '{object_type or cond_entry.get('object_type')}' is "
+            "missing 'tpose_rest_rotations'; regenerate cond to bake the bind-pose "
+            "local rotations (they are not derivable from rest_pose/offsets)."
+        )
+    rest_quats = np.asarray(rest_rots, dtype=np.float64).reshape(joint_count, 4)
+    tpos_rots = Quaternions(rest_quats[None, :, :])  # (1, J, 4)
+
+    orientation_qs = np.asarray(cond_entry['orientation_quat'], dtype=np.float64).reshape(4)
+    orientation_quat = Quaternions(orientation_qs[None, :]).normalized()  # (1, 4)
+
+    rest_positions = rest_positions_from_offsets(offsets, parents)
+    tpos_anim = Animation(
+        tpos_rots.copy(),
+        rest_positions[None, :, :].astype(np.float64),
+        Quaternions.id(joint_count),
+        offsets.astype(np.float64),
+        parents,
+    )
+
+    return TPoseFeatures(
+        scale_factor=float(cond_entry['scale_factor']),
+        offsets=offsets,
+        foot_indices=list(cond_entry.get('contact_joints') or []),
+        tpos_rots=tpos_rots,
+        names=names,
+        tpos_anim=tpos_anim,
+        face_joints=list(cond_entry.get('face_joints') or []),
+        orientation_quat=orientation_quat,
+        forward_joint_index=cond_entry.get('forward_joint_index'),
+        forward_base_joint_index=cond_entry.get('forward_base_joint_index'),
+        contact_joint_source=cond_entry.get('contact_joint_source', 'cond'),
+        axial_avg_len=float(cond_entry.get('axial_avg_len', 0.0)),
+    )
+
+
 @dataclass
 class TPoseFeatures:
     """Packaged return from get_common_features_from_rest_pose.

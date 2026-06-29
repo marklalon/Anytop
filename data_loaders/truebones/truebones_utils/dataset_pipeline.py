@@ -16,7 +16,7 @@ from os.path import join as pjoin
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import random
 import bisect
-from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, MOTION_METADATA_FILE, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, get_raw_data_dir
+from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, MOTION_METADATA_FILE, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, TPOSE_REFERENCE_SIDECAR, get_raw_data_dir
 from pathlib import Path
 from .motion_labels import build_motion_labels, build_object_labels, write_motion_metadata, load_motion_metadata
 from .physics_joint_annotation import (
@@ -278,18 +278,11 @@ def _attach_orientation_reference_metadata(
     orientation_quat,
     forward_joint_index,
     forward_base_joint_index,
-    orientation_reference_fbx_path,
 ):
     orientation_qs = coerce_single_orientation_quat(orientation_quat).qs[0]
     object_cond['orientation_quat'] = orientation_qs.reshape(4)
     object_cond['forward_joint_index'] = int(forward_joint_index) if forward_joint_index is not None else None
     object_cond['forward_base_joint_index'] = int(forward_base_joint_index) if forward_base_joint_index is not None else None
-    # Store a repo-root-relative POSIX path so cond.npy stays portable across
-    # machines / containers (resolve via utils.misc.resolve_dataset_path).
-    from utils.misc import to_portable_dataset_path
-    object_cond['orientation_reference_fbx_path'] = to_portable_dataset_path(
-        orientation_reference_fbx_path
-    )
 
 
 def _build_motion_metadata_entry(result, motion_file_name):
@@ -360,6 +353,14 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
     object_cond['object_type'] = object_type
     object_cond['parents'] = parents
     object_cond['offsets'] = tp.offsets
+    # Bind-pose per-joint LOCAL rotations (J, 4 quaternions) of the
+    # scaled/oriented rest skeleton. These are NOT recoverable from
+    # rest_pose[:, 3:9] (those are the feature-space rest rotations, a different
+    # quantity) nor from offsets, so they are baked here for cond-only retarget
+    # and reference-motion preprocessing.
+    object_cond['tpose_rest_rotations'] = np.asarray(
+        getattr(tp.tpos_rots[0], 'qs', tp.tpos_rots[0]), dtype=np.float32
+    ).reshape(len(parents), 4)
     object_cond['joints_names'] = tp.names
     object_cond['canonical_joint_names'] = semantic_metadata['canonical_joint_names']
     object_cond['canonical_bvh_joint_names'] = [
@@ -373,7 +374,6 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
         tp.orientation_quat,
         tp.forward_joint_index,
         tp.forward_base_joint_index,
-        rest_pose_path,
     )
     object_cond['end_effector_joints'] = semantic_metadata['end_effector_joints']
     object_cond['end_effector_names'] = semantic_metadata['end_effector_names']
@@ -389,7 +389,14 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
     object_cond['axial_avg_len'] = float(tp.axial_avg_len)
     object_cond['kinematic_chains'] = parents2kinchains(parents, object_policy(object_type))
     object_cond.update(build_object_labels(object_type))
-    return object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, squared_positions_error, max_joints
+    # The skinned-mesh reference path is returned alongside cond (NOT stored on
+    # object_cond) so it never enters cond.npy or the in-memory cond dict. It is
+    # consumed ONLY by the offline dataset GLB tool (data_bridge.restore_glb_from_anytop)
+    # via the tpose_reference_paths sidecar; inference paths reconstruct rest-pose
+    # features from cond directly. Stored repo-root-relative POSIX for portability.
+    from utils.misc import to_portable_dataset_path
+    tpose_reference_path = to_portable_dataset_path(rest_pose_path)
+    return object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, squared_positions_error, max_joints, tpose_reference_path
 
 
 def build_tpose_cond(*args, **kwargs):
@@ -399,7 +406,7 @@ def build_tpose_cond(*args, **kwargs):
 
 """Build the rest-pose cond dict from a single FBX/GLB file (no motion files needed)."""
 def _build_rest_pose_only_cond(object_type, rest_pose_path, face_joints, crop_enabled=True):
-    object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints = _build_rest_pose_cond(
+    object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints, tpose_reference_path = _build_rest_pose_cond(
         object_type, rest_pose_path, face_joints, crop_enabled=crop_enabled,
     )
     num_joints = len(parents)
@@ -412,7 +419,7 @@ def _build_rest_pose_only_cond(object_type, rest_pose_path, face_joints, crop_en
 
     object_cond['std'] = np.ones_like(mean)
 
-    return object_cond, max_joints
+    return object_cond, max_joints, tpose_reference_path
 
 
 def _resample_animation(anim, target_len):
@@ -491,7 +498,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             return None
 
     squared_positions_error = dict()
-    object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints = _build_rest_pose_cond(
+    object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints, tpose_reference_path = _build_rest_pose_cond(
         object_type, t_pos_path, face_joints, max_joints=max_joints, crop_enabled=crop_enabled,
     )
     all_tensors = list()
@@ -575,6 +582,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     return {
         'object_type': object_type,
         'object_cond': object_cond,
+        'tpose_reference_path': tpose_reference_path,
         'errors': squared_positions_error,
         'max_joints': max_joints,
         'results': prepared_results,
@@ -646,16 +654,41 @@ def _write_positions_error_file(save_dir, squared_positions_error):
             error_file.write('%s: %f\n' %(source_clip, squared_error))
 
 
-def _write_preprocess_seed_artifacts(save_dir, cond, motion_metadata, max_joints, files_counter, frames_counter, squared_positions_error):
+def _save_cond_with_tpose_sidecar(save_dir, cond, tpose_refs=None):
+    """Persist cond.npy plus the ``TPOSE_REFERENCE_SIDECAR`` file
+    ({object_type: portable mesh path}).
+
+    The skinned-mesh path is never stored on cond (file or memory); it travels
+    separately and is passed here as *tpose_refs* ({object_type: path}). Only the
+    objects present in *tpose_refs* (with a non-None path) update the sidecar; all
+    other existing sidecar entries are preserved, so incremental builds, per-object
+    merges, and retarget/update paths (which reuse the target's existing entry) keep
+    every other species' path intact.
+    """
+    sidecar_path = pjoin(save_dir, TPOSE_REFERENCE_SIDECAR)
+    sidecar = {}
+    if os.path.exists(sidecar_path):
+        sidecar = dict(np.load(sidecar_path, allow_pickle=True).item())
+
+    # Fresh paths collected this run take precedence over any existing sidecar value.
+    for object_type, path in (tpose_refs or {}).items():
+        if path:
+            sidecar[object_type] = path
+
+    np.save(pjoin(save_dir, 'cond.npy'), cond)
+    np.save(sidecar_path, sidecar)
+
+
+def _write_preprocess_seed_artifacts(save_dir, cond, motion_metadata, max_joints, files_counter, frames_counter, squared_positions_error, tpose_refs=None):
     # Seed artifacts are the minimum inputs regeneration needs to rebuild the
     # full side-artifact set after motion export completes.
     _print_dataset_summary(max_joints, files_counter, frames_counter)
     _write_positions_error_file(save_dir, squared_positions_error)
-    np.save(pjoin(save_dir, 'cond.npy'), cond)
+    _save_cond_with_tpose_sidecar(save_dir, cond, tpose_refs)
     write_motion_metadata(save_dir, motion_metadata, files_counter)
 
 
-def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, max_joints, files_counter, frames_counter, squared_positions_error, skip_t5=False):
+def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, max_joints, files_counter, frames_counter, squared_positions_error, skip_t5=False, tpose_refs=None):
     _print_dataset_summary(max_joints, files_counter, frames_counter)
     with open(pjoin(save_dir, 'metadata.txt'), 'w', encoding='utf-8') as text_file:
         text_file.write('max joints: %d\n' %(max_joints))
@@ -669,7 +702,7 @@ def _write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, m
 
     if not skip_t5:
         attach_t5_embeddings_to_cond(cond, save_dir)
-    np.save(pjoin(save_dir, "cond.npy"), cond)
+    _save_cond_with_tpose_sidecar(save_dir, cond, tpose_refs)
     write_motion_metadata(save_dir, motion_metadata, files_counter)
 
 
@@ -723,7 +756,7 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
         crop_enabled=crop_enabled,
     )
     if object_payload is None:
-        return files_counter, frames_counter, max_joints, None, {}
+        return files_counter, frames_counter, max_joints, None, {}, None
 
     squared_positions_error.update(object_payload['errors'])
     max_joints = max(max_joints, object_payload['max_joints'])
@@ -735,7 +768,8 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
     )
     frames_counter += object_frames_counter
 
-    return files_counter, frames_counter, max_joints, object_payload['object_cond'], object_motion_metadata
+    return (files_counter, frames_counter, max_joints, object_payload['object_cond'],
+            object_motion_metadata, object_payload['tpose_reference_path'])
 
 
 """ create dataset
@@ -823,6 +857,10 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
     # this run survive the cond.npy / motion_metadata rewrite below.
     cond = dict(existing_cond)
     motion_metadata = dict(existing_meta)
+    # Skinned-mesh reference paths travel separately from cond and are written to
+    # the sidecar (never into cond.npy). Only this run's objects are collected;
+    # untouched objects keep their existing sidecar entries.
+    tpose_refs: dict[str, str | None] = {}
 
     all_motion_errors = []
     all_warn_messages: list[str] = []
@@ -843,6 +881,7 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
         )
         frames_counter += object_frames
         cond[object_type] = payload['object_cond']
+        tpose_refs[object_type] = payload['tpose_reference_path']
         objects_counter[object_type] = files_counter - cur_counter
         motion_metadata.update(object_motion_metadata)
 
@@ -873,6 +912,7 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
         total_clips,
         frames_counter,
         squared_positions_error,
+        tpose_refs=tpose_refs,
     )
 
 
@@ -881,13 +921,16 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
 Other objects already present in cond.npy are left untouched. mean/std written
 here are provisional — regenerate_dataset_artifacts(recompute_stats=True) rebuilds
 them over the merged clip set after an incremental --update."""
-def _merge_object_into_cond(save_dir, object_name, object_cond):
+def _merge_object_into_cond(save_dir, object_name, object_cond, tpose_reference_path=None):
     cond_path = pjoin(save_dir, 'cond.npy')
     cond = {}
     if os.path.exists(cond_path):
         cond = dict(np.load(cond_path, allow_pickle=True).item())
     cond[object_name] = object_cond
-    np.save(cond_path, cond)
+    # tpose_reference_path is None for retarget/anim-dir updates that reuse the
+    # target's existing sidecar entry (preserved by _save_cond_with_tpose_sidecar).
+    tpose_refs = {object_name: tpose_reference_path} if tpose_reference_path else None
+    _save_cond_with_tpose_sidecar(save_dir, cond, tpose_refs)
 
 
 def _is_anim_dir_motion_entry(entry):
@@ -1077,7 +1120,7 @@ def _update_anim_dir(object_name, face_joints, save_dir, tpose_path, anim_dir):
     action_start_counts = _object_action_start_counts(existing_meta, object_name)
 
     squared_positions_error = dict()
-    _, _, _, object_cond, new_meta = process_object(
+    _, _, _, object_cond, new_meta, tpose_reference_path = process_object(
         object_name,
         0,
         0,
@@ -1126,7 +1169,7 @@ def _update_anim_dir(object_name, face_joints, save_dir, tpose_path, anim_dir):
     merged_meta = dict(kept_meta)
     merged_meta.update(new_meta)
     write_motion_metadata(save_dir, merged_meta, len(merged_meta))
-    _merge_object_into_cond(save_dir, object_name, object_cond)
+    _merge_object_into_cond(save_dir, object_name, object_cond, tpose_reference_path)
     print(f"[update] anim-dir: {len(new_meta)} clip(s) written, "
           f"{len(merged_meta)} clip(s) total")
 
@@ -1237,7 +1280,7 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
 
     if anim_dir is None:
         # Rest-pose only: generate cond.npy without motion file processing
-        object_cond, max_joints = _build_rest_pose_only_cond(
+        object_cond, max_joints, tpose_reference_path = _build_rest_pose_only_cond(
             object_name,
             tpose_path,
             face_joints,
@@ -1254,11 +1297,12 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
             frames_counter,
             squared_positions_error,
             skip_t5=skip_t5,
+            tpose_refs={object_name: tpose_reference_path},
         )
         return
 
     cur_counter = files_counter
-    files_counter, frames_counter, max_joints, object_cond, object_motion_metadata = process_object(
+    files_counter, frames_counter, max_joints, object_cond, object_motion_metadata, tpose_reference_path = process_object(
         object_name,
         files_counter,
         frames_counter,
@@ -1287,4 +1331,5 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
         frames_counter,
         squared_positions_error,
         skip_t5=skip_t5,
+        tpose_refs={object_name: tpose_reference_path},
     )
