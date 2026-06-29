@@ -1477,8 +1477,7 @@ def main(args=None, cond_dict=None, runtime=None):
                 inferred_display = source_type if source_type else target_type
                 print(f"Reference motion object_type: {inferred_display}")
 
-    print(f'\n### Sampling object_type: {object_type}')
-    print(f'  method={sampling_method} steps={sampling_steps or "full"} batch_size={args.batch_size}')
+    print(f'\nSampling object_type: {object_type}  method={sampling_method} steps={sampling_steps or "full"} batch_size={args.batch_size}')
 
     # Prepare reference motion (normalize + reshape)
     ref_motion = None
