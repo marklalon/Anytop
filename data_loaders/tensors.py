@@ -132,14 +132,20 @@ def truebones_collate(batch):
             ])
         })
 
-    # Global canonical standardization stats are a single cross-species constant
-    # (identical for every sample), so carry one 13-vector through for the
-    # training-time aux-loss decode (canonical_to_physical_hml reads y).
+    # Canonical standardization stats are a cross-species constant *per object_subset*
+    # (quadruped / winged / ... each get their own 13-vector), so a mixed-species
+    # batch needs per-sample stats. Stack them in batch order into [B, F] so the
+    # training-time aux-loss decode (canonical_to_physical_hml reads y) de-standardizes
+    # each sample with its own object_subset's stats. Only stack when every item carries
+    # the stat; a partially-populated batch would misalign sample<->stat (and the
+    # fail-fast loader guarantees all training items have it).
     for stat_key in ('canonical_feature_mean', 'canonical_feature_std'):
-        for batch_item in notnone_batches:
-            if batch_item.get(stat_key) is not None:
-                cond['y'][stat_key] = batch_item[stat_key]
-                break
+        stat_vals = [batch_item.get(stat_key) for batch_item in notnone_batches]
+        if all(v is not None for v in stat_vals):
+            cond['y'][stat_key] = torch.stack(
+                [torch.as_tensor(v, dtype=torch.float32).reshape(-1) for v in stat_vals],
+                dim=0,
+            )
 
     if any('feature_space' in batch_item for batch_item in notnone_batches):
         cond['y'].update({

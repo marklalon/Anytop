@@ -987,7 +987,7 @@ class Truebones(data.Dataset):
                 raise RuntimeError(
                     f"cond entry '{object_type}' is missing canonical_feature_mean/std. "
                     "Regenerate cond.npy (python tools/regenerate_dataset_artifacts.py) to "
-                    "compute the global canonical standardization statistics."
+                    "compute the per-object_subset canonical standardization statistics."
                 )
             cond['joint_mask_candidate_roots'] = _build_joint_mask_candidate_roots(cond)
 

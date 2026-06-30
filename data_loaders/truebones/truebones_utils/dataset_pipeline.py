@@ -16,7 +16,7 @@ from os.path import join as pjoin
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import random
 import bisect
-from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, MOTION_METADATA_FILE, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, TPOSE_REFERENCE_SIDECAR, get_raw_data_dir
+from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, MOTION_METADATA_FILE, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, TPOSE_REFERENCE_SIDECAR, get_raw_data_dir, object_subset_for_object_type
 from pathlib import Path
 from .motion_labels import build_motion_labels, build_object_labels, write_motion_metadata, load_motion_metadata
 from .physics_joint_annotation import (
@@ -880,22 +880,65 @@ def _merge_object_into_cond(save_dir, object_name, object_cond, tpose_reference_
     cond = {}
     if os.path.exists(cond_path):
         cond = dict(np.load(cond_path, allow_pickle=True).item())
+    prior_entry = cond.get(object_name)
     cond[object_name] = object_cond
-    # The global canonical standardization stats are a single cross-species
-    # constant tied to the trained checkpoint. A newly added skeleton has no
-    # motions of its own to recompute them from and MUST reuse the dataset's
-    # existing constant so its features land in the same space the model was
-    # trained on. Inherit from any sibling entry that already carries them.
+    # The canonical standardization stats are a cross-species constant *per
+    # object_subset* tied to the trained checkpoint. A freshly (re)built object
+    # cond has no stats of its own, so it must reuse the dataset's existing
+    # constant to land in the space the model was trained on.
+    def _entry_stats(entry):
+        if entry is None:
+            return None
+        mean = entry.get('canonical_feature_mean')
+        std = entry.get('canonical_feature_std')
+        return (mean, std) if mean is not None and std is not None else None
+
     if object_cond.get('canonical_feature_mean') is None:
-        for sibling, sibling_cond in cond.items():
-            if sibling == object_name:
-                continue
-            mean = sibling_cond.get('canonical_feature_mean')
-            std = sibling_cond.get('canonical_feature_std')
-            if mean is not None and std is not None:
-                object_cond['canonical_feature_mean'] = np.asarray(mean, dtype=np.float32)
-                object_cond['canonical_feature_std'] = np.asarray(std, dtype=np.float32)
-                break
+        # 1) Update of an existing species: keep its own prior stats (skeleton
+        #    geometry / object_subset is unchanged, and the stats are tied to the
+        #    checkpoint), so the overwrite above doesn't drop them.
+        chosen = _entry_stats(prior_entry)
+        if chosen is None:
+            siblings_with_stats = {
+                sibling: stats
+                for sibling, sibling_cond in cond.items()
+                if sibling != object_name and (stats := _entry_stats(sibling_cond)) is not None
+            }
+            # 2) New species in a dataset that already carries canonical stats:
+            #    inherit ONLY from a sibling of the SAME object_subset. There is no
+            #    cross-subset fallback -- the model is trained per-object_subset, so
+            #    borrowing another subset's stats (or an untagged species having
+            #    none) would be out-of-distribution at inference -> fast-fail.
+            if not siblings_with_stats:
+                raise ValueError(
+                    f"No species in cond.npy carries canonical standardization stats "
+                    f"for '{object_name}' to inherit (the dataset predates canonical "
+                    f"features, or no species has been processed with rest geometry). "
+                    "Run regenerate_dataset_artifacts first to compute per-object_subset "
+                    "standardization statistics before merging new skeletons."
+                )
+            target_subset = object_subset_for_object_type(object_name)
+            if target_subset is None:
+                raise ValueError(
+                    f"'{object_name}' has no object_subset (missing species_tags.jsonl "
+                    "entry); cannot inherit canonical standardization stats. Register it "
+                    "in species_tags.jsonl before merging."
+                )
+            for sibling, stats in siblings_with_stats.items():
+                if object_subset_for_object_type(sibling) == target_subset:
+                    chosen = stats
+                    break
+            if chosen is None:
+                raise ValueError(
+                    f"No existing '{target_subset}' species in cond.npy carries canonical "
+                    f"standardization stats for new skeleton '{object_name}' to inherit. "
+                    "The model is trained per-object_subset, so borrowing another subset's "
+                    "stats would be out-of-distribution. Add a same-object_subset species "
+                    "(or regenerate the dataset) before merging."
+                )
+        if chosen is not None:
+            object_cond['canonical_feature_mean'] = np.asarray(chosen[0], dtype=np.float32)
+            object_cond['canonical_feature_std'] = np.asarray(chosen[1], dtype=np.float32)
     # tpose_reference_path is None for retarget/anim-dir updates that reuse the
     # target's existing sidecar entry (preserved by _save_cond_with_tpose_sidecar).
     tpose_refs = {object_name: tpose_reference_path} if tpose_reference_path else None

@@ -9,13 +9,18 @@ model feature space via three prior-free, exactly-invertible steps:
      channels are divided by the skeleton's own geometric length ``L`` so that
      every species lands in a size-free space (cross-species fair). Rotation
      (6d) and contact are size-independent and are left untouched here.
-  3. Global per-channel standardization: subtract a GLOBAL per-channel mean and
-     divide by a GLOBAL per-channel std (13-vectors). These statistics are
-     computed ONCE over the whole training set in the L-normalized space of
-     step (2) and pooled across all joints / frames / clips / species, so they
-     are a single cross-species constant (NOT a per-species motion prior) and
-     generalize to held-out species. They are stored in ``cond`` at
-     preprocessing time (``canonical_feature_mean`` / ``canonical_feature_std``).
+  3. Per-object_subset per-channel standardization: subtract a per-channel mean
+     and divide by a per-channel std (13-vectors). These statistics are computed
+     at preprocessing time in the L-normalized space of step (2), pooled across
+     all joints / frames / clips / species *within each object_subset* (quadruped
+     / biped / multiped / serpentine / aquatic / winged). They are therefore a
+     cross-species constant *per object_subset* (NOT a per-species motion prior):
+     a held-out species inherits the stats of its object_subset, so the
+     standardization generalizes while giving each object_subset its own
+     zero-mean / unit-std calibration (winged flapping and quadruped locomotion
+     have very different velocity / rotation scales). They are stored in ``cond``
+     per species (``canonical_feature_mean`` / ``canonical_feature_std``); species
+     sharing an object_subset carry the same 13-vectors.
 
 Channel layout per joint (n_feats == 13):
     0:3   position   (rest-centered residual)
@@ -38,10 +43,11 @@ except Exception:  # pragma: no cover - torch is present in training/runtime.
 CANONICAL_FEATURE_SPACE = "canonical_motion_v3"
 PHYSICAL_FEATURE_SPACE = "hml_like_v_current"
 
-# Keys under which the global per-channel standardization statistics are stored
-# in each cond entry. The same 13-vectors are written to every species (they are
-# a single cross-species constant). Computed at preprocessing time over the
-# L-normalized training distribution -- see compute_global_canonical_stats().
+# Keys under which the per-object_subset per-channel standardization statistics
+# are stored in each cond entry. The 13-vectors are shared by species within the
+# same object_subset (quadruped / winged / ...). Computed at preprocessing time
+# over the L-normalized training distribution -- see
+# ``_compute_canonical_stats_per_object_subset``.
 CANONICAL_MEAN_KEY = "canonical_feature_mean"
 CANONICAL_STD_KEY = "canonical_feature_std"
 
@@ -160,7 +166,7 @@ def _apply_L_scale(feature, cond_entry, inverse: bool):
 
 
 def get_canonical_global_stats(cond_entry):
-    """Return ``(mean, std)`` global per-channel standardization vectors from a
+    """Return ``(mean, std)`` per-object_subset standardization vectors from a
     cond entry, or ``None`` when absent (cond predates the stats, e.g. tests).
     """
     if cond_entry is None:
@@ -173,7 +179,7 @@ def get_canonical_global_stats(cond_entry):
 
 
 def set_canonical_global_stats(cond_entry, mean, std):
-    """Store the global per-channel mean/std (13-vectors) on a cond entry,
+    """Store the per-object_subset mean/std (13-vectors) on a cond entry,
     flooring near-constant channels to unit std so the encode divide is safe.
     """
     mean = np.asarray(mean, dtype=np.float32).reshape(-1)
@@ -184,16 +190,50 @@ def set_canonical_global_stats(cond_entry, mean, std):
     return cond_entry
 
 
+def _view_stat_torch(stat, ndim: int, n_feats: int):
+    """Shape a standardization stat tensor for broadcasting against a feature.
+
+    ``stat`` is either 1D ``[F]`` (broadcast over the whole batch) or 2D
+    ``[B, F]`` (per-sample). For a 4D ``[B, J, F, T]`` feature the result is
+    ``[1, 1, F, 1]`` (1D) or ``[B, 1, F, 1]`` (per-sample). For lower-rank
+    single-sample features the 1D vector broadcasts over the trailing axis as-is.
+    """
+    if stat.dim() >= 2:
+        if ndim != 4:
+            raise ValueError(
+                "per-sample [B, F] canonical stats are only supported for 4D "
+                f"[B, J, F, T] features, got feature rank {ndim}."
+            )
+        stat2 = stat.reshape(stat.shape[0], -1)[:, :n_feats]
+        return stat2.view(stat2.shape[0], 1, n_feats, 1)
+    stat1 = stat.reshape(-1)[:n_feats]
+    return stat1.view(1, 1, n_feats, 1) if ndim == 4 else stat1
+
+
+def _view_stat_numpy(stat, ndim: int, n_feats: int):
+    """Numpy counterpart of _view_stat_torch (same 1D / per-sample contract)."""
+    if stat.ndim >= 2:
+        if ndim != 4:
+            raise ValueError(
+                "per-sample [B, F] canonical stats are only supported for 4D "
+                f"[B, J, F, T] features, got feature rank {ndim}."
+            )
+        stat2 = stat.reshape(stat.shape[0], -1)[:, :n_feats]
+        return stat2.reshape(stat2.shape[0], 1, n_feats, 1)
+    stat1 = stat.reshape(-1)[:n_feats]
+    return stat1.reshape(1, 1, n_feats, 1) if ndim == 4 else stat1
+
+
 def _apply_global_stats(feature, cond_entry, inverse: bool):
     """Standardize (encode: ``(x - mean) / std``) or de-standardize
-    (decode: ``x * std + mean``) every channel by the GLOBAL per-channel
+    (decode: ``x * std + mean``) every channel by the per-object_subset
     statistics stored on ``cond_entry``.
 
     Raises if the statistics are absent. Silently skipping standardization would
     leave the features in the L-normalized space (wrong scale) without any error
     -- exactly the failure mode that produced broken inference when a caller
-    passed a decode dict missing the stats. Callers must always thread the global
-    stats through (cond entry, or the collated ``y`` dict). The stats-free
+    passed a decode dict missing the stats. Callers must always thread the stats
+    through (cond entry, or the collated ``y`` dict). The stats-free
     L-normalized space is reachable only via physical_hml_to_lnorm(), which is
     used solely to *compute* these statistics at preprocessing time.
     """
@@ -213,31 +253,23 @@ def _apply_global_stats(feature, cond_entry, inverse: bool):
         # Stats may arrive as numpy (per-species cond entry) or as torch tensors,
         # possibly on CUDA (collated into y for the training aux-loss decode).
         # Convert without round-tripping through numpy so a CUDA tensor is safe.
+        # A 1D ``[F]`` vector is broadcast over the whole batch (single-sample
+        # decode, or a homogeneous batch). A 2D ``[B, F]`` vector is per-sample:
+        # each batch element carries its own object_subset's stats (the collate stacks
+        # them in batch order), which a mixed-species batch requires.
         mean_t = (mean if _is_torch_tensor(mean) else torch.as_tensor(np.asarray(mean, dtype=np.float32))) \
-            .to(device=out.device, dtype=out.dtype).reshape(-1)
+            .to(device=out.device, dtype=out.dtype)
         std_t = (std if _is_torch_tensor(std) else torch.as_tensor(np.asarray(std, dtype=np.float32))) \
-            .to(device=out.device, dtype=out.dtype).reshape(-1)
-        mean_t = mean_t[:n_feats]
-        std_t = std_t[:n_feats]
-        if ndim == 4:
-            mean_v = mean_t.view(1, 1, n_feats, 1)
-            std_v = std_t.view(1, 1, n_feats, 1)
-        else:
-            mean_v = mean_t
-            std_v = std_t
+            .to(device=out.device, dtype=out.dtype)
+        mean_v = _view_stat_torch(mean_t, ndim, n_feats)
+        std_v = _view_stat_torch(std_t, ndim, n_feats)
         return (out * std_v) + mean_v if inverse else (out - mean_v) / std_v
 
     out = np.asarray(feature, dtype=np.float32)
     ndim = out.ndim
     n_feats = out.shape[2] if ndim == 4 else out.shape[-1]
-    mean_np = np.asarray(mean, dtype=np.float32).reshape(-1)[:n_feats]
-    std_np = np.asarray(std, dtype=np.float32).reshape(-1)[:n_feats]
-    if ndim == 4:
-        mean_v = mean_np.reshape(1, 1, n_feats, 1)
-        std_v = std_np.reshape(1, 1, n_feats, 1)
-    else:
-        mean_v = mean_np
-        std_v = std_np
+    mean_v = _view_stat_numpy(np.asarray(mean, dtype=np.float32), ndim, n_feats)
+    std_v = _view_stat_numpy(np.asarray(std, dtype=np.float32), ndim, n_feats)
     out = (out * std_v) + mean_v if inverse else (out - mean_v) / std_v
     return out.astype(np.float32, copy=False)
 
@@ -290,7 +322,7 @@ def physical_hml_to_canonical(feature, cond_entry):
 
     Encode order: subtract rest from the position channel, divide the
     position/velocity channels by ``L``, then standardize every channel by the
-    GLOBAL per-channel mean/std.
+    per-object_subset mean/std.
     """
     lnorm = physical_hml_to_lnorm(feature, cond_entry)
     return _apply_global_stats(lnorm, cond_entry, inverse=False)
@@ -299,9 +331,9 @@ def physical_hml_to_canonical(feature, cond_entry):
 def canonical_to_physical_hml(feature, cond_entry):
     """Decode canonical model features back to HML-like physical features.
 
-    Decode order (exact inverse of encode): de-standardize by the GLOBAL
-    per-channel mean/std, multiply the position/velocity channels by ``L``, then
-    add rest back onto the position channel.
+    Decode order (exact inverse of encode): de-standardize by the
+    per-object_subset mean/std, multiply the position/velocity channels by
+    ``L``, then add rest back onto the position channel.
     """
     lnorm = _apply_global_stats(feature, cond_entry, inverse=True)
     unscaled = _apply_L_scale(lnorm, cond_entry, inverse=True)
@@ -391,6 +423,6 @@ def validate_feature_space(cond_entry, expected=CANONICAL_FEATURE_SPACE):
         raise ValueError(
             f"cond entry is missing {CANONICAL_MEAN_KEY!r}/{CANONICAL_STD_KEY!r}. "
             "Regenerate cond.npy (regenerate_dataset_artifacts) to compute the "
-            "global canonical standardization statistics."
+            "per-object_subset canonical standardization statistics."
         )
     return True

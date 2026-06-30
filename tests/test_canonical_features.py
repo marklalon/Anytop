@@ -184,6 +184,8 @@ def test_truebones_collate_drops_motion_stats_and_carries_global_stats():
     assert "std" not in y
     assert y["feature_space"] == ["canonical_motion_v3"]
     assert tuple(y["rest_pos_ric_hml"].shape) == (1, 2, 3)
-    # global standardization stats flow through as a single 13-vector
-    assert tuple(y["canonical_feature_mean"].shape) == (13,)
-    assert tuple(y["canonical_feature_std"].shape) == (13,)
+    # Per-object_subset standardization stats flow through per-sample, stacked in
+    # batch order as [B, 13] so a mixed-species batch de-standardizes each sample
+    # with its own object_subset's stats.
+    assert tuple(y["canonical_feature_mean"].shape) == (1, 13)
+    assert tuple(y["canonical_feature_std"].shape) == (1, 13)

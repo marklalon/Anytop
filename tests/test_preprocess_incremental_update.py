@@ -770,6 +770,57 @@ def test_process_skeleton_retarget_branch_writes_translation_root_metadata(monke
     assert motion_metadata['Dragon_RunLoop_001.npy']['motion_source'] == 'retarget'
 
 
+def _cond_entry_with_stats(object_type, mean_fill, std_fill):
+    entry = _make_cond_entry(object_type)
+    entry["canonical_feature_mean"] = np.full((13,), mean_fill, dtype=np.float32)
+    entry["canonical_feature_std"] = np.full((13,), std_fill, dtype=np.float32)
+    return entry
+
+
+def test_merge_inherits_canonical_stats_from_same_object_subset(tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir(parents=True)
+    # Existing quadruped (Cat) carries stats; add a new quadruped (Dog) without.
+    np.save(dataset_dir / "cond.npy", {"Cat": _cond_entry_with_stats("Cat", 0.5, 2.0)})
+
+    dataset_pipeline_mod._merge_object_into_cond(
+        str(dataset_dir), "Dog", _make_cond_entry("Dog")
+    )
+
+    merged = dict(np.load(dataset_dir / "cond.npy", allow_pickle=True).item())
+    np.testing.assert_allclose(merged["Dog"]["canonical_feature_mean"], np.full((13,), 0.5, dtype=np.float32))
+    np.testing.assert_allclose(merged["Dog"]["canonical_feature_std"], np.full((13,), 2.0, dtype=np.float32))
+
+
+def test_merge_fast_fails_when_no_same_object_subset_donor(tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir(parents=True)
+    # Only a quadruped carries stats; a new winged species (Dragon) has no
+    # same-object_subset donor, so borrowing would be OOD -> fast-fail.
+    np.save(dataset_dir / "cond.npy", {"Cat": _cond_entry_with_stats("Cat", 0.5, 2.0)})
+
+    with pytest.raises(ValueError, match="winged"):
+        dataset_pipeline_mod._merge_object_into_cond(
+            str(dataset_dir), "Dragon", _make_cond_entry("Dragon")
+        )
+
+
+def test_merge_update_preserves_species_own_prior_stats(tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir(parents=True)
+    # Single-species dataset: an update rebuilds Dragon's cond without stats; its
+    # own prior stats must survive the overwrite (no sibling to inherit from).
+    np.save(dataset_dir / "cond.npy", {"Dragon": _cond_entry_with_stats("Dragon", 0.3, 1.5)})
+
+    dataset_pipeline_mod._merge_object_into_cond(
+        str(dataset_dir), "Dragon", _make_cond_entry("Dragon")
+    )
+
+    merged = dict(np.load(dataset_dir / "cond.npy", allow_pickle=True).item())
+    np.testing.assert_allclose(merged["Dragon"]["canonical_feature_mean"], np.full((13,), 0.3, dtype=np.float32))
+    np.testing.assert_allclose(merged["Dragon"]["canonical_feature_std"], np.full((13,), 1.5, dtype=np.float32))
+
+
 def test_update_anim_dir_preserves_other_objects(monkeypatch, tmp_path):
     dataset_dir = tmp_path / 'dataset'
     motions_dir = dataset_dir / 'motions'

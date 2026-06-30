@@ -61,6 +61,7 @@ from truebones_utils.param_utils import (  # noqa: E402
     MOTION_METADATA_FILE,
     ACTION_TAGS_FILE,
     get_dataset_dir,
+    object_subset_for_object_type,
 )
 from truebones_utils.physics_joint_annotation import (  # noqa: E402
     build_semantic_metadata,
@@ -214,52 +215,93 @@ def _mark_object_feature_spaces(
         print(f"[OK] marked canonical feature space for {len(rebuilt_cond)} species")
 
 
-def _compute_global_canonical_stats(
+def _compute_canonical_stats_per_object_subset(
     rebuilt_cond: dict[str, dict],
     motion_files: list[Path],
 ) -> None:
-    """Compute the GLOBAL per-channel standardization statistics over every motion
-    clip and store the same 13-vectors on every cond entry.
+    """Compute per-object_subset per-channel standardization statistics and store
+    each object_subset's 13-vectors on its member cond entries.
 
     Each physical clip is encoded into the L-normalized space (rest-centered
-    position + per-skeleton size division) and pooled across all joints, frames,
-    clips, and species. The resulting mean/std are a single cross-species
-    constant (no per-species motion prior), so they generalize to held-out
-    species while restoring the zero-mean / unit-variance behavior the diffusion
-    noise schedule expects. Requires rest geometry (set by mark_canonical_cond_entry)
-    to already be present on each cond entry."""
+    position + per-skeleton size division) and accumulated into the bucket of the
+    species' object_subset (the first motion tag in species_tags.jsonl: quadruped
+    / biped / multiped / serpentine / aquatic / winged). Pooling within an
+    object_subset (across its species, joints, frames, and clips) keeps the
+    resulting mean/std a cross-species constant *per object_subset* (no per-species
+    motion prior), so they generalize to held-out species of the same
+    object_subset while giving each object_subset its own zero-mean / unit-variance
+    calibration -- closer to the behavior the diffusion noise schedule expects than
+    a single global constant that averages flapping wings against quadruped gaits.
+
+    There is NO global-pooled fallback: the model is trained exclusively on
+    per-object_subset normalized features, so standardizing any species with stats
+    pooled across all subsets would place its features in a space the model never
+    saw (out-of-distribution at inference). A species that cannot resolve to an
+    object_subset with usable clips is therefore a hard error -- the build
+    fast-fails listing the offending species. Requires rest geometry (set by
+    mark_canonical_cond_entry) to already be present on each cond entry."""
 
     known_object_types = tuple(rebuilt_cond.keys())
-    acc = None
+    subset_of = {ot: object_subset_for_object_type(ot) for ot in known_object_types}
+
+    subset_accs: dict[str, dict] = {}
     used = 0
     for motion_path in motion_files:
         object_type = _infer_object_type_from_motion_name(motion_path.name, known_object_types)
         object_cond = rebuilt_cond.get(object_type)
         if object_cond is None:
             continue
+        subset = subset_of.get(object_type)
+        if not subset:
+            # Untagged species cannot be bucketed; it will be caught by the
+            # unresolved-species fast-fail below (no global fallback).
+            continue
         motion = np.load(motion_path).astype(np.float32, copy=False)
         if motion.ndim != 3 or motion.shape[-1] < 13:
             continue
         try:
-            acc = accumulate_lnorm_stats(motion, object_cond, acc=acc)
+            subset_accs[subset] = accumulate_lnorm_stats(motion, object_cond, acc=subset_accs.get(subset))
         except (KeyError, ValueError):
             # cond entry lacks rest geometry (e.g. minimal synthetic fixtures);
             # such clips cannot be encoded, so skip them.
             continue
         used += 1
 
-    if acc is None or acc["count"] <= 0:
-        print("[WARN] no usable motion clips with rest geometry; global canonical stats not written")
+    usable_accs = {s: a for s, a in subset_accs.items() if a is not None and a["count"] > 0}
+    if not usable_accs:
+        print("[WARN] no usable motion clips with rest geometry; canonical stats not written")
         return
 
-    mean, std = finalize_lnorm_stats(acc)
-    for object_cond in rebuilt_cond.values():
-        set_canonical_global_stats(object_cond, mean, std)
-    with np.printoptions(precision=3, suppress=True, linewidth=160):
-        print(
-            f"[OK] global canonical stats over {used} clip(s) / {acc['count']} frames-joints\n"
-            f"     mean={mean}\n     std ={std}"
+    subset_stats = {subset: finalize_lnorm_stats(acc) for subset, acc in usable_accs.items()}
+
+    # No global-pooled fallback (would be OOD at inference -- see docstring). Every
+    # species MUST resolve to an object_subset that has usable clips.
+    unresolved = sorted(
+        f"{ot} (object_subset={subset_of.get(ot)!r})"
+        for ot in rebuilt_cond
+        if subset_of.get(ot) is None or subset_of.get(ot) not in subset_stats
+    )
+    if unresolved:
+        raise ValueError(
+            "Cannot compute per-object_subset canonical stats: no usable clips for "
+            "the object_subset(s) of these species:\n  " + "\n  ".join(unresolved)
+            + "\nEvery species must belong to an object_subset that has at least one "
+            "usable motion clip (the model is trained per-object_subset; there is no "
+            "global fallback). Add clips for the subset, or register the species in "
+            "species_tags.jsonl."
         )
+
+    for object_type, object_cond in rebuilt_cond.items():
+        mean, std = subset_stats[subset_of[object_type]]
+        set_canonical_global_stats(object_cond, mean, std)
+
+    with np.printoptions(precision=3, suppress=True, linewidth=160):
+        print(f"[OK] canonical stats over {used} clip(s) bucketed by object_subset:")
+        for subset, (mean, std) in sorted(subset_stats.items()):
+            print(
+                f"     [{subset}] {usable_accs[subset]['count']} frames-joints\n"
+                f"         mean={mean}\n         std ={std}"
+            )
 
 
 def _recompute_contact_joints(rebuilt_cond: dict[str, dict]) -> None:
@@ -454,8 +496,8 @@ def regenerate_dataset_artifacts(
     write_joint_name_collision_report(rebuilt_cond, str(dataset_dir_path))
 
     t0 = time.time()
-    _compute_global_canonical_stats(rebuilt_cond, motion_files)
-    print(f"[OK] global canonical stats computed in {time.time() - t0:.1f}s")
+    _compute_canonical_stats_per_object_subset(rebuilt_cond, motion_files)
+    print(f"[OK] per-object_subset canonical stats computed in {time.time() - t0:.1f}s")
 
     np.save(str(cond_path), rebuilt_cond)
 
