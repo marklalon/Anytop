@@ -6,9 +6,7 @@ The output cond.npy is designed to be passed via ``--cond-path`` to ``generate.p
 
 .. warning::
    The generated data is **not suitable for training**. Skeleton cropping
-   (MAX_JOINTS=100) is disabled by default (``--crop-enabled`` to enable), and the
-   mean/std statistics are computed from retargeted donor motions or a limited set of
-   input animations, which do not reflect the training distribution. Use
+   (MAX_JOINTS=100) is disabled by default (``--crop-enabled`` to enable). Use
    ``preprocess_and_validate.py`` for training dataset creation.
 
 While designed to be as generic as possible, some skeleton-specific adjustments may be
@@ -17,86 +15,37 @@ velocity/height thresholds for foot contact detection). Tested on FBX from Mixam
 sources.
 
 Input Arguments:
-object_type       - Species/type name (e.g. "Dragon"). Inferred from filenames when omitted.
-anim-dir          - Directory with animation files (FBX/GLB/GLTF) of the skeleton.
-                    More files improve mean/std accuracy for motion denormalization.
-                    Mutually exclusive with --retarget-top-k.
-tpos-path         - An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base.
-                    When omitted (and --anim-dir given), auto-selects a reference carrier
-                    from anim files (T-pose/rest/bind > idle > walk > first).
+tpos-path         - An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base (required).
 save-dir          - Output directory (required).
-retarget-top-k    - Auto-select the top-k most similar training skeletons as motion donors,
-                    retarget their motions to the new skeleton, and use those coarse motions
-                    to compute mean/std. Mutually exclusive with --anim-dir.
-training-cond-path - Path to the training dataset's cond.npy for donor selection when
-                     --retarget-top-k is set. (default: dataset/truebones/.../cond.npy)
-donor-skeletons   - Comma-separated donor names to use instead of auto-selection,
-                    e.g. 'Bison,Cow,Horse'. Only effective with --retarget-top-k.
+object_type       - Species/type name (e.g. "Dragon"). Inferred from tpos-path filename when omitted.
 species-tags      - Comma-separated explicit species tags for --object-type,
                     e.g. 'Quadruped,Large,Lumbering'. When specified, takes
-                    precedence over both species_tags.jsonl and the auto-donor
-                    fallback — the given tags are used unconditionally at
-                    runtime without modifying species_tags.jsonl.
+                    precedence over species_tags.jsonl.
 crop-enabled      - Enable skeleton cropping to MAX_JOINTS=100.
                     Off by default (inference has no joint cap).
 update            - Incremental mode: merge new clips into the existing dataset instead of
                     wiping --save-dir. Requires an existing dataset at --save-dir.
-                    Supports both --anim-dir and --retarget-top-k.
 
 Output (under save_dir/):
   motions/    - .npy files of processed motion features for each input clip.
   bvhs/       - BVH previews exported from the processed animation representation.
-  cond.npy    - Skeleton representation (joint name embeddings, graph conditions, mean/std)
+  cond.npy    - Skeleton representation (joint name embeddings, graph conditions,
+                canonical feature-space metadata)
                 consumed by AnyTop inference via ``--cond-path``.
 """
 import sys, os, shutil
 from typing import Any
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from data_loaders.truebones.truebones_utils.motion_process import (
-    process_skeleton,
-    validate_anim_dir_update_state,
-)
-from data_loaders.truebones.truebones_utils.fbx_filename_rules import find_tpose_reference_path
-from utils.misc import infer_object_type_from_filename, resolve_dataset_path
+from data_loaders.truebones.truebones_utils.motion_process import process_skeleton
+from utils.misc import infer_object_type_from_filename
 from utils.parser_util import process_new_skeleton_args
-
-_ANYTOP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DEFAULT_TRAINING_COND_REL = "dataset/truebones/zoo/truebones_processed/cond.npy"
-DEFAULT_TRAINING_COND_PATH = os.path.join(_ANYTOP_DIR, _DEFAULT_TRAINING_COND_REL)
-
-
-def _resolve_training_cond_path(path: str | None) -> str:
-    """Resolve training cond.npy using the project's existing dataset-path rules."""
-    if path is None or path == "":
-        path = _DEFAULT_TRAINING_COND_REL
-
-    expanded = os.path.expanduser(path)
-    if os.path.isabs(expanded):
-        return os.path.abspath(expanded)
-
-    cwd_candidate = os.path.abspath(expanded)
-    if os.path.isfile(cwd_candidate):
-        return cwd_candidate
-
-    try:
-        return resolve_dataset_path(expanded, extra_roots=[_ANYTOP_DIR])
-    except FileNotFoundError:
-        # Keep the final error readable for explicit caller-supplied relative paths.
-        if os.path.normpath(expanded) == os.path.normpath(_DEFAULT_TRAINING_COND_REL):
-            return os.path.abspath(DEFAULT_TRAINING_COND_PATH)
-        return cwd_candidate
-
 
 def process_new_skeleton(
     *,
     save_dir: str,
+    tpos_path: str,
     object_type: str | None = None,
-    anim_dir: str | None = None,
-    tpos_path: str | None = None,
-    retarget_top_k: int | None = None,
-    training_cond_path: str = _DEFAULT_TRAINING_COND_REL,
-    donor_skeletons: str | None = None,
     crop_enabled: bool = False,
     update: bool = False,
     species_tags: str | None = None,
@@ -111,11 +60,7 @@ def process_new_skeleton(
     args = type("ProcessNewSkeletonArgs", (), {
         "save_dir": save_dir,
         "object_type": object_type,
-        "anim_dir": anim_dir,
         "tpos_path": tpos_path,
-        "retarget_top_k": retarget_top_k,
-        "training_cond_path": training_cond_path,
-        "donor_skeletons": donor_skeletons,
         "crop_enabled": crop_enabled,
         "update": update,
         "species_tags": species_tags,
@@ -127,13 +72,7 @@ def process_new_skeleton(
 
 def _process_new_skeleton_from_args(args) -> dict[str, Any]:
     save_dir = args.save_dir
-    args.training_cond_path = _resolve_training_cond_path(
-        getattr(args, "training_cond_path", _DEFAULT_TRAINING_COND_REL)
-    )
 
-    # --update: incremental mode. Keeps the existing dataset and adds/replaces
-    # motions instead of wiping --save-dir. Works for both the --anim-dir path
-    # and the --retarget-top-k path; side artifacts are rebuilt afterwards.
     update_mode = bool(getattr(args, 'update', False))
     if update_mode and not os.path.exists(os.path.join(save_dir, 'cond.npy')):
         print(f"[process_new_skeleton] --update requested but no existing dataset "
@@ -179,26 +118,10 @@ def _process_new_skeleton_from_args(args) -> dict[str, Any]:
     else:
         os.makedirs(save_dir, exist_ok=True)
 
-    # Resolve tpose_path: auto-select a rest-pose reference carrier from anim_dir when not provided
     tpose_path = args.tpos_path
-    if tpose_path is None or tpose_path == '':
-        if args.anim_dir is None:
-            raise FileNotFoundError(
-                "Either --tpos-path or --anim-dir must be provided. "
-                "--tpos-path is required for rest-pose-only mode, and --anim-dir "
-                "is required to auto-select a rest-pose reference."
-            )
-        anim_files = sorted([
-            os.path.join(args.anim_dir, f)
-            for f in os.listdir(args.anim_dir)
-            if f.lower().endswith(('.fbx', '.glb', '.gltf'))
-        ])
-        if len(anim_files) == 0:
-            raise FileNotFoundError(
-                f"No animation files (.fbx/.glb/.gltf) found in --anim-dir '{args.anim_dir}'."
-            )
-        tpose_path = find_tpose_reference_path(anim_files)
-        print(f"Auto-selected rest-pose reference carrier: {tpose_path}")
+    if not tpose_path:
+        raise FileNotFoundError("--tpos-path is required. Provide a FBX/GLB/GLTF file whose "
+                                "bind/rest pose defines the skeleton.")
 
     object_type = args.object_type
     if object_type is None:
@@ -209,37 +132,11 @@ def _process_new_skeleton_from_args(args) -> dict[str, Any]:
             )
         print(f"Auto-detected object_type: {object_type}")
 
-    # If --tpos-path is given without --retarget-top-k, default to retarget-top-k 1
-    # (prefer retarget over rest-pose-only mode with no motions)
-    # If --donor-skeletons is given, also default to 1 but suppress the log
-    # since the user is explicitly configuring retarget.
     # Skeleton cropping: off by default (inference has no joint cap).
     # Use --crop-enabled to enable MAX_JOINTS=100 cropping.
     crop_enabled = args.crop_enabled
 
-    retarget_top_k = args.retarget_top_k
-    if retarget_top_k == 0 and (args.donor_skeletons or args.anim_dir):
-        raise SystemExit(
-            "Error: --retarget-top-k 0 (rest-pose-only) is mutually exclusive with "
-            "--donor-skeletons and --anim-dir (it builds graph metadata from the "
-            "--tpos-path skeleton alone, with no motions)."
-        )
-
-    if retarget_top_k == 0:
-        # Rest-pose-only: no donor retargeting, no motions/. Graph metadata is a
-        # pure function of the skeleton topology; the donors only ever fed the
-        # position mean/std, which Video2Pose no longer consumes.
-        print("[process_new_skeleton] --retarget-top-k 0: rest-pose-only build "
-              "(graph metadata from --tpos-path, no donor motions)")
-    elif retarget_top_k is None and args.anim_dir is None:
-        retarget_top_k = 1
-        if args.donor_skeletons is None or args.donor_skeletons.strip() == '':
-            print(f"[process_new_skeleton] No --retarget-top-k specified, defaulting to 1")
-
-    # ── Species tags (apply early, consumed by ALL code paths) ────────────
-    # If --species-tags is given explicitly, use those regardless of whether
-    # the object_type is already registered in species_tags.jsonl. Otherwise
-    # the retarget branch may fall back to the top donor's tags.
+    # ── Species tags ─────────────────────────────────────────────────────
     import data_loaders.truebones.truebones_utils.physics_joint_annotation as _pja
     if args.species_tags is not None:
         parsed_tags = tuple(
@@ -252,104 +149,42 @@ def _process_new_skeleton_from_args(args) -> dict[str, Any]:
                 f"[process_new_skeleton] Using explicit --species-tags for "
                 f"'{object_type}': {parsed_tags}"
             )
-        else:
-            print(
-                f"[process_new_skeleton] WARNING: --species-tags was specified but "
-                f"parsed as empty; falling through to donor-based fallback."
-            )
     # ──────────────────────────────────────────────────────────────────────
 
-    if update_mode and args.anim_dir:
-        try:
-            validate_anim_dir_update_state(object_type, save_dir)
-        except RuntimeError as exc:
-            raise SystemExit(f"Error: {exc}") from exc
-
     if update_mode:
-        print(f"[process_new_skeleton] --update: incrementally updating {save_dir} "
-              f"(existing clips preserved)")
+        metadata_path = os.path.join(save_dir, "motion_metadata.json")
+        if not os.path.exists(metadata_path):
+            print(f"[process_new_skeleton] --update requires motion_metadata.json but it is "
+                  f"missing from '{save_dir}'. Aborting.", file=sys.stderr)
+            sys.exit("motion_metadata.json not found")
+        else:
+            print(f"[process_new_skeleton] --update: incrementally updating {save_dir} "
+                f"(existing clips preserved)")
 
-    if retarget_top_k:
-        if args.anim_dir:
-            raise SystemExit(
-                "Error: --retarget-top-k and --anim-dir are mutually exclusive. "
-                "--retarget-top-k auto-generates motion data from retargeted donors."
-            )
-        from utils.auto_retarget import auto_retarget_pipeline
-        result = auto_retarget_pipeline(
-            target_object_type=object_type,
-            target_tpose_path=tpose_path,
-            save_dir=args.save_dir,
-            top_k=retarget_top_k,
-            training_cond_path=args.training_cond_path,
-            donor_skeletons_override=(
-                [s.strip() for s in args.donor_skeletons.split(',')]
-                if args.donor_skeletons else None
-            ),
-            crop_enabled=crop_enabled,
-        )
+    process_skeleton(
+        object_type,
+        None,
+        args.save_dir,
+        tpose_path,
+        None,
+        update=update_mode,
+        crop_enabled=crop_enabled,
+        skip_t5=args.skip_t5_embeddings,
+    )
 
-        # ── Species tags fallback (only if not already set by --species-tags) ─
-        if object_type.lower() not in {k.lower() for k in _pja._SPECIES_TAGS}:
-            # Only possible in the retarget branch (donors_used has entries).
-            donors_used = result.get('donors_used', [])
-            if donors_used:
-                top_donor = donors_used[0][0]
-                # Case-insensitive lookup of the donor in _SPECIES_TAGS
-                donor_key_map = {k.lower(): k for k in _pja._SPECIES_TAGS}
-                donor_key = donor_key_map.get(top_donor.lower())
-                if donor_key is not None:
-                    donor_tags = _pja._SPECIES_TAGS[donor_key]
-                    _pja._SPECIES_TAGS[object_type] = donor_tags
-                    _pja._SPECIES_TAGS_LOWER = None  # invalidate lazy cache
-                    print(
-                        f"[process_new_skeleton] WARNING: '{object_type}' not found in "
-                        f"species_tags.jsonl. Using species tags from donor "
-                        f"'{top_donor}': {donor_tags}"
-                    )
-        # ───────────────────────────────────────────────────────────────────
-
-        process_skeleton(
-            object_type,
-            None,
-            args.save_dir,
-            tpose_path,
-            motions_from_npys=result['retargeted_npys'],
-            target_cond_partial=result['target_cond'],
-            update=update_mode,
-            crop_enabled=crop_enabled,
-            skip_t5=args.skip_t5_embeddings,
-        )
-    else:
-        process_skeleton(
-            object_type,
-            None,
-            args.save_dir,
-            tpose_path,
-            args.anim_dir,
-            update=update_mode,
-            crop_enabled=crop_enabled,
-            skip_t5=args.skip_t5_embeddings,
-        )
-
-    # In --update mode process_skeleton only writes motions plus a provisional
-    # cond.npy / motion_metadata. Rebuild the side artifacts over the merged
-    # clip set, recomputing mean/std so normalization reflects the added motions.
+    # In --update mode process_skeleton only writes motions plus cond.npy /
+    # motion_metadata. Rebuild the side artifacts over the merged clip set.
     if update_mode:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         from regenerate_dataset_artifacts import regenerate_dataset_artifacts
         print("[process_new_skeleton] --update: rebuilding side artifacts "
-              "(embeddings, mean/std, metadata)")
-        # Only this object's clips changed, so scope the mean/std recompute to it.
-        regenerate_dataset_artifacts(
-            args.save_dir, recompute_stats=True, recompute_stats_objects={object_type}
-        )
+              "(embeddings, canonical feature metadata, metadata)")
+        regenerate_dataset_artifacts(args.save_dir)
 
     return {
         "save_dir": save_dir,
         "object_type": object_type,
         "tpose_path": tpose_path,
-        "retarget_top_k": retarget_top_k,
         "update": update_mode,
         "cond_npy": os.path.join(save_dir, "cond.npy"),
     }

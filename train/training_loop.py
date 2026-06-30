@@ -22,6 +22,7 @@ from utils.model_util import load_model
 from utils.model_util import create_model_and_diffusion_general_skeleton
 import random
 from data_loaders.get_data import get_dataset_loader
+from data_loaders.truebones.truebones_utils.canonical_features import canonical_to_physical_hml
 from eval.motion_quality import DistributionMotionQualityScorer
 
 INITIAL_LOG_LOSS_SCALE = 20.0
@@ -637,9 +638,15 @@ class TrainLoop:
                         continue
                     n_joints = cond['y']['n_joints'][i].item()
                     motion_sample = sample[i][:n_joints]
-                    mean = cond_dict[object_type]['mean'][None, :]
-                    std = cond_dict[object_type]['std'][None, :]
-                    motion_np = motion_sample.cpu().permute(2, 0, 1).numpy() * std + mean
+                    motion_physical = canonical_to_physical_hml(
+                        motion_sample.unsqueeze(0),
+                        {
+                            'rest_pos_ric_hml': cond['y']['rest_pos_ric_hml'][i:i + 1, :n_joints],
+                            'canonical_feature_mean': cond['y'].get('canonical_feature_mean'),
+                            'canonical_feature_std': cond['y'].get('canonical_feature_std'),
+                        },
+                    )[0]
+                    motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
                     group_key = (object_type, action_tags)
                     motion_groups.setdefault(group_key, []).append(motion_np.astype(np.float32))
 

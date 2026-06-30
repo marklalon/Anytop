@@ -44,6 +44,12 @@ from .features import (
     infer_translation_root_index_from_features,
     extract_motion_features_from_aligned_anims,
 )
+from .canonical_features import (
+    mark_canonical_cond_entry,
+    accumulate_lnorm_stats,
+    finalize_lnorm_stats,
+    set_canonical_global_stats,
+)
 
 
 class DatasetPreprocessingError(RuntimeError):
@@ -52,36 +58,7 @@ class DatasetPreprocessingError(RuntimeError):
         super().__init__(f"{len(self.motion_errors)} motion processing error(s)")
 
 
-################## Statistics & Topology #####################
-
-""" computes mean and std for a list of motions """
-def get_mean_std(data):
-    if len(data) > 0:
-        Mean = data.mean(axis=0) # (Joints, 25)
-        Std = data.std(axis=0) # # (Joints, 25)
-        Std[0, :3] = Std[0, :3].mean() / 1.0 # all joints except root ric pos
-        Std[0, 3:9] = Std[0, 3:9].mean() / 1.0 # all joints except root rotation
-        Std[0, 9:12] = Std[0, 9:12].mean() / 1.0 # all joints except root local velocity
-
-        Std[1:, :3] = Std[1:, :3].mean() / 1.0 # all joints except root ric pos
-        Std[1:, 3:9] = Std[1:, 3:9].mean() / 1.0 # all joints except root rotation
-        Std[1:, 9:12] = Std[1:, 9:12].mean() / 1.0 # all joints except root local velocity
-        if len(Std[:, 12][Std[:, 12]!=0]) > 0:
-            Std[:, 12][Std[:, 12]!=0] = Std[:, 12][Std[:, 12]!=0].mean() / 1.0
-        Std[:, 12][Std[:, 12]==0] = 1.0 # replace zeros with ones
-
-        # Universal guard for constant (zero-variance) channels across ALL
-        # channels. The own-rotation encoding leaves the root joint's 6D
-        # rotation constant, so its block-averaged std collapses to 0 above.
-        # A ~zero divisor is meaningless and dangerous: it leaves the motion at
-        # 0 but amplifies rest_pose normalization, (rest_pose - mean) / std,
-        # to ~1e6, which drives the spatial-attention graph bias to ~1e5 and
-        # yields NaN gradients under bf16. Treat any sub-1e-5 std as unit
-        # variance (mirrors the std_safe floor in data/dataset.py:Truebones).
-        Std = np.where(Std < 1e-5, 1.0, Std)
-
-        return Mean, Std
-
+################## Topology #####################
 
 """ compures Relations and Distance marices"""
 def create_topology_edge_relations(parents, max_path_len = 5): # joint j+1 contains len(j, j+1)
@@ -346,6 +323,7 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
     # aggregates per-motion translation_root_index values and picks the consensus.
     object_cond['translation_root_index'] = int(_rest_translation_root_index)
     object_cond['rest_pose'] = rest_pose_motion[0]
+    mark_canonical_cond_entry(object_cond)
     object_cond['pose_base'] = 'rest_pose'
     joint_relations, joints_graph_dist = create_topology_edge_relations(tp.tpos_anim.parents, max_path_len=MAX_PATH_LEN)
     object_cond['joint_relations'] = joint_relations
@@ -409,16 +387,6 @@ def _build_rest_pose_only_cond(object_type, rest_pose_path, face_joints, crop_en
     object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints, tpose_reference_path = _build_rest_pose_cond(
         object_type, rest_pose_path, face_joints, crop_enabled=crop_enabled,
     )
-    num_joints = len(parents)
-
-    # mean: rest-pose feature vector with velocity channels (9:12) explicitly zeroed
-    # to make rest-pose semantics unambiguous.
-    mean = rest_pose_motion[0].astype(np.float32).copy()  # (J, 13)
-    mean[:, 9:12] = 0.0
-    object_cond['mean'] = mean
-
-    object_cond['std'] = np.ones_like(mean)
-
     return object_cond, max_joints, tpose_reference_path
 
 
@@ -501,8 +469,6 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints, tpose_reference_path = _build_rest_pose_cond(
         object_type, t_pos_path, face_joints, max_joints=max_joints, crop_enabled=crop_enabled,
     )
-    all_tensors = list()
-
     # Animation loading via bpy is single-threaded inside a process because clear_scene
     # mutates global Blender state, so file-level parallelism is intentionally removed.
     print(f'processing {len(anim_files)} animation files for {object_type} (serial — bpy is single-threaded)', flush=True)
@@ -569,15 +535,8 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
 
     for result in prepared_results:
         motion = result['motion']
-        all_tensors.append(motion)
         files_counter += 1
         frames_counter += motion.shape[0]
-
-    stats_tensors = np.concatenate(all_tensors, axis=0)
-
-    mean, std = get_mean_std(stats_tensors)
-    object_cond["mean"] = mean
-    object_cond["std"] = std
 
     return {
         'object_type': object_type,
@@ -778,10 +737,8 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
 files that have not produced clips yet (per-object, keyed on source_fbx_path). New
 clips number above retained ones within each (object, action) group. The rewritten
 cond.npy / motion_metadata.json are seeded from the existing dataset so untouched
-objects survive. Provisional mean/std are computed over the newly processed clips only;
-the caller must finalize them with regenerate_dataset_artifacts(recompute_stats=True).
-Without ``incremental`` the prior full-build behavior is unchanged (callers wipe
-outputs first). """
+objects survive. Without ``incremental`` the prior full-build behavior is unchanged
+(callers wipe outputs first). """
 def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, raw_data_dir=None, object_workers=8, filter_min_length=10, resample_min_length=20, incremental=False):
     ## prepare
     target_dataset_dir = dataset_dir or DEFAULT_DATASET_DIR
@@ -918,15 +875,28 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
 
 """Merge a freshly built object cond entry into an existing cond.npy in place.
 
-Other objects already present in cond.npy are left untouched. mean/std written
-here are provisional — regenerate_dataset_artifacts(recompute_stats=True) rebuilds
-them over the merged clip set after an incremental --update."""
+Other objects already present in cond.npy are left untouched."""
 def _merge_object_into_cond(save_dir, object_name, object_cond, tpose_reference_path=None):
     cond_path = pjoin(save_dir, 'cond.npy')
     cond = {}
     if os.path.exists(cond_path):
         cond = dict(np.load(cond_path, allow_pickle=True).item())
     cond[object_name] = object_cond
+    # The global canonical standardization stats are a single cross-species
+    # constant tied to the trained checkpoint. A newly added skeleton has no
+    # motions of its own to recompute them from and MUST reuse the dataset's
+    # existing constant so its features land in the same space the model was
+    # trained on. Inherit from any sibling entry that already carries them.
+    if object_cond.get('canonical_feature_mean') is None:
+        for sibling, sibling_cond in cond.items():
+            if sibling == object_name:
+                continue
+            mean = sibling_cond.get('canonical_feature_mean')
+            std = sibling_cond.get('canonical_feature_std')
+            if mean is not None and std is not None:
+                object_cond['canonical_feature_mean'] = np.asarray(mean, dtype=np.float32)
+                object_cond['canonical_feature_std'] = np.asarray(std, dtype=np.float32)
+                break
     # tpose_reference_path is None for retarget/anim-dir updates that reuse the
     # target's existing sidecar entry (preserved by _save_cond_with_tpose_sidecar).
     tpose_refs = {object_name: tpose_reference_path} if tpose_reference_path else None
@@ -1186,10 +1156,7 @@ def _update_retarget(object_name, save_dir, motions_from_npys, target_cond_parti
         print("[update] no retargeted motions produced; dataset unchanged")
         return
 
-    object_cond = dict(target_cond_partial)
-    object_cond['mean'], object_cond['std'] = get_mean_std(
-        np.concatenate(all_motions, axis=0)
-    )
+    object_cond = mark_canonical_cond_entry(dict(target_cond_partial))
 
     parents = np.asarray(object_cond['parents'], dtype=np.int64)
     offsets = np.asarray(object_cond['offsets'], dtype=np.float64)
@@ -1221,7 +1188,7 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
 
     if motions_from_npys is not None:
         # Retarget branch: motions already written to save_dir/motions/ by auto_retarget_pipeline.
-        # Load them, compute mean/std, then write cond.npy.
+        # Load them for metadata, then write static canonical cond.npy.
         assert target_cond_partial is not None, "target_cond_partial required with motions_from_npys"
         if update:
             _update_retarget(object_name, save_dir, motions_from_npys, target_cond_partial)
@@ -1230,11 +1197,22 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
         if not all_motions:
             print(f"[process_skeleton] no retargeted motions available; cond.npy not written")
             return
-        stats_tensors = np.concatenate(all_motions, axis=0)  # (total_frames, J, 13)
-        mean, std = get_mean_std(stats_tensors)
-        object_cond = dict(target_cond_partial)
-        object_cond['mean'] = mean
-        object_cond['std'] = std
+        object_cond = mark_canonical_cond_entry(dict(target_cond_partial))
+        # Standalone (non-merge) build has no sibling to inherit the cross-species
+        # global standardization constant from, so calibrate it from this skeleton's
+        # own retargeted clips in the L-normalized (size-free) space. A full dataset
+        # build instead finalizes these over all species in regenerate_dataset_artifacts.
+        _stats_acc = None
+        for _m in all_motions:
+            if _m.ndim == 3 and _m.shape[-1] >= 13:
+                try:
+                    _stats_acc = accumulate_lnorm_stats(_m, object_cond, acc=_stats_acc)
+                except (KeyError, ValueError):
+                    # cond entry lacks rest geometry; cannot encode -> skip.
+                    break
+        if _stats_acc is not None and _stats_acc["count"] > 0:
+            _mean, _std = finalize_lnorm_stats(_stats_acc)
+            set_canonical_global_stats(object_cond, _mean, _std)
         motion_metadata = {}
         parents = np.asarray(object_cond['parents'], dtype=np.int64)
         offsets = np.asarray(object_cond['offsets'], dtype=np.float64)

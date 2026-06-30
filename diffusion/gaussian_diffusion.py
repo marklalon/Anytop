@@ -18,6 +18,7 @@ from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood, geodesic_distance
 from model.anytop import GlobalEnergyExtractor
 from utils.rotation_conversions import rotation_6d_to_matrix_safe
+from data_loaders.truebones.truebones_utils.canonical_features import canonical_to_physical_hml
 
 
 _EXTRACT_TENSOR_CACHE = {}
@@ -1573,8 +1574,6 @@ class GaussianDiffusion:
         lengths = model_kwargs['y']['lengths']
         actual_joints = model_kwargs['y']['n_joints']
         joints_padding_mask = model_kwargs['y']['joints_padding_mask'][:, :, :, 1, 1:]
-        mean = model_kwargs['y']['mean'][..., None]
-        std = model_kwargs['y']['std'][..., None]
 
         if model_kwargs is None:
             model_kwargs = {}
@@ -1644,22 +1643,21 @@ class GaussianDiffusion:
                 ModelMeanType.EPSILON: noise,
             }[self.model_mean_type]
             assert model_output.shape == target.shape == x_start.shape  # [bs, njoints, nfeats, nframes]
-            with self._fp32_math_context(model_output, target, mean, std):
+            with self._fp32_math_context(model_output, target):
                 target_fp32 = target.float()
                 model_output_fp32 = model_output.float()
                 joints_padding_mask_fp32 = joints_padding_mask.float()
                 lengths_fp32 = lengths.float()
                 actual_joints_fp32 = actual_joints.float()
-                mean_fp32 = mean.float()
-                std_fp32 = std.float()
 
                 terms["l_simple"] = self.spatial_masked_l2(
                     target_fp32, model_output_fp32, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
                 )
                 terms["loss"] = terms["l_simple"].clone()
 
-                target_denorm = (target_fp32 * std_fp32) + mean_fp32
-                model_output_denorm = (model_output_fp32 * std_fp32) + mean_fp32
+                y_for_decode = (model_kwargs or {}).get('y', {})
+                target_physical = canonical_to_physical_hml(target_fp32, y_for_decode)
+                model_output_physical = canonical_to_physical_hml(model_output_fp32, y_for_decode)
 
                 if self.temporal_span_seam_loss_weight > 0.0:
                     temporal_span_seam_weights = self._build_temporal_span_seam_weights(
@@ -1667,8 +1665,8 @@ class GaussianDiffusion:
                     )
                     if temporal_span_seam_weights is not None:
                         seam_acc_loss = self.temporal_span_seam_acceleration_loss(
-                            target_denorm,
-                            model_output_denorm,
+                            target_physical,
+                            model_output_physical,
                             temporal_span_seam_weights,
                             joints_padding_mask_fp32,
                         )
@@ -1681,20 +1679,20 @@ class GaussianDiffusion:
 
                 if self.lambda_geo > 0.:
                     terms["geodesic_loss"] = self.geodesic_loss(
-                        target_denorm, model_output_denorm, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
+                        target_physical, model_output_physical, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
                     )
                     terms["loss"] = terms["loss"] + self.lambda_geo * terms["geodesic_loss"]
 
                 if self.lambda_vel > 0.:
                     terms["vel_loss"] = self.velocity_consistency_loss(
-                        model_output_denorm, joints_padding_mask_fp32, actual_joints_fp32, (model_kwargs or {}).get('y', {})
+                        model_output_physical, joints_padding_mask_fp32, actual_joints_fp32, y_for_decode
                     )
                     terms["loss"] = terms["loss"] + self.lambda_vel * terms["vel_loss"]
 
                 if self.lambda_loop_wrap > 0.0:
                     y = model_kwargs.get('y', {}) if isinstance(model_kwargs, dict) else {}
                     loop_terms = self.loop_wrap_loss(
-                        model_output_denorm,
+                        model_output_physical,
                         y,
                         actual_joints,
                     )

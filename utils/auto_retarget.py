@@ -780,7 +780,7 @@ def auto_retarget_pipeline(
 
     Returns:
         dict with keys:
-          'target_cond'      -- the built target cond entry (no mean/std yet)
+          'target_cond'      -- the built target cond entry (canonical metadata)
           'retargeted_npys'  -- list of absolute paths to written .npy files
           'donors_used'      -- list of (name, score, n_success) tuples
     """

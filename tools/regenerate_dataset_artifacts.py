@@ -49,7 +49,12 @@ from truebones_utils.motion_labels import (  # noqa: E402
 from truebones_utils.motion_process import (  # noqa: E402
     attach_t5_embeddings_to_cond,
     write_joint_name_collision_report,
-    get_mean_std,
+)
+from truebones_utils.canonical_features import (  # noqa: E402
+    mark_canonical_cond_entry,
+    accumulate_lnorm_stats,
+    finalize_lnorm_stats,
+    set_canonical_global_stats,
 )
 from truebones_utils.param_utils import (  # noqa: E402
     MOTION_DIR,
@@ -198,40 +203,63 @@ def _infer_object_type_from_motion_name(
     return str(resolved)
 
 
-def _recompute_object_stats(
+def _mark_object_feature_spaces(
+    rebuilt_cond: dict[str, dict],
+) -> None:
+    """Ensure cond entries carry canonical feature-space metadata."""
+
+    for object_type, object_cond in rebuilt_cond.items():
+        mark_canonical_cond_entry(object_cond)
+    if rebuilt_cond:
+        print(f"[OK] marked canonical feature space for {len(rebuilt_cond)} species")
+
+
+def _compute_global_canonical_stats(
     rebuilt_cond: dict[str, dict],
     motion_files: list[Path],
-    only_objects: set[str] | None = None,
 ) -> None:
-    """Recompute per-object mean/std over every motion clip on disk.
+    """Compute the GLOBAL per-channel standardization statistics over every motion
+    clip and store the same 13-vectors on every cond entry.
 
-    regenerate_dataset_artifacts() otherwise preserves the mean/std deep-copied
-    from the existing cond.npy. After an incremental update that adds clips, the
-    preserved stats are stale, so --recompute-stats / recompute_stats=True asks
-    for a fresh computation that matches what preprocessing would produce.
+    Each physical clip is encoded into the L-normalized space (rest-centered
+    position + per-skeleton size division) and pooled across all joints, frames,
+    clips, and species. The resulting mean/std are a single cross-species
+    constant (no per-species motion prior), so they generalize to held-out
+    species while restoring the zero-mean / unit-variance behavior the diffusion
+    noise schedule expects. Requires rest geometry (set by mark_canonical_cond_entry)
+    to already be present on each cond entry."""
 
-    ``only_objects`` scopes the (expensive, clip-loading) recompute to the objects
-    actually touched by an incremental run. Untouched objects keep their carried-forward
-    stats, which are byte-identical to a recompute since their clips did not change, so
-    skipping them avoids re-reading every other species' clips for nothing."""
-    object_to_motions: dict[str, list[Path]] = {}
+    known_object_types = tuple(rebuilt_cond.keys())
+    acc = None
+    used = 0
     for motion_path in motion_files:
-        object_type = _infer_object_type_from_motion_name(
-            motion_path.name,
-            tuple(rebuilt_cond.keys()),
-        )
-        object_to_motions.setdefault(object_type, []).append(motion_path)
+        object_type = _infer_object_type_from_motion_name(motion_path.name, known_object_types)
+        object_cond = rebuilt_cond.get(object_type)
+        if object_cond is None:
+            continue
+        motion = np.load(motion_path).astype(np.float32, copy=False)
+        if motion.ndim != 3 or motion.shape[-1] < 13:
+            continue
+        try:
+            acc = accumulate_lnorm_stats(motion, object_cond, acc=acc)
+        except (KeyError, ValueError):
+            # cond entry lacks rest geometry (e.g. minimal synthetic fixtures);
+            # such clips cannot be encoded, so skip them.
+            continue
+        used += 1
 
-    for object_type, paths in sorted(object_to_motions.items()):
-        if object_type not in rebuilt_cond:
-            continue
-        if only_objects is not None and object_type not in only_objects:
-            continue
-        clips = [np.load(path).astype(np.float32) for path in paths]
-        mean, std = get_mean_std(np.concatenate(clips, axis=0))
-        rebuilt_cond[object_type]["mean"] = mean
-        rebuilt_cond[object_type]["std"] = std
-        print(f"[OK] recomputed mean/std for {object_type} over {len(paths)} clip(s)")
+    if acc is None or acc["count"] <= 0:
+        print("[WARN] no usable motion clips with rest geometry; global canonical stats not written")
+        return
+
+    mean, std = finalize_lnorm_stats(acc)
+    for object_cond in rebuilt_cond.values():
+        set_canonical_global_stats(object_cond, mean, std)
+    with np.printoptions(precision=3, suppress=True, linewidth=160):
+        print(
+            f"[OK] global canonical stats over {used} clip(s) / {acc['count']} frames-joints\n"
+            f"     mean={mean}\n     std ={std}"
+        )
 
 
 def _recompute_contact_joints(rebuilt_cond: dict[str, dict]) -> None:
@@ -326,8 +354,6 @@ def _normalize_object_translation_roots(
 def regenerate_dataset_artifacts(
     dataset_dir: str | Path | None = None,
     t5_model: str = "t5-base",
-    recompute_stats: bool = False,
-    recompute_stats_objects: set[str] | None = None,
 ) -> Path:
     dataset_dir_path = _resolve_dataset_dir_path(dataset_dir)
     motions_dir = dataset_dir_path / MOTION_DIR
@@ -395,6 +421,7 @@ def regenerate_dataset_artifacts(
         object_type: copy.deepcopy(object_cond)
         for object_type, object_cond in active_cond.items()
     }
+    _mark_object_feature_spaces(rebuilt_cond)
 
     t0 = time.time()
     _recompute_contact_joints(rebuilt_cond)
@@ -425,15 +452,11 @@ def regenerate_dataset_artifacts(
     )
     print(f"[OK] T5 embeddings attached in {time.time() - t0:.1f}s")
     write_joint_name_collision_report(rebuilt_cond, str(dataset_dir_path))
-    if recompute_stats:
-        only_objects = None
-        if recompute_stats_objects:
-            only_objects = {obj for obj in recompute_stats_objects if obj in rebuilt_cond}
-            ignored = sorted(set(recompute_stats_objects) - only_objects)
-            if ignored:
-                print(f"[WARN] --recompute-stats-objects names not in dataset, ignored: {', '.join(ignored)}")
-            print(f"[OK] recomputing mean/std for {len(only_objects)} touched object(s) only")
-        _recompute_object_stats(rebuilt_cond, motion_files, only_objects=only_objects)
+
+    t0 = time.time()
+    _compute_global_canonical_stats(rebuilt_cond, motion_files)
+    print(f"[OK] global canonical stats computed in {time.time() - t0:.1f}s")
+
     np.save(str(cond_path), rebuilt_cond)
 
     rebuilt_motion_metadata: dict[str, dict[str, object]] = {}
@@ -490,29 +513,7 @@ def main() -> int:
         type=str,
         help="T5 model to use for joint name embeddings (default: t5-base).",
     )
-    parser.add_argument(
-        "--recompute-stats",
-        action="store_true",
-        help="Recompute per-object mean/std over all motion clips on disk instead "
-             "of preserving the stats from the existing cond.npy. Use this after "
-             "incrementally adding motions so normalization reflects the new clips.",
-    )
-    parser.add_argument(
-        "--recompute-stats-objects",
-        default="",
-        type=str,
-        help="Comma/semicolon-separated object names to scope --recompute-stats to "
-             "(e.g. after `--filter Buffalo`, only Buffalo's clips are re-read). "
-             "Untouched objects keep their carried-forward stats, which are identical "
-             "to a recompute since their clips are unchanged. Empty = recompute all.",
-    )
     args = parser.parse_args()
-
-    recompute_stats_objects = {
-        token.strip()
-        for token in args.recompute_stats_objects.replace(";", ",").split(",")
-        if token.strip()
-    } or None
 
     print("\n" + "=" * 70)
     print("Regenerating dataset sidecar artifacts")
@@ -522,8 +523,6 @@ def main() -> int:
         dataset_dir_path = regenerate_dataset_artifacts(
             args.dataset_dir,
             t5_model=args.t5_model,
-            recompute_stats=args.recompute_stats,
-            recompute_stats_objects=recompute_stats_objects,
         )
         cond_path = dataset_dir_path / "cond.npy"
         cond = dict(np.load(cond_path, allow_pickle=True).item())

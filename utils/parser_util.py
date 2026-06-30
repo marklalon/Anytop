@@ -20,9 +20,8 @@ def parse_and_load_from_model(parser, argv=None, preserve_cli_args=None):
 
     if isinstance(args.model_path, list) and len(args.model_path) == 1:
         args.model_path = args.model_path[0]
-    
-    # load args from model
-    assert not isinstance(args, list) and not isinstance(args.model_path, list), 'Deprecated feature..'
+
+    assert not isinstance(args.model_path, list), "model_path should not be a list at this point"
     args = extract_args(copy.deepcopy(args), args_to_overwrite, args.model_path)
 
     return args
@@ -349,47 +348,24 @@ def generate_args(argv=None):
 def process_new_skeleton_args():
     parser = ArgumentParser()
     group = parser.add_argument_group('process_new_skeleton')
-    group.add_argument("--object-type", default=None, type=str,
-                       help="A character's species/type name (e.g. \"Dragon\"). "
-                            "When omitted, inferred from the first filename in --anim-dir.")
-    group.add_argument("--anim-dir", default=None, type=str,
-                       help="Path to a directory containing animation files (FBX/GLB/GLTF) of the skeleton. "
-                            "More files improve statistical accuracy for motion denormalization. "
-                            "If omitted, defaults to the parent directory of --tpos-path.")
+    group.add_argument("--tpos-path", required=True, type=str,
+                       help="An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base.")
     group.add_argument("--save-dir", required=True, type=str,
                        help="Output directory.")
-    group.add_argument("--tpos-path", default=None, type=str,
-                       help="An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base. "
-                           "If omitted, the code will auto-select one from --anim-dir using filename heuristics "
-                           "(T-pose/rest/bind > idle > walk > first file).")
-    group.add_argument("--retarget-top-k", default=None, type=int,
-                       help="Auto-select the top-k most similar training skeletons as motion donors, "
-                            "retarget all their motions to the new skeleton, and use those coarse motions "
-                            "to compute proper mean/std for cond.npy. Mutually exclusive with --anim-dir. "
-                            "Set to 0 for rest-pose-only mode (graph metadata from --tpos-path skeleton "
-                            "alone, no donor retargeting, no motions/).")
-    group.add_argument("--training-cond-path",
-                       default="dataset/truebones/zoo/truebones_processed/cond.npy",
-                       type=str,
-                       help="Path to the training dataset's cond.npy, used for donor selection when "
-                            "--retarget-top-k is set. Default: dataset/truebones/zoo/truebones_processed/cond.npy")
-    group.add_argument("--donor-skeletons", default=None, type=str,
-                       help="Comma-separated donor skeleton names to use instead of auto-selection, "
-                            "e.g. 'Bison,Cow,Horse'. Only effective with --retarget-top-k.")
-
+    group.add_argument("--object-type", default=None, type=str,
+                       help="A character's species/type name (e.g. \"Dragon\"). "
+                            "When omitted, inferred from the tpos-path filename.")
     group.add_argument("--crop-enabled", action='store_true', default=False,
                        help="Enable automatic skeleton cropping to MAX_JOINTS=100. "
                             "Off by default because inference has no joint cap; "
                             "enable for training-compatible preprocessing.")
     group.add_argument("--update", action='store_true',
                        help="Incremental update mode. Instead of clearing --save-dir and rebuilding "
-                           "from scratch, merge the current --anim-dir batch into the existing "
+                           "from scratch, merge new clips into the existing "
                            "dataset, replacing any older clips produced from the same source files "
                            "while keeping untouched sources, then rebuild the side "
-                            "artifacts (cond.npy mean/std, motion_metadata.json, metadata.txt, "
-                            "positions_error_rate.txt) over the merged clip set. Clips whose source "
-                           "file is present in the update batch are force-replaced. Supports both "
-                           "--anim-dir updates and --retarget-top-k updates, and requires an existing "
+                            "artifacts (cond.npy canonical metadata, motion_metadata.json, metadata.txt, "
+                            "positions_error_rate.txt) over the merged clip set. Requires an existing "
                            "--save-dir when updating in place.")
     group.add_argument("--species-tags", default=None, type=str,
                        help="Comma-separated species tags to explicitly assign to --object-type, "

@@ -24,6 +24,7 @@ def _make_cond_entry(object_type: str) -> dict[str, object]:
         "joints_names": ["Root", "Tail"],
         "parents": np.array([-1, 0], dtype=np.int64),
         "offsets": np.zeros((2, 3), dtype=np.float32),
+        "rest_pose": np.zeros((2, 13), dtype=np.float32),
     }
 
 
@@ -628,29 +629,18 @@ def test_find_new_source_files_omits_fully_processed_objects(monkeypatch, tmp_pa
     assert dataset_pipeline_mod.find_new_source_files(['Cat'], str(dataset_dir), str(raw)) == {}
 
 
-def test_recompute_object_stats_scopes_to_only_objects(tmp_path):
-    motions = tmp_path / 'motions'
-    motions.mkdir()
-    cat = motions / 'Cat_Walk_1.npy'
-    dog = motions / 'Dog_Idle_1.npy'
-    # Motion tensors are (frames, joints, 13); get_mean_std indexes the 13-feature layout.
-    np.save(cat, np.ones((4, 2, 13), dtype=np.float32))
-    np.save(dog, np.ones((4, 2, 13), dtype=np.float32) * 5.0)
-
-    dog_sentinel = np.array([[222.0]])
+def test_mark_object_feature_spaces():
     rebuilt = {
-        'Cat': {'mean': np.array([[111.0]]), 'std': np.array([[111.0]])},
-        'Dog': {'mean': dog_sentinel.copy(), 'std': dog_sentinel.copy()},
+        'Cat': _make_cond_entry('Cat'),
+        'Dog': _make_cond_entry('Dog'),
     }
 
-    regenerate_dataset_artifacts_module._recompute_object_stats(
-        rebuilt, [cat, dog], only_objects={'Cat'}
-    )
+    regenerate_dataset_artifacts_module._mark_object_feature_spaces(rebuilt)
 
-    # Cat was recomputed over its clip (mean now has the real (J, feat) shape) ...
-    assert rebuilt['Cat']['mean'].shape == (2, 13)
-    # ... while untouched Dog keeps its carried-forward sentinel untouched.
-    assert np.array_equal(rebuilt['Dog']['mean'], dog_sentinel)
+    for object_type in ('Cat', 'Dog'):
+        assert rebuilt[object_type]['feature_space'] == 'canonical_motion_v3'
+        assert rebuilt[object_type]['physical_feature_space'] == 'hml_like_v_current'
+        assert rebuilt[object_type]['rest_pos_ric_hml'].shape == (2, 3)
 
 
 def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypatch, tmp_path):
@@ -1047,11 +1037,9 @@ def test_process_new_skeleton_rejects_unsafe_anim_dir_update(monkeypatch, tmp_pa
         anim_dir='anim_dir',
         object_type='Cat',
         face_joints_names=None,
-        retarget_top_k=None,
-        donor_skeletons=None,
-        training_cond_path='unused',
         crop_enabled=False,
         species_tags=None,
+        skip_t5_embeddings=False,
     )
 
     monkeypatch.setattr(process_new_skeleton_module, 'process_new_skeleton_args', lambda: args)

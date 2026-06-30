@@ -4,8 +4,8 @@ Unified Preprocessing + Validation Workflow
 ============================================
 Automatically chains AnyTop dataset creation with validation:
     1. Preprocessing: Incremental by default - keyed on source anim files, so only newly
-       added animations are processed while clips already on disk are kept (mean/std are
-       recomputed over the merged set). --overwrite forces a full (re)build of the target set.
+       added animations are processed while clips already on disk are kept. --overwrite
+       forces a full (re)build of the target set.
     2. Validation: Validates the preprocessed dataset
 
 Usage:
@@ -757,12 +757,10 @@ def run_remove_motions(
                 ml_cache.unlink()
                 print(f"  [OK] Deleted cache/motion_lengths.npy (will be regenerated)")
 
-    # --- Regenerate side artifacts to recompute mean/std after deletion ---
+    # --- Regenerate side artifacts after deletion ---
     print("\nRegenerating dataset side artifacts...")
     ret = run_regenerate_side_artifacts(
         dataset_dir,
-        recompute_stats=bool(deleted_count),
-        recompute_stats_objects=tuple(affected_species) if deleted_count else (),
     )
     if ret != 0:
         print("\n[WARN] Side artifact regeneration returned non-zero exit code.")
@@ -775,16 +773,8 @@ def run_regenerate_side_artifacts(
     dataset_dir: str = "",
     preserved_side_artifacts: PreservedSideArtifacts | None = None,
     t5_model: str = "t5-base",
-    recompute_stats: bool = False,
-    recompute_stats_objects: tuple[str, ...] = (),
 ) -> int:
-    """Regenerate non-motion dataset artifacts without re-preprocessing motions.
-
-    ``recompute_stats`` rebuilds per-object mean/std over every clip on disk; required
-    after incremental preprocessing, where create_data_samples only saw the newly added
-    clips and therefore wrote provisional stats. ``recompute_stats_objects`` scopes that
-    recompute to the touched objects so an incremental run does not re-read every other
-    species' clips (their carried-forward stats are unchanged)."""
+    """Regenerate non-motion dataset artifacts without re-preprocessing motions."""
 
     try:
         dataset_dir_path = Path(get_dataset_dir(dataset_dir or None))
@@ -802,10 +792,6 @@ def run_regenerate_side_artifacts(
             "--t5-model",
             t5_model,
         ]
-        if recompute_stats:
-            cmd.append("--recompute-stats")
-            if recompute_stats_objects:
-                cmd += ["--recompute-stats-objects", ",".join(recompute_stats_objects)]
 
         env = os.environ.copy()
         existing_pythonpath = env.get("PYTHONPATH", "")
@@ -1111,14 +1097,11 @@ def main() -> int:
                 print("\n[FAIL] Preprocessing failed, aborting workflow.")
                 return ret
 
-            # Incremental preprocessing wrote provisional mean/std (new clips only), so
-            # recompute them during regeneration - but only for the touched objects, since
-            # untouched species' clips are unchanged and their stats carry forward intact.
+            # Incremental preprocessing writes motions and static cond metadata; refresh
+            # side artifacts over the merged clip set.
             ret = run_regenerate_side_artifacts(
                 args.dataset_dir,
                 preserved_side_artifacts=preserved_side_artifacts,
-                recompute_stats=incremental,
-                recompute_stats_objects=objects_to_process if incremental else (),
             )
             if ret != 0:
                 print("\n[FAIL] Side artifact regeneration failed, aborting workflow.")

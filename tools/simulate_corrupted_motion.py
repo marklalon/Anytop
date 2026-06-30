@@ -2,10 +2,9 @@
 Simulate Corrupted Motion — Freeze Specified Joint Subtrees
 
 Loads a raw motion NPY ``(T, J, 13)``, freezes the channels of the requested
-joints (and, by default, their subtrees) by setting them to the dataset's
-per-joint mean — the exact corruption signal the model sees during training
-when joint-mask subtree perturbation is enabled — and writes both the corrupted NPY
-and a BVH preview.
+joints (and, by default, their subtrees) by setting their canonical features to
+zero, then decodes back to physical HML-like features and writes both the
+corrupted NPY and a BVH preview.
 
 The joint name resolution follows the same alias rules as
 ``--inpaint_joints`` in ``sample/generate.py`` (raw / canonical /
@@ -57,6 +56,11 @@ from data_loaders.truebones.truebones_utils.motion_process import (
 )
 from data_loaders.truebones.truebones_utils.animation_utils import (
     refresh_joint_metadata_in_cond_dict,
+)
+from data_loaders.truebones.truebones_utils.canonical_features import (
+    canonical_to_physical_hml,
+    mark_canonical_cond_entry,
+    physical_hml_to_canonical,
 )
 from model.joint_mask_utils import collect_subtree_indices
 from utils.misc import infer_object_type_from_filename
@@ -142,9 +146,8 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
             "Freeze specified joints (and their subtrees) in a raw motion NPY "
-            "by replacing their channels with the dataset's per-joint mean — "
-            "matching the corruption signal seen during training when "
-            "joint-mask subtree perturbation is enabled."
+            "by zeroing their canonical model-space channels, then decoding "
+            "back to physical HML-like features."
         )
     )
     p.add_argument("--motion", required=True,
@@ -161,15 +164,14 @@ def parse_args() -> argparse.Namespace:
                         "all descendants).")
     p.add_argument("--cond-file",
                    default="dataset/truebones/zoo/truebones_processed/cond.npy",
-                   help="Path to cond.npy holding per-species normalization stats.")
+                   help="Path to cond.npy holding static skeleton conditioning.")
     p.add_argument("--output-dir", default="outputs/corrupted_motion",
                    help="Directory to write the corrupted NPY + BVH preview.")
     p.add_argument("--output-stem", default="",
                    help="Override the output filename stem.")
     p.add_argument("--noise-std", type=float, default=0.1,
                    help="Std of i.i.d. Gaussian noise added to all joints in "
-                        "normalized space. 0 disables noise; "
-                        "1.0 matches the unit-normal scale of the data.")
+                        "canonical model space. 0 disables noise.")
     p.add_argument("--noise-seed", type=int, default=0,
                    help="RNG seed for the noise sampler (default: 0).")
     return p.parse_args()
@@ -218,12 +220,10 @@ def main() -> int:
         )
         return 1
     object_cond = cond_dict[object_type]
+    mark_canonical_cond_entry(object_cond)
 
     parents = np.asarray(object_cond["parents"], dtype=np.int64)
     offsets = np.asarray(object_cond["offsets"], dtype=np.float32)
-    mean = np.asarray(object_cond["mean"], dtype=np.float32)
-    std = np.asarray(object_cond["std"], dtype=np.float32)
-    std_safe = std + 1e-6
     n_joints_cond = parents.shape[0]
 
     joint_names_bvh = list(
@@ -263,8 +263,8 @@ def main() -> int:
         return 1
     if 0 in freeze_indices:
         print(
-            "[WARN] Freezing the root joint zeroes the global trajectory in "
-            "normalized space and yields the dataset mean root pose."
+            "[WARN] Freezing the root joint zeroes the root canonical features "
+            "and may suppress global trajectory cues."
         )
 
     freeze_mask = np.zeros((J,), dtype=bool)
@@ -278,26 +278,24 @@ def main() -> int:
     )
 
     # -----------------------------------------------------------------------
-    # Apply mask in normalized space → denorm (training-style corruption)
+    # Apply mask in canonical model space, then decode back to physical features.
     # -----------------------------------------------------------------------
-    motion_norm = np.nan_to_num(
-        (motion_raw - mean[None, :, :]) / std_safe[None, :, :],
+    motion_canonical = np.nan_to_num(
+        physical_hml_to_canonical(motion_raw, object_cond),
         copy=True,
     ).astype(np.float32)
-    motion_norm[:, freeze_mask, :] = 0.0
+    motion_canonical[:, freeze_mask, :] = 0.0
     if args.noise_std > 0.0:
         rng = np.random.default_rng(int(args.noise_seed))
         noise = rng.standard_normal(
-            size=(T, J, motion_norm.shape[2]),
+            size=(T, J, motion_canonical.shape[2]),
         ).astype(np.float32) * np.float32(args.noise_std)
-        motion_norm += noise
+        motion_canonical += noise
         print(
             f"[INFO] Added i.i.d. Gaussian noise (std={args.noise_std}, "
             f"seed={args.noise_seed}) to ALL joints."
         )
-    motion_corrupted = (
-        motion_norm * std_safe[None, :, :] + mean[None, :, :]
-    ).astype(np.float32)
+    motion_corrupted = canonical_to_physical_hml(motion_canonical, object_cond).astype(np.float32)
 
     # -----------------------------------------------------------------------
     # Write outputs

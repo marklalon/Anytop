@@ -27,6 +27,12 @@ from data_loaders.truebones.data.dataset import (
     ensure_joint_name_embeddings,
     resample_motion_features,
 )
+from data_loaders.truebones.truebones_utils.canonical_features import (
+    build_canonical_rest_feature,
+    canonical_to_physical_hml,
+    mark_canonical_cond_entry,
+    physical_hml_to_canonical,
+)
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_process import (
     FOOT_CONTACT_VEL_THRESH,
@@ -548,39 +554,6 @@ def _prepare_reference_motion_path(
     return out_npy
 
 
-def _get_reference_normalization_stats(
-    cond_entry,
-    *,
-    object_type,
-    joint_count,
-    feature_count,
-    context,
-):
-    if cond_entry is None:
-        raise KeyError(
-            f"Missing cond entry for {context} object_type '{object_type}'."
-        )
-
-    mean = np.asarray(cond_entry['mean'], dtype=np.float32)
-    std = np.asarray(cond_entry['std'], dtype=np.float32)
-    if mean.ndim != 2 or std.ndim != 2:
-        raise ValueError(
-            f"{context} normalization stats for '{object_type}' must have shape (J, F), "
-            f"got mean={mean.shape}, std={std.shape}"
-        )
-    if mean.shape[0] != joint_count or std.shape[0] != joint_count:
-        raise ValueError(
-            f"{context} normalization stats for '{object_type}' expect {joint_count} joints, "
-            f"got mean={mean.shape[0]}, std={std.shape[0]}"
-        )
-    if mean.shape[1] < feature_count or std.shape[1] < feature_count:
-        raise ValueError(
-            f"{context} normalization stats for '{object_type}' need at least {feature_count} feature channels, "
-            f"got mean={mean.shape[1]}, std={std.shape[1]}"
-        )
-    return mean[:, :feature_count], std[:, :feature_count] + 1e-6
-
-
 def _require_cond_translation_root_index(cond_entry, *, object_type, context):
     try:
         root = int(cond_entry['translation_root_index'])
@@ -815,26 +788,20 @@ def _prepare_img2img_reference_bundle(
     if ref_raw.shape[0] != output_frame_count:
         ref_raw = resample_motion_features(ref_raw, output_frame_count)
 
-    obj_mean, obj_std = _get_reference_normalization_stats(
-        target_cond,
-        object_type=target_type,
-        joint_count=loaded_reference_joint_count,
-        feature_count=ref_feats,
-        context='reference motion',
-    )
-    ref_norm = np.nan_to_num(
-        (ref_raw - obj_mean[None, :, :ref_feats]) / obj_std[None, :, :ref_feats],
+    mark_canonical_cond_entry(target_cond)
+    ref_canonical = np.nan_to_num(
+        physical_hml_to_canonical(ref_raw, target_cond),
         copy=True,
     ).astype(np.float32)
 
     if loaded_reference_joint_count < max_joints:
         pad = np.zeros(
-            (output_frame_count, max_joints - loaded_reference_joint_count, ref_norm.shape[2]),
+            (output_frame_count, max_joints - loaded_reference_joint_count, ref_canonical.shape[2]),
             dtype=np.float32,
         )
-        ref_norm = np.concatenate([ref_norm, pad], axis=1)
+        ref_canonical = np.concatenate([ref_canonical, pad], axis=1)
 
-    ref_tensor = torch.from_numpy(ref_norm).permute(1, 2, 0)
+    ref_tensor = torch.from_numpy(ref_canonical).permute(1, 2, 0)
     ref_feat = ref_tensor.shape[1]
     if ref_feat < target_feature_len:
         pad = torch.zeros(
@@ -1121,11 +1088,15 @@ def _generate_all_species(
             for sample_idx, motion in enumerate(sample):
                 sp = batch_species[sample_idx]
                 sp_entry = cond_dict[sp]
+                mark_canonical_cond_entry(sp_entry)
                 n_joints = model_kwargs['y']['n_joints'][sample_idx].item()
                 motion = motion[:n_joints]
                 parents = model_kwargs['y']['parents'][sample_idx]
-                motion_np = (motion.cpu().permute(2, 0, 1).numpy()
-                             * sp_entry['std'][None, :] + sp_entry['mean'][None, :])
+                # Decode with the full per-species cond entry: it carries both the
+                # rest geometry and the global standardization stats. (Building a
+                # minimal dict here is what previously dropped the stats silently.)
+                motion_physical = canonical_to_physical_hml(motion.unsqueeze(0), sp_entry)[0]
+                motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
 
                 if target_output_frames != output_frame_count:
                     motion_np = resample_motion_features(motion_np, target_output_frames)
@@ -1134,10 +1105,6 @@ def _generate_all_species(
                     model_kwargs, sample_idx,
                     fallback=sp_entry.get('translation_root_index', 0),
                 )
-                if _root_xz_locomotion_is_degenerate(
-                    sp_entry['std'], translation_root_index
-                ):
-                    _suppress_degenerate_root_xz_velocity(motion_np, translation_root_index)
                 if getattr(args, 'loop', False):
                     _close_loop_root_xz_via_velocity(motion_np, translation_root_index)
 
@@ -1146,13 +1113,9 @@ def _generate_all_species(
                 )
 
                 # T-pose rest rotations (per-species)
-                _tpose_rr = None
-                _tff = sp_entry.get('rest_pose')
-                if _tff is not None:
-                    from utils.rotation_conversions import rotation_6d_to_matrix_np
-                    from motion_lib.Quaternions import Quaternions as _QQ
-                    _rot6d = np.asarray(_tff[:, 3:9], dtype=np.float64)
-                    _tpose_rr = _QQ.from_transforms(rotation_6d_to_matrix_np(_rot6d)).qs
+                _tpose_rr = sp_entry.get('tpose_rest_rotations')
+                if _tpose_rr is not None:
+                    _tpose_rr = np.asarray(_tpose_rr, dtype=np.float32)
 
                 # Count existing outputs so repeated runs don't overwrite.
                 existing = [f for f in os.listdir(out_path)
@@ -1772,16 +1735,9 @@ def main(args=None, cond_dict=None, runtime=None):
         if f.startswith(object_type) and f.endswith('.npy')
     )
 
-    # Extract T-pose rest rotations (6D → quaternion)
-    _tff = cond_dict[object_type].get('rest_pose')
-    _tpose_rest_rotations = None
-    if _tff is not None:
-        from utils.rotation_conversions import rotation_6d_to_matrix_np
-        from motion_lib.Quaternions import Quaternions
-        _rot6d = np.asarray(_tff[:, 3:9], dtype=np.float64)
-        _tpose_rest_rotations = Quaternions.from_transforms(
-            rotation_6d_to_matrix_np(_rot6d)
-        ).qs
+    _tpose_rest_rotations = cond_dict[object_type].get('tpose_rest_rotations')
+    if _tpose_rest_rotations is not None:
+        _tpose_rest_rotations = np.asarray(_tpose_rest_rotations, dtype=np.float32)
 
     # Collect export tasks (in-process, no pickling needed)
     joint_names = cond_dict[object_type].get(
@@ -1798,13 +1754,15 @@ def main(args=None, cond_dict=None, runtime=None):
             _parse_frame_ranges(inpaint_frames_arg, target_output_frames)
         )
     export_tasks = []
+    mark_canonical_cond_entry(cond_dict[object_type])
     for sample_idx, motion in enumerate(sample):
         n_joints = model_kwargs['y']['n_joints'][sample_idx].item()
         motion = motion[:n_joints]
         parents = model_kwargs['y']['parents'][sample_idx]
-        mean = cond_dict[object_type]['mean'][None, :]
-        std = cond_dict[object_type]['std'][None, :]
-        motion_np = motion.cpu().permute(2, 0, 1).numpy() * std + mean
+        # Decode with the full per-species cond entry (rest geometry + global
+        # standardization stats), not a minimal dict that would drop the stats.
+        motion_physical = canonical_to_physical_hml(motion.unsqueeze(0), cond_dict[object_type])[0]
+        motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
 
         if target_output_frames != output_frame_count:
             motion_np = resample_motion_features(
@@ -1825,14 +1783,6 @@ def main(args=None, cond_dict=None, runtime=None):
             sample_idx,
             fallback=cond_dict[object_type].get('translation_root_index', 0),
         )
-
-        # In-place species (zero XZ locomotion in training) have a floored
-        # root-velocity std; the model emits noise there that would integrate
-        # into root drift. Suppress it so the export stays in-place.
-        if _root_xz_locomotion_is_degenerate(
-            cond_dict[object_type]['std'], translation_root_index
-        ):
-            _suppress_degenerate_root_xz_velocity(motion_np, translation_root_index)
 
         if inpaint_y_spans:
             _reanchor_inpaint_root_y_via_velocity(motion_np, inpaint_y_spans)
@@ -2041,44 +1991,6 @@ def _reanchor_inpaint_root_y_via_velocity(motion_np, spans):
         )
 
 
-def _root_xz_locomotion_is_degenerate(std, translation_root_index):
-    """True when the species has no XZ locomotion to generate.
-
-    ``get_mean_std`` floors any sub-1e-5 (zero-variance) std block to 1.0. A
-    species whose translation root never translates in XZ during training (e.g.
-    Tukan — all clips are in-place fly/idle, raw root XZ velocity is exactly 0)
-    therefore ends up with the root XZ velocity std floored to 1.0 instead of a
-    genuine ~0.01 scale value. At generation the model has no signal to learn on
-    those channels and emits ~N(0,1) noise; denormalizing with std=1.0 turns that
-    noise into a full unit-per-frame velocity, which integrates into large root
-    drift. Real locomotion stds in this scaled feature space are ~0.001–0.015, so
-    a value at/near the 1.0 floor is an unambiguous "no locomotion" marker.
-    """
-    std = np.asarray(std)
-    root_index = int(translation_root_index)
-    if std.ndim != 2 or std.shape[1] < 12 or root_index < 0 or root_index >= std.shape[0]:
-        return False
-    return bool(np.all(std[root_index, [9, 11]] >= 0.5))
-
-
-def _suppress_degenerate_root_xz_velocity(motion_np, translation_root_index):
-    """Zero the generated root XZ velocity for in-place species (see
-    :func:`_root_xz_locomotion_is_degenerate`). Operates in-place on ``motion_np``
-    so both the saved .npy and the exported BVH stay consistent (in-place, no
-    drift). The locomotion-root RIC X/Z channels (0, 2) are zero by construction
-    under RIFKE, so they are pinned too for cleanliness."""
-    if motion_np.ndim != 3:
-        return
-    _, joint_count, feature_count = motion_np.shape
-    root_index = int(translation_root_index)
-    if feature_count < 12 or root_index < 0 or root_index >= joint_count:
-        return
-    motion_np[:, root_index, 0] = 0.0
-    motion_np[:, root_index, 2] = 0.0
-    motion_np[:, root_index, 9] = 0.0
-    motion_np[:, root_index, 11] = 0.0
-
-
 def _close_loop_root_xz_via_velocity(motion_np, translation_root_index):
     """Close loop root XZ drift by distributing velocity residual.
 
@@ -2263,13 +2175,10 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joi
                 f"Unknown object_type '{object_type}'. Available object types in cond file: {available}"
             )
         batch = list()
+        mark_canonical_cond_entry(cond_dict[object_type])
         parents = cond_dict[object_type]['parents']
         n_joints = len(parents)
-        mean = cond_dict[object_type]['mean']
-        std = cond_dict[object_type]['std']
-        rest_pose = cond_dict[object_type]['rest_pose']
-        rest_pose = (rest_pose - mean) / (std + 1e-6)
-        rest_pose = np.nan_to_num(rest_pose)
+        rest_pose = np.nan_to_num(build_canonical_rest_feature(cond_dict[object_type]))
         joint_relations = cond_dict[object_type]['joint_relations']
         joints_graph_dist = cond_dict[object_type]['joints_graph_dist']
         offsets = cond_dict[object_type]['offsets']
@@ -2285,8 +2194,6 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joi
         batch.append(object_type)
         batch.append(joints_names_embs)
         batch.append(0)
-        batch.append(mean)
-        batch.append(std)
         batch.append(max_joints)
         metadata = {
             'is_loop': bool(loop),
@@ -2301,6 +2208,13 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joi
                 metadata['action_tags'] = tags
         batch.append(metadata)
         batch.append(object_type)
+        batch.append({
+            # Generation decodes per sample with the full cond entry, so y does
+            # not carry the global stats here (sampling itself never decodes).
+            'rest_pose_physical': cond_dict[object_type]['rest_pose'],
+            'rest_pos_ric_hml': cond_dict[object_type]['rest_pos_ric_hml'],
+            'feature_space': cond_dict[object_type].get('feature_space', 'canonical_motion_v3'),
+        })
         batches.append(batch)
 
     return truebones_batch_collate(batches)
