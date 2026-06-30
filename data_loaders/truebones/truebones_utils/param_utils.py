@@ -57,7 +57,7 @@ ACTION_TAGS_FILE = "action_tags.jsonl"
 # out of cond.npy (no inference path reads it); consumed only by the offline dataset
 # GLB tool (data_bridge.restore_glb_from_anytop). Written/refreshed by the dataset
 # preprocessing save path and by regenerate_dataset_artifacts.
-TPOSE_REFERENCE_SIDECAR = "tpose_reference_paths.npy"
+TPOSE_REFERENCE_SIDECAR = "tpose_reference_paths.jsonl"
 # Per-species motion descriptor (body-plan, size/build, locomotion), maintained as
 # a JSONL sidecar alongside action_tags.jsonl. One object per line:
 #   {"species": "Cat", "species_tags": ["Quadruped", "Small", "Stalking"]}

@@ -615,7 +615,7 @@ def _write_positions_error_file(save_dir, squared_positions_error):
 
 def _save_cond_with_tpose_sidecar(save_dir, cond, tpose_refs=None):
     """Persist cond.npy plus the ``TPOSE_REFERENCE_SIDECAR`` file
-    ({object_type: portable mesh path}).
+    (JSONL, one ``{"object_type": ..., "path": ...}`` per line).
 
     The skinned-mesh path is never stored on cond (file or memory); it travels
     separately and is passed here as *tpose_refs* ({object_type: path}). Only the
@@ -624,10 +624,9 @@ def _save_cond_with_tpose_sidecar(save_dir, cond, tpose_refs=None):
     merges, and retarget/update paths (which reuse the target's existing entry) keep
     every other species' path intact.
     """
+    from utils.misc import load_tpose_reference_sidecar, save_tpose_reference_sidecar
     sidecar_path = pjoin(save_dir, TPOSE_REFERENCE_SIDECAR)
-    sidecar = {}
-    if os.path.exists(sidecar_path):
-        sidecar = dict(np.load(sidecar_path, allow_pickle=True).item())
+    sidecar = load_tpose_reference_sidecar(sidecar_path)
 
     # Fresh paths collected this run take precedence over any existing sidecar value.
     for object_type, path in (tpose_refs or {}).items():
@@ -635,7 +634,7 @@ def _save_cond_with_tpose_sidecar(save_dir, cond, tpose_refs=None):
             sidecar[object_type] = path
 
     np.save(pjoin(save_dir, 'cond.npy'), cond)
-    np.save(sidecar_path, sidecar)
+    save_tpose_reference_sidecar(sidecar_path, sidecar)
 
 
 def _write_preprocess_seed_artifacts(save_dir, cond, motion_metadata, max_joints, files_counter, frames_counter, squared_positions_error, tpose_refs=None):
