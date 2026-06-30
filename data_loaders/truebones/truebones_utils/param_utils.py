@@ -73,6 +73,9 @@ MAX_PATH_LEN = 5.
 # compressed into the [min, max] band.
 VERTICAL_CLAMP_MIN_RATIO = 0.3
 VERTICAL_CLAMP_MAX_RATIO = 0.5
+# Absolute lower bound for the processed translation-root Y height, in the same
+# normalized units as the exported motion features.
+ROOT_Y_MIN_HEIGHT = -0.5
 
 # Maps object_type -> joint index tuple used to compute the forward direction for
 # creatures without usable limb pairs (snakes, fish).
