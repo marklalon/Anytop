@@ -360,14 +360,6 @@ def process_new_skeleton_args():
                        help="Enable automatic skeleton cropping to MAX_JOINTS=100. "
                             "Off by default because inference has no joint cap; "
                             "enable for training-compatible preprocessing.")
-    group.add_argument("--update", action='store_true',
-                       help="Incremental update mode. Instead of clearing --save-dir and rebuilding "
-                           "from scratch, merge new clips into the existing "
-                           "dataset, replacing any older clips produced from the same source files "
-                           "while keeping untouched sources, then rebuild the side "
-                            "artifacts (cond.npy canonical metadata, motion_metadata.json, metadata.txt, "
-                            "positions_error_rate.txt) over the merged clip set. Requires an existing "
-                           "--save-dir when updating in place.")
     group.add_argument("--species-tags", default=None, type=str,
                        help="Comma-separated species tags to explicitly assign to --object-type, "
                             "e.g. 'Quadruped,Large,Lumbering'. Takes precedence over both "

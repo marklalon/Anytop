@@ -1,8 +1,8 @@
-"""Shared retarget helpers for the --retarget-top-k preprocessing flow.
+"""Shared retarget helpers for the cross-species reference retarget flow.
 
 Used by:
-  tools/process_new_skeleton.py  -- builds coarse motions from similar donors
   sample/generate.py             -- cross-species reference motion retarget
+  tools/retarget.py              -- CLI wrapper for retargeting files
 """
 import glob
 import os
@@ -769,12 +769,12 @@ def auto_retarget_pipeline(
     fps: float = FPS,
     crop_enabled: bool = True,
 ) -> dict:
-    """Auto-retarget motions from top-k similar training donors onto the target.
+    """Auto-retarget motions from ranked training donors onto the target.
 
     Steps:
       1. Load training cond_dict from training_cond_path.
       2. Build target_cond + target_tp via _build_tpose_cond.
-      3. Select donors (override list or auto top-k ranking).
+      3. Select donors (override list or ranked donor selection).
       4. For each donor: retarget all motion .npy files, save .npy + .bvh.
       5. Return summary dict.
 

@@ -23,12 +23,8 @@ species-tags      - Comma-separated explicit species tags for --object-type,
                     precedence over species_tags.jsonl.
 crop-enabled      - Enable skeleton cropping to MAX_JOINTS=100.
                     Off by default (inference has no joint cap).
-update            - Incremental mode: merge new clips into the existing dataset instead of
-                    wiping --save-dir. Requires an existing dataset at --save-dir.
 
 Output (under save_dir/):
-  motions/    - .npy files of processed motion features for each input clip.
-  bvhs/       - BVH previews exported from the processed animation representation.
   cond.npy    - Skeleton representation (joint name embeddings, graph conditions,
                 canonical feature-space metadata)
                 consumed by AnyTop inference via ``--cond-path``.
@@ -47,7 +43,6 @@ def process_new_skeleton(
     tpos_path: str,
     object_type: str | None = None,
     crop_enabled: bool = False,
-    update: bool = False,
     species_tags: str | None = None,
     skip_t5_embeddings: bool = False,
     yes: bool = False,
@@ -62,7 +57,6 @@ def process_new_skeleton(
         "object_type": object_type,
         "tpos_path": tpos_path,
         "crop_enabled": crop_enabled,
-        "update": update,
         "species_tags": species_tags,
         "skip_t5_embeddings": skip_t5_embeddings,
         "yes": yes,
@@ -73,17 +67,9 @@ def process_new_skeleton(
 def _process_new_skeleton_from_args(args) -> dict[str, Any]:
     save_dir = args.save_dir
 
-    update_mode = bool(getattr(args, 'update', False))
-    if update_mode and not os.path.exists(os.path.join(save_dir, 'cond.npy')):
-        print(f"[process_new_skeleton] --update requested but no existing dataset "
-              f"found in '{save_dir}'; performing a full build instead.")
-        update_mode = False
-
-    if update_mode:
-        os.makedirs(save_dir, exist_ok=True)
-    elif os.path.exists(save_dir):
+    if os.path.exists(save_dir):
         # Clear known data subdirectories (motions/, bvhs/, etc.) but preserve
-        # top-level files (cond.npy, metadata.txt, motion_metadata.json, etc.).
+        # top-level files.
         # Aligns with preprocess_and_validate.py behavior.
         known_subdirs = ['motions', 'bvhs', 'joint_name_inspection']
         existing_subdirs = [
@@ -151,41 +137,19 @@ def _process_new_skeleton_from_args(args) -> dict[str, Any]:
             )
     # ──────────────────────────────────────────────────────────────────────
 
-    if update_mode:
-        metadata_path = os.path.join(save_dir, "motion_metadata.json")
-        if not os.path.exists(metadata_path):
-            print(f"[process_new_skeleton] --update requires motion_metadata.json but it is "
-                  f"missing from '{save_dir}'. Aborting.", file=sys.stderr)
-            sys.exit("motion_metadata.json not found")
-        else:
-            print(f"[process_new_skeleton] --update: incrementally updating {save_dir} "
-                f"(existing clips preserved)")
-
     process_skeleton(
         object_type,
         None,
         args.save_dir,
         tpose_path,
-        None,
-        update=update_mode,
         crop_enabled=crop_enabled,
         skip_t5=args.skip_t5_embeddings,
     )
-
-    # In --update mode process_skeleton only writes motions plus cond.npy /
-    # motion_metadata. Rebuild the side artifacts over the merged clip set.
-    if update_mode:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        from regenerate_dataset_artifacts import regenerate_dataset_artifacts
-        print("[process_new_skeleton] --update: rebuilding side artifacts "
-              "(embeddings, canonical feature metadata, metadata)")
-        regenerate_dataset_artifacts(args.save_dir)
 
     return {
         "save_dir": save_dir,
         "object_type": object_type,
         "tpose_path": tpose_path,
-        "update": update_mode,
         "cond_npy": os.path.join(save_dir, "cond.npy"),
     }
 

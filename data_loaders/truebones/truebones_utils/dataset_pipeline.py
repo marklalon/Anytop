@@ -572,8 +572,9 @@ keyed sidecars (action_tags.jsonl, motion_captions.jsonl) do not go stale.
 
 `files_counter` is still threaded through purely for the dataset-wide summary
 counts; it no longer participates in clip names. `action_start_counts` lets the
-incremental --update path continue numbering above existing clips of the same
-(object, action) group so freshly written clips never collide with retained ones.
+direct-input refresh path continue numbering above existing clips of the same
+(object, action) group so freshly written clips never collide with retained
+ones.
 """
 def _write_object_outputs(save_dir, object_payload, files_counter, action_start_counts=None):
     object_type = object_payload['object_type']
@@ -631,8 +632,7 @@ def _save_cond_with_tpose_sidecar(save_dir, cond, tpose_refs=None):
     separately and is passed here as *tpose_refs* ({object_type: path}). Only the
     objects present in *tpose_refs* (with a non-None path) update the sidecar; all
     other existing sidecar entries are preserved, so incremental builds, per-object
-    merges, and retarget/update paths (which reuse the target's existing entry) keep
-    every other species' path intact.
+    merges, and retarget paths keep every other species' path intact.
     """
     from utils.misc import load_tpose_reference_sidecar, save_tpose_reference_sidecar
     sidecar_path = pjoin(save_dir, TPOSE_REFERENCE_SIDECAR)
@@ -745,9 +745,9 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
 ``incremental``: keep already-processed clips on disk and only process source anim
 files that have not produced clips yet (per-object, keyed on source_fbx_path). New
 clips number above retained ones within each (object, action) group. The rewritten
-cond.npy / motion_metadata.json are seeded from the existing dataset so untouched
-objects survive. Without ``incremental`` the prior full-build behavior is unchanged
-(callers wipe outputs first). """
+dataset state is seeded from the existing dataset so untouched objects survive.
+Without ``incremental`` the prior full-build behavior is unchanged (callers wipe
+outputs first). """
 def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, raw_data_dir=None, object_workers=8, filter_min_length=10, resample_min_length=20, incremental=False):
     ## prepare
     target_dataset_dir = dataset_dir or DEFAULT_DATASET_DIR
@@ -1000,7 +1000,7 @@ def _merge_object_into_cond(save_dir, object_name, object_cond, tpose_reference_
         if chosen is not None:
             object_cond['canonical_feature_mean'] = np.asarray(chosen[0], dtype=np.float32)
             object_cond['canonical_feature_std'] = np.asarray(chosen[1], dtype=np.float32)
-    # tpose_reference_path is None for retarget/anim-dir updates that reuse the
+    # tpose_reference_path is None for retarget/direct-input updates that reuse the
     # target's existing sidecar entry (preserved by _save_cond_with_tpose_sidecar).
     tpose_refs = {object_name: tpose_reference_path} if tpose_reference_path else None
     _save_cond_with_tpose_sidecar(save_dir, cond, tpose_refs)
@@ -1022,7 +1022,7 @@ def _normalized_source_fbx_path(entry):
 
 
 def _load_motion_metadata_raw(dataset_dir):
-    """Read motion_metadata.json's per-clip entries directly, without joining action_tags.
+    """Read stored per-clip entries directly, without joining action_tags.
 
     Unlike load_motion_metadata this never requires the action_tags.jsonl sidecar, so the
     incremental path can read source/numbering bookkeeping on datasets that have not been
@@ -1093,9 +1093,9 @@ def list_object_source_files(object_type, raw_data_dir=None):
     )
     # Mirror _prepare_object_outputs: a dedicated T-pose/rest reference file is consumed
     # as the encoding base (find_tpose_reference_path removes it from anim_files in place)
-    # and never produces a clip, so it never lands in motion_metadata.json. Drop it here
-    # too — otherwise every object carrying a *-TPOSE.fbx would perpetually report one
-    # unprocessed source file and get needlessly reprocessed on every incremental run.
+    # and never produces a clip. Drop it here too — otherwise every object carrying a
+    # *-TPOSE.fbx would perpetually report one unprocessed source file and get needlessly
+    # reprocessed on every incremental run.
     find_tpose_reference_path(anim_files)
     return [f for f in anim_files if not should_skip_anim(f, object_type)]
 
@@ -1105,7 +1105,7 @@ def find_new_source_files(objects, dataset_dir=None, raw_data_dir=None):
 
     Objects whose every current source file already produced clips are omitted. Used by
     the incremental preprocessing path to decide which objects need any work at all
-    (cheap: reads motion_metadata.json + lists raw dirs, no geometry loading)."""
+    (cheap: reads stored metadata + lists raw dirs, no geometry loading)."""
     target_dataset_dir = dataset_dir or DEFAULT_DATASET_DIR
     existing_meta = _load_motion_metadata_raw(target_dataset_dir)
     result = {}
@@ -1120,170 +1120,8 @@ def find_new_source_files(objects, dataset_dir=None, raw_data_dir=None):
     return result
 
 
-def validate_anim_dir_update_state(object_name, save_dir, existing_meta=None):
-    """Refuse incremental anim-dir replacement when target clips are ambiguous.
-
-    Replacing only the prior anim-dir clips is safe only when every existing
-    target motion on disk is tracked in motion_metadata.json and explicitly
-    identifiable as either a direct anim-dir clip or a preserved retarget clip.
-    Legacy datasets without that metadata must be rebuilt instead of updated in
-    place, otherwise an incoming source clip cannot reliably replace its older
-    output slices without duplicating target motions."""
-    motions_dir = pjoin(save_dir, MOTION_DIR)
-    existing_meta = load_motion_metadata(save_dir) if existing_meta is None else existing_meta
-
-    target_prefix = f"{object_name}_"
-    target_motion_names = [
-        p.name
-        for p in sorted(Path(motions_dir).glob("*.npy"))
-        if p.name.startswith(target_prefix)
-    ]
-    if not target_motion_names:
-        return
-
-    untracked_target = [
-        motion_name for motion_name in target_motion_names if motion_name not in existing_meta
-    ]
-    if untracked_target:
-        sample = ', '.join(untracked_target[:5])
-        raise RuntimeError(
-            f"cannot incrementally update anim-dir for {object_name}: existing target "
-            f"motions are present on disk but missing from motion_metadata.json "
-            f"({sample}). Rebuild this dataset without --update."
-        )
-
-    ambiguous_target = []
-    for motion_name in target_motion_names:
-        entry = existing_meta.get(motion_name, {})
-        if str(entry.get('object_type', '')) != object_name:
-            ambiguous_target.append(motion_name)
-            continue
-        if _is_anim_dir_motion_entry(entry) or _is_retarget_motion_entry(entry):
-            continue
-        ambiguous_target.append(motion_name)
-    if ambiguous_target:
-        sample = ', '.join(ambiguous_target[:5])
-        raise RuntimeError(
-            f"cannot incrementally update anim-dir for {object_name}: existing target "
-            f"motions lack source metadata needed to distinguish direct clips from "
-            f"preserved retarget clips ({sample}). Rebuild or regenerate this dataset "
-            f"with explicit motion_source metadata."
-        )
-
-
-"""Incremental --update for the --anim-dir path.
-
-Reprocesses the current --anim-dir input and merges the result into the
-existing dataset. Prior anim-dir clips from the same source FBX files are
-replaced in place, while untouched source clips and donor clips from a prior
---retarget-top-k run are preserved. Side artifacts are rebuilt afterwards by
-regenerate_dataset_artifacts() in the caller."""
-def _update_anim_dir(object_name, face_joints, save_dir, tpose_path, anim_dir):
-    motions_dir = pjoin(save_dir, MOTION_DIR)
-    bvhs_dir = pjoin(save_dir, BVHS_DIR)
-    existing_meta = load_motion_metadata(save_dir)
-    validate_anim_dir_update_state(object_name, save_dir, existing_meta)
-
-    # Clip numbers are per-(object, action) segment indices, so number new clips
-    # above the highest existing index *within each action group*. New clips then
-    # collide neither with retained donor clips nor with older anim-dir outputs
-    # still on disk during processing (matching-source clips are removed only
-    # after processing succeeds, so a failed reprocess leaves the existing
-    # dataset intact).
-    action_start_counts = _object_action_start_counts(existing_meta, object_name)
-
-    squared_positions_error = dict()
-    _, _, _, object_cond, new_meta, tpose_reference_path = process_object(
-        object_name,
-        0,
-        0,
-        23,
-        squared_positions_error,
-        save_dir=save_dir,
-        fbxs_dir=anim_dir,
-        face_joints=face_joints,
-        t_pos_path=tpose_path,
-        action_start_counts=action_start_counts,
-    )
-    if object_cond is None:
-        print(f"[update] no valid animation data found in {anim_dir}; dataset unchanged")
-        return
-
-    replaced_sources = {
-        _normalized_source_fbx_path(entry)
-        for entry in new_meta.values()
-    }
-    replaced_sources.discard(None)
-
-    # Processing succeeded — replace only prior direct clips that came from the
-    # same source files as this update. Untouched direct clips and donor clips
-    # are preserved, so A,B updated with B,C becomes A,B,C.
-    kept_meta = {}
-    replaced = 0
-    for motion_name, entry in existing_meta.items():
-        if (
-            str(entry.get('object_type', '')) == object_name
-            and _is_anim_dir_motion_entry(entry)
-            and _normalized_source_fbx_path(entry) in replaced_sources
-        ):
-            npy_path = pjoin(motions_dir, motion_name)
-            if os.path.exists(npy_path):
-                os.remove(npy_path)
-            bvh_path = pjoin(bvhs_dir, os.path.splitext(motion_name)[0] + '.bvh')
-            if os.path.exists(bvh_path):
-                os.remove(bvh_path)
-            replaced += 1
-        else:
-            kept_meta[motion_name] = entry
-    if replaced:
-        print(f"[update] replaced {replaced} previously processed anim-dir clip(s) "
-              f"from {len(replaced_sources)} updated source file(s)")
-
-    merged_meta = dict(kept_meta)
-    merged_meta.update(new_meta)
-    write_motion_metadata(save_dir, merged_meta, len(merged_meta))
-    _merge_object_into_cond(save_dir, object_name, object_cond, tpose_reference_path)
-    print(f"[update] anim-dir: {len(new_meta)} clip(s) written, "
-          f"{len(merged_meta)} clip(s) total")
-
-
-"""Incremental --update for the --retarget-top-k path.
-
-Donor motions were already written to save_dir/motions/ by auto_retarget_pipeline
-(deterministic `{target}_{donor}_{action}` names, so re-runs overwrite same-named
-donors and add new ones). Existing clips are kept; cond.npy and motion_metadata
-are merged. Side artifacts are rebuilt afterwards by the caller."""
-def _update_retarget(object_name, save_dir, motions_from_npys, target_cond_partial):
-    all_motions = [np.load(p).astype(np.float32) for p in motions_from_npys]
-    if not all_motions:
-        print("[update] no retargeted motions produced; dataset unchanged")
-        return
-
-    object_cond = mark_canonical_cond_entry(dict(target_cond_partial))
-
-    parents = np.asarray(object_cond['parents'], dtype=np.int64)
-    offsets = np.asarray(object_cond['offsets'], dtype=np.float64)
-    existing_meta = load_motion_metadata(save_dir)
-    new_meta = {}
-    for motion_path, motion in zip(motions_from_npys, all_motions):
-        motion_name = os.path.basename(motion_path)
-        motion_labels = build_motion_labels(object_name, motion_name=motion_name)
-        motion_labels['translation_root_index'] = int(
-            infer_translation_root_index_from_features(motion, parents, offsets)
-        )
-        motion_labels['motion_source'] = 'retarget'
-        new_meta[motion_name] = motion_labels
-
-    merged_meta = dict(existing_meta)
-    merged_meta.update(new_meta)
-    write_motion_metadata(save_dir, merged_meta, len(merged_meta))
-    _merge_object_into_cond(save_dir, object_name, object_cond)
-    print(f"[update] retarget: {len(new_meta)} donor clip(s) written, "
-          f"{len(merged_meta)} clip(s) total")
-
-
-def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=None,
-                     motions_from_npys=None, target_cond_partial=None, update=False,
+def process_skeleton(object_name, face_joints, save_dir, tpose_path,
+                     motions_from_npys=None, target_cond_partial=None,
                      crop_enabled=True, skip_t5=False):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
@@ -1293,9 +1131,6 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
         # Retarget branch: motions already written to save_dir/motions/ by auto_retarget_pipeline.
         # Load them for metadata, then write static canonical cond.npy.
         assert target_cond_partial is not None, "target_cond_partial required with motions_from_npys"
-        if update:
-            _update_retarget(object_name, save_dir, motions_from_npys, target_cond_partial)
-            return
         all_motions = [np.load(p).astype(np.float32) for p in motions_from_npys]
         if not all_motions:
             print(f"[process_skeleton] no retargeted motions available; cond.npy not written")
@@ -1346,10 +1181,6 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
         )
         return
 
-    if update and anim_dir is not None:
-        _update_anim_dir(object_name, face_joints, save_dir, tpose_path, anim_dir)
-        return
-
     ## process
     files_counter = 0
     frames_counter = 0
@@ -1359,55 +1190,20 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
     cond = dict()
     motion_metadata = {}
 
-    if anim_dir is None:
-        # Rest-pose only: generate cond.npy without motion file processing
-        object_cond, max_joints, tpose_reference_path = _build_rest_pose_only_cond(
-            object_name,
-            tpose_path,
-            face_joints,
-            crop_enabled=crop_enabled,
-        )
-        # Rest-pose-only builds have no clips to calibrate the per-object_subset
-        # standardization stats from, and no sibling in this standalone cond to
-        # inherit them from. Pull them from the trained dataset's same-object_subset
-        # species so the cond is usable for inference (else generation fast-fails
-        # with the missing-stats KeyError).
-        _inherit_canonical_stats_from_dataset(object_name, object_cond)
-        cond[object_name] = object_cond
-        _write_dataset_artifacts(
-            save_dir,
-            cond,
-            motion_metadata,
-            objects_counter,
-            max_joints,
-            files_counter,
-            frames_counter,
-            squared_positions_error,
-            skip_t5=skip_t5,
-            tpose_refs={object_name: tpose_reference_path},
-        )
-        return
-
-    cur_counter = files_counter
-    files_counter, frames_counter, max_joints, object_cond, object_motion_metadata, tpose_reference_path = process_object(
+    # Rest-pose only: generate cond.npy without motion file processing.
+    object_cond, max_joints, tpose_reference_path = _build_rest_pose_only_cond(
         object_name,
-        files_counter,
-        frames_counter,
-        max_joints,
-        squared_positions_error,
-        save_dir=save_dir,
-        fbxs_dir=anim_dir,
-        face_joints=face_joints,
-        t_pos_path=tpose_path,
+        tpose_path,
+        face_joints,
         crop_enabled=crop_enabled,
     )
-    if object_cond is None:
-        print(f"No valid animation data found for '{object_name}', aborting.")
-        return
+    # Rest-pose-only builds have no clips to calibrate the per-object_subset
+    # standardization stats from, and no sibling in this standalone cond to
+    # inherit them from. Pull them from the trained dataset's same-object_subset
+    # species so the cond is usable for inference (else generation fast-fails
+    # with the missing-stats KeyError).
+    _inherit_canonical_stats_from_dataset(object_name, object_cond)
     cond[object_name] = object_cond
-    objects_counter[object_name] = files_counter - cur_counter
-    motion_metadata.update(object_motion_metadata)
-
     _write_dataset_artifacts(
         save_dir,
         cond,
