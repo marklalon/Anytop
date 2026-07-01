@@ -829,8 +829,8 @@ def test_update_anim_dir_preserves_other_objects(monkeypatch, tmp_path):
     bvhs_dir.mkdir(parents=True)
 
     np.save(dataset_dir / 'cond.npy', {
-        'Cat': _make_cond_entry('Cat'),
-        'Dog': _make_cond_entry('Dog'),
+        'Cat': _cond_entry_with_stats('Cat', 0.4, 1.2),
+        'Dog': _cond_entry_with_stats('Dog', 0.4, 1.2),
     })
     np.save(motions_dir / 'Cat_Run_001.npy', np.zeros((1, 1, 1), dtype=np.float32))
     np.save(motions_dir / 'Dog_Run_001.npy', np.zeros((1, 1, 1), dtype=np.float32))
@@ -884,7 +884,7 @@ def test_update_anim_dir_replaces_only_matching_sources(monkeypatch, tmp_path):
     motions_dir.mkdir(parents=True)
     bvhs_dir.mkdir(parents=True)
 
-    np.save(dataset_dir / 'cond.npy', {'Dragon': _make_cond_entry('Dragon')})
+    np.save(dataset_dir / 'cond.npy', {'Dragon': _cond_entry_with_stats('Dragon', 0.3, 1.5)})
     np.save(motions_dir / 'Dragon_A_001.npy', np.zeros((1, 1, 1), dtype=np.float32))
     np.save(motions_dir / 'Dragon_B_001.npy', np.zeros((1, 1, 1), dtype=np.float32))
     (bvhs_dir / 'Dragon_A_001.bvh').write_text('A', encoding='utf-8')
@@ -971,7 +971,7 @@ def test_update_anim_dir_full_rerun_replaces_old_versions(monkeypatch, tmp_path)
     for source_path in (source_a, source_b, source_c):
         Path(source_path).write_text('fbx', encoding='utf-8')
 
-    np.save(dataset_dir / 'cond.npy', {'Dragon': _make_cond_entry('Dragon')})
+    np.save(dataset_dir / 'cond.npy', {'Dragon': _cond_entry_with_stats('Dragon', 0.3, 1.5)})
     np.save(motions_dir / 'Dragon_A_001.npy', np.zeros((1, 1, 1), dtype=np.float32))
     np.save(motions_dir / 'Dragon_B_001.npy', np.zeros((1, 1, 1), dtype=np.float32))
     (bvhs_dir / 'Dragon_A_001.bvh').write_text('A-old', encoding='utf-8')

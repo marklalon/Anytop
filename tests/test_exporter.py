@@ -1,22 +1,22 @@
 """
-End-to-end exporter test against a source FBX.
+End-to-end exporter test against a source GLB.
 
-The test loads one FBX animation, converts it into AnimationExporter inputs,
+The test loads one GLB animation, converts it into AnimationExporter inputs,
 exports three variants via Anytop.utils.exporter.AnimationExporter, then uses
-tools.compare_motions to compare each exported file back to the source FBX.
+tools.compare_motions to compare each exported file back to the source GLB.
 
 Pass criteria:
-  - bones-only GLB vs FBX passes compare_motions thresholds
-  - skinned GLB vs FBX passes compare_motions thresholds
+  - bones-only GLB vs source passes compare_motions thresholds
+  - skinned GLB vs source passes compare_motions thresholds
   - bones-only GLB is verified to contain no skinned mesh
   - skinned GLB is verified to contain a skinned mesh and passes mesh checks
-  - BVH vs FBX passes compare_motions thresholds, if --no-skip-bvh is set
+  - BVH vs source passes compare_motions thresholds, if --no-skip-bvh is set
 
 Usage:
         python tests/test_exporter.py
 
         python tests/test_exporter.py \
-        --fbx dataset/truebones/zoo/Truebone_Z-OO/Horse/HorseALL-RunToStop.fbx \
+        --fbx dataset/truebones/zoo/Truebone_Z-OO/Horse/HorseALL-RunToStop.glb \
         --output-dir outputs/exporter_compare_motions
 """
 from __future__ import annotations
@@ -49,15 +49,16 @@ from Anytop.utils.exporter import AnimationExporter, animation_to_exporter_input
 from tools.compare_motions import compare_motions, compute_mesh_surface_error, detect_and_align, load_motion, print_summary
 
 
-_DEFAULT_FBX = os.path.join(
+_DEFAULT_GLB = os.path.join(
     _ANYTOP_ROOT,
     "dataset",
     "truebones",
     "zoo",
     "Truebone_Z-OO",
     "Horse",
-    "HorseALL-RunToStop.fbx",
+    "HorseALL-RunToStop.glb",
 )
+_DEFAULT_FBX = _DEFAULT_GLB
 
 
 _COLOR_RED = "\033[31m"
@@ -344,14 +345,14 @@ def _run_test_exporter_compare_motions(
 ) -> dict[str, Any]:
     if fbx_path is None:
         fbx_path = _DEFAULT_FBX
-    assert os.path.isfile(fbx_path), f"Missing required FBX: {fbx_path}"
+    assert os.path.isfile(fbx_path), f"Missing required GLB: {fbx_path}"
 
     temp_context = nullcontext(output_dir) if output_dir else tempfile.TemporaryDirectory(prefix="exporter_compare_")
     with temp_context as work_dir:
         assert work_dir is not None
         os.makedirs(work_dir, exist_ok=True)
 
-        print(f"[Source] FBX: {_fmt_path(fbx_path)}")
+        print(f"[Source] GLB: {_fmt_path(fbx_path)}")
         exports = _export_variants_from_fbx(fbx_path, work_dir, skip_bvh=skip_bvh)
 
         if not skip_bvh:
@@ -393,7 +394,7 @@ def _run_test_exporter_compare_motions(
         all_passed = all(r["passed"] for r in results.values())
         overall_status = "PASS" if all_passed else f"{_COLOR_RED}FAIL{_COLOR_RESET}"
         print(f"\n{'=' * 78}")
-        print(f"[{overall_status}] exporter outputs vs source FBX")
+        print(f"[{overall_status}] exporter outputs vs source")
         print(f"{'=' * 78}")
         return {
             "source_fbx": os.path.abspath(fbx_path),
@@ -428,12 +429,12 @@ def test_exporter_compare_motions() -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Export BVH / bones-only GLB / skinned GLB from one FBX and compare each output to the source FBX.",
+        description="Export BVH / bones-only GLB / skinned GLB from one GLB and compare each output to the source.",
     )
     parser.add_argument(
         "--fbx",
         default=_DEFAULT_FBX,
-        help="Path to source FBX animation.",
+        help="Path to source GLB animation.",
     )
     parser.add_argument(
         "--output-dir",
