@@ -107,7 +107,12 @@ def _resolve_one_glb(
             clear_scene()
             return rel, "already_ok"
 
-        # Re-export GLB, overwriting the original.
+        # Re-export GLB, overwriting the original.  Bake animation at 30 fps
+        # rather than Blender's 24 fps scene default.
+        scene = bpy.context.scene
+        scene.render.fps = 30
+        scene.render.fps_base = 1.0
+
         with contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(io.StringIO()), \
              _silence_os_std():

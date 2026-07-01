@@ -174,6 +174,16 @@ def _process_motion_file(file_path, object_type, max_joints,
     _crop_max = MAX_JOINTS if crop_enabled else 2 ** 16
     # Load the animation file (FBX/GLB/GLTF) once; pass it as `preloaded` to every get_motion call so that
     raw_anim, names, frame_time = FBX.load(file_path)
+
+    # Warn if the motion file's FPS deviates from the expected 30 FPS.
+    fps = 1.0 / frame_time if frame_time > 0 else 0.0
+    if fps and abs(fps - 30.0) > 0.1:
+        from .animation_utils import _warn
+        _warn(
+            f"FPS mismatch: '{os.path.basename(str(file_path))}' runs at "
+            f"{fps:.2f} FPS (frame_time={frame_time:.6f}s), expected 30 FPS"
+        )
+
     # Crop oversized skeletons to the crop cap so the loaded animation and its
     # exported names match the cropped rest-pose offsets. Leaves are peeled from
     # deepest to shallowest; ties at the same depth prefer shorter bones first,
@@ -872,6 +882,57 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
     )
 
 
+def _inherit_canonical_stats_from_dataset(object_name, object_cond, reference_dataset_dir=None):
+    """Inherit per-object_subset canonical standardization stats onto a standalone,
+    motion-less cond entry from the trained dataset cond.npy.
+
+    A rest-pose-only new skeleton (the ``process_new_skeleton`` inference path) has
+    no clips to calibrate the L-normalized mean/std from, and no sibling species in
+    its own standalone cond to inherit from. The stats are a cross-species constant
+    *per object_subset* tied to the trained checkpoint, so the only correct source
+    is a same-object_subset species in the training dataset cond.npy. Without them
+    the cond cannot be (de)standardized and generation fast-fails downstream.
+
+    Returns True if stats were set (or were already present), False if none could be
+    resolved (the caller warns; generation will then raise the missing-stats error).
+    """
+    from .canonical_features import get_canonical_global_stats
+
+    if get_canonical_global_stats(object_cond) is not None:
+        return True
+
+    target_subset = object_subset_for_object_type(object_name)
+    if target_subset is None:
+        print(f"[process_skeleton] '{object_name}' has no object_subset "
+              "(missing species_tags.jsonl entry); cannot inherit canonical stats.")
+        return False
+
+    ref_dir = reference_dataset_dir or DEFAULT_DATASET_DIR
+    ref_cond_path = pjoin(ref_dir, 'cond.npy')
+    if not os.path.exists(ref_cond_path):
+        print(f"[process_skeleton] reference dataset cond not found at '{ref_cond_path}'; "
+              "cannot inherit canonical stats.")
+        return False
+
+    ref_cond = np.load(ref_cond_path, allow_pickle=True).item()
+    for sibling, sibling_cond in ref_cond.items():
+        if not isinstance(sibling_cond, dict):
+            continue
+        if object_subset_for_object_type(sibling) != target_subset:
+            continue
+        stats = get_canonical_global_stats(sibling_cond)
+        if stats is not None:
+            set_canonical_global_stats(object_cond, stats[0], stats[1])
+            print(f"[process_skeleton] inherited canonical stats for '{object_name}' "
+                  f"(subset={target_subset}) from {ref_cond_path}")
+            return True
+
+    print(f"[process_skeleton] no '{target_subset}' species with canonical stats found "
+          f"in {ref_cond_path} for '{object_name}' to inherit; "
+          "regenerate the dataset cond.npy or process with motion clips.")
+    return False
+
+
 """Merge a freshly built object cond entry into an existing cond.npy in place.
 
 Other objects already present in cond.npy are left untouched."""
@@ -1306,6 +1367,12 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
             face_joints,
             crop_enabled=crop_enabled,
         )
+        # Rest-pose-only builds have no clips to calibrate the per-object_subset
+        # standardization stats from, and no sibling in this standalone cond to
+        # inherit them from. Pull them from the trained dataset's same-object_subset
+        # species so the cond is usable for inference (else generation fast-fails
+        # with the missing-stats KeyError).
+        _inherit_canonical_stats_from_dataset(object_name, object_cond)
         cond[object_name] = object_cond
         _write_dataset_artifacts(
             save_dir,

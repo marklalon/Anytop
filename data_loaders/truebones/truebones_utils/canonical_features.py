@@ -241,8 +241,10 @@ def _apply_global_stats(feature, cond_entry, inverse: bool):
     if stats is None:
         raise KeyError(
             f"cond entry is missing {CANONICAL_MEAN_KEY!r}/{CANONICAL_STD_KEY!r}; "
-            "cannot (de)standardize canonical features. Pass the global stats "
-            "(from the cond entry or the collated y dict), or regenerate cond.npy."
+            "cannot (de)standardize canonical features. Pass the per-object_subset "
+            "stats (from the cond entry or the collated y dict), or regenerate "
+            "cond.npy. A freshly built new-skeleton cond inherits these stats from "
+            "a same-object_subset species in the dataset cond.npy."
         )
     mean, std = stats
 

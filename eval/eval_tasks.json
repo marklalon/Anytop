@@ -12,8 +12,8 @@
 
     { "category": "ConvertLoop", "args": ["--reference_motion", "outputs/test/Buffalo_Run_Noloop.npy", "--skip_timesteps", "90", "--loop"] },
 
-    { "category": "CorruptionFix", "args": ["--reference_motion", "outputs/corrupted_motion/Buffalo_corrupted.npy", "--skip_timesteps", "50", "--action_tags", "locomotion"] },
-    { "category": "CorruptionFix", "args": ["--reference_motion", "outputs/test/Buffalo_debug_phase2_animation.glb", "--skip_timesteps", "5", "--action_tags", "locomotion"] },
+    { "category": "CorruptionFix", "args": ["--reference_motion", "outputs/corrupted_motion/Buffalo_corrupted.npy", "--skip_timesteps", "90", "--action_tags", "locomotion"] },
+    { "category": "CorruptionFix", "args": ["--reference_motion", "outputs/test/Buffalo_debug_phase2_animation.glb", "--skip_timesteps", "90", "--action_tags", "locomotion"] },
 
     { "category": "InpaintFrames", "args": ["--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Buffalo_RunLoop_1.npy", "--inpaint_frames", "20-30"] },
     { "category": "InpaintFrames", "args": ["--reference_motion", "$LAST_OUTPUT", "--skip_timesteps", "90"] },
@@ -25,6 +25,6 @@
     { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--object_type", "dragon"] },
     { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--object_type", "dragon", "--global_energy", "1", "--loop"] },
     { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--reference_motion", "outputs/test/dragon_walk.glb", "--inpaint_joints", "RightThigh", "--action_tags", "locomotion"] },
-    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--reference_motion", "$LAST_OUTPUT", "--skip_timesteps", "80"] }
+    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--reference_motion", "$LAST_OUTPUT", "--skip_timesteps", "90"] }
   ]
 }

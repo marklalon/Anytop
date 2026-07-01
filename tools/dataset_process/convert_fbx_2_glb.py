@@ -104,6 +104,11 @@ def _convert_one_fbx(
             with contextlib.redirect_stdout(io.StringIO()):
                 resolve_main_character_textures(bpy, armature, fbx_path)
 
+        # Bake animation at 30 fps rather than Blender's 24 fps scene default.
+        scene = bpy.context.scene
+        scene.render.fps = 30
+        scene.render.fps_base = 1.0
+
         with contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(io.StringIO()), \
              _silence_os_std():
