@@ -299,8 +299,7 @@ def _compute_canonical_stats_per_object_subset(
         print(f"[OK] canonical stats over {used} clip(s) bucketed by object_subset:")
         for subset, (mean, std) in sorted(subset_stats.items()):
             print(
-                f"     [{subset}] {usable_accs[subset]['count']} frames-joints\n"
-                f"         mean={mean}\n         std ={std}"
+                f"     [{subset}] {usable_accs[subset]['count']} frames-joints"
             )
 
 
