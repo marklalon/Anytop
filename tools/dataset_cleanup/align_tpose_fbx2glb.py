@@ -1,28 +1,24 @@
 """
 align_tpose_fbx2glb.py
 
-Force every action FBX in a directory to face the same orientation as the
+Force every action FBX/GLB in a directory to face the same orientation as the
 character's T-pose, then export each one as a same-named skinned GLB.
 
 The orientation logic mirrors the dataset preprocessing pipeline
 (``data_loaders/truebones/.../dataset_pipeline.py``):
 
-    1. List the FBX files in the input directory.
-    2. Pick a single character-level orientation reference with
-       ``find_tpose_reference_path`` (priority: T-pose > idle > walk).
-    3. Filter the rest with ``should_skip_anim`` to keep only valid action clips.
-    4. Compute the T-pose ``orientation_quat`` once and apply it to every action
-       via ``rotate_to_hml_orientation`` (the exact rotation preprocessing uses
-       to canonicalize root facing).
-    5. Re-export each rotated action onto its own FBX rig/skin as a GLB.
+    1. List the FBX/GLB/GLTF action files in the input directory.
+    2. Load the T-pose bind pose from ``--bind-pose`` to derive orientation.
+    3. Filter with ``should_skip_anim`` to keep only valid action clips.
+    4. Compute the T-pose ``orientation_quat`` and apply to every action via
+       ``rotate_to_hml_orientation``.
+    5. Re-export each rotated action onto its own rig/skin as a GLB.
 
-A true T-pose reference (a static pose) is used only to derive the orientation
-and is not exported. An idle/walk fallback reference is also a real action, so
-it is exported like any other clip.
+The bind pose is used only to derive the orientation and is not exported.
 
 Requires bpy (Blender as a Python module) — run with the project's .venv:
 
-    .venv/Scripts/python.exe Anytop/tools/align_tpose_fbx2glb.py --dir <folder>
+    .venv/Scripts/python.exe Anytop/tools/align_tpose_fbx2glb.py --dir <folder> --bind-pose <path>
 """
 
 from __future__ import annotations
@@ -33,39 +29,40 @@ import sys
 
 # Put the Anytop package root on sys.path so the data_loaders/motion_lib/utils
 # imports resolve to the Anytop copies (NOT the top-level pcvg `utils`).
-_ANYTOP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_ANYTOP_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _ANYTOP_DIR not in sys.path:
     sys.path.insert(0, _ANYTOP_DIR)
 
 
-def _list_fbx_files(directory: str) -> list[str]:
+def _list_mesh_files(directory: str) -> list[str]:
+    """List all FBX/GLB/GLTF files in *directory*, sorted."""
+    _extensions = (".fbx", ".glb", ".gltf")
     return sorted(
         os.path.join(directory, name)
         for name in os.listdir(directory)
-        if name.lower().endswith(".fbx")
+        if name.lower().endswith(_extensions)
     )
-
-
-def _confirm_overwrite(path: str) -> bool:
-    reply = input(f"  '{os.path.basename(path)}' already exists. Overwrite? [y/N] ").strip().lower()
-    return reply in ("y", "yes")
 
 
 def align_directory(
     directory: str,
     object_type: str | None = None,
     output_dir: str | None = None,
-    overwrite: str = "prompt",
+    overwrite: str = "skip",
+    bind_pose_path: str | None = None,
 ) -> list[str]:
-    """Align all action FBX files in *directory* to the T-pose orientation and export GLBs.
+    """Align all action FBX/GLB files in *directory* to the T-pose orientation and export GLBs.
 
     Args:
-        directory:   Folder holding the character's T-pose + action FBX files.
-        object_type: Species/type key used to strip filename prefixes during
-                     action filtering. Defaults to the directory's basename
-                     (matches the Truebones raw_data_dir/<object_type> layout).
-        output_dir:  Where to write the GLBs. Defaults to *directory* (same-named).
-        overwrite:   "prompt" (ask per file), "force" (always), or "skip".
+        directory:      Folder holding the character's action files
+                        (FBX, GLB, or GLTF).
+        object_type:    Species/type key used to strip filename prefixes during
+                        action filtering. Defaults to the directory's basename
+                        (matches the Truebones raw_data_dir/<object_type> layout).
+        output_dir:     Where to write the GLBs. Defaults to *directory* (same-named).
+        overwrite:      "force" (overwrite existing), or "skip" (default, skip existing).
+        bind_pose_path: Path to the T-pose bind pose file (FBX/GLB/GLTF).
+                        Used to derive the orientation quat; not exported.
 
     Returns:
         Absolute paths of the GLB files written.
@@ -74,7 +71,6 @@ def align_directory(
 
     from motion_lib import FBX
     from data_loaders.truebones.truebones_utils.fbx_filename_rules import (
-        find_tpose_reference_path,
         should_skip_anim,
     )
     from data_loaders.truebones.truebones_utils.features import (
@@ -100,44 +96,38 @@ def align_directory(
     if not os.path.isdir(directory):
         raise NotADirectoryError(f"Input directory not found: {directory}")
 
+    if bind_pose_path is None:
+        raise ValueError("--bind-pose is required; specify the T-pose bind pose file path.")
+    bind_pose_path = os.path.abspath(bind_pose_path)
+    if not os.path.isfile(bind_pose_path):
+        raise FileNotFoundError(f"Bind pose file not found: {bind_pose_path}")
+
     if object_type is None:
         object_type = os.path.basename(os.path.normpath(directory))
     if output_dir is None:
         output_dir = directory
     os.makedirs(output_dir, exist_ok=True)
 
-    anim_files = _list_fbx_files(directory)
+    anim_files = _list_mesh_files(directory)
     if not anim_files:
-        raise FileNotFoundError(f"No .fbx files found in {directory}")
+        raise FileNotFoundError(f"No .fbx/.glb/.gltf files found in {directory}")
 
-    # find_tpose_reference_path mutates anim_files: a true T-pose is REMOVED
-    # (static, not exported); an idle/walk fallback is left in place (real action).
-    reference_path = find_tpose_reference_path(anim_files)
     print(f"Object type        : {object_type}")
-    print(f"Orientation ref     : {os.path.basename(reference_path)}")
+    print(f"Bind pose          : {os.path.basename(bind_pose_path)}")
 
     action_files = [f for f in anim_files if not should_skip_anim(f, object_type)]
     if not action_files:
         raise RuntimeError(f"No valid action FBX files after filtering in {directory}")
     print(f"Action clips        : {len(action_files)}")
 
-    # The reference T-pose defines the target facing. Each action clip is
-    # rotated so its frame-0 facing matches the T-pose's NATIVE facing, i.e. the
-    # character in every exported GLB faces the same way as the raw T-pose FBX.
-    # A single constant orientation_quat derived from the T-pose is NOT reused,
-    # because Truebones action FBXs are often authored with a different native
-    # root orientation than the T-pose (e.g. Crab's T-pose root carries an extra
-    # 90 deg Y rotation the action clips lack); applying the T-pose quat to such
-    # a clip leaves it ~90 deg off. Instead we measure each clip's own forward
-    # and align it per-clip.
-    tp = get_common_features_from_T_pose(reference_path, object_type)
+    tp = get_common_features_from_T_pose(bind_pose_path, object_type)
 
     # T-pose rest/bind-pose forward, computed with the same face/forward joints
     # that produced tp.orientation_quat so native-matching clips map to ~identity.
     # Use the rest pose (bind pose), NOT frame 0 of the animation, because some
-    # T-pose FBX files carry non-identity root rotation at frame 0 (e.g. Crab
+    # bind-pose files carry non-identity root rotation at frame 0 (e.g. Crab
     # has +X rest pose but -Z at frame 0).
-    ref_anim, _ref_names, _ref_ft = FBX.load(reference_path)
+    ref_anim, _ref_names, _ref_ft = FBX.load(bind_pose_path)
     ref_rest_anim = _rest_pose_animation_from_loaded_anim(ref_anim)
     tpose_forward = _get_facing_forward(
         positions_global(ref_rest_anim),
@@ -176,9 +166,6 @@ def align_directory(
         if os.path.exists(output_glb):
             if overwrite == "skip":
                 print(f"[skip] {stem}.glb exists")
-                continue
-            if overwrite == "prompt" and not _confirm_overwrite(output_glb):
-                print(f"[skip] {stem}.glb")
                 continue
 
         print(f"[align] {os.path.basename(fbx_path)} -> {stem}.glb")
@@ -228,7 +215,7 @@ def align_directory(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Align every action FBX in a directory to the character's T-pose "
+            "Align every action FBX/GLB in a directory to the character's T-pose "
             "orientation and export same-named skinned GLB files."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -236,7 +223,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--dir", required=True,
-        help="Directory containing the T-pose and action FBX files.",
+        help="Directory containing the action FBX/GLB/GLTF files.",
+    )
+    parser.add_argument(
+        "--bind-pose", required=True,
+        help="Path to the T-pose bind pose file (FBX/GLB/GLTF). Used for orientation; not exported.",
     )
     parser.add_argument(
         "--object-type", default=None,
@@ -246,28 +237,20 @@ def main() -> int:
         "--output-dir", default=None,
         help="Where to write GLBs. Defaults to the input directory (same-named output).",
     )
-    overwrite_group = parser.add_mutually_exclusive_group()
-    overwrite_group.add_argument(
+    parser.add_argument(
         "--overwrite", action="store_true",
-        help="Overwrite existing GLB files without prompting.",
-    )
-    overwrite_group.add_argument(
-        "--skip-existing", action="store_true",
-        help="Skip files whose GLB already exists (no prompt).",
+        help="Overwrite existing GLB output files.",
     )
     args = parser.parse_args()
 
-    overwrite = "prompt"
-    if args.overwrite:
-        overwrite = "force"
-    elif args.skip_existing:
-        overwrite = "skip"
+    overwrite = "force" if args.overwrite else "skip"
 
     align_directory(
         directory=args.dir,
         object_type=args.object_type,
         output_dir=args.output_dir,
         overwrite=overwrite,
+        bind_pose_path=args.bind_pose,
     )
     return 0
 
