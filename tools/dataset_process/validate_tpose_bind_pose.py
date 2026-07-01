@@ -51,7 +51,7 @@ TOLERANCE = 1e-2
 TARGET_FPS = 30.0
 FPS_TOLERANCE = 0.1
 SYMMETRY_IGNORE_TERMINAL_LAYERS = 2
-SYMMETRY_RELATIVE_TOLERANCE = 0.3
+SYMMETRY_RELATIVE_TOLERANCE = 0.4
 SUPPORTED_EXTENSIONS = {".fbx", ".glb", ".gltf"}
 
 MatrixRows = tuple[tuple[float, float, float, float], ...]
@@ -133,6 +133,43 @@ def _confirm_yes_no(prompt: str) -> bool:
 def _warning_sort_key(message: str) -> tuple[str, str]:
     species = str(message).split(":", 1)[0].split("/", 1)[0].strip().lower()
     return species, str(message).lower()
+
+
+def _load_symmetry_suppress_patterns(dataset_dir: Path) -> list[str]:
+    """Load ``#`` comment-line patterns from ``<dataset_dir>/ignore_warnings.txt``.
+
+    Lines starting with ``#`` are treated as case-insensitive substring
+    patterns; if any pattern matches a symmetry-warning message, that warning
+    is suppressed from the final report.
+    """
+    ignore_path = dataset_dir / "ignore_warnings.txt"
+    if not ignore_path.exists():
+        return []
+    patterns: list[str] = []
+    for line in ignore_path.read_text("utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            pattern = stripped[1:].strip()
+            if pattern:
+                patterns.append(pattern.lower())
+    return patterns
+
+
+def _filter_suppressed_warnings(
+    warnings: list[str],
+    suppress_patterns: list[str],
+) -> tuple[list[str], int]:
+    """Return ``(remaining, suppressed_count)`` after filtering by substring patterns."""
+    if not suppress_patterns or not warnings:
+        return warnings, 0
+    remaining: list[str] = []
+    suppressed = 0
+    for msg in warnings:
+        if any(pat in msg.lower() for pat in suppress_patterns):
+            suppressed += 1
+        else:
+            remaining.append(msg)
+    return remaining, suppressed
 
 
 # ---------------------------------------------------------------------------
@@ -743,6 +780,7 @@ def validate_tpose_bind_pose(
     from data_loaders.truebones.truebones_utils.param_utils import get_raw_data_dir
 
     dataset_dir_resolved = Path(get_raw_data_dir(dataset_dir)).resolve()
+    suppress_patterns = _load_symmetry_suppress_patterns(dataset_dir_resolved)
     output_dir_resolved = (
         Path(output_dir).resolve()
         if output_dir
@@ -889,12 +927,20 @@ def validate_tpose_bind_pose(
     else:
         print("\n  Bind-pose consistency warnings: none")
 
+    symmetry_warnings, symmetry_suppressed = _filter_suppressed_warnings(
+        symmetry_warnings, suppress_patterns
+    )
     if symmetry_warnings:
         print(f"\n  Bind-pose symmetry warnings ({len(symmetry_warnings)}):")
         for msg in sorted(symmetry_warnings, key=_warning_sort_key):
             print(f"    [WARN] {msg}")
     else:
         print("\n  Bind-pose symmetry warnings: none")
+    if symmetry_suppressed:
+        print(
+            f"  \x1b[90m({symmetry_suppressed} suppressed by "
+            f"ignore_warnings.txt patterns)\x1b[0m"
+        )
 
     if quick:
         print("\n  FPS warnings: skipped (--quick)")

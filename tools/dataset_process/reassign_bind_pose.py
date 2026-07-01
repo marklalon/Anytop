@@ -39,9 +39,11 @@ if str(_ANYTOP_DIR) not in sys.path:
 
 
 MatrixRows = list[list[float]]
+BoneTopology = tuple[list[str], list[int]]
 
 _WORKER_REFERENCE_POSE_BASIS: dict[str, MatrixRows] | None = None
 _WORKER_REFERENCE_BONE_NAMES: list[str] | None = None
+_WORKER_REFERENCE_BONE_TOPOLOGY: BoneTopology | None = None
 _WORKER_REFERENCE_FIRST_SAMPLE_TIME: float | None = None
 _WORKER_REFERENCE_IS_REST_POSE: bool = False
 
@@ -96,10 +98,170 @@ def _find_armature(bpy, path: str):
     return max(armatures, key=lambda obj: len(obj.data.bones))
 
 
+def _extract_bone_topology(armature) -> BoneTopology:
+    """Return bone names and parent indices in deterministic hierarchy order."""
+    data_bones = list(armature.data.bones)
+    ordered_bones = []
+    seen: set[int] = set()
+
+    def _append_preorder(bone) -> None:
+        marker = id(bone)
+        if marker in seen:
+            return
+        seen.add(marker)
+        ordered_bones.append(bone)
+        for child in bone.children:
+            _append_preorder(child)
+
+    for bone in data_bones:
+        if bone.parent is None:
+            _append_preorder(bone)
+    for bone in data_bones:
+        _append_preorder(bone)
+
+    names = [bone.name for bone in ordered_bones]
+    name_to_index = {name: index for index, name in enumerate(names)}
+    parents = [
+        name_to_index.get(bone.parent.name, -1) if bone.parent is not None else -1
+        for bone in ordered_bones
+    ]
+    return names, parents
+
+
+def _build_topology_rename_pairs(
+    armature,
+    reference_topology: BoneTopology,
+) -> list[tuple[str, str]]:
+    """Build source-to-reference bone-name pairs after exact topology checking."""
+    source_names, source_parents = _extract_bone_topology(armature)
+    reference_names, reference_parents = reference_topology
+
+    if len(source_names) != len(reference_names):
+        raise RuntimeError(
+            "cannot fix bone names; topology differs from reference "
+            f"(source bones={len(source_names)}, reference bones={len(reference_names)})"
+        )
+    if source_parents != reference_parents:
+        raise RuntimeError(
+            "cannot fix bone names; topology differs from reference "
+            "(parent hierarchy is not identical)"
+        )
+
+    return list(zip(source_names, reference_names))
+
+
+def _unique_temp_name(existing_names: set[str], prefix: str, index: int) -> str:
+    candidate = f"{prefix}_{index}__"
+    suffix = 0
+    while candidate in existing_names:
+        suffix += 1
+        candidate = f"{prefix}_{index}_{suffix}__"
+    existing_names.add(candidate)
+    return candidate
+
+
+def _rename_animation_data_paths(bpy, rename_map: dict[str, str]) -> None:
+    """Best-effort update for existing pose-bone FCurve paths."""
+    if not rename_map:
+        return
+
+    rename_items = list(rename_map.items())
+    for action in getattr(bpy.data, "actions", []):
+        for fcurve in getattr(action, "fcurves", []):
+            data_path = getattr(fcurve, "data_path", "")
+            if not data_path:
+                continue
+            for index, (old_name, _new_name) in enumerate(rename_items):
+                temp_name = f"__fix_bone_names_tmp_path_{index}__"
+                data_path = data_path.replace(
+                    f'pose.bones["{old_name}"]',
+                    f'pose.bones["{temp_name}"]',
+                )
+                data_path = data_path.replace(
+                    f"pose.bones['{old_name}']",
+                    f"pose.bones['{temp_name}']",
+                )
+            for index, (_old_name, new_name) in enumerate(rename_items):
+                temp_name = f"__fix_bone_names_tmp_path_{index}__"
+                data_path = data_path.replace(
+                    f'pose.bones["{temp_name}"]',
+                    f'pose.bones["{new_name}"]',
+                )
+                data_path = data_path.replace(
+                    f"pose.bones['{temp_name}']",
+                    f"pose.bones['{new_name}']",
+                )
+            fcurve.data_path = data_path
+
+
+def _rename_armature_bones_to_reference(
+    bpy,
+    armature,
+    name_pairs: list[tuple[str, str]],
+) -> dict[str, str]:
+    """Rename bones and matching skin vertex groups to reference names."""
+    rename = [(old, new) for old, new in name_pairs if old != new]
+    if not rename:
+        return {}
+    rename_map = dict(rename)
+
+    data_bones = armature.data.bones
+    existing_bone_names = {bone.name for bone in data_bones}
+    pending_bones: list[tuple[str, str]] = []
+    for index, (old_name, new_name) in enumerate(rename):
+        bone = data_bones.get(old_name)
+        if bone is None:
+            continue
+        existing_bone_names.discard(old_name)
+        temp_name = _unique_temp_name(
+            existing_bone_names,
+            "__fix_bone_names_tmp_bone",
+            index,
+        )
+        bone.name = temp_name
+        pending_bones.append((temp_name, new_name))
+    for temp_name, new_name in pending_bones:
+        bone = data_bones.get(temp_name)
+        if bone is not None:
+            bone.name = new_name
+
+    for obj in bpy.data.objects:
+        if obj.parent == armature and obj.parent_type == "BONE":
+            new_parent_bone = rename_map.get(obj.parent_bone)
+            if new_parent_bone is not None:
+                world_matrix = obj.matrix_world.copy()
+                obj.parent_bone = new_parent_bone
+                obj.matrix_world = world_matrix
+
+    for mesh in _armature_bound_meshes(bpy, armature):
+        vertex_groups = mesh.vertex_groups
+        existing_group_names = {group.name for group in vertex_groups}
+        pending_groups: list[tuple[str, str]] = []
+        for index, (old_name, new_name) in enumerate(rename):
+            group = vertex_groups.get(old_name)
+            if group is None:
+                continue
+            existing_group_names.discard(old_name)
+            temp_name = _unique_temp_name(
+                existing_group_names,
+                "__fix_bone_names_tmp_group",
+                index,
+            )
+            group.name = temp_name
+            pending_groups.append((temp_name, new_name))
+        for temp_name, new_name in pending_groups:
+            group = vertex_groups.get(temp_name)
+            if group is not None:
+                group.name = new_name
+
+    _rename_animation_data_paths(bpy, rename_map)
+    return rename_map
+
+
 def _load_reference_pose(
     bind_pose_glb: str,
     frame_index: int = 0,
-) -> tuple[dict[str, MatrixRows], list[str], float, bool]:
+) -> tuple[dict[str, MatrixRows], list[str], BoneTopology, float, bool]:
     """Load *bind_pose_glb* and return the requested reference pose matrices.
 
     ``frame_index >= 0`` reads a sampled animation frame and returns pose-bone
@@ -124,9 +286,10 @@ def _load_reference_pose(
     remove_lights_and_cameras()
 
     armature = _find_armature(bpy, bind_pose_glb)
+    bone_topology = _extract_bone_topology(armature)
     scene = bpy.context.scene
 
-    def _read_rest_pose() -> tuple[dict[str, MatrixRows], list[str], float, bool]:
+    def _read_rest_pose() -> tuple[dict[str, MatrixRows], list[str], BoneTopology, float, bool]:
         bone_names = [pose_bone.name for pose_bone in armature.pose.bones]
         data_bones = armature.data.bones
         rest_pose = {
@@ -135,7 +298,7 @@ def _load_reference_pose(
             if data_bones.get(bone_name) is not None
         }
         clear_scene()
-        return rest_pose, bone_names, -1.0, True
+        return rest_pose, bone_names, bone_topology, -1.0, True
 
     if frame_index < -1:
         raise ValueError(f"--frame must be -1 or >= 0, got {frame_index}")
@@ -171,19 +334,21 @@ def _load_reference_pose(
         return _read_rest_pose()
 
     clear_scene()
-    return pose_basis, bone_names, sample_time, False
+    return pose_basis, bone_names, bone_topology, sample_time, False
 
 
 def _init_worker_reference_pose(bind_pose_glb: str, frame_index: int = 0) -> None:
     """Load the reference pose once inside each worker process."""
     global _WORKER_REFERENCE_POSE_BASIS
     global _WORKER_REFERENCE_BONE_NAMES
+    global _WORKER_REFERENCE_BONE_TOPOLOGY
     global _WORKER_REFERENCE_FIRST_SAMPLE_TIME
     global _WORKER_REFERENCE_IS_REST_POSE
 
     (
         _WORKER_REFERENCE_POSE_BASIS,
         _WORKER_REFERENCE_BONE_NAMES,
+        _WORKER_REFERENCE_BONE_TOPOLOGY,
         _WORKER_REFERENCE_FIRST_SAMPLE_TIME,
         _WORKER_REFERENCE_IS_REST_POSE,
     ) = _load_reference_pose(bind_pose_glb, frame_index=frame_index)
@@ -456,6 +621,7 @@ def _reassign_one_glb(
     output_path: str,
     ignore_missing_bones: bool,
     preserve_animation: bool,
+    fix_bone_names: bool,
 ) -> tuple[str, str]:
     """Worker entry point.  Returns ``(basename, status)``."""
     import bpy
@@ -470,7 +636,11 @@ def _reassign_one_glb(
 
     basename = os.path.basename(glb_path)
     try:
-        if _WORKER_REFERENCE_POSE_BASIS is None or _WORKER_REFERENCE_BONE_NAMES is None:
+        if (
+            _WORKER_REFERENCE_POSE_BASIS is None
+            or _WORKER_REFERENCE_BONE_NAMES is None
+            or _WORKER_REFERENCE_BONE_TOPOLOGY is None
+        ):
             raise RuntimeError(
                 "worker reference pose is not initialized; "
                 "call _init_worker_reference_pose first"
@@ -495,6 +665,24 @@ def _reassign_one_glb(
         source_bone_names = [pose_bone.name for pose_bone in armature.pose.bones]
         source_set = set(source_bone_names)
         reference_set = set(_WORKER_REFERENCE_BONE_NAMES)
+        rename_map: dict[str, str] = {}
+        if fix_bone_names and source_set != reference_set:
+            name_pairs = _build_topology_rename_pairs(
+                armature,
+                _WORKER_REFERENCE_BONE_TOPOLOGY,
+            )
+            rename_map = _rename_armature_bones_to_reference(
+                bpy,
+                armature,
+                name_pairs,
+            )
+            if original_names is not None:
+                original_names = [
+                    rename_map.get(name, name)
+                    for name in original_names
+                ]
+            source_bone_names = [pose_bone.name for pose_bone in armature.pose.bones]
+            source_set = set(source_bone_names)
 
         missing_in_source = sorted(reference_set - source_set)
         missing_in_reference = sorted(source_set - reference_set)
@@ -568,6 +756,7 @@ def reassign_bind_pose_directory(
     workers: int = 16,
     ignore_missing_bones: bool = False,
     preserve_animation: bool = True,
+    fix_bone_names: bool = False,
     frame_index: int = 0,
 ) -> int:
     """Reassign GLB bind poses in *directory* from one frame of *bind_pose_glb*.
@@ -585,6 +774,9 @@ def reassign_bind_pose_directory(
             mismatches.  Defaults to strict one-to-one bone-name checking.
         preserve_animation: Re-bake animation channels after changing the rest
             pose so total local joint transforms stay unchanged.
+        fix_bone_names: If true and bone names differ from the reference,
+            require identical topology and rename source bones/skin groups to
+            the reference names before applying the bind pose.
         frame_index: Zero-based sampled frame index from *bind_pose_glb* to use
             as the new bind/rest pose.  Use -1 to use *bind_pose_glb*'s own
             bind/rest pose instead of an animation frame.
@@ -613,6 +805,7 @@ def reassign_bind_pose_directory(
     print(f"Bind-pose frame: {frame_index}")
     print(f"Output dir     : {output_dir_abs}")
     print(f"GLB files      : {len(glb_files)}")
+    print(f"Fix bone names : {fix_bone_names}")
 
     all_tasks = [
         (glb_path, os.path.join(output_dir_abs, os.path.basename(glb_path)))
@@ -667,6 +860,7 @@ def reassign_bind_pose_directory(
                 output_path,
                 ignore_missing_bones,
                 preserve_animation,
+                fix_bone_names,
             )
             if status == "reassigned":
                 written += 1
@@ -688,6 +882,7 @@ def reassign_bind_pose_directory(
                     output_path,
                     ignore_missing_bones,
                     preserve_animation,
+                    fix_bone_names,
                 ): (glb_path, output_path)
                 for glb_path, output_path in tasks
             }
@@ -767,6 +962,14 @@ def main() -> int:
         help="Apply matching bones and ignore source/reference bone-name mismatches.",
     )
     parser.add_argument(
+        "--fix-bone-names",
+        action="store_true",
+        help=(
+            "When source bone names differ from --bind-pose, require identical "
+            "bone topology and rename source bones/skin groups to reference names."
+        ),
+    )
+    parser.add_argument(
         "--no-preserve-animation",
         action="store_true",
         help=(
@@ -787,6 +990,7 @@ def main() -> int:
             workers=args.workers,
             ignore_missing_bones=args.ignore_missing_bones,
             preserve_animation=not args.no_preserve_animation,
+            fix_bone_names=args.fix_bone_names,
             frame_index=args.frame,
         )
         return 0
