@@ -15,18 +15,18 @@ are processed.  Use ``--filter`` to restrict to specific character types.
 
 Requires bpy (Blender as a Python module) - run with the project's .venv::
 
-    .venv/Scripts/python.exe Anytop/tools/dataset_process/resolve_glb_texture.py [options]
+    .venv/Scripts/python.exe Anytop/tools/dataset_cleanup/resolve_glb_texture.py [options]
 
 Usage::
 
     # Resolve all characters under the default dataset directory (incremental)
-    python Anytop/tools/dataset_process/resolve_glb_texture.py
+    python Anytop/tools/dataset_cleanup/resolve_glb_texture.py
 
     # Resolve only Buffalo and Dragon
-    python Anytop/tools/dataset_process/resolve_glb_texture.py --filter Buffalo,Dragon
+    python Anytop/tools/dataset_cleanup/resolve_glb_texture.py --filter Buffalo,Dragon
 
     # Rebuild diffuse / alpha links even when textures already exist
-    python Anytop/tools/dataset_process/resolve_glb_texture.py --filter Skunk --force
+    python Anytop/tools/dataset_cleanup/resolve_glb_texture.py --filter Skunk --force
 
 """
 

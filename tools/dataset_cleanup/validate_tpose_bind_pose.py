@@ -24,7 +24,7 @@ TPOSE/species-name files.
 
 Requires bpy (Blender as a Python module) -- run with the project's .venv::
 
-    .venv/Scripts/python.exe Anytop/tools/dataset_process/validate_tpose_bind_pose.py
+    .venv/Scripts/python.exe Anytop/tools/dataset_cleanup/validate_tpose_bind_pose.py
 """
 
 from __future__ import annotations

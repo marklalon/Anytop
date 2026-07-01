@@ -13,7 +13,7 @@ transforms are preserved while the bind/rest pose changes.
 
 Requires bpy (Blender as a Python module) -- run with the project's .venv:
 
-    .venv/Scripts/python.exe Anytop/tools/dataset_process/reassign_bind_pose.py \
+    .venv/Scripts/python.exe Anytop/tools/dataset_cleanup/reassign_bind_pose.py \
         --dir Anytop/dataset/truebones/zoo/Truebone_Z-OO/Camel \
         --bind-pose Anytop/dataset/truebones/zoo/Truebone_Z-OO/Camel/Camel-IdleLoop.glb \
         --frame 0 \

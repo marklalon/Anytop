@@ -12,18 +12,18 @@ or ``--filter`` to restrict to specific character types.
 
 Requires bpy (Blender as a Python module) — run with the project's .venv::
 
-    .venv/Scripts/python.exe Anytop/tools/dataset_process/convert_fbx_2_glb.py [options]
+    .venv/Scripts/python.exe Anytop/tools/dataset_cleanup/convert_fbx_2_glb.py [options]
 
 Usage::
 
     # Convert all characters (incremental)
-    python Anytop/tools/dataset_process/convert_fbx_2_glb.py
+    python Anytop/tools/dataset_cleanup/convert_fbx_2_glb.py
 
     # Convert only Buffalo and Dragon, overwriting existing GLBs
-    python Anytop/tools/dataset_process/convert_fbx_2_glb.py --filter Buffalo,Dragon --overwrite
+    python Anytop/tools/dataset_cleanup/convert_fbx_2_glb.py --filter Buffalo,Dragon --overwrite
 
     # Use a custom dataset directory
-    python Anytop/tools/dataset_process/convert_fbx_2_glb.py --dataset-dir /path/to/fbx_root
+    python Anytop/tools/dataset_cleanup/convert_fbx_2_glb.py --dataset-dir /path/to/fbx_root
 """
 
 from __future__ import annotations
