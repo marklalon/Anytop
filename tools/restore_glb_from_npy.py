@@ -83,7 +83,6 @@ for _p in [REPO_ROOT, ANYTOP_DIR, os.path.join(ANYTOP_DIR, "tests")]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-# ── Fix utils namespace conflict (same workaround as test_fbx_npy_glb_roundtrip.py) ──
 
 def _load_utils_module(module_name: str) -> None:
     module_path = os.path.join(ANYTOP_DIR, "utils", f"{module_name.rsplit('.', 1)[-1]}.py")

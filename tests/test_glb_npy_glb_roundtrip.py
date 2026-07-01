@@ -14,18 +14,18 @@ Requires bpy (Blender as Python module) in the current Python environment.
 
 Usage examples:
     # Use a single GLB as both T-pose source and animation source:
-    python tests/test_fbx_npy_glb_roundtrip.py \
+    python tests/test_glb_npy_glb_roundtrip.py \
         --glb outputs/fbx_npy_roundtrip/original.glb \
         --object-type Horse
 
     # Specify a separate T-pose GLB for skeleton metadata:
-    python tests/test_fbx_npy_glb_roundtrip.py \
+    python tests/test_glb_npy_glb_roundtrip.py \
         --tpose-mesh outputs/tpose.glb \
         --glb outputs/fbx_npy_roundtrip/original.glb \
         --object-type Horse
 
     # Custom output directory and tolerance:
-    python tests/test_fbx_npy_glb_roundtrip.py \
+    python tests/test_glb_npy_glb_roundtrip.py \
         --glb outputs/fbx_npy_roundtrip/original.glb \\
         --output-dir outputs/glb_npy_roundtrip \\
         --tolerance 0.01
