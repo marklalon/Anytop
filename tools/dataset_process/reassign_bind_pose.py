@@ -71,6 +71,22 @@ def _matrix_to_rows(matrix) -> MatrixRows:
     return [[float(matrix[row][col]) for col in range(4)] for row in range(4)]
 
 
+def _is_identity_rows(rows: MatrixRows, tol: float = 1e-3) -> bool:
+    """Return True when *rows* is (near-)equal to the 4x4 identity matrix.
+
+    The tolerance is deliberately loose (matching the project's bind-pose
+    validation tolerance) so glTF quantization noise in a near-identity static
+    bind-pose action still counts as "no pose", while a real animation frame
+    (basis deviations of order 0.1-1.0) does not.
+    """
+    for row in range(4):
+        for col in range(4):
+            expected = 1.0 if row == col else 0.0
+            if abs(rows[row][col] - expected) > tol:
+                return False
+    return True
+
+
 def _find_armature(bpy, path: str):
     armatures = [obj for obj in bpy.data.objects if obj.type == "ARMATURE"]
     if not armatures:
@@ -110,7 +126,7 @@ def _load_reference_pose(
     armature = _find_armature(bpy, bind_pose_glb)
     scene = bpy.context.scene
 
-    if frame_index == -1:
+    def _read_rest_pose() -> tuple[dict[str, MatrixRows], list[str], float, bool]:
         bone_names = [pose_bone.name for pose_bone in armature.pose.bones]
         data_bones = armature.data.bones
         rest_pose = {
@@ -121,14 +137,15 @@ def _load_reference_pose(
         clear_scene()
         return rest_pose, bone_names, -1.0, True
 
-    sample_times = get_action_sample_times(armature)
     if frame_index < -1:
         raise ValueError(f"--frame must be -1 or >= 0, got {frame_index}")
-    if sample_times and frame_index >= len(sample_times):
+    if frame_index == -1:
+        return _read_rest_pose()
+
+    sample_times = get_action_sample_times(armature)
+    if frame_index >= len(sample_times):
         frame_index = len(sample_times) - 1
-    sample_time = float(
-        sample_times[frame_index] if sample_times else scene.frame_start + frame_index
-    )
+    sample_time = float(sample_times[frame_index])
     set_scene_time(scene, sample_time)
     bpy.context.view_layer.update()
 
@@ -143,6 +160,16 @@ def _load_reference_pose(
     }
 
     bpy.ops.object.mode_set(mode="OBJECT")
+
+    # The sampled ``matrix_basis`` is the pose *relative to the rest pose*.  When
+    # every bone's basis is (near-)identity -- e.g. a rest-pose-only TPOSE export
+    # (whose ``get_action_sample_times`` still yields ``[0.0]``), or a GLB that
+    # only carries a static identity bind-pose action -- applying it would be a
+    # no-op that keeps each source file's own rest pose.  Fall back to the
+    # reference's actual bind/rest pose so the reassignment really retargets.
+    if all(_is_identity_rows(rows) for rows in pose_basis.values()):
+        return _read_rest_pose()
+
     clear_scene()
     return pose_basis, bone_names, sample_time, False
 

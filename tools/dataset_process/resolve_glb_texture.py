@@ -5,15 +5,15 @@ Re-resolve missing diffuse / alpha textures on existing GLB files and
 re-export them when textures were actually applied.
 
 For each GLB file, Blender imports it, calls
-:func:`resolve_main_character_textures` to wire missing diffuse / alpha
-textures, and — if the function applied any changes — re-exports the GLB
-in-place.  If the character already has all textures (no-op), the GLB is left
-untouched.
+:func:`resolve_main_character_textures` to wire diffuse / alpha textures, and
+- if the function applied any changes - re-exports the GLB in-place.  If the
+character already has all textures (no-op), the GLB is left untouched unless
+``--force`` is used.
 
-Incremental by default — only GLB files whose textures still need resolving
+Incremental by default - only GLB files whose textures still need resolving
 are processed.  Use ``--filter`` to restrict to specific character types.
 
-Requires bpy (Blender as a Python module) — run with the project's .venv::
+Requires bpy (Blender as a Python module) - run with the project's .venv::
 
     .venv/Scripts/python.exe Anytop/tools/dataset_process/resolve_glb_texture.py [options]
 
@@ -24,6 +24,9 @@ Usage::
 
     # Resolve only Buffalo and Dragon
     python Anytop/tools/dataset_process/resolve_glb_texture.py --filter Buffalo,Dragon
+
+    # Rebuild diffuse / alpha links even when textures already exist
+    python Anytop/tools/dataset_process/resolve_glb_texture.py --filter Skunk --force
 
 """
 
@@ -71,13 +74,14 @@ def _get_object_dirs(dataset_dir: str) -> list[tuple[str, str]]:
 def _resolve_one_glb(
     object_type: str,
     glb_path: str,
+    force: bool = False,
 ) -> tuple[str, str]:
     """Import *glb_path*, resolve textures, re-export if changes were made.
 
     Returns ``(rel_path, status)`` where *status* is one of:
-        - ``"resolved"``  — textures were applied and GLB was overwritten
-        - ``"already_ok"`` — no missing textures found, GLB left untouched
-        - ``"failed"``    — an exception occurred
+        - ``"resolved"``  - textures were applied and GLB was overwritten
+        - ``"already_ok"`` - no missing textures found, GLB left untouched
+        - ``"failed"``    - an exception occurred
     """
     import bpy
     from motion_lib.FBX import _silence_os_std, clear_scene, import_gltf
@@ -100,10 +104,15 @@ def _resolve_one_glb(
             clear_scene()
             return rel, "already_ok"
 
-        has_changes = resolve_main_character_textures(bpy, armature, glb_path)
+        has_changes = resolve_main_character_textures(
+            bpy,
+            armature,
+            glb_path,
+            force=force,
+        )
 
         if not has_changes:
-            # No missing textures — nothing to do.
+            # No missing textures - nothing to do.
             clear_scene()
             return rel, "already_ok"
 
@@ -141,12 +150,13 @@ def resolve_glb_texture(
     dataset_dir: str | None = None,
     only_objects: set[str] | None = None,
     workers: int = 16,
+    force: bool = False,
 ) -> int:
     """Resolve missing textures on GLB files and re-export when changed.
 
     Only GLB files whose textures were actually missing and applied are
     re-exported.  If a GLB already has all diffuse/alpha textures, it is
-    left untouched.
+    left untouched unless ``force`` is true.
 
     Args:
         dataset_dir: Root directory containing per-character subfolders with
@@ -155,6 +165,8 @@ def resolve_glb_texture(
             to (e.g. ``{"Buffalo", "Horse"}``).
         workers: Number of parallel Blender processes.  Each worker runs its
             own independent Blender instance.  Default 16.
+        force: Re-resolve diffuse and alpha links even when textures already
+            exist in the imported GLB.
 
     Returns:
         Number of GLB files that were actually overwritten (status
@@ -194,6 +206,8 @@ def resolve_glb_texture(
     print(f"Dataset   : {dataset_dir_resolved}")
     print(f"GLB files : {len(all_glbs)}")
     print(f"--workers={workers}")
+    if force:
+        print("--force enabled: existing diffuse/alpha links will be rebuilt")
 
     # --- Parallel processing ---
     resolved_count = 0
@@ -206,7 +220,7 @@ def resolve_glb_texture(
     done = 0
     with ProcessPoolExecutor(max_workers=n_workers) as executor:
         fut_to_item = {
-            executor.submit(_resolve_one_glb, o, p): (o, p)
+            executor.submit(_resolve_one_glb, o, p, force): (o, p)
             for o, p in all_glbs
         }
         for fut in as_completed(fut_to_item):
@@ -217,7 +231,8 @@ def resolve_glb_texture(
                 _rel, status = fut.result()
                 if status == "resolved":
                     resolved_count += 1
-                    print(f"[{done}/{total}] [OK]  {rel}  -> textures applied, re-exported")
+                    action = "textures force-rebuilt" if force else "textures applied"
+                    print(f"[{done}/{total}] [OK]  {rel}  -> {action}, re-exported")
                 elif status == "already_ok":
                     already_ok_count += 1
                     print(f"[{done}/{total}] [--]  {rel}  -> textures OK, skipped")
@@ -246,7 +261,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Resolve missing textures on GLB files and re-export when changed. "
-            "If a GLB already has all diffuse/alpha textures, it is left untouched."
+            "If a GLB already has all diffuse/alpha textures, it is left untouched "
+            "unless --force is used."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
@@ -276,6 +292,15 @@ def main() -> int:
         type=int,
         help="Number of parallel Blender worker processes.  Default 16.",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Re-resolve diffuse and alpha textures even when the imported GLB "
+            "already has texture links, then re-export any file where textures "
+            "could be rebuilt."
+        ),
+    )
     args = parser.parse_args()
 
     only_objects: set[str] | None = {
@@ -289,6 +314,7 @@ def main() -> int:
             dataset_dir=args.dataset_dir or None,
             only_objects=only_objects,
             workers=args.workers,
+            force=args.force,
         )
         return 0
     except Exception as exc:

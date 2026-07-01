@@ -97,8 +97,12 @@ _TRACEABLE_IMAGE_NODES = {
 
 # ── Texture file discovery / classification ─────────────────────────────────
 
+def _texture_token_list(stem: str) -> list[str]:
+    return [tok for tok in re.split(r"[^a-z0-9]+", stem.lower()) if tok]
+
+
 def _texture_tokens(stem: str) -> set[str]:
-    return {tok for tok in re.split(r"[^a-z0-9]+", stem.lower()) if tok}
+    return set(_texture_token_list(stem))
 
 
 def _texture_kind(filename: str) -> str:
@@ -213,16 +217,49 @@ def _alpha_replacement_stems(diffuse_stem: str) -> list[str]:
     return stems
 
 
+_NON_ALPHA_MATCH_TOKENS = (
+    _ALPHA_TOKENS
+    | _DIFFUSE_STRONG_TOKENS
+    | _COLOR_TOKENS
+    | _NORMAL_TOKENS
+    | _SPEC_TOKENS
+    | _ROUGH_METAL_TOKENS
+    | _MISC_NON_DIFFUSE_TOKENS
+    | _GENERIC_MATCH_TOKENS
+)
+
+
 def _alpha_match_tokens(stem: str) -> set[str]:
-    return _texture_tokens(stem) - (
-        _ALPHA_TOKENS
-        | _DIFFUSE_STRONG_TOKENS
-        | _COLOR_TOKENS
-        | _NORMAL_TOKENS
-        | _SPEC_TOKENS
-        | _ROUGH_METAL_TOKENS
-        | _MISC_NON_DIFFUSE_TOKENS
-        | _GENERIC_MATCH_TOKENS
+    return _texture_tokens(stem) - _NON_ALPHA_MATCH_TOKENS
+
+
+def _alpha_match_tokens_without_trailing_code(stem: str) -> set[str]:
+    """Return identity tokens while ignoring a final author/batch code.
+
+    Truebone names commonly end with short artist tags after the texture-kind
+    token (``..._D_BYN``, ``..._C2_KSW``). Some valid alpha pairs disagree on
+    that final tag, so the relaxed matcher removes it while keeping variant
+    tokens such as ``A01`` / ``B01``.
+    """
+    tokens = _texture_token_list(stem)
+    kind_tokens = _ALPHA_TOKENS | _DIFFUSE_STRONG_TOKENS | _COLOR_TOKENS
+    if len(tokens) >= 2 and tokens[-2] in kind_tokens:
+        tokens = tokens[:-1]
+    return set(tokens) - _NON_ALPHA_MATCH_TOKENS
+
+
+def _variant_tokens(tokens: set[str]) -> set[str]:
+    """Return standalone variant tags such as ``a01`` / ``b01``."""
+    return {tok for tok in tokens if re.match(r"^[a-z]\d{2,}$", tok)}
+
+
+def _has_variant_conflict(hint_tokens: set[str], candidate_tokens: set[str]) -> bool:
+    hint_variants = _variant_tokens(hint_tokens)
+    candidate_variants = _variant_tokens(candidate_tokens)
+    return bool(
+        hint_variants
+        and candidate_variants
+        and not (hint_variants & candidate_variants)
     )
 
 
@@ -257,6 +294,8 @@ def _select_alpha_texture(tex_files: list[str], diffuse_hint: str) -> str | None
     for path in alpha_files:
         stem = _normalized_stem(path)
         tokens = _alpha_match_tokens(stem)
+        if _has_variant_conflict(hint_tokens, tokens):
+            continue
         overlap = hint_tokens & tokens
         min_overlap = min(2, len(hint_tokens))
         if len(overlap) < min_overlap:
@@ -266,7 +305,36 @@ def _select_alpha_texture(tex_files: list[str], diffuse_hint: str) -> str | None
         score -= 0.01 * len(stem)
         if best is None or score > best[0]:
             best = (score, path)
-    return best[1] if best is not None else None
+    if best is not None:
+        return best[1]
+
+    # Relaxed fallback for pairs whose final author/batch code differs, e.g.
+    # ``Skunk_D_BYN`` with ``Skunk_C2_KSW``. Keep it ambiguity-aware: when the
+    # relaxed identity is only one token, accept only a single matching alpha.
+    hint_tokens = _alpha_match_tokens_without_trailing_code(hint_stem)
+    if not hint_tokens:
+        return None
+
+    candidates: list[tuple[float, str]] = []
+    for path in alpha_files:
+        stem = _normalized_stem(path)
+        tokens = _alpha_match_tokens_without_trailing_code(stem)
+        if _has_variant_conflict(hint_tokens, tokens):
+            continue
+        overlap = hint_tokens & tokens
+        min_overlap = min(2, len(hint_tokens))
+        if len(overlap) < min_overlap:
+            continue
+        union = hint_tokens | tokens
+        score = 100.0 * len(overlap) + 10.0 * (len(overlap) / max(1, len(union)))
+        score -= 0.01 * len(stem)
+        candidates.append((score, path))
+
+    if not candidates:
+        return None
+    if min(2, len(hint_tokens)) == 1 and len(candidates) != 1:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
 
 
 def _is_alpha_mask_image(bpy, path: str) -> bool:
@@ -520,13 +588,20 @@ def _connect_alpha_webp_blend(bpy, mat, bsdf, diffuse_path: str, alpha_path: str
 
 # ── Public entry point ──────────────────────────────────────────────────────
 
-def resolve_main_character_textures(bpy, armature, mesh_path: str) -> bool:
+def resolve_main_character_textures(
+    bpy,
+    armature,
+    mesh_path: str,
+    *,
+    force: bool = False,
+) -> bool:
     """Resolve missing diffuse / alpha textures on the skinned main character.
 
     Only meshes bound to *armature* are touched (helper primitives such as
     Icosphere/Cube are skipped). A diffuse is wired on only when the mesh lacks
     a usable one; a matching alpha map is composed with the diffuse into RGBA
-    WebP only when a confirmed mask exists.
+    WebP only when a confirmed mask exists. When ``force`` is true, existing
+    diffuse and alpha links are replaced from the discovered texture files.
 
     Returns:
         ``True`` if at least one texture (diffuse or alpha) was applied,
@@ -552,7 +627,7 @@ def resolve_main_character_textures(bpy, armature, mesh_path: str) -> bool:
         )
         diffuse_path = (
             _select_diffuse_texture(tex_files, char_name, mesh.name)
-            if not has_diffuse else None
+            if force or not has_diffuse else None
         )
         if diffuse_path is None and not targets:
             continue
@@ -567,7 +642,7 @@ def resolve_main_character_textures(bpy, armature, mesh_path: str) -> bool:
 
         for target_mat, target_bsdf in targets:
             alpha_input = target_bsdf.inputs.get("Alpha")
-            if alpha_input is None or alpha_input.is_linked:
+            if alpha_input is None or (alpha_input.is_linked and not force):
                 continue
 
             diffuse_for_alpha = diffuse_path
