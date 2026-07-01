@@ -340,8 +340,6 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collis
             autocast_dtype=None,
             local_files_only=True,
         )
-    else:
-        print(f'Using pre-loaded T5 conditioner ({t5_name}) ...')
 
     print(f'Encoding joint-name embeddings for {joint_count} object types ...')
 
