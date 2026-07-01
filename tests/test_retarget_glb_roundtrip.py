@@ -1,5 +1,5 @@
 """
-Retarget roundtrip test: FBX/GLB -> retarget NPY -> restore GLB -> compare vs source.
+Retarget roundtrip test: GLB -> retarget NPY -> restore GLB -> compare vs source.
 
 Locks in the cond-free file-retarget path
 (``utils.auto_retarget.retarget_animation_file_to_target``): a raw source
@@ -29,7 +29,7 @@ matching NPY inputs. That means this GLB smoke test gates on rigid alignment,
 joint positions, and bone directions. Full raw-rig twist / mesh-surface identity
 is covered by export/restore-specific tests, not by this feature-space retarget
 path; the exact retarget NPY equivalence is locked below by
-``test_retarget_raw_fbx_matches_matching_npy_reference``.
+``test_retarget_raw_glb_matches_matching_npy_reference``.
 
 Requires bpy (Blender as a Python module).
 """
@@ -100,10 +100,10 @@ _COLOR_RED = "\033[31m"
 _COLOR_RESET = "\033[0m"
 
 _DEFAULT_SOURCE = os.path.join(
-    _ANYTOP_ROOT, "dataset", "truebones", "zoo", "Truebone_Z-OO", "Buffalo", "Buffalo-RunLoop.fbx",
+    _ANYTOP_ROOT, "dataset", "truebones", "zoo", "Truebone_Z-OO", "Buffalo", "Buffalo-RunLoop.glb",
 )
-_DEFAULT_TPOSE = os.path.join(
-    _ANYTOP_ROOT, "dataset", "truebones", "zoo", "Truebone_Z-OO", "Buffalo", "Buffalo-TPOSE.fbx",
+_DEFAULT_TPOSE_MESH = os.path.join(
+    _ANYTOP_ROOT, "dataset", "truebones", "zoo", "Truebone_Z-OO", "Buffalo", "Buffalo-TPOSE.glb",
 )
 _DEFAULT_TARGET_TYPE = "Buffalo"
 _DEFAULT_MATCHING_NPY = os.path.join(
@@ -129,11 +129,11 @@ def _require_or_skip(condition: bool, message: str) -> None:
 
 def _run_retarget_glb_roundtrip(
     source_motion: str | None = None,
-    tpose_fbx: str | None = None,
+    tpose_mesh: str | None = None,
     target_type: str = _DEFAULT_TARGET_TYPE,
     output_dir: str | None = None,
 ) -> dict[str, Any]:
-    """FBX/GLB -> retarget NPY -> restore GLB -> compare vs source.
+    """GLB -> retarget NPY -> restore GLB -> compare vs source.
 
     Pipeline:
         1. Build the target rest-pose features + resolve the target cond entry.
@@ -144,10 +144,10 @@ def _run_retarget_glb_roundtrip(
         5. Compare the restored GLB against the original source motion.
     """
     source_motion = source_motion or _DEFAULT_SOURCE
-    tpose_fbx = tpose_fbx or _DEFAULT_TPOSE
+    tpose_mesh = tpose_mesh or _DEFAULT_TPOSE_MESH
 
     _require_or_skip(os.path.isfile(source_motion), f"Missing source motion: {source_motion}")
-    _require_or_skip(os.path.isfile(tpose_fbx), f"Missing target rest-pose reference: {tpose_fbx}")
+    _require_or_skip(os.path.isfile(tpose_mesh), f"Missing target rest-pose reference: {tpose_mesh}")
 
     target_cond = load_cond_dict().get(target_type)
     _require_or_skip(
@@ -178,7 +178,7 @@ def _run_retarget_glb_roundtrip(
         # Phase A: target rest-pose features (helper-augmented, like generation).
         print(f"[Phase A] Building target rest-pose features for {target_type}...")
         target_tp: TPoseFeatures = get_common_features_from_T_pose(
-            tpose_fbx,
+            tpose_mesh,
             target_type,
             max_joints=max_joints,
         )
@@ -208,7 +208,7 @@ def _run_retarget_glb_roundtrip(
         print(f"[Phase D] Restoring NPY -> {os.path.basename(recovered_glb)}...")
         restore_glb(
             npy_path=npy_path,
-            tpose_mesh=tpose_fbx,
+            tpose_mesh=tpose_mesh,
             output_glb=recovered_glb,
             object_type=target_type,
             fps=source_fps,
@@ -302,7 +302,7 @@ def _run_retarget_glb_roundtrip(
             for err in errors:
                 print(f"\n  [{status}] {_COLOR_RED}{err}{_COLOR_RESET}")
         else:
-            print(f"\n  [{status}] retarget FBX/GLB -> NPY -> GLB roundtrip checks passed")
+            print(f"\n  [{status}] retarget GLB -> NPY -> GLB roundtrip checks passed")
 
         return {
             "passed": passed,
@@ -324,13 +324,13 @@ def _run_retarget_glb_roundtrip(
 def test_retarget_glb_roundtrip() -> None:
     """Buffalo-RunLoop self-retarget roundtrip: restore must match the source."""
     result = _run_retarget_glb_roundtrip()
-    assert result["passed"], "retarget FBX->NPY->GLB roundtrip failed: " + "; ".join(result["errors"])
+    assert result["passed"], "retarget GLB->NPY->GLB roundtrip failed: " + "; ".join(result["errors"])
 
 
 @pytest.mark.parametrize("target_type", [_DEFAULT_SOURCE_TYPE, _DEFAULT_CROSS_TARGET_TYPE])
-def test_retarget_raw_fbx_matches_matching_npy_reference(target_type: str) -> None:
-    """Matching FBX and NPY references must retarget to the same target features."""
-    _require_or_skip(os.path.isfile(_DEFAULT_SOURCE), f"Missing source FBX: {_DEFAULT_SOURCE}")
+def test_retarget_raw_glb_matches_matching_npy_reference(target_type: str) -> None:
+    """Matching GLB and NPY references must retarget to the same target features."""
+    _require_or_skip(os.path.isfile(_DEFAULT_SOURCE), f"Missing source GLB: {_DEFAULT_SOURCE}")
     _require_or_skip(os.path.isfile(_DEFAULT_MATCHING_NPY), f"Missing source NPY: {_DEFAULT_MATCHING_NPY}")
 
     cond_dict = load_cond_dict()
@@ -376,7 +376,7 @@ def test_retarget_raw_fbx_matches_matching_npy_reference(target_type: str) -> No
 
     diff = np.abs(raw_file_features - npy_features)
     assert float(diff.max()) <= 1e-5, (
-        "FBX cond-free retarget and matching NPY retarget diverged: "
+        "GLB cond-free retarget and matching NPY retarget diverged: "
         f"max={float(diff.max()):.8g}, mean={float(diff.mean()):.8g}, "
         f"argmax={np.unravel_index(int(np.argmax(diff)), diff.shape)}"
     )
@@ -391,9 +391,9 @@ def test_retarget_raw_fbx_matches_matching_npy_reference(target_type: str) -> No
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Retarget FBX/GLB -> NPY -> GLB roundtrip test")
-    parser.add_argument("--source", default=None, help="Source animation FBX/GLB to retarget.")
-    parser.add_argument("--tpose-fbx", default=None, help="Target rest-pose reference FBX/GLB (skeleton + restore container).")
+    parser = argparse.ArgumentParser(description="Retarget GLB -> NPY -> GLB roundtrip test")
+    parser.add_argument("--source", default=None, help="Source animation GLB to retarget.")
+    parser.add_argument("--tpose-mesh", default=None, help="Target rest-pose reference GLB (skeleton + restore container).")
     parser.add_argument("--target-type", default=_DEFAULT_TARGET_TYPE, help="Target object type (must be in cond.npy).")
     parser.add_argument(
         "--output-dir",
@@ -406,14 +406,14 @@ def parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = parse_args()
     print(f"Source     : {args.source or _DEFAULT_SOURCE}")
-    print(f"Reference  : {args.tpose_fbx or _DEFAULT_TPOSE}")
+    print(f"Reference  : {args.tpose_mesh or _DEFAULT_TPOSE_MESH}")
     print(f"Target type: {args.target_type}")
     print(f"Output dir : {args.output_dir}")
     print()
 
     result = _run_retarget_glb_roundtrip(
         source_motion=args.source,
-        tpose_fbx=args.tpose_fbx,
+        tpose_mesh=args.tpose_mesh,
         target_type=args.target_type,
         output_dir=args.output_dir,
     )

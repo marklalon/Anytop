@@ -192,20 +192,20 @@ def test_xz_locomotion_extent_still_detects_true_locomotion_after_initial_root_c
 
 def test_raw_tpose_animation_input_reapplies_tpose_normalization():
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    tpose_fbx = os.path.join(
+    tpose_mesh = os.path.join(
         repo_root,
         'dataset',
         'truebones',
         'zoo',
         'Truebone_Z-OO',
         'Buffalo',
-        'Buffalo-TPOSE.fbx',
+        'Buffalo-TPOSE.glb',
     )
-    if not os.path.isfile(tpose_fbx):
-        pytest.skip(f'missing T-pose FBX: {tpose_fbx}')
+    if not os.path.isfile(tpose_mesh):
+        pytest.skip(f'missing T-pose GLB: {tpose_mesh}')
 
     tp = get_common_features_from_T_pose(
-        tpose_fbx,
+        tpose_mesh,
         'Buffalo',
         max_joints=53,
     )
