@@ -151,9 +151,10 @@ def add_data_options(parser):
     group.add_argument("--objects_subset", default='all', type=str,
                        help="Object subset. Can be a predefined category (e.g. 'all', 'quadruped', 'winged', 'biped', 'multiped', etc.) or a single species name (e.g. 'Horse', 'Dragon').")
     group.add_argument("--action_tags", default='', type=str,
-                       help="Comma-separated action tags, e.g. 'locomotion,attack'. During training, filters "
-                            "kept motions whose metadata tags match. During generation with --score, filters "
-                            "the scorer's reference prior selection.")
+                       help="Comma-separated action tags, e.g. 'locomotion,attack'. Use 'all' to include every "
+                            "action tag (no filtering). During training, filters kept motions whose metadata "
+                            "tags match. During generation with --score, filters the scorer's reference prior "
+                            "selection.")
 
 def add_training_options(parser):
     group = parser.add_argument_group('training')

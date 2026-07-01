@@ -76,6 +76,10 @@ def filter_motion_names_by_action_tags(
     if not requested_action_tags:
         return motion_names
 
+    # "all" means no filtering — return every motion.
+    if "all" in requested_action_tags:
+        return motion_names
+
     filtered = set()
     for motion_name in motion_names:
         motion_metadata = _require_motion_metadata_entry(motion_name, motion_metadata_lookup)
