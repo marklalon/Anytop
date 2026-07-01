@@ -1,5 +1,5 @@
 """
-align_tpose_fbx2glb.py
+align_tpose_orientation.py
 
 Force every action FBX/GLB in a directory to face the same orientation as the
 character's T-pose, then export each one as a same-named skinned GLB.
@@ -18,7 +18,7 @@ The bind pose is used only to derive the orientation and is not exported.
 
 Requires bpy (Blender as a Python module) — run with the project's .venv:
 
-    .venv/Scripts/python.exe Anytop/tools/align_tpose_fbx2glb.py --dir <folder> --bind-pose <path>
+    .venv/Scripts/python.exe Anytop/tools/dataset_cleanup/align_tpose_orientation.py --dir <folder> --bind-pose <path>
 """
 
 from __future__ import annotations
