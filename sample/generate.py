@@ -1730,12 +1730,26 @@ def main(args=None, cond_dict=None, runtime=None):
                 f"ERROR: cond entry for '{object_type}' has no baked 'species_emb'; regenerate "
                 "cond.npy with species embeddings before using --species_tags."
             )
-        _species_emb_override = _encode_species_tags_override(
-            _species_tags,
-            _target_cond_entry,
-            int(np.asarray(_target_cond_entry['species_emb']).shape[-1]),
-            t5_conditioner=getattr(runtime, 't5_conditioner', None),
+        _override_t5_name = _resolve_species_t5_name(_target_cond_entry)
+        _override_dim = int(np.asarray(_target_cond_entry['species_emb']).shape[-1])
+        # Fast path: if the requested tags exactly match a species already encoded
+        # in cond (same T5 + dim), reuse that baked species_emb and skip T5.
+        _cached = _find_cached_species_emb(
+            _species_tags, cond_dict, _override_t5_name, _override_dim,
         )
+        if _cached is not None:
+            _species_emb_override, _cache_src = _cached
+            print(
+                f"[generate] species tags {_species_tags} match baked descriptor of "
+                f"'{_cache_src}'; reusing cached species_emb (skipped T5)."
+            )
+        else:
+            _species_emb_override = _encode_species_tags_override(
+                _species_tags,
+                _target_cond_entry,
+                _override_dim,
+                t5_conditioner=getattr(runtime, 't5_conditioner', None),
+            )
         _default_text = ' '.join(
             (_target_cond_entry.get('species_emb_meta') or {}).get('embedding_text', '').split()
         )
@@ -2332,6 +2346,36 @@ def _encode_species_tags_override(tags, cond_entry, expected_dim, t5_conditioner
             "to build cond.npy."
         )
     return emb
+
+
+def _find_cached_species_emb(tags, cond_dict, t5_name, expected_dim):
+    """Reuse a baked ``species_emb`` when the requested tag text exactly matches a
+    species already encoded in ``cond_dict`` (same T5 model + dim).
+
+    T5 mean-pooling is a deterministic function of the tokenized text, so an exact
+    ``embedding_text`` match yields the identical vector -- reusing the baked one is
+    exact, not an approximation -- and lets us skip loading/running T5 entirely.
+
+    Returns ``(species_emb, source_object_type)`` on a hit, else ``None``.
+    """
+    target_text = ' '.join(tags)
+    for entry in cond_dict.values():
+        if not isinstance(entry, dict):
+            continue
+        emb = entry.get('species_emb')
+        meta = entry.get('species_emb_meta')
+        if emb is None or not isinstance(meta, dict):
+            continue
+        if str(meta.get('t5_name') or '') != str(t5_name):
+            continue
+        # Baked text is a space-joined tag list; collapse whitespace on both sides
+        # so the comparison is over the same normalized token stream.
+        if ' '.join(str(meta.get('embedding_text', '')).split()) != target_text:
+            continue
+        emb = np.asarray(emb, dtype=np.float32)
+        if emb.shape[-1] == int(expected_dim):
+            return emb, str(entry.get('object_type') or '?')
+    return None
 
 
 def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joints, feature_len, loop=False, action_tags=None, species_emb_override=None):
