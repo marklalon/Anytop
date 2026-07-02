@@ -323,6 +323,14 @@ def add_generate_options(parser):
                             "(inclusive, clipped to the reference length). Empty = all frames. Combined with "
                             "--inpaint_joints, the regenerated region is selected-joints x selected-frames; "
                             "everything else is clamped to --reference_motion. Requires --reference_motion.")
+    group.add_argument("--species_tags", default="", type=str,
+                       help="Override the target species' motion style tags for this generation, e.g. "
+                            "'Quadruped,Heavy,Lumbering'. Comma/semicolon-separated. The tags are re-encoded "
+                            "through the same T5 conditioner used at preprocessing and replace the species "
+                            "descriptor baked into cond.npy (default from species_tags.jsonl), letting you "
+                            "restyle the generated motion (e.g. make a Winged Dragon walk on the ground). "
+                            "Requires a checkpoint trained with --species_cond and/or --species_joint_cond. "
+                            "Incompatible with --object_type all.")
 
 
 def train_args():
@@ -343,7 +351,7 @@ def generate_args(argv=None):
     add_generate_options(parser)
     # These CLI args are generation-time overrides and must NOT be
     # overwritten by the training args.json (which stores their defaults).
-    args = parse_and_load_from_model(parser, argv=argv, preserve_cli_args={'action_tags'})
+    args = parse_and_load_from_model(parser, argv=argv, preserve_cli_args={'action_tags', 'species_tags'})
     return args
 
 def process_new_skeleton_args():

@@ -73,6 +73,11 @@ class GenerationRuntime:
     sampling_steps: int
     amp_dtype: str
     cond_path: str
+    # Optional preloaded T5 conditioner (e.g. the server's resident instance)
+    # reused by --species_tags re-encoding to avoid loading a second T5. Keyed
+    # implicitly by its `.name`; a mismatch with the species' baked t5_name
+    # falls back to an on-demand load.
+    t5_conditioner: object = None
 
     def validate_args(self, args):
         expected_model = os.path.realpath(self.model_path)
@@ -1311,6 +1316,12 @@ def main(args=None, cond_dict=None, runtime=None):
                 "ERROR: --object_type all is incompatible with --reference_motion. "
                 "Pass --object_type <Species> for reference-guided generation."
             )
+        if str(getattr(args, 'species_tags', '') or '').strip():
+            sys.exit(
+                "ERROR: --species_tags is incompatible with --object_type all "
+                "(a single tag set cannot restyle every species). Pass "
+                "--object_type <Species> to restyle one species."
+            )
         _generate_all_species(
             cond_dict=cond_dict,
             cond_max_joints=cond_max_joints,
@@ -1699,6 +1710,40 @@ def main(args=None, cond_dict=None, runtime=None):
                     'ERROR: --action_tags was passed but this checkpoint was trained '
                     'without --action_tag_cond. Action tags will have no effect.'
                 )
+
+    # ── --species_tags: restyle the target species' motion descriptor ────────
+    _species_emb_override = None
+    _species_tags = _parse_species_tags(getattr(args, 'species_tags', ''))
+    if _species_tags:
+        # Fast-fail if the checkpoint ignores the species descriptor entirely,
+        # otherwise the override would silently have no effect.
+        _uw = unwrap_anytop_model(model)
+        if not (getattr(_uw, 'species_cond', False) or getattr(_uw, 'species_joint_cond', False)):
+            sys.exit(
+                'ERROR: --species_tags was passed but this checkpoint was trained without '
+                '--species_cond or --species_joint_cond; the species descriptor is unused, so '
+                'the tags would have no effect.'
+            )
+        _target_cond_entry = cond_dict[object_type]
+        if 'species_emb' not in _target_cond_entry:
+            sys.exit(
+                f"ERROR: cond entry for '{object_type}' has no baked 'species_emb'; regenerate "
+                "cond.npy with species embeddings before using --species_tags."
+            )
+        _species_emb_override = _encode_species_tags_override(
+            _species_tags,
+            _target_cond_entry,
+            int(np.asarray(_target_cond_entry['species_emb']).shape[-1]),
+            t5_conditioner=getattr(runtime, 't5_conditioner', None),
+        )
+        _default_text = ' '.join(
+            (_target_cond_entry.get('species_emb_meta') or {}).get('embedding_text', '').split()
+        )
+        print(
+            f"[generate] species descriptor for '{object_type}' overridden: "
+            f"'{_default_text}' -> '{' '.join(_species_tags)}'"
+        )
+
     _, model_kwargs = create_condition(
         obj_batch,
         cond_dict,
@@ -1708,6 +1753,7 @@ def main(args=None, cond_dict=None, runtime=None):
         feature_len=opt.feature_len,
         loop=getattr(args, 'loop', False),
         action_tags=_action_tags_per_obj,
+        species_emb_override=_species_emb_override,
     )
     if global_energy_condition is not None:
         model_kwargs['y']['global_energy_cond'] = global_energy_condition.clone()
@@ -2201,7 +2247,94 @@ def build_inpaint_mask(
     return mask_t
 
 
-def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joints, feature_len, loop=False, action_tags=None):
+def _parse_species_tags(raw):
+    """Split a raw ``--species_tags`` string into a clean list of tags.
+
+    Accepts comma- or semicolon-separated tags and drops empty entries.
+    """
+    return [t.strip() for t in str(raw or '').replace(';', ',').split(',') if t.strip()]
+
+
+def _resolve_species_t5_name(cond_entry):
+    """Return the T5 model name used to bake this species' descriptor.
+
+    Prefer the species descriptor's own metadata, fall back to the joint-name
+    embedding metadata (same conditioner), then to the dataset default so the
+    override is encoded in the SAME embedding space the model was trained on.
+    """
+    for meta_key in ('species_emb_meta', 'joints_names_embs_meta'):
+        meta = cond_entry.get(meta_key)
+        if isinstance(meta, dict) and meta.get('t5_name'):
+            return str(meta['t5_name'])
+    return 't5-base'
+
+
+# Process-local T5 cache for --species_tags re-encoding, keyed by t5 model name.
+# Lets repeated standalone generations (and any path without a preloaded
+# conditioner) reuse a single T5 instance instead of reloading it every call.
+_SPECIES_T5_CACHE = {}
+
+
+def _get_species_t5_conditioner(t5_name, *, preloaded=None):
+    """Return a T5 conditioner named ``t5_name``, reusing an instance when possible.
+
+    Preference order:
+      1. ``preloaded`` (e.g. the server's resident conditioner) when its ``.name``
+         matches ``t5_name`` — zero extra load.
+      2. A process-local cache keyed by ``t5_name``.
+      3. A freshly loaded conditioner (cached for next time).
+    """
+    if preloaded is not None and str(getattr(preloaded, 'name', '')) == str(t5_name):
+        return preloaded
+    cached = _SPECIES_T5_CACHE.get(t5_name)
+    if cached is not None:
+        return cached
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"[generate] Loading T5 '{t5_name}' on {device.upper()} for species-tag re-encoding ...")
+    from model.conditioners import T5Conditioner
+
+    conditioner = T5Conditioner(
+        name=t5_name,
+        finetune=False,
+        word_dropout=0.0,
+        normalize_text=False,
+        device=device,
+        autocast_dtype=None,
+        local_files_only=True,
+    )
+    _SPECIES_T5_CACHE[t5_name] = conditioner
+    return conditioner
+
+
+def _encode_species_tags_override(tags, cond_entry, expected_dim, t5_conditioner=None):
+    """Re-encode custom species-style *tags* into a ``[expected_dim]`` species_emb.
+
+    Mirrors the preprocessing path (``build_species_embedding_text`` -> T5): the
+    tags are space-joined and mean-pooled through the same T5 conditioner, so the
+    resulting vector lives in the trained species-descriptor space and can be
+    swapped in for the baked ``species_emb``.
+
+    ``t5_conditioner`` optionally supplies a preloaded conditioner (e.g. the
+    server's resident instance) to reuse when its model name matches the species'
+    baked ``t5_name``; otherwise a cached / freshly-loaded one is used.
+    """
+    species_text = ' '.join(tags)
+    t5_name = _resolve_species_t5_name(cond_entry)
+    print(f"[generate] Re-encoding species tags {tags} via T5 '{t5_name}' ...")
+    conditioner = _get_species_t5_conditioner(t5_name, preloaded=t5_conditioner)
+    with torch.no_grad():
+        tokens = conditioner.tokenize_entries([species_text])
+        emb = conditioner(tokens).detach().cpu().numpy().astype(np.float32, copy=False)[0]
+    if emb.shape[-1] != int(expected_dim):
+        raise ValueError(
+            f"--species_tags re-encoding produced dim {emb.shape[-1]} but the model expects "
+            f"{expected_dim} (t5_out_dim). The T5 model '{t5_name}' does not match the one used "
+            "to build cond.npy."
+        )
+    return emb
+
+
+def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joints, feature_len, loop=False, action_tags=None, species_emb_override=None):
     """Build model_kwargs for a batch of object_types.
 
     Parameters
@@ -2210,6 +2343,11 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joi
         Per-object action tag lists (e.g. ``[['locomotion', 'attack'], ...]``).
         When provided, must have the same length as *object_types*. Each element
         may be a list of tag strings, a single string, or ``None``.
+    species_emb_override : np.ndarray or None
+        A single ``[t5_out_dim]`` species embedding vector that, when provided,
+        replaces the per-species ``species_emb`` baked into ``cond_dict`` for
+        *every* object in the batch. Used by ``--species_tags`` to restyle the
+        generated motion via a re-encoded species descriptor.
     """
     batches = list()
     circular_mask = bool(loop)
@@ -2247,6 +2385,8 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joi
         }
         if 'species_emb' in cond_dict[object_type]:
             metadata['species_emb'] = cond_dict[object_type]['species_emb']
+        if species_emb_override is not None:
+            metadata['species_emb'] = species_emb_override
         if action_tags is not None and i < len(action_tags):
             tags = action_tags[i]
             if tags is not None:
