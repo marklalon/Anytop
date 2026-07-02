@@ -24,6 +24,7 @@ from sample.generate import (  # noqa: E402
     _reanchor_inpaint_root_y_via_velocity,
     _resolve_inpaint_joint_indices,
     _sample_batch,
+    _validate_reference_motion_path,
     build_inpaint_mask,
     create_condition,
 )
@@ -120,6 +121,18 @@ def test_finalize_output_lengths_rejects_out_of_window() -> None:
         _finalize_output_lengths(requested_frames=121, min_length=20, internal_num_frames=60)
 
 
+def test_validate_reference_motion_path_accepts_supported_suffixes() -> None:
+    assert _validate_reference_motion_path("clip.npy") == ".npy"
+    assert _validate_reference_motion_path("clip.fbx") == ".fbx"
+    assert _validate_reference_motion_path("clip.glb") == ".glb"
+    assert _validate_reference_motion_path("clip.gltf") == ".gltf"
+
+
+def test_validate_reference_motion_path_rejects_unsupported_suffix() -> None:
+    with pytest.raises(ValueError, match="Unsupported reference motion format"):
+        _validate_reference_motion_path("clip.txt")
+
+
 def test_prepare_reference_bundle_uses_preloaded_cropped_features() -> None:
     # Crop path: feed exactly M=40 frames (as main() does for R > M). The bundle
     # must consume the preloaded array verbatim (no disk load) and not re-trim it.
@@ -139,6 +152,7 @@ def test_prepare_reference_bundle_uses_preloaded_cropped_features() -> None:
         requested_output_frame_count=60,
         requested_visible_frame_count=40,
         preloaded_features=preloaded,
+        physical_energy_features=preloaded,
     )
 
     assert bundle["loaded_reference_frame_count"] == 40

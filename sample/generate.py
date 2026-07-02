@@ -35,14 +35,10 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_process import (
-    FOOT_CONTACT_VEL_THRESH,
     tpose_features_from_cond,
-    get_motion,
     recover_bvh_export_animation_from_motion_np,
 )
-from motion_lib import BVH, FBX
-from motion_lib.Animation import Animation
-from motion_lib.Quaternions import Quaternions
+from motion_lib import BVH
 from os.path import join as pjoin
 from utils import dist_util
 from utils.fixseed import fixseed
@@ -219,19 +215,6 @@ def prepare_generation_runtime(args=None, cond_dict=None):
     )
 
 
-def validate_reference_configuration(
-    reference_motion_path=None,
-    skip_timesteps=0,
-    global_energy=None,
-):
-    # --global_energy is optional with --reference_motion. When omitted,
-    # the model uses the global-energy CFG drop path (unconditional energy
-    # token, FiLM sublayer bypassed). When provided, it overrides with the
-    # explicit z-score value — useful for controlled energy sweeps on
-    # reference-guided generation.
-    return int(skip_timesteps) if skip_timesteps is not None else 0
-
-
 def _finalize_output_lengths(requested_frames, min_length, internal_num_frames):
     """Validate the requested output frame count M and derive the playspeed
     conditioning value. Returns ``(requested_output_frames, target_output_frames,
@@ -350,15 +333,6 @@ def _should_retarget_reference(source_type, target_type):
     return _reference_crosses_skeletons(source_type, target_type)
 
 
-def _resolve_source_cond_entry(source_type, cond_dict, default_cond_cache=None):
-    if not source_type:
-        return None
-    source_cond_entry = cond_dict.get(source_type)
-    if source_cond_entry is None and default_cond_cache:
-        source_cond_entry = default_cond_cache.get(source_type)
-    return source_cond_entry
-
-
 def _build_retarget_cond_dict(cond_dict, source_type, default_cond_cache=None):
     retarget_cond_dict = dict(cond_dict)
     if source_type in retarget_cond_dict:
@@ -373,190 +347,17 @@ def _build_retarget_cond_dict(cond_dict, source_type, default_cond_cache=None):
     return retarget_cond_dict
 
 
-def _reference_skeleton_from_tpose(tp):
-    """Return (names, parents) of the reference skeleton.
-
-    Under own-rotation encoding no leaf rotation helpers are appended,
-    so the full tp.names list is the reference skeleton.
-    """
-    return list(tp.names), np.asarray(tp.tpos_anim.parents, dtype=np.int32)
-
-
-def _reindex_animation_subset(raw_anim, names, keep_indices):
-    """Drop all joints except ``keep_indices`` and reindex parents/arrays.
-
-    ``keep_indices`` must already be in ascending (DFS pre-order) order and must
-    be closed under the parent relation (every kept joint's parent is kept), which
-    the caller guarantees before calling.
-    """
-    old_to_new = {old: new for new, old in enumerate(keep_indices)}
-    new_names = [names[i] for i in keep_indices]
-    new_parents = np.array(
-        [old_to_new[int(raw_anim.parents[i])] if int(raw_anim.parents[i]) >= 0 else -1
-         for i in keep_indices],
-        dtype=np.int32,
-    )
-    new_anim = Animation(
-        Quaternions(raw_anim.rotations.qs[:, keep_indices].copy()),
-        raw_anim.positions[:, keep_indices].copy(),
-        Quaternions(raw_anim.orients.qs[keep_indices].copy()),
-        raw_anim.offsets[keep_indices].copy(),
-        new_parents,
-    )
-    return new_anim, new_names
-
-
-def _align_reference_skeleton(raw_anim, names, expected_names, expected_parents, fname, source_type=None):
-    """Validate/repair the raw reference skeleton against the dataset reference skeleton.
-
-    ``get_motion`` assumes the raw animation's joints match the dataset's canonical
-    skeleton index-for-index, then appends leaf-rotation helpers to reach the feature
-    joint count. That assumption is silent: a reference carrying extra terminal bones
-    (e.g. Blender ``*_end`` tip bones materialised on FBX/GLB export) can coincidentally
-    match the *augmented* joint count and get mismatched joint-by-joint, scrambling the
-    whole skeleton.
-
-    Defense:
-      * If the skeleton already matches the reference, return it unchanged.
-      * Otherwise strip terminal (leaf) bones whose names are not in the reference
-        — this removes ``*_end``-style tip bones while preserving DFS order — and
-        re-validate.
-      * If it still does not match (missing joints, reordered joints, or an
-        *internal* extra bone that cannot be safely dropped), raise with a clear
-        diff instead of silently producing corrupt motion.
-    """
-    expected_name_set = set(expected_names)
-
-    if list(names) == list(expected_names):
-        return raw_anim, list(names)
-
-    # Identify leaf joints (no children) whose names are not in the reference.
-    parents = np.asarray(raw_anim.parents, dtype=np.int32)
-    has_children = np.zeros(len(names), dtype=bool)
-    has_children[parents[parents >= 0]] = True
-    unexpected_leaves = [
-        i for i, name in enumerate(names)
-        if name not in expected_name_set and not has_children[i]
-    ]
-
-    if unexpected_leaves:
-        keep_indices = [i for i in range(len(names)) if i not in set(unexpected_leaves)]
-        # Reject if dropping orphans an expected joint (its parent was removed) —
-        # that means the extra bone is internal and cannot be safely stripped.
-        keep_set = set(keep_indices)
-        for i in keep_indices:
-            p = int(parents[i])
-            if p >= 0 and p not in keep_set:
-                break
-        else:
-            stripped_names = [names[i] for i in unexpected_leaves]
-            raw_anim, names = _reindex_animation_subset(raw_anim, names, keep_indices)
-            print(
-                f"[generate] WARNING: stripped {len(stripped_names)} terminal bone(s) "
-                f"from reference {fname} not present in the '{','.join(expected_names[:1])}...' "
-                f"reference skeleton: {stripped_names[:10]}"
-                f"{'...' if len(stripped_names) > 10 else ''}. These are typically Blender "
-                f"'*_end' tip bones; the clip is processed on the canonical "
-                f"{len(expected_names)}-joint skeleton."
-            )
-
-    # Final structural validation (names AND parents must match exactly).
-    if list(names) == list(expected_names) and np.array_equal(
-        np.asarray(raw_anim.parents, dtype=np.int32), expected_parents
-    ):
-        return raw_anim, list(names)
-
-    extra = [n for n in names if n not in expected_name_set]
-    missing = [n for n in expected_names if n not in set(names)]
-    type_label = f" (object_type='{source_type}')" if source_type else ""
-    raise ValueError(
-        f"Reference motion skeleton of '{fname}'{type_label} does not match the dataset reference "
-        f"skeleton ({len(expected_names)} joints, root "
-        f"'{expected_names[0] if expected_names else '?'}') and cannot be auto-aligned.\n"
-        f"  input joints  : {len(names)}\n"
-        f"  extra joints  ({len(extra)}): {extra[:10]}{'...' if len(extra) > 10 else ''}\n"
-        f"  missing joints({len(missing)}): {missing[:10]}{'...' if len(missing) > 10 else ''}\n"
-        f"  Re-export the reference on the dataset's canonical skeleton. (A same-count but "
-        f"differently-ordered skeleton would otherwise be silently scrambled.)"
-    )
-
-
-def _prepare_reference_motion_path(
-    reference_motion_path,
-    source_type,
-    source_cond,
-    opt,
-    output_dir,
-):
+def _validate_reference_motion_path(reference_motion_path):
     suffix = os.path.splitext(reference_motion_path)[1].lower()
     if suffix == '.npy':
-        return reference_motion_path
+        return suffix
 
     if suffix not in _REFERENCE_MOTION_PREPROCESS_SUFFIXES:
         raise ValueError(
             f"Unsupported reference motion format: {suffix or '<no extension>'}. "
             "Supported formats: .npy, .fbx, .glb, .gltf"
         )
-
-    if source_cond is None:
-        raise KeyError(
-            f"Missing cond entry for reference motion object_type '{source_type}'. "
-            "Cannot preprocess non-NPY reference motion."
-        )
-
-    cond_parents = source_cond.get('parents')
-    preprocess_max_joints = len(cond_parents) if cond_parents is not None else int(opt.max_joints)
-
-    print(f"  Preprocessing reference motion {suffix} -> .npy using object_type={source_type}")
-    # The source character's rest-pose feature skeleton (offsets, rest rotations,
-    # orientation_quat, face joints, scale, contact joints) is reconstructed
-    # directly from the cond entry — no original FBX/GLB T-pose mesh is read.
-    source_tp = tpose_features_from_cond(source_cond, source_type)
-    scale_factor = float(source_cond.get('scale_factor', source_tp.scale_factor))
-
-    # Defense: align the raw reference skeleton to the dataset's canonical skeleton
-    # before get_motion blindly maps it index-by-index against the T-pose. This strips
-    # stray terminal '*_end' tip bones (common on Blender FBX/GLB export) and fast-fails
-    # on a real structural mismatch instead of silently scrambling the joints.
-    fname = os.path.basename(reference_motion_path)
-    raw_anim, names, _frame_time = FBX.load(reference_motion_path)
-    anim_len = len(raw_anim)
-    expected_names, expected_parents = _reference_skeleton_from_tpose(source_tp)
-    raw_anim, names = _align_reference_skeleton(
-        raw_anim, names, expected_names, expected_parents, fname, source_type
-    )
-
-    squared_positions_error = {}
-    source_features, *_ = get_motion(
-        reference_motion_path,
-        FOOT_CONTACT_VEL_THRESH,
-        source_type,
-        preprocess_max_joints,
-        source_tp.offsets,
-        source_tp.foot_indices,
-        source_tp.tpos_rots,
-        squared_positions_error,
-        scale_factor=scale_factor,
-        orientation_quat=source_tp.orientation_quat,
-        slice_inds=[0, anim_len],
-        preloaded=(raw_anim, names),
-    )
-    if source_features is None:
-        raise RuntimeError(
-            f"Failed to preprocess reference motion '{reference_motion_path}' into feature-space NPY"
-        )
-
-    source_features = np.asarray(source_features, dtype=np.float32)
-    if source_features.shape[1] != len(source_tp.names):
-        raise RuntimeError(
-            "Reference motion preprocessing produced a joint count that does not match "
-            "the helper-aware T-pose feature skeleton"
-        )
-
-    base = os.path.splitext(os.path.basename(reference_motion_path))[0]
-    out_npy = os.path.join(output_dir, f"_reference_features_{source_type}__{base}.npy")
-    np.save(out_npy, source_features, allow_pickle=False)
-    return out_npy
+    return suffix
 
 
 def _require_cond_translation_root_index(cond_entry, *, object_type, context):
@@ -1194,14 +995,7 @@ def main(args=None, cond_dict=None, runtime=None):
     if _inpaint_early and skip_timesteps_raw is None:
         skip_timesteps_raw = 0
 
-    try:
-        skip_timesteps = validate_reference_configuration(
-            reference_motion_path=getattr(args, 'reference_motion', None),
-            skip_timesteps=skip_timesteps_raw,
-            global_energy=getattr(args, 'global_energy', None),
-        )
-    except ValueError as exc:
-        sys.exit(f"ERROR: {exc}")
+    skip_timesteps = int(skip_timesteps_raw) if skip_timesteps_raw is not None else 0
 
     if runtime is None:
         runtime = prepare_generation_runtime(args, cond_dict=cond_dict)
@@ -1288,6 +1082,10 @@ def main(args=None, cond_dict=None, runtime=None):
 
     ddim_eta = float(getattr(args, 'ddim_eta', 0.0))
     reference_motion_path = getattr(args, 'reference_motion', None)
+    reference_motion_suffix = (
+        _validate_reference_motion_path(reference_motion_path)
+        if reference_motion_path else ''
+    )
 
     inpaint_joints_arg = str(getattr(args, 'inpaint_joints', '') or '').strip()
     inpaint_frames_arg = str(getattr(args, 'inpaint_frames', '') or '').strip()
@@ -1374,8 +1172,7 @@ def main(args=None, cond_dict=None, runtime=None):
     # source object_type nor look it up in cond. Only .npy references (already in
     # feature space) still need a source cond entry for their T-pose/skeleton.
     reference_is_raw_anim = bool(reference_motion_path) and (
-        os.path.splitext(reference_motion_path)[1].lower()
-        in _REFERENCE_MOTION_PREPROCESS_SUFFIXES
+        reference_motion_suffix in _REFERENCE_MOTION_PREPROCESS_SUFFIXES
     )
     source_type = None
     _default_cond_cache = None
@@ -1471,20 +1268,6 @@ def main(args=None, cond_dict=None, runtime=None):
             fps=fps,
         )
     elif reference_motion_path:
-        source_cond_entry = _resolve_source_cond_entry(
-            source_type,
-            cond_dict,
-            _default_cond_cache,
-        )
-
-        prepared_reference_path = _prepare_reference_motion_path(
-            reference_motion_path,
-            source_type,
-            source_cond_entry,
-            opt,
-            out_path,
-        )
-
         effective_reference_path = prepared_reference_path
         if should_retarget_reference:
             retarget_cond_dict = _build_retarget_cond_dict(
@@ -1596,7 +1379,6 @@ def main(args=None, cond_dict=None, runtime=None):
         ref_motion = reference_bundle['reference_motion']
         output_frame_count = reference_bundle['output_frame_count']
         loaded_reference_frame_count = reference_bundle['loaded_reference_frame_count']
-        reference_source_frame_count = reference_bundle.get('reference_source_frame_count', loaded_reference_frame_count)
         loaded_reference_joint_count = reference_bundle['loaded_reference_joint_count']
         reference_physical_motion = reference_bundle.get('reference_physical_motion')
 
