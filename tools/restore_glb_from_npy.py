@@ -24,43 +24,31 @@ preprocessed space unless an explicit root-translation XZ override is passed
 during restore.
 
 Usage:
-        # Using FBX T-pose (explicit)
-        python tools/restore_glb_from_npy.py \
-                --npy "D:/AI/.../Horse___RunToStop_29.npy" \
-                --tpose-mesh "D:/AI/.../HorseALL-TPOSE.fbx" \
-                --output-glb "outputs/Horse___RunToStop_29.glb"
+    # Skinned GLB in native (mesh) space
+    python tools/restore_glb_from_npy.py \\
+        --npy "F:/npy/Horse___RunToStop_29.npy" \\
+        --tpose-mesh "D:/Models/HorseALL-TPOSE.fbx"
 
-        # Using T-pose path saved in cond.npy (no --tpose-mesh needed)
-        python tools/restore_glb_from_npy.py \
-                --npy "D:/AI/.../Horse___RunToStop_29.npy" \
-                --output-glb "outputs/Horse___RunToStop_29.glb"
+    # Skinned GLB in HML preprocessed space
+    python tools/restore_glb_from_npy.py \\
+        --npy "F:/npy/Horse___RunToStop_29.npy" \\
+        --tpose-mesh "D:/Models/HorseALL-TPOSE.fbx" \\
+        --restore-space hml
 
-        # HML space: keep the NPY's orientation/scale/placement (like the
-        # corresponding processed BVH) instead of the T-pose mesh's native space
-        python tools/restore_glb_from_npy.py \
-                --npy "D:/AI/.../Horse___RunToStop_29.npy" \
-                --restore-space hml \
-                --output-glb "outputs/Horse___RunToStop_29.glb"
+    # Skeleton-only GLB from cond.npy (HML space)
+    python tools/restore_glb_from_npy.py \\
+        --npy "F:/npy/Horse___RunToStop_29.npy" \\
+        --skeleton-only
 
-Two restore spaces (``--restore-space``):
-    fbx (default)  Align the recovered animation to the T-pose mesh's native
-                   orientation / scale / translation.
-    hml            Reverse-align the T-pose mesh onto the NPY: re-apply the
-                   forward preprocessing similarity (scale_factor + orientation
-                   quat) to the imported rig so the GLB keeps the NPY's
-                   orientation, scale, and centered placement, with skin + rest
-                   pose bound correctly.
+    # Skeleton-only GLB using T-pose armature for rest rotations (native space)
+    python tools/restore_glb_from_npy.py \\
+        --npy "F:/npy/Horse___RunToStop_29.npy" \\
+        --tpose-mesh "D:/Models/HorseALL-TPOSE.fbx" \\
+        --skeleton-only
 
-Skeleton-only mode (``--skeleton-only``):
-        Exports a skeleton-only GLB in HML preprocessed space with no mesh or
-        skinning.  No T-pose mesh required — all metadata comes from cond.npy.
-        ``--restore-space`` is forced to ``hml``.
-
-        Usage:
-            python tools/restore_glb_from_npy.py \\
-                    --npy "D:/AI/.../Horse___RunToStop_29.npy" \\
-                    --skeleton-only \\
-                    --output-glb "outputs/Horse___RunToStop_29_skeleton.glb"
+``--restore-space`` modes:
+    native (default)  Align the animation to the mesh's original orientation / scale.
+    hml               Keep the NPY's preprocessed orientation / scale / placement.
 
 """
 
@@ -484,7 +472,7 @@ def restore_glb(
     root_translation_xz: np.ndarray | None = None,
     fullbody_ik: bool = False,
     stretch_factor: float = DEFAULT_IK_STRETCH_FACTOR,
-    restore_space: str = "fbx",
+    restore_space: str = "native",
     use_image_search: bool = False,
     resample_fps: float | None = None,
     resample_min_length: int | None = None,
@@ -498,14 +486,18 @@ def restore_glb(
     GLB — no FBX/GLB asset is ever read. cond.npy carries no T-pose mesh path,
     so there is no implicit dataset-mesh resolution.
 
-    When *skeleton_only* is ``True``, the output is a skeleton-only GLB in HML
-    space with no mesh or skinning — ``restore_space`` is forced to ``"hml"``.
+    When *skeleton_only* is ``True``, the output is a skeleton-only GLB (no mesh,
+    no skinning).  Without a T-pose mesh, ``restore_space`` is forced to ``"hml"``
+    and all metadata comes from ``cond.npy``.  With a T-pose mesh, ``restore_space``
+    is honoured — the mesh supplies proper rest rotations for the skeleton.
 
     Args:
         npy_path:            Path to the preprocessed .npy motion file.
         output_glb:          Path for the output .glb file.
         tpose_mesh:          Path to the T-pose FBX (provides skin + armature).
-                             Ignored when *skeleton_only* is True.
+                             When *skeleton_only* is also True, the mesh's
+                             armature still provides rest rotations and enables
+                             FBX-space export, but no skin is bound in the output.
         cond_npy:            Path to cond.npy; defaults to the dataset default.
         object_type:         Character type key (e.g. "Horse").  Auto-detected
                              from the NPY filename if None.
@@ -515,7 +507,8 @@ def restore_glb(
                      inverse scale and before inverse orientation. When
                      omitted, restore keeps the clip in centred
                      preprocessed space.  Ignored when *skeleton_only* is True
-                     (always stays in centred HML space).
+                     and no ``--tpose-mesh`` is given (always stays in centred
+                     HML space).
         fullbody_ik:          If True, perform a full-body IK reconstruction
                              on the raw export skeleton after recovering the
                              animation.  Default is False (skip IK, use
@@ -525,13 +518,13 @@ def restore_glb(
                              (e.g. 0.1 = ±10 %).  Default is {DEFAULT_IK_STRETCH_FACTOR}.
                              Only effective when fullbody_ik is True.
         restore_space:        Output coordinate space:
-                             ``"fbx"`` (default) aligns the animation to the
+                             ``"native"`` (default) aligns the animation to the
                              T-pose mesh's native orientation/scale/translation.
                              ``"hml"`` reverse-aligns the T-pose mesh onto the
                              NPY so the GLB keeps the NPY's orientation, scale,
                              and centered placement (like the corresponding
-                             processed BVH).  Ignored when *skeleton_only* is
-                             True (always ``"hml"``).
+                             processed BVH).  For skeleton-only exports without
+                             a T-pose mesh, this is forced to ``"hml"``.
         use_image_search:     If True, resolve textures for the skinned mesh:
                              the FBX importer first searches directories near
                              the source mesh, then a fallback resolver wires a
@@ -549,8 +542,9 @@ def restore_glb(
                              many frames (even interpolation, no looping).  Only
                              effective when ``resample_fps`` is set.  Default None.
         skeleton_only:        If True, export a skeleton-only GLB (no mesh, no
-                             skinning) in HML preprocessed space.  The T-pose
-                             mesh is not required.  Default False.
+                             skinning).  Without a T-pose mesh the output stays
+                             in HML preprocessed space; with a T-pose mesh the
+                             restore space is honoured.  Default False.
 
     Returns:
         The absolute path of the written GLB file.
@@ -574,11 +568,11 @@ def restore_glb(
         )
         skeleton_only = True
 
-    if skeleton_only:
+    if skeleton_only and tpose_mesh is None:
         restore_space = "hml"
-        print("Skeleton-only mode: restore_space forced to 'hml'")
-    elif restore_space not in ("fbx", "hml"):
-        raise ValueError(f"restore_space must be 'fbx' or 'hml', got {restore_space!r}")
+        print("Skeleton-only mode (no T-pose mesh): restore_space forced to 'hml'")
+    elif restore_space not in ("native", "hml"):
+        raise ValueError(f"restore_space must be 'native' or 'hml', got {restore_space!r}")
 
     # ── Load cond.npy ─────────────────────────────────────────────────────────
     cond_npy_path = cond_npy or _DEFAULT_COND_NPY
@@ -604,7 +598,7 @@ def restore_glb(
 
     # ── Resolve T-pose mesh / Build context ──────────────────────────────────
     cond_entry = cond[object_type]
-    if skeleton_only:
+    if skeleton_only and tpose_mesh is None:
         raw = np.load(npy_path)
         ctx = _build_skeleton_only_context(raw, object_type, cond_entry)
         features = ctx["features"]
@@ -620,8 +614,6 @@ def restore_glb(
         orientation_quat_val = ctx["orientation_quat"]
         tpose_mesh_resolved = None
     else:
-        # Reached only with an explicit user-provided tpose_mesh (the fallback
-        # above flips skeleton_only on when none is given).
         raw = np.load(npy_path)
         restore_ctx = _build_restore_context(
             raw,
@@ -641,7 +633,9 @@ def restore_glb(
         export_rest_rotations = np.asarray(restore_ctx["export_rest_rotations"], dtype=np.float32)
         scale_factor_val = float(restore_ctx["scale_factor"])
         orientation_quat_val = np.asarray(restore_ctx["orientation_quat"], dtype=np.float64)
-        tpose_mesh_resolved = tpose_mesh
+        # skeleton-only with tpose_mesh: use mesh armature metadata for rest
+        # rotations and FBX-space export, but skip skin/mesh binding
+        tpose_mesh_resolved = None if skeleton_only else tpose_mesh
 
     translation_root_index = None
 
@@ -696,8 +690,8 @@ def restore_glb(
         tpose_rest_rotations,
     )
 
-    if skeleton_only:
-        print("Skeleton-only: staying in HML space (skipping inverse preprocess transform)")
+    if restore_space == "hml":
+        print("HML space: staying in HML space (skipping inverse preprocess transform)")
     else:
         export_anim = _invert_preprocess_transform(
             export_anim,
@@ -763,14 +757,15 @@ def restore_glb(
     os.makedirs(os.path.dirname(output_glb) or ".", exist_ok=True)
 
     # ── HML reverse-alignment (restore_space="hml") ─────────────────────────
-    # In "fbx" mode the recovered animation is exported in the T-pose mesh's
+    # In "native" mode the recovered animation is exported in the T-pose mesh's
     # native space. In "hml" mode we instead reverse-align the rig onto the NPY
     # by re-applying the forward preprocessing similarity (scale + orientation)
     # to the imported mesh/armature, so the GLB lands in the same space as the
     # NPY / corresponding processed BVH.
-    # In skeleton-only mode we are already in HML space — no reverse-alignment.
+    # When there is no mesh (tpose_mesh_resolved is None), reverse-alignment
+    # is unnecessary — the skeleton is already in the correct space.
     global_similarity = None
-    if restore_space == "hml" and not skeleton_only:
+    if restore_space == "hml" and tpose_mesh_resolved is not None:
         hml_scale = scale_factor_val
         hml_orientation = np.asarray(orientation_quat_val, dtype=np.float64).reshape(-1)
         print(
@@ -887,11 +882,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--restore-space",
-        choices=("fbx", "hml"),
-        default="fbx",
+        choices=("native", "hml"),
+        default="native",
         help=(
-            "Output coordinate space. 'fbx' (default) aligns the animation to the "
-            "T-pose mesh's native orientation/scale/translation. 'hml' reverse-aligns "
+            "Output coordinate space. 'native' (default) aligns the animation to the "
+            "T-pose mesh's original orientation/scale/translation. 'hml' reverse-aligns "
             "the T-pose mesh onto the NPY so the GLB keeps the NPY's orientation, "
             "scale, and centered placement (like the corresponding processed BVH)."
         ),
@@ -922,8 +917,8 @@ def main() -> None:
         type=int,
         default=None,
         help=(
-            "When --resample-fps is set, loop (tile) the resampled clip so it has "
-            "at least this many frames. Default: no looping."
+            "When --resample-fps is set, time-stretch the resampled clip so it has "
+            "at least this many frames (interpolated, no looping). Default: no minimum."
         ),
     )
     parser.add_argument(
@@ -931,10 +926,11 @@ def main() -> None:
         action="store_true",
         default=False,
         help=(
-            "Export a skeleton-only GLB (no mesh, no skinning) in HML "
-            "preprocessed space.  No T-pose mesh required.  "
-            "Forces --restore-space to hml.  This is also the automatic "
-            "fallback when no --tpose-mesh is given."
+            "Export a skeleton-only GLB (no mesh, no skinning).  "
+            "Without --tpose-mesh, uses cond.npy metadata and forces "
+            "--restore-space to hml (the default automatic fallback).  "
+            "With --tpose-mesh, the mesh armature supplies rest rotations "
+            "and --restore-space is honoured."
         ),
     )
     parser.add_argument(
@@ -947,7 +943,6 @@ def main() -> None:
         ),
     )
 
-
     args = parser.parse_args()
 
     if not os.path.isfile(args.npy):
@@ -957,7 +952,7 @@ def main() -> None:
             f"Expected a .npy file, got: {args.npy}\n"
             f"  This tool restores preprocessed NPY motion features, not raw BVH/FBX files."
         )
-    if args.tpose_mesh is not None and not args.skeleton_only and not os.path.isfile(args.tpose_mesh):
+    if args.tpose_mesh is not None and not os.path.isfile(args.tpose_mesh):
         parser.error(f"T-pose mesh not found: {args.tpose_mesh}")
 
     if args.output_glb is None:
