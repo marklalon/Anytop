@@ -17,6 +17,12 @@ from data_loaders.truebones.truebones_utils.motion_labels import load_motion_met
 from data_loaders.truebones.truebones_utils.motion_process import (
     refresh_joint_metadata_in_cond_dict,
 )
+from data_loaders.truebones.truebones_utils.canonical_features import (
+    build_canonical_rest_feature,
+    canonical_to_physical_hml,
+    mark_canonical_cond_entry,
+    physical_hml_to_canonical,
+)
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
     assert_species_tags_cover,
@@ -68,6 +74,10 @@ def filter_motion_names_by_action_tags(
 ):
     requested_action_tags = set(parse_action_tags(raw_action_tags))
     if not requested_action_tags:
+        return motion_names
+
+    # "all" means no filtering — return every motion.
+    if "all" in requested_action_tags:
         return motion_names
 
     filtered = set()
@@ -167,16 +177,6 @@ def resample_motion_features(motion, target_num_frames, *, loop_terminal=False):
     return resampled.astype(motion.dtype, copy=False)
 
 
-def _resample_normalized_motion_features(motion, target_num_frames, mean, std, *, loop_terminal=False):
-    raw_motion = motion * std[None, :, :] + mean[None, :, :]
-    raw_resampled = resample_motion_features(
-        raw_motion,
-        target_num_frames,
-        loop_terminal=loop_terminal,
-    )
-    return np.nan_to_num((raw_resampled - mean[None, :, :]) / std[None, :, :]).astype(np.float32, copy=False)
-
-
 def _compute_global_energy_condition_np(motion: np.ndarray, n_joints: int) -> np.ndarray:
     # Global energy must describe the clip's physical cadence before we stretch
     # or squeeze it into the fixed training window. After resampling, the model
@@ -185,7 +185,7 @@ def _compute_global_energy_condition_np(motion: np.ndarray, n_joints: int) -> np
     # n_joints is explicit so the statistic stays aligned with the encoder's
     # valid_joints mask even if a future caller passes a joint-padded motion.
     if motion.ndim != 3 or motion.shape[-1] < 13:
-        raise ValueError(f"Expected normalized motion with shape (T, J, >=13), got {motion.shape}.")
+        raise ValueError(f"Expected motion with shape (T, J, >=13), got {motion.shape}.")
     n_joints = int(n_joints)
     if n_joints <= 0 or n_joints > motion.shape[1]:
         raise ValueError(
@@ -664,9 +664,7 @@ class MotionDataset(data.Dataset):
         self.min_length = length
     
     def inv_transform(self, x, y):
-        mean = self.cond_dict[y['object_type']]['mean']
-        std = self.cond_dict[y['object_type']]['std']
-        return x * std + mean
+        return canonical_to_physical_hml(x, self.cond_dict[y['object_type']])
 
     def _get_temporal_mask(self, target_num_frames, circular=False):
         if int(target_num_frames) == int(self.max_motion_length):
@@ -743,7 +741,7 @@ class MotionDataset(data.Dataset):
             and random.random() >= loop_cond_prob
         )
 
-        motion, m_length, object_type, parents, joints_graph_dist, joints_relations, rest_pose, offsets, joints_names_embs, kinematic_chains, mean, std = self._load_normalized_motion(data)
+        motion, m_length, object_type, parents, joints_graph_dist, joints_relations, rest_pose, offsets, joints_names_embs, kinematic_chains = self._load_physical_motion(data)
         ind = 0
         loop_applied = False
         loop_full_cycle = False
@@ -816,14 +814,16 @@ class MotionDataset(data.Dataset):
         global_energy_cond = _compute_global_energy_condition_np(motion, n_joints=int(motion.shape[1]))
 
         if m_length != target_num_frames:
-            motion = _resample_normalized_motion_features(
+            motion = resample_motion_features(
                 motion,
                 target_num_frames,
-                mean,
-                std,
                 loop_terminal=loop_condition_active,
             )
             m_length = target_num_frames
+
+        motion = np.nan_to_num(
+            physical_hml_to_canonical(motion, self.cond_dict[object_type])
+        ).astype(np.float32, copy=False)
 
         if loop_condition_active:
             loop_full_cycle = True
@@ -850,9 +850,14 @@ class MotionDataset(data.Dataset):
         temporal_mask = self._get_temporal_mask(target_num_frames, circular=circular_mask)
 
         if return_aug_info:
-            return motion, m_length, parents, rest_pose, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {
+            return motion, m_length, parents, rest_pose, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, self.opt.max_joints, motion_metadata, name, {
                 'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
                 'species_emb': self.cond_dict[object_type].get('species_emb'),
+                'rest_pose_physical': self.cond_dict[object_type]['rest_pose'],
+                'rest_pos_ric_hml': self.cond_dict[object_type]['rest_pos_ric_hml'],
+                'canonical_feature_mean': self.cond_dict[object_type].get('canonical_feature_mean'),
+                'canonical_feature_std': self.cond_dict[object_type].get('canonical_feature_std'),
+                'feature_space': self.cond_dict[object_type].get('feature_space', 'canonical_motion_v3'),
             }, {
                 'crop_start': int(ind),
                 'loop_applied': bool(loop_applied),
@@ -861,12 +866,17 @@ class MotionDataset(data.Dataset):
                 'playspeed_cond': float(playspeed_cond),
                 'loop_uncond': bool(loop_uncond),
             }
-        return motion, m_length, parents, rest_pose, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, mean, std, self.opt.max_joints, motion_metadata, name, {
+        return motion, m_length, parents, rest_pose, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, self.opt.max_joints, motion_metadata, name, {
             'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
             'species_emb': self.cond_dict[object_type].get('species_emb'),
+            'rest_pose_physical': self.cond_dict[object_type]['rest_pose'],
+            'rest_pos_ric_hml': self.cond_dict[object_type]['rest_pos_ric_hml'],
+            'canonical_feature_mean': self.cond_dict[object_type].get('canonical_feature_mean'),
+            'canonical_feature_std': self.cond_dict[object_type].get('canonical_feature_std'),
+            'feature_space': self.cond_dict[object_type].get('feature_space', 'canonical_motion_v3'),
         }
     
-    def _load_normalized_motion(self, data):
+    def _load_physical_motion(self, data):
         object_type = data['object_type']
         cond = self.cond_dict[object_type]
         motion_path = data['motion_path']
@@ -883,14 +893,10 @@ class MotionDataset(data.Dataset):
         else:
             motion = np.load(motion_path).astype(np.float32, copy=False)
 
-        motion = np.nan_to_num((motion - cond['mean'][None, :]) / cond['std_safe'][None, :]).astype(np.float32, copy=False)
-
         m_length = motion.shape[0]
-        mean = self.cond_dict[object_type]['mean']
-        std = self.cond_dict[object_type]['std_safe']
-        rest_pose = cond['rest_pose_normalized']
+        rest_pose = build_canonical_rest_feature(cond)
         offsets = cond['offsets']
-        return (motion, m_length, object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], rest_pose, offsets, cond['joints_names_embs'], cond['kinematic_chains'], mean, std)
+        return (motion, m_length, object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], rest_pose, offsets, cond['joints_names_embs'], cond['kinematic_chains'])
         
     def __len__(self):
         return len(self.name_list) - self.pointer
@@ -980,22 +986,15 @@ class Truebones(data.Dataset):
         assert_species_tags_cover(cond_dict.keys())
         cond_dict = ensure_joint_name_embeddings(cond_dict, cond_source=opt.cond_file)
         for object_type, cond in cond_dict.items():
-            mean = np.asarray(cond['mean'], dtype=np.float32)
-            raw_std = np.asarray(cond['std'], dtype=np.float32)
-            # Channels with ~zero variance are constant (e.g. the root joint's
-            # own 6D rotation under the own-rotation encoding). A 1e-6 epsilon is
-            # far too small a divisor there: it leaves the motion at 0 but blows
-            # up rest_pose_normalized = (rest_pose - mean) / std to ~1e6, which
-            # then drives the spatial-attention graph bias to ~1e5 and produces
-            # NaN gradients under bf16 autocast. Treat constant channels as
-            # unit-variance so they normalize to a sane O(1) range instead.
-            std_safe = np.where(raw_std < 1e-5, 1.0, raw_std + 1e-6).astype(np.float32)
-            cond['mean'] = mean
-            cond['std'] = np.asarray(cond['std'], dtype=np.float32)
-            cond['std_safe'] = std_safe
-            cond['rest_pose_normalized'] = np.nan_to_num((np.asarray(cond['rest_pose'], dtype=np.float32) - mean) / std_safe).astype(np.float32, copy=False)
+            mark_canonical_cond_entry(cond)
+            if cond.get('canonical_feature_mean') is None or cond.get('canonical_feature_std') is None:
+                raise RuntimeError(
+                    f"cond entry '{object_type}' is missing canonical_feature_mean/std. "
+                    "Regenerate cond.npy (python tools/regenerate_dataset_artifacts.py) to "
+                    "compute the per-object_subset canonical standardization statistics."
+                )
             cond['joint_mask_candidate_roots'] = _build_joint_mask_candidate_roots(cond)
-            
+
         motion_metadata_lookup = load_motion_metadata(opt.data_root)
         self.split_file = pjoin(opt.data_root, f'{split}.txt') if split != ALL_SPLIT_NAME else ''
         allowed_motion_names = load_motion_names_for_split_with_action_tags(

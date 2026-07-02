@@ -122,8 +122,12 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
                 "lengths": torch.full((batch_size,), n_frames, dtype=torch.int64),
                 "n_joints": torch.full((batch_size,), n_joints, dtype=torch.int64),
                 "joints_padding_mask": torch.ones(batch_size, 1, 1, n_joints + 1, n_joints + 1, dtype=torch.float32),
-                "mean": torch.zeros(batch_size, n_joints, n_feats, dtype=torch.float32),
-                "std": torch.ones(batch_size, n_joints, n_feats, dtype=torch.float32),
+                # Canonical decode (canonical_to_physical_hml) needs rest-pose geometry
+                # and the global standardization stats (identity here so the decoded
+                # physical space equals the L-normalized space the tests reason about).
+                "rest_pos_ric_hml": torch.arange(n_joints * 3, dtype=torch.float32).reshape(n_joints, 3),
+                "canonical_feature_mean": torch.zeros(n_feats, dtype=torch.float32),
+                "canonical_feature_std": torch.ones(n_feats, dtype=torch.float32),
             }
         }
 
@@ -300,9 +304,15 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             output_mode="zero",
         )
         # Position profile per frame (broadcast across the 3 position channels):
-        # [0, 0, 1, 1, 0, 0]. With a zero prediction, the residual acceleration
-        # at interior frames 1..4 is |target acc| = 1 everywhere, so the
-        # seam-band weighted mean squared acceleration error equals 1.0.
+        # [0, 0, 1, 1, 0, 0]. With a zero prediction, the canonical residual
+        # acceleration at interior frames 1..4 is 1 everywhere. The seam loss is
+        # measured in PHYSICAL space, so the position channel is first decoded:
+        # physical = std_pos * L * canonical (+ rest/mean, which cancel under the
+        # acceleration). No global stats are set on this test's model_kwargs, so
+        # std_pos == 1, and the single-joint rest pose is degenerate (L falls back
+        # to 1.0), making the decoded acceleration 1 and the seam-band weighted
+        # mean squared acceleration error equal to 1.0.
+        expected_seam = 1.0
         x_start = torch.zeros(batch_size, n_joints, n_feats, n_frames, dtype=torch.float32)
         x_start[:, :, 0:3, 2:4] = 1.0
         t = torch.tensor([1], dtype=torch.int64)
@@ -317,10 +327,10 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         )
 
         self.assertIn("temporal_span_seam_loss", terms)
-        self.assertAlmostEqual(float(terms["temporal_span_seam_loss"].item()), 1.0, places=5)
+        self.assertAlmostEqual(float(terms["temporal_span_seam_loss"].item()), expected_seam, places=5)
         self.assertAlmostEqual(
             float(terms["loss"].item()),
-            float(terms["l_simple"].item()) + 0.75 * 1.0,
+            float(terms["l_simple"].item()) + 0.75 * expected_seam,
             places=5,
         )
 

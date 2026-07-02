@@ -2,7 +2,6 @@ import json
 import os
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -14,7 +13,6 @@ from data_loaders.truebones.truebones_utils import dataset_pipeline as dataset_p
 from data_loaders.truebones.truebones_utils import motion_process as motion_process_mod
 
 from tools import regenerate_dataset_artifacts as regenerate_dataset_artifacts_module
-from tools import process_new_skeleton as process_new_skeleton_module
 import preprocess_and_validate as preprocess_and_validate_module
 
 
@@ -24,6 +22,7 @@ def _make_cond_entry(object_type: str) -> dict[str, object]:
         "joints_names": ["Root", "Tail"],
         "parents": np.array([-1, 0], dtype=np.int64),
         "offsets": np.zeros((2, 3), dtype=np.float32),
+        "rest_pose": np.zeros((2, 13), dtype=np.float32),
     }
 
 
@@ -628,29 +627,18 @@ def test_find_new_source_files_omits_fully_processed_objects(monkeypatch, tmp_pa
     assert dataset_pipeline_mod.find_new_source_files(['Cat'], str(dataset_dir), str(raw)) == {}
 
 
-def test_recompute_object_stats_scopes_to_only_objects(tmp_path):
-    motions = tmp_path / 'motions'
-    motions.mkdir()
-    cat = motions / 'Cat_Walk_1.npy'
-    dog = motions / 'Dog_Idle_1.npy'
-    # Motion tensors are (frames, joints, 13); get_mean_std indexes the 13-feature layout.
-    np.save(cat, np.ones((4, 2, 13), dtype=np.float32))
-    np.save(dog, np.ones((4, 2, 13), dtype=np.float32) * 5.0)
-
-    dog_sentinel = np.array([[222.0]])
+def test_mark_object_feature_spaces():
     rebuilt = {
-        'Cat': {'mean': np.array([[111.0]]), 'std': np.array([[111.0]])},
-        'Dog': {'mean': dog_sentinel.copy(), 'std': dog_sentinel.copy()},
+        'Cat': _make_cond_entry('Cat'),
+        'Dog': _make_cond_entry('Dog'),
     }
 
-    regenerate_dataset_artifacts_module._recompute_object_stats(
-        rebuilt, [cat, dog], only_objects={'Cat'}
-    )
+    regenerate_dataset_artifacts_module._mark_object_feature_spaces(rebuilt)
 
-    # Cat was recomputed over its clip (mean now has the real (J, feat) shape) ...
-    assert rebuilt['Cat']['mean'].shape == (2, 13)
-    # ... while untouched Dog keeps its carried-forward sentinel untouched.
-    assert np.array_equal(rebuilt['Dog']['mean'], dog_sentinel)
+    for object_type in ('Cat', 'Dog'):
+        assert rebuilt[object_type]['feature_space'] == 'canonical_motion_v3'
+        assert rebuilt[object_type]['physical_feature_space'] == 'hml_like_v_current'
+        assert rebuilt[object_type]['rest_pos_ric_hml'].shape == (2, 3)
 
 
 def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypatch, tmp_path):
@@ -780,286 +768,54 @@ def test_process_skeleton_retarget_branch_writes_translation_root_metadata(monke
     assert motion_metadata['Dragon_RunLoop_001.npy']['motion_source'] == 'retarget'
 
 
-def test_update_anim_dir_preserves_other_objects(monkeypatch, tmp_path):
-    dataset_dir = tmp_path / 'dataset'
-    motions_dir = dataset_dir / 'motions'
-    bvhs_dir = dataset_dir / 'bvhs'
-    motions_dir.mkdir(parents=True)
-    bvhs_dir.mkdir(parents=True)
+def _cond_entry_with_stats(object_type, mean_fill, std_fill):
+    entry = _make_cond_entry(object_type)
+    entry["canonical_feature_mean"] = np.full((13,), mean_fill, dtype=np.float32)
+    entry["canonical_feature_std"] = np.full((13,), std_fill, dtype=np.float32)
+    return entry
 
-    np.save(dataset_dir / 'cond.npy', {
-        'Cat': _make_cond_entry('Cat'),
-        'Dog': _make_cond_entry('Dog'),
-    })
-    np.save(motions_dir / 'Cat_Run_001.npy', np.zeros((1, 1, 1), dtype=np.float32))
-    np.save(motions_dir / 'Dog_Run_001.npy', np.zeros((1, 1, 1), dtype=np.float32))
-    (bvhs_dir / 'Cat_Run_001.bvh').write_text('cat', encoding='utf-8')
-    (bvhs_dir / 'Dog_Run_001.bvh').write_text('dog', encoding='utf-8')
-    write_motion_metadata(
-        dataset_dir,
-        {
-            'Cat_Run_001.npy': {'object_type': 'Cat', 'source_fbx_path': 'cat.fbx'},
-            'Dog_Run_001.npy': {'object_type': 'Dog', 'source_fbx_path': 'dog.fbx'},
-        },
-        total_clips=2,
-    )
-    _write_action_tags(
-        dataset_dir,
-        {
-            'Cat_Run_001.npy': ['locomotion'],
-            'Dog_Run_001.npy': ['locomotion'],
-            'Cat_New_002.npy': ['locomotion'],
-        },
+
+def test_merge_inherits_canonical_stats_from_same_object_subset(tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir(parents=True)
+    # Existing quadruped (Cat) carries stats; add a new quadruped (Dog) without.
+    np.save(dataset_dir / "cond.npy", {"Cat": _cond_entry_with_stats("Cat", 0.5, 2.0)})
+
+    dataset_pipeline_mod._merge_object_into_cond(
+        str(dataset_dir), "Dog", _make_cond_entry("Dog")
     )
 
-    def fake_process_object(object_name, *args, **kwargs):
-        np.save(motions_dir / 'Cat_New_002.npy', np.zeros((1, 1, 1), dtype=np.float32))
-        (bvhs_dir / 'Cat_New_002.bvh').write_text('new', encoding='utf-8')
-        return 0, 0, 0, _make_cond_entry(object_name), {
-            'Cat_New_002.npy': {
-                'object_type': object_name,
-                'source_fbx_path': 'cat-new.fbx',
-                'motion_source': 'anim_dir',
-            }
-        }, None
-
-    monkeypatch.setattr(dataset_pipeline_mod, 'process_object', fake_process_object)
-
-    dataset_pipeline_mod._update_anim_dir('Cat', None, str(dataset_dir), 'tpose', 'anim_dir')
-
-    assert sorted(path.name for path in motions_dir.glob('*.npy')) == ['Cat_New_002.npy', 'Cat_Run_001.npy', 'Dog_Run_001.npy']
-    assert sorted(path.name for path in bvhs_dir.glob('*.bvh')) == ['Cat_New_002.bvh', 'Cat_Run_001.bvh', 'Dog_Run_001.bvh']
-
-    motion_metadata = load_motion_metadata(dataset_dir)
-    assert sorted(motion_metadata) == ['Cat_New_002.npy', 'Cat_Run_001.npy', 'Dog_Run_001.npy']
-    cond = dict(np.load(dataset_dir / 'cond.npy', allow_pickle=True).item())
-    assert sorted(cond) == ['Cat', 'Dog']
+    merged = dict(np.load(dataset_dir / "cond.npy", allow_pickle=True).item())
+    np.testing.assert_allclose(merged["Dog"]["canonical_feature_mean"], np.full((13,), 0.5, dtype=np.float32))
+    np.testing.assert_allclose(merged["Dog"]["canonical_feature_std"], np.full((13,), 2.0, dtype=np.float32))
 
 
-def test_update_anim_dir_replaces_only_matching_sources(monkeypatch, tmp_path):
-    dataset_dir = tmp_path / 'dataset'
-    motions_dir = dataset_dir / 'motions'
-    bvhs_dir = dataset_dir / 'bvhs'
-    motions_dir.mkdir(parents=True)
-    bvhs_dir.mkdir(parents=True)
+def test_merge_fast_fails_when_no_same_object_subset_donor(tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir(parents=True)
+    # Only a quadruped carries stats; a new winged species (Dragon) has no
+    # same-object_subset donor, so borrowing would be OOD -> fast-fail.
+    np.save(dataset_dir / "cond.npy", {"Cat": _cond_entry_with_stats("Cat", 0.5, 2.0)})
 
-    np.save(dataset_dir / 'cond.npy', {'Dragon': _make_cond_entry('Dragon')})
-    np.save(motions_dir / 'Dragon_A_001.npy', np.zeros((1, 1, 1), dtype=np.float32))
-    np.save(motions_dir / 'Dragon_B_001.npy', np.zeros((1, 1, 1), dtype=np.float32))
-    (bvhs_dir / 'Dragon_A_001.bvh').write_text('A', encoding='utf-8')
-    (bvhs_dir / 'Dragon_B_001.bvh').write_text('B', encoding='utf-8')
-    write_motion_metadata(
-        dataset_dir,
-        {
-            'Dragon_A_001.npy': {
-                'object_type': 'Dragon',
-                'source_fbx_path': str((tmp_path / 'A.fbx').resolve()),
-                'motion_source': 'anim_dir',
-            },
-            'Dragon_B_001.npy': {
-                'object_type': 'Dragon',
-                'source_fbx_path': str((tmp_path / 'B.fbx').resolve()),
-                'motion_source': 'anim_dir',
-            },
-        },
-        total_clips=2,
-    )
-    _write_action_tags(
-        dataset_dir,
-        {
-            'Dragon_A_001.npy': ['locomotion'],
-            'Dragon_B_001.npy': ['locomotion'],
-            'Dragon_B_002.npy': ['locomotion'],
-            'Dragon_C_003.npy': ['locomotion'],
-        },
+    with pytest.raises(ValueError, match="winged"):
+        dataset_pipeline_mod._merge_object_into_cond(
+            str(dataset_dir), "Dragon", _make_cond_entry("Dragon")
+        )
+
+
+def test_merge_update_preserves_species_own_prior_stats(tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir(parents=True)
+    # Single-species dataset: rebuilding Dragon's cond without stats must still
+    # preserve its own prior stats (no sibling to inherit from).
+    np.save(dataset_dir / "cond.npy", {"Dragon": _cond_entry_with_stats("Dragon", 0.3, 1.5)})
+
+    dataset_pipeline_mod._merge_object_into_cond(
+        str(dataset_dir), "Dragon", _make_cond_entry("Dragon")
     )
 
-    def fake_process_object(object_name, *args, **kwargs):
-        np.save(motions_dir / 'Dragon_B_002.npy', np.zeros((1, 1, 1), dtype=np.float32))
-        np.save(motions_dir / 'Dragon_C_003.npy', np.zeros((1, 1, 1), dtype=np.float32))
-        (bvhs_dir / 'Dragon_B_002.bvh').write_text('B2', encoding='utf-8')
-        (bvhs_dir / 'Dragon_C_003.bvh').write_text('C', encoding='utf-8')
-        return 0, 0, 0, _make_cond_entry(object_name), {
-            'Dragon_B_002.npy': {
-                'object_type': object_name,
-                'source_fbx_path': str((tmp_path / 'B.fbx').resolve()),
-                'motion_source': 'anim_dir',
-            },
-            'Dragon_C_003.npy': {
-                'object_type': object_name,
-                'source_fbx_path': str((tmp_path / 'C.fbx').resolve()),
-                'motion_source': 'anim_dir',
-            },
-        }, None
-
-    monkeypatch.setattr(dataset_pipeline_mod, 'process_object', fake_process_object)
-
-    dataset_pipeline_mod._update_anim_dir('Dragon', None, str(dataset_dir), 'tpose', 'anim_dir')
-
-    assert sorted(path.name for path in motions_dir.glob('*.npy')) == [
-        'Dragon_A_001.npy',
-        'Dragon_B_002.npy',
-        'Dragon_C_003.npy',
-    ]
-    assert sorted(path.name for path in bvhs_dir.glob('*.bvh')) == [
-        'Dragon_A_001.bvh',
-        'Dragon_B_002.bvh',
-        'Dragon_C_003.bvh',
-    ]
-
-    motion_metadata = load_motion_metadata(dataset_dir)
-    assert sorted(motion_metadata) == [
-        'Dragon_A_001.npy',
-        'Dragon_B_002.npy',
-        'Dragon_C_003.npy',
-    ]
+    merged = dict(np.load(dataset_dir / "cond.npy", allow_pickle=True).item())
+    np.testing.assert_allclose(merged["Dragon"]["canonical_feature_mean"], np.full((13,), 0.3, dtype=np.float32))
+    np.testing.assert_allclose(merged["Dragon"]["canonical_feature_std"], np.full((13,), 1.5, dtype=np.float32))
 
 
-def test_update_anim_dir_full_rerun_replaces_old_versions(monkeypatch, tmp_path):
-    dataset_dir = tmp_path / 'dataset'
-    motions_dir = dataset_dir / 'motions'
-    bvhs_dir = dataset_dir / 'bvhs'
-    motions_dir.mkdir(parents=True)
-    bvhs_dir.mkdir(parents=True)
-
-    anim_dir = tmp_path / 'anim_dir'
-    anim_dir.mkdir()
-    source_a = str((anim_dir / 'A.fbx').resolve())
-    source_b = str((anim_dir / 'B.fbx').resolve())
-    source_c = str((anim_dir / 'C.fbx').resolve())
-    for source_path in (source_a, source_b, source_c):
-        Path(source_path).write_text('fbx', encoding='utf-8')
-
-    np.save(dataset_dir / 'cond.npy', {'Dragon': _make_cond_entry('Dragon')})
-    np.save(motions_dir / 'Dragon_A_001.npy', np.zeros((1, 1, 1), dtype=np.float32))
-    np.save(motions_dir / 'Dragon_B_001.npy', np.zeros((1, 1, 1), dtype=np.float32))
-    (bvhs_dir / 'Dragon_A_001.bvh').write_text('A-old', encoding='utf-8')
-    (bvhs_dir / 'Dragon_B_001.bvh').write_text('B-old', encoding='utf-8')
-    write_motion_metadata(
-        dataset_dir,
-        {
-            'Dragon_A_001.npy': {
-                'object_type': 'Dragon',
-                'source_fbx_path': source_a,
-                'motion_source': 'anim_dir',
-            },
-            'Dragon_B_001.npy': {
-                'object_type': 'Dragon',
-                'source_fbx_path': source_b,
-                'motion_source': 'anim_dir',
-            },
-        },
-        total_clips=2,
-    )
-    _write_action_tags(
-        dataset_dir,
-        {
-            'Dragon_A_001.npy': ['locomotion'],
-            'Dragon_B_001.npy': ['locomotion'],
-            'Dragon_A_003.npy': ['locomotion'],
-            'Dragon_B_004.npy': ['locomotion'],
-            'Dragon_C_005.npy': ['locomotion'],
-        },
-    )
-
-    def fake_process_object(object_name, *args, **kwargs):
-        np.save(motions_dir / 'Dragon_A_003.npy', np.zeros((1, 1, 1), dtype=np.float32))
-        np.save(motions_dir / 'Dragon_B_004.npy', np.zeros((1, 1, 1), dtype=np.float32))
-        np.save(motions_dir / 'Dragon_C_005.npy', np.zeros((1, 1, 1), dtype=np.float32))
-        (bvhs_dir / 'Dragon_A_003.bvh').write_text('A-new', encoding='utf-8')
-        (bvhs_dir / 'Dragon_B_004.bvh').write_text('B-new', encoding='utf-8')
-        (bvhs_dir / 'Dragon_C_005.bvh').write_text('C-new', encoding='utf-8')
-        return 0, 0, 0, _make_cond_entry(object_name), {
-            'Dragon_A_003.npy': {
-                'object_type': object_name,
-                'source_fbx_path': source_a,
-                'motion_source': 'anim_dir',
-            },
-            'Dragon_B_004.npy': {
-                'object_type': object_name,
-                'source_fbx_path': source_b,
-                'motion_source': 'anim_dir',
-            },
-            'Dragon_C_005.npy': {
-                'object_type': object_name,
-                'source_fbx_path': source_c,
-                'motion_source': 'anim_dir',
-            },
-        }, None
-
-    monkeypatch.setattr(dataset_pipeline_mod, 'process_object', fake_process_object)
-
-    dataset_pipeline_mod._update_anim_dir('Dragon', None, str(dataset_dir), 'tpose', str(anim_dir))
-
-    assert sorted(path.name for path in motions_dir.glob('*.npy')) == [
-        'Dragon_A_003.npy',
-        'Dragon_B_004.npy',
-        'Dragon_C_005.npy',
-    ]
-    assert sorted(path.name for path in bvhs_dir.glob('*.bvh')) == [
-        'Dragon_A_003.bvh',
-        'Dragon_B_004.bvh',
-        'Dragon_C_005.bvh',
-    ]
-
-    motion_metadata = load_motion_metadata(dataset_dir)
-    assert sorted(motion_metadata) == [
-        'Dragon_A_003.npy',
-        'Dragon_B_004.npy',
-        'Dragon_C_005.npy',
-    ]
-
-
-def test_update_anim_dir_rejects_untracked_target_motions(monkeypatch, tmp_path):
-    dataset_dir = tmp_path / 'dataset'
-    motions_dir = dataset_dir / 'motions'
-    bvhs_dir = dataset_dir / 'bvhs'
-    motions_dir.mkdir(parents=True)
-    bvhs_dir.mkdir(parents=True)
-
-    np.save(motions_dir / 'Cat_Old_001.npy', np.zeros((1, 1, 1), dtype=np.float32))
-    (bvhs_dir / 'Cat_Old_001.bvh').write_text('old', encoding='utf-8')
-
-    def fail_process_object(*args, **kwargs):
-        raise AssertionError('process_object should not run when update metadata is unsafe')
-
-    monkeypatch.setattr(dataset_pipeline_mod, 'process_object', fail_process_object)
-
-    with pytest.raises(RuntimeError, match='missing from motion_metadata.json'):
-        dataset_pipeline_mod._update_anim_dir('Cat', None, str(dataset_dir), 'tpose', 'anim_dir')
-
-    assert (motions_dir / 'Cat_Old_001.npy').exists()
-    assert (bvhs_dir / 'Cat_Old_001.bvh').exists()
-
-
-def test_process_new_skeleton_rejects_unsafe_anim_dir_update(monkeypatch, tmp_path):
-    dataset_dir = tmp_path / 'dataset'
-    motions_dir = dataset_dir / 'motions'
-    motions_dir.mkdir(parents=True)
-
-    np.save(dataset_dir / 'cond.npy', {'Cat': _make_cond_entry('Cat')})
-    np.save(motions_dir / 'Cat_Old_001.npy', np.zeros((1, 1, 1), dtype=np.float32))
-
-    args = SimpleNamespace(
-        save_dir=str(dataset_dir),
-        update=True,
-        tpos_path='dragon.glb',
-        anim_dir='anim_dir',
-        object_type='Cat',
-        face_joints_names=None,
-        retarget_top_k=None,
-        donor_skeletons=None,
-        training_cond_path='unused',
-        crop_enabled=False,
-        species_tags=None,
-    )
-
-    monkeypatch.setattr(process_new_skeleton_module, 'process_new_skeleton_args', lambda: args)
-    monkeypatch.setattr(
-        process_new_skeleton_module,
-        'process_skeleton',
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('process_skeleton should not run')),
-    )
-
-    with pytest.raises(SystemExit, match='motion_metadata.json'):
-        process_new_skeleton_module.main()

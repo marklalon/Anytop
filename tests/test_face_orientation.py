@@ -55,6 +55,44 @@ class FaceOrientationChainForwardTest(unittest.TestCase):
             '[WARN] FallbackBug: no head/neck forward reference was found; falling back to tail->spine body-axis orientation.'
         )
 
+    def test_degenerate_neck_reference_skipped_in_favor_of_tail_spine(self):
+        # A zero-length 'Neck' coincident with the hips (e.g. Scorpion's
+        # placeholder Bip01_Neck1) carries no directional info. With rest
+        # positions supplied it must be skipped so the forward reference falls
+        # through to the reliable tail->spine body axis instead of silently
+        # reversing the facing.
+        joint_names = [
+            'Hips',
+            'Bip01_Neck1',
+            'Bip01_Spine',
+            'Bip01_Pelvis',
+            'Bip01_Tail',
+            'Bip01_Tail1',
+        ]
+        parents = np.array([-1, 0, 0, 2, 3, 4], dtype=np.int64)
+        rest_positions = np.array([[
+            [0.0, 0.0, 0.0],   # Hips
+            [0.0, 0.0, 0.0],   # Neck1 coincident with Hips -> degenerate
+            [0.0, 0.0, -0.1],  # Spine (toward front)
+            [0.0, 0.0, 0.1],   # Pelvis
+            [0.0, 0.0, 0.3],   # Tail
+            [0.0, 0.0, 0.5],   # Tail1
+        ]], dtype=np.float64)
+
+        # Without positions the degenerate neck is (wrongly) selected.
+        forward_no_pos, base_no_pos = resolve_forward_reference_joints(
+            joint_names, parents, object_type='DegenerateNeck',
+        )
+        self.assertEqual(forward_no_pos, 1)
+        self.assertIsNone(base_no_pos)
+
+        # With positions the neck is skipped and the tail->spine axis is used.
+        forward_idx, base_idx = resolve_forward_reference_joints(
+            joint_names, parents, object_type='DegenerateNeck', rest_positions=rest_positions,
+        )
+        self.assertEqual(forward_idx, 2)   # Bip01_Spine
+        self.assertEqual(base_idx, 4)      # Bip01_Tail
+
     def test_tail_spine_reference_axis_produces_forward_candidate(self):
         joints = np.zeros((1, 63, 3), dtype=np.float64)
         joints[:, 3] = np.array([0.0, 0.0, 0.0], dtype=np.float64)

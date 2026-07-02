@@ -28,6 +28,10 @@ from data_loaders.truebones.data.dataset import (
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.motion_process import infer_translation_root_index_from_features
+from data_loaders.truebones.truebones_utils.canonical_features import (
+    canonical_to_physical_hml,
+    physical_hml_to_canonical,
+)
 from model.anytop import GlobalEnergyExtractor
 
 
@@ -55,7 +59,7 @@ def assert_close(name: str, actual: np.ndarray, expected: np.ndarray, atol: floa
 
 
 def _normalize_motion(raw: np.ndarray, cond: dict[str, np.ndarray]) -> np.ndarray:
-    return np.nan_to_num((raw - cond["mean"][None, :]) / cond["std_safe"][None, :]).astype(np.float32, copy=False)
+    return np.nan_to_num(physical_hml_to_canonical(raw, cond)).astype(np.float32, copy=False)
 
 
 def _expected_resampled_velocity(raw: np.ndarray, target_frames: int, *, loop_terminal: bool = False) -> np.ndarray:
@@ -217,7 +221,8 @@ def test_loop_padding_updates_effective_length() -> None:
     motion_dataset = dataset.motion_dataset
     with patch.object(motion_dataset, '_sample_loop_tile_count', return_value=1):
         sample = motion_dataset.prepare_sample_by_name(LOOP_MOTION, target_num_frames=NUM_FRAMES, loop_offset=0)
-    motion, m_length, *_rest, mean, std, _max_joints, motion_metadata, name, _joint_mask_dict = sample
+    motion, m_length = sample[0], sample[1]
+    motion_metadata, name = sample[12], sample[13]
 
     assert name == LOOP_MOTION, f"unexpected sample: {name}"
     assert bool(motion_metadata.get("is_loop", False)), "loop regression sample is no longer marked loop"
@@ -253,7 +258,8 @@ def test_loop_padding_can_tile_multiple_cycles_before_resample() -> None:
 
     with patch.object(motion_dataset, '_sample_loop_tile_count', return_value=2):
         sample = motion_dataset.prepare_sample_by_name(LOOP_MOTION, target_num_frames=NUM_FRAMES, loop_offset=0)
-    motion, m_length, *_rest, mean, std, _max_joints, motion_metadata, name, _joint_mask_dict = sample
+    motion, m_length = sample[0], sample[1]
+    motion_metadata, name = sample[12], sample[13]
 
     expected = _resample_raw_then_normalize(_tile_loop_motion(raw, 2), cond, NUM_FRAMES, loop_terminal=True)
 
@@ -288,11 +294,11 @@ def test_loop_padding_random_offset_wraps_without_truncation() -> None:
             target_num_frames=NUM_FRAMES,
             loop_offset=offset,
         )
-    motion, m_length, *_rest, mean, std, _max_joints, _motion_metadata, _name, _joint_mask_dict = sample
+    motion, m_length = sample[0], sample[1]
     rolled_raw = _circular_roll_motion(raw, offset)
     expected_raw = resample_motion_features(rolled_raw, NUM_FRAMES, loop_terminal=True)
     expected = _normalize_motion(expected_raw, cond)
-    raw_motion = motion * std[None, :, :] + mean[None, :, :]
+    raw_motion = canonical_to_physical_hml(motion, cond)
     assert motion.shape[0] == NUM_FRAMES, f"expected random-offset loop fill to keep {NUM_FRAMES} frames"
     assert m_length == NUM_FRAMES, f"effective length should remain {NUM_FRAMES}, got {m_length}"
     assert_close("loop-filled motion with wraparound offset", motion, expected, atol=3e-5)

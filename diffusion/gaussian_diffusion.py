@@ -18,6 +18,7 @@ from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood, geodesic_distance
 from model.anytop import GlobalEnergyExtractor
 from utils.rotation_conversions import rotation_6d_to_matrix_safe
+from data_loaders.truebones.truebones_utils.canonical_features import canonical_to_physical_hml
 
 
 _EXTRACT_TENSOR_CACHE = {}
@@ -166,6 +167,7 @@ class GaussianDiffusion:
         lambda_geo=0.,
         lambda_vel=0.,
         lambda_loop_wrap=0.,
+        lambda_bone=0.,
         temporal_span_seam_loss_weight=0.0,
         temporal_span_seam_width=0,
     ):
@@ -176,10 +178,13 @@ class GaussianDiffusion:
         self.lambda_geo = lambda_geo
         self.lambda_vel = lambda_vel
         self.lambda_loop_wrap = float(lambda_loop_wrap)
+        self.lambda_bone = float(lambda_bone)
         self.temporal_span_seam_loss_weight = float(temporal_span_seam_loss_weight)
         self.temporal_span_seam_width = int(temporal_span_seam_width)
         if self.lambda_loop_wrap < 0.0:
             raise ValueError(f"lambda_loop_wrap must be >= 0, got {self.lambda_loop_wrap}")
+        if self.lambda_bone < 0.0:
+            raise ValueError(f"lambda_bone must be >= 0, got {self.lambda_bone}")
         if self.temporal_span_seam_loss_weight < 0.0:
             raise ValueError(
                 "temporal_span_seam_loss_weight must be >= 0, got "
@@ -454,6 +459,85 @@ class GaussianDiffusion:
         valid = valid_joints.expand(-1, -1, -1, loss.shape[-1])
         loss_val = (loss * valid).sum() / (valid.sum() * 3).clamp(min=1)
         return loss_val
+
+    def _masked_smooth_l1(self, x, mask, beta=0.1):
+        """Smooth-L1 (Huber) of ``x`` averaged over entries where ``mask`` > 0.
+
+        ``beta`` is small so the relative bone-length errors (typically << 1)
+        stay in the quadratic regime while a few gross outliers are linearized
+        (robust). ``mask`` and ``x`` broadcast to the same shape.
+        """
+        absx = x.abs()
+        huber = th.where(absx < beta, 0.5 * x * x / beta, absx - 0.5 * beta)
+        denom = mask.sum().clamp(min=1.0)
+        return (huber * mask).sum() / denom
+
+    def bone_length_consistency_loss(self, pred_physical, target_physical, spat_mask, y):
+        """Target-relative, rest-length-normalized bone-length loss (V1).
+
+        Penalizes each predicted bone length's deviation from the GROUND-TRUTH
+        bone length at the same frame, normalized by the rest bone length.
+
+        Why normalized by rest length: ``l_simple`` weights every joint/axis
+        uniformly in standardized space, so a fixed position error is a tiny
+        fraction of a long proximal bone but a huge fraction of a short distal
+        one -- exactly why distal bones stretch on novel skeletons. Dividing the
+        length error by the rest bone length gives short/distal bones
+        proportionally larger gradient, the signal ``l_simple`` structurally
+        omits (and the reason a plain absolute bone L2 was redundant with it).
+
+        Why the target is GT (not rest): anchoring on the ground-truth per-frame
+        length preserves genuinely animated bone-length deformation -- the loss
+        only tracks GT's own length trajectory, so species that legitimately
+        stretch a bone are not fought.
+
+        Returns a scalar loss.
+        """
+        bs, max_joints, _n_feats, n_frames = pred_physical.shape
+        device = pred_physical.device
+        parents_list = (y or {}).get('parents')
+        if parents_list is None:
+            raise ValueError(
+                "bone_length_consistency_loss requires y['parents'] (per-sample "
+                "parent arrays from the collate); none were provided."
+            )
+        rest_pose = (y or {}).get('rest_pose')
+        if rest_pose is None:
+            raise ValueError(
+                "bone_length_consistency_loss requires y['rest_pose'] (padded "
+                "rest-pose features) to normalize by rest bone length."
+            )
+
+        # Padded [bs, max_joints] parent-index tensor + per-joint bone validity
+        # (False for the root, which has no parent bone). Small python loop over
+        # the batch; this loss runs eager, so the per-step cost is negligible.
+        parents_idx = th.zeros(bs, max_joints, dtype=th.long, device=device)
+        parent_is_bone = th.zeros(bs, max_joints, dtype=th.bool, device=device)
+        for b, p in enumerate(parents_list):
+            p_t = th.as_tensor(np.asarray(p).reshape(-1), dtype=th.long, device=device)
+            n = min(int(p_t.numel()), max_joints)
+            parents_idx[b, :n] = p_t[:n].clamp(min=0)
+            parent_is_bone[b, :n] = p_t[:n] >= 0
+
+        pos_pred = pred_physical[:, :, 0:3, :]                 # [bs, J, 3, T]
+        pos_tgt = target_physical[:, :, 0:3, :]
+        rest_pos = rest_pose[:, :, 0:3].to(device=device, dtype=pos_pred.dtype)  # [bs, J, 3]
+
+        gather_bt = parents_idx.view(bs, max_joints, 1, 1).expand(-1, -1, 3, n_frames)
+        len_pred = (pos_pred - th.gather(pos_pred, 1, gather_bt)).norm(dim=2)   # [bs, J, T]
+        len_tgt = (pos_tgt - th.gather(pos_tgt, 1, gather_bt)).norm(dim=2)
+        gather_r = parents_idx.view(bs, max_joints, 1).expand(-1, -1, 3)
+        rest_len = (rest_pos - th.gather(rest_pos, 1, gather_r)).norm(dim=2)    # [bs, J]
+
+        # Valid bones: real (unpadded) joint, has a parent, and non-degenerate
+        # rest length (skip zero-length bones, e.g. zero-offset leaves).
+        joint_valid = spat_mask.float().transpose(1, 3).reshape(bs, max_joints) > 0.5
+        bone_valid = joint_valid & parent_is_bone & (rest_len > 1e-4)          # [bs, J]
+        inv_rest = (1.0 / (rest_len + 1e-4)).unsqueeze(-1)                     # [bs, J, 1]
+
+        rel = (len_pred - len_tgt) * inv_rest                                 # [bs, J, T]
+        valid_bt = bone_valid.unsqueeze(-1).float().expand(-1, -1, n_frames)
+        return self._masked_smooth_l1(rel, valid_bt)
 
     def _coerce_bool_batch(self, value, batch_size, device, default=False):
         if value is None:
@@ -1573,8 +1657,6 @@ class GaussianDiffusion:
         lengths = model_kwargs['y']['lengths']
         actual_joints = model_kwargs['y']['n_joints']
         joints_padding_mask = model_kwargs['y']['joints_padding_mask'][:, :, :, 1, 1:]
-        mean = model_kwargs['y']['mean'][..., None]
-        std = model_kwargs['y']['std'][..., None]
 
         if model_kwargs is None:
             model_kwargs = {}
@@ -1644,22 +1726,21 @@ class GaussianDiffusion:
                 ModelMeanType.EPSILON: noise,
             }[self.model_mean_type]
             assert model_output.shape == target.shape == x_start.shape  # [bs, njoints, nfeats, nframes]
-            with self._fp32_math_context(model_output, target, mean, std):
+            with self._fp32_math_context(model_output, target):
                 target_fp32 = target.float()
                 model_output_fp32 = model_output.float()
                 joints_padding_mask_fp32 = joints_padding_mask.float()
                 lengths_fp32 = lengths.float()
                 actual_joints_fp32 = actual_joints.float()
-                mean_fp32 = mean.float()
-                std_fp32 = std.float()
 
                 terms["l_simple"] = self.spatial_masked_l2(
                     target_fp32, model_output_fp32, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
                 )
                 terms["loss"] = terms["l_simple"].clone()
 
-                target_denorm = (target_fp32 * std_fp32) + mean_fp32
-                model_output_denorm = (model_output_fp32 * std_fp32) + mean_fp32
+                y_for_decode = (model_kwargs or {}).get('y', {})
+                target_physical = canonical_to_physical_hml(target_fp32, y_for_decode)
+                model_output_physical = canonical_to_physical_hml(model_output_fp32, y_for_decode)
 
                 if self.temporal_span_seam_loss_weight > 0.0:
                     temporal_span_seam_weights = self._build_temporal_span_seam_weights(
@@ -1667,8 +1748,8 @@ class GaussianDiffusion:
                     )
                     if temporal_span_seam_weights is not None:
                         seam_acc_loss = self.temporal_span_seam_acceleration_loss(
-                            target_denorm,
-                            model_output_denorm,
+                            target_physical,
+                            model_output_physical,
                             temporal_span_seam_weights,
                             joints_padding_mask_fp32,
                         )
@@ -1681,20 +1762,27 @@ class GaussianDiffusion:
 
                 if self.lambda_geo > 0.:
                     terms["geodesic_loss"] = self.geodesic_loss(
-                        target_denorm, model_output_denorm, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
+                        target_physical, model_output_physical, joints_padding_mask_fp32, lengths_fp32, actual_joints_fp32
                     )
                     terms["loss"] = terms["loss"] + self.lambda_geo * terms["geodesic_loss"]
 
                 if self.lambda_vel > 0.:
                     terms["vel_loss"] = self.velocity_consistency_loss(
-                        model_output_denorm, joints_padding_mask_fp32, actual_joints_fp32, (model_kwargs or {}).get('y', {})
+                        model_output_physical, joints_padding_mask_fp32, actual_joints_fp32, y_for_decode
                     )
                     terms["loss"] = terms["loss"] + self.lambda_vel * terms["vel_loss"]
+
+                if self.lambda_bone > 0.:
+                    terms["bone_loss"] = self.bone_length_consistency_loss(
+                        model_output_physical, target_physical,
+                        joints_padding_mask_fp32, y_for_decode,
+                    )
+                    terms["loss"] = terms["loss"] + self.lambda_bone * terms["bone_loss"]
 
                 if self.lambda_loop_wrap > 0.0:
                     y = model_kwargs.get('y', {}) if isinstance(model_kwargs, dict) else {}
                     loop_terms = self.loop_wrap_loss(
-                        model_output_denorm,
+                        model_output_physical,
                         y,
                         actual_joints,
                     )

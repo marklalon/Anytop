@@ -69,6 +69,10 @@ from data_loaders.truebones.data.dataset import (
     SUPPORTED_SPLITS,
     _build_joint_mask_candidate_roots,
 )
+from data_loaders.truebones.truebones_utils.canonical_features import (
+    canonical_to_physical_hml,
+    mark_canonical_cond_entry,
+)
 from model.joint_mask_utils import sample_subtree_joint_mask
 
 
@@ -77,7 +81,7 @@ from model.joint_mask_utils import sample_subtree_joint_mask
 # ---------------------------------------------------------------------------
 
 def _build_cond_dict(opt, objects_subset: str) -> dict:
-    """Load cond.npy and prepare per-species statistics.
+    """Load cond.npy and prepare static canonical metadata.
     Joint-name T5 embeddings are stubbed with zeros so we can avoid loading a
     large language model just for BVH export.
     """
@@ -97,15 +101,7 @@ def _build_cond_dict(opt, objects_subset: str) -> dict:
         )
 
     for object_type, cond in cond_dict.items():
-        mean = np.asarray(cond["mean"], dtype=np.float32)
-        std = np.asarray(cond["std"], dtype=np.float32)
-        std_safe = std + 1e-6
-        cond["mean"] = mean
-        cond["std"] = std
-        cond["std_safe"] = std_safe
-        cond["rest_pose_normalized"] = np.nan_to_num(
-            (np.asarray(cond["rest_pose"], dtype=np.float32) - mean) / std_safe
-        ).astype(np.float32, copy=False)
+        mark_canonical_cond_entry(cond)
         # Stub T5 embeddings — only used by the model, not needed for BVH export.
         n_joints = np.asarray(cond["parents"]).shape[0]
         if "joints_names_embs" not in cond:
@@ -286,9 +282,9 @@ def main() -> int:
         print(f"[{idx+1}/{n}] Processing: {name} ...", end=" ")
 
         try:
-            # _prepare_sample applies augmentations and returns NORMALIZED motion
+            # _prepare_sample applies augmentations and returns canonical motion.
             (
-                motion_norm,  # (num_frames, J, 13) — normalized
+                motion_canonical,  # (num_frames, J, 13) canonical model space
                 m_length,     # actual frames (before padding)
                 parents,
                 rest_pose,
@@ -299,8 +295,6 @@ def main() -> int:
                 object_type,
                 _joints_names_embs,
                 _crop_start,
-                mean,         # (J, 13) normalization mean
-                std,          # (J, 13) normalization std (std_safe)
                 _max_joints,
                 motion_metadata,
                 _name,
@@ -309,9 +303,12 @@ def main() -> int:
             ) = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
 
             # ----------------------------------------------------------------
-            # Denormalize: undo the (x - mean) / std applied in augment()
+            # Decode canonical model-space features back to physical HML-like features.
             # ----------------------------------------------------------------
-            motion_raw = (motion_norm[:m_length] * std[None, :, :] + mean[None, :, :]).astype(np.float32)
+            motion_raw = canonical_to_physical_hml(
+                motion_canonical[:m_length],
+                cond_dict[object_type],
+            ).astype(np.float32)
 
             # ----------------------------------------------------------------
             # Retrieve joint names from cond_dict for BVH hierarchy
@@ -335,7 +332,7 @@ def main() -> int:
             stem = Path(name).stem
             tags: list[str] = []
             source_metadata = dataset.data_dict[name].get("motion_metadata", {})
-            source_length = int(dataset.data_dict[name].get("length", motion_norm.shape[0]))
+            source_length = int(dataset.data_dict[name].get("length", motion_canonical.shape[0]))
             is_source_loop = bool(source_metadata.get("is_loop", False))
             loop_phase_length = float(motion_metadata.get("loop_phase_length", m_length))
 
@@ -389,11 +386,13 @@ def main() -> int:
                 else:
                     mask = None
                 if mask is not None:
-                    # Apply mask in normalized space (same as the model does),
-                    # then denormalize so masked joints land at mean (valid pose).
-                    motion_masked_norm = motion_norm.copy()
-                    motion_masked_norm[:, mask, :] = 0.0
-                    motion_masked_raw = (motion_masked_norm[:m_length] * std[None, :, :] + mean[None, :, :]).astype(np.float32)
+                    # Apply mask in canonical model space, then decode for BVH export.
+                    motion_masked_canonical = motion_canonical.copy()
+                    motion_masked_canonical[:, mask, :] = 0.0
+                    motion_masked_raw = canonical_to_physical_hml(
+                        motion_masked_canonical[:m_length],
+                        cond_dict[object_type],
+                    ).astype(np.float32)
 
                     masked_tags = list(tags) + [f"mask{int(round(args.joint_mask_budget * 100))}"]
                     masked_fname = f"{stem}__{'+'.join(masked_tags)}_masked.bvh"

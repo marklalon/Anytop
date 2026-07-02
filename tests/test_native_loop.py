@@ -48,8 +48,6 @@ def _make_batch_item(
     graph = np.zeros((n_joints, n_joints), dtype=np.int64)
     relations = np.zeros((n_joints, n_joints), dtype=np.int64)
     names = np.zeros((n_joints, 4), dtype=np.float32)
-    mean = np.zeros((n_joints, n_feats), dtype=np.float32)
-    std = np.ones((n_joints, n_feats), dtype=np.float32)
     if loop_phase_length is None:
         loop_phase_length = float(n_frames)
     metadata = {
@@ -75,8 +73,6 @@ def _make_batch_item(
         'Horse',
         names,
         0,
-        mean,
-        std,
         max_joints,
         metadata,
         'Horse_walk.npy',

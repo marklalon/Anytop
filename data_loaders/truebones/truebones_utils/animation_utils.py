@@ -14,7 +14,16 @@ import os
 from os.path import join as pjoin
 import re
 import torch
-from data_loaders.truebones.truebones_utils.param_utils import HML_REF_AXIAL_BONE_LENGTH, HML_REF_MAX_SPAN, MAX_JOINTS, OBJECT_SUBSETS_DICT, SCALE_BODY_SPAN_BLEND_WEIGHT, VERTICAL_CLAMP_MIN_RATIO, VERTICAL_CLAMP_MAX_RATIO
+from data_loaders.truebones.truebones_utils.param_utils import (
+    HML_REF_AXIAL_BONE_LENGTH,
+    HML_REF_MAX_SPAN,
+    MAX_JOINTS,
+    OBJECT_SUBSETS_DICT,
+    ROOT_Y_MIN_HEIGHT,
+    SCALE_BODY_SPAN_BLEND_WEIGHT,
+    VERTICAL_CLAMP_MIN_RATIO,
+    VERTICAL_CLAMP_MAX_RATIO,
+)
 from data_loaders.truebones.truebones_utils.skeleton_cropping import (
     select_cropped_joint_indices,
 )
@@ -331,8 +340,6 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collis
             autocast_dtype=None,
             local_files_only=True,
         )
-    else:
-        print(f'Using pre-loaded T5 conditioner ({t5_name}) ...')
 
     print(f'Encoding joint-name embeddings for {joint_count} object types ...')
 
@@ -623,35 +630,64 @@ def _compress_negative_excursion(values, min_h, max_h):
     return compressed, True
 
 
+def _compress_below_negative_band(values, min_h, max_h):
+    """Compress values below negative thresholds derived from positive ratios."""
+    return _compress_negative_excursion(values, abs(min_h), abs(max_h))
+
+
+def _clamp_min_height(values, min_height):
+    if float(values.min()) >= min_height:
+        return values, False
+    return np.maximum(values, min_height), True
+
+
 def clamp_vertical_trajectory(
     processed_anim,
     object_type,
     min_ratio=VERTICAL_CLAMP_MIN_RATIO,
     max_ratio=VERTICAL_CLAMP_MAX_RATIO,
+    root_y_min_height=ROOT_Y_MIN_HEIGHT,
 ):
-    """Compress only the vertical excursion that exceeds the allowed size-relative band.
+    """Constrain the processed translation-root vertical trajectory.
 
-    The allowed band is derived from the processed skeleton's reference body length.
-    Motion within ±minH is left untouched. Only the excess beyond minH is compressed
-    so that the final excursion stays within [minH, maxH].
+    Flying species keep the existing positive size-relative excursion clamp.
+    Aquatic species use the same positive height clamp and also apply the same
+    ratios with a negative sign so their downward swim depth is compressed into
+    [-maxH, -minH]. Every species also gets the absolute root-Y floor.
     """
-    if object_type not in FLYING and object_type not in FISH:
-        return processed_anim
-
     trans_root = find_translation_root(processed_anim)
     global_pos = positions_global(processed_anim)
     world_y = global_pos[:, trans_root, 1]
-    body_length = _get_reference_body_length(processed_anim)
-    min_h = body_length * min_ratio
-    max_h = body_length * max_ratio
 
+    clamped_world_y = world_y.copy()
+    changed = False
     if object_type in FLYING:
-        clamped_world_y, changed = _compress_positive_excursion(world_y, min_h, max_h)
+        body_length = _get_reference_body_length(processed_anim)
+        min_h = body_length * min_ratio
+        max_h = body_length * max_ratio
+        clamped_world_y, changed = _compress_positive_excursion(clamped_world_y, min_h, max_h)
+    elif object_type in FISH:
+        body_length = _get_reference_body_length(processed_anim)
+        positive_min_h = body_length * min_ratio
+        positive_max_h = body_length * max_ratio
+        clamped_world_y, changed_pos = _compress_positive_excursion(
+            clamped_world_y,
+            positive_min_h,
+            positive_max_h,
+        )
+        negative_min_h = -positive_min_h
+        negative_max_h = -positive_max_h
+        clamped_world_y, changed_neg = _compress_below_negative_band(
+            clamped_world_y,
+            negative_min_h,
+            negative_max_h,
+        )
+        changed = changed_pos or changed_neg
     else:
         clamped_world_y = world_y.copy()
-        clamped_world_y, changed_pos = _compress_positive_excursion(clamped_world_y, min_h, max_h)
-        clamped_world_y, changed_neg = _compress_negative_excursion(clamped_world_y, min_h, max_h)
-        changed = changed_pos or changed_neg
+
+    clamped_world_y, changed_floor = _clamp_min_height(clamped_world_y, root_y_min_height)
+    changed = changed or changed_floor
 
     if not changed:
         return processed_anim

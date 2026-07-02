@@ -1,8 +1,8 @@
-"""Shared retarget helpers for the --retarget-top-k preprocessing flow.
+"""Shared retarget helpers for the cross-species reference retarget flow.
 
 Used by:
-  tools/process_new_skeleton.py  -- builds coarse motions from similar donors
   sample/generate.py             -- cross-species reference motion retarget
+  tools/retarget.py              -- CLI wrapper for retargeting files
 """
 import glob
 import os
@@ -499,7 +499,7 @@ def retarget_animation_file_to_target(
         _SRC_FACE_HINT, src_names, src_parents, None, rest_positions=bind_positions
     )
     src_forward_joint, src_forward_base_joint = resolve_forward_reference_joints(
-        src_names, src_parents, object_type=_SRC_FACE_HINT,
+        src_names, src_parents, object_type=_SRC_FACE_HINT, rest_positions=bind_positions,
     )
     src_orientation_quat = np.asarray(
         calculate_root_quat(
@@ -769,18 +769,18 @@ def auto_retarget_pipeline(
     fps: float = FPS,
     crop_enabled: bool = True,
 ) -> dict:
-    """Auto-retarget motions from top-k similar training donors onto the target.
+    """Auto-retarget motions from ranked training donors onto the target.
 
     Steps:
       1. Load training cond_dict from training_cond_path.
       2. Build target_cond + target_tp via _build_tpose_cond.
-      3. Select donors (override list or auto top-k ranking).
+      3. Select donors (override list or ranked donor selection).
       4. For each donor: retarget all motion .npy files, save .npy + .bvh.
       5. Return summary dict.
 
     Returns:
         dict with keys:
-          'target_cond'      -- the built target cond entry (no mean/std yet)
+          'target_cond'      -- the built target cond entry (canonical metadata)
           'retargeted_npys'  -- list of absolute paths to written .npy files
           'donors_used'      -- list of (name, score, n_success) tuples
     """

@@ -200,8 +200,9 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
         "joints_names",
         "joints_names_embs",
         "kinematic_chains",
-        "mean",
-        "std",
+        "feature_space",
+        "physical_feature_space",
+        "rest_pos_ric_hml",
     }
 
     for object_type in objects_to_validate:
@@ -216,8 +217,7 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
             parents = np.asarray(object_cond["parents"])
             offsets = np.asarray(object_cond["offsets"])
             rest_pose = np.asarray(object_cond["rest_pose"])
-            mean = np.asarray(object_cond["mean"])
-            std = np.asarray(object_cond["std"])
+            rest_pos_ric_hml = np.asarray(object_cond["rest_pos_ric_hml"])
             joint_relations = np.asarray(object_cond["joint_relations"])
             joints_graph_dist = np.asarray(object_cond["joints_graph_dist"])
             joints_names = object_cond["joints_names"]
@@ -233,12 +233,25 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
             if rest_pose.shape != (n_joints, FEATS_LEN):
                 msg = f"{object_type} rest_pose shape mismatch: {rest_pose.shape}"
                 print_warn(f"validation error: {msg}")
-            if mean.shape != (n_joints, FEATS_LEN):
-                msg = f"{object_type} mean shape mismatch: {mean.shape}"
+            if rest_pos_ric_hml.shape != (n_joints, 3):
+                msg = f"{object_type} rest_pos_ric_hml shape mismatch: {rest_pos_ric_hml.shape}"
                 print_warn(f"validation error: {msg}")
-            if std.shape != (n_joints, FEATS_LEN):
-                msg = f"{object_type} std shape mismatch: {std.shape}"
+            if object_cond.get("feature_space") != "canonical_motion_v3":
+                msg = f"{object_type} feature_space must be canonical_motion_v3"
                 print_warn(f"validation error: {msg}")
+            if object_cond.get("physical_feature_space") != "hml_like_v_current":
+                msg = f"{object_type} physical_feature_space must be hml_like_v_current"
+                print_warn(f"validation error: {msg}")
+            canon_mean = object_cond.get("canonical_feature_mean")
+            canon_std = object_cond.get("canonical_feature_std")
+            if canon_mean is None or canon_std is None:
+                msg = f"{object_type} missing canonical_feature_mean/std (regenerate cond.npy)"
+                print_warn(f"validation error: {msg}")
+            else:
+                if np.asarray(canon_mean).reshape(-1).shape[0] != FEATS_LEN or \
+                        np.asarray(canon_std).reshape(-1).shape[0] != FEATS_LEN:
+                    msg = f"{object_type} canonical_feature_mean/std must have length {FEATS_LEN}"
+                    print_warn(f"validation error: {msg}")
             if joint_relations.shape != (n_joints, n_joints):
                 msg = f"{object_type} joint_relations shape mismatch: {joint_relations.shape}"
                 print_warn(f"validation error: {msg}")
@@ -257,17 +270,11 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
             if not np.isfinite(rest_pose).all():
                 msg = f"{object_type} rest_pose contains NaN/Inf"
                 print_warn(f"validation error: {msg}")
-            if not np.isfinite(mean).all():
-                msg = f"{object_type} mean contains NaN/Inf"
-                print_warn(f"validation error: {msg}")
-            if not np.isfinite(std).all():
-                msg = f"{object_type} std contains NaN/Inf"
+            if not np.isfinite(rest_pos_ric_hml).all():
+                msg = f"{object_type} rest_pos_ric_hml contains NaN/Inf"
                 print_warn(f"validation error: {msg}")
             if not np.isfinite(joints_names_embs).all():
                 msg = f"{object_type} joints_names_embs contain NaN/Inf"
-                print_warn(f"validation error: {msg}")
-            if not (std > 0).any():
-                msg = f"{object_type} std is entirely non-positive"
                 print_warn(f"validation error: {msg}")
 
             _validate_optional_semantic_metadata(object_type, object_cond, n_joints)
@@ -583,11 +590,20 @@ def _validate_motion_orientation(
         tpose_features = np.asarray(object_cond["rest_pose"], dtype=np.float64)
         joint_names = list(object_cond.get("joints_names", []))
 
+        # Compute rest positions first so they can be used for degenerate bone
+        # detection in face/forward reference resolution.
+        tpose_positions, _ = recover_from_bvh_rot_np(
+            tpose_features[None],
+            parents,
+            offsets,
+            translation_root_index=translation_root_index,
+        )
+
         face_joints = object_cond.get("face_joints")
         if face_joints is not None:
             face_joints = [int(index) for index in face_joints]
         else:
-            face_joints = resolve_face_joints(object_type, joint_names, parents)
+            face_joints = resolve_face_joints(object_type, joint_names, parents, rest_positions=tpose_positions)
 
         forward_joint_index = object_cond.get("forward_joint_index")
         forward_base_joint_index = object_cond.get("forward_base_joint_index")
@@ -596,6 +612,7 @@ def _validate_motion_orientation(
                 joint_names,
                 parents,
                 object_type,
+                rest_positions=tpose_positions,
             )
         elif forward_base_joint_index is not None:
             forward_base_joint_index = int(forward_base_joint_index)
@@ -605,12 +622,6 @@ def _validate_motion_orientation(
         endpoint_indices = [0] if motion.shape[0] == 1 else [0, motion.shape[0] - 1]
         motion_positions, _ = recover_from_bvh_rot_np(
             motion[endpoint_indices],
-            parents,
-            offsets,
-            translation_root_index=translation_root_index,
-        )
-        tpose_positions, _ = recover_from_bvh_rot_np(
-            tpose_features[None],
             parents,
             offsets,
             translation_root_index=translation_root_index,

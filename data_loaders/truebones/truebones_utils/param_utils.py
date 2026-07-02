@@ -57,7 +57,7 @@ ACTION_TAGS_FILE = "action_tags.jsonl"
 # out of cond.npy (no inference path reads it); consumed only by the offline dataset
 # GLB tool (data_bridge.restore_glb_from_anytop). Written/refreshed by the dataset
 # preprocessing save path and by regenerate_dataset_artifacts.
-TPOSE_REFERENCE_SIDECAR = "tpose_reference_paths.npy"
+TPOSE_REFERENCE_SIDECAR = "tpose_reference_paths.jsonl"
 # Per-species motion descriptor (body-plan, size/build, locomotion), maintained as
 # a JSONL sidecar alongside action_tags.jsonl. One object per line:
 #   {"species": "Cat", "species_tags": ["Quadruped", "Small", "Stalking"]}
@@ -73,6 +73,9 @@ MAX_PATH_LEN = 5.
 # compressed into the [min, max] band.
 VERTICAL_CLAMP_MIN_RATIO = 0.3
 VERTICAL_CLAMP_MAX_RATIO = 0.5
+# Absolute lower bound for the processed translation-root Y height, in the same
+# normalized units as the exported motion features.
+ROOT_Y_MIN_HEIGHT = -0.5
 
 # Maps object_type -> joint index tuple used to compute the forward direction for
 # creatures without usable limb pairs (snakes, fish).
@@ -118,23 +121,23 @@ def load_species_tags(dataset_dir=None):
 
 
 def build_object_subsets_dict(species_tags):
-        """Group species by body-plan (the first motion tag) into ``--object_subsets`` keys.
+        """Group species by object_subset (the first motion tag) into ``--object_subsets`` keys.
 
         Keeps the existing ``OBJECT_SUBSETS_DICT`` contract -- ``"all"`` plus a
-        lower-cased key per body-plan -- but sources the membership from the
+        lower-cased key per object_subset -- but sources the membership from the
         species motion tags so the mapping never drifts from the descriptor.
         """
         subsets = {"all": list(species_tags.keys())}
         for species, tags in species_tags.items():
-                body_plan = tags[0].strip().lower()
-                subsets.setdefault(body_plan, []).append(species)
+                object_subset = tags[0].strip().lower()
+                subsets.setdefault(object_subset, []).append(species)
         return subsets
 
 
 SPECIES_TAGS = load_species_tags()
 
-# Body-plan groupings for ``--object_subsets``. Keys are ``"all"`` plus the
-# lower-cased body-plan tag (quadruped / biped / multiped / serpentine /
+# object_subset groupings for ``--object_subsets``. Keys are ``"all"`` plus the
+# lower-cased first motion tag (quadruped / biped / multiped / serpentine /
 # aquatic / winged); values are derived from SPECIES_TAGS.
 OBJECT_SUBSETS_DICT = build_object_subsets_dict(SPECIES_TAGS)
 
@@ -146,6 +149,34 @@ OBJECT_SUBSETS_DICT["podata"] = (
         + OBJECT_SUBSETS_DICT["multiped"]
         + OBJECT_SUBSETS_DICT["winged"]
 )
+
+
+def object_subset_for_object_type(object_type):
+        """Return the ``object_subset`` key for a species / ``object_type``.
+
+        The object_subset is the lowercased first motion tag from
+        ``species_tags.jsonl`` (quadruped / biped / multiped / serpentine /
+        aquatic / winged) -- the same key used in ``OBJECT_SUBSETS_DICT``. The
+        per-object_subset canonical standardization statistics are bucketed on
+        this value, so held-out species inherit the stats of their object_subset.
+        The species-name lookup is case-insensitive. Returns ``None`` when the
+        species carries no tags entry.
+        """
+        if object_type is None:
+                return None
+        key = str(object_type).strip()
+        if not key:
+                return None
+        tags = SPECIES_TAGS.get(key)
+        if tags is None:
+                lowered = key.lower()
+                for species, species_tags in SPECIES_TAGS.items():
+                        if species.lower() == lowered:
+                                tags = species_tags
+                                break
+        if not tags:
+                return None
+        return tags[0].strip().lower()
 
 
 def parse_action_tags(raw_action_tags):

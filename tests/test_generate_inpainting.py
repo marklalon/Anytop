@@ -22,8 +22,10 @@ from sample.generate import (  # noqa: E402
     _parse_frame_ranges,
     _prepare_img2img_reference_bundle,
     _reanchor_inpaint_root_y_via_velocity,
+    _reground_inpaint_joint_y,
     _resolve_inpaint_joint_indices,
     _sample_batch,
+    _validate_reference_motion_path,
     build_inpaint_mask,
     create_condition,
 )
@@ -73,8 +75,8 @@ def _make_full_cond_entry(n_joints: int, feature_len: int = 13) -> dict:
         "canonical_joint_names": [f"Joint{i}" for i in range(n_joints)],
         "canonical_bvh_joint_names": [f"Joint{i}" for i in range(n_joints)],
         "parents": parents,
-        "mean": np.zeros((n_joints, feature_len), dtype=np.float32),
-        "std": np.ones((n_joints, feature_len), dtype=np.float32),
+        "canonical_feature_mean": np.zeros((feature_len,), dtype=np.float32),
+        "canonical_feature_std": np.ones((feature_len,), dtype=np.float32),
         "rest_pose": np.zeros((n_joints, feature_len), dtype=np.float32),
         "joint_relations": np.zeros((n_joints, n_joints), dtype=np.int64),
         "joints_graph_dist": np.zeros((n_joints, n_joints), dtype=np.int64),
@@ -120,6 +122,18 @@ def test_finalize_output_lengths_rejects_out_of_window() -> None:
         _finalize_output_lengths(requested_frames=121, min_length=20, internal_num_frames=60)
 
 
+def test_validate_reference_motion_path_accepts_supported_suffixes() -> None:
+    assert _validate_reference_motion_path("clip.npy") == ".npy"
+    assert _validate_reference_motion_path("clip.fbx") == ".fbx"
+    assert _validate_reference_motion_path("clip.glb") == ".glb"
+    assert _validate_reference_motion_path("clip.gltf") == ".gltf"
+
+
+def test_validate_reference_motion_path_rejects_unsupported_suffix() -> None:
+    with pytest.raises(ValueError, match="Unsupported reference motion format"):
+        _validate_reference_motion_path("clip.txt")
+
+
 def test_prepare_reference_bundle_uses_preloaded_cropped_features() -> None:
     # Crop path: feed exactly M=40 frames (as main() does for R > M). The bundle
     # must consume the preloaded array verbatim (no disk load) and not re-trim it.
@@ -139,6 +153,7 @@ def test_prepare_reference_bundle_uses_preloaded_cropped_features() -> None:
         requested_output_frame_count=60,
         requested_visible_frame_count=40,
         preloaded_features=preloaded,
+        physical_energy_features=preloaded,
     )
 
     assert bundle["loaded_reference_frame_count"] == 40
@@ -613,3 +628,74 @@ def test_close_loop_root_xz_noop_for_invalid_root():
     _close_loop_root_xz_via_velocity(motion, translation_root_index=5)
 
     np.testing.assert_array_equal(motion, original)
+
+
+def _make_pos_y_motion(pos_y_by_joint, n_feat=13):
+    """Build a (F, J, C) motion tensor with only the pos_y channel (index 1)
+    populated from a dict {joint_index: [per-frame Y]}.
+    """
+    joints = sorted(pos_y_by_joint)
+    F = len(next(iter(pos_y_by_joint.values())))
+    J = max(joints) + 1
+    motion = np.zeros((F, J, n_feat), dtype=np.float32)
+    for j, ys in pos_y_by_joint.items():
+        motion[:, j, 1] = np.asarray(ys, dtype=np.float32)
+    return motion
+
+
+def test_reground_inpaint_joint_y_reseats_floating_subtree():
+    # Chain Root(-1) -> A(0) -> B(1) -> C(2); inpaint B with subtree => free {2, 3}.
+    parents = np.array([-1, 0, 1, 2], dtype=np.int64)
+    ref = _make_pos_y_motion({
+        0: [0.0, 0.0, 0.0], 1: [0.0, 0.0, 0.0],
+        2: [1.0, 1.1, 0.9], 3: [0.5, 0.6, 0.4],
+    })
+    gen = _make_pos_y_motion({
+        0: [0.0, 0.0, 0.0], 1: [0.0, 0.0, 0.0],
+        # Grounded articulation lifted by a constant +5 float offset.
+        2: [6.0, 6.2, 5.8], 3: [5.5, 5.9, 5.1],
+    })
+    clamped_before = gen[:, [0, 1], 1].copy()
+    articulation_before = (gen[:, 3, 1] - gen[:, 2, 1]).copy()
+
+    delta = _reground_inpaint_joint_y(gen, ref, {2, 3}, parents)
+
+    # Boundary joint is joint 2 (parent 1 is clamped); delta grounds its DC.
+    assert delta == pytest.approx(-5.0, abs=1e-5)
+    np.testing.assert_allclose(gen[:, 2, 1], [1.0, 1.2, 0.8], atol=1e-5)
+    np.testing.assert_allclose(gen[:, 3, 1], [0.5, 0.9, 0.1], atol=1e-5)
+    # Generated internal articulation is preserved (only a constant removed).
+    np.testing.assert_allclose(gen[:, 3, 1] - gen[:, 2, 1], articulation_before, atol=1e-5)
+    # Clamped joints untouched.
+    np.testing.assert_array_equal(gen[:, [0, 1], 1], clamped_before)
+
+
+def test_reground_inpaint_joint_y_anchors_only_on_boundary():
+    # free = {1, 2, 3}; boundary is joint 1 (parent 0 clamped). Interior joints
+    # 2/3 carry a huge offset that must NOT influence the estimated delta.
+    parents = np.array([-1, 0, 1, 2], dtype=np.int64)
+    ref = _make_pos_y_motion({
+        0: [0.0, 0.0], 1: [2.0, 2.0], 2: [1.0, 1.0], 3: [0.0, 0.0],
+    })
+    gen = _make_pos_y_motion({
+        0: [0.0, 0.0], 1: [4.0, 4.0], 2: [101.0, 101.0], 3: [100.0, 100.0],
+    })
+
+    delta = _reground_inpaint_joint_y(gen, ref, {1, 2, 3}, parents)
+
+    # Delta comes from boundary joint 1 only: mean(2.0 - 4.0) = -2.0.
+    assert delta == pytest.approx(-2.0, abs=1e-5)
+    np.testing.assert_allclose(gen[:, 1, 1], [2.0, 2.0], atol=1e-5)
+    np.testing.assert_allclose(gen[:, 2, 1], [99.0, 99.0], atol=1e-5)
+    np.testing.assert_allclose(gen[:, 3, 1], [98.0, 98.0], atol=1e-5)
+
+
+def test_reground_inpaint_joint_y_noops_without_reference_or_free_set():
+    parents = np.array([-1, 0], dtype=np.int64)
+    gen = _make_pos_y_motion({0: [0.0], 1: [7.0]})
+    original = gen.copy()
+
+    assert _reground_inpaint_joint_y(gen, None, {1}, parents) == 0.0
+    np.testing.assert_array_equal(gen, original)
+    assert _reground_inpaint_joint_y(gen, gen.copy(), set(), parents) == 0.0
+    np.testing.assert_array_equal(gen, original)

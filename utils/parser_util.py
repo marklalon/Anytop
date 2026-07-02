@@ -20,9 +20,8 @@ def parse_and_load_from_model(parser, argv=None, preserve_cli_args=None):
 
     if isinstance(args.model_path, list) and len(args.model_path) == 1:
         args.model_path = args.model_path[0]
-    
-    # load args from model
-    assert not isinstance(args, list) and not isinstance(args.model_path, list), 'Deprecated feature..'
+
+    assert not isinstance(args.model_path, list), "model_path should not be a list at this point"
     args = extract_args(copy.deepcopy(args), args_to_overwrite, args.model_path)
 
     return args
@@ -93,6 +92,13 @@ def add_model_options(parser):
                             " Couples position and velocity feature groups to prevent independent memorization.")
     group.add_argument("--lambda_loop_wrap", default=0.0, type=float,
                        help="Weight for loop-only wrap loss on denormalized pose/rotation/terminal_vel channels.")
+    group.add_argument("--lambda_bone", default=0.0, type=float,
+                       help="Weight for the target-relative, rest-length-normalized bone-length loss (0.0=off). "
+                            "Penalizes each predicted bone length's deviation from the GROUND-TRUTH bone length "
+                            "at the same frame, normalized by the rest bone length so short/distal bones (which "
+                            "l_simple under-weights and which stretch most on novel skeletons) get proportionally "
+                            "larger gradient. Anchoring on GT (not rest) preserves genuinely animated bone-length "
+                            "deformation. Computed on denormalized outputs; recommended range ~0.1-0.3.")
     group.add_argument("--loop_cond_prob", default=1.0, type=float,
                        help="Probability that a loop training clip stays loop-conditioned "
                             "(periodic resampling, circular phase, and loop-condition embedding)."
@@ -152,9 +158,10 @@ def add_data_options(parser):
     group.add_argument("--objects_subset", default='all', type=str,
                        help="Object subset. Can be a predefined category (e.g. 'all', 'quadruped', 'winged', 'biped', 'multiped', etc.) or a single species name (e.g. 'Horse', 'Dragon').")
     group.add_argument("--action_tags", default='', type=str,
-                       help="Comma-separated action tags, e.g. 'locomotion,attack'. During training, filters "
-                            "kept motions whose metadata tags match. During generation with --score, filters "
-                            "the scorer's reference prior selection.")
+                       help="Comma-separated action tags, e.g. 'locomotion,attack'. Use 'all' to include every "
+                            "action tag (no filtering). During training, filters kept motions whose metadata "
+                            "tags match. During generation with --score, filters the scorer's reference prior "
+                            "selection.")
 
 def add_training_options(parser):
     group = parser.add_argument_group('training')
@@ -262,6 +269,11 @@ def add_sampling_options(parser):
                             "softmax stays fp32. Requires a CUDA device with bf16 support (Ampere+).")
     group.add_argument("--loop", action='store_true',
                        help="Generate with loop conditioning and loop-aware temporal masks when supported by the checkpoint.")
+    group.add_argument("--rigidbone", action='store_true',
+                       help="Export BVH as pure FK (rotation + fixed rest offsets), skipping the RIC position solver. "
+                            "Keeps bone lengths rigid; drops animated non-root translations. "
+                            "Useful when the position/rotation channels disagree and the solver stretches bones. "
+                            "Only affects BVH export; .npy features are unchanged.")
 
 
 def add_generate_options(parser):
@@ -323,6 +335,14 @@ def add_generate_options(parser):
                             "(inclusive, clipped to the reference length). Empty = all frames. Combined with "
                             "--inpaint_joints, the regenerated region is selected-joints x selected-frames; "
                             "everything else is clamped to --reference_motion. Requires --reference_motion.")
+    group.add_argument("--species_tags", default="", type=str,
+                       help="Override the target species' motion style tags for this generation, e.g. "
+                            "'Quadruped,Heavy,Lumbering'. Comma/semicolon-separated. The tags are re-encoded "
+                            "through the same T5 conditioner used at preprocessing and replace the species "
+                            "descriptor baked into cond.npy (default from species_tags.jsonl), letting you "
+                            "restyle the generated motion (e.g. make a Winged Dragon walk on the ground). "
+                            "Requires a checkpoint trained with --species_cond and/or --species_joint_cond. "
+                            "Incompatible with --object_type all.")
 
 
 def train_args():
@@ -343,54 +363,23 @@ def generate_args(argv=None):
     add_generate_options(parser)
     # These CLI args are generation-time overrides and must NOT be
     # overwritten by the training args.json (which stores their defaults).
-    args = parse_and_load_from_model(parser, argv=argv, preserve_cli_args={'action_tags'})
+    args = parse_and_load_from_model(parser, argv=argv, preserve_cli_args={'action_tags', 'species_tags'})
     return args
 
 def process_new_skeleton_args():
     parser = ArgumentParser()
     group = parser.add_argument_group('process_new_skeleton')
-    group.add_argument("--object-type", default=None, type=str,
-                       help="A character's species/type name (e.g. \"Dragon\"). "
-                            "When omitted, inferred from the first filename in --anim-dir.")
-    group.add_argument("--anim-dir", default=None, type=str,
-                       help="Path to a directory containing animation files (FBX/GLB/GLTF) of the skeleton. "
-                            "More files improve statistical accuracy for motion denormalization. "
-                            "If omitted, defaults to the parent directory of --tpos-path.")
+    group.add_argument("--tpos-path", required=True, type=str,
+                       help="An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base.")
     group.add_argument("--save-dir", required=True, type=str,
                        help="Output directory.")
-    group.add_argument("--tpos-path", default=None, type=str,
-                       help="An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base. "
-                           "If omitted, the code will auto-select one from --anim-dir using filename heuristics "
-                           "(T-pose/rest/bind > idle > walk > first file).")
-    group.add_argument("--retarget-top-k", default=None, type=int,
-                       help="Auto-select the top-k most similar training skeletons as motion donors, "
-                            "retarget all their motions to the new skeleton, and use those coarse motions "
-                            "to compute proper mean/std for cond.npy. Mutually exclusive with --anim-dir. "
-                            "Set to 0 for rest-pose-only mode (graph metadata from --tpos-path skeleton "
-                            "alone, no donor retargeting, no motions/).")
-    group.add_argument("--training-cond-path",
-                       default="dataset/truebones/zoo/truebones_processed/cond.npy",
-                       type=str,
-                       help="Path to the training dataset's cond.npy, used for donor selection when "
-                            "--retarget-top-k is set. Default: dataset/truebones/zoo/truebones_processed/cond.npy")
-    group.add_argument("--donor-skeletons", default=None, type=str,
-                       help="Comma-separated donor skeleton names to use instead of auto-selection, "
-                            "e.g. 'Bison,Cow,Horse'. Only effective with --retarget-top-k.")
-
+    group.add_argument("--object-type", default=None, type=str,
+                       help="A character's species/type name (e.g. \"Dragon\"). "
+                            "When omitted, inferred from the tpos-path filename.")
     group.add_argument("--crop-enabled", action='store_true', default=False,
                        help="Enable automatic skeleton cropping to MAX_JOINTS=100. "
                             "Off by default because inference has no joint cap; "
                             "enable for training-compatible preprocessing.")
-    group.add_argument("--update", action='store_true',
-                       help="Incremental update mode. Instead of clearing --save-dir and rebuilding "
-                           "from scratch, merge the current --anim-dir batch into the existing "
-                           "dataset, replacing any older clips produced from the same source files "
-                           "while keeping untouched sources, then rebuild the side "
-                            "artifacts (cond.npy mean/std, motion_metadata.json, metadata.txt, "
-                            "positions_error_rate.txt) over the merged clip set. Clips whose source "
-                           "file is present in the update batch are force-replaced. Supports both "
-                           "--anim-dir updates and --retarget-top-k updates, and requires an existing "
-                           "--save-dir when updating in place.")
     group.add_argument("--species-tags", default=None, type=str,
                        help="Comma-separated species tags to explicitly assign to --object-type, "
                             "e.g. 'Quadruped,Large,Lumbering'. Takes precedence over both "

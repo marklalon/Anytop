@@ -16,7 +16,7 @@ from os.path import join as pjoin
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import random
 import bisect
-from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, MOTION_METADATA_FILE, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, TPOSE_REFERENCE_SIDECAR, get_raw_data_dir
+from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, MOTION_METADATA_FILE, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, TPOSE_REFERENCE_SIDECAR, get_raw_data_dir, object_subset_for_object_type
 from pathlib import Path
 from .motion_labels import build_motion_labels, build_object_labels, write_motion_metadata, load_motion_metadata
 from .physics_joint_annotation import (
@@ -44,6 +44,12 @@ from .features import (
     infer_translation_root_index_from_features,
     extract_motion_features_from_aligned_anims,
 )
+from .canonical_features import (
+    mark_canonical_cond_entry,
+    accumulate_lnorm_stats,
+    finalize_lnorm_stats,
+    set_canonical_global_stats,
+)
 
 
 class DatasetPreprocessingError(RuntimeError):
@@ -52,36 +58,7 @@ class DatasetPreprocessingError(RuntimeError):
         super().__init__(f"{len(self.motion_errors)} motion processing error(s)")
 
 
-################## Statistics & Topology #####################
-
-""" computes mean and std for a list of motions """
-def get_mean_std(data):
-    if len(data) > 0:
-        Mean = data.mean(axis=0) # (Joints, 25)
-        Std = data.std(axis=0) # # (Joints, 25)
-        Std[0, :3] = Std[0, :3].mean() / 1.0 # all joints except root ric pos
-        Std[0, 3:9] = Std[0, 3:9].mean() / 1.0 # all joints except root rotation
-        Std[0, 9:12] = Std[0, 9:12].mean() / 1.0 # all joints except root local velocity
-
-        Std[1:, :3] = Std[1:, :3].mean() / 1.0 # all joints except root ric pos
-        Std[1:, 3:9] = Std[1:, 3:9].mean() / 1.0 # all joints except root rotation
-        Std[1:, 9:12] = Std[1:, 9:12].mean() / 1.0 # all joints except root local velocity
-        if len(Std[:, 12][Std[:, 12]!=0]) > 0:
-            Std[:, 12][Std[:, 12]!=0] = Std[:, 12][Std[:, 12]!=0].mean() / 1.0
-        Std[:, 12][Std[:, 12]==0] = 1.0 # replace zeros with ones
-
-        # Universal guard for constant (zero-variance) channels across ALL
-        # channels. The own-rotation encoding leaves the root joint's 6D
-        # rotation constant, so its block-averaged std collapses to 0 above.
-        # A ~zero divisor is meaningless and dangerous: it leaves the motion at
-        # 0 but amplifies rest_pose normalization, (rest_pose - mean) / std,
-        # to ~1e6, which drives the spatial-attention graph bias to ~1e5 and
-        # yields NaN gradients under bf16. Treat any sub-1e-5 std as unit
-        # variance (mirrors the std_safe floor in data/dataset.py:Truebones).
-        Std = np.where(Std < 1e-5, 1.0, Std)
-
-        return Mean, Std
-
+################## Topology #####################
 
 """ compures Relations and Distance marices"""
 def create_topology_edge_relations(parents, max_path_len = 5): # joint j+1 contains len(j, j+1)
@@ -197,6 +174,16 @@ def _process_motion_file(file_path, object_type, max_joints,
     _crop_max = MAX_JOINTS if crop_enabled else 2 ** 16
     # Load the animation file (FBX/GLB/GLTF) once; pass it as `preloaded` to every get_motion call so that
     raw_anim, names, frame_time = FBX.load(file_path)
+
+    # Warn if the motion file's FPS deviates from the expected 30 FPS.
+    fps = 1.0 / frame_time if frame_time > 0 else 0.0
+    if fps and abs(fps - 30.0) > 0.1:
+        from .animation_utils import _warn
+        _warn(
+            f"FPS mismatch: '{os.path.basename(str(file_path))}' runs at "
+            f"{fps:.2f} FPS (frame_time={frame_time:.6f}s), expected 30 FPS"
+        )
+
     # Crop oversized skeletons to the crop cap so the loaded animation and its
     # exported names match the cropped rest-pose offsets. Leaves are peeled from
     # deepest to shallowest; ties at the same depth prefer shorter bones first,
@@ -346,6 +333,7 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
     # aggregates per-motion translation_root_index values and picks the consensus.
     object_cond['translation_root_index'] = int(_rest_translation_root_index)
     object_cond['rest_pose'] = rest_pose_motion[0]
+    mark_canonical_cond_entry(object_cond)
     object_cond['pose_base'] = 'rest_pose'
     joint_relations, joints_graph_dist = create_topology_edge_relations(tp.tpos_anim.parents, max_path_len=MAX_PATH_LEN)
     object_cond['joint_relations'] = joint_relations
@@ -409,16 +397,6 @@ def _build_rest_pose_only_cond(object_type, rest_pose_path, face_joints, crop_en
     object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints, tpose_reference_path = _build_rest_pose_cond(
         object_type, rest_pose_path, face_joints, crop_enabled=crop_enabled,
     )
-    num_joints = len(parents)
-
-    # mean: rest-pose feature vector with velocity channels (9:12) explicitly zeroed
-    # to make rest-pose semantics unambiguous.
-    mean = rest_pose_motion[0].astype(np.float32).copy()  # (J, 13)
-    mean[:, 9:12] = 0.0
-    object_cond['mean'] = mean
-
-    object_cond['std'] = np.ones_like(mean)
-
     return object_cond, max_joints, tpose_reference_path
 
 
@@ -501,8 +479,6 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints, tpose_reference_path = _build_rest_pose_cond(
         object_type, t_pos_path, face_joints, max_joints=max_joints, crop_enabled=crop_enabled,
     )
-    all_tensors = list()
-
     # Animation loading via bpy is single-threaded inside a process because clear_scene
     # mutates global Blender state, so file-level parallelism is intentionally removed.
     print(f'processing {len(anim_files)} animation files for {object_type} (serial — bpy is single-threaded)', flush=True)
@@ -569,15 +545,8 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
 
     for result in prepared_results:
         motion = result['motion']
-        all_tensors.append(motion)
         files_counter += 1
         frames_counter += motion.shape[0]
-
-    stats_tensors = np.concatenate(all_tensors, axis=0)
-
-    mean, std = get_mean_std(stats_tensors)
-    object_cond["mean"] = mean
-    object_cond["std"] = std
 
     return {
         'object_type': object_type,
@@ -603,8 +572,9 @@ keyed sidecars (action_tags.jsonl, motion_captions.jsonl) do not go stale.
 
 `files_counter` is still threaded through purely for the dataset-wide summary
 counts; it no longer participates in clip names. `action_start_counts` lets the
-incremental --update path continue numbering above existing clips of the same
-(object, action) group so freshly written clips never collide with retained ones.
+direct-input refresh path continue numbering above existing clips of the same
+(object, action) group so freshly written clips never collide with retained
+ones.
 """
 def _write_object_outputs(save_dir, object_payload, files_counter, action_start_counts=None):
     object_type = object_payload['object_type']
@@ -656,19 +626,17 @@ def _write_positions_error_file(save_dir, squared_positions_error):
 
 def _save_cond_with_tpose_sidecar(save_dir, cond, tpose_refs=None):
     """Persist cond.npy plus the ``TPOSE_REFERENCE_SIDECAR`` file
-    ({object_type: portable mesh path}).
+    (JSONL, one ``{"object_type": ..., "path": ...}`` per line).
 
     The skinned-mesh path is never stored on cond (file or memory); it travels
     separately and is passed here as *tpose_refs* ({object_type: path}). Only the
     objects present in *tpose_refs* (with a non-None path) update the sidecar; all
     other existing sidecar entries are preserved, so incremental builds, per-object
-    merges, and retarget/update paths (which reuse the target's existing entry) keep
-    every other species' path intact.
+    merges, and retarget paths keep every other species' path intact.
     """
+    from utils.misc import load_tpose_reference_sidecar, save_tpose_reference_sidecar
     sidecar_path = pjoin(save_dir, TPOSE_REFERENCE_SIDECAR)
-    sidecar = {}
-    if os.path.exists(sidecar_path):
-        sidecar = dict(np.load(sidecar_path, allow_pickle=True).item())
+    sidecar = load_tpose_reference_sidecar(sidecar_path)
 
     # Fresh paths collected this run take precedence over any existing sidecar value.
     for object_type, path in (tpose_refs or {}).items():
@@ -676,7 +644,7 @@ def _save_cond_with_tpose_sidecar(save_dir, cond, tpose_refs=None):
             sidecar[object_type] = path
 
     np.save(pjoin(save_dir, 'cond.npy'), cond)
-    np.save(sidecar_path, sidecar)
+    save_tpose_reference_sidecar(sidecar_path, sidecar)
 
 
 def _write_preprocess_seed_artifacts(save_dir, cond, motion_metadata, max_joints, files_counter, frames_counter, squared_positions_error, tpose_refs=None):
@@ -777,9 +745,7 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
 ``incremental``: keep already-processed clips on disk and only process source anim
 files that have not produced clips yet (per-object, keyed on source_fbx_path). New
 clips number above retained ones within each (object, action) group. The rewritten
-cond.npy / motion_metadata.json are seeded from the existing dataset so untouched
-objects survive. Provisional mean/std are computed over the newly processed clips only;
-the caller must finalize them with regenerate_dataset_artifacts(recompute_stats=True).
+dataset state is seeded from the existing dataset so untouched objects survive.
 Without ``incremental`` the prior full-build behavior is unchanged (callers wipe
 outputs first). """
 def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, raw_data_dir=None, object_workers=8, filter_min_length=10, resample_min_length=20, incremental=False):
@@ -916,18 +882,125 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
     )
 
 
+def _inherit_canonical_stats_from_dataset(object_name, object_cond, reference_dataset_dir=None):
+    """Inherit per-object_subset canonical standardization stats onto a standalone,
+    motion-less cond entry from the trained dataset cond.npy.
+
+    A rest-pose-only new skeleton (the ``process_new_skeleton`` inference path) has
+    no clips to calibrate the L-normalized mean/std from, and no sibling species in
+    its own standalone cond to inherit from. The stats are a cross-species constant
+    *per object_subset* tied to the trained checkpoint, so the only correct source
+    is a same-object_subset species in the training dataset cond.npy. Without them
+    the cond cannot be (de)standardized and generation fast-fails downstream.
+
+    Returns True if stats were set (or were already present), False if none could be
+    resolved (the caller warns; generation will then raise the missing-stats error).
+    """
+    from .canonical_features import get_canonical_global_stats
+
+    if get_canonical_global_stats(object_cond) is not None:
+        return True
+
+    target_subset = object_subset_for_object_type(object_name)
+    if target_subset is None:
+        print(f"[process_skeleton] '{object_name}' has no object_subset "
+              "(missing species_tags.jsonl entry); cannot inherit canonical stats.")
+        return False
+
+    ref_dir = reference_dataset_dir or DEFAULT_DATASET_DIR
+    ref_cond_path = pjoin(ref_dir, 'cond.npy')
+    if not os.path.exists(ref_cond_path):
+        print(f"[process_skeleton] reference dataset cond not found at '{ref_cond_path}'; "
+              "cannot inherit canonical stats.")
+        return False
+
+    ref_cond = np.load(ref_cond_path, allow_pickle=True).item()
+    for sibling, sibling_cond in ref_cond.items():
+        if not isinstance(sibling_cond, dict):
+            continue
+        if object_subset_for_object_type(sibling) != target_subset:
+            continue
+        stats = get_canonical_global_stats(sibling_cond)
+        if stats is not None:
+            set_canonical_global_stats(object_cond, stats[0], stats[1])
+            print(f"[process_skeleton] inherited canonical stats for '{object_name}' "
+                  f"(subset={target_subset}) from {ref_cond_path}")
+            return True
+
+    print(f"[process_skeleton] no '{target_subset}' species with canonical stats found "
+          f"in {ref_cond_path} for '{object_name}' to inherit; "
+          "regenerate the dataset cond.npy or process with motion clips.")
+    return False
+
+
 """Merge a freshly built object cond entry into an existing cond.npy in place.
 
-Other objects already present in cond.npy are left untouched. mean/std written
-here are provisional — regenerate_dataset_artifacts(recompute_stats=True) rebuilds
-them over the merged clip set after an incremental --update."""
+Other objects already present in cond.npy are left untouched."""
 def _merge_object_into_cond(save_dir, object_name, object_cond, tpose_reference_path=None):
     cond_path = pjoin(save_dir, 'cond.npy')
     cond = {}
     if os.path.exists(cond_path):
         cond = dict(np.load(cond_path, allow_pickle=True).item())
+    prior_entry = cond.get(object_name)
     cond[object_name] = object_cond
-    # tpose_reference_path is None for retarget/anim-dir updates that reuse the
+    # The canonical standardization stats are a cross-species constant *per
+    # object_subset* tied to the trained checkpoint. A freshly (re)built object
+    # cond has no stats of its own, so it must reuse the dataset's existing
+    # constant to land in the space the model was trained on.
+    def _entry_stats(entry):
+        if entry is None:
+            return None
+        mean = entry.get('canonical_feature_mean')
+        std = entry.get('canonical_feature_std')
+        return (mean, std) if mean is not None and std is not None else None
+
+    if object_cond.get('canonical_feature_mean') is None:
+        # 1) Update of an existing species: keep its own prior stats (skeleton
+        #    geometry / object_subset is unchanged, and the stats are tied to the
+        #    checkpoint), so the overwrite above doesn't drop them.
+        chosen = _entry_stats(prior_entry)
+        if chosen is None:
+            siblings_with_stats = {
+                sibling: stats
+                for sibling, sibling_cond in cond.items()
+                if sibling != object_name and (stats := _entry_stats(sibling_cond)) is not None
+            }
+            # 2) New species in a dataset that already carries canonical stats:
+            #    inherit ONLY from a sibling of the SAME object_subset. There is no
+            #    cross-subset fallback -- the model is trained per-object_subset, so
+            #    borrowing another subset's stats (or an untagged species having
+            #    none) would be out-of-distribution at inference -> fast-fail.
+            if not siblings_with_stats:
+                raise ValueError(
+                    f"No species in cond.npy carries canonical standardization stats "
+                    f"for '{object_name}' to inherit (the dataset predates canonical "
+                    f"features, or no species has been processed with rest geometry). "
+                    "Run regenerate_dataset_artifacts first to compute per-object_subset "
+                    "standardization statistics before merging new skeletons."
+                )
+            target_subset = object_subset_for_object_type(object_name)
+            if target_subset is None:
+                raise ValueError(
+                    f"'{object_name}' has no object_subset (missing species_tags.jsonl "
+                    "entry); cannot inherit canonical standardization stats. Register it "
+                    "in species_tags.jsonl before merging."
+                )
+            for sibling, stats in siblings_with_stats.items():
+                if object_subset_for_object_type(sibling) == target_subset:
+                    chosen = stats
+                    break
+            if chosen is None:
+                raise ValueError(
+                    f"No existing '{target_subset}' species in cond.npy carries canonical "
+                    f"standardization stats for new skeleton '{object_name}' to inherit. "
+                    "The model is trained per-object_subset, so borrowing another subset's "
+                    "stats would be out-of-distribution. Add a same-object_subset species "
+                    "(or regenerate the dataset) before merging."
+                )
+        if chosen is not None:
+            object_cond['canonical_feature_mean'] = np.asarray(chosen[0], dtype=np.float32)
+            object_cond['canonical_feature_std'] = np.asarray(chosen[1], dtype=np.float32)
+    # tpose_reference_path is None for retarget/direct-input updates that reuse the
     # target's existing sidecar entry (preserved by _save_cond_with_tpose_sidecar).
     tpose_refs = {object_name: tpose_reference_path} if tpose_reference_path else None
     _save_cond_with_tpose_sidecar(save_dir, cond, tpose_refs)
@@ -949,7 +1022,7 @@ def _normalized_source_fbx_path(entry):
 
 
 def _load_motion_metadata_raw(dataset_dir):
-    """Read motion_metadata.json's per-clip entries directly, without joining action_tags.
+    """Read stored per-clip entries directly, without joining action_tags.
 
     Unlike load_motion_metadata this never requires the action_tags.jsonl sidecar, so the
     incremental path can read source/numbering bookkeeping on datasets that have not been
@@ -1020,9 +1093,9 @@ def list_object_source_files(object_type, raw_data_dir=None):
     )
     # Mirror _prepare_object_outputs: a dedicated T-pose/rest reference file is consumed
     # as the encoding base (find_tpose_reference_path removes it from anim_files in place)
-    # and never produces a clip, so it never lands in motion_metadata.json. Drop it here
-    # too — otherwise every object carrying a *-TPOSE.fbx would perpetually report one
-    # unprocessed source file and get needlessly reprocessed on every incremental run.
+    # and never produces a clip. Drop it here too — otherwise every object carrying a
+    # *-TPOSE.fbx would perpetually report one unprocessed source file and get needlessly
+    # reprocessed on every incremental run.
     find_tpose_reference_path(anim_files)
     return [f for f in anim_files if not should_skip_anim(f, object_type)]
 
@@ -1032,7 +1105,7 @@ def find_new_source_files(objects, dataset_dir=None, raw_data_dir=None):
 
     Objects whose every current source file already produced clips are omitted. Used by
     the incremental preprocessing path to decide which objects need any work at all
-    (cheap: reads motion_metadata.json + lists raw dirs, no geometry loading)."""
+    (cheap: reads stored metadata + lists raw dirs, no geometry loading)."""
     target_dataset_dir = dataset_dir or DEFAULT_DATASET_DIR
     existing_meta = _load_motion_metadata_raw(target_dataset_dir)
     result = {}
@@ -1047,173 +1120,8 @@ def find_new_source_files(objects, dataset_dir=None, raw_data_dir=None):
     return result
 
 
-def validate_anim_dir_update_state(object_name, save_dir, existing_meta=None):
-    """Refuse incremental anim-dir replacement when target clips are ambiguous.
-
-    Replacing only the prior anim-dir clips is safe only when every existing
-    target motion on disk is tracked in motion_metadata.json and explicitly
-    identifiable as either a direct anim-dir clip or a preserved retarget clip.
-    Legacy datasets without that metadata must be rebuilt instead of updated in
-    place, otherwise an incoming source clip cannot reliably replace its older
-    output slices without duplicating target motions."""
-    motions_dir = pjoin(save_dir, MOTION_DIR)
-    existing_meta = load_motion_metadata(save_dir) if existing_meta is None else existing_meta
-
-    target_prefix = f"{object_name}_"
-    target_motion_names = [
-        p.name
-        for p in sorted(Path(motions_dir).glob("*.npy"))
-        if p.name.startswith(target_prefix)
-    ]
-    if not target_motion_names:
-        return
-
-    untracked_target = [
-        motion_name for motion_name in target_motion_names if motion_name not in existing_meta
-    ]
-    if untracked_target:
-        sample = ', '.join(untracked_target[:5])
-        raise RuntimeError(
-            f"cannot incrementally update anim-dir for {object_name}: existing target "
-            f"motions are present on disk but missing from motion_metadata.json "
-            f"({sample}). Rebuild this dataset without --update."
-        )
-
-    ambiguous_target = []
-    for motion_name in target_motion_names:
-        entry = existing_meta.get(motion_name, {})
-        if str(entry.get('object_type', '')) != object_name:
-            ambiguous_target.append(motion_name)
-            continue
-        if _is_anim_dir_motion_entry(entry) or _is_retarget_motion_entry(entry):
-            continue
-        ambiguous_target.append(motion_name)
-    if ambiguous_target:
-        sample = ', '.join(ambiguous_target[:5])
-        raise RuntimeError(
-            f"cannot incrementally update anim-dir for {object_name}: existing target "
-            f"motions lack source metadata needed to distinguish direct clips from "
-            f"preserved retarget clips ({sample}). Rebuild or regenerate this dataset "
-            f"with explicit motion_source metadata."
-        )
-
-
-"""Incremental --update for the --anim-dir path.
-
-Reprocesses the current --anim-dir input and merges the result into the
-existing dataset. Prior anim-dir clips from the same source FBX files are
-replaced in place, while untouched source clips and donor clips from a prior
---retarget-top-k run are preserved. Side artifacts are rebuilt afterwards by
-regenerate_dataset_artifacts() in the caller."""
-def _update_anim_dir(object_name, face_joints, save_dir, tpose_path, anim_dir):
-    motions_dir = pjoin(save_dir, MOTION_DIR)
-    bvhs_dir = pjoin(save_dir, BVHS_DIR)
-    existing_meta = load_motion_metadata(save_dir)
-    validate_anim_dir_update_state(object_name, save_dir, existing_meta)
-
-    # Clip numbers are per-(object, action) segment indices, so number new clips
-    # above the highest existing index *within each action group*. New clips then
-    # collide neither with retained donor clips nor with older anim-dir outputs
-    # still on disk during processing (matching-source clips are removed only
-    # after processing succeeds, so a failed reprocess leaves the existing
-    # dataset intact).
-    action_start_counts = _object_action_start_counts(existing_meta, object_name)
-
-    squared_positions_error = dict()
-    _, _, _, object_cond, new_meta, tpose_reference_path = process_object(
-        object_name,
-        0,
-        0,
-        23,
-        squared_positions_error,
-        save_dir=save_dir,
-        fbxs_dir=anim_dir,
-        face_joints=face_joints,
-        t_pos_path=tpose_path,
-        action_start_counts=action_start_counts,
-    )
-    if object_cond is None:
-        print(f"[update] no valid animation data found in {anim_dir}; dataset unchanged")
-        return
-
-    replaced_sources = {
-        _normalized_source_fbx_path(entry)
-        for entry in new_meta.values()
-    }
-    replaced_sources.discard(None)
-
-    # Processing succeeded — replace only prior direct clips that came from the
-    # same source files as this update. Untouched direct clips and donor clips
-    # are preserved, so A,B updated with B,C becomes A,B,C.
-    kept_meta = {}
-    replaced = 0
-    for motion_name, entry in existing_meta.items():
-        if (
-            str(entry.get('object_type', '')) == object_name
-            and _is_anim_dir_motion_entry(entry)
-            and _normalized_source_fbx_path(entry) in replaced_sources
-        ):
-            npy_path = pjoin(motions_dir, motion_name)
-            if os.path.exists(npy_path):
-                os.remove(npy_path)
-            bvh_path = pjoin(bvhs_dir, os.path.splitext(motion_name)[0] + '.bvh')
-            if os.path.exists(bvh_path):
-                os.remove(bvh_path)
-            replaced += 1
-        else:
-            kept_meta[motion_name] = entry
-    if replaced:
-        print(f"[update] replaced {replaced} previously processed anim-dir clip(s) "
-              f"from {len(replaced_sources)} updated source file(s)")
-
-    merged_meta = dict(kept_meta)
-    merged_meta.update(new_meta)
-    write_motion_metadata(save_dir, merged_meta, len(merged_meta))
-    _merge_object_into_cond(save_dir, object_name, object_cond, tpose_reference_path)
-    print(f"[update] anim-dir: {len(new_meta)} clip(s) written, "
-          f"{len(merged_meta)} clip(s) total")
-
-
-"""Incremental --update for the --retarget-top-k path.
-
-Donor motions were already written to save_dir/motions/ by auto_retarget_pipeline
-(deterministic `{target}_{donor}_{action}` names, so re-runs overwrite same-named
-donors and add new ones). Existing clips are kept; cond.npy and motion_metadata
-are merged. Side artifacts are rebuilt afterwards by the caller."""
-def _update_retarget(object_name, save_dir, motions_from_npys, target_cond_partial):
-    all_motions = [np.load(p).astype(np.float32) for p in motions_from_npys]
-    if not all_motions:
-        print("[update] no retargeted motions produced; dataset unchanged")
-        return
-
-    object_cond = dict(target_cond_partial)
-    object_cond['mean'], object_cond['std'] = get_mean_std(
-        np.concatenate(all_motions, axis=0)
-    )
-
-    parents = np.asarray(object_cond['parents'], dtype=np.int64)
-    offsets = np.asarray(object_cond['offsets'], dtype=np.float64)
-    existing_meta = load_motion_metadata(save_dir)
-    new_meta = {}
-    for motion_path, motion in zip(motions_from_npys, all_motions):
-        motion_name = os.path.basename(motion_path)
-        motion_labels = build_motion_labels(object_name, motion_name=motion_name)
-        motion_labels['translation_root_index'] = int(
-            infer_translation_root_index_from_features(motion, parents, offsets)
-        )
-        motion_labels['motion_source'] = 'retarget'
-        new_meta[motion_name] = motion_labels
-
-    merged_meta = dict(existing_meta)
-    merged_meta.update(new_meta)
-    write_motion_metadata(save_dir, merged_meta, len(merged_meta))
-    _merge_object_into_cond(save_dir, object_name, object_cond)
-    print(f"[update] retarget: {len(new_meta)} donor clip(s) written, "
-          f"{len(merged_meta)} clip(s) total")
-
-
-def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=None,
-                     motions_from_npys=None, target_cond_partial=None, update=False,
+def process_skeleton(object_name, face_joints, save_dir, tpose_path,
+                     motions_from_npys=None, target_cond_partial=None,
                      crop_enabled=True, skip_t5=False):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
@@ -1221,20 +1129,28 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
 
     if motions_from_npys is not None:
         # Retarget branch: motions already written to save_dir/motions/ by auto_retarget_pipeline.
-        # Load them, compute mean/std, then write cond.npy.
+        # Load them for metadata, then write static canonical cond.npy.
         assert target_cond_partial is not None, "target_cond_partial required with motions_from_npys"
-        if update:
-            _update_retarget(object_name, save_dir, motions_from_npys, target_cond_partial)
-            return
         all_motions = [np.load(p).astype(np.float32) for p in motions_from_npys]
         if not all_motions:
             print(f"[process_skeleton] no retargeted motions available; cond.npy not written")
             return
-        stats_tensors = np.concatenate(all_motions, axis=0)  # (total_frames, J, 13)
-        mean, std = get_mean_std(stats_tensors)
-        object_cond = dict(target_cond_partial)
-        object_cond['mean'] = mean
-        object_cond['std'] = std
+        object_cond = mark_canonical_cond_entry(dict(target_cond_partial))
+        # Standalone (non-merge) build has no sibling to inherit the cross-species
+        # global standardization constant from, so calibrate it from this skeleton's
+        # own retargeted clips in the L-normalized (size-free) space. A full dataset
+        # build instead finalizes these over all species in regenerate_dataset_artifacts.
+        _stats_acc = None
+        for _m in all_motions:
+            if _m.ndim == 3 and _m.shape[-1] >= 13:
+                try:
+                    _stats_acc = accumulate_lnorm_stats(_m, object_cond, acc=_stats_acc)
+                except (KeyError, ValueError):
+                    # cond entry lacks rest geometry; cannot encode -> skip.
+                    break
+        if _stats_acc is not None and _stats_acc["count"] > 0:
+            _mean, _std = finalize_lnorm_stats(_stats_acc)
+            set_canonical_global_stats(object_cond, _mean, _std)
         motion_metadata = {}
         parents = np.asarray(object_cond['parents'], dtype=np.int64)
         offsets = np.asarray(object_cond['offsets'], dtype=np.float64)
@@ -1265,10 +1181,6 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
         )
         return
 
-    if update and anim_dir is not None:
-        _update_anim_dir(object_name, face_joints, save_dir, tpose_path, anim_dir)
-        return
-
     ## process
     files_counter = 0
     frames_counter = 0
@@ -1278,49 +1190,20 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path, anim_dir=No
     cond = dict()
     motion_metadata = {}
 
-    if anim_dir is None:
-        # Rest-pose only: generate cond.npy without motion file processing
-        object_cond, max_joints, tpose_reference_path = _build_rest_pose_only_cond(
-            object_name,
-            tpose_path,
-            face_joints,
-            crop_enabled=crop_enabled,
-        )
-        cond[object_name] = object_cond
-        _write_dataset_artifacts(
-            save_dir,
-            cond,
-            motion_metadata,
-            objects_counter,
-            max_joints,
-            files_counter,
-            frames_counter,
-            squared_positions_error,
-            skip_t5=skip_t5,
-            tpose_refs={object_name: tpose_reference_path},
-        )
-        return
-
-    cur_counter = files_counter
-    files_counter, frames_counter, max_joints, object_cond, object_motion_metadata, tpose_reference_path = process_object(
+    # Rest-pose only: generate cond.npy without motion file processing.
+    object_cond, max_joints, tpose_reference_path = _build_rest_pose_only_cond(
         object_name,
-        files_counter,
-        frames_counter,
-        max_joints,
-        squared_positions_error,
-        save_dir=save_dir,
-        fbxs_dir=anim_dir,
-        face_joints=face_joints,
-        t_pos_path=tpose_path,
+        tpose_path,
+        face_joints,
         crop_enabled=crop_enabled,
     )
-    if object_cond is None:
-        print(f"No valid animation data found for '{object_name}', aborting.")
-        return
+    # Rest-pose-only builds have no clips to calibrate the per-object_subset
+    # standardization stats from, and no sibling in this standalone cond to
+    # inherit them from. Pull them from the trained dataset's same-object_subset
+    # species so the cond is usable for inference (else generation fast-fails
+    # with the missing-stats KeyError).
+    _inherit_canonical_stats_from_dataset(object_name, object_cond)
     cond[object_name] = object_cond
-    objects_counter[object_name] = files_counter - cur_counter
-    motion_metadata.update(object_motion_metadata)
-
     _write_dataset_artifacts(
         save_dir,
         cond,

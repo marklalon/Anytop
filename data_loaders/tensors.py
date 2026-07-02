@@ -57,8 +57,8 @@ def truebones_collate(batch):
     """Collate a list of motion items into a single (inp, cond) batch.
 
     Each item in *batch* is a dict produced by ``truebones_batch_collate``
-    containing keys like ``'inp'``, ``'rest_pose'``, ``'mean'``,
-    ``'std'``, ``'motion_start_frame'``, etc.
+    containing keys like ``'inp'``, ``'rest_pose'``,
+    ``'motion_start_frame'``, etc.
 
     Returns
     -------
@@ -66,14 +66,12 @@ def truebones_collate(batch):
         Concatenated motion input tensor.
     cond : dict
         Conditioning dictionary with ``'y'`` containing all metadata
-        (mask, lengths, T-pose, normalization stats, object type,
+        (mask, lengths, T-pose, object type,
         motion name, action tags, loop info, motion_start_frame, …).
     """
     notnone_batches = [b for b in batch if b is not None]
     databatch = [b['inp'] for b in notnone_batches]
     restposebatch = [b['rest_pose'] for b in notnone_batches]
-    meanbatch = [b['mean'] for b in notnone_batches]
-    stdbatch = [b['std'] for b in notnone_batches]
     if 'n_joints' in notnone_batches[0]:
         jointsnumbatch = [b['n_joints'] for b in notnone_batches]
     else:
@@ -86,8 +84,6 @@ def truebones_collate(batch):
     
     databatchTensor = collate_tensors(databatch)
     restposebatchTensor = collate_tensors(restposebatch)
-    meanbatchTensor = collate_tensors(meanbatch)
-    stdbatchTensor = collate_tensors(stdbatch)
     jointsnumbatchTensor = torch.as_tensor(jointsnumbatch)
     jointsmaskbatchTensor = n_joints_to_mask(jointsnumbatchTensor, databatchTensor.shape[1]).unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
 
@@ -100,7 +96,7 @@ def truebones_collate(batch):
     motion = databatchTensor
     frame_count = databatchTensor.shape[-1]
     batch_size = len(databatch)
-    cond = {'y': {'mask': maskbatchTensor, 'lengths': torch.full((batch_size,), frame_count, dtype=torch.long), 'rest_pose': restposebatchTensor, 'mean': meanbatchTensor, 'std':stdbatchTensor}}
+    cond = {'y': {'mask': maskbatchTensor, 'lengths': torch.full((batch_size,), frame_count, dtype=torch.long), 'rest_pose': restposebatchTensor}}
 
     if 'object_type' in notnone_batches[0]:
         objecttypebatch = [b['object_type'] for b in notnone_batches]
@@ -120,6 +116,40 @@ def truebones_collate(batch):
     if any('translation_root_index' in batch_item for batch_item in notnone_batches):
         cond['y'].update({
             'translation_root_index': [batch_item.get('translation_root_index') for batch_item in notnone_batches]
+        })
+
+    if any('rest_pos_ric_hml' in batch_item for batch_item in notnone_batches):
+        cond['y'].update({
+            'rest_pos_ric_hml': collate_tensors([
+                batch_item['rest_pos_ric_hml'] for batch_item in notnone_batches
+            ])
+        })
+
+    if any('rest_pose_physical' in batch_item for batch_item in notnone_batches):
+        cond['y'].update({
+            'rest_pose_physical': collate_tensors([
+                batch_item['rest_pose_physical'] for batch_item in notnone_batches
+            ])
+        })
+
+    # Canonical standardization stats are a cross-species constant *per object_subset*
+    # (quadruped / winged / ... each get their own 13-vector), so a mixed-species
+    # batch needs per-sample stats. Stack them in batch order into [B, F] so the
+    # training-time aux-loss decode (canonical_to_physical_hml reads y) de-standardizes
+    # each sample with its own object_subset's stats. Only stack when every item carries
+    # the stat; a partially-populated batch would misalign sample<->stat (and the
+    # fail-fast loader guarantees all training items have it).
+    for stat_key in ('canonical_feature_mean', 'canonical_feature_std'):
+        stat_vals = [batch_item.get(stat_key) for batch_item in notnone_batches]
+        if all(v is not None for v in stat_vals):
+            cond['y'][stat_key] = torch.stack(
+                [torch.as_tensor(v, dtype=torch.float32).reshape(-1) for v in stat_vals],
+                dim=0,
+            )
+
+    if any('feature_space' in batch_item for batch_item in notnone_batches):
+        cond['y'].update({
+            'feature_space': [batch_item.get('feature_space') for batch_item in notnone_batches]
         })
 
     for key in ('is_loop', 'loop_full_cycle'):
@@ -235,14 +265,12 @@ def truebones_batch_collate(batch):
         [8]  object_type     – str
         [9]  joints_names_embs – np.ndarray, joint name embeddings
         [10] crop_start      – int, starting frame index in source motion
-        [11] mean            – np.ndarray, per-joint normalization mean
-        [12] std             – np.ndarray, per-joint normalization std
-        [13] max_joints      – int
-        [14] motion_metadata – dict or None (action tags, loop info, etc.)
-        [15] name            – str, motion name
-        [16+] extras         – dicts (joint_mask_candidate_roots, aug info, …)
+        [11] max_joints      – int
+        [12] motion_metadata – dict or None (action tags, loop info, etc.)
+        [13] name            – str, motion name
+        [14+] extras         – dicts (joint_mask_candidate_roots, aug info, …)
     """
-    max_joints = batch[0][13]
+    max_joints = batch[0][11]
     adapted_batch = []
     for b in batch:  
         max_len, n_joints, n_feats = b[0].shape
@@ -252,10 +280,6 @@ def truebones_batch_collate(batch):
         motion[:, :b[0].shape[1], :] = torch.from_numpy(np.asarray(b[0], dtype=np.float32))
         joints_names_embs = torch.zeros((max_joints, b[9].shape[1]))
         joints_names_embs[:n_joints] = torch.from_numpy(np.asarray(b[9], dtype=np.float32))
-        mean = torch.zeros((max_joints, n_feats))
-        mean[:n_joints] = torch.from_numpy(np.asarray(b[11], dtype=np.float32))
-        std = torch.ones((max_joints, n_feats))
-        std[:n_joints] = torch.from_numpy(np.asarray(b[12], dtype=np.float32))
         n_joints = b[0].shape[1]
         temporal_mask = torch.as_tensor(b[5][:max_len + 1, :max_len + 1])
         padded_joints_relations =  create_padded_relation(b[7], max_joints, n_joints)
@@ -264,9 +288,9 @@ def truebones_batch_collate(batch):
         motion_metadata = None
         motion_name = None
         extra_cond = None
-        for extra in b[14:]:
+        for extra in b[12:]:
             if isinstance(extra, dict):
-                if 'joint_mask_candidate_roots' in extra:
+                if 'joint_mask_candidate_roots' in extra or 'rest_pos_ric_hml' in extra:
                     extra_cond = extra
                 elif any(key in extra for key in ('species_label', 'action_tags', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'global_energy_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count')):
                     motion_metadata = extra
@@ -284,8 +308,6 @@ def truebones_batch_collate(batch):
             'object_type': object_type,
             'joints_names_embs': joints_names_embs,
             'rest_pose': rest_pose,
-            'mean': mean,
-            'std': std,
             'motion_start_frame': int(b[10]),  # crop_start from _prepare_sample
         }
         if extra_cond is not None and 'joint_mask_candidate_roots' in extra_cond:
@@ -297,6 +319,31 @@ def truebones_batch_collate(batch):
             item['joint_mask_candidate_roots'] = padded_candidate_roots
         if extra_cond is not None and extra_cond.get('species_emb') is not None:
             item['species_emb'] = torch.from_numpy(np.asarray(extra_cond['species_emb'], dtype=np.float32))
+        if extra_cond is not None and 'rest_pos_ric_hml' in extra_cond:
+            rest_pos = torch.zeros((max_joints, 3), dtype=torch.float32)
+            raw_rest_pos = np.asarray(extra_cond['rest_pos_ric_hml'], dtype=np.float32)
+            rest_pos[:min(max_joints, n_joints, raw_rest_pos.shape[0])] = torch.from_numpy(
+                raw_rest_pos[:min(max_joints, n_joints, raw_rest_pos.shape[0])]
+            )
+            item['rest_pos_ric_hml'] = rest_pos
+        if extra_cond is not None and 'rest_pose_physical' in extra_cond:
+            rest_physical = torch.zeros((max_joints, n_feats), dtype=torch.float32)
+            raw_rest_physical = np.asarray(extra_cond['rest_pose_physical'], dtype=np.float32)
+            count = min(max_joints, n_joints, raw_rest_physical.shape[0])
+            rest_physical[:count, :min(n_feats, raw_rest_physical.shape[1])] = torch.from_numpy(
+                raw_rest_physical[:count, :min(n_feats, raw_rest_physical.shape[1])]
+            )
+            item['rest_pose_physical'] = rest_physical
+        if extra_cond is not None and extra_cond.get('canonical_feature_mean') is not None:
+            item['canonical_feature_mean'] = torch.from_numpy(
+                np.asarray(extra_cond['canonical_feature_mean'], dtype=np.float32).reshape(-1)
+            )
+        if extra_cond is not None and extra_cond.get('canonical_feature_std') is not None:
+            item['canonical_feature_std'] = torch.from_numpy(
+                np.asarray(extra_cond['canonical_feature_std'], dtype=np.float32).reshape(-1)
+            )
+        if extra_cond is not None:
+            item['feature_space'] = extra_cond.get('feature_space', 'canonical_motion_v3')
         if motion_metadata is not None:
             for key in ('action_tags', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'global_energy_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count'):
                 if key in motion_metadata:

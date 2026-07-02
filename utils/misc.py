@@ -127,7 +127,7 @@ def infer_object_type_from_filename(
 
 # ── Dataset asset path portability ─────────────────────────────────────────
 # Dataset sidecars store asset paths such as the ``tpose_reference_path`` in the
-# tpose_reference_paths sidecar. Historically these were absolute paths, which
+# tpose_reference_paths.jsonl sidecar. Historically these were absolute paths, which
 # break when the repo/dataset is moved to another machine or mounted into a
 # container at a different prefix (e.g. a Windows ``D:\...`` path inside a Linux
 # container). They are now stored as a *repo-root-relative POSIX* path via
@@ -191,6 +191,42 @@ def resolve_dataset_path(stored, *, extra_roots=None) -> str | None:
     raise FileNotFoundError(
         f"Dataset path not found: {stored!r} (searched roots: {roots})"
     )
+
+
+# ── tpose_reference_paths.jsonl sidecar I/O ──────────────────────────────
+
+def load_tpose_reference_sidecar(path: str) -> dict[str, str]:
+    """Load the JSONL sidecar (``object_type`` → portable mesh path).
+
+    Returns a dict keyed by ``object_type``; entries with a ``None`` path are
+    omitted.  Returns an empty dict if the file does not exist.
+    """
+    import json
+    refs: dict[str, str] = {}
+    if not _os.path.isfile(path):
+        return refs
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            entry = json.loads(line)
+            path_val = entry.get("path")
+            if path_val is not None:
+                refs[entry["object_type"]] = path_val
+    return refs
+
+
+def save_tpose_reference_sidecar(path: str, refs: dict[str, str | None]) -> None:
+    """Write the JSONL sidecar (one ``{"object_type": ..., "path": ...}`` per line).
+
+    Entries with a ``None`` path are written as ``null`` so the consumer can
+    distinguish an explicitly cleared entry from a missing one.
+    """
+    import json
+    with open(path, "w", encoding="utf-8") as f:
+        for ot, p in refs.items():
+            f.write(json.dumps({"object_type": ot, "path": p}, ensure_ascii=False) + "\n")
 
 
 # ── String normalisation helpers (shared across tools) ───────────────────

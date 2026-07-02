@@ -16,6 +16,10 @@ from .physics_joint_annotation import (
 
 _EMITTED_DEGENERATE_FACING_WARNINGS = set()
 _FACING_NEAR_Y_AXIS_ANGLE_DEG = 15.0
+# A forward-reference joint whose bone (distance to its parent) is shorter than
+# this fraction of the skeleton's overall extent carries no directional
+# information and is treated as geometrically degenerate.
+_DEGENERATE_BONE_LENGTH_FRACTION = 1e-3
 
 
 def _emit_degenerate_facing_warning(object_type, warning_kind, message):
@@ -197,9 +201,20 @@ def _find_semantic_joint_pair(joint_names, parents, priorities, *, exclude_near_
     return right_index, left_index
 
 
-def _find_forward_reference_joint(joint_names, parents):
+def _find_forward_reference_joint(joint_names, parents, rest_positions=None):
     depths = _joint_depths(parents)
     replacements = effective_canonical_replacements(joint_names)
+
+    # When rest positions are available, measure a skeleton scale so bone lengths
+    # can be judged degenerate relative to the body's overall size (unit-agnostic).
+    pos = _rest_positions_2d(rest_positions)
+    scale = None
+    if pos is not None:
+        centered = pos - pos.mean(axis=0, keepdims=True)
+        scale = float(np.linalg.norm(centered, axis=1).max())
+        if scale < 1e-8:
+            pos = None  # degenerate skeleton overall: cannot judge bone lengths
+
     candidates = []
 
     for joint_index, joint_name in enumerate(joint_names):
@@ -213,6 +228,18 @@ def _find_forward_reference_joint(joint_names, parents):
                 break
         if priority_index is None:
             continue
+        # Skip geometrically degenerate references: a joint coincident with its
+        # parent (zero-length bone, e.g. a placeholder 'Neck' sitting on the hips)
+        # carries no directional information. Picking it yields a meaningless
+        # forward vector that can silently reverse the facing; skipping it lets the
+        # search fall through to a deeper head/neck joint or, failing that, the
+        # tail->spine body-axis fallback.
+        if pos is not None:
+            parent_index = int(parents[joint_index])
+            if parent_index >= 0:
+                bone_length = float(np.linalg.norm(pos[joint_index] - pos[parent_index]))
+                if bone_length < _DEGENERATE_BONE_LENGTH_FRACTION * scale:
+                    continue
         candidates.append((priority_index, -depths[joint_index], joint_index))
 
     if not candidates:
@@ -267,8 +294,8 @@ def _find_body_axis_base_joint(joint_names, parents):
     )
 
 
-def resolve_forward_reference_joints(joint_names, parents, object_type=None):
-    forward_joint_index = _find_forward_reference_joint(joint_names, parents)
+def resolve_forward_reference_joints(joint_names, parents, object_type=None, rest_positions=None):
+    forward_joint_index = _find_forward_reference_joint(joint_names, parents, rest_positions=rest_positions)
 
     if forward_joint_index is not None:
         return forward_joint_index, None
