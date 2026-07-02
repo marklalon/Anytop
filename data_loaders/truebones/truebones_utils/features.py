@@ -412,6 +412,7 @@ def get_common_features_from_rest_pose(
         rest_pose_names,
         reference_anim.parents,
         object_type=object_type,
+        rest_positions=reference_positions,
     )
     rest_pose_orientation_quat = calculate_root_quat(reference_positions, object_type, face_joint_indx=face_joints, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)[0]
 

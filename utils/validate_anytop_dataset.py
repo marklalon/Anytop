@@ -590,11 +590,20 @@ def _validate_motion_orientation(
         tpose_features = np.asarray(object_cond["rest_pose"], dtype=np.float64)
         joint_names = list(object_cond.get("joints_names", []))
 
+        # Compute rest positions first so they can be used for degenerate bone
+        # detection in face/forward reference resolution.
+        tpose_positions, _ = recover_from_bvh_rot_np(
+            tpose_features[None],
+            parents,
+            offsets,
+            translation_root_index=translation_root_index,
+        )
+
         face_joints = object_cond.get("face_joints")
         if face_joints is not None:
             face_joints = [int(index) for index in face_joints]
         else:
-            face_joints = resolve_face_joints(object_type, joint_names, parents)
+            face_joints = resolve_face_joints(object_type, joint_names, parents, rest_positions=tpose_positions)
 
         forward_joint_index = object_cond.get("forward_joint_index")
         forward_base_joint_index = object_cond.get("forward_base_joint_index")
@@ -603,6 +612,7 @@ def _validate_motion_orientation(
                 joint_names,
                 parents,
                 object_type,
+                rest_positions=tpose_positions,
             )
         elif forward_base_joint_index is not None:
             forward_base_joint_index = int(forward_base_joint_index)
@@ -612,12 +622,6 @@ def _validate_motion_orientation(
         endpoint_indices = [0] if motion.shape[0] == 1 else [0, motion.shape[0] - 1]
         motion_positions, _ = recover_from_bvh_rot_np(
             motion[endpoint_indices],
-            parents,
-            offsets,
-            translation_root_index=translation_root_index,
-        )
-        tpose_positions, _ = recover_from_bvh_rot_np(
-            tpose_features[None],
             parents,
             offsets,
             translation_root_index=translation_root_index,

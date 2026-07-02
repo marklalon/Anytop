@@ -499,7 +499,7 @@ def retarget_animation_file_to_target(
         _SRC_FACE_HINT, src_names, src_parents, None, rest_positions=bind_positions
     )
     src_forward_joint, src_forward_base_joint = resolve_forward_reference_joints(
-        src_names, src_parents, object_type=_SRC_FACE_HINT,
+        src_names, src_parents, object_type=_SRC_FACE_HINT, rest_positions=bind_positions,
     )
     src_orientation_quat = np.asarray(
         calculate_root_quat(

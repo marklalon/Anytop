@@ -142,10 +142,13 @@ def align_directory(
         """Rotation mapping this clip's frame-0 facing onto the T-pose rest-pose facing."""
         if tpose_forward is None:
             return tp.orientation_quat
-        fj = resolve_face_joints(object_type, names, anim.parents)
-        fwd_j, fwd_b = resolve_forward_reference_joints(names, anim.parents, object_type=object_type)
+        clip_positions = positions_global(anim[:1])
+        fj = resolve_face_joints(object_type, names, anim.parents, rest_positions=clip_positions)
+        fwd_j, fwd_b = resolve_forward_reference_joints(
+            names, anim.parents, object_type=object_type, rest_positions=clip_positions
+        )
         clip_forward = _get_facing_forward(
-            positions_global(anim[:1]),
+            clip_positions,
             object_type,
             face_joint_indx=fj,
             forward_joint_index=fwd_j,
