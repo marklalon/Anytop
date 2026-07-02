@@ -1416,6 +1416,16 @@ def main(args=None, cond_dict=None, runtime=None):
         _cached = _find_cached_species_emb(
             _species_tags, cond_dict, _override_t5_name, _override_dim,
         )
+        if _cached is None:
+            # The active --cond_path may be a small custom cond lacking the
+            # species whose baked tags match; fall back to the default cond DB.
+            _default_cond_cache = _load_default_cond_cache(
+                getattr(opt, 'cond_file', None), actual_cond_file,
+            )
+            if _default_cond_cache:
+                _cached = _find_cached_species_emb(
+                    _species_tags, _default_cond_cache, _override_t5_name, _override_dim,
+                )
         if _cached is not None:
             _species_emb_override, _cache_src = _cached
             print(
