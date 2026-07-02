@@ -4,7 +4,8 @@ Dump the per-character canonical t-pose stored in cond.npy to single-frame BVH.
 
 cond.npy is a dict keyed by object type; each entry carries the canonical
 skeleton's rest-pose local ``offsets`` (J, 3), ``parents`` (J,), and
-``joints_names``. The rest pose with identity joint rotations *is* the t-pose,
+``joints_names`` (or ``canonical_bvh_joint_names``). The rest pose with
+identity joint rotations *is* the t-pose,
 so we emit one single-frame BVH per character (no source motion required).
 
 NOTE — frame convention: these ``offsets`` are the processed bind pose stored in
@@ -48,7 +49,13 @@ def _build_tpose_animation(object_cond: dict) -> tuple[Animation, list[str]]:
     """Build a one-frame rest-pose Animation from a cond.npy object entry."""
     offsets = np.asarray(object_cond["offsets"], dtype=np.float64)
     parents = np.asarray(object_cond["parents"], dtype=np.int64)
-    joint_names = [str(name).replace(" ", "_") for name in object_cond["joints_names"]]
+    joint_names = [
+        str(name).replace(" ", "_")
+        for name in object_cond.get(
+            "canonical_bvh_joint_names",
+            object_cond.get("canonical_joint_names", object_cond["joints_names"]),
+        )
+    ]
 
     num_joints = offsets.shape[0]
     if parents.shape[0] != num_joints or len(joint_names) != num_joints:
