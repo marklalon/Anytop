@@ -609,7 +609,8 @@ def _prepare_img2img_reference_bundle(
 
 
 def _export_motion(task):
-    motion_np, parents_np, offsets, npy_name, joint_names, out_path, fps, tpose_rest_rotations, translation_root_index = task
+    (motion_np, parents_np, offsets, npy_name, joint_names, out_path, fps,
+     tpose_rest_rotations, translation_root_index, rigid_bone) = task
     out_anim, joint_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
         motion_np,
         parents_np,
@@ -618,6 +619,7 @@ def _export_motion(task):
         translation_root_index=translation_root_index,
         allow_infer=translation_root_index is None,
         tpose_rest_rotations=tpose_rest_rotations,
+        rigid_bone=rigid_bone,
     )
     np.save(pjoin(out_path, npy_name), motion_np)
     if out_anim is not None:
@@ -895,6 +897,7 @@ def _generate_all_species(
                 export_tasks.append((
                     motion_np, parents, sp_entry['offsets'], npy_name, joint_names,
                     out_path, fps, _tpose_rr, translation_root_index,
+                    bool(getattr(args, 'rigidbone', False)),
                 ))
 
             for task in tqdm(export_tasks, desc=f'batch {batch_idx} export'):
@@ -1624,6 +1627,7 @@ def main(args=None, cond_dict=None, runtime=None):
             fps,
             _tpose_rest_rotations,
             translation_root_index,
+            bool(getattr(args, 'rigidbone', False)),
         ))
 
     for task in tqdm(export_tasks, desc=f'{object_type} export'):

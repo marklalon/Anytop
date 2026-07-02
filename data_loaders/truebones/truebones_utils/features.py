@@ -1004,6 +1004,7 @@ def recover_animation_from_motion_np(
     anim_pos_threshold=0.01,
     motion_metadata=None,
     allow_infer=False,
+    rigid_bone=False,
 ):
     translation_root_index = resolve_feature_translation_root_index(
         data,
@@ -1015,15 +1016,6 @@ def recover_animation_from_motion_np(
         anim_pos_threshold=anim_pos_threshold,
         context='motion feature tensor',
     )
-    target_global        = recover_from_bvh_ric_np(
-        data,
-        translation_root_index=translation_root_index,
-        parents=parents,
-        offsets=offsets,
-        anim_pos_threshold=anim_pos_threshold,
-        motion_metadata=motion_metadata,
-        allow_infer=allow_infer,
-    )              # (F, J, 3)
     _, anim_rot          = recover_from_bvh_rot_np(
         data,
         parents,
@@ -1033,6 +1025,21 @@ def recover_animation_from_motion_np(
         motion_metadata=motion_metadata,
         allow_infer=allow_infer,
     )
+    # Rigid-bone export: trust the rotation channel + fixed rest offsets only
+    # (pure FK), skipping the RIC position-channel override below. Bones stay
+    # perfectly rigid; genuinely animated non-root joint translation is dropped.
+    if rigid_bone:
+        return anim_rot, needs_bvh_position_channels(anim_rot)
+
+    target_global        = recover_from_bvh_ric_np(
+        data,
+        translation_root_index=translation_root_index,
+        parents=parents,
+        offsets=offsets,
+        anim_pos_threshold=anim_pos_threshold,
+        motion_metadata=motion_metadata,
+        allow_infer=allow_infer,
+    )              # (F, J, 3)
     glob_rot             = positions_global(anim_rot)                  # (F, J, 3)
 
     # Zero-offset leaf joints have no bone length, so the model's small per-joint
@@ -1088,6 +1095,7 @@ def recover_bvh_export_animation_from_motion_np(
     motion_metadata=None,
     allow_infer=False,
     tpose_rest_rotations=None,
+    rigid_bone=False,
 ):
     """Recover a motion tensor and remap it into BVH-safe DFS order.
 
@@ -1110,6 +1118,7 @@ def recover_bvh_export_animation_from_motion_np(
         anim_pos_threshold=anim_pos_threshold,
         motion_metadata=motion_metadata,
         allow_infer=allow_infer,
+        rigid_bone=rigid_bone,
     )
     if anim is None:
         return None, list(joint_names), has_animated_pos

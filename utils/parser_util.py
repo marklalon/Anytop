@@ -262,6 +262,11 @@ def add_sampling_options(parser):
                             "softmax stays fp32. Requires a CUDA device with bf16 support (Ampere+).")
     group.add_argument("--loop", action='store_true',
                        help="Generate with loop conditioning and loop-aware temporal masks when supported by the checkpoint.")
+    group.add_argument("--rigidbone", action='store_true',
+                       help="Export BVH as pure FK (rotation + fixed rest offsets), skipping the RIC position solver. "
+                            "Keeps bone lengths rigid; drops animated non-root translations. "
+                            "Useful when the position/rotation channels disagree and the solver stretches bones. "
+                            "Only affects BVH export; .npy features are unchanged.")
 
 
 def add_generate_options(parser):
