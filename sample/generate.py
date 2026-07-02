@@ -69,10 +69,7 @@ class GenerationRuntime:
     sampling_steps: int
     amp_dtype: str
     cond_path: str
-    # Optional preloaded T5 conditioner (e.g. the server's resident instance)
-    # reused by --species_tags re-encoding to avoid loading a second T5. Keyed
-    # implicitly by its `.name`; a mismatch with the species' baked t5_name
-    # falls back to an on-demand load.
+    # Preloaded T5 conditioner reused by --species_tags to avoid a second T5 load.
     t5_conditioner: object = None
 
     def validate_args(self, args):
@@ -166,15 +163,13 @@ def prepare_generation_runtime(args=None, cond_dict=None):
     _raise_opt_max_joints_for_cond(opt, cond_dict)
 
     print('Creating model and diffusion...')
-    # Pass cond_dict (already in memory) instead of the file path to avoid a
-    # second np.load() of cond.npy.
+    # Use in-memory cond_dict to avoid a second np.load().
     resolve_t5_out_dim(args, cond_source=cond_dict)
     sampling_method, sampling_steps = _configure_sampling_args(args)
     model, diffusion = create_model_and_diffusion_general_skeleton(args)
 
     print(f'Loading checkpoints from [{args.model_path}]...')
-    # Load checkpoint directly to the target device when CUDA is available,
-    # otherwise fall back to CPU to avoid device(=None) surprises.
+    # Load checkpoint to CUDA if available, else CPU.
     device = dist_util.dev()
     if device is None or device.type != 'cuda':
         device = torch.device('cpu')
@@ -185,9 +180,7 @@ def prepare_generation_runtime(args=None, cond_dict=None):
     elif 'model' in state_dict:
         state_dict = state_dict['model']
     assert model is not None, 'BUG: create_model_and_diffusion_general_skeleton returned None for model'
-    # NOTE: model.to(device) can return None in some PyTorch builds
-    # (observed with CUDA 12.8 + torch 2.7.1). The parameter move is
-    # in-place on nn.Module, so we must NOT capture the return value.
+    # model.to(device) may return None (CUDA 12.8 + torch 2.7.1); parameter move is in-place.
     model.to(device)
     load_model(model, state_dict)
 
@@ -241,9 +234,7 @@ def resolve_global_energy_condition(model, global_energy, batch_size):
     running_mean = unwrapped_model.global_energy_running_mean.detach().to(device='cpu', dtype=torch.float32).clone()
     running_var = unwrapped_model.global_energy_running_var.detach().to(device='cpu', dtype=torch.float32).clone()
     running_std = torch.sqrt(running_var.clamp_min(1e-6))
-    # CLI value is in normalized space (Z-score against training distribution).
-    # De-normalize to raw space so that downstream _build_global_energy_token
-    # re-normalizes it correctly: raw = norm * running_std + running_mean.
+    # CLI value is a z-score; de-normalize to raw space for _build_global_energy_token.
     raw = running_mean.clone()
     raw[0] = float(global_energy) * running_std[0] + running_mean[0]
     if not torch.isfinite(raw).all():
@@ -252,12 +243,7 @@ def resolve_global_energy_condition(model, global_energy, batch_size):
 
 
 def _compute_global_energy_from_reference(ref_motion, n_joints, playspeed_cond=None):
-    """Extract raw global energy [mean, std] from a reference motion tensor.
-
-    ``ref_motion`` must be a (B, J, F, T) tensor in the model feature space.
-    Returns a (B, 1) float32 tensor on the same device with column
-    ``[global_energy]`` ready for ``_build_global_energy_token``.
-    """
+    """Extract raw global energy [mean, std] from reference motion (B, J, F, T) tensor."""
     from Anytop.model.anytop import GlobalEnergyExtractor
 
     return GlobalEnergyExtractor.compute_global_energy_condition(
@@ -410,8 +396,7 @@ def _retarget_reference_motion(
         context='Cross-species reference retarget',
     )
 
-    # Both source and target rest-pose skeletons are reconstructed from cond —
-    # no original T-pose FBX/GLB mesh is read for either side.
+    # Both skeletons reconstructed from cond (no mesh read).
     src_tp = tpose_features_from_cond(src_cond, source_type)
     tgt_tp = tpose_features_from_cond(tgt_cond, target_type)
 
@@ -432,13 +417,13 @@ def _retarget_reference_motion(
             f"({source_type} → {target_type}). Check source/target cond entries and joint overlap."
         )
 
-    # Save retargeted .npy
+    # Save retargeted .npy.
     base = os.path.splitext(os.path.basename(ref_motion_path))[0]
     out_npy = os.path.join(output_dir, f"_retargeted_{source_type}_to_{target_type}__{base}.npy")
     np.save(out_npy, target_features)
     print(f"  Retargeted features {target_features.shape} → {out_npy}")
 
-    # Inspection-friendly BVH sibling
+    # Inspection BVH.
     try:
         out_bvh = out_npy.replace('.npy', '.bvh')
         out_anim, joint_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
@@ -470,25 +455,15 @@ def _retarget_reference_motion_from_file(
     output_dir,
     fps,
 ):
-    """Retarget a raw .fbx/.glb/.gltf reference onto ``target_type``, cond-free on
-    the source side.
-
-    Unlike :func:`_retarget_reference_motion` (which consumes a feature .npy and
-    needs the source object's cond entry), this reads the source skeleton and
-    motion straight from the animation file via ``FBX.load`` and delegates to
-    ``utils.auto_retarget.retarget_animation_file_to_target``. It works even when
-    the source object_type is not present in ``cond_dict`` — only the target's
-    cond/T-pose is required. Output artifacts (retargeted .npy + inspection .bvh)
-    match the feature-npy retarget path.
-    """
+    """Retarget raw .fbx/.glb/.gltf onto target_type (cond-free source).
+    Only the target's cond/T-pose is required."""
     from Anytop.utils.auto_retarget import (
         retarget_animation_file_to_target,
     )
 
     tgt_cond = dict(cond_dict[target_type])
 
-    # Source label is for output naming only — never used to look up cond or to
-    # drive any object_type-dependent processing on the source.
+    # Source label is for output naming only.
     base = os.path.splitext(os.path.basename(reference_motion_path))[0]
     source_label = infer_object_type_from_filename(reference_motion_path, valid_types=None) or base
 
@@ -502,9 +477,7 @@ def _retarget_reference_motion_from_file(
         context='Cond-free reference retarget',
     )
 
-    # Target rest-pose skeleton from cond — no T-pose mesh read. The source
-    # skeleton/motion still comes from the user-provided animation file inside
-    # retarget_animation_file_to_target (that file is the actual input motion).
+    # Target rest-pose from cond; source skeleton/motion from the animation file.
     tgt_tp = tpose_features_from_cond(tgt_cond, target_type)
 
     target_features = retarget_animation_file_to_target(
@@ -526,7 +499,7 @@ def _retarget_reference_motion_from_file(
     np.save(out_npy, target_features)
     print(f"  Retargeted features {target_features.shape} → {out_npy}")
 
-    # Inspection-friendly BVH sibling
+    # Inspection BVH.
     try:
         out_bvh = out_npy.replace('.npy', '.bvh')
         out_anim, joint_names, has_animated_pos = recover_bvh_export_animation_from_motion_np(
@@ -574,17 +547,9 @@ def _prepare_img2img_reference_bundle(
         )
 
     loaded_reference_frame_count, loaded_reference_joint_count, ref_feats = ref_raw.shape
-    # The model is a fixed-window model: every training clip is resampled to
-    # num_frames (see dataset._resample_motion_features), so the temporal
-    # transformer and the loop-phase positional embedding are only ever valid at
-    # the native window length. Always run the model at that native window
-    # (requested_output_frame_count == num_frames) and resample the reference up
-    # to it, exactly like the pure-generation path. The requested output length
-    # is honored afterwards by resampling the sampled motion to
-    # target_output_frames. Previously this used min(loaded, requested), which
-    # ran the model at a shorter, never-trained window whenever the (cropped)
-    # reference was shorter than num_frames -- breaking loop closure and quality
-    # for num_frames < internal num_frames.
+    # Fixed-window model: always run at native window length (num_frames);
+    # resample reference up to it like pure generation, then resample output
+    # to target_output_frames afterwards.
     output_frame_count = int(requested_output_frame_count)
     max_source_frames = max(int(min_length), output_frame_count * 2)
     if loaded_reference_frame_count > max_source_frames:
@@ -592,16 +557,9 @@ def _prepare_img2img_reference_bundle(
         source_frames = min(max_source_frames, max(int(min_length), visible_frames))
         ref_raw = ref_raw[:source_frames]
     reference_source_frame_count = int(ref_raw.shape[0])
-    # Snapshot the physical (post-crop, pre-resample) reference so global-energy
-    # extraction can run in the SAME feature space the training running stats
-    # were accumulated in. The dataset computes global_energy_cond on the
-    # physical HML clip at its true length, before physical_hml_to_canonical and
-    # before the fixed-window resample (see dataset._compute_global_energy_condition_np,
-    # called ahead of the canonical transform). Computing it on the canonical
-    # ref_motion below would compare a std-standardized energy against
-    # physical-space stats and yield a meaningless z-score. The caller MUST
-    # supply physical_energy_features (the real unpadded frames) so outpaint
-    # hold-frame padding never dilutes the statistic.
+    # Snapshot the physical (pre-canonical, pre-resample) reference so
+    # global-energy extraction runs in the same feature space as training
+    # running stats (physical HML, not canonical-standardized).
     if physical_energy_features is None:
         raise ValueError(
             "physical_energy_features is required for global-energy extraction; "
@@ -732,9 +690,8 @@ def _sample_batch(
         return loop_model_kwargs
 
     def _autocast_context():
-        # Single top-level autocast context around the reverse-diffusion loop;
-        # the model is invoked many times deep inside the diffusion sampler, so
-        # this is the natural call site to apply standard bf16 autocast.
+        # Top-level autocast around the reverse-diffusion loop (model invoked
+        # many times inside the sampler, so this is the natural call site).
         if autocast_dtype is None:
             return torch.autocast(device_type=device.type, enabled=False)
         return torch.autocast(device_type=device.type, dtype=autocast_dtype)
@@ -773,11 +730,7 @@ def _sample_batch(
         raise ValueError(f'Unknown sampling_method: {sampling_method}')
 
     if inpainting and skip_timesteps > 0:
-        # Localized img2img inpainting: start the reverse process from the
-        # reference noised to the requested skip timestep, but clamp the known
-        # (unmasked) region back to the ORIGINAL reference at every step. This
-        # keeps skip_timesteps local to the inpaint mask instead of varying the
-        # preserved context outside it.
+        # Start from noised reference but clamp unmasked region to original reference at every step.
         ref = reference_motion.to(device, non_blocking=True)
         mask = inpaint_mask.to(device, non_blocking=True)
         prepared_cross_limb_unreliable_mask = _prepared_cross_limb_unreliable_mask_from_inpaint_mask(mask)
@@ -794,12 +747,7 @@ def _sample_batch(
 
     fixseed(seed)
     if inpainting:
-        # Motion inpainting, skip_timesteps == 0: the
-        # latent starts from PURE NOISE everywhere (so masked joints/frames are
-        # truly generated, not a noised copy of the reference), and the
-        # reference is used only as the per-step clamp source for the known
-        # (unmasked) region. We deliberately do NOT route the reference
-        # through init_image, and denoise the full schedule.
+        # skip_timesteps=0: start from pure noise; reference is only the per-step clamp source for unmasked region.
         mask = inpaint_mask.to(device, non_blocking=True)
         prepared_cross_limb_unreliable_mask = _prepared_cross_limb_unreliable_mask_from_inpaint_mask(mask)
         return _run_loop(
@@ -811,9 +759,7 @@ def _sample_batch(
             cross_limb_unreliable_mask_=prepared_cross_limb_unreliable_mask,
         )
     if reference_motion is not None and skip_timesteps > 0:
-        # img2img-style: noise the whole reference to an intermediate step.
-        # skip_timesteps: how many of the noisiest timesteps to skip.
-        # Higher = start from less noisy state = more faithful to reference.
+        # img2img: noise the whole reference to an intermediate step (higher = more faithful).
         return _run_loop(
             noise=torch.randn(sample_shape, device=device),
             init_image=reference_motion.to(device, non_blocking=True),
@@ -822,7 +768,7 @@ def _sample_batch(
             inpaint_reference_=None,
             cross_limb_unreliable_mask_=None,
         )
-    # Plain generation: no reference => full denoising from pure noise.
+    # Plain generation: full denoising from pure noise.
     return _run_loop(
         noise=torch.randn(sample_shape, device=device),
         init_image=None,
@@ -880,7 +826,6 @@ def _generate_all_species(
             print(f'\n--- Batch {batch_idx}/{len(species_batches)} ({actual_bs} species, '
                   f'max_joints={batch_max_joints}): {", ".join(batch_species)} ---')
 
-            # Build model kwargs for this heterogeneous batch.
             _, model_kwargs = create_condition(
                 list(batch_species),
                 cond_dict,
@@ -898,7 +843,6 @@ def _generate_all_species(
                 (actual_bs,), playspeed_cond_value, dtype=torch.float32, device=dist_util.dev(),
             )
 
-            # Sample the whole batch in one forward pass.
             print(f'  Sampling {actual_bs} species × 1 motion each ...')
             sample = _sample_batch(
                 diffusion=diffusion,
@@ -921,9 +865,7 @@ def _generate_all_species(
                 n_joints = model_kwargs['y']['n_joints'][sample_idx].item()
                 motion = motion[:n_joints]
                 parents = model_kwargs['y']['parents'][sample_idx]
-                # Decode with the full per-species cond entry: it carries both the
-                # rest geometry and the global standardization stats. (Building a
-                # minimal dict here is what previously dropped the stats silently.)
+                # Decode with full cond entry (carries rest geometry + global standardization stats).
                 motion_physical = canonical_to_physical_hml(motion.unsqueeze(0), sp_entry)[0]
                 motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
 
@@ -968,21 +910,16 @@ def main(args=None, cond_dict=None, runtime=None):
 
     skip_timesteps_raw = getattr(args, 'skip_timesteps', None)
 
-    # Early check for inpaint before ~30s model load (reused below for the
-    # skip_timesteps fast-fail).
+    # Check inpaint flags early (before ~30s model load).
     _inpaint_early = bool(
         str(getattr(args, 'inpaint_joints', '') or '').strip()
         or str(getattr(args, 'inpaint_frames', '') or '').strip()
     )
 
-    # NOTE: the "--reference_motion needs --skip_timesteps (or inpaint)" check is
-    # deferred until after the reference frame count R is known, because an
-    # R < M length extension auto-enables outpaint (a temporal inpaint) and so
-    # does not require --skip_timesteps. See the crop/outpaint block below.
+    # --skip_timesteps check deferred until after reference length R is known
+    # (R < M auto-enables outpaint, which does not need --skip_timesteps).
 
-    # Fail fast (before the ~30s model load) if inpaint flags are set without a
-    # reference motion: the masked region needs a known region to clamp to,
-    # otherwise it would silently degrade to plain generation.
+    # Fail fast if inpaint flags are set without reference motion.
     if _inpaint_early and not getattr(args, 'reference_motion', None):
         sys.exit(
             "ERROR: --inpaint_joints / --inpaint_frames require --reference_motion "
@@ -991,9 +928,8 @@ def main(args=None, cond_dict=None, runtime=None):
             "flags for plain generation."
         )
 
-    # --inpaint_joints with --skip_timesteps omitted: default to 0 (skip disabled).
     if _inpaint_early and skip_timesteps_raw is None:
-        skip_timesteps_raw = 0
+        skip_timesteps_raw = 0  # inpaint without skip: denoise full schedule
 
     skip_timesteps = int(skip_timesteps_raw) if skip_timesteps_raw is not None else 0
 
@@ -1025,9 +961,7 @@ def main(args=None, cond_dict=None, runtime=None):
     niter = os.path.basename(args.model_path).replace('model', '').replace('.pt', '')
     fps = opt.fps
 
-    # Model native window: read directly from checkpoint args.json (NOT from
-    # args.num_frames, which represents the user's output-length intent and
-    # may be None = "use reference native length").
+    # Model native window from checkpoint args.json (args.num_frames = user intent, may be None).
     _ckpt_args_path = os.path.join(os.path.dirname(args.model_path), 'args.json')
     _ckpt_num_frames = 60
     if os.path.isfile(_ckpt_args_path):
@@ -1041,19 +975,12 @@ def main(args=None, cond_dict=None, runtime=None):
     cond_max_joints = opt.max_joints
 
     reference_present = bool(getattr(args, 'reference_motion', None))
-    # args.num_frames is now NOT overwritten by extract_args; it is None when
-    # the user omits --num_frames, and the code below falls through to the
-    # reference-length path.
     motion_frames = getattr(args, 'num_frames', None)
     if motion_frames is None and not reference_present:
-        # Pure-random generation with no --num_frames defaults to the
-        # checkpoint's native window size.
-        motion_frames = _ckpt_num_frames
+        motion_frames = _ckpt_num_frames  # default to native window
 
-    # Output lengths are finalized here when --num_frames is known. When it
-    # is omitted together with --reference_motion they are deferred until the
-    # reference frame count R is known (the output length then defaults to R,
-    # clamped to [min_length, 2*num_frames]).
+    # Output lengths: known now if --num_frames given; otherwise deferred until
+    # reference frame count R is known (defaults to R clamped to [min_length, 2*num_frames]).
     requested_output_frames = target_output_frames = playspeed_cond_value = None
     if motion_frames is not None:
         requested_output_frames, target_output_frames, playspeed_cond_value = (
@@ -1166,11 +1093,8 @@ def main(args=None, cond_dict=None, runtime=None):
         target_type = None  # unreachable
 
     # 2) Resolve reference source type (for retarget decision)
-    #
-    # Raw animation references (.fbx/.glb/.gltf) are handled cond-free: the source
-    # skeleton + motion are read straight from the file, so we neither infer the
-    # source object_type nor look it up in cond. Only .npy references (already in
-    # feature space) still need a source cond entry for their T-pose/skeleton.
+    # Raw animation references (.fbx/.glb/.gltf) are cond-free (source from file);
+    # .npy references need a source cond entry for their T-pose/skeleton.
     reference_is_raw_anim = bool(reference_motion_path) and (
         reference_motion_suffix in _REFERENCE_MOTION_PREPROCESS_SUFFIXES
     )
@@ -1202,8 +1126,7 @@ def main(args=None, cond_dict=None, runtime=None):
                 f"{reference_motion_path}) not found in cond file. "
                 f"Available: {available}"
             )
-    # Raw-anim references always retarget onto the target skeleton (cond-free path);
-    # .npy references retarget only when their source type differs from the target.
+    # Raw-anim references always retarget (cond-free); .npy only when source != target.
     should_retarget_reference = reference_is_raw_anim or _should_retarget_reference(
         source_type,
         target_type,
@@ -1294,9 +1217,7 @@ def main(args=None, cond_dict=None, runtime=None):
             )
         R = int(ref_features_full.shape[0])
 
-        # Finalize output lengths now that the reference frame count R is
-        # known. If --num_frames wasn't specified, use R clamped to
-        # [min_length, 2*num_frames].
+        # Finalize output lengths from R (if --num_frames not specified).
         if requested_output_frames is None:
             auto_frames = int(np.clip(R, min_length, 2 * internal_num_frames))
             requested_output_frames, target_output_frames, playspeed_cond_value = (
@@ -1311,21 +1232,14 @@ def main(args=None, cond_dict=None, runtime=None):
                 )
         M = int(requested_output_frames)
 
-        # Real (unpadded) physical frames for global-energy extraction: the first
-        # min(R, M) frames of the actual reference. Captured before the outpaint
-        # padding below so the held-last-frame carrier never dilutes the energy
-        # statistic. In the crop case (R >= M) this is the first M real frames;
-        # in the outpaint case (R < M) this is all R real frames.
+        # Unpadded physical frames for global-energy extraction (before outpaint padding).
         physical_energy_features = np.array(
             ref_features_full[:M] if R >= M else ref_features_full,
             dtype=np.float32,
             copy=True,
         )
 
-        # Crop (R > M) / outpaint (R < M) the reference to exactly M frames so
-        # the rest of the pipeline runs at the requested length. The appended
-        # [R, M) frames are padded by holding the last reference frame; that
-        # placeholder is only a carrier — it is always regenerated.
+        # Crop (R > M) or outpaint-pad (R < M) reference to exactly M frames.
         if R > M:
             ref_features_full = ref_features_full[:M]
             print(f'  Reference cropped: R={R} > M={M} -> using first {M} frames')
@@ -1336,16 +1250,10 @@ def main(args=None, cond_dict=None, runtime=None):
             auto_outpaint_range = f'{R}-{M - 1}'
             print(f'  Reference outpaint: R={R} < M={M} -> appended frames [{R}, {M - 1}]')
 
-        # The appended [R, M) tail must be generated from PURE NOISE on the
-        # full reverse schedule (a noised copy of the held-last-frame
-        # placeholder would bias it toward the frozen final pose). A single
-        # reverse pass has one start timestep, so it cannot give the tail a
-        # from-noise start while ALSO honoring skip_timesteps / an explicit
-        # inpaint selection elsewhere. When the user asks for that
-        # combination we split into two passes:
-        #   pass 1: outpaint the tail from noise -> a complete M-frame reference
-        #   pass 2: run the requested skip / inpaint on that completed reference
-        # Otherwise the extension is a single pure-noise outpaint pass.
+        # Appended [R, M) frames need a pure-noise start (full schedule), which
+        # conflicts with skip_timesteps/explicit inpaint. When both are present,
+        # split into two passes: pass 1 outpaints the tail from noise, pass 2
+        # applies the requested skip/inpaint on the completed reference.
         two_pass_outpaint = outpaint_active and (
             skip_timesteps > 0 or user_inpaint_active
         )
@@ -1417,11 +1325,7 @@ def main(args=None, cond_dict=None, runtime=None):
                   'skip_timesteps=0, denoising full schedule from pure noise)')
         else:
             print(f'    skip_timesteps: {skip_timesteps} (higher = more faithful to reference)')
-        # Global energy conditioning: when --global_energy is not
-        # explicitly provided alongside --reference_motion, auto-extract
-        # it from the reference. When explicitly provided, it overrides
-        # with the user-supplied z-score — useful for controlled energy
-        # sweeps on reference-guided generation.
+        # Auto-extract global energy from reference when --global_energy not explicitly provided.
         if ref_motion is not None and global_energy_condition is not None:
             print(
                 f'    Using explicit --global_energy={getattr(args, "global_energy", None):.4f} '
@@ -1429,12 +1333,7 @@ def main(args=None, cond_dict=None, runtime=None):
             )
         elif ref_motion is not None:
             if model_supports_global_energy_conditioning(model) and reference_physical_motion is not None:
-                # Extract energy from the PHYSICAL reference (pre-canonical,
-                # pre-resample), matching exactly the space/length the training
-                # running stats were accumulated in (dataset computes the label
-                # on the physical clip at its true length, no playspeed). Using
-                # the canonical ref_motion here would compare std-standardized
-                # energy against physical-space stats -> spurious huge z-scores.
+                # Extract energy from physical reference (same space as training running stats).
                 _ref_phys = torch.from_numpy(
                     np.ascontiguousarray(reference_physical_motion, dtype=np.float32)
                 ).permute(1, 2, 0).unsqueeze(0).expand(args.batch_size, -1, -1, -1)
@@ -1497,8 +1396,7 @@ def main(args=None, cond_dict=None, runtime=None):
     _species_emb_override = None
     _species_tags = _parse_species_tags(getattr(args, 'species_tags', ''))
     if _species_tags:
-        # Fast-fail if the checkpoint ignores the species descriptor entirely,
-        # otherwise the override would silently have no effect.
+        # Fast-fail if checkpoint ignores species descriptor.
         _uw = unwrap_anytop_model(model)
         if not (getattr(_uw, 'species_cond', False) or getattr(_uw, 'species_joint_cond', False)):
             sys.exit(
@@ -1514,8 +1412,7 @@ def main(args=None, cond_dict=None, runtime=None):
             )
         _override_t5_name = _resolve_species_t5_name(_target_cond_entry)
         _override_dim = int(np.asarray(_target_cond_entry['species_emb']).shape[-1])
-        # Fast path: if the requested tags exactly match a species already encoded
-        # in cond (same T5 + dim), reuse that baked species_emb and skip T5.
+        # Reuse baked species_emb if tags match an existing cond entry (same T5 + dim).
         _cached = _find_cached_species_emb(
             _species_tags, cond_dict, _override_t5_name, _override_dim,
         )
@@ -1616,6 +1513,18 @@ def main(args=None, cond_dict=None, runtime=None):
         # Plain img2img (reference present) or plain generation (ref_motion None).
         sample = _run_sample(ref_motion, skip_timesteps, None)
 
+    # Joint-inpaint vertical reseat: capture the reference actually
+    # used to clamp the known joints so the regenerated subtree can be dropped
+    # back onto its grounded vertical frame during export. Pure joint inpaint
+    # only (no --inpaint_frames, which already reanchors Y temporally).
+    reseat_reference = None
+    reseat_free_joints = None
+    if user_inpaint_active and inpaint_joints_arg and not inpaint_frames_arg:
+        reseat_reference = completed_reference if two_pass_outpaint else ref_motion
+        reseat_free_joints, _ = _resolve_inpaint_joint_indices(
+            cond_dict[object_type], inpaint_joints_arg, inpaint_include_subtree
+        )
+
     # Count existing .npy outputs so repeated runs don't overwrite.
     base_index = sum(
         1 for f in os.listdir(out_path)
@@ -1673,6 +1582,22 @@ def main(args=None, cond_dict=None, runtime=None):
 
         if inpaint_y_spans:
             _reanchor_inpaint_root_y_via_velocity(motion_np, inpaint_y_spans)
+        elif reseat_reference is not None:
+            ref_phys = canonical_to_physical_hml(
+                reseat_reference[sample_idx][:n_joints].to(motion.device).unsqueeze(0),
+                cond_dict[object_type],
+            )[0]
+            ref_motion_np = ref_phys.cpu().permute(2, 0, 1).numpy()
+            if target_output_frames != output_frame_count:
+                ref_motion_np = resample_motion_features(ref_motion_np, target_output_frames)
+            reseat_delta = _reground_inpaint_joint_y(
+                motion_np, ref_motion_np, reseat_free_joints, parents,
+            )
+            if reseat_delta:
+                print(
+                    f'    Inpaint reseat: shifted regenerated subtree world-Y by '
+                    f'{reseat_delta:+.4f} to re-ground onto the reference'
+                )
         if getattr(args, 'loop', False):
             _close_loop_root_xz_via_velocity(motion_np, translation_root_index)
 
@@ -1767,12 +1692,8 @@ def _map_frame_ranges_to_internal(spec, source_frames, target_frames, warn_remap
         for start, end in internal_runs
     )
 
-    # The frame range was given in visible/output-frame space but the model
-    # samples at a different internal length, so the mask had to be rescaled.
-    # floor/ceil widening + the resolution drop (visible -> internal -> visible)
-    # mean the regenerated region will NOT line up with the requested integer
-    # frames; warn with the effective visible boundaries so the drift is not
-    # silent. To inpaint exact frames, set --num_frames to the model's
+    # Frame range remapped from visible to internal length; floor/ceil widening
+    # causes ~1-2 frame drift. To inpaint exact frames, set --num_frames to match the model's
     # num_frames so visible == internal and no remapping happens.
     if warn_remap:
         inv_scale = float(source_frames - 1) / float(target_frames - 1) if target_frames > 1 else 0.0
@@ -1817,79 +1738,84 @@ def _contiguous_frame_runs(frame_set):
 
 
 def _reanchor_inpaint_root_y_via_velocity(motion_np, spans):
-    """Inpaint-side fix for Y misalignment: per contiguous inpaint span
-    [a, b] (frame indices into ``motion_np``) and per joint, replace the
-    absolute Y channel (pos[..., 1]) with a vel-Y integral anchored at the
-    last clamped frame ``a-1`` and linearly ramped to match the clamped Y
-    at ``b+1``.
+    """Fix inpaint Y misalignment per joint via vel-Y integral + linear ramp.
 
-    Background: features are ``[pos(3) || rot(6) || vel(3) || foot(1)]`` (13ch).
-    For EVERY joint, pos[1] is the absolute world Y — ``get_rifke`` only
-    subtracts root XZ before encoding, leaving Y untouched, and the recover
-    path likewise reads pos[1] verbatim without adding root Y back. So in an
-    inpaint span the model regresses each joint's pos[1] toward its dataset
-    mean (visible as the whole skeleton sinking), while vel[1] (ch 10) — the
-    per-joint world Y velocity — stays near zero. Integrating vel_y from the
-    left-clamped Y plus a linear ramp to the right-clamped Y closes both
-    seams in the integral sense and preserves per-frame Y micro-structure.
+    For each inpaint span [a, b], replaces pos[..., 1] with cumulative vel-Y
+    from a-1 anchored to pos_y[a-1], then ramps to match pos_y[b+1]. This
+    closes the Y seam while preserving per-frame articulation.
 
-    Applied independently to every joint via a vectorized batched cumsum.
-    For joints whose columns were clamped to the reference (e.g. when
-    ``--inpaint_joints`` selects a subset), the inputs are already
-    consistent so the correction is mathematically a no-op.
-
-    No-op when an inpaint span has no left or no right clamped neighbour
-    (touches frame 0 or frame F-1).
-
-    Args:
-        motion_np: (F, J, C) feature tensor. Modified in place via a basic
-            slice on the channel axis (preserves view semantics).
-        spans: list of ``(a, b)`` inclusive frame ranges marking inpaint
-            regions; both ``a-1`` and ``b+1`` must lie inside [0, F-1].
+    No-op when a span touches frame 0 or F-1 (no neighbour on one side).
     """
     if not spans:
         return
     F, J, C = motion_np.shape
     if C < 11 or J == 0:
         return
-    # Basic slicing on the channel axis returns a view, so assignments
-    # through ``pos_y`` write straight back into ``motion_np``.
-    pos_y = motion_np[:, :, 1]   # (F, J) view
-    vel_y = motion_np[:, :, 10]  # (F, J) view — vel[f] = pos[f+1] - pos[f]
+    # Slice views -> writes propagate to motion_np.
+    pos_y = motion_np[:, :, 1]   # (F, J) world Y
+    vel_y = motion_np[:, :, 10]  # (F, J) vel[f] = pos[f+1] - pos[f]
     for a, b in spans:
         if a < 1 or b > F - 2 or a > b:
-            # Need both a-1 and b+1 as clamped anchors; otherwise leave alone.
-            continue
+            continue  # no clamped anchor on both sides
         L = b - a + 1
-        # Forward integrate from clamped pos_y[a-1] across the span:
-        #   y_int[k] = pos_y[a-1] + sum_{i=a-1..k-1} vel_y[i]  for k in [a, b]
         integrated = pos_y[a - 1:a] + np.cumsum(
             vel_y[a - 1:b], axis=0, dtype=np.float64,
         )  # (L, J)
-        # Bridge to the right anchor: if we also stepped one more by vel_y[b]
-        # we should land at pos_y[b+1]. Distribute the residual linearly so
-        # adjusted_y[a-1] is unchanged and adjusted_y[b+1] would land on target.
         integrated_at_b_plus_1 = integrated[-1] + vel_y[b]
-        adjust = pos_y[b + 1] - integrated_at_b_plus_1  # (J,)
-        # Ramp factor for k in [a, b]: (k - (a-1)) / ((b+1) - (a-1)) = (k - a + 1) / (L + 1)
+        adjust = pos_y[b + 1] - integrated_at_b_plus_1  # (J,) residual to close
         ramp = (np.arange(1, L + 1, dtype=np.float64) / float(L + 1))[:, None]  # (L, 1)
         pos_y[a:b + 1] = (integrated + adjust[None, :] * ramp).astype(
             pos_y.dtype, copy=False,
         )
 
 
-def _close_loop_root_xz_via_velocity(motion_np, translation_root_index):
-    """Close loop root XZ drift by distributing velocity residual.
+def _reground_inpaint_joint_y(motion_np, ref_motion_np, free_joint_indices, parents):
+    """Re-ground regenerated subtree Y onto the reference.
 
-    The feature recover path reconstructs root XZ by integrating channels 9
-    and 11 over frames ``0..F-2``. The translation-root RIC X/Z channels 0 and
-    2 should be zero by construction because RIFKE subtracts that root's XZ
-    before encoding. For generated loop clips, tiny non-zero residuals in both
-    places become a visible first/last root-position seam when the BVH loops.
-    Subtracting the mean velocity residual from each transition preserves the
-    local root motion shape while making the integrated endpoint match the
-    start; zeroing the root RIC X/Z removes representation noise only.
+    ``--inpaint_joints`` frees a subset of joints while the rest stay clamped
+    to the reference. The free joints live in the model's own vertical frame
+    which can float above the grounded body. This computes a constant offset
+    at the subtree *boundary* (free joints whose parent is clamped) and shifts
+    the whole free subtree to meet the reference's grounded height.
+
+        boundary = { j in free : parent(j) not in free }
+        delta    = mean_{j in boundary, t}( ref_y - gen_y )
+        gen_y[:, free] += delta
     """
+    if ref_motion_np is None or motion_np.ndim != 3:
+        return 0.0
+    F, J, C = motion_np.shape
+    if C < 2 or F == 0 or ref_motion_np.shape[:2] != (F, J):
+        return 0.0
+    free = [int(j) for j in free_joint_indices if 0 <= int(j) < J]
+    if not free:
+        return 0.0
+    free_set = set(free)
+    parents = np.asarray(parents).reshape(-1)
+    # Boundary joints: free joints whose parent is clamped — anchor the reseat here.
+    boundary = [
+        j for j in free
+        if 0 <= int(parents[j]) < J and int(parents[j]) not in free_set
+    ]
+    if not boundary:
+        boundary = free
+    b_idx = np.asarray(boundary, dtype=np.int64)
+    delta = float(np.mean(
+        ref_motion_np[:, b_idx, 1].astype(np.float64)
+        - motion_np[:, b_idx, 1].astype(np.float64)
+    ))
+    if delta == 0.0 or not np.isfinite(delta):
+        return 0.0
+    f_idx = np.asarray(free, dtype=np.int64)
+    motion_np[:, f_idx, 1] += np.asarray(delta, dtype=motion_np.dtype)
+    return delta
+
+
+def _close_loop_root_xz_via_velocity(motion_np, translation_root_index):
+    """Close loop root XZ drift by distributing velocity residual across frames.
+    Zeroes the root RIC X/Z (ch 0, 2) and subtracts mean vel-XZ residual (ch 9, 11)
+    so the integrated endpoint matches the start."""
+
     if motion_np.ndim != 3:
         return
     frame_count, joint_count, feature_count = motion_np.shape
@@ -2052,12 +1978,8 @@ def _parse_species_tags(raw):
 
 
 def _resolve_species_t5_name(cond_entry):
-    """Return the T5 model name used to bake this species' descriptor.
-
-    Prefer the species descriptor's own metadata, fall back to the joint-name
-    embedding metadata (same conditioner), then to the dataset default so the
-    override is encoded in the SAME embedding space the model was trained on.
-    """
+    """Return the T5 model name used to bake this species' descriptor (species_emb_meta >
+    joints_names_embs_meta > t5-base)."""
     for meta_key in ('species_emb_meta', 'joints_names_embs_meta'):
         meta = cond_entry.get(meta_key)
         if isinstance(meta, dict) and meta.get('t5_name'):
@@ -2065,21 +1987,12 @@ def _resolve_species_t5_name(cond_entry):
     return 't5-base'
 
 
-# Process-local T5 cache for --species_tags re-encoding, keyed by t5 model name.
-# Lets repeated standalone generations (and any path without a preloaded
-# conditioner) reuse a single T5 instance instead of reloading it every call.
+# Process-local T5 cache keyed by t5 model name for --species_tags re-encoding.
 _SPECIES_T5_CACHE = {}
 
 
 def _get_species_t5_conditioner(t5_name, *, preloaded=None):
-    """Return a T5 conditioner named ``t5_name``, reusing an instance when possible.
-
-    Preference order:
-      1. ``preloaded`` (e.g. the server's resident conditioner) when its ``.name``
-         matches ``t5_name`` — zero extra load.
-      2. A process-local cache keyed by ``t5_name``.
-      3. A freshly loaded conditioner (cached for next time).
-    """
+    """Return a T5 conditioner, preferring preloaded (if name matches) > cached > fresh."""
     if preloaded is not None and str(getattr(preloaded, 'name', '')) == str(t5_name):
         return preloaded
     cached = _SPECIES_T5_CACHE.get(t5_name)
@@ -2103,17 +2016,7 @@ def _get_species_t5_conditioner(t5_name, *, preloaded=None):
 
 
 def _encode_species_tags_override(tags, cond_entry, expected_dim, t5_conditioner=None):
-    """Re-encode custom species-style *tags* into a ``[expected_dim]`` species_emb.
-
-    Mirrors the preprocessing path (``build_species_embedding_text`` -> T5): the
-    tags are space-joined and mean-pooled through the same T5 conditioner, so the
-    resulting vector lives in the trained species-descriptor space and can be
-    swapped in for the baked ``species_emb``.
-
-    ``t5_conditioner`` optionally supplies a preloaded conditioner (e.g. the
-    server's resident instance) to reuse when its model name matches the species'
-    baked ``t5_name``; otherwise a cached / freshly-loaded one is used.
-    """
+    """Re-encode species tags via T5 into a [expected_dim] species_emb override."""
     species_text = ' '.join(tags)
     t5_name = _resolve_species_t5_name(cond_entry)
     print(f"[generate] Re-encoding species tags {tags} via T5 '{t5_name}' ...")
@@ -2131,15 +2034,8 @@ def _encode_species_tags_override(tags, cond_entry, expected_dim, t5_conditioner
 
 
 def _find_cached_species_emb(tags, cond_dict, t5_name, expected_dim):
-    """Reuse a baked ``species_emb`` when the requested tag text exactly matches a
-    species already encoded in ``cond_dict`` (same T5 model + dim).
-
-    T5 mean-pooling is a deterministic function of the tokenized text, so an exact
-    ``embedding_text`` match yields the identical vector -- reusing the baked one is
-    exact, not an approximation -- and lets us skip loading/running T5 entirely.
-
-    Returns ``(species_emb, source_object_type)`` on a hit, else ``None``.
-    """
+    """Reuse baked species_emb when requested tags match an existing cond entry (same T5 + dim).
+    T5 mean-pooling is deterministic given tokenized text, so this is exact."""
     target_text = ' '.join(tags)
     for entry in cond_dict.values():
         if not isinstance(entry, dict):
@@ -2150,8 +2046,7 @@ def _find_cached_species_emb(tags, cond_dict, t5_name, expected_dim):
             continue
         if str(meta.get('t5_name') or '') != str(t5_name):
             continue
-        # Baked text is a space-joined tag list; collapse whitespace on both sides
-        # so the comparison is over the same normalized token stream.
+        # Normalize whitespace for comparison.
         if ' '.join(str(meta.get('embedding_text', '')).split()) != target_text:
             continue
         emb = np.asarray(emb, dtype=np.float32)
@@ -2163,17 +2058,8 @@ def _find_cached_species_emb(tags, cond_dict, t5_name, expected_dim):
 def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joints, feature_len, loop=False, action_tags=None, species_emb_override=None):
     """Build model_kwargs for a batch of object_types.
 
-    Parameters
-    ----------
-    action_tags : list of list[str] or None
-        Per-object action tag lists (e.g. ``[['locomotion', 'attack'], ...]``).
-        When provided, must have the same length as *object_types*. Each element
-        may be a list of tag strings, a single string, or ``None``.
-    species_emb_override : np.ndarray or None
-        A single ``[t5_out_dim]`` species embedding vector that, when provided,
-        replaces the per-species ``species_emb`` baked into ``cond_dict`` for
-        *every* object in the batch. Used by ``--species_tags`` to restyle the
-        generated motion via a re-encoded species descriptor.
+    action_tags: per-object list of tag strings (or None).
+    species_emb_override: [t5_out_dim] vector replacing baked species_emb for all objects.
     """
     batches = list()
     circular_mask = bool(loop)
