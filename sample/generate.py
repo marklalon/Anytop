@@ -756,6 +756,7 @@ def _prepare_img2img_reference_bundle(
     requested_visible_frame_count=None,
     min_length=20,
     preloaded_features=None,
+    physical_energy_features=None,
 ):
     if preloaded_features is not None:
         ref_raw = np.asarray(preloaded_features, dtype=np.float32)
@@ -785,6 +786,27 @@ def _prepare_img2img_reference_bundle(
         source_frames = min(max_source_frames, max(int(min_length), visible_frames))
         ref_raw = ref_raw[:source_frames]
     reference_source_frame_count = int(ref_raw.shape[0])
+    # Snapshot the physical (post-crop, pre-resample) reference so global-energy
+    # extraction can run in the SAME feature space the training running stats
+    # were accumulated in. The dataset computes global_energy_cond on the
+    # physical HML clip at its true length, before physical_hml_to_canonical and
+    # before the fixed-window resample (see dataset._compute_global_energy_condition_np,
+    # called ahead of the canonical transform). Computing it on the canonical
+    # ref_motion below would compare a std-standardized energy against
+    # physical-space stats and yield a meaningless z-score. The caller MUST
+    # supply physical_energy_features (the real unpadded frames) so outpaint
+    # hold-frame padding never dilutes the statistic.
+    if physical_energy_features is None:
+        raise ValueError(
+            "physical_energy_features is required for global-energy extraction; "
+            "the caller must provide the real (unpadded) physical frames so the "
+            "energy statistic is computed in the same space as training running stats."
+        )
+    reference_physical_motion = np.array(
+        physical_energy_features,
+        dtype=np.float32,
+        copy=True,
+    )
     if ref_raw.shape[0] != output_frame_count:
         ref_raw = resample_motion_features(ref_raw, output_frame_count)
 
@@ -818,6 +840,7 @@ def _prepare_img2img_reference_bundle(
         'loaded_reference_frame_count': loaded_reference_frame_count,
         'reference_source_frame_count': reference_source_frame_count,
         'loaded_reference_joint_count': loaded_reference_joint_count,
+        'reference_physical_motion': reference_physical_motion,
     }
 
 
@@ -1494,6 +1517,17 @@ def main(args=None, cond_dict=None, runtime=None):
                 )
         M = int(requested_output_frames)
 
+        # Real (unpadded) physical frames for global-energy extraction: the first
+        # min(R, M) frames of the actual reference. Captured before the outpaint
+        # padding below so the held-last-frame carrier never dilutes the energy
+        # statistic. In the crop case (R >= M) this is the first M real frames;
+        # in the outpaint case (R < M) this is all R real frames.
+        physical_energy_features = np.array(
+            ref_features_full[:M] if R >= M else ref_features_full,
+            dtype=np.float32,
+            copy=True,
+        )
+
         # Crop (R > M) / outpaint (R < M) the reference to exactly M frames so
         # the rest of the pipeline runs at the requested length. The appended
         # [R, M) frames are padded by holding the last reference frame; that
@@ -1545,6 +1579,7 @@ def main(args=None, cond_dict=None, runtime=None):
             requested_output_frame_count=n_frames,
             requested_visible_frame_count=target_output_frames,
             preloaded_features=ref_features_full,
+            physical_energy_features=physical_energy_features,
             min_length=min_length,
         )
         ref_motion = reference_bundle['reference_motion']
@@ -1552,6 +1587,7 @@ def main(args=None, cond_dict=None, runtime=None):
         loaded_reference_frame_count = reference_bundle['loaded_reference_frame_count']
         reference_source_frame_count = reference_bundle.get('reference_source_frame_count', loaded_reference_frame_count)
         loaded_reference_joint_count = reference_bundle['loaded_reference_joint_count']
+        reference_physical_motion = reference_bundle.get('reference_physical_motion')
 
         print(f'  Reference motion loaded: {effective_reference_path}')
         if reference_is_raw_anim:
@@ -1599,16 +1635,25 @@ def main(args=None, cond_dict=None, runtime=None):
                 f'(z-score, reference-guided generation)'
             )
         elif ref_motion is not None:
-            if model_supports_global_energy_conditioning(model):
+            if model_supports_global_energy_conditioning(model) and reference_physical_motion is not None:
+                # Extract energy from the PHYSICAL reference (pre-canonical,
+                # pre-resample), matching exactly the space/length the training
+                # running stats were accumulated in (dataset computes the label
+                # on the physical clip at its true length, no playspeed). Using
+                # the canonical ref_motion here would compare std-standardized
+                # energy against physical-space stats -> spurious huge z-scores.
+                _ref_phys = torch.from_numpy(
+                    np.ascontiguousarray(reference_physical_motion, dtype=np.float32)
+                ).permute(1, 2, 0).unsqueeze(0).expand(args.batch_size, -1, -1, -1)
                 _ref_n_joints = torch.full(
                     (args.batch_size,),
-                    loaded_reference_joint_count,
+                    int(reference_physical_motion.shape[1]),
                     dtype=torch.long,
                 )
                 global_energy_condition = _compute_global_energy_from_reference(
-                    ref_motion,
+                    _ref_phys,
                     _ref_n_joints,
-                    playspeed_cond=float(reference_source_frame_count) / float(output_frame_count),
+                    playspeed_cond=None,
                 )
                 if global_energy_condition is not None:
                     ge_raw = float(global_energy_condition[0, 0])
