@@ -202,6 +202,70 @@ def test_normalize_imported_armature_and_meshes_drops_object_translation_scale_a
     assert np.allclose(_matrix_to_np(mesh_modifier_only.matrix_parent_inverse), _matrix_to_np(Matrix.Identity(4)), atol=1e-6)
 
 
+def test_remove_mesh_objects_for_skeleton_only_export_keeps_armature() -> None:
+    class _FakeObjectCollection(list):
+        def remove(self, obj, do_unlink=False) -> None:
+            del do_unlink
+            super().remove(obj)
+
+    armature = _FakeObject(
+        name="Armature",
+        object_type="ARMATURE",
+        matrix_world=Matrix.Identity(4),
+    )
+    mesh_a = _FakeObject(
+        name="Body",
+        object_type="MESH",
+        matrix_world=Matrix.Identity(4),
+    )
+    mesh_b = _FakeObject(
+        name="Eyes",
+        object_type="MESH",
+        matrix_world=Matrix.Identity(4),
+    )
+    fake_bpy = types.SimpleNamespace(
+        data=types.SimpleNamespace(
+            objects=_FakeObjectCollection([armature, mesh_a, mesh_b])
+        )
+    )
+
+    removed = exporter_mod._remove_mesh_objects_for_skeleton_only_export(fake_bpy)
+
+    assert removed == 2
+    assert list(fake_bpy.data.objects) == [armature]
+
+
+def test_clear_imported_animation_data_removes_source_actions() -> None:
+    armature = _FakeObject(
+        name="Armature",
+        object_type="ARMATURE",
+        matrix_world=Matrix.Identity(4),
+    )
+    mesh = _FakeObject(
+        name="Body",
+        object_type="MESH",
+        matrix_world=Matrix.Identity(4),
+    )
+    old_arm_action = types.SimpleNamespace(name="SourceArmatureAction")
+    old_mesh_action = types.SimpleNamespace(name="SourceMeshAction")
+    armature.animation_data = types.SimpleNamespace(action=old_arm_action)
+    mesh.animation_data = types.SimpleNamespace(action=old_mesh_action)
+
+    fake_bpy = types.SimpleNamespace(
+        data=types.SimpleNamespace(
+            objects=[armature, mesh],
+            actions=[old_arm_action, old_mesh_action],
+        )
+    )
+
+    cleared = exporter_mod._clear_imported_animation_data(fake_bpy)
+
+    assert cleared == 2
+    assert armature.animation_data is None
+    assert mesh.animation_data is None
+    assert fake_bpy.data.actions == []
+
+
 def _run_export_branch_case(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

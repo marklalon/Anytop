@@ -89,7 +89,6 @@ _load_utils_module("utils.misc")
 from utils.misc import infer_object_type_from_filename
 from utils.npy_roundtrip_utils import recover_from_features
 from Anytop.utils.roundtrip_common import (
-    load_fbx_armature_object_scale,
     load_fbx_skeleton_metadata,
 )
 from Anytop.motion_lib.FBX import collapse_root_skeleton
@@ -150,10 +149,6 @@ def _load_tpose_restore_metadata(
         "tpose_rest_rotations": np.asarray(tp.tpos_rots[0], dtype=np.float32),
         "orientation_quat": np.asarray(tp.orientation_quat, dtype=np.float64),
         "scale_factor": float(tp.scale_factor),
-        # Armature object scale (0.01 cm wrapper) dropped by the armature-local
-        # skeleton read; skeleton-only restore multiplies its rebuilt-at-scale-1
-        # skeleton by this to land back in the mesh's world scale.
-        "object_scale": float(load_fbx_armature_object_scale(tpose_mesh)),
         "raw_joint_names": list(raw_joint_names),
         "raw_parents": raw_parents,
         "raw_offsets": raw_offsets,
@@ -301,7 +296,6 @@ def _build_restore_context(
         "export_parents": export_parents,
         "export_offsets": export_offsets,
         "export_rest_rotations": export_rest_rotations,
-        "tpose_object_scale": float(tpose_meta["object_scale"]),
     }
 
 
@@ -359,9 +353,6 @@ def _build_skeleton_only_context(
         "export_parents": parents.copy(),
         "export_offsets": offsets.copy(),
         "export_rest_rotations": identity_rest.copy(),
-        # No T-pose mesh: cond offsets are already in HML space, nothing to
-        # rescale to.
-        "tpose_object_scale": 1.0,
     }
 
 
@@ -640,7 +631,6 @@ def restore_glb(
         export_rest_rotations = np.asarray(ctx["export_rest_rotations"], dtype=np.float32)
         scale_factor_val = ctx["scale_factor"]
         orientation_quat_val = ctx["orientation_quat"]
-        tpose_object_scale = float(ctx["tpose_object_scale"])
         tpose_mesh_resolved = None
     else:
         raw = np.load(npy_path)
@@ -662,10 +652,15 @@ def restore_glb(
         export_rest_rotations = np.asarray(restore_ctx["export_rest_rotations"], dtype=np.float32)
         scale_factor_val = float(restore_ctx["scale_factor"])
         orientation_quat_val = np.asarray(restore_ctx["orientation_quat"], dtype=np.float64)
-        tpose_object_scale = float(restore_ctx["tpose_object_scale"])
-        # skeleton-only with tpose_mesh: use mesh armature metadata for rest
-        # rotations and FBX-space export, but skip skin/mesh binding
-        tpose_mesh_resolved = None if skeleton_only else tpose_mesh
+        # skeleton-only native with tpose_mesh: import the source armature and
+        # drop only its meshes at export time. This preserves the same
+        # armature-object scale / local-offset decomposition as a skinned GLB.
+        # HML skeleton-only remains mesh-free/canonical, as before.
+        tpose_mesh_resolved = (
+            tpose_mesh
+            if (not skeleton_only or restore_space == "native")
+            else None
+        )
 
     translation_root_index = None
 
@@ -773,31 +768,17 @@ def restore_glb(
         )
 
     # ── Reconcile skeleton-only export scale ────────────────────────────────
-    # A skeleton-only export rebuilds a fresh armature at object scale 1.0 from
-    # ``export_offsets``, so those offsets and the recovered motion must share a
-    # single scale. When the skeleton came from a T-pose mesh, ``export_offsets``
-    # were read in armature-LOCAL units (the object-scale wrapper, e.g. the 0.01
-    # cm wrapper, dropped) — which restore_space must reconcile:
-    #   * native: the motion was inverse-preprocessed back to that same
-    #     armature-local scale, so both already match. Multiply BOTH the rest
-    #     offsets and the motion by the mesh object scale (a similarity
-    #     transform — the animation stays glued to the skeleton) so the export
-    #     lands in the mesh's WORLD scale, matching the T-pose mesh exactly.
-    #   * hml: the motion stays in normalized HML space, so only the skeleton is
-    #     mis-scaled — bring it DOWN into HML by ``scale_factor`` (leaving the
-    #     already-normalized motion untouched). The export stays canonical
-    #     HML-sized, like the NPY / processed BVH, independent of the mesh.
-    # Without a T-pose mesh the offsets are the cond HML offsets, which already
-    # match the HML motion — nothing to reconcile.
+    # With a T-pose mesh in native mode, skeleton-only uses the imported source
+    # armature as the export rig and removes only mesh objects before writing
+    # the GLB. That keeps the same object-scale/local-offset decomposition as a
+    # skinned export, which matters for downstream tools that copy local TRS by
+    # node name. In HML mode we still create a canonical mesh-free armature, so
+    # bring its rest offsets into normalized HML scale to match the motion.
     skeleton_only_from_tpose = skeleton_only and tpose_mesh is not None
-    if skeleton_only_from_tpose and restore_space == "native" and abs(tpose_object_scale - 1.0) > 1e-9:
-        s = tpose_object_scale
-        export_offsets = (export_offsets * s).astype(np.float32)
-        export_anim.positions = export_anim.positions * s
-        export_anim.offsets = export_anim.offsets * s
+    if skeleton_only_from_tpose and restore_space == "native":
         print(
-            "Skeleton-only (native): rescaled export by T-pose object scale "
-            f"{s:.6f} to match the mesh's world scale"
+            "Skeleton-only (native): using the T-pose armature as export rig "
+            "and omitting meshes, preserving source node scale/local offsets"
         )
     elif skeleton_only_from_tpose and restore_space == "hml" and abs(scale_factor_val - 1.0) > 1e-12:
         export_offsets = (export_offsets * scale_factor_val).astype(np.float32)
@@ -853,6 +834,7 @@ def restore_glb(
         bone_translations=bone_translations,
         global_similarity=global_similarity,
         use_image_search=use_image_search,
+        export_mesh=not skeleton_only,
         rename_bones_to_canonical=(restore_space == "hml"),
         prune_unmapped_bones=(restore_space == "hml"),
     )

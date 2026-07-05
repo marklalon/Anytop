@@ -284,6 +284,52 @@ def _apply_gltf_output_space_similarity(
         mesh.matrix_world = delta @ mesh_worlds_old[mesh.name]
 
 
+def _remove_mesh_objects_for_skeleton_only_export(bpy) -> int:
+    """Remove mesh objects while leaving the imported armature/animation intact."""
+    removed = 0
+    for obj in list(bpy.data.objects):
+        if obj.type == "MESH":
+            bpy.data.objects.remove(obj, do_unlink=True)
+            removed += 1
+    return removed
+
+
+def _clear_imported_animation_data(bpy) -> int:
+    """Discard animation imported from a source asset before writing NPY motion."""
+    datablocks = []
+    for collection_name in (
+        "objects",
+        "armatures",
+        "meshes",
+        "materials",
+        "cameras",
+        "lights",
+        "curves",
+    ):
+        datablocks.extend(list(getattr(bpy.data, collection_name, [])))
+
+    for mesh in list(getattr(bpy.data, "meshes", [])):
+        shape_keys = getattr(mesh, "shape_keys", None)
+        if shape_keys is not None:
+            datablocks.append(shape_keys)
+
+    cleared = 0
+    seen: set[int] = set()
+    for datablock in datablocks:
+        key = id(datablock)
+        if key in seen or getattr(datablock, "animation_data", None) is None:
+            continue
+        seen.add(key)
+        if hasattr(datablock, "animation_data_clear"):
+            datablock.animation_data_clear()
+            cleared += 1
+
+    for action in list(getattr(bpy.data, "actions", [])):
+        bpy.data.actions.remove(action)
+
+    return cleared
+
+
 def _prune_unmapped_armature_bones(
     bpy,
     armature,
@@ -662,14 +708,17 @@ class AnimationExporter:
         rotation_channel_mask: Optional[Tensor | np.ndarray] = None,
         global_similarity: Optional[tuple[float | None, Optional[np.ndarray]]] = None,
         use_image_search: bool = False,
+        export_mesh: bool = True,
         rename_bones_to_canonical: bool = False,
         prune_unmapped_bones: bool = False,
     ) -> None:
         """Export GLB directly through bpy in the current Python process.
 
         When *mesh_path* is provided, imports the external asset for its
-        mesh + armature and keyframes animation on it.  When not provided,
-        only the armature is exported (skeleton-only GLB, no mesh or skinning).
+        mesh + armature and keyframes animation on it. Set *export_mesh* to
+        ``False`` to keep that imported armature path but omit meshes from the
+        final GLB. When *mesh_path* is not provided, a fresh armature is created
+        from the input skeleton (skeleton-only GLB, no mesh or skinning).
 
         Args:
             joint_rotations: Animated local joint quaternions with shape ``[F, J, 4]``.
@@ -697,6 +746,11 @@ class AnimationExporter:
                 character mesh still left without a usable base-color texture.
                 When ``False`` (default), neither texture-resolution path runs
                 and the importer's behavior is unchanged.
+            export_mesh: When ``False`` and *mesh_path* is provided, import and
+                animate the source armature exactly like a skinned export, then
+                remove mesh objects before writing the GLB. This is useful for a
+                skeleton-only companion that must preserve the source rig's
+                node-scale / local-offset decomposition.
             rename_bones_to_canonical: When ``True`` (and *mesh_path* is given),
                 rename the exported armature's bones — and the bound meshes'
                 vertex groups — to the canonical BVH joint names (e.g. ``Tail01``)
@@ -922,14 +976,9 @@ class AnimationExporter:
                 )
                 bone_names = list(tgt_bvh_names)
 
-        # ── Clear existing animation, create fresh action ─────────────
-        if armature.animation_data:
-            armature.animation_data_clear()
+        # ── Drop imported animation, create fresh NPY action ─────────
+        _clear_imported_animation_data(bpy)
         armature.animation_data_create()
-        # Remove any old actions to avoid name collisions
-        for a in list(bpy.data.actions):
-            if a.name.startswith("PCVGAnimation"):
-                bpy.data.actions.remove(a)
         action = bpy.data.actions.new(name="PCVGAnimation")
         armature.animation_data.action = action
         armature.rotation_mode = "QUATERNION"
@@ -1021,6 +1070,9 @@ class AnimationExporter:
                 _record(pbone.path_from_id("scale"), ones_f3)
 
         bpy.ops.object.mode_set(mode="OBJECT")
+
+        if mesh_path and not export_mesh:
+            _remove_mesh_objects_for_skeleton_only_export(bpy)
 
         # ── Bulk-fill every frame on each fcurve via foreach_set ──────
         if F and action is not None and data_path_value_arrays:
