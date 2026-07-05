@@ -378,9 +378,10 @@ def get_common_features_from_rest_pose(
     object_type,
     face_joints=None,
     *,
-    max_joints=MAX_JOINTS,
+    max_joints=None,
 ):
     loaded_anim, rest_pose_names, _rest_pose_frame_time = FBX.load(rest_pose_path)
+    max_joints = int(max_joints) if max_joints is not None else max(len(rest_pose_names), 1)
     reference_anim = _rest_pose_animation_from_loaded_anim(loaded_anim)
     # Crop oversized skeletons down to max_joints BEFORE any face/contact/offset
     # inference, so every downstream rest-pose artifact is built on the cropped

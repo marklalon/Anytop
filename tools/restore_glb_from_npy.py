@@ -105,6 +105,8 @@ from Anytop.utils.fullbody_ik import (
 def _load_tpose_restore_metadata(
     tpose_mesh: str,
     object_type: str,
+    *,
+    expected_joint_count: int | None = None,
 ) -> dict[str, object]:
     from data_loaders.truebones.truebones_utils.motion_process import get_common_features_from_T_pose, TPoseFeatures
 
@@ -112,8 +114,20 @@ def _load_tpose_restore_metadata(
     if not tpose_lower.endswith(('.fbx', '.glb', '.gltf')):
         raise ValueError(f"Unsupported T-pose mesh format: {tpose_mesh} - expected .fbx, .glb, or .gltf")
 
-    tp: TPoseFeatures = get_common_features_from_T_pose(tpose_mesh, object_type)
     raw_joint_names, raw_parents, raw_offsets, raw_rest_rotations = load_fbx_skeleton_metadata(tpose_mesh)
+    uncropped_joint_cap = max(
+        len(raw_joint_names),
+        int(expected_joint_count or 0),
+        1,
+    )
+    # Restore/inference should consume the full T-pose skeleton. The default
+    # get_common_features_from_T_pose(max_joints=MAX_JOINTS) cap is a training
+    # concern and would silently drop tail joints here.
+    tp: TPoseFeatures = get_common_features_from_T_pose(
+        tpose_mesh,
+        object_type,
+        max_joints=uncropped_joint_cap,
+    )
     raw_parents = np.asarray(raw_parents, dtype=np.int32)
     raw_offsets = np.asarray(raw_offsets, dtype=np.float32)
     raw_rest_rotations = np.asarray(raw_rest_rotations, dtype=np.float32)
@@ -229,11 +243,14 @@ def _build_restore_context(
                 f"cond.npy entry for '{object_type}' is missing required field '{key}'."
             )
 
-    tpose_meta = _load_tpose_restore_metadata(tpose_mesh, object_type)
-
     joint_names = list(cond_entry["joints_names"])
     parents = np.asarray(cond_entry["parents"], dtype=np.int32)
     offsets = np.asarray(cond_entry["offsets"], dtype=np.float32)
+    tpose_meta = _load_tpose_restore_metadata(
+        tpose_mesh,
+        object_type,
+        expected_joint_count=len(joint_names),
+    )
 
     if feature_joint_count not in (0, len(joint_names)):
         raise ValueError(

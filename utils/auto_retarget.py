@@ -767,7 +767,7 @@ def auto_retarget_pipeline(
     donor_skeletons_override=None,
     max_joints: int = MAX_JOINTS,
     fps: float = FPS,
-    crop_enabled: bool = True,
+    crop_enabled: bool = False,
 ) -> dict:
     """Auto-retarget motions from ranked training donors onto the target.
 

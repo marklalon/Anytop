@@ -120,15 +120,20 @@ def align_directory(
         raise RuntimeError(f"No valid action FBX files after filtering in {directory}")
     print(f"Action clips        : {len(action_files)}")
 
-    tp = get_common_features_from_T_pose(bind_pose_path, object_type)
+    bind_anim, bind_names, _bind_frame_time = FBX.load(bind_pose_path)
+    uncropped_joint_cap = max(len(bind_names), 1)
+    tp = get_common_features_from_T_pose(
+        bind_pose_path,
+        object_type,
+        max_joints=uncropped_joint_cap,
+    )
 
     # T-pose rest/bind-pose forward, computed with the same face/forward joints
     # that produced tp.orientation_quat so native-matching clips map to ~identity.
     # Use the rest pose (bind pose), NOT frame 0 of the animation, because some
     # bind-pose files carry non-identity root rotation at frame 0 (e.g. Crab
     # has +X rest pose but -Z at frame 0).
-    ref_anim, _ref_names, _ref_ft = FBX.load(bind_pose_path)
-    ref_rest_anim = _rest_pose_animation_from_loaded_anim(ref_anim)
+    ref_rest_anim = _rest_pose_animation_from_loaded_anim(bind_anim)
     tpose_forward = _get_facing_forward(
         positions_global(ref_rest_anim),
         object_type,
