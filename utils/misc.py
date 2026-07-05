@@ -67,7 +67,10 @@ def infer_object_type_from_filename(
 
     When *valid_types* is provided the extracted candidate(s) are validated
     against that container.  Multi-word types (e.g. ``Sea_Lion``) are handled
-    via progressive prefix matching.
+    via progressive prefix matching. Validation is **case-insensitive** and the
+    canonical key from *valid_types* is returned, so a lowercase filename like
+    ``dragon_tpose.glb`` resolves to a registered ``Dragon`` key (matching the
+    case-insensitive registry check downstream) instead of silently missing.
 
     Common Truebones suffixes (e.g. ``All`` in ``LionAll-Walk.fbx``) are
     stripped from candidates so that the inferred type matches the
@@ -84,12 +87,26 @@ def infer_object_type_from_filename(
     if not stem:
         return None
 
+    # Case-insensitive lookup from lowercased candidate → canonical valid_types
+    # key (built once). ``_match`` returns the canonical key when validating, the
+    # raw candidate when validation is off, or ``None`` on a validated miss.
+    _canon = None
+    if valid_types is not None:
+        _canon = {}
+        for known in valid_types:
+            _canon.setdefault(known.lower(), known)
+
+    def _match(candidate: str) -> str | None:
+        if valid_types is None:
+            return candidate
+        return _canon.get(candidate.lower())
+
     # 1. Triple-underscore separator  (highest priority)
     sep_triple = "___"
     if sep_triple in stem:
-        candidate = _strip_common_suffixes(stem.split(sep_triple, 1)[0])
-        if valid_types is None or candidate in valid_types:
-            return candidate
+        matched = _match(_strip_common_suffixes(stem.split(sep_triple, 1)[0]))
+        if matched is not None:
+            return matched
 
     # 2. Progressive single-underscore prefix matching
     #    (handles multi-word types like "Sea_Lion")
@@ -97,9 +114,9 @@ def infer_object_type_from_filename(
         parts = stem.split("_")
         best: str | None = None
         for i in range(1, len(parts)):
-            candidate = _strip_common_suffixes("_".join(parts[:i]))
-            if candidate in valid_types:
-                best = candidate  # keep going for a longer match
+            matched = _match(_strip_common_suffixes("_".join(parts[:i])))
+            if matched is not None:
+                best = matched  # keep going for a longer match
         if best is not None:
             return best
 
@@ -107,15 +124,17 @@ def infer_object_type_from_filename(
     if "_" in stem:
         first_token = _strip_common_suffixes(stem.split("_", 1)[0])
         if first_token:
-            if valid_types is None or first_token in valid_types:
-                return first_token
+            matched = _match(first_token)
+            if matched is not None:
+                return matched
 
     # 4. Hyphen separator (for FBX stems like "Wyvern-Tpose")
     if "-" in stem:
         first_token = _strip_common_suffixes(stem.split("-", 1)[0])
         if first_token:
-            if valid_types is None or first_token in valid_types:
-                return first_token
+            matched = _match(first_token)
+            if matched is not None:
+                return matched
 
     # 5. Fallback: bare stem (e.g. "dragon.fbx" → "dragon")
     if valid_types is None:
