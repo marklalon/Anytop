@@ -99,6 +99,29 @@ def load_fbx_skeleton_metadata(
     return extract_armature_skeleton_data(armature)
 
 
+def load_fbx_armature_object_scale(fbx_path: str) -> float:
+    """Return the uniform world object-scale of the T-pose armature.
+
+    ``extract_armature_skeleton_data`` reads armature-LOCAL bone data and
+    deliberately drops the armature object scale (the ``0.01`` Truebones
+    centimetre wrapper); the dataset pipeline re-introduces that factor via the
+    per-character ``scale_factor``. A skeleton-only restore, however, rebuilds a
+    fresh armature at object scale ``1.0`` directly from those armature-local
+    offsets, so without this factor the exported skeleton comes out
+    ``1 / object_scale`` (e.g. 100×) larger than the source mesh. Callers use
+    this to rescale the skeleton-only export back into the mesh's world scale.
+
+    Returns ``1.0`` outside a live Blender session or when the armature has no
+    object-level scale.
+    """
+    from ..motion_lib.FBX import load_fbx_scene
+    armature = load_fbx_scene(fbx_path)
+    if not hasattr(armature, "matrix_world"):
+        return 1.0
+    sx, sy, sz = armature.matrix_world.to_scale()
+    return float((abs(sx) + abs(sy) + abs(sz)) / 3.0)
+
+
 # ── Identity rest rotations ────────────────────────────────────────────────
 
 def identity_rest_rotations(joint_count: int) -> np.ndarray:
