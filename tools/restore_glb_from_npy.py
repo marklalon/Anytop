@@ -754,18 +754,24 @@ def restore_glb(
     # resampling at render time.
     output_fps = fps
     if resample_fps is not None and resample_fps > 0:
-        src_frames = export_anim.shape[0]
-        frame_times = _resample_frame_indices(
-            src_frames, fps, resample_fps, min_length=resample_min_length
-        )
-        export_anim = _resample_animation(export_anim, frame_times)
-        output_fps = resample_fps
-        print(
-            f"Resampled motion {src_frames} -> {export_anim.shape[0]} frames "
-            f"({fps:g}fps -> {resample_fps:g}fps"
-            + (f", min_length={resample_min_length}" if resample_min_length else "")
-            + ")"
-        )
+        if abs(resample_fps - fps) < 1e-6:
+            print(
+                f"resample_fps ({resample_fps}) equals fps ({fps}), "
+                "skipping resample."
+            )
+        else:
+            src_frames = export_anim.shape[0]
+            frame_times = _resample_frame_indices(
+                src_frames, fps, resample_fps, min_length=resample_min_length
+            )
+            export_anim = _resample_animation(export_anim, frame_times)
+            output_fps = resample_fps
+            print(
+                f"Resampled motion {src_frames} -> {export_anim.shape[0]} frames "
+                f"({fps:g}fps -> {resample_fps:g}fps"
+                + (f", min_length={resample_min_length}" if resample_min_length else "")
+                + ")"
+            )
 
     # ── Reconcile skeleton-only export scale ────────────────────────────────
     # With a T-pose mesh in native mode, skeleton-only uses the imported source
