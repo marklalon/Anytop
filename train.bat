@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=truebones_zoo_locomotion_no_pior_v2
+set RUN_NAME=truebones_zoo_stationary_no_pior_v1
 set TORCH_LOGS=recompiles,graph_breaks
 
 REM --compile builds Triton kernel launchers with MSVC cl.exe. Initialize
@@ -19,7 +19,7 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--auto_resume ^
 	--ml_platform_type TensorboardPlatform ^
 	--objects_subset all ^
-	--action_tags locomotion,fly,swim ^
+	--action_tags idle,emote,attack,interact ^
 	--train_split train ^
 	--balanced ^
 	--latent_dim 256 ^
