@@ -62,7 +62,7 @@ _ALPHA_MID_TONE_LO = 0.15
 _ALPHA_MID_TONE_HI = 0.85
 
 
-_TEXTURE_EXTS = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tif", ".tiff", ".dds"}
+_TEXTURE_EXTS = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tif", ".tiff", ".dds", ".webp"}
 
 # Object names that are scene helpers / primitives, never the skinned character.
 _EXCLUDED_MESH_PREFIXES = (
