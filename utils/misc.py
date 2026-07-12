@@ -64,6 +64,7 @@ def infer_object_type_from_filename(
         ``{Type}___{Action}_{ID}.ext``     — triple underscore (e.g. ``Horse___RunToStop_29.npy``)
         ``{Type}_{Action}_{ID}.ext``        — single underscore (e.g. ``Sea_Lion_Swim_42.npy``)
         ``{Type}-{Action}.ext``             — hyphen (e.g. ``Wyvern-Tpose.fbx``)
+        ``{Type}.{suffix}.ext``             — dot (e.g. ``Elephant.rig.glb``)
 
     When *valid_types* is provided the extracted candidate(s) are validated
     against that container.  Multi-word types (e.g. ``Sea_Lion``) are handled
@@ -131,6 +132,14 @@ def infer_object_type_from_filename(
     # 4. Hyphen separator (for FBX stems like "Wyvern-Tpose")
     if "-" in stem:
         first_token = _strip_common_suffixes(stem.split("-", 1)[0])
+        if first_token:
+            matched = _match(first_token)
+            if matched is not None:
+                return matched
+
+    # 4b. Dot separator (for stems like "Elephant.rig" from "Elephant.rig.glb")
+    if "." in stem:
+        first_token = _strip_common_suffixes(stem.split(".", 1)[0])
         if first_token:
             matched = _match(first_token)
             if matched is not None:
