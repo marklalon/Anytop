@@ -8,7 +8,8 @@ same-named GLB next to the source FBX.
 
 Incremental by default — only FBX files whose ``.glb`` output does **not**
 yet exist are processed.  Combine ``--overwrite`` to force a full reconversion
-or ``--filter`` to restrict to specific character types.
+or ``--filter`` to restrict to specific character types.  ``--skeleton-only``
+exports only the armature and its animation, without meshes.
 
 Requires bpy (Blender as a Python module) — run with the project's .venv::
 
@@ -21,6 +22,9 @@ Usage::
 
     # Convert only Buffalo and Dragon, overwriting existing GLBs
     python Anytop/tools/dataset_cleanup/convert_fbx_2_glb.py --filter Buffalo,Dragon --overwrite
+
+    # Convert to animation-only (mesh-free) GLBs
+    python Anytop/tools/dataset_cleanup/convert_fbx_2_glb.py --skeleton-only --overwrite
 
     # Use a custom dataset directory
     python Anytop/tools/dataset_cleanup/convert_fbx_2_glb.py --dataset-dir /path/to/fbx_root
@@ -72,6 +76,26 @@ def _confirm_yes_no(prompt: str) -> bool:
         print("Invalid response. Please enter 'yes', 'y', 'no', or 'n'.")
 
 
+def _prepare_skeleton_only_export(bpy, armature) -> None:
+    """Leave only *armature* in the scene for a skeleton-only GLB export.
+
+    Removing mesh objects, instead of merely disabling their visibility, keeps
+    the glTF exporter from serializing any mesh primitives or skin data while
+    preserving the imported armature action.
+    """
+    if armature is None or armature.type != "ARMATURE":
+        raise RuntimeError("Skeleton-only export requires an imported armature")
+
+    for obj in list(bpy.data.objects):
+        if obj != armature:
+            bpy.data.objects.remove(obj, do_unlink=True)
+
+    for obj in bpy.context.selected_objects:
+        obj.select_set(False)
+    armature.select_set(True)
+    bpy.context.view_layer.objects.active = armature
+
+
 # ---------------------------------------------------------------------------
 # Per-worker entry point  (must be module-level for pickle / ProcessPool)
 # ---------------------------------------------------------------------------
@@ -81,6 +105,7 @@ def _convert_one_fbx(
     object_type: str,
     fbx_path: str,
     glb_path: str,
+    skeleton_only: bool = False,
 ) -> tuple[str, bool]:
     """Import *fbx_path* into Blender and export as GLB.
 
@@ -93,13 +118,17 @@ def _convert_one_fbx(
     rel = f"{object_type}/{os.path.basename(fbx_path)}"
     try:
         clear_scene()
-        import_fbx(fbx_path, use_image_search=True)
+        # Texture search/reload only matters when meshes (and their materials)
+        # survive to export; skip the wasted image work for skeleton-only runs.
+        import_fbx(fbx_path, use_image_search=not skeleton_only)
 
-        # Wire up alpha / diffuse textures that bpy's FBX importer may have
-        # skipped — without this, alpha-channel textures are missing in the GLB
-        # output (matching AnimationExporter.export_glb behaviour).
         armature = next((o for o in bpy.data.objects if o.type == "ARMATURE"), None)
-        if armature is not None:
+        if skeleton_only:
+            _prepare_skeleton_only_export(bpy, armature)
+        elif armature is not None:
+            # Wire up alpha / diffuse textures that bpy's FBX importer may have
+            # skipped — without this, alpha-channel textures are missing in the GLB
+            # output (matching AnimationExporter.export_glb behaviour).
             from utils.texture_resolve import resolve_main_character_textures
             with contextlib.redirect_stdout(io.StringIO()):
                 resolve_main_character_textures(bpy, armature, fbx_path)
@@ -112,10 +141,20 @@ def _convert_one_fbx(
         with contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(io.StringIO()), \
              _silence_os_std():
-            bpy.ops.export_scene.gltf(
-                filepath=glb_path,
-                export_format="GLB"
-            )
+            export_kwargs = {
+                "filepath": glb_path,
+                "export_format": "GLB",
+            }
+            if skeleton_only:
+                export_kwargs.update(
+                    use_selection=True,
+                    export_animations=True,
+                    export_animation_mode="ACTIVE_ACTIONS",
+                    export_force_sampling=True,
+                    export_apply=False,
+                    export_yup=True,
+                )
+            bpy.ops.export_scene.gltf(**export_kwargs)
         clear_scene()
         return rel, True
     except Exception as exc:
@@ -137,6 +176,7 @@ def convert_fbx_2_glb(
     overwrite: bool = False,
     yes: bool = False,
     workers: int = 16,
+    skeleton_only: bool = False,
 ) -> int:
     """Convert all FBX files under *dataset_dir* to same-named GLB files.
 
@@ -151,6 +191,8 @@ def convert_fbx_2_glb(
         yes: When ``True``, skip all interactive confirmation prompts.
         workers: Number of parallel Blender processes.  Each worker runs its
             own independent Blender instance.  Default 16.
+        skeleton_only: When ``True``, export only the armature and its
+            animation; all mesh and other non-armature objects are omitted.
 
     Returns:
         Number of GLB files written.
@@ -198,7 +240,10 @@ def convert_fbx_2_glb(
 
     print(f"Dataset : {dataset_dir_resolved}")
     print(f"Total   : {len(all_fbx)} FBX file(s) across {len(object_dirs)} character(s)")
-    print(f"Pending : {len(pending)}  (--overwrite={overwrite}, --workers={workers})")
+    print(
+        f"Pending : {len(pending)}  (--overwrite={overwrite}, "
+        f"--skeleton-only={skeleton_only}, --workers={workers})"
+    )
     if skipped:
         print(f"Skipped : {skipped} existing GLB(s)")
 
@@ -218,7 +263,7 @@ def convert_fbx_2_glb(
     done = 0
     with ProcessPoolExecutor(max_workers=n_workers) as executor:
         fut_to_item = {
-            executor.submit(_convert_one_fbx, o, f, g): (o, f, g)
+            executor.submit(_convert_one_fbx, o, f, g, skeleton_only): (o, f, g)
             for o, f, g in pending
         }
         for fut in as_completed(fut_to_item):
@@ -249,7 +294,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Convert all FBX files under the Truebones raw dataset to GLB "
-            "using Blender (bpy).  Incremental by default."
+            "using Blender (bpy).  Incremental by default; use "
+            "--skeleton-only for mesh-free armature animation GLBs."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
@@ -278,6 +324,11 @@ def main() -> int:
         help="Re-export GLB even if the output file already exists (force reconversion).",
     )
     parser.add_argument(
+        "--skeleton-only",
+        action="store_true",
+        help="Export only the armature and its animation; omit meshes and other objects.",
+    )
+    parser.add_argument(
         "--yes",
         action="store_true",
         default=False,
@@ -304,6 +355,7 @@ def main() -> int:
             overwrite=args.overwrite,
             yes=args.yes,
             workers=args.workers,
+            skeleton_only=args.skeleton_only,
         )
         return 0
     except Exception as exc:
