@@ -25,7 +25,9 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import os
+import struct
 import sys
 import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -57,16 +59,50 @@ def _list_glb_files(directory: str) -> list[str]:
     )
 
 
+def _read_glb_json(path: str) -> dict:
+    """Read the JSON chunk from a GLB without importing or rewriting it."""
+    with open(path, "rb") as handle:
+        data = handle.read()
+    if len(data) < 12:
+        raise RuntimeError(f"Invalid GLB header: {path}")
+
+    magic, version, _declared_length = struct.unpack_from("<III", data, 0)
+    if magic != 0x46546C67 or version != 2:
+        raise RuntimeError(f"Unsupported GLB header: {path}")
+
+    offset = 12
+    while offset + 8 <= len(data):
+        chunk_length, chunk_type = struct.unpack_from("<II", data, offset)
+        offset += 8
+        chunk_end = offset + chunk_length
+        if chunk_end > len(data):
+            raise RuntimeError(f"Truncated GLB chunk: {path}")
+        if chunk_type == 0x4E4F534A:
+            payload = data[offset:chunk_end]
+            return json.loads(payload.rstrip(b" \t\r\n\0").decode("utf-8"))
+        offset = chunk_end
+    raise RuntimeError(f"GLB has no JSON chunk: {path}")
+
+
+def _glb_has_surface_mesh(path: str) -> bool:
+    """Return whether *path* contains a renderable mesh primitive.
+
+    The Truebones skeleton preview uses glTF ``LINES`` primitives (mode 1),
+    which are part of the skeleton representation rather than a character
+    surface.  Any other primitive mode is treated as actual mesh content and
+    must be preserved in the output.
+    """
+    document = _read_glb_json(path)
+    return any(
+        int(primitive.get("mode", 4)) != 1
+        for mesh in document.get("meshes", [])
+        for primitive in mesh.get("primitives", [])
+    )
+
+
 def _confirm_yes_no(prompt: str) -> bool:
     reply = input(prompt).strip().lower()
     return reply in ("y", "yes")
-
-
-def _is_tpose_glb(path: str) -> bool:
-    """Return True when the filename stem contains a T-pose suffix/hint."""
-    stem = Path(path).stem.lower()
-    compact = stem.replace("-", "").replace("_", "").replace(" ", "")
-    return "tpose" in compact
 
 
 def _matrix_to_rows(matrix) -> MatrixRows:
@@ -354,7 +390,12 @@ def _init_worker_reference_pose(bind_pose_glb: str, frame_index: int = 0) -> Non
     ) = _load_reference_pose(bind_pose_glb, frame_index=frame_index)
 
 
-def _export_glb_safely(bpy, output_path: str, *, in_place: bool) -> None:
+def _export_glb_safely(
+    bpy,
+    output_path: str,
+    *,
+    in_place: bool,
+) -> None:
     """Export the current scene to *output_path*, using a temp file for in-place writes."""
     from motion_lib.FBX import _silence_os_std
 
@@ -542,48 +583,6 @@ def _rebake_action_against_new_rest(
     bpy.ops.object.mode_set(mode="OBJECT")
 
 
-def _write_static_bind_pose_action(
-    bpy,
-    armature,
-    fps: float = 30.0,
-) -> None:
-    """Create a one-frame identity pose action, which samples as the bind pose."""
-    from motion_lib.FBX import iter_action_fcurves
-
-    if armature.animation_data:
-        armature.animation_data_clear()
-    armature.animation_data_create()
-    action = bpy.data.actions.new(name="StaticBindPoseAnimation")
-    armature.animation_data.action = action
-
-    scene = bpy.context.scene
-    scene.render.fps = int(round(fps)) if fps and fps > 0 else 30
-    scene.render.fps_base = 1.0
-    scene.frame_start = 0
-    scene.frame_end = 0
-    scene.frame_set(0)
-
-    bpy.context.view_layer.objects.active = armature
-    armature.select_set(True)
-    bpy.ops.object.mode_set(mode="POSE")
-
-    for pose_bone in armature.pose.bones:
-        pose_bone.rotation_mode = "QUATERNION"
-        pose_bone.location = (0.0, 0.0, 0.0)
-        pose_bone.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
-        pose_bone.scale = (1.0, 1.0, 1.0)
-        pose_bone.keyframe_insert(data_path="location", frame=0)
-        pose_bone.keyframe_insert(data_path="rotation_quaternion", frame=0)
-        pose_bone.keyframe_insert(data_path="scale", frame=0)
-
-    for fcurve in iter_action_fcurves(action):
-        for keyframe in fcurve.keyframe_points:
-            keyframe.interpolation = "LINEAR"
-        fcurve.update()
-
-    bpy.ops.object.mode_set(mode="OBJECT")
-
-
 def _apply_reference_rest_pose_to_armature(armature, reference_rest_pose: dict[str, MatrixRows]) -> None:
     """Set pose-bone bases so the final pose equals *reference_rest_pose*."""
     from mathutils import Matrix
@@ -631,7 +630,6 @@ def _reassign_one_glb(
         _silence_os_std,
         clear_scene,
         import_gltf,
-        remove_lights_and_cameras,
     )
 
     basename = os.path.basename(glb_path)
@@ -646,9 +644,9 @@ def _reassign_one_glb(
                 "call _init_worker_reference_pose first"
             )
 
-        force_static_bind_pose = _is_tpose_glb(glb_path)
+        input_has_surface_mesh = _glb_has_surface_mesh(glb_path)
         original_anim = original_names = original_frametime = None
-        if preserve_animation and not force_static_bind_pose:
+        if preserve_animation:
             original_anim, original_names, original_frametime = FBX.load(
                 glb_path,
                 collapse_root=False,
@@ -659,7 +657,6 @@ def _reassign_one_glb(
              contextlib.redirect_stderr(io.StringIO()), \
              _silence_os_std():
             import_gltf(glb_path)
-        remove_lights_and_cameras()
 
         armature = _find_armature(bpy, glb_path)
         source_bone_names = [pose_bone.name for pose_bone in armature.pose.bones]
@@ -714,16 +711,15 @@ def _reassign_one_glb(
                 pose_bone.matrix_basis = Matrix(rows)
 
         bpy.context.view_layer.update()
-        _bake_current_deformed_meshes_to_bind_data(bpy, armature)
+        if input_has_surface_mesh:
+            _bake_current_deformed_meshes_to_bind_data(bpy, armature)
         with contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(io.StringIO()), \
              _silence_os_std():
             bpy.ops.pose.armature_apply(selected=False)
         bpy.ops.object.mode_set(mode="OBJECT")
 
-        if force_static_bind_pose:
-            _write_static_bind_pose_action(bpy, armature)
-        elif preserve_animation:
+        if preserve_animation:
             _rebake_action_against_new_rest(
                 bpy,
                 armature,
@@ -796,15 +792,25 @@ def reassign_bind_pose_directory(
         raise ValueError(f"--frame must be -1 or >= 0, got {frame_index}")
     os.makedirs(output_dir_abs, exist_ok=True)
 
-    glb_files = _list_glb_files(directory_abs)
+    all_glb_files = _list_glb_files(directory_abs)
+    bind_pose_key = os.path.normcase(bind_pose_abs)
+    glb_files = [
+        path
+        for path in all_glb_files
+        if os.path.normcase(os.path.abspath(path)) != bind_pose_key
+    ]
     if not glb_files:
-        raise FileNotFoundError(f"No .glb files found in {directory_abs}")
+        raise FileNotFoundError(
+            f"No action GLB files found in {directory_abs} "
+            f"after excluding the bind-pose reference"
+        )
 
     print(f"Input dir      : {directory_abs}")
     print(f"Bind-pose GLB  : {bind_pose_abs}")
     print(f"Bind-pose frame: {frame_index}")
     print(f"Output dir     : {output_dir_abs}")
-    print(f"GLB files      : {len(glb_files)}")
+    print(f"GLB files      : {len(glb_files)} action file(s)")
+    print(f"Bind-pose excluded: {os.path.basename(bind_pose_abs)}")
     print(f"Fix bone names : {fix_bone_names}")
 
     all_tasks = [
