@@ -22,8 +22,11 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     BVHS_DIR,
     MOTION_METADATA_FILE,
     ACTION_TAGS_FILE,
-    OBJECT_SUBSETS_DICT,
     get_dataset_dir,
+)
+from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
+    OBJECT_SUBSET_CHOICES,
+    dataset_tags,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     load_motion_metadata,
@@ -181,7 +184,7 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
     
     # Determine which object types to validate
     if objects_subset != "all":
-        objects_to_validate = set(OBJECT_SUBSETS_DICT[objects_subset])
+        objects_to_validate = set(dataset_tags().object_subsets[objects_subset])
         missing_objects = sorted(objects_to_validate - cond_keys)
         if missing_objects:
             print_warn(f"cond.npy is missing objects from subset {objects_subset}: {missing_objects}")
@@ -816,7 +819,7 @@ def _validate_generated_artifacts_consistency(dataset_dir: Path, cond: dict, obj
         is_consistent = False
 
     if objects_subset != "all":
-        expected_subset = set(OBJECT_SUBSETS_DICT[objects_subset])
+        expected_subset = set(dataset_tags().object_subsets[objects_subset])
         missing_subset_objects = sorted(expected_subset - object_types_in_motions)
         if missing_subset_objects:
             print_warn(
@@ -875,7 +878,7 @@ def validate_positions_error_file(positions_error_path: Path) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate an AnyTop preprocessed dataset directory.")
     parser.add_argument("--dataset-dir", default=None, help="Dataset directory to validate. If not specified, uses default path.")
-    parser.add_argument("--objects-subset", default="all", choices=sorted(OBJECT_SUBSETS_DICT.keys()), help="Subset that must be present in the dataset; incremental runs may still contain additional objects.")
+    parser.add_argument("--objects-subset", default="all", choices=sorted(OBJECT_SUBSET_CHOICES), help="Subset that must be present in the dataset; incremental runs may still contain additional objects.")
     parser.add_argument("--sample-count", type=int, default=0, help="How many motion files to validate in detail. Use 0 to validate all files.")
     parser.add_argument("--orientation-threshold-deg", type=float, default=5.0, help="Maximum allowed T-pose face-orientation delta from the nearest cardinal XZ axis (+x/-x/+z/-z) before warning.")
     parser.add_argument("--skip-orientation-check", action="store_true", help="Skip T-pose face-orientation validation.")

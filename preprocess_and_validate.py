@@ -71,56 +71,48 @@ import numpy as np
 
 ANYTOP_DIR = Path(__file__).resolve().parent
 
-# Make the bundled truebones helpers importable directly (param_utils, truebones_utils.motion_labels).
-_TRUEBONES_DIR = ANYTOP_DIR / "data_loaders" / "truebones"
-for _path in (_TRUEBONES_DIR, _TRUEBONES_DIR / "truebones_utils"):
-    _path_str = str(_path)
-    if _path_str not in sys.path:
-        sys.path.insert(0, _path_str)
+# Import the bundled truebones helpers under their package-qualified names only.
+# A short-name import (via a sys.path entry inside the package) would create a
+# SECOND copy of those modules in this process, with its own module globals.
+if str(ANYTOP_DIR) not in sys.path:
+    sys.path.insert(0, str(ANYTOP_DIR))
 
-from param_utils import (  # noqa: E402
+from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     BVHS_DIR,
     MOTION_DIR,
     ACTION_TAGS_FILE,
-    SPECIES_TAGS_FILE,
-    CHAIN_FORWARD_JOINTS_FILE,
-    configure_chain_forward_joints,
-    configure_species_tags,
     get_dataset_dir,
     get_raw_data_dir,
 )
-from truebones_utils.motion_labels import load_motion_metadata, write_motion_metadata  # noqa: E402
+from data_loaders.truebones.truebones_utils import dataset_tags  # noqa: E402
+from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
+    load_motion_metadata,
+    write_motion_metadata,
+)
 
 
-def _configure_species_tags_for_run(dataset_dir: str = "") -> str:
-    """Configure the species-tag sidecar, resolved from the dataset directory.
+def _configure_dataset_tags_for_run(args: argparse.Namespace) -> None:
+    """Point the tag sidecars at this run's dataset before any of them is read.
 
-    The sidecar is expected at ``<dataset-dir>/species_tags.jsonl`` (or the default
-    dataset directory when ``--dataset-dir`` is omitted). Loading it configures the
-    process-wide SPECIES_TAGS / OBJECT_SUBSETS_DICT globals used by preprocessing.
+    The sidecars default to ``<dataset-dir>/species_tags.jsonl`` and
+    ``<dataset-dir>/chain_forward_joints.jsonl``; ``--species-tags-file`` /
+    ``--chain-forward-joints-file`` override either location. Nothing is loaded
+    here -- the first consumer triggers the read -- so this is safe to call
+    before the pipeline modules are imported.
     """
-    resolved_path = configure_species_tags(dataset_dir=dataset_dir or None)
-    print(f"[OK] using species tags: {resolved_path}")
-    return str(resolved_path)
-
-
-def _configure_chain_forward_joints_for_run(dataset_dir: str = "") -> str:
-    """Configure the dataset-specific forward-chain sidecar, resolved from the
-    dataset directory.
-
-    The sidecar is expected at ``<dataset-dir>/chain_forward_joints.jsonl``. Most
-    datasets do not carry one; in that case the loader falls back to semantic
-    head/limb detection.
-    """
-    resolved_path = configure_chain_forward_joints(dataset_dir=dataset_dir or None)
-    if resolved_path.is_file():
-        print(f"[OK] using chain forward joints: {resolved_path}")
+    paths = dataset_tags.configure(
+        dataset_dir=args.dataset_dir,
+        species_tags_file=args.species_tags_file,
+        chain_forward_joints_file=args.chain_forward_joints_file,
+    )
+    print(f"[OK] using species tags: {paths.species_tags}")
+    if paths.chain_forward_joints.is_file():
+        print(f"[OK] using chain forward joints: {paths.chain_forward_joints}")
     else:
         print(
-            f"[OK] no chain forward-joints sidecar at {resolved_path}; "
+            f"[OK] no chain forward-joints sidecar at {paths.chain_forward_joints}; "
             "using generic orientation detection"
         )
-    return str(resolved_path)
 
 
 def _discover_all_objects(raw_data_dir: str = "") -> tuple[str, ...]:
@@ -770,7 +762,7 @@ def run_remove_motions(
                 print(f"  [OK] Removed {cond_removed} species from cond.npy" + (" (deleted — no species remaining)" if not cond else ""))
 
         # species_tags.jsonl
-        st_path = dataset_dir_path / SPECIES_TAGS_FILE
+        st_path = dataset_dir_path / dataset_tags.SPECIES_TAGS_FILE
         if st_path.exists():
             st_entries = _load_jsonl(st_path)
             new_st = [e for e in st_entries if e.get("species", "") not in empty_species]
@@ -779,7 +771,7 @@ def run_remove_motions(
                 print(f"  [OK] Removed {len(st_entries) - len(new_st)} species from species_tags.jsonl")
 
         # chain_forward_joints.jsonl
-        cfj_path = dataset_dir_path / CHAIN_FORWARD_JOINTS_FILE
+        cfj_path = dataset_dir_path / dataset_tags.CHAIN_FORWARD_JOINTS_FILE
         if cfj_path.exists():
             cfj_entries = _load_jsonl(cfj_path)
             new_cfj = [e for e in cfj_entries if e.get("species", "") not in empty_species]
@@ -1039,6 +1031,21 @@ def parse_args() -> argparse.Namespace:
         help="Output directory for processed dataset. If not specified, uses default path.",
     )
     parser.add_argument(
+        "--species-tags-file",
+        default="",
+        type=str,
+        help="Species motion-tag sidecar. Defaults to <dataset-dir>/species_tags.jsonl.",
+    )
+    parser.add_argument(
+        "--chain-forward-joints-file",
+        default="",
+        type=str,
+        help=(
+            "Forward-chain joint-index sidecar for species without usable limb pairs. "
+            "Defaults to <dataset-dir>/chain_forward_joints.jsonl; optional."
+        ),
+    )
+    parser.add_argument(
         "--filter-min-length",
         default=10,
         type=int,
@@ -1068,12 +1075,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    try:
-        _configure_species_tags_for_run(args.dataset_dir)
-        _configure_chain_forward_joints_for_run(args.dataset_dir)
-    except (FileNotFoundError, ValueError, KeyError, OSError) as exc:
-        print(f"ERROR: failed to configure dataset sidecars: {exc}")
-        return 1
+    _configure_dataset_tags_for_run(args)
 
     if args.sample_count < 0:
         print("ERROR: --sample-count must be >= 0")

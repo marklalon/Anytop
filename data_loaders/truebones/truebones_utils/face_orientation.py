@@ -4,7 +4,7 @@ import numpy as np
 import re
 from motion_lib.Quaternions import Quaternions
 from motion_lib.Animation import Animation
-from .param_utils import CHAIN_FORWARD_JOINTS
+from .dataset_tags import dataset_tags
 from .physics_joint_annotation import (
     normalize_joint_name,
     detect_joint_side,
@@ -372,7 +372,7 @@ def _vector_angle_deg(vector_a, vector_b):
 
 
 def _get_chain_forward(joints, object_type):
-    chain = CHAIN_FORWARD_JOINTS.get(object_type)
+    chain = dataset_tags().chain_forward_joints.get(object_type)
     if chain is None:
         return None, True
 
@@ -435,7 +435,7 @@ def _get_facing_candidates_with_diagnostics(
     candidates = {}
     near_y_candidates = {}
 
-    if object_type in CHAIN_FORWARD_JOINTS:
+    if object_type in dataset_tags().chain_forward_joints:
         chain_forward, chain_near_y = _get_chain_forward(joints, object_type)
         if chain_forward is None:
             return {}, {}
@@ -707,10 +707,10 @@ def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints
             return [joint_names.index(name) for name in face_joints]
         return list(face_joints)
 
-    # Dataset-specific chain entries use CHAIN_FORWARD_JOINTS for direction;
-    # _get_facing_candidates returns early for them and never unpacks
+    # Species with a chain_forward_joints entry take their direction from that
+    # chain; _get_facing_candidates returns early for them and never unpacks
     # face_joint_indx.
-    if object_type in CHAIN_FORWARD_JOINTS:
+    if object_type in dataset_tags().chain_forward_joints:
         return []
 
     if joint_names is not None and parents is not None:

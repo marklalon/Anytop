@@ -123,14 +123,16 @@ def _process_new_skeleton_from_args(args) -> dict[str, Any]:
     crop_enabled = args.crop_enabled
 
     # ── Species tags ─────────────────────────────────────────────────────
-    import data_loaders.truebones.truebones_utils.physics_joint_annotation as _pja
+    # A brand-new skeleton is usually not in species_tags.jsonl yet; register
+    # its tags for this process so every derived view (subsets, descriptors)
+    # sees them.
+    from data_loaders.truebones.truebones_utils import dataset_tags
     if args.species_tags is not None:
         parsed_tags = tuple(
             t.strip() for t in args.species_tags.split(',') if t.strip()
         )
         if parsed_tags:
-            _pja._SPECIES_TAGS[object_type] = parsed_tags
-            _pja._SPECIES_TAGS_LOWER = None  # invalidate lazy cache
+            dataset_tags.register_species_tags(object_type, parsed_tags)
             print(
                 f"[process_new_skeleton] Using explicit --species-tags for "
                 f"'{object_type}': {parsed_tags}"

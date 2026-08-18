@@ -5,9 +5,7 @@ from collections import Counter
 import numpy as np
 import re
 
-from data_loaders.truebones.truebones_utils.param_utils import (
-    SPECIES_TAGS as _SPECIES_TAGS,
-)
+from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
 
 
 # End effector joint detection tokens
@@ -372,49 +370,11 @@ def _collapse_solitary_head_feature_indices(canonical_joint_names):
     return collapsed_names
 
 
-# Lazy lowercase→tags mapping for case-insensitive species lookup
-# (SPECIES_TAGS is loaded from species_tags.jsonl by param_utils).
-_SPECIES_TAGS_LOWER = None
-
-
-def _motion_tags_lower():
-    global _SPECIES_TAGS_LOWER
-    if _SPECIES_TAGS_LOWER is None:
-        _SPECIES_TAGS_LOWER = {
-            key.lower(): tags for key, tags in _SPECIES_TAGS.items()
-        }
-    return _SPECIES_TAGS_LOWER
-
-
 def _species_motion_tokens(object_cond):
     object_type = str(object_cond.get('object_type') or '').strip()
     if not object_type:
         return []
-    return list(_motion_tags_lower().get(object_type.lower(), ()))
-
-
-def assert_species_tags_cover(object_types):
-    """Fast-fail unless every ``object_type`` has an entry in ``species_tags.jsonl``.
-
-    ``species_tags.jsonl`` (loaded via ``param_utils.SPECIES_TAGS``) is the single
-    source of truth for the per-species descriptor (``build_species_embedding_text``)
-    and the retarget group discount, and it carries no fallback. Call this at
-    preprocessing and before training so a newly added species without motion tags
-    surfaces immediately rather than silently degrading the species condition.
-    """
-    tags_lower = _motion_tags_lower()
-    missing = sorted(
-        {str(object_type) for object_type in object_types
-         if str(object_type).strip()
-         and str(object_type).strip().lower() not in tags_lower}
-    )
-    if missing:
-        message = (
-            "\033[91mspecies_tags.jsonl is missing tags for object_type(s): "
-            f"{', '.join(missing)}. Add them in the "
-            "species_tags.jsonl sidecar before preprocessing or training.\033[0m"
-        )
-        raise SystemExit(message)
+    return list(dataset_tags().tags_for(object_type))
 
 
 def build_species_embedding_text(object_cond):

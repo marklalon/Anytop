@@ -52,14 +52,14 @@ from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import (
     _normalize_motion_action_tags,
 )
-from data_loaders.truebones.truebones_utils.param_utils import OBJECT_SUBSETS_DICT
+from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
 from sample.generate import prepare_generation_runtime
 from utils.model_util import unwrap_anytop_model
 from utils.parser_util import generate_args
 
 # Reverse mapping: object_type → objects_subset name (e.g. "Horse" → "quadruped")
 _OBJECT_TYPE_TO_SUBSET = {}
-for _subset_name, _type_set in OBJECT_SUBSETS_DICT.items():
+for _subset_name, _type_set in dataset_tags().object_subsets.items():
     if _subset_name == "all":
         continue
     for _t in _type_set:

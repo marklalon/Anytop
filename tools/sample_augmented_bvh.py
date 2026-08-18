@@ -58,7 +58,7 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     refresh_joint_metadata_in_cond_dict,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
-from data_loaders.truebones.truebones_utils.param_utils import OBJECT_SUBSETS_DICT
+from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
 from data_loaders.truebones.truebones_utils.motion_labels import (
     load_motion_metadata,
 )
@@ -88,10 +88,7 @@ def _build_cond_dict(opt, objects_subset: str) -> dict:
     cond_dict_raw: dict = np.load(opt.cond_file, allow_pickle=True).item()
     cond_dict_raw = refresh_joint_metadata_in_cond_dict(cond_dict_raw)
 
-    if objects_subset in OBJECT_SUBSETS_DICT:
-        species_list = OBJECT_SUBSETS_DICT[objects_subset]
-    else:
-        species_list = [objects_subset]  # single species name
+    species_list = dataset_tags().species_for(objects_subset)
 
     cond_dict = {k: cond_dict_raw[k] for k in species_list if k in cond_dict_raw}
     if not cond_dict:

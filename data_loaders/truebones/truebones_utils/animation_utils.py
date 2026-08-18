@@ -18,7 +18,6 @@ from data_loaders.truebones.truebones_utils.param_utils import (
     HML_REF_AXIAL_BONE_LENGTH,
     HML_REF_MAX_SPAN,
     MAX_JOINTS,
-    OBJECT_SUBSETS_DICT,
     ROOT_Y_MIN_HEIGHT,
     SCALE_BODY_SPAN_BLEND_WEIGHT,
     VERTICAL_CLAMP_MIN_RATIO,
@@ -27,18 +26,16 @@ from data_loaders.truebones.truebones_utils.param_utils import (
 from data_loaders.truebones.truebones_utils.skeleton_cropping import (
     select_cropped_joint_indices,
 )
-
-# Body-plan groups used by the vertical clamp; sourced from the species motion
-# tags (winged == old FLYING, aquatic == old FISH) so they never drift.
-FLYING = frozenset(OBJECT_SUBSETS_DICT['winged'])
-FISH = frozenset(OBJECT_SUBSETS_DICT['aquatic'])
+from data_loaders.truebones.truebones_utils.dataset_tags import (
+    assert_species_tags_cover,
+    dataset_tags,
+)
 from .physics_joint_annotation import (
     build_semantic_metadata,
     normalize_joint_name,
     strip_joint_name_prefix,
     build_joint_embedding_texts,
     build_species_embedding_text,
-    assert_species_tags_cover,
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
 )
 
@@ -326,7 +323,7 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collis
 
     if t5_conditioner is None:
         # Fast-fail before any encoding: the per-species descriptor has no fallback,
-        # so a species missing from _SPECIES_TAGS must surface here.
+        # so a species missing from species_tags.jsonl must surface here.
         assert_species_tags_cover(cond.keys())
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         print(f'Loading T5 model {t5_name} on {device.upper()} ...')
@@ -661,12 +658,12 @@ def clamp_vertical_trajectory(
 
     clamped_world_y = world_y.copy()
     changed = False
-    if object_type in FLYING:
+    if object_type in dataset_tags().subset_members['winged']:
         body_length = _get_reference_body_length(processed_anim)
         min_h = body_length * min_ratio
         max_h = body_length * max_ratio
         clamped_world_y, changed = _compress_positive_excursion(clamped_world_y, min_h, max_h)
-    elif object_type in FISH:
+    elif object_type in dataset_tags().subset_members['aquatic']:
         body_length = _get_reference_body_length(processed_anim)
         positive_min_h = body_length * min_ratio
         positive_max_h = body_length * max_ratio

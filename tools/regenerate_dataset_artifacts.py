@@ -37,35 +37,35 @@ ANYTOP_DIR = Path(__file__).resolve().parent.parent
 _PARENT_DIR = ANYTOP_DIR.parent
 sys.path.insert(0, str(_PARENT_DIR))
 sys.path.insert(0, str(ANYTOP_DIR))
-sys.path.insert(0, str(ANYTOP_DIR / "data_loaders" / "truebones"))
 
-from truebones_utils.motion_labels import (  # noqa: E402
+# Package-qualified imports only: a short-name import (via a sys.path entry
+# inside the package) would create a SECOND copy of these modules in this
+# process, each with its own module globals.
+from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     build_motion_labels,
     infer_action_tags_from_clip_name,
     load_motion_metadata,
     load_action_tags,
     write_motion_metadata,
 )
-from truebones_utils.motion_process import (  # noqa: E402
+from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
     attach_t5_embeddings_to_cond,
     write_joint_name_collision_report,
 )
-from truebones_utils.canonical_features import (  # noqa: E402
+from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa: E402
     mark_canonical_cond_entry,
     accumulate_lnorm_stats,
     finalize_lnorm_stats,
     set_canonical_global_stats,
 )
-from truebones_utils.param_utils import (  # noqa: E402
+from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     MOTION_DIR,
     MOTION_METADATA_FILE,
     ACTION_TAGS_FILE,
-    configure_chain_forward_joints,
-    configure_species_tags,
     get_dataset_dir,
-    object_subset_for_object_type,
 )
-from truebones_utils.physics_joint_annotation import (  # noqa: E402
+from data_loaders.truebones.truebones_utils import dataset_tags  # noqa: E402
+from data_loaders.truebones.truebones_utils.physics_joint_annotation import (  # noqa: E402
     build_semantic_metadata,
 )
 
@@ -268,7 +268,8 @@ def _compute_canonical_stats_per_object_subset(
     mark_canonical_cond_entry) to already be present on each cond entry."""
 
     known_object_types = tuple(rebuilt_cond.keys())
-    subset_of = {ot: object_subset_for_object_type(ot) for ot in known_object_types}
+    tags = dataset_tags.dataset_tags()
+    subset_of = {ot: tags.object_subset_for(ot) for ot in known_object_types}
 
     subset_accs: dict[str, dict] = {}
     used = 0
@@ -421,26 +422,16 @@ def _normalize_object_translation_roots(
 def regenerate_dataset_artifacts(
     dataset_dir: str | Path | None = None,
     t5_model: str = "t5-base",
-    species_tags_file: str | Path | None = None,
-    chain_forward_joints_file: str | Path | None = None,
 ) -> Path:
     dataset_dir_path = _resolve_dataset_dir_path(dataset_dir)
-    configure_species_tags(
-        species_tags_file=(
-            str(species_tags_file)
-            if species_tags_file is not None and str(species_tags_file).strip()
-            else None
-        ),
-        dataset_dir=dataset_dir_path,
-    )
-    configure_chain_forward_joints(
-        chain_forward_joints_file=(
-            str(chain_forward_joints_file)
-            if chain_forward_joints_file is not None and str(chain_forward_joints_file).strip()
-            else None
-        ),
-        dataset_dir=dataset_dir_path,
-    )
+    # Read this dataset's tag sidecars for the duration of the rebuild. A caller
+    # that already configured the same dataset (with, say, an explicit
+    # --species-tags-file) keeps its configuration.
+    with dataset_tags.using_dataset_dir(dataset_dir_path):
+        return _regenerate_dataset_artifacts(dataset_dir_path, t5_model=t5_model)
+
+
+def _regenerate_dataset_artifacts(dataset_dir_path: Path, t5_model: str = "t5-base") -> Path:
     motions_dir = dataset_dir_path / MOTION_DIR
     cond_path = dataset_dir_path / "cond.npy"
 
@@ -617,11 +608,15 @@ def main() -> int:
     print("=" * 70 + "\n")
 
     try:
+        # The entry point owns configuration; the library call only scopes it.
+        dataset_tags.configure(
+            dataset_dir=args.dataset_dir,
+            species_tags_file=args.species_tags_file,
+            chain_forward_joints_file=args.chain_forward_joints_file,
+        )
         dataset_dir_path = regenerate_dataset_artifacts(
             args.dataset_dir,
             t5_model=args.t5_model,
-            species_tags_file=args.species_tags_file,
-            chain_forward_joints_file=args.chain_forward_joints_file,
         )
         cond_path = dataset_dir_path / "cond.npy"
         cond = dict(np.load(cond_path, allow_pickle=True).item())

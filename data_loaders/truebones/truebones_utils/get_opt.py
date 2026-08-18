@@ -1,7 +1,8 @@
 from argparse import Namespace
 import re
 from os.path import join as pjoin
-from data_loaders.truebones.truebones_utils.param_utils import MAX_JOINTS, FEATS_LEN, MAX_PATH_LEN, FPS, OBJECT_SUBSETS_DICT, DEFAULT_DATASET_DIR
+from data_loaders.truebones.truebones_utils.param_utils import MAX_JOINTS, FEATS_LEN, MAX_PATH_LEN, FPS, DEFAULT_DATASET_DIR
+from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
 
 
 def is_float(numStr):
@@ -36,5 +37,5 @@ def get_opt(device):
     opt.device = device
     opt.max_path_len=MAX_PATH_LEN
     opt.fps=FPS
-    opt.subsets_dict=OBJECT_SUBSETS_DICT
+    opt.subsets_dict=dataset_tags().object_subsets
     return opt

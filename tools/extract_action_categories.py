@@ -5,7 +5,7 @@ from pathlib import Path
 # Add project root so we can import from data_loaders
 _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
-from data_loaders.truebones.truebones_utils.param_utils import OBJECT_SUBSETS_DICT
+from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
 from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
 
 parser = argparse.ArgumentParser(description="Extract action category statistics from motion metadata.")
@@ -15,7 +15,7 @@ parser.add_argument(
     nargs="*",
     default=None,
     help="Filter by object_type(s). Supports group names (e.g. quadruped biped winged) "
-         "from OBJECT_SUBSETS_DICT, or individual PascalCase names (e.g. Horse Buffalo Camel). "
+         "from species_tags.jsonl, or individual PascalCase names (e.g. Horse Buffalo Camel). "
          "If omitted, all objects are included.",
 )
 parser.add_argument(
@@ -39,11 +39,9 @@ motions = load_motion_metadata(dataset_dir)
 # --- Optional filter by object_type ---
 if args.objects_subset:
     filter_set: set[str] = set()
+    tags = dataset_tags()
     for name in args.objects_subset:
-        if name in OBJECT_SUBSETS_DICT:
-            filter_set.update(OBJECT_SUBSETS_DICT[name])
-        else:
-            filter_set.add(name)
+        filter_set.update(tags.species_for(name))
     motions = {k: v for k, v in motions.items() if v.get("object_type") in filter_set}
     print(f"Filtered to {len(motions)} motions matching object_type in {sorted(filter_set)}\n")
 

@@ -36,6 +36,22 @@ def _write_action_tags(dataset_dir, tags_by_clip):
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _write_species_tags(dataset_dir, species=("Cat", "Dog", "Stale")):
+    """Write the species_tags.jsonl sidecar a temp dataset needs to regenerate.
+
+    ``regenerate_dataset_artifacts`` reads the tag sidecar of the dataset it is
+    pointed at (there is no in-code fallback), so a synthetic dataset must carry
+    one for its species.
+    """
+    path = Path(dataset_dir) / "species_tags.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        json.dumps({"species": name, "species_tags": ["Quadruped", "Medium", "Striding"]})
+        for name in species
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def test_write_motion_metadata_preserves_all_fields(tmp_path):
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir(parents=True)
@@ -208,6 +224,7 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_t5_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
 
+    _write_species_tags(dataset_dir)
     dataset_dir_path = regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
 
     assert dataset_dir_path == dataset_dir.resolve()
@@ -301,6 +318,7 @@ def test_regenerate_dataset_artifacts_unifies_translation_root_index_per_object(
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_t5_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
 
+    _write_species_tags(dataset_dir)
     regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
 
     regenerated_cond = dict(np.load(dataset_dir / "cond.npy", allow_pickle=True).item())
@@ -353,6 +371,7 @@ def test_regenerate_dataset_artifacts_rebuilds_translation_root_when_metadata_mi
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_t5_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
 
+    _write_species_tags(dataset_dir)
     regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
 
     regenerated_cond = dict(np.load(dataset_dir / "cond.npy", allow_pickle=True).item())
@@ -403,6 +422,7 @@ def test_regenerate_dataset_artifacts_uses_majority_root_not_minimum(monkeypatch
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "attach_t5_embeddings_to_cond", fake_attach)
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
 
+    _write_species_tags(dataset_dir)
     regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
 
     regenerated_cond = dict(np.load(dataset_dir / "cond.npy", allow_pickle=True).item())
@@ -469,6 +489,7 @@ def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_infe
         fake_build_motion_labels,
     )
 
+    _write_species_tags(dataset_dir)
     regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
 
     assert calls == ["Cat_Run_001.npy", "Dog_Jump_002.npy"]

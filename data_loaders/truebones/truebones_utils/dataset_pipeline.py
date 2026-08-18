@@ -16,8 +16,9 @@ from os.path import join as pjoin
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import random
 import bisect
-from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, MOTION_METADATA_FILE, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, TPOSE_REFERENCE_SIDECAR, configure_chain_forward_joints, get_raw_data_dir, object_subset_for_object_type
+from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, MOTION_METADATA_FILE, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, TPOSE_REFERENCE_SIDECAR, get_raw_data_dir
 from pathlib import Path
+from . import dataset_tags as _dataset_tags
 from .motion_labels import build_motion_labels, build_object_labels, write_motion_metadata, load_motion_metadata
 from .physics_joint_annotation import (
     build_semantic_metadata,
@@ -679,13 +680,13 @@ def _resolve_preprocessing_workers(objects, object_workers=8):
     return min(object_count, max(1, int(object_workers)))
 
 
-def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, chain_forward_joints_file=None):
+def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None):
     # ── Install a local warning collector inside the worker process ──────
     # The parent's _WarnCollector monkey-patches do NOT propagate into
     # ProcessPoolExecutor children.  Capture _warn() / degenerate-facing
     # calls here and return them so the parent can print a deduplicated
-    # summary via its own collector.
-    configure_chain_forward_joints(chain_forward_joints_file=chain_forward_joints_file)
+    # summary via its own collector.  (The tag sidecars are configured once per
+    # worker by the pool initializer, not here.)
     from . import animation_utils as _au
     from . import face_orientation as _fo
     _warn_messages: list[str] = []
@@ -749,13 +750,20 @@ clips number above retained ones within each (object, action) group. The rewritt
 dataset state is seeded from the existing dataset so untouched objects survive.
 Without ``incremental`` the prior full-build behavior is unchanged (callers wipe
 outputs first). """
-def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, raw_data_dir=None, object_workers=8, filter_min_length=10, resample_min_length=20, incremental=False, chain_forward_joints_file=None):
+def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, raw_data_dir=None, object_workers=8, filter_min_length=10, resample_min_length=20, incremental=False):
+    # Read the target dataset's tag sidecars for the duration of the build, so a
+    # direct API caller on a non-default dataset gets that dataset's tags and
+    # the process is not left reconfigured afterwards.
+    with _dataset_tags.using_dataset_dir(dataset_dir or DEFAULT_DATASET_DIR):
+        return _create_data_samples(
+            objects, max_files_per_object, dataset_dir, raw_data_dir,
+            object_workers, filter_min_length, resample_min_length, incremental,
+        )
+
+
+def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, raw_data_dir=None, object_workers=8, filter_min_length=10, resample_min_length=20, incremental=False):
     ## prepare
     target_dataset_dir = dataset_dir or DEFAULT_DATASET_DIR
-    resolved_chain_forward_joints_file = configure_chain_forward_joints(
-        chain_forward_joints_file=chain_forward_joints_file,
-        dataset_dir=target_dataset_dir,
-    )
     os.makedirs(pjoin(target_dataset_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(target_dataset_dir, BVHS_DIR), exist_ok=True)
 
@@ -802,7 +810,11 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
                 skip_source_paths=per_object_skip.get(object_type),
             )
     else:
-        with ProcessPoolExecutor(max_workers=obj_workers) as executor:
+        with ProcessPoolExecutor(
+            max_workers=obj_workers,
+            initializer=_dataset_tags.configure,
+            initargs=_dataset_tags.worker_initargs(),
+        ) as executor:
             future_to_idx = {
                 executor.submit(
                     _prepare_object_outputs_worker,
@@ -812,7 +824,6 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
                     filter_min_length,
                     resample_min_length,
                     per_object_skip.get(object_type),
-                    str(resolved_chain_forward_joints_file),
                 ): idx
                 for idx, object_type in enumerate(objects)
             }
@@ -907,7 +918,8 @@ def _inherit_canonical_stats_from_dataset(object_name, object_cond, reference_da
     if get_canonical_global_stats(object_cond) is not None:
         return True
 
-    target_subset = object_subset_for_object_type(object_name)
+    tags = _dataset_tags.dataset_tags()
+    target_subset = tags.object_subset_for(object_name)
     if target_subset is None:
         print(f"[process_skeleton] '{object_name}' has no object_subset "
               "(missing species_tags.jsonl entry); cannot inherit canonical stats.")
@@ -924,7 +936,7 @@ def _inherit_canonical_stats_from_dataset(object_name, object_cond, reference_da
     for sibling, sibling_cond in ref_cond.items():
         if not isinstance(sibling_cond, dict):
             continue
-        if object_subset_for_object_type(sibling) != target_subset:
+        if tags.object_subset_for(sibling) != target_subset:
             continue
         stats = get_canonical_global_stats(sibling_cond)
         if stats is not None:
@@ -984,7 +996,8 @@ def _merge_object_into_cond(save_dir, object_name, object_cond, tpose_reference_
                     "Run regenerate_dataset_artifacts first to compute per-object_subset "
                     "standardization statistics before merging new skeletons."
                 )
-            target_subset = object_subset_for_object_type(object_name)
+            tags = _dataset_tags.dataset_tags()
+            target_subset = tags.object_subset_for(object_name)
             if target_subset is None:
                 raise ValueError(
                     f"'{object_name}' has no object_subset (missing species_tags.jsonl "
@@ -992,7 +1005,7 @@ def _merge_object_into_cond(save_dir, object_name, object_cond, tpose_reference_
                     "in species_tags.jsonl before merging."
                 )
             for sibling, stats in siblings_with_stats.items():
-                if object_subset_for_object_type(sibling) == target_subset:
+                if tags.object_subset_for(sibling) == target_subset:
                     chosen = stats
                     break
             if chosen is None:

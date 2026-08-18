@@ -25,8 +25,8 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
 )
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
-    assert_species_tags_cover,
 )
+from data_loaders.truebones.truebones_utils.dataset_tags import assert_species_tags_cover
 
 
 

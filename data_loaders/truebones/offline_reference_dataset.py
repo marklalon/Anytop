@@ -9,9 +9,9 @@ import numpy as np
 from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
 from data_loaders.truebones.truebones_utils.param_utils import (
     MOTION_DIR,
-    OBJECT_SUBSETS_DICT,
     get_dataset_dir,
 )
+from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
 
 
 def resolve_dataset_root(dataset_dir: str | Path | None = None) -> Path:
@@ -48,11 +48,7 @@ def list_motion_files(
         requested = {name for name in motion_names}
         selected = [name for name in all_motion_files if name in requested]
     else:
-        if objects_subset in OBJECT_SUBSETS_DICT:
-            allowed_objects = set(OBJECT_SUBSETS_DICT[objects_subset])
-        else:
-            # Treat as a single object type name (e.g. "Horse")
-            allowed_objects = {objects_subset}
+        allowed_objects = set(dataset_tags().species_for(objects_subset))
         selected = [name for name in all_motion_files if _matches_object_subset(name, allowed_objects)]
     if sample_limit > 0:
         selected = selected[:sample_limit]

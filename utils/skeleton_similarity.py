@@ -45,18 +45,10 @@ from typing import List, Mapping, Optional, Sequence
 import numpy as np
 
 # Single source of truth for the per-species motion descriptor tags
-# ((body-plan, gait/dynamics, refinement) per species). physics_joint_annotation
-# is torch-free (numpy/collections/re only) and its package path carries no
-# heavy __init__ side effects, so importing the constant keeps this module
-# lightweight.
-from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
-    _SPECIES_TAGS,
-)
-
-# Case-insensitive object_type -> frozenset of motion tags. Built once.
-_GROUP_TAGS_LOWER: dict[str, frozenset] = {
-    key.lower(): frozenset(tags) for key, tags in _SPECIES_TAGS.items()
-}
+# ((body-plan, gait/dynamics, refinement) per species). dataset_tags is
+# torch-free (json/pathlib/numpy only) and reads its sidecars lazily, so
+# importing it keeps this module lightweight.
+from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
 # Every registered species carries this many motion tags; the graded group
 # discount normalises overlap by it (full overlap -> full bonus).
 _GROUP_TAG_ARITY = 3
@@ -236,11 +228,11 @@ def topology_descriptor(object_cond: Mapping[str, object]) -> np.ndarray:
 def group_tags(object_type: object) -> frozenset:
     """Motion descriptor tags ``(body-plan, gait/dynamics, refinement)`` for an object_type.
 
-    Case-insensitive; species absent from ``_SPECIES_TAGS`` (e.g. a
-    novel retarget target the user has not registered) return an empty set,
-    which yields no group discount.
+    Case-insensitive; species absent from ``species_tags.jsonl`` (e.g. a novel
+    retarget target the user has not registered) return an empty set, which
+    yields no group discount.
     """
-    return _GROUP_TAGS_LOWER.get(str(object_type).strip().lower(), frozenset())
+    return frozenset(dataset_tags().tags_for(object_type))
 
 
 # ── Combined similarity ──────────────────────────────────────────────────────
