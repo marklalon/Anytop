@@ -60,6 +60,8 @@ from truebones_utils.param_utils import (  # noqa: E402
     MOTION_DIR,
     MOTION_METADATA_FILE,
     ACTION_TAGS_FILE,
+    configure_chain_forward_joints,
+    configure_species_tags,
     get_dataset_dir,
     object_subset_for_object_type,
 )
@@ -93,31 +95,55 @@ def _ensure_action_tags_fallback(
     dataset_dir_path: Path,
     motion_files: list[Path],
 ) -> list[tuple[str, list[str]]]:
-    """Backfill clips absent from action_tags.jsonl with clip-name-inferred tags.
+    """Backfill missing/unknown clips with clip-name-inferred tags.
 
-    Returns the list of (clip, inferred_tags) that were appended (empty if every
-    clip already had an entry). Only clips with *no* entry are backfilled — an
-    explicitly empty action_tags list is left untouched (load_action_tags treats
-    absence, not emptiness, as the fatal case). The file is created if missing.
+    Existing non-unknown labels are preserved.  Existing ``["unknown"]`` labels
+    are replaced only when the filename inference finds a more specific tag.
+    The file is created if missing.
     """
     tags_path = dataset_dir_path / ACTION_TAGS_FILE
-    existing_clips: set[str] = set()
+    existing_tags: dict[str, list[str]] = {}
     if tags_path.exists():
-        existing_clips = set(load_action_tags(dataset_dir_path).keys())
+        existing_tags = load_action_tags(dataset_dir_path)
 
-    fallbacks = [
-        (motion_path.name, infer_action_tags_from_clip_name(motion_path.name))
-        for motion_path in motion_files
-        if motion_path.name not in existing_clips
-    ]
+    fallbacks: list[tuple[str, list[str]]] = []
+    for motion_path in motion_files:
+        clip = motion_path.name
+        current = existing_tags.get(clip)
+        if current is not None and current != ["unknown"]:
+            continue
+        inferred = infer_action_tags_from_clip_name(clip)
+        if current is None or inferred != current:
+            fallbacks.append((clip, inferred))
     if not fallbacks:
         return []
 
-    with open(tags_path, "a", encoding="utf-8") as handle:
-        for clip, inferred in sorted(fallbacks):
-            handle.write(json.dumps({"clip": clip, "action_tags": inferred}) + "\n")
+    fallback_by_clip = dict(fallbacks)
+    if tags_path.exists():
+        rewritten_lines: list[str] = []
+        rewritten_clips: set[str] = set()
+        with open(tags_path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    rewritten_lines.append(line)
+                    continue
+                entry = json.loads(line)
+                clip = str(entry.get("clip", ""))
+                if clip in fallback_by_clip:
+                    entry["action_tags"] = fallback_by_clip[clip]
+                    rewritten_clips.add(clip)
+                rewritten_lines.append(json.dumps(entry, ensure_ascii=False) + "\n")
+        with open(tags_path, "w", encoding="utf-8") as handle:
+            handle.writelines(rewritten_lines)
+            for clip, inferred in sorted(fallbacks):
+                if clip not in rewritten_clips:
+                    handle.write(json.dumps({"clip": clip, "action_tags": inferred}, ensure_ascii=False) + "\n")
+    else:
+        with open(tags_path, "a", encoding="utf-8") as handle:
+            for clip, inferred in sorted(fallbacks):
+                handle.write(json.dumps({"clip": clip, "action_tags": inferred}, ensure_ascii=False) + "\n")
     print(
-        f"[OK] backfilled {len(fallbacks)} missing action_tags entr"
+        f"[OK] backfilled/updated {len(fallbacks)} action_tags entr"
         f"{'y' if len(fallbacks) == 1 else 'ies'} into {ACTION_TAGS_FILE}"
     )
     return fallbacks
@@ -127,7 +153,7 @@ def _print_action_tag_fallback_report(fallbacks: list[tuple[str, list[str]]]) ->
     """Print every fallback-tagged clip in yellow as a manual-review reminder."""
     print(
         f"\n{_COLOR_YELLOW}{'=' * 70}\n"
-        f"[REVIEW] {len(fallbacks)} clip(s) had no hand-labeled action_tags; tags below "
+        f"[REVIEW] {len(fallbacks)} clip(s) had missing/unknown action_tags; tags below "
         f"were auto-inferred from the clip name and written to {ACTION_TAGS_FILE}.\n"
         f"Please verify them by hand (especially any 'unknown'):{_COLOR_RESET}"
     )
@@ -395,8 +421,26 @@ def _normalize_object_translation_roots(
 def regenerate_dataset_artifacts(
     dataset_dir: str | Path | None = None,
     t5_model: str = "t5-base",
+    species_tags_file: str | Path | None = None,
+    chain_forward_joints_file: str | Path | None = None,
 ) -> Path:
     dataset_dir_path = _resolve_dataset_dir_path(dataset_dir)
+    configure_species_tags(
+        species_tags_file=(
+            str(species_tags_file)
+            if species_tags_file is not None and str(species_tags_file).strip()
+            else None
+        ),
+        dataset_dir=dataset_dir_path,
+    )
+    configure_chain_forward_joints(
+        chain_forward_joints_file=(
+            str(chain_forward_joints_file)
+            if chain_forward_joints_file is not None and str(chain_forward_joints_file).strip()
+            else None
+        ),
+        dataset_dir=dataset_dir_path,
+    )
     motions_dir = dataset_dir_path / MOTION_DIR
     cond_path = dataset_dir_path / "cond.npy"
 
@@ -554,6 +598,18 @@ def main() -> int:
         type=str,
         help="T5 model to use for joint name embeddings (default: t5-base).",
     )
+    parser.add_argument(
+        "--species-tags-file",
+        default="",
+        type=str,
+        help="Path to the species_tags.jsonl sidecar used for this run.",
+    )
+    parser.add_argument(
+        "--chain-forward-joints-file",
+        default="",
+        type=str,
+        help="Path to the chain_forward_joints.jsonl sidecar used for this run.",
+    )
     args = parser.parse_args()
 
     print("\n" + "=" * 70)
@@ -564,6 +620,8 @@ def main() -> int:
         dataset_dir_path = regenerate_dataset_artifacts(
             args.dataset_dir,
             t5_model=args.t5_model,
+            species_tags_file=args.species_tags_file,
+            chain_forward_joints_file=args.chain_forward_joints_file,
         )
         cond_path = dataset_dir_path / "cond.npy"
         cond = dict(np.load(cond_path, allow_pickle=True).item())

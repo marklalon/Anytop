@@ -707,8 +707,9 @@ def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints
             return [joint_names.index(name) for name in face_joints]
         return list(face_joints)
 
-    # Snakes use CHAIN_FORWARD_JOINTS for direction; _get_facing_candidates
-    # returns early for them and never unpacks face_joint_indx.
+    # Dataset-specific chain entries use CHAIN_FORWARD_JOINTS for direction;
+    # _get_facing_candidates returns early for them and never unpacks
+    # face_joint_indx.
     if object_type in CHAIN_FORWARD_JOINTS:
         return []
 

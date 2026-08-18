@@ -1,0 +1,5 @@
+{"species": "Anaconda", "chain_forward_joints": [22, 24]}
+{"species": "Crow", "chain_forward_joints": [8, 22]}
+{"species": "Jaws", "chain_forward_joints": [15, 3]}
+{"species": "KingCobra", "chain_forward_joints": [4, 8]}
+{"species": "Pirrana", "chain_forward_joints": [10, 3, 4]}

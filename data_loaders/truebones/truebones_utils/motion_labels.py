@@ -119,8 +119,8 @@ _GETUP_UP_CONTEXT: frozenset[str] = frozenset(
 # vocabulary (~84% agreement with the existing labels; the rest surface as
 # ``unknown`` / review items).
 _FALLBACK_ACTION_RULES: tuple[tuple[str, frozenset[str]], ...] = (
-    ("getup", frozenset({"getup", "get", "rise", "rising", "wake", "waking", "revive", "recover", "standup"})),
-    ("death", frozenset({"die", "death", "dead", "dying", "dies", "deceased"})),
+    ("getup", frozenset({"getup", "get", "rise", "rising", "wake", "waking", "revive", "recover", "standup", "spawn"})),
+    ("death", frozenset({"die", "death", "dead", "dying", "dies", "deceased", "despawn"})),
     ("gethurt", frozenset({"hit", "hurt", "gethurt", "damage", "knock", "knocked", "knockback", "stunned",
                            "stun", "shot", "recoil", "flinch", "pain", "wound", "injured", "limp", "sorr"})),
     ("attack", frozenset({"attack", "atk", "bite", "sting", "strike", "kill", "swat", "swipe", "snap", "whip",
@@ -133,19 +133,20 @@ _FALLBACK_ACTION_RULES: tuple[tuple[str, frozenset[str]], ...] = (
     ("fly", frozenset({"fly", "flying", "glide", "flap", "hover", "soar", "soaring", "takeoff", "take",
                        "land", "lander", "wing", "float", "floater"})),
     ("turn", frozenset({"turn", "spin", "rotate", "strafe", "circle", "pivot", "arc"})),
-    ("interact", frozenset({"eat", "drink", "fish", "egg", "dig", "burrow", "burrough", "graze", "feed", "feast"})),
-    ("rest", frozenset({"rest", "sleep", "sit", "lay", "lie", "lying", "relax", "down", "sleepy"})),
+    ("interact", frozenset({"eat", "drink", "fish", "egg", "dig", "burrow", "burrough", "graze", "graz", "grazing", "feed", "feast"})),
+    ("rest", frozenset({"rest", "sleep", "sit", "lay", "laydown", "lie", "lying", "relax", "down", "sleepy"})),
     ("emote", frozenset({"emote", "roar", "yawn", "look", "shake", "growl", "yell", "scream", "hiss", "howl",
                          "bark", "cry", "scratch", "sniff", "lick", "stretch", "scrape", "purr", "taunt",
                          "celebrate", "dance", "nod", "listen", "alert", "angry", "pissed", "scared",
                          "curious", "sneeze", "wag", "ear", "restless", "hoof", "rear", "mean", "scary",
-                         "pant", "twitch", "twitching", "buck", "mope", "wild", "special"})),
-    ("locomotion", frozenset({"walk", "run", "trot", "gallop", "sprint", "dash", "crawl", "move", "locomotion",
+                         "pant", "twitch", "twitching", "buck", "mope", "wild", "special", "call", "threaten",
+                         "threat", "clear", "clearing"})),
+    ("locomotion", frozenset({"walk", "run", "jog", "trot", "gallop", "sprint", "dash", "crawl", "move", "locomotion",
                               "step", "chase", "retreat", "climb", "sneak", "prowl", "pace", "slide", "march",
                               "strut", "wander", "roam", "scurry", "slither", "back", "backing", "forward",
                               "backward", "slow", "fast", "slowwalk", "stalk", "stalking"})),
     ("idle", frozenset({"idle", "stand", "ready", "breath", "breathe", "wait", "stance", "energetic",
-                        "tired", "steady", "clean", "cud"})),
+                        "tired", "steady", "clean", "cud", "hind", "hind2", "observ", "observing", "start"})),
 )
 
 # Sanity guard: every fallback tag must be a member of the canonical vocabulary so

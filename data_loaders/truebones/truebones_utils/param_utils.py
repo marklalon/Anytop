@@ -1,5 +1,7 @@
 import json
+import importlib
 import os
+import sys
 from pathlib import Path
 import statistics
 import numpy as np
@@ -64,6 +66,9 @@ TPOSE_REFERENCE_SIDECAR = "tpose_reference_paths.jsonl"
 # This is the single source of truth for the species condition and for the
 # object subsets below; do not duplicate the species->tags mapping in code.
 SPECIES_TAGS_FILE = "species_tags.jsonl"
+# Dataset-specific forward-chain overrides.  The joint indices are tied to a
+# particular dataset's skeleton ordering, so they must not live in source code.
+CHAIN_FORWARD_JOINTS_FILE = "chain_forward_joints.jsonl"
 FOOT_CONTACT_HEIGHT_THRESH = 0.2
 FOOT_CONTACT_VEL_THRESH = 0.002
 MAX_PATH_LEN = 5.
@@ -77,19 +82,27 @@ VERTICAL_CLAMP_MAX_RATIO = 0.5
 # normalized units as the exported motion features.
 ROOT_Y_MIN_HEIGHT = -0.5
 
-# Maps object_type -> joint index tuple used to compute the forward direction for
-# creatures without usable limb pairs (snakes, fish).
-# 2-tuple (neck, head)        -> forward = head - neck
-# 3-tuple (base, neck, head)  -> forward = (head - neck) + (neck - base)
-CHAIN_FORWARD_JOINTS = {
-    'Anaconda': (22, 24),
-    'Crow': (8, 22),
-    'Jaws': (15, 3),
-    'KingCobra': (4, 8),
-    'Pirrana': (10, 3, 4),  # kosi → mune(Chest) → atama(Head) (tail to head); indices are collapsed-skeleton order
-}
+# Maps object_type -> joint index tuple used to compute the forward direction.
+# Loaded from CHAIN_FORWARD_JOINTS_FILE below.  2-tuple (neck, head) means
+# ``head - neck``; 3-tuple (base, neck, head) means
+# ``(head - neck) + (neck - base)``.
+CHAIN_FORWARD_JOINTS = {}
 
-def load_species_tags(dataset_dir=None):
+def resolve_species_tags_file(species_tags_file=None, dataset_dir=None):
+        """Resolve the species-tag sidecar path used by the current run."""
+        if species_tags_file is not None and str(species_tags_file).strip():
+                return _resolve_project_path(species_tags_file)
+        return Path(get_dataset_dir(dataset_dir)) / SPECIES_TAGS_FILE
+
+
+def resolve_chain_forward_joints_file(chain_forward_joints_file=None, dataset_dir=None):
+        """Resolve the dataset-specific forward-chain sidecar path."""
+        if chain_forward_joints_file is not None and str(chain_forward_joints_file).strip():
+                return _resolve_project_path(chain_forward_joints_file)
+        return Path(get_dataset_dir(dataset_dir)) / CHAIN_FORWARD_JOINTS_FILE
+
+
+def load_species_tags(dataset_dir=None, species_tags_file=None):
         """Load the per-species motion descriptor from ``SPECIES_TAGS_FILE``.
 
         Returns an insertion-ordered ``{species: (tag, ...)}`` mapping. The file is
@@ -97,7 +110,10 @@ def load_species_tags(dataset_dir=None):
         ``OBJECT_SUBSETS_DICT`` -- there is no in-code fallback, so a missing or
         malformed file fails loudly rather than silently degrading.
         """
-        tags_path = Path(get_dataset_dir(dataset_dir)) / SPECIES_TAGS_FILE
+        tags_path = resolve_species_tags_file(
+                species_tags_file=species_tags_file,
+                dataset_dir=dataset_dir,
+        )
         if not tags_path.is_file():
                 raise FileNotFoundError(
                         f"Species motion tags file not found at: {tags_path}\n"
@@ -120,6 +136,56 @@ def load_species_tags(dataset_dir=None):
         return species_tags
 
 
+def load_chain_forward_joints(dataset_dir=None, chain_forward_joints_file=None):
+        """Load dataset-specific forward-chain joint indices from JSONL."""
+        joints_path = resolve_chain_forward_joints_file(
+                chain_forward_joints_file=chain_forward_joints_file,
+                dataset_dir=dataset_dir,
+        )
+        if not joints_path.is_file():
+                # Most datasets do not need any index-based forward override;
+                # they should fall through to semantic head/limb detection.
+                return {}
+
+        chain_forward_joints = {}
+        with open(joints_path, "r", encoding="utf-8") as f:
+                for line_no, line in enumerate(f, start=1):
+                        line = line.strip()
+                        if not line:
+                                continue
+                        record = json.loads(line)
+                        species = str(record["species"]).strip()
+                        raw_indices = record["chain_forward_joints"]
+                        if not species:
+                                raise ValueError(
+                                        f"{CHAIN_FORWARD_JOINTS_FILE}:{line_no} has an empty species."
+                                )
+                        if not isinstance(raw_indices, (list, tuple)) or len(raw_indices) not in (2, 3):
+                                raise ValueError(
+                                        f"{CHAIN_FORWARD_JOINTS_FILE}:{line_no} chain_forward_joints "
+                                        "must contain 2 or 3 joint indices."
+                                )
+                        try:
+                                indices = tuple(int(index) for index in raw_indices)
+                        except (TypeError, ValueError) as exc:
+                                raise ValueError(
+                                        f"{CHAIN_FORWARD_JOINTS_FILE}:{line_no} contains non-integer "
+                                        "chain_forward_joints."
+                                ) from exc
+                        if any(index < 0 for index in indices):
+                                raise ValueError(
+                                        f"{CHAIN_FORWARD_JOINTS_FILE}:{line_no} contains negative "
+                                        "chain_forward_joints index."
+                                )
+                        if species in chain_forward_joints:
+                                raise ValueError(
+                                        f"{CHAIN_FORWARD_JOINTS_FILE}:{line_no} duplicates species "
+                                        f"'{species}'."
+                                )
+                        chain_forward_joints[species] = indices
+        return chain_forward_joints
+
+
 def build_object_subsets_dict(species_tags):
         """Group species by object_subset (the first motion tag) into ``--object_subsets`` keys.
 
@@ -131,10 +197,127 @@ def build_object_subsets_dict(species_tags):
         for species, tags in species_tags.items():
                 object_subset = tags[0].strip().lower()
                 subsets.setdefault(object_subset, []).append(species)
+        for object_subset in (
+                "quadruped",
+                "biped",
+                "multiped",
+                "serpentine",
+                "aquatic",
+                "winged",
+        ):
+                subsets.setdefault(object_subset, [])
         return subsets
 
 
+def configure_species_tags(species_tags_file=None, dataset_dir=None):
+        """Load a run-specific species-tag sidecar into the process globals.
+
+        The preprocessing and artifact-generation modules historically imported
+        the tag mapping once at module import time.  Updating these dictionaries
+        in place keeps existing imported aliases valid while allowing a custom
+        dataset to provide its own ``species_tags.jsonl``.
+        """
+        loaded_tags = load_species_tags(
+                dataset_dir=dataset_dir,
+                species_tags_file=species_tags_file,
+        )
+
+        rebuilt_subsets = build_object_subsets_dict(loaded_tags)
+        rebuilt_subsets["podata"] = (
+                rebuilt_subsets["quadruped"]
+                + rebuilt_subsets["biped"]
+                + rebuilt_subsets["multiped"]
+                + rebuilt_subsets["winged"]
+        )
+
+        # Some legacy entry points import this module under a short name
+        # (``param_utils`` / ``truebones_utils.param_utils``), while the main
+        # pipeline uses the package-qualified name.  Synchronize all aliases so
+        # a custom sidecar cannot silently update only one copy of the globals.
+        param_modules = []
+        for module_name in (
+                "param_utils",
+                "truebones_utils.param_utils",
+                "data_loaders.truebones.truebones_utils.param_utils",
+        ):
+                module = sys.modules.get(module_name)
+                if module is not None and module not in param_modules:
+                        param_modules.append(module)
+        for module in param_modules:
+                module.SPECIES_TAGS.clear()
+                module.SPECIES_TAGS.update(loaded_tags)
+                module.OBJECT_SUBSETS_DICT.clear()
+                module.OBJECT_SUBSETS_DICT.update(rebuilt_subsets)
+
+        # These modules keep lazy/derived views over the same mapping.  Refresh
+        # them when they were imported before this configuration call (for
+        # example, by a direct validation entry point).
+        for module_name, module in list(sys.modules.items()):
+                if module is None:
+                        continue
+                if module_name.endswith("physics_joint_annotation"):
+                        module._SPECIES_TAGS_LOWER = None
+                elif module_name.endswith("animation_utils"):
+                        module.FLYING = frozenset(rebuilt_subsets["winged"])
+                        module.FISH = frozenset(rebuilt_subsets["aquatic"])
+                elif module_name.endswith("skeleton_similarity"):
+                        module._GROUP_TAGS_LOWER = {
+                                key.lower(): frozenset(tags)
+                                for key, tags in loaded_tags.items()
+                        }
+
+        return resolve_species_tags_file(
+                species_tags_file=species_tags_file,
+                dataset_dir=dataset_dir,
+        )
+
+
+def configure_chain_forward_joints(chain_forward_joints_file=None, dataset_dir=None):
+        """Load a run-specific chain-forward sidecar into all imported aliases."""
+        loaded_joints = load_chain_forward_joints(
+                dataset_dir=dataset_dir,
+                chain_forward_joints_file=chain_forward_joints_file,
+        )
+
+        # The project has legacy short-name and package-qualified imports. Keep
+        # every already-imported mapping live so face_orientation sees the same
+        # run-specific sidecar in the parent and worker processes.
+        modules = []
+        for module_name in (
+                "param_utils",
+                "truebones_utils.param_utils",
+                "data_loaders.truebones.truebones_utils.param_utils",
+        ):
+                module = sys.modules.get(module_name)
+                if module is None:
+                        try:
+                                module = importlib.import_module(module_name)
+                        except (ImportError, ModuleNotFoundError):
+                                module = None
+                if module is not None and module not in modules:
+                        modules.append(module)
+        for module in modules:
+                mapping = getattr(module, "CHAIN_FORWARD_JOINTS", None)
+                if isinstance(mapping, dict):
+                        mapping.clear()
+                        mapping.update(loaded_joints)
+
+        for module in list(sys.modules.values()):
+                if module is None or not getattr(module, "__name__", "").endswith("face_orientation"):
+                        continue
+                mapping = getattr(module, "CHAIN_FORWARD_JOINTS", None)
+                if isinstance(mapping, dict):
+                        mapping.clear()
+                        mapping.update(loaded_joints)
+
+        return resolve_chain_forward_joints_file(
+                chain_forward_joints_file=chain_forward_joints_file,
+                dataset_dir=dataset_dir,
+        )
+
+
 SPECIES_TAGS = load_species_tags()
+CHAIN_FORWARD_JOINTS.update(load_chain_forward_joints())
 
 # object_subset groupings for ``--object_subsets``. Keys are ``"all"`` plus the
 # lower-cased first motion tag (quadruped / biped / multiped / serpentine /

@@ -78,8 +78,49 @@ for _path in (_TRUEBONES_DIR, _TRUEBONES_DIR / "truebones_utils"):
     if _path_str not in sys.path:
         sys.path.insert(0, _path_str)
 
-from param_utils import BVHS_DIR, MOTION_DIR, ACTION_TAGS_FILE, SPECIES_TAGS_FILE, get_dataset_dir, get_raw_data_dir  # noqa: E402
+from param_utils import (  # noqa: E402
+    BVHS_DIR,
+    MOTION_DIR,
+    ACTION_TAGS_FILE,
+    SPECIES_TAGS_FILE,
+    CHAIN_FORWARD_JOINTS_FILE,
+    configure_chain_forward_joints,
+    configure_species_tags,
+    get_dataset_dir,
+    get_raw_data_dir,
+)
 from truebones_utils.motion_labels import load_motion_metadata, write_motion_metadata  # noqa: E402
+
+
+def _configure_species_tags_for_run(dataset_dir: str = "") -> str:
+    """Configure the species-tag sidecar, resolved from the dataset directory.
+
+    The sidecar is expected at ``<dataset-dir>/species_tags.jsonl`` (or the default
+    dataset directory when ``--dataset-dir`` is omitted). Loading it configures the
+    process-wide SPECIES_TAGS / OBJECT_SUBSETS_DICT globals used by preprocessing.
+    """
+    resolved_path = configure_species_tags(dataset_dir=dataset_dir or None)
+    print(f"[OK] using species tags: {resolved_path}")
+    return str(resolved_path)
+
+
+def _configure_chain_forward_joints_for_run(dataset_dir: str = "") -> str:
+    """Configure the dataset-specific forward-chain sidecar, resolved from the
+    dataset directory.
+
+    The sidecar is expected at ``<dataset-dir>/chain_forward_joints.jsonl``. Most
+    datasets do not carry one; in that case the loader falls back to semantic
+    head/limb detection.
+    """
+    resolved_path = configure_chain_forward_joints(dataset_dir=dataset_dir or None)
+    if resolved_path.is_file():
+        print(f"[OK] using chain forward joints: {resolved_path}")
+    else:
+        print(
+            f"[OK] no chain forward-joints sidecar at {resolved_path}; "
+            "using generic orientation detection"
+        )
+    return str(resolved_path)
 
 
 def _discover_all_objects(raw_data_dir: str = "") -> tuple[str, ...]:
@@ -737,6 +778,18 @@ def run_remove_motions(
                 _write_jsonl(st_path, new_st)
                 print(f"  [OK] Removed {len(st_entries) - len(new_st)} species from species_tags.jsonl")
 
+        # chain_forward_joints.jsonl
+        cfj_path = dataset_dir_path / CHAIN_FORWARD_JOINTS_FILE
+        if cfj_path.exists():
+            cfj_entries = _load_jsonl(cfj_path)
+            new_cfj = [e for e in cfj_entries if e.get("species", "") not in empty_species]
+            if len(new_cfj) != len(cfj_entries):
+                _write_jsonl(cfj_path, new_cfj)
+                print(
+                    f"  [OK] Removed {len(cfj_entries) - len(new_cfj)} species "
+                    "from chain_forward_joints.jsonl"
+                )
+
         # joint_name_inspection/ per-species .json files
         if joint_name_inspection_dir.exists():
             for species in empty_species:
@@ -759,9 +812,7 @@ def run_remove_motions(
 
     # --- Regenerate side artifacts after deletion ---
     print("\nRegenerating dataset side artifacts...")
-    ret = run_regenerate_side_artifacts(
-        dataset_dir,
-    )
+    ret = run_regenerate_side_artifacts(dataset_dir)
     if ret != 0:
         print("\n[WARN] Side artifact regeneration returned non-zero exit code.")
 
@@ -1017,6 +1068,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    try:
+        _configure_species_tags_for_run(args.dataset_dir)
+        _configure_chain_forward_joints_for_run(args.dataset_dir)
+    except (FileNotFoundError, ValueError, KeyError, OSError) as exc:
+        print(f"ERROR: failed to configure dataset sidecars: {exc}")
+        return 1
+
     if args.sample_count < 0:
         print("ERROR: --sample-count must be >= 0")
         return 1
@@ -1046,9 +1104,7 @@ def main() -> int:
 
     # Handle re-encode joint names only mode
     if args.re_encode_joint_names_only:
-        return run_regenerate_side_artifacts(
-            args.dataset_dir,
-        )
+        return run_regenerate_side_artifacts(args.dataset_dir)
 
     # Handle remove motions mode
     if args.rm_pattern:

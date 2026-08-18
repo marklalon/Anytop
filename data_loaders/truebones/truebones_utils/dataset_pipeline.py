@@ -16,7 +16,7 @@ from os.path import join as pjoin
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import random
 import bisect
-from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, MOTION_METADATA_FILE, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, TPOSE_REFERENCE_SIDECAR, get_raw_data_dir, object_subset_for_object_type
+from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, MOTION_METADATA_FILE, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, TPOSE_REFERENCE_SIDECAR, configure_chain_forward_joints, get_raw_data_dir, object_subset_for_object_type
 from pathlib import Path
 from .motion_labels import build_motion_labels, build_object_labels, write_motion_metadata, load_motion_metadata
 from .physics_joint_annotation import (
@@ -679,12 +679,13 @@ def _resolve_preprocessing_workers(objects, object_workers=8):
     return min(object_count, max(1, int(object_workers)))
 
 
-def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None):
+def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, chain_forward_joints_file=None):
     # ── Install a local warning collector inside the worker process ──────
     # The parent's _WarnCollector monkey-patches do NOT propagate into
     # ProcessPoolExecutor children.  Capture _warn() / degenerate-facing
     # calls here and return them so the parent can print a deduplicated
     # summary via its own collector.
+    configure_chain_forward_joints(chain_forward_joints_file=chain_forward_joints_file)
     from . import animation_utils as _au
     from . import face_orientation as _fo
     _warn_messages: list[str] = []
@@ -748,9 +749,13 @@ clips number above retained ones within each (object, action) group. The rewritt
 dataset state is seeded from the existing dataset so untouched objects survive.
 Without ``incremental`` the prior full-build behavior is unchanged (callers wipe
 outputs first). """
-def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, raw_data_dir=None, object_workers=8, filter_min_length=10, resample_min_length=20, incremental=False):
+def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, raw_data_dir=None, object_workers=8, filter_min_length=10, resample_min_length=20, incremental=False, chain_forward_joints_file=None):
     ## prepare
     target_dataset_dir = dataset_dir or DEFAULT_DATASET_DIR
+    resolved_chain_forward_joints_file = configure_chain_forward_joints(
+        chain_forward_joints_file=chain_forward_joints_file,
+        dataset_dir=target_dataset_dir,
+    )
     os.makedirs(pjoin(target_dataset_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(target_dataset_dir, BVHS_DIR), exist_ok=True)
 
@@ -807,6 +812,7 @@ def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=Non
                     filter_min_length,
                     resample_min_length,
                     per_object_skip.get(object_type),
+                    str(resolved_chain_forward_joints_file),
                 ): idx
                 for idx, object_type in enumerate(objects)
             }
