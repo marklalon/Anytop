@@ -18,7 +18,7 @@ datasets' own ``cond.npy`` files are never modified.
 Usage:
     python tools/merge_dataset_cond.py \
         --datasets dataset/datasets.jsonl \
-        --out dataset/merged/truebones_all/cond.npy \
+        --out dataset/merged/cond.npy \
         [--no-recompute-stats] [--dry-run]
 """
 
@@ -28,7 +28,7 @@ import argparse
 import copy
 import sys
 import time
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -50,7 +50,6 @@ from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
 from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E402
     COND_FILE,
     bare_species_name,
-    build_species_file_tokens,
     load_datasets_manifest,
 )
 from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
@@ -231,7 +230,7 @@ def _count_clips(source, merged_cond) -> Counter:
     return counts
 
 
-def _report(sources, merged_cond, before_stats, after_stats):
+def _report(sources, merged_cond):
     print("\n" + "=" * 70)
     print("Merged cond report")
     print("=" * 70)
@@ -243,48 +242,7 @@ def _report(sources, merged_cond, before_stats, after_stats):
             f"  {source.namespace:<28} {len(keys):>3} species  "
             f"{sum(clip_counts.values()):>5} clips  ({source.portable_root})"
         )
-
-    by_bare: dict[str, list[str]] = defaultdict(list)
-    for key in merged_cond:
-        by_bare[bare_species_name(key)].append(key)
-    collisions = {name: keys for name, keys in by_bare.items() if len(keys) > 1}
-    tokens = build_species_file_tokens(merged_cond)
-    if collisions:
-        print(f"\n  {len(collisions)} bare-name collision(s); output filenames use the qualified token:")
-        for name in sorted(collisions):
-            for key in collisions[name]:
-                print(f"    {key:<40} -> {tokens[key]}")
-    else:
-        print("\n  No bare-name collisions; every output filename stays the plain species name.")
-
-    if after_stats:
-        print("\n  Per-object_subset canonical stats (channel 0), before -> after:")
-        for subset in sorted(after_stats):
-            after_mean, after_std = after_stats[subset]
-            befores = before_stats.get(subset, [])
-            before_text = ", ".join(
-                f"{namespace}: mean={mean:+.4f} std={std:.4f}" for namespace, mean, std in befores
-            )
-            print(f"    [{subset}]")
-            if before_text:
-                print(f"      before  {before_text}")
-            print(f"      after   mean={float(after_mean[0]):+.4f} std={float(after_std[0]):.4f}")
     print()
-
-
-def _collect_before_stats(per_source_entries) -> dict[str, list]:
-    """Channel-0 mean/std each source currently carries, per object_subset."""
-    before: dict[str, set] = defaultdict(set)
-    for namespace, entries in per_source_entries.items():
-        for entry in entries.values():
-            mean = entry.get("canonical_feature_mean")
-            std = entry.get("canonical_feature_std")
-            if mean is None or std is None:
-                continue
-            tags = entry.get("species_tags") or ()
-            subset = tags[0].strip().lower() if tags else "?"
-            before[subset].add((namespace, round(float(np.asarray(mean)[0]), 6), round(float(np.asarray(std)[0]), 6)))
-    return {subset: sorted(values) for subset, values in before.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -332,11 +290,9 @@ def merge_dataset_cond(manifest_path, out_path, recompute_stats=True, dry_run=Fa
                 raise SystemExit(f"Duplicate canonical species key across sources: {key}")
             merged_cond[key] = copy.deepcopy(entry)
 
-    before_stats = _collect_before_stats(per_source_entries)
-    after_stats: dict[str, tuple] = {}
     if recompute_stats:
         t0 = time.time()
-        after_stats = _recompute_canonical_stats(merged_cond, sources)
+        _recompute_canonical_stats(merged_cond, sources)
         print(f"[OK] statistics recomputed in {time.time() - t0:.1f}s")
     else:
         print(
@@ -345,7 +301,7 @@ def merge_dataset_cond(manifest_path, out_path, recompute_stats=True, dry_run=Fa
             f"spaces. For pipeline validation only, never for a real training run.{_COLOR_RESET}"
         )
 
-    _report(sources, merged_cond, before_stats, after_stats)
+    _report(sources, merged_cond)
 
     subsets = build_object_subsets({key: entry["species_tags"] for key, entry in merged_cond.items()})
     print(f"  object subsets: " + ", ".join(

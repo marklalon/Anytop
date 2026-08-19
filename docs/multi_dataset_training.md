@@ -8,11 +8,11 @@
 ```bash
 # 合并成一个训练 cond（不复制任何 motion 文件，默认重算统计量）
 python tools/merge_dataset_cond.py --datasets dataset/datasets.jsonl \
-    --out dataset/merged/truebones_all/cond.npy
+    --out dataset/merged/cond.npy
 
 # 训练：单数据集 / 合并只差 --cond_path
 python train/train_anytop.py --cond_path dataset/truebones/zoo/truebones_processed/cond.npy ...
-python train/train_anytop.py --cond_path dataset/merged/truebones_all/cond.npy ...
+python train/train_anytop.py --cond_path dataset/merged/cond.npy ...
 
 # 推理：不传 --cond_path 时自动读 checkpoint 同目录的 cond.npy 快照
 python -m sample.generate --model_path save/<run>/model.pt --object_type zoo_upgrade/Horse
@@ -138,7 +138,7 @@ truebones/zoo_upgrade/Horse
 ```
 python tools/merge_dataset_cond.py \
     --datasets dataset/datasets.jsonl \
-    --out dataset/merged/truebones_all/cond.npy \
+    --out dataset/merged/cond.npy \
     [--no-recompute-stats] \
     [--dry-run]
 ```
@@ -187,7 +187,7 @@ quadruped   zoo:         mean[0]=0.0098  std[0]=0.4691
 
 - `train_anytop.py` 新增 `--cond_path`，**必填**（与 `generate.py` 同名）
 - 单数据集训练：`--cond_path dataset/truebones/zoo/truebones_processed/cond.npy`
-- 合并训练：`--cond_path dataset/merged/truebones_all/cond.npy`
+- 合并训练：`--cond_path dataset/merged/cond.npy`
 - `--objects_subset all` 的含义 = 当前 cond.npy 里的全部物种
 
 ### 5.2 `get_opt` / opt
@@ -306,7 +306,7 @@ shutil.copy2(args.cond_path, os.path.join(save_dir, 'cond.npy'))
 |---|---|---|
 | **P0** ✅ | cond schema v4：预处理写入 `dataset_namespace` / `species_name` / `species_tags`，key 改规范键 | 两个数据集的 cond.npy 已是 v4 |
 | **P1** ✅ | `resolve_species_key` + `species_file_token` + `infer_object_type_from_filename` 反解 + `dataset_tags.configure_from_cond` | 推理自足；单数据集回归 |
-| **P2** ✅ | `tools/merge_dataset_cond.py`（含统计量重算） | `dataset/merged/truebones_all/cond.npy`，104 物种 |
+| **P2** ✅ | `tools/merge_dataset_cond.py`（含统计量重算） | `dataset/merged/cond.npy`，104 物种 |
 | **P3** ✅ | 训练侧多源加载（复合 clip id、去前缀匹配、逐源 split、`dataset_tags.configure(sources)`） | 合并训练集 1402 clip 可加载 |
 | **P4** ✅ | `--cond_path` 必填 + `save_dir` cond 快照 + 推理侧默认回退改造 | 端到端自足 |
 | **P5** ✅ | `eval / --score` 清单支持 | 多源打分 |
