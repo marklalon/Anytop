@@ -1,0 +1,3 @@
+# Cobra: no named left-right joint pairs found
+# impman: orientation calculation fell back to the across-vector heuristic
+# scorpion: no head/neck forward reference was found

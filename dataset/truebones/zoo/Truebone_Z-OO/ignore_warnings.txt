@@ -1,3 +1,0 @@
-# Crab: bind pose is not symmetric
-# SabreToothTiger: bind pose is not symmetric
-# Spider: bind pose is not symmetric
