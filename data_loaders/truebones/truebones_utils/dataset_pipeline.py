@@ -379,7 +379,7 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
     # object_cond) so it never enters cond.npy or the in-memory cond dict. It is
     # consumed ONLY by the offline dataset GLB tool (data_bridge.restore_glb_from_anytop)
     # via the tpose_reference_paths sidecar; inference paths reconstruct rest-pose
-    # features from cond directly. Stored repo-root-relative POSIX for portability.
+    # features from cond directly. Stored AnyTop-root-relative POSIX for portability.
     from utils.misc import to_portable_dataset_path
     tpose_reference_path = to_portable_dataset_path(rest_pose_path)
     return object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, squared_positions_error, max_joints, tpose_reference_path

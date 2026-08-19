@@ -172,44 +172,55 @@ def infer_object_type_from_filename(
 # tpose_reference_paths.jsonl sidecar. Historically these were absolute paths, which
 # break when the repo/dataset is moved to another machine or mounted into a
 # container at a different prefix (e.g. a Windows ``D:\...`` path inside a Linux
-# container). They are now stored as a *repo-root-relative POSIX* path via
-# ``to_portable_dataset_path``; both forms
-# (and legacy foreign-absolute paths) are resolved back to a local path by
-# ``resolve_dataset_path``.
+# container). They are now stored as an *AnyTop-root-relative POSIX* path via
+# ``to_portable_dataset_path`` — the same anchor every other relative path in the
+# module uses (``param_utils._ANYTOP_ROOT``), so ``Anytop`` can be relocated or
+# vendored without rewriting its sidecars. All forms (AnyTop-relative, legacy
+# repo-root-relative with an ``Anytop/`` prefix, and foreign-absolute paths) are
+# resolved back to a local path by ``resolve_dataset_path``.
+
+def anytop_root_dir() -> str:
+    """Absolute path of the ``Anytop`` module root (the parent of ``utils``)."""
+    return _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+
 
 def repo_root_dir() -> str:
-    """Absolute path of the repository root (the parent of the ``Anytop`` dir)."""
-    return _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+    """Absolute path of the repository root (the parent of the ``Anytop`` dir).
+
+    Kept only as a *fallback* resolution root for legacy sidecars whose paths
+    were written repo-root-relative (i.e. with an ``Anytop/`` prefix).
+    """
+    return _os.path.dirname(anytop_root_dir())
 
 
 def to_portable_dataset_path(path: str | None) -> str | None:
-    """Return a portable form of *path* for storage in cond.npy.
+    """Return a portable form of *path* for storage in a dataset sidecar.
 
-    Paths inside the repo become repo-root-relative POSIX paths; paths outside
-    the repo (or on a different Windows drive) are kept as a normalised absolute
-    path. ``None``/empty input returns ``None``.
+    Paths inside the ``Anytop`` module tree become AnyTop-root-relative POSIX
+    paths; paths outside it (or on a different Windows drive) are kept as a
+    normalised absolute path. ``None``/empty input returns ``None``.
     """
     if not path:
         return None
     abs_path = _os.path.abspath(path)
-    root = repo_root_dir()
+    root = anytop_root_dir()
     try:
         rel = _os.path.relpath(abs_path, root)
     except ValueError:
         return abs_path  # different drive on Windows — cannot be made relative
     if rel.startswith(_os.pardir):
-        return abs_path  # outside the repo tree
+        return abs_path  # outside the Anytop tree
     return rel.replace(_os.sep, "/")
 
 
 def resolve_dataset_path(stored, *, extra_roots=None) -> str | None:
-    """Resolve a cond.npy asset path (repo-root-relative or absolute) to a
-    local path.
+    """Resolve a stored dataset asset path to a local path.
 
     Resolution order:
       1. ``None``/empty → ``None``.
       2. An absolute path that exists as-is → returned unchanged.
-      3. A relative path → joined against the repo root (and any *extra_roots*).
+      3. A relative path → joined against the AnyTop root, then the repo root
+         (legacy ``Anytop/...`` entries), then any *extra_roots*.
 
     Raises ``FileNotFoundError`` if no candidate exists.
     """
@@ -219,7 +230,7 @@ def resolve_dataset_path(stored, *, extra_roots=None) -> str | None:
     if _os.path.isabs(raw) and _os.path.isfile(raw):
         return raw
 
-    roots = [repo_root_dir()]
+    roots = [anytop_root_dir(), repo_root_dir()]
     if extra_roots:
         roots.extend(r for r in extra_roots if r)
 
@@ -235,18 +246,41 @@ def resolve_dataset_path(stored, *, extra_roots=None) -> str | None:
     )
 
 
-# ── tpose_reference_paths.jsonl sidecar I/O ──────────────────────────────
+# ── tpose_reference_paths.jsonl sidecar I/O ────────────────────────────────
+# A sidecar written into a scratch/cache dir (e.g. the server's per-skeleton
+# cache under ``outputs/server/cache/skeletons/<hash>/``) usually points at a
+# mesh copied into that very dir. Such assets live outside the Anytop tree, so
+# ``to_portable_dataset_path`` can only keep them absolute — which pins the cache
+# dir to one machine. The sidecar I/O therefore stores paths *inside the sidecar's
+# own directory* relative to it, leaving the cache dir self-contained and movable;
+# loading resolves those back against the sidecar dir.
+
+def _relative_to_sidecar_dir(path: str | None, sidecar_dir: str) -> str | None:
+    """Return *path* relative to *sidecar_dir* when it lives inside it, else *path*."""
+    if not path or not _os.path.isabs(path):
+        return path
+    try:
+        rel = _os.path.relpath(path, sidecar_dir)
+    except ValueError:
+        return path  # different drive on Windows
+    if rel.startswith(_os.pardir):
+        return path  # outside the sidecar dir
+    return rel.replace(_os.sep, "/")
+
 
 def load_tpose_reference_sidecar(path: str) -> dict[str, str]:
-    """Load the JSONL sidecar (``object_type`` → portable mesh path).
+    """Load the JSONL sidecar (``object_type`` → mesh path).
 
     Returns a dict keyed by ``object_type``; entries with a ``None`` path are
-    omitted.  Returns an empty dict if the file does not exist.
+    omitted.  Returns an empty dict if the file does not exist.  Entries stored
+    relative to the sidecar's own directory are returned as absolute local paths;
+    every other form is returned verbatim for ``resolve_dataset_path``.
     """
     import json
     refs: dict[str, str] = {}
     if not _os.path.isfile(path):
         return refs
+    sidecar_dir = _os.path.dirname(_os.path.abspath(path))
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -254,21 +288,36 @@ def load_tpose_reference_sidecar(path: str) -> dict[str, str]:
                 continue
             entry = json.loads(line)
             path_val = entry.get("path")
-            if path_val is not None:
-                refs[entry["object_type"]] = path_val
+            if path_val is None:
+                continue
+            if not _os.path.isabs(path_val):
+                beside = _os.path.join(sidecar_dir, path_val.replace("/", _os.sep))
+                if _os.path.isfile(beside):
+                    path_val = beside
+            refs[entry["object_type"]] = path_val
     return refs
 
 
 def save_tpose_reference_sidecar(path: str, refs: dict[str, str | None]) -> None:
     """Write the JSONL sidecar (one ``{"object_type": ..., "path": ...}`` per line).
 
-    Entries with a ``None`` path are written as ``null`` so the consumer can
-    distinguish an explicitly cleared entry from a missing one.
+    Paths are stored in the most portable form available: relative to the
+    sidecar's own directory when the asset lives inside it (so scratch/cache
+    dirs stay self-contained), otherwise AnyTop-root-relative, otherwise
+    absolute. Entries with a ``None`` path are written as ``null`` so the
+    consumer can distinguish an explicitly cleared entry from a missing one.
     """
     import json
+    sidecar_dir = _os.path.dirname(_os.path.abspath(path))
     with open(path, "w", encoding="utf-8") as f:
         for ot, p in refs.items():
-            f.write(json.dumps({"object_type": ot, "path": p}, ensure_ascii=False) + "\n")
+            stored = _relative_to_sidecar_dir(p, sidecar_dir)
+            if stored and _os.path.isabs(stored):
+                stored = to_portable_dataset_path(stored)
+            f.write(json.dumps(
+                {"object_type": ot, "path": stored},
+                ensure_ascii=False,
+            ) + "\n")
 
 
 # ── String normalisation helpers (shared across tools) ───────────────────
