@@ -38,6 +38,7 @@ from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E40
 from utils.misc import infer_object_type_from_filename  # noqa: E402
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond  # noqa: E402
 from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E402
+    bare_species_name,
     load_datasets_manifest,
     species_lookup_map,
 )
@@ -410,8 +411,11 @@ def _prune_excess_joint_motions(motions_dir: Path, bvhs_dir: Path, cond: dict, s
             print_warn(f"failed to inspect {motion_path.name} during pre-validation pruning: {exc}")
 
     for object_type in sorted(excess_joints_chars):
-        char_motions = [path for path in motion_files if path.stem.startswith(f"{object_type}_")]
-        char_bvhs = [path for path in bvh_files if path.stem.startswith(f"{object_type}_")]
+        # Motion/BVH filenames are bare-keyed (species_name), while cond is canonically
+        # namespaced; prefix-match on the bare name so pruning actually targets the clips.
+        bare = bare_species_name(object_type)
+        char_motions = [path for path in motion_files if path.stem.startswith(f"{bare}_")]
+        char_bvhs = [path for path in bvh_files if path.stem.startswith(f"{bare}_")]
         for path in char_motions + char_bvhs:
             try:
                 path.unlink()
@@ -760,7 +764,12 @@ def validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: 
             motion_name = motion_path.name
             motion_metadata = motions[motion_name]
             object_type = _match_object_type(motion_path.stem, cond)
-            require_valid(motion_metadata.get("object_type") == object_type, f"object_type mismatch for {motion_name}")
+            # motion_metadata.json is bare-keyed (species_name) by design, while cond is
+            # canonically namespaced; compare against the entry's bare species_name.
+            require_valid(
+                motion_metadata.get("object_type") == cond[object_type].get("species_name"),
+                f"object_type mismatch for {motion_name}",
+            )
             require_valid(bool(motion_metadata.get("species_label")), f"species_label missing for {motion_name}")
             normalized_action_tags = action_tags.get(motion_name)
             require_valid(normalized_action_tags is not None, f"action_tags missing in {ACTION_TAGS_FILE} for {motion_name}")

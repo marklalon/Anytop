@@ -124,20 +124,28 @@ class DatasetTags:
         """Forward-chain joint indices for a species, or ``None``.
 
         These indices are tied to one dataset's collapsed-skeleton ordering, so
-        they are stored per canonical key and never shared across datasets. A
-        bare species name is accepted only when exactly one dataset defines it;
-        an ambiguous bare name resolves to nothing rather than to the wrong
-        skeleton's indices.
+        they are stored bare in the ``chain_forward_joints.jsonl`` sidecar and
+        never shared across datasets. ``object_type`` may be a canonical
+        ``<namespace>/<species>`` key or a bare species name. In a single-source
+        setup both resolve to the same bare-name sidecar entry; in a
+        multi-source setup a canonical key resolves to that dataset's own entry
+        while a bare name resolves to nothing when more than one dataset defines
+        the same bare name, rather than to the wrong skeleton's indices.
         """
         if object_type is None:
             return None
         name = str(object_type).strip()
+        # The sidecar keys are bare species names. Accept either a canonical
+        # <namespace>/<species> key or a bare name by resolving to the bare name.
+        bare = bare_species_name(name)
         exact = self.chain_forward_joints.get(name)
+        if exact is None:
+            exact = self.chain_forward_joints.get(bare)
         if exact is not None:
             return exact
         matches = [
             indices for key, indices in self.chain_forward_joints.items()
-            if bare_species_name(key) == name
+            if bare_species_name(key) == bare
         ]
         return matches[0] if len(matches) == 1 else None
 
