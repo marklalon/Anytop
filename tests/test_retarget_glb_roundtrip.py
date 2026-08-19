@@ -73,6 +73,7 @@ _load_utils_module("utils.npy_roundtrip_utils")
 
 from motion_lib import FBX
 from data_loaders.truebones.offline_reference_dataset import load_cond_dict
+from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
 from data_loaders.truebones.truebones_utils.motion_process import (
     get_common_features_from_T_pose,
     tpose_features_from_cond,
@@ -149,7 +150,11 @@ def _run_retarget_glb_roundtrip(
     _require_or_skip(os.path.isfile(source_motion), f"Missing source motion: {source_motion}")
     _require_or_skip(os.path.isfile(tpose_mesh), f"Missing target rest-pose reference: {tpose_mesh}")
 
-    target_cond = load_cond_dict().get(target_type)
+    # cond.npy is keyed '<namespace>/<species>' (schema v4); the bare target_type
+    # resolves to the canonical key, never a direct .get().
+    cond_dict = load_cond_dict()
+    target_key = resolve_species_key(cond_dict, target_type)
+    target_cond = cond_dict.get(target_key) if target_key is not None else None
     _require_or_skip(
         target_cond is not None,
         f"cond.npy is missing a '{target_type}' entry; regenerate or point the test at a matching dataset",
@@ -333,9 +338,13 @@ def test_retarget_raw_glb_matches_matching_npy_reference(target_type: str) -> No
     _require_or_skip(os.path.isfile(_DEFAULT_SOURCE), f"Missing source GLB: {_DEFAULT_SOURCE}")
     _require_or_skip(os.path.isfile(_DEFAULT_MATCHING_NPY), f"Missing source NPY: {_DEFAULT_MATCHING_NPY}")
 
+    # cond.npy is keyed '<namespace>/<species>' (schema v4); the bare species
+    # names resolve to canonical keys, never a direct .get().
     cond_dict = load_cond_dict()
-    source_cond = cond_dict.get(_DEFAULT_SOURCE_TYPE)
-    target_cond = cond_dict.get(target_type)
+    source_key = resolve_species_key(cond_dict, _DEFAULT_SOURCE_TYPE)
+    target_key = resolve_species_key(cond_dict, target_type)
+    source_cond = cond_dict.get(source_key) if source_key is not None else None
+    target_cond = cond_dict.get(target_key) if target_key is not None else None
     _require_or_skip(source_cond is not None, f"cond.npy is missing '{_DEFAULT_SOURCE_TYPE}'")
     _require_or_skip(target_cond is not None, f"cond.npy is missing '{target_type}'")
     _require_or_skip(

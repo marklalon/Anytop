@@ -68,6 +68,7 @@ _load_utils_module("utils.npy_roundtrip_utils")
 
 from motion_lib import FBX
 from data_loaders.truebones.offline_reference_dataset import load_cond_dict
+from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
 from data_loaders.truebones.truebones_utils.param_utils import MAX_JOINTS
 from data_loaders.truebones.truebones_utils.motion_process import (
     FOOT_CONTACT_VEL_THRESH,
@@ -263,7 +264,11 @@ def _run_test_glb_npy_glb_roundtrip(
 
         # Phase A: Load T-pose metadata used by the production preprocessing path
         print("[Phase A] Loading T-pose GLB preprocessing metadata...")
-        cond_entry = load_cond_dict().get(object_type)
+        # cond.npy is keyed '<namespace>/<species>' (schema v4); the bare
+        # object_type resolves to the canonical key, never a direct .get().
+        cond_dict = load_cond_dict()
+        cond_key = resolve_species_key(cond_dict, object_type)
+        cond_entry = cond_dict.get(cond_key) if cond_key is not None else None
         cond_entry = _require_dataset_cond_entry_or_skip(cond_entry, object_type)
         preprocess_max_joints = (
             len(cond_entry["parents"])
