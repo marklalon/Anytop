@@ -13,7 +13,7 @@ for _p in [_REPO_ROOT, _ANYTOP_ROOT]:
         sys.path.insert(0, _p)
 
 
-from Anytop.motion_lib import FBX
+from motion_lib import FBX
 
 
 class _FakeTranslation:

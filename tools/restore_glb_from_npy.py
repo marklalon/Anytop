@@ -88,10 +88,10 @@ _load_utils_module("utils.misc")
 
 from utils.misc import infer_object_type_from_filename
 from utils.npy_roundtrip_utils import recover_from_features
-from Anytop.utils.roundtrip_common import (
+from utils.roundtrip_common import (
     load_fbx_skeleton_metadata,
 )
-from Anytop.motion_lib.FBX import collapse_root_skeleton
+from motion_lib.FBX import collapse_root_skeleton
 
 # ── Default cond.npy path ─────────────────────────────────────────────────────
 
@@ -99,7 +99,7 @@ _DEFAULT_COND_NPY = os.path.realpath(
     os.path.join(ANYTOP_DIR, "dataset", "truebones", "zoo", "truebones_processed", "cond.npy")
 )
 
-from Anytop.utils.fullbody_ik import (
+from utils.fullbody_ik import (
     DEFAULT_IK_STRETCH_FACTOR,
     rebuild_fullbody_animation_with_ik,
 )
@@ -568,8 +568,8 @@ def restore_glb(
     Returns:
         The absolute path of the written GLB file.
     """
-    from Anytop.utils.exporter import AnimationExporter, animation_to_exporter_inputs
-    from Anytop.utils.roundtrip_common import build_skeleton
+    from utils.exporter import AnimationExporter, animation_to_exporter_inputs
+    from utils.roundtrip_common import build_skeleton
     from data_loaders.truebones.truebones_utils.motion_process import (
         find_translation_root,
         recover_processed_animation_from_feature_animation,

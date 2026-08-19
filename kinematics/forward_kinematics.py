@@ -11,7 +11,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 from .skeleton import Skeleton
-from Anytop.utils.quaternion import quat_multiply, quat_to_matrix
+from utils.quaternion import quat_multiply, quat_to_matrix
 
 
 def forward_kinematics(

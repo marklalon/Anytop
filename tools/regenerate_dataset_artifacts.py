@@ -70,7 +70,7 @@ from data_loaders.truebones.truebones_utils.physics_joint_annotation import (  #
 )
 
 
-from Anytop.utils.misc import (
+from utils.misc import (
     infer_object_type_from_filename,
     normalize_identifier as _normalize_identifier,
 )

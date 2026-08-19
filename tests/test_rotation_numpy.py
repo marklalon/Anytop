@@ -15,7 +15,7 @@ for _path in [_REPO_ROOT, _ANYTOP_ROOT]:
         sys.path.insert(0, _path)
 
 
-from Anytop.utils.rotation_numpy import (
+from utils.rotation_numpy import (
     apply_rotation_to_quaternions_wxyz_np,
     matrix_to_quat_wxyz_np,
     quat_conjugate_wxyz_np,

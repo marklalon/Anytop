@@ -9,7 +9,7 @@ same retargeting without depending on ``bpy``.
 
 Usage as CLI::
 
-    python -m Anytop.utils.retarget --source <path> --object_type <Type>
+    python -m utils.retarget --source <path> --object_type <Type>
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ if __name__ == '__main__' and __package__ is None:
     _parts = [p for p in (_ANYTOP_PARENT, _existing_pythonpath) if p]
     _relaunch_env['PYTHONPATH'] = __os.pathsep.join(_parts)
     _sys.exit(__sp.call(
-        [_sys.executable, '-m', 'Anytop.utils.retarget'] + _sys.argv[1:],
+        [_sys.executable, '-m', 'utils.retarget'] + _sys.argv[1:],
         cwd=_ANYTOP_PARENT,
         env=_relaunch_env,
     ))
@@ -1776,7 +1776,7 @@ if __name__ == '__main__':
         # Feature-space .npy source: infer source object_type from filename,
         # then delegate to retarget_features_npy_to_target.
         from utils.misc import infer_object_type_from_filename
-        from Anytop.utils.auto_retarget import retarget_features_npy_to_target
+        from utils.auto_retarget import retarget_features_npy_to_target
 
         _src_type = infer_object_type_from_filename(
             _source_path,
@@ -1812,7 +1812,7 @@ if __name__ == '__main__':
             )
     else:
         # Raw animation file (.glb/.fbx/.gltf): cond-free on the source side.
-        from Anytop.utils.auto_retarget import retarget_animation_file_to_target
+        from utils.auto_retarget import retarget_animation_file_to_target
 
         print(f'[retarget CLI] Retargeting {_source_path} → {_target_type}')
 

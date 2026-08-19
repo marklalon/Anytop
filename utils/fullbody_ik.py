@@ -14,7 +14,7 @@ directions.  It supports:
 
 Usage::
 
-    from Anytop.utils.fullbody_ik import rebuild_fullbody_animation_with_ik
+    from utils.fullbody_ik import rebuild_fullbody_animation_with_ik
 
     rebuilt_anim, mean_err, max_err = rebuild_fullbody_animation_with_ik(
         target_anim,

@@ -45,8 +45,8 @@ if repo_root not in sys.path:
 
 
 def _build_minimal_skeleton(device: torch.device):
-    from Anytop.kinematics import forward_kinematics
-    from Anytop.kinematics.skeleton import Bone, Skeleton
+    from kinematics import forward_kinematics
+    from kinematics.skeleton import Bone, Skeleton
 
     bones = [
         Bone(
@@ -127,7 +127,7 @@ def _make_animation(num_frames: int, num_joints: int, device: torch.device):
 
 
 def _expected_fk(skeleton, joint_rotations, root_translation, root_rotation):
-    from Anytop.kinematics import forward_kinematics
+    from kinematics import forward_kinematics
 
     world_transforms, joint_positions = forward_kinematics(
         joint_rotations,
@@ -158,9 +158,9 @@ def _parse_motion_width(bvh_path: str) -> tuple[int, list[int]]:
 def main() -> None:
     import numpy as np
 
-    from Anytop.utils.exporter import AnimationExporter
-    from Anytop.utils.retarget import batch_forward_kinematics_np
-    from Anytop.utils.rotation_numpy import quat_rotate_wxyz_np
+    from utils.exporter import AnimationExporter
+    from utils.retarget import batch_forward_kinematics_np
+    from utils.rotation_numpy import quat_rotate_wxyz_np
 
     device = torch.device("cpu")
     skeleton = _build_minimal_skeleton(device)

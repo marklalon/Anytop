@@ -94,7 +94,7 @@ def build_skeleton(
 def load_fbx_skeleton_metadata(
     fbx_path: str,
 ) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
-    from ..motion_lib.FBX import load_fbx_scene, extract_armature_skeleton_data
+    from motion_lib.FBX import load_fbx_scene, extract_armature_skeleton_data
     armature = load_fbx_scene(fbx_path)
     return extract_armature_skeleton_data(armature)
 

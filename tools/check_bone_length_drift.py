@@ -60,8 +60,8 @@ _load_utils_module("utils.misc")
 
 from utils.misc import infer_object_type_from_filename
 from utils.npy_roundtrip_utils import coerce_feature_payload, recover_from_features
-from Anytop.motion_lib.Animation import positions_global
-from Anytop.motion_lib.FBX import (
+from motion_lib.Animation import positions_global
+from motion_lib.FBX import (
     extract_armature_skeleton_data,
     get_action_sample_times,
     set_scene_time,
@@ -75,9 +75,9 @@ from eval.motion_quality.bone_length_drift import (
 )
 
 
-from Anytop.utils.misc import normalize_bone_key as _normalize_bone_key
-from Anytop.utils.misc import normalize_identifier as _normalize_identifier
-from Anytop.data_loaders.truebones.truebones_utils.animation_utils import (
+from utils.misc import normalize_bone_key as _normalize_bone_key
+from utils.misc import normalize_identifier as _normalize_identifier
+from data_loaders.truebones.truebones_utils.animation_utils import (
     refresh_joint_metadata_in_object_cond,
 )
 

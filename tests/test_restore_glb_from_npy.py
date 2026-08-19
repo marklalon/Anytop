@@ -18,11 +18,11 @@ for _path in [_REPO_ROOT, _ANYTOP_ROOT]:
 
 from motion_lib.Animation import Animation, positions_global
 from motion_lib.Quaternions import Quaternions
-from Anytop.utils.fullbody_ik import (
+from utils.fullbody_ik import (
     rebuild_fullbody_animation_with_ik,
 )
-from Anytop.utils.exporter import animation_to_exporter_inputs
-from Anytop.utils.roundtrip_common import build_skeleton
+from utils.exporter import animation_to_exporter_inputs
+from utils.roundtrip_common import build_skeleton
 
 
 def test_fullbody_ik_rebuild_restores_rigid_local_positions() -> None:

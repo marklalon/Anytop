@@ -867,7 +867,7 @@ def run_validation(
     # The workflow always operates over every object, so validate the whole dataset.
     objects_subset = "all"
 
-    # Ensure parent of Anytop/ is on sys.path so `from Anytop.utils...` imports work
+    # Ensure parent of Anytop/ is on sys.path so `from utils...` imports work
     if str(ANYTOP_DIR.parent) not in sys.path:
         sys.path.insert(0, str(ANYTOP_DIR.parent))
 

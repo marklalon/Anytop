@@ -9,7 +9,7 @@ import sys
 from dataclasses import dataclass
 
 # Ensure both the Anytop dir (for bare ``utils.*`` / ``data_loaders.*`` imports)
-# and its parent (for ``Anytop.utils.*`` imports made by submodules like
+# and its parent (for ``utils.*`` imports made by submodules like
 # ``utils/retarget.py``) are on sys.path when running as a script. Insert
 # repo-root first then Anytop second so Anytop's ``utils/`` wins over the
 # unrelated ``<repo_root>/utils/`` directory for bare imports.
@@ -244,7 +244,7 @@ def resolve_global_energy_condition(model, global_energy, batch_size):
 
 def _compute_global_energy_from_reference(ref_motion, n_joints, playspeed_cond=None):
     """Extract raw global energy [mean, std] from reference motion (B, J, F, T) tensor."""
-    from Anytop.model.anytop import GlobalEnergyExtractor
+    from model.anytop import GlobalEnergyExtractor
 
     return GlobalEnergyExtractor.compute_global_energy_condition(
         ref_motion,
@@ -378,7 +378,7 @@ def _retarget_reference_motion(
     Loads source features, builds target TPoseFeatures, delegates the math, then
     writes the retargeted .npy and an inspection .bvh under ``output_dir``.
     """
-    from Anytop.utils.auto_retarget import (
+    from utils.auto_retarget import (
         retarget_features_npy_to_target,
     )
 
@@ -457,7 +457,7 @@ def _retarget_reference_motion_from_file(
 ):
     """Retarget raw .fbx/.glb/.gltf onto target_type (cond-free source).
     Only the target's cond/T-pose is required."""
-    from Anytop.utils.auto_retarget import (
+    from utils.auto_retarget import (
         retarget_animation_file_to_target,
     )
 

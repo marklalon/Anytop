@@ -41,10 +41,10 @@ from data_loaders.truebones.truebones_utils.features import (
     recover_animation_from_motion_np,
 )
 from data_loaders.truebones.truebones_utils.animation_utils import find_translation_root
-import Anytop.utils.retarget as retarget_mod
-from Anytop.utils.auto_retarget import build_tpose_aligned_target_animation
-from Anytop.utils.auto_retarget import retarget_features_npy_to_target
-from Anytop.utils.rotation_numpy import (
+import utils.retarget as retarget_mod
+from utils.auto_retarget import build_tpose_aligned_target_animation
+from utils.auto_retarget import retarget_features_npy_to_target
+from utils.rotation_numpy import (
     quat_conjugate_wxyz_np,
     quat_multiply_wxyz_np,
     quat_rotate_wxyz_np,
@@ -731,10 +731,10 @@ def test_retarget_features_npy_to_target_encodes_feature_space_animation_directl
     target T-pose rest rotations a second time.
     """
     import importlib
-    import Anytop.utils.auto_retarget as auto_retarget_mod
-    import Anytop.utils.exporter as exporter_mod
-    import Anytop.utils.retarget as retarget_mod
-    import Anytop.utils.roundtrip_common as roundtrip_common_mod
+    import utils.auto_retarget as auto_retarget_mod
+    import utils.exporter as exporter_mod
+    import utils.retarget as retarget_mod
+    import utils.roundtrip_common as roundtrip_common_mod
     import data_loaders.truebones.truebones_utils.features as features_mod
 
     sys.modules['utils.exporter'] = exporter_mod
@@ -820,7 +820,7 @@ def test_retarget_features_npy_to_target_uses_effective_root_override(
     import data_loaders.truebones.truebones_utils.features as features_mod
     import utils.exporter as exporter_mod
     import utils.roundtrip_common as roundtrip_common_mod
-    import Anytop.utils.auto_retarget as auto_retarget_mod
+    import utils.auto_retarget as auto_retarget_mod
 
     sentinel_anim = Animation(
         Quaternions(np.tile(_identity_quat(2)[None, :, :], (1, 1, 1))),
@@ -1491,7 +1491,7 @@ def test_infer_donor_consensus_effective_root_index_majority_vote(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Majority vote: 3 files with root=2, 2 files with root=5 => returns 2."""
-    import Anytop.utils.auto_retarget as auto_retarget_mod
+    import utils.auto_retarget as auto_retarget_mod
     import data_loaders.truebones.truebones_utils.features as features_mod
 
     npy_dir = tmp_path / "npys"
@@ -1523,7 +1523,7 @@ def test_infer_donor_consensus_effective_root_index_empty_list(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Empty npy list => None."""
-    import Anytop.utils.auto_retarget as auto_retarget_mod
+    import utils.auto_retarget as auto_retarget_mod
 
     donor_cond = {
         'parents': np.array([-1, 0], dtype=np.int32),
@@ -1538,7 +1538,7 @@ def test_infer_donor_consensus_effective_root_index_single(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Single file => returns that file's root index."""
-    import Anytop.utils.auto_retarget as auto_retarget_mod
+    import utils.auto_retarget as auto_retarget_mod
     import data_loaders.truebones.truebones_utils.features as features_mod
 
     npy_dir = tmp_path / "npys_single"
@@ -1565,7 +1565,7 @@ def test_infer_donor_consensus_effective_root_index_skip_corrupted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Corrupted .npy files are skipped; returns consensus of valid ones."""
-    import Anytop.utils.auto_retarget as auto_retarget_mod
+    import utils.auto_retarget as auto_retarget_mod
     import data_loaders.truebones.truebones_utils.features as features_mod
 
     npy_dir = tmp_path / "npys_corrupt"
@@ -1623,7 +1623,7 @@ def _floating_anim(foot_height: float):
 
 def test_bake_foot_floor_offset_single_foot_still_aligns_to_zero() -> None:
     from motion_lib.Animation import positions_global
-    from Anytop.utils.auto_retarget import bake_foot_floor_offset
+    from utils.auto_retarget import bake_foot_floor_offset
 
     anim = _floating_anim(foot_height=0.75)
     # Sanity: foot floats at 0.75 before flooring.
@@ -1638,7 +1638,7 @@ def test_bake_foot_floor_offset_single_foot_still_aligns_to_zero() -> None:
 
 def test_bake_foot_floor_offset_noop_without_contacts() -> None:
     from motion_lib.Animation import positions_global
-    from Anytop.utils.auto_retarget import bake_foot_floor_offset
+    from utils.auto_retarget import bake_foot_floor_offset
 
     for foot_indices in (None, [], np.array([], dtype=np.int64)):
         anim = _floating_anim(foot_height=0.75)
@@ -1650,7 +1650,7 @@ def test_bake_foot_floor_offset_noop_without_contacts() -> None:
 def test_bake_foot_floor_offset_lifts_sunken_skeleton() -> None:
     # A foot below the floor (negative height) is lifted up to 0.
     from motion_lib.Animation import positions_global
-    from Anytop.utils.auto_retarget import bake_foot_floor_offset
+    from utils.auto_retarget import bake_foot_floor_offset
 
     anim = _floating_anim(foot_height=-0.4)
     bake_foot_floor_offset(anim, foot_indices=[2])
@@ -1660,7 +1660,7 @@ def test_bake_foot_floor_offset_lifts_sunken_skeleton() -> None:
 def test_bake_foot_floor_offset_uses_median_of_per_joint_mins() -> None:
     # Two feet at different heights: the median of per-joint minimums aligns.
     from motion_lib.Animation import Animation, positions_global
-    from Anytop.utils.auto_retarget import bake_foot_floor_offset
+    from utils.auto_retarget import bake_foot_floor_offset
 
     # 5-joint skeleton: Root(0) -> LeftMid(1) -> LeftFoot(2), Root -> RightMid(3) -> RightFoot(4)
     parents = np.array([-1, 0, 1, 0, 3], dtype=np.int32)

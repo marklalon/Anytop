@@ -336,6 +336,33 @@ def register_species_tags(species: str, tags) -> DatasetTags:
     return _snapshot
 
 
+def restore(snapshot: DatasetTags) -> None:
+    """Reinstate a snapshot captured earlier from ``dataset_tags()``.
+
+    For persistent workers that hand control to code which may call
+    ``register_species_tags``: capture before, restore after, so one request's
+    tags do not leak into the next.
+    """
+    global _snapshot
+    _snapshot = snapshot
+
+
+@contextmanager
+def registered_species_tags(species: str, tags):
+    """Add a species' tags for the duration of one request, then restore.
+
+    For long-lived processes (the inference service, its persistent pool
+    workers) that accept per-request ``--species-tags`` for a skeleton absent
+    from the sidecar: the tags must not leak into the next request.
+    """
+    previous = dataset_tags()
+    register_species_tags(species, tags)
+    try:
+        yield
+    finally:
+        restore(previous)
+
+
 def assert_species_tags_cover(object_types) -> None:
     """Fast-fail unless every ``object_type`` has an entry in ``species_tags.jsonl``.
 

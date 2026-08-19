@@ -2,7 +2,7 @@
 End-to-end exporter test against a source GLB.
 
 The test loads one GLB animation, converts it into AnimationExporter inputs,
-exports three variants via Anytop.utils.exporter.AnimationExporter, then uses
+exports three variants via utils.exporter.AnimationExporter, then uses
 tools.compare_motions to compare each exported file back to the source GLB.
 
 Pass criteria:
@@ -42,10 +42,10 @@ for _path in [_REPO_ROOT, _ANYTOP_ROOT]:
         sys.path.insert(0, _path)
 
 
-from Anytop.utils.roundtrip_common import build_skeleton, load_fbx_skeleton_metadata
-from Anytop.motion_lib import FBX
-from Anytop.motion_lib.FBX import fbx_to_animation
-from Anytop.utils.exporter import AnimationExporter, animation_to_exporter_inputs
+from utils.roundtrip_common import build_skeleton, load_fbx_skeleton_metadata
+from motion_lib import FBX
+from motion_lib.FBX import fbx_to_animation
+from utils.exporter import AnimationExporter, animation_to_exporter_inputs
 from tools.compare_motions import compare_motions, compute_mesh_surface_error, detect_and_align, load_motion, print_summary
 
 

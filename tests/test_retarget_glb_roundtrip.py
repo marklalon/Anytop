@@ -71,7 +71,7 @@ _load_utils_module("utils.rotation_conversions")
 _load_utils_module("utils.npy_roundtrip_utils")
 
 
-from Anytop.motion_lib import FBX
+from motion_lib import FBX
 from data_loaders.truebones.offline_reference_dataset import load_cond_dict
 from data_loaders.truebones.truebones_utils.motion_process import (
     get_common_features_from_T_pose,

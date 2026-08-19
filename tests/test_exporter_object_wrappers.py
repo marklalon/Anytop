@@ -21,8 +21,8 @@ for _path in [_REPO_ROOT, _ANYTOP_ROOT]:
         sys.path.insert(0, _path)
 
 
-from Anytop.utils.roundtrip_common import build_skeleton
-import Anytop.utils.exporter as exporter_mod
+from utils.roundtrip_common import build_skeleton
+import utils.exporter as exporter_mod
 
 
 class _AbortRetarget(RuntimeError):

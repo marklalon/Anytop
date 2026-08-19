@@ -20,7 +20,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (
     MAX_JOINTS,
     FOOT_CONTACT_VEL_THRESH,
 )
-from Anytop.utils.rotation_conversions import rotation_6d_to_matrix_np
+from utils.rotation_conversions import rotation_6d_to_matrix_np
 from .physics_joint_annotation import (
     infer_contact_joints,
     detect_joint_side,

@@ -849,7 +849,7 @@ class AnimationExporter:
         # ────────────────────────────────────────────────────────────────
         # Retargeting: convert input-skeleton animation to FBX armature
         # local space via world-space alignment. The numpy core lives in
-        # ``Anytop.utils.retarget`` so non-Blender callers can share it.
+        # ``utils.retarget`` so non-Blender callers can share it.
         # ────────────────────────────────────────────────────────────────
         if mesh_path:
             fbx_names, fbx_parents, fbx_offsets, fbx_rest_rots = extract_armature_skeleton_data(armature)

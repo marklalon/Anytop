@@ -8,7 +8,7 @@ import numpy as np
 try:
     from utils.rotation_numpy import quat_multiply_wxyz_np, quat_rotate_wxyz_np
 except ImportError:
-    from Anytop.utils.rotation_numpy import quat_multiply_wxyz_np, quat_rotate_wxyz_np
+    from utils.rotation_numpy import quat_multiply_wxyz_np, quat_rotate_wxyz_np
 
 
 # Common root joint names: when the root already carries a semantic name like

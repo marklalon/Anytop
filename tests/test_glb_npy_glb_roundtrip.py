@@ -66,7 +66,7 @@ _load_utils_module("utils.rotation_conversions")
 _load_utils_module("utils.npy_roundtrip_utils")
 
 
-from Anytop.motion_lib import FBX
+from motion_lib import FBX
 from data_loaders.truebones.offline_reference_dataset import load_cond_dict
 from data_loaders.truebones.truebones_utils.param_utils import MAX_JOINTS
 from data_loaders.truebones.truebones_utils.motion_process import (
@@ -107,7 +107,7 @@ _DEFAULT_TPOSE_MESH = os.path.join(
 _DEFAULT_OBJECT_TYPE = "Buffalo"
 
 
-from Anytop.utils.misc import normalize_bone_key as _normalize_bone_key
+from utils.misc import normalize_bone_key as _normalize_bone_key
 
 
 def _require_dataset_cond_entry_or_skip(cond_entry: dict[str, Any] | None, object_type: str) -> dict[str, Any]:
