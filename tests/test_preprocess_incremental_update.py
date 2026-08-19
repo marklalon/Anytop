@@ -732,63 +732,6 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
     assert set(merged_meta) == {'Cat_Walk_1.npy', 'Cat_Walk_2.npy', 'Dog_Idle_1.npy'}
 
 
-def test_process_skeleton_retarget_branch_writes_translation_root_metadata(monkeypatch, tmp_path):
-    motion = np.zeros((4, 3, 13), dtype=np.float32)
-    motion[:, :, 3:9] = np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32)
-    trajectory_x = np.arange(4, dtype=np.float32)
-    motion[:, 0, 0] = -trajectory_x
-    motion[:, 0, 2] = 1.0
-    motion[:, 1, 0] = -trajectory_x
-    motion[:, 1, 1] = 1.0
-    motion[:, 1, 2] = 1.0
-    motion[:, 2, 1] = 1.0
-    motion[:-1, 2, 9] = 1.0
-
-    motion_path = tmp_path / 'Dragon_RunLoop_001.npy'
-    np.save(motion_path, motion)
-
-    captured: dict[str, object] = {}
-
-    def fake_write_dataset_artifacts(save_dir, cond, motion_metadata, objects_counter, max_joints, files_counter, frames_counter, squared_positions_error, skip_t5=False, tpose_refs=None):
-        captured['save_dir'] = save_dir
-        captured['cond'] = cond
-        captured['motion_metadata'] = motion_metadata
-        captured['objects_counter'] = objects_counter
-        captured['max_joints'] = max_joints
-        captured['files_counter'] = files_counter
-        captured['frames_counter'] = frames_counter
-
-    monkeypatch.setattr(dataset_pipeline_mod, '_write_dataset_artifacts', fake_write_dataset_artifacts)
-
-    dataset_pipeline_mod.process_skeleton(
-        'Dragon',
-        None,
-        str(tmp_path / 'out'),
-        'unused',
-        motions_from_npys=[str(motion_path)],
-        target_cond_partial={
-            'object_type': 'Dragon',
-            'joints_names': ['Root', 'Mid', 'Tip'],
-            'parents': np.array([-1, 0, 1], dtype=np.int64),
-            'offsets': np.array(
-                [
-                    [0.0, 0.0, 0.0],
-                    [0.0, 1.0, 0.0],
-                    [0.0, 0.0, -1.0],
-                ],
-                dtype=np.float32,
-            ),
-        },
-    )
-
-    motion_metadata = captured['motion_metadata']
-    assert 'Dragon_RunLoop_001.npy' in motion_metadata
-    assert motion_metadata['Dragon_RunLoop_001.npy']['motion_name'] == 'Dragon_RunLoop_001.npy'
-    assert motion_metadata['Dragon_RunLoop_001.npy']['object_type'] == 'Dragon'
-    assert motion_metadata['Dragon_RunLoop_001.npy']['translation_root_index'] == 2
-    assert motion_metadata['Dragon_RunLoop_001.npy']['motion_source'] == 'retarget'
-
-
 def _cond_entry_with_stats(object_type, mean_fill, std_fill):
     entry = _make_cond_entry(object_type)
     entry["canonical_feature_mean"] = np.full((13,), mean_fill, dtype=np.float32)

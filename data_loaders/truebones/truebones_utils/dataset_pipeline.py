@@ -42,13 +42,10 @@ from .animation_utils import (
 from .features import (
     get_common_features_from_rest_pose,
     get_motion,
-    infer_translation_root_index_from_features,
     extract_motion_features_from_aligned_anims,
 )
 from .canonical_features import (
     mark_canonical_cond_entry,
-    accumulate_lnorm_stats,
-    finalize_lnorm_stats,
     set_canonical_global_stats,
 )
 
@@ -1140,65 +1137,10 @@ def find_new_source_files(objects, dataset_dir=None, raw_data_dir=None):
 
 
 def process_skeleton(object_name, face_joints, save_dir, tpose_path,
-                     motions_from_npys=None, target_cond_partial=None,
                      crop_enabled=True, skip_t5=False):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(save_dir, BVHS_DIR), exist_ok=True)
-
-    if motions_from_npys is not None:
-        # Retarget branch: motions already written to save_dir/motions/ by auto_retarget_pipeline.
-        # Load them for metadata, then write static canonical cond.npy.
-        assert target_cond_partial is not None, "target_cond_partial required with motions_from_npys"
-        all_motions = [np.load(p).astype(np.float32) for p in motions_from_npys]
-        if not all_motions:
-            print(f"[process_skeleton] no retargeted motions available; cond.npy not written")
-            return
-        object_cond = mark_canonical_cond_entry(dict(target_cond_partial))
-        # Standalone (non-merge) build has no sibling to inherit the cross-species
-        # global standardization constant from, so calibrate it from this skeleton's
-        # own retargeted clips in the L-normalized (size-free) space. A full dataset
-        # build instead finalizes these over all species in regenerate_dataset_artifacts.
-        _stats_acc = None
-        for _m in all_motions:
-            if _m.ndim == 3 and _m.shape[-1] >= 13:
-                try:
-                    _stats_acc = accumulate_lnorm_stats(_m, object_cond, acc=_stats_acc)
-                except (KeyError, ValueError):
-                    # cond entry lacks rest geometry; cannot encode -> skip.
-                    break
-        if _stats_acc is not None and _stats_acc["count"] > 0:
-            _mean, _std = finalize_lnorm_stats(_stats_acc)
-            set_canonical_global_stats(object_cond, _mean, _std)
-        motion_metadata = {}
-        parents = np.asarray(object_cond['parents'], dtype=np.int64)
-        offsets = np.asarray(object_cond['offsets'], dtype=np.float64)
-        for motion_path, motion in zip(motions_from_npys, all_motions):
-            motion_name = os.path.basename(motion_path)
-            motion_labels = build_motion_labels(object_name, motion_name=motion_name)
-            motion_labels['translation_root_index'] = int(
-                infer_translation_root_index_from_features(
-                    motion,
-                    parents,
-                    offsets,
-                )
-            )
-            motion_labels['motion_source'] = 'retarget'
-            motion_metadata[motion_name] = motion_labels
-        n_joints = len(object_cond['parents'])
-        cond = {object_name: object_cond}
-        _write_dataset_artifacts(
-            save_dir,
-            cond,
-            motion_metadata,
-            {object_name: len(all_motions)},             # objects_counter
-            n_joints,                                     # max_joints
-            len(all_motions),                             # files_counter
-            sum(m.shape[0] for m in all_motions),         # frames_counter
-            {},                                           # squared_positions_error
-            skip_t5=skip_t5,
-        )
-        return
 
     ## process
     files_counter = 0

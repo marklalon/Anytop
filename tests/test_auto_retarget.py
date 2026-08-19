@@ -1,7 +1,6 @@
 import os
 import sys
 import importlib.util
-import pathlib
 from types import SimpleNamespace
 
 import numpy as np
@@ -1479,124 +1478,6 @@ def test_build_target_animation_matches_target_world_positions() -> None:
         retarget_result['target_world_positions'],
         atol=1e-6,
     )
-
-
-# ---------------------------------------------------------------------------
-# _infer_donor_consensus_effective_root_index
-# ---------------------------------------------------------------------------
-
-
-def test_infer_donor_consensus_effective_root_index_majority_vote(
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Majority vote: 3 files with root=2, 2 files with root=5 => returns 2."""
-    import utils.auto_retarget as auto_retarget_mod
-    import data_loaders.truebones.truebones_utils.features as features_mod
-
-    npy_dir = tmp_path / "npys"
-    npy_dir.mkdir()
-    parents = np.array([-1, 0, 1], dtype=np.int32)
-    offsets = np.array([[0, 0, 0], [0, 1, 0], [0, 1, 0]], dtype=np.float64)
-    donor_cond = {'parents': parents, 'offsets': offsets}
-
-    paths: list[str] = []
-    for i in range(5):
-        p = npy_dir / f"motion_{i}.npy"
-        np.save(str(p), np.zeros((1, 3, 13), dtype=np.float32))
-        paths.append(str(p))
-
-    # 3 files → root 2,  2 files → root 5
-    call_count: list[int] = [0]
-    def _mock_infer(data, parents_, offsets_, **_kw):  # type: ignore
-        idx = call_count[0]
-        call_count[0] += 1
-        return 2 if idx < 3 else 5
-
-    monkeypatch.setattr(features_mod, 'infer_translation_root_index_from_features', _mock_infer)
-
-    result = auto_retarget_mod._infer_donor_consensus_effective_root_index(paths, donor_cond)
-    assert result == 2
-
-
-def test_infer_donor_consensus_effective_root_index_empty_list(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Empty npy list => None."""
-    import utils.auto_retarget as auto_retarget_mod
-
-    donor_cond = {
-        'parents': np.array([-1, 0], dtype=np.int32),
-        'offsets': np.array([[0, 0, 0], [0, 1, 0]], dtype=np.float64),
-    }
-    result = auto_retarget_mod._infer_donor_consensus_effective_root_index([], donor_cond)
-    assert result is None
-
-
-def test_infer_donor_consensus_effective_root_index_single(
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Single file => returns that file's root index."""
-    import utils.auto_retarget as auto_retarget_mod
-    import data_loaders.truebones.truebones_utils.features as features_mod
-
-    npy_dir = tmp_path / "npys_single"
-    npy_dir.mkdir()
-    donor_cond = {
-        'parents': np.array([-1, 0], dtype=np.int32),
-        'offsets': np.array([[0, 0, 0], [0, 1, 0]], dtype=np.float64),
-    }
-    p = npy_dir / "only.npy"
-    np.save(str(p), np.zeros((1, 2, 13), dtype=np.float32))
-
-    monkeypatch.setattr(
-        features_mod,
-        'infer_translation_root_index_from_features',
-        lambda *a, **kw: 7,
-    )
-
-    result = auto_retarget_mod._infer_donor_consensus_effective_root_index([str(p)], donor_cond)
-    assert result == 7
-
-
-def test_infer_donor_consensus_effective_root_index_skip_corrupted(
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Corrupted .npy files are skipped; returns consensus of valid ones."""
-    import utils.auto_retarget as auto_retarget_mod
-    import data_loaders.truebones.truebones_utils.features as features_mod
-
-    npy_dir = tmp_path / "npys_corrupt"
-    npy_dir.mkdir()
-    donor_cond = {
-        'parents': np.array([-1, 0], dtype=np.int32),
-        'offsets': np.array([[0, 0, 0], [0, 1, 0]], dtype=np.float64),
-    }
-
-    # Valid file
-    good = npy_dir / "good.npy"
-    np.save(str(good), np.zeros((1, 2, 13), dtype=np.float32))
-
-    # Corrupted file (not a valid .npy)
-    bad = npy_dir / "bad.npy"
-    bad.write_bytes(b"not a numpy file")
-
-    call_log: list[int] = []
-    def _mock_infer(data, parents_, offsets_, **_kw):  # type: ignore
-        call_log.append(1)
-        return 3
-
-    monkeypatch.setattr(features_mod, 'infer_translation_root_index_from_features', _mock_infer)
-
-    result = auto_retarget_mod._infer_donor_consensus_effective_root_index(
-        [str(good), str(bad)],
-        donor_cond,
-    )
-    # Only the valid file should be counted
-    assert result == 3
-    assert len(call_log) == 1
 
 
 def _floating_anim(foot_height: float):

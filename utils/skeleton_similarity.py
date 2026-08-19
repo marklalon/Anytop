@@ -5,8 +5,6 @@ skeletons?", reused by:
 
   * eval/motion_quality/reference_bank.py -- pick reference species to score a
     generated clip against.
-  * utils/auto_retarget.py                -- rank donor skeletons to retarget
-    motion from onto a novel target.
 
 Similarity blends three complementary signals (see ``SimilarityWeights``):
 
