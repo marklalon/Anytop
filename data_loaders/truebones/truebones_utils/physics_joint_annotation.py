@@ -172,6 +172,11 @@ _CANONICAL_NAME_PREFIXES = (
     'jt',
     'Elk',
 )
+# Trailing rig suffixes stripped from joint names during canonicalization.
+# Matched case-insensitively against the raw (pre-lowercased) name.
+_CANONICAL_NAME_SUFFIXES = (
+    'SHJnt',
+)
 _JAPANESE_NAME_REPLACEMENTS = {
     'momo': 'Thigh',
     'sippo': 'Tail',
@@ -280,6 +285,13 @@ def strip_joint_name_prefix(name):
     for prefix in sorted(_CANONICAL_NAME_PREFIXES, key=len, reverse=True):
         if stripped.startswith(prefix):
             stripped = stripped[len(prefix):]
+            break
+    # Strip known rig suffixes (case-insensitive), but never reduce the name
+    # to an empty string (e.g. a joint literally named "SHJnt").
+    for suffix in sorted(_CANONICAL_NAME_SUFFIXES, key=len, reverse=True):
+        suffix_len = len(suffix)
+        if len(stripped) > suffix_len and stripped[-suffix_len:].lower() == suffix.lower():
+            stripped = stripped[:-suffix_len]
             break
     return stripped
 
