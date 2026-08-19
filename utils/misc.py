@@ -40,7 +40,7 @@ def freeze_joints(x, joints_to_freeze):
 
 import glob as _glob
 import os as _os
-from collections.abc import Container as _Container
+from collections.abc import Container as _Container, Mapping as _Mapping
 
 
 def _strip_common_suffixes(candidate: str) -> str:
@@ -73,13 +73,22 @@ def infer_object_type_from_filename(
     ``dragon_tpose.glb`` resolves to a registered ``Dragon`` key (matching the
     case-insensitive registry check downstream) instead of silently missing.
 
+    *valid_types* may also be a **mapping** of filename token → canonical key,
+    which is how a multi-dataset cond is passed in (see
+    ``dataset_sources.species_lookup_map``): filenames carry the token
+    ``Horse@truebones_zoo_upgrade`` while the cond key is
+    ``truebones/zoo_upgrade/Horse``, and the mapping is what turns one into the
+    other.  With a plain container the key is its own token, so single-dataset
+    behaviour is unchanged.
+
     Common Truebones suffixes (e.g. ``All`` in ``LionAll-Walk.fbx``) are
     stripped from candidates so that the inferred type matches the
     preprocessing convention.
 
     Args:
         filename:   A file path or plain filename.
-        valid_types: Optional set/container of known object types for validation.
+        valid_types: Optional set/container of known object types, or a mapping
+                     of filename token → canonical key, for validation.
 
     Returns:
         The inferred object type, or ``None`` if inference fails.
@@ -94,8 +103,13 @@ def infer_object_type_from_filename(
     _canon = None
     if valid_types is not None:
         _canon = {}
-        for known in valid_types:
-            _canon.setdefault(known.lower(), known)
+        _pairs = (
+            valid_types.items()
+            if isinstance(valid_types, _Mapping)
+            else ((known, known) for known in valid_types)
+        )
+        for token, canonical in _pairs:
+            _canon.setdefault(token.lower(), canonical)
 
     def _match(candidate: str) -> str | None:
         if valid_types is None:

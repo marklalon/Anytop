@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
 
-from data_loaders.truebones.offline_reference_dataset import get_motion_dir, load_cond_dict, resolve_dataset_root
+from data_loaders.truebones.offline_reference_dataset import (
+    load_cond_dict,
+    resolve_sources,
+)
+from data_loaders.truebones.truebones_utils.dataset_sources import (
+    resolve_species_key,
+    species_lookup_map,
+    split_canonical_key,
+)
 from data_loaders.truebones.truebones_utils.motion_labels import (
     load_motion_metadata,
 )
@@ -15,13 +24,16 @@ from utils.skeleton_similarity import SpeciesSimilarity, rank_species
 
 
 def _resolve_lookup_key(name: str, lookup: Mapping[str, object]) -> str:
-    if name in lookup:
-        return name
-    lowered = str(name).strip().lower()
-    for key in lookup:
-        if str(key).lower() == lowered:
-            return str(key)
-    raise KeyError(f"Unknown key: {name}")
+    """Resolve user/metadata-supplied species text to a canonical cond key.
+
+    Shares one resolution rule with the CLI (exact key, then unique namespace
+    suffix, then bare name taking the first source), so 'Horse' means the same
+    species everywhere.
+    """
+    resolved = resolve_species_key(lookup, name)
+    if resolved is None:
+        raise KeyError(f"Unknown key: {name}")
+    return resolved
 
 
 @dataclass(frozen=True)
@@ -90,25 +102,22 @@ def _normalize_motion_action_tags(raw_action_tags) -> set[str]:
 
 
 def _collect_action_tags_paths(
-    dataset_root: Path,
+    sources,
     cond_lookup: Mapping[str, Mapping[str, object]],
     action_tags: str,
 ) -> Dict[str, List[str]]:
-    """Collect motion paths grouped by object type, filtered by action_tags.
-    
+    """Collect motion paths grouped by canonical species key, filtered by action_tags.
+
     Args:
-        dataset_root: Path to dataset root
-        cond_lookup: Mapping of object types to cond data
+        sources: The ``DatasetSource`` list whose ``motions/`` dirs form the pool
+        cond_lookup: Canonically-keyed cond entries
         action_tags: Comma/semicolon-separated action tags to filter by
-    
+
     Returns:
-        Dict mapping object_type to list of motion paths that match any of the action_tags
+        Dict mapping canonical species key to matching motion paths, pooled across
+        every source.  Paths are absolute, so the same bare filename appearing in
+        two datasets stays two distinct clips.
     """
-    motion_dir = get_motion_dir(dataset_root)
-    metadata_lookup = load_motion_metadata(dataset_root)
-    object_types = tuple(cond_lookup.keys())
-    grouped: Dict[str, List[str]] = {}
-    
     # Parse requested action tags
     # Support both comma and semicolon separation
     if action_tags is None:
@@ -116,36 +125,53 @@ def _collect_action_tags_paths(
     else:
         tokens = str(action_tags).replace(';', ',').split(',')
         requested_tags = {
-            token.strip().lower() 
-            for token in tokens 
+            token.strip().lower()
+            for token in tokens
             if str(token).strip()
         }
-    
+
     if not requested_tags:
         raise ValueError("action_tags must contain at least one tag")
 
-    for path in sorted(motion_dir.glob("*.npy")):
-        motion_name = path.name
-        metadata = metadata_lookup.get(motion_name)
-        if metadata is None:
-            # No metadata means no action tags, so the clip can never match a
-            # requested tag — skip it rather than fabricating empty labels.
+    grouped: Dict[str, List[str]] = {}
+    for source in sources:
+        motion_dir = Path(source.motion_dir)
+        metadata_lookup = load_motion_metadata(source.root)
+        # Species membership is resolved inside the owning source, so a bare
+        # 'Horse' from one dataset's metadata never binds to the other's.
+        source_lookup = {
+            key: entry for key, entry in cond_lookup.items()
+            if str(entry.get("dataset_namespace")) == source.namespace
+        }
+        if not source_lookup:
             continue
+        filename_lookup = species_lookup_map(source_lookup)
 
-        # Get motion's action tags and normalize to set
-        motion_action_tags = _normalize_motion_action_tags(metadata.get("action_tags"))
+        for path in sorted(motion_dir.glob("*.npy")):
+            motion_name = path.name
+            metadata = metadata_lookup.get(motion_name)
+            if metadata is None:
+                # No metadata means no action tags, so the clip can never match a
+                # requested tag — skip it rather than fabricating empty labels.
+                continue
 
-        # Check if motion has any of the requested tags
-        if not motion_action_tags.intersection(requested_tags):
-            continue
+            # Get motion's action tags and normalize to set
+            motion_action_tags = _normalize_motion_action_tags(metadata.get("action_tags"))
 
-        object_type = str(metadata.get("object_type") or "").strip()
-        if not object_type:
-            object_type = infer_object_type_from_filename(
-                motion_name, valid_types=set(object_types)
-            ) or Path(motion_name).stem.split("_", 1)[0]
-        object_type = _resolve_lookup_key(object_type, cond_lookup)
-        grouped.setdefault(object_type, []).append(str(path))
+            # Check if motion has any of the requested tags
+            if not motion_action_tags.intersection(requested_tags):
+                continue
+
+            species = str(metadata.get("object_type") or "").strip()
+            if not species:
+                object_type = infer_object_type_from_filename(
+                    motion_name, valid_types=filename_lookup
+                )
+                if object_type is None:
+                    continue
+            else:
+                object_type = _resolve_lookup_key(species, source_lookup)
+            grouped.setdefault(object_type, []).append(str(path))
 
     return grouped
 
@@ -222,7 +248,9 @@ def build_weighted_reference_bank(
             query_cond=query_cond,
         )
 
-    dataset_root_key = str(resolve_dataset_root(dataset_root))
+    # The cache key must name every source: two runs differing only in which
+    # datasets they pool must not share a reference bank.
+    dataset_root_key = tuple(source.root for source in resolve_sources(dataset_root))
     action_tags_key = frozenset(
         token.strip().lower()
         for token in str(action_tags or "").replace(";", ",").split(",")
@@ -255,15 +283,15 @@ def _build_weighted_reference_bank(
     cond_lookup: Optional[Mapping[str, Mapping[str, object]]] = None,
     query_cond: Optional[Mapping[str, object]] = None,
 ) -> WeightedReferenceBank:
-    dataset_root_path = resolve_dataset_root(dataset_root)
+    sources = resolve_sources(dataset_root)
     if cond_lookup is None:
-        cond_lookup = load_cond_dict(dataset_root_path)
+        cond_lookup = load_cond_dict(sources)
     object_key = str(object_type) if query_cond is not None else _resolve_lookup_key(object_type, cond_lookup)
     action_tags_str = str(action_tags or "").strip()
     if not action_tags_str:
         raise ValueError("action_tags must be a non-empty string")
 
-    action_paths_by_species = _collect_action_tags_paths(dataset_root_path, cond_lookup, action_tags_str)
+    action_paths_by_species = _collect_action_tags_paths(sources, cond_lookup, action_tags_str)
     selected_species = _select_species_weights(
         object_key,
         action_tags_str,
@@ -290,8 +318,10 @@ def _build_weighted_reference_bank(
         if not loaded or total_frames <= 0:
             continue
 
+        clip_namespace = split_canonical_key(species_name)[0]
         for path, motion in loaded:
-            motion_name = Path(path).name
+            # Composite clip id: the bare filename repeats across datasets.
+            motion_name = f"{clip_namespace}/{Path(path).name}" if clip_namespace else Path(path).name
             clip_weight = ranked.weight * (float(motion.shape[0]) / float(total_frames))
             clips.append(
                 ReferenceClip(
@@ -353,7 +383,7 @@ def _build_weighted_reference_bank(
 
     species_summaries.sort(key=lambda item: (-item.species_weight, item.cosine_distance, item.object_type))
     return WeightedReferenceBank(
-        dataset_root=str(dataset_root_path),
+        dataset_root=os.pathsep.join(source.root for source in sources),
         object_type=object_key,
         action_tags=action_tags_str,
         top_k_species=int(top_k_species),

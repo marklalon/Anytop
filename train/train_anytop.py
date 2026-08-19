@@ -121,6 +121,7 @@ def prepare_save_dir(args):
 def create_training_data_loader(args):
     loop_cond_prob = getattr(args, 'loop_cond_prob', 1.0)
     return get_dataset_loader(
+        cond_path=args.cond_path,
         batch_size=args.batch_size,
         num_frames=args.num_frames,
         split=getattr(args, 'train_split', 'train'),
@@ -140,7 +141,12 @@ def run_training(args):
     fixseed(args.seed)
     save_dir = prepare_save_dir(args)
     args.checkpoint_step_numbering = 'completed_steps'
-    opt = get_opt(args.device)
+    opt = get_opt(args.device, args.cond_path)
+    # The checkpoint directory carries its own inference contract: cond.npy is
+    # self-sufficient (baked species tags included), so generation from this
+    # save_dir never needs the training dataset directories. Refreshed on every
+    # launch, including resumes, so an updated cond does not leave a stale copy.
+    shutil.copy2(opt.cond_file, os.path.join(save_dir, 'cond.npy'))
     resolve_t5_out_dim(args, cond_source=opt.cond_file)
 
     ml_platform_type = eval(args.ml_platform_type)

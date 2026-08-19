@@ -85,6 +85,14 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     get_raw_data_dir,
 )
 from data_loaders.truebones.truebones_utils import dataset_tags  # noqa: E402
+from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
+    load_cond,
+    save_cond,
+    stamp_dataset_cond,
+)
+from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E402
+    resolve_species_key,
+)
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     load_motion_metadata,
     write_motion_metadata,
@@ -355,11 +363,12 @@ def _capture_preserved_side_artifacts(
 
     cond_path = dataset_dir_path / "cond.npy"
     if cond_path.exists():
-        current_cond = dict(np.load(cond_path, allow_pickle=True).item())
+        # cond is canonically keyed on disk; the caller names bare species.
+        current_cond = load_cond(cond_path)
         preserved.cond = {
             str(obj): obj_cond
             for obj, obj_cond in current_cond.items()
-            if str(obj) not in target_object_types
+            if str(obj_cond["species_name"]) not in target_object_types
         }
 
     motions_dir = dataset_dir_path / MOTION_DIR
@@ -383,11 +392,11 @@ def _merge_preserved_side_artifacts(dataset_dir_path: Path, preserved: Preserved
     cond_path = dataset_dir_path / "cond.npy"
     current_cond: dict[str, dict[str, object]] = {}
     if cond_path.exists():
-        current_cond = dict(np.load(cond_path, allow_pickle=True).item())
+        current_cond = load_cond(cond_path)
     for obj, obj_cond in preserved.cond.items():
         current_cond.setdefault(obj, obj_cond)
     if current_cond:
-        np.save(cond_path, current_cond)
+        save_cond(cond_path, stamp_dataset_cond(current_cond, dataset_dir_path))
 
     motions_dir = dataset_dir_path / MOTION_DIR
     # Carry-forward read only; freshly preprocessed clips may not be hand-labeled yet.
@@ -748,15 +757,16 @@ def run_remove_motions(
         # cond.npy
         cond_path = dataset_dir_path / "cond.npy"
         if cond_path.exists():
-            cond = dict(np.load(cond_path, allow_pickle=True).item())
+            cond = load_cond(cond_path)
             cond_removed = 0
             for species in empty_species:
-                if species in cond:
-                    del cond[species]
+                key = resolve_species_key(cond, species)
+                if key is not None:
+                    del cond[key]
                     cond_removed += 1
             if cond_removed:
                 if cond:
-                    np.save(cond_path, cond)
+                    save_cond(cond_path, cond)
                 else:
                     cond_path.unlink()
                 print(f"  [OK] Removed {cond_removed} species from cond.npy" + (" (deleted — no species remaining)" if not cond else ""))

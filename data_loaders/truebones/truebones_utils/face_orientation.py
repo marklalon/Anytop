@@ -372,7 +372,7 @@ def _vector_angle_deg(vector_a, vector_b):
 
 
 def _get_chain_forward(joints, object_type):
-    chain = dataset_tags().chain_forward_joints.get(object_type)
+    chain = dataset_tags().chain_forward_for(object_type)
     if chain is None:
         return None, True
 
@@ -435,7 +435,7 @@ def _get_facing_candidates_with_diagnostics(
     candidates = {}
     near_y_candidates = {}
 
-    if object_type in dataset_tags().chain_forward_joints:
+    if dataset_tags().chain_forward_for(object_type) is not None:
         chain_forward, chain_near_y = _get_chain_forward(joints, object_type)
         if chain_forward is None:
             return {}, {}
@@ -710,7 +710,7 @@ def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints
     # Species with a chain_forward_joints entry take their direction from that
     # chain; _get_facing_candidates returns early for them and never unpacks
     # face_joint_indx.
-    if object_type in dataset_tags().chain_forward_joints:
+    if dataset_tags().chain_forward_for(object_type) is not None:
         return []
 
     if joint_names is not None and parents is not None:

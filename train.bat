@@ -13,6 +13,7 @@ pushd "%SCRIPT_DIR%"
 REM 使用 --objects_subset Horse 指定单个物种的所有动作作为训练集
 REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 %PYTHON_EXE% train/train_anytop.py ^
+	--cond_path dataset/truebones/zoo/truebones_processed/cond.npy ^
 	--save_dir save/%RUN_NAME% ^
 	--save_interval 5000 ^
 	--log_interval 100 ^

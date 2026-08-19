@@ -37,7 +37,8 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import scipy.signal
 
-from data_loaders.truebones.offline_reference_dataset import load_cond_dict
+from data_loaders.truebones.offline_reference_dataset import load_cond_dict, resolve_sources
+from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
 
 from .bone_length_drift import compute_bone_length_drift, resolve_comparison_edges
 from .reference_bank import ReferenceClip, WeightedReferenceBank, build_weighted_reference_bank
@@ -656,9 +657,15 @@ def _score_bone_length_from_drift(
 class DistributionMotionQualityScorer:
     """Low-shot weighted-reference motion quality scorer."""
 
-    def __init__(self, dataset_root: Optional[str] = None):
-        self.dataset_root = dataset_root
-        self._cond_lookup = load_cond_dict(dataset_root)
+    def __init__(self, dataset_root=None):
+        """*dataset_root* is anything ``resolve_sources`` accepts: a dataset
+        directory, a ``.jsonl`` manifest naming several, an already-resolved
+        ``DatasetSource`` list (what the training loop passes), or ``None`` for
+        the default dataset.  The reference distribution is pooled over all of
+        them -- it is the one thing a cond snapshot cannot stand in for, since it
+        must be measured from real clips."""
+        self.dataset_root = tuple(resolve_sources(dataset_root))
+        self._cond_lookup = load_cond_dict(self.dataset_root)
         self._query_cond_lookup = dict(self._cond_lookup)
         self._custom_cond_keys: set[str] = set()
         self._joint_group_cache: Dict[Tuple[str, int], Tuple[Dict[str, np.ndarray], str]] = {}
@@ -771,13 +778,12 @@ class DistributionMotionQualityScorer:
         )
 
     def _resolve_object_type_key(self, object_type: str) -> str:
-        if object_type in self._query_cond_lookup:
-            return object_type
-        lowered = str(object_type).strip().lower()
-        for key in self._query_cond_lookup:
-            if str(key).lower() == lowered:
-                return str(key)
-        raise KeyError(f"Unknown object_type {object_type!r} in cond.npy")
+        # Same resolution rule as the CLI: canonical key, unique namespace
+        # suffix, then bare name taking the first source.
+        resolved = resolve_species_key(self._query_cond_lookup, object_type)
+        if resolved is None:
+            raise KeyError(f"Unknown object_type {object_type!r} in cond.npy")
+        return resolved
 
     def _resolve_joint_groups(self, object_type: str, n_joints: int) -> Tuple[Dict[str, np.ndarray], str]:
         cache_key = (object_type, n_joints)

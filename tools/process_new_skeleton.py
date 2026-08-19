@@ -146,6 +146,7 @@ def _process_new_skeleton_from_args(args) -> dict[str, Any]:
         tpose_path,
         crop_enabled=crop_enabled,
         skip_t5=args.skip_t5_embeddings,
+        reference_cond_path=getattr(args, 'reference_cond_path', None) or None,
     )
 
     return {

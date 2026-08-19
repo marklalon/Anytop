@@ -58,13 +58,14 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     refresh_joint_metadata_in_cond_dict,
 )
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
+from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
 from data_loaders.truebones.truebones_utils.motion_labels import (
     load_motion_metadata,
 )
 from data_loaders.truebones.data.dataset import (
     MotionDataset,
-    load_motion_names_for_split_with_action_tags,
+    load_allowed_motion_names_per_source,
     ALL_SPLIT_NAME,
     SUPPORTED_SPLITS,
     _build_joint_mask_candidate_roots,
@@ -85,7 +86,7 @@ def _build_cond_dict(opt, objects_subset: str) -> dict:
     Joint-name T5 embeddings are stubbed with zeros so we can avoid loading a
     large language model just for BVH export.
     """
-    cond_dict_raw: dict = np.load(opt.cond_file, allow_pickle=True).item()
+    cond_dict_raw: dict = load_cond(opt.cond_file)
     cond_dict_raw = refresh_joint_metadata_in_cond_dict(cond_dict_raw)
 
     species_list = dataset_tags().species_for(objects_subset)
@@ -168,6 +169,9 @@ def parse_args() -> argparse.Namespace:
                    help="Dataset split: train / test / all.")
     p.add_argument("--seed", type=int, default=1234,
                    help="RNG seed for reproducible sampling.")
+    p.add_argument("--cond-path", dest="cond_path", default="",
+                   help="cond.npy defining the run (single dataset or merged). "
+                        "Takes precedence over --dataset-dir.")
     p.add_argument("--dataset-dir", default="",
                    help="Processed dataset root (auto-detected if omitted).")
     p.add_argument("--output-dir", default="outputs/augmented_bvh_samples",
@@ -199,13 +203,13 @@ def main() -> int:
     rng_py = random.Random(args.seed)  # independent RNG for name sampling
 
     device = None
-    opt = get_opt(device)
-    if args.dataset_dir:
-        opt.data_root = str(Path(args.dataset_dir).resolve())
-        opt.cond_file = pjoin(opt.data_root, "cond.npy")
-        opt.motion_dir = pjoin(opt.data_root, "motions")
-    opt.motion_dir = pjoin(".", opt.motion_dir)
-    opt.data_root = pjoin(".", opt.data_root)
+    # One cond.npy defines the run; --dataset-dir is shorthand for that
+    # directory's own cond.npy.
+    cond_path = args.cond_path
+    if not cond_path and args.dataset_dir:
+        cond_path = str(Path(args.dataset_dir).resolve() / "cond.npy")
+    opt = get_opt(device, cond_path)
+    source = opt.sources[0]
 
     # Augmentation settings
     opt.loop_cond_prob = args.loop_cond_prob
@@ -221,15 +225,18 @@ def main() -> int:
     # -----------------------------------------------------------------------
     # Build MotionDataset (applies augmentations via augment() + _prepare_sample())
     # -----------------------------------------------------------------------
-    motion_metadata_lookup = load_motion_metadata(opt.data_root)
-    allowed_motion_names = load_motion_names_for_split_with_action_tags(
+    motion_metadata_lookup = {
+        source.namespace: load_motion_metadata(source.root) for source in opt.sources
+    }
+    allowed_motion_names = load_allowed_motion_names_per_source(
         args.split,
-        opt.data_root,
-        opt.motion_dir,
+        opt.sources,
         args.action_tags,
         motion_metadata_lookup,
     )
-    print(f"[INFO] Eligible motions in split '{args.split}': {len(allowed_motion_names)}")
+    eligible = sum(len(names) for names in allowed_motion_names.values())
+    print(f"[INFO] Eligible motions in split '{args.split}': {eligible} "
+          f"across {len(allowed_motion_names)} dataset source(s)")
 
     dataset = MotionDataset(
         opt=opt,
@@ -274,6 +281,7 @@ def main() -> int:
     # -----------------------------------------------------------------------
     exported = 0
     failed = 0
+    multi_source = len(opt.sources) > 1
 
     for idx, name in enumerate(sampled_names):
         print(f"[{idx+1}/{n}] Processing: {name} ...", end=" ")
@@ -326,7 +334,12 @@ def main() -> int:
             # ----------------------------------------------------------------
             # Build a descriptive filename that encodes what augmentations fired
             # ----------------------------------------------------------------
-            stem = Path(name).stem
+            # name is the composite clip id '<namespace>/<file>.npy'. With one
+            # source the namespace is redundant and dropped, so filenames match
+            # what a single-dataset run has always produced; with several it is
+            # flattened in, since the bare filename repeats across datasets.
+            clip_label = name if multi_source else name.rpartition("/")[2]
+            stem = Path(clip_label.replace("/", "_")).stem
             tags: list[str] = []
             source_metadata = dataset.data_dict[name].get("motion_metadata", {})
             source_length = int(dataset.data_dict[name].get("length", motion_canonical.shape[0]))

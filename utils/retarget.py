@@ -1730,10 +1730,16 @@ if __name__ == '__main__':
             f'Run preprocessing first or provide --cond_path.'
         )
 
-    _cond_dict = dict(np.load(_default_cond, allow_pickle=True).item())
+    from data_loaders.truebones.truebones_utils.cond_schema import load_cond as _load_cond
+    from data_loaders.truebones.truebones_utils.dataset_sources import (
+        resolve_species_key as _resolve_species_key,
+        species_lookup_map as _species_lookup_map,
+    )
+
+    _cond_dict = _load_cond(_default_cond)
 
     if _extra_cond_path:
-        _extra_cond = dict(np.load(_extra_cond_path, allow_pickle=True).item())
+        _extra_cond = _load_cond(_extra_cond_path)
         # Merge: extra entries override/add to default, but don't replace
         # keys that already exist in default — we only add new object_types.
         for _key, _val in _extra_cond.items():
@@ -1742,10 +1748,11 @@ if __name__ == '__main__':
         print(f'[retarget CLI] Merged {len(_extra_cond)} extra cond entries '
               f'(total: {len(_cond_dict)}).')
 
-    _target_type = _cli_args.object_type
-    if _target_type not in _cond_dict:
+    # Bare name, namespace suffix, canonical key, or filename token all resolve.
+    _target_type = _resolve_species_key(_cond_dict, _cli_args.object_type)
+    if _target_type is None:
         _PARSER.error(
-            f'Target object_type "{_target_type}" not found in cond. '
+            f'Target object_type "{_cli_args.object_type}" not found in cond. '
             f'Available: {sorted(_cond_dict.keys())}'
         )
 
@@ -1780,7 +1787,7 @@ if __name__ == '__main__':
 
         _src_type = infer_object_type_from_filename(
             _source_path,
-            valid_types=set(_cond_dict.keys()),
+            valid_types=_species_lookup_map(_cond_dict),
         )
         if _src_type is None:
             _PARSER.error(

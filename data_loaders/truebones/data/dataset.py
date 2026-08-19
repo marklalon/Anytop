@@ -13,6 +13,8 @@ import warnings
 from torch.utils.data._utils.collate import default_collate
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.param_utils import parse_action_tags
+from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
 from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
 from data_loaders.truebones.truebones_utils.motion_process import (
     refresh_joint_metadata_in_cond_dict,
@@ -478,6 +480,44 @@ def load_motion_names_for_split_with_action_tags(
     return selected_motion_names
 
 
+def clip_id(namespace: str, motion_name: str) -> str:
+    """Composite clip key ``"<namespace>/<file>.npy"``.
+
+    Two datasets legitimately hold the same bare filename (``Horse_Idle_1.npy``
+    exists in both the zoo and the zoo_upgrade sets), so the bare name cannot be
+    the ``data_dict`` / ``name_list`` key any more.  Everything that joins
+    against a dataset sidecar keeps using the bare name, which is unique inside
+    a single source.
+    """
+    return f"{namespace}/{motion_name}"
+
+
+def load_allowed_motion_names_per_source(
+    split: str,
+    sources,
+    raw_action_tags,
+    metadata_by_namespace: dict[str, dict[str, dict[str, object]]],
+) -> dict[str, set[str]]:
+    """Resolve the split independently for each source, then union the results.
+
+    AnyTop holds out whole *species*, so recomputing the split over the union
+    would reshuffle which species land in val/test and make every earlier
+    experiment incomparable.  Running the existing per-dataset logic once per
+    source and unioning keeps each dataset's manifests byte-identical to what a
+    single-dataset run produces.
+    """
+    return {
+        source.namespace: load_motion_names_for_split_with_action_tags(
+            split,
+            source.root,
+            source.motion_dir,
+            raw_action_tags,
+            metadata_by_namespace[source.namespace],
+        )
+        for source in sources
+    }
+
+
 def _motion_length_cache_path(data_root: str) -> Path:
     cache_dir = Path(data_root) / "cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -572,53 +612,78 @@ class MotionDataset(data.Dataset):
         self.motion_cache_size = max(0, int(getattr(opt, 'motion_cache_size', 0)))
         self.motion_cache = OrderedDict()
         data_dict = {}
-        all_object_types = self.cond_dict.keys()
         if motion_metadata_lookup is None:
-            motion_metadata_lookup = load_motion_metadata(opt.data_root)
+            motion_metadata_lookup = {
+                source.namespace: load_motion_metadata(source.root)
+                for source in opt.sources
+            }
         new_name_list = []
         length_list = []
-        motion_length_cache_path = _motion_length_cache_path(opt.data_root)
-        motion_length_cache = _load_motion_length_cache(motion_length_cache_path)
-        cache_dirty = False
 
-        all_motion_files = [name for name in os.listdir(opt.motion_dir) if name.endswith('.npy')]
-        if allowed_motion_names is not None:
-            all_motion_files = [name for name in all_motion_files if name in allowed_motion_names]
+        # Species stay in cond order *within* a source, so a single-source run
+        # enumerates in exactly the order it always has.
+        species_by_namespace: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        for object_key, entry in self.cond_dict.items():
+            species_by_namespace[entry['dataset_namespace']].append(
+                (object_key, str(entry['species_name']))
+            )
 
-        for object_type in all_object_types:
-            object_motions = [name for name in all_motion_files if name.startswith(f'{object_type}_')]
-            
-            for name in object_motions:
-                motion_metadata = _require_motion_metadata_entry(name, motion_metadata_lookup)
-                try:
-                    motion_path = pjoin(opt.motion_dir, name)
-                    stat = os.stat(motion_path)
-                    cache_entry = motion_length_cache.get(name)
-                    if cache_entry is not None and cache_entry.get('mtime_ns') == stat.st_mtime_ns and cache_entry.get('size_bytes') == stat.st_size:
-                        motion_length = int(cache_entry['length'])
-                    else:
-                        motion_length = _read_motion_length(motion_path)
-                        motion_length_cache[name] = {
-                            'length': int(motion_length),
-                            'mtime_ns': int(stat.st_mtime_ns),
-                            'size_bytes': int(stat.st_size),
-                        }
-                        cache_dirty = True
-                    data_dict[name] = {
-                                        'motion_path': motion_path,
-                                        'length': motion_length,
-                                        'object_type': object_type,
-                                        'motion_metadata': motion_metadata,
-                                       }
-                                       
-                    new_name_list.append(name)
-                    length_list.append(motion_length)
-                except Exception:
-                    pass
+        for source in opt.sources:
+            namespace = source.namespace
+            source_species = species_by_namespace.get(namespace)
+            if not source_species:
+                continue
+            source_metadata = motion_metadata_lookup[namespace]
+            # One length cache per source, still keyed by the bare filename
+            # (unique within a source) so existing caches stay valid.
+            motion_length_cache_path = _motion_length_cache_path(source.root)
+            motion_length_cache = _load_motion_length_cache(motion_length_cache_path)
+            cache_dirty = False
 
-        if cache_dirty:
-            _save_motion_length_cache(motion_length_cache_path, motion_length_cache)
-                
+            all_motion_files = [name for name in os.listdir(source.motion_dir) if name.endswith('.npy')]
+            allowed_for_source = (
+                None if allowed_motion_names is None else allowed_motion_names.get(namespace, set())
+            )
+            if allowed_for_source is not None:
+                all_motion_files = [name for name in all_motion_files if name in allowed_for_source]
+
+            for object_key, species_name in source_species:
+                object_motions = [name for name in all_motion_files if name.startswith(f'{species_name}_')]
+
+                for name in object_motions:
+                    motion_metadata = _require_motion_metadata_entry(name, source_metadata)
+                    try:
+                        motion_path = pjoin(source.motion_dir, name)
+                        stat = os.stat(motion_path)
+                        cache_entry = motion_length_cache.get(name)
+                        if cache_entry is not None and cache_entry.get('mtime_ns') == stat.st_mtime_ns and cache_entry.get('size_bytes') == stat.st_size:
+                            motion_length = int(cache_entry['length'])
+                        else:
+                            motion_length = _read_motion_length(motion_path)
+                            motion_length_cache[name] = {
+                                'length': int(motion_length),
+                                'mtime_ns': int(stat.st_mtime_ns),
+                                'size_bytes': int(stat.st_size),
+                            }
+                            cache_dirty = True
+                        key = clip_id(namespace, name)
+                        data_dict[key] = {
+                                            'motion_path': motion_path,
+                                            'length': motion_length,
+                                            'object_type': object_key,
+                                            'motion_metadata': motion_metadata,
+                                            'source_namespace': namespace,
+                                            'motion_name': name,
+                                           }
+
+                        new_name_list.append(key)
+                        length_list.append(motion_length)
+                    except Exception:
+                        pass
+
+            if cache_dirty:
+                _save_motion_length_cache(motion_length_cache_path, motion_length_cache)
+
         sorted_pairs = sorted(zip(new_name_list, length_list), key=lambda x: x[1])
         if not sorted_pairs:
             raise RuntimeError("No motion clips were found for the requested dataset subset.")
@@ -718,6 +783,9 @@ class MotionDataset(data.Dataset):
             raise ValueError(f"target_num_frames must be positive, got {target_num_frames}.")
 
         motion_metadata = _copy_required_motion_metadata(name, data.get('motion_metadata'))
+        # The composite clip id, not the bare filename: two sources may hold the
+        # same filename, and this value is what training logs report.
+        motion_metadata['motion_name'] = name
         is_loop = bool(motion_metadata.get('is_loop'))
         loop_cond_prob = float(getattr(self.opt, 'loop_cond_prob', 1.0))
         if not 0.0 <= loop_cond_prob <= 1.0:
@@ -914,7 +982,15 @@ class TruebonesSampler(WeightedRandomSampler):
 
     Each species' total sampling mass is proportional to the square root of its
     clip count, then normalized across all non-empty species; within a species
-    the mass is split uniformly across its clips. This is a softer middle ground
+    the mass is split uniformly across its clips.
+
+    Species identity is the canonical cond key, so two datasets' ``Horse``
+    entries count as two species and each gets its own sqrt-mass -- the intended
+    reading, since they are different skeletons (79 vs 39 joints). There is no
+    per-dataset weighting: a species' mass depends only on how many clips it
+    contributes to this training subset, never on which dataset it came from.
+
+    This is a softer middle ground
     than full per-species balancing: a species with 9 clips is sampled 3x
     (=sqrt(9)) as often as a single-clip species, rather than equally (full
     balance) or 9x (uniform per-clip). The clip count is taken over the already
@@ -929,13 +1005,19 @@ class TruebonesSampler(WeightedRandomSampler):
         pointer = motion_dataset.pointer
         weights = np.zeros(total_samples, dtype=np.float64)
 
-        object_types = motion_dataset.cond_dict.keys()
-        # Collect all object types that have samples
-        non_empty_types = []
-        for object_type in object_types:
-            object_indices = [i for i in range(pointer, len(name_list)) if name_list[i].startswith(f'{object_type}_')]
-            if len(object_indices) > 0:
-                non_empty_types.append((object_type, object_indices))
+        # Species membership comes from the loaded entry, not a filename prefix:
+        # after merging, 'Horse_Idle_1.npy' exists under two namespaces and a
+        # prefix test would assign it to both.
+        data_dict = motion_dataset.data_dict
+        indices_by_object_type: dict[str, list[int]] = defaultdict(list)
+        for i in range(pointer, len(name_list)):
+            indices_by_object_type[data_dict[name_list[i]]['object_type']].append(i)
+
+        non_empty_types = [
+            (object_type, indices_by_object_type[object_type])
+            for object_type in motion_dataset.cond_dict
+            if indices_by_object_type.get(object_type)
+        ]
 
         # Re-balance weights among only the non-empty object types
         if len(non_empty_types) == 0:
@@ -957,11 +1039,10 @@ class Truebones(data.Dataset):
     def __init__(self, split="train", temporal_window=31, **kwargs):
         if split not in SUPPORTED_SPLITS and split != ALL_SPLIT_NAME:
             raise ValueError(f"Unsupported split '{split}'. Expected one of {SUPPORTED_SPLITS + (ALL_SPLIT_NAME,)}.")
-        abs_base_path = f'.'
         device = None  # torch.device('cuda:4') # This param is not in use in this context
-        opt = get_opt(device)
-        opt.motion_dir = pjoin(abs_base_path, opt.motion_dir)
-        opt.data_root = pjoin(abs_base_path, opt.data_root)
+        # cond.npy is the single entry point: it names the species and, through
+        # each entry's namespace/root, the dataset directories holding the clips.
+        opt = get_opt(device, kwargs.get('cond_path'))
         self.opt = opt
         self.balanced = kwargs['balanced']
         self.objects_subset = kwargs['objects_subset']
@@ -972,15 +1053,17 @@ class Truebones(data.Dataset):
         self.opt.min_length = int(kwargs.get('min_length', getattr(self.opt, 'min_length', 20)))
 
         self.opt.loop_cond_prob = kwargs.get('loop_cond_prob', 1.0)
-        cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
+        cond_dict = load_cond(opt.cond_file)
         cond_dict = refresh_joint_metadata_in_cond_dict(cond_dict)
-        # Support both predefined subsets and single species names
+        # Support both predefined subsets and single species names. A species
+        # name is user input, so it goes through the same bare-name / suffix /
+        # canonical-key resolution the CLI uses everywhere else.
         if self.objects_subset in opt.subsets_dict:
             subset = opt.subsets_dict[self.objects_subset]
         else:
-            # Treat as a single species name
-            subset = [self.objects_subset]
-        cond_dict = {k:cond_dict[k] for k in subset if k in cond_dict}
+            resolved = resolve_species_key(cond_dict, self.objects_subset)
+            subset = [resolved] if resolved is not None else [self.objects_subset]
+        cond_dict = {k: cond_dict[k] for k in subset if k in cond_dict}
         # Fast-fail before training if any species being trained lacks a motion
         # tag (the per-species condition has no fallback).
         assert_species_tags_cover(cond_dict.keys())
@@ -995,12 +1078,17 @@ class Truebones(data.Dataset):
                 )
             cond['joint_mask_candidate_roots'] = _build_joint_mask_candidate_roots(cond)
 
-        motion_metadata_lookup = load_motion_metadata(opt.data_root)
-        self.split_file = pjoin(opt.data_root, f'{split}.txt') if split != ALL_SPLIT_NAME else ''
-        allowed_motion_names = load_motion_names_for_split_with_action_tags(
+        motion_metadata_lookup = {
+            source.namespace: load_motion_metadata(source.root)
+            for source in opt.sources
+        }
+        self.split_files = (
+            [pjoin(source.root, f'{split}.txt') for source in opt.sources]
+            if split != ALL_SPLIT_NAME else []
+        )
+        allowed_motion_names = load_allowed_motion_names_per_source(
             split,
-            opt.data_root,
-            opt.motion_dir,
+            opt.sources,
             self.action_tags,
             motion_metadata_lookup,
         )

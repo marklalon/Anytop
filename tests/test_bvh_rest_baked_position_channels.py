@@ -35,6 +35,8 @@ import pytest
 from motion_lib.Animation import Animation, positions_global
 from motion_lib.Quaternions import Quaternions
 from data_loaders.truebones.truebones_utils.animation_utils import needs_bvh_position_channels
+from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
 from data_loaders.truebones.truebones_utils.features import (
     recover_processed_animation_from_feature_animation,
     recover_bvh_export_animation_from_motion_np,
@@ -195,7 +197,8 @@ def test_export_returns_position_channels_for_pure_rotation_with_rest():
     if not (os.path.isfile(_BUFFALO_NPY) and os.path.isfile(_COND)):
         pytest.skip("Buffalo NPY / cond.npy fixtures not available")
 
-    cond = np.load(_COND, allow_pickle=True).item()["Buffalo"]
+    cond_dict = load_cond(_COND)
+    cond = cond_dict[resolve_species_key(cond_dict, "Buffalo")]
     parents = np.asarray(cond["parents"], dtype=np.int32)
     offsets = np.asarray(cond["offsets"], dtype=np.float32)
     names = list(cond.get("canonical_bvh_joint_names", cond["joints_names"]))

@@ -64,6 +64,11 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
 )
 from model.joint_mask_utils import collect_subtree_indices
 from utils.misc import infer_object_type_from_filename
+from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+from data_loaders.truebones.truebones_utils.dataset_sources import (
+    resolve_species_key,
+    species_lookup_map,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -196,13 +201,13 @@ def main() -> int:
     # Load cond.npy and refresh joint-name aliases
     # -----------------------------------------------------------------------
     print(f"[INFO] Loading cond.npy: {cond_path}")
-    cond_dict = np.load(cond_path, allow_pickle=True).item()
+    cond_dict = load_cond(cond_path)
     cond_dict = refresh_joint_metadata_in_cond_dict(cond_dict)
 
     object_type = args.object_type.strip()
     if not object_type:
         inferred = infer_object_type_from_filename(
-            input_path.name, valid_types=set(cond_dict.keys()),
+            input_path.name, valid_types=species_lookup_map(cond_dict),
         )
         if inferred is None:
             print(
@@ -213,12 +218,16 @@ def main() -> int:
             return 1
         object_type = inferred
         print(f"[INFO] Inferred --object-type from filename: '{object_type}'")
-    elif object_type not in cond_dict:
-        print(
-            f"[ERROR] object-type '{object_type}' not in cond.npy. "
-            f"Available: {sorted(cond_dict.keys())[:20]} ..."
-        )
-        return 1
+    else:
+        # Bare name, namespace suffix, canonical key, or filename token.
+        resolved = resolve_species_key(cond_dict, object_type)
+        if resolved is None:
+            print(
+                f"[ERROR] object-type '{object_type}' not in cond.npy. "
+                f"Available: {sorted(cond_dict.keys())[:20]} ..."
+            )
+            return 1
+        object_type = resolved
     object_cond = cond_dict[object_type]
     mark_canonical_cond_entry(object_cond)
 

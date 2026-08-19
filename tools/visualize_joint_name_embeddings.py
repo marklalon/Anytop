@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import build_joint_embedding_texts
 from utils.skeleton_similarity import group_tags
+from data_loaders.truebones.truebones_utils.cond_schema import load_cond as _load_cond
 
 def l2_normalize(emb: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     norm = float(np.linalg.norm(emb))
@@ -65,8 +66,9 @@ GROUP_ORDER = ["Quadruped", "Biped", "Multiped", "Winged", "Serpentine", "Aquati
 
 
 def load_cond(path: str) -> dict:
-    raw = np.load(path, allow_pickle=True).item()
-    return raw
+    # Schema-normalized: entries come back keyed '<namespace>/<species>', which is
+    # also what the plot labels and group lookups use.
+    return _load_cond(path)
 
 
 def _embedding_texts_for_object(object_cond: dict) -> list[str]:

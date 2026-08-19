@@ -21,11 +21,15 @@ from typing import Optional
 # v2: bone_len precision increased from .2f to .4f, top_p=1.0 for determinism.
 CACHE_VERSION = "v2"
 
-# Cache directory — resolved relative to this file's location.
-# Points to: <Anytop>/dataset/truebones/zoo/truebones_processed/cache/retarget/
-_CACHE_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "dataset", "truebones", "zoo", "truebones_processed", "cache", "retarget",
+# Cache directory — resolved relative to this file's location: <Anytop>/cache/retarget/.
+# The cache key is a SHA-256 of the prompt and messages (which already carry the
+# bone names and lengths), so entries are species- and dataset-independent and the
+# cache does not belong inside any one dataset directory. Entries written under the
+# old per-dataset location are still read, once, as a fallback.
+_ANYTOP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_CACHE_DIR = os.path.join(_ANYTOP_DIR, "cache", "retarget")
+_LEGACY_CACHE_DIR = os.path.join(
+    _ANYTOP_DIR, "dataset", "truebones", "zoo", "truebones_processed", "cache", "retarget",
 )
 
 
@@ -56,18 +60,24 @@ def set_in_memory(system_msg: str, user_msg: str, result: dict[str, Optional[str
 # ---------------------------------------------------------------------------
 
 
+def _cache_key(system_msg: str, user_msg: str) -> str:
+    raw = f"{CACHE_VERSION}|{system_msg}|{user_msg}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def _get_cache_path(system_msg: str, user_msg: str) -> str:
     """Compute the file path for a cache entry based on prompt+message content."""
-    raw = f"{CACHE_VERSION}|{system_msg}|{user_msg}"
-    key = hashlib.sha256(raw.encode("utf-8")).hexdigest()
-    return os.path.join(_CACHE_DIR, f"{key}.json")
+    return os.path.join(_CACHE_DIR, f"{_cache_key(system_msg, user_msg)}.json")
 
 
 def load_from_disk(system_msg: str, user_msg: str) -> Optional[dict[str, Optional[str]]]:
     """Load a cached LLM joint mapping from disk, or return None if not found."""
     path = _get_cache_path(system_msg, user_msg)
     if not os.path.isfile(path):
-        return None
+        # Read-only fallback to the pre-move location so existing entries survive.
+        path = os.path.join(_LEGACY_CACHE_DIR, f"{_cache_key(system_msg, user_msg)}.json")
+        if not os.path.isfile(path):
+            return None
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)

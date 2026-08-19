@@ -36,6 +36,11 @@ from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E40
     ROOT_XZ_STRIP_THRESHOLD,
 )
 from utils.misc import infer_object_type_from_filename  # noqa: E402
+from data_loaders.truebones.truebones_utils.cond_schema import load_cond  # noqa: E402
+from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E402
+    load_datasets_manifest,
+    species_lookup_map,
+)
 
 
 class ValidationError(RuntimeError):
@@ -172,7 +177,7 @@ def _validate_optional_semantic_metadata(object_type: str, object_cond: dict, n_
 
 
 def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
-    cond = np.load(cond_path, allow_pickle=True).item()
+    cond = load_cond(cond_path)
     
     try:
         require_valid(isinstance(cond, dict), "cond.npy did not load into a dictionary")
@@ -292,7 +297,9 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
 def _match_object_type(file_stem: str, cond: dict) -> str:
     from utils.misc import infer_object_type_from_filename
 
-    result = infer_object_type_from_filename(file_stem, valid_types=cond.keys())
+    # Canonical cond keys carry '/', which cannot appear in a filename; the token
+    # map translates the on-disk name back to the key.
+    result = infer_object_type_from_filename(file_stem, valid_types=species_lookup_map(cond))
     require_valid(result is not None, f"could not match motion file to object type: {file_stem}")
     return result
 
@@ -349,7 +356,7 @@ def _collect_motion_stats(motion_files: list[Path], cond: dict | None = None) ->
     object_counts: Counter[str] = Counter()
     object_types: set[str] = set()
 
-    known_object_types = tuple(cond.keys()) if cond else None
+    known_object_types = species_lookup_map(cond) if cond else None
     for motion_path in motion_files:
         motion = np.load(motion_path, mmap_mode="r")
         total_frames += int(motion.shape[0])
@@ -360,7 +367,7 @@ def _collect_motion_stats(motion_files: list[Path], cond: dict | None = None) ->
             object_type = str(
                 infer_object_type_from_filename(
                     motion_path.name,
-                    valid_types=set(known_object_types) if known_object_types is not None else None,
+                    valid_types=known_object_types,
                 )
                 or motion_path.stem.split("_", 1)[0]
             )
@@ -843,7 +850,7 @@ def prepare_dataset_for_validation(
     sample_count: int,
 ) -> None:
     motions_dir, bvhs_dir, cond_path, _metadata_path, _positions_error_path = read_required_artifacts(dataset_dir, silent=True)
-    cond = dict(np.load(cond_path, allow_pickle=True).item())
+    cond = load_cond(cond_path)
 
     deleted_joint_stems = _prune_excess_joint_motions(motions_dir, bvhs_dir, cond, sample_count)
     needs_regeneration = bool(deleted_joint_stems)
@@ -856,7 +863,7 @@ def prepare_dataset_for_validation(
         from regenerate_dataset_artifacts import regenerate_dataset_artifacts
 
         regenerate_dataset_artifacts(str(dataset_dir))
-        cond = dict(np.load(cond_path, allow_pickle=True).item())
+        cond = load_cond(cond_path)
 
     validate_positions_error_file(_positions_error_path)
 
@@ -878,6 +885,7 @@ def validate_positions_error_file(positions_error_path: Path) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate an AnyTop preprocessed dataset directory.")
     parser.add_argument("--dataset-dir", default=None, help="Dataset directory to validate. If not specified, uses default path.")
+    parser.add_argument("--datasets", default=None, help="Dataset manifest (JSONL); validates every dataset it lists, each on its own. Overrides --dataset-dir.")
     parser.add_argument("--objects-subset", default="all", choices=sorted(OBJECT_SUBSET_CHOICES), help="Subset that must be present in the dataset; incremental runs may still contain additional objects.")
     parser.add_argument("--sample-count", type=int, default=0, help="How many motion files to validate in detail. Use 0 to validate all files.")
     parser.add_argument("--orientation-threshold-deg", type=float, default=5.0, help="Maximum allowed T-pose face-orientation delta from the nearest cardinal XZ axis (+x/-x/+z/-z) before warning.")
@@ -894,10 +902,26 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    dataset_dir = resolve_dataset_dir(args.dataset_dir)
     require_valid(args.sample_count >= 0, "sample-count must be >= 0")
     require_valid(args.orientation_threshold_deg >= 0, "orientation-threshold-deg must be >= 0")
 
+    if args.datasets:
+        # A manifest validates each dataset on its own terms: validation is a
+        # per-dataset property (its own cond, motions, splits, and sidecars), so
+        # multi-source is just the loop, not a different check.
+        sources = load_datasets_manifest(args.datasets)
+        print(f"=== AnyTop Dataset Validation: {len(sources)} dataset(s) from {args.datasets} ===")
+        for source in sources:
+            print(f"\n--- {source.namespace} ---")
+            _validate_one_dataset(Path(source.root), args)
+        print("[PASS] all datasets validated successfully")
+        return 0
+
+    _validate_one_dataset(resolve_dataset_dir(args.dataset_dir), args)
+    return 0
+
+
+def _validate_one_dataset(dataset_dir: Path, args) -> None:
     print("=== AnyTop Dataset Validation ===")
     print(f"dataset_dir: {dataset_dir}")
     print(f"objects_subset: {args.objects_subset}")
@@ -933,7 +957,6 @@ def main() -> int:
     validate_positions_error_file(positions_error_path)
 
     print("[PASS] dataset validation completed successfully")
-    return 0
 
 
 if __name__ == "__main__":

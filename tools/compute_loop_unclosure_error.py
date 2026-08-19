@@ -273,6 +273,11 @@ def main():
         help="Directory for HTML report (default: Anytop/outputs/compute_loop_unclosure_error)"
     )
     parser.add_argument(
+        "--cond-path", dest="cond_path", type=str, default=None,
+        help="cond.npy defining the run; its first dataset source supplies the default "
+             "--data-root / --motion-dir."
+    )
+    parser.add_argument(
         "--bvh-dir", type=str, default=None,
         help="Directory containing BVH files for hyperlinks (default: dataset/truebones/zoo/truebones_processed/bvhs)"
     )
@@ -280,9 +285,12 @@ def main():
 
     # Determine paths
     from data_loaders.truebones.truebones_utils.get_opt import get_opt
-    opt = get_opt(None)
-    data_root = args.data_root or opt.data_root
-    motion_dir = args.motion_dir or opt.motion_dir
+    # opt has no single data_root any more: one cond.npy may span several dataset
+    # sources. This tool reads one directory, so it takes the first source.
+    opt = get_opt(None, getattr(args, "cond_path", None))
+    primary_source = opt.sources[0]
+    data_root = args.data_root or primary_source.root
+    motion_dir = args.motion_dir or primary_source.motion_dir
 
     # Load motions
     all_motions = load_motions(data_root)

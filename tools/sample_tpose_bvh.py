@@ -37,6 +37,11 @@ _PARENT_DIR = ANYTOP_DIR.parent
 sys.path.insert(0, str(_PARENT_DIR))
 sys.path.insert(0, str(ANYTOP_DIR))
 
+from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+from data_loaders.truebones.truebones_utils.dataset_sources import (
+    build_species_file_tokens,
+    resolve_species_key,
+)
 from data_loaders.truebones.truebones_utils.param_utils import get_dataset_dir  # noqa: E402
 
 from motion_lib.Animation import Animation  # noqa: E402
@@ -81,14 +86,20 @@ def sample_tpose_bvh(
     if not cond_path.exists():
         raise RuntimeError(f"cond.npy not found at {cond_path}")
 
-    cond = dict(np.load(cond_path, allow_pickle=True).item())
+    cond = load_cond(cond_path)
+    file_tokens = build_species_file_tokens(cond)
 
     object_types = sorted(cond.keys())
     if only_objects is not None:
-        missing = sorted(only_objects - set(object_types))
-        if missing:
-            print(f"[WARN] --filter names not in cond.npy, ignored: {', '.join(missing)}")
-        object_types = [obj for obj in object_types if obj in only_objects]
+        # --filter takes user-facing names (bare, suffixed, or canonical).
+        requested = {}
+        for name in only_objects:
+            key = resolve_species_key(cond, name)
+            if key is None:
+                print(f"[WARN] --filter name not in cond.npy, ignored: {name}")
+            else:
+                requested[key] = name
+        object_types = [obj for obj in object_types if obj in requested]
         if not object_types:
             raise RuntimeError("no requested objects found in cond.npy")
 
@@ -98,7 +109,7 @@ def sample_tpose_bvh(
     written = 0
     for object_type in object_types:
         anim, joint_names = _build_tpose_animation(cond[object_type])
-        out_path = out_dir / f"{object_type}.bvh"
+        out_path = out_dir / f"{file_tokens[object_type]}.bvh"
         bvh_save(str(out_path), anim, names=joint_names, positions=False)
         print(f"[OK] {object_type}: {len(joint_names)} joints -> {out_path}")
         written += 1

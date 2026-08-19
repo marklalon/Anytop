@@ -17,6 +17,22 @@ Single owner of the sidecar-backed dataset metadata (``species_tags.jsonl`` and
 
 Sub-processes start with the default sources, so pass ``configure`` as the
 ``ProcessPoolExecutor`` initializer (see ``dataset_pipeline.create_data_samples``).
+
+A run may be pointed at three different things, in rising order of
+independence from the filesystem:
+
+* one dataset directory (``configure(dataset_dir=...)``) -- the preprocessing
+  case; the snapshot is keyed by **bare** species names, exactly as the sidecars
+  are written;
+* several dataset directories (``configure(sources=[...])``) -- multi-dataset
+  training; the snapshot is keyed by **canonical** ``<namespace>/<species>``
+  keys so two datasets may both contain a ``Horse``;
+* a cond dict alone (``configure_from_cond(cond_dict)``) -- inference, where no
+  dataset directory need exist; the tags come from each entry's baked
+  ``species_tags``.
+
+Lookups accept either key form in all three modes, so preprocessing code that
+passes a bare species name keeps working under a multi-source configuration.
 """
 
 from __future__ import annotations
@@ -27,6 +43,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
+from data_loaders.truebones.truebones_utils.dataset_sources import (
+    DatasetSource,
+    bare_species_name,
+    canonical_key,
+    make_source,
+)
 from data_loaders.truebones.truebones_utils.param_utils import (
     _resolve_project_path,
     get_dataset_dir,
@@ -80,12 +102,44 @@ class DatasetTags:
     object_subsets: Mapping[str, list[str]]
     subset_members: Mapping[str, frozenset]
     species_tags_lower: Mapping[str, tuple[str, ...]]
+    # Bare-species-name index over the same snapshot, so a caller holding only
+    # "Horse" resolves under a multi-source (canonical-key) configuration. First
+    # source wins, matching ``dataset_sources.resolve_species_key`` rule 3.
+    species_tags_bare_lower: Mapping[str, tuple[str, ...]] = ()
 
     def tags_for(self, object_type) -> tuple[str, ...]:
-        """Motion tags for a species; empty when it carries no entry (case-insensitive)."""
+        """Motion tags for a species; empty when it carries no entry (case-insensitive).
+
+        Accepts a canonical ``<namespace>/<species>`` key or a bare species name.
+        """
         if object_type is None:
             return ()
-        return self.species_tags_lower.get(str(object_type).strip().lower(), ())
+        lowered = str(object_type).strip().lower()
+        tags = self.species_tags_lower.get(lowered)
+        if tags is not None:
+            return tags
+        return (self.species_tags_bare_lower or {}).get(bare_species_name(lowered), ())
+
+    def chain_forward_for(self, object_type) -> tuple[int, ...] | None:
+        """Forward-chain joint indices for a species, or ``None``.
+
+        These indices are tied to one dataset's collapsed-skeleton ordering, so
+        they are stored per canonical key and never shared across datasets. A
+        bare species name is accepted only when exactly one dataset defines it;
+        an ambiguous bare name resolves to nothing rather than to the wrong
+        skeleton's indices.
+        """
+        if object_type is None:
+            return None
+        name = str(object_type).strip()
+        exact = self.chain_forward_joints.get(name)
+        if exact is not None:
+            return exact
+        matches = [
+            indices for key, indices in self.chain_forward_joints.items()
+            if bare_species_name(key) == name
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     def object_subset_for(self, object_type) -> str | None:
         """``object_subset`` key for a species -- its lower-cased first motion tag.
@@ -101,9 +155,17 @@ class DatasetTags:
         """Species named by an ``--object_subsets`` selector.
 
         A selector is either a subset key ("all", "quadruped", "podata", ...) or
-        a single species name ("Horse").
+        a single species name ("Horse"), which under a multi-source configuration
+        is resolved to its canonical key.
         """
-        return list(self.object_subsets.get(selector, [selector]))
+        members = self.object_subsets.get(selector)
+        if members is not None:
+            return list(members)
+        lowered = str(selector).strip().lower()
+        for key in self.species_tags:
+            if key.lower() == lowered or bare_species_name(key).lower() == lowered:
+                return [key]
+        return [selector]
 
 
 # ── Sidecar loading ──────────────────────────────────────────────────────────
@@ -193,6 +255,20 @@ class _Sources:
     dataset_dir: str | None = None
     species_tags_file: str | None = None
     chain_forward_joints_file: str | None = None
+    # Multi-dataset training: ``((namespace, root), ...)``. Kept as plain tuples
+    # so ``worker_initargs`` stays picklable for a ProcessPoolExecutor.
+    dataset_sources: tuple[tuple[str, str], ...] | None = None
+    # Inference: tags come from a cond dict, not from any dataset directory.
+    # ``((canonical key, (tag, ...)), ...)``.
+    cond_species_tags: tuple[tuple[str, tuple[str, ...]], ...] | None = None
+
+    @property
+    def is_multi_source(self) -> bool:
+        return bool(self.dataset_sources)
+
+    @property
+    def is_cond_backed(self) -> bool:
+        return self.cond_species_tags is not None
 
 
 _sources = _Sources()
@@ -206,6 +282,13 @@ def _clean(value) -> str | None:
 
 
 def _resolve(sources: _Sources) -> SidecarPaths:
+    if sources.is_multi_source:
+        # Reported for logging only; each source is read from its own root.
+        first_root = Path(sources.dataset_sources[0][1])
+        return SidecarPaths(
+            species_tags=first_root / SPECIES_TAGS_FILE,
+            chain_forward_joints=first_root / CHAIN_FORWARD_JOINTS_FILE,
+        )
     dataset_dir = Path(get_dataset_dir(sources.dataset_dir))
     return SidecarPaths(
         species_tags=(
@@ -221,22 +304,66 @@ def _resolve(sources: _Sources) -> SidecarPaths:
     )
 
 
-def configure(dataset_dir=None, species_tags_file=None, chain_forward_joints_file=None) -> SidecarPaths:
+def configure(
+    dataset_dir=None,
+    species_tags_file=None,
+    chain_forward_joints_file=None,
+    sources=None,
+) -> SidecarPaths:
     """Point the loader at a run's sidecars and drop the cached snapshot.
 
     Does no I/O -- the sidecars are read on the next ``dataset_tags()`` call, so
     this is safe to call before the consuming modules are imported and cheap
     enough to use as a ``ProcessPoolExecutor`` initializer.  Returns the
-    resolved sidecar paths for logging.
+    resolved sidecar paths for logging (the first source's, when several are
+    given).
+
+    *sources* is a sequence of ``DatasetSource`` (or ``(namespace, root)``
+    pairs).  With it the snapshot is keyed by canonical ``<namespace>/<species>``
+    keys and the per-file overrides do not apply -- each source brings its own
+    sidecars.
     """
     global _sources, _snapshot
     _sources = _Sources(
         dataset_dir=_clean(dataset_dir),
         species_tags_file=_clean(species_tags_file),
         chain_forward_joints_file=_clean(chain_forward_joints_file),
+        dataset_sources=_normalize_source_pairs(sources),
     )
     _snapshot = None
     return _resolve(_sources)
+
+
+def configure_from_cond(cond_dict) -> DatasetTags:
+    """Take the tag snapshot from a cond dict's baked ``species_tags``.
+
+    The inference contract is ``cond.npy`` alone: no dataset directory need
+    exist.  ``chain_forward_joints`` stays empty because its indices are tied to
+    a dataset's collapsed-skeleton ordering and are only consumed by
+    preprocessing, which always runs against a real dataset directory.
+    """
+    global _sources, _snapshot
+    baked = tuple(
+        (str(key), tuple(str(tag).strip() for tag in (entry.get("species_tags") or ())))
+        for key, entry in cond_dict.items()
+    )
+    _sources = _Sources(cond_species_tags=baked)
+    _snapshot = _snapshot_from({key: tags for key, tags in baked if tags}, {})
+    return _snapshot
+
+
+def _normalize_source_pairs(sources) -> tuple[tuple[str, str], ...] | None:
+    if not sources:
+        return None
+    pairs: list[tuple[str, str]] = []
+    for source in sources:
+        if isinstance(source, DatasetSource):
+            pairs.append((source.namespace, source.root))
+        else:
+            namespace, root = source
+            resolved = make_source(namespace, root)
+            pairs.append((resolved.namespace, resolved.root))
+    return tuple(pairs)
 
 
 @contextmanager
@@ -246,13 +373,19 @@ def using_dataset_dir(dataset_dir):
     Library functions (``create_data_samples`` and friends) wrap their work in
     this so a direct API caller working on a non-default dataset gets that
     dataset's sidecars -- without leaving the process reconfigured afterwards.
-    A caller already pointed at the same dataset (a CLI that ran
+    A caller already pointed at the same single dataset (a CLI that ran
     ``configure()``, possibly with explicit file overrides) keeps its
-    configuration untouched.
+    configuration untouched.  A multi-source or cond-backed configuration is
+    always replaced for the duration: it names no single dataset directory, so
+    "already pointed here" cannot hold.
     """
     global _sources, _snapshot
     previous_sources, previous_snapshot = _sources, _snapshot
-    reconfigured = get_dataset_dir(_clean(dataset_dir)) != get_dataset_dir(_sources.dataset_dir)
+    reconfigured = (
+        _sources.is_multi_source
+        or _sources.is_cond_backed
+        or get_dataset_dir(_clean(dataset_dir)) != get_dataset_dir(_sources.dataset_dir)
+    )
     if reconfigured:
         configure(dataset_dir=dataset_dir)
     try:
@@ -272,6 +405,7 @@ def worker_initargs() -> tuple:
         _sources.dataset_dir,
         _sources.species_tags_file,
         _sources.chain_forward_joints_file,
+        _sources.dataset_sources,
     )
 
 
@@ -285,6 +419,13 @@ def dataset_tags() -> DatasetTags:
 
 def _load(sources: _Sources) -> DatasetTags:
     """Read both sidecars. This is the one place that decides what may be absent."""
+    if sources.is_cond_backed:
+        return _snapshot_from(
+            {key: tags for key, tags in sources.cond_species_tags if tags}, {}
+        )
+    if sources.is_multi_source:
+        return _load_multi_source(sources.dataset_sources)
+
     paths = _resolve(sources)
 
     # Species tags have no in-code fallback: a missing file fails loudly rather
@@ -310,14 +451,46 @@ def _load(sources: _Sources) -> DatasetTags:
     )
 
 
+def _load_multi_source(source_pairs: tuple[tuple[str, str], ...]) -> DatasetTags:
+    """Merge every source's sidecars into one canonically-keyed snapshot.
+
+    Duplicate species names across sources are expected (both datasets have a
+    ``Horse``) and become distinct canonical keys; a duplicate *within* one
+    source is still an error, raised by ``load_species_tags``.  Forward-chain
+    joint indices are tied to their dataset's collapsed-skeleton ordering, so
+    they are namespaced too and never shared between sources.
+    """
+    species_tags: dict[str, tuple[str, ...]] = {}
+    chain_forward_joints: dict[str, tuple[int, ...]] = {}
+    for namespace, root in source_pairs:
+        root_path = Path(root)
+        species_path = root_path / SPECIES_TAGS_FILE
+        if not species_path.is_file():
+            raise FileNotFoundError(
+                f"Species motion tags file not found at: {species_path}\n"
+                f"Every dataset source must carry its own {SPECIES_TAGS_FILE}."
+            )
+        for species, tags in load_species_tags(species_path).items():
+            species_tags[canonical_key(namespace, species)] = tags
+        chain_path = root_path / CHAIN_FORWARD_JOINTS_FILE
+        if chain_path.is_file():
+            for species, indices in load_chain_forward_joints(chain_path).items():
+                chain_forward_joints[canonical_key(namespace, species)] = indices
+    return _snapshot_from(species_tags, chain_forward_joints)
+
+
 def _snapshot_from(species_tags, chain_forward_joints) -> DatasetTags:
     object_subsets = build_object_subsets(species_tags)
+    bare_lower: dict[str, tuple[str, ...]] = {}
+    for key, tags in species_tags.items():
+        bare_lower.setdefault(bare_species_name(key).lower(), tags)
     return DatasetTags(
         species_tags=species_tags,
         chain_forward_joints=chain_forward_joints,
         object_subsets=object_subsets,
         subset_members={key: frozenset(names) for key, names in object_subsets.items()},
         species_tags_lower={key.lower(): tags for key, tags in species_tags.items()},
+        species_tags_bare_lower=bare_lower,
     )
 
 
@@ -372,13 +545,12 @@ def assert_species_tags_cover(object_types) -> None:
     newly added species without motion tags surfaces immediately rather than
     silently degrading the species condition.
     """
-    tags_lower = dataset_tags().species_tags_lower
+    tags = dataset_tags()
     missing = sorted(
         {
             str(object_type)
             for object_type in object_types
-            if str(object_type).strip()
-            and str(object_type).strip().lower() not in tags_lower
+            if str(object_type).strip() and not tags.tags_for(object_type)
         }
     )
     if missing:

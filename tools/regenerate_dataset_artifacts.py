@@ -58,6 +58,14 @@ from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa:
     finalize_lnorm_stats,
     set_canonical_global_stats,
 )
+from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
+    load_cond,
+    save_cond,
+    stamp_dataset_cond,
+)
+from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E402
+    species_lookup_map,
+)
 from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     MOTION_DIR,
     MOTION_METADATA_FILE,
@@ -219,12 +227,15 @@ def _rewrite_positions_error_file(dataset_dir_path: Path, motion_entries: dict[s
 
 def _infer_object_type_from_motion_name(
     motion_name: str,
-    object_types: tuple[str, ...],
+    cond_lookup,
 ) -> str:
-    resolved = infer_object_type_from_filename(
-        motion_name,
-        valid_types=set(object_types),
-    )
+    """Canonical cond key for a clip filename.
+
+    *cond_lookup* is the ``{filename token: canonical key}`` map, so a species
+    whose bare name is unique keeps its plain filename while a collision resolves
+    through its qualified token.
+    """
+    resolved = infer_object_type_from_filename(motion_name, valid_types=cond_lookup)
     if resolved is None:
         resolved = Path(motion_name).stem.split("_", 1)[0]
     return str(resolved)
@@ -267,14 +278,14 @@ def _compute_canonical_stats_per_object_subset(
     fast-fails listing the offending species. Requires rest geometry (set by
     mark_canonical_cond_entry) to already be present on each cond entry."""
 
-    known_object_types = tuple(rebuilt_cond.keys())
+    cond_lookup = species_lookup_map(rebuilt_cond)
     tags = dataset_tags.dataset_tags()
-    subset_of = {ot: tags.object_subset_for(ot) for ot in known_object_types}
+    subset_of = {ot: tags.object_subset_for(ot) for ot in rebuilt_cond}
 
     subset_accs: dict[str, dict] = {}
     used = 0
     for motion_path in motion_files:
-        object_type = _infer_object_type_from_motion_name(motion_path.name, known_object_types)
+        object_type = _infer_object_type_from_motion_name(motion_path.name, cond_lookup)
         object_cond = rebuilt_cond.get(object_type)
         if object_cond is None:
             continue
@@ -367,6 +378,7 @@ def _normalize_object_translation_roots(
     rebuilt_cond: dict[str, dict],
     motion_files: list[Path],
     motion_metadata: dict[str, dict],
+    cond_lookup: dict[str, str],
 ) -> dict[str, int]:
     """Collapse per-motion translation_root_index to one canonical root per object.
 
@@ -380,8 +392,9 @@ def _normalize_object_translation_roots(
     for motion_name, entry in motion_metadata.items():
         if motion_name not in motion_names:
             continue
-        object_type = str(entry.get("object_type", ""))
-        if object_type not in rebuilt_cond:
+        # motion_metadata stores the bare species name; cond is canonically keyed.
+        object_type = cond_lookup.get(str(entry.get("object_type", "")))
+        if object_type is None or object_type not in rebuilt_cond:
             continue
         if "translation_root_index" not in entry:
             raise RuntimeError(
@@ -464,15 +477,12 @@ def _regenerate_dataset_artifacts(dataset_dir_path: Path, t5_model: str = "t5-ba
     # which otherwise hard-exits when a clip on disk has no action_tags entry.
     action_tag_fallbacks = _ensure_action_tags_fallback(dataset_dir_path, motion_files)
 
-    existing_cond = dict(np.load(cond_path, allow_pickle=True).item())
+    existing_cond = load_cond(cond_path)
     existing_motion_metadata = load_motion_metadata(dataset_dir_path)
-    known_object_types = tuple(existing_cond.keys())
+    existing_lookup = species_lookup_map(existing_cond)
     active_object_types = sorted(
         {
-            _infer_object_type_from_motion_name(
-                motion_path.name,
-                known_object_types,
-            )
+            _infer_object_type_from_motion_name(motion_path.name, existing_lookup)
             for motion_path in motion_files
         }
     )
@@ -508,6 +518,7 @@ def _regenerate_dataset_artifacts(dataset_dir_path: Path, t5_model: str = "t5-ba
         rebuilt_cond,
         motion_files,
         existing_motion_metadata,
+        species_lookup_map(rebuilt_cond),
     )
     print(f"[OK] translation roots normalized in {time.time() - t0:.1f}s")
 
@@ -533,8 +544,11 @@ def _regenerate_dataset_artifacts(dataset_dir_path: Path, t5_model: str = "t5-ba
     _compute_canonical_stats_per_object_subset(rebuilt_cond, motion_files)
     print(f"[OK] per-object_subset canonical stats computed in {time.time() - t0:.1f}s")
 
-    np.save(str(cond_path), rebuilt_cond)
+    # Re-stamp on write: this is the dataset's own cond, so entries stay keyed
+    # <namespace>/<species> with dataset_root=None ("wherever this file lives").
+    save_cond(cond_path, stamp_dataset_cond(rebuilt_cond, dataset_dir_path))
 
+    rebuilt_lookup = species_lookup_map(rebuilt_cond)
     rebuilt_motion_metadata: dict[str, dict[str, object]] = {}
     object_counts: Counter[str] = Counter()
     total_frames = 0
@@ -545,15 +559,14 @@ def _regenerate_dataset_artifacts(dataset_dir_path: Path, t5_model: str = "t5-ba
         max_joints = max(max_joints, int(motion.shape[1]))
 
         motion_entry = dict(existing_motion_metadata.get(motion_path.name, {}))
-        object_type = _infer_object_type_from_motion_name(
-            motion_path.name, tuple(rebuilt_cond.keys())
-        )
-        motion_entry.update(build_motion_labels(object_type, motion_name=motion_path.name))
-        motion_entry["translation_root_index"] = int(
-            canonical_translation_roots[str(motion_entry["object_type"])]
-        )
+        object_key = _infer_object_type_from_motion_name(motion_path.name, rebuilt_lookup)
+        # motion_metadata.json is a per-dataset sidecar and stays keyed by the
+        # BARE species name, which is what joins it back to cond.species_name.
+        species_name = str(rebuilt_cond[object_key]["species_name"]) if object_key in rebuilt_cond else object_key
+        motion_entry.update(build_motion_labels(species_name, motion_name=motion_path.name))
+        motion_entry["translation_root_index"] = int(canonical_translation_roots[object_key])
         rebuilt_motion_metadata[motion_path.name] = motion_entry
-        object_counts[str(motion_entry["object_type"])] += 1
+        object_counts[object_key] += 1
 
     _write_metadata_summary(
         dataset_dir_path,

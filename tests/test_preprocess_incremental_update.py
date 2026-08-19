@@ -9,6 +9,8 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata, write_motion_metadata
+from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+from data_loaders.truebones.truebones_utils.dataset_sources import build_species_file_tokens
 from data_loaders.truebones.truebones_utils import dataset_pipeline as dataset_pipeline_mod
 from data_loaders.truebones.truebones_utils import motion_process as motion_process_mod
 
@@ -50,6 +52,18 @@ def _write_species_tags(dataset_dir, species=("Cat", "Dog", "Stale")):
         for name in species
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+
+def _cond_by_species(dataset_dir):
+    """Read a written cond.npy back, re-indexed by bare species name.
+
+    cond.npy is keyed ``<namespace>/<species>`` on disk (schema v4); these tests
+    assert on species, not on which dataset directory pytest happened to create,
+    so the namespace is dropped here.
+    """
+    cond = load_cond(Path(dataset_dir) / "cond.npy")
+    return {str(entry["species_name"]): entry for entry in cond.values()}
 
 
 def test_write_motion_metadata_preserves_all_fields(tmp_path):
@@ -199,6 +213,9 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
     def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True):
         inspection_output_dir = Path(save_dir) / "joint_name_inspection"
         inspection_output_dir.mkdir(parents=True, exist_ok=True)
+        # Mirrors the real encoder: cond keys carry '/', so inspection files are
+        # named by the species file token.
+        file_tokens = build_species_file_tokens(cond)
         for object_type, object_cond in cond.items():
             embedding_count = len(object_cond["joints_names"])
             object_cond["joints_names_embs"] = np.ones((embedding_count, 1), dtype=np.float32)
@@ -208,15 +225,16 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
                 "embedding_dim": 1,
                 "embedding_texts": list(object_cond["joints_names"]),
             }
-            (inspection_output_dir / f"{object_type}.json").write_text(
+            (inspection_output_dir / f"{file_tokens[object_type]}.json").write_text(
                 json.dumps({"object_type": object_type, "encoded": True}),
                 encoding="utf-8",
             )
 
     def fake_write_collision_report(cond, save_dir):
         report_path = Path(save_dir) / "joint_name_collision_report.json"
+        tokens = build_species_file_tokens(cond)
         report_path.write_text(
-            json.dumps({"num_objects": len(cond), "objects": sorted(cond)}),
+            json.dumps({"num_objects": len(cond), "objects": sorted(tokens.values())}),
             encoding="utf-8",
         )
         return []
@@ -229,7 +247,7 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
 
     assert dataset_dir_path == dataset_dir.resolve()
 
-    regenerated_cond = dict(np.load(dataset_dir / "cond.npy", allow_pickle=True).item())
+    regenerated_cond = _cond_by_species(dataset_dir)
     assert sorted(regenerated_cond) == ["Cat", "Dog"]
     assert regenerated_cond["Cat"]["joints_names_embs_meta"]["t5_name"] == "fake-t5"
     assert regenerated_cond["Dog"]["joints_names_embs_meta"]["t5_name"] == "fake-t5"
@@ -321,7 +339,7 @@ def test_regenerate_dataset_artifacts_unifies_translation_root_index_per_object(
     _write_species_tags(dataset_dir)
     regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
 
-    regenerated_cond = dict(np.load(dataset_dir / "cond.npy", allow_pickle=True).item())
+    regenerated_cond = _cond_by_species(dataset_dir)
     assert regenerated_cond["Cat"]["translation_root_index"] == 1
 
     motion_metadata = load_motion_metadata(dataset_dir)
@@ -374,7 +392,7 @@ def test_regenerate_dataset_artifacts_rebuilds_translation_root_when_metadata_mi
     _write_species_tags(dataset_dir)
     regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
 
-    regenerated_cond = dict(np.load(dataset_dir / "cond.npy", allow_pickle=True).item())
+    regenerated_cond = _cond_by_species(dataset_dir)
     assert regenerated_cond["Cat"]["translation_root_index"] == 2
 
     motion_metadata = load_motion_metadata(dataset_dir)
@@ -425,7 +443,7 @@ def test_regenerate_dataset_artifacts_uses_majority_root_not_minimum(monkeypatch
     _write_species_tags(dataset_dir)
     regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
 
-    regenerated_cond = dict(np.load(dataset_dir / "cond.npy", allow_pickle=True).item())
+    regenerated_cond = _cond_by_species(dataset_dir)
     assert regenerated_cond["Bear"]["translation_root_index"] == 1
 
     motion_metadata = load_motion_metadata(dataset_dir)
@@ -534,7 +552,7 @@ def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch,
         object_workers=1,
     )
 
-    seed_cond = dict(np.load(dataset_dir / 'cond.npy', allow_pickle=True).item())
+    seed_cond = _cond_by_species(dataset_dir)
     assert sorted(seed_cond) == ['Cat']
     assert 'joints_names_embs' not in seed_cond['Cat']
 
@@ -724,7 +742,7 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
     assert captured['action_start_counts'] == {'Walk': 1}
 
     # cond.npy keeps the untouched Dog and refreshes Cat.
-    merged_cond = dict(np.load(dataset_dir / 'cond.npy', allow_pickle=True).item())
+    merged_cond = _cond_by_species(dataset_dir)
     assert sorted(merged_cond) == ['Cat', 'Dog']
 
     # Existing clips preserved; the new clip is appended without colliding.
@@ -749,7 +767,7 @@ def test_merge_inherits_canonical_stats_from_same_object_subset(tmp_path):
         str(dataset_dir), "Dog", _make_cond_entry("Dog")
     )
 
-    merged = dict(np.load(dataset_dir / "cond.npy", allow_pickle=True).item())
+    merged = _cond_by_species(dataset_dir)
     np.testing.assert_allclose(merged["Dog"]["canonical_feature_mean"], np.full((13,), 0.5, dtype=np.float32))
     np.testing.assert_allclose(merged["Dog"]["canonical_feature_std"], np.full((13,), 2.0, dtype=np.float32))
 
@@ -778,7 +796,7 @@ def test_merge_update_preserves_species_own_prior_stats(tmp_path):
         str(dataset_dir), "Dragon", _make_cond_entry("Dragon")
     )
 
-    merged = dict(np.load(dataset_dir / "cond.npy", allow_pickle=True).item())
+    merged = _cond_by_species(dataset_dir)
     np.testing.assert_allclose(merged["Dragon"]["canonical_feature_mean"], np.full((13,), 0.3, dtype=np.float32))
     np.testing.assert_allclose(merged["Dragon"]["canonical_feature_std"], np.full((13,), 1.5, dtype=np.float32))
 

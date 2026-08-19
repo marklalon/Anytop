@@ -33,7 +33,13 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     mark_canonical_cond_entry,
     physical_hml_to_canonical,
 )
-from data_loaders.truebones.truebones_utils.get_opt import get_opt
+from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+from data_loaders.truebones.truebones_utils.dataset_sources import (
+    build_species_file_tokens,
+    resolve_species_key,
+    species_lookup_map,
+)
+from data_loaders.truebones.truebones_utils.get_opt import DEFAULT_COND_PATH, get_opt
 from data_loaders.truebones.truebones_utils.motion_process import (
     tpose_features_from_cond,
     recover_bvh_export_animation_from_motion_np,
@@ -94,11 +100,33 @@ class GenerationRuntime:
             raise ValueError("GenerationRuntime cannot be reused across different --amp_dtype values")
 
 
+def _checkpoint_cond_path(model_path):
+    """The cond.npy sitting next to a checkpoint, if training left one there.
+
+    A training run copies its cond into save_dir, so a checkpoint carries its own
+    complete inference contract -- species, skeletons, and baked species tags --
+    and generation never has to reach for a dataset directory.
+    """
+    if not model_path:
+        return ''
+    candidate = os.path.join(os.path.dirname(os.path.abspath(model_path)), 'cond.npy')
+    return candidate if os.path.isfile(candidate) else ''
+
+
+def _resolve_generation_cond_path(args):
+    """--cond_path, else the checkpoint's own snapshot, else the default dataset."""
+    explicit = getattr(args, 'cond_path', '') or ''
+    if explicit:
+        return explicit
+    checkpoint_cond = _checkpoint_cond_path(getattr(args, 'model_path', ''))
+    if checkpoint_cond:
+        return checkpoint_cond
+    return DEFAULT_COND_PATH
+
+
 def _load_generation_cond(args, opt, cond_dict=None):
     if cond_dict is None:
-        if args.cond_path:
-            return np.load(args.cond_path, allow_pickle=True).item(), args.cond_path
-        return np.load(opt.cond_file, allow_pickle=True).item(), opt.cond_file
+        return load_cond(opt.cond_file), opt.cond_file
     return cond_dict, opt.cond_file
 
 
@@ -158,7 +186,10 @@ def prepare_generation_runtime(args=None, cond_dict=None):
         args = generate_args()
 
     dist_util.setup_dist(args.device)
-    opt = get_opt(args.device)
+    # cond.npy is the whole inference contract, so it is resolved before opt:
+    # get_opt derives the dataset sources from it and configures dataset_tags,
+    # falling back to the cond's baked species tags when no dataset dir exists.
+    opt = get_opt(args.device, _resolve_generation_cond_path(args), cond_dict=cond_dict)
     cond_dict, actual_cond_file = _load_generation_cond(args, opt, cond_dict)
     _raise_opt_max_joints_for_cond(opt, cond_dict)
 
@@ -255,16 +286,31 @@ def _compute_global_energy_from_reference(ref_motion, n_joints, playspeed_cond=N
 
 
 def _lookup_object_type_case_insensitive(object_types, requested_type):
+    """Resolve user/filename species text to a canonical cond key.
+
+    Kept under its old name because several call sites pass a bare ``.keys()``
+    view; the resolution itself now goes through the shared rule (exact key,
+    unique namespace suffix, then bare name taking the first dataset), so
+    ``--object_type Horse`` and ``--object_type zoo_upgrade/Horse`` both work.
+    """
     if requested_type is None:
         return None
-    return next(
-        (object_type for object_type in object_types if object_type.upper() == requested_type.upper()),
-        None,
-    )
+    keys = object_types if isinstance(object_types, dict) else {key: None for key in object_types}
+    try:
+        return resolve_species_key(keys, requested_type)
+    except ValueError as exc:
+        sys.exit(f"ERROR: {exc}")
 
 
 def _load_default_cond_cache(default_cond_file, actual_cond_file):
-    if not default_cond_file:
+    """Load the checkpoint's own cond snapshot as a secondary source-species pool.
+
+    Used only to name the *source* skeleton of a reference clip when the user
+    passed a narrow ``--cond_path`` that does not contain it. It is the
+    checkpoint's cond, not a hard-coded dataset directory: the species a
+    checkpoint knows are exactly the ones it was trained on.
+    """
+    if not default_cond_file or not os.path.isfile(default_cond_file):
         return None
 
     default_real = os.path.realpath(default_cond_file)
@@ -276,7 +322,7 @@ def _load_default_cond_cache(default_cond_file, actual_cond_file):
         if default_real == actual_real:
             return None
 
-    return np.load(default_cond_file, allow_pickle=True).item()
+    return load_cond(default_cond_file)
 
 
 def _resolve_reference_source_type(
@@ -384,6 +430,11 @@ def _retarget_reference_motion(
 
     src_cond = cond_dict[source_type]
     tgt_cond = dict(cond_dict[target_type])
+    # Intermediate artefacts are files, so they are named by the file token
+    # rather than the '/'-bearing canonical key.
+    file_tokens = build_species_file_tokens(cond_dict)
+    source_token = file_tokens[source_type]
+    target_token = file_tokens[target_type]
 
     print(f"\n### Cross-species retarget: {source_type} → {target_type}")
 
@@ -419,7 +470,7 @@ def _retarget_reference_motion(
 
     # Save retargeted .npy.
     base = os.path.splitext(os.path.basename(ref_motion_path))[0]
-    out_npy = os.path.join(output_dir, f"_retargeted_{source_type}_to_{target_type}__{base}.npy")
+    out_npy = os.path.join(output_dir, f"_retargeted_{source_token}_to_{target_token}__{base}.npy")
     np.save(out_npy, target_features)
     print(f"  Retargeted features {target_features.shape} → {out_npy}")
 
@@ -462,6 +513,7 @@ def _retarget_reference_motion_from_file(
     )
 
     tgt_cond = dict(cond_dict[target_type])
+    target_token = build_species_file_tokens(cond_dict)[target_type]
 
     # Source label is for output naming only.
     base = os.path.splitext(os.path.basename(reference_motion_path))[0]
@@ -495,7 +547,7 @@ def _retarget_reference_motion_from_file(
             f"and joint-name overlap with the source file."
         )
 
-    out_npy = os.path.join(output_dir, f"_retargeted_{source_label}_to_{target_type}__{base}.npy")
+    out_npy = os.path.join(output_dir, f"_retargeted_{source_label}_to_{target_token}__{base}.npy")
     np.save(out_npy, target_features)
     print(f"  Retargeted features {target_features.shape} → {out_npy}")
 
@@ -805,6 +857,8 @@ def _generate_all_species(
     over species one at a time.
     """
     all_species = sorted(cond_dict.keys())
+    # Canonical keys carry '/', so output filenames use the file token instead.
+    species_file_tokens = build_species_file_tokens(cond_dict)
     batch_size = int(args.batch_size)
     species_batches = [all_species[i:i + batch_size] for i in range(0, len(all_species), batch_size)]
 
@@ -891,9 +945,10 @@ def _generate_all_species(
                     _tpose_rr = np.asarray(_tpose_rr, dtype=np.float32)
 
                 # Count existing outputs so repeated runs don't overwrite.
+                sp_token = species_file_tokens[sp]
                 existing = [f for f in os.listdir(out_path)
-                            if f.startswith(sp) and f.endswith('.npy')]
-                npy_name = f'{sp}_{(len(existing))}.npy'
+                            if f.startswith(sp_token) and f.endswith('.npy')]
+                npy_name = f'{sp_token}_{(len(existing))}.npy'
                 export_tasks.append((
                     motion_np, parents, sp_entry['offsets'], npy_name, joint_names,
                     out_path, fps, _tpose_rr, translation_root_index,
@@ -1081,8 +1136,10 @@ def main(args=None, cond_dict=None, runtime=None):
             )
     elif reference_motion_path:
         # Case B: no --object_type, infer from reference motion filename.
+        # Token map, not the raw keys: canonical keys contain '/', which cannot
+        # appear in a filename. A unique bare name still matches its plain form.
         target_type = infer_object_type_from_filename(
-            reference_motion_path, valid_types=cond_dict.keys()
+            reference_motion_path, valid_types=species_lookup_map(cond_dict)
         )
         if target_type is None:
             available = ', '.join(sorted(cond_dict.keys()))
@@ -1111,7 +1168,8 @@ def main(args=None, cond_dict=None, runtime=None):
             reference_motion_path,
             cond_dict,
             target_type=target_type,
-            default_cond_file=getattr(opt, 'cond_file', None),
+            # The checkpoint's own snapshot, not a hard-coded dataset directory.
+            default_cond_file=_checkpoint_cond_path(getattr(args, 'model_path', '')),
             actual_cond_file=actual_cond_file,
         )
         if source_type is None and blind_type:
@@ -1538,10 +1596,15 @@ def main(args=None, cond_dict=None, runtime=None):
             cond_dict[object_type], inpaint_joints_arg, inpaint_include_subtree
         )
 
+    # Output filenames use the species FILE TOKEN, not the canonical cond key:
+    # the key contains '/'. A species whose bare name is unique across the cond
+    # keeps that plain name, so single-dataset runs produce today's filenames.
+    object_file_token = build_species_file_tokens(cond_dict)[object_type]
+
     # Count existing .npy outputs so repeated runs don't overwrite.
     base_index = sum(
         1 for f in os.listdir(out_path)
-        if f.startswith(object_type) and f.endswith('.npy')
+        if f.startswith(object_file_token) and f.endswith('.npy')
     )
 
     _tpose_rest_rotations = cond_dict[object_type].get('tpose_rest_rotations')
@@ -1616,7 +1679,7 @@ def main(args=None, cond_dict=None, runtime=None):
 
         offsets = cond_dict[object_type]['offsets']
 
-        npy_name = f'{object_type}_{base_index + sample_idx}.npy'
+        npy_name = f'{object_file_token}_{base_index + sample_idx}.npy'
         export_tasks.append((
             motion_np,
             parents,  # already np.ndarray, shared in-process
@@ -1630,7 +1693,7 @@ def main(args=None, cond_dict=None, runtime=None):
             bool(getattr(args, 'rigidbone', False)),
         ))
 
-    for task in tqdm(export_tasks, desc=f'{object_type} export'):
+    for task in tqdm(export_tasks, desc=f'{object_file_token} export'):
         npy_name = _export_motion(task)
         print(f'    Created motion: {npy_name}')
 

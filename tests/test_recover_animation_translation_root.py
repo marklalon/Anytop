@@ -11,6 +11,8 @@ from motion_lib.Animation import Animation
 from motion_lib.Quaternions import Quaternions
 
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
+from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
 from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
 from data_loaders.truebones.truebones_utils.motion_process import (
     FOOT_CONTACT_VEL_THRESH,
@@ -34,10 +36,8 @@ def _identity_cont6d() -> np.ndarray:
 
 
 def _load_motion_metadata_entry(opt, motion_name: str) -> dict[str, object]:
-    data_root = opt.data_root
-    if not os.path.isabs(data_root):
-        data_root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), data_root)
-    motion_metadata = load_motion_metadata(data_root).get(motion_name)
+    # One cond may span several dataset sources; these fixtures live in the first.
+    motion_metadata = load_motion_metadata(opt.sources[0].root).get(motion_name)
     if not isinstance(motion_metadata, dict):
         raise AssertionError(f"missing motion metadata for {motion_name}")
     return motion_metadata
@@ -337,11 +337,12 @@ def _recover_pre_normalized_bvh_rotations(raw: np.ndarray, cond, motion_metadata
 )
 def test_feature_roundtrip_preserves_dataset_motion_features(object_type: str, motion_pattern: str):
     opt = get_opt(None)
-    cond = np.load(opt.cond_file, allow_pickle=True).item()[object_type]
+    cond_dict = load_cond(opt.cond_file)
+    cond = cond_dict[resolve_species_key(cond_dict, object_type)]
     if 'tpose_rest_rotations' not in cond:
         pytest.skip("cond.npy predates the baked 'tpose_rest_rotations' field; regenerate cond")
 
-    motion_dir = opt.motion_dir
+    motion_dir = opt.sources[0].motion_dir
     if not os.path.isabs(motion_dir):
         motion_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), motion_dir)
 
@@ -401,9 +402,10 @@ def test_recover_bvh_rot_np_root_rotation_consistency():
     from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_rot_np
 
     opt = get_opt(None)
-    cond = np.load(opt.cond_file, allow_pickle=True).item()['Horse']
+    cond_dict = load_cond(opt.cond_file)
+    cond = cond_dict[resolve_species_key(cond_dict, 'Horse')]
 
-    motion_dir = opt.motion_dir
+    motion_dir = opt.sources[0].motion_dir
     if not os.path.isabs(motion_dir):
         motion_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), motion_dir)
 
@@ -445,9 +447,10 @@ def test_recover_bvh_rot_np_normalizes_non_root_quaternion_sign_flips():
     from data_loaders.truebones.truebones_utils.motion_process import recover_from_bvh_rot_np
 
     opt = get_opt(None)
-    cond = np.load(opt.cond_file, allow_pickle=True).item()['Alligator']
+    cond_dict = load_cond(opt.cond_file)
+    cond = cond_dict[resolve_species_key(cond_dict, 'Alligator')]
 
-    motion_dir = opt.motion_dir
+    motion_dir = opt.sources[0].motion_dir
     if not os.path.isabs(motion_dir):
         motion_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), motion_dir)
 

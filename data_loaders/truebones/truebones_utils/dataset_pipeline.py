@@ -633,15 +633,20 @@ def _save_cond_with_tpose_sidecar(save_dir, cond, tpose_refs=None):
     merges, and retarget paths keep every other species' path intact.
     """
     from utils.misc import load_tpose_reference_sidecar, save_tpose_reference_sidecar
+    from .cond_schema import save_cond, stamp_dataset_cond
     sidecar_path = pjoin(save_dir, TPOSE_REFERENCE_SIDECAR)
     sidecar = load_tpose_reference_sidecar(sidecar_path)
 
     # Fresh paths collected this run take precedence over any existing sidecar value.
+    # The sidecar stays keyed by the BARE species name -- it is a per-dataset file,
+    # so it needs no namespace, and data_bridge joins it on species_name.
     for object_type, path in (tpose_refs or {}).items():
         if path:
             sidecar[object_type] = path
 
-    np.save(pjoin(save_dir, 'cond.npy'), cond)
+    # The single point where a dataset's cond gets its schema-v4 stamp: the
+    # preprocessing chain itself stays single-dataset and bare-keyed.
+    save_cond(pjoin(save_dir, 'cond.npy'), stamp_dataset_cond(cond, save_dir))
     save_tpose_reference_sidecar(sidecar_path, sidecar)
 
 
@@ -782,7 +787,8 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
         existing_meta = _load_motion_metadata_raw(target_dataset_dir)
         cond_path = pjoin(target_dataset_dir, 'cond.npy')
         if os.path.exists(cond_path):
-            existing_cond = dict(np.load(cond_path, allow_pickle=True).item())
+            from .cond_schema import load_cond
+            existing_cond = load_cond(cond_path)
         for object_type in objects:
             per_object_skip[object_type] = _object_processed_sources(existing_meta, object_type)
             per_object_action_start[object_type] = _object_action_start_counts(existing_meta, object_type)
@@ -860,7 +866,13 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
             action_start_counts=per_object_action_start.get(object_type),
         )
         frames_counter += object_frames
-        cond[object_type] = payload['object_cond']
+        # The seeded entries are canonically keyed ('<namespace>/<species>') while a
+        # freshly built one arrives under its bare species name. Write through the
+        # existing key so the rebuilt species replaces itself in place instead of
+        # producing a second entry that the schema stamp would reject as a duplicate.
+        from .dataset_sources import resolve_species_key
+        existing_key = resolve_species_key(cond, object_type)
+        cond[existing_key if existing_key is not None else object_type] = payload['object_cond']
         tpose_refs[object_type] = payload['tpose_reference_path']
         objects_counter[object_type] = files_counter - cur_counter
         motion_metadata.update(object_motion_metadata)
@@ -896,9 +908,9 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
     )
 
 
-def _inherit_canonical_stats_from_dataset(object_name, object_cond, reference_dataset_dir=None):
+def _inherit_canonical_stats_from_dataset(object_name, object_cond, reference_cond_path=None):
     """Inherit per-object_subset canonical standardization stats onto a standalone,
-    motion-less cond entry from the trained dataset cond.npy.
+    motion-less cond entry from the trained checkpoint's cond.npy.
 
     A rest-pose-only new skeleton (the ``process_new_skeleton`` inference path) has
     no clips to calibrate the L-normalized mean/std from, and no sibling species in
@@ -922,14 +934,17 @@ def _inherit_canonical_stats_from_dataset(object_name, object_cond, reference_da
               "(missing species_tags.jsonl entry); cannot inherit canonical stats.")
         return False
 
-    ref_dir = reference_dataset_dir or DEFAULT_DATASET_DIR
-    ref_cond_path = pjoin(ref_dir, 'cond.npy')
+    # The stats belong to a *checkpoint*, so the reference is that checkpoint's
+    # own cond.npy snapshot; the processed dataset directory is only the
+    # fallback for a caller that names neither.
+    ref_cond_path = reference_cond_path or pjoin(DEFAULT_DATASET_DIR, 'cond.npy')
     if not os.path.exists(ref_cond_path):
-        print(f"[process_skeleton] reference dataset cond not found at '{ref_cond_path}'; "
+        print(f"[process_skeleton] reference cond not found at '{ref_cond_path}'; "
               "cannot inherit canonical stats.")
         return False
 
-    ref_cond = np.load(ref_cond_path, allow_pickle=True).item()
+    from .cond_schema import load_cond
+    ref_cond = load_cond(ref_cond_path)
     for sibling, sibling_cond in ref_cond.items():
         if not isinstance(sibling_cond, dict):
             continue
@@ -952,12 +967,20 @@ def _inherit_canonical_stats_from_dataset(object_name, object_cond, reference_da
 
 Other objects already present in cond.npy are left untouched."""
 def _merge_object_into_cond(save_dir, object_name, object_cond, tpose_reference_path=None):
+    from .cond_schema import load_cond
+    from .dataset_sources import resolve_species_key
     cond_path = pjoin(save_dir, 'cond.npy')
     cond = {}
     if os.path.exists(cond_path):
-        cond = dict(np.load(cond_path, allow_pickle=True).item())
-    prior_entry = cond.get(object_name)
-    cond[object_name] = object_cond
+        cond = load_cond(cond_path)
+    # The on-disk cond is canonically keyed; the freshly built entry arrives under
+    # its bare species name and is re-stamped on save. Updating an existing
+    # species writes through its current key so the entry keeps its position --
+    # cond insertion order is the dataset's enumeration order.
+    existing_key = resolve_species_key(cond, object_name)
+    prior_entry = cond.get(existing_key) if existing_key is not None else None
+    merged_key = existing_key if existing_key is not None else object_name
+    cond[merged_key] = object_cond
     # The canonical standardization stats are a cross-species constant *per
     # object_subset* tied to the trained checkpoint. A freshly (re)built object
     # cond has no stats of its own, so it must reuse the dataset's existing
@@ -978,7 +1001,7 @@ def _merge_object_into_cond(save_dir, object_name, object_cond, tpose_reference_
             siblings_with_stats = {
                 sibling: stats
                 for sibling, sibling_cond in cond.items()
-                if sibling != object_name and (stats := _entry_stats(sibling_cond)) is not None
+                if sibling != merged_key and (stats := _entry_stats(sibling_cond)) is not None
             }
             # 2) New species in a dataset that already carries canonical stats:
             #    inherit ONLY from a sibling of the SAME object_subset. There is no
@@ -1137,7 +1160,7 @@ def find_new_source_files(objects, dataset_dir=None, raw_data_dir=None):
 
 
 def process_skeleton(object_name, face_joints, save_dir, tpose_path,
-                     crop_enabled=True, skip_t5=False):
+                     crop_enabled=True, skip_t5=False, reference_cond_path=None):
     ## prepare
     os.makedirs(pjoin(save_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(save_dir, BVHS_DIR), exist_ok=True)
@@ -1163,7 +1186,9 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path,
     # inherit them from. Pull them from the trained dataset's same-object_subset
     # species so the cond is usable for inference (else generation fast-fails
     # with the missing-stats KeyError).
-    _inherit_canonical_stats_from_dataset(object_name, object_cond)
+    _inherit_canonical_stats_from_dataset(
+        object_name, object_cond, reference_cond_path=reference_cond_path
+    )
     cond[object_name] = object_cond
     _write_dataset_artifacts(
         save_dir,

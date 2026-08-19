@@ -87,6 +87,11 @@ _load_utils_module("utils.npy_roundtrip_utils")
 _load_utils_module("utils.misc")
 
 from utils.misc import infer_object_type_from_filename
+from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+from data_loaders.truebones.truebones_utils.dataset_sources import (
+    resolve_species_key,
+    species_lookup_map,
+)
 from utils.npy_roundtrip_utils import recover_from_features
 from utils.roundtrip_common import (
     load_fbx_skeleton_metadata,
@@ -597,11 +602,11 @@ def restore_glb(
     cond_npy_path = cond_npy or _DEFAULT_COND_NPY
     if not os.path.isfile(cond_npy_path):
         raise FileNotFoundError(f"cond.npy not found: {cond_npy_path}")
-    cond = np.load(cond_npy_path, allow_pickle=True).item()
+    cond = load_cond(cond_npy_path)
 
     # ── Detect object_type ────────────────────────────────────────────────────
     if object_type is None:
-        object_type = infer_object_type_from_filename(npy_path, valid_types=cond.keys())
+        object_type = infer_object_type_from_filename(npy_path, valid_types=species_lookup_map(cond))
         if object_type is None:
             raise ValueError(
                 f"Cannot auto-detect object_type from '{os.path.basename(npy_path)}'.\n"
@@ -609,11 +614,15 @@ def restore_glb(
                 f"  Pass --object-type explicitly."
             )
         print(f"Auto-detected object_type: {object_type}")
-    elif object_type not in cond:
-        raise ValueError(
-            f"object_type '{object_type}' not found in cond.npy.\n"
-            f"  Available: {list(cond.keys())}"
-        )
+    else:
+        # Bare name, namespace suffix, canonical key, or filename token.
+        resolved = resolve_species_key(cond, object_type)
+        if resolved is None:
+            raise ValueError(
+                f"object_type '{object_type}' not found in cond.npy.\n"
+                f"  Available: {list(cond.keys())}"
+            )
+        object_type = resolved
 
     # ── Resolve T-pose mesh / Build context ──────────────────────────────────
     cond_entry = cond[object_type]

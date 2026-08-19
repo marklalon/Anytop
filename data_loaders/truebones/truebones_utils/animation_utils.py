@@ -369,10 +369,14 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collis
                 'embedding_text': species_text,
             }
 
+    # cond keys are '<namespace>/<species>', which cannot go into a filename;
+    # the file token degrades to the plain species name whenever it is unique.
+    from .dataset_sources import build_species_file_tokens
+    file_tokens = build_species_file_tokens(cond)
     for object_type in sorted(cond):
         object_cond = cond[object_type]
         embedding_texts = embedding_texts_by_object[object_type]
-        inspection_path = pjoin(inspection_dir, f'{object_type}.json')
+        inspection_path = pjoin(inspection_dir, f'{file_tokens[object_type]}.json')
         with open(inspection_path, 'w', encoding='utf-8') as inspection_file:
             json.dump(_build_joint_name_inspection_rows(object_cond, embedding_texts), inspection_file, indent=2)
 
@@ -658,12 +662,15 @@ def clamp_vertical_trajectory(
 
     clamped_world_y = world_y.copy()
     changed = False
-    if object_type in dataset_tags().subset_members['winged']:
+    # object_subset_for accepts a bare species name or a canonical
+    # '<namespace>/<species>' key, unlike a raw subset_members membership test.
+    object_subset = dataset_tags().object_subset_for(object_type)
+    if object_subset == 'winged':
         body_length = _get_reference_body_length(processed_anim)
         min_h = body_length * min_ratio
         max_h = body_length * max_ratio
         clamped_world_y, changed = _compress_positive_excursion(clamped_world_y, min_h, max_h)
-    elif object_type in dataset_tags().subset_members['aquatic']:
+    elif object_subset == 'aquatic':
         body_length = _get_reference_body_length(processed_anim)
         positive_min_h = body_length * min_ratio
         positive_max_h = body_length * max_ratio

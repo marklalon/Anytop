@@ -165,6 +165,13 @@ def add_data_options(parser):
 
 def add_training_options(parser):
     group = parser.add_argument_group('training')
+    group.add_argument("--cond_path", required=True, type=str,
+                       help="Path to the cond.npy that defines this run. It names the species and, "
+                            "through each entry's dataset namespace/root, the dataset directories "
+                            "holding their clips -- so single-dataset and merged multi-dataset "
+                            "training differ only in which cond.npy is passed. Build a merged one "
+                            "with tools/merge_dataset_cond.py. A copy is written to save_dir so the "
+                            "checkpoint carries its own inference contract.")
     group.add_argument("--save_dir", type=str,
                        help="Path to save checkpoints and results.")
     group.add_argument("--model_prefix", type=str,
@@ -386,6 +393,11 @@ def process_new_skeleton_args():
                             "species_tags.jsonl and the auto-donor fallback — the given tags "
                             "are used unconditionally at runtime without modifying "
                             "species_tags.jsonl.")
+    group.add_argument("--reference-cond-path", default=None, type=str,
+                       help="cond.npy to inherit the per-object_subset standardization "
+                            "statistics from. Those statistics belong to a trained checkpoint, "
+                            "so this should normally be the checkpoint's own cond.npy snapshot. "
+                            "Defaults to the processed dataset directory's cond.npy.")
     group.add_argument("--skip-t5-embeddings", action='store_true', default=False,
                        help="Skip T5 embedding computation (caller will inject via "
                             "attach_t5_embeddings_to_cond with a pre-loaded conditioner).")

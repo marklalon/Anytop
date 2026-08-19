@@ -166,6 +166,7 @@ class TrainLoop:
         if self.args.eval_during_training:
             eval_loop_cond_prob = getattr(self.args, 'loop_cond_prob', 1.0)
             self.eval_data = get_dataset_loader(
+                cond_path=self.args.cond_path,
                 batch_size=self.args.eval_batch_size,
                 num_frames=self.args.num_frames,
                 split=self.args.eval_split,
@@ -185,7 +186,11 @@ class TrainLoop:
             infer_args = pycopy.deepcopy(self.args)
             infer_args.timestep_respacing = f'ddim{sampling_steps}' if sampling_steps > 0 else ''
             _, self.inference_diffusion = create_model_and_diffusion_general_skeleton(infer_args)
-            self.scorer = DistributionMotionQualityScorer()
+            # The scorer's reference distribution must come from real clips, so
+            # it reuses the same dataset sources the training cond derives.
+            self.scorer = DistributionMotionQualityScorer(
+                dataset_root=data.dataset.opt.sources
+            )
         self.use_ddp = False
         self.ddp_model = self.model
         self.forward_model = self.ddp_model

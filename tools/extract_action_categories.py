@@ -5,7 +5,8 @@ from pathlib import Path
 # Add project root so we can import from data_loaders
 _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
-from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
+from data_loaders.truebones.truebones_utils.dataset_tags import configure as configure_dataset_tags, dataset_tags
+from data_loaders.truebones.truebones_utils.param_utils import get_dataset_dir
 from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
 
 parser = argparse.ArgumentParser(description="Extract action category statistics from motion metadata.")
@@ -17,6 +18,14 @@ parser.add_argument(
     help="Filter by object_type(s). Supports group names (e.g. quadruped biped winged) "
          "from species_tags.jsonl, or individual PascalCase names (e.g. Horse Buffalo Camel). "
          "If omitted, all objects are included.",
+)
+parser.add_argument(
+    "--dataset-dir", "--dataset_dir",
+    dest="dataset_dir",
+    type=str,
+    default=None,
+    help="Processed dataset directory to read motion_metadata.json and the tag sidecars "
+         "from. Defaults to the standard truebones_processed directory.",
 )
 parser.add_argument(
     "--action_tags",
@@ -33,7 +42,10 @@ if args.action_tags:
     args.action_tags = [t for item in args.action_tags for t in item.split(",") if t.strip()]
 
 # Load motion metadata; action_tags are merged in from action_tags.jsonl.
-dataset_dir = _project_root / 'dataset' / 'truebones' / 'zoo' / 'truebones_processed'
+# This reads only per-dataset sidecars (never cond.npy), so object_type here is
+# the BARE species name and the tag snapshot is configured for that one dataset.
+dataset_dir = Path(get_dataset_dir(args.dataset_dir))
+configure_dataset_tags(dataset_dir=dataset_dir)
 motions = load_motion_metadata(dataset_dir)
 
 # --- Optional filter by object_type ---

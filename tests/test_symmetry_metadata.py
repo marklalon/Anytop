@@ -8,6 +8,8 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
+from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
     detect_joint_side,
     _infer_symmetry_metadata,
@@ -18,7 +20,8 @@ from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
 
 def test_horse_front_helper_bones_are_paired() -> None:
     opt = get_opt(None)
-    cond = np.load(opt.cond_file, allow_pickle=True).item()['Horse']
+    cond_dict = load_cond(opt.cond_file)
+    cond = cond_dict[resolve_species_key(cond_dict, 'Horse')]
 
     joint_names = list(cond['joints_names'])
     parents = np.asarray(cond['parents'], dtype=np.int64)

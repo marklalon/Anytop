@@ -284,8 +284,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dataset_root", "--dataset-root",
         default=None,
-        metavar="DIR",
-        help="Dataset root containing cond.npy, motion_metadata.json, and motions/. Auto-detected when omitted.",
+        metavar="DIR_OR_MANIFEST",
+        help="Dataset root containing cond.npy, motion_metadata.json, and motions/. "
+             "A path ending in .jsonl is read as a dataset manifest instead, pooling the "
+             "reference distribution over every dataset it lists. Auto-detected when omitted.",
     )
     parser.add_argument(
         "--top_k_species", "--top-k-species",

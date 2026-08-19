@@ -236,7 +236,10 @@ def _first_output_npy(task_dir: Path) -> Path | None:
 def _extract_object_type(npy_path: Path) -> str | None:
     """Extract the object type from a generated .npy filename.
 
-    Standard output files are named ``<ObjectType>_<idx>.npy``.
+    Standard output files are named ``<SpeciesFileToken>_<idx>.npy`` -- the plain
+    species name when it is unique across the cond, otherwise the qualified
+    ``Horse@truebones_zoo_upgrade`` form. Either resolves back to a canonical
+    cond key through ``resolve_species_key``.
     Intermediate helpers (``_reference_*``, ``_retargeted_*``) are excluded
     by the caller.
 
@@ -288,8 +291,8 @@ def _extract_cond_path(extra_args: list) -> str | None:
 def _register_cond_path(scorer: DistributionMotionQualityScorer, cond_path: str) -> None:
     """Load a cond.npy and register its entries as query skeleton metadata."""
     try:
-        cond_dict = np.load(cond_path, allow_pickle=True).item()
-        scorer.register_cond(cond_dict)
+        from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+        scorer.register_cond(load_cond(cond_path))
     except Exception as exc:
         print(f"    [WARN] failed to register cond_path {cond_path}: {exc}")
 

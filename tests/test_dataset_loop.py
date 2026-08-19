@@ -33,18 +33,20 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     physical_hml_to_canonical,
 )
 from model.anytop import GlobalEnergyExtractor
+from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
 
 
 def _find_motion(pattern: str) -> str:
-    """Find a motion file by glob pattern (avoids hard-coded index)."""
-    opt = get_opt(None)
-    motion_dir = opt.motion_dir
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if not os.path.isabs(motion_dir):
-        motion_dir = os.path.join(repo_root, motion_dir)
-    files = sorted(glob.glob(os.path.join(motion_dir, pattern)))
-    assert files, f"No files matching '{pattern}' in {motion_dir}"
-    return os.path.basename(files[0])
+    """Find a motion file by glob pattern and return its composite clip id.
+
+    ``data_dict`` / ``name_list`` are keyed ``"<namespace>/<file>.npy"`` so that
+    two datasets holding the same filename stay distinct clips.
+    """
+    source = get_opt(None).sources[0]
+    files = sorted(glob.glob(os.path.join(source.motion_dir, pattern)))
+    assert files, f"No files matching '{pattern}' in {source.motion_dir}"
+    return f"{source.namespace}/{os.path.basename(files[0])}"
 
 
 LOOP_MOTION = _find_motion("Ostrich_Run_*.npy")
@@ -107,26 +109,22 @@ def _get_enriched_motion_metadata_lookup() -> dict[str, dict[str, object]]:
         return {name: dict(metadata) for name, metadata in _ENRICHED_MOTION_METADATA_LOOKUP.items()}
 
     opt = get_opt(None)
-    data_root = opt.data_root
-    motion_dir = opt.motion_dir
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if not os.path.isabs(data_root):
-        data_root = os.path.join(repo_root, data_root)
-    if not os.path.isabs(motion_dir):
-        motion_dir = os.path.join(repo_root, motion_dir)
+    source = opt.sources[0]
+    data_root, motion_dir = source.root, source.motion_dir
 
-    cond_dict = np.load(opt.cond_file, allow_pickle=True).item()
+    cond_dict = load_cond(opt.cond_file)
     motion_metadata_lookup = dataset_module.load_motion_metadata(data_root)
     enriched_lookup = {name: dict(metadata) for name, metadata in motion_metadata_lookup.items()}
     for motion_name, motion_metadata in enriched_lookup.items():
         if 'translation_root_index' in motion_metadata:
             continue
-        object_type = str(motion_metadata['object_type'])
+        # motion_metadata carries the bare species name; cond is canonically keyed.
+        object_key = resolve_species_key(cond_dict, motion_metadata['object_type'])
         motion = np.load(os.path.join(motion_dir, motion_name)).astype(np.float32, copy=False)
         motion_metadata['translation_root_index'] = infer_translation_root_index_from_features(
             motion,
-            cond_dict[object_type]['parents'],
-            cond_dict[object_type]['offsets'],
+            cond_dict[object_key]['parents'],
+            cond_dict[object_key]['offsets'],
         )
 
     _ENRICHED_MOTION_METADATA_LOOKUP = enriched_lookup
