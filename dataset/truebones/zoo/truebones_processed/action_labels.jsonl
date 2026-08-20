@@ -1,0 +1,1180 @@
+{"clip": "Alligator_BigMouth_1.npy", "action_group": "stationary", "action_label": "idle, opens and closes mouth wide"}
+{"clip": "Alligator_Bite1_1.npy", "action_group": "stationary", "action_label": "attack, bite, repeatedly opens and closes jaws"}
+{"clip": "Alligator_Bite2_1.npy", "action_group": "stationary", "action_label": "bite, crouched low opening and closing jaws"}
+{"clip": "Alligator_Bite3_1.npy", "action_group": "stationary", "action_label": "bite, opens and closes jaws in a low crouch"}
+{"clip": "Alligator_Bite4_1.npy", "action_group": "stationary", "action_label": "attack, bite, opens mouth wide and snaps shut"}
+{"clip": "Alligator_Bite5_1.npy", "action_group": "stationary", "action_label": "attack, bite, opens and closes jaws while stationary"}
+{"clip": "Alligator_Bite6_1.npy", "action_group": "stationary", "action_label": "attack, bite, opens and closes jaws in a biting motion"}
+{"clip": "Alligator_Bite7_1.npy", "action_group": "stationary", "action_label": "attack, bite, opens and closes jaws"}
+{"clip": "Alligator_Catch_1.npy", "action_group": "stationary", "action_label": "attack, bite, opens and closes jaws while standing still"}
+{"clip": "Alligator_DIe_1.npy", "action_group": "transition", "action_label": "die, opens mouth wide then closes it"}
+{"clip": "Alligator_Dash2_1.npy", "action_group": "locomotion", "action_label": "run, dash, rapid lunge with mouth snapping open and shut"}
+{"clip": "Alligator_Dash_1.npy", "action_group": "locomotion", "action_label": "run, dash with head bobbing and tail swaying"}
+{"clip": "Alligator_DeadUp_1.npy", "action_group": "transition", "action_label": "getup, slow head bob and tail sway while low to ground"}
+{"clip": "Alligator_DieLoop_1.npy", "action_group": "transition", "action_label": "die, lies motionless with mouth open and limbs splayed"}
+{"clip": "Alligator_Shake_1.npy", "action_group": "stationary", "action_label": "shake, shakes head and upper body vigorously"}
+{"clip": "Alligator_StandIdle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with slight head turns and sways its tail"}
+{"clip": "Alligator_Throw2_1.npy", "action_group": "stationary", "action_label": "attack, bite, opens mouth wide and snaps shut"}
+{"clip": "Alligator_Throw_1.npy", "action_group": "stationary", "action_label": "attack, throw, lifts front limbs and snaps jaws"}
+{"clip": "Alligator_Walk1_1.npy", "action_group": "locomotion", "action_label": "walk, mouth opening and closing rhythmically"}
+{"clip": "Alligator_Walk2_1.npy", "action_group": "locomotion", "action_label": "walk, mouth opening and closing rhythmically"}
+{"clip": "Alligator_Walk2_2.npy", "action_group": "locomotion", "action_label": "walk, legs move rhythmically with body bobbing"}
+{"clip": "Alligator_Walk3_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic gait with mouth opening and closing"}
+{"clip": "Anaconda_Attack_1.npy", "action_group": "stationary", "action_label": "attack, rears up head and neck opening mouth wide"}
+{"clip": "Anaconda_Bite2_1.npy", "action_group": "stationary", "action_label": "attack, bite, rears head and opens mouth"}
+{"clip": "Anaconda_Bite_1.npy", "action_group": "stationary", "action_label": "attack, bite, rears head and opens mouth wide to strike"}
+{"clip": "Anaconda_Die_1.npy", "action_group": "transition", "action_label": "die, rears up with mouth agape then collapses into a coil"}
+{"clip": "Anaconda_Hiss_1.npy", "action_group": "stationary", "action_label": "idle, coiled with mouth open and tongue flicking"}
+{"clip": "Anaconda_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, turn, slowly turns head to the right and opens mouth open"}
+{"clip": "Anaconda_Idle2_2.npy", "action_group": "stationary", "action_label": "idle, coiled posture opening and opens mouth wide"}
+{"clip": "Anaconda_Idle_1.npy", "action_group": "stationary", "action_label": "idle, coiled with tongue flicking and subtle head movements"}
+{"clip": "Anaconda_Rise2_1.npy", "action_group": "transition", "action_label": "getup, lifts head and upper body upward opening mouth"}
+{"clip": "Anaconda_Rise_1.npy", "action_group": "transition", "action_label": "getup, rises upper body and head from coiled position"}
+{"clip": "Anaconda_Run_1.npy", "action_group": "locomotion", "action_label": "run, undulates body in a continuous wave-like pattern"}
+{"clip": "Anaconda_Sneaky_1.npy", "action_group": "locomotion", "action_label": "sneak, slow sinuous undulation"}
+{"clip": "Anaconda_Sneaky_2.npy", "action_group": "locomotion", "action_label": "crawl, sneak, slow sinuous undulation"}
+{"clip": "Anaconda_Spin_1.npy", "action_group": "transition", "action_label": "turn, rotates body in a circular motion"}
+{"clip": "Anaconda_Strike2_1.npy", "action_group": "stationary", "action_label": "attack, rear up and lunge forward with open mouth"}
+{"clip": "Anaconda_Strike_1.npy", "action_group": "stationary", "action_label": "attack, rears up head and neck opening mouth wide"}
+{"clip": "Anaconda_StruckDie_1.npy", "action_group": "transition", "action_label": "die, rears up then falls limp"}
+{"clip": "Anaconda_Tired_1.npy", "action_group": "stationary", "action_label": "idle, sluggish undulation of the body"}
+{"clip": "Anaconda_Twistrattle_1.npy", "action_group": "stationary", "action_label": "idle, coils body into a tight spiral flicking tongue"}
+{"clip": "Anaconda_WalkSLow_1.npy", "action_group": "locomotion", "action_label": "walk, slow undulating serpentine motion"}
+{"clip": "Ant_Attack_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with mandibles open"}
+{"clip": "Ant_Cleaning_1.npy", "action_group": "stationary", "action_label": "scratch, rubs front legs against head and mouthparts"}
+{"clip": "Ant_Die2_1.npy", "action_group": "transition", "action_label": "die, collapses onto back flailing legs"}
+{"clip": "Ant_DieLoop_1.npy", "action_group": "transition", "action_label": "die, lies on back with legs twitching"}
+{"clip": "Ant_DieUp_1.npy", "action_group": "transition", "action_label": "getup, flips from back onto feet"}
+{"clip": "Ant_Die_1.npy", "action_group": "transition", "action_label": "die, collapses onto back legs flailing"}
+{"clip": "Ant_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, stands still with legs spread wide and head slightly turned"}
+{"clip": "Ant_Idle3_1.npy", "action_group": "stationary", "action_label": "idle, stands still with legs spread wide and head lowered"}
+{"clip": "Ant_Idle_1.npy", "action_group": "stationary", "action_label": "idle, crouched with head bobbing gently"}
+{"clip": "Ant_JumpForward_1.npy", "action_group": "transition", "action_label": "jump, propels forward extending legs"}
+{"clip": "Ant_KnockedBack_1.npy", "action_group": "transition", "action_label": "hurt, fall, knocked backward tumbling onto back"}
+{"clip": "Ant_March_1.npy", "action_group": "locomotion", "action_label": "walk, marches with a rhythmic alternating gait"}
+{"clip": "Ant_Shake_1.npy", "action_group": "stationary", "action_label": "shake, vigorously shakes body and limbs"}
+{"clip": "Ant_Sting2_1.npy", "action_group": "stationary", "action_label": "attack, sting, abdomen raised thrusting stinger forward"}
+{"clip": "Ant_Sting_1.npy", "action_group": "stationary", "action_label": "attack, sting, arches abdomen and thrusts stinger downward"}
+{"clip": "Ant_Throw_1.npy", "action_group": "stationary", "action_label": "attack, throw, lifts head and manipulates front limbs"}
+{"clip": "Ant_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, alternates legs rhythmically"}
+{"clip": "Bat_AttackBite_1.npy", "action_group": "stationary", "action_label": "attack, bite, flaps wings and lunges forward"}
+{"clip": "Bat_Float_1.npy", "action_group": "locomotion", "action_label": "fly, hover in mid-air flapping wings"}
+{"clip": "Bat_FlyGlide_1.npy", "action_group": "locomotion", "action_label": "fly, glide with wings fully extended"}
+{"clip": "Bat_FlyLoop_1.npy", "action_group": "locomotion", "action_label": "fly, flaps wings in continuous rhythmic motion"}
+{"clip": "Bat_Fly_1.npy", "action_group": "locomotion", "action_label": "fly, hovers with rhythmic wing flaps"}
+{"clip": "Bat_Kick_1.npy", "action_group": "stationary", "action_label": "attack, kick, bat kicks while hovering in mid-air"}
+{"clip": "Bat_KnockedBack_1.npy", "action_group": "transition", "action_label": "fall, hurt, flaps wings while tumbling backward"}
+{"clip": "Bat_Looking_1.npy", "action_group": "stationary", "action_label": "look, flaps wings while turning head to look around"}
+{"clip": "Bat_SlowFly_1.npy", "action_group": "locomotion", "action_label": "fly, slow rhythmic wing flaps while hovering"}
+{"clip": "Bat_Walk_1.npy", "action_group": "locomotion", "action_label": "fly, hover in place with rhythmic wing flaps"}
+{"clip": "Bear_AngerySwat_1.npy", "action_group": "stationary", "action_label": "attack, roar, lunges forward with aggressive swatting motion"}
+{"clip": "Bear_BackUp_1.npy", "action_group": "locomotion", "action_label": "walk, retreats backward with head lowered and mouth open"}
+{"clip": "Bear_BearRun_1.npy", "action_group": "locomotion", "action_label": "run, gallops with rhythmic limb cycling"}
+{"clip": "Bear_Bite_1.npy", "action_group": "stationary", "action_label": "bite, lowers head and snaps jaws shut"}
+{"clip": "Bear_CatchFish_1.npy", "action_group": "stationary", "action_label": "attack, catch, lunges forward with open mouth and claws then crouch"}
+{"clip": "Bear_Feast_1.npy", "action_group": "stationary", "action_label": "eat, head lowered chewing rhythmically"}
+{"clip": "Bear_FishBite_1.npy", "action_group": "stationary", "action_label": "bite, lowers head and snaps jaws downward"}
+{"clip": "Bear_GetUp_1.npy", "action_group": "transition", "action_label": "getup, rises from prone to standing"}
+{"clip": "Bear_GroundPaw_1.npy", "action_group": "stationary", "action_label": "scratch, lowers head and lifts front paw to scratch face"}
+{"clip": "Bear_Growl_1.npy", "action_group": "stationary", "action_label": "roar, opens mouth wide in low aggressive stance"}
+{"clip": "Bear_IdlePant_1.npy", "action_group": "stationary", "action_label": "idle, stands still panting with mouth open"}
+{"clip": "Bear_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with head lowered"}
+{"clip": "Bear_JumpBite_1.npy", "action_group": "transition", "action_label": "jump, attack, bite, lunges upward with open mouth"}
+{"clip": "Bear_LayDown_1.npy", "action_group": "transition", "action_label": "rest, lowers body to ground and lies flat"}
+{"clip": "Bear_RiseRoar_1.npy", "action_group": "transition", "action_label": "getup, roar, rises onto hind legs and lowers back down"}
+{"clip": "Bear_RunningBear_1.npy", "action_group": "locomotion", "action_label": "run, galloping gait with rhythmic body undulation"}
+{"clip": "Bear_SlowWalk_1.npy", "action_group": "locomotion", "action_label": "walk, slow deliberate gait with low grounded posture"}
+{"clip": "Bear_Stalking_1.npy", "action_group": "locomotion", "action_label": "walk, slow deliberate gait with body low to the ground"}
+{"clip": "Bear_Stand_1.npy", "action_group": "transition", "action_label": "stand, rear up on hind legs with mouth open"}
+{"clip": "Bear_SwatLeft_1.npy", "action_group": "stationary", "action_label": "attack, swat left paw"}
+{"clip": "Bear_SwatRight_1.npy", "action_group": "stationary", "action_label": "attack, swat right paw"}
+{"clip": "Bear_TipLeft_1.npy", "action_group": "transition", "action_label": "fall, collapses onto left side"}
+{"clip": "Bear_Trot_1.npy", "action_group": "locomotion", "action_label": "run, trot with rhythmic alternating legs and forward lean"}
+{"clip": "Bear_Trotting_1.npy", "action_group": "locomotion", "action_label": "run, trotting, rhythmic alternating limb movement"}
+{"clip": "Bear_Turn180_1.npy", "action_group": "locomotion", "action_label": "turn, rotates body 180 degrees in low alert posture"}
+{"clip": "Bear_TurnLeft_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body to the left"}
+{"clip": "Bear_WakeUp_1.npy", "action_group": "transition", "action_label": "getup, rises from prone to standing"}
+{"clip": "Bear_WalkForward_1.npy", "action_group": "locomotion", "action_label": "walk, moves forward with head lowered and mouth open"}
+{"clip": "Bear_WetShake_1.npy", "action_group": "stationary", "action_label": "shake, vigorously shakes head and body to dislodge water"}
+{"clip": "BrownBear_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, rear, swipes with front paws"}
+{"clip": "BrownBear_Attack3_1.npy", "action_group": "stationary", "action_label": "attack, lunge forward roaring with front paws extended"}
+{"clip": "BrownBear_Attack_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with front paws extended and mouth open"}
+{"clip": "BrownBear_Charge_1.npy", "action_group": "transition", "action_label": "jump, attack, retreats then leaps forward with mouth open"}
+{"clip": "BrownBear_DeathLoop_1.npy", "action_group": "stationary", "action_label": "die, lies motionless on its side with limbs extended"}
+{"clip": "BrownBear_EatFish_1.npy", "action_group": "stationary", "action_label": "eat, lowers head and chews in a crouched posture"}
+{"clip": "BrownBear_EatFish_2.npy", "action_group": "stationary", "action_label": "eat, lowers head and chews rhythmically"}
+{"clip": "BrownBear_Falling_1.npy", "action_group": "transition", "action_label": "fall, tumbling head down then rearing up on hind legs"}
+{"clip": "BrownBear_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with head lowered breathing"}
+{"clip": "BrownBear_Limp_1.npy", "action_group": "locomotion", "action_label": "walk, limp, drags one front leg in uneven gait"}
+{"clip": "BrownBear_Limping_1.npy", "action_group": "locomotion", "action_label": "walk, limping with uneven rhythm"}
+{"clip": "BrownBear_Ready_1.npy", "action_group": "stationary", "action_label": "idle, crouched low with head down and mouth open"}
+{"clip": "BrownBear_RiseAttack_1.npy", "action_group": "stationary", "action_label": "attack, rise onto hind legs to swipe"}
+{"clip": "BrownBear_RiseSwat_1.npy", "action_group": "stationary", "action_label": "attack, rise, swats with front paws from a low crouch"}
+{"clip": "BrownBear_Rise_1.npy", "action_group": "transition", "action_label": "getup, rises from prone to stand upright"}
+{"clip": "BrownBear_RunLoop_1.npy", "action_group": "locomotion", "action_label": "run, steady rhythmic gait with continuous limb cycling"}
+{"clip": "BrownBear_ScratchEar_1.npy", "action_group": "stationary", "action_label": "scratch, lifts hind leg raised to ear"}
+{"clip": "BrownBear_SitClean_1.npy", "action_group": "stationary", "action_label": "rest, scratch, sits and scratches face and neck with front paw"}
+{"clip": "BrownBear_Sleepy_1.npy", "action_group": "stationary", "action_label": "rest, stands still with head lowered and slow breathing"}
+{"clip": "BrownBear_SlowWalk_1.npy", "action_group": "locomotion", "action_label": "walk, slow deliberate gait with head lowered"}
+{"clip": "BrownBear_Twitching_1.npy", "action_group": "transition", "action_label": "die, fall, collapses onto side twitching limbs"}
+{"clip": "BrownBear_WalkLoop_1.npy", "action_group": "locomotion", "action_label": "walk, continuous gait with forward-leaning posture"}
+{"clip": "Buffalo_AlertIdle_1.npy", "action_group": "stationary", "action_label": "idle, stands still turning head to look around and opening mouth to vocalize"}
+{"clip": "Buffalo_AngryAntlers_1.npy", "action_group": "stationary", "action_label": "attack, shake, lowers head and shakes antlers while stomping front legs"}
+{"clip": "Buffalo_Attack1_1.npy", "action_group": "stationary", "action_label": "attack, head lowered, lunges forward"}
+{"clip": "Buffalo_Attack_1.npy", "action_group": "stationary", "action_label": "attack, head lowered, lunges forward, rears up, shakes head"}
+{"clip": "Buffalo_ChargedUp_1.npy", "action_group": "stationary", "action_label": "idle, builds up power, stands with head lowered and horns forward"}
+{"clip": "Buffalo_Cud_1.npy", "action_group": "stationary", "action_label": "idle, stands still with head lowered chewing"}
+{"clip": "Buffalo_Cud_2.npy", "action_group": "stationary", "action_label": "idle, stands still chewing cud with rhythmic jaw movement"}
+{"clip": "Buffalo_Die_1.npy", "action_group": "transition", "action_label": "die, fall, collapses to the ground"}
+{"clip": "Buffalo_Fall_1.npy", "action_group": "transition", "action_label": "fall, collapses onto side with legs flailing"}
+{"clip": "Buffalo_GetUp_1.npy", "action_group": "transition", "action_label": "getup, rises from lying to standing"}
+{"clip": "Buffalo_GroundLoop_1.npy", "action_group": "stationary", "action_label": "rest, roll, rolls body along the ground"}
+{"clip": "Buffalo_HoofScrape_1.npy", "action_group": "stationary", "action_label": "idle, head lowered scraping front hooves on ground"}
+{"clip": "Buffalo_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with head lowered and tail swishing"}
+{"clip": "Buffalo_Jump_1.npy", "action_group": "transition", "action_label": "jump, leaps off ground with legs tucked"}
+{"clip": "Buffalo_LoweredHead_1.npy", "action_group": "stationary", "action_label": "idle, stands still with head lowered"}
+{"clip": "Buffalo_RunLoop_1.npy", "action_group": "locomotion", "action_label": "run, continuous rhythmic gait with forward-leaning posture"}
+{"clip": "Buffalo_Shot_1.npy", "action_group": "transition", "action_label": "die, fall, collapses onto side and lies motionless"}
+{"clip": "Buffalo_SleepUp_1.npy", "action_group": "transition", "action_label": "rest, lowers body to ground and settles into rest"}
+{"clip": "Buffalo_SleepUp_2.npy", "action_group": "transition", "action_label": "getup, rises from lying to standing"}
+{"clip": "Buffalo_WalkLoop_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic leg sequence"}
+{"clip": "Camel_Bite_1.npy", "action_group": "stationary", "action_label": "bite, stands still opening mouth wide"}
+{"clip": "Camel_Buck_1.npy", "action_group": "transition", "action_label": "rear, stands on hind legs then lowers back down"}
+{"clip": "Camel_DownLoop_1.npy", "action_group": "stationary", "action_label": "rest, loops body with legs extended and arched"}
+{"clip": "Camel_Fall_1.npy", "action_group": "transition", "action_label": "fall, collapses sideways with legs flailing"}
+{"clip": "Camel_IdleLoop_1.npy", "action_group": "stationary", "action_label": "idle, stands still with slight head turns and mouth motions"}
+{"clip": "Camel_LayDown_1.npy", "action_group": "transition", "action_label": "rest, lowers front legs and bends knees to collapse onto ground"}
+{"clip": "Camel_Mope_1.npy", "action_group": "stationary", "action_label": "idle, stands still with head lowered to the ground"}
+{"clip": "Camel_Restless_1.npy", "action_group": "stationary", "action_label": "attack, head lowered, shifts weight and lunges forward"}
+{"clip": "Camel_RunFast_1.npy", "action_group": "locomotion", "action_label": "run, fast gait with legs cycling rapidly"}
+{"clip": "Camel_Run_1.npy", "action_group": "locomotion", "action_label": "run, galloping gait with body bobbing up and down"}
+{"clip": "Camel_ScrapeHoof_1.npy", "action_group": "stationary", "action_label": "idle, stands still lifting a front leg to scrape its hoof"}
+{"clip": "Camel_SlowWalk_1.npy", "action_group": "locomotion", "action_label": "walk, slow steady gait with measured leg lifts"}
+{"clip": "Camel_Specail_1.npy", "action_group": "stationary", "action_label": "idle, head lowered then mouth open with leg kicks"}
+{"clip": "Camel_StandUp_1.npy", "action_group": "transition", "action_label": "getup, rises from prone to standing"}
+{"clip": "Camel_StopWalk_1.npy", "action_group": "transition", "action_label": "walk, stop, lifts head and neck to stand still"}
+{"clip": "Camel_Trot_1.npy", "action_group": "locomotion", "action_label": "walk, trotting gait with legs moving in diagonal pairs"}
+{"clip": "Camel_Wild1_1.npy", "action_group": "stationary", "action_label": "attack, raises front hooves high balancing on hind legs"}
+{"clip": "Camel_Yell_1.npy", "action_group": "stationary", "action_label": "idle, stands still with mouth open yelling"}
+{"clip": "Cat_IdlePurr_1.npy", "action_group": "stationary", "action_label": "idle, crouches low crouch with front legs extended"}
+{"clip": "Cat_IdlePurr_2.npy", "action_group": "stationary", "action_label": "idle, crouched low with front paws extended and mouth briefly open"}
+{"clip": "Cat_IdlePurr_3.npy", "action_group": "stationary", "action_label": "idle, sits and purrs with subtle body movements"}
+{"clip": "Cat_LickCleanIdle_1.npy", "action_group": "stationary", "action_label": "idle, sits and licks front paw to clean"}
+{"clip": "Cat_LickCleanIdle_2.npy", "action_group": "stationary", "action_label": "idle, sits grooming by licking paw and rubbing face"}
+{"clip": "Cat_LickCleanIdle_3.npy", "action_group": "stationary", "action_label": "idle, sits grooming head and neck"}
+{"clip": "Cat_StretchYawnIdle_1.npy", "action_group": "stationary", "action_label": "idle, stretch, yawn, arches back with front legs forward"}
+{"clip": "Cat_StretchYawnIdle_2.npy", "action_group": "stationary", "action_label": "idle, stretch, yawn, settles into sitting position"}
+{"clip": "Cat_StretchYawnIdle_3.npy", "action_group": "stationary", "action_label": "idle, stretch, yawn, sits and opens mouth wide"}
+{"clip": "Cat_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, steady gait with tail held high and swaying"}
+{"clip": "Centipede_Attack1_1.npy", "action_group": "stationary", "action_label": "attack, rears up and thrusts head forward"}
+{"clip": "Centipede_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, rear, lunges forward with front appendages"}
+{"clip": "Centipede_Attack_1.npy", "action_group": "stationary", "action_label": "attack, rear up and thrust head forward"}
+{"clip": "Centipede_Die_1.npy", "action_group": "transition", "action_label": "die, convulses and twists body in chaotic motion"}
+{"clip": "Centipede_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, sways body and twitches antennae"}
+{"clip": "Centipede_Idle3_1.npy", "action_group": "stationary", "action_label": "idle, remains motionless in a static pose"}
+{"clip": "Centipede_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with twitching antennae and tail"}
+{"clip": "Centipede_Rearing_1.npy", "action_group": "stationary", "action_label": "rear, lifts head and thorax arching back"}
+{"clip": "Centipede_Run_1.npy", "action_group": "locomotion", "action_label": "run, rapid undulating gait with tail whipping back and forth"}
+{"clip": "Centipede_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic gait with wave-like leg movement"}
+{"clip": "Chicken_EggLaying_1.npy", "action_group": "transition", "action_label": "rest, squat down and rise back up"}
+{"clip": "Chicken_IdlePecking_1.npy", "action_group": "stationary", "action_label": "idle, peck, lowers head to peck ground"}
+{"clip": "Chicken_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic gait with head bobbing"}
+{"clip": "Comodoa_Attack1_1.npy", "action_group": "stationary", "action_label": "attack, lunge forward with open mouth and extended front limbs"}
+{"clip": "Comodoa_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward snapping jaws"}
+{"clip": "Comodoa_Attack3_1.npy", "action_group": "stationary", "action_label": "attack, spin, twists body and snaps jaws"}
+{"clip": "Comodoa_Die_1.npy", "action_group": "transition", "action_label": "die, collapses onto back flailing limbs"}
+{"clip": "Comodoa_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, stands still with tail swaying gently"}
+{"clip": "Comodoa_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still turning head to look around"}
+{"clip": "Comodoa_Idle_2.npy", "action_group": "stationary", "action_label": "idle, stands still with body held low with head slightly raised"}
+{"clip": "Comodoa_Run_1.npy", "action_group": "locomotion", "action_label": "run, low sprawling gait with undulating body and swaying tail"}
+{"clip": "Comodoa_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic limb sequence with slight body undulation"}
+{"clip": "Comodoa_Yawn_1.npy", "action_group": "stationary", "action_label": "idle, yawn, opens mouth wide while standing low"}
+{"clip": "Comodoa_Yawn_2.npy", "action_group": "stationary", "action_label": "idle, yawn, opens mouth wide in slow deliberate stretch"}
+{"clip": "Coyote_Attack1_1.npy", "action_group": "stationary", "action_label": "attack, bite, lunges forward with mouth open"}
+{"clip": "Coyote_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with extended front paw and open mouth"}
+{"clip": "Coyote_Attack3_1.npy", "action_group": "stationary", "action_label": "attack, lunge forward with mouth open"}
+{"clip": "Coyote_Die_1.npy", "action_group": "transition", "action_label": "die, collapses onto back legs splayed"}
+{"clip": "Coyote_Howling_1.npy", "action_group": "stationary", "action_label": "roar, head lowered then raised with mouth open"}
+{"clip": "Coyote_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands alert with mouth slightly open and slight head turns"}
+{"clip": "Coyote_Restless_1.npy", "action_group": "stationary", "action_label": "idle, restless, shifts weight and stretches front legs with mouth open"}
+{"clip": "Coyote_Running_1.npy", "action_group": "locomotion", "action_label": "run, gallops with a fluid gait"}
+{"clip": "Coyote_Sniffing_1.npy", "action_group": "stationary", "action_label": "idle, sniff with head lowered and mouth open"}
+{"clip": "Coyote_Walking_1.npy", "action_group": "locomotion", "action_label": "walk, steady gait with forward-leaning posture"}
+{"clip": "Crab_Attack1_1.npy", "action_group": "stationary", "action_label": "attack, raises large claw and lunges forward"}
+{"clip": "Crab_Attack3_1.npy", "action_group": "stationary", "action_label": "attack, raises large claw high and strikes down"}
+{"clip": "Crab_Attack4_1.npy", "action_group": "stationary", "action_label": "attack, raises claw and lunges forward"}
+{"clip": "Crab_Defeated_1.npy", "action_group": "transition", "action_label": "die, collapses body and lowers claw to ground"}
+{"clip": "Crab_Die_1.npy", "action_group": "transition", "action_label": "die, collapses onto back with legs flailing"}
+{"clip": "Crab_Eat_1.npy", "action_group": "stationary", "action_label": "eat, opens and closes claw rhythmically"}
+{"clip": "Crab_HitBack_1.npy", "action_group": "transition", "action_label": "hurt, falls over"}
+{"clip": "Crab_Strafe_1.npy", "action_group": "locomotion", "action_label": "walk, strafe laterally with alternating legs"}
+{"clip": "Crab_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic gait alternating legs and claws"}
+{"clip": "Cricket_Attack1_1.npy", "action_group": "stationary", "action_label": "attack, rears up on hind legs swinging front claws"}
+{"clip": "Cricket_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, rears up on hind legs swinging front claws"}
+{"clip": "Cricket_Attack3_1.npy", "action_group": "stationary", "action_label": "attack, rears up on hind legs swinging forelimbs"}
+{"clip": "Cricket_Attack4_1.npy", "action_group": "stationary", "action_label": "attack, rears up on hind legs swinging front claws"}
+{"clip": "Cricket_Burrough_1.npy", "action_group": "stationary", "action_label": "dig, burrows into ground with front legs"}
+{"clip": "Cricket_Die_1.npy", "action_group": "transition", "action_label": "die, collapses onto back flailing legs"}
+{"clip": "Cricket_IdlePissed_1.npy", "action_group": "stationary", "action_label": "idle, stands still with mandibles open and antennae raised"}
+{"clip": "Cricket_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with legs and antennae steady"}
+{"clip": "Cricket_LookAround_1.npy", "action_group": "stationary", "action_label": "look, rotates head and body to survey surroundings"}
+{"clip": "Cricket_LookAround_2.npy", "action_group": "stationary", "action_label": "look, rotates head and body to survey surroundings"}
+{"clip": "Cricket_OutOfGround_1.npy", "action_group": "transition", "action_label": "getup, rises from ground into standing posture"}
+{"clip": "Cricket_Running_1.npy", "action_group": "locomotion", "action_label": "run, legs cycling in a coordinated gait"}
+{"clip": "Cricket_Walking_1.npy", "action_group": "locomotion", "action_label": "walk, legs moving in a coordinated sequence"}
+{"clip": "Crocodile_Attack_1.npy", "action_group": "stationary", "action_label": "attack, lunge forward with jaws wide open"}
+{"clip": "Crocodile_Bite_1.npy", "action_group": "stationary", "action_label": "attack, bite, opens and closes jaws in a biting motion"}
+{"clip": "Crocodile_Bounce_1.npy", "action_group": "transition", "action_label": "hurt, die, takes a hit and collapses to the ground"}
+{"clip": "Crocodile_Die_1.npy", "action_group": "transition", "action_label": "die, collapses to ground with limbs twitching and mouth agape"}
+{"clip": "Crocodile_GetUp_1.npy", "action_group": "transition", "action_label": "getup, lifts body off ground with mouth open"}
+{"clip": "Crocodile_HeavyBreathe_1.npy", "action_group": "stationary", "action_label": "idle, stands still with mouth open and heavy breathing"}
+{"clip": "Crocodile_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with body elevated"}
+{"clip": "Crocodile_NormalBreath_1.npy", "action_group": "stationary", "action_label": "idle, breathes with subtle body and head movements"}
+{"clip": "Crocodile_Running_1.npy", "action_group": "locomotion", "action_label": "run, low sprawling gait with undulating body"}
+{"clip": "Crocodile_SleepLoop_1.npy", "action_group": "stationary", "action_label": "rest, lies motionless in prone posture"}
+{"clip": "Crocodile_TailWhip_1.npy", "action_group": "stationary", "action_label": "attack, whips tail around with mouth open"}
+{"clip": "Crocodile_Yawning_1.npy", "action_group": "stationary", "action_label": "idle, yawns with mouth wide open"}
+{"clip": "Deer_Backing_1.npy", "action_group": "locomotion", "action_label": "walk, moves backward with head lowered"}
+{"clip": "Deer_Bleat_1.npy", "action_group": "stationary", "action_label": "idle, stands still opening and closing its mouth"}
+{"clip": "Deer_BuckShy_1.npy", "action_group": "transition", "action_label": "turn, lowers head and shifts weight to the side"}
+{"clip": "Deer_Charge_1.npy", "action_group": "stationary", "action_label": "attack, head lowered, lunges forward with antlers sweeping"}
+{"clip": "Deer_ComeDown_1.npy", "action_group": "transition", "action_label": "jump, lowers head and body into a crouch"}
+{"clip": "Deer_Gallop_1.npy", "action_group": "locomotion", "action_label": "run, gallop with rhythmic bounding gait"}
+{"clip": "Deer_GetUpAgain_1.npy", "action_group": "transition", "action_label": "getup, rises from lying to standing"}
+{"clip": "Deer_GetUp_1.npy", "action_group": "transition", "action_label": "getup, rises from prone to standing"}
+{"clip": "Deer_Grazing_1.npy", "action_group": "stationary", "action_label": "eat, lowers head to ground and grazes rhythmically"}
+{"clip": "Deer_Grazing_2.npy", "action_group": "stationary", "action_label": "eat, lowers head to graze then lifts it back up"}
+{"clip": "Deer_IdleEarFlik_1.npy", "action_group": "stationary", "action_label": "idle, stands still flicking ears"}
+{"clip": "Deer_IdleEarFlik_2.npy", "action_group": "stationary", "action_label": "idle, stands still flicking ears"}
+{"clip": "Deer_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with head lowered and ears perked"}
+{"clip": "Deer_RearUp_1.npy", "action_group": "stationary", "action_label": "rear, attack, stands still with front legs kicking forward"}
+{"clip": "Deer_Rutting_1.npy", "action_group": "stationary", "action_label": "idle, head lowered shifting weight in rutting display"}
+{"clip": "Deer_Squirly_1.npy", "action_group": "stationary", "action_label": "turn, sidesteps with small movement"}
+{"clip": "Deer_TakeOff_1.npy", "action_group": "transition", "action_label": "jump, takeoff, crouches then leaps"}
+{"clip": "Deer_Trot_1.npy", "action_group": "locomotion", "action_label": "run, trots with a rhythmic diagonal gait"}
+{"clip": "Deer_TurnLeft_1.npy", "action_group": "locomotion", "action_label": "walk, turn, pivots body to the left"}
+{"clip": "Deer_WalkBack_1.npy", "action_group": "locomotion", "action_label": "walk, moves backward in a steady rhythmic gait"}
+{"clip": "Deer_WalkCall_1.npy", "action_group": "locomotion", "action_label": "walk, head raised calling"}
+{"clip": "Deer_WalkForward_1.npy", "action_group": "locomotion", "action_label": "walk, steady gait with rhythmic leg sequence"}
+{"clip": "Elephant_Atk1_1.npy", "action_group": "stationary", "action_label": "attack, slow rhythmic head bob and trunk curl"}
+{"clip": "Elephant_Atk2_1.npy", "action_group": "stationary", "action_label": "attack, head lowered, curls trunk toward mouth"}
+{"clip": "Elephant_Die_1.npy", "action_group": "transition", "action_label": "die, fall, collapses to the ground"}
+{"clip": "Elephant_DownIn_1.npy", "action_group": "transition", "action_label": "die, fall, collapses onto its side with legs splayed"}
+{"clip": "Elephant_DownLoop_1.npy", "action_group": "stationary", "action_label": "rest, lowers body and legs in a repetitive loop"}
+{"clip": "Elephant_DownOut_1.npy", "action_group": "transition", "action_label": "getup, lowers body then rises to standing"}
+{"clip": "Elephant_Firing_1.npy", "action_group": "stationary", "action_label": "idle, extends trunk outward and upward"}
+{"clip": "Elephant_Idle1_1.npy", "action_group": "stationary", "action_label": "idle, stands still swaying head and trunk"}
+{"clip": "Elephant_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, stands still swaying trunk and flapping ears"}
+{"clip": "Elephant_Idle3_1.npy", "action_group": "stationary", "action_label": "idle, stands still swaying trunk and tail"}
+{"clip": "Elephant_Passout_1.npy", "action_group": "stationary", "action_label": "idle, stands still with head lowered"}
+{"clip": "Elephant_Run_1.npy", "action_group": "locomotion", "action_label": "run, galloping gait with trunk curled inward and ears flapping"}
+{"clip": "Elephant_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, steady gait with trunk curled inward"}
+{"clip": "FireAnt_AntAngry_1.npy", "action_group": "stationary", "action_label": "attack, snaps mandibles while rooted in place"}
+{"clip": "FireAnt_AntAnnoyed_1.npy", "action_group": "stationary", "action_label": "idle, twitches mandibles and front legs in agitation"}
+{"clip": "FireAnt_AntBackUp_1.npy", "action_group": "locomotion", "action_label": "walk, retreat, moves backward with a slow deliberate gait"}
+{"clip": "FireAnt_AntBite_1.npy", "action_group": "stationary", "action_label": "attack, bite, head lowered mandibles snap shut"}
+{"clip": "FireAnt_AntCreep_1.npy", "action_group": "locomotion", "action_label": "crawl, slow deliberate creeping gait"}
+{"clip": "FireAnt_AntFeel_1.npy", "action_group": "stationary", "action_label": "idle, raises and lowers head while extending antennae"}
+{"clip": "FireAnt_AntFightOff_1.npy", "action_group": "stationary", "action_label": "attack, rears up on hind legs swinging mandibles"}
+{"clip": "FireAnt_AntForwardMarch_1.npy", "action_group": "locomotion", "action_label": "walk, marches forward with rhythmic leg sequence"}
+{"clip": "FireAnt_AntGesture_1.npy", "action_group": "stationary", "action_label": "idle, opens and closes mandibles rhythmically"}
+{"clip": "FireAnt_AntHit_1.npy", "action_group": "stationary", "action_label": "hurt, rear up on hind legs swinging mandibles"}
+{"clip": "FireAnt_AntHungry_1.npy", "action_group": "stationary", "action_label": "idle, lifts head and raises mandibles in hungry posture"}
+{"clip": "FireAnt_AntIdle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with twitching mandibles and antennae"}
+{"clip": "FireAnt_AntJump_1.npy", "action_group": "transition", "action_label": "jump, crouches low then leaps upward"}
+{"clip": "FireAnt_AntLeft_1.npy", "action_group": "locomotion", "action_label": "walk, moves laterally to the left"}
+{"clip": "FireAnt_AntRight_1.npy", "action_group": "locomotion", "action_label": "walk, moves laterally to the right"}
+{"clip": "FireAnt_AntRipFlesh2_1.npy", "action_group": "stationary", "action_label": "attack, bite, repeatedly opens and closes mandibles in a tearing motion"}
+{"clip": "FireAnt_AntRipFlesh_1.npy", "action_group": "stationary", "action_label": "attack, bite, raises head and tears with mandibles"}
+{"clip": "FireAnt_AntRip_1.npy", "action_group": "stationary", "action_label": "attack, bite, rapidly opens and closes mandibles"}
+{"clip": "FireAnt_AntRoar_1.npy", "action_group": "stationary", "action_label": "roar, rears up on hind legs opening and closing mandibles"}
+{"clip": "FireAnt_AntSnap_1.npy", "action_group": "stationary", "action_label": "attack, snaps mandibles open and closed while standing still"}
+{"clip": "FireAnt_AntTurnLeft_1.npy", "action_group": "locomotion", "action_label": "turn, rotates body to the left"}
+{"clip": "FireAnt_AntTurnRight_1.npy", "action_group": "locomotion", "action_label": "turn, rotates body to the right"}
+{"clip": "FireAnt_AntUpFromDown2_1.npy", "action_group": "transition", "action_label": "getup, rises from crouched posture to upright stance"}
+{"clip": "FireAnt_AntUpFromDown_1.npy", "action_group": "transition", "action_label": "getup, rises from crouched posture to upright stance"}
+{"clip": "Flamingo_BendIdle_1.npy", "action_group": "stationary", "action_label": "idle, bends neck down then returns upright"}
+{"clip": "Flamingo_Sleep_1.npy", "action_group": "stationary", "action_label": "rest, sleep, head tucked into feathers"}
+{"clip": "Flamingo_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, slow deliberate gait with upright posture"}
+{"clip": "Fox_Atk1_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with front paws extended and mouth open"}
+{"clip": "Fox_Atk2_1.npy", "action_group": "stationary", "action_label": "attack, rear up on hind legs to strike with front paws"}
+{"clip": "Fox_Atk3_1.npy", "action_group": "stationary", "action_label": "attack, lunge forward with mouth open then snap back to crouch"}
+{"clip": "Fox_Atk4_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with front paws extended"}
+{"clip": "Fox_Die2_1.npy", "action_group": "transition", "action_label": "die, rears up then collapses onto side"}
+{"clip": "Fox_Die_1.npy", "action_group": "transition", "action_label": "die, collapses to the ground curling into a fetal position"}
+{"clip": "Fox_Idle1_1.npy", "action_group": "stationary", "action_label": "idle, howl with mouth open"}
+{"clip": "Fox_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, stands still with mouth slightly open"}
+{"clip": "Fox_Idle3_1.npy", "action_group": "stationary", "action_label": "idle, stands still sniffing ground then yawns"}
+{"clip": "Fox_Idle3_2.npy", "action_group": "stationary", "action_label": "idle, look, stands alert shifting weight and turning head"}
+{"clip": "Fox_Idle4_1.npy", "action_group": "stationary", "action_label": "idle, crouches low and turns head to look around"}
+{"clip": "Fox_Idle4_2.npy", "action_group": "stationary", "action_label": "idle, sniff, lowers head to ground then lifts back up"}
+{"clip": "Fox_Idle5_1.npy", "action_group": "stationary", "action_label": "sit, look, settles into a seated pose and looks around"}
+{"clip": "Fox_Idle5_2.npy", "action_group": "transition", "action_label": "getup, rises from sitting to standing, head turn, mouth open"}
+{"clip": "Fox_Run_1.npy", "action_group": "locomotion", "action_label": "run, bounding gait with rhythmic body stretch"}
+{"clip": "Fox_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, steady forward gait with alternating legs"}
+{"clip": "Gazelle_Alert_1.npy", "action_group": "stationary", "action_label": "idle, stands still turning head to look around"}
+{"clip": "Gazelle_Alert_2.npy", "action_group": "stationary", "action_label": "idle, stands still turning head to the side"}
+{"clip": "Gazelle_Atk1_1.npy", "action_group": "stationary", "action_label": "attack, lowers head and neck in a bowing motion"}
+{"clip": "Gazelle_Atk2_1.npy", "action_group": "stationary", "action_label": "idle, attack, high-stepping gait with lowered head"}
+{"clip": "Gazelle_Atk3_1.npy", "action_group": "stationary", "action_label": "attack, lowers head and neck while shifting weight"}
+{"clip": "Gazelle_Attack1_1.npy", "action_group": "stationary", "action_label": "attack, lowers head and neck in aggressive stance"}
+{"clip": "Gazelle_Attack_1.npy", "action_group": "stationary", "action_label": "attack, head lowered, lunges forward"}
+{"clip": "Gazelle_Die_1.npy", "action_group": "transition", "action_label": "die, fall, die, collapses to the ground"}
+{"clip": "Gazelle_Fall_1.npy", "action_group": "transition", "action_label": "fall, collapses onto its side"}
+{"clip": "Gazelle_HeadPoke_1.npy", "action_group": "stationary", "action_label": "attack, head lowered poking motion"}
+{"clip": "Gazelle_Idle1_1.npy", "action_group": "stationary", "action_label": "idle, stands still with slight head turns"}
+{"clip": "Gazelle_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, stands still with slight head turns and ear flicks"}
+{"clip": "Gazelle_Idle3_1.npy", "action_group": "stationary", "action_label": "idle, stands still turning head to look around"}
+{"clip": "Gazelle_Idle3_2.npy", "action_group": "stationary", "action_label": "idle, stands still turning head to the left"}
+{"clip": "Gazelle_IdleReady_1.npy", "action_group": "stationary", "action_label": "idle, stands alert with head lowered shifting weight"}
+{"clip": "Gazelle_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with head held high and ears alert"}
+{"clip": "Gazelle_Run_1.npy", "action_group": "locomotion", "action_label": "run, bounding gallop with legs extended"}
+{"clip": "Gazelle_Run_2.npy", "action_group": "locomotion", "action_label": "run, bounding gait with legs extended"}
+{"clip": "Gazelle_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, steady rhythmic gait with upright posture"}
+{"clip": "Gazelle_Walk_2.npy", "action_group": "locomotion", "action_label": "walk, steady rhythmic gait alternating legs"}
+{"clip": "Goat_Attack_1.npy", "action_group": "stationary", "action_label": "attack, head lowered, lunges forward with horns down"}
+{"clip": "Goat_Bleat_1.npy", "action_group": "stationary", "action_label": "idle, stands still opening and closing its mouth"}
+{"clip": "Goat_Die_1.npy", "action_group": "transition", "action_label": "die, collapses onto its side and lies motionless"}
+{"clip": "Goat_HeadButt2_1.npy", "action_group": "stationary", "action_label": "attack, headbutt, rears up on hind legs"}
+{"clip": "Goat_HeadButt_1.npy", "action_group": "stationary", "action_label": "attack, head butt, rears up on hind legs"}
+{"clip": "Goat_HoofScrape_1.npy", "action_group": "stationary", "action_label": "idle, stands still scraping hooves on ground"}
+{"clip": "Goat_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with slight head turns and mouth motions"}
+{"clip": "Goat_JumpKnock_1.npy", "action_group": "transition", "action_label": "jump, attack, leaps upward twisting torso mid-air"}
+{"clip": "Goat_Run_1.npy", "action_group": "locomotion", "action_label": "run, legs cycling rapidly with body bouncing"}
+{"clip": "Goat_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, steady gait with rhythmic leg alternation"}
+{"clip": "Hamster_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with head lowered"}
+{"clip": "Hamster_RollAttack_1.npy", "action_group": "transition", "action_label": "attack, roll, curls into a ball and spins"}
+{"clip": "Hamster_Run_1.npy", "action_group": "locomotion", "action_label": "run, rapid energetic gait with forward-leaning posture"}
+{"clip": "Hamster_Sniff_1.npy", "action_group": "stationary", "action_label": "sniff, lowers head and brings front paws together"}
+{"clip": "Hamster_Sniff_2.npy", "action_group": "stationary", "action_label": "sniff, stands on hind legs turning head to smell air"}
+{"clip": "Hamster_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic alternating paws"}
+{"clip": "HermitCrab_Die_1.npy", "action_group": "transition", "action_label": "die, limbs retract and body collapses"}
+{"clip": "HermitCrab_Eat_1.npy", "action_group": "stationary", "action_label": "eat, moves claws and antennae near mouth"}
+{"clip": "HermitCrab_Expire_1.npy", "action_group": "transition", "action_label": "die, retracts body and limbs into shell"}
+{"clip": "HermitCrab_Fighting_1.npy", "action_group": "stationary", "action_label": "attack, raises and lowers claws rhythmically"}
+{"clip": "HermitCrab_KnockedBack_1.npy", "action_group": "transition", "action_label": "hurt, retreats backward pulling body out of shell"}
+{"clip": "HermitCrab_KnockedOut_1.npy", "action_group": "transition", "action_label": "die, retreats into shell after raising claws"}
+{"clip": "HermitCrab_OutofGround_1.npy", "action_group": "transition", "action_label": "getup, extends antennae and claws while shifting posture changes"}
+{"clip": "HermitCrab_Pinchers_1.npy", "action_group": "stationary", "action_label": "idle,"}
+{"clip": "HermitCrab_SandBurrough_1.npy", "action_group": "transition", "action_label": "rest, lowers body and retracts limbs into shell"}
+{"clip": "HermitCrab_Sleep_1.npy", "action_group": "stationary", "action_label": "rest, lies still with limbs tucked"}
+{"clip": "HermitCrab_Slowwalk_1.npy", "action_group": "locomotion", "action_label": "walk, slow deliberate leg movement"}
+{"clip": "HermitCrab_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic gait with swaying antennae"}
+{"clip": "Hippopotamus_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, rears head upward with mouth wide open"}
+{"clip": "Hippopotamus_Attack3_1.npy", "action_group": "stationary", "action_label": "attack, bite, lunges forward with mouth wide open"}
+{"clip": "Hippopotamus_Attack4_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with mouth wide open"}
+{"clip": "Hippopotamus_Attack_1.npy", "action_group": "stationary", "action_label": "attack, lunge forward with mouth wide open"}
+{"clip": "Hippopotamus_Die_1.npy", "action_group": "transition", "action_label": "die, fall, collapses onto its side"}
+{"clip": "Hippopotamus_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, stands still with mouth slightly open"}
+{"clip": "Hippopotamus_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with head lowered and eyes closed"}
+{"clip": "Hippopotamus_Run_1.npy", "action_group": "locomotion", "action_label": "run, galloping gait with body bouncing rhythmically"}
+{"clip": "Hippopotamus_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, steady gait with rhythmic leg lift"}
+{"clip": "Hippopotamus_Yawn_1.npy", "action_group": "stationary", "action_label": "idle,"}
+{"clip": "Horse_Attack_1.npy", "action_group": "stationary", "action_label": "attack, rear, kicks front hooves in the air"}
+{"clip": "Horse_BackUp_1.npy", "action_group": "locomotion", "action_label": "walk, moves backward with head lowered"}
+{"clip": "Horse_Bucking_1.npy", "action_group": "stationary", "action_label": "attack, rears up on hind legs"}
+{"clip": "Horse_Dying_1.npy", "action_group": "transition", "action_label": "die, fall, rears up then collapses onto its side"}
+{"clip": "Horse_FeetUp_1.npy", "action_group": "stationary", "action_label": "idle, stands still lifting front legs alternately"}
+{"clip": "Horse_GetUp_1.npy", "action_group": "transition", "action_label": "getup, rises from lying to standing"}
+{"clip": "Horse_HoofScrape2_1.npy", "action_group": "stationary", "action_label": "idle, stands still scraping front hoof on ground"}
+{"clip": "Horse_HoofScrape_1.npy", "action_group": "stationary", "action_label": "idle, lifts front leg and scrapes hoof on ground"}
+{"clip": "Horse_HoofScrape_2.npy", "action_group": "stationary", "action_label": "idle, stands still scraping hoof on ground"}
+{"clip": "Horse_Idle3_1.npy", "action_group": "stationary", "action_label": "idle, stands still with subtle movements"}
+{"clip": "Horse_IdleEars_1.npy", "action_group": "stationary", "action_label": "idle, stands still twitching ears and shifting head"}
+{"clip": "Horse_IdleEars_2.npy", "action_group": "stationary", "action_label": "idle, stands still twitching and swiveling ears"}
+{"clip": "Horse_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still lowering head to graze"}
+{"clip": "Horse_Idle_2.npy", "action_group": "stationary", "action_label": "idle, stands still shifting weight and moving head and ears"}
+{"clip": "Horse_InAir_1.npy", "action_group": "transition", "action_label": "jump, suspended in mid-air with front legs extended"}
+{"clip": "Horse_JumpLand_1.npy", "action_group": "transition", "action_label": "jump, land, absorbs impact with legs"}
+{"clip": "Horse_Jumping_1.npy", "action_group": "transition", "action_label": "jump, rear, lifts front hooves high"}
+{"clip": "Horse_KnockedBack_1.npy", "action_group": "transition", "action_label": "hurt, fall, rears up then collapses backward onto its side"}
+{"clip": "Horse_LandRun_1.npy", "action_group": "locomotion", "action_label": "run, lowers head and front legs into crouch before resuming gait"}
+{"clip": "Horse_LoneRanger_1.npy", "action_group": "transition", "action_label": "rear, lifts front hooves high then settles down"}
+{"clip": "Horse_Lying_1.npy", "action_group": "stationary", "action_label": "rest, lies on the ground with legs tucked"}
+{"clip": "Horse_Rearing2_1.npy", "action_group": "transition", "action_label": "rear, lifts front hooves high into the air"}
+{"clip": "Horse_Rearing_1.npy", "action_group": "transition", "action_label": "rear, lifts front hooves high on hind legs"}
+{"clip": "Horse_Restless2_1.npy", "action_group": "stationary", "action_label": "idle, stands shifting weight and lifting front legs"}
+{"clip": "Horse_Restless3_1.npy", "action_group": "stationary", "action_label": "idle, stands shifting weight lifting front legs alternately"}
+{"clip": "Horse_Restless_1.npy", "action_group": "stationary", "action_label": "idle, shifts weight and lowers head to graze"}
+{"clip": "Horse_RunJump_1.npy", "action_group": "transition", "action_label": "run, jump, leaps with front legs extended"}
+{"clip": "Horse_RunLoop_1.npy", "action_group": "locomotion", "action_label": "run, continuous rhythmic leg cycling"}
+{"clip": "Horse_RunToStop_1.npy", "action_group": "transition", "action_label": "run, stop, lowers head to a standstill"}
+{"clip": "Horse_SlowIdle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with head lowered"}
+{"clip": "Horse_SlowWalk_1.npy", "action_group": "locomotion", "action_label": "walk, slow steady gait with rhythmic leg movement"}
+{"clip": "Hound_Attack_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with head lowered"}
+{"clip": "Hound_Bark1_1.npy", "action_group": "stationary", "action_label": "idle, stands still opening and closing its mouth"}
+{"clip": "Hound_Barking_1.npy", "action_group": "stationary", "action_label": "idle, stands alert with mouth opening and closing to bark"}
+{"clip": "Hound_DieLoop_1.npy", "action_group": "transition", "action_label": "die, collapses onto side with mouth open"}
+{"clip": "Hound_Die_1.npy", "action_group": "transition", "action_label": "die, collapses onto back with legs flailing"}
+{"clip": "Hound_GetUp_1.npy", "action_group": "transition", "action_label": "getup, rolls from side to stand upright"}
+{"clip": "Hound_Hit_1.npy", "action_group": "transition", "action_label": "hurt, fall, thrown backward tumbling"}
+{"clip": "Hound_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with head held high and ears perked"}
+{"clip": "Hound_Ready2_1.npy", "action_group": "stationary", "action_label": "idle, stands alert with mouth open and ears perked"}
+{"clip": "Hound_Restless_1.npy", "action_group": "stationary", "action_label": "roar, crouches low and growls with mouth open"}
+{"clip": "Hound_RunLoop_1.npy", "action_group": "locomotion", "action_label": "run, continuous gait, limbs cycling rhythmically"}
+{"clip": "Hound_Sniff_1.npy", "action_group": "stationary", "action_label": "idle, stands still lowering head to sniff the ground"}
+{"clip": "Hound_WalkLoop_1.npy", "action_group": "locomotion", "action_label": "walk, steady forward gait with alternating legs"}
+{"clip": "Isopetra_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, snaps mandibles and twitches antennae"}
+{"clip": "Isopetra_Attack3_1.npy", "action_group": "stationary", "action_label": "attack, rears up on hind legs thrusting head forward"}
+{"clip": "Isopetra_Attack_1.npy", "action_group": "stationary", "action_label": "attack, snaps mandibles while shifting body weight"}
+{"clip": "Isopetra_Die_1.npy", "action_group": "transition", "action_label": "die, collapses onto back flailing legs"}
+{"clip": "Isopetra_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, stands still twitching antennae"}
+{"clip": "Isopetra_Idle3_1.npy", "action_group": "stationary", "action_label": "idle, stands still twitching antennae and front legs"}
+{"clip": "Isopetra_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with subtle shifts in antennae and mandibles"}
+{"clip": "Isopetra_Run_1.npy", "action_group": "locomotion", "action_label": "run, rapid alternating gait with coordinated leg cycle"}
+{"clip": "Isopetra_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic gait with forward-leaning posture"}
+{"clip": "Jaguar_Attack1_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward roaring with mouth open"}
+{"clip": "Jaguar_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with open mouth and extended claws"}
+{"clip": "Jaguar_Attack_1.npy", "action_group": "stationary", "action_label": "attack, lunges upward with open mouth and extended claws"}
+{"clip": "Jaguar_Die1_1.npy", "action_group": "transition", "action_label": "die, fall, collapses to the ground with limbs limp"}
+{"clip": "Jaguar_Die2_1.npy", "action_group": "transition", "action_label": "die, collapses to the ground rolling onto its side"}
+{"clip": "Jaguar_GetUp_1.npy", "action_group": "transition", "action_label": "getup, rises from low posture to standing"}
+{"clip": "Jaguar_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands alert with tail swaying slightly"}
+{"clip": "Jaguar_LieIdle_1.npy", "action_group": "stationary", "action_label": "rest, lies motionless on the ground with body fully extended"}
+{"clip": "Jaguar_Low_1.npy", "action_group": "stationary", "action_label": "rest, crouched low to the ground"}
+{"clip": "Jaguar_Run_1.npy", "action_group": "locomotion", "action_label": "run, powerful fluid gait with rhythmic body extension"}
+{"clip": "Jaguar_Sit_1.npy", "action_group": "transition", "action_label": "rest, lowers body into a crouched sitting position"}
+{"clip": "Jaguar_Sit_2.npy", "action_group": "transition", "action_label": "rest, lowers hindquarters to sit"}
+{"clip": "Jaguar_Stancing_1.npy", "action_group": "stationary", "action_label": "idle, low crouch with front legs extended"}
+{"clip": "Jaguar_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, steady rhythmic gait with low balanced posture"}
+{"clip": "KingCobra_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, rear, raises body then lowers"}
+{"clip": "KingCobra_Attack_1.npy", "action_group": "stationary", "action_label": "attack, rears up and lunges with open mouth"}
+{"clip": "KingCobra_Bite_1.npy", "action_group": "stationary", "action_label": "attack, bite, strikes forward with head raised"}
+{"clip": "KingCobra_CircleBite_1.npy", "action_group": "stationary", "action_label": "turn, attack, rotates body in a circle while flicking tongue"}
+{"clip": "KingCobra_GetUp_1.npy", "action_group": "transition", "action_label": "getup, raises head and upper body into upright stance"}
+{"clip": "KingCobra_IdleLoop_1.npy", "action_group": "stationary", "action_label": "idle, raises head and spreads hood and flicks tongue"}
+{"clip": "KingCobra_IdleLoop_2.npy", "action_group": "stationary", "action_label": "idle, lowers raised head and upper body to horizontal"}
+{"clip": "KingCobra_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands upright flicking tongue"}
+{"clip": "KingCobra_Killed_1.npy", "action_group": "transition", "action_label": "die, body collapses and head lowers to ground"}
+{"clip": "KingCobra_Steady_1.npy", "action_group": "stationary", "action_label": "idle, holds steady curved posture"}
+{"clip": "Leapord_Attack_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with extended front paws and open mouth"}
+{"clip": "Leapord_Bite_1.npy", "action_group": "stationary", "action_label": "attack, bite, lunges forward with mouth open then retracts"}
+{"clip": "Leapord_Death_1.npy", "action_group": "transition", "action_label": "die, collapses onto back with limbs flailing"}
+{"clip": "Leapord_DieLoop_1.npy", "action_group": "stationary", "action_label": "die, lies motionless on its side with limbs extended"}
+{"clip": "Leapord_Die_1.npy", "action_group": "transition", "action_label": "die, collapses to the ground going limp"}
+{"clip": "Leapord_Graze_1.npy", "action_group": "stationary", "action_label": "graze, lowers head and neck to eat while standing"}
+{"clip": "Leapord_Graze_2.npy", "action_group": "stationary", "action_label": "graze, lowers head to ground and slowly lifts it"}
+{"clip": "Leapord_Growl_1.npy", "action_group": "stationary", "action_label": "roar, low aggressive crouch with mouth open and tail swaying"}
+{"clip": "Leapord_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with mouth slightly open and tail sways"}
+{"clip": "Leapord_JumpUp_1.npy", "action_group": "transition", "action_label": "getup, rises from prone to standing"}
+{"clip": "Leapord_PounceSwipe_1.npy", "action_group": "stationary", "action_label": "jump, attack, rears up on hind legs to swipe front paws upward"}
+{"clip": "Leapord_Pounce_1.npy", "action_group": "transition", "action_label": "jump, attack, retreats to gather power then leaps forward"}
+{"clip": "Leapord_Run_1.npy", "action_group": "locomotion", "action_label": "run, dynamic gait with arched back"}
+{"clip": "Leapord_Sick_1.npy", "action_group": "stationary", "action_label": "idle, stands hunched with head lowered"}
+{"clip": "Leapord_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, slow deliberate gait with steady alternating legs"}
+{"clip": "Lion_Attack1_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with open mouth and extended front paws"}
+{"clip": "Lion_Attack_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with open mouth and swipes paws"}
+{"clip": "Lion_DeathIdle_1.npy", "action_group": "stationary", "action_label": "die, rest, lies motionless on the ground with limbs extended"}
+{"clip": "Lion_Die2_1.npy", "action_group": "transition", "action_label": "die, collapses onto side with flailing limbs"}
+{"clip": "Lion_Die_1.npy", "action_group": "transition", "action_label": "die, fall, collapses to the ground rolling onto its back"}
+{"clip": "Lion_GetUp_1.npy", "action_group": "transition", "action_label": "getup, rises from prone to standing posture"}
+{"clip": "Lion_Growl_1.npy", "action_group": "stationary", "action_label": "roar, lunges forward with mouth open and tail swaying"}
+{"clip": "Lion_JumpBite_1.npy", "action_group": "transition", "action_label": "jump, attack, leaps with mouth open and front paws extended"}
+{"clip": "Lion_LeapBite_1.npy", "action_group": "transition", "action_label": "jump, attack, leap and bite with open mouth"}
+{"clip": "Lion_Run_1.npy", "action_group": "locomotion", "action_label": "run, gallops with body extending and contracting"}
+{"clip": "Lion_SlowIdle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with tail swaying gently"}
+{"clip": "Lion_Sniff_1.npy", "action_group": "stationary", "action_label": "sniff, lowers head and extends neck forward"}
+{"clip": "Lion_Swatting_1.npy", "action_group": "stationary", "action_label": "attack, swat, lunges forward with open mouth and extended paws"}
+{"clip": "Lion_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, steady rhythmic gait"}
+{"clip": "Lion_Yawn_1.npy", "action_group": "stationary", "action_label": "idle, yawn, lowers head then opens mouth wide"}
+{"clip": "Lion_Yawn_2.npy", "action_group": "stationary", "action_label": "idle, yawn, lowers head and opens mouth wide"}
+{"clip": "Lynx_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with extended paws and open mouth"}
+{"clip": "Lynx_Attack3_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with front paws extended and mouth open"}
+{"clip": "Lynx_Attack_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with open mouth and extended front paws"}
+{"clip": "Lynx_Die2_1.npy", "action_group": "transition", "action_label": "die, fall, collapses to the ground rolling onto its side"}
+{"clip": "Lynx_DieLoop_1.npy", "action_group": "stationary", "action_label": "die, lies motionless on its side with limbs extended"}
+{"clip": "Lynx_Die_1.npy", "action_group": "transition", "action_label": "die, collapses to ground, body convulsing and limbs twitching"}
+{"clip": "Lynx_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, roar, stands still lifting head to roar"}
+{"clip": "Lynx_Idle3_1.npy", "action_group": "stationary", "action_label": "idle, holds mid-air pouncing pose with mouth open"}
+{"clip": "Lynx_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands crouched with mouth slightly open and turns head"}
+{"clip": "Lynx_Jump_1.npy", "action_group": "transition", "action_label": "jump, leaps with body extended and mouth open"}
+{"clip": "Lynx_Run_1.npy", "action_group": "locomotion", "action_label": "run, limbs cycling in coordinated motion"}
+{"clip": "Lynx_Stand_1.npy", "action_group": "transition", "action_label": "getup, stand, rises from prone to standing while roaring"}
+{"clip": "Lynx_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic leg sequence"}
+{"clip": "Mammoth_Bellow_1.npy", "action_group": "stationary", "action_label": "roar, extends trunk outward then curls it back"}
+{"clip": "Mammoth_Bellow_2.npy", "action_group": "stationary", "action_label": "roar, stands still lowering head and curling trunk"}
+{"clip": "Mammoth_DeathLoop_1.npy", "action_group": "transition", "action_label": "die, collapses to the ground and lies motionless"}
+{"clip": "Mammoth_Die2_1.npy", "action_group": "transition", "action_label": "die, collapses to the ground and lies motionless"}
+{"clip": "Mammoth_Die_1.npy", "action_group": "transition", "action_label": "die, collapses to the ground and lies motionless"}
+{"clip": "Mammoth_Gesture_1.npy", "action_group": "stationary", "action_label": "idle, stands still swaying head and curling trunk"}
+{"clip": "Mammoth_GetUp_1.npy", "action_group": "transition", "action_label": "getup, rises from prone to standing"}
+{"clip": "Mammoth_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, stands still with head lowered and trunk curled"}
+{"clip": "Mammoth_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with subtle weight shifts"}
+{"clip": "Mammoth_Rise_1.npy", "action_group": "stationary", "action_label": "idle, raises head to attack with chin"}
+{"clip": "Mammoth_Run_1.npy", "action_group": "locomotion", "action_label": "run, steady rhythmic gait with forward-leaning posture"}
+{"clip": "Mammoth_SideSwipe_1.npy", "action_group": "stationary", "action_label": "attack, swings head and trunk sideways"}
+{"clip": "Mammoth_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, steady gait with rhythmic leg movement and body sway"}
+{"clip": "Monkey_Atk1_1.npy", "action_group": "stationary", "action_label": "attack, crouches low lunging forward with alternating arm strikes"}
+{"clip": "Monkey_Atk2_1.npy", "action_group": "stationary", "action_label": "attack, rears up on hind legs raising arms high"}
+{"clip": "Monkey_Atk3_1.npy", "action_group": "transition", "action_label": "jump, attack, leaps and rotates through the air"}
+{"clip": "Monkey_Atk4_1.npy", "action_group": "stationary", "action_label": "attack, extends limbs and raises arm in striking motion"}
+{"clip": "Monkey_B01Die_1.npy", "action_group": "transition", "action_label": "die, fall, collapses backward limbs flailing"}
+{"clip": "Monkey_B01Idle_1.npy", "action_group": "stationary", "action_label": "idle, look, sits crouched turning head to look around"}
+{"clip": "Monkey_B01Idle_2.npy", "action_group": "stationary", "action_label": "idle, sit, head on hand, look around"}
+{"clip": "Monkey_B02Atk_1.npy", "action_group": "stationary", "action_label": "attack, lunges arms forward and upward from a crouch"}
+{"clip": "Monkey_B02Die_1.npy", "action_group": "transition", "action_label": "die, fall, collapses backward onto its back"}
+{"clip": "Monkey_B02Idle_1.npy", "action_group": "stationary", "action_label": "idle, crouched shifting weight and rotating torso"}
+{"clip": "Monkey_B02Idle_2.npy", "action_group": "transition", "action_label": "idle, sits down tucking legs and raising tail"}
+{"clip": "Monkey_Die_1.npy", "action_group": "transition", "action_label": "die, fall, collapses from crouch onto side"}
+{"clip": "Monkey_Idle1_1.npy", "action_group": "stationary", "action_label": "idle, hangs suspended with limbs extended and tail curved upward"}
+{"clip": "Monkey_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, crouches with limbs bent and tail raised"}
+{"clip": "Monkey_Idle3_1.npy", "action_group": "stationary", "action_label": "idle, sits crouched extending and retracting arm"}
+{"clip": "Monkey_Idle3_2.npy", "action_group": "stationary", "action_label": "idle, eat, sits with legs dangling bringing hand to mouth"}
+{"clip": "Monkey_Run_1.npy", "action_group": "locomotion", "action_label": "run, bounding gait with extended limbs and tail"}
+{"clip": "Monkey_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, quadrupedal gait with tail held high"}
+{"clip": "Ostrich_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, rear up flapping wings and lunging neck forward"}
+{"clip": "Ostrich_Attack3_1.npy", "action_group": "stationary", "action_label": "attack, flaps wings and lunges neck forward to strike with beak"}
+{"clip": "Ostrich_Attack4_1.npy", "action_group": "stationary", "action_label": "attack, lunges head forward flapping wings and kicking legs"}
+{"clip": "Ostrich_Attack_1.npy", "action_group": "stationary", "action_label": "attack, extends neck forward snapping head down flapping wings"}
+{"clip": "Ostrich_Die_1.npy", "action_group": "transition", "action_label": "die, fall, collapses onto side flailing wings"}
+{"clip": "Ostrich_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, stands upright shifting weight and moving head"}
+{"clip": "Ostrich_Idle3_1.npy", "action_group": "stationary", "action_label": "idle, stands still flapping wings and bending neck to preen"}
+{"clip": "Ostrich_Idle3_2.npy", "action_group": "stationary", "action_label": "idle, stands still raising head from tucked to upright"}
+{"clip": "Ostrich_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still flapping wings and bobbing head"}
+{"clip": "Ostrich_Run_1.npy", "action_group": "locomotion", "action_label": "run, rapid stride with upright posture"}
+{"clip": "Ostrich_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, steady gait with alternating legs and upright posture"}
+{"clip": "Pirrana_Biting2_1.npy", "action_group": "stationary", "action_label": "attack, bite, opens and closes its mouth"}
+{"clip": "Pirrana_Biting_1.npy", "action_group": "stationary", "action_label": "bite, opens and closes mouth"}
+{"clip": "Pirrana_DeadFloat2_1.npy", "action_group": "transition", "action_label": "die, floats belly up in water with mouth open"}
+{"clip": "Pirrana_DeadFloat_1.npy", "action_group": "transition", "action_label": "die, floats motionless with body vertical"}
+{"clip": "Pirrana_DiveIn_1.npy", "action_group": "transition", "action_label": "dive, tilts head down and opens mouth wide"}
+{"clip": "Pirrana_Flopping_1.npy", "action_group": "stationary", "action_label": "shake, thrashes body and flaps fins violently"}
+{"clip": "Pirrana_Jump2_1.npy", "action_group": "transition", "action_label": "jump, swim, leaps vertically with jaws open"}
+{"clip": "Pirrana_MidSwim_1.npy", "action_group": "locomotion", "action_label": "swim, mouth opening and closing with undulating fins"}
+{"clip": "Pirrana_RiseTop_1.npy", "action_group": "locomotion", "action_label": "swim, rises upward undulating fins and tail"}
+{"clip": "Pirrana_SwimJump_1.npy", "action_group": "locomotion", "action_label": "swim, jump, swims with fins and tail while mouth opens and closes"}
+{"clip": "Pirrana_Swim_1.npy", "action_group": "locomotion", "action_label": "swim, undulates body and flaps fins"}
+{"clip": "PolarBearB_Die_1.npy", "action_group": "transition", "action_label": "die, collapses onto side and rolls onto back"}
+{"clip": "PolarBearB_Fall_1.npy", "action_group": "transition", "action_label": "fall, collapses onto back, flailing limbs"}
+{"clip": "PolarBearB_GetUp_1.npy", "action_group": "transition", "action_label": "getup, rolls onto back then rights itself to stand upright"}
+{"clip": "PolarBearB_Idle1_1.npy", "action_group": "stationary", "action_label": "idle, stands still with slight head and mouth movement"}
+{"clip": "PolarBearB_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, stands still shifting weight and moving head"}
+{"clip": "PolarBearB_Idle2_2.npy", "action_group": "stationary", "action_label": "idle, stands still shifting weight and moving head"}
+{"clip": "PolarBearB_Idle3_1.npy", "action_group": "transition", "action_label": "rest, roll onto back to stretch limbs"}
+{"clip": "PolarBearB_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with head bobbing and mouth opening and closing"}
+{"clip": "PolarBearB_Play_1.npy", "action_group": "stationary", "action_label": "roar, playful head and paw movements with mouth open"}
+{"clip": "PolarBearB_Roar_1.npy", "action_group": "stationary", "action_label": "roar, opens mouth wide shifting weight"}
+{"clip": "PolarBearB_Run_1.npy", "action_group": "locomotion", "action_label": "run, dynamic gait extending front legs forward"}
+{"clip": "PolarBearB_Run_2.npy", "action_group": "locomotion", "action_label": "run, extends front legs forward and pushes off with hind legs"}
+{"clip": "PolarBearB_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, steady gait alternating front and hind legs"}
+{"clip": "PolarBearB_Walk_2.npy", "action_group": "locomotion", "action_label": "walk, steady gait, rhythmic alternating legs"}
+{"clip": "PolarBear_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, roar, rears up on hind legs to swipe"}
+{"clip": "PolarBear_Attack3_1.npy", "action_group": "stationary", "action_label": "attack, rear on hind legs swiping paws"}
+{"clip": "PolarBear_Attack_1.npy", "action_group": "stationary", "action_label": "attack, rear on hind legs swiping front paws"}
+{"clip": "PolarBear_Die_1.npy", "action_group": "transition", "action_label": "die, fall, collapses sideways to the ground"}
+{"clip": "PolarBear_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, stands still with head lowered shifting weight"}
+{"clip": "PolarBear_Idle3_1.npy", "action_group": "stationary", "action_label": "idle, stands with head lowered turning to look forward"}
+{"clip": "PolarBear_Idle3_2.npy", "action_group": "stationary", "action_label": "idle, stands still lowering head and opening mouth"}
+{"clip": "PolarBear_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with mouth open breathing"}
+{"clip": "PolarBear_Run_1.npy", "action_group": "locomotion", "action_label": "run, rhythmic gait with steady powerful stride"}
+{"clip": "PolarBear_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, steady gait with head lowered"}
+{"clip": "Puppy_IdleEnergetic_1.npy", "action_group": "stationary", "action_label": "idle, stands shifting weight and rears up on hind legs"}
+{"clip": "Puppy_IdleEnergetic_2.npy", "action_group": "transition", "action_label": "idle, sit, stands on hind legs then lowers to sit"}
+{"clip": "Puppy_IdleEnergetic_3.npy", "action_group": "stationary", "action_label": "idle, sits with alert posture and tail wagging"}
+{"clip": "Puppy_IdleLayDown_1.npy", "action_group": "transition", "action_label": "rest, lowers body from sitting to lie down"}
+{"clip": "Puppy_IdleLayDown_2.npy", "action_group": "stationary", "action_label": "rest, lies prone with limbs extended"}
+{"clip": "Puppy_IdleLayDown_3.npy", "action_group": "transition", "action_label": "getup, rises from lying to sitting posture"}
+{"clip": "Puppy_Run_1.npy", "action_group": "locomotion", "action_label": "run, bounding gait with front legs extended forward"}
+{"clip": "Puppy_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic leg sequence"}
+{"clip": "Raindeer_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, rear up on hind legs with mouth open"}
+{"clip": "Raindeer_Attack3_1.npy", "action_group": "stationary", "action_label": "attack, head lowered, lunges forward"}
+{"clip": "Raindeer_Attack_1.npy", "action_group": "stationary", "action_label": "attack, lowers head and neck to ground"}
+{"clip": "Raindeer_Die_1.npy", "action_group": "transition", "action_label": "die, collapses onto its side and lies motionless"}
+{"clip": "Raindeer_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with head slightly turned"}
+{"clip": "Raindeer_Run_1.npy", "action_group": "locomotion", "action_label": "run, legs cycling rapidly with body bouncing with each stride"}
+{"clip": "Raindeer_Stance_1.npy", "action_group": "stationary", "action_label": "idle, stands alert stance with mouth opening and closing"}
+{"clip": "Raindeer_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, steady gait with rhythmic leg alternation"}
+{"clip": "Raindeer_Yell_1.npy", "action_group": "stationary", "action_label": "roar, eat, lifts head to vocalize then lowers to graze"}
+{"clip": "Raptor2_BreatheIdle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with mouth open breathing"}
+{"clip": "Raptor2_Clean_1.npy", "action_group": "stationary", "action_label": "scratch, lifts hind leg to groom head and neck"}
+{"clip": "Raptor2_Die2GetUp_1.npy", "action_group": "transition", "action_label": "die, getup, collapses and struggles to stand"}
+{"clip": "Raptor2_DieGetUp_1.npy", "action_group": "transition", "action_label": "die, getup, collapses on back then rolls to stand"}
+{"clip": "Raptor2_Die_1.npy", "action_group": "transition", "action_label": "die, rears up then collapses forward lowering head"}
+{"clip": "Raptor2_EatGrass_1.npy", "action_group": "stationary", "action_label": "eat, lowers head to ground in grazing motion"}
+{"clip": "Raptor2_Eat_1.npy", "action_group": "stationary", "action_label": "eat, lowers head and opens mouth"}
+{"clip": "Raptor2_EggTend_1.npy", "action_group": "stationary", "action_label": "idle, stands still lowering head and neck"}
+{"clip": "Raptor2_FallGetUp_1.npy", "action_group": "transition", "action_label": "fall, getup, tumbles onto back then rolls to stand"}
+{"clip": "Raptor2_Fall_1.npy", "action_group": "transition", "action_label": "fall, hurt, tumbles through air rotating body"}
+{"clip": "Raptor2_FenceClimbFall_1.npy", "action_group": "transition", "action_label": "fall, rear up then tumble backward onto back"}
+{"clip": "Raptor2_IdleAlert_1.npy", "action_group": "stationary", "action_label": "idle, stands alert with head raised and mouth slightly open"}
+{"clip": "Raptor2_IdleBiteApple_1.npy", "action_group": "stationary", "action_label": "idle, bite, stands upright opening mouth wide then crouches"}
+{"clip": "Raptor2_IdleCurious_1.npy", "action_group": "stationary", "action_label": "idle, look, stands alert shifting weight and turning head"}
+{"clip": "Raptor2_IdleCurious_2.npy", "action_group": "stationary", "action_label": "idle, lowers head to sniff the ground"}
+{"clip": "Raptor2_IdleForward_1.npy", "action_group": "stationary", "action_label": "idle, forward with swaying tail"}
+{"clip": "Raptor2_IdleLeft_1.npy", "action_group": "stationary", "action_label": "idle, look, stands alert shifting weight and turning head"}
+{"clip": "Raptor2_IdleLookLeft_1.npy", "action_group": "stationary", "action_label": "idle, look, stands still turning head to look left"}
+{"clip": "Raptor2_IdleLookRight_1.npy", "action_group": "stationary", "action_label": "idle, look, stands still turning head to look right"}
+{"clip": "Raptor2_IdleRight_1.npy", "action_group": "stationary", "action_label": "idle, stands on hind legs swaying head and tail"}
+{"clip": "Raptor2_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands alert with body bouncing and head turning"}
+{"clip": "Raptor2_JumpSpinRun_1.npy", "action_group": "locomotion", "action_label": "run, jump, turn, leaps and spins while cycling legs"}
+{"clip": "Raptor2_LeftHeadRun_1.npy", "action_group": "locomotion", "action_label": "run, head turned left while moving"}
+{"clip": "Raptor2_LeftRunBite_1.npy", "action_group": "locomotion", "action_label": "run, attack, head turned left biting"}
+{"clip": "Raptor2_ReverseRun_1.npy", "action_group": "locomotion", "action_label": "run, retreat, runs backward with tail held high"}
+{"clip": "Raptor2_RightHeadRun_1.npy", "action_group": "locomotion", "action_label": "run, head turned right while moving"}
+{"clip": "Raptor2_RightRunBite_1.npy", "action_group": "locomotion", "action_label": "run, attack, head turned right biting"}
+{"clip": "Raptor2_RunFall_1.npy", "action_group": "transition", "action_label": "run, fall, trips and tumbles onto back"}
+{"clip": "Raptor2_RunJumpBite_1.npy", "action_group": "locomotion", "action_label": "run, jump, bite, leaps into the air to bite and lands"}
+{"clip": "Raptor2_RunJumpFall_1.npy", "action_group": "transition", "action_label": "run, jump, fall, leaps and tumbles down"}
+{"clip": "Raptor2_RunJumpLandBack_1.npy", "action_group": "transition", "action_label": "run, jump, land, leaps and lands on back"}
+{"clip": "Raptor2_RunJumpRoll_1.npy", "action_group": "locomotion", "action_label": "run, jump, roll, leaps and somersaults"}
+{"clip": "Raptor2_RunJump_1.npy", "action_group": "locomotion", "action_label": "run, jump, leaps into the air"}
+{"clip": "Raptor2_RunScreamJump_1.npy", "action_group": "locomotion", "action_label": "run, jump, leaps while screaming"}
+{"clip": "Raptor2_RunToStopRoar2_1.npy", "action_group": "transition", "action_label": "run, roar, halts to open mouth"}
+{"clip": "Raptor2_RunToStopRoar_1.npy", "action_group": "transition", "action_label": "run, stop, roar, opens mouth wide"}
+{"clip": "Raptor2_Run_1.npy", "action_group": "locomotion", "action_label": "run, high-speed gait with tail extended for balance"}
+{"clip": "Raptor2_SpinRun_1.npy", "action_group": "locomotion", "action_label": "run, turn, spins rapidly while maintaining a running gait"}
+{"clip": "Raptor2_Stride_1.npy", "action_group": "locomotion", "action_label": "walk, strides with forward-leaning posture"}
+{"clip": "Raptor2_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic leg alternation with forward-leaning posture"}
+{"clip": "Raptor3_AttackRight_1.npy", "action_group": "stationary", "action_label": "attack, lunge right with open mouth and tail swing"}
+{"clip": "Raptor3_BarkForward_1.npy", "action_group": "stationary", "action_label": "idle, attack, barks forward with mouth open"}
+{"clip": "Raptor3_LeftPuke_1.npy", "action_group": "stationary", "action_label": "attack, stands with mouth open performing a puke"}
+{"clip": "Raptor3_MeanLEft_1.npy", "action_group": "stationary", "action_label": "roar, attack, faces left in crouch with mouth open"}
+{"clip": "Raptor3_MeanRight_1.npy", "action_group": "stationary", "action_label": "roar, attack, faces right in crouch with mouth open"}
+{"clip": "Raptor3_RoarLeft_1.npy", "action_group": "stationary", "action_label": "roar, rears up on hind legs turning head left with mouth wide open"}
+{"clip": "Raptor3_RoarRight_1.npy", "action_group": "stationary", "action_label": "roar, rears up on hind legs turning head right with mouth wide open"}
+{"clip": "Raptor3_Roarforward_1.npy", "action_group": "stationary", "action_label": "roar, rears up on hind legs with mouth wide open"}
+{"clip": "Raptor3_Run_1.npy", "action_group": "locomotion", "action_label": "run, galloping gait with body bobbing and tail swinging"}
+{"clip": "Raptor3_StepLeft_1.npy", "action_group": "locomotion", "action_label": "walk, steps laterally to the left"}
+{"clip": "Raptor3_StepRight_1.npy", "action_group": "locomotion", "action_label": "walk, steps laterally to the right"}
+{"clip": "Raptor3_StepRoar_1.npy", "action_group": "stationary", "action_label": "roar, steps in place with mouth open"}
+{"clip": "Raptor3_Yell_1.npy", "action_group": "stationary", "action_label": "roar, stands on hind legs opening mouth wide"}
+{"clip": "Raptor_Attack_1.npy", "action_group": "stationary", "action_label": "attack, rear on hind legs lunges forward with a strike"}
+{"clip": "Raptor_Die_1.npy", "action_group": "transition", "action_label": "die, collapses to the ground legs buckling"}
+{"clip": "Raptor_FastWalk_1.npy", "action_group": "locomotion", "action_label": "walk, fast alternating gait with forward-leaning posture"}
+{"clip": "Raptor_HeadSmash_1.npy", "action_group": "stationary", "action_label": "attack, crouch and snap head up"}
+{"clip": "Raptor_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, stands alert shifting weight and swaying head and tail"}
+{"clip": "Raptor_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with jaws opening and closing"}
+{"clip": "Raptor_Idle_2.npy", "action_group": "stationary", "action_label": "idle, stands alert with mouth open and slight head turns"}
+{"clip": "Raptor_LegScratch_1.npy", "action_group": "stationary", "action_label": "scratch, lifts hind leg to scratch side"}
+{"clip": "Raptor_LegScratch_2.npy", "action_group": "stationary", "action_label": "scratch,"}
+{"clip": "Raptor_Roar_1.npy", "action_group": "stationary", "action_label": "roar, rears up on hind legs with mouth wide open"}
+{"clip": "Raptor_SlowWalk_1.npy", "action_group": "locomotion", "action_label": "walk, slow rhythmic leg alternation with body sway"}
+{"clip": "Raptor_Yawn_1.npy", "action_group": "stationary", "action_label": "idle, yawn, opens mouth wide"}
+{"clip": "Raptor_Yawn_2.npy", "action_group": "stationary", "action_label": "idle, yawn, stands still opening its mouth wide"}
+{"clip": "Rat_AlertRun_1.npy", "action_group": "transition", "action_label": "turn, run, rapid escape with body held low"}
+{"clip": "Rat_Clean_1.npy", "action_group": "stationary", "action_label": "idle, lowers head and grooms face with front paws"}
+{"clip": "Rat_Eat_1.npy", "action_group": "stationary", "action_label": "eat, lowers head and moves front paws rhythmically"}
+{"clip": "Rat_Itch_1.npy", "action_group": "stationary", "action_label": "scratch, lowers head and scratches face with hind leg"}
+{"clip": "Rat_Scamper_1.npy", "action_group": "locomotion", "action_label": "run, rapid energetic scamper with quick limb movement"}
+{"clip": "Rat_Trottle_1.npy", "action_group": "locomotion", "action_label": "run, trotting gait with rhythmic leg sequence"}
+{"clip": "Rhino_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, head lowered, lunges forward"}
+{"clip": "Rhino_Attack3_1.npy", "action_group": "stationary", "action_label": "attack, head lowered, lunges forward"}
+{"clip": "Rhino_Attack_1.npy", "action_group": "stationary", "action_label": "attack, head lowered, lunges forward"}
+{"clip": "Rhino_Die_1.npy", "action_group": "transition", "action_label": "die, collapses to the ground and lies motionless"}
+{"clip": "Rhino_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, stands still with slight head turns and ear flicks"}
+{"clip": "Rhino_Idle3_1.npy", "action_group": "stationary", "action_label": "idle, stands still with head lowered"}
+{"clip": "Rhino_Idle3_2.npy", "action_group": "stationary", "action_label": "idle, stands still shifting weight and moving head"}
+{"clip": "Rhino_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still shifting weight and moving head"}
+{"clip": "Rhino_Run_1.npy", "action_group": "locomotion", "action_label": "run, steady rhythmic gait, body forward-leaning"}
+{"clip": "Rhino_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, steady rhythmic gait with alternating legs"}
+{"clip": "Roach_Bristle_1.npy", "action_group": "stationary", "action_label": "idle, bristles wings and twitches antennae"}
+{"clip": "Roach_Fall_1.npy", "action_group": "transition", "action_label": "fall, body tilts and legs twitch erratically"}
+{"clip": "Roach_Hop_1.npy", "action_group": "transition", "action_label": "jump, hop with legs extended"}
+{"clip": "Roach_Left_1.npy", "action_group": "locomotion", "action_label": "walk, moves legs in a coordinated sequence"}
+{"clip": "Roach_Move_1.npy", "action_group": "locomotion", "action_label": "walk, moves legs in a walking motion while remaining in place"}
+{"clip": "Roach_Scurry_1.npy", "action_group": "locomotion", "action_label": "run, scurry with rapid jerky leg movements"}
+{"clip": "Roach_Shake_1.npy", "action_group": "stationary", "action_label": "shake, body and antennae wiggle while legs planted"}
+{"clip": "Roach_Smelling_1.npy", "action_group": "stationary", "action_label": "idle, sniffing with antennae and head"}
+{"clip": "Roach_TurnLeft_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body to the left"}
+{"clip": "Roach_TurnRight_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body to the right"}
+{"clip": "Roach_Uppity_1.npy", "action_group": "stationary", "action_label": "jump, twitching legs and antennae while upright"}
+{"clip": "SabreToothTiger_180Flip_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body 180 degrees to face opposite direction"}
+{"clip": "SabreToothTiger_180RIght_1.npy", "action_group": "locomotion", "action_label": "turn, rotates 180 degrees to the right"}
+{"clip": "SabreToothTiger_45TurnLeft_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body left rotating torso and head"}
+{"clip": "SabreToothTiger_Agitated_1.npy", "action_group": "stationary", "action_label": "idle, crouches low with mouth open shifting weight"}
+{"clip": "SabreToothTiger_Attack_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with jaws open"}
+{"clip": "SabreToothTiger_BackUp_1.npy", "action_group": "locomotion", "action_label": "walk, retreat, moves backward with head lowered and mouth open"}
+{"clip": "SabreToothTiger_Backing_1.npy", "action_group": "locomotion", "action_label": "walk, retreat, backs away with mouth open in a snarl"}
+{"clip": "SabreToothTiger_Begg_1.npy", "action_group": "stationary", "action_label": "idle, crouches low with front paws extended and head lowered"}
+{"clip": "SabreToothTiger_Bite_1.npy", "action_group": "stationary", "action_label": "attack, bite, lunges forward with mouth wide open"}
+{"clip": "SabreToothTiger_CageBat_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with open mouth and extended claws"}
+{"clip": "SabreToothTiger_Cowering2_1.npy", "action_group": "transition", "action_label": "retreat, crouches low with mouth open"}
+{"clip": "SabreToothTiger_Cowering_1.npy", "action_group": "stationary", "action_label": "idle, cowers with body lowered and mouth open"}
+{"clip": "SabreToothTiger_Eating_1.npy", "action_group": "stationary", "action_label": "eat, stands with body angled downward chewing"}
+{"clip": "SabreToothTiger_GetUp2_1.npy", "action_group": "transition", "action_label": "getup, rises from prone to standing"}
+{"clip": "SabreToothTiger_GetUpMad_1.npy", "action_group": "transition", "action_label": "getup, rises from prone to standing while snarling"}
+{"clip": "SabreToothTiger_GetUp_1.npy", "action_group": "transition", "action_label": "getup, rises from prone to standing"}
+{"clip": "SabreToothTiger_Growling_1.npy", "action_group": "stationary", "action_label": "idle, crouched low opening and closing jaws to growl"}
+{"clip": "SabreToothTiger_Layout_1.npy", "action_group": "transition", "action_label": "rest, lowers body into a crouched predatory stance"}
+{"clip": "SabreToothTiger_Leaper_1.npy", "action_group": "transition", "action_label": "jump, lunge forward with front paws extended and mouth open"}
+{"clip": "SabreToothTiger_LeftTurn_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body left in low stance"}
+{"clip": "SabreToothTiger_Mean_1.npy", "action_group": "stationary", "action_label": "attack, crouches low with head lowered and mouth open"}
+{"clip": "SabreToothTiger_PawSwatting_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward and swats with front paw"}
+{"clip": "SabreToothTiger_PissedOff2_1.npy", "action_group": "stationary", "action_label": "roar, aggressive display opening and closing jaws"}
+{"clip": "SabreToothTiger_PissedOff_1.npy", "action_group": "stationary", "action_label": "roar, aggressive display with mouth wide open"}
+{"clip": "SabreToothTiger_Raged_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with open mouth and extended claws"}
+{"clip": "SabreToothTiger_Roaring_1.npy", "action_group": "stationary", "action_label": "roar, crouched stance with mouth wide open"}
+{"clip": "SabreToothTiger_Run2_1.npy", "action_group": "locomotion", "action_label": "run, gallops with body low to the ground"}
+{"clip": "SabreToothTiger_Run_1.npy", "action_group": "locomotion", "action_label": "run, galloping gait with rapid limb cycling"}
+{"clip": "SabreToothTiger_Sit_1.npy", "action_group": "transition", "action_label": "rest, sit, lowers hindquarters to ground"}
+{"clip": "SabreToothTiger_Sitting2_1.npy", "action_group": "stationary", "action_label": "rest, sits upright with mouth open"}
+{"clip": "SabreToothTiger_Sitting_1.npy", "action_group": "stationary", "action_label": "rest, sits still with mouth open"}
+{"clip": "SabreToothTiger_Slow180_1.npy", "action_group": "locomotion", "action_label": "turn, slow 180 degree rotation"}
+{"clip": "SabreToothTiger_Snap_1.npy", "action_group": "stationary", "action_label": "attack,"}
+{"clip": "SabreToothTiger_Spin180_1.npy", "action_group": "locomotion", "action_label": "turn, rotates body 180 degrees in a low crouch"}
+{"clip": "SabreToothTiger_Stablize_1.npy", "action_group": "transition", "action_label": "turn, lowers body into a crouch"}
+{"clip": "SabreToothTiger_Stalker_1.npy", "action_group": "locomotion", "action_label": "walk, slow predatory crouch with front paws extended"}
+{"clip": "SabreToothTiger_StartLeft_1.npy", "action_group": "transition", "action_label": "turn, low prowling motion with body angled"}
+{"clip": "SabreToothTiger_Startwalk_1.npy", "action_group": "transition", "action_label": "walk, getup, transitions from crouch to stride"}
+{"clip": "SabreToothTiger_SwatLft_1.npy", "action_group": "stationary", "action_label": "attack, swat with left forelimb extended"}
+{"clip": "SabreToothTiger_Swim_1.npy", "action_group": "locomotion", "action_label": "swim, paddles limbs in a rhythmic cycle"}
+{"clip": "SabreToothTiger_TiredYawn_1.npy", "action_group": "stationary", "action_label": "idle, yawns with head tilted back"}
+{"clip": "SabreToothTiger_Trot_1.npy", "action_group": "locomotion", "action_label": "run, trot with rhythmic alternating legs and forward-leaning posture"}
+{"clip": "SabreToothTiger_TurnLeft_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body to the left"}
+{"clip": "SabreToothTiger_Warning_1.npy", "action_group": "stationary", "action_label": "roar, opens mouth wide while crouched low"}
+{"clip": "SandMouse_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, rear on hind legs and lunge forward"}
+{"clip": "SandMouse_Attack_1.npy", "action_group": "stationary", "action_label": "attack, rears up on hind legs thrusting front paws forward"}
+{"clip": "SandMouse_Die2_1.npy", "action_group": "transition", "action_label": "die, collapses onto back, limbs twitching, tail curling"}
+{"clip": "SandMouse_Die3_1.npy", "action_group": "transition", "action_label": "die, collapses onto side, limbs twitching, tail curling"}
+{"clip": "SandMouse_Die_1.npy", "action_group": "transition", "action_label": "die, collapses onto back with twitching limbs"}
+{"clip": "SandMouse_DigIn_1.npy", "action_group": "transition", "action_label": "dig, lowers head and front paws into a digging posture"}
+{"clip": "SandMouse_DigOut_1.npy", "action_group": "transition", "action_label": "getup, rotates from supine to upright extending limbs"}
+{"clip": "SandMouse_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, stands still with tail twitching"}
+{"clip": "SandMouse_Idle3_1.npy", "action_group": "stationary", "action_label": "idle, stands alert with mouth slightly open and tail sways"}
+{"clip": "SandMouse_Idle4_1.npy", "action_group": "stationary", "action_label": "idle, stands on hind legs grooming face and ears"}
+{"clip": "SandMouse_Idle4_2.npy", "action_group": "stationary", "action_label": "idle, stands on hind legs twitching nose and whiskers"}
+{"clip": "SandMouse_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still twitching head and whiskers"}
+{"clip": "SandMouse_Idle_2.npy", "action_group": "stationary", "action_label": "idle, stands still with head lowered"}
+{"clip": "SandMouse_Run_1.npy", "action_group": "locomotion", "action_label": "run, rapid bounding gait with rhythmic body stretch"}
+{"clip": "SandMouse_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic limb sequence"}
+{"clip": "Scorpion-2_AttackRetreat_1.npy", "action_group": "locomotion", "action_label": "retreat, walk backward with tail and claws raised"}
+{"clip": "Scorpion-2_BackConfused_1.npy", "action_group": "stationary", "action_label": "idle, shuffles legs and pincers in place"}
+{"clip": "Scorpion-2_BackUp_1.npy", "action_group": "locomotion", "action_label": "walk, moves backward with a rhythmic gait, tail arched high"}
+{"clip": "Scorpion-2_BackingCrazy_1.npy", "action_group": "locomotion", "action_label": "walk, retreats backward with frantic erratic gait"}
+{"clip": "Scorpion-2_BellyDeath1_1.npy", "action_group": "transition", "action_label": "die, collapses onto back flailing legs and tail"}
+{"clip": "Scorpion-2_BellyDeath_1.npy", "action_group": "transition", "action_label": "die, collapses onto back flailing legs and tail"}
+{"clip": "Scorpion-2_BiteAttack_1.npy", "action_group": "stationary", "action_label": "attack, bite, lunges forward with pincers to bite"}
+{"clip": "Scorpion-2_BiteGrab_1.npy", "action_group": "stationary", "action_label": "attack, bite, raises tail and snaps pincers"}
+{"clip": "Scorpion-2_BlastedDeath_1.npy", "action_group": "transition", "action_label": "die, collapses onto back flailing legs and tail"}
+{"clip": "Scorpion-2_Death2_1.npy", "action_group": "transition", "action_label": "die, collapses into a curled motionless posture"}
+{"clip": "Scorpion-2_Death_1.npy", "action_group": "transition", "action_label": "die, body and limbs convulse and twitch"}
+{"clip": "Scorpion-2_Death_2.npy", "action_group": "transition", "action_label": "die, body and limbs convulse and twitch erratically"}
+{"clip": "Scorpion-2_Flipped_1.npy", "action_group": "transition", "action_label": "getup,"}
+{"clip": "Scorpion-2_Guns_1.npy", "action_group": "stationary", "action_label": "idle, raises tail high and arches it over back"}
+{"clip": "Scorpion-2_HasppyFangs_1.npy", "action_group": "stationary", "action_label": "idle, rhythmically opens and closes front pincers"}
+{"clip": "Scorpion-2_HitAndSorr_1.npy", "action_group": "transition", "action_label": "hurt, retreat, shake, fall, lies on ground"}
+{"clip": "Scorpion-2_JumpSting_1.npy", "action_group": "transition", "action_label": "retreat, attack, stings with raised tail"}
+{"clip": "Scorpion-2_LimpAlive_1.npy", "action_group": "transition", "action_label": "getup, idle, slowly rises to stand"}
+{"clip": "Scorpion-2_LungeForward_1.npy", "action_group": "stationary", "action_label": "attack, lunge forward with extended legs"}
+{"clip": "Scorpion-2_OnBackDying_1.npy", "action_group": "transition", "action_label": "die, collapses onto back flailing legs and tail"}
+{"clip": "Scorpion-2_PissedFangs_1.npy", "action_group": "stationary", "action_label": "idle, tail raised shifting body rhythmically"}
+{"clip": "Scorpion-2_RisingWalk_1.npy", "action_group": "locomotion", "action_label": "walk, rises lifting its body and tail while stepping forward"}
+{"clip": "Scorpion-2_RunAttack_1.npy", "action_group": "locomotion", "action_label": "run, attack, gallops with tail and claws raised"}
+{"clip": "Scorpion-2_RunToAttrack_1.npy", "action_group": "transition", "action_label": "run, legs move in coordinated sequence then stop"}
+{"clip": "Scorpion-2_SettleBack_1.npy", "action_group": "transition", "action_label": "rest, lowers body and retracts limbs into compact posture"}
+{"clip": "Scorpion-2_SlideBack_1.npy", "action_group": "locomotion", "action_label": "walk, moves backward with rhythmic gait, tail arched"}
+{"clip": "Scorpion-2_SlowIdle_1.npy", "action_group": "stationary", "action_label": "idle, remains motionless in a static pose"}
+{"clip": "Scorpion-2_StandAttack_1.npy", "action_group": "stationary", "action_label": "attack, raises pincers and tail in defensive posture"}
+{"clip": "Scorpion-2_StandReady_1.npy", "action_group": "stationary", "action_label": "idle, stands ready with subtle body and tail shifts"}
+{"clip": "Scorpion-2_StandingRun_1.npy", "action_group": "locomotion", "action_label": "run, legs alternate with body elevated and tail arched"}
+{"clip": "Scorpion-2_SteadyWalk_1.npy", "action_group": "locomotion", "action_label": "walk, steady gait with stable posture"}
+{"clip": "Scorpion-2_StingKill2_1.npy", "action_group": "stationary", "action_label": "attack, stings with tail raised"}
+{"clip": "Scorpion-2_StingKill_1.npy", "action_group": "stationary", "action_label": "attack, stings with tail arching over back"}
+{"clip": "Scorpion-2_StingYaYa_1.npy", "action_group": "stationary", "action_label": "attack, sting, rhythmically raises and lowers tail and claws"}
+{"clip": "Scorpion-2_StingYa_1.npy", "action_group": "stationary", "action_label": "attack, stings with raised tail and stinger"}
+{"clip": "Scorpion-2_StrafeLeft_1.npy", "action_group": "locomotion", "action_label": "walk, strafe left sideways with legs coordinated"}
+{"clip": "Scorpion-2_StrafeRight_1.npy", "action_group": "locomotion", "action_label": "walk, strafe right sideways with legs coordinated"}
+{"clip": "Scorpion-2_WalkAndRise_1.npy", "action_group": "locomotion", "action_label": "walk, rises body and tail while moving"}
+{"clip": "Scorpion-2_WalkForward_1.npy", "action_group": "locomotion", "action_label": "walk, moves forward with rhythmic gait, body low to ground"}
+{"clip": "Scorpion-2_WildDeath_1.npy", "action_group": "transition", "action_label": "die, arches tail high and thrashes body convulsively"}
+{"clip": "Scorpion_Agitated_1.npy", "action_group": "stationary", "action_label": "idle, shakes pincers and tail rapidly"}
+{"clip": "Scorpion_Attack1_1.npy", "action_group": "stationary", "action_label": "attack, raises left pincer and lunges forward snapping"}
+{"clip": "Scorpion_BackUp_1.npy", "action_group": "locomotion", "action_label": "walk, moves backward with a low alert posture"}
+{"clip": "Scorpion_Defend_1.npy", "action_group": "stationary", "action_label": "idle, raises pincers and tail in defensive posture"}
+{"clip": "Scorpion_Defend_2.npy", "action_group": "stationary", "action_label": "idle, raises tail and opens pincers"}
+{"clip": "Scorpion_IdleLoop_1.npy", "action_group": "stationary", "action_label": "idle, shifts weight and adjusts legs and tail"}
+{"clip": "Scorpion_Recoil2_1.npy", "action_group": "stationary", "action_label": "idle, rears up on hind legs with tail and pincers raised"}
+{"clip": "Scorpion_Recoil_1.npy", "action_group": "stationary", "action_label": "idle, arched tail and steady pincers"}
+{"clip": "Scorpion_SlowForward_1.npy", "action_group": "locomotion", "action_label": "walk, slow deliberate gait with body low to the ground"}
+{"clip": "Scorpion_Stinger_1.npy", "action_group": "stationary", "action_label": "attack, raises and lowers tail in a striking motion"}
+{"clip": "Scorpion_StretchArms_1.npy", "action_group": "stationary", "action_label": "stretch, extends front pincers outward and retracts"}
+{"clip": "Scorpion_TurnLeft_1.npy", "action_group": "locomotion", "action_label": "turn, rotates body left with tail raised"}
+{"clip": "Scorpion_TurnRight_1.npy", "action_group": "locomotion", "action_label": "turn, rotates body right with tail raised"}
+{"clip": "Scorpion_WalkForward_1.npy", "action_group": "locomotion", "action_label": "walk, moves forward with rhythmic gait"}
+{"clip": "Skunk_Die_1.npy", "action_group": "transition", "action_label": "die, collapses onto side and lies motionless"}
+{"clip": "Skunk_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, stands still with body lowered and tail held high"}
+{"clip": "Skunk_Idle3_1.npy", "action_group": "stationary", "action_label": "idle, turn, slow deliberate body and head rotation in low alert posture"}
+{"clip": "Skunk_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with mouth open and tail raised"}
+{"clip": "Skunk_Run_1.npy", "action_group": "locomotion", "action_label": "run, rhythmic gait with bushy tail swaying"}
+{"clip": "Skunk_Spray_1.npy", "action_group": "stationary", "action_label": "turn, rotates body and sprays attack"}
+{"clip": "Skunk_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, steady gait with tail swaying gently"}
+{"clip": "Skunk_Walk_2.npy", "action_group": "locomotion", "action_label": "walk, steady gait with tail swaying gently"}
+{"clip": "SpiderG_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, rears up on hind legs raising front limbs"}
+{"clip": "SpiderG_Attack3_1.npy", "action_group": "stationary", "action_label": "attack, rear, thrusts front limbs forward"}
+{"clip": "SpiderG_Attack4_1.npy", "action_group": "stationary", "action_label": "attack, rears up on hind legs thrusting front limbs forward"}
+{"clip": "SpiderG_Attack5_1.npy", "action_group": "stationary", "action_label": "attack, rear up on hind legs raising front limbs"}
+{"clip": "SpiderG_Attack6_1.npy", "action_group": "stationary", "action_label": "attack, rears up on hind legs to strike with front limbs"}
+{"clip": "SpiderG_Attack7_1.npy", "action_group": "stationary", "action_label": "attack, rear on hind legs and lunge forward"}
+{"clip": "SpiderG_Attack_1.npy", "action_group": "stationary", "action_label": "attack, rears up on hind legs thrusting front limbs forward"}
+{"clip": "SpiderG_Burrough_1.npy", "action_group": "transition", "action_label": "dig, lowers body and tucks legs inward"}
+{"clip": "SpiderG_ComeOut_1.npy", "action_group": "transition", "action_label": "getup, turn, rotates body to face forward"}
+{"clip": "SpiderG_Die_1.npy", "action_group": "transition", "action_label": "die, collapses onto back flailing legs"}
+{"clip": "SpiderG_Die_2.npy", "action_group": "transition", "action_label": "die, collapses legs and lowers body to ground"}
+{"clip": "SpiderG_Fangs_1.npy", "action_group": "stationary", "action_label": "attack, raises front legs and extends fangs"}
+{"clip": "SpiderG_Fangs_2.npy", "action_group": "stationary", "action_label": "turn, rotates body and head to the right"}
+{"clip": "SpiderG_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, crouched shifting weight and adjusting legs"}
+{"clip": "SpiderG_Idle3_1.npy", "action_group": "stationary", "action_label": "idle, crouched posture twitching legs"}
+{"clip": "SpiderG_Idle3_2.npy", "action_group": "stationary", "action_label": "idle, crouched alert posture shifting weight"}
+{"clip": "SpiderG_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still in a static posture"}
+{"clip": "SpiderG_Retreat_1.npy", "action_group": "locomotion", "action_label": "retreat, lifts front legs and rotates body backward"}
+{"clip": "SpiderG_Run_1.npy", "action_group": "locomotion", "action_label": "run, rapid alternating gait with legs lifted high"}
+{"clip": "SpiderG_Shiver_1.npy", "action_group": "stationary", "action_label": "shake, body and legs tremble rapidly"}
+{"clip": "SpiderG_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, low forward-leaning posture with alternating legs"}
+{"clip": "Spider_Attack1_1.npy", "action_group": "stationary", "action_label": "attack, rears up on hind legs thrusting front pedipalps forward"}
+{"clip": "Spider_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, rear up on hind legs raising front appendages"}
+{"clip": "Spider_Attack4_1.npy", "action_group": "stationary", "action_label": "attack,"}
+{"clip": "Spider_Attack5_1.npy", "action_group": "stationary", "action_label": "attack, raises front legs and strikes downward with claws"}
+{"clip": "Spider_AttackLeft_1.npy", "action_group": "stationary", "action_label": "attack, raises left pincer and strikes downward"}
+{"clip": "Spider_Attackright_1.npy", "action_group": "stationary", "action_label": "attack, raises right pincer and strikes downward"}
+{"clip": "Spider_BackRear_1.npy", "action_group": "stationary", "action_label": "attack, rear, lifts hind legs and abdomen backward"}
+{"clip": "Spider_BackitUp_1.npy", "action_group": "locomotion", "action_label": "walk, moves backward with a coordinated gait"}
+{"clip": "Spider_Barking_1.npy", "action_group": "stationary", "action_label": "attack, snaps front pincers open and shut"}
+{"clip": "Spider_Fangy_1.npy", "action_group": "stationary", "action_label": "attack, raises and lowers front pincers in a scissoring motion"}
+{"clip": "Spider_Fangy_2.npy", "action_group": "stationary", "action_label": "attack, raises front legs and claws in defensive posture"}
+{"clip": "Spider_Gliding_1.npy", "action_group": "locomotion", "action_label": "crawl, moves while hanging upside down"}
+{"clip": "Spider_Hurt_1.npy", "action_group": "stationary", "action_label": "hurt, flinches and recoils while idle"}
+{"clip": "Spider_Injuredwalk_1.npy", "action_group": "locomotion", "action_label": "walk, slow labored hunched posture with uneven legs"}
+{"clip": "Spider_Jump_1.npy", "action_group": "transition", "action_label": "jump, crouches low then leaps vertically"}
+{"clip": "Spider_LandinHAir_1.npy", "action_group": "transition", "action_label": "jump, land, adjusts posture to a crouch, legs spread to stabilize"}
+{"clip": "Spider_Landing_1.npy", "action_group": "transition", "action_label": "land, lowers body and extends legs to absorb impact"}
+{"clip": "Spider_Rearing_1.npy", "action_group": "stationary", "action_label": "rear, lifts front body and pedipalps into defensive posture"}
+{"clip": "Spider_RetreatInjured_1.npy", "action_group": "locomotion", "action_label": "walk, retreat, limping backward dragging injured front legs"}
+{"clip": "Spider_RetreatSlow_1.npy", "action_group": "locomotion", "action_label": "retreat, walk, slow backward gait with low posture"}
+{"clip": "Spider_Retreat_1.npy", "action_group": "locomotion", "action_label": "retreat, walks backward pulling legs"}
+{"clip": "Spider_Riser_1.npy", "action_group": "transition", "action_label": "getup, rear up on hind legs raising front paws high"}
+{"clip": "Spider_Rising_1.npy", "action_group": "transition", "action_label": "getup, lifts body upward extending legs"}
+{"clip": "Spider_Runleft_1.npy", "action_group": "locomotion", "action_label": "run, legs moving in alternating pattern"}
+{"clip": "Spider_Scary_1.npy", "action_group": "stationary", "action_label": "attack, menacing display with front legs raised and head turning"}
+{"clip": "Spider_Scramble_1.npy", "action_group": "locomotion", "action_label": "crawl, frantic leg shifting in place"}
+{"clip": "Spider_SlowIdle_1.npy", "action_group": "stationary", "action_label": "idle, slowly raises and lowers front legs"}
+{"clip": "Spider_TravelWeb_1.npy", "action_group": "locomotion", "action_label": "walk, raises front legs and claws high while shifting body weight"}
+{"clip": "Spider_Walker_1.npy", "action_group": "locomotion", "action_label": "walk, legs moving in a coordinated sequence"}
+{"clip": "Spider_Walkleft_1.npy", "action_group": "locomotion", "action_label": "walk, legs moving in a coordinated sequence"}
+{"clip": "Spider_Walkloop_1.npy", "action_group": "locomotion", "action_label": "walk, continuous gait alternating legs"}
+{"clip": "Spider_Weaver_1.npy", "action_group": "stationary", "action_label": "idle, raises front legs and claws high"}
+{"clip": "Spider_Weaving_1.npy", "action_group": "stationary", "action_label": "idle, raises front legs and rotates body while weaving"}
+{"clip": "Stego_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, swings spiked tail upward and to the side"}
+{"clip": "Stego_Attack3_1.npy", "action_group": "stationary", "action_label": "attack, swings spiked tail in wide arc"}
+{"clip": "Stego_Attack_1.npy", "action_group": "stationary", "action_label": "attack, swings spiked tail in wide arc"}
+{"clip": "Stego_Fall_1.npy", "action_group": "transition", "action_label": "fall, collapses onto side with legs flailing"}
+{"clip": "Stego_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, stands still with tail swaying gently"}
+{"clip": "Stego_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with mouth open breathing"}
+{"clip": "Stego_Run_1.npy", "action_group": "locomotion", "action_label": "run, rhythmic gait with body bobbing"}
+{"clip": "Stego_Shake_1.npy", "action_group": "stationary", "action_label": "shake, body and head shake with feet planted"}
+{"clip": "Stego_Slowwalk_1.npy", "action_group": "locomotion", "action_label": "walk, slow deliberate gait with steady rhythmic leg cycle"}
+{"clip": "Stego_TailWhip_1.npy", "action_group": "stationary", "action_label": "attack, swings spiked tail in a sweeping arc"}
+{"clip": "Trex_BigRoarStep_1.npy", "action_group": "stationary", "action_label": "roar, steps in place with mouth open"}
+{"clip": "Trex_Bite90Left_1.npy", "action_group": "stationary", "action_label": "attack, bite, head and torso rotate left while jaws snap"}
+{"clip": "Trex_Bite90Right_1.npy", "action_group": "stationary", "action_label": "attack, bite, head and torso rotate right while jaws snap"}
+{"clip": "Trex_BiteCloseLeft_1.npy", "action_group": "stationary", "action_label": "attack, bite, crouched with head lowered and jaws open"}
+{"clip": "Trex_BiteCloseRight_1.npy", "action_group": "stationary", "action_label": "attack, bite, crouched with head lowered and jaws open"}
+{"clip": "Trex_BiteStepBackForward_1.npy", "action_group": "locomotion", "action_label": "walk, head facing left, mouth holding prey"}
+{"clip": "Trex_ChaseBiteLeft_1.npy", "action_group": "locomotion", "action_label": "run, attack, lunges left snapping jaws"}
+{"clip": "Trex_ChaseBiteRight_1.npy", "action_group": "locomotion", "action_label": "run, attack, lunges right snapping jaws"}
+{"clip": "Trex_ChaseBite_1.npy", "action_group": "locomotion", "action_label": "walk, attack, lunging bite with head snapping forward"}
+{"clip": "Trex_ChaseHeadButtLeft_1.npy", "action_group": "locomotion", "action_label": "run, attack, head butts left with body twist"}
+{"clip": "Trex_ChaseRoarLeft_1.npy", "action_group": "locomotion", "action_label": "walk, roar, crouched low with head turned left and jaws open"}
+{"clip": "Trex_ChaseRoarRight_1.npy", "action_group": "locomotion", "action_label": "walk, roar, crouched low with head turned right and jaws open"}
+{"clip": "Trex_ChaseRoar_1.npy", "action_group": "locomotion", "action_label": "walk, roar, walks with mouth open"}
+{"clip": "Trex_ClimbDown_1.npy", "action_group": "locomotion", "action_label": "climb, descends with body lowering and limbs adjusting"}
+{"clip": "Trex_ClimbUp_1.npy", "action_group": "locomotion", "action_label": "climb, lifts legs and shifts body upward"}
+{"clip": "Trex_DeathShort_1.npy", "action_group": "transition", "action_label": "die, collapses to the ground with legs buckling"}
+{"clip": "Trex_Death_1.npy", "action_group": "transition", "action_label": "die, fall, die, collapses forward with limbs flailing"}
+{"clip": "Trex_HeadButtLeft_1.npy", "action_group": "stationary", "action_label": "attack, head lowered thrusting left"}
+{"clip": "Trex_HitHead1_1.npy", "action_group": "stationary", "action_label": "hurt, shakes head and snaps jaws"}
+{"clip": "Trex_HitHead2_1.npy", "action_group": "stationary", "action_label": "hurt, opens mouth wide and snaps shut"}
+{"clip": "Trex_HitHead3_1.npy", "action_group": "stationary", "action_label": "hurt, roar, lowers head and opens mouth wide"}
+{"clip": "Trex_HitLeg2_1.npy", "action_group": "locomotion", "action_label": "walk, hurt, leg strike"}
+{"clip": "Trex_HitLeg_1.npy", "action_group": "locomotion", "action_label": "walk, leg hit, continue walking"}
+{"clip": "Trex_HitTorsoLeft_1.npy", "action_group": "stationary", "action_label": "idle, hurt, flinches and turns head left"}
+{"clip": "Trex_HitTorsoRight_1.npy", "action_group": "stationary", "action_label": "idle, hurt, flinches and turns head right"}
+{"clip": "Trex_HumanBite_1.npy", "action_group": "stationary", "action_label": "attack, bite, opens and closes jaws while leaning forward"}
+{"clip": "Trex_HumanKill_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with head and upper body thrusting"}
+{"clip": "Trex_HumanShake_1.npy", "action_group": "stationary", "action_label": "shake, body and head oscillate side to side"}
+{"clip": "Trex_IdleAttackToRunLeft_1.npy", "action_group": "transition", "action_label": "idle, attack, opens mouth then lunges forward"}
+{"clip": "Trex_IdleAttackToRunRight_1.npy", "action_group": "transition", "action_label": "idle, attack, opens mouth then lunges forward"}
+{"clip": "Trex_IdleAttack_1.npy", "action_group": "stationary", "action_label": "idle, attack, stands with head lowered and mouth slightly open"}
+{"clip": "Trex_IdleInvestigaeOut_1.npy", "action_group": "stationary", "action_label": "idle, lowers head and neck while alert"}
+{"clip": "Trex_IdleInvestigateLoop_1.npy", "action_group": "stationary", "action_label": "idle, stands still bobbing head and opening jaws to investigate"}
+{"clip": "Trex_IdleInvestigate_1.npy", "action_group": "stationary", "action_label": "idle, look, slowly lifts head and turns to the side"}
+{"clip": "Trex_IdleSneeze_1.npy", "action_group": "stationary", "action_label": "idle, sneeze with a sharp head jerk"}
+{"clip": "Trex_IdleSneeze_2.npy", "action_group": "stationary", "action_label": "idle, sneezes while standing still"}
+{"clip": "Trex_IdleToRun_1.npy", "action_group": "transition", "action_label": "idle, run, transitions from standing to running with mouth open"}
+{"clip": "Trex_KillLong_1.npy", "action_group": "stationary", "action_label": "attack, lunge forward with jaws open"}
+{"clip": "Trex_KillLong_2.npy", "action_group": "stationary", "action_label": "attack, slow rhythmic head bob and body sway"}
+{"clip": "Trex_LongDeath_1.npy", "action_group": "transition", "action_label": "die, collapses onto side and lies motionless"}
+{"clip": "Trex_LongDeath_2.npy", "action_group": "transition", "action_label": "die, collapses onto side with twitching legs"}
+{"clip": "Trex_LongDeath_3.npy", "action_group": "transition", "action_label": "die, collapses to the ground with twitching limbs"}
+{"clip": "Trex_LookForward2_1.npy", "action_group": "stationary", "action_label": "look, stands still with head lowered and mouth open"}
+{"clip": "Trex_LookForward_1.npy", "action_group": "stationary", "action_label": "idle, stands still facing forward with swaying tail"}
+{"clip": "Trex_LookLeft_1.npy", "action_group": "stationary", "action_label": "look, turns head to the left with tail swaying"}
+{"clip": "Trex_LookRight_1.npy", "action_group": "stationary", "action_label": "look, turns head to the right with tail swaying"}
+{"clip": "Trex_MamaCaveBiteLoop_1.npy", "action_group": "stationary", "action_label": "attack, bite, crouched posture opening and closing jaws"}
+{"clip": "Trex_MamaCaveBiteOut_1.npy", "action_group": "stationary", "action_label": "attack, bite, opens and closes jaws while leaning forward"}
+{"clip": "Trex_MamaCaveBite_1.npy", "action_group": "stationary", "action_label": "attack, bite, opens and closes jaws while leaning forward"}
+{"clip": "Trex_RoarLeft_1.npy", "action_group": "stationary", "action_label": "roar, head lowered and turned left with mouth wide open"}
+{"clip": "Trex_RoarRight_1.npy", "action_group": "stationary", "action_label": "roar, head lowered and turned right with mouth wide open"}
+{"clip": "Trex_Roar_1.npy", "action_group": "stationary", "action_label": "roar, stands still opening its mouth wide"}
+{"clip": "Trex_RunHeadButtRight_1.npy", "action_group": "locomotion", "action_label": "run, attack, head lowered thrusting right"}
+{"clip": "Trex_RunHeadLoop_1.npy", "action_group": "locomotion", "action_label": "run, legs cycling rapidly with body bobbing"}
+{"clip": "Trex_RunHeadLow2_1.npy", "action_group": "locomotion", "action_label": "run, head held low with rapid leg cycling"}
+{"clip": "Trex_RunHeadLow_1.npy", "action_group": "locomotion", "action_label": "run, head held low with rapid leg cycling"}
+{"clip": "Trex_RunToStop_1.npy", "action_group": "locomotion", "action_label": "run, decelerates to a halt"}
+{"clip": "Trex_SprintHeadLeft_1.npy", "action_group": "locomotion", "action_label": "run, sprint with head turned left"}
+{"clip": "Trex_SprintHeadRight_1.npy", "action_group": "locomotion", "action_label": "run, sprint with head turned right"}
+{"clip": "Trex_SprintLoop_1.npy", "action_group": "locomotion", "action_label": "run, sprints with rapid leg cycling and body leaning forward"}
+{"clip": "Trex_StepBack_1.npy", "action_group": "locomotion", "action_label": "walk, steps backward with a slow deliberate gait"}
+{"clip": "Trex_Stunned_1.npy", "action_group": "transition", "action_label": "hurt, stumbles and staggers with unsteady gait"}
+{"clip": "Trex_Stunned_2.npy", "action_group": "stationary", "action_label": "idle, hurt, stands still with lowered head and open mouth"}
+{"clip": "Trex_Turn180Look_1.npy", "action_group": "locomotion", "action_label": "turn, rotates body 180 degrees with head lowered looking down"}
+{"clip": "Trex_Turn180Right_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body 180 degrees to the right"}
+{"clip": "Trex_Turn180TurnRight_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body 180 degrees to the right"}
+{"clip": "Trex_Turn90Left_1.npy", "action_group": "locomotion", "action_label": "turn, rotates body ninety degrees left with head lowered"}
+{"clip": "Trex_Turn90Right_1.npy", "action_group": "locomotion", "action_label": "turn, rotates body ninety degrees right with head lowered"}
+{"clip": "Trex_WalkBack_1.npy", "action_group": "locomotion", "action_label": "walk, retreats backward with tail swaying for balance"}
+{"clip": "Trex_WalkBite_1.npy", "action_group": "locomotion", "action_label": "walk, attack, walks while opening and closing jaws open and close in a bite"}
+{"clip": "Trex_WalkHeadLow_1.npy", "action_group": "locomotion", "action_label": "walk, head low, tail sways for balance"}
+{"clip": "Trex_WalkLeftBite_1.npy", "action_group": "locomotion", "action_label": "walk, bites while moving left"}
+{"clip": "Trex_WalkLoop_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic leg alternation with body and tail sway"}
+{"clip": "Trex_WalkRightBite_1.npy", "action_group": "locomotion", "action_label": "walk, attack, walks while opening mouth to bite"}
+{"clip": "Trex_WalkSlowLoop_1.npy", "action_group": "locomotion", "action_label": "walk, slow steady gait with alternating legs"}
+{"clip": "Tricera_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, lunges head forward rearing on hind legs"}
+{"clip": "Tricera_Attack3_1.npy", "action_group": "stationary", "action_label": "attack, lowers head and swings horns"}
+{"clip": "Tricera_Attack4_1.npy", "action_group": "stationary", "action_label": "attack, head lowered swinging side to side"}
+{"clip": "Tricera_Attack_1.npy", "action_group": "stationary", "action_label": "attack, lowers head and thrusts horns forward"}
+{"clip": "Tricera_Fall_1.npy", "action_group": "transition", "action_label": "fall, collapses to the ground lying prone"}
+{"clip": "Tricera_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with head lowered breathing"}
+{"clip": "Tricera_NoseDirt_1.npy", "action_group": "stationary", "action_label": "scratch, lowers head and rubs nose on ground"}
+{"clip": "Tricera_Run_1.npy", "action_group": "locomotion", "action_label": "run, steady four-legged gait with body bobbing"}
+{"clip": "Tricera_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, steady four-legged gait with low grounded posture"}
+{"clip": "Turtle_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, opens mouth wide and extends neck forward"}
+{"clip": "Turtle_Attack3_1.npy", "action_group": "stationary", "action_label": "attack, snaps head forward with mouth wide open"}
+{"clip": "Turtle_Attack_1.npy", "action_group": "stationary", "action_label": "attack, extends neck and opens mouth wide"}
+{"clip": "Turtle_Hide_1.npy", "action_group": "transition", "action_label": "rest, retracts head and limbs into shell"}
+{"clip": "Turtle_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, stands still opening and closing its mouth"}
+{"clip": "Turtle_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still opening and closing its mouth"}
+{"clip": "Turtle_Onback_1.npy", "action_group": "transition", "action_label": "rest, lies on back flailing limbs"}
+{"clip": "Turtle_Run_1.npy", "action_group": "locomotion", "action_label": "run, rapid alternating legs"}
+{"clip": "Turtle_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmically alternating legs to move body"}
+{"clip": "Turtle_Yawn_1.npy", "action_group": "stationary", "action_label": "idle, yawn, opens mouth wide while stationary"}
+{"clip": "Turtle_Yawn_2.npy", "action_group": "stationary", "action_label": "idle, yawn, opens mouth wide and slowly closes it"}
+{"clip": "Tyranno_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, roar, rears up with mouth wide open"}
+{"clip": "Tyranno_Attack_1.npy", "action_group": "stationary", "action_label": "attack, roar, rears up on hind legs to bite"}
+{"clip": "Tyranno_Fall_1.npy", "action_group": "transition", "action_label": "fall, tumbles backward onto its back flailing limbs"}
+{"clip": "Tyranno_HeadButt_1.npy", "action_group": "stationary", "action_label": "attack, head lowered, lunges forward to headbutt"}
+{"clip": "Tyranno_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, stands crouched shifting weight and swaying tail"}
+{"clip": "Tyranno_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with mouth open and tail swaying"}
+{"clip": "Tyranno_Roar_1.npy", "action_group": "stationary", "action_label": "roar, rears up on hind legs opening mouth wide"}
+{"clip": "Tyranno_Run_1.npy", "action_group": "locomotion", "action_label": "run, gallops with powerful hind legs and tail swinging for balance"}
+{"clip": "Tyranno_TailWhip_1.npy", "action_group": "stationary", "action_label": "attack, tail whip, swings tail in wide arc"}
+{"clip": "Tyranno_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic leg alternation"}
+{"clip": "Dragon_WyvernAttack_1.npy", "action_group": "stationary", "action_label": "attack, flaps wings and twists body in mid-air"}
+{"clip": "Bird_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, flaps wings and extends talons in a striking motion"}
+{"clip": "Bird_Attack3_1.npy", "action_group": "stationary", "action_label": "attack, flaps wings and extends talons"}
+{"clip": "Bird_Attack4_1.npy", "action_group": "stationary", "action_label": "attack, flaps wings and twists body extending talons"}
+{"clip": "Bird_Attack_1.npy", "action_group": "stationary", "action_label": "attack, flaps wings and extends talons"}
+{"clip": "Bird_CircleLand_1.npy", "action_group": "transition", "action_label": "fly, turn, land, flaps wings and rotates body to extend legs"}
+{"clip": "Bird_CircleLand_2.npy", "action_group": "transition", "action_label": "fly, land, descends with wings tucked"}
+{"clip": "Bird_Fallen_1.npy", "action_group": "transition", "action_label": "fall, flapping wings, rotating body while falling through the air"}
+{"clip": "Bird_Falling_1.npy", "action_group": "transition", "action_label": "fall, flaps wings and twists body while falling"}
+{"clip": "Bird_Floater_1.npy", "action_group": "locomotion", "action_label": "fly, hover in mid-air flapping wings"}
+{"clip": "Bird_FlyFast_1.npy", "action_group": "locomotion", "action_label": "fly, flaps wings rapidly with forward-leaning posture"}
+{"clip": "Bird_FlyLoop_1.npy", "action_group": "locomotion", "action_label": "fly, flaps wings in continuous rhythmic motion"}
+{"clip": "Bird_FlySlow_1.npy", "action_group": "locomotion", "action_label": "fly, flaps wings slowly while hovering"}
+{"clip": "Bird_Flying_1.npy", "action_group": "locomotion", "action_label": "fly, flaps wings in a continuous hovering posture"}
+{"clip": "Bird_GroundFlap_1.npy", "action_group": "stationary", "action_label": "flap, wings beating while hovering in mid-air"}
+{"clip": "Bird_IdleLoop_1.npy", "action_group": "stationary", "action_label": "idle, stands still with wings folded"}
+{"clip": "Bird_Lander_1.npy", "action_group": "transition", "action_label": "fly, land, flaps wings and extends legs downward"}
+{"clip": "Bird_LookRight_1.npy", "action_group": "stationary", "action_label": "look, flaps wings while turning head to the right"}
+{"clip": "Bird_SlowLook_1.npy", "action_group": "stationary", "action_label": "look, slow head and body turn with wings spread"}
+{"clip": "Bird_TakeOff_1.npy", "action_group": "transition", "action_label": "fly, takeoff, flaps wings vigorously and extends legs downward"}
+{"clip": "Buzzard_Attack1_1.npy", "action_group": "stationary", "action_label": "attack, fly, twists body flapping wings extending talons"}
+{"clip": "Buzzard_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, fly, twists body flapping wings extending talons"}
+{"clip": "Buzzard_Attack3_1.npy", "action_group": "stationary", "action_label": "attack, flaps wings and extends talons in a striking motion"}
+{"clip": "Buzzard_Die1_1.npy", "action_group": "transition", "action_label": "die, fall, flaps wings and rotates body in mid-air"}
+{"clip": "Buzzard_Dying_1.npy", "action_group": "transition", "action_label": "die, flaps wings while rotating body in mid-air"}
+{"clip": "Buzzard_FlyLoop_1.npy", "action_group": "locomotion", "action_label": "fly, hovers in place with rhythmic wing flaps"}
+{"clip": "Buzzard_SlowFly_1.npy", "action_group": "locomotion", "action_label": "fly, slow rhythmic wing flaps in steady posture"}
+{"clip": "Buzzard_SlowLoop_1.npy", "action_group": "locomotion", "action_label": "fly, slow continuous wing flaps while hovering"}
+{"clip": "Buzzard_SlowtoLand_1.npy", "action_group": "transition", "action_label": "fly, land, descends with wings flapping and talons extended"}
+{"clip": "Buzzard_Soaring_1.npy", "action_group": "locomotion", "action_label": "fly, glides with wings fully extended"}
+{"clip": "Dragon_WyvernAttack3_1.npy", "action_group": "stationary", "action_label": "fly, attack, hovers then strikes with wings and head"}
+{"clip": "Dragon_WyvernDie_1.npy", "action_group": "transition", "action_label": "die, fall, collapses from flying posture folding wings"}
+{"clip": "Dragon_WyvernFly_1.npy", "action_group": "locomotion", "action_label": "fly, flaps wings in a continuous rhythmic motion"}
+{"clip": "Dragon_WyvernFly_2.npy", "action_group": "locomotion", "action_label": "fly, flaps wings rhythmically to maintain flight"}
+{"clip": "Dragon_WyvernIdle2_1.npy", "action_group": "stationary", "action_label": "idle, hovers in air flapping wings"}
+{"clip": "Dragon_WyvernIdle3_1.npy", "action_group": "stationary", "action_label": "idle, hovers in mid-air flapping wings"}
+{"clip": "Dragon_WyvernIdle3_2.npy", "action_group": "stationary", "action_label": "idle, fly, hovers in mid-air flapping wings"}
+{"clip": "Dragon_WyvernIdle_1.npy", "action_group": "stationary", "action_label": "idle, fly, hovers in mid-air flapping wings"}
+{"clip": "Dragon_WyvernIdle_2.npy", "action_group": "stationary", "action_label": "idle, fly, hovers in air flapping wings"}
+{"clip": "Dragon_WyvernSlowFly_1.npy", "action_group": "locomotion", "action_label": "fly, slow rhythmic wing flaps while hovering"}
+{"clip": "Dragon_WyvernSlowFly_2.npy", "action_group": "locomotion", "action_label": "fly, slow rhythmic wing flaps while hovering"}
+{"clip": "Eagle_EggSteal_1.npy", "action_group": "stationary", "action_label": "fly, hovers and grabs with claws"}
+{"clip": "Eagle_FloatDown_1.npy", "action_group": "locomotion", "action_label": "fly, descend with wings spread wide"}
+{"clip": "Eagle_FloattUp_1.npy", "action_group": "locomotion", "action_label": "fly, flaps wings and rotates body while floating upward"}
+{"clip": "Eagle_FlyLoop_1.npy", "action_group": "locomotion", "action_label": "fly, flaps wings in a continuous rhythmic motion"}
+{"clip": "Eagle_GlideLoop_1.npy", "action_group": "locomotion", "action_label": "fly, glide, banks and turns while flapping wings"}
+{"clip": "Eagle_IdleNest_1.npy", "action_group": "stationary", "action_label": "idle, flaps wings and adjusts posture while hovering"}
+{"clip": "Eagle_Landing_1.npy", "action_group": "transition", "action_label": "fly, land, descends with wings flapping and talons extended"}
+{"clip": "Eagle_RideWind_1.npy", "action_group": "locomotion", "action_label": "fly, roll, continuous barrel roll in mid-air"}
+{"clip": "Eagle_Shot_1.npy", "action_group": "transition", "action_label": "fly, fall, die, hit mid-air and drop"}
+{"clip": "Eagle_Strike1_1.npy", "action_group": "stationary", "action_label": "attack, extends talons forward while flapping wings"}
+{"clip": "Eagle_Strike2_1.npy", "action_group": "stationary", "action_label": "attack, strike, extends talons forward flapping wings"}
+{"clip": "Eagle_TakeOff_1.npy", "action_group": "transition", "action_label": "fly, takeoff, flaps wings and extends talons"}
+{"clip": "Giantbee_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, spin in place extending stinger"}
+{"clip": "Giantbee_Attack3_1.npy", "action_group": "stationary", "action_label": "attack,"}
+{"clip": "Giantbee_Attack4_1.npy", "action_group": "stationary", "action_label": "attack, rapid aerial spin extending stinger and flapping wings"}
+{"clip": "Giantbee_Attack_1.npy", "action_group": "stationary", "action_label": "attack, fly, flaps wings while rotating body and extending abdomen"}
+{"clip": "Giantbee_Die2_1.npy", "action_group": "transition", "action_label": "die, flails wings and limbs while collapsing"}
+{"clip": "Giantbee_Die_1.npy", "action_group": "transition", "action_label": "die, flails limbs and twists body"}
+{"clip": "Giantbee_Fly_1.npy", "action_group": "locomotion", "action_label": "fly, hovers in place flapping wings"}
+{"clip": "Giantbee_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, hovers with wings flapping and body swaying"}
+{"clip": "Giantbee_Idle_1.npy", "action_group": "stationary", "action_label": "idle, hovers with wings flapping rapidly and antennae twitching"}
+{"clip": "Parrot2_IdleClean_1.npy", "action_group": "stationary", "action_label": "idle, scratch, lowers head to scratch foot with beak"}
+{"clip": "Parrot2_Idle_1.npy", "action_group": "stationary", "action_label": "idle, hovers with wings spread and feet dangling"}
+{"clip": "Parrot2_Land_1.npy", "action_group": "transition", "action_label": "fly, land, flaps wings and extends legs to touch ground"}
+{"clip": "Parrot2_Land_2.npy", "action_group": "transition", "action_label": "fly, land, flaps wings and extends legs to land"}
+{"clip": "Parrot_Attack_1.npy", "action_group": "stationary", "action_label": "attack, flaps wings and extends talons"}
+{"clip": "Parrot_CircleFly_1.npy", "action_group": "locomotion", "action_label": "fly, turn, banks and rotates in a continuous aerial loop"}
+{"clip": "Parrot_Die2_1.npy", "action_group": "transition", "action_label": "die, fall, flaps wings and rotates body in mid-air"}
+{"clip": "Parrot_Die3_1.npy", "action_group": "transition", "action_label": "die, flaps wings and rotates body in mid-air"}
+{"clip": "Parrot_Die_1.npy", "action_group": "transition", "action_label": "die, fall, flaps wings in a spiraling descent"}
+{"clip": "Parrot_Fly_1.npy", "action_group": "locomotion", "action_label": "fly, flaps wings in continuous rhythmic motion"}
+{"clip": "Parrot_Hover_1.npy", "action_group": "locomotion", "action_label": "fly, hover in mid-air flapping wings"}
+{"clip": "Parrot_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, stands still bobbing head and shifting weight"}
+{"clip": "Parrot_Idle2_2.npy", "action_group": "stationary", "action_label": "idle, flaps wings and adjusts posture while hovering"}
+{"clip": "Parrot_Idle_1.npy", "action_group": "stationary", "action_label": "idle, suspended in mid-air with slight head tilts"}
+{"clip": "Parrot_Land_1.npy", "action_group": "transition", "action_label": "fly, land, flaps wings and extends legs downward"}
+{"clip": "Parrot_Preen_1.npy", "action_group": "stationary", "action_label": "idle, scratch, bends neck to groom chest feathers"}
+{"clip": "Parrot_Rise_1.npy", "action_group": "transition", "action_label": "fly, takeoff, flaps wings and ascends"}
+{"clip": "Parrot_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, flaps wings while moving legs"}
+{"clip": "Pigeon_Circle_1.npy", "action_group": "transition", "action_label": "turn, rotates body in a circular motion"}
+{"clip": "Pigeon_Cooing_1.npy", "action_group": "stationary", "action_label": "idle, stands still bobbing head and opening beak"}
+{"clip": "Pigeon_FlyLoop_1.npy", "action_group": "locomotion", "action_label": "fly, flaps wings in a continuous rhythmic hovering motion"}
+{"clip": "Pigeon_IdleLoop_1.npy", "action_group": "stationary", "action_label": "idle, stands still shifting weight and turning head"}
+{"clip": "Pigeon_IdleLoop_2.npy", "action_group": "stationary", "action_label": "idle, stands still bobbing its head"}
+{"clip": "Pigeon_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still flapping wings and bobbing head"}
+{"clip": "Pigeon_Land_1.npy", "action_group": "transition", "action_label": "fly, land, flaps wings and extends legs to touch down"}
+{"clip": "Pigeon_Left_1.npy", "action_group": "stationary", "action_label": "idle, flaps wings while hovering in place"}
+{"clip": "Pigeon_Peck_1.npy", "action_group": "stationary", "action_label": "peck, rapidly bobs head downward and upward"}
+{"clip": "Pigeon_Right_1.npy", "action_group": "stationary", "action_label": "idle, flaps wings while hovering in place"}
+{"clip": "Pigeon_TakeOff_1.npy", "action_group": "transition", "action_label": "fly, takeoff, lifts off ground flapping wings"}
+{"clip": "Pigeon_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic gait with upright posture"}
+{"clip": "Pteranodon_ArcLeft_1.npy", "action_group": "locomotion", "action_label": "fly, turn, banks left with beak open"}
+{"clip": "Pteranodon_ArcRight_1.npy", "action_group": "locomotion", "action_label": "fly, turn, banks right with beak open"}
+{"clip": "Pteranodon_Death2_1.npy", "action_group": "transition", "action_label": "die, fall, spiraling descent with flapping wings"}
+{"clip": "Pteranodon_Death_1.npy", "action_group": "transition", "action_label": "die, flaps wings erratically while tumbling"}
+{"clip": "Pteranodon_Fancy_1.npy", "action_group": "locomotion", "action_label": "fly, twist and bank while flapping wings"}
+{"clip": "Pteranodon_Flapergasted_1.npy", "action_group": "stationary", "action_label": "idle, flaps wings and rotates body in a loop"}
+{"clip": "Pteranodon_FlyLoop_1.npy", "action_group": "locomotion", "action_label": "fly, flaps wings in a continuous rhythmic cycle"}
+{"clip": "Pteranodon_GlideScream_1.npy", "action_group": "locomotion", "action_label": "fly, flaps wings while screaming"}
+{"clip": "Pteranodon_Hit2_1.npy", "action_group": "locomotion", "action_label": "fly, hit, continues flying with wings rotating"}
+{"clip": "Pteranodon_Hit_1.npy", "action_group": "locomotion", "action_label": "fly, hurt, continue flying with wings spread"}
+{"clip": "Pteranodon_Lander_1.npy", "action_group": "transition", "action_label": "fly, land, flaps wings to descend"}
+{"clip": "Pteranodon_ScreamFly_1.npy", "action_group": "locomotion", "action_label": "fly, flaps wings opening and closing beak"}
+{"clip": "Tukan_FlyForward_1.npy", "action_group": "locomotion", "action_label": "fly, flaps wings rhythmically while moving forward"}
+{"clip": "Tukan_FlyLoop_1.npy", "action_group": "locomotion", "action_label": "fly, flaps wings in continuous rhythmic motion"}
+{"clip": "Tukan_Fly_1.npy", "action_group": "locomotion", "action_label": "fly, flaps wings rhythmically to maintain flight"}
+{"clip": "Tukan_IdleLook_1.npy", "action_group": "stationary", "action_label": "idle, look, hovers with wings spread shifting head and beak"}
+{"clip": "Tukan_Shake_1.npy", "action_group": "stationary", "action_label": "shake, body and wings while hovering in mid-air"}
+{"clip": "Tukan_SlowDown_1.npy", "action_group": "locomotion", "action_label": "fly, flaps wings to slow down"}
+{"clip": "Tukan_Sqwak_1.npy", "action_group": "stationary", "action_label": "idle, flaps wings and opens beak to squawk"}
+{"clip": "Tukan_WingScratch_1.npy", "action_group": "stationary", "action_label": "scratch, flaps wings while twisting body to scratch head with foot"}
+{"clip": "Crow_Ascend_1.npy", "action_group": "locomotion", "action_label": "fly, ascend with rhythmic wing flaps"}
+{"clip": "Crow_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, dive, flaps wings and extends talons"}
+{"clip": "Crow_Attack_1.npy", "action_group": "stationary", "action_label": "attack, dive, flaps wings and extends talons"}
+{"clip": "Crow_FlyStart_1.npy", "action_group": "transition", "action_label": "fly, takeoff, extends wings to lift body"}
+{"clip": "Crow_Glide_1.npy", "action_group": "locomotion", "action_label": "fly, glide with wings extended and undulating"}
+{"clip": "Crow_IdleFlap_1.npy", "action_group": "stationary", "action_label": "idle, flaps wings with beak open"}
+{"clip": "Crow_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still bobbing its head"}
+{"clip": "Crow_Idle_2.npy", "action_group": "stationary", "action_label": "idle, stands still with head tilted downward"}
+{"clip": "Crow_Landflap_1.npy", "action_group": "transition", "action_label": "fly, land, flaps wings and extends legs"}
+{"clip": "Crow_PeckEat_1.npy", "action_group": "stationary", "action_label": "peck, eat, lowers head to peck ground with wings spread"}
+{"clip": "Crow_PeckEat_2.npy", "action_group": "stationary", "action_label": "peck, eat, repeatedly lowers and raises head to peck at the ground"}
+{"clip": "Crow_TakeOff_1.npy", "action_group": "transition", "action_label": "fly, takeoff, flaps wings vigorously to lift off"}
+{"clip": "Dog-2_ArmBite_1.npy", "action_group": "stationary", "action_label": "attack, bite, lunges forward with open mouth and tail wags"}
+{"clip": "Dog-2_Attack_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with front legs extended and teeth bared"}
+{"clip": "Dog-2_BackOff_1.npy", "action_group": "locomotion", "action_label": "walk, retreat, slow cautious backward step with front paws planted"}
+{"clip": "Dog-2_Bark2_1.npy", "action_group": "stationary", "action_label": "idle, stands still barking"}
+{"clip": "Dog-2_Bark_1.npy", "action_group": "stationary", "action_label": "idle, stands still barking with mouth open"}
+{"clip": "Dog-2_BiteArmShake_1.npy", "action_group": "stationary", "action_label": "attack, bite, shake, lunges forward with open mouth and shake head"}
+{"clip": "Dog-2_BiteJump_1.npy", "action_group": "transition", "action_label": "jump, attack, lunges upward with open mouth to bite"}
+{"clip": "Dog-2_GetUp_1.npy", "action_group": "transition", "action_label": "getup, rolls from side to standing"}
+{"clip": "Dog-2_Growl_1.npy", "action_group": "stationary", "action_label": "idle, low stance with head lowered and mouth open"}
+{"clip": "Dog-2_IdleBreathe_1.npy", "action_group": "stationary", "action_label": "idle, stands still breathing slowly with head level"}
+{"clip": "Dog-2_Leashjump_1.npy", "action_group": "transition", "action_label": "jump, leaps with body fully extended and limbs splayed"}
+{"clip": "Dog-2_LookLeft_1.npy", "action_group": "stationary", "action_label": "look, turns head to the left while standing still"}
+{"clip": "Dog-2_LookRight_1.npy", "action_group": "stationary", "action_label": "look, turns head to the right while standing still"}
+{"clip": "Dog-2_Paddle_1.npy", "action_group": "locomotion", "action_label": "swim, paddle legs in a galloping in a continuous cycle"}
+{"clip": "Dog-2_Ready_1.npy", "action_group": "stationary", "action_label": "idle, stands in a tense ready stance with body lowered and head raised"}
+{"clip": "Dog-2_RunFast_1.npy", "action_group": "locomotion", "action_label": "run, fast gait with extended strides and high tail"}
+{"clip": "Dog-2_RunJump_1.npy", "action_group": "locomotion", "action_label": "run, jump, galloping with rapid leg cycling"}
+{"clip": "Dog-2_Scratch_1.npy", "action_group": "stationary", "action_label": "scratch, lifts hind leg to scratch side while standing"}
+{"clip": "Dog-2_Sense_1.npy", "action_group": "stationary", "action_label": "idle, stands still turning head to look around"}
+{"clip": "Dog-2_Shake_1.npy", "action_group": "stationary", "action_label": "shake, vigorously shakes head and body"}
+{"clip": "Dog-2_Sit_1.npy", "action_group": "transition", "action_label": "sit, lowers hindquarters to ground then rises to stand"}
+{"clip": "Dog-2_Slowtail_1.npy", "action_group": "stationary", "action_label": "idle, stands still wagging tail slowly"}
+{"clip": "Dog-2_Sniffing_1.npy", "action_group": "stationary", "action_label": "sniff, lowers head and moves front paws"}
+{"clip": "Dog-2_SwimIdle_1.npy", "action_group": "locomotion", "action_label": "swim, paddles legs rhythmically in water"}
+{"clip": "Dog-2_SwimTurn2_1.npy", "action_group": "locomotion", "action_label": "swim, turn, paddles legs and undulates body"}
+{"clip": "Dog-2_Swim_1.npy", "action_group": "locomotion", "action_label": "swim, legs paddling in a rhythmic cycle"}
+{"clip": "Dog-2_Swimturn_1.npy", "action_group": "locomotion", "action_label": "swim, turn, rotates body while paddling"}
+{"clip": "Dog-2_TurnLeft_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body and head to the left"}
+{"clip": "Dog-2_TurnRight_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body and head to the right"}
+{"clip": "Dog-2_Wag_1.npy", "action_group": "stationary", "action_label": "idle, wags tail"}
+{"clip": "Dog-2_WalkLimp_1.npy", "action_group": "locomotion", "action_label": "walk, limping with uneven gait favoring one leg"}
+{"clip": "Dog-2_WalkLoop_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic leg sequence"}
+{"clip": "Dog-2_WalkNormal_1.npy", "action_group": "locomotion", "action_label": "walk, steady gait with tail slightly raised"}
+{"clip": "Dog-2_Walkbackward_1.npy", "action_group": "locomotion", "action_label": "walk, moves backward in a rhythmic gait"}
+{"clip": "Dog-2_Woof_1.npy", "action_group": "stationary", "action_label": "idle, stands tense with tail high barking"}
+{"clip": "Jaws_SharkBiteLeft_1.npy", "action_group": "stationary", "action_label": "attack, bite, jaws open wide and snap shut while turning head left"}
+{"clip": "Jaws_SharkBiteRight_1.npy", "action_group": "stationary", "action_label": "attack, bite, jaws open wide and snap shut while turning head right"}
+{"clip": "Jaws_SharkDeadLoop_1.npy", "action_group": "transition", "action_label": "die, lies still with mouth open"}
+{"clip": "Jaws_SharkDead_1.npy", "action_group": "transition", "action_label": "die, lies motionless with mouth agape"}
+{"clip": "Jaws_SharkSwim180_1.npy", "action_group": "locomotion", "action_label": "swim, turn, 180 degree rotation while moving forward"}
+{"clip": "Jaws_SharkSwimAt_1.npy", "action_group": "locomotion", "action_label": "swim, mouth open undulating tail and fins"}
+{"clip": "Jaws_SharkSwimLeft_1.npy", "action_group": "locomotion", "action_label": "swim, turn, banks body left while propelling with tail fin"}
+{"clip": "Jaws_SharkSwimRight_1.npy", "action_group": "locomotion", "action_label": "swim, turn, banks body right while propelling with tail fin"}
+{"clip": "Jaws_SharkSwim_1.npy", "action_group": "locomotion", "action_label": "swim, steady undulating motion with tail fin propelling through water"}
+{"clip": "Dog_Attack_1.npy", "action_group": "stationary", "action_label": "attack, lunges with mouth open and front legs extended"}
+{"clip": "Dog_BackAway_1.npy", "action_group": "locomotion", "action_label": "walk, retreat, body low to the ground"}
+{"clip": "Dog_BarkJump_1.npy", "action_group": "transition", "action_label": "jump, leap with front legs extended and mouth open"}
+{"clip": "Dog_Barking_1.npy", "action_group": "stationary", "action_label": "idle, stands still opening and closing its mouth to bark"}
+{"clip": "Dog_BiteArm_1.npy", "action_group": "stationary", "action_label": "attack, bite, lunges forward with mouth open then retracts"}
+{"clip": "Dog_FloorRiseLeft_1.npy", "action_group": "transition", "action_label": "getup, rises from lying on side to standing"}
+{"clip": "Dog_FloorRiseRight_1.npy", "action_group": "transition", "action_label": "getup, rises from lying on side to standing"}
+{"clip": "Dog_Frightened_1.npy", "action_group": "stationary", "action_label": "idle, stands tense with lowered posture and trembling"}
+{"clip": "Dog_Galloping_1.npy", "action_group": "locomotion", "action_label": "run, gallops with rapid extended stride and rhythmic body bob"}
+{"clip": "Dog_Grab_1.npy", "action_group": "stationary", "action_label": "attack, lunge forward with open mouth and bared teeth"}
+{"clip": "Dog_HitLeft_1.npy", "action_group": "stationary", "action_label": "hurt, flinches with head turned left"}
+{"clip": "Dog_HitRight_1.npy", "action_group": "stationary", "action_label": "hurt, flinches with head turned right"}
+{"clip": "Dog_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with mouth open and tongue out"}
+{"clip": "Dog_InvestigateLoop_1.npy", "action_group": "stationary", "action_label": "sniff, lowers head and shifts weight while searching the ground"}
+{"clip": "Dog_LeashAttack_1.npy", "action_group": "stationary", "action_label": "attack, lunges with front paws extended and mouth open"}
+{"clip": "Dog_LimpLoop_1.npy", "action_group": "locomotion", "action_label": "walk, limping gait favoring one leg"}
+{"clip": "Dog_LookLeft_1.npy", "action_group": "stationary", "action_label": "look, turns head to the left while standing still"}
+{"clip": "Dog_LookRight_1.npy", "action_group": "stationary", "action_label": "look, turns head to the right while standing still"}
+{"clip": "Dog_PAnting_1.npy", "action_group": "stationary", "action_label": "idle, stands still opening and closing its mouth to pant"}
+{"clip": "Dog_Paddle_1.npy", "action_group": "locomotion", "action_label": "swim, paddle, legs cycling in a continuous galloping gait"}
+{"clip": "Dog_Retreat_1.npy", "action_group": "locomotion", "action_label": "retreat, walks backward with a low tense posture"}
+{"clip": "Dog_Rise_1.npy", "action_group": "transition", "action_label": "getup, rises from a low stretched posture to standing"}
+{"clip": "Dog_RunFrisbee_1.npy", "action_group": "locomotion", "action_label": "run, body fully extended with all four legs off the ground"}
+{"clip": "Dog_Running_1.npy", "action_group": "locomotion", "action_label": "run, dynamic gait with rhythmic body stretch"}
+{"clip": "Dog_SNiffed_1.npy", "action_group": "stationary", "action_label": "sniff, lowers head to ground then lifts"}
+{"clip": "Dog_ScratchRight_1.npy", "action_group": "stationary", "action_label": "scratch, lifts right hind leg to scratch side while standing"}
+{"clip": "Dog_SingleBark_1.npy", "action_group": "stationary", "action_label": "idle, stands still and barks once"}
+{"clip": "Dog_Sit_1.npy", "action_group": "transition", "action_label": "sit, lowers hindquarters to ground then rises to stand"}
+{"clip": "Dog_Snarling_1.npy", "action_group": "stationary", "action_label": "idle, low stance with mouth open in a snarl"}
+{"clip": "Dog_Stare_1.npy", "action_group": "stationary", "action_label": "idle, stands still with head lowered and eyes fixed forward"}
+{"clip": "Dog_SwimFast_1.npy", "action_group": "locomotion", "action_label": "swim, fast paddling with rhythmic leg cycle"}
+{"clip": "Dog_SwimLeft_1.npy", "action_group": "locomotion", "action_label": "swim, paddles legs in water turning left"}
+{"clip": "Dog_SwimRight_1.npy", "action_group": "locomotion", "action_label": "swim, paddles legs in water turning right"}
+{"clip": "Dog_Swim_1.npy", "action_group": "locomotion", "action_label": "swim, legs paddling in a rhythmic cycle"}
+{"clip": "Dog_TurnLeft_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body and head to the left"}
+{"clip": "Dog_TurnRight_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body and head to the right"}
+{"clip": "Dog_Wag_1.npy", "action_group": "stationary", "action_label": "idle, stands still wagging its tail"}
+{"clip": "Dog_WalkBackwardsLoop_1.npy", "action_group": "locomotion", "action_label": "walk, moves backward with steady rhythmic gait"}
+{"clip": "Dog_WalkLoop_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic gait with tail swaying"}
+{"clip": "Dog_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic gait with forward-leaning posture"}
+{"clip": "Dog_Wine_1.npy", "action_group": "stationary", "action_label": "idle, stands still turning head side to side"}
+{"clip": "Dog_Woof_1.npy", "action_group": "stationary", "action_label": "idle, stands still barking with mouth open"}

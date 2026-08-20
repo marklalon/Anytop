@@ -42,6 +42,335 @@ ACTION_TAGS: tuple[str, ...] = (
 )
 
 # ---------------------------------------------------------------------------
+# Action groups + controlled label vocabulary  (action_labels.jsonl)
+# ---------------------------------------------------------------------------
+# See docs/action_group_label_refactor.md. Two fields replace ACTION_TAGS:
+#
+#   action_group  -- one of ACTION_GROUPS. Partitions the dataset; each group
+#                    trains its own model.
+#   action_label  -- a short free-text prompt ("run, gallops with head lowered").
+#                    Conditions the model through T5. May be empty (= no
+#                    condition, routed to the learned null embedding).
+#
+# The vocabulary below is a CONTROLLED VOCABULARY / recall anchor, *not* a set of
+# mutually exclusive classes. A label may hit several core words at once
+# ("idle, growls occasionally" -> idle + roar); that is expected, not an error.
+
+ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
+
+# Core vocabulary: the coarse actions with enough support to earn a dedicated
+# multi-hot slot, one per entry. Order is significant -- it defines the multi-hot
+# index layout (trained checkpoints depend on it) and the word order of
+# synthesized coarse strings.
+#
+# A label is expected to name a core word but is NOT required to: some clips
+# (rearing, sniffing, burrowing, crawling) have no coarse counterpart, and forcing
+# one on would put a word into the multi-hot that the animal never does. Those
+# labels carry detail words only and derive an all-zero multi-hot -- a defined
+# state, not a defect. See ``validate`` in tools/migrate_action_tags_to_labels.py.
+#
+# Membership threshold: >= ~20 supporting clips out of 1445. Rarer actions live in
+# ACTION_VOCAB_DETAIL, where they still reach the model through the T5 text path
+# but get no dedicated multi-hot slot (too few samples to learn a reliable
+# response from).
+ACTION_VOCAB_CORE: tuple[str, ...] = (
+    "idle",
+    "walk",
+    "run",
+    "fly",
+    "swim",
+    "jump",
+    "turn",
+    "attack",
+    "bite",
+    "roar",
+    "eat",
+    "die",
+    "fall",
+    "hurt",
+    "getup",
+    "rest",
+    "look",
+    "shake",
+    "scratch",
+)
+
+# Detail vocabulary: recognized and allowed in labels, but NOT given a multi-hot
+# slot -- too few supporting clips to learn a reliable response from. These words
+# still reach the model through the T5 text path.
+ACTION_VOCAB_DETAIL: tuple[str, ...] = (
+    "crawl", "climb", "sneak", "retreat", "land", "takeoff", "dive", "roll",
+    "rear", "sit", "sleep", "stand", "sniff", "stretch", "yawn", "taunt",
+    "dig", "throw", "catch", "peck", "sting", "kick", "spit", "drag", "dance",
+    "breathe", "drink", "graze", "flap", "wag",
+)
+
+CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB_CORE + ACTION_VOCAB_DETAIL
+
+# Surface forms recognized for each vocabulary word. Labels are written using the
+# canonical word, so this mainly serves (a) inflected forms inside labels and
+# (b) normalizing free-text user prompts at inference ("sprint" -> "run") so they
+# land on the same wording the model was trained on.
+#
+# Kept explicit rather than stemmed: a stemmer would collapse "stalking" into
+# "stalk" but also drag unrelated words in, and the false positives land silently
+# in the conditioning signal.
+_VOCAB_SURFACE_FORMS: dict[str, tuple[str, ...]] = {
+    # NOTE: "in place" / "stationary" are deliberately NOT idle forms. Most of
+    # this dataset is animated in place, so those phrases show up as filler in
+    # descriptions of running and flying clips too ("opens its jaws while
+    # stationary", "runs in place") and would silently light up the idle slot.
+    "idle": ("idle", "idles", "idling", "motionless", "stands still",
+             "standing still", "stand still", "stays still"),
+    "walk": ("walk", "walks", "walking", "trot", "trots", "trotting",
+             "pace", "paces", "pacing", "march", "marches", "marching",
+             "strut", "struts", "strutting", "amble", "ambles", "ambling"),
+    "run": ("run", "runs", "running", "gallop", "gallops", "galloping",
+            "sprint", "sprints", "sprinting", "dash", "dashes", "dashing",
+            "jog", "jogs", "jogging", "charge", "charges", "charging"),
+    "fly": ("fly", "flies", "flying", "flap", "flaps", "flapping",
+            "glide", "glides", "gliding", "soar", "soars", "soaring",
+            "hover", "hovers", "hovering"),
+    "swim": ("swim", "swims", "swimming", "paddle", "paddles", "paddling"),
+    "jump": ("jump", "jumps", "jumping", "leap", "leaps", "leaping",
+             "hop", "hops", "hopping", "pounce", "pounces", "pouncing",
+             "bound", "bounds", "bounding"),
+    "turn": ("turn", "turns", "turning", "spin", "spins", "spinning",
+             "rotate", "rotates", "rotating", "pivot", "pivots", "pivoting",
+             "strafe", "strafes", "strafing", "circle", "circles", "circling",
+             "bank", "banks", "banking"),
+    "attack": ("attack", "attacks", "attacking", "strike", "strikes",
+               "striking", "lunge", "lunges", "lunging", "swipe", "swipes",
+               "swiping", "slash", "slashes", "slashing", "claw", "claws",
+               "clawing", "maul", "mauls", "mauling", "slam", "slams",
+               "slamming", "swat", "swats", "swatting"),
+    "bite": ("bite", "bites", "biting", "bit", "chomp", "chomps", "chomping",
+             "snaps its jaws", "snapping its jaws"),
+    "roar": ("roar", "roars", "roaring", "growl", "growls", "growling",
+             "howl", "howls", "howling", "bark", "barks", "barking",
+             "hiss", "hisses", "hissing", "screech", "screeches", "screeching",
+             "scream", "screams", "screaming", "bellow", "bellows",
+             "bellowing"),
+    "eat": ("eat", "eats", "eating", "feed", "feeds", "feeding", "graze",
+            "grazes", "grazing", "chew", "chews", "chewing", "devour",
+            "devours", "devouring", "drink", "drinks", "drinking"),
+    # "collapse" belongs to fall, not die: in this dataset it describes going
+    # down ("fall, collapses onto its side"), and every clip it matched on its
+    # own turned out to be a fall or a lie-down, not a death.
+    "die": ("die", "dies", "dying", "death", "dead", "perish", "perishes",
+            "passes out"),
+    "fall": ("fall", "falls", "falling", "fell", "collapse", "collapses",
+             "collapsing", "tumble", "tumbles",
+             "tumbling", "trip", "trips", "tripping", "stumble", "stumbles",
+             "stumbling", "topple", "topples", "toppling"),
+    # "gethurt" (one token) is the legacy tag spelling. The word-boundary match
+    # means it does NOT fall out of "hurt" on its own -- the 't' in front blocks
+    # it -- so it has to be listed explicitly.
+    "hurt": ("hurt", "hurts", "gethurt", "get hurt", "get-hurt", "gets hurt",
+             "injured", "wounded", "flinch", "flinches",
+             "flinching", "recoil", "recoils", "recoiling", "stagger",
+             "staggers", "staggering", "stunned", "limp", "limps", "limping",
+             "takes a hit", "knocked back"),
+    # Bare "rise"/"rises"/"rising" are deliberately absent: they denote any
+    # upward motion ("rises upward undulating fins", "rise onto hind legs",
+    # "chest rising and falling") and fired on swimming, rearing and breathing
+    # more often than on a recovery. Only the phrases naming the destination or
+    # the down-state are kept.
+    "getup": ("getup", "get up", "gets up", "getting up", "get-up",
+              "stands up", "standing up",
+              "rises to stand", "rises to standing", "rises to its feet",
+              "rise back up", "rises back up",
+              "recover", "recovers", "recovering",
+              "wakes up", "waking up", "revive", "revives", "reviving"),
+    # Bare "lie"/"lies"/"lying" are deliberately absent: they name a posture,
+    # and in this dataset that posture is nearly always death ("die, lies
+    # motionless on its side") or the state a get-up departs from ("getup, rises
+    # from lying to standing"). The explicit settle-down phrases stay -- those
+    # do mean going to rest.
+    "rest": ("rest", "rests", "resting", "lie down",
+             "lies down", "lying down", "sit", "sits", "sitting", "seated",
+             "sleep", "sleeps", "sleeping", "dozing", "napping"),
+    # "alert" is deliberately NOT a look form: here it is a posture adjective
+    # ("stands alert", "low alert posture", "ears alert"), and all 18 clips it
+    # matched on its own were idle stances, not the act of looking.
+    "look": ("look", "looks", "looking", "glance", "glances", "glancing",
+             "gaze", "gazes", "gazing", "observe", "observes", "observing",
+             "scan", "scans", "scanning", "watch", "watches", "watching"),
+    "shake": ("shake", "shakes", "shaking", "shudder", "shudders",
+              "shuddering", "twitch", "twitches", "twitching", "tremble",
+              "trembles", "trembling", "wag", "wags", "wagging"),
+    "scratch": ("scratch", "scratches", "scratching", "groom", "grooms",
+                "grooming", "rub", "rubs", "rubbing", "itch", "itches",
+                "itching"),
+    # -- detail tier --
+    "crawl": ("crawl", "crawls", "crawling", "slither", "slithers",
+              "slithering", "creep", "creeps", "creeping", "scurry",
+              "scurries", "scurrying"),
+    "climb": ("climb", "climbs", "climbing"),
+    "sneak": ("sneak", "sneaks", "sneaking", "stalk", "stalks", "stalking",
+              "prowl", "prowls", "prowling"),
+    "retreat": ("retreat", "retreats", "retreating", "backs away",
+                "backing away", "backs up", "backing up", "backward",
+                "backwards"),
+    "land": ("land", "lands", "landing", "touches down", "touching down"),
+    "takeoff": ("take off", "takes off", "taking off", "takeoff", "lift off",
+                "lifts off"),
+    "dive": ("dive", "dives", "diving", "plunge", "plunges", "plunging"),
+    "roll": ("roll", "rolls", "rolling"),
+    "rear": ("rear", "rears", "rearing", "on its hind legs",
+             "onto its hind legs"),
+    "sit": ("sit", "sits", "sitting", "seated"),
+    "sleep": ("sleep", "sleeps", "sleeping", "dozing", "napping", "asleep"),
+    "stand": ("stand", "stands", "standing", "upright"),
+    "sniff": ("sniff", "sniffs", "sniffing", "smell", "smells", "smelling"),
+    "stretch": ("stretch", "stretches", "stretching"),
+    "yawn": ("yawn", "yawns", "yawning"),
+    "taunt": ("taunt", "taunts", "taunting", "threaten", "threatens",
+              "threatening", "intimidate", "intimidates", "intimidating"),
+    "dig": ("dig", "digs", "digging", "burrow", "burrows", "burrowing",
+            "scrape", "scrapes", "scraping"),
+    "throw": ("throw", "throws", "throwing", "toss", "tosses", "tossing",
+              "fling", "flings", "flinging", "hurl", "hurls", "hurling"),
+    "catch": ("catch", "catches", "catching", "grab", "grabs", "grabbing",
+              "seize", "seizes", "seizing", "snatch", "snatches", "snatching"),
+    "peck": ("peck", "pecks", "pecking"),
+    "sting": ("sting", "stings", "stinging"),
+    "kick": ("kick", "kicks", "kicking", "stomp", "stomps", "stomping",
+             "trample", "tramples", "trampling", "buck", "bucks", "bucking"),
+    "spit": ("spit", "spits", "spitting", "spray", "sprays", "spraying",
+             "breathes fire"),
+    "drag": ("drag", "drags", "dragging"),
+    "dance": ("dance", "dances", "dancing", "celebrate", "celebrates",
+              "celebrating"),
+    "breathe": ("breathe", "breathes", "breathing", "pant", "pants",
+                "panting"),
+    "drink": ("drink", "drinks", "drinking", "laps at water"),
+    "graze": ("graze", "grazes", "grazing"),
+    "flap": ("flap", "flaps", "flapping"),
+    "wag": ("wag", "wags", "wagging"),
+}
+
+# A canonical word must always match itself: labels are written using the
+# canonical spelling, so a word missing from its own surface-form list silently
+# fails to match every label that uses it ("getup, lifts head" hitting nothing).
+assert all(
+    word in {form.lower() for form in _VOCAB_SURFACE_FORMS.get(word, ())}
+    for word in CONTROLLED_VOCAB
+), (
+    "every vocabulary word must appear in its own surface forms: "
+    + str([w for w in CONTROLLED_VOCAB
+           if w not in {f.lower() for f in _VOCAB_SURFACE_FORMS.get(w, ())}])
+)
+assert set(_VOCAB_SURFACE_FORMS) == set(CONTROLLED_VOCAB), (
+    "surface-form table and CONTROLLED_VOCAB disagree: "
+    f"{set(_VOCAB_SURFACE_FORMS) ^ set(CONTROLLED_VOCAB)}"
+)
+assert not (set(ACTION_VOCAB_CORE) & set(ACTION_VOCAB_DETAIL)), (
+    "a word cannot be in both the core and detail vocabulary"
+)
+
+# Longest-first so multi-word forms ("stands still") win over their single-word
+# prefixes ("stand") when both belong to the SAME word. Precedence across
+# different words is resolved by span containment in ``vocab_words_in``.
+_VOCAB_MATCHERS: tuple[tuple[str, re.Pattern], ...] = tuple(
+    (
+        word,
+        re.compile(
+            r"(?<![A-Za-z])(?:"
+            + "|".join(
+                re.escape(form).replace(r"\ ", r"\s+")
+                for form in sorted(forms, key=len, reverse=True)
+            )
+            + r")(?![A-Za-z])",
+            re.IGNORECASE,
+        ),
+    )
+    for word, forms in (
+        (w, _VOCAB_SURFACE_FORMS[w]) for w in CONTROLLED_VOCAB
+    )
+)
+
+
+def vocab_words_in(text: str, core_only: bool = False) -> list[str]:
+    """Controlled-vocabulary words present in *text*, in canonical vocab order.
+
+    Matching is over the whole string, not just a prefix -- a label may name its
+    coarse action anywhere ("stands still and growls" hits idle *and* roar), and
+    may hit several words at once. That is the point of a controlled vocabulary:
+    it anchors recall without forcing a mutually exclusive choice.
+
+    A word is dropped when every one of its matches sits strictly inside a longer
+    match of a *different* word: "stands still" is idle, so the "stands" inside it
+    must not also light up ``stand``, and "breathes fire" is spit, not breathe.
+    Equal-length matches both survive, which is what keeps a detail word firing
+    alongside the core word that shares its spelling ("grazes" -> eat + graze).
+    """
+    if not text:
+        return []
+
+    spans: dict[str, list[tuple[int, int]]] = {}
+    for word, pattern in _VOCAB_MATCHERS:
+        found = [match.span() for match in pattern.finditer(text)]
+        if found:
+            spans[word] = found
+
+    def subsumed(word: str, span: tuple[int, int]) -> bool:
+        """True when *span* sits strictly inside a longer match of another word."""
+        start, end = span
+        for other_word, other_spans in spans.items():
+            if other_word == word:
+                continue
+            for other_start, other_end in other_spans:
+                if (other_start <= start and end <= other_end
+                        and other_end - other_start > end - start):
+                    return True
+        return False
+
+    allowed = set(ACTION_VOCAB_CORE) if core_only else None
+    # ``spans`` is filled in _VOCAB_MATCHERS order, which is canonical vocab
+    # order, and dicts preserve insertion order -- so the result is already sorted.
+    return [
+        word
+        for word in spans
+        if (allowed is None or word in allowed)
+        and any(not subsumed(word, span) for span in spans[word])
+    ]
+
+
+def action_multihot_words(label: str) -> list[str]:
+    """Core words a label activates -- the derived multi-hot, as words.
+
+    Derived automatically from the label text, so it costs the annotator nothing
+    and naturally supports multiple hits.
+    """
+    return vocab_words_in(label, core_only=True)
+
+
+def coarse_label_from_words(words) -> str:
+    """Synthesize the coarse training string from core words ('idle, roar').
+
+    Used by the training-time coarse augmentation: with some probability the
+    model sees this instead of the full label, so it learns to answer the short
+    queries users actually type. Word order follows ACTION_VOCAB_CORE, so
+    'idle, roar' is the only spelling of that combination.
+
+    Detail-only labels fall back to their detail words ('rear', 'sniff'). Users
+    type those bare too, and returning '' for them would hand the augmentation
+    the null condition instead -- the model would then train on "no condition"
+    for exactly the clips whose action is only reachable through a detail word,
+    and could never learn to answer that query. The fallback is a T5 string, not
+    a multi-hot, so it costs no index slot.
+    """
+    order = {word: i for i, word in enumerate(ACTION_VOCAB_CORE)}
+    hits = sorted({w for w in words if w in order}, key=order.__getitem__)
+    if not hits:
+        detail_order = {word: i for i, word in enumerate(ACTION_VOCAB_DETAIL)}
+        hits = sorted({w for w in words if w in detail_order},
+                      key=detail_order.__getitem__)
+    return ", ".join(hits)
+
+
+# ---------------------------------------------------------------------------
 # Tokenization helpers
 # ---------------------------------------------------------------------------
 
