@@ -3,7 +3,7 @@
 > 状态：**词表与数据迁移已完成（§7 步骤 1-2），代码改造未开始**
 > 已产出：两个数据集的 `action_labels.jsonl` + 复核清单；受控词表已落在
 > [`motion_labels.py`](../data_loaders/truebones/truebones_utils/motion_labels.py)。
-> 待办：人工过复核清单 -> 代码改造 -> 重训三组。
+> 待办：人工过复核清单 -> 冻结 per-group multihot mask（§2.4.1）-> 代码改造 -> 重训三组。
 > 目标：把现在一个 `action_tags` 字段承担的两份职责拆开 ——
 > **`action_group`** 负责训练集切分（分 3 个模型训练），**`action_label`** 负责推理时的
 > text-to-motion 条件控制。
@@ -96,6 +96,9 @@
 > climbing 等）没有对应的粗粒度动作，硬塞一个 core 词只会把错误的词写进 multihot。
 > 这些 clip 的 multihot 全零 —— 那是个**有定义的状态**（映射到 projection 的 bias，
 > 与被 CFG 丢弃的 null 态不同），T5 文本通路仍然携带完整语义。
+>
+> 注意全零现在有**两个**来源：这里的「label 本来就没有 core 词」，以及 §2.4.1 的
+> 「命中的 core 词在该组被降级」。两者目前合流到同一个状态，量小可接受，见 §2.4.1 的副作用一节。
 
 词表的角色 = **受控词汇表 / 召回锚点**，只保证一件事：用户输入 `run` 时，
 训练集里确实有一批 label 含 `run`。
@@ -136,21 +139,25 @@ caption，与 `action_tags.jsonl` 的 clip key **一一对应**（去掉 `.npy` 
 - **真正的约束是每个词的样本数**：全库 1445 条 clip。一个词只出现 5 次，模型学不出可靠响应，
   还会挤占容量、制造噪声。经验下限约 **每词 >= 20~25 条**，对应词表上限约 40~50 词。
 
-**实测**（迁移完成后，统计 1180 条真实 label 的命中次数，非估计值）：
+**实测**（统计 1180 条真实 label 的命中次数，非估计值。2026-08-20 修正 surface form
+假阳性并人工调整分组后重算，与迁移当天的旧数字有出入）：
 
 | core 词 | 次数 | core 词 | 次数 | core 词 | 次数 |
 |---|---|---|---|---|---|
-| idle | 308 | fall | 98 | roar | 52 |
-| attack | 257 | die | 93 | shake | 50 |
-| walk | 136 | rest | 72 | look | 49 |
-| fly | 124 | getup | 57 | jump | 44 |
-| turn | 124 | bite | 56 | hurt | 28 |
-| run | 116 | swim | 21 | eat | 21 |
+| idle | 317 | fall | 99 | getup | 50 |
+| attack | 261 | die | 94 | rest | 47 |
+| walk | 138 | roar | 55 | jump | 44 |
+| turn | 125 | bite | 54 | hurt | 30 |
+| fly | 124 | shake | 50 | look | 30 |
+| run | 99 | eat | 21 | swim | 21 |
 | scratch | 18 | | | | |
 
 最低频三个是 `scratch` 18 / `eat` 21 / `swim` 21。`eat`、`swim` 虽然接近下限但是用户一定会
 输入的**粗粒度模式词**，保留；`scratch` 18 略低于 20，因为是有稳定 T5 语义的独立行为，一并保留，
 实际下限记为 **>= 18**。
+
+> **这一层门槛是全库口径，不够用。** 三组各训一个模型，真正决定可学性的是**组内**样本量，
+> 见 §2.4.1。
 
 每条 label 命中的 core 词数：0 个 27 条 / 1 个 723 条 / 2 个 335 条 / 3 个 89 条 / 4 个 6 条 ——
 多命中是常态，正是 2.1 说的「不用二选一」。
@@ -167,6 +174,76 @@ multihot 是**自动派生的，不增加任何标注负担**，且天然支持�
 `"idle, growls"` 就是 idle + emote 双热，正好对应"无法判断"的真实情况：它本来就是两者。
 
 CFG 时 multihot 与 T5 emb **同时**丢弃（共用一个 drop 掩码），保持 uncond 分支一致。
+
+### 2.4.1 per-group multihot mask（组内门槛，已确认）
+
+§2.4 的 ">= 20 条" 是**全库 1445 条**口径，而 §1.1 规定三组各训一个模型 ——
+全局看健康的词切到组内可能只剩个位数。组内实测（**命中 clip 数 / 涉及物种数**）：
+
+| core 词 | locomotion (313) | stationary (621) | transition (246) |
+|---|---:|---:|---:|
+| idle | – | 297/69 | 20/14 |
+| walk | 136/60 | – | 2/2 |
+| run | 89/50 | – | 10/5 |
+| fly | 46/13 | 49/15 | 29/10 |
+| swim | 20/5 | – | 1/1 |
+| jump | 14/9 | 3/3 | 27/19 |
+| turn | 45/17 | 62/32 | 18/14 |
+| attack | 15/6 | 230/61 | 16/13 |
+| bite | 7/2 | 44/20 | 3/3 |
+| roar | 5/3 | 46/21 | 4/3 |
+| eat | – | 21/14 | – |
+| die | – | 4/4 | 90/47 |
+| fall | – | – | 99/51 |
+| hurt | 7/6 | 10/4 | 13/13 |
+| getup | – | – | 50/33 |
+| rest | – | 27/15 | 20/15 |
+| look | 1/1 | 29/14 | – |
+| shake | – | 37/20 | 13/8 |
+| scratch | – | 18/14 | – |
+
+**门槛：组内 clip 数 < 10 或 物种数 < 5 -> 该组降级。**
+
+物种维度不是可选项。AnyTop 是跨骨架条件模型，失效模式是「词绑定到骨架」而不是「词学不会」：
+locomotion 的 `bite` 7 条**全部来自 Raptor2 + Trex 两个物种**，纯计数门槛拦不住；反过来
+locomotion 的 `jump` 14 条覆盖 9 个物种，数量相近但安全得多。locomotion 的 `swim`
+20 条 / 5 物种正好卡在线上，保留 —— 它是用户一定会输入的粗粒度模式词。
+
+**降级 = 不进 multihot，只进 T5；不是从词表删除。** 为什么这样能减轻过拟合：
+
+- multihot 槽是 [anytop.py:147-151](../model/anytop.py#L147) 那个 `Linear(V -> D)` 里
+  **从零训练**的一整列 D 维向量，用 5 条样本去拟合它就是记忆；
+- T5 是**冻结的预训练**编码器，`roar` 的表示预训练时就落在 `growl` / `scream` 附近，
+  不需要从这 5 条 clip 里学出来；
+- T5 读的是整句，稀有词的梯度混在 `run` / `attack` 这些有充分支撑的词里流；
+  multihot 槽是孤立无歧义的开关，记忆抓手强得多。
+
+> **能治的和不能治的。** 降级削弱的是「词」的记忆通道，不改变「动作」本身样本少这件事 ——
+> locomotion 的 bite 仍然只有 7 条兽脚类样本，用户输入 bite 仍然大概率拿到 Trex 的动作，
+> 变的只是绑定的锐利程度。真正的解是补数据或推理端不暴露该词。
+
+**实现：保持 19 槽全局布局不变，按 group 置零，不要做三套词表。**
+三套 `ACTION_VOCAB_CORE` = 三套索引布局 = 结构不兼容的 checkpoint，且
+`action_multihot_words` / `coarse_label_from_words` 及全部消费者都要加 group 参数。
+恒零列拿不到梯度，无害。
+
+| group | 有效槽 | 降级（组内不足） | 恒零（组内 0 条） |
+|---|---|---|---|
+| locomotion | **7** | bite, roar, hurt, look | idle, eat, die, fall, getup, rest, shake, scratch |
+| stationary | **11** | jump, die, hurt | walk, run, swim, fall, getup |
+| transition | **12** | walk, swim, bite, roar | eat, look, scratch |
+
+**mask 必须是冻结常量**，不能在 import 时从数据集现算 —— 否则加 clip 会静默改变布局语义。
+样本量后续会增加，届时按同一规则重算并显式提交新的 mask。
+
+**副作用：stationary 的 `hurt` 降级后有 4 条 clip 的 multihot 变全零**
+（`FireAnt_AntHit_1` / `Trex_HitHead2_1` / `Dog_HitLeft_1` / `Dog_HitRight_1`，
+label 只命中 hurt 一个 core 词）。locomotion 与 transition 零副作用。这 4 条会和 §2.1
+那 27 条「没有 core 词」的 clip 合流到同一个「无 tag」状态。目前量小可接受；若数据扩充后
+这个数变大，需要给 multihot 加一位独立的「已降级」指示位，而不是让两种语义共用全零。
+
+**降级不解决的两件事**（另行处理）：组内不均衡（stationary 84% 的 clip 命中 idle 或 attack，
+locomotion 70% 命中 walk 或 run）；transition 组只有 246 条的绝对量问题。
 
 ### 2.5 空 label = 无条件（已确认）
 
@@ -197,6 +274,19 @@ CFG 时 multihot 与 T5 emb **同时**丢弃（共用一个 drop 掩码），保
 - **训练分布与推理查询分布对齐** —— 前端用户实际打的就是 `idle` / `idle, growl` 这类短查询，
   这个分布模型训练时真见过，而不是只见过完整长句；
 - 顺带消除"到底该写多细"的标注压力 —— 写细不会伤害粗粒度响应。
+
+**两条实现约束：**
+
+1. **合成串走的是完整词表，不受 §2.4.1 的 mask 影响。** 合成串是喂给 T5 的**字符串**，
+   不是 multihot 向量。被降级的词恰恰最需要出现在短查询训练分布里 —— 用 mask 后的词去合成
+   等于让降级词永远学不到短查询响应，与降级的初衷相反。所以合成读的是
+   `vocab_words_in(label)` 的结果，不是 masked multihot。
+2. **detail-only label 回退到 detail 词。** §2.1 那 27 条没有 core 词的 clip，
+   若按「只从 core 词合成」会得到**空串**，而空串按 §2.5 等于 null 条件 ——
+   模型会对「唯一入口是 detail 词」的那些动作恰好训练在"无条件"上，
+   `sneak` / `rear` / `sniff` / `dig` 这类用户照样会打的短查询就永远学不到。
+   `coarse_label_from_words` 在无 core 命中时回退到 detail 词（`'sneak'` / `'rear'`），
+   代价为零：它是 T5 字符串，不占任何 multihot 槽位。
 
 ### 2.7 推理端：group 由请求显式指定
 
@@ -274,10 +364,10 @@ transition —— 该组样本最少、分布最独特，宁可多喂），然�
 
 | 文件 | 改动 |
 |---|---|
-| [motion_labels.py](../data_loaders/truebones/truebones_utils/motion_labels.py) | `ACTION_TAGS`(15) -> `ACTION_GROUPS`(3) + `CONTROLLED_VOCAB` + `VOCAB_ALIASES` + `MULTIHOT_VOCAB`（频次门槛子集）；`load_action_tags` -> `load_action_labels`（校验 group 合法 + label 命中）；`_FALLBACK_ACTION_RULES` 改为 clip 名 -> 粗动词的回退规则 |
+| [motion_labels.py](../data_loaders/truebones/truebones_utils/motion_labels.py) | `ACTION_TAGS`(15) -> `ACTION_GROUPS`(3) + `CONTROLLED_VOCAB` + `VOCAB_ALIASES` + `MULTIHOT_VOCAB`（频次门槛子集）；**新增冻结常量 `GROUP_MULTIHOT_MASK` + 访问器 `group_multihot_mask(group)`（§2.4.1）**；`load_action_tags` -> `load_action_labels`（校验 group 合法 + label 命中）；`_FALLBACK_ACTION_RULES` 改为 clip 名 -> 粗动词的回退规则 |
 | [param_utils.py:53](../data_loaders/truebones/truebones_utils/param_utils.py#L53) | `ACTION_TAGS_FILE` -> `ACTION_LABELS_FILE = "action_labels.jsonl"` |
 | [dataset.py:72-95,427-478](../data_loaders/truebones/data/dataset.py#L72-L95) | tag 集合求交 -> group 单值相等过滤；`__getitem__` 带出 `action_group` / `action_label` / label emb |
-| [tensors.py:109-113](../data_loaders/tensors.py#L109-L113) | multihot 拼装改为：[B,512] label emb + [B,V] 派生 multihot + [B] valid mask |
+| [tensors.py:109-113](../data_loaders/tensors.py#L109-L113) | multihot 拼装改为：[B,512] label emb + [B,V] 派生 multihot + [B] valid mask。**派生后按训练组的 `group_multihot_mask()` 逐元素相乘**（§2.4.1）—— 训练与推理必须用同一个 mask，否则推理时会点亮训练中恒零的槽 |
 | [anytop.py:136-159,368-420](../model/anytop.py#L136-L159) | `action_tag_projection`(15->D) -> `action_label_projection`(512->D) + `action_multihot_projection`(V->D)；加性通路与 `action_tag_null_emb` / CFG 逻辑原样保留；空 label 直接走 null |
 | [parser_util.py:145-165](../utils/parser_util.py#L145-L165) | `--action_tags` -> `--action_group`（训练过滤，单值）；新增 `--action_label`（推理）；`--action_tag_cond` -> `--action_label_cond`；新增 `--action_label_truncate_prob`（§2.6） |
 | [anytop_service.py:62-125](../../server/anytop_service.py#L62-L125) | 删除 tag 展开表与 `resolve_anytop_group()`；请求直接带 `action_group`，缺失或非法则报错列出三个合法值 |
@@ -352,10 +442,12 @@ getup 49  turn 47  gethurt 42  jump 38  interact 36  fall 15  swim 13
 2. ~~写迁移脚本，跑 LLM，产出两个 `action_labels.jsonl` + 复核清单~~ **已完成**
    （见 §8）。
 3. **人工过复核清单** <- 当前卡在这里，zoo 224 条 + upgrade 32 条。
-4. 代码改造 + 单测（schema 校验、group 过滤、空 label 走 null、multihot 派生）。
+4. 冻结 `GROUP_MULTIHOT_MASK`（§2.4.1）—— 依赖步骤 3 的复核结果，分组定稿后才能算。
+5. 代码改造 + 单测（schema 校验、group 过滤、空 label 走 null、multihot 派生 + mask 生效、
+   合成串不受 mask 影响、detail-only 回退非空）。
    旧 checkpoint **不做兼容**：`args.json` 带 `action_tag_cond` 时直接报错退出。
-5. 预计算 label embedding sidecar；
-6. 三组重训。
+6. 预计算 label embedding sidecar；
+7. 三组重训。
 
 ---
 
@@ -420,3 +512,40 @@ zoo 与 zoo_upgrade 有 **15 个同名 clip**（`Bear_Stand_1` / `Horse_Idle_1` 
 但它们是不同数据集里的不同动作。`motion_captions.jsonl` 按裸文件名索引，所以
 **caption 只能 join 给它真正所属的那个数据集**，迁移脚本的 `--captions` 也只传给 zoo。
 后续给 upgrade 补 caption 时同样要注意。
+
+### 8.3 受控词表复查（2026-08-20）
+
+按 group 统计 core 词频次时发现一批**假阳性**，修完 zoo 的 1180 条里有 188 条命中集合变化
+（只减不增，无 clip 掉到零命中，校验器全量 0 failure）。
+
+**1. 跨词的最长匹配从来没生效（结构性）。** `_VOCAB_MATCHERS` 上方注释写着
+「longest-first 让 `"stands still"` 压过 `"stand"`」，但 longest-first 只在**单个词自己的
+form 列表内**排序，跨词之间没有任何优先级 —— `"stands still"` 同时点亮 `idle` 和 detail 词
+`stand`，`"breathes fire"` 同时点亮 `spit` 和 `breathe`。`vocab_words_in` 改为收集所有
+match span，**某词的匹配若严格落在另一个词更长的匹配内部就抑制**。等长匹配双方保留，
+`"grazes"` 仍然 `eat + graze`、`"flap"` 仍然 `fly + flap`，core/detail 共现不受影响。
+`stand` 227 -> 86。
+
+**2. 三个 form 撤下**（口径同 §8.1 第 5 条：按「只靠这一个 form 命中」抽查）：
+
+| 词 | 撤下 | 证据 |
+|---|---|---|
+| `look` | `alert` | 18 条只靠它命中的全是姿态形容（`stands alert` / `low alert posture` / `ears alert`），**零真阳性**。48 -> 30 |
+| `rest` | 裸 `lie` / `lies` / `lying`（保留 `lie down` 等短语） | 25 条只靠它命中的里约 18 条是 `die, lies motionless`，6 条是 `getup, rises from lying to standing`（离开的状态），无一在休息。72 -> 48 |
+| `getup` | 裸 `rise` / `rises` / `rising`，换成 `rises to stand` / `rise back up` 等 | 裸词表示任意向上运动（`rises upward undulating fins` / `rise onto hind legs` / `chest rising and falling`），在游泳、立起、呼吸上误触发多于真正起身。57 -> 50 |
+
+**3. 剩余 4 条改的是 label 不是词表**（词表层面无法区分，且都是描述本身有问题）：
+
+| clip | 改后 |
+|---|---|
+| `Dog-2_IdleBreathe_1` | `idle, stands still breathing slowly with head level`（原描述里 "chest rising and falling" 误触发 `fall`，且细节无价值） |
+| `Crocodile_Bounce_1` | `hurt, die, takes a hit and collapses to the ground`（实为受击死亡，原 caption 的 "bouncing" 描述错误） |
+| `Scorpion-2_LimpAlive_1` | `getup, idle, slowly rises to stand with tail swaying`（原写「从 lying 恢复」，描述**离开的状态**必然点亮那个状态的槽；改为描述**去向**） |
+| `Camel_Restless_1` | `attack, head lowered, shifts weight and lifts legs`（实为攻击，与 rest / pacing 无关） |
+
+> **教训（§8.1 第 5 条的推广）**：surface form 表定完，除了按「只靠这一别名命中」抽查，
+> 还要检查**跨词的包含关系**。另外 label 写作上，「描述离开的那个状态」这个句式
+> （`recovery from lying down` / `rises from sleeping`）必然点亮那个状态的槽位，
+> 应当改写成描述去向。
+
+`action_labels.jsonl` 未纳入 git，改动前的副本务必自行备份。
