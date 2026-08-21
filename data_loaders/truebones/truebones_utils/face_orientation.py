@@ -114,10 +114,19 @@ def _canonicalize_joint_name(name, replacements=None):
     return ' '.join(canonical_parts) if canonical_parts else name.strip()
 
 
+# Side half of a quadruped limb code, dropped so a left and a right limb share a
+# signature; the fore/hind half is kept as a bare 'f'/'b' so LfLeg01 can only
+# pair with RfLeg01. Mirrors _LIMB_CODE_SIGNATURE_TOKENS in
+# physics_joint_annotation -- the hind codes were missing here too, so a rig that
+# names its limbs Lb/Rb had no hind pair to derive the lateral axis from.
+_LIMB_CODE_SIGNATURE_TOKENS = {'lf': 'f', 'rf': 'f', 'lb': 'b', 'rb': 'b'}
+
+
 def _joint_signature(name, replacements=None):
     signature_tokens = [
-        token for token in _canonicalize_joint_name(name, replacements).lower().split()
-        if token not in ('left', 'right', 'lf', 'rf')
+        _LIMB_CODE_SIGNATURE_TOKENS.get(token, token)
+        for token in _canonicalize_joint_name(name, replacements).lower().split()
+        if token not in ('left', 'right')
     ]
     if signature_tokens:
         return ' '.join(signature_tokens)

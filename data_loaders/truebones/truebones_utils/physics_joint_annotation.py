@@ -234,21 +234,75 @@ _EMBED_TEXT_SKIP_TOKENS = {
     'end',
     'site',
 }
+# Rig scaffolding, props and tack: bones that carry no anatomy at all. A joint
+# whose name reduces to nothing but these is blanked by build_joint_embedding_texts
+# (zero embedding), which is the honest encoding -- it has no cross-species slot.
+# A name that also carries anatomy keeps it ("XtraSpine" -> "Spine"), because the
+# per-token filter runs first and only the all-marker case reaches the blanking
+# fallback.
+#
+# Everything here was checked against its actual place in the tree before being
+# added: Horse/Camel "Saddle"/"Reins"/"Halter"/"Handle"/"Ctrl"/"IkChain" are tack
+# and controls hung off the spine, rhino "Passenger" is a rider node, serpent_man
+# "Blade" is a weapon parented to the hand, SabreToothTiger "MagicEffectsNode" and
+# FireAnt "ProjectileNodeFire" are VFX emitters, and Flamingo/Roach "Bone02" is a
+# bare generic marker. Deliberately NOT here: "spline", which in this corpus is
+# Anaconda's Hips->Spline01..06->Neck trunk (a real spine, mapped as a synonym),
+# and "down", which may be a lower-body qualifier rather than a control.
+#
+# The single-rig codes below were each read off their own tree before being
+# added: Rabbit's "Bip01" is a bare node between Root and Pelvis; Crow/Pirrana/
+# Tukan's "All" is the rig root, Hips -> All -> Locator; Boar's "Aux" hangs off
+# an otherwise ordinary "LeftClavicleAux"/"LeftCheekAux" (no plain Clavicle to
+# collide with, so the joint simply gains the corpus name); "Helt"/"Helb",
+# "Lftb"/"Rftb", "Bnp" and "Mag" are opaque suffix codes whose name already
+# carries the anatomy ("HeadEyeLidHelt", "LeftTwistBoneLftb").
 _EMBED_TEXT_NON_ANATOMICAL_TOKENS = {
+    'all',
+    'aux',
+    'bip',
+    'blade',
+    'bnp',
+    'bone',
     'brain',
     'center',
+    'chain',
+    'control',
+    'controler',
     'copy',
     'cog',
+    'ctrl',
     'dummy',
+    'effects',
+    'fire',
     'fur',
+    'halter',
+    'handle',
+    'helb',
+    'helper',
+    'helt',
     'ik',
     'joint',
+    'lftb',
     'locator',
+    'mag',
+    'magic',
     'mesh',
     'node',
+    'null',
+    'passenger',
+    'pole',
+    'ponitail',
     'ponytail',
     'projectile',
+    'prop',
+    'reins',
+    'rftb',
+    'saddle',
+    'target',
     'trajectory',
+    'weapon',
+    'xtra',
 }
 # Side is re-attached from the geometry-derived joint_side_labels in
 # build_joint_embedding_texts, so the name's own side word is dropped here.
@@ -266,6 +320,134 @@ _EMBED_TEXT_HEAD_FEATURE_TOKENS = {
     'ear',
     'eye',
     'tongue',
+}
+# Creature words that some rigs glue onto an otherwise ordinary joint name. Two
+# sources: a rig that stamps its own species on every bone (Kappa_gorilla's
+# "GorillaJaw", "KappaNeck", "RightGorillaFinger101"), and a *variant* rig that
+# carries several interchangeable heads on one skeleton (antilope hangs a Deer,
+# Moose, Quilin and Donkey neck+head off Spine02; Tiger hangs a KhitanTiger neck
+# beside its own).
+#
+# The species is already conditioned globally through ``species_emb``, so
+# repeating it per joint only dilutes the anatomy. Measured on the current bank,
+# the dilution is total, not cosmetic: the nearest neighbour of "Kappa Head" is
+# "Neck Nek ..." (0.49) and of "Moose Neck" is "Right Quilin Moustache" (0.57) --
+# T5 clusters these joints by *species* instead of by body part, which is the
+# exact opposite of what a cross-species model needs. Dropping the word leaves
+# four plain "Neck" joints that _sibling_instance_tokens then numbers apart.
+#
+# Stripped only in the embedding text, never in canonical_joint_names: the
+# canonical layer needs them to keep names unique (and would have
+# _disambiguate_duplicate_canonical_names re-append them anyway), so stripping
+# there would cost BVH-name churn and a renamer bank rebuild for no gain.
+#
+# Deliberately excluded: 'ant' (spider_tarantula's "RightAnt00" is an antenna
+# under Head01, not the insect), 'horse' ("HorseLink" is a 3ds Max Biped leg
+# bone used by 33 species -- handled as a pair merge below), and 'jaws' (a
+# species here, but one keystroke from the anatomical 'jaw').
+_EMBED_TEXT_CREATURE_TOKENS = {
+    'antilope', 'bat', 'bear', 'bee', 'boar', 'buffalo', 'buzzard', 'camel',
+    'cat', 'centipede', 'chicken', 'cobra', 'coyote', 'crab', 'cricket', 'crocodile',
+    'crow', 'deer', 'dinosaur', 'dog', 'donkey', 'dragon', 'eagle', 'elephant',
+    'elk', 'flamingo', 'fox', 'gazelle', 'goat', 'gorilla', 'hamster', 'hen',
+    'hippopotamus', 'hound', 'hyena', 'jaguar', 'kappa', 'khitan', 'leapord',
+    'leopard', 'lion', 'lynx', 'mammoth', 'monkey', 'moose', 'mouse', 'ostrich',
+    'parrot', 'pigeon', 'puppy', 'quilin', 'rabbit', 'raptor', 'rat', 'rhino',
+    'roach', 'sabrecat', 'scorpion', 'seagull', 'serpent', 'skunk', 'spider',
+    'stego', 'tarantula', 'tiger', 'trex', 'tricera', 'tukan', 'turtle', 'tyranno',
+    'wyvern',
+}
+# Quadruped limb codes: Lf/Rf/Lb/Rb = left/right fore/hind. The side half is
+# already recovered by detect_joint_side and re-attached from the geometry label,
+# so only the fore/hind half is emitted here. Dropping the code outright would
+# collapse a front leg onto a hind leg -- the same failure the front/back words
+# are kept out of _EMBED_TEXT_SKIP_TOKENS to avoid.
+_EMBED_TEXT_LIMB_CODE_TOKENS = {
+    'lf': 'Front',
+    'rf': 'Front',
+    'lb': 'Back',
+    'rb': 'Back',
+}
+# Anatomical synonyms and rig abbreviations folded onto the vocabulary the rest
+# of the corpus already uses, so one body part is one point in T5 space instead
+# of a dozen singleton families. Left as-is when T5 gets there on its own; these
+# are the ones it does not -- it neighbours by spelling, so "Left Carpal" lands
+# on "Left Calf" (0.70) and "Left Ulna" on "Left Clavicle" (0.65).
+#
+# Every mapping was read off the joint's actual position in the tree, not a
+# dictionary: Deer runs Pelvis->Femur->Tibia->LargeCannon->PhalanxPrima->Hoof
+# (= Thigh/Calf/Foot/Toe) and Ribcage->Scapula->Humerus->Radius->Metacarpus
+# (= Clavicle/UpperArm/Forearm/Hand); Hyena runs Scapula->Humerus->Ulna->Carpal;
+# Anaconda runs Hips->Spline01..06->Neck. Not mapped, on inspection: 'ball'
+# (Bear uses it for both the ball of the foot and the palm), 'belly'/'stomach'
+# (abdomen, spine segment and fat jiggle across three rigs) and 'crest' (Boar's
+# is a back crest, not a neck one).
+_EMBED_TEXT_SYNONYM_TOKENS = {
+    # long bones -> the segment word the corpus uses
+    'scapula': 'Clavicle',
+    'humerus': 'UpperArm',
+    'humer': 'UpperArm',
+    'radius': 'Forearm',
+    'ulna': 'Forearm',
+    'carpal': 'Hand',
+    'carpus': 'Hand',
+    'metacarpal': 'Hand',
+    'metacarpus': 'Hand',
+    'femur': 'Thigh',
+    'tibia': 'Calf',
+    'fibula': 'Calf',
+    'cannon': 'Foot',
+    'tarsal': 'Foot',
+    'metatarsal': 'Foot',
+    'metatarsus': 'Foot',
+    'phalanx': 'Toe',
+    'phalanges': 'Toe',
+    'palm': 'Hand',
+    # head
+    'mandible': 'Jaw',
+    'chin': 'Jaw',
+    'muzzle': 'Nose',
+    'snout': 'Nose',
+    'brow': 'Eyebrow',
+    # trunk
+    'ribcage': 'Chest',
+    'thorax': 'Chest',
+    'spline': 'Spine',
+    # arthropod appendages, one family instead of three spellings
+    'antenna': 'Feeler',
+    'antennae': 'Feeler',
+    'piers': 'Pincers',
+    'pliers': 'Pincers',
+    # misspellings, which T5 has no reason to place anywhere near the word they
+    # meant
+    'tounge': 'Tongue',
+    'thouge': 'Tongue',
+    'tunge': 'Tongue',
+    'eyeleds': 'Eyelid',
+    'scull': 'Head',
+    # rig abbreviations that echo the full word already in the same name
+    # ("LeftThighLeftThi", "SpineSpn0", "Tail0Tal0"); expanding them lets the
+    # adjacent-duplicate collapse in _refine_joint_embedding_name eat the echo.
+    'thi': 'Thigh',
+    'clf': 'Calf',
+    'fot': 'Foot',
+    'hnd': 'Hand',
+    'uar': 'UpperArm',
+    'far': 'Forearm',
+    'clv': 'Clavicle',
+    'nek': 'Neck',
+    'spn': 'Spine',
+    'tal': 'Tail',
+    # standalone abbreviations, read off the tree: Deer_Buck hangs "LeftClav"
+    # and "LeftScap" off Spine4 (both girdle helpers, both -> Clavicle, as
+    # "scapula" already maps there), Hyena runs Femur -> Shin -> Ankle, and
+    # SabreToothTiger's "Pelv" sits Hips -> Pelv -> Thigh/Tail.
+    'clav': 'Clavicle',
+    'scap': 'Clavicle',
+    'shin': 'Calf',
+    'pelv': 'Pelvis',
+    'chk': 'Cheek',
+    'lips': 'Lip',
 }
 
 # Some rigs glue a multi-word joint name together in all lowercase
@@ -327,7 +509,7 @@ def _split_glued_compound_token(token):
     return parts if parts is not None and len(parts) >= 2 else None
 
 
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 9
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 10
 
 _CHAIN_INDEX_ORDINAL_TOKENS = {
     1: 'First',
@@ -533,6 +715,19 @@ _EMBED_TEXT_TOKEN_PAIR_MERGES = {
     ('fore', 'leg'): 'Foreleg',
     ('upper', 'arm'): 'UpperArm',
     ('lower', 'arm'): 'Forearm',
+    # 3ds Max Biped's extra digitigrade leg link, exported by 33 species here.
+    # It sits Thigh -> Calf -> HorseLink -> Foot in every one of them, which is
+    # the ankle/hock; merging the pair both names it correctly and keeps the
+    # creature word "horse" out of the embedding text of a Cat, a Lion and a
+    # Chicken. No species carries both a HorseLink and an Ankle, so nothing
+    # collides.
+    ('horse', 'link'): 'Ankle',
+    # CamelCase splits "EyeLid"/"EyeLids" into two tokens, and a bare 'eye' also
+    # emits the shared HeadFeature category -- merging the pair keeps an eyelid
+    # an eyelid instead of "Eye HeadFeature Lid". The glued lowercase spelling is
+    # already protected by _COMPOUND_SPLIT_PROTECTED_TOKENS.
+    ('eye', 'lid'): 'Eyelid',
+    ('eye', 'lids'): 'Eyelid',
 }
 
 
@@ -567,6 +762,12 @@ def _bare_arm_means_upper_arm(joint_names, parents):
 
 def _refine_joint_embedding_tokens(clean_token, bare_arm_is_upper_arm=False):
     """Map one canonical token to the embedding token(s) it contributes."""
+    limb_code_token = _EMBED_TEXT_LIMB_CODE_TOKENS.get(clean_token)
+    if limb_code_token is not None:
+        return [limb_code_token]
+    synonym_token = _EMBED_TEXT_SYNONYM_TOKENS.get(clean_token)
+    if synonym_token is not None:
+        return [synonym_token]
     if clean_token in ('sippo', 'tai') or clean_token.startswith('tail'):
         return ['Tail']
     if clean_token.startswith('toe'):
@@ -590,17 +791,29 @@ def _refine_joint_embedding_tokens(clean_token, bare_arm_is_upper_arm=False):
     return [clean_token.capitalize()]
 
 
+def _clean_embedding_token(token):
+    """Lower-case, strip punctuation, drop a trailing index run.
+
+    The token tables are all keyed on this form, so every lookup against them
+    has to go through here -- comparing a raw token instead silently misses
+    anything spelled with punctuation or an index ("BN_P", "Bip01").
+    """
+    cleaned = re.sub(r'[^a-z0-9]+', '', token.lower())
+    return re.sub(r'\d+$', '', cleaned)
+
+
 def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False):
     canonical_name = _canonicalize_joint_name(name)
     clean_tokens = []
     for token in canonical_name.split():
-        clean_token = re.sub(r'[^a-z0-9]+', '', token.lower())
-        clean_token = re.sub(r'\d+$', '', clean_token)
+        clean_token = _clean_embedding_token(token)
         if not clean_token or clean_token.isdigit() or clean_token in _EMBED_TEXT_SKIP_TOKENS:
             continue
         if clean_token in _EMBED_TEXT_NON_ANATOMICAL_TOKENS:
             continue
         if clean_token in _EMBED_TEXT_SIDE_TOKENS:
+            continue
+        if clean_token in _EMBED_TEXT_CREATURE_TOKENS:
             continue
         clean_tokens.append(clean_token)
 
@@ -617,7 +830,16 @@ def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False):
         )
         index += 1
 
-    return merged_tokens or canonical_name.split()
+    # Collapse an adjacent repeat left behind by the mappings above. Rigs that
+    # spell a part twice in one name -- "LeftThighLeftThi", "SpineSpn0",
+    # "NeckNek0" -- only look like two tokens until the abbreviation is expanded;
+    # a body part never legitimately repeats back-to-back.
+    deduped_tokens = [
+        token for position, token in enumerate(merged_tokens)
+        if position == 0 or token != merged_tokens[position - 1]
+    ]
+
+    return deduped_tokens or canonical_name.split()
 
 
 def _chain_index_token(index):
@@ -766,7 +988,10 @@ def build_joint_embedding_texts(object_cond):
     flag_tokens_per_joint = []
     for joint_index, joint_name in enumerate(base_joint_names):
         refined_tokens = refined_tokens_per_joint[joint_index]
-        lowered_tokens = {token.lower() for token in refined_tokens}
+        # Same cleaning the table lookups use. It matters on the fallback path:
+        # a name made *only* of markers comes back as the raw canonical tokens
+        # ("BN_P", "Bip01"), which a bare .lower() cannot match against the set.
+        lowered_tokens = {_clean_embedding_token(token) for token in refined_tokens}
         if lowered_tokens & _EMBED_TEXT_NON_ANATOMICAL_TOKENS:
             body_tokens_per_joint.append([])
             flag_tokens_per_joint.append([])
@@ -801,18 +1026,32 @@ def build_joint_embedding_texts(object_cond):
     ]
 
 
+# Side half of a quadruped limb code, dropped from the symmetry signature; the
+# fore/hind half is kept as a bare 'f'/'b' so LfLeg01 can only ever pair with
+# RfLeg01. Erasing the code outright would put a fore and a hind leg in one
+# group and leave the mirror test to tell them apart.
+_LIMB_CODE_SIGNATURE_TOKENS = {'lf': 'f', 'rf': 'f', 'lb': 'b', 'rb': 'b'}
+
+
+def _signature_tokens(tokens, side_tokens):
+    signature_tokens = []
+    for token in tokens:
+        if token in side_tokens:
+            continue
+        signature_tokens.append(_LIMB_CODE_SIGNATURE_TOKENS.get(token, token))
+    return signature_tokens
+
+
 def _joint_signature(name):
-    signature_tokens = [
-        token for token in _canonicalize_joint_name(name).lower().split()
-        if token not in ('left', 'right', 'lf', 'rf')
-    ]
+    signature_tokens = _signature_tokens(
+        _canonicalize_joint_name(name).lower().split(), ('left', 'right'),
+    )
     if signature_tokens:
         return ' '.join(signature_tokens)
 
-    fallback_tokens = [
-        token for token in normalize_joint_name(name).split()
-        if token not in ('left', 'right', 'l', 'r', 'lf', 'rf')
-    ]
+    fallback_tokens = _signature_tokens(
+        normalize_joint_name(name).split(), ('left', 'right', 'l', 'r'),
+    )
     return ' '.join(fallback_tokens)
 
 
@@ -1154,7 +1393,7 @@ def _joint_depths(parents):
 def detect_joint_side(name):
     normalized = normalize_joint_name(name)
     compact = normalized.replace(' ', '')
-    tokens = normalized.split()
+    tokens = set(normalized.split())
     right_markers = (
         ' right ',
         ' npc r',
@@ -1193,11 +1432,16 @@ def detect_joint_side(name):
     if any(marker in padded for marker in left_markers) or compact.startswith(('l_', 'lleg', 'larm', 'lthigh', 'lmomo', 'lkata', 'lhiji')):
         return 'left'
 
-    has_rf = 'rf' in tokens
-    has_lf = 'lf' in tokens
-    if has_rf and not has_lf:
+    # Quadruped limb codes. Both halves of the rig use them -- Lf/Rf for the fore
+    # limbs, Lb/Rb for the hind -- but only the fore pair was ever read, so every
+    # Lb*/Rb* joint in Bear, Dinosaur, Tiger, antilope and rhino (52 joints) came
+    # back 'center' and lost its side, taking its symmetry pairing with it.
+    # Fires only on an unambiguous single side, same as the explicit markers above.
+    right_codes = tokens & {'rf', 'rb'}
+    left_codes = tokens & {'lf', 'lb'}
+    if right_codes and not left_codes:
         return 'right'
-    if has_lf and not has_rf:
+    if left_codes and not right_codes:
         return 'left'
     return None
 

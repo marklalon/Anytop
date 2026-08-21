@@ -127,6 +127,45 @@ def test_lf_rf_suffixes_drive_side_detection_and_signature_normalization() -> No
     assert _joint_signature('Sabrecat_Finger4_LF04_') == _joint_signature('Sabrecat_Finger4_RF04_')
 
 
+def test_lb_rb_suffixes_drive_side_detection_without_crossing_fore_and_hind() -> None:
+    # Only the fore codes were ever read, so every Lb*/Rb* hind-limb joint in
+    # Bear, Dinosaur, Tiger, antilope and rhino came back 'center' and lost its
+    # side along with its symmetry pairing.
+    assert detect_joint_side('LbLeg01') == 'left'
+    assert detect_joint_side('RbLeg01') == 'right'
+    assert detect_joint_side('RbClaw4') == 'right'
+
+    assert _joint_signature('LbLeg01') == _joint_signature('RbLeg01')
+    # The side half of the code is dropped, the fore/hind half is not: a fore leg
+    # and a hind leg must not land in one symmetry group.
+    assert _joint_signature('LfLeg01') != _joint_signature('LbLeg01')
+
+
+def test_lb_rb_hind_limbs_pair_with_each_other_not_with_the_fore_limbs() -> None:
+    joint_names = ['Root', 'LfLeg01', 'RfLeg01', 'LbLeg01', 'RbLeg01']
+    parents = np.asarray([-1, 0, 0, 0, 0], dtype=np.int64)
+    rest_positions = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [-1.0, 0.0, 2.0],
+            [1.0, 0.0, 2.0],
+            [-1.0, 0.0, -2.0],
+            [1.0, 0.0, -2.0],
+        ],
+        dtype=np.float64,
+    )
+
+    joint_side_labels, symmetry_partner_indices, _pairs = _infer_symmetry_metadata(
+        joint_names,
+        parents,
+        rest_positions,
+    )
+
+    assert joint_side_labels == ['center', 'left', 'right', 'left', 'right']
+    assert symmetry_partner_indices[1] == 2, f'fore pair: {symmetry_partner_indices[1]}'
+    assert symmetry_partner_indices[3] == 4, f'hind pair: {symmetry_partner_indices[3]}'
+
+
 def test_lf_rf_suffix_children_are_paired() -> None:
     joint_names = [
         'Root',
