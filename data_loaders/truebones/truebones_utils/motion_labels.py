@@ -67,7 +67,7 @@ ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 # (rearing, sniffing, burrowing, crawling) have no coarse counterpart, and forcing
 # one on would put a word into the multi-hot that the animal never does. Those
 # labels carry detail words only and derive an all-zero multi-hot -- a defined
-# state, not a defect. See ``validate`` in tools/migrate_action_tags_to_labels.py.
+# state, not a defect.
 #
 # Membership threshold: >= ~20 supporting clips out of 1445. Rarer actions live in
 # ACTION_VOCAB_DETAIL, where they still reach the model through the T5 text path

@@ -387,8 +387,6 @@ transition —— 该组样本最少、分布最独特，宁可多喂），然�
 
 ## 5. 迁移流程
 
-新增 `tools/migrate_action_tags_to_labels.py`：
-
 **zoo**（1180 条）
 1. `action_group`：按优先级映射给初值（`rest` 除外，逐条判），LLM 读 caption + clip 名给建议值；
 2. `action_label`：LLM 压缩 caption 为 `<动词>, <细节短句>`，动词受受控词表约束；
@@ -452,17 +450,6 @@ getup 49  turn 47  gethurt 42  jump 38  interact 36  fall 15  swim 13
 ---
 
 ## 8. 迁移执行记录（2026-08-20）
-
-工具：[`tools/migrate_action_tags_to_labels.py`](../../tools/migrate_action_tags_to_labels.py)
-（可续跑，`--limit` / `--dry-run` 可先试水）
-
-```bash
-# zoo：LLM 从 caption 生成 group + label
-python tools/migrate_action_tags_to_labels.py     --dataset Anytop/dataset/truebones/zoo/truebones_processed     --captions dataset/truebones_processed/motion_captions.jsonl --workers 12
-
-# zoo_upgrade：无 caption，规则 group + 空 label
-python tools/migrate_action_tags_to_labels.py     --dataset Anytop/dataset/truebones/zoo_upgrade/clean_processed
-```
 
 产出：
 
