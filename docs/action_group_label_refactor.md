@@ -120,9 +120,9 @@
 
 ### 2.3 label 由 LLM 压缩 caption 生成（已确认）
 
-zoo 的 [motion_captions.jsonl](../../dataset/truebones_processed/motion_captions.jsonl) 有 1180 条整句
-caption，与 `action_tags.jsonl` 的 clip key **一一对应**（去掉 `.npy` 后 overlap = 1180/1180，
-两边各 1180 条，无单边条目）。
+zoo 的 [motion_captions.jsonl](../../dataset/truebones_processed/motion_captions.jsonl) 有 1137 条整句
+caption，与 `action_tags.jsonl` 的 clip key **一一对应**（去掉 `.npy` 后 overlap = 1137/1137，
+两边各 1137 条，无单边条目）。
 
 用已有的 vLLM / Qwen 通道（[server/llm_utils.py](../../server/llm_utils.py)）把 caption 压成
 `<动词>, <细节短句>`。纯规则版只能把细节退化成 clip 名，拿不到 "with mouth open" 这类信息，
@@ -136,30 +136,30 @@ caption，与 `action_tags.jsonl` 的 clip key **一一对应**（去掉 `.npy` 
 
 - **参数量**：`Linear(V -> 256)`，V 从 15 涨到 40 也只是 4k -> 10k 参数，可忽略。
   **维度本身不是问题。**
-- **真正的约束是每个词的样本数**：全库 1445 条 clip。一个词只出现 5 次，模型学不出可靠响应，
+- **真正的约束是每个词的样本数**：全库 1402 条 clip。一个词只出现 5 次，模型学不出可靠响应，
   还会挤占容量、制造噪声。经验下限约 **每词 >= 20~25 条**，对应词表上限约 40~50 词。
 
-**实测**（统计 1180 条真实 label 的命中次数，非估计值。2026-08-20 修正 surface form
-假阳性并人工调整分组后重算，与迁移当天的旧数字有出入）：
+**实测**（统计 1137 条真实 label 的命中次数，非估计值。2026-08-21 按清理后的 1137 条
+重算，与迁移当天的旧数字有出入，见 §8.4）：
 
 | core 词 | 次数 | core 词 | 次数 | core 词 | 次数 |
 |---|---|---|---|---|---|
-| idle | 317 | fall | 99 | getup | 50 |
-| attack | 261 | die | 94 | rest | 47 |
-| walk | 138 | roar | 55 | jump | 44 |
-| turn | 125 | bite | 54 | hurt | 30 |
-| fly | 124 | shake | 50 | look | 30 |
-| run | 99 | eat | 21 | swim | 21 |
+| idle | 298 | die | 93 | shake | 46 |
+| attack | 256 | fall | 86 | jump | 41 |
+| walk | 138 | bite | 53 | hurt | 30 |
+| fly | 123 | getup | 53 | look | 28 |
+| turn | 117 | roar | 51 | eat | 22 |
+| run | 94 | rest | 47 | swim | 19 |
 | scratch | 18 | | | | |
 
-最低频三个是 `scratch` 18 / `eat` 21 / `swim` 21。`eat`、`swim` 虽然接近下限但是用户一定会
+最低频三个是 `scratch` 18 / `swim` 19 / `eat` 22。`eat`、`swim` 虽然接近下限但是用户一定会
 输入的**粗粒度模式词**，保留；`scratch` 18 略低于 20，因为是有稳定 T5 语义的独立行为，一并保留，
 实际下限记为 **>= 18**。
 
 > **这一层门槛是全库口径，不够用。** 三组各训一个模型，真正决定可学性的是**组内**样本量，
 > 见 §2.4.1。
 
-每条 label 命中的 core 词数：0 个 27 条 / 1 个 723 条 / 2 个 335 条 / 3 个 89 条 / 4 个 6 条 ——
+每条 label 命中的 core 词数：0 个 26 条 / 1 个 703 条 / 2 个 317 条 / 3 个 88 条 / 4 个 3 条 ——
 多命中是常态，正是 2.1 说的「不用二选一」。
 
 **结论 —— 两层设计：**
@@ -177,37 +177,37 @@ CFG 时 multihot 与 T5 emb **同时**丢弃（共用一个 drop 掩码），保
 
 ### 2.4.1 per-group multihot mask（组内门槛，已确认）
 
-§2.4 的 ">= 20 条" 是**全库 1445 条**口径，而 §1.1 规定三组各训一个模型 ——
+§2.4 的 ">= 20 条" 是**全库 1402 条**口径，而 §1.1 规定三组各训一个模型 ——
 全局看健康的词切到组内可能只剩个位数。组内实测（**命中 clip 数 / 涉及物种数**）：
 
-| core 词 | locomotion (313) | stationary (621) | transition (246) |
+| core 词 | locomotion (307) | stationary (600) | transition (230) |
 |---|---:|---:|---:|
-| idle | – | 297/69 | 20/14 |
-| walk | 136/60 | – | 2/2 |
-| run | 89/50 | – | 10/5 |
-| fly | 46/13 | 49/15 | 29/10 |
-| swim | 20/5 | – | 1/1 |
-| jump | 14/9 | 3/3 | 27/19 |
-| turn | 45/17 | 62/32 | 18/14 |
-| attack | 15/6 | 230/61 | 16/13 |
-| bite | 7/2 | 44/20 | 3/3 |
-| roar | 5/3 | 46/21 | 4/3 |
-| eat | – | 21/14 | – |
-| die | – | 4/4 | 90/47 |
-| fall | – | – | 99/51 |
-| hurt | 7/6 | 10/4 | 13/13 |
-| getup | – | – | 50/33 |
-| rest | – | 27/15 | 20/15 |
-| look | 1/1 | 29/14 | – |
-| shake | – | 37/20 | 13/8 |
+| idle | – | 279/69 | 19/13 |
+| walk | 135/59 | – | 3/3 |
+| run | 86/50 | – | 8/5 |
+| fly | 48/13 | 46/14 | 29/10 |
+| swim | 18/5 | – | 1/1 |
+| jump | 13/9 | 5/4 | 23/19 |
+| turn | 43/17 | 57/31 | 17/13 |
+| attack | 15/6 | 225/61 | 16/13 |
+| bite | 7/2 | 43/20 | 3/3 |
+| roar | 5/3 | 41/20 | 5/4 |
+| eat | – | 22/15 | – |
+| die | – | 5/5 | 88/47 |
+| fall | – | – | 86/47 |
+| hurt | 7/6 | 11/5 | 12/12 |
+| getup | – | 1/1 | 52/35 |
+| rest | – | 26/15 | 21/16 |
+| look | 1/1 | 27/14 | – |
+| shake | – | 35/20 | 11/7 |
 | scratch | – | 18/14 | – |
 
 **门槛：组内 clip 数 < 10 或 物种数 < 5 -> 该组降级。**
 
 物种维度不是可选项。AnyTop 是跨骨架条件模型，失效模式是「词绑定到骨架」而不是「词学不会」：
 locomotion 的 `bite` 7 条**全部来自 Raptor2 + Trex 两个物种**，纯计数门槛拦不住；反过来
-locomotion 的 `jump` 14 条覆盖 9 个物种，数量相近但安全得多。locomotion 的 `swim`
-20 条 / 5 物种正好卡在线上，保留 —— 它是用户一定会输入的粗粒度模式词。
+locomotion 的 `jump` 13 条覆盖 9 个物种，数量相近但安全得多。locomotion 的 `swim`
+18 条 / 5 物种正好卡在线上，保留 —— 它是用户一定会输入的粗粒度模式词。
 
 **降级 = 不进 multihot，只进 T5；不是从词表删除。** 为什么这样能减轻过拟合：
 
@@ -230,20 +230,22 @@ locomotion 的 `jump` 14 条覆盖 9 个物种，数量相近但安全得多。l
 | group | 有效槽 | 降级（组内不足） | 恒零（组内 0 条） |
 |---|---|---|---|
 | locomotion | **7** | bite, roar, hurt, look | idle, eat, die, fall, getup, rest, shake, scratch |
-| stationary | **11** | jump, die, hurt | walk, run, swim, fall, getup |
-| transition | **12** | walk, swim, bite, roar | eat, look, scratch |
+| stationary | **12** | jump, die, getup | walk, run, swim, fall |
+| transition | **11** | walk, run, swim, bite, roar | eat, look, scratch |
 
 **mask 必须是冻结常量**，不能在 import 时从数据集现算 —— 否则加 clip 会静默改变布局语义。
 样本量后续会增加，届时按同一规则重算并显式提交新的 mask。
 
-**副作用：stationary 的 `hurt` 降级后有 4 条 clip 的 multihot 变全零**
-（`FireAnt_AntHit_1` / `Trex_HitHead2_1` / `Dog_HitLeft_1` / `Dog_HitRight_1`，
-label 只命中 hurt 一个 core 词）。locomotion 与 transition 零副作用。这 4 条会和 §2.1
-那 27 条「没有 core 词」的 clip 合流到同一个「无 tag」状态。目前量小可接受；若数据扩充后
-这个数变大，需要给 multihot 加一位独立的「已降级」指示位，而不是让两种语义共用全零。
+**副作用：降级后有 8 条 clip 的 multihot 变全零**（label 命中的 core 词在本组全被降级）：
+stationary 4 条（`Alligator_DieLoop_1` / `Horse_FeetUp_1` / `Horse_InAir_1` /
+`Horse_Jumping_1`，只命中 die / getup / jump），transition 4 条（`Horse_RunToStop_1` /
+`Raptor2_RunToStopRoar_1` / `Raptor2_RunToStopRoar2_1` / `Scorpion-2_RunToAttrack_1`，
+只命中 run / roar）；locomotion 零副作用。这 8 条会和 §2.1 那 26 条「没有 core 词」的 clip
+合流到同一个「无 tag」状态。目前量小可接受；若数据扩充后这个数变大，需要给 multihot 加一位
+独立的「已降级」指示位，而不是让两种语义共用全零。
 
-**降级不解决的两件事**（另行处理）：组内不均衡（stationary 84% 的 clip 命中 idle 或 attack，
-locomotion 70% 命中 walk 或 run）；transition 组只有 246 条的绝对量问题。
+**降级不解决的两件事**（另行处理）：组内不均衡（stationary 83% 的 clip 命中 idle 或 attack，
+locomotion 70% 命中 walk 或 run）；transition 组只有 230 条的绝对量问题。
 
 ### 2.5 空 label = 无条件（已确认）
 
@@ -281,7 +283,7 @@ locomotion 70% 命中 walk 或 run）；transition 组只有 246 条的绝对量
    不是 multihot 向量。被降级的词恰恰最需要出现在短查询训练分布里 —— 用 mask 后的词去合成
    等于让降级词永远学不到短查询响应，与降级的初衷相反。所以合成读的是
    `vocab_words_in(label)` 的结果，不是 masked multihot。
-2. **detail-only label 回退到 detail 词。** §2.1 那 27 条没有 core 词的 clip，
+2. **detail-only label 回退到 detail 词。** §2.1 那 26 条没有 core 词的 clip，
    若按「只从 core 词合成」会得到**空串**，而空串按 §2.5 等于 null 条件 ——
    模型会对「唯一入口是 detail 词」的那些动作恰好训练在"无条件"上，
    `sneak` / `rear` / `sniff` / `dig` 这类用户照样会打的短查询就永远学不到。
@@ -376,7 +378,7 @@ transition —— 该组样本最少、分布最独特，宁可多喂），然�
 
 ### 4.1 label 的 T5 embedding 怎么进训练
 
-- **离线预计算 sidecar**：label 字符串去重后 mean-pool 成 512 维（<= 1445 条约 3MB），
+- **离线预计算 sidecar**：label 字符串去重后 mean-pool 成 512 维（<= 1402 条约 3MB），
   dataset 查表即可，**训练进程不需要常驻 T5**。
 - **推理端**：service 已常驻 T5 conditioner（三组共享），直接编码用户 prompt 得到同一空间的向量。
 - 查表未命中直接报错（fail-fast，与现有 `load_action_tags` 风格一致）。
@@ -387,7 +389,7 @@ transition —— 该组样本最少、分布最独特，宁可多喂），然�
 
 ## 5. 迁移流程
 
-**zoo**（1180 条）
+**zoo**（迁移当天 1180 条，清理后 1137 条，见 §8.4）
 1. `action_group`：按优先级映射给初值（`rest` 除外，逐条判），LLM 读 caption + clip 名给建议值；
 2. `action_label`：LLM 压缩 caption 为 `<动词>, <细节短句>`，动词受受控词表约束；
 3. 产出 `action_labels.jsonl` + `action_labels_review.jsonl`。
@@ -412,7 +414,7 @@ transition —— 该组样本最少、分布最独特，宁可多喂），然�
 - 旧 checkpoint 的 `args.json` 带 `action_tag_cond`，加载路径需要**明确的弃用报错**，不要静默忽略。
 - 71 条跨组 clip 的训练归属会变，`locomotion` / `transition` 两组样本数小幅变动。
 
-分布变化（zoo；upgrade 零跨组，138 / 76 / 51 不变）：
+分布变化（zoo，迁移当天口径；upgrade 零跨组，138 / 76 / 51 不变）：
 
 | group | 迁移前（跨组 clip 重复计入两组） | 迁移后（单值，transition-first） |
 |---|---|---|
@@ -420,13 +422,14 @@ transition —— 该组样本最少、分布最独特，宁可多喂），然�
 | locomotion | 258 + 59 | 288 |
 | transition | 248 + 41 | 289 |
 
-迁移后总数从 1251（含重复）降到 1180（每条 clip 恰好进一组）。
+迁移后总数从 1251（含重复）降到 1180（每条 clip 恰好进一组）；2026-08-21 清理掉 43 条
+源文件已不存在的 clip 后为 1137（locomotion 307 / stationary 600 / transition 230，见 §8.4）。
 
-旧 tag 频次（zoo + upgrade 合计 1445 条）：
+旧 tag 频次（zoo + upgrade 合计 1402 条）：
 
 ```
-locomotion 318  attack 311  emote 240  idle 234  death 101  fly 62  rest 51
-getup 49  turn 47  gethurt 42  jump 38  interact 36  fall 15  swim 13
+locomotion 310  attack 306  emote 232  idle 228  death 101  fly 62  rest 50
+getup 49  turn 45  gethurt 41  jump 36  interact 36  swim 11  fall 4
 ```
 
 ---
@@ -455,7 +458,7 @@ getup 49  turn 47  gethurt 42  jump 38  interact 36  fall 15  swim 13
 
 | 文件 | 条数 | 说明 |
 |---|---|---|
-| `zoo/truebones_processed/action_labels.jsonl` | 1180 | 全部带 label |
+| `zoo/truebones_processed/action_labels.jsonl` | 1180 -> 1137 | 全部带 label（清理后，见 §8.4） |
 | `zoo/truebones_processed/action_labels_review.jsonl` | 224 | 待人工复核 |
 | `zoo_upgrade/clean_processed/action_labels.jsonl` | 265 | label 全空 |
 | `zoo_upgrade/clean_processed/action_labels_review.jsonl` | 32 | 待人工复核 |
@@ -465,7 +468,7 @@ LLM 后的 group 分布（zoo）：stationary 602 / locomotion 302 / transition 
 基本都是 §3 预判的「`turn`/`gethurt` + 位移」那两类 —— 方向与人工预期一致）。
 
 质量核查：退化 label 0 条、未命中受控词 0 条、超长 0 条、schema 校验失败 0 条；
-1045/1180 是唯一 label。
+1045/1180 是唯一 label（清理后 1022/1137）。
 
 ### 8.1 执行中踩到的三个坑
 
@@ -535,4 +538,38 @@ match span，**某词的匹配若严格落在另一个词更长的匹配内部�
 > （`recovery from lying down` / `rises from sleeping`）必然点亮那个状态的槽位，
 > 应当改写成描述去向。
 
-`action_labels.jsonl` 未纳入 git，改动前的副本务必自行备份。
+`action_labels.jsonl` 现已纳入 git（zoo 与 zoo_upgrade 两份都是），改动直接走 diff 复核。
+
+### 8.4 clip 清理：1180 -> 1137（2026-08-21）
+
+`--overwrite` 全量重跑预处理后 clip 数掉到 1137（重跑前磁盘上实际是 1179）。**不是这次跑失败**：
+这 43 条的源动画文件在 raw 目录里已经不存在了。它们是 2026-06-14 / 06-30 从 FBX 源产出的遗留
+npy —— 07-01 raw 数据整体转成 GLB（`tools/dataset_cleanup/convert_fbx_2_glb.py` 把 GLB 写在
+FBX 旁边，FBX 事后删除）时这批文件没能转出来，而后续几次预处理都走**增量**（按源文件路径去重，
+不删旧产物），孤儿 npy 就一直留在 `motions/` 里被计数。`--overwrite` 且无 `--filter` 会整体清空
+`motions/` / `bvhs/` 重建，只剩当前 raw 推得出来的 1137 条。
+
+丢失分布（43 条 / 14 个物种）：Dog-2 14、Gazelle 8、PolarBearB 6、Raptor2 4、SabreToothTiger 2，
+Buffalo / Camel / Comodoa / Dog / Roach / Skunk / Stego / Tricera / Tyranno 各 1。其中 12 条是
+各物种的 `*Fall*`，另有若干是同一动作的第二个源文件（`Gazelle_Run_2` / `PolarBearB_Walk_2` 等）。
+43 条里 36 条能在 `TrueboneZ-OO.csv` 官方清单里找到同名 BVH 且帧数吻合 —— 要补回来就按清单重转
+缺的源文件放回物种目录，然后**不带** `--overwrite` 走增量。
+
+同步清掉的 clip 键 sidecar（各 -43，清理后均对 1137 条 clip 全覆盖，无缺口）：
+
+| 文件 | 条数 |
+|---|---|
+| `zoo/truebones_processed/action_tags.jsonl` | 1180 -> 1137 |
+| `zoo/truebones_processed/action_labels.jsonl` | 1180 -> 1137 |
+| `dataset/truebones_processed/motion_captions.jsonl`（V2P 侧） | 1180 -> 1137 |
+
+本文 §2.3 / §2.4 / §2.4.1 / §4.1 / §6 的统计口径已按 1137 条重算；§5、§6 的分布变化表、
+§8 / §8.1 / §8.3 保留迁移当天（2026-08-20）的数字，标注为历史记录。
+
+**两个遗留问题：**
+
+- `preprocess_and_validate.py --rm` 删 clip 时只同步 `action_tags.jsonl`，不动
+  `action_labels.jsonl` 和 `motion_captions.jsonl` —— 下次再删还会漂。
+- V2P 侧 `dataset/truebones_processed/` 的 `glb/`(1182) 与 `glb_pose/`(1180) 仍含这 43 条，
+  两个数据集目前对不齐。
+

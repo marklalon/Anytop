@@ -1,4 +1,4 @@
-head{"clip": "antilope_Atk_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with head lowered"}
+{"clip": "antilope_Atk_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with head lowered"}
 {"clip": "antilope_Atk2_1.npy", "action_group": "stationary", "action_label": "attack, rears up on hind legs to strike with front legs"}
 {"clip": "antilope_Atk3_1.npy", "action_group": "stationary", "action_label": "attack, lunges left side with head lowered"}
 {"clip": "antilope_Death_1.npy", "action_group": "transition", "action_label": "die, collapses to the ground and lies motionless"}
