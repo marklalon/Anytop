@@ -10,7 +10,7 @@
 {"species": "Donkey", "species_tags": ["Quadruped", "Large", "Trotting"]}
 {"species": "Dinosaur", "species_tags": ["Quadruped", "Heavy", "Lumbering"]}
 {"species": "Elephant", "species_tags": ["Quadruped", "Heavy", "Lumbering"]}
-{"species": "Goat", "species_tags": ["Quadruped", "Medium", "Climbing"]}
+{"species": "Goat", "species_tags": ["Quadruped", "Medium", "Trotting"]}
 {"species": "Hen", "species_tags": ["Biped", "Small", "Striding"]}
 {"species": "Horse", "species_tags": ["Quadruped", "Large", "Galloping"]}
 {"species": "Hyena", "species_tags": ["Quadruped", "Medium", "Trotting"]}
