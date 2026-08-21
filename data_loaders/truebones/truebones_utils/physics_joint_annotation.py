@@ -1,6 +1,6 @@
 """End effector detection and symmetry analysis utilities."""
 
-from collections import Counter
+from collections import Counter, defaultdict
 
 import numpy as np
 import re
@@ -222,11 +222,12 @@ _JAPANESE_GATED_REPLACEMENTS = {
     'te': 'Hand',
     'era': 'Gill',
 }
+# Chain-position filler that the Segment/ChainStart/ChainEnd tokens already say
+# better. Limb-position words (front/back/rear/mid) are deliberately NOT here:
+# they are the only thing separating a fore limb from a hind limb once the side
+# label is factored out, so dropping them collapsed e.g. Crocodile's
+# "Right Front Leg 1" and "Right Back Leg 1" onto one identical embedding text.
 _EMBED_TEXT_SKIP_TOKENS = {
-    'mid',
-    'rear',
-    'front',
-    'back',
     'base',
     'tip',
     'nub',
@@ -249,6 +250,17 @@ _EMBED_TEXT_NON_ANATOMICAL_TOKENS = {
     'projectile',
     'trajectory',
 }
+# Side is re-attached from the geometry-derived joint_side_labels in
+# build_joint_embedding_texts, so the name's own side word is dropped here.
+# Across all 104 species the geometry label is a strict superset of the name:
+# it agrees on every joint that names a side (never conflicts, never falls back
+# to "center") and additionally sides 100 joints whose name is silent. Dropping
+# it also puts the side at one fixed position for every rig -- "R_thigh",
+# "thigh_R" and "RightThigh" all reduce to "Thigh ... Right".
+_EMBED_TEXT_SIDE_TOKENS = {
+    'left',
+    'right',
+}
 _EMBED_TEXT_HEAD_FEATURE_TOKENS = {
     'beard',
     'ear',
@@ -256,7 +268,66 @@ _EMBED_TEXT_HEAD_FEATURE_TOKENS = {
     'tongue',
 }
 
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 8
+# Some rigs glue a multi-word joint name together in all lowercase
+# ("R_smallfrontarm_J01"), which leaves normalize_joint_name no case or digit
+# boundary to split on, so the whole blob survives as one OOV token. Segment
+# those against an explicit vocabulary during canonicalization so both the
+# canonical name and the T5 embedding text see real words.
+_COMPOUND_MODIFIER_TOKENS = frozenset({
+    'back', 'big', 'bottom', 'down', 'first', 'fore', 'front', 'hind', 'inner',
+    'large', 'left', 'long', 'low', 'lower', 'mid', 'middle', 'outer', 'outter',
+    'rear', 'right', 'second', 'short', 'small', 'third', 'top', 'upper',
+})
+_COMPOUND_ANATOMY_TOKENS = frozenset({
+    'ankle', 'arm', 'belly', 'body', 'calf', 'chest', 'claw', 'elbow', 'fat',
+    'fin', 'finger', 'foot', 'forearm', 'hand', 'head', 'hoof', 'horn', 'jaw',
+    'knee', 'leg', 'lip', 'neck', 'nose', 'palm', 'paw', 'spine', 'tail', 'thigh',
+    'thumb', 'toe', 'tongue', 'tooth', 'wing', 'wrist',
+})
+_COMPOUND_SPLIT_VOCABULARY = _COMPOUND_MODIFIER_TOKENS | _COMPOUND_ANATOMY_TOKENS
+# Real single words that happen to decompose into vocabulary entries. Splitting
+# them would be wrong ("ponytail" is a deliberate non-anatomical marker, and
+# "eyebrow" must not decay into the generic HeadFeature token via "eye").
+_COMPOUND_SPLIT_PROTECTED_TOKENS = frozenset({
+    'backbone', 'collarbone', 'eyeball', 'eyebrow', 'eyelid', 'fingertip',
+    'foreleg', 'headtop', 'ponytail', 'ribcage', 'toenail', 'topknot',
+})
+_COMPOUND_SPLIT_MIN_LENGTH = 6
+_COMPOUND_SPLIT_MIN_PART_LENGTH = 3
+
+
+def _split_glued_compound_token(token):
+    """Segment an all-lowercase glued joint token into vocabulary words.
+
+    Returns the parts (>= 2) when the *whole* token is covered by
+    ``_COMPOUND_SPLIT_VOCABULARY``, otherwise None -- an all-or-nothing rule so
+    an unknown word is never half-split into noise. Prefers the fewest parts,
+    breaking ties toward the longest leading word.
+    """
+    if len(token) < _COMPOUND_SPLIT_MIN_LENGTH:
+        return None
+    if token in _COMPOUND_SPLIT_PROTECTED_TOKENS or token in _COMPOUND_SPLIT_VOCABULARY:
+        return None
+
+    best_by_start = [None] * (len(token) + 1)
+    best_by_start[len(token)] = []
+    for start in range(len(token) - _COMPOUND_SPLIT_MIN_PART_LENGTH, -1, -1):
+        for end in range(len(token), start + _COMPOUND_SPLIT_MIN_PART_LENGTH - 1, -1):
+            word = token[start:end]
+            if word not in _COMPOUND_SPLIT_VOCABULARY:
+                continue
+            tail = best_by_start[end]
+            if tail is None:
+                continue
+            candidate = [word] + tail
+            if best_by_start[start] is None or len(candidate) < len(best_by_start[start]):
+                best_by_start[start] = candidate
+
+    parts = best_by_start[0]
+    return parts if parts is not None and len(parts) >= 2 else None
+
+
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 9
 
 _CHAIN_INDEX_ORDINAL_TOKENS = {
     1: 'First',
@@ -327,6 +398,39 @@ def effective_canonical_replacements(joint_names):
     return _JAPANESE_NAME_REPLACEMENTS
 
 
+def _collapse_repeated_name_parts(canonical_parts):
+    """Drop words a rig name repeats verbatim.
+
+    Rigs that encode the parent path *and* the joint's own name emit the same
+    words twice ("Sabrecat_HeadLeftEar_LEar_" -> "Head Left Ear Left Ear"). Two
+    exact-match rules, so they can only ever remove a verbatim echo: collapse an
+    adjacent duplicate, then drop a trailing block that repeats the block right
+    before it.
+
+    Numeric parts are exempt: repeated digits are two index fields that happen to
+    hold the same value, not an echo. Boar's "LEFT_Ear_01_01SHJnt" is chain 01
+    segment 01 -- its siblings "..._01_02" and "..._01_03" prove it -- so
+    collapsing it would desync one member of a chain from the rest.
+
+    A trailing *abbreviation* of an earlier word ("LeftThigh_LThi_") is
+    deliberately left alone too: that would take a prefix heuristic, and the
+    three joints it covers do not justify the risk of eating a real short word.
+    """
+    collapsed = []
+    for part in canonical_parts:
+        if collapsed and collapsed[-1] == part and not part.isdigit():
+            continue
+        collapsed.append(part)
+
+    for block_length in range(2, len(collapsed) // 2 + 1):
+        block = collapsed[-block_length:]
+        if any(part.isdigit() for part in block):
+            continue
+        if block == collapsed[-2 * block_length:-block_length]:
+            return collapsed[:-block_length]
+    return collapsed
+
+
 def _canonicalize_joint_name(name, replacements=None):
     replacements = _JAPANESE_NAME_REPLACEMENTS if replacements is None else replacements
     split_name = normalize_joint_name(strip_joint_name_prefix(name))
@@ -347,7 +451,13 @@ def _canonicalize_joint_name(name, replacements=None):
                 continue
             canonical_parts.append(clean_part)
         else:
-            canonical_parts.append(clean_part.capitalize())
+            compound_parts = _split_glued_compound_token(clean_part)
+            if compound_parts is None:
+                canonical_parts.append(clean_part.capitalize())
+            else:
+                canonical_parts.extend(part.capitalize() for part in compound_parts)
+
+    canonical_parts = _collapse_repeated_name_parts(canonical_parts)
     return ' '.join(canonical_parts) if canonical_parts else name.strip()
 
 
@@ -412,9 +522,77 @@ def build_species_embedding_text(object_cond):
     return ' '.join(motion_tokens)
 
 
-def _refine_joint_embedding_name(name):
+# Adjacent canonical tokens that name one anatomical part together. Applied to
+# the raw tokens, before the per-token substitutions in
+# _refine_joint_embedding_tokens -- those rewrite "arm", which would otherwise
+# hide every <modifier>+arm pair from this table.
+_EMBED_TEXT_TOKEN_PAIR_MERGES = {
+    ('upper', 'leg'): 'Thigh',
+    ('up', 'leg'): 'Thigh',
+    ('fore', 'arm'): 'Forearm',
+    ('fore', 'leg'): 'Foreleg',
+    ('upper', 'arm'): 'UpperArm',
+    ('lower', 'arm'): 'Forearm',
+}
+
+
+def _bare_arm_means_upper_arm(joint_names, parents):
+    """Per-joint flag: is a "ForeArm" named further down this joint's limb?
+
+    Mixamo-style rigs call the upper arm "Arm" and the next segment "ForeArm",
+    so a bare "Arm" there really is the upper arm. Arthropod rigs use "Arm" for
+    a whole multi-segment limb and never name a forearm (Crab "BN_Arm_L_01..04",
+    Spider "ArmR_01_" -> "ArmRClaw"), and FireAnt hangs an "Arm_Nub" off the
+    hand -- mapping those to UpperArm mislabels 48 joints across 6 species, so
+    the rewrite is gated on this signal instead of firing unconditionally.
+    """
+    joint_count = len(joint_names)
+    if parents is None or len(parents) != joint_count:
+        return [False] * joint_count
+
+    parents = np.asarray(parents, dtype=np.int64)
+    is_forearm = [
+        'forearm' in normalize_joint_name(str(name)).replace(' ', '')
+        for name in joint_names
+    ]
+    # Same reverse-index sweep as _build_chain_relative_joint_tokens: a child
+    # always has a higher index than its parent in these rigs.
+    has_forearm_below = [False] * joint_count
+    for joint_index in range(joint_count - 1, 0, -1):
+        parent_index = int(parents[joint_index])
+        if parent_index >= 0 and (is_forearm[joint_index] or has_forearm_below[joint_index]):
+            has_forearm_below[parent_index] = True
+    return has_forearm_below
+
+
+def _refine_joint_embedding_tokens(clean_token, bare_arm_is_upper_arm=False):
+    """Map one canonical token to the embedding token(s) it contributes."""
+    if clean_token in ('sippo', 'tai') or clean_token.startswith('tail'):
+        return ['Tail']
+    if clean_token.startswith('toe'):
+        return ['Toe']
+    if clean_token.startswith('finger'):
+        return ['Finger']
+    if clean_token == 'arm':
+        return ['UpperArm'] if bare_arm_is_upper_arm else ['Arm']
+    if clean_token in ('fore', 'forearm'):
+        return ['Forearm']
+    if clean_token == 'upleg':
+        return ['UpperLeg']
+    if clean_token == 'clip':
+        return ['Appendage']
+    if clean_token in _EMBED_TEXT_HEAD_FEATURE_TOKENS:
+        # Emit the specific word *and* the shared category. The category token
+        # keeps every head appendage close together in T5 space (the point of
+        # the grouping), while the specific word stops Jaguar's Eye, Ear and
+        # Beard from collapsing onto one identical "HeadFeature Right".
+        return [clean_token.capitalize(), 'HeadFeature']
+    return [clean_token.capitalize()]
+
+
+def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False):
     canonical_name = _canonicalize_joint_name(name)
-    refined_tokens = []
+    clean_tokens = []
     for token in canonical_name.split():
         clean_token = re.sub(r'[^a-z0-9]+', '', token.lower())
         clean_token = re.sub(r'\d+$', '', clean_token)
@@ -422,42 +600,21 @@ def _refine_joint_embedding_name(name):
             continue
         if clean_token in _EMBED_TEXT_NON_ANATOMICAL_TOKENS:
             continue
-        if clean_token in ('sippo', 'tai') or clean_token.startswith('tail'):
-            refined_tokens.append('Tail')
-        elif clean_token.startswith('toe'):
-            refined_tokens.append('Toe')
-        elif clean_token.startswith('finger'):
-            refined_tokens.append('Finger')
-        elif clean_token == 'arm':
-            refined_tokens.append('UpperArm')
-        elif clean_token in ('fore', 'forearm'):
-            refined_tokens.append('Forearm')
-        elif clean_token == 'upleg':
-            refined_tokens.append('UpperLeg')
-        elif clean_token == 'clip':
-            refined_tokens.append('Appendage')
-        elif clean_token in _EMBED_TEXT_HEAD_FEATURE_TOKENS:
-            refined_tokens.append('HeadFeature')
-        else:
-            refined_tokens.append(clean_token.capitalize())
+        if clean_token in _EMBED_TEXT_SIDE_TOKENS:
+            continue
+        clean_tokens.append(clean_token)
 
     merged_tokens = []
     index = 0
-    while index < len(refined_tokens):
-        pair = tuple(token.lower() for token in refined_tokens[index:index + 2])
-        if pair in (('upper', 'leg'), ('up', 'leg')):
-            merged_tokens.append('Thigh')
+    while index < len(clean_tokens):
+        merged_token = _EMBED_TEXT_TOKEN_PAIR_MERGES.get(tuple(clean_tokens[index:index + 2]))
+        if merged_token is not None:
+            merged_tokens.append(merged_token)
             index += 2
             continue
-        if pair == ('fore', 'arm'):
-            merged_tokens.append('Forearm')
-            index += 2
-            continue
-        if pair == ('upper', 'arm'):
-            merged_tokens.append('UpperArm')
-            index += 2
-            continue
-        merged_tokens.append(refined_tokens[index])
+        merged_tokens.extend(
+            _refine_joint_embedding_tokens(clean_tokens[index], bare_arm_is_upper_arm)
+        )
         index += 1
 
     return merged_tokens or canonical_name.split()
@@ -529,6 +686,56 @@ def _build_chain_relative_joint_tokens(refined_tokens_per_joint, parents):
     return chain_tokens
 
 
+def _sibling_instance_tokens(body_tokens_per_joint, flag_tokens_per_joint, symmetry_partner_indices):
+    """Number the joints that would otherwise share one identical text.
+
+    Whatever still collides here is a *sibling* repeat -- a centipede's leg
+    pairs, a bat's wing fingers -- which the chain tokens cannot separate
+    because the joints do not sit on one parent-child run.
+
+    The ordinal is a plain within-group index, deliberately not a geometric one.
+    Ordering siblings along a body axis would need that axis signed (raw PCA
+    would mirror-flip left against right), and the only thing it buys over array
+    order is mirror consistency -- which ``symmetry_partner_indices`` already
+    delivers exactly: propagating ranks across the symmetry links matches
+    742/742 paired joints, against 566/742 for bare array order. What is given
+    up is cross-species comparability: "Instance First" is a within-skeleton id,
+    not "the front-most pair".
+    """
+    groups = defaultdict(list)
+    for joint_index, (body_tokens, flag_tokens) in enumerate(zip(body_tokens_per_joint, flag_tokens_per_joint)):
+        if body_tokens:
+            groups[' '.join([*body_tokens, *flag_tokens])].append(joint_index)
+    groups = {text: indices for text, indices in groups.items() if len(indices) > 1}
+    if not groups:
+        return [[] for _ in body_tokens_per_joint]
+
+    partners = list(symmetry_partner_indices or [])
+    ranks = {}
+    # Rank the earliest group by array order, then let each later group inherit
+    # its ranks through the symmetry links whenever that yields a clean
+    # one-to-one match; otherwise fall back to array order for that group too.
+    for text in sorted(groups, key=lambda text: min(groups[text])):
+        indices = sorted(groups[text])
+        partner_indices = [
+            int(partners[joint_index]) if joint_index < len(partners) else -1
+            for joint_index in indices
+        ]
+        partner_ranks = [ranks[partner_index] for partner_index in partner_indices if partner_index in ranks]
+        if len(partner_ranks) == len(indices) and len(set(partner_ranks)) == len(indices):
+            ranks.update(zip(indices, partner_ranks))
+            continue
+        ranks.update((joint_index, rank) for rank, joint_index in enumerate(indices))
+
+    instance_tokens = [[] for _ in body_tokens_per_joint]
+    for indices in groups.values():
+        for joint_index in indices:
+            instance_tokens[joint_index] = [
+                'Instance', _chain_index_token(ranks[joint_index] + 1), 'Of', str(len(indices)),
+            ]
+    return instance_tokens
+
+
 def build_joint_embedding_texts(object_cond):
     base_joint_names = object_cond.get('canonical_joint_names') or object_cond.get('joints_names') or []
     if not base_joint_names:
@@ -537,31 +744,61 @@ def build_joint_embedding_texts(object_cond):
     joint_side_labels = list(object_cond.get('joint_side_labels') or ['center'] * len(base_joint_names))
     contact_joints = {int(joint_index) for joint_index in list(object_cond.get('contact_joints') or [])}
     end_effector_joints = {int(joint_index) for joint_index in list(object_cond.get('end_effector_joints') or [])}
-    refined_tokens_per_joint = [_refine_joint_embedding_name(joint_name) for joint_name in base_joint_names]
-    chain_relative_tokens = _build_chain_relative_joint_tokens(refined_tokens_per_joint, object_cond.get('parents'))
+    bare_arm_flags = _bare_arm_means_upper_arm(
+        list(object_cond.get('joints_names') or base_joint_names),
+        object_cond.get('parents'),
+    )
+    refined_tokens_per_joint = [
+        _refine_joint_embedding_name(joint_name, bare_arm_flags[joint_index])
+        for joint_index, joint_name in enumerate(base_joint_names)
+    ]
+    # Chain grouping stays side-aware even though the side word is emitted only
+    # once, at the end: without it a midline trunk (Buzzard "Tail 01") shares a
+    # signature with its left and right forks and swallows both into one chain.
+    chain_signature_tokens = [
+        [*tokens, joint_side_labels[joint_index] if joint_index < len(joint_side_labels) else 'center']
+        if tokens else []
+        for joint_index, tokens in enumerate(refined_tokens_per_joint)
+    ]
+    chain_relative_tokens = _build_chain_relative_joint_tokens(chain_signature_tokens, object_cond.get('parents'))
 
-    texts = []
+    body_tokens_per_joint = []
+    flag_tokens_per_joint = []
     for joint_index, joint_name in enumerate(base_joint_names):
         refined_tokens = refined_tokens_per_joint[joint_index]
         lowered_tokens = {token.lower() for token in refined_tokens}
         if lowered_tokens & _EMBED_TEXT_NON_ANATOMICAL_TOKENS:
-            texts.append('')
+            body_tokens_per_joint.append([])
+            flag_tokens_per_joint.append([])
             continue
 
-        semantic_tokens = list()
-        semantic_tokens.extend(refined_tokens)
-        semantic_tokens.extend(chain_relative_tokens[joint_index])
-
+        # Side leads, so the text opens with the identity attributes as a plain
+        # English noun phrase ("Right Finger ...") -- a construction T5 saw in
+        # pretraining, unlike a trailing "Right" stranded after chain jargon.
+        # Everything derived (chain position, contact, end effector) follows.
         side = joint_side_labels[joint_index] if joint_index < len(joint_side_labels) else 'center'
-        if side in ('left', 'right'):
-            semantic_tokens.append(side.capitalize())
-        if joint_index in contact_joints:
-            semantic_tokens.append('Contact')
-        if joint_index in end_effector_joints:
-            semantic_tokens.append('EndEffector')
-        texts.append(' '.join(semantic_tokens))
+        body_tokens = [side.capitalize()] if side in ('left', 'right') else []
+        body_tokens.extend(refined_tokens)
+        body_tokens.extend(chain_relative_tokens[joint_index])
+        body_tokens_per_joint.append(body_tokens)
 
-    return texts
+        flag_tokens = []
+        if joint_index in contact_joints:
+            flag_tokens.append('Contact')
+        if joint_index in end_effector_joints:
+            flag_tokens.append('EndEffector')
+        flag_tokens_per_joint.append(flag_tokens)
+
+    # Instance ordinals sit with the other positional tokens, ahead of the
+    # derived Contact/EndEffector flags.
+    instance_tokens_per_joint = _sibling_instance_tokens(
+        body_tokens_per_joint, flag_tokens_per_joint, object_cond.get('symmetry_partner_indices')
+    )
+    return [
+        ' '.join([*body_tokens, *instance_tokens, *flag_tokens]) if body_tokens else ''
+        for body_tokens, instance_tokens, flag_tokens
+        in zip(body_tokens_per_joint, instance_tokens_per_joint, flag_tokens_per_joint)
+    ]
 
 
 def _joint_signature(name):

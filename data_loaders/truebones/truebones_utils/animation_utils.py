@@ -208,6 +208,23 @@ def _disambiguate_duplicate_canonical_names(raw_names, canonical_names):
     return updated_names
 
 
+def assign_canonical_joint_names(object_cond, joint_names, canonical_names):
+    """Store the disambiguated canonical names plus their BVH-safe spellings.
+
+    Both keys must derive from the *disambiguated* list. BVH bone names have to
+    be unique, and canonical_name_for_bvh only strips punctuation, so deriving
+    them from the raw canonicalizer output emits duplicate bones (e.g. Camel's
+    front and back legs both exported as "LeftLeg01"). Single entry point so the
+    preprocessing pipeline and the on-load refresh cannot drift apart.
+    """
+    disambiguated_names = _disambiguate_duplicate_canonical_names(joint_names, canonical_names)
+    object_cond['canonical_joint_names'] = disambiguated_names
+    object_cond['canonical_bvh_joint_names'] = [
+        canonical_name_for_bvh(canonical_name, raw_name)
+        for canonical_name, raw_name in zip(disambiguated_names, joint_names)
+    ]
+
+
 def collect_joint_name_collision_groups(cond):
     collision_groups = []
     for object_type in sorted(cond):
@@ -268,18 +285,7 @@ def refresh_joint_metadata_in_object_cond(object_cond):
     parents = np.asarray(object_cond.get('parents'), dtype=np.int64)
     offsets = np.asarray(object_cond.get('offsets'), dtype=np.float64)
     semantic_metadata = build_semantic_metadata(joint_names, parents, offsets)
-    object_cond['canonical_joint_names'] = _disambiguate_duplicate_canonical_names(
-        joint_names,
-        semantic_metadata['canonical_joint_names'],
-    )
-    object_cond['canonical_bvh_joint_names'] = [
-        canonical_name_for_bvh(canonical_name, raw_name)
-        for canonical_name, raw_name in zip(semantic_metadata['canonical_joint_names'], joint_names)
-    ]
-    object_cond['canonical_bvh_joint_names'] = [
-        canonical_name_for_bvh(canonical_name, raw_name)
-        for canonical_name, raw_name in zip(object_cond['canonical_joint_names'], joint_names)
-    ]
+    assign_canonical_joint_names(object_cond, joint_names, semantic_metadata['canonical_joint_names'])
     object_cond['end_effector_joints'] = semantic_metadata['end_effector_joints']
     object_cond['end_effector_names'] = semantic_metadata['end_effector_names']
     object_cond['contact_joints'] = semantic_metadata['contact_joints']

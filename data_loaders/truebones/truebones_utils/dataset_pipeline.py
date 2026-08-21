@@ -31,7 +31,7 @@ from .fbx_filename_rules import (
 )
 
 from .animation_utils import (
-    canonical_name_for_bvh,
+    assign_canonical_joint_names,
     attach_t5_embeddings_to_cond,
     needs_bvh_position_channels,
     reorder_animation_to_dfs,
@@ -348,11 +348,7 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
         getattr(tp.tpos_rots[0], 'qs', tp.tpos_rots[0]), dtype=np.float32
     ).reshape(len(parents), 4)
     object_cond['joints_names'] = tp.names
-    object_cond['canonical_joint_names'] = semantic_metadata['canonical_joint_names']
-    object_cond['canonical_bvh_joint_names'] = [
-        canonical_name_for_bvh(canonical_name, raw_name)
-        for canonical_name, raw_name in zip(semantic_metadata['canonical_joint_names'], tp.names)
-    ]
+    assign_canonical_joint_names(object_cond, tp.names, semantic_metadata['canonical_joint_names'])
     object_cond['face_joints'] = list(tp.face_joints)
     object_cond['face_joint_names'] = [tp.names[index] for index in tp.face_joints]
     _attach_orientation_reference_metadata(
