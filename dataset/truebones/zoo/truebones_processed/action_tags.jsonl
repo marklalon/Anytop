@@ -3,9 +3,7 @@
 {"clip": "Alligator_Bite2_1.npy", "action_tags": ["attack"]}
 {"clip": "Alligator_Bite3_1.npy", "action_tags": ["attack"]}
 {"clip": "Alligator_Bite4_1.npy", "action_tags": ["attack"]}
-{"clip": "Alligator_Bite5_1.npy", "action_tags": ["attack"]}
 {"clip": "Alligator_Bite6_1.npy", "action_tags": ["attack"]}
-{"clip": "Alligator_Bite7_1.npy", "action_tags": ["attack"]}
 {"clip": "Alligator_Catch_1.npy", "action_tags": ["attack"]}
 {"clip": "Alligator_DIe_1.npy", "action_tags": ["death"]}
 {"clip": "Alligator_Dash2_1.npy", "action_tags": ["locomotion"]}
@@ -17,9 +15,6 @@
 {"clip": "Alligator_Throw2_1.npy", "action_tags": ["attack"]}
 {"clip": "Alligator_Throw_1.npy", "action_tags": ["attack"]}
 {"clip": "Alligator_Walk1_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Alligator_Walk2_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Alligator_Walk2_2.npy", "action_tags": ["locomotion"]}
-{"clip": "Alligator_Walk3_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Anaconda_Attack_1.npy", "action_tags": ["attack"]}
 {"clip": "Anaconda_Bite2_1.npy", "action_tags": ["attack"]}
 {"clip": "Anaconda_Bite_1.npy", "action_tags": ["attack"]}
@@ -96,6 +91,25 @@
 {"clip": "Bear_WakeUp_1.npy", "action_tags": ["getup"]}
 {"clip": "Bear_WalkForward_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Bear_WetShake_1.npy", "action_tags": ["emote"]}
+{"clip": "Bird_Attack2_1.npy", "action_tags": ["attack"]}
+{"clip": "Bird_Attack3_1.npy", "action_tags": ["attack"]}
+{"clip": "Bird_Attack4_1.npy", "action_tags": ["attack"]}
+{"clip": "Bird_Attack_1.npy", "action_tags": ["attack"]}
+{"clip": "Bird_CircleLand_1.npy", "action_tags": ["fly", "turn"]}
+{"clip": "Bird_CircleLand_2.npy", "action_tags": ["fly", "turn"]}
+{"clip": "Bird_Fallen_1.npy", "action_tags": ["fall"]}
+{"clip": "Bird_Falling_1.npy", "action_tags": ["fall"]}
+{"clip": "Bird_Floater_1.npy", "action_tags": ["fly"]}
+{"clip": "Bird_FlyFast_1.npy", "action_tags": ["fly"]}
+{"clip": "Bird_FlyLoop_1.npy", "action_tags": ["fly"]}
+{"clip": "Bird_FlySlow_1.npy", "action_tags": ["fly"]}
+{"clip": "Bird_Flying_1.npy", "action_tags": ["fly"]}
+{"clip": "Bird_GroundFlap_1.npy", "action_tags": ["emote"]}
+{"clip": "Bird_IdleLoop_1.npy", "action_tags": ["idle"]}
+{"clip": "Bird_Lander_1.npy", "action_tags": ["fly"]}
+{"clip": "Bird_LookRight_1.npy", "action_tags": ["emote"]}
+{"clip": "Bird_SlowLook_1.npy", "action_tags": ["emote"]}
+{"clip": "Bird_TakeOff_1.npy", "action_tags": ["fly"]}
 {"clip": "BrownBear_Attack2_1.npy", "action_tags": ["attack"]}
 {"clip": "BrownBear_Attack3_1.npy", "action_tags": ["attack"]}
 {"clip": "BrownBear_Attack_1.npy", "action_tags": ["attack"]}
@@ -137,6 +151,16 @@
 {"clip": "Buffalo_SleepUp_1.npy", "action_tags": ["rest"]}
 {"clip": "Buffalo_SleepUp_2.npy", "action_tags": ["getup"]}
 {"clip": "Buffalo_WalkLoop_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Buzzard_Attack1_1.npy", "action_tags": ["attack"]}
+{"clip": "Buzzard_Attack2_1.npy", "action_tags": ["attack"]}
+{"clip": "Buzzard_Attack3_1.npy", "action_tags": ["attack"]}
+{"clip": "Buzzard_Die1_1.npy", "action_tags": ["death"]}
+{"clip": "Buzzard_Dying_1.npy", "action_tags": ["death"]}
+{"clip": "Buzzard_FlyLoop_1.npy", "action_tags": ["fly"]}
+{"clip": "Buzzard_SlowFly_1.npy", "action_tags": ["fly"]}
+{"clip": "Buzzard_SlowLoop_1.npy", "action_tags": ["fly"]}
+{"clip": "Buzzard_SlowtoLand_1.npy", "action_tags": ["fly"]}
+{"clip": "Buzzard_Soaring_1.npy", "action_tags": ["fly"]}
 {"clip": "Camel_Bite_1.npy", "action_tags": ["attack"]}
 {"clip": "Camel_Buck_1.npy", "action_tags": ["emote"]}
 {"clip": "Camel_DownLoop_1.npy", "action_tags": ["rest"]}
@@ -231,6 +255,18 @@
 {"clip": "Crocodile_SleepLoop_1.npy", "action_tags": ["rest"]}
 {"clip": "Crocodile_TailWhip_1.npy", "action_tags": ["attack"]}
 {"clip": "Crocodile_Yawning_1.npy", "action_tags": ["emote"]}
+{"clip": "Crow_Ascend_1.npy", "action_tags": ["fly"]}
+{"clip": "Crow_Attack2_1.npy", "action_tags": ["attack"]}
+{"clip": "Crow_Attack_1.npy", "action_tags": ["attack"]}
+{"clip": "Crow_FlyStart_1.npy", "action_tags": ["fly"]}
+{"clip": "Crow_Glide_1.npy", "action_tags": ["fly"]}
+{"clip": "Crow_IdleFlap_1.npy", "action_tags": ["fly"]}
+{"clip": "Crow_Idle_1.npy", "action_tags": ["idle"]}
+{"clip": "Crow_Idle_2.npy", "action_tags": ["idle"]}
+{"clip": "Crow_Landflap_1.npy", "action_tags": ["fly"]}
+{"clip": "Crow_PeckEat_1.npy", "action_tags": ["attack"]}
+{"clip": "Crow_PeckEat_2.npy", "action_tags": ["attack"]}
+{"clip": "Crow_TakeOff_1.npy", "action_tags": ["fly"]}
 {"clip": "Deer_Backing_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Deer_Bleat_1.npy", "action_tags": ["emote"]}
 {"clip": "Deer_BuckShy_1.npy", "action_tags": ["emote"]}
@@ -253,6 +289,92 @@
 {"clip": "Deer_WalkBack_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Deer_WalkCall_1.npy", "action_tags": ["locomotion", "emote"]}
 {"clip": "Deer_WalkForward_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Dog-2_ArmBite_1.npy", "action_tags": ["attack"]}
+{"clip": "Dog-2_BackOff_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Dog-2_BiteJump_1.npy", "action_tags": ["jump", "attack"]}
+{"clip": "Dog-2_GetUp_1.npy", "action_tags": ["getup"]}
+{"clip": "Dog-2_Growl_1.npy", "action_tags": ["emote"]}
+{"clip": "Dog-2_IdleBreathe_1.npy", "action_tags": ["idle"]}
+{"clip": "Dog-2_Ready_1.npy", "action_tags": ["idle"]}
+{"clip": "Dog-2_RunFast_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Dog-2_RunJump_1.npy", "action_tags": ["jump"]}
+{"clip": "Dog-2_Scratch_1.npy", "action_tags": ["emote"]}
+{"clip": "Dog-2_Sense_1.npy", "action_tags": ["emote"]}
+{"clip": "Dog-2_Shake_1.npy", "action_tags": ["emote"]}
+{"clip": "Dog-2_Slowtail_1.npy", "action_tags": ["emote"]}
+{"clip": "Dog-2_Sniffing_1.npy", "action_tags": ["emote"]}
+{"clip": "Dog-2_SwimIdle_1.npy", "action_tags": ["swim"]}
+{"clip": "Dog-2_SwimTurn2_1.npy", "action_tags": ["swim"]}
+{"clip": "Dog-2_Swimturn_1.npy", "action_tags": ["swim"]}
+{"clip": "Dog-2_WalkLimp_1.npy", "action_tags": ["locomotion", "gethurt"]}
+{"clip": "Dog-2_WalkLoop_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Dog-2_WalkNormal_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Dog-2_Walkbackward_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Dog_Attack_1.npy", "action_tags": ["attack"]}
+{"clip": "Dog_BackAway_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Dog_BarkJump_1.npy", "action_tags": ["jump"]}
+{"clip": "Dog_Barking_1.npy", "action_tags": ["emote"]}
+{"clip": "Dog_BiteArm_1.npy", "action_tags": ["attack"]}
+{"clip": "Dog_FloorRiseLeft_1.npy", "action_tags": ["getup"]}
+{"clip": "Dog_FloorRiseRight_1.npy", "action_tags": ["getup"]}
+{"clip": "Dog_Frightened_1.npy", "action_tags": ["emote"]}
+{"clip": "Dog_Galloping_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Dog_Grab_1.npy", "action_tags": ["attack"]}
+{"clip": "Dog_HitLeft_1.npy", "action_tags": ["gethurt"]}
+{"clip": "Dog_HitRight_1.npy", "action_tags": ["gethurt"]}
+{"clip": "Dog_InvestigateLoop_1.npy", "action_tags": ["emote"]}
+{"clip": "Dog_LeashAttack_1.npy", "action_tags": ["attack"]}
+{"clip": "Dog_LimpLoop_1.npy", "action_tags": ["locomotion", "gethurt"]}
+{"clip": "Dog_LookLeft_1.npy", "action_tags": ["emote"]}
+{"clip": "Dog_LookRight_1.npy", "action_tags": ["emote"]}
+{"clip": "Dog_PAnting_1.npy", "action_tags": ["idle"]}
+{"clip": "Dog_Paddle_1.npy", "action_tags": ["swim"]}
+{"clip": "Dog_Retreat_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Dog_Rise_1.npy", "action_tags": ["getup"]}
+{"clip": "Dog_RunFrisbee_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Dog_Running_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Dog_SNiffed_1.npy", "action_tags": ["emote"]}
+{"clip": "Dog_ScratchRight_1.npy", "action_tags": ["emote"]}
+{"clip": "Dog_SingleBark_1.npy", "action_tags": ["emote"]}
+{"clip": "Dog_Sit_1.npy", "action_tags": ["rest"]}
+{"clip": "Dog_Snarling_1.npy", "action_tags": ["emote"]}
+{"clip": "Dog_Stare_1.npy", "action_tags": ["emote"]}
+{"clip": "Dog_SwimFast_1.npy", "action_tags": ["swim"]}
+{"clip": "Dog_SwimLeft_1.npy", "action_tags": ["swim"]}
+{"clip": "Dog_SwimRight_1.npy", "action_tags": ["swim"]}
+{"clip": "Dog_Swim_1.npy", "action_tags": ["swim"]}
+{"clip": "Dog_TurnLeft_1.npy", "action_tags": ["turn"]}
+{"clip": "Dog_TurnRight_1.npy", "action_tags": ["turn"]}
+{"clip": "Dog_Wag_1.npy", "action_tags": ["emote"]}
+{"clip": "Dog_WalkBackwardsLoop_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Dog_WalkLoop_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Dog_Walk_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Dog_Wine_1.npy", "action_tags": ["emote"]}
+{"clip": "Dog_Woof_1.npy", "action_tags": ["emote"]}
+{"clip": "Dragon_WyvernAttack3_1.npy", "action_tags": ["attack"]}
+{"clip": "Dragon_WyvernAttack_1.npy", "action_tags": ["attack"]}
+{"clip": "Dragon_WyvernDie_1.npy", "action_tags": ["death"]}
+{"clip": "Dragon_WyvernFly_1.npy", "action_tags": ["fly"]}
+{"clip": "Dragon_WyvernFly_2.npy", "action_tags": ["fly"]}
+{"clip": "Dragon_WyvernIdle2_1.npy", "action_tags": ["idle"]}
+{"clip": "Dragon_WyvernIdle3_1.npy", "action_tags": ["idle"]}
+{"clip": "Dragon_WyvernIdle3_2.npy", "action_tags": ["idle"]}
+{"clip": "Dragon_WyvernIdle_1.npy", "action_tags": ["idle"]}
+{"clip": "Dragon_WyvernIdle_2.npy", "action_tags": ["idle"]}
+{"clip": "Dragon_WyvernSlowFly_1.npy", "action_tags": ["fly"]}
+{"clip": "Dragon_WyvernSlowFly_2.npy", "action_tags": ["fly"]}
+{"clip": "Eagle_EggSteal_1.npy", "action_tags": ["interact"]}
+{"clip": "Eagle_FloatDown_1.npy", "action_tags": ["fly"]}
+{"clip": "Eagle_FloattUp_1.npy", "action_tags": ["fly"]}
+{"clip": "Eagle_FlyLoop_1.npy", "action_tags": ["fly"]}
+{"clip": "Eagle_GlideLoop_1.npy", "action_tags": ["fly"]}
+{"clip": "Eagle_IdleNest_1.npy", "action_tags": ["idle"]}
+{"clip": "Eagle_Landing_1.npy", "action_tags": ["fly"]}
+{"clip": "Eagle_RideWind_1.npy", "action_tags": ["fly"]}
+{"clip": "Eagle_Shot_1.npy", "action_tags": ["gethurt"]}
+{"clip": "Eagle_Strike1_1.npy", "action_tags": ["attack"]}
+{"clip": "Eagle_Strike2_1.npy", "action_tags": ["attack"]}
+{"clip": "Eagle_TakeOff_1.npy", "action_tags": ["fly"]}
 {"clip": "Elephant_Atk1_1.npy", "action_tags": ["attack"]}
 {"clip": "Elephant_Atk2_1.npy", "action_tags": ["attack"]}
 {"clip": "Elephant_Die_1.npy", "action_tags": ["death"]}
@@ -321,6 +443,15 @@
 {"clip": "Gazelle_Idle_1.npy", "action_tags": ["idle"]}
 {"clip": "Gazelle_Run_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Gazelle_Walk_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Giantbee_Attack2_1.npy", "action_tags": ["attack"]}
+{"clip": "Giantbee_Attack3_1.npy", "action_tags": ["attack"]}
+{"clip": "Giantbee_Attack4_1.npy", "action_tags": ["attack"]}
+{"clip": "Giantbee_Attack_1.npy", "action_tags": ["attack"]}
+{"clip": "Giantbee_Die2_1.npy", "action_tags": ["death"]}
+{"clip": "Giantbee_Die_1.npy", "action_tags": ["death"]}
+{"clip": "Giantbee_Fly_1.npy", "action_tags": ["fly"]}
+{"clip": "Giantbee_Idle2_1.npy", "action_tags": ["idle"]}
+{"clip": "Giantbee_Idle_1.npy", "action_tags": ["idle"]}
 {"clip": "Goat_Attack_1.npy", "action_tags": ["attack"]}
 {"clip": "Goat_Bleat_1.npy", "action_tags": ["emote"]}
 {"clip": "Goat_Die_1.npy", "action_tags": ["death"]}
@@ -426,6 +557,15 @@
 {"clip": "Jaguar_Sit_2.npy", "action_tags": ["rest"]}
 {"clip": "Jaguar_Stancing_1.npy", "action_tags": ["idle"]}
 {"clip": "Jaguar_Walk_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Jaws_SharkBiteLeft_1.npy", "action_tags": ["attack"]}
+{"clip": "Jaws_SharkBiteRight_1.npy", "action_tags": ["attack"]}
+{"clip": "Jaws_SharkDeadLoop_1.npy", "action_tags": ["death"]}
+{"clip": "Jaws_SharkDead_1.npy", "action_tags": ["death"]}
+{"clip": "Jaws_SharkSwim180_1.npy", "action_tags": ["locomotion", "turn"]}
+{"clip": "Jaws_SharkSwimAt_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Jaws_SharkSwimLeft_1.npy", "action_tags": ["locomotion", "turn"]}
+{"clip": "Jaws_SharkSwimRight_1.npy", "action_tags": ["locomotion", "turn"]}
+{"clip": "Jaws_SharkSwim_1.npy", "action_tags": ["locomotion"]}
 {"clip": "KingCobra_Attack2_1.npy", "action_tags": ["attack"]}
 {"clip": "KingCobra_Attack_1.npy", "action_tags": ["attack"]}
 {"clip": "KingCobra_Bite_1.npy", "action_tags": ["attack"]}
@@ -522,6 +662,36 @@
 {"clip": "Ostrich_Idle_1.npy", "action_tags": ["idle"]}
 {"clip": "Ostrich_Run_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Ostrich_Walk_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Parrot2_IdleClean_1.npy", "action_tags": ["idle"]}
+{"clip": "Parrot2_Idle_1.npy", "action_tags": ["idle"]}
+{"clip": "Parrot2_Land_1.npy", "action_tags": ["fly"]}
+{"clip": "Parrot2_Land_2.npy", "action_tags": ["fly"]}
+{"clip": "Parrot_Attack_1.npy", "action_tags": ["attack"]}
+{"clip": "Parrot_CircleFly_1.npy", "action_tags": ["fly", "turn"]}
+{"clip": "Parrot_Die2_1.npy", "action_tags": ["death"]}
+{"clip": "Parrot_Die3_1.npy", "action_tags": ["death"]}
+{"clip": "Parrot_Die_1.npy", "action_tags": ["death"]}
+{"clip": "Parrot_Fly_1.npy", "action_tags": ["fly"]}
+{"clip": "Parrot_Hover_1.npy", "action_tags": ["fly"]}
+{"clip": "Parrot_Idle2_1.npy", "action_tags": ["idle"]}
+{"clip": "Parrot_Idle2_2.npy", "action_tags": ["idle"]}
+{"clip": "Parrot_Idle_1.npy", "action_tags": ["idle"]}
+{"clip": "Parrot_Land_1.npy", "action_tags": ["fly"]}
+{"clip": "Parrot_Preen_1.npy", "action_tags": ["emote"]}
+{"clip": "Parrot_Rise_1.npy", "action_tags": ["getup"]}
+{"clip": "Parrot_Walk_1.npy", "action_tags": ["fly"]}
+{"clip": "Pigeon_Circle_1.npy", "action_tags": ["locomotion", "turn"]}
+{"clip": "Pigeon_Cooing_1.npy", "action_tags": ["emote"]}
+{"clip": "Pigeon_FlyLoop_1.npy", "action_tags": ["fly"]}
+{"clip": "Pigeon_IdleLoop_1.npy", "action_tags": ["idle"]}
+{"clip": "Pigeon_IdleLoop_2.npy", "action_tags": ["idle"]}
+{"clip": "Pigeon_Idle_1.npy", "action_tags": ["idle"]}
+{"clip": "Pigeon_Land_1.npy", "action_tags": ["fly"]}
+{"clip": "Pigeon_Left_1.npy", "action_tags": ["emote"]}
+{"clip": "Pigeon_Peck_1.npy", "action_tags": ["attack"]}
+{"clip": "Pigeon_Right_1.npy", "action_tags": ["emote"]}
+{"clip": "Pigeon_TakeOff_1.npy", "action_tags": ["fly"]}
+{"clip": "Pigeon_Walk_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Pirrana_Biting2_1.npy", "action_tags": ["attack"]}
 {"clip": "Pirrana_Biting_1.npy", "action_tags": ["attack"]}
 {"clip": "Pirrana_DeadFloat2_1.npy", "action_tags": ["death"]}
@@ -551,6 +721,18 @@
 {"clip": "PolarBear_Idle_1.npy", "action_tags": ["idle"]}
 {"clip": "PolarBear_Run_1.npy", "action_tags": ["locomotion"]}
 {"clip": "PolarBear_Walk_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Pteranodon_ArcLeft_1.npy", "action_tags": ["fly", "turn"]}
+{"clip": "Pteranodon_ArcRight_1.npy", "action_tags": ["fly", "turn"]}
+{"clip": "Pteranodon_Death2_1.npy", "action_tags": ["death"]}
+{"clip": "Pteranodon_Death_1.npy", "action_tags": ["death"]}
+{"clip": "Pteranodon_Fancy_1.npy", "action_tags": ["emote"]}
+{"clip": "Pteranodon_Flapergasted_1.npy", "action_tags": ["emote"]}
+{"clip": "Pteranodon_FlyLoop_1.npy", "action_tags": ["fly"]}
+{"clip": "Pteranodon_GlideScream_1.npy", "action_tags": ["emote", "fly"]}
+{"clip": "Pteranodon_Hit2_1.npy", "action_tags": ["gethurt"]}
+{"clip": "Pteranodon_Hit_1.npy", "action_tags": ["gethurt"]}
+{"clip": "Pteranodon_Lander_1.npy", "action_tags": ["fly"]}
+{"clip": "Pteranodon_ScreamFly_1.npy", "action_tags": ["emote", "fly"]}
 {"clip": "Puppy_IdleEnergetic_1.npy", "action_tags": ["idle"]}
 {"clip": "Puppy_IdleEnergetic_2.npy", "action_tags": ["idle"]}
 {"clip": "Puppy_IdleEnergetic_3.npy", "action_tags": ["idle"]}
@@ -570,7 +752,6 @@
 {"clip": "Raindeer_Yell_1.npy", "action_tags": ["emote"]}
 {"clip": "Raptor2_BreatheIdle_1.npy", "action_tags": ["idle"]}
 {"clip": "Raptor2_Clean_1.npy", "action_tags": ["emote"]}
-{"clip": "Raptor2_Die2GetUp_1.npy", "action_tags": ["getup"]}
 {"clip": "Raptor2_DieGetUp_1.npy", "action_tags": ["getup"]}
 {"clip": "Raptor2_Die_1.npy", "action_tags": ["death"]}
 {"clip": "Raptor2_EatGrass_1.npy", "action_tags": ["interact"]}
@@ -587,21 +768,11 @@
 {"clip": "Raptor2_IdleLookRight_1.npy", "action_tags": ["idle", "emote"]}
 {"clip": "Raptor2_IdleRight_1.npy", "action_tags": ["idle"]}
 {"clip": "Raptor2_Idle_1.npy", "action_tags": ["idle"]}
-{"clip": "Raptor2_JumpSpinRun_1.npy", "action_tags": ["jump", "turn", "locomotion"]}
-{"clip": "Raptor2_LeftHeadRun_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Raptor2_LeftRunBite_1.npy", "action_tags": ["locomotion", "attack"]}
 {"clip": "Raptor2_ReverseRun_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Raptor2_RightHeadRun_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Raptor2_RightRunBite_1.npy", "action_tags": ["locomotion", "attack"]}
-{"clip": "Raptor2_RunJumpBite_1.npy", "action_tags": ["locomotion", "jump", "attack"]}
-{"clip": "Raptor2_RunJumpLandBack_1.npy", "action_tags": ["jump"]}
-{"clip": "Raptor2_RunJumpRoll_1.npy", "action_tags": ["locomotion", "jump"]}
 {"clip": "Raptor2_RunJump_1.npy", "action_tags": ["locomotion", "jump"]}
-{"clip": "Raptor2_RunScreamJump_1.npy", "action_tags": ["locomotion", "jump", "emote"]}
 {"clip": "Raptor2_RunToStopRoar2_1.npy", "action_tags": ["locomotion", "emote"]}
 {"clip": "Raptor2_RunToStopRoar_1.npy", "action_tags": ["locomotion", "emote"]}
 {"clip": "Raptor2_Run_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Raptor2_SpinRun_1.npy", "action_tags": ["turn", "locomotion"]}
 {"clip": "Raptor2_Stride_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Raptor2_Walk_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Raptor3_AttackRight_1.npy", "action_tags": ["attack"]}
@@ -838,20 +1009,12 @@
 {"clip": "Stego_Slowwalk_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Stego_TailWhip_1.npy", "action_tags": ["attack"]}
 {"clip": "Trex_BigRoarStep_1.npy", "action_tags": ["emote", "locomotion"]}
-{"clip": "Trex_Bite90Left_1.npy", "action_tags": ["attack"]}
-{"clip": "Trex_Bite90Right_1.npy", "action_tags": ["attack"]}
-{"clip": "Trex_BiteCloseLeft_1.npy", "action_tags": ["attack"]}
-{"clip": "Trex_BiteCloseRight_1.npy", "action_tags": ["attack"]}
+{"clip": "Trex_BiteLeft_1.npy", "action_tags": ["attack"]}
+{"clip": "Trex_BiteRight_1.npy", "action_tags": ["attack"]}
 {"clip": "Trex_BiteStepBackForward_1.npy", "action_tags": ["attack", "locomotion"]}
-{"clip": "Trex_ChaseBiteLeft_1.npy", "action_tags": ["locomotion", "attack"]}
-{"clip": "Trex_ChaseBiteRight_1.npy", "action_tags": ["locomotion", "attack"]}
 {"clip": "Trex_ChaseBite_1.npy", "action_tags": ["locomotion", "attack"]}
 {"clip": "Trex_ChaseHeadButtLeft_1.npy", "action_tags": ["locomotion", "attack"]}
-{"clip": "Trex_ChaseRoarLeft_1.npy", "action_tags": ["locomotion", "emote"]}
-{"clip": "Trex_ChaseRoarRight_1.npy", "action_tags": ["locomotion", "emote"]}
 {"clip": "Trex_ChaseRoar_1.npy", "action_tags": ["locomotion", "emote"]}
-{"clip": "Trex_ClimbDown_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Trex_ClimbUp_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Trex_DeathShort_1.npy", "action_tags": ["death"]}
 {"clip": "Trex_Death_1.npy", "action_tags": ["death"]}
 {"clip": "Trex_HeadButtLeft_1.npy", "action_tags": ["attack"]}
@@ -865,8 +1028,6 @@
 {"clip": "Trex_HumanBite_1.npy", "action_tags": ["attack"]}
 {"clip": "Trex_HumanKill_1.npy", "action_tags": ["attack"]}
 {"clip": "Trex_HumanShake_1.npy", "action_tags": ["attack"]}
-{"clip": "Trex_IdleAttackToRunLeft_1.npy", "action_tags": ["turn", "locomotion"]}
-{"clip": "Trex_IdleAttackToRunRight_1.npy", "action_tags": ["turn", "locomotion"]}
 {"clip": "Trex_IdleAttack_1.npy", "action_tags": ["idle", "attack"]}
 {"clip": "Trex_IdleInvestigaeOut_1.npy", "action_tags": ["idle", "emote"]}
 {"clip": "Trex_IdleInvestigateLoop_1.npy", "action_tags": ["idle", "emote"]}
@@ -894,23 +1055,18 @@
 {"clip": "Trex_RunHeadLow2_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Trex_RunHeadLow_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Trex_RunToStop_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Trex_SprintHeadLeft_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Trex_SprintHeadRight_1.npy", "action_tags": ["locomotion", "emote"]}
 {"clip": "Trex_SprintLoop_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Trex_StepBack_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Trex_Stunned_1.npy", "action_tags": ["gethurt"]}
 {"clip": "Trex_Stunned_2.npy", "action_tags": ["gethurt"]}
 {"clip": "Trex_Turn180Look_1.npy", "action_tags": ["turn", "emote"]}
 {"clip": "Trex_Turn180Right_1.npy", "action_tags": ["turn"]}
-{"clip": "Trex_Turn180TurnRight_1.npy", "action_tags": ["turn"]}
 {"clip": "Trex_Turn90Left_1.npy", "action_tags": ["turn"]}
 {"clip": "Trex_Turn90Right_1.npy", "action_tags": ["turn"]}
 {"clip": "Trex_WalkBack_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Trex_WalkBite_1.npy", "action_tags": ["locomotion", "attack"]}
 {"clip": "Trex_WalkHeadLow_1.npy", "action_tags": ["locomotion", "emote"]}
-{"clip": "Trex_WalkLeftBite_1.npy", "action_tags": ["locomotion", "attack"]}
 {"clip": "Trex_WalkLoop_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Trex_WalkRightBite_1.npy", "action_tags": ["locomotion", "attack"]}
 {"clip": "Trex_WalkSlowLoop_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Tricera_Attack2_1.npy", "action_tags": ["attack"]}
 {"clip": "Tricera_Attack3_1.npy", "action_tags": ["attack"]}
@@ -920,6 +1076,14 @@
 {"clip": "Tricera_NoseDirt_1.npy", "action_tags": ["interact"]}
 {"clip": "Tricera_Run_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Tricera_Walk_1.npy", "action_tags": ["locomotion"]}
+{"clip": "Tukan_FlyForward_1.npy", "action_tags": ["fly"]}
+{"clip": "Tukan_FlyLoop_1.npy", "action_tags": ["fly"]}
+{"clip": "Tukan_Fly_1.npy", "action_tags": ["fly"]}
+{"clip": "Tukan_IdleLook_1.npy", "action_tags": ["emote", "idle"]}
+{"clip": "Tukan_Shake_1.npy", "action_tags": ["emote"]}
+{"clip": "Tukan_SlowDown_1.npy", "action_tags": ["fly"]}
+{"clip": "Tukan_Sqwak_1.npy", "action_tags": ["emote"]}
+{"clip": "Tukan_WingScratch_1.npy", "action_tags": ["emote"]}
 {"clip": "Turtle_Attack2_1.npy", "action_tags": ["attack"]}
 {"clip": "Turtle_Attack3_1.npy", "action_tags": ["attack"]}
 {"clip": "Turtle_Attack_1.npy", "action_tags": ["attack"]}
@@ -940,198 +1104,3 @@
 {"clip": "Tyranno_Run_1.npy", "action_tags": ["locomotion"]}
 {"clip": "Tyranno_TailWhip_1.npy", "action_tags": ["attack"]}
 {"clip": "Tyranno_Walk_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Dragon_WyvernAttack_1.npy", "action_tags": ["attack"]}
-{"clip": "Bird_Attack2_1.npy", "action_tags": ["attack"]}
-{"clip": "Bird_Attack3_1.npy", "action_tags": ["attack"]}
-{"clip": "Bird_Attack4_1.npy", "action_tags": ["attack"]}
-{"clip": "Bird_Attack_1.npy", "action_tags": ["attack"]}
-{"clip": "Bird_CircleLand_1.npy", "action_tags": ["fly", "turn"]}
-{"clip": "Bird_CircleLand_2.npy", "action_tags": ["fly", "turn"]}
-{"clip": "Bird_Fallen_1.npy", "action_tags": ["fall"]}
-{"clip": "Bird_Falling_1.npy", "action_tags": ["fall"]}
-{"clip": "Bird_Floater_1.npy", "action_tags": ["fly"]}
-{"clip": "Bird_FlyFast_1.npy", "action_tags": ["fly"]}
-{"clip": "Bird_FlyLoop_1.npy", "action_tags": ["fly"]}
-{"clip": "Bird_FlySlow_1.npy", "action_tags": ["fly"]}
-{"clip": "Bird_Flying_1.npy", "action_tags": ["fly"]}
-{"clip": "Bird_GroundFlap_1.npy", "action_tags": ["emote"]}
-{"clip": "Bird_IdleLoop_1.npy", "action_tags": ["idle"]}
-{"clip": "Bird_Lander_1.npy", "action_tags": ["fly"]}
-{"clip": "Bird_LookRight_1.npy", "action_tags": ["emote"]}
-{"clip": "Bird_SlowLook_1.npy", "action_tags": ["emote"]}
-{"clip": "Bird_TakeOff_1.npy", "action_tags": ["fly"]}
-{"clip": "Buzzard_Attack1_1.npy", "action_tags": ["attack"]}
-{"clip": "Buzzard_Attack2_1.npy", "action_tags": ["attack"]}
-{"clip": "Buzzard_Attack3_1.npy", "action_tags": ["attack"]}
-{"clip": "Buzzard_Die1_1.npy", "action_tags": ["death"]}
-{"clip": "Buzzard_Dying_1.npy", "action_tags": ["death"]}
-{"clip": "Buzzard_FlyLoop_1.npy", "action_tags": ["fly"]}
-{"clip": "Buzzard_SlowFly_1.npy", "action_tags": ["fly"]}
-{"clip": "Buzzard_SlowLoop_1.npy", "action_tags": ["fly"]}
-{"clip": "Buzzard_SlowtoLand_1.npy", "action_tags": ["fly"]}
-{"clip": "Buzzard_Soaring_1.npy", "action_tags": ["fly"]}
-{"clip": "Dragon_WyvernAttack3_1.npy", "action_tags": ["attack"]}
-{"clip": "Dragon_WyvernDie_1.npy", "action_tags": ["death"]}
-{"clip": "Dragon_WyvernFly_1.npy", "action_tags": ["fly"]}
-{"clip": "Dragon_WyvernFly_2.npy", "action_tags": ["fly"]}
-{"clip": "Dragon_WyvernIdle2_1.npy", "action_tags": ["idle"]}
-{"clip": "Dragon_WyvernIdle3_1.npy", "action_tags": ["idle"]}
-{"clip": "Dragon_WyvernIdle3_2.npy", "action_tags": ["idle"]}
-{"clip": "Dragon_WyvernIdle_1.npy", "action_tags": ["idle"]}
-{"clip": "Dragon_WyvernIdle_2.npy", "action_tags": ["idle"]}
-{"clip": "Dragon_WyvernSlowFly_1.npy", "action_tags": ["fly"]}
-{"clip": "Dragon_WyvernSlowFly_2.npy", "action_tags": ["fly"]}
-{"clip": "Eagle_EggSteal_1.npy", "action_tags": ["interact"]}
-{"clip": "Eagle_FloatDown_1.npy", "action_tags": ["fly"]}
-{"clip": "Eagle_FloattUp_1.npy", "action_tags": ["fly"]}
-{"clip": "Eagle_FlyLoop_1.npy", "action_tags": ["fly"]}
-{"clip": "Eagle_GlideLoop_1.npy", "action_tags": ["fly"]}
-{"clip": "Eagle_IdleNest_1.npy", "action_tags": ["idle"]}
-{"clip": "Eagle_Landing_1.npy", "action_tags": ["fly"]}
-{"clip": "Eagle_RideWind_1.npy", "action_tags": ["fly"]}
-{"clip": "Eagle_Shot_1.npy", "action_tags": ["gethurt"]}
-{"clip": "Eagle_Strike1_1.npy", "action_tags": ["attack"]}
-{"clip": "Eagle_Strike2_1.npy", "action_tags": ["attack"]}
-{"clip": "Eagle_TakeOff_1.npy", "action_tags": ["fly"]}
-{"clip": "Giantbee_Attack2_1.npy", "action_tags": ["attack"]}
-{"clip": "Giantbee_Attack3_1.npy", "action_tags": ["attack"]}
-{"clip": "Giantbee_Attack4_1.npy", "action_tags": ["attack"]}
-{"clip": "Giantbee_Attack_1.npy", "action_tags": ["attack"]}
-{"clip": "Giantbee_Die2_1.npy", "action_tags": ["death"]}
-{"clip": "Giantbee_Die_1.npy", "action_tags": ["death"]}
-{"clip": "Giantbee_Fly_1.npy", "action_tags": ["fly"]}
-{"clip": "Giantbee_Idle2_1.npy", "action_tags": ["idle"]}
-{"clip": "Giantbee_Idle_1.npy", "action_tags": ["idle"]}
-{"clip": "Parrot2_IdleClean_1.npy", "action_tags": ["idle"]}
-{"clip": "Parrot2_Idle_1.npy", "action_tags": ["idle"]}
-{"clip": "Parrot2_Land_1.npy", "action_tags": ["fly"]}
-{"clip": "Parrot2_Land_2.npy", "action_tags": ["fly"]}
-{"clip": "Parrot_Attack_1.npy", "action_tags": ["attack"]}
-{"clip": "Parrot_CircleFly_1.npy", "action_tags": ["fly", "turn"]}
-{"clip": "Parrot_Die2_1.npy", "action_tags": ["death"]}
-{"clip": "Parrot_Die3_1.npy", "action_tags": ["death"]}
-{"clip": "Parrot_Die_1.npy", "action_tags": ["death"]}
-{"clip": "Parrot_Fly_1.npy", "action_tags": ["fly"]}
-{"clip": "Parrot_Hover_1.npy", "action_tags": ["fly"]}
-{"clip": "Parrot_Idle2_1.npy", "action_tags": ["idle"]}
-{"clip": "Parrot_Idle2_2.npy", "action_tags": ["idle"]}
-{"clip": "Parrot_Idle_1.npy", "action_tags": ["idle"]}
-{"clip": "Parrot_Land_1.npy", "action_tags": ["fly"]}
-{"clip": "Parrot_Preen_1.npy", "action_tags": ["emote"]}
-{"clip": "Parrot_Rise_1.npy", "action_tags": ["getup"]}
-{"clip": "Parrot_Walk_1.npy", "action_tags": ["fly"]}
-{"clip": "Pigeon_Circle_1.npy", "action_tags": ["locomotion", "turn"]}
-{"clip": "Pigeon_Cooing_1.npy", "action_tags": ["emote"]}
-{"clip": "Pigeon_FlyLoop_1.npy", "action_tags": ["fly"]}
-{"clip": "Pigeon_IdleLoop_1.npy", "action_tags": ["idle"]}
-{"clip": "Pigeon_IdleLoop_2.npy", "action_tags": ["idle"]}
-{"clip": "Pigeon_Idle_1.npy", "action_tags": ["idle"]}
-{"clip": "Pigeon_Land_1.npy", "action_tags": ["fly"]}
-{"clip": "Pigeon_Left_1.npy", "action_tags": ["emote"]}
-{"clip": "Pigeon_Peck_1.npy", "action_tags": ["attack"]}
-{"clip": "Pigeon_Right_1.npy", "action_tags": ["emote"]}
-{"clip": "Pigeon_TakeOff_1.npy", "action_tags": ["fly"]}
-{"clip": "Pigeon_Walk_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Pteranodon_ArcLeft_1.npy", "action_tags": ["fly", "turn"]}
-{"clip": "Pteranodon_ArcRight_1.npy", "action_tags": ["fly", "turn"]}
-{"clip": "Pteranodon_Death2_1.npy", "action_tags": ["death"]}
-{"clip": "Pteranodon_Death_1.npy", "action_tags": ["death"]}
-{"clip": "Pteranodon_Fancy_1.npy", "action_tags": ["emote"]}
-{"clip": "Pteranodon_Flapergasted_1.npy", "action_tags": ["emote"]}
-{"clip": "Pteranodon_FlyLoop_1.npy", "action_tags": ["fly"]}
-{"clip": "Pteranodon_GlideScream_1.npy", "action_tags": ["emote", "fly"]}
-{"clip": "Pteranodon_Hit2_1.npy", "action_tags": ["gethurt"]}
-{"clip": "Pteranodon_Hit_1.npy", "action_tags": ["gethurt"]}
-{"clip": "Pteranodon_Lander_1.npy", "action_tags": ["fly"]}
-{"clip": "Pteranodon_ScreamFly_1.npy", "action_tags": ["emote", "fly"]}
-{"clip": "Tukan_FlyForward_1.npy", "action_tags": ["fly"]}
-{"clip": "Tukan_FlyLoop_1.npy", "action_tags": ["fly"]}
-{"clip": "Tukan_Fly_1.npy", "action_tags": ["fly"]}
-{"clip": "Tukan_IdleLook_1.npy", "action_tags": ["emote", "idle"]}
-{"clip": "Tukan_Shake_1.npy", "action_tags": ["emote"]}
-{"clip": "Tukan_SlowDown_1.npy", "action_tags": ["fly"]}
-{"clip": "Tukan_Sqwak_1.npy", "action_tags": ["emote"]}
-{"clip": "Tukan_WingScratch_1.npy", "action_tags": ["emote"]}
-{"clip": "Crow_Ascend_1.npy", "action_tags": ["fly"]}
-{"clip": "Crow_Attack2_1.npy", "action_tags": ["attack"]}
-{"clip": "Crow_Attack_1.npy", "action_tags": ["attack"]}
-{"clip": "Crow_FlyStart_1.npy", "action_tags": ["fly"]}
-{"clip": "Crow_Glide_1.npy", "action_tags": ["fly"]}
-{"clip": "Crow_IdleFlap_1.npy", "action_tags": ["fly"]}
-{"clip": "Crow_Idle_1.npy", "action_tags": ["idle"]}
-{"clip": "Crow_Idle_2.npy", "action_tags": ["idle"]}
-{"clip": "Crow_Landflap_1.npy", "action_tags": ["fly"]}
-{"clip": "Crow_PeckEat_1.npy", "action_tags": ["attack"]}
-{"clip": "Crow_PeckEat_2.npy", "action_tags": ["attack"]}
-{"clip": "Crow_TakeOff_1.npy", "action_tags": ["fly"]}
-{"clip": "Dog-2_ArmBite_1.npy", "action_tags": ["attack"]}
-{"clip": "Dog-2_BackOff_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Dog-2_BiteJump_1.npy", "action_tags": ["jump", "attack"]}
-{"clip": "Dog-2_GetUp_1.npy", "action_tags": ["getup"]}
-{"clip": "Dog-2_Growl_1.npy", "action_tags": ["emote"]}
-{"clip": "Dog-2_IdleBreathe_1.npy", "action_tags": ["idle"]}
-{"clip": "Dog-2_Ready_1.npy", "action_tags": ["idle"]}
-{"clip": "Dog-2_RunFast_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Dog-2_RunJump_1.npy", "action_tags": ["jump"]}
-{"clip": "Dog-2_Scratch_1.npy", "action_tags": ["emote"]}
-{"clip": "Dog-2_Sense_1.npy", "action_tags": ["emote"]}
-{"clip": "Dog-2_Shake_1.npy", "action_tags": ["emote"]}
-{"clip": "Dog-2_Slowtail_1.npy", "action_tags": ["emote"]}
-{"clip": "Dog-2_Sniffing_1.npy", "action_tags": ["emote"]}
-{"clip": "Dog-2_SwimIdle_1.npy", "action_tags": ["swim"]}
-{"clip": "Dog-2_SwimTurn2_1.npy", "action_tags": ["swim"]}
-{"clip": "Dog-2_Swimturn_1.npy", "action_tags": ["swim"]}
-{"clip": "Dog-2_WalkLimp_1.npy", "action_tags": ["locomotion", "gethurt"]}
-{"clip": "Dog-2_WalkLoop_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Dog-2_WalkNormal_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Dog-2_Walkbackward_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Jaws_SharkBiteLeft_1.npy", "action_tags": ["attack"]}
-{"clip": "Jaws_SharkBiteRight_1.npy", "action_tags": ["attack"]}
-{"clip": "Jaws_SharkDeadLoop_1.npy", "action_tags": ["death"]}
-{"clip": "Jaws_SharkDead_1.npy", "action_tags": ["death"]}
-{"clip": "Jaws_SharkSwim180_1.npy", "action_tags": ["locomotion", "turn"]}
-{"clip": "Jaws_SharkSwimAt_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Jaws_SharkSwimLeft_1.npy", "action_tags": ["locomotion", "turn"]}
-{"clip": "Jaws_SharkSwimRight_1.npy", "action_tags": ["locomotion", "turn"]}
-{"clip": "Jaws_SharkSwim_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Dog_Attack_1.npy", "action_tags": ["attack"]}
-{"clip": "Dog_BackAway_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Dog_BarkJump_1.npy", "action_tags": ["jump"]}
-{"clip": "Dog_Barking_1.npy", "action_tags": ["emote"]}
-{"clip": "Dog_BiteArm_1.npy", "action_tags": ["attack"]}
-{"clip": "Dog_FloorRiseLeft_1.npy", "action_tags": ["getup"]}
-{"clip": "Dog_FloorRiseRight_1.npy", "action_tags": ["getup"]}
-{"clip": "Dog_Frightened_1.npy", "action_tags": ["emote"]}
-{"clip": "Dog_Galloping_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Dog_Grab_1.npy", "action_tags": ["attack"]}
-{"clip": "Dog_HitLeft_1.npy", "action_tags": ["gethurt"]}
-{"clip": "Dog_HitRight_1.npy", "action_tags": ["gethurt"]}
-{"clip": "Dog_InvestigateLoop_1.npy", "action_tags": ["emote"]}
-{"clip": "Dog_LeashAttack_1.npy", "action_tags": ["attack"]}
-{"clip": "Dog_LimpLoop_1.npy", "action_tags": ["locomotion", "gethurt"]}
-{"clip": "Dog_LookLeft_1.npy", "action_tags": ["emote"]}
-{"clip": "Dog_LookRight_1.npy", "action_tags": ["emote"]}
-{"clip": "Dog_PAnting_1.npy", "action_tags": ["idle"]}
-{"clip": "Dog_Paddle_1.npy", "action_tags": ["swim"]}
-{"clip": "Dog_Retreat_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Dog_Rise_1.npy", "action_tags": ["getup"]}
-{"clip": "Dog_RunFrisbee_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Dog_Running_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Dog_SNiffed_1.npy", "action_tags": ["emote"]}
-{"clip": "Dog_ScratchRight_1.npy", "action_tags": ["emote"]}
-{"clip": "Dog_SingleBark_1.npy", "action_tags": ["emote"]}
-{"clip": "Dog_Sit_1.npy", "action_tags": ["rest"]}
-{"clip": "Dog_Snarling_1.npy", "action_tags": ["emote"]}
-{"clip": "Dog_Stare_1.npy", "action_tags": ["emote"]}
-{"clip": "Dog_SwimFast_1.npy", "action_tags": ["swim"]}
-{"clip": "Dog_SwimLeft_1.npy", "action_tags": ["swim"]}
-{"clip": "Dog_SwimRight_1.npy", "action_tags": ["swim"]}
-{"clip": "Dog_Swim_1.npy", "action_tags": ["swim"]}
-{"clip": "Dog_TurnLeft_1.npy", "action_tags": ["turn"]}
-{"clip": "Dog_TurnRight_1.npy", "action_tags": ["turn"]}
-{"clip": "Dog_Wag_1.npy", "action_tags": ["emote"]}
-{"clip": "Dog_WalkBackwardsLoop_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Dog_WalkLoop_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Dog_Walk_1.npy", "action_tags": ["locomotion"]}
-{"clip": "Dog_Wine_1.npy", "action_tags": ["emote"]}
-{"clip": "Dog_Woof_1.npy", "action_tags": ["emote"]}
