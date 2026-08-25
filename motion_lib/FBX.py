@@ -26,10 +26,19 @@ try:
 except ImportError:
     from root_collapse import collapse_root_skeleton
 
+try:
+    from .fbx_scale_fix import repair_scaled_bone_import
+except ImportError:
+    from fbx_scale_fix import repair_scaled_bone_import
+
 
 # ── FBX import utilities (merged from utils/fbx.py) ─────────────────────────
 
-def import_fbx(filepath: str, use_image_search: bool = False) -> None:
+def import_fbx(
+    filepath: str,
+    use_image_search: bool = False,
+    repair_bone_scale: bool = True,
+) -> None:
     """Import an FBX file into the current Blender scene.
 
     Always imports with ``ignore_leaf_bones=False`` so that leaf bones carrying
@@ -41,9 +50,16 @@ def import_fbx(filepath: str, use_image_search: bool = False) -> None:
     old add-on importer's ``use_image_search`` parameter directly, then repair
     any image datablocks whose pixels never loaded (see
     :func:`_reload_unloaded_images`).
+
+    When ``repair_bone_scale`` is true (the default), fix up rigs whose bone
+    nodes carry a non-unit ``Lcl Scaling`` -- the importer bakes that scale into
+    the rest pose but not into the animation, so the clip explodes by ``1 /
+    scale`` (see :mod:`motion_lib.fbx_scale_fix`).  It is a no-op for rigs whose
+    bones are unit-scaled.
     """
     import bpy
 
+    before = set(bpy.data.objects)
     with _silence_os_std():
         bpy.ops.wm.fbx_import(
             filepath=filepath,
@@ -51,6 +67,10 @@ def import_fbx(filepath: str, use_image_search: bool = False) -> None:
             use_custom_normals=False,
             use_anim=True,
         )
+    if repair_bone_scale:
+        added = [obj for obj in bpy.data.objects if obj not in before]
+        with _silence_os_std():
+            repair_scaled_bone_import(bpy, filepath, added)
     if use_image_search:
         bpy.ops.file.find_missing_files(
             directory=os.path.dirname(os.path.abspath(filepath))
