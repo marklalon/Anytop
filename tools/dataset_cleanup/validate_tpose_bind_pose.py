@@ -136,23 +136,14 @@ def _warning_sort_key(message: str) -> tuple[str, str]:
 
 
 def _load_symmetry_suppress_patterns(dataset_dir: Path) -> list[str]:
-    """Load ``#`` comment-line patterns from ``<dataset_dir>/ignore_warnings.txt``.
+    """Load the ``#`` substring patterns from the dataset's ``ignore_warnings.txt``.
 
-    Lines starting with ``#`` are treated as case-insensitive substring
-    patterns; if any pattern matches a symmetry-warning message, that warning
-    is suppressed from the final report.
+    If any pattern matches a symmetry-warning message, that warning is
+    suppressed from the final report.
     """
-    ignore_path = dataset_dir / "ignore_warnings.txt"
-    if not ignore_path.exists():
-        return []
-    patterns: list[str] = []
-    for line in ignore_path.read_text("utf-8").splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            pattern = stripped[1:].strip()
-            if pattern:
-                patterns.append(pattern.lower())
-    return patterns
+    from data_loaders.truebones.truebones_utils import ignore_warnings
+
+    return list(ignore_warnings.load(dataset_dir).patterns)
 
 
 def _filter_suppressed_warnings(

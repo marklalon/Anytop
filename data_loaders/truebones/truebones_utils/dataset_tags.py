@@ -405,6 +405,19 @@ def using_dataset_dir(dataset_dir):
             _sources, _snapshot = previous_sources, previous_snapshot
 
 
+def configured_dataset_dir() -> str | None:
+    """The single dataset directory this process is pointed at, if there is one.
+
+    ``None`` under a multi-source or cond-backed configuration, neither of which
+    names one directory.  The other dataset-directory-scoped sidecars
+    (``ignore_warnings.txt``) resolve through this, so the pool initializer that
+    replays ``configure()`` into a worker carries them along with the tags.
+    """
+    if _sources.is_multi_source or _sources.is_cond_backed:
+        return None
+    return get_dataset_dir(_sources.dataset_dir)
+
+
 def worker_initargs() -> tuple:
     """Args for ``ProcessPoolExecutor(initializer=configure, initargs=...)``.
 

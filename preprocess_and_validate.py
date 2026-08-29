@@ -23,6 +23,13 @@ Options:
     --orientation-threshold-deg DEG      Maximum allowed T-pose face-orientation delta from the nearest cardinal XZ axis (+x/-x/+z/-z) before warning (default: 15.0)
     --motion-orientation-threshold DEG   Maximum allowed first/last-frame recovered-facing delta from T-pose facing before warning (default: 45.0)
 
+Dataset switches (``<dataset-dir>/ignore_warnings.txt``, or the file of the same
+name in its parent directory):
+    !skip-orientation-detection          The dataset's rest poses already face the canonical
+                                         +Z: keep orientation_quat at identity instead of
+                                         estimating each character's facing, and silence the
+                                         estimator's fallback warnings
+
 Examples:
     # Default workflow: process only newly added source animations -> validate
     python preprocess_and_validate.py
@@ -85,6 +92,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     get_raw_data_dir,
 )
 from data_loaders.truebones.truebones_utils import dataset_tags  # noqa: E402
+from data_loaders.truebones.truebones_utils import ignore_warnings  # noqa: E402
 from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
     load_cond,
     save_cond,
@@ -121,6 +129,67 @@ def _configure_dataset_tags_for_run(args: argparse.Namespace) -> None:
             f"[OK] no chain forward-joints sidecar at {paths.chain_forward_joints}; "
             "using generic orientation detection"
         )
+
+
+def _report_ignore_warnings_for_run(args: argparse.Namespace) -> None:
+    """Announce the dataset's ignore_warnings.txt and any switch it turns on.
+
+    The switches change what the run computes (``!skip-orientation-detection``
+    keeps every ``orientation_quat`` at identity), so a run must never take one
+    silently -- and a misspelled directive must not read as an accepted one.
+    """
+    sidecar = ignore_warnings.load(args.dataset_dir or None)
+    if sidecar.path is None:
+        return
+    directives = ' '.join(f"!{name}" for name in sorted(sidecar.directives))
+    print(f"[OK] using ignore_warnings: {sidecar.path}{f' ({directives})' if directives else ''}")
+    if ignore_warnings.SKIP_ORIENTATION_DETECTION in sidecar.directives:
+        print(
+            "     T-pose face-orientation detection is OFF: rest poses are taken to "
+            "face +Z, orientation_quat stays identity, facing warnings are silenced"
+        )
+    for name in sidecar.unknown_directives:
+        print(f"[WARN] unknown ignore_warnings.txt directive '!{name}' -- ignored")
+
+
+def _install_sidecars_into_dataset_dir(args: argparse.Namespace) -> None:
+    """Leave a copy of an out-of-tree sidecar inside the processed dataset dir.
+
+    A processed dataset directory is a self-contained *source*, and two consumers
+    downstream of this process re-resolve the sidecars from it rather than from
+    this run's flags: ``regenerate_dataset_artifacts.py`` runs in its own
+    subprocess, and ``dataset_tags._load_multi_source`` reads
+    ``<root>/species_tags.jsonl`` for every entry in ``datasets.jsonl`` with no
+    override at all. So pointing a run at a sidecar that lives elsewhere has to
+    deposit a copy, or preprocessing succeeds and everything after it looks for a
+    file that is not there.
+
+    Only an explicitly named sidecar is installed. Without the flag the dataset
+    directory's own file is already the one in use and is left untouched, which
+    keeps ``--rm``'s in-place edits from being reverted.
+    """
+    dataset_dir_path = Path(get_dataset_dir(args.dataset_dir or None))
+    named = (
+        (args.species_tags_file, dataset_tags.SPECIES_TAGS_FILE),
+        (args.chain_forward_joints_file, dataset_tags.CHAIN_FORWARD_JOINTS_FILE),
+    )
+    for given, filename in named:
+        if not given:
+            continue
+        source = Path(given)
+        if not source.is_file():
+            continue  # configure()/_load raises a better message than a copy would
+        target = dataset_dir_path / filename
+        if target.is_file():
+            if target.resolve() == source.resolve():
+                continue
+            if target.read_bytes() == source.read_bytes():
+                continue
+            print(f"[WARN] replacing {target}")
+            print(f"       with {source.resolve()}")
+        dataset_dir_path.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        print(f"[OK] installed {filename} into {dataset_dir_path}")
 
 
 def _discover_all_objects(raw_data_dir: str = "") -> tuple[str, ...]:
@@ -221,24 +290,15 @@ class _WarnCollector:
             self._summarizing = False
 
     def _load_suppress_patterns(self):
-        """Load comment-line suppress patterns from ignore_warnings.txt.
+        """Load the ``#`` substring patterns from the dataset's ignore_warnings.txt.
 
-        Lines starting with ``#`` are treated as case-insensitive substring
-        patterns; if any pattern matches a warning message, that warning is
-        suppressed from the summary output.
+        If any pattern matches a warning message, that warning is suppressed
+        from the summary output.
         """
         if self._suppress_loaded or self._dataset_dir is None:
             return
         self._suppress_loaded = True
-        ignore_path = self._dataset_dir / "ignore_warnings.txt"
-        if not ignore_path.exists():
-            return
-        for line in ignore_path.read_text("utf-8").splitlines():
-            stripped = line.strip()
-            if stripped.startswith("#"):
-                pattern = stripped[1:].strip()
-                if pattern:
-                    self._suppress_patterns.append(pattern.lower())
+        self._suppress_patterns.extend(ignore_warnings.load(self._dataset_dir).patterns)
 
     def _print_summary(self):
         self._load_suppress_patterns()
@@ -1086,6 +1146,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     _configure_dataset_tags_for_run(args)
+    _report_ignore_warnings_for_run(args)
+    _install_sidecars_into_dataset_dir(args)
 
     if args.sample_count < 0:
         print("ERROR: --sample-count must be >= 0")

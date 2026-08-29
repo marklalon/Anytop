@@ -31,6 +31,7 @@ from .face_orientation import (
     rotate_to_hml_orientation,
     resolve_forward_reference_joints,
 )
+from .ignore_warnings import skip_orientation_detection
 
 from .animation_utils import (
     ROOT_XZ_STRIP_THRESHOLD,
@@ -415,7 +416,15 @@ def get_common_features_from_rest_pose(
         object_type=object_type,
         rest_positions=reference_positions,
     )
-    rest_pose_orientation_quat = calculate_root_quat(reference_positions, object_type, face_joint_indx=face_joints, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)[0]
+    if skip_orientation_detection():
+        # The dataset declares its rest poses already facing the canonical +Z
+        # (``!skip-orientation-detection`` in ignore_warnings.txt), so no facing
+        # is estimated and the correction stays identity. The face/forward joints
+        # resolved above are still recorded on the object cond -- validation
+        # compares each clip's recovered facing against the rest pose with them.
+        rest_pose_orientation_quat = Quaternions.id(len(reference_positions))[0]
+    else:
+        rest_pose_orientation_quat = calculate_root_quat(reference_positions, object_type, face_joint_indx=face_joints, forward_joint_index=forward_joint_index, forward_base_joint_index=forward_base_joint_index)[0]
 
     # Pre-compute the per-character scale factor once from the raw rest-pose
     # offsets and reuse it for every motion clip of the same character.

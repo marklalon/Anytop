@@ -5,6 +5,7 @@ import re
 from motion_lib.Quaternions import Quaternions
 from motion_lib.Animation import Animation
 from .dataset_tags import dataset_tags
+from .ignore_warnings import skip_orientation_detection
 from .physics_joint_annotation import (
     normalize_joint_name,
     detect_joint_side,
@@ -23,11 +24,29 @@ _DEGENERATE_BONE_LENGTH_FRACTION = 1e-3
 
 
 def _emit_degenerate_facing_warning(object_type, warning_kind, message):
+    """Print a facing-estimate warning once per (object, kind).
+
+    The preprocessing warning collectors replace this name to redirect the text
+    into their end-of-run summary, so anything that decides whether a warning is
+    wanted at all belongs in ``_facing_warning`` above it, not here.
+    """
     warning_key = (str(object_type or ''), str(warning_kind))
     if warning_key in _EMITTED_DEGENERATE_FACING_WARNINGS:
         return
     _EMITTED_DEGENERATE_FACING_WARNINGS.add(warning_key)
     print(f"[WARN] {message}")
+
+
+def _facing_warning(object_type, warning_kind, message):
+    """Emit a facing warning unless the dataset opted out of facing detection.
+
+    A dataset carrying ``!skip-orientation-detection`` keeps ``orientation_quat``
+    at identity, so every fallback these warnings describe feeds a computation
+    nothing consumes -- reporting them would be noise over the whole dataset.
+    """
+    if skip_orientation_detection():
+        return
+    _emit_degenerate_facing_warning(object_type, warning_kind, message)
 
 
 # Face joint detection tokens
@@ -315,7 +334,7 @@ def resolve_forward_reference_joints(joint_names, parents, object_type=None, res
         return None, None
 
     prefix = f'{object_type}: ' if object_type else ''
-    _emit_degenerate_facing_warning(
+    _facing_warning(
         object_type,
         'tail_spine_fallback',
         f"{prefix}no head/neck forward reference was found; falling back to tail->spine body-axis orientation.",
@@ -524,7 +543,7 @@ def _choose_facing_forward(candidates, object_type=None, near_y_candidates=None,
     across_forward = candidates.get('across')
     if across_forward is not None:
         if emit_warnings:
-            _emit_degenerate_facing_warning(
+            _facing_warning(
                 object_type,
                 'across_selected',
                 f"{object_type}: orientation calculation fell back to the across-vector heuristic because higher-priority forward references were unavailable or near-parallel to the Y axis.",
@@ -758,7 +777,7 @@ def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints
         # the axis is correct even though right/left is arbitrary.
         mirror_pair = _find_mirror_symmetry_pair(rest_positions)
         if mirror_pair is not None:
-            _emit_degenerate_facing_warning(
+            _facing_warning(
                 object_type,
                 'geometric_mirror',
                 f"{object_type}: no named left-right joint pairs found; estimated the "
@@ -771,7 +790,7 @@ def resolve_face_joints(object_type, joint_names=None, parents=None, face_joints
     # rigs) have no left-right pairs at all.  Fall back to an empty list so
     # that _get_facing_candidates skips across/torso_head heuristics and
     # calculate_root_quat uses the default +Z forward direction.
-    _emit_degenerate_facing_warning(
+    _facing_warning(
         object_type,
         'no_pairs',
         f"{object_type}: no left-right joint pairs found; using default +Z orientation. "

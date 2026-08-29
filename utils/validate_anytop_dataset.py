@@ -37,6 +37,7 @@ from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E40
 )
 from utils.misc import infer_object_type_from_filename  # noqa: E402
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond  # noqa: E402
+from data_loaders.truebones.truebones_utils import ignore_warnings  # noqa: E402
 from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E402
     bare_species_name,
     load_datasets_manifest,
@@ -438,16 +439,7 @@ def _prune_excess_joint_motions(motions_dir: Path, bvhs_dir: Path, cond: dict, s
 
 def _load_ignore_warnings(dataset_dir: Path) -> set[str]:
     """Load motion stems (without .npy extension) to suppress known benign warnings."""
-    ignore_path = dataset_dir / "ignore_warnings.txt"
-    if not ignore_path.exists():
-        return set()
-    stems: set[str] = set()
-    for line in ignore_path.read_text("utf-8").splitlines():
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#"):
-            # Accept both "name.npy" and bare "name" forms.
-            stems.add(stripped.replace(".npy", ""))
-    return stems
+    return set(ignore_warnings.load(dataset_dir).stems)
 
 
 def _validate_root_motion_extent(
@@ -507,6 +499,17 @@ def validate_motion_files(
     if ignored_stems:
         print_ok(f"loaded {len(ignored_stems)} ignored warning stem(s) from ignore_warnings.txt")
 
+    # The recovered-facing check runs the same limb-pair/head-reference heuristic
+    # preprocessing does, against a rest pose that heuristic never oriented. A
+    # dataset that opted out of facing detection has no facing estimate to hold
+    # its clips to, so the check would only report the heuristic's own misses.
+    check_motion_orientation = not ignore_warnings.skip_orientation_detection(motions_dir.parent)
+    if not check_motion_orientation:
+        print_ok(
+            "skipping recovered-facing validation: ignore_warnings.txt carries "
+            f"!{ignore_warnings.SKIP_ORIENTATION_DETECTION}"
+        )
+
     has_paired_bvhs = False
     if bvh_files:
         motion_stems = {path.stem for path in motion_files}
@@ -554,15 +557,16 @@ def validate_motion_files(
                 ignored_stems=ignored_stems,
             )
 
-            _validate_motion_orientation(
-                motion,
-                object_type,
-                cond[object_type],
-                motion_path.name,
-                motion_orientation_threshold,
-                translation_root_index,
-                ignored_stems=ignored_stems,
-            )
+            if check_motion_orientation:
+                _validate_motion_orientation(
+                    motion,
+                    object_type,
+                    cond[object_type],
+                    motion_path.name,
+                    motion_orientation_threshold,
+                    translation_root_index,
+                    ignored_stems=ignored_stems,
+                )
         except ValidationError as e:
             print_warn(f"validation error: {motion_path.name}: {e}")
 
