@@ -13,7 +13,8 @@ model feature space via three prior-free, exactly-invertible steps:
      and divide by a per-channel std (13-vectors). These statistics are computed
      at preprocessing time in the L-normalized space of step (2), pooled across
      all joints / frames / clips / species *within each object_subset* (quadruped
-     / biped / multiped / serpentine / aquatic / winged). They are therefore a
+     / biped / multiped / serpentine / aquatic / winged / drifting). They are
+     therefore a
      cross-species constant *per object_subset* (NOT a per-species motion prior):
      a held-out species inherits the stats of its object_subset, so the
      standardization generalizes while giving each object_subset its own

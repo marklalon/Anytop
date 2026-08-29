@@ -657,7 +657,21 @@ def clamp_vertical_trajectory(
 ):
     """Constrain the processed translation-root vertical trajectory.
 
-    Flying species keep the existing positive size-relative excursion clamp.
+    What this compresses is the root's ABSOLUTE height, not its excursion: once
+    the peak passes ``max_ratio`` of the body span, everything above ``min_ratio``
+    is squeezed into that band. The band is calibrated on flight, where an
+    unbounded climb is the thing worth bounding.
+
+    ``drifting`` deliberately does NOT take this branch, though it too leaves the
+    ground. A drifting species holds a near-constant hover height that is a trait
+    of the species, and that height routinely sits above ``max_ratio`` (a hover
+    robot's root rides at 2-3 body spans while a walking biped's sits at 0.1-0.4),
+    so the flight band would crush the hover back down to walking height -- and by
+    a factor that depends on each clip's own peak, which would make one species'
+    hover height differ from clip to clip. Its vertical range in level travel is
+    already as small as level flight's, so there is nothing here worth clamping;
+    it keeps only the absolute root-Y floor, the same as a ground species.
+
     Aquatic species use the same positive height clamp and also apply the same
     ratios with a negative sign so their downward swim depth is compressed into
     [-maxH, -minH]. Every species also gets the absolute root-Y floor.

@@ -508,7 +508,7 @@ class TrainLoop:
         """Track l_simple broken down by topology family.
 
         Maps the per-family difficulty landscape (quad/biped/millipede/snake/
-        fish/flying) and shows how negative transfer hits each family. Same
+        fish/flying/drifting) and shows how negative transfer hits each family. Same
         weighting convention as the aggregate l_simple metric, so all of these
         are directly comparable to it and to a single-family run.
         """
@@ -528,6 +528,7 @@ class TrainLoop:
                 'snake': members['serpentine'],
                 'fish': members['aquatic'],
                 'flying': members['winged'],
+                'drifting': members['drifting'],
             }
             self._family_species_sets = family_sets
         l_simple = (losses["l_simple"] * weights).detach().float()

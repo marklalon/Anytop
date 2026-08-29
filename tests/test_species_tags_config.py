@@ -47,7 +47,6 @@ def test_configure_loads_custom_species_tags(tmp_path):
     assert tags.object_subsets["aquatic"] == ["Pikefish"]
     # Canonical subsets exist even with no member species.
     assert tags.object_subsets["serpentine"] == []
-    assert tags.object_subsets["podata"] == ["Kappa_gorilla"]
     # Derived views come off the same snapshot, so they cannot drift.
     assert tags.subset_members["aquatic"] == frozenset({"Pikefish"})
     assert tags.object_subset_for("kappa_GORILLA") == "biped"
@@ -122,7 +121,6 @@ def test_register_species_tags_rebuilds_derived_views():
     tags = dt.dataset_tags()
     assert tags.species_tags["Kappa_gorilla"] == ("Biped", "Medium", "Striding")
     assert "Kappa_gorilla" in tags.object_subsets["biped"]
-    assert "Kappa_gorilla" in tags.object_subsets["podata"]
     assert tags.object_subset_for("Kappa_gorilla") == "biped"
     dt.assert_species_tags_cover(["Kappa_gorilla"])
 

@@ -262,7 +262,7 @@ def _compute_canonical_stats_per_object_subset(
     Each physical clip is encoded into the L-normalized space (rest-centered
     position + per-skeleton size division) and accumulated into the bucket of the
     species' object_subset (the first motion tag in species_tags.jsonl: quadruped
-    / biped / multiped / serpentine / aquatic / winged). Pooling within an
+    / biped / multiped / serpentine / aquatic / winged / drifting). Pooling within an
     object_subset (across its species, joints, frames, and clips) keeps the
     resulting mean/std a cross-species constant *per object_subset* (no per-species
     motion prior), so they generalize to held-out species of the same

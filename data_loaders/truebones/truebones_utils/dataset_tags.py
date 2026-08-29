@@ -78,11 +78,17 @@ CANONICAL_OBJECT_SUBSETS = (
     "serpentine",
     "aquatic",
     "winged",
+    # No leg chains and no propulsive body wave: the root carries the whole body
+    # along, whether it hovers (ghost, elemental, hover robot) or slides over the
+    # ground (slime, shell, a robed figure whose hem drags). ``serpentine`` is the
+    # other legless bucket and it is the one whose body deforms to propel itself,
+    # so the split is the propulsion mechanism, not the height off the floor.
+    "drifting",
 )
 
 # Every subset key ``build_object_subsets`` is guaranteed to produce, for CLI
 # ``choices=`` lists that must be built before a dataset directory is known.
-OBJECT_SUBSET_CHOICES = ("all",) + CANONICAL_OBJECT_SUBSETS + ("podata",)
+OBJECT_SUBSET_CHOICES = ("all",) + CANONICAL_OBJECT_SUBSETS
 
 
 @dataclass(frozen=True)
@@ -162,7 +168,7 @@ class DatasetTags:
     def species_for(self, selector) -> list[str]:
         """Species named by an ``--object_subsets`` selector.
 
-        A selector is either a subset key ("all", "quadruped", "podata", ...) or
+        A selector is either a subset key ("all", "quadruped", ...) or
         a single species name ("Horse"), which under a multi-source configuration
         is resolved to its canonical key.
         """
@@ -241,19 +247,15 @@ def _iter_jsonl(path: Path):
 def build_object_subsets(species_tags: Mapping[str, tuple[str, ...]]) -> dict[str, list[str]]:
     """Group species by object_subset (the lower-cased first motion tag).
 
-    Keys are ``"all"``, the six canonical body plans (always present, possibly
-    empty), any extra subset a dataset introduces, and the ``"podata"``
-    composite -- all footed creatures (有足动物), i.e. everything but serpentine
-    and aquatic.  This is the only place subsets are assembled.
+    Keys are ``"all"``, the seven canonical body plans (always present, possibly
+    empty), and any extra subset a dataset introduces. This is the only place
+    subsets are assembled.
     """
     subsets: dict[str, list[str]] = {"all": list(species_tags.keys())}
     for object_subset in CANONICAL_OBJECT_SUBSETS:
         subsets[object_subset] = []
     for species, tags in species_tags.items():
         subsets.setdefault(tags[0].strip().lower(), []).append(species)
-    subsets["podata"] = (
-        subsets["quadruped"] + subsets["biped"] + subsets["multiped"] + subsets["winged"]
-    )
     return subsets
 
 
