@@ -902,7 +902,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--objects-subset", default="all", choices=sorted(OBJECT_SUBSET_CHOICES), help="Subset that must be present in the dataset; incremental runs may still contain additional objects.")
     parser.add_argument("--sample-count", type=int, default=0, help="How many motion files to validate in detail. Use 0 to validate all files.")
     parser.add_argument("--orientation-threshold-deg", type=float, default=5.0, help="Maximum allowed T-pose face-orientation delta from the nearest cardinal XZ axis (+x/-x/+z/-z) before warning.")
-    parser.add_argument("--skip-orientation-check", action="store_true", help="Skip T-pose face-orientation validation.")
     parser.add_argument("--root-motion-threshold", type=float, default=ROOT_XZ_STRIP_THRESHOLD, help=f"Maximum allowed root XZ distance from the centred origin (default={ROOT_XZ_STRIP_THRESHOLD}).")
     parser.add_argument(
         "--motion-orientation-threshold",
@@ -962,11 +961,8 @@ def _validate_one_dataset(dataset_dir: Path, args) -> None:
         motion_orientation_threshold=args.motion_orientation_threshold,
     )
     
-    if args.skip_orientation_check:
-        print_warn("skipping T-pose face-orientation validation by request")
-    else:
-        validate_tpose_orientation(cond, args.orientation_threshold_deg)
-    
+    validate_tpose_orientation(cond, args.orientation_threshold_deg)
+
     validate_positions_error_file(positions_error_path)
 
     print("[PASS] dataset validation completed successfully")

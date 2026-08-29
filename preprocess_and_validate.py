@@ -15,7 +15,6 @@ Options:
     --validate-only                      Skip preprocessing, only validate existing dataset
     --re-encode-joint-names-only         Skip preprocessing and validation, only re-encode joint names into cond.npy
     --skip-validate                      Skip validation step (faster for CI)
-    --skip-orientation-check             Skip T-pose face-orientation validation during dataset checks
     --overwrite                          Reprocess every targeted object, deleting existing outputs first (a full wipe when no --filter is set). Without it, already-processed objects are skipped.
     --filter PATTERN                     Comma/semicolon-separated case-insensitive glob(s) restricting which object names are considered for processing
     --object-workers N                   Concurrent characters to preprocess (default: 16)
@@ -39,9 +38,6 @@ Examples:
 
     # Validate only (assumes preprocessing already done)
     python preprocess_and_validate.py --validate-only
-
-    # Validate only, skipping orientation check
-    python preprocess_and_validate.py --validate-only --skip-orientation-check
 
     # Preprocess without validation
     python preprocess_and_validate.py --skip-validate
@@ -923,7 +919,6 @@ def run_regenerate_side_artifacts(
 
 
 def run_validation(
-    skip_orientation_check: bool,
     orientation_threshold_deg: float,
     sample_count: int,
     dataset_dir: str = "",
@@ -989,11 +984,8 @@ def run_validation(
             motion_orientation_threshold=motion_orientation_threshold,
         )
 
-        if skip_orientation_check:
-            print_warn("skipping T-pose face-orientation validation by request")
-        else:
-            from validate_anytop_dataset import validate_tpose_orientation
-            validate_tpose_orientation(cond, orientation_threshold_deg)
+        from validate_anytop_dataset import validate_tpose_orientation
+        validate_tpose_orientation(cond, orientation_threshold_deg)
 
         validate_positions_error_file(positions_error_path)
 
@@ -1037,11 +1029,6 @@ def parse_args() -> argparse.Namespace:
         "--skip-validate",
         action="store_true",
         help="Skip validation (faster, useful for CI).",
-    )
-    parser.add_argument(
-        "--skip-orientation-check",
-        action="store_true",
-        help="Skip T-pose face-orientation validation during dataset checks.",
     )
     parser.add_argument(
         "--overwrite",
@@ -1242,7 +1229,6 @@ def main() -> int:
     # Validate
     if not args.skip_validate:
         ret = run_validation(
-            args.skip_orientation_check,
             args.orientation_threshold_deg,
             args.sample_count,
             args.dataset_dir,
