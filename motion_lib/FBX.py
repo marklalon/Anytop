@@ -219,15 +219,24 @@ def _armature_yup_correction(armature):
        stands upright in AnyTop's Y‑up frame.
 
     2. **Translation** — some exporters place the armature at a non‑zero world
-       position (e.g. ``(0, 0, 0.501)``).  ``bone.matrix_local`` is armature‑local
-       and misses this, while ``pose_bone.matrix`` (used for per‑frame animation
-       positions) is world‑space and includes it.  Baking the translation into the
-       rest offsets makes the rest skeleton and per‑frame positions share one
-       coordinate frame.
+       position (e.g. ``(0, 0, 0.501)``); Unity‑authored GLB rigs park the
+       character's standing height there (``(0, 0, 0.572)`` for IAC_Caveman).
+       NEITHER ``bone.matrix_local`` NOR ``pose_bone.matrix`` carries it — both
+       are armature‑OBJECT space — so the translation has to be baked onto the
+       root of the rest pose *and* of every animated frame, or the skeleton
+       sinks by exactly that height (a leg length below the floor).
 
-    Both are composed into a single 4×4 matrix: ``Rx(-90) @ T_world @ R_world``,
-    where the object scale is stripped (the 0.01 Truebones scale is handled
-    separately via the preprocessing ``scale_factor``).
+       Because both bone matrices are object space, they are also free of the
+       object SCALE, while ``matrix_world``'s translation is in world units.
+       The translation is therefore divided by the object scale so it lands in
+       the same units as the bone matrices; the uniform preprocessing
+       ``scale_factor`` puts the whole skeleton back into world proportions.
+       Skipping that division shrank a 0.572 m pelvis height to 0.0057 m.
+
+    Both are composed into a single 4×4 matrix:
+    ``Rx(-90) @ T(T_world / s_world) @ R_world``, where the object scale is
+    stripped (the 0.01 Truebones scale is handled separately via the
+    preprocessing ``scale_factor``).
 
     The correction is applied to the hierarchy **root only** — every other joint
     is parent‑relative and rides along through FK.
@@ -243,6 +252,13 @@ def _armature_yup_correction(armature):
     # Decompose matrix_world: R = rotation, T = translation, drop scale/shear
     world_t = armature.matrix_world.to_translation()
     world_r = armature.matrix_world.to_quaternion().to_matrix().to_4x4()
+    # Re-express the translation in armature-object units: the bone matrices it
+    # is composed with are object space, so they never went through the object
+    # scale that ``world_t`` is expressed in.
+    world_s = armature.matrix_world.to_scale()
+    uniform_scale = (abs(world_s.x) + abs(world_s.y) + abs(world_s.z)) / 3.0
+    if uniform_scale > 1e-12:
+        world_t = world_t / uniform_scale
     world_transform = mathutils.Matrix.Translation(world_t) @ world_r
 
     yup_base = mathutils.Matrix.Rotation(math.radians(-90.0), 4, "X")
@@ -419,13 +435,13 @@ def _scene_to_animation(scene_path: str, collapse_root: bool = True) -> tuple[An
     bpy.context.view_layer.objects.active = armature
     bpy.ops.object.mode_set(mode="POSE")
 
-    # Reuse the root correction from the rest pose, but strip the translation:
-    # pose_bone.matrix is world-space (already includes armature object translation),
-    # so only the rotation correction Rx(-90) @ R_world needs to be applied here.
+    # Reuse the FULL root correction from the rest pose, translation included:
+    # pose_bone.matrix is armature-OBJECT space, not world space, so it carries
+    # the armature object's translation just as little as bone.matrix_local does.
+    # Applying only the rotation here left the rest offsets holding the object
+    # height while every animated frame started from zero, which sank the whole
+    # character below the floor for the rigs that park a height on the object.
     root_correction = _armature_yup_correction(armature)
-    root_correction_rot = (
-        root_correction.to_3x3().to_4x4() if root_correction is not None else None
-    )
 
     # Pre-build ordered pose_bone list to avoid repeated dict lookups
     pose_bones = armature.pose.bones
@@ -456,8 +472,8 @@ def _scene_to_animation(scene_path: str, collapse_root: bool = True) -> tuple[An
             parent_inverse = parent_inverse_matrices[joint_idx]
             if parent_inverse is None:
                 local_matrix = pose_matrix
-                if root_correction_rot is not None:
-                    local_matrix = root_correction_rot @ local_matrix
+                if root_correction is not None:
+                    local_matrix = root_correction @ local_matrix
             else:
                 local_matrix = parent_inverse @ pose_matrix
 
