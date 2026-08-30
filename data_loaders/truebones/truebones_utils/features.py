@@ -49,7 +49,7 @@ from .animation_utils import (
     reorder_animation_to_dfs,
     crop_animation_to_max_joints,
     get_average_axial_bone_length,
-    get_rest_body_max_span,
+    get_scale_reference_extent,
     compute_scale_factor,
     scale_anim,
     compute_rots_from_tpos,
@@ -433,7 +433,10 @@ def get_common_features_from_rest_pose(
         detected = detect_joint_side(name)
         _rest_pose_side_labels.append(detected if detected in ('left', 'right') else 'center')
     axial_avg_len = get_average_axial_bone_length(reference_anim.offsets, reference_anim.parents, _rest_pose_side_labels)
-    reference_body_max_span = get_rest_body_max_span(reference_anim.offsets, reference_anim.parents)
+    # Extent, not joint span: a rig whose root is seated far above the origin
+    # (hovering/drifting creatures) must be normalized against that elevation
+    # too, or bone-driven scaling leaves its root height an outlier.
+    reference_body_max_span = get_scale_reference_extent(reference_anim.offsets, reference_anim.parents)
     scale_factor = compute_scale_factor(axial_avg_len, body_max_span=reference_body_max_span)
 
     scaled, _root_xz_center, scale_factor = process_anim(

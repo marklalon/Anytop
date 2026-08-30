@@ -15,6 +15,7 @@ from os.path import join as pjoin
 import re
 import torch
 from data_loaders.truebones.truebones_utils.param_utils import (
+    DEGENERATE_BONE_LENGTH_RATIO,
     HML_REF_AXIAL_BONE_LENGTH,
     HML_REF_MAX_SPAN,
     MAX_JOINTS,
@@ -996,21 +997,35 @@ def get_average_axial_bone_length(offsets, parents, joint_side_labels):
 
     Falls back to the mean bone length across *all* non-root bones when no
     center-labeled bones exist, so the return value is always a positive float.
+
+    Degenerate bones -- rig helpers that sit exactly on their parent, e.g. the
+    zero-length ``RigSpine`` of MU04_Pollen -- are dropped from the mean. They
+    carry no size information but drag the average down, which inflates the
+    character's scale factor (Pollen: 2.95 instead of 4.43, a 1.22x oversize).
+    Which branch is taken is still decided by the *unfiltered* center-bone
+    count, so filtering never flips a skeleton between the two branches.
     """
-    total_length = 0.0
-    axial_count = 0
+    all_lengths = [float(np.linalg.norm(offsets[j])) for j in range(1, len(parents))]
+    if not all_lengths:
+        return 0.1  # ultimate fallback for single-bone skeletons
+    min_bone_length = DEGENERATE_BONE_LENGTH_RATIO * (sum(all_lengths) / len(all_lengths))
+
+    axial_lengths = []
     for joint_index in range(1, len(parents)):  # skip root (no parent bone)
         if joint_index < len(joint_side_labels) and joint_side_labels[joint_index] == 'center':
-            bone_length = float(np.linalg.norm(offsets[joint_index]))
-            total_length += bone_length
-            axial_count += 1
-    if axial_count >= 10:
-        return total_length / axial_count
+            axial_lengths.append(float(np.linalg.norm(offsets[joint_index])))
+    if len(axial_lengths) >= 10:
+        return _mean_excluding_degenerate(axial_lengths, min_bone_length)
     # Fallback: average bone length across all non-root bones.
-    all_lengths = [float(np.linalg.norm(offsets[j])) for j in range(1, len(parents))]
-    if all_lengths:
-        return sum(all_lengths) / len(all_lengths)
-    return 0.1  # ultimate fallback for single-bone skeletons
+    return _mean_excluding_degenerate(all_lengths, min_bone_length)
+
+
+def _mean_excluding_degenerate(lengths, min_bone_length):
+    """Mean of ``lengths`` ignoring degenerate ones; unfiltered mean if all are."""
+    kept = [length for length in lengths if length >= min_bone_length]
+    if not kept:
+        return sum(lengths) / len(lengths)
+    return sum(kept) / len(kept)
 
 
 def get_rest_body_max_span(offsets, parents):
@@ -1023,6 +1038,27 @@ def get_rest_body_max_span(offsets, parents):
     joint_deltas = rest_positions[:, None, :] - rest_positions[None, :, :]
     max_span = np.linalg.norm(joint_deltas, axis=-1).max()
     return max(float(max_span), 1e-8)
+
+
+def get_scale_reference_extent(offsets, parents):
+    """Character extent used for scale normalization.
+
+    This is the rest-pose joint span widened to the root's own elevation above
+    the rig origin. A handful of rigs (hovering/drifting creatures, effect rigs)
+    seat their root far above the origin while their bones stay tiny; that
+    elevation is part of the character's size but never shows up in a
+    joint-to-joint span, so a purely bone-driven scale blows the normalized root
+    height up into an outlier -- MU04_Pollen ends up with its root at 14.7 joint
+    spans (8.6 units against a dataset median of 0.45). Folding the elevation in
+    re-anchors those characters and is a no-op for every rig whose root already
+    sits inside its own joint span, which is all 104 truebones/zoo species.
+
+    Only the vertical component counts: the root offset's XZ is authoring
+    placement rather than size, and is exactly 0.0 for all 260 dataset species.
+    """
+    joint_span = get_rest_body_max_span(offsets, parents)
+    root_elevation = abs(float(np.asarray(offsets, dtype=np.float64)[0][1]))
+    return max(joint_span, root_elevation)
 
 
 def compute_scale_factor(axial_avg_len, body_max_span=None, *, span_blend_weight=SCALE_BODY_SPAN_BLEND_WEIGHT):

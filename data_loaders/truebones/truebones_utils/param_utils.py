@@ -140,3 +140,9 @@ HML_REF_MAX_SPAN = float(np.linalg.norm(
 # Geometric blend weight between axial mean bone length and whole-body max span.
 # 0 keeps the existing axial-only scaling; 1 becomes pure max-span scaling.
 SCALE_BODY_SPAN_BLEND_WEIGHT = 0.5
+
+# A bone shorter than this fraction of the skeleton's mean bone length is a rig
+# helper sitting on top of its parent, not a limb: it is excluded from the mean
+# bone length that drives scale normalization. 53% of the unitybundles species
+# carry at least one (MU04_Pollen's RigSpine is 3.8e-5 against 4.43).
+DEGENERATE_BONE_LENGTH_RATIO = 0.02
