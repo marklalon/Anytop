@@ -42,7 +42,7 @@ ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 # labels carry detail words only and derive an all-zero multi-hot -- a defined
 # state, not a defect.
 #
-# Membership threshold: a word earns a core slot when it (a) has >= ~20 supporting
+# Membership threshold: a word earns a core slot when it (a) has >= 30 supporting
 # clips AND (b) names a genuinely independent coarse action -- not an aspect of an
 # existing core word (stand->idle, flap->fly, kick->attack). Rarer or single-species
 # actions live in ACTION_VOCAB_DETAIL, where they still reach the model through the
@@ -90,7 +90,7 @@ CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB_CORE + ACTION_VOCAB_DETAIL
 # ---------------------------------------------------------------------------
 # Per-group multi-hot mask
 # ---------------------------------------------------------------------------
-# Each group trains its own model, so the ">= ~20 clips" threshold that earned a
+# Each group trains its own model, so the ">= 30 clips" threshold that earned a
 # word its core slot is the wrong yardstick: a word that is healthy library-wide
 # can be down to a handful of clips *inside* one group. A slot fitted on five
 # clips is memorized, not learned -- and on a cross-skeleton model the failure
