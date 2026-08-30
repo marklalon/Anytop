@@ -24,7 +24,6 @@ Examples:
 
 import argparse
 import copy
-import json
 import shutil
 import sys
 import time
@@ -42,10 +41,9 @@ sys.path.insert(0, str(ANYTOP_DIR))
 # inside the package) would create a SECOND copy of these modules in this
 # process, each with its own module globals.
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
+    ACTION_GROUPS,
     build_motion_labels,
-    infer_action_label_from_clip_name,
     load_motion_metadata,
-    load_action_labels,
     write_motion_metadata,
 )
 from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
@@ -64,7 +62,6 @@ from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
     stamp_dataset_cond,
 )
 from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E402
-    bare_species_name,
     species_lookup_map,
 )
 from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
@@ -83,89 +80,6 @@ from utils.misc import (
     infer_object_type_from_filename,
     normalize_identifier as _normalize_identifier,
 )
-
-
-# ---------------------------------------------------------------------------
-# Action-label fallback backfill (I/O + reporting)
-# ---------------------------------------------------------------------------
-# Action groups/labels are normally hand-maintained in action_labels.jsonl, and
-# load_motion_metadata() / load_action_labels() hard-exit when any clip on disk is
-# missing an entry. When clips are added incrementally, hand-labeling lags behind,
-# so we backfill missing entries with a best-effort (group, label) pair inferred
-# from the clip name (the inference itself lives in
-# motion_labels.infer_action_label_from_clip_name). These guesses are HEURISTIC and
-# must be reviewed by hand — a synthesized label is one bare verb, which is a legal
-# label but carries none of the detail a written one does. The run reports every
-# fallback in yellow.
-
-_COLOR_RESET = "\033[0m"
-_COLOR_YELLOW = "\033[93m"
-
-
-def _ensure_action_labels_fallback(
-    dataset_dir_path: Path,
-    motion_files: list[Path],
-    cond_lookup: dict[str, str] | None = None,
-) -> list[tuple[str, str, str]]:
-    """Backfill clips missing from ``action_labels.jsonl`` with a clip-name guess.
-
-    Only clips with no entry at all are touched — a hand-written label always
-    wins, because the clip name can never recover the detail that makes a label
-    worth conditioning on. The file is created if missing.
-
-    *cond_lookup* is the species registry; it is what tells the tokenizer how many
-    leading tokens are the species name, so a clip of ``MU06_DeathMage`` is not
-    labeled "die" by its own species name.
-
-    Returns ``[(clip, group, label), ...]`` for the review report.
-    """
-    labels_path = dataset_dir_path / ACTION_LABELS_FILE
-    existing: dict[str, dict[str, str]] = {}
-    if labels_path.exists():
-        existing = load_action_labels(dataset_dir_path)
-
-    fallbacks: list[tuple[str, str, str]] = []
-    for motion_path in motion_files:
-        clip = motion_path.name
-        if clip in existing:
-            continue
-        object_type = (
-            _infer_object_type_from_motion_name(clip, cond_lookup)
-            if cond_lookup
-            else None
-        )
-        group, label = infer_action_label_from_clip_name(
-            clip, bare_species_name(object_type) if object_type else None
-        )
-        fallbacks.append((clip, group, label))
-    if not fallbacks:
-        return []
-
-    with open(labels_path, "a", encoding="utf-8") as handle:
-        for clip, group, label in sorted(fallbacks):
-            handle.write(json.dumps(
-                {"clip": clip, "action_group": group, "action_label": label},
-                ensure_ascii=False,
-            ) + "\n")
-    print(
-        f"[OK] backfilled {len(fallbacks)} action_labels entr"
-        f"{'y' if len(fallbacks) == 1 else 'ies'} into {ACTION_LABELS_FILE}"
-    )
-    return fallbacks
-
-
-def _print_action_label_fallback_report(fallbacks: list[tuple[str, str, str]]) -> None:
-    """Print every fallback-labeled clip in yellow as a manual-review reminder."""
-    print(
-        f"\n{_COLOR_YELLOW}{'=' * 70}\n"
-        f"[REVIEW] {len(fallbacks)} clip(s) had no {ACTION_LABELS_FILE} entry; the "
-        f"group/label below were auto-inferred from the clip name and appended.\n"
-        f"Please verify the group and write a real label — a one-word guess is legal "
-        f"but carries no detail:{_COLOR_RESET}"
-    )
-    for clip, group, label in sorted(fallbacks):
-        print(f"  {_COLOR_YELLOW}{clip:<48s} -> {group:<11s} {label!r}{_COLOR_RESET}")
-    print(f"{_COLOR_YELLOW}{'=' * 70}{_COLOR_RESET}")
 
 
 def _resolve_dataset_dir_path(dataset_dir: str | Path | None) -> Path:
@@ -460,11 +374,7 @@ def _regenerate_dataset_artifacts(dataset_dir_path: Path, t5_model: str = "t5-ba
 
     # Fast-fail: motion_metadata.json must exist.  Without it, load_motion_metadata
     # returns {} and the rebuilt metadata will be missing is_loop, source_file,
-    # translation_root_index, and other per-clip fields.  (action_group/action_label
-    # are sourced from action_labels.jsonl at load time and stripped on write; any
-    # clip missing an entry there is backfilled by _ensure_action_labels_fallback
-    # below before load_motion_metadata runs, so the load no longer hard-exits on
-    # new clips.)
+    # translation_root_index, and other per-clip fields.
     metadata_path = dataset_dir_path / MOTION_METADATA_FILE
     if not metadata_path.exists():
         raise RuntimeError(
@@ -475,13 +385,22 @@ def _regenerate_dataset_artifacts(dataset_dir_path: Path, t5_model: str = "t5-ba
             f"the full dataset, or restore it from a backup."
         )
 
-    # Backfill any clips missing from action_labels.jsonl BEFORE load_motion_metadata,
-    # which otherwise hard-exits when a clip on disk has no entry.
-    existing_cond = load_cond(cond_path)
-    action_label_fallbacks = _ensure_action_labels_fallback(
-        dataset_dir_path, motion_files, species_lookup_map(existing_cond)
-    )
+    # Fast-fail: action_labels.jsonl must exist (same contract as species_tags.jsonl
+    # -- single source of truth, no inference fallback, no auto-creation).
+    # load_motion_metadata below also hard-exits when a clip has no entry, but a
+    # missing file is reported up front with the fix spelled out.
+    action_labels_path = dataset_dir_path / ACTION_LABELS_FILE
+    if not action_labels_path.exists():
+        raise RuntimeError(
+            f"{ACTION_LABELS_FILE} not found at {action_labels_path}.\n"
+            f"It is the single source of truth for per-clip action group/label.\n"
+            f"Add one entry per clip in motions/ (one "
+            f'{{"clip": "<name>.npy", "action_group": "{ACTION_GROUPS[0]}", '
+            f'"action_label": "run, gallops with head lowered"}} object per line), '
+            f"then re-run."
+        )
 
+    existing_cond = load_cond(cond_path)
     existing_motion_metadata = load_motion_metadata(dataset_dir_path)
     existing_lookup = species_lookup_map(existing_cond)
     active_object_types = sorted(
@@ -581,9 +500,6 @@ def _regenerate_dataset_artifacts(dataset_dir_path: Path, t5_model: str = "t5-ba
     )
     write_motion_metadata(dataset_dir_path, rebuilt_motion_metadata, len(motion_files))
     _rewrite_positions_error_file(dataset_dir_path, rebuilt_motion_metadata)
-
-    if action_label_fallbacks:
-        _print_action_label_fallback_report(action_label_fallbacks)
 
     return dataset_dir_path
 

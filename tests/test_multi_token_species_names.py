@@ -19,9 +19,6 @@ from data_loaders.truebones.data.dataset import (  # noqa: E402
     ensure_split_manifests,
     resolve_motion_object_type,
 )
-from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
-    infer_action_label_from_clip_name,
-)
 from preprocess_and_validate import _species_of_motion_name  # noqa: E402
 from utils.misc import infer_object_type_from_filename  # noqa: E402
 
@@ -49,16 +46,6 @@ def test_species_of_motion_name_uses_the_registry():
     assert _species_of_motion_name("FEP_MagmaDemon_Attack01_1.npy", LOOKUP) == "FEP_MagmaDemon"
     # No registry at all (a dataset without cond.npy) is the only blind case.
     assert _species_of_motion_name("FEP_MagmaDemon_Attack01_1.npy", {}) == "FEP"
-
-
-def test_action_labels_ignore_the_species_name():
-    # 'Sting' / 'DeathMage' are species names, not actions.
-    assert infer_action_label_from_clip_name("MU01_Sting_Idle_1.npy", "MU01_Sting") == ("stationary", "idle")
-    assert infer_action_label_from_clip_name("MU06_DeathMage_Idle_1.npy", "MU06_DeathMage") == ("stationary", "idle")
-    assert infer_action_label_from_clip_name("MU06_Death_TurnLeft_1.npy", "MU06_Death") == ("transition", "turn")
-    # Single-token species keep working, with or without the hint.
-    assert infer_action_label_from_clip_name("Horse_Run_3.npy", "Horse") == ("locomotion", "run")
-    assert infer_action_label_from_clip_name("Horse_Run_3.npy") == ("locomotion", "run")
 
 
 def test_resolve_motion_object_type_prefers_metadata_and_never_guesses(tmp_path):
@@ -168,14 +155,6 @@ def test_a_file_named_after_the_species_alone_resolves():
         infer_object_type_from_filename("Horse.npy", valid_types={"Horse": "truebones/zoo/Horse"})
         == "truebones/zoo/Horse"
     )
-
-
-def test_species_prefix_is_stripped_case_insensitively():
-    # The filename -> species inference folds case, so the prefix strip must too:
-    # "deer_buck_Idle_1.npy" resolves to "Deer_Buck", and a case-sensitive test
-    # would leave 'buck' in the action tokens (labeling the clip "rear").
-    for clip in ("Deer_Buck_Idle_1.npy", "deer_buck_Idle_1.npy", "DEER_BUCK_Idle_1.npy"):
-        assert infer_action_label_from_clip_name(clip, "Deer_Buck") == ("stationary", "idle")
 
 
 def test_grouping_key_is_namespace_free_from_either_branch(tmp_path):

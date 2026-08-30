@@ -50,6 +50,13 @@ $EDITOR dataset/<新数据集>/species_tags.jsonl
 # 只有蛇/鱼这类没有可用肢体对的物种才需要
 # {"species": "Pirrana", "chain_forward_joints": [10, 3, 4]}
 $EDITOR dataset/<新数据集>/chain_forward_joints.jsonl
+
+# action_labels.jsonl 同样没有 fallback（2026-08-30 起，见
+# action_group_label_refactor.md §9.5）：预处理阶段宽容（carry-forward 读），
+# 但训练 / 产物重建（regenerate_dataset_artifacts.py）时缺文件或缺 clip 条目
+# 会直接 fast-fail。每个 clip 一行，group 三选一：
+# {"clip": "Cat_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, ..."}
+$EDITOR dataset/<新数据集>/action_labels.jsonl
 ```
 
 `chain_forward_joints` 的下标绑定的是**塌陷后**的骨架顺序，不是原始 GLB 顺序——

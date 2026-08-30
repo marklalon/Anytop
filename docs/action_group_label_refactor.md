@@ -264,8 +264,10 @@ locomotion 70% 命中 walk 或 run）；transition 组只有 230 条的绝对量
 `zoo_upgrade` 的 265 条暂无 caption，label 留空。空 label **必须走 null embedding 分支**，
 不能把空串丢给 T5 编码 —— 否则等于教模型「空文本 -> 任意动作」，污染 CFG 的 uncond 分支。
 
-后续给 upgrade 补了 caption 再回填即可（也可用 `--backfill-from-clipname` 从 clip 名
-生成粗 label 作为过渡）。
+后续给 upgrade 补了 caption 再回填即可。~~也可用 `--backfill-from-clipname` 从 clip 名
+生成粗 label 作为过渡~~ **已移除（2026-08-30，见 §9.5）**：clip 名回退整体删除，
+`action_labels.jsonl` 与 `species_tags.jsonl` 同契约 —— 必须存在、逐 clip 覆盖，
+缺失直接 fast-fail。
 
 ### 2.6 训练期粗粒度串增强（由 multihot 反向合成，不切字符串）
 
@@ -378,7 +380,7 @@ transition —— 该组样本最少、分布最独特，宁可多喂），然�
 
 | 文件 | 改动 |
 |---|---|
-| [motion_labels.py](../data_loaders/truebones/truebones_utils/motion_labels.py) | `ACTION_TAGS`(15) -> `ACTION_GROUPS`(3) + `CONTROLLED_VOCAB` + `VOCAB_ALIASES` + `MULTIHOT_VOCAB`（频次门槛子集）；**新增冻结常量 `GROUP_MULTIHOT_MASK` + 访问器 `group_multihot_mask(group)`（§2.4.1）**；`load_action_tags` -> `load_action_labels`（校验 group 合法 + label 命中）；`_FALLBACK_ACTION_RULES` 改为 clip 名 -> 粗动词的回退规则 |
+| [motion_labels.py](../data_loaders/truebones/truebones_utils/motion_labels.py) | `ACTION_TAGS`(15) -> `ACTION_GROUPS`(3) + `CONTROLLED_VOCAB` + `VOCAB_ALIASES` + `MULTIHOT_VOCAB`（频次门槛子集）；**新增冻结常量 `GROUP_MULTIHOT_MASK` + 访问器 `group_multihot_mask(group)`（§2.4.1）**；`load_action_tags` -> `load_action_labels`（校验 group 合法 + label 命中）；`_FALLBACK_ACTION_RULES` 改为 clip 名 -> 粗动词的回退规则（2026-08-30 已删除，见 §9.5） |
 | [param_utils.py:53](../data_loaders/truebones/truebones_utils/param_utils.py#L53) | `ACTION_TAGS_FILE` -> `ACTION_LABELS_FILE = "action_labels.jsonl"` |
 | [dataset.py:72-95,427-478](../data_loaders/truebones/data/dataset.py#L72-L95) | tag 集合求交 -> group 单值相等过滤；`__getitem__` 带出 `action_group` / `action_label` / label emb |
 | [tensors.py:109-113](../data_loaders/tensors.py#L109-L113) | multihot 拼装改为：[B,512] label emb + [B,V] 派生 multihot + [B] valid mask。**派生后按训练组的 `group_multihot_mask()` 逐元素相乘**（§2.4.1）—— 训练与推理必须用同一个 mask，否则推理时会点亮训练中恒零的槽 |
@@ -408,7 +410,7 @@ transition —— 该组样本最少、分布最独特，宁可多喂），然�
 
 **zoo_upgrade**（265 条）
 1. `action_group`：由旧 tag 直接映射（零跨组，无歧义）；
-2. `action_label`：留空（`--backfill-from-clipname` 可选）。
+2. `action_label`：留空（~~`--backfill-from-clipname` 可选~~ 回退已删除，见 §9.5）。
 
 **复核清单** `action_labels_review.jsonl` 收录：
 - 71 条跨组 clip（其中 29 条对优先级敏感，§3 已列出高风险的两类）；
@@ -450,7 +452,8 @@ getup 49  turn 45  gethurt 41  jump 36  interact 36  swim 11  fall 4
 
 1. ~~定受控词表 + 同义词合并表 + multihot 频次门槛~~ **已完成** ->
    `ACTION_VOCAB_CORE`(19) / `ACTION_VOCAB_DETAIL`(30) / `_VOCAB_SURFACE_FORMS` /
-   `CORE_WORD_GROUP` 在 [motion_labels.py](../data_loaders/truebones/truebones_utils/motion_labels.py)，
+   `CORE_WORD_GROUP`（2026-08-30 已删除，见 §9.5）在
+   [motion_labels.py](../data_loaders/truebones/truebones_utils/motion_labels.py)，
    配套 `vocab_words_in` / `action_multihot_words` / `coarse_label_from_words`。
 2. ~~写迁移脚本，跑 LLM，产出两个 `action_labels.jsonl` + 复核清单~~ **已完成**
    （见 §8）。
@@ -653,7 +656,7 @@ Buffalo / Camel / Comodoa / Dog / Roach / Skunk / Stego / Tricera / Tyranno 各 
 
 | 位置 | 结果 |
 |---|---|
-| `motion_labels.py` | `ACTION_TAGS` 删除；新增 `GROUP_MULTIHOT_MASK` / `group_multihot_mask()` / `CORE_WORD_GROUP` / `action_multihot_vector()` / `normalize_action_group` / `normalize_action_label`；`load_action_tags` -> `load_action_labels`（校验 group 合法 + 非空 label 命中受控词 + <=15 词）；`infer_action_tags_from_clip_name` -> `infer_action_label_from_clip_name`（返回 `(group, label)`） |
+| `motion_labels.py` | `ACTION_TAGS` 删除；新增 `GROUP_MULTIHOT_MASK` / `group_multihot_mask()` / `CORE_WORD_GROUP` / `action_multihot_vector()` / `normalize_action_group` / `normalize_action_label`；`load_action_tags` -> `load_action_labels`（校验 group 合法 + 非空 label 命中受控词 + <=15 词）；`infer_action_tags_from_clip_name` -> `infer_action_label_from_clip_name`（返回 `(group, label)`；2026-08-30 已删除，见 §9.5） |
 | `param_utils.py` | `ACTION_TAGS_FILE` -> `ACTION_LABELS_FILE`；新增 `ACTION_LABEL_EMBEDDINGS_FILE = "action_label_embs.npy"`；`parse_action_tags` -> `parse_action_words` |
 | `dataset.py` | tag 求交 -> `filter_motion_names_by_action_group` 单值相等；`resolve_requested_action_group` 拒绝逗号列表（那是 stale 的 `--action_tags` 写法）；`load_action_label_embeddings` + `_resolve_action_label_condition`（§2.6 粗粒度增强 + emb 查表） |
 | `tensors.py` | collate 产出 `action_group` / `action_label` / `action_multihot`（**逐行按自己那条的 group mask**）/ `action_label_emb` / `action_label_valid` |
@@ -668,3 +671,25 @@ Buffalo / Camel / Comodoa / Dog / Roach / Skunk / Stego / Tricera / Tyranno 各 
 `action_label_embs.npy` 是**派生产物**（在 `.gitignore` 的 `dataset` 之下），改了
 `action_labels.jsonl` 就要重跑；`--action_label_cond` 打开而 sidecar 缺失会直接报错，
 不会静默退化成无条件训练。
+
+### 9.5 删除 clip 名回退，`action_labels.jsonl` 改为必须存在（2026-08-30）
+
+`infer_action_label_from_clip_name` 及其规则表（`_FALLBACK_LABEL_RULES` /
+`_GETUP_UP_CONTEXT` / `_FALLBACK_DETAIL_GROUP`）、`CORE_WORD_GROUP`（只服务于回退
+的种子 group）、`regenerate_dataset_artifacts.py` 的 `_ensure_action_labels_fallback`
+自动补写 **全部删除**。理由：
+
+- 回退产物是单动词粗 label，与手写 label 的信息量差距太大，混进
+  `action_labels.jsonl` 后难以区分「人写的」和「猜的」；
+- 自动补写让 sidecar 悄悄增长，diff 复核（§8.3「改动直接走 diff 复核」）失去意义；
+- 缺失条目的正确处置是**停下来补标注**，不是猜一个合法值继续跑。
+
+新契约与 `species_tags.jsonl` 对齐：`action_labels.jsonl` **必须存在**且覆盖
+`motions/` 下每个 clip —— `load_action_labels` 缺文件直接 `FileNotFoundError`，
+`load_motion_metadata` 缺条目直接 exit；`regenerate_dataset_artifacts.py` 在重算前
+显式检查文件存在并在报错里写清补法（不再自动创建文件）。
+
+受影响文件：`motion_labels.py`（删回退段 + `CORE_WORD_GROUP`）、
+`tools/regenerate_dataset_artifacts.py`（删 backfill 与 REVIEW 报告，加 fast-fail）、
+`tests/test_action_label_fallback.py`（删除）、
+`tests/test_multi_token_species_names.py`（删两个依赖回退的测试）。
