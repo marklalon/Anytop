@@ -64,6 +64,7 @@ from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
     stamp_dataset_cond,
 )
 from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E402
+    bare_species_name,
     species_lookup_map,
 )
 from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
@@ -102,12 +103,17 @@ _COLOR_YELLOW = "\033[93m"
 def _ensure_action_tags_fallback(
     dataset_dir_path: Path,
     motion_files: list[Path],
+    cond_lookup: dict[str, str] | None = None,
 ) -> list[tuple[str, list[str]]]:
     """Backfill missing/unknown clips with clip-name-inferred tags.
 
     Existing non-unknown labels are preserved.  Existing ``["unknown"]`` labels
     are replaced only when the filename inference finds a more specific tag.
     The file is created if missing.
+
+    *cond_lookup* is the species registry; it is what tells the tokenizer how many
+    leading tokens are the species name, so a clip of ``MU06_DeathMage`` is not
+    tagged "death" by its own species name.
     """
     tags_path = dataset_dir_path / ACTION_TAGS_FILE
     existing_tags: dict[str, list[str]] = {}
@@ -120,7 +126,14 @@ def _ensure_action_tags_fallback(
         current = existing_tags.get(clip)
         if current is not None and current != ["unknown"]:
             continue
-        inferred = infer_action_tags_from_clip_name(clip)
+        object_type = (
+            _infer_object_type_from_motion_name(clip, cond_lookup)
+            if cond_lookup
+            else None
+        )
+        inferred = infer_action_tags_from_clip_name(
+            clip, bare_species_name(object_type) if object_type else None
+        )
         if current is None or inferred != current:
             fallbacks.append((clip, inferred))
     if not fallbacks:
@@ -475,9 +488,11 @@ def _regenerate_dataset_artifacts(dataset_dir_path: Path, t5_model: str = "t5-ba
 
     # Backfill any clips missing from action_tags.jsonl BEFORE load_motion_metadata,
     # which otherwise hard-exits when a clip on disk has no action_tags entry.
-    action_tag_fallbacks = _ensure_action_tags_fallback(dataset_dir_path, motion_files)
-
     existing_cond = load_cond(cond_path)
+    action_tag_fallbacks = _ensure_action_tags_fallback(
+        dataset_dir_path, motion_files, species_lookup_map(existing_cond)
+    )
+
     existing_motion_metadata = load_motion_metadata(dataset_dir_path)
     existing_lookup = species_lookup_map(existing_cond)
     active_object_types = sorted(

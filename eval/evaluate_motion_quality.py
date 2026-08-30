@@ -343,13 +343,21 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 1
     results: list[tuple[str, DistributionEvalReport]] = []
     skipped = 0
+    # Filename inference is validated against the scorer's species, so a
+    # multi-token name ("FEP_MagmaDemon_Attack01_1.npy") is not cut at the first
+    # underscore.
+    species_lookup = (
+        scorer.species_lookup() if explicit_object_type is None else None
+    )
 
     print(f"Evaluating {len(motion_paths)} motion(s) ...")
     for path in motion_paths:
         if explicit_object_type is not None:
             object_type = explicit_object_type
         else:
-            object_type = infer_object_type_from_filename(path)
+            object_type = infer_object_type_from_filename(
+                path, valid_types=species_lookup
+            )
             if object_type is None:
                 print(
                     f"[warn] cannot auto-detect object_type from "

@@ -333,11 +333,19 @@ def _resolve_reference_source_type(
     default_cond_file=None,
     actual_cond_file=None,
 ):
-    blind_type = infer_object_type_from_filename(
+    # Match the filename against the cond's own species first: only that knows how
+    # many leading tokens are the species name, so a multi-token species
+    # ("FEP_MagmaDemon_Attack01_1.npy") resolves whole instead of to its pack
+    # prefix. The blind parse stays as the fallback for a source that lives only
+    # in the checkpoint's default cond, which is searched below.
+    source_type = infer_object_type_from_filename(
+        reference_motion_path,
+        valid_types=species_lookup_map(cond_dict),
+    )
+    blind_type = source_type or infer_object_type_from_filename(
         reference_motion_path,
         valid_types=None,
     )
-    source_type = _lookup_object_type_case_insensitive(cond_dict.keys(), blind_type)
     default_cond_cache = None
 
     if source_type is None and blind_type and default_cond_file and actual_cond_file:

@@ -485,18 +485,39 @@ assert all(tag in ACTION_TAGS for tag, _ in _FALLBACK_ACTION_RULES), (
 )
 
 
-def _tokenize_action_name(clip_name: str) -> set[str]:
+def _strip_species_prefix(parts: list[str], object_type: str | None) -> list[str]:
+    """Drop the species tokens from a split clip name.
+
+    With *object_type* known the exact prefix is removed, which is the only way
+    to handle a multi-token species: ``MU06_DeathMage_Idle_1`` must not leave
+    'death' in the action tokens. Without it only one token can be dropped, so
+    pass *object_type* whenever the caller has it.
+
+    The comparison is case-insensitive, like the filename->species inference that
+    produced *object_type*: ``deer_buck_Idle_1.npy`` resolves to ``Deer_Buck``,
+    and a case-sensitive prefix test would drop only 'deer' and let 'buck' reach
+    the keyword rules.
+    """
+    if object_type:
+        species_parts = str(object_type).split("_")
+        head = [part.lower() for part in parts[: len(species_parts)]]
+        if head == [part.lower() for part in species_parts] and len(parts) > len(species_parts):
+            return parts[len(species_parts):]
+    if len(parts) > 1:
+        return parts[1:]
+    return parts
+
+
+def _tokenize_action_name(clip_name: str, object_type: str | None = None) -> set[str]:
     """Tokenize the action portion of a "Species_Action_id" clip name.
 
-    Drops the leading species token (so species names like 'Ant' don't pollute
-    keyword matching) and trailing numeric ids, lower-cases via the shared
+    Drops the species tokens (so species names like 'Ant' don't pollute keyword
+    matching) and trailing numeric ids, lower-cases via the shared
     :data:`_TOKEN_PATTERN`, and adds lightly stemmed variants (-ing/-ed/-er/-s) so
     'Trotting' matches 'trot', etc.
     """
     stem = Path(clip_name).stem
-    parts = stem.split("_")
-    if len(parts) > 1:
-        parts = parts[1:]  # drop species token
+    parts = _strip_species_prefix(stem.split("_"), object_type)
     tokens: set[str] = set()
     for part in parts:
         for match in _TOKEN_PATTERN.findall(part):
@@ -510,14 +531,18 @@ def _tokenize_action_name(clip_name: str) -> set[str]:
     return tokens
 
 
-def infer_action_tags_from_clip_name(clip_name: str) -> list[str]:
+def infer_action_tags_from_clip_name(
+    clip_name: str,
+    object_type: str | None = None,
+) -> list[str]:
     """Best-effort single action tag inferred from a clip name; ``['unknown']`` if no rule fires.
 
     Heuristic fallback for clips not yet hand-labeled in ``action_tags.jsonl``; the
     result is always a list of canonical :data:`ACTION_TAGS` members and is meant
-    to be reviewed by a human before use.
+    to be reviewed by a human before use. Pass *object_type* so that a multi-token
+    species name is stripped whole and cannot leak into the keyword match.
     """
-    tokens = _tokenize_action_name(clip_name)
+    tokens = _tokenize_action_name(clip_name, object_type)
     if "up" in tokens and (tokens & _GETUP_UP_CONTEXT):
         return ["getup"]
     for tag, keywords in _FALLBACK_ACTION_RULES:

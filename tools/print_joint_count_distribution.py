@@ -15,6 +15,11 @@ if str(_anytop_root) not in sys.path:
 from data_loaders.truebones.truebones_utils.param_utils import (
     get_dataset_dir, MOTION_DIR, BVHS_DIR, MAX_JOINTS
 )
+from data_loaders.truebones.truebones_utils.cond_schema import (
+    species_lookup_map_for_dataset_dir,
+)
+from data_loaders.truebones.truebones_utils.dataset_sources import bare_species_name
+from utils.misc import infer_object_type_from_filename
 
 def load_motion_files():
     """Load all motion files and analyze joint distributions."""
@@ -28,6 +33,11 @@ def load_motion_files():
     print(f"Motions directory: {motions_dir}")
     print(f"MAX_JOINTS constant: {MAX_JOINTS}\n")
     
+    # Species names are matched against cond.npy, not split on the first
+    # underscore: a multi-token name ("FEP_MagmaDemon_Attack01_1.npy") would
+    # otherwise collapse into its pack prefix ("FEP").
+    species_lookup = species_lookup_map_for_dataset_dir(dataset_dir)
+
     motion_files = sorted(motions_dir.glob("*.npy"))
     print(f"Total motion files: {len(motion_files)}\n")
     
@@ -36,8 +46,14 @@ def load_motion_files():
         n_joints = motion.shape[1]
         joint_counts[n_joints] += 1
         
-        # Extract species from filename (e.g., "Horse_Walk_001.npy" -> "Horse")
-        species = motion_file.stem.split("_")[0]
+        # Extract species from filename ("Horse_Walk_001.npy" -> "Horse"),
+        # validated against cond.npy so multi-token names survive.
+        resolved = (
+            infer_object_type_from_filename(motion_file.name, valid_types=species_lookup)
+            if species_lookup
+            else None
+        )
+        species = bare_species_name(resolved) if resolved else motion_file.stem.split("_")[0]
         species_joints[species].append(n_joints)
     
     return joint_counts, species_joints

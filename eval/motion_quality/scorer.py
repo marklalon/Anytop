@@ -38,7 +38,10 @@ import numpy as np
 import scipy.signal
 
 from data_loaders.truebones.offline_reference_dataset import load_cond_dict, resolve_sources
-from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
+from data_loaders.truebones.truebones_utils.dataset_sources import (
+    resolve_species_key,
+    species_lookup_map,
+)
 
 from .bone_length_drift import compute_bone_length_drift, resolve_comparison_edges
 from .reference_bank import ReferenceClip, WeightedReferenceBank, build_weighted_reference_bank
@@ -689,6 +692,14 @@ class DistributionMotionQualityScorer:
             for cache_key in list(self._joint_group_cache):
                 if cache_key[0] == target_key:
                     del self._joint_group_cache[cache_key]
+
+    def species_lookup(self) -> Dict[str, str]:
+        """``{filename token: canonical key}`` over every species this scorer knows.
+
+        Callers inferring an object_type from a filename must validate against
+        this, or a multi-token species name is truncated at its first underscore.
+        """
+        return species_lookup_map(self._query_cond_lookup)
 
     def evaluate(
         self,

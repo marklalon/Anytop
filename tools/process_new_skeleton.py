@@ -37,6 +37,13 @@ from data_loaders.truebones.truebones_utils.motion_process import process_skelet
 from utils.misc import infer_object_type_from_filename
 from utils.parser_util import process_new_skeleton_args
 
+# Trailing stem tokens that name the *pose*, not the species, so dropping them is
+# expected and needs no warning ("Horse_Tpose.fbx" -> "Horse").
+_POSE_STEM_SUFFIXES = frozenset({
+    "tpose", "apose", "pose", "rest", "restpose", "bind", "bindpose",
+    "rig", "skeleton", "ref", "reference", "all",
+})
+
 def process_new_skeleton(
     *,
     save_dir: str,
@@ -115,6 +122,20 @@ def _process_new_skeleton_from_args(args) -> dict[str, Any]:
         if object_type is None:
             raise FileNotFoundError(
                 f"Cannot infer object-type from reference file '{tpose_path}'."
+            )
+        # This is the one inference with no cond.npy to validate against -- a new
+        # skeleton is by definition not registered anywhere yet -- so the filename
+        # is split blindly at the first underscore. Say so out loud when the rest
+        # of the stem is not just a pose suffix, because a multi-token species
+        # ("FEP_MagmaDemon_Tpose.glb") would silently register as "FEP".
+        _stem = os.path.splitext(os.path.basename(tpose_path))[0]
+        _remainder = _stem[len(object_type):].strip("_-. ")
+        if _remainder and _remainder.lower().replace("-", "") not in _POSE_STEM_SUFFIXES:
+            print(
+                f"[WARN] '{_stem}' carries more than the species name; only "
+                f"'{object_type}' was taken and '{_remainder}' dropped. A new "
+                f"skeleton has no cond.npy to validate the name against -- pass "
+                f"--object-type explicitly if that is wrong."
             )
         print(f"Auto-detected object_type: {object_type}")
 

@@ -13,8 +13,14 @@ import warnings
 from torch.utils.data._utils.collate import default_collate
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
 from data_loaders.truebones.truebones_utils.param_utils import parse_action_tags
-from data_loaders.truebones.truebones_utils.cond_schema import load_cond
-from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
+from data_loaders.truebones.truebones_utils.cond_schema import (
+    load_cond,
+    species_lookup_map_for_dataset_dir,
+)
+from data_loaders.truebones.truebones_utils.dataset_sources import (
+    bare_species_name,
+    resolve_species_key,
+)
 from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
 from data_loaders.truebones.truebones_utils.motion_process import (
     refresh_joint_metadata_in_cond_dict,
@@ -378,15 +384,62 @@ def _compute_filtered_split_counts(num_items: int) -> dict[str, int]:
     return _compute_split_counts(num_items)
 
 
-def ensure_split_manifests(data_root: str, motion_dir: str) -> dict[str, Path]:
+def resolve_motion_object_type(
+    motion_name: str,
+    data_root: str,
+    motion_metadata_lookup=None,
+    species_lookup=None,
+) -> str:
+    """Object_type of one clip, from its metadata entry or the cond registry.
+
+    Never guesses blind: ``motion_metadata.json`` is authoritative, and the
+    filename is only ever matched against ``cond.npy``'s species. A blind
+    ``stem.split('_', 1)[0]`` would truncate every multi-token species name
+    (``FEP_MagmaDemon_Attack01_1.npy`` -> ``FEP``) and silently collapse a whole
+    asset pack into one "species".
+    """
+    # Both branches are funnelled through bare_species_name(): motion_metadata.json
+    # is keyed by the bare species name while the cond registry returns a
+    # namespaced key, and a grouping key that differs between the two would split
+    # one species into two groups. It is a no-op on a name that carries no
+    # namespace, so today's metadata passes through untouched.
+    entry = (motion_metadata_lookup or {}).get(motion_name)
+    if isinstance(entry, dict):
+        object_type = str(entry.get('object_type') or '').strip()
+        if object_type:
+            return bare_species_name(object_type)
+
+    if species_lookup is None:
+        species_lookup = species_lookup_map_for_dataset_dir(data_root)
+    from utils.misc import infer_object_type_from_filename
+    resolved = infer_object_type_from_filename(motion_name, valid_types=species_lookup)
+    if resolved is not None:
+        return bare_species_name(resolved)
+    raise RuntimeError(
+        f"Cannot resolve object_type for '{motion_name}': it has no "
+        f"motion_metadata.json entry and its name matches no species in "
+        f"{Path(data_root) / 'cond.npy'}. Regenerate the dataset artifacts "
+        f"or pass a motion_metadata_lookup."
+    )
+
+
+def ensure_split_manifests(
+    data_root: str,
+    motion_dir: str,
+    motion_metadata_lookup=None,
+) -> dict[str, Path]:
     data_root_path = Path(data_root)
     split_paths = {split: data_root_path / f"{split}.txt" for split in SUPPORTED_SPLITS}
 
-    # Group motion names by object_type (animal character)
+    # Group motion names by object_type (animal character). Splits are held out
+    # per species, so the grouping key must be the full species name.
     grouped_motion_names: dict[str, list[str]] = defaultdict(list)
-    from utils.misc import infer_object_type_from_filename
+    species_lookup = species_lookup_map_for_dataset_dir(data_root_path)
     for motion_name in _list_motion_files(motion_dir):
-        grouped_motion_names[infer_object_type_from_filename(motion_name)].append(motion_name)
+        object_type = resolve_motion_object_type(
+            motion_name, str(data_root_path), motion_metadata_lookup, species_lookup
+        )
+        grouped_motion_names[object_type].append(motion_name)
 
     # Shuffle object types and assign all their motions to the same split
     manifests = {split: [] for split in SUPPORTED_SPLITS}
@@ -408,13 +461,18 @@ def ensure_split_manifests(data_root: str, motion_dir: str) -> dict[str, Path]:
     return split_paths
 
 
-def load_motion_names_for_split(split: str, data_root: str, motion_dir: str) -> set[str]:
+def load_motion_names_for_split(
+    split: str,
+    data_root: str,
+    motion_dir: str,
+    motion_metadata_lookup=None,
+) -> set[str]:
     if split == ALL_SPLIT_NAME:
         motion_names = set(_list_motion_files(motion_dir))
         if not motion_names:
             raise RuntimeError(f"Split '{split}' is empty: {motion_dir}")
         return motion_names
-    split_paths = ensure_split_manifests(data_root, motion_dir)
+    split_paths = ensure_split_manifests(data_root, motion_dir, motion_metadata_lookup)
     split_path = split_paths[split]
     motion_names = {
         line.strip() for line in split_path.read_text(encoding="utf-8").splitlines() if line.strip()
@@ -433,7 +491,9 @@ def load_motion_names_for_split_with_action_tags(
 ) -> set[str]:
     requested_action_tags = set(parse_action_tags(raw_action_tags))
     if not requested_action_tags:
-        return load_motion_names_for_split(split, data_root, motion_dir)
+        return load_motion_names_for_split(
+            split, data_root, motion_dir, motion_metadata_lookup
+        )
 
     all_motion_names = set(_list_motion_files(motion_dir))
     filtered_motion_names = filter_motion_names_by_action_tags(

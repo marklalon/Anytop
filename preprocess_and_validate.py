@@ -92,11 +92,15 @@ from data_loaders.truebones.truebones_utils import ignore_warnings  # noqa: E402
 from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
     load_cond,
     save_cond,
+    species_lookup_map_for_dataset_dir,
     stamp_dataset_cond,
 )
 from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E402
+    bare_species_name,
     resolve_species_key,
+    species_lookup_map,
 )
+from utils.misc import infer_object_type_from_filename  # noqa: E402
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     load_motion_metadata,
     write_motion_metadata,
@@ -418,9 +422,11 @@ def _capture_preserved_side_artifacts(
     preserved = PreservedSideArtifacts()
 
     cond_path = dataset_dir_path / "cond.npy"
+    preserved_species_lookup: dict[str, str] = {}
     if cond_path.exists():
         # cond is canonically keyed on disk; the caller names bare species.
         current_cond = load_cond(cond_path)
+        preserved_species_lookup = species_lookup_map(current_cond)
         preserved.cond = {
             str(obj): obj_cond
             for obj, obj_cond in current_cond.items()
@@ -433,7 +439,10 @@ def _capture_preserved_side_artifacts(
     for motion_name, entry in load_motion_metadata(dataset_dir_path, require_action_tags=False).items():
         if not (motions_dir / motion_name).exists():
             continue
-        object_type = str(entry.get("object_type") or Path(motion_name).stem.split("_", 1)[0])
+        object_type = str(
+            entry.get("object_type")
+            or _species_of_motion_name(motion_name, preserved_species_lookup)
+        )
         if object_type in target_object_types:
             continue
         preserved.motion_metadata[motion_name] = dict(entry)
@@ -659,14 +668,32 @@ def _write_jsonl(path: Path, entries: list[dict[str, object]]) -> None:
             handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-def _collect_species_from_motions(motions_dir: Path) -> dict[str, set[str]]:
+def _species_of_motion_name(motion_name: str, species_lookup: dict[str, str]) -> str:
+    """Bare species name of a clip, matched against the dataset's cond registry.
+
+    Splitting on the first underscore would truncate every multi-token species
+    name (``FEP_MagmaDemon_Attack01_1.npy`` -> ``FEP``) and merge a whole asset
+    pack into one pseudo-species, so the name is resolved against cond.npy. The
+    blind split survives only for a dataset that has no cond.npy at all, where
+    there is nothing to validate against.
+    """
+    if species_lookup:
+        resolved = infer_object_type_from_filename(motion_name, valid_types=species_lookup)
+        if resolved is not None:
+            return bare_species_name(resolved)
+    return Path(motion_name).stem.split("_", 1)[0]
+
+
+def _collect_species_from_motions(
+    motions_dir: Path,
+    species_lookup: dict[str, str] | None = None,
+) -> dict[str, set[str]]:
     """Return {species: {motion_filename, ...}} for all .npy files in motions_dir."""
     species_map: dict[str, set[str]] = {}
     if not motions_dir.exists():
         return species_map
     for p in motions_dir.glob("*.npy"):
-        stem = p.stem
-        species = stem.split("_", 1)[0]
+        species = _species_of_motion_name(p.name, species_lookup or {})
         species_map.setdefault(species, set()).add(p.name)
     return species_map
 
@@ -695,7 +722,9 @@ def run_remove_motions(
         return 1
 
     # Gather all motions currently on disk, scoped by --filter if provided.
-    all_species_motions = _collect_species_from_motions(motions_dir)
+    all_species_motions = _collect_species_from_motions(
+        motions_dir, species_lookup_map_for_dataset_dir(dataset_dir_path)
+    )
     if object_filter:
         all_species_motions = {s: m for s, m in all_species_motions.items() if s in target_species}
 
@@ -711,12 +740,17 @@ def run_remove_motions(
         return 0
 
     # --- Summary ---
-    affected_species = sorted({m.split("_", 1)[0] for m in to_delete})
+    species_of_motion = {
+        motion_name: species
+        for species, motion_names in all_species_motions.items()
+        for motion_name in motion_names
+    }
+    affected_species = sorted({species_of_motion[m] for m in to_delete})
     species_remaining: dict[str, int] = {}
     empty_species: set[str] = set()
     for species in affected_species:
         total = len(all_species_motions.get(species, set()))
-        deleted = sum(1 for m in to_delete if m.startswith(f"{species}_"))
+        deleted = sum(1 for m in to_delete if species_of_motion[m] == species)
         remaining = total - deleted
         species_remaining[species] = remaining
         if remaining <= 0:

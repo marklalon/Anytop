@@ -35,11 +35,13 @@ from typing import Mapping
 import numpy as np
 
 from data_loaders.truebones.truebones_utils.dataset_sources import (
+    COND_FILE,
     COND_SCHEMA_VERSION,
     canonical_key,
     infer_namespace_from_root,
     normalize_namespace,
     resolve_anytop_path,
+    species_lookup_map,
     split_canonical_key,
     to_anytop_relative,
 )
@@ -158,6 +160,22 @@ def load_cond(cond_path, namespace=None) -> dict[str, dict]:
         raise FileNotFoundError(f"Condition file was not found: {path}")
     raw = np.load(str(path), allow_pickle=True).item()
     return normalize_cond_dict(raw, cond_path=path, namespace=namespace)
+
+
+def species_lookup_map_for_dataset_dir(dataset_dir) -> dict[str, str]:
+    """``{filename token: canonical key}`` read from ``<dataset_dir>/cond.npy``.
+
+    The registry every filename->object_type inference must be validated against:
+    without it, ``infer_object_type_from_filename`` falls back to "everything up
+    to the first underscore", which truncates a multi-token species name
+    (``FEP_MagmaDemon_Attack01_1.npy`` -> ``FEP``). Returns ``{}`` only when the
+    dataset has no cond yet, which is the one case where a caller has nothing to
+    validate against.
+    """
+    cond_path = Path(dataset_dir) / COND_FILE
+    if not cond_path.is_file():
+        return {}
+    return species_lookup_map(load_cond(cond_path))
 
 
 def save_cond(cond_path, cond_dict: Mapping[str, Mapping]) -> Path:

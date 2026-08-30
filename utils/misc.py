@@ -97,24 +97,34 @@ def infer_object_type_from_filename(
     if not stem:
         return None
 
-    # Case-insensitive lookup from lowercased candidate → canonical valid_types
-    # key (built once). ``_match`` returns the canonical key when validating, the
-    # raw candidate when validation is off, or ``None`` on a validated miss.
+    # Lookup from candidate → canonical valid_types key (built once). ``_match``
+    # returns the canonical key when validating, the raw candidate when
+    # validation is off, or ``None`` on a validated miss. An exact hit is tried
+    # before a case-folded one, matching ``resolve_species_key``: the dataset
+    # carries real ``Rhino``/``rhino`` and ``Scorpion``/``scorpion`` pairs, and
+    # folding first would hand every ``rhino_*.npy`` to whichever of the two the
+    # cond happens to list first.
     _canon = None
+    _canon_folded = None
     if valid_types is not None:
         _canon = {}
+        _canon_folded = {}
         _pairs = (
             valid_types.items()
             if isinstance(valid_types, _Mapping)
             else ((known, known) for known in valid_types)
         )
         for token, canonical in _pairs:
-            _canon.setdefault(token.lower(), canonical)
+            _canon.setdefault(token, canonical)
+            _canon_folded.setdefault(token.lower(), canonical)
 
     def _match(candidate: str) -> str | None:
         if valid_types is None:
             return candidate
-        return _canon.get(candidate.lower())
+        exact = _canon.get(candidate)
+        if exact is not None:
+            return exact
+        return _canon_folded.get(candidate.lower())
 
     # 1. Triple-underscore separator  (highest priority)
     sep_triple = "___"
@@ -124,11 +134,13 @@ def infer_object_type_from_filename(
             return matched
 
     # 2. Progressive single-underscore prefix matching
-    #    (handles multi-word types like "Sea_Lion")
+    #    (handles multi-word types like "Sea_Lion"). The range includes the whole
+    #    stem so a file named after the species alone ("Deer_Buck.glb") matches
+    #    "Deer_Buck" instead of stopping at the shorter "Deer".
     if valid_types is not None and "_" in stem:
         parts = stem.split("_")
         best: str | None = None
-        for i in range(1, len(parts)):
+        for i in range(1, len(parts) + 1):
             matched = _match(_strip_common_suffixes("_".join(parts[:i])))
             if matched is not None:
                 best = matched  # keep going for a longer match
@@ -159,12 +171,16 @@ def infer_object_type_from_filename(
             if matched is not None:
                 return matched
 
-    # 5. Fallback: bare stem (e.g. "dragon.fbx" → "dragon")
+    # 5. Fallback: bare stem (e.g. "dragon.fbx" → "dragon"). Validated too, so a
+    # file named after the species alone ("Sea_Lion.npy", "Deer_Buck.npy") still
+    # resolves once a registry is supplied -- rule 2 only ever tries *proper*
+    # prefixes, and rule 3 would stop at "Sea".
+    stripped = _strip_common_suffixes(stem)
+    if not stripped:
+        return None
     if valid_types is None:
-        stripped = _strip_common_suffixes(stem)
-        return stripped if stripped else None
-
-    return None
+        return stripped
+    return _match(stripped)
 
 
 # ── Dataset asset path portability ─────────────────────────────────────────

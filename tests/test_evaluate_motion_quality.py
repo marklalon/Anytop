@@ -45,6 +45,9 @@ def test_main_registers_cond_path_for_novel_query_species(tmp_path, monkeypatch)
         def register_cond(self, cond):
             captured["cond"] = cond
 
+        def species_lookup(self):
+            return {}
+
         def evaluate(self, motions, object_type, action_tags, top_k_species):
             captured["object_type"] = object_type
             captured["action_tags"] = action_tags
