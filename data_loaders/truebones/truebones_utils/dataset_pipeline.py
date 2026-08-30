@@ -324,6 +324,7 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
         parents,
         tp.offsets,
         rest_positions=rest_positions,
+        species_name=object_type,
     )
     object_cond = dict()
     # Provisional translation root from the T-pose animation. Will be refreshed

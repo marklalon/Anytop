@@ -339,6 +339,37 @@ def retarget_features_npy_to_target(
     return np.asarray(target_features, dtype=np.float32)
 
 
+def canonical_match_names_from_raw_skeleton(
+    joint_names,
+    parents,
+    offsets,
+    *,
+    species_name: Optional[str] = None,
+) -> list[str]:
+    """Return dataset-compatible canonical names for a raw source skeleton.
+
+    This deliberately uses the cond refresh path instead of calling
+    ``build_semantic_metadata`` alone: refresh also applies the duplicate-name
+    disambiguation used by preprocessed targets (for example ``Tongue`` and
+    ``Tongue02`` must not both collapse to ``Tongue``).
+    """
+    from data_loaders.truebones.truebones_utils.animation_utils import (
+        refresh_joint_metadata_in_object_cond,
+    )
+
+    species_name = str(species_name or '').strip()
+    source_name_cond = {
+        # Empty when unknown: prefix inference no-ops on an empty species name.
+        'object_type': species_name,
+        'species_name': species_name,
+        'joints_names': [str(name) for name in joint_names],
+        'parents': np.asarray(parents, dtype=np.int32),
+        'offsets': np.asarray(offsets, dtype=np.float64),
+    }
+    refresh_joint_metadata_in_object_cond(source_name_cond)
+    return list(source_name_cond['canonical_joint_names'])
+
+
 def retarget_animation_file_to_target(
     source_motion_path: str,
     target_tp,
@@ -347,6 +378,7 @@ def retarget_animation_file_to_target(
     target_cond: dict,
     *,
     slice_inds=None,
+    source_object_type: Optional[str] = None,
 ) -> Optional[np.ndarray]:
     """Retarget a raw animation file (FBX/GLB/GLTF) onto the target skeleton.
 
@@ -367,10 +399,11 @@ def retarget_animation_file_to_target(
     instead, which is invariant to leg configuration, so it canonicalizes robustly
     and ``coordinate_search`` is left off (source and target are both already +Z).
 
-    The source's canonical match names are produced with the same
-    ``build_semantic_metadata`` canonicalization the dataset cond uses, so name
-    matching against the target behaves identically whether or not the source is
-    registered in cond.
+    The source's canonical match names are produced through the same metadata
+    refresh and duplicate-name disambiguation path as dataset cond. When known,
+    ``source_object_type`` also enables the same skeleton-wide species-prefix
+    stripping; an unregistered source may still supply this name without needing
+    a source cond entry.
 
     Args:
         source_motion_path: path to an .fbx/.glb/.gltf animation.
@@ -379,6 +412,8 @@ def retarget_animation_file_to_target(
         max_joints:         maximum joint count for feature padding.
         target_cond:        target cond entry (for ``canonical_joint_names``).
         slice_inds:         optional ``[start, end]`` frame slice on the source.
+        source_object_type: optional source species/object identifier used only
+                            for canonical joint-name prefix normalization.
 
     Returns:
         (F, J_tgt, 13) retargeted feature array, or None if the retarget failed.
@@ -404,7 +439,6 @@ def retarget_animation_file_to_target(
         compute_scale_factor,
     )
     from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
-        build_semantic_metadata,
         detect_joint_side,
         infer_contact_joints,
     )
@@ -420,11 +454,28 @@ def retarget_animation_file_to_target(
     src_parents = np.asarray(raw_anim.parents, dtype=np.int32)
     src_offsets = np.asarray(raw_anim.offsets, dtype=np.float64)
     src_rest_rotations = np.asarray(raw_anim.orients.qs, dtype=np.float64)
+    _SRC_FACE_HINT = '__retarget_source_from_file__'
 
-    # 2. Source canonical match names — same canonicalization the dataset cond
-    #    uses, so matching is consistent with the in-cond path.
-    src_match_names = list(
-        build_semantic_metadata(src_names, src_parents, src_offsets)['canonical_joint_names']
+    # 2. Source canonical match names. Build a minimal cond-shaped record and
+    #    run the exact refresh/assignment path used by dataset cond, including
+    #    skeleton-wide species-prefix stripping and duplicate-name disambiguation.
+    #    A raw source does not require a cond entry: callers can pass only its
+    #    object/species identifier. Dataset source files also commonly live in a
+    #    species-named parent directory, which is a safe fallback because the
+    #    prefix inference still requires every source joint to share the token.
+    source_species_hint = str(source_object_type or '').strip()
+    if not source_species_hint:
+        # Only use the parent directory when the path actually carries one --
+        # a bare filename would otherwise resolve to the current working
+        # directory. The all-joints prefix gate keeps this a safe hint either way.
+        dir_name = os.path.dirname(source_motion_path)
+        if dir_name:
+            source_species_hint = os.path.basename(dir_name)
+    src_match_names = canonical_match_names_from_raw_skeleton(
+        src_names,
+        src_parents,
+        src_offsets,
+        species_name=source_species_hint,
     )
     # 3. Source canonical orientation. Compute the +Z-facing quat from the bind
     #    pose (FK of the rest offsets) using name-based face/forward detection — no
@@ -438,7 +489,6 @@ def retarget_animation_file_to_target(
         src_parents.copy(),
     )
     bind_positions = positions_global(bind_anim)  # (1, J, 3)
-    _SRC_FACE_HINT = '__retarget_source_from_file__'
     src_face_joints = resolve_face_joints(
         _SRC_FACE_HINT, src_names, src_parents, None, rest_positions=bind_positions
     )

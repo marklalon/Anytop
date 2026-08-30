@@ -165,9 +165,11 @@ _CONTACT_CUMULATIVE_OFFSET_CAP = 0.34
 # Joint name canonicalization
 _CANONICAL_NAME_PREFIXES = (
     'BN_Bip01',
+    'Bip001',
     'Bip01',
     'Sabrecat',
     'NPC',
+    'Rig',
     'BN',
     'jt',
     'Elk',
@@ -509,7 +511,7 @@ def _split_glued_compound_token(token):
     return parts if parts is not None and len(parts) >= 2 else None
 
 
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 10
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 11
 
 _CHAIN_INDEX_ORDINAL_TOKENS = {
     1: 'First',
@@ -533,10 +535,74 @@ def normalize_joint_name(name):
     return re.sub(r'[^a-z0-9]+', ' ', split_name.lower()).strip()
 
 
-def strip_joint_name_prefix(name):
+def _has_joint_name_prefix(name, prefix, *, case_sensitive=True):
+    """Return whether *prefix* is one complete leading identifier token."""
+    name = str(name or '')
+    prefix = str(prefix or '')
+    leading = name[:len(prefix)]
+    prefix_matches = leading == prefix if case_sensitive else leading.casefold() == prefix.casefold()
+    if not prefix or not prefix_matches:
+        return False
+
+    prefix_end = len(prefix)
+    return (
+        prefix_end == len(name)
+        or not name[prefix_end].isalnum()
+        or name[prefix_end].isupper()
+        or name[prefix_end].isdigit()
+    )
+
+
+def infer_species_joint_name_prefixes(joint_names, species_name=None):
+    """Infer a character/species prefix shared by the whole skeleton.
+
+    Dataset identifiers commonly include a pack code (``IAC_Caveman``), while
+    their bones use only the species suffix (``Caveman Pelvis``).  Generate all
+    separator-preserving suffix forms and accept only the longest form that is
+    a complete leading token on *every* joint.  The all-joints gate is what keeps
+    an anatomical name such as ``HorseLink`` intact on an ordinary Horse rig.
+    """
+    names = [] if joint_names is None else [str(name or '') for name in joint_names]
+    if not names or not species_name:
+        return ()
+
+    bare_species = str(species_name).replace('\\', '/').rsplit('/', 1)[-1]
+    parts = [part for part in re.split(r'[^0-9A-Za-z]+', bare_species) if part]
+    candidates = set()
+    for start in range(len(parts)):
+        suffix = parts[start:]
+        if not any(any(character.isalpha() for character in part) for part in suffix):
+            continue
+        candidates.update({
+            ''.join(suffix),
+            ' '.join(suffix),
+            '_'.join(suffix),
+            '-'.join(suffix),
+        })
+
+    for candidate in sorted(candidates, key=lambda value: (len(value), value), reverse=True):
+        if all(
+            len(name) > len(candidate)
+            and _has_joint_name_prefix(name, candidate, case_sensitive=False)
+            for name in names
+        ):
+            return (candidate,)
+    return ()
+
+
+def strip_joint_name_prefix(name, additional_prefixes=()):
     stripped = name
-    for prefix in sorted(_CANONICAL_NAME_PREFIXES, key=len, reverse=True):
-        if stripped.startswith(prefix):
+    prefixes = (
+        *((prefix, False) for prefix in tuple(additional_prefixes or ())),
+        *((prefix, True) for prefix in _CANONICAL_NAME_PREFIXES),
+    )
+    for prefix, case_sensitive in sorted(prefixes, key=lambda item: len(item[0]), reverse=True):
+        # Prefixes are complete rig/character tokens, not arbitrary character
+        # sequences.  A following separator, digit, or CamelCase boundary is
+        # valid ("Rig_Head", "Rig01", "RigHead"); a lowercase continuation is
+        # not ("RightArm", "RigidBody", "Belly").  This boundary check is
+        # especially important for the short Unity prefix "Rig".
+        if _has_joint_name_prefix(stripped, prefix, case_sensitive=case_sensitive):
             stripped = stripped[len(prefix):]
             break
     # Strip known rig suffixes (case-insensitive), but never reduce the name
@@ -613,9 +679,9 @@ def _collapse_repeated_name_parts(canonical_parts):
     return collapsed
 
 
-def _canonicalize_joint_name(name, replacements=None):
+def _canonicalize_joint_name(name, replacements=None, additional_prefixes=()):
     replacements = _JAPANESE_NAME_REPLACEMENTS if replacements is None else replacements
-    split_name = normalize_joint_name(strip_joint_name_prefix(name))
+    split_name = normalize_joint_name(strip_joint_name_prefix(name, additional_prefixes))
     canonical_parts = []
     for part in split_name.split():
         clean_part = re.sub(r'[^a-z0-9]+', '', part)
@@ -802,8 +868,8 @@ def _clean_embedding_token(token):
     return re.sub(r'\d+$', '', cleaned)
 
 
-def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False):
-    canonical_name = _canonicalize_joint_name(name)
+def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_prefixes=()):
+    canonical_name = _canonicalize_joint_name(name, additional_prefixes=additional_prefixes)
     clean_tokens = []
     for token in canonical_name.split():
         clean_token = _clean_embedding_token(token)
@@ -963,15 +1029,24 @@ def build_joint_embedding_texts(object_cond):
     if not base_joint_names:
         return []
 
+    raw_joint_names = list(object_cond.get('joints_names') or base_joint_names)
+    species_prefixes = infer_species_joint_name_prefixes(
+        raw_joint_names,
+        object_cond.get('species_name') or object_cond.get('object_type'),
+    )
     joint_side_labels = list(object_cond.get('joint_side_labels') or ['center'] * len(base_joint_names))
     contact_joints = {int(joint_index) for joint_index in list(object_cond.get('contact_joints') or [])}
     end_effector_joints = {int(joint_index) for joint_index in list(object_cond.get('end_effector_joints') or [])}
     bare_arm_flags = _bare_arm_means_upper_arm(
-        list(object_cond.get('joints_names') or base_joint_names),
+        raw_joint_names,
         object_cond.get('parents'),
     )
     refined_tokens_per_joint = [
-        _refine_joint_embedding_name(joint_name, bare_arm_flags[joint_index])
+        _refine_joint_embedding_name(
+            joint_name,
+            bare_arm_flags[joint_index],
+            additional_prefixes=species_prefixes,
+        )
         for joint_index, joint_name in enumerate(base_joint_names)
     ]
     # Chain grouping stays side-aware even though the side word is emitted only
@@ -1591,11 +1666,15 @@ def _infer_is_symmetric(symmetric_joint_pairs, joint_side_labels):
     return False
 
 
-def build_semantic_metadata(joint_names, parents, offsets, rest_positions=None):
+def build_semantic_metadata(joint_names, parents, offsets, rest_positions=None, species_name=None):
     parents = np.asarray(parents, dtype=np.int64)
     rest_positions = rest_positions_from_offsets(offsets, parents) if rest_positions is None else np.asarray(rest_positions, dtype=np.float64)
     replacements = effective_canonical_replacements(joint_names)
-    canonical_joint_names = [_canonicalize_joint_name(name, replacements) for name in joint_names]
+    species_prefixes = infer_species_joint_name_prefixes(joint_names, species_name)
+    canonical_joint_names = [
+        _canonicalize_joint_name(name, replacements, species_prefixes)
+        for name in joint_names
+    ]
     canonical_joint_names = _collapse_solitary_head_feature_indices(canonical_joint_names)
     contact_joints, contact_joint_source = infer_contact_joints(
         joint_names,

@@ -21,7 +21,7 @@ from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
 )
 
 
-def _embedding_texts(joint_names, parents, offsets=None):
+def _embedding_texts(joint_names, parents, offsets=None, species_name=None):
     parents = np.asarray(parents, dtype=np.int64)
     if offsets is None:
         # A plain chain down -Y, mirrored on X for the Left/Right pairs, is
@@ -35,12 +35,30 @@ def _embedding_texts(joint_names, parents, offsets=None):
                 0.0,
             ]
     metadata = build_semantic_metadata(
-        joint_names=joint_names, parents=parents, offsets=np.asarray(offsets, dtype=np.float64),
+        joint_names=joint_names,
+        parents=parents,
+        offsets=np.asarray(offsets, dtype=np.float64),
+        species_name=species_name,
     )
     object_cond = dict(metadata)
     object_cond['joints_names'] = list(joint_names)
     object_cond['parents'] = parents
+    if species_name:
+        object_cond['species_name'] = species_name
     return build_joint_embedding_texts(object_cond)
+
+
+def test_skeleton_wide_species_prefix_is_removed_from_embedding_text():
+    texts = _embedding_texts(
+        ['Caveman Pelvis', 'Caveman Spine', 'Caveman Head'],
+        [-1, 0, 1],
+        species_name='IAC_Caveman',
+    )
+
+    assert all('Caveman' not in text for text in texts), texts
+    assert texts[0] == 'Pelvis'
+    assert texts[1] == 'Spine'
+    assert texts[2].startswith('Head'), texts[2]
 
 
 def test_species_word_is_dropped_so_variant_heads_share_one_anatomy():

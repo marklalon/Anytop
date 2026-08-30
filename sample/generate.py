@@ -523,9 +523,18 @@ def _retarget_reference_motion_from_file(
     tgt_cond = dict(cond_dict[target_type])
     target_token = build_species_file_tokens(cond_dict)[target_type]
 
-    # Source label is for output naming only.
+    # Resolve a source species hint when the raw file belongs to a registered
+    # skeleton. The raw path remains cond-free; this hint is used only to apply
+    # the same species-prefix joint-name canonicalization as dataset cond.
     base = os.path.splitext(os.path.basename(reference_motion_path))[0]
-    source_label = infer_object_type_from_filename(reference_motion_path, valid_types=None) or base
+    source_object_type = infer_object_type_from_filename(
+        reference_motion_path,
+        valid_types=species_lookup_map(cond_dict),
+    )
+    source_label = source_object_type or infer_object_type_from_filename(
+        reference_motion_path,
+        valid_types=None,
+    ) or base
 
     print(
         f"\n### Reference retarget (cond-free source): {reference_motion_path} → {target_type}"
@@ -546,6 +555,7 @@ def _retarget_reference_motion_from_file(
         target_type,
         opt.max_joints,
         tgt_cond,
+        source_object_type=source_object_type,
     )
 
     if target_features is None:

@@ -42,6 +42,7 @@ from data_loaders.truebones.truebones_utils.features import (
 from data_loaders.truebones.truebones_utils.animation_utils import find_translation_root
 import utils.retarget as retarget_mod
 from utils.auto_retarget import build_tpose_aligned_target_animation
+from utils.auto_retarget import canonical_match_names_from_raw_skeleton
 from utils.auto_retarget import retarget_features_npy_to_target
 from utils.rotation_numpy import (
     quat_conjugate_wxyz_np,
@@ -84,6 +85,21 @@ class _TensorLike:
 
     def numpy(self) -> np.ndarray:
         return self._array
+
+
+def test_raw_source_match_names_use_species_prefix_and_duplicate_disambiguation() -> None:
+    names = ["Caveman Pelvis", "Caveman Tongue", "Caveman Tongue02"]
+    parents = np.array([-1, 0, 1], dtype=np.int32)
+    offsets = np.zeros((3, 3), dtype=np.float64)
+
+    canonical = canonical_match_names_from_raw_skeleton(
+        names,
+        parents,
+        offsets,
+        species_name="unitybundles/IAC_Caveman",
+    )
+
+    assert canonical == ["Pelvis", "Tongue", "Tongue 02"]
 
 
 def test_find_translation_root_ignores_sparse_wrapper_motion() -> None:

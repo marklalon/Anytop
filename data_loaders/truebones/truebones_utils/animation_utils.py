@@ -33,6 +33,7 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (
 )
 from .physics_joint_annotation import (
     build_semantic_metadata,
+    infer_species_joint_name_prefixes,
     normalize_joint_name,
     strip_joint_name_prefix,
     build_joint_embedding_texts,
@@ -117,9 +118,9 @@ def _remove_token_counts(tokens, counts_to_remove):
     return remaining_tokens
 
 
-def _joint_disambiguation_tokens(raw_name, canonical_name):
+def _joint_disambiguation_tokens(raw_name, canonical_name, additional_prefixes=()):
     raw_value = str(raw_name or '')
-    stripped_raw = strip_joint_name_prefix(raw_value)
+    stripped_raw = strip_joint_name_prefix(raw_value, additional_prefixes)
     raw_tokens = normalize_joint_name(stripped_raw).split()
     canonical_tokens = normalize_joint_name(canonical_name).split()
     residual_tokens = _remove_token_counts(raw_tokens, Counter(canonical_tokens))
@@ -161,7 +162,11 @@ def _display_disambiguation_tokens(raw_tokens):
     return display_tokens
 
 
-def _disambiguate_duplicate_canonical_names(raw_names, canonical_names):
+def _disambiguate_duplicate_canonical_names(
+    raw_names,
+    canonical_names,
+    additional_prefixes=(),
+):
     updated_names = list(canonical_names)
     grouped_indices = defaultdict(list)
     for joint_index, canonical_name in enumerate(canonical_names):
@@ -173,7 +178,11 @@ def _disambiguate_duplicate_canonical_names(raw_names, canonical_names):
             continue
 
         residual_token_lists = [
-            _joint_disambiguation_tokens(raw_names[index], canonical_name)
+            _joint_disambiguation_tokens(
+                raw_names[index],
+                canonical_name,
+                additional_prefixes,
+            )
             for index in indices
         ]
         common_counts = Counter(residual_token_lists[0])
@@ -218,7 +227,15 @@ def assign_canonical_joint_names(object_cond, joint_names, canonical_names):
     front and back legs both exported as "LeftLeg01"). Single entry point so the
     preprocessing pipeline and the on-load refresh cannot drift apart.
     """
-    disambiguated_names = _disambiguate_duplicate_canonical_names(joint_names, canonical_names)
+    species_prefixes = infer_species_joint_name_prefixes(
+        joint_names,
+        object_cond.get('species_name') or object_cond.get('object_type'),
+    )
+    disambiguated_names = _disambiguate_duplicate_canonical_names(
+        joint_names,
+        canonical_names,
+        additional_prefixes=species_prefixes,
+    )
     object_cond['canonical_joint_names'] = disambiguated_names
     object_cond['canonical_bvh_joint_names'] = [
         canonical_name_for_bvh(canonical_name, raw_name)
@@ -285,7 +302,12 @@ def refresh_joint_metadata_in_object_cond(object_cond):
 
     parents = np.asarray(object_cond.get('parents'), dtype=np.int64)
     offsets = np.asarray(object_cond.get('offsets'), dtype=np.float64)
-    semantic_metadata = build_semantic_metadata(joint_names, parents, offsets)
+    semantic_metadata = build_semantic_metadata(
+        joint_names,
+        parents,
+        offsets,
+        species_name=object_cond.get('species_name') or object_cond.get('object_type'),
+    )
     assign_canonical_joint_names(object_cond, joint_names, semantic_metadata['canonical_joint_names'])
     object_cond['end_effector_joints'] = semantic_metadata['end_effector_joints']
     object_cond['end_effector_names'] = semantic_metadata['end_effector_names']
@@ -1210,4 +1232,3 @@ def solve_local_positions_for_target_global(
             ) * (target_global_positions[:, joint_idx] - temp_global_pos[:, parent_idx])
 
     return local_positions
-

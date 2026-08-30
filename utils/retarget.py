@@ -1820,8 +1820,13 @@ if __name__ == '__main__':
     else:
         # Raw animation file (.glb/.fbx/.gltf): cond-free on the source side.
         from utils.auto_retarget import retarget_animation_file_to_target
+        from utils.misc import infer_object_type_from_filename
 
         print(f'[retarget CLI] Retargeting {_source_path} → {_target_type}')
+        _raw_src_type = infer_object_type_from_filename(
+            _source_path,
+            valid_types=_species_lookup_map(_cond_dict),
+        )
 
         _target_features = retarget_animation_file_to_target(
             _source_path,
@@ -1829,6 +1834,7 @@ if __name__ == '__main__':
             _target_type,
             _max_joints,
             _tgt_cond,
+            source_object_type=_raw_src_type,
         )
 
     if _target_features is None:

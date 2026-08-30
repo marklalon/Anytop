@@ -366,7 +366,10 @@ def _recompute_contact_joints(rebuilt_cond: dict[str, dict]) -> None:
         joint_names = list(object_cond["joints_names"])
 
         semantic_metadata = build_semantic_metadata(
-            joint_names, parents, offsets
+            joint_names,
+            parents,
+            offsets,
+            species_name=object_cond.get("species_name") or object_cond.get("object_type") or object_type,
         )
 
         old_contact = list(object_cond.get("contact_joints", []))

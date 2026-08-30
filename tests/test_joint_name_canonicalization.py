@@ -13,7 +13,89 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     refresh_joint_metadata_in_object_cond,
     write_joint_name_collision_report,
 )
-from data_loaders.truebones.truebones_utils.physics_joint_annotation import build_semantic_metadata
+from data_loaders.truebones.truebones_utils.animation_utils import (
+    _joint_disambiguation_tokens,
+)
+from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
+    build_semantic_metadata,
+    strip_joint_name_prefix,
+)
+
+
+def test_unity_rig_prefixes_are_removed_from_canonical_names():
+    raw_names = ["RigPelvis", "RigSpine1", "RigLHand", "RigRHand"]
+    metadata = build_semantic_metadata(
+        joint_names=raw_names,
+        parents=np.array([-1, 0, 1, 1], dtype=np.int64),
+        offsets=np.zeros((len(raw_names), 3), dtype=np.float64),
+    )
+
+    assert metadata["canonical_joint_names"] == [
+        "Pelvis",
+        "Spine 1",
+        "Left Hand",
+        "Right Hand",
+    ]
+
+
+def test_species_prefix_is_derived_from_namespaced_pack_identifier():
+    cases = [
+        ("unitybundles/IAC_Caveman", ["Caveman Pelvis", "Caveman Spine1"], ["Pelvis", "Spine 1"]),
+        ("IAC_Cavewoman", ["Cavewoman Pelvis", "Cavewoman Head"], ["Pelvis", "Head"]),
+        ("IAC_Mammoth", ["Mammoth Pelvis", "Mammoth Trunk02"], ["Pelvis", "Trunk 02"]),
+        ("IAC_Sabertooth", ["Sabertooth Pelvis", "Sabertooth L Ear"], ["Pelvis", "Left Ear"]),
+        ("NEW_SpaceDragon", ["SpaceDragonRoot", "SpaceDragonWing1"], ["Root", "Wing 1"]),
+    ]
+    for species_name, raw_names, expected in cases:
+        metadata = build_semantic_metadata(
+            joint_names=raw_names,
+            parents=np.array([-1, 0], dtype=np.int64),
+            offsets=np.zeros((2, 3), dtype=np.float64),
+            species_name=species_name,
+        )
+        assert metadata["canonical_joint_names"] == expected
+
+
+def test_species_word_is_not_removed_when_it_is_not_a_skeleton_wide_prefix():
+    raw_names = ["Hips", "HorseLink", "HorseHead"]
+    metadata = build_semantic_metadata(
+        joint_names=raw_names,
+        parents=np.array([-1, 0, 1], dtype=np.int64),
+        offsets=np.zeros((3, 3), dtype=np.float64),
+        species_name="Horse",
+    )
+
+    assert metadata["canonical_joint_names"] == ["Hips", "Horse Link", "Horse Head"]
+
+
+def test_species_prefix_is_removed_before_duplicate_name_disambiguation():
+    object_cond = {
+        "object_type": "unitybundles/IAC_Caveman",
+        "species_name": "IAC_Caveman",
+        "joints_names": ["Caveman Tongue", "Caveman Tongue02"],
+        "parents": np.array([-1, 0], dtype=np.int64),
+        "offsets": np.zeros((2, 3), dtype=np.float64),
+    }
+
+    refresh_joint_metadata_in_object_cond(object_cond)
+
+    assert object_cond["canonical_joint_names"] == ["Tongue", "Tongue 02"]
+    assert _joint_disambiguation_tokens(
+        "Caveman Tongue02",
+        "Tongue",
+        additional_prefixes=("Caveman",),
+    ) == ["02"]
+
+
+def test_short_rig_prefixes_only_match_at_identifier_boundaries():
+    assert strip_joint_name_prefix("RigHead") == "Head"
+    assert strip_joint_name_prefix("Rig_Head") == "_Head"
+
+    assert strip_joint_name_prefix("RightArm") == "RightArm"
+    assert strip_joint_name_prefix("RIGHT_Arm") == "RIGHT_Arm"
+    assert strip_joint_name_prefix("RigidBody") == "RigidBody"
+    assert strip_joint_name_prefix("Belly") == "Belly"
+    assert strip_joint_name_prefix("BODY_00") == "BODY_00"
 
 
 def test_tai_tokens_are_canonicalized_to_tail_bvh_names():
