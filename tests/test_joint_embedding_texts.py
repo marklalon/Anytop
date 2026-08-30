@@ -184,3 +184,77 @@ def test_anaconda_spline_trunk_is_a_spine_not_a_control():
     )
     assert texts[1].startswith('Spine'), texts[1]
     assert texts[2].startswith('Spine'), texts[2]
+
+
+def test_swapped_limb_code_decodes_only_when_the_name_spells_a_limb():
+    texts = _embedding_texts(
+        ['Root', 'FlLeg1', 'FrLeg1', 'BlLeg1', 'BrLeg1', 'LmLeg1', 'RmLeg1'],
+        [-1, 0, 0, 0, 0, 0, 0],
+        offsets=[[0, 0, 0], [-1, -1, 2], [1, -1, 2], [-1, -1, -2], [1, -1, -2],
+                 [-1, -1, 0], [1, -1, 0]],
+    )
+    assert texts[1].startswith('Left Front Leg'), texts[1]
+    assert texts[2].startswith('Right Front Leg'), texts[2]
+    assert texts[3].startswith('Left Back Leg'), texts[3]
+    assert texts[4].startswith('Right Back Leg'), texts[4]
+    assert texts[5].startswith('Left Mid Leg'), texts[5]
+    assert texts[6].startswith('Right Mid Leg'), texts[6]
+
+
+def test_swapped_limb_code_is_left_alone_on_a_mouth_corner():
+    # MU04_Earthworm names the corners of its mouth MouthTL/TR/BL/BR, where "BL"
+    # is bottom-left. Decoding it as a hind limb would invent anatomy, so the
+    # code is only read next to a limb word.
+    texts = _embedding_texts(
+        ['RigBase', 'RigHead', 'RigMouthBL', 'RigMouthTR'],
+        [-1, 0, 1, 1],
+    )
+    assert 'Back' not in texts[2], texts[2]
+    assert texts[2].startswith('Mouth'), texts[2]
+    assert texts[3].startswith('Mouth'), texts[3]
+
+
+def test_mirrored_name_typo_folds_onto_the_segment_its_twin_uses():
+    # The pack mirrored its left bones and ran a global L -> R replace over the
+    # copied names: the left arm is "Lower_Arm_L", the right one "Rower_Arm_R".
+    texts = _embedding_texts(
+        ['Hips', 'Upper_Arm_L', 'Lower_Arm_L', 'Upper_Arm_R', 'Rower_Arm_R',
+         'Upper_Leg_L', 'Lower_Leg_L', 'Upper_Reg_R', 'Rower_Reg_R'],
+        [-1, 0, 1, 0, 3, 0, 5, 0, 7],
+    )
+    assert texts[1].startswith('Left UpperArm'), texts[1]
+    assert texts[2].startswith('Left Forearm'), texts[2]
+    assert texts[3].startswith('Right UpperArm'), texts[3]
+    assert texts[4].startswith('Right Forearm'), texts[4]
+    assert texts[5].startswith('Left Thigh'), texts[5]
+    assert texts[6].startswith('Left Calf'), texts[6]
+    assert texts[7].startswith('Right Thigh'), texts[7]
+    assert texts[8].startswith('Right Calf'), texts[8]
+
+
+def test_glued_side_letter_on_a_wing_leaves_a_plain_wing():
+    texts = _embedding_texts(
+        ['RigBody', 'RigLwing1', 'RigRwing1'],
+        [-1, 0, 0],
+        offsets=[[0, 0, 0], [-1, 0, 0], [1, 0, 0]],
+    )
+    assert texts[1].startswith('Left Wing'), texts[1]
+    assert texts[2].startswith('Right Wing'), texts[2]
+
+
+def test_carried_equipment_is_blanked_but_worn_cloth_keeps_its_word():
+    texts = _embedding_texts(
+        ['Hips', 'Spine1', 'Sword', 'Shield', 'L_hand_container', 'Bone_Mount',
+         'BackpackContainer', 'CapeBack1', 'HeadContainer'],
+        [-1, 0, 1, 1, 1, 0, 1, 1, 1],
+    )
+    assert texts[2] == ''
+    assert texts[3] == ''
+    assert texts[5] == ''
+    assert texts[6] == ''
+    # The socket keeps the body part it hangs off; only the socket word goes.
+    assert texts[4].startswith('Left Hand'), texts[4]
+    assert texts[8].startswith('Head'), texts[8]
+    # Cloth is qualified by a direction ("CapeBack"), so blanking the noun would
+    # leave a bare "Back" claiming to be the creature's back.
+    assert texts[7].startswith('Cape'), texts[7]

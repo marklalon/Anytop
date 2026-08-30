@@ -259,16 +259,50 @@ _EMBED_TEXT_SKIP_TOKENS = {
 # collide with, so the joint simply gains the corpus name); "Helt"/"Helb",
 # "Lftb"/"Rftb", "Bnp" and "Mag" are opaque suffix codes whose name already
 # carries the anatomy ("HeadEyeLidHelt", "LeftTwistBoneLftb").
+#
+# The game-character rigs carry far more equipment than the animal ones: held
+# weapons ("Sword", "Bow", "Arrow", "Spear", "Staff"), worn gear ("Shield",
+# "Armor", "Backpack", "Cape", "Skirt", "Robe", "Headband", "Quiver", "Bag"),
+# carried tools ("GoldPick", "BoneWood"), robot hardware ("Gun", "Barrel",
+# "Bolt") and bare attachment sockets ("L_hand_container", "Quiver_container",
+# "WeaponPosition", "Bone_Mount"). Each was read off its tree first: the
+# containers hang as childless leaves off a hand or the spine, the mount node
+# sits between a rider's spine and the mount's own root. Rig roots that spell a
+# code instead of a body part go here too -- "CG" (centre of gravity), "Hub",
+# "Main" and a bare "Base" are all index-0 nodes with no anatomy in the name.
+#
+# Deliberately NOT here, after checking the tree: "Crown" (RMW_Bat hangs it off
+# UpperBody, RMW_Slime off Head -- two rigs, two meanings), "Ice" (an ice
+# elemental's shards are its own body, like the plant monster's "Leaf"),
+# "Notch" (single joint on a rock golem's spine, could be rock anatomy) and
+# "Pad" (keeping it leaves "Shoulder Pad", which reads as the armour it is
+# instead of inventing a shoulder the Orc rig does not otherwise have).
+#
+# "Cape" and "Skirt" are left out for a different reason: those rigs qualify the
+# cloth with a direction ("CapeBack01", "FrontSkirt", "RearSkirt"), and blanking
+# fires only when *every* token is a marker -- so dropping the noun would leave a
+# bare "Back"/"Front" claiming to be the creature's back, which is worse than the
+# uninformative-but-true "Cape Back". Same treatment hair already gets.
 _EMBED_TEXT_NON_ANATOMICAL_TOKENS = {
     'all',
+    'armor',
+    'arrow',
     'aux',
+    'backpack',
+    'bag',
+    'barrel',
+    'base',
     'bip',
     'blade',
     'bnp',
+    'bolt',
     'bone',
+    'bow',
     'brain',
     'center',
+    'cg',
     'chain',
+    'container',
     'control',
     'controler',
     'copy',
@@ -278,32 +312,48 @@ _EMBED_TEXT_NON_ANATOMICAL_TOKENS = {
     'effects',
     'fire',
     'fur',
+    'gold',
+    'gun',
+    'halo',
     'halter',
     'handle',
+    'headband',
     'helb',
     'helper',
     'helt',
+    'hub',
     'ik',
     'joint',
     'lftb',
     'locator',
     'mag',
     'magic',
+    'main',
     'mesh',
+    'mount',
     'node',
     'null',
     'passenger',
+    'pick',
     'pole',
     'ponitail',
     'ponytail',
+    'position',
     'projectile',
     'prop',
+    'quiver',
     'reins',
     'rftb',
+    'robe',
     'saddle',
+    'shield',
+    'spear',
+    'staff',
+    'sword',
     'target',
     'trajectory',
     'weapon',
+    'wood',
     'xtra',
 }
 # Side is re-attached from the geometry-derived joint_side_labels in
@@ -370,6 +420,22 @@ _EMBED_TEXT_LIMB_CODE_TOKENS = {
     'lb': 'Back',
     'rb': 'Back',
 }
+# The same code with the two halves swapped -- Fl/Fr = fore-left/fore-right,
+# Bl/Br = back-left/back-right, Lm/Rm = the middle pair of a hexapod. Kept apart
+# from the table above because these spellings are ambiguous on their own:
+# MU04_Earthworm names the corners of its mouth "MouthTL"/"MouthBL", where "Bl"
+# is bottom-left and decoding it as a hind limb would invent anatomy. They are
+# only read when the same name also carries a limb word, which is how every rig
+# that uses them spells it ("FlLeg1", "BrLegAnkle", "LmLegAnkle").
+_EMBED_TEXT_QUADRANT_LIMB_CODE_TOKENS = {
+    'fl': 'Front',
+    'fr': 'Front',
+    'bl': 'Back',
+    'br': 'Back',
+    'lm': 'Mid',
+    'rm': 'Mid',
+}
+_EMBED_TEXT_QUADRANT_LIMB_CONTEXT_TOKENS = frozenset({'arm', 'leg'})
 # Anatomical synonyms and rig abbreviations folded onto the vocabulary the rest
 # of the corpus already uses, so one body part is one point in T5 space instead
 # of a dozen singleton families. Left as-is when T5 gets there on its own; these
@@ -405,6 +471,10 @@ _EMBED_TEXT_SYNONYM_TOKENS = {
     'phalanx': 'Toe',
     'phalanges': 'Toe',
     'palm': 'Hand',
+    'collarbone': 'Clavicle',
+    'feet': 'Foot',
+    'lwing': 'Wing',
+    'rwing': 'Wing',
     # head
     'mandible': 'Jaw',
     'chin': 'Jaw',
@@ -427,6 +497,20 @@ _EMBED_TEXT_SYNONYM_TOKENS = {
     'tunge': 'Tongue',
     'eyeleds': 'Eyelid',
     'scull': 'Head',
+    'pevis': 'Pelvis',
+    'shouder': 'Shoulder',
+    'uppder': 'Upper',
+    # One asset pack mirrored its left-side bones and ran a global L -> R
+    # replace over the copied names, which corrupted the words themselves: the
+    # left arm is "Lower_Arm_L" but the right one is "Rower_Arm_R", and the left
+    # leg is "Upper_Leg_L"/"Lower_Leg_L" against "Upper_Reg_R"/"Rower_Reg_R" on
+    # the right. Both spellings sit in the same skeleton, and the tree confirms
+    # them (UpperArm -> RowerArm -> Hand, Hips -> UpperReg -> RowerReg -> Foot),
+    # so the two sides landed in unrelated corners of T5 space and their
+    # symmetry pairs failed to form. The pair merges below turn the decoded
+    # words into the corpus segment names; these entries cover a stray single.
+    'rower': 'Lower',
+    'reg': 'Leg',
     # rig abbreviations that echo the full word already in the same name
     # ("LeftThighLeftThi", "SpineSpn0", "Tail0Tal0"); expanding them lets the
     # adjacent-duplicate collapse in _refine_joint_embedding_name eat the echo.
@@ -450,6 +534,7 @@ _EMBED_TEXT_SYNONYM_TOKENS = {
     'pelv': 'Pelvis',
     'chk': 'Cheek',
     'lips': 'Lip',
+    'btm': 'Bottom',
 }
 
 # Some rigs glue a multi-word joint name together in all lowercase
@@ -511,7 +596,7 @@ def _split_glued_compound_token(token):
     return parts if parts is not None and len(parts) >= 2 else None
 
 
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 11
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 12
 
 _CHAIN_INDEX_ORDINAL_TOKENS = {
     1: 'First',
@@ -781,6 +866,17 @@ _EMBED_TEXT_TOKEN_PAIR_MERGES = {
     ('fore', 'leg'): 'Foreleg',
     ('upper', 'arm'): 'UpperArm',
     ('lower', 'arm'): 'Forearm',
+    # The counterpart of ('upper', 'leg'): the segment below the upper leg. On a
+    # quadruped's *fore* limb that segment is really a forearm, but the pair
+    # above already reads that rig's "UpperLeg" as a Thigh, so decoding both
+    # halves the same way at least keeps one limb in one family instead of
+    # splitting it across two.
+    ('lower', 'leg'): 'Calf',
+    # Same three segments as spelled by the L -> R mirrored names above.
+    ('rower', 'arm'): 'Forearm',
+    ('upper', 'reg'): 'Thigh',
+    ('rower', 'reg'): 'Calf',
+    ('lower', 'reg'): 'Calf',
     # 3ds Max Biped's extra digitigrade leg link, exported by 33 species here.
     # It sits Thigh -> Calf -> HorseLink -> Foot in every one of them, which is
     # the ankle/hock; merging the pair both names it correctly and keeps the
@@ -826,11 +922,16 @@ def _bare_arm_means_upper_arm(joint_names, parents):
     return has_forearm_below
 
 
-def _refine_joint_embedding_tokens(clean_token, bare_arm_is_upper_arm=False):
+def _refine_joint_embedding_tokens(clean_token, bare_arm_is_upper_arm=False,
+                                   quadrant_codes_name_a_limb=False):
     """Map one canonical token to the embedding token(s) it contributes."""
     limb_code_token = _EMBED_TEXT_LIMB_CODE_TOKENS.get(clean_token)
     if limb_code_token is not None:
         return [limb_code_token]
+    if quadrant_codes_name_a_limb:
+        quadrant_token = _EMBED_TEXT_QUADRANT_LIMB_CODE_TOKENS.get(clean_token)
+        if quadrant_token is not None:
+            return [quadrant_token]
     synonym_token = _EMBED_TEXT_SYNONYM_TOKENS.get(clean_token)
     if synonym_token is not None:
         return [synonym_token]
@@ -883,6 +984,12 @@ def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_p
             continue
         clean_tokens.append(clean_token)
 
+    # Gate for the ambiguous fore/hind codes: only a name that also spells a limb
+    # gets them decoded, so a mouth corner keeps its "Bl" and a leg does not.
+    quadrant_codes_name_a_limb = bool(
+        set(clean_tokens) & _EMBED_TEXT_QUADRANT_LIMB_CONTEXT_TOKENS
+    )
+
     merged_tokens = []
     index = 0
     while index < len(clean_tokens):
@@ -892,7 +999,11 @@ def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_p
             index += 2
             continue
         merged_tokens.extend(
-            _refine_joint_embedding_tokens(clean_tokens[index], bare_arm_is_upper_arm)
+            _refine_joint_embedding_tokens(
+                clean_tokens[index],
+                bare_arm_is_upper_arm,
+                quadrant_codes_name_a_limb=quadrant_codes_name_a_limb,
+            )
         )
         index += 1
 
@@ -1104,8 +1215,33 @@ def build_joint_embedding_texts(object_cond):
 # Side half of a quadruped limb code, dropped from the symmetry signature; the
 # fore/hind half is kept as a bare 'f'/'b' so LfLeg01 can only ever pair with
 # RfLeg01. Erasing the code outright would put a fore and a hind leg in one
-# group and leave the mirror test to tell them apart.
-_LIMB_CODE_SIGNATURE_TOKENS = {'lf': 'f', 'rf': 'f', 'lb': 'b', 'rb': 'b'}
+# group and leave the mirror test to tell them apart. The swapped spellings
+# (Fl/Fr, Bl/Br) and the hexapod's middle pair (Lm/Rm) need the same treatment
+# -- once detect_joint_side reads them, a front and a hind leg would otherwise
+# share the signature "leg 1" and could cross-pair.
+_LIMB_CODE_SIGNATURE_TOKENS = {
+    'lf': 'f', 'rf': 'f', 'lb': 'b', 'rb': 'b',
+    'fl': 'f', 'fr': 'f', 'bl': 'b', 'br': 'b',
+    'lm': 'm', 'rm': 'm',
+}
+
+
+# Spelling-only repairs, applied to the symmetry signature. The pack that ran a
+# global L -> R replace over its mirrored bone names corrupted the words too, so
+# the two halves of one limb no longer share a signature: "UpperLegLeft" against
+# "UpperRegRight", "LowerArmLeft" against "RowerArmRight". These undo the letter
+# swap so the pair can form; the embedding text has its own entries for the same
+# spellings. "Lwing"/"Rwing" is the other spelling problem in the same class: the
+# side letter is glued to the word with no case boundary, so the two sides read
+# as two different parts. Deliberately not the full synonym table -- a signature
+# is a spelling key, and folding synonyms into it would regroup every existing
+# rig.
+_SIGNATURE_SPELLING_TOKENS = {
+    'rower': 'lower',
+    'reg': 'leg',
+    'lwing': 'wing',
+    'rwing': 'wing',
+}
 
 
 def _signature_tokens(tokens, side_tokens):
@@ -1113,6 +1249,7 @@ def _signature_tokens(tokens, side_tokens):
     for token in tokens:
         if token in side_tokens:
             continue
+        token = _SIGNATURE_SPELLING_TOKENS.get(token, token)
         signature_tokens.append(_LIMB_CODE_SIGNATURE_TOKENS.get(token, token))
     return signature_tokens
 
@@ -1478,6 +1615,7 @@ def detect_joint_side(name):
         ' r_',
         ' rleg',
         ' rarm',
+        ' rwing',
         ' rthigh',
         ' rclavicle',
         ' rupperarm',
@@ -1494,6 +1632,7 @@ def detect_joint_side(name):
         ' l_',
         ' lleg',
         ' larm',
+        ' lwing',
         ' lthigh',
         ' lclavicle',
         ' lupperarm',
@@ -1502,9 +1641,9 @@ def detect_joint_side(name):
         ' l hiji',
     )
     padded = f' {normalized} '
-    if any(marker in padded for marker in right_markers) or compact.startswith(('r_', 'rleg', 'rarm', 'rthigh', 'rmomo', 'rkata', 'rhiji')):
+    if any(marker in padded for marker in right_markers) or compact.startswith(('r_', 'rleg', 'rarm', 'rwing', 'rthigh', 'rmomo', 'rkata', 'rhiji')):
         return 'right'
-    if any(marker in padded for marker in left_markers) or compact.startswith(('l_', 'lleg', 'larm', 'lthigh', 'lmomo', 'lkata', 'lhiji')):
+    if any(marker in padded for marker in left_markers) or compact.startswith(('l_', 'lleg', 'larm', 'lwing', 'lthigh', 'lmomo', 'lkata', 'lhiji')):
         return 'left'
 
     # Quadruped limb codes. Both halves of the rig use them -- Lf/Rf for the fore
@@ -1518,6 +1657,20 @@ def detect_joint_side(name):
         return 'right'
     if left_codes and not right_codes:
         return 'left'
+
+    # The same code with the halves swapped (Fl/Fr, Bl/Br) plus the hexapod's
+    # middle pair (Lm/Rm). Read only next to a limb word, for the same reason
+    # _EMBED_TEXT_QUADRANT_LIMB_CODE_TOKENS is gated: a mouth corner named
+    # "MouthBL" is a bottom-left corner, not a back-left leg. Without this a
+    # whole quadruped ("FlLeg1".."BrLegFoot2") came back 'center' and formed no
+    # symmetry pairs at all.
+    if tokens & _EMBED_TEXT_QUADRANT_LIMB_CONTEXT_TOKENS:
+        right_quadrant = tokens & {'fr', 'br', 'rm'}
+        left_quadrant = tokens & {'fl', 'bl', 'lm'}
+        if right_quadrant and not left_quadrant:
+            return 'right'
+        if left_quadrant and not right_quadrant:
+            return 'left'
     return None
 
 

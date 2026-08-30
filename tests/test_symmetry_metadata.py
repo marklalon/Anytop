@@ -206,12 +206,79 @@ def test_lf_rf_suffix_children_are_paired() -> None:
     assert joint_side_labels[6] == 'right'
 
 
+def test_swapped_limb_code_is_read_only_next_to_a_limb_word() -> None:
+    # Fl/Fr/Bl/Br is the same fore/hind code with the halves swapped, and Lm/Rm
+    # is the middle pair of a hexapod. A whole quadruped ("FlLeg1".."BrLegFoot2")
+    # came back 'center' and formed no symmetry pairs at all without these.
+    assert detect_joint_side('FlLeg1') == 'left'
+    assert detect_joint_side('FrLegAnkle') == 'right'
+    assert detect_joint_side('BlLegFoot1') == 'left'
+    assert detect_joint_side('BrLeg2') == 'right'
+    assert detect_joint_side('LmLegAnkle') == 'left'
+    assert detect_joint_side('RmLeg1') == 'right'
+
+    # The gate: without a limb word the code is ambiguous. "MouthBL" is the
+    # bottom-left corner of a worm's mouth, not a back-left limb.
+    assert detect_joint_side('RigMouthBL') is None
+    assert detect_joint_side('RigMouthTR') is None
+
+    # Side half dropped, fore/hind/middle half kept, same as Lf/Rf/Lb/Rb.
+    assert _joint_signature('FlLeg1') == _joint_signature('FrLeg1')
+    assert _joint_signature('LmLeg1') == _joint_signature('RmLeg1')
+    assert _joint_signature('FlLeg1') != _joint_signature('BlLeg1')
+    assert _joint_signature('FlLeg1') != _joint_signature('LmLeg1')
+
+
+def test_glued_side_letter_on_a_wing_drives_side_detection() -> None:
+    # "Lwing1" has no case boundary after the side letter, so neither the marker
+    # list nor the compound splitter saw it and the bee's ten wing joints stayed
+    # 'center' while its "LBackArm1" limbs paired normally.
+    assert detect_joint_side('RigLwing1') == 'left'
+    assert detect_joint_side('RigRwing5') == 'right'
+    assert _joint_signature('RigLwing1') == _joint_signature('RigRwing1')
+
+
+def test_mirrored_name_typo_still_pairs_with_its_twin() -> None:
+    # One pack mirrored its left bones and ran a global L -> R replace over the
+    # copied names, corrupting the words: "Lower_Arm_L" against "Rower_Arm_R",
+    # "Upper_Leg_L" against "Upper_Reg_R". The signature is a spelling key, so
+    # the two halves of one limb stopped matching and the pairs never formed.
+    assert _joint_signature('Lower_Arm_L') == _joint_signature('Rower_Arm_R')
+    assert _joint_signature('Upper_Leg_L') == _joint_signature('Upper_Reg_R')
+    assert _joint_signature('Lower_Leg_L') == _joint_signature('Rower_Reg_R')
+
+    joint_names = ['Hips', 'Upper_Leg_L', 'Lower_Leg_L', 'Upper_Reg_R', 'Rower_Reg_R']
+    parents = np.asarray([-1, 0, 1, 0, 3], dtype=np.int64)
+    rest_positions = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [-1.0, -1.0, 0.0],
+            [-1.0, -2.0, 0.0],
+            [1.0, -1.0, 0.0],
+            [1.0, -2.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+
+    _sides, symmetry_partner_indices, _pairs = _infer_symmetry_metadata(
+        joint_names,
+        parents,
+        rest_positions,
+    )
+
+    assert symmetry_partner_indices[1] == 3, f'upper leg pair: {symmetry_partner_indices[1]}'
+    assert symmetry_partner_indices[2] == 4, f'lower leg pair: {symmetry_partner_indices[2]}'
+
+
 def main() -> None:
     test_horse_front_helper_bones_are_paired()
     test_conservative_fallback_rejects_non_mirrored_unique_children()
     test_conservative_fallback_disables_ambiguous_child_subtrees()
     test_lf_rf_suffixes_drive_side_detection_and_signature_normalization()
     test_lf_rf_suffix_children_are_paired()
+    test_swapped_limb_code_is_read_only_next_to_a_limb_word()
+    test_glued_side_letter_on_a_wing_drives_side_detection()
+    test_mirrored_name_typo_still_pairs_with_its_twin()
     print('horse symmetry metadata regression: ok')
 
 

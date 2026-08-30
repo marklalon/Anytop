@@ -137,8 +137,14 @@ def _canonicalize_joint_name(name, replacements=None):
 # signature; the fore/hind half is kept as a bare 'f'/'b' so LfLeg01 can only
 # pair with RfLeg01. Mirrors _LIMB_CODE_SIGNATURE_TOKENS in
 # physics_joint_annotation -- the hind codes were missing here too, so a rig that
-# names its limbs Lb/Rb had no hind pair to derive the lateral axis from.
-_LIMB_CODE_SIGNATURE_TOKENS = {'lf': 'f', 'rf': 'f', 'lb': 'b', 'rb': 'b'}
+# names its limbs Lb/Rb had no hind pair to derive the lateral axis from, and the
+# swapped spellings (Fl/Fr, Bl/Br) plus the hexapod middle pair (Lm/Rm) are kept
+# in sync with it for the same reason.
+_LIMB_CODE_SIGNATURE_TOKENS = {
+    'lf': 'f', 'rf': 'f', 'lb': 'b', 'rb': 'b',
+    'fl': 'f', 'fr': 'f', 'bl': 'b', 'br': 'b',
+    'lm': 'm', 'rm': 'm',
+}
 
 
 def _joint_signature(name, replacements=None):
