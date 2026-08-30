@@ -778,7 +778,6 @@ def validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: 
                 motion_metadata.get("object_type") == cond[object_type].get("species_name"),
                 f"object_type mismatch for {motion_name}",
             )
-            require_valid(bool(motion_metadata.get("species_label")), f"species_label missing for {motion_name}")
             action_entry = action_labels.get(motion_name)
             require_valid(action_entry is not None, f"entry missing in {ACTION_LABELS_FILE} for {motion_name}")
             action_group = (action_entry or {}).get("action_group", "")

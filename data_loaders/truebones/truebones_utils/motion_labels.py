@@ -10,9 +10,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (
 )
 
 
-MOTION_METADATA_SCHEMA_VERSION = 5
-
-_TOKEN_PATTERN = re.compile(r"[A-Z]+(?=[A-Z][a-z]|\d|$)|[A-Z]?[a-z]+|\d+")
+MOTION_METADATA_SCHEMA_VERSION = 6
 
 # ---------------------------------------------------------------------------
 # Action groups + controlled label vocabulary  (action_labels.jsonl)
@@ -436,39 +434,8 @@ def coarse_label_from_words(words) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tokenization helpers
-# ---------------------------------------------------------------------------
-
-def _split_identifier_tokens(value: str) -> list[str]:
-    raw_parts = re.split(r"[^A-Za-z0-9]+", value)
-    tokens: list[str] = []
-    for part in raw_parts:
-        if not part:
-            continue
-        matches = _TOKEN_PATTERN.findall(part)
-        if matches:
-            tokens.extend(matches)
-        else:
-            tokens.append(part)
-    return [token.lower() for token in tokens if token]
-
-
-def _strip_species_variant(object_type: str) -> str:
-    base = re.sub(r"[-_\s]*\d+$", "", object_type).strip("-_")
-    if len(base) > 1 and base[-1].isupper() and base[-2].islower():
-        return base[:-1]
-    return base
-
-
-# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-
-def infer_species_label(object_type: str) -> str:
-    base = _strip_species_variant(object_type)
-    tokens = _split_identifier_tokens(base)
-    return " ".join(tokens) if tokens else object_type.lower()
-
 
 def normalize_action_group(raw_action_group) -> str:
     """Lower-case / strip an ``action_group`` value. Never validates membership."""
@@ -488,10 +455,6 @@ def normalize_action_label(raw_action_label) -> str:
 # Metadata builders
 # ---------------------------------------------------------------------------
 
-def build_object_labels(object_type: str) -> dict[str, str]:
-    return {"species_label": infer_species_label(object_type)}
-
-
 def build_motion_labels(
     object_type: str,
     motion_name: str | None = None,
@@ -503,7 +466,6 @@ def build_motion_labels(
     ``action_labels.jsonl`` and merged in by :func:`load_motion_metadata`.
     """
     payload: dict[str, object] = {"object_type": object_type}
-    payload.update(build_object_labels(object_type))
     if motion_name is not None:
         payload["motion_name"] = motion_name
     return payload
@@ -688,15 +650,15 @@ def write_motion_metadata(
     sidecar, and every rebuild path round-trips loaded entries back through here.
     Persisting them would leave a second copy that silently diverges the moment
     ``action_labels.jsonl`` is edited -- the sidecar is the single source of truth,
-    so the joined fields are dropped on the way out. (``action_tags`` is the
-    removed predecessor; stripping it clears the stale copies earlier rebuilds
-    baked in.)
+    so the joined fields are dropped on the way out. (``action_tags`` and
+    ``species_label`` are removed predecessors -- stripping them clears the stale
+    copies earlier rebuilds baked in.)
     """
     output_path = Path(save_dir) / MOTION_METADATA_FILE
-    joined_keys = ("action_group", "action_label", "action_tags")
+    dropped_keys = ("action_group", "action_label", "action_tags", "species_label")
     sanitized_entries = {
         motion_name: {
-            key: value for key, value in metadata.items() if key not in joined_keys
+            key: value for key, value in metadata.items() if key not in dropped_keys
         }
         for motion_name, metadata in motion_entries.items()
         if isinstance(metadata, dict)

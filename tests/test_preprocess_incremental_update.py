@@ -90,9 +90,8 @@ def test_write_motion_metadata_preserves_all_fields(tmp_path):
 
     payload = json.loads((dataset_dir / "motion_metadata.json").read_text(encoding="utf-8"))
     entry = payload["motions"]["Cat_Run_001.npy"]
-    assert payload["schema_version"] == 5
+    assert payload["schema_version"] == 6
     assert entry["object_type"] == "Cat"
-    assert entry["species_label"] == "cat"
     assert entry["translation_root_index"] == 1
     assert entry["motion_name"] == "Cat_Run_001.npy"
     # The action fields are joined in from action_labels.jsonl at load time and
@@ -101,6 +100,10 @@ def test_write_motion_metadata_preserves_all_fields(tmp_path):
     # writer.
     assert "action_group" not in entry
     assert "action_label" not in entry
+    # species_label was a derived (lower-cased object_type) text label, removed
+    # from the schema; the writer must strip the stale copies carried over from
+    # older metadata files.
+    assert "species_label" not in entry
 
 
 def test_load_motion_metadata_merges_action_labels_from_sidecar(tmp_path):
@@ -109,12 +112,11 @@ def test_load_motion_metadata_merges_action_labels_from_sidecar(tmp_path):
     (dataset_dir / "motion_metadata.json").write_text(
         json.dumps(
             {
-                "schema_version": 5,
+                "schema_version": 6,
                 "total_clips": 1,
                 "motions": {
                     "Cat_Run_001.npy": {
                         "object_type": "Cat",
-                        "species_label": "cat",
                     },
                 },
             }
@@ -138,10 +140,10 @@ def test_load_motion_metadata_fast_fails_when_label_missing(tmp_path):
     (dataset_dir / "motion_metadata.json").write_text(
         json.dumps(
             {
-                "schema_version": 5,
+                "schema_version": 6,
                 "total_clips": 1,
                 "motions": {
-                    "Cat_Run_001.npy": {"object_type": "Cat", "species_label": "cat"},
+                    "Cat_Run_001.npy": {"object_type": "Cat"},
                 },
             }
         ),
@@ -504,7 +506,6 @@ def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_infe
         calls.append(motion_name)
         return {
             "object_type": object_type,
-            "species_label": str(object_type).lower(),
             "motion_name": motion_name,
         }
 

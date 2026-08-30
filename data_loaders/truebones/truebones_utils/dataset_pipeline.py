@@ -19,7 +19,7 @@ import bisect
 from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, MOTION_METADATA_FILE, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, TPOSE_REFERENCE_SIDECAR, get_raw_data_dir
 from pathlib import Path
 from . import dataset_tags as _dataset_tags
-from .motion_labels import build_motion_labels, build_object_labels, write_motion_metadata, load_motion_metadata
+from .motion_labels import build_motion_labels, write_motion_metadata, load_motion_metadata
 from .physics_joint_annotation import (
     build_semantic_metadata,
     rest_positions_from_offsets,
@@ -371,7 +371,6 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
     object_cond['scale_factor'] = character_scale_factor
     object_cond['axial_avg_len'] = float(tp.axial_avg_len)
     object_cond['kinematic_chains'] = parents2kinchains(parents, object_policy(object_type))
-    object_cond.update(build_object_labels(object_type))
     # The skinned-mesh reference path is returned alongside cond (NOT stored on
     # object_cond) so it never enters cond.npy or the in-memory cond dict. It is
     # consumed ONLY by the offline dataset GLB tool (data_bridge.restore_glb_from_anytop)

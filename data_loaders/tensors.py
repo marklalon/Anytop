@@ -338,7 +338,7 @@ def truebones_batch_collate(batch):
             if isinstance(extra, dict):
                 if 'joint_mask_candidate_roots' in extra or 'rest_pos_ric_hml' in extra:
                     extra_cond = extra
-                elif any(key in extra for key in ('species_label', 'action_group', 'action_label', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'global_energy_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count')):
+                elif any(key in extra for key in ('action_group', 'action_label', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'global_energy_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count')):
                     motion_metadata = extra
             elif isinstance(extra, str):
                 motion_name = extra
