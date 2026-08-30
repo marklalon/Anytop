@@ -38,8 +38,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import build_joint_embedding_texts
-from utils.skeleton_similarity import group_tags
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond as _load_cond
+from data_loaders.truebones.truebones_utils.dataset_sources import bare_species_name
 
 def l2_normalize(emb: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     norm = float(np.linalg.norm(emb))
@@ -52,17 +52,21 @@ def l2_normalize(emb: np.ndarray, eps: float = 1e-12) -> np.ndarray:
 # Main
 # ---------------------------------------------------------------------------
 
+# Canonical object_subset keys (see dataset_tags.CANONICAL_OBJECT_SUBSETS):
+# the lower-cased first species tag. Kept in sync with the dataset code so the
+# plot grouping matches how training/``--object_subsets`` bucket species.
 GROUP_COLORS = {
-    "Quadruped":   "#4e79a7",
-    "Biped":       "#f28e2b",
-    "Multiped":    "#59a14f",
-    "Winged":      "#e15759",
-    "Serpentine":  "#76b7b2",
-    "Aquatic":     "#edc948",
+    "quadruped":   "#4e79a7",
+    "biped":       "#f28e2b",
+    "multiped":    "#59a14f",
+    "winged":      "#e15759",
+    "serpentine":  "#76b7b2",
+    "aquatic":     "#edc948",
+    "drifting":    "#8c564b",
     "unknown":     "#b07aa1",
 }
 
-GROUP_ORDER = ["Quadruped", "Biped", "Multiped", "Winged", "Serpentine", "Aquatic", "unknown"]
+GROUP_ORDER = ["quadruped", "biped", "multiped", "winged", "serpentine", "aquatic", "drifting", "unknown"]
 
 
 def load_cond(path: str) -> dict:
@@ -111,6 +115,22 @@ def _embedding_source_description(cond: dict) -> str:
     return " | ".join(lines)
 
 
+def _object_subset(object_cond: dict, a: str) -> str:
+    """Canonical object_subset for an entry: the lower-cased first motion tag.
+
+    Entries with no tags are a data error (every species must be registered in
+    species_tags.jsonl), so fail loudly instead of silently plotting an
+    "unknown" bucket.
+    """
+    tags = tuple(object_cond.get("species_tags") or ())
+    if not tags:
+        raise ValueError(
+            f"{a!r} has empty species_tags in cond.npy; register it in "
+            "species_tags.jsonl and re-stamp the dataset cond."
+        )
+    return tags[0].strip().lower()
+
+
 def per_animal_embedding(cond: dict, normalize_means: bool) -> dict:
     """
     Returns per-animal diagnostics including the precomputed semantic joint-name mean embedding.
@@ -139,8 +159,7 @@ def per_animal_embedding(cond: dict, normalize_means: bool) -> dict:
 
         mean_emb = joint_embs.mean(axis=0)
         plot_emb = l2_normalize(mean_emb) if normalize_means else mean_emb
-        tags = group_tags(a)
-        group = next((g for g in GROUP_ORDER if g in tags), "unknown")
+        group = _object_subset(object_cond, a)
         result[a] = {
             "mean_emb": mean_emb,
             "plot_emb": plot_emb,
@@ -180,8 +199,7 @@ def per_animal_species_embedding(cond: dict, normalize: bool) -> dict:
         embedding_text = str(species_meta.get("embedding_text") or "")
 
         plot_emb = l2_normalize(species_emb) if normalize else species_emb.copy()
-        tags = group_tags(a)
-        group = next((g for g in GROUP_ORDER if g in tags), "unknown")
+        group = _object_subset(object_cond, a)
         result[a] = {
             "species_emb": species_emb,
             "plot_emb": plot_emb,
@@ -212,9 +230,10 @@ def plot_tsne(animal_embs: dict, output_dir: Path, perplexity: int, suffix: str 
     for a, (x, y), g in zip(animals, coords, groups):
         color = GROUP_COLORS.get(g, GROUP_COLORS["unknown"])
         ax.scatter(x, y, c=color, s=80, zorder=2, edgecolors="white", linewidths=0.5)
-        
-        # Create text annotation (position will be adjusted later)
-        text = ax.text(x, y, a, fontsize=7, ha="center", va="bottom", zorder=4)
+
+        # Label with the bare species name (strip the <namespace>/ prefix).
+        label = bare_species_name(a)
+        text = ax.text(x, y, label, fontsize=7, ha="center", va="bottom", zorder=4)
         texts.append(text)
 
     # Use adjustText to automatically reposition overlapping labels
