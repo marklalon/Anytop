@@ -146,3 +146,18 @@ SCALE_BODY_SPAN_BLEND_WEIGHT = 0.5
 # bone length that drives scale normalization. 53% of the unitybundles species
 # carry at least one (MU04_Pollen's RigSpine is 3.8e-5 against 4.43).
 DEGENERATE_BONE_LENGTH_RATIO = 0.02
+
+# A bone this many times longer than the skeleton's 90th-percentile bone is a
+# rig socket (a held weapon parked away from the body in the T-pose), not
+# anatomy, and is excluded from scale statistics. Calibrated on the 260 dataset
+# species: the highest anatomical leaf is at 2.94 (TTR_MountedScout's horse tail
+# tip), the lowest prop at 3.34 (RMW_EvilMage's Staff01); 3.25 flags 16 joints
+# across 14 unitybundles species (Bow, Arrow, Sword, Shield, ...) and nothing in
+# truebones/zoo or zoo_upgrade (closest: the rhino's rider marker at 3.22).
+PROP_SOCKET_BONE_LENGTH_RATIO = 3.25
+
+# A socket may carry a short chain (MLS_ElfRanger's ``Bow`` -> ``Bow02``), so an
+# over-long bone still counts while at most this many joints hang below it, and
+# the whole subtree is excluded with it. Above 4 this starts to reach real
+# anatomy.
+PROP_SOCKET_MAX_SUBTREE_JOINTS = 4

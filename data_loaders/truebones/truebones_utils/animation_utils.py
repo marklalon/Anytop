@@ -19,6 +19,8 @@ from data_loaders.truebones.truebones_utils.param_utils import (
     HML_REF_AXIAL_BONE_LENGTH,
     HML_REF_MAX_SPAN,
     MAX_JOINTS,
+    PROP_SOCKET_BONE_LENGTH_RATIO,
+    PROP_SOCKET_MAX_SUBTREE_JOINTS,
     ROOT_Y_MIN_HEIGHT,
     SCALE_BODY_SPAN_BLEND_WEIGHT,
     VERTICAL_CLAMP_MIN_RATIO,
@@ -33,6 +35,7 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (
 )
 from .physics_joint_annotation import (
     build_semantic_metadata,
+    joint_name_is_non_anatomical,
     infer_species_joint_name_prefixes,
     normalize_joint_name,
     strip_joint_name_prefix,
@@ -631,9 +634,35 @@ def bake_descendant_y_into_translation_root(anim, max_depth=2):
     )
 
 
+def rest_pose_animation(anim):
+    """The one-frame rest pose of ``anim``: its orients seated on its offsets.
+
+    ``positions_global`` reads only the per-frame ``rotations``/``positions``, so
+    FK'ing a multi-frame clip never yields its rest pose -- reduce it here first.
+    """
+    rest_rotations = np.asarray(anim.orients.qs, dtype=np.float64)
+    offsets = np.asarray(anim.offsets, dtype=np.float64)
+    if rest_rotations.shape[0] != offsets.shape[0]:
+        raise ValueError(
+            f"Animation has {offsets.shape[0]} offsets but "
+            f"{rest_rotations.shape[0]} rest rotations"
+        )
+    return Animation(
+        Quaternions(rest_rotations[None].copy()),
+        offsets[None].copy(),
+        anim.orients.copy(),
+        offsets.copy(),
+        np.asarray(anim.parents, dtype=np.int32).copy(),
+    )
+
+
 def _get_reference_body_length(anim):
-    """Estimate a character size from the processed rest pose joint span."""
-    return get_rest_body_max_span(anim.offsets, anim.parents)
+    """Character size from the rest-pose joint span.
+
+    ``anim`` is a multi-frame clip; reduce it to its rest pose first so the band
+    this feeds is a species property, not tied to the pose the clip opens with.
+    """
+    return max_joint_span(positions_global(rest_pose_animation(anim))[0])
 
 
 def _compress_positive_excursion(values, min_h, max_h):
@@ -1014,7 +1043,69 @@ def reorder_animation_to_dfs(anim, names):
 
 ################## Scaling Utilities #####################
 
-def get_average_axial_bone_length(offsets, parents, joint_side_labels):
+def find_prop_socket_joints(
+    offsets,
+    parents,
+    joint_names,
+    length_ratio=PROP_SOCKET_BONE_LENGTH_RATIO,
+    max_subtree_joints=PROP_SOCKET_MAX_SUBTREE_JOINTS,
+):
+    """Joints held by a detached prop/weapon socket bone, as an index set.
+
+    Unity character packs park a held weapon in its own bone far from the body
+    (MLH_Archer's ``Bow``/``Arrow`` at (+/-3, 1, 0) on a 1.03-tall archer), which
+    dominates the rest-pose size statistics and shrinks the character ~3x. A
+    socket is a joint satisfying all three of:
+
+    * its name carries no body part (``joint_name_is_non_anatomical``),
+    * it carries at most ``max_subtree_joints`` joints below it,
+    * its bone is ``length_ratio`` times the skeleton's 90th-percentile bone
+      (median as floor for near-degenerate rigs).
+
+    The socket and its whole subtree are returned. Name and geometry fail in
+    opposite directions and are exact only together: 194 dataset joints are
+    non-anatomically named but sit on the body (armor, fur, saddles), while
+    geometry alone cannot tell a parked staff from a single-bone tail.
+    """
+    offsets = np.asarray(offsets, dtype=np.float64)
+    parents = np.asarray(parents)
+    joint_count = len(parents)
+    if joint_count < 2:
+        return set()
+    if len(joint_names) != joint_count:
+        raise ValueError(
+            f"Expected {joint_count} joint names for the socket-name guard, got {len(joint_names)}"
+        )
+
+    # The root's own offset is rig placement, not a bone: keep it out of both
+    # the reference and the scan, the same way every other bone statistic does.
+    lengths = np.linalg.norm(offsets, axis=1)
+    reference = max(float(np.percentile(lengths[1:], 90)), float(np.median(lengths[1:])))
+    if reference <= 0.0:
+        return set()
+
+    subtree_size = np.ones(joint_count, dtype=np.int64)
+    for joint_index in range(joint_count - 1, 0, -1):
+        parent_index = int(parents[joint_index])
+        if parent_index >= 0:
+            subtree_size[parent_index] += subtree_size[joint_index]
+
+    prop_joints = {
+        joint_index
+        for joint_index in range(1, joint_count)
+        if subtree_size[joint_index] <= max_subtree_joints
+        and lengths[joint_index] > length_ratio * reference
+        and joint_name_is_non_anatomical(joint_names[joint_index])
+    }
+    # Sweep the sockets' descendants in. Parents always precede their children,
+    # so one ascending pass carries a socket down its whole chain.
+    for joint_index in range(1, joint_count):
+        if int(parents[joint_index]) in prop_joints:
+            prop_joints.add(joint_index)
+    return prop_joints
+
+
+def get_average_axial_bone_length(offsets, parents, joint_side_labels, joint_names):
     """Compute the mean bone length of axial (center-labeled) bones, excluding root.
 
     Falls back to the mean bone length across *all* non-root bones when no
@@ -1024,19 +1115,30 @@ def get_average_axial_bone_length(offsets, parents, joint_side_labels):
     zero-length ``RigSpine`` of MU04_Pollen -- are dropped from the mean. They
     carry no size information but drag the average down, which inflates the
     character's scale factor (Pollen: 2.95 instead of 4.43, a 1.22x oversize).
-    Which branch is taken is still decided by the *unfiltered* center-bone
-    count, so filtering never flips a skeleton between the two branches.
+    Prop-socket bones (see ``find_prop_socket_joints``) are dropped for the
+    mirror-image reason: MLH_Archer's 3.05-long ``Bow``/``Arrow`` lift the 0.31
+    body mean to 0.55 and shrink the archer 1.8x. The branch is still chosen by
+    the *unfiltered* center-bone count, so filtering never flips skeletons
+    between branches.
     """
-    all_lengths = [float(np.linalg.norm(offsets[j])) for j in range(1, len(parents))]
+    prop_joints = find_prop_socket_joints(offsets, parents, joint_names)
+    all_lengths = [
+        float(np.linalg.norm(offsets[j]))
+        for j in range(1, len(parents))
+        if j not in prop_joints
+    ]
     if not all_lengths:
         return 0.1  # ultimate fallback for single-bone skeletons
     min_bone_length = DEGENERATE_BONE_LENGTH_RATIO * (sum(all_lengths) / len(all_lengths))
 
+    center_count = 0
     axial_lengths = []
     for joint_index in range(1, len(parents)):  # skip root (no parent bone)
         if joint_index < len(joint_side_labels) and joint_side_labels[joint_index] == 'center':
-            axial_lengths.append(float(np.linalg.norm(offsets[joint_index])))
-    if len(axial_lengths) >= 10:
+            center_count += 1
+            if joint_index not in prop_joints:
+                axial_lengths.append(float(np.linalg.norm(offsets[joint_index])))
+    if center_count >= 10 and axial_lengths:
         return _mean_excluding_degenerate(axial_lengths, min_bone_length)
     # Fallback: average bone length across all non-root bones.
     return _mean_excluding_degenerate(all_lengths, min_bone_length)
@@ -1050,19 +1152,47 @@ def _mean_excluding_degenerate(lengths, min_bone_length):
     return sum(kept) / len(kept)
 
 
-def get_rest_body_max_span(offsets, parents):
-    rest_positions = np.zeros_like(np.asarray(offsets, dtype=np.float64))
+def max_joint_span(positions, exclude_joints=()):
+    """Largest joint-to-joint distance among ``positions``.
+
+    ``exclude_joints`` drops joints from the measurement only -- the positions
+    are already resolved, so excluding one never moves another. The unfiltered
+    span is returned when the exclusions would leave fewer than two joints.
+    """
+    positions = np.asarray(positions, dtype=np.float64)
+    if exclude_joints:
+        kept = [j for j in range(len(positions)) if j not in exclude_joints]
+        if len(kept) >= 2:
+            positions = positions[kept]
+    joint_deltas = positions[:, None, :] - positions[None, :, :]
+    max_span = np.linalg.norm(joint_deltas, axis=-1).max()
+    return max(float(max_span), 1e-8)
+
+
+def rest_positions_from_offsets(offsets, parents):
+    """Accumulate parent-to-child ``offsets`` into rest-pose joint positions.
+
+    The offsets must already be rest-pose deltas (``rest_positions[j] -
+    rest_positions[parent[j]]``). Bone-local ``Animation.offsets`` are stated in
+    the parent bone's frame and sum to a straightened-out skeleton, so FK a
+    loaded animation instead of passing ``anim.offsets`` here.
+    """
+    offsets = np.asarray(offsets, dtype=np.float64)
+    rest_positions = np.zeros_like(offsets)
     for joint_index, parent_index in enumerate(parents):
         if parent_index >= 0:
             rest_positions[joint_index] = rest_positions[parent_index] + offsets[joint_index]
         else:
             rest_positions[joint_index] = offsets[joint_index]
-    joint_deltas = rest_positions[:, None, :] - rest_positions[None, :, :]
-    max_span = np.linalg.norm(joint_deltas, axis=-1).max()
-    return max(float(max_span), 1e-8)
+    return rest_positions
 
 
-def get_scale_reference_extent(offsets, parents):
+def get_rest_body_max_span(offsets, parents, exclude_joints=()):
+    """``max_joint_span`` of the rest pose accumulated from ``offsets``."""
+    return max_joint_span(rest_positions_from_offsets(offsets, parents), exclude_joints)
+
+
+def get_scale_reference_extent(rest_positions, parents, joint_names):
     """Character extent used for scale normalization.
 
     This is the rest-pose joint span widened to the root's own elevation above
@@ -1077,9 +1207,22 @@ def get_scale_reference_extent(offsets, parents):
 
     Only the vertical component counts: the root offset's XZ is authoring
     placement rather than size, and is exactly 0.0 for all 260 dataset species.
+
+    Prop-socket joints (see ``find_prop_socket_joints``) are left out of the
+    span for the same reason: a parked weapon sets the span from where the rig
+    authored it, not from the body. ``rest_positions`` must be the FK'd rest
+    pose, not hand-accumulated offsets: see ``rest_positions_from_offsets``.
     """
-    joint_span = get_rest_body_max_span(offsets, parents)
-    root_elevation = abs(float(np.asarray(offsets, dtype=np.float64)[0][1]))
+    rest_positions = np.asarray(rest_positions, dtype=np.float64)
+    parents = np.asarray(parents)
+    # Parent-to-child deltas. Their lengths are the bone lengths the socket
+    # filter needs, and are identical to the bone-local offsets' lengths.
+    bone_deltas = rest_positions.copy()
+    has_parent = parents >= 0
+    bone_deltas[has_parent] -= rest_positions[parents[has_parent]]
+    prop_joints = find_prop_socket_joints(bone_deltas, parents, joint_names)
+    joint_span = max_joint_span(rest_positions, exclude_joints=prop_joints)
+    root_elevation = abs(float(rest_positions[0][1]))
     return max(joint_span, root_elevation)
 
 

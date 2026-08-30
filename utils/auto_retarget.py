@@ -651,7 +651,7 @@ def retarget_animation_file_to_target(
     for name in src_names:
         detected = detect_joint_side(name)
         side_labels.append(detected if detected in ('left', 'right') else 'center')
-    axial_avg_len = get_average_axial_bone_length(src_offsets, src_parents, side_labels)
+    axial_avg_len = get_average_axial_bone_length(src_offsets, src_parents, side_labels, src_names)
     # Must stay the same call the dataset path makes in
     # get_common_features_from_rest_pose: the retargeter cancels a uniform
     # source scale (it renormalizes by mean_len_tgt / mean_len_src), but the
@@ -659,7 +659,7 @@ def retarget_animation_file_to_target(
     # -- ROOT_Y_MIN_HEIGHT, the root-XZ strip / loop-detection bands, the
     # foot-contact velocity and height thresholds -- do not, so a raw source
     # file must land in the same normalized space its dataset clips do.
-    body_max_span = get_scale_reference_extent(src_offsets, src_parents)
+    body_max_span = get_scale_reference_extent(bind_positions[0], src_parents, src_names)
     source_scale_factor = compute_scale_factor(axial_avg_len, body_max_span=body_max_span)
     source_tpose_anim, _source_root_xz_center, source_scale_factor = process_anim(
         bind_anim,

@@ -983,6 +983,25 @@ def _clean_embedding_token(token):
     return re.sub(r'\d+$', '', cleaned)
 
 
+def joint_name_is_non_anatomical(name, additional_prefixes=()):
+    """True when a joint's name carries no body-part token.
+
+    Reuses the embedding vocabulary: a joint named ``Sword``, ``Quiver`` or
+    ``Backpack`` (or a pure marker like ``joint1``/``Bone02`` that reduces to
+    nothing) is taken at its word, with the same test
+    ``build_joint_embedding_texts`` uses to blank body tokens.
+
+    A *name* signal only -- armor, fur and saddles are non-anatomical but still
+    part of the character's size; pair with geometry (``find_prop_socket_joints``).
+    """
+    tokens = {
+        _clean_embedding_token(token)
+        for token in _refine_joint_embedding_name(name, additional_prefixes=additional_prefixes)
+    }
+    tokens.discard('')
+    return not tokens or bool(tokens & _EMBED_TEXT_NON_ANATOMICAL_TOKENS)
+
+
 def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_prefixes=()):
     canonical_name = _canonicalize_joint_name(name, additional_prefixes=additional_prefixes)
     clean_tokens = []

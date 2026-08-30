@@ -50,6 +50,7 @@ from .animation_utils import (
     crop_animation_to_max_joints,
     get_average_axial_bone_length,
     get_scale_reference_extent,
+    rest_pose_animation,
     compute_scale_factor,
     scale_anim,
     compute_rots_from_tpos,
@@ -358,19 +359,7 @@ def infer_translation_root_index_from_features(data, parents, offsets, anim_pos_
 
 def _rest_pose_animation_from_loaded_anim(anim):
     """Return a one-frame bind/rest-pose Animation from a loaded FBX animation."""
-    rest_rotations = np.asarray(anim.orients.qs, dtype=np.float64)
-    if rest_rotations.shape[0] != anim.offsets.shape[0]:
-        raise ValueError(
-            f"Loaded animation has {anim.offsets.shape[0]} offsets but "
-            f"{rest_rotations.shape[0]} rest rotations"
-        )
-    return Animation(
-        Quaternions(rest_rotations[None].copy()),
-        np.asarray(anim.offsets, dtype=np.float64)[None].copy(),
-        anim.orients.copy(),
-        np.asarray(anim.offsets, dtype=np.float64).copy(),
-        np.asarray(anim.parents, dtype=np.int32).copy(),
-    )
+    return rest_pose_animation(anim)
 
 
 """ get object_type common characteristics, extracted from an FBX/GLB bind/rest pose"""
@@ -432,11 +421,17 @@ def get_common_features_from_rest_pose(
     for name in rest_pose_names:
         detected = detect_joint_side(name)
         _rest_pose_side_labels.append(detected if detected in ('left', 'right') else 'center')
-    axial_avg_len = get_average_axial_bone_length(reference_anim.offsets, reference_anim.parents, _rest_pose_side_labels)
+    axial_avg_len = get_average_axial_bone_length(
+        reference_anim.offsets, reference_anim.parents, _rest_pose_side_labels, rest_pose_names
+    )
     # Extent, not joint span: a rig whose root is seated far above the origin
     # (hovering/drifting creatures) must be normalized against that elevation
-    # too, or bone-driven scaling leaves its root height an outlier.
-    reference_body_max_span = get_scale_reference_extent(reference_anim.offsets, reference_anim.parents)
+    # too, or bone-driven scaling leaves its root height an outlier. Measured on
+    # the FK'd rest pose above: reference_anim.offsets are parent-bone-local and
+    # sum to a straightened skeleton.
+    reference_body_max_span = get_scale_reference_extent(
+        reference_positions[0], reference_anim.parents, rest_pose_names
+    )
     scale_factor = compute_scale_factor(axial_avg_len, body_max_span=reference_body_max_span)
 
     scaled, _root_xz_center, scale_factor = process_anim(
