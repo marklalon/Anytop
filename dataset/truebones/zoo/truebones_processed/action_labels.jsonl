@@ -86,8 +86,8 @@
 {"clip": "Bear_TipLeft_1.npy", "action_group": "transition", "action_label": "fall, collapses onto left side"}
 {"clip": "Bear_Trot_1.npy", "action_group": "locomotion", "action_label": "run, trot with rhythmic alternating legs and forward lean"}
 {"clip": "Bear_Trotting_1.npy", "action_group": "locomotion", "action_label": "run, trotting, rhythmic alternating limb movement"}
-{"clip": "Bear_Turn180_1.npy", "action_group": "locomotion", "action_label": "turn, rotates body 180 degrees in low alert posture"}
-{"clip": "Bear_TurnLeft_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body to the left"}
+{"clip": "Bear_Turn180_1.npy", "action_group": "transition", "action_label": "turn, rotates body 180 degrees in low alert posture"}
+{"clip": "Bear_TurnLeft_1.npy", "action_group": "transition", "action_label": "turn, pivots body to the left"}
 {"clip": "Bear_WakeUp_1.npy", "action_group": "transition", "action_label": "getup, rises from prone to standing"}
 {"clip": "Bear_WalkForward_1.npy", "action_group": "locomotion", "action_label": "walk, moves forward with head lowered and mouth open"}
 {"clip": "Bear_WetShake_1.npy", "action_group": "stationary", "action_label": "shake, vigorously shakes head and body to dislodge water"}
@@ -285,7 +285,7 @@
 {"clip": "Deer_Squirly_1.npy", "action_group": "stationary", "action_label": "turn, sidesteps with small movement"}
 {"clip": "Deer_TakeOff_1.npy", "action_group": "transition", "action_label": "jump, takeoff, crouches then leaps"}
 {"clip": "Deer_Trot_1.npy", "action_group": "locomotion", "action_label": "run, trots with a rhythmic diagonal gait"}
-{"clip": "Deer_TurnLeft_1.npy", "action_group": "locomotion", "action_label": "walk, turn, pivots body to the left"}
+{"clip": "Deer_TurnLeft_1.npy", "action_group": "transition", "action_label": "turn, pivots body to the left"}
 {"clip": "Deer_WalkBack_1.npy", "action_group": "locomotion", "action_label": "walk, moves backward in a steady rhythmic gait"}
 {"clip": "Deer_WalkCall_1.npy", "action_group": "locomotion", "action_label": "walk, head raised calling"}
 {"clip": "Deer_WalkForward_1.npy", "action_group": "locomotion", "action_label": "walk, steady gait with rhythmic leg sequence"}
@@ -343,8 +343,8 @@
 {"clip": "Dog_SwimLeft_1.npy", "action_group": "locomotion", "action_label": "swim, paddles legs in water turning left"}
 {"clip": "Dog_SwimRight_1.npy", "action_group": "locomotion", "action_label": "swim, paddles legs in water turning right"}
 {"clip": "Dog_Swim_1.npy", "action_group": "locomotion", "action_label": "swim, legs paddling in a rhythmic cycle"}
-{"clip": "Dog_TurnLeft_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body and head to the left"}
-{"clip": "Dog_TurnRight_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body and head to the right"}
+{"clip": "Dog_TurnLeft_1.npy", "action_group": "transition", "action_label": "turn, pivots body and head to the left"}
+{"clip": "Dog_TurnRight_1.npy", "action_group": "transition", "action_label": "turn, pivots body and head to the right"}
 {"clip": "Dog_Wag_1.npy", "action_group": "stationary", "action_label": "idle, stands still wagging its tail"}
 {"clip": "Dog_WalkBackwardsLoop_1.npy", "action_group": "locomotion", "action_label": "walk, moves backward with steady rhythmic gait"}
 {"clip": "Dog_WalkLoop_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic gait with tail swaying"}
@@ -408,8 +408,8 @@
 {"clip": "FireAnt_AntRip_1.npy", "action_group": "stationary", "action_label": "attack, bite, rapidly opens and closes mandibles"}
 {"clip": "FireAnt_AntRoar_1.npy", "action_group": "stationary", "action_label": "roar, raises head opening and closing mandibles"}
 {"clip": "FireAnt_AntSnap_1.npy", "action_group": "stationary", "action_label": "attack, snaps mandibles open and closed while standing still"}
-{"clip": "FireAnt_AntTurnLeft_1.npy", "action_group": "locomotion", "action_label": "turn, rotates body to the left"}
-{"clip": "FireAnt_AntTurnRight_1.npy", "action_group": "locomotion", "action_label": "turn, rotates body to the right"}
+{"clip": "FireAnt_AntTurnLeft_1.npy", "action_group": "transition", "action_label": "turn, rotates body to the left"}
+{"clip": "FireAnt_AntTurnRight_1.npy", "action_group": "transition", "action_label": "turn, rotates body to the right"}
 {"clip": "FireAnt_AntUpFromDown2_1.npy", "action_group": "transition", "action_label": "getup, rises from crouched posture to upright stance"}
 {"clip": "FireAnt_AntUpFromDown_1.npy", "action_group": "transition", "action_label": "getup, rises from crouched posture to upright stance"}
 {"clip": "Flamingo_BendIdle_1.npy", "action_group": "stationary", "action_label": "idle, bends neck down then returns upright"}
@@ -824,12 +824,12 @@
 {"clip": "Roach_Scurry_1.npy", "action_group": "locomotion", "action_label": "run, scurry with rapid jerky leg movements"}
 {"clip": "Roach_Shake_1.npy", "action_group": "stationary", "action_label": "shake, body and antennae wiggle while legs planted"}
 {"clip": "Roach_Smelling_1.npy", "action_group": "stationary", "action_label": "idle, sniffing with antennae and head"}
-{"clip": "Roach_TurnLeft_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body to the left"}
-{"clip": "Roach_TurnRight_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body to the right"}
+{"clip": "Roach_TurnLeft_1.npy", "action_group": "transition", "action_label": "turn, pivots body to the left"}
+{"clip": "Roach_TurnRight_1.npy", "action_group": "transition", "action_label": "turn, pivots body to the right"}
 {"clip": "Roach_Uppity_1.npy", "action_group": "stationary", "action_label": "jump, twitching legs and antennae while upright"}
-{"clip": "SabreToothTiger_180Flip_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body 180 degrees to face opposite direction"}
-{"clip": "SabreToothTiger_180RIght_1.npy", "action_group": "locomotion", "action_label": "turn, rotates 180 degrees to the right"}
-{"clip": "SabreToothTiger_45TurnLeft_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body left rotating torso and head"}
+{"clip": "SabreToothTiger_180Flip_1.npy", "action_group": "transition", "action_label": "turn, pivots body 180 degrees to face opposite direction"}
+{"clip": "SabreToothTiger_180RIght_1.npy", "action_group": "transition", "action_label": "turn, rotates 180 degrees to the right"}
+{"clip": "SabreToothTiger_45TurnLeft_1.npy", "action_group": "transition", "action_label": "turn, pivots body left rotating torso and head"}
 {"clip": "SabreToothTiger_Agitated_1.npy", "action_group": "stationary", "action_label": "idle, crouches low with mouth open shifting weight"}
 {"clip": "SabreToothTiger_Attack_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward with jaws open"}
 {"clip": "SabreToothTiger_BackUp_1.npy", "action_group": "locomotion", "action_label": "walk, retreat, moves backward with head lowered and mouth open"}
@@ -845,7 +845,7 @@
 {"clip": "SabreToothTiger_Growling_1.npy", "action_group": "stationary", "action_label": "idle, crouched low opening and closing jaws to growl"}
 {"clip": "SabreToothTiger_Layout_1.npy", "action_group": "transition", "action_label": "rest, lowers body into a crouched predatory stance"}
 {"clip": "SabreToothTiger_Leaper_1.npy", "action_group": "transition", "action_label": "jump, lunge forward with front paws extended and mouth open"}
-{"clip": "SabreToothTiger_LeftTurn_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body left in low stance"}
+{"clip": "SabreToothTiger_LeftTurn_1.npy", "action_group": "transition", "action_label": "turn, pivots body left in low stance"}
 {"clip": "SabreToothTiger_Mean_1.npy", "action_group": "stationary", "action_label": "attack, crouches low with head lowered and mouth open"}
 {"clip": "SabreToothTiger_PawSwatting_1.npy", "action_group": "stationary", "action_label": "attack, lunges forward and swats with front paw"}
 {"clip": "SabreToothTiger_PissedOff2_1.npy", "action_group": "stationary", "action_label": "roar, aggressive display opening and closing jaws"}
@@ -868,7 +868,7 @@
 {"clip": "SabreToothTiger_Swim_1.npy", "action_group": "locomotion", "action_label": "swim, paddles limbs in a rhythmic cycle"}
 {"clip": "SabreToothTiger_TiredYawn_1.npy", "action_group": "stationary", "action_label": "idle, yawns with head tilted back"}
 {"clip": "SabreToothTiger_Trot_1.npy", "action_group": "locomotion", "action_label": "run, trot with rhythmic alternating legs and forward-leaning posture"}
-{"clip": "SabreToothTiger_TurnLeft_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body to the left"}
+{"clip": "SabreToothTiger_TurnLeft_1.npy", "action_group": "transition", "action_label": "turn, pivots body to the left"}
 {"clip": "SandMouse_Attack2_1.npy", "action_group": "stationary", "action_label": "attack, rear on hind legs and lunge forward"}
 {"clip": "SandMouse_Attack_1.npy", "action_group": "stationary", "action_label": "attack, rears up on hind legs thrusting front paws forward"}
 {"clip": "SandMouse_Die2_1.npy", "action_group": "transition", "action_label": "die, collapses onto back, limbs twitching, tail curling"}
@@ -935,8 +935,8 @@
 {"clip": "Scorpion_SlowForward_1.npy", "action_group": "locomotion", "action_label": "walk, slow deliberate gait with body low to the ground"}
 {"clip": "Scorpion_Stinger_1.npy", "action_group": "stationary", "action_label": "attack, raises and lowers tail in a striking motion"}
 {"clip": "Scorpion_StretchArms_1.npy", "action_group": "stationary", "action_label": "stretch, extends front pincers outward and retracts"}
-{"clip": "Scorpion_TurnLeft_1.npy", "action_group": "locomotion", "action_label": "turn, rotates body left with tail raised"}
-{"clip": "Scorpion_TurnRight_1.npy", "action_group": "locomotion", "action_label": "turn, rotates body right with tail raised"}
+{"clip": "Scorpion_TurnLeft_1.npy", "action_group": "transition", "action_label": "turn, rotates body left with tail raised"}
+{"clip": "Scorpion_TurnRight_1.npy", "action_group": "transition", "action_label": "turn, rotates body right with tail raised"}
 {"clip": "Scorpion_WalkForward_1.npy", "action_group": "locomotion", "action_label": "walk, moves forward with rhythmic gait"}
 {"clip": "Skunk_Die_1.npy", "action_group": "transition", "action_label": "die, collapses onto side and lies motionless"}
 {"clip": "Skunk_Idle2_1.npy", "action_group": "stationary", "action_label": "idle, stands still with body lowered and tail held high"}
@@ -1059,10 +1059,10 @@
 {"clip": "Trex_StepBack_1.npy", "action_group": "locomotion", "action_label": "walk, steps backward with a slow deliberate gait"}
 {"clip": "Trex_Stunned_1.npy", "action_group": "transition", "action_label": "hurt, stumbles and staggers with unsteady gait"}
 {"clip": "Trex_Stunned_2.npy", "action_group": "stationary", "action_label": "idle, hurt, stands still with lowered head and open mouth"}
-{"clip": "Trex_Turn180Look_1.npy", "action_group": "locomotion", "action_label": "turn, rotates body 180 degrees with head lowered looking down"}
-{"clip": "Trex_Turn180Right_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body 180 degrees to the right"}
-{"clip": "Trex_Turn90Left_1.npy", "action_group": "locomotion", "action_label": "turn, rotates body ninety degrees left with head lowered"}
-{"clip": "Trex_Turn90Right_1.npy", "action_group": "locomotion", "action_label": "turn, rotates body ninety degrees right with head lowered"}
+{"clip": "Trex_Turn180Look_1.npy", "action_group": "transition", "action_label": "turn, rotates body 180 degrees with head lowered looking down"}
+{"clip": "Trex_Turn180Right_1.npy", "action_group": "transition", "action_label": "turn, pivots body 180 degrees to the right"}
+{"clip": "Trex_Turn90Left_1.npy", "action_group": "transition", "action_label": "turn, rotates body ninety degrees left with head lowered"}
+{"clip": "Trex_Turn90Right_1.npy", "action_group": "transition", "action_label": "turn, rotates body ninety degrees right with head lowered"}
 {"clip": "Trex_WalkBack_1.npy", "action_group": "locomotion", "action_label": "walk, retreats backward with tail swaying for balance"}
 {"clip": "Trex_WalkBite_1.npy", "action_group": "locomotion", "action_label": "walk, attack, walks while opening and closing jaws open and close in a bite"}
 {"clip": "Trex_WalkHeadLow_1.npy", "action_group": "locomotion", "action_label": "walk, head low, tail sways for balance"}

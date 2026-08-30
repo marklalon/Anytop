@@ -44,7 +44,7 @@
 {"clip": "Bear_StandToLying_1.npy", "action_group": "transition", "action_label": "stand, lie down, lowers body to prone position"}
 {"clip": "Bear_Stand2_1.npy", "action_group": "stationary", "action_label": "idle, stands still"}
 {"clip": "Bear_Trot_1.npy", "action_group": "locomotion", "action_label": "run, trot with rhythmic alternating legs"}
-{"clip": "Bear_TurnLeft_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body to the left"}
+{"clip": "Bear_TurnLeft_1.npy", "action_group": "transition", "action_label": "turn, pivots body to the left"}
 {"clip": "Bear_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, steady gait with rhythmic limb sequence"}
 {"clip": "Bear_WalkLeft_1.npy", "action_group": "locomotion", "action_label": "walk, moves left with a steady gait"}
 {"clip": "Bear_WalkSlow_1.npy", "action_group": "locomotion", "action_label": "walk, slow steady gait"}
@@ -158,7 +158,7 @@
 {"clip": "Horse_Run_1.npy", "action_group": "locomotion", "action_label": "run, galloping gait with rhythmic body stretch"}
 {"clip": "Horse_Sleeping_1.npy", "action_group": "stationary", "action_label": "rest, sleep, lies still"}
 {"clip": "Horse_Trot_1.npy", "action_group": "locomotion", "action_label": "run, trot with rhythmic alternating legs"}
-{"clip": "Horse_Turn_1.npy", "action_group": "locomotion", "action_label": "turn, pivots body, turns right 90 degrees"}
+{"clip": "Horse_Turn_1.npy", "action_group": "transition", "action_label": "turn, pivots body, turns right 90 degrees"}
 {"clip": "Horse_WakeUp_1.npy", "action_group": "transition", "action_label": "getup, rises from lying to standing"}
 {"clip": "Horse_Walk_1.npy", "action_group": "locomotion", "action_label": "walk, rhythmic gait with head bobbing"}
 {"clip": "Horse_Wound_1.npy", "action_group": "transition", "action_label": "hurt, rears up and falls over"}

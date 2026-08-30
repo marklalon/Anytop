@@ -42,10 +42,11 @@ ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 # labels carry detail words only and derive an all-zero multi-hot -- a defined
 # state, not a defect.
 #
-# Membership threshold: >= ~20 supporting clips out of 1445. Rarer actions live in
-# ACTION_VOCAB_DETAIL, where they still reach the model through the T5 text path
-# but get no dedicated multi-hot slot (too few samples to learn a reliable
-# response from).
+# Membership threshold: a word earns a core slot when it (a) has >= ~20 supporting
+# clips AND (b) names a genuinely independent coarse action -- not an aspect of an
+# existing core word (stand->idle, flap->fly, kick->attack). Rarer or single-species
+# actions live in ACTION_VOCAB_DETAIL, where they still reach the model through the
+# T5 text path but get no dedicated multi-hot slot.
 ACTION_VOCAB_CORE: tuple[str, ...] = (
     "idle",
     "walk",
@@ -65,17 +66,23 @@ ACTION_VOCAB_CORE: tuple[str, ...] = (
     "rest",
     "look",
     "shake",
-    "scratch",
+    "crouch",
+    "retreat",
+    "rear",
+    "throw",
+    "crawl",
+    "taunt",
 )
 
 # Detail vocabulary: recognized and allowed in labels, but NOT given a multi-hot
-# slot -- too few supporting clips to learn a reliable response from. These words
-# still reach the model through the T5 text path.
+# slot -- too few supporting clips, a single species, or an aspect of a core word
+# to learn a reliable response from. These words still reach the model through the
+# T5 text path.
 ACTION_VOCAB_DETAIL: tuple[str, ...] = (
-    "crawl", "climb", "sneak", "retreat", "land", "takeoff", "dive", "roll",
-    "rear", "sit", "sleep", "stand", "sniff", "stretch", "yawn", "taunt",
-    "dig", "throw", "catch", "peck", "sting", "kick", "spit", "drag", "dance",
-    "breathe", "drink", "graze", "flap", "wag", "crouch",
+    "climb", "sneak", "land", "takeoff", "dive", "roll",
+    "sit", "sleep", "stand", "sniff", "stretch", "yawn",
+    "dig", "catch", "peck", "sting", "kick", "spit", "drag", "dance",
+    "breathe", "drink", "graze", "flap", "wag", "scratch",
 )
 
 CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB_CORE + ACTION_VOCAB_DETAIL
@@ -99,7 +106,7 @@ CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB_CORE + ACTION_VOCAB_DETAIL
 # the from-scratch multi-hot column -- an isolated, unambiguous memorization
 # handle -- is switched off.
 #
-# The layout stays the 19-slot global one in every group: three per-group
+# The layout stays the 24-slot global one in every group: three per-group
 # vocabularies would mean three index layouts and structurally incompatible
 # checkpoints. A permanently-zero column simply never receives gradient.
 #
@@ -108,13 +115,11 @@ CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB_CORE + ACTION_VOCAB_DETAIL
 # means. Recompute it by the rule above when the corpus grows, and commit the new
 # values explicitly.
 #
-# Measured 2026-08-30 over all 4028 labeled clips (locomotion 1029 / stationary
-# 2196 / transition 803) across the zoo, zoo_upgrade and unitybundles datasets.
 GROUP_MULTIHOT_MASK: dict[str, tuple[int, ...]] = {
-    #                idle walk run  fly swim jump turn attk bite roar  eat  die fall hurt getup rest look shak scra
-    "locomotion": (    0,   1,   1,   1,   1,   1,   1,   1,   0,   0,   0,   0,   1,   0,   0,   0,   0,   0,   0),
-    "stationary": (    1,   0,   0,   1,   0,   1,   1,   1,   1,   1,   1,   0,   1,   1,   0,   1,   1,   1,   1),
-    "transition": (    1,   0,   1,   1,   0,   1,   1,   1,   0,   0,   0,   1,   1,   1,   1,   1,   0,   1,   0),
+    #                idle walk run  fly swim jump turn attk bite roar  eat  die fall hurt getup rest look shak crou retr rear thro craw taun
+    "locomotion": (    0,   1,   1,   1,   1,   1,   1,   1,   0,   0,   0,   0,   1,   0,   0,   0,   0,   0,   0,   1,   0,   0,   1,   0),
+    "stationary": (    1,   0,   0,   1,   0,   1,   1,   1,   1,   1,   1,   0,   1,   1,   0,   1,   1,   1,   1,   0,   1,   1,   0,   1),
+    "transition": (    1,   0,   1,   1,   0,   1,   1,   1,   0,   0,   0,   1,   1,   1,   1,   1,   0,   1,   1,   1,   1,   0,   0,   0),
 }
 
 assert set(GROUP_MULTIHOT_MASK) == set(ACTION_GROUPS), (
@@ -169,7 +174,12 @@ CORE_WORD_GROUP: dict[str, str] = {
     "rest": "stationary",
     "look": "stationary",
     "shake": "stationary",
-    "scratch": "stationary",
+    "crouch": "stationary",
+    "retreat": "locomotion",
+    "rear": "stationary",
+    "throw": "stationary",
+    "crawl": "locomotion",
+    "taunt": "stationary",
 }
 
 assert set(CORE_WORD_GROUP) == set(ACTION_VOCAB_CORE), (
@@ -272,38 +282,37 @@ _VOCAB_SURFACE_FORMS: dict[str, tuple[str, ...]] = {
     "shake": ("shake", "shakes", "shaking", "shudder", "shudders",
               "shuddering", "twitch", "twitches", "twitching", "tremble",
               "trembles", "trembling", "wag", "wags", "wagging"),
-    "scratch": ("scratch", "scratches", "scratching", "groom", "grooms",
-                "grooming", "rub", "rubs", "rubbing", "itch", "itches",
-                "itching"),
-    # -- detail tier --
-    "crawl": ("crawl", "crawls", "crawling", "slither", "slithers",
-              "slithering", "creep", "creeps", "creeping", "scurry",
-              "scurries", "scurrying"),
-    "climb": ("climb", "climbs", "climbing"),
-    "sneak": ("sneak", "sneaks", "sneaking", "stalk", "stalks", "stalking",
-              "prowl", "prowls", "prowling"),
+    "crouch": ("crouch", "crouches", "crouching", "squat", "squats",
+               "squatting", "hunker", "hunkers", "hunkering"),
     "retreat": ("retreat", "retreats", "retreating", "backs away",
                 "backing away", "backs up", "backing up", "backward",
                 "backwards"),
+    "rear": ("rear", "rears", "rearing", "on its hind legs",
+             "onto its hind legs"),
+    "throw": ("throw", "throws", "throwing", "toss", "tosses", "tossing",
+              "fling", "flings", "flinging", "hurl", "hurls", "hurling"),
+    "crawl": ("crawl", "crawls", "crawling", "slither", "slithers",
+              "slithering", "creep", "creeps", "creeping", "scurry",
+              "scurries", "scurrying"),
+    "taunt": ("taunt", "taunts", "taunting", "threaten", "threatens",
+              "threatening", "intimidate", "intimidates", "intimidating"),
+    # -- detail tier --
+    "climb": ("climb", "climbs", "climbing"),
+    "sneak": ("sneak", "sneaks", "sneaking", "stalk", "stalks", "stalking",
+              "prowl", "prowls", "prowling"),
     "land": ("land", "lands", "landing", "touches down", "touching down"),
     "takeoff": ("take off", "takes off", "taking off", "takeoff", "lift off",
                 "lifts off"),
     "dive": ("dive", "dives", "diving", "plunge", "plunges", "plunging"),
     "roll": ("roll", "rolls", "rolling"),
-    "rear": ("rear", "rears", "rearing", "on its hind legs",
-             "onto its hind legs"),
     "sit": ("sit", "sits", "sitting", "seated"),
     "sleep": ("sleep", "sleeps", "sleeping", "dozing", "napping", "asleep"),
     "stand": ("stand", "stands", "standing", "upright"),
     "sniff": ("sniff", "sniffs", "sniffing", "smell", "smells", "smelling"),
     "stretch": ("stretch", "stretches", "stretching"),
     "yawn": ("yawn", "yawns", "yawning"),
-    "taunt": ("taunt", "taunts", "taunting", "threaten", "threatens",
-              "threatening", "intimidate", "intimidates", "intimidating"),
     "dig": ("dig", "digs", "digging", "burrow", "burrows", "burrowing",
             "scrape", "scrapes", "scraping"),
-    "throw": ("throw", "throws", "throwing", "toss", "tosses", "tossing",
-              "fling", "flings", "flinging", "hurl", "hurls", "hurling"),
     "catch": ("catch", "catches", "catching", "grab", "grabs", "grabbing",
               "seize", "seizes", "seizing", "snatch", "snatches", "snatching"),
     "peck": ("peck", "pecks", "pecking"),
@@ -321,8 +330,9 @@ _VOCAB_SURFACE_FORMS: dict[str, tuple[str, ...]] = {
     "graze": ("graze", "grazes", "grazing"),
     "flap": ("flap", "flaps", "flapping"),
     "wag": ("wag", "wags", "wagging"),
-    "crouch": ("crouch", "crouches", "crouching", "squat", "squats",
-               "squatting", "hunker", "hunkers", "hunkering"),
+    "scratch": ("scratch", "scratches", "scratching", "groom", "grooms",
+                "grooming", "rub", "rubs", "rubbing", "itch", "itches",
+                "itching"),
 }
 
 # A canonical word must always match itself: labels are written using the
@@ -590,11 +600,9 @@ assert all(word in CONTROLLED_VOCAB for word, _ in _FALLBACK_LABEL_RULES), (
 # entry here.
 _FALLBACK_DETAIL_GROUP: dict[str, str] = {
     "dig": "stationary",
-    "rear": "stationary",
-    "taunt": "stationary",
     "sneak": "locomotion",
     "climb": "locomotion",
-    "retreat": "locomotion",
+    "scratch": "stationary",
 }
 
 assert all(
