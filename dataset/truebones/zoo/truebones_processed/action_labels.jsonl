@@ -796,7 +796,7 @@
 {"clip": "Raptor_Idle_1.npy", "action_group": "stationary", "action_label": "idle, stands still with jaws opening and closing"}
 {"clip": "Raptor_Idle_2.npy", "action_group": "stationary", "action_label": "idle, stands alert with mouth open and slight head turns"}
 {"clip": "Raptor_LegScratch_1.npy", "action_group": "stationary", "action_label": "scratch, lifts front leg to scratch"}
-{"clip": "Raptor_LegScratch_2.npy", "action_group": "stationary", "action_label": "scratch,"}
+{"clip": "Raptor_LegScratch_2.npy", "action_group": "stationary", "action_label": "scratch, scratch end"}
 {"clip": "Raptor_Roar_1.npy", "action_group": "stationary", "action_label": "roar, rears up on hind legs with mouth wide open"}
 {"clip": "Raptor_SlowWalk_1.npy", "action_group": "locomotion", "action_label": "walk, slow rhythmic leg alternation with body sway"}
 {"clip": "Raptor_Yawn_1.npy", "action_group": "stationary", "action_label": "idle, yawn, opens mouth wide"}

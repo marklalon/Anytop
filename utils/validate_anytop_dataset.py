@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
+import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
@@ -22,6 +25,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     BVHS_DIR,
     MOTION_METADATA_FILE,
     ACTION_LABELS_FILE,
+    ACTION_LABEL_EMBEDDINGS_FILE,
     get_dataset_dir,
 )
 from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
@@ -62,6 +66,10 @@ _CANONICAL_FORWARD_VECTOR = np.array([[0.0, 0.0, 1.0]], dtype=np.float64)
 
 def print_ok(message: str) -> None:
     print(f"[OK] {message}")
+
+
+def print_info(message: str) -> None:
+    print(f"[INFO] {message}")
 
 
 def print_warn(message: str) -> None:
@@ -746,6 +754,68 @@ def validate_metadata(metadata_path: Path, motion_files: list[Path], cond: dict,
     return is_valid
 
 
+def _expected_action_label_t5_name(cond: dict) -> str:
+    """T5 model the dataset's cond.npy was encoded with.
+
+    The label sidecar must live in the same embedding space as
+    ``joints_names_embs``, so the rebuild is pinned to this model.
+    """
+    for object_type in sorted(cond):
+        meta = cond[object_type].get("joints_names_embs_meta") or {}
+        t5_name = meta.get("t5_name")
+        if t5_name:
+            return str(t5_name)
+    return "t5-base"
+
+
+def _action_label_embeddings_staleness(dataset_dir: Path, cond: dict) -> str | None:
+    """Why ``action_label_embs.npy`` is out of date, or None when it is current.
+
+    Freshness is keyed on the md5 of ``action_labels.jsonl`` stored in the
+    sidecar: editing the labels (new clip, reworded label) stales the sidecar
+    even when every old string is still covered. Sidecars built before the
+    hash existed fall back to the legacy string-coverage check.
+    """
+    labels_path = dataset_dir / ACTION_LABELS_FILE
+    if not labels_path.exists():
+        return None  # a missing labels file is reported by the coverage check
+    sidecar_path = dataset_dir / ACTION_LABEL_EMBEDDINGS_FILE
+    if not sidecar_path.exists():
+        return "missing"
+    payload = np.load(sidecar_path, allow_pickle=True).item()
+    expected_t5 = _expected_action_label_t5_name(cond)
+    if payload.get("t5_name") != expected_t5:
+        return f"built with T5 '{payload.get('t5_name')}' but cond.npy expects '{expected_t5}'"
+    stored_md5 = payload.get("action_labels_md5")
+    if stored_md5 is not None:
+        if stored_md5 != hashlib.md5(labels_path.read_bytes()).hexdigest():
+            return f"{ACTION_LABELS_FILE} changed since the sidecar was built"
+        return None
+    sys.path.insert(0, str(REPO_ROOT / "tools"))
+    from build_action_label_embeddings import collect_label_strings  # noqa: E402
+    strings = set(collect_label_strings(dataset_dir))
+    if not set(payload.get("embeddings") or {}) >= strings:
+        return "does not cover the current label set"
+    return None
+
+
+def _rebuild_action_label_embeddings(dataset_dir: Path, cond: dict) -> None:
+    """Re-run tools/build_action_label_embeddings.py for one dataset."""
+    t5_name = _expected_action_label_t5_name(cond)
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "tools" / "build_action_label_embeddings.py"),
+        str(dataset_dir),
+        "--t5-model", t5_name,
+    ]
+    env = os.environ.copy()
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(REPO_ROOT.parent) + os.pathsep + existing_pythonpath
+    result = subprocess.run(cmd, cwd=str(REPO_ROOT), env=env)
+    if result.returncode != 0:
+        raise ValidationError(f"failed to rebuild {ACTION_LABEL_EMBEDDINGS_FILE} for {dataset_dir}")
+
+
 def validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: dict, silent: bool = False) -> bool:
     metadata_path = dataset_dir / MOTION_METADATA_FILE
     if not metadata_path.exists():
@@ -785,10 +855,14 @@ def validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: 
             require_valid(action_group in ACTION_GROUPS, f"action_group {action_group!r} invalid in {ACTION_LABELS_FILE} for {motion_name}")
             # An empty label is legal (it means "no condition"), but every empty one
             # is a clip the text-to-motion path can never retrieve, so say so.
+            # A label with no core word but a detail word is also legal: detail words
+            # still reach the model through the T5 text path, they just get no
+            # multi-hot slot. Only a label hitting neither is worth warning about
+            # (load_action_labels already hard-exits on one).
             if not silent and not action_label:
                 print_warn(f"action_label is empty for {motion_name} (clip trains unconditioned)")
-            elif not silent and not vocab_words_in(action_label, core_only=True):
-                print_warn(f"action_label for {motion_name} hits no core word: {action_label!r}")
+            elif not silent and not vocab_words_in(action_label):
+                print_warn(f"action_label for {motion_name} hits no core or detail word: {action_label!r}")
 
             require_valid("translation_root_index" in motion_metadata, f"translation_root_index missing for {motion_name}")
             translation_root_index = motion_metadata.get("translation_root_index")
@@ -812,6 +886,22 @@ def validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: 
                 require_valid(0 <= start < end, f"source_frame_range invalid for {motion_name}: {source_frame_range}")
             if (source_fbx_path is None) != (source_frame_range is None):
                 print_warn(f"validation error: {motion_name} source FBX metadata is incomplete")
+
+        # The frozen-T5 label sidecar is derived from action_labels.jsonl; an
+        # edited or freshly preprocessed dataset would otherwise make the next
+        # train run hard-fail, so refresh it here while validation still has cond.
+        if not silent:
+            stale_reason = _action_label_embeddings_staleness(dataset_dir, cond)
+            if stale_reason is not None:
+                print_info(f"{ACTION_LABEL_EMBEDDINGS_FILE} is out of date ({stale_reason}); rebuilding")
+                _rebuild_action_label_embeddings(dataset_dir, cond)
+                stale_reason = _action_label_embeddings_staleness(dataset_dir, cond)
+                if stale_reason is not None:
+                    require_valid(False, f"{ACTION_LABEL_EMBEDDINGS_FILE} still out of date after rebuild: {stale_reason}")
+                else:
+                    print_ok(f"{ACTION_LABEL_EMBEDDINGS_FILE} rebuilt and up to date")
+            else:
+                print_info(f"{ACTION_LABEL_EMBEDDINGS_FILE} up to date")
 
         total_clips = payload.get("total_clips")
         if total_clips is not None:

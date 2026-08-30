@@ -34,6 +34,7 @@ Options:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
 from pathlib import Path
 
@@ -78,12 +79,26 @@ def build_sidecar(dataset_dir: Path, t5_model: str, force: bool) -> Path:
         raise FileNotFoundError(f"{ACTION_LABELS_FILE} not found at {labels_path}")
 
     strings = collect_label_strings(dataset_dir)
+    # Source hash: a byte-identical labels file guarantees the sidecar is
+    # current, and any edit (new clip, reworded label) makes it stale even when
+    # every old string is still covered (e.g. a clip was removed).
+    labels_md5 = hashlib.md5(labels_path.read_bytes()).hexdigest()
     sidecar_path = dataset_dir / ACTION_LABEL_EMBEDDINGS_FILE
 
     if sidecar_path.exists() and not force:
         payload = np.load(sidecar_path, allow_pickle=True).item()
         existing = payload.get("embeddings") or {}
-        if payload.get("t5_name") == t5_model and set(existing) >= set(strings):
+        stored_md5 = payload.get("action_labels_md5")
+        up_to_date = payload.get("t5_name") == t5_model and (
+            (stored_md5 is not None and stored_md5 == labels_md5)
+            # Legacy sidecar (pre-hash): fall back to the string-coverage check.
+            or (stored_md5 is None and set(existing) >= set(strings))
+        )
+        if up_to_date:
+            if stored_md5 is None:
+                # Stamp the source hash so future runs take the fast path.
+                payload["action_labels_md5"] = labels_md5
+                np.save(sidecar_path, payload, allow_pickle=True)
             print(f"[skip] {sidecar_path} already covers {len(strings)} label string(s)")
             return sidecar_path
 
@@ -121,6 +136,7 @@ def build_sidecar(dataset_dir: Path, t5_model: str, force: bool) -> Path:
         "t5_name": t5_model,
         "embedding_dim": embedding_dim,
         "embeddings": embeddings,
+        "action_labels_md5": labels_md5,
     }, allow_pickle=True)
     print(f"[OK] wrote {sidecar_path} ({len(embeddings)} strings x {embedding_dim}d)")
     return sidecar_path
