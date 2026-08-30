@@ -563,7 +563,7 @@ The trailing clip number is a segment index counted *within* each
 `{object_type}_{action}` group (1, 2, 3, ...), not a global running counter.
 This keeps a clip's name stable when unrelated species are added/removed or when
 only a subset is reprocessed (e.g. --filter), so externally maintained, clip-name
-keyed sidecars (action_tags.jsonl, motion_captions.jsonl) do not go stale.
+keyed sidecars (action_labels.jsonl, motion_captions.jsonl) do not go stale.
 
 `files_counter` is still threaded through purely for the dataset-wide summary
 counts; it no longer participates in clip names. `action_start_counts` lets the
@@ -1058,11 +1058,11 @@ def _normalized_source_fbx_path(entry):
 
 
 def _load_motion_metadata_raw(dataset_dir):
-    """Read stored per-clip entries directly, without joining action_tags.
+    """Read stored per-clip entries directly, without joining the action sidecar.
 
-    Unlike load_motion_metadata this never requires the action_tags.jsonl sidecar, so the
+    Unlike load_motion_metadata this never requires the action_labels.jsonl sidecar, so the
     incremental path can read source/numbering bookkeeping on datasets that have not been
-    hand-tagged yet. Returns {} when the file is absent or malformed."""
+    hand-labeled yet. Returns {} when the file is absent or malformed."""
     metadata_path = pjoin(str(dataset_dir), MOTION_METADATA_FILE)
     if not os.path.exists(metadata_path):
         return {}

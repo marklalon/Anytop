@@ -25,7 +25,8 @@ This fork includes significant improvements over the original repository while p
 
 ### Evaluation
 - **Distribution-Based Motion Quality Scorer** — Low-shot weighted-reference evaluation without autoencoders or discriminators. Scores macro distribution fidelity and local joint naturalness.
-- **Action Tag Filtering** — Train and evaluate on specific action tags via `--action_tags locomotion,attack`.
+- **Action Group Split** — Train one model per action group via `--action_group locomotion|stationary|transition`.
+- **Text-to-Motion Conditioning** — `--action_label_cond` conditions on the clip's `action_label` (frozen T5 embedding + a group-masked multi-hot over the controlled action vocabulary); `--action_label "run"` at generation time.
 - **Semantic Joint Groups** — Automatic root/axial/limbs grouping from skeleton metadata for per-group evaluation.
 
 ### Data Loading
@@ -199,7 +200,8 @@ To reproduce the flying animals paper model, run:
 python -m train.train_anytop --model_prefix winged --objects_subset winged --lambda_geo 1.0 --auto_resume --balanced
 ```
 * **General instructions** Checkout './utils/parser_utils.py' to view all configurable parameters and default settings. '--balanced' flag is used to activate the balancing sampler, ensuring fair sampling of all skeletons. Use '--auto_resume' if you want the script to continue from the latest checkpoint in save_dir. Without it, training starts fresh and overwrites existing checkpoints in save_dir. 
-* Use `--action_tags` to keep only motions whose `action_tags` contain one of the requested tags. Action tags are maintained by hand in `action_tags.jsonl` (one `{"clip": "<name>.npy", "action_tags": [...]}` object per line) alongside `motion_metadata.json`. Example: `--action_tags locomotion` or `--action_tags locomotion,attack`.
+* Use `--action_group` to train on one action group. Each clip belongs to exactly one of `locomotion` (sustained displacement), `stationary` (in-place / interactive) or `transition` (pose changes), and each group trains its own model. The group and the clip's free-text `action_label` are maintained by hand in `action_labels.jsonl` (one `{"clip": "<name>.npy", "action_group": "...", "action_label": "..."}` object per line) alongside `motion_metadata.json`.
+* Add `--action_label_cond` to condition on the label text. It needs the frozen-T5 sidecar next to the labels — build it once with `python tools/build_action_label_embeddings.py <dataset_dir>` (rebuild after editing `action_labels.jsonl`). `--action_label_coarse_prob 0.3` additionally trains on the coarse string synthesized from the label's controlled words (`"idle, roar"`), so the model answers the short queries users actually type.
 * **Recommended:** Add `--use_ema` for Exponential Moving Average to improve performance.
 * Use `--diffusion_steps 50` to train the faster model with less diffusion steps.
 * Use `--device` to define GPU id.
@@ -207,7 +209,7 @@ python -m train.train_anytop --model_prefix winged --objects_subset winged --lam
 
 Example of training only on locomotion clips:
 ```shell
-python -m train.train_anytop --model_prefix all_locomotion --objects_subset all --action_tags locomotion --lambda_geo 1.0 --auto_resume --balanced
+python -m train.train_anytop --model_prefix all_locomotion --objects_subset all --action_group locomotion --lambda_geo 1.0 --auto_resume --balanced
 ```
 
 ## Visualizing Motions in Blender## Visualizing Motions in Blender

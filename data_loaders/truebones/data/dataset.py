@@ -12,7 +12,16 @@ from typing import Optional
 import warnings
 from torch.utils.data._utils.collate import default_collate
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
-from data_loaders.truebones.truebones_utils.param_utils import parse_action_tags
+from data_loaders.truebones.truebones_utils.param_utils import (
+    ACTION_LABEL_EMBEDDINGS_FILE,
+)
+from data_loaders.truebones.truebones_utils.motion_labels import (
+    ACTION_GROUPS,
+    coarse_label_from_words,
+    load_motion_metadata,
+    normalize_action_group,
+    vocab_words_in,
+)
 from data_loaders.truebones.truebones_utils.cond_schema import (
     load_cond,
     species_lookup_map_for_dataset_dir,
@@ -21,7 +30,6 @@ from data_loaders.truebones.truebones_utils.dataset_sources import (
     bare_species_name,
     resolve_species_key,
 )
-from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
 from data_loaders.truebones.truebones_utils.motion_process import (
     refresh_joint_metadata_in_cond_dict,
 )
@@ -44,20 +52,6 @@ SUPPORTED_SPLITS = tuple(DEFAULT_SPLIT_RATIOS.keys())
 ALL_SPLIT_NAME = "all"
 
 
-def _normalize_motion_action_tags(raw_action_tags) -> set[str]:
-    if raw_action_tags is None:
-        return set()
-    if isinstance(raw_action_tags, str):
-        values = [raw_action_tags]
-    else:
-        values = raw_action_tags
-    return {
-        str(tag).strip().lower()
-        for tag in values
-        if str(tag).strip()
-    }
-
-
 def _copy_required_motion_metadata(motion_name: str, motion_metadata) -> dict[str, object]:
     if not isinstance(motion_metadata, dict):
         raise KeyError(f"Motion '{motion_name}' is missing explicit motion metadata.")
@@ -75,24 +69,38 @@ def _require_motion_metadata_entry(
     return _copy_required_motion_metadata(motion_name, motion_metadata_lookup.get(motion_name))
 
 
-def filter_motion_names_by_action_tags(
+def resolve_requested_action_group(raw_action_group) -> str:
+    """Normalize the ``--action_group`` training filter to a single group or ``''``.
+
+    ``''`` and ``'all'`` both mean "no filtering". Anything else must be one of the
+    three closed :data:`ACTION_GROUPS` values -- the group is a single, exclusive
+    field now, so a comma list is a stale ``--action_tags`` invocation and is
+    rejected rather than silently taking the first entry.
+    """
+    requested = normalize_action_group(raw_action_group)
+    if not requested or requested == "all":
+        return ""
+    if requested not in ACTION_GROUPS:
+        raise ValueError(
+            f"Unknown action_group {raw_action_group!r}. action_group is a single "
+            f"value; expected one of {list(ACTION_GROUPS)} (or 'all' for no filtering)."
+        )
+    return requested
+
+
+def filter_motion_names_by_action_group(
     motion_names,
-    raw_action_tags,
+    raw_action_group,
     motion_metadata_lookup,
 ):
-    requested_action_tags = set(parse_action_tags(raw_action_tags))
-    if not requested_action_tags:
-        return motion_names
-
-    # "all" means no filtering — return every motion.
-    if "all" in requested_action_tags:
+    requested_action_group = resolve_requested_action_group(raw_action_group)
+    if not requested_action_group:
         return motion_names
 
     filtered = set()
     for motion_name in motion_names:
         motion_metadata = _require_motion_metadata_entry(motion_name, motion_metadata_lookup)
-        motion_action_tags = _normalize_motion_action_tags(motion_metadata.get('action_tags'))
-        if motion_action_tags.intersection(requested_action_tags):
+        if normalize_action_group(motion_metadata.get('action_group')) == requested_action_group:
             filtered.add(motion_name)
     return filtered
 
@@ -482,23 +490,23 @@ def load_motion_names_for_split(
     return motion_names
 
 
-def load_motion_names_for_split_with_action_tags(
+def load_motion_names_for_split_with_action_group(
     split: str,
     data_root: str,
     motion_dir: str,
-    raw_action_tags,
+    raw_action_group,
     motion_metadata_lookup,
 ) -> set[str]:
-    requested_action_tags = set(parse_action_tags(raw_action_tags))
-    if not requested_action_tags:
+    requested_action_group = resolve_requested_action_group(raw_action_group)
+    if not requested_action_group:
         return load_motion_names_for_split(
             split, data_root, motion_dir, motion_metadata_lookup
         )
 
     all_motion_names = set(_list_motion_files(motion_dir))
-    filtered_motion_names = filter_motion_names_by_action_tags(
+    filtered_motion_names = filter_motion_names_by_action_group(
         all_motion_names,
-        raw_action_tags,
+        raw_action_group,
         motion_metadata_lookup,
     )
     if split == ALL_SPLIT_NAME:
@@ -527,7 +535,7 @@ def load_motion_names_for_split_with_action_tags(
 
     if not selected_motion_names:
         raise RuntimeError(
-            f"Split '{split}' is empty after filtering action_tags={sorted(requested_action_tags)}"
+            f"Split '{split}' is empty after filtering action_group={requested_action_group!r}"
         )
     
     # Generate split manifest files for manual verification
@@ -555,7 +563,7 @@ def clip_id(namespace: str, motion_name: str) -> str:
 def load_allowed_motion_names_per_source(
     split: str,
     sources,
-    raw_action_tags,
+    raw_action_group,
     metadata_by_namespace: dict[str, dict[str, dict[str, object]]],
 ) -> dict[str, set[str]]:
     """Resolve the split independently for each source, then union the results.
@@ -567,15 +575,43 @@ def load_allowed_motion_names_per_source(
     single-dataset run produces.
     """
     return {
-        source.namespace: load_motion_names_for_split_with_action_tags(
+        source.namespace: load_motion_names_for_split_with_action_group(
             split,
             source.root,
             source.motion_dir,
-            raw_action_tags,
+            raw_action_group,
             metadata_by_namespace[source.namespace],
         )
         for source in sources
     }
+
+
+def load_action_label_embeddings(sources) -> dict[str, np.ndarray]:
+    """Load the per-source ``action_label_embs.npy`` sidecars into one lookup.
+
+    The sidecar maps a label *string* to its frozen T5 mean-pool vector, so the
+    training process never has to keep a T5 encoder resident. It is keyed by the
+    text rather than by the clip because labels repeat heavily (2984 distinct
+    strings over 4028 clips) and because the coarse strings synthesized for the
+    coarse-query augmentation have to resolve through the same table.
+
+    Build it with ``tools/build_action_label_embeddings.py``. Called only when
+    label conditioning is on, so a source with no sidecar is a hard error: the
+    alternative is training that whole dataset unconditioned without saying so.
+    """
+    embeddings: dict[str, np.ndarray] = {}
+    for source in sources:
+        sidecar = Path(source.root) / ACTION_LABEL_EMBEDDINGS_FILE
+        if not sidecar.exists():
+            raise FileNotFoundError(
+                f"{ACTION_LABEL_EMBEDDINGS_FILE} not found at {sidecar}, but action-label "
+                "conditioning is enabled. Build it with: "
+                f"python tools/build_action_label_embeddings.py {source.root}"
+            )
+        payload = np.load(sidecar, allow_pickle=True).item()
+        for label, vector in (payload.get('embeddings') or {}).items():
+            embeddings[str(label)] = np.asarray(vector, dtype=np.float32)
+    return embeddings
 
 
 def _motion_length_cache_path(data_root: str) -> Path:
@@ -656,8 +692,14 @@ def ensure_joint_name_embeddings(
 
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, temporal_window, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None):
+    def __init__(self, opt, cond_dict, temporal_window, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_label_coarse_prob: float = 0.0, action_label_embeddings: Optional[dict[str, np.ndarray]] = None):
         self.opt = opt
+        self.action_label_coarse_prob = float(action_label_coarse_prob)
+        # None (not {}) means the caller does not want label conditioning, so no
+        # embedding is attached and no lookup can fail. An empty dict would be
+        # indistinguishable from "the sidecar exists but is empty", and silently
+        # training every clip unconditioned is exactly the failure this avoids.
+        self.action_label_embeddings = action_label_embeddings
         self.temporal_window = int(temporal_window)
         self.min_length = int(getattr(opt, 'min_length', 20))
         self.pointer = 0
@@ -974,6 +1016,7 @@ class MotionDataset(data.Dataset):
         motion_metadata['loop_phase_length'] = float(
             loop_phase_length if loop_condition_active and loop_full_cycle else max(int(m_length), 1)
         )
+        self._apply_action_label_condition(motion_metadata)
         circular_mask = bool(loop_full_cycle)
         temporal_mask = self._get_temporal_mask(target_num_frames, circular=circular_mask)
 
@@ -1004,6 +1047,55 @@ class MotionDataset(data.Dataset):
             'feature_space': self.cond_dict[object_type].get('feature_space', 'canonical_motion_v3'),
         }
     
+    def _lookup_action_label_emb(self, label: str) -> np.ndarray:
+        emb = self.action_label_embeddings.get(label)
+        if emb is None:
+            raise KeyError(
+                f"action_label {label!r} has no entry in {ACTION_LABEL_EMBEDDINGS_FILE}. "
+                "Rebuild the sidecar after editing action_labels.jsonl: "
+                "python tools/build_action_label_embeddings.py <dataset_dir>"
+            )
+        return emb
+
+    def _apply_action_label_condition(self, motion_metadata) -> None:
+        if self.action_label_embeddings is None:
+            return
+        self._resolve_action_label_condition(motion_metadata)
+
+    def _resolve_action_label_condition(self, motion_metadata) -> None:
+        """Resolve this sample's label text and attach its frozen T5 embedding.
+
+        With probability ``action_label_coarse_prob`` the full label is swapped
+        for the coarse string synthesized from the controlled words it hits
+        ("stands still and growls occasionally, tail flicking" -> "idle, roar").
+        Two things this deliberately is not:
+
+        * It is not a prefix truncation. Labels are free to name their coarse
+          action anywhere in the sentence and may name several, so there is no
+          well-defined cut point; synthesizing from the matched words is exact and
+          fixes the word order to vocabulary order, so one word combination has
+          exactly one spelling in the training distribution.
+        * It does not read the group-masked word set. The synthesized string is T5
+          text, not a multi-hot, and the masked-out words are precisely the ones
+          that most need to appear in the short-query distribution -- masking here
+          would guarantee they never learn a short-query response.
+
+        The point is that the model sees the query shape users actually type
+        ("idle", "idle, roar") and not only full sentences.
+        """
+        label = str(motion_metadata.get('action_label') or '')
+        if label and self.action_label_coarse_prob > 0.0 and random.random() < self.action_label_coarse_prob:
+            coarse = coarse_label_from_words(vocab_words_in(label))
+            if coarse:
+                label = coarse
+        motion_metadata['action_label'] = label
+        # An empty label is the unconditional state and must NOT be encoded as an
+        # empty string: the model routes it to the learned null embedding, so the
+        # zero vector here is a placeholder the null path overwrites.
+        motion_metadata['action_label_emb'] = (
+            self._lookup_action_label_emb(label) if label else None
+        )
+
     def _load_physical_motion(self, data):
         object_type = data['object_type']
         cond = self.cond_dict[object_type]
@@ -1054,7 +1146,7 @@ class TruebonesSampler(WeightedRandomSampler):
     than full per-species balancing: a species with 9 clips is sampled 3x
     (=sqrt(9)) as often as a single-clip species, rather than equally (full
     balance) or 9x (uniform per-clip). The clip count is taken over the already
-    split/action_tags-filtered ``name_list``, so it reflects only the clips
+    split/action_group-filtered ``name_list``, so it reflects only the clips
     actually present in this training subset.
     """
     def __init__(self, data_source):
@@ -1106,7 +1198,9 @@ class Truebones(data.Dataset):
         self.opt = opt
         self.balanced = kwargs['balanced']
         self.objects_subset = kwargs['objects_subset']
-        self.action_tags = kwargs.get('action_tags', '')
+        self.action_group = kwargs.get('action_group', '')
+        self.action_label_cond = bool(kwargs.get('action_label_cond', False))
+        self.action_label_coarse_prob = float(kwargs.get('action_label_coarse_prob', 0.0))
         self.sample_limit = kwargs.get('sample_limit', 0)
         self.motion_cache_size = kwargs.get('motion_cache_size', 0)
         self.opt.motion_cache_size = self.motion_cache_size
@@ -1149,7 +1243,7 @@ class Truebones(data.Dataset):
         allowed_motion_names = load_allowed_motion_names_per_source(
             split,
             opt.sources,
-            self.action_tags,
+            self.action_group,
             motion_metadata_lookup,
         )
         self.motion_dataset = MotionDataset(
@@ -1161,6 +1255,10 @@ class Truebones(data.Dataset):
             sample_limit=self.sample_limit,
             allowed_motion_names=allowed_motion_names,
             motion_metadata_lookup=motion_metadata_lookup,
+            action_label_coarse_prob=self.action_label_coarse_prob,
+            action_label_embeddings=(
+                load_action_label_embeddings(opt.sources) if self.action_label_cond else None
+            ),
         )
         assert len(self.motion_dataset) > 0, 'You loaded an empty dataset, ' \
                                           'it is probably because your data dir has only texts and no motions.\n' \

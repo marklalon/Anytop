@@ -26,11 +26,35 @@ def parse_and_load_from_model(parser, argv=None, preserve_cli_args=None):
 
     return args
 
+def assert_action_conditioning_not_deprecated(model_args, args_path):
+    """Refuse a checkpoint trained on the removed 15-way action-tag condition.
+
+    The condition changed shape entirely (a 15-dim tag multi-hot became a T5
+    label embedding plus a 19-slot masked multi-hot), so such a checkpoint cannot
+    be loaded, only retrained. Silently ignoring the stale flag would load the
+    weights and generate motion with the action condition quietly disabled, which
+    looks like a quality regression rather than an incompatibility.
+    """
+    stale = [key for key in ('action_tag_cond', 'action_tag_cfg_drop_prob', 'action_tags')
+             if key in model_args]
+    if not stale:
+        return
+    raise SystemExit(
+        f"ERROR: {args_path} was written by the removed action-tag conditioning "
+        f"({', '.join(stale)}). That condition has been replaced by --action_label_cond "
+        "(T5 label embedding + group-masked core multi-hot) and the two are not "
+        "weight-compatible. Retrain this group with --action_label_cond; see "
+        "docs/action_group_label_refactor.md."
+    )
+
+
 def extract_args(args, args_to_overwrite, model_path):
     args_path = os.path.join(os.path.dirname(model_path), 'args.json')
     assert os.path.exists(args_path), 'Arguments json file was not found!'
     with open(args_path, 'r') as fr:
         model_args = json.load(fr)
+
+    assert_action_conditioning_not_deprecated(model_args, args_path)
 
     for a in args_to_overwrite:
         if a in model_args.keys():
@@ -142,13 +166,23 @@ def add_model_options(parser):
                             "embedding, shifting joint semantics toward the body-plan context of the "
                             "species. Per-joint structural conditioning, orthogonal to (and combinable "
                             "with) the --species_cond FiLM. Requires 'species_emb'.")
-    group.add_argument("--action_tag_cond", action='store_true',
-                       help="Enable action-tag conditioning: a multi-hot over the canonical action-tag "
-                            "vocabulary is projected and added to the timestep token.")
-    group.add_argument("--action_tag_cfg_drop_prob", default=0.2, type=float,
-                       help="Per-sample probability of hard-dropping the action-tag condition during "
+    group.add_argument("--action_label_cond", action='store_true',
+                       help="Enable action-label conditioning: the frozen T5 embedding of the clip's "
+                            "action_label plus a multi-hot over the controlled core vocabulary derived "
+                            "from that same text (masked per action group) are projected and added to "
+                            "the timestep token. Requires action_label_embs.npy alongside "
+                            "action_labels.jsonl (tools/build_action_label_embeddings.py).")
+    group.add_argument("--action_label_cfg_drop_prob", default=0.2, type=float,
+                       help="Per-sample probability of hard-dropping the action condition during "
                             "training (replaced by a learned null embedding), enabling classifier-free "
-                            "guidance over action tags. Default 0.2.")
+                            "guidance. The T5 and multi-hot pathways share this one drop mask. "
+                            "Default 0.2.")
+    group.add_argument("--action_label_coarse_prob", default=0.0, type=float,
+                       help="Probability of replacing a training clip's full action_label with the "
+                            "coarse string synthesized from the controlled words it hits "
+                            "('stands still and growls' -> 'idle, roar'), so the model also trains on "
+                            "the short queries users actually type. Synthesized from the matched words, "
+                            "never by truncating the label. Default 0.0 (always use the full label).")
 
 def add_data_options(parser):
     group = parser.add_argument_group('dataset')
@@ -157,11 +191,12 @@ def add_data_options(parser):
                        help="Data split to use for training. 'train'=training set, 'val'=validation set, 'test'=test set, 'all'=use all data.")
     group.add_argument("--objects_subset", default='all', type=str,
                        help="Object subset. Can be a predefined category (e.g. 'all', 'quadruped', 'winged', 'biped', 'multiped', etc.) or a single species name (e.g. 'Horse', 'Dragon').")
-    group.add_argument("--action_tags", default='', type=str,
-                       help="Comma-separated action tags, e.g. 'locomotion,attack'. Use 'all' to include every "
-                            "action tag (no filtering). During training, filters kept motions whose metadata "
-                            "tags match. During generation with --score, filters the scorer's reference prior "
-                            "selection.")
+    group.add_argument("--action_group", default='', type=str,
+                       choices=['', 'all', 'locomotion', 'stationary', 'transition'],
+                       help="Action group to train on: 'locomotion' (sustained displacement), "
+                            "'stationary' (in-place / interactive), or 'transition' (pose changes). "
+                            "Single-valued and exclusive -- each clip belongs to exactly one group and "
+                            "each group trains its own model. '' or 'all' trains on every clip.")
 
 def add_training_options(parser):
     group = parser.add_argument_group('training')
@@ -342,6 +377,20 @@ def add_generate_options(parser):
                             "(inclusive, clipped to the reference length). Empty = all frames. Combined with "
                             "--inpaint_joints, the regenerated region is selected-joints x selected-frames; "
                             "everything else is clamped to --reference_motion. Requires --reference_motion.")
+    group.add_argument("--action_label", default="", type=str,
+                       help="Text-to-motion prompt for this generation, e.g. 'run' or "
+                            "'idle, opens and closes its jaws'. Encoded through the same frozen T5 as "
+                            "the training labels and combined with the multi-hot derived from the "
+                            "controlled words it hits. Empty = unconditional (the learned null "
+                            "embedding). Requires a checkpoint trained with --action_label_cond.")
+    group.add_argument("--action_words", default="", type=str,
+                       help="Controlled-vocabulary words used to select the reference prior for the "
+                            "motion-quality scorer (eval/evaluate_motion_quality.py and the training "
+                            "eval hook), e.g. 'walk,run'. Filters dataset clips whose action_label hits "
+                            "any of these words. Deliberately not the action_group: grouping would "
+                            "widen the prior from 'the attack references' to 'everything stationary' and "
+                            "make the score meaningless. Ignored by sample/generate.py (which does not "
+                            "run the scorer).")
     group.add_argument("--species_tags", default="", type=str,
                        help="Override the target species' motion style tags for this generation, e.g. "
                             "'Quadruped,Heavy,Lumbering'. Comma/semicolon-separated. The tags are re-encoded "
@@ -370,7 +419,10 @@ def generate_args(argv=None):
     add_generate_options(parser)
     # These CLI args are generation-time overrides and must NOT be
     # overwritten by the training args.json (which stores their defaults).
-    args = parse_and_load_from_model(parser, argv=argv, preserve_cli_args={'action_tags', 'species_tags'})
+    args = parse_and_load_from_model(
+        parser, argv=argv,
+        preserve_cli_args={'action_group', 'action_label', 'action_words', 'species_tags'},
+    )
     return args
 
 def process_new_skeleton_args():

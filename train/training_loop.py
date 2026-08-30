@@ -29,25 +29,26 @@ INITIAL_LOG_LOSS_SCALE = 20.0
 EXP_AVG_SQ_CHECKPOINT_ALERT_THRESHOLD = 1e20
 
 
-def _normalize_eval_action_tags(raw_action_tags):
-    if raw_action_tags is None:
+def _eval_action_words(raw_action_label):
+    """Controlled-vocabulary words a validation clip's label hits.
+
+    These select the scorer's reference prior, so they are the *words* and not the
+    ``action_group``: grouping would widen the prior from "the attack references"
+    to "everything stationary" and make the score meaningless. Detail words count
+    -- the reference bank matches on the same rule, so a 'sneak'-only label still
+    finds its own references.
+    """
+    if not raw_action_label:
         return ()
-    if isinstance(raw_action_tags, str):
-        values = raw_action_tags.replace(';', ',').split(',')
-    else:
-        values = raw_action_tags
-    normalized = {
-        str(tag).strip().lower()
-        for tag in values
-        if str(tag).strip()
-    }
-    return tuple(sorted(normalized))
+    from data_loaders.truebones.truebones_utils.motion_labels import vocab_words_in
+
+    return tuple(vocab_words_in(str(raw_action_label)))
 
 def _tile_eval_cond(cond, repeat):
     """Repeat each sample in a cond dict ``repeat`` times for batched DDIM sampling.
 
     All tensors in ``cond['y']`` are repeated along the batch axis;
-    python lists (object_type, parents, action_tags, etc.) are
+    python lists (object_type, parents, action_label, etc.) are
     element-replicated.
     """
     if repeat <= 1:
@@ -176,7 +177,8 @@ class TrainLoop:
                 sample_limit=self.args.sample_limit,
                 shuffle=False,
                 drop_last=True,
-                action_tags=getattr(self.args, 'action_tags', ''),
+                action_group=getattr(self.args, 'action_group', ''),
+                action_label_cond=getattr(self.args, 'action_label_cond', False),
                 motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
                 min_length=getattr(self.args, 'min_length', 20),
                 main_process_prefetch_batches=getattr(self.args, 'main_process_prefetch_batches', 0),
@@ -595,7 +597,7 @@ class TrainLoop:
         cond_dict = self.data.dataset.motion_dataset.cond_dict
         infer_model = self.model  # use raw model (not EMA) to observe real val performance
         motion_groups = {}
-        missing_action_tag_count = 0
+        missing_action_label_count = 0
         target_batch = int(self.args.eval_batch_size)
 
         infer_model.eval()
@@ -635,11 +637,11 @@ class TrainLoop:
 
                 for i in range(batch_size):
                     object_type = cond['y']['object_type'][i]
-                    action_tags = _normalize_eval_action_tags(
-                        cond['y'].get('action_tags', [None] * batch_size)[i]
+                    action_words = _eval_action_words(
+                        cond['y'].get('action_label', [None] * batch_size)[i]
                     )
-                    if not action_tags:
-                        missing_action_tag_count += 1
+                    if not action_words:
+                        missing_action_label_count += 1
                         continue
                     n_joints = cond['y']['n_joints'][i].item()
                     motion_sample = sample[i][:n_joints]
@@ -652,13 +654,13 @@ class TrainLoop:
                         },
                     )[0]
                     motion_np = motion_physical.cpu().permute(2, 0, 1).numpy()
-                    group_key = (object_type, action_tags)
+                    group_key = (object_type, action_words)
                     motion_groups.setdefault(group_key, []).append(motion_np.astype(np.float32))
 
         infer_model.train()
 
-        if missing_action_tag_count:
-            tqdm.write(f'Validation skipped {missing_action_tag_count} motion(s) without action_tags.')
+        if missing_action_label_count:
+            tqdm.write(f'Validation skipped {missing_action_label_count} motion(s) whose action_label hits no controlled word.')
 
         if not motion_groups:
             tqdm.write('Validation skipped: eval split returned no samples.')
@@ -670,15 +672,15 @@ class TrainLoop:
         snap_scores = []
         sf_scores = []
         bl_scores = []
-        for (object_type, action_tags), motions in motion_groups.items():
+        for (object_type, action_words), motions in motion_groups.items():
             try:
                 report = self.scorer.evaluate(
                     motions=motions,
                     object_type=object_type,
-                    action_tags=','.join(action_tags),
+                    action_words=','.join(action_words),
                 )
             except Exception as exc:
-                tqdm.write(f"[eval] Scoring failed for {object_type} ({','.join(action_tags)}): {exc}")
+                tqdm.write(f"[eval] Scoring failed for {object_type} ({','.join(action_words)}): {exc}")
                 continue
             scores.append(report.overall_score)
             jerk_scores.append(report.jerk_score)
@@ -862,7 +864,8 @@ class TrainLoop:
 
         names = field_list('motion_name')
         species = field_list('object_type')
-        action_tags = y.get('action_tags')
+        action_labels = y.get('action_label')
+        action_groups = y.get('action_group')
         flag_keys = (
             'is_loop', 'loop_full_cycle', 'loop_data_aug_applied', 'loop_tile_count',
             'loop_phase_offset', 'motion_start_frame', 'playspeed_cond', 'n_joints',
@@ -892,7 +895,8 @@ class TrainLoop:
                 't': int(t_np[i]),
                 'name': names[i] if names else None,
                 'species': species[i] if species else None,
-                'action_tags': action_tags[i] if action_tags else None,
+                'action_label': action_labels[i] if action_labels else None,
+                'action_group': action_groups[i] if action_groups else None,
             }
             for k, arr in flags.items():
                 rec[k] = arr[i] if (arr is not None and i < len(arr)) else None
@@ -931,7 +935,8 @@ class TrainLoop:
                 't': ctx['t'].cpu(),
                 'motion_name': names,
                 'object_type': species,
-                'action_tags': action_tags,
+                'action_label': action_labels,
+                'action_group': action_groups,
             }
             for k in flag_keys:
                 v = y.get(k)

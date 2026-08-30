@@ -76,7 +76,9 @@ from utils.parser_util import generate_args
 
 # Sentinel resolved at run time to the first output .npy of the previous task.
 _LAST_OUTPUT = "$LAST_OUTPUT"
-_SCORE_ACTION_TAGS = "locomotion"
+# Controlled words (not a group) selecting the scorer's reference prior: the
+# battery generates gait-like motion, so the prior is the walk/run references.
+_SCORE_ACTION_WORDS = "walk,run"
 _SCORE_TOP_K_SPECIES = 3
 
 # Default task battery, loaded by build_tasks() when --task_config is omitted.
@@ -435,7 +437,7 @@ def _score_task(
             report = scorer.evaluate(
                 motions=[motion],
                 object_type=object_type,
-                action_tags=_SCORE_ACTION_TAGS,
+                action_words=_SCORE_ACTION_WORDS,
                 top_k_species=_SCORE_TOP_K_SPECIES,
             )
         except (ValueError, KeyError, FileNotFoundError, RuntimeError) as exc:

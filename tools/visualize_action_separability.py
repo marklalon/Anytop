@@ -1,5 +1,5 @@
 """Diagnose how well an AnyTop checkpoint's internal representation separates
-different action types (action_tags) and species groups (objects_subset).
+different action types (action_label words) and species groups (objects_subset).
 
 Motivation
 ----------
@@ -7,7 +7,7 @@ AnyTop has NO explicit action-class conditioning: action type only enters
 through loop / playspeed / global-energy scalars and the joint-name text
 embedding. So "do different actions overlap in the same activation region?"
 is tested by probing intermediate decoder-layer activations, labelling each
-clip by its primary action tag, and measuring separability.
+clip by its primary action label, and measuring separability.
 
 The same analysis is also performed for species groups (objects_subset, e.g.
 quadruped / biped / serpentine) to assess whether different broader creature
@@ -20,12 +20,12 @@ Pipeline
    i.e. the clean normalized motion) and capture every decoder layer's
    latent via forward hooks; masked-mean-pool over valid joints + frames
    -> one D-dim vector per clip per layer.
-3. Quantify separability of both action_tags and species groups:
+3. Quantify separability of both action words and species groups:
       * leave-one-out kNN accuracy  (no model fitting; non-linear sensitive)
       * silhouette score            (cluster compactness vs separation)
    Two tables are printed (one per label type).
 4. Render two UMAP (fallback t-SNE) 2-D scatters for the chosen layer:
-   one coloured by action tag, one coloured by species group.
+   one coloured by action label, one coloured by species group.
 
 Usage
 -----
@@ -49,8 +49,9 @@ import torch
 
 from data_loaders.get_data import get_dataset
 from data_loaders.tensors import truebones_batch_collate
-from data_loaders.truebones.data.dataset import (
-    _normalize_motion_action_tags,
+from data_loaders.truebones.truebones_utils.motion_labels import (
+    action_multihot_words,
+    vocab_words_in,
 )
 from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
 from sample.generate import prepare_generation_runtime
@@ -67,17 +68,21 @@ for _subset_name, _type_set in dataset_tags().object_subsets.items():
 
 
 # ----------------------------------------------------------------------------
-# Action-tag -> single primary label
+# action_label -> single primary display word
 # ----------------------------------------------------------------------------
-def primary_action_tag(raw_tags):
-    """Reduce a clip's (possibly multi-)action_tags to one display label.
+def primary_action_word(raw_label):
+    """Reduce a clip's action_label to one display word for the scatter legend.
 
-    Returns the alphabetically first tag when multiple tags are present.
+    Prefers a core word (the coarse actions the plot is meant to separate) and
+    falls back to a detail word, so a 'sneak'-only clip still gets a class
+    instead of collapsing into 'unknown' with everything else.
     """
-    tags = _normalize_motion_action_tags(raw_tags)  # set[str], lowercased
-    if not tags:
-        return "unknown"
-    return sorted(tags)[0]
+    text = str(raw_label or "")
+    core = action_multihot_words(text)
+    if core:
+        return core[0]
+    detail = vocab_words_in(text)
+    return detail[0] if detail else "unknown"
 
 
 # ----------------------------------------------------------------------------
@@ -100,7 +105,7 @@ def extract_layer_activations(runtime, dataset, names, batch_size, timestep, dev
     Returns
     -------
     layer_feats    : dict[int, np.ndarray]   layer_idx -> (N, D)
-    action_labels  : list[str]               primary action tag per clip (len N)
+    action_labels  : list[str]               primary action word per clip (len N)
     species_labels : list[str]               object_type per clip (len N)
     """
     # Reseed so random crop inside prepare_sample_by_name is deterministic
@@ -160,9 +165,9 @@ def extract_layer_activations(runtime, dataset, names, batch_size, timestep, dev
                 pooled = (per_joint * w).sum(dim=1) / w.sum(dim=1).clamp_min(1e-6)  # (B, D)
                 layer_feats[layer_idx].append(pooled.float().cpu().numpy())
 
-            raw_tag_list = y.get("action_tags") or [None] * bs
-            for raw_tags in raw_tag_list:
-                action_labels.append(primary_action_tag(raw_tags))
+            raw_label_list = y.get("action_label") or [None] * bs
+            for raw_label in raw_label_list:
+                action_labels.append(primary_action_word(raw_label))
 
             species_list = y.get("object_type") or ["unknown"] * bs
             for sp in species_list:
@@ -320,7 +325,7 @@ def main():
 
     # Report the tag / species distribution.
     tags, tag_counts = np.unique(np.asarray(action_labels), return_counts=True)
-    print("\nAction-tag distribution in the probe set:")
+    print("\nAction-label distribution in the probe set:")
     for tag, c in sorted(zip(tags, tag_counts), key=lambda kv: -kv[1]):
         print(f"  {tag:<24s} {c}")
     if args.objects_subset == "all":
@@ -331,9 +336,9 @@ def main():
 
     num_layers = len(feats)
 
-    # --- Per-layer separability table: action tags ---
+    # --- Per-layer separability table: action labels ---
     print("\n" + "=" * 55)
-    print(f"{'layer':>5s} | {'kNN acc':>9s} {'silhouette':>9s}  <- ACTION tags")
+    print(f"{'layer':>5s} | {'kNN acc':>9s} {'silhouette':>9s}  <- ACTION labels")
     print("-" * 55)
     action_metrics = {}
     for layer in range(num_layers):
@@ -374,7 +379,7 @@ def main():
         emb, action_labels,
         f"layer {plot_layer}, kNN={action_metrics[plot_layer]['knn_acc']:.3f}",
         method,
-        f"Action-tag separability of decoder latents ({method})",
+        f"Action-label separability of decoder latents ({method})",
         out_png_action,
     )
 

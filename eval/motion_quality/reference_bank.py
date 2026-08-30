@@ -17,8 +17,11 @@ from data_loaders.truebones.truebones_utils.dataset_sources import (
     split_canonical_key,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (
+    CONTROLLED_VOCAB,
     load_motion_metadata,
+    vocab_words_in,
 )
+from data_loaders.truebones.truebones_utils.param_utils import parse_action_words
 from utils.misc import infer_object_type_from_filename
 from utils.skeleton_similarity import SpeciesSimilarity, rank_species
 
@@ -62,7 +65,7 @@ class ReferenceSpeciesSummary:
 class WeightedReferenceBank:
     dataset_root: str
     object_type: str
-    action_tags: str
+    action_words: str
     top_k_species: int
     clips: List[ReferenceClip]
     species: List[ReferenceSpeciesSummary]
@@ -86,52 +89,36 @@ class WeightedReferenceBank:
         return float(1.0 / denom)
 
 
-def _normalize_motion_action_tags(raw_action_tags) -> set[str]:
-    """Normalize motion action tags to a set of lowercase strings."""
-    if raw_action_tags is None:
-        return set()
-    if isinstance(raw_action_tags, str):
-        values = [raw_action_tags]
-    else:
-        values = raw_action_tags
-    return {
-        str(tag).strip().lower()
-        for tag in values
-        if str(tag).strip()
-    }
-
-
-def _collect_action_tags_paths(
+def _collect_action_words_paths(
     sources,
     cond_lookup: Mapping[str, Mapping[str, object]],
-    action_tags: str,
+    action_words: str,
 ) -> Dict[str, List[str]]:
-    """Collect motion paths grouped by canonical species key, filtered by action_tags.
+    """Collect motion paths grouped by canonical species key, filtered by action words.
+
+    The filter is over the controlled words a clip's ``action_label`` hits, NOT
+    over its ``action_group``: grouping would widen the prior from "the attack
+    references" to "everything stationary", and a prior that loose scores almost
+    anything as plausible.
 
     Args:
         sources: The ``DatasetSource`` list whose ``motions/`` dirs form the pool
         cond_lookup: Canonically-keyed cond entries
-        action_tags: Comma/semicolon-separated action tags to filter by
+        action_words: Comma/semicolon-separated controlled-vocabulary words
 
     Returns:
         Dict mapping canonical species key to matching motion paths, pooled across
         every source.  Paths are absolute, so the same bare filename appearing in
         two datasets stays two distinct clips.
     """
-    # Parse requested action tags
-    # Support both comma and semicolon separation
-    if action_tags is None:
-        requested_tags = set()
-    else:
-        tokens = str(action_tags).replace(';', ',').split(',')
-        requested_tags = {
-            token.strip().lower()
-            for token in tokens
-            if str(token).strip()
-        }
-
-    if not requested_tags:
-        raise ValueError("action_tags must contain at least one tag")
+    requested_words = set(parse_action_words(action_words))
+    if not requested_words:
+        raise ValueError("action_words must contain at least one controlled-vocabulary word")
+    unknown = sorted(requested_words - set(CONTROLLED_VOCAB))
+    if unknown:
+        raise ValueError(
+            f"Unknown action word(s) {unknown}. Valid words: {list(CONTROLLED_VOCAB)}"
+        )
 
     grouped: Dict[str, List[str]] = {}
     for source in sources:
@@ -151,15 +138,15 @@ def _collect_action_tags_paths(
             motion_name = path.name
             metadata = metadata_lookup.get(motion_name)
             if metadata is None:
-                # No metadata means no action tags, so the clip can never match a
-                # requested tag — skip it rather than fabricating empty labels.
+                # No metadata means no action label, so the clip can never match a
+                # requested word — skip it rather than fabricating empty labels.
                 continue
 
-            # Get motion's action tags and normalize to set
-            motion_action_tags = _normalize_motion_action_tags(metadata.get("action_tags"))
+            # Controlled words this clip's label hits, by the same matcher the
+            # requested words came from.
+            motion_action_words = set(vocab_words_in(str(metadata.get("action_label") or "")))
 
-            # Check if motion has any of the requested tags
-            if not motion_action_tags.intersection(requested_tags):
+            if not motion_action_words.intersection(requested_words):
                 continue
 
             species = str(metadata.get("object_type") or "").strip()
@@ -178,7 +165,7 @@ def _collect_action_tags_paths(
 
 def _select_species_weights(
     query_object_type: str,
-    action_tags: str,
+    action_words: str,
     action_paths_by_species: Mapping[str, Sequence[str]],
     cond_lookup: Mapping[str, Mapping[str, object]],
     top_k_species: int,
@@ -199,7 +186,7 @@ def _select_species_weights(
     }
     if not candidate_conds:
         raise ValueError(
-            f"No dataset reference motions found for action_tags={action_tags!r}"
+            f"No dataset reference motions found for action_words={action_words!r}"
         )
 
     return rank_species(
@@ -220,7 +207,7 @@ def clear_reference_bank_cache() -> None:
 
 def build_weighted_reference_bank(
     object_type: str,
-    action_tags: str,
+    action_words: str,
     dataset_root: Optional[str] = None,
     top_k_species: int = 5,
     min_frames: int = 8,
@@ -232,7 +219,7 @@ def build_weighted_reference_bank(
 
     Assembling the bank loads every matching reference clip from disk, which is
     the dominant cost when scoring many query clips that share the same
-    (object_type, action_tags, top_k_species) prior. The result is memoized on
+    (object_type, action_words, top_k_species) prior. The result is memoized on
     the resolved dataset root plus the normalized request so repeated calls
     reuse the already-loaded clips. The returned bank is treated as read-only by
     all callers; do not mutate its clips in place.
@@ -240,7 +227,7 @@ def build_weighted_reference_bank(
     if cond_lookup is not None or query_cond is not None or not use_cache:
         return _build_weighted_reference_bank(
             object_type,
-            action_tags,
+            action_words,
             dataset_root,
             top_k_species,
             min_frames,
@@ -251,15 +238,11 @@ def build_weighted_reference_bank(
     # The cache key must name every source: two runs differing only in which
     # datasets they pool must not share a reference bank.
     dataset_root_key = tuple(source.root for source in resolve_sources(dataset_root))
-    action_tags_key = frozenset(
-        token.strip().lower()
-        for token in str(action_tags or "").replace(";", ",").split(",")
-        if token.strip()
-    )
+    action_words_key = frozenset(parse_action_words(action_words))
     cache_key = (
         dataset_root_key,
         str(object_type).strip().lower(),
-        action_tags_key,
+        action_words_key,
         int(top_k_species),
         int(min_frames),
     )
@@ -268,7 +251,7 @@ def build_weighted_reference_bank(
         return cached
 
     bank = _build_weighted_reference_bank(
-        object_type, action_tags, dataset_root, top_k_species, min_frames
+        object_type, action_words, dataset_root, top_k_species, min_frames
     )
     _REFERENCE_BANK_CACHE[cache_key] = bank
     return bank
@@ -276,7 +259,7 @@ def build_weighted_reference_bank(
 
 def _build_weighted_reference_bank(
     object_type: str,
-    action_tags: str,
+    action_words: str,
     dataset_root: Optional[str] = None,
     top_k_species: int = 5,
     min_frames: int = 8,
@@ -287,14 +270,14 @@ def _build_weighted_reference_bank(
     if cond_lookup is None:
         cond_lookup = load_cond_dict(sources)
     object_key = str(object_type) if query_cond is not None else _resolve_lookup_key(object_type, cond_lookup)
-    action_tags_str = str(action_tags or "").strip()
-    if not action_tags_str:
-        raise ValueError("action_tags must be a non-empty string")
+    action_words_str = str(action_words or "").strip()
+    if not action_words_str:
+        raise ValueError("action_words must be a non-empty string")
 
-    action_paths_by_species = _collect_action_tags_paths(sources, cond_lookup, action_tags_str)
+    action_paths_by_species = _collect_action_words_paths(sources, cond_lookup, action_words_str)
     selected_species = _select_species_weights(
         object_key,
-        action_tags_str,
+        action_words_str,
         action_paths_by_species,
         cond_lookup,
         top_k_species,
@@ -349,7 +332,7 @@ def _build_weighted_reference_bank(
 
     if not clips:
         raise ValueError(
-            f"No valid reference motions found for object_type={object_key!r}, action_tags={action_tags_str!r}"
+            f"No valid reference motions found for object_type={object_key!r}, action_words={action_words_str!r}"
         )
 
     total_weight = float(sum(clip.weight for clip in clips))
@@ -385,7 +368,7 @@ def _build_weighted_reference_bank(
     return WeightedReferenceBank(
         dataset_root=os.pathsep.join(source.root for source in sources),
         object_type=object_key,
-        action_tags=action_tags_str,
+        action_words=action_words_str,
         top_k_species=int(top_k_species),
         clips=clips,
         species=species_summaries,

@@ -83,7 +83,7 @@ if str(ANYTOP_DIR) not in sys.path:
 from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     BVHS_DIR,
     MOTION_DIR,
-    ACTION_TAGS_FILE,
+    ACTION_LABELS_FILE,
     get_dataset_dir,
     get_raw_data_dir,
 )
@@ -434,9 +434,10 @@ def _capture_preserved_side_artifacts(
         }
 
     motions_dir = dataset_dir_path / MOTION_DIR
-    # Tolerate clips that still lack hand-labeled action_tags: this is a preserve-only
-    # read, the strict tag check belongs to artifact regeneration / training, not here.
-    for motion_name, entry in load_motion_metadata(dataset_dir_path, require_action_tags=False).items():
+    # Tolerate clips that still lack a hand-written action label: this is a
+    # preserve-only read, and the strict check belongs to artifact regeneration /
+    # training, not here.
+    for motion_name, entry in load_motion_metadata(dataset_dir_path, require_action_labels=False).items():
         if not (motions_dir / motion_name).exists():
             continue
         object_type = str(
@@ -465,8 +466,8 @@ def _merge_preserved_side_artifacts(dataset_dir_path: Path, preserved: Preserved
 
     motions_dir = dataset_dir_path / MOTION_DIR
     # Carry-forward read only; freshly preprocessed clips may not be hand-labeled yet.
-    # Artifact regeneration backfills inferred tags and re-applies the strict check.
-    current_metadata = load_motion_metadata(dataset_dir_path, require_action_tags=False)
+    # Artifact regeneration backfills inferred labels and re-applies the strict check.
+    current_metadata = load_motion_metadata(dataset_dir_path, require_action_labels=False)
     for motion_name, entry in preserved.motion_metadata.items():
         if motion_name in current_metadata:
             continue
@@ -818,7 +819,7 @@ def run_remove_motions(
             print(f"  [OK] Deleted {insp_deleted} inspection file(s)")
 
     # --- Update motion_metadata.json ---
-    metadata = load_motion_metadata(dataset_dir_path, require_action_tags=False)
+    metadata = load_motion_metadata(dataset_dir_path, require_action_labels=False)
     if metadata:
         removed_meta = 0
         for mname in to_delete:
@@ -830,15 +831,15 @@ def run_remove_motions(
         if removed_meta:
             print(f"  [OK] Removed {removed_meta} entries from motion_metadata.json (total: {total_clips})")
 
-    # --- Update action_tags.jsonl ---
-    tags_path = dataset_dir_path / ACTION_TAGS_FILE
-    if tags_path.exists():
-        entries = _load_jsonl(tags_path)
+    # --- Update action_labels.jsonl ---
+    labels_path = dataset_dir_path / ACTION_LABELS_FILE
+    if labels_path.exists():
+        entries = _load_jsonl(labels_path)
         delete_set = set(to_delete)
         new_entries = [e for e in entries if e.get("clip", "") not in delete_set]
         if len(new_entries) != len(entries):
-            _write_jsonl(tags_path, new_entries)
-            print(f"  [OK] Removed {len(entries) - len(new_entries)} entries from action_tags.jsonl")
+            _write_jsonl(labels_path, new_entries)
+            print(f"  [OK] Removed {len(entries) - len(new_entries)} entries from {ACTION_LABELS_FILE}")
 
     # --- Handle species that became empty ---
     if empty_species:
@@ -890,13 +891,8 @@ def run_remove_motions(
                     sp.unlink()
                     print(f"  [OK] Deleted joint_name_inspection/{species}.json")
 
-        # Cache: delete action_tags_cache.json (it will be regenerated)
         cache_dir = dataset_dir_path / "cache"
         if cache_dir.exists():
-            at_cache = cache_dir / "action_tags_cache.json"
-            if at_cache.exists():
-                at_cache.unlink()
-                print(f"  [OK] Deleted cache/action_tags_cache.json (will be regenerated)")
             ml_cache = cache_dir / "motion_lengths.npy"
             if ml_cache.exists():
                 ml_cache.unlink()

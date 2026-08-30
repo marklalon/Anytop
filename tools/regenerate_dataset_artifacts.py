@@ -43,9 +43,9 @@ sys.path.insert(0, str(ANYTOP_DIR))
 # process, each with its own module globals.
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     build_motion_labels,
-    infer_action_tags_from_clip_name,
+    infer_action_label_from_clip_name,
     load_motion_metadata,
-    load_action_tags,
+    load_action_labels,
     write_motion_metadata,
 )
 from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
@@ -70,7 +70,7 @@ from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E4
 from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     MOTION_DIR,
     MOTION_METADATA_FILE,
-    ACTION_TAGS_FILE,
+    ACTION_LABELS_FILE,
     get_dataset_dir,
 )
 from data_loaders.truebones.truebones_utils import dataset_tags  # noqa: E402
@@ -86,100 +86,85 @@ from utils.misc import (
 
 
 # ---------------------------------------------------------------------------
-# Action-tag fallback backfill (I/O + reporting)
+# Action-label fallback backfill (I/O + reporting)
 # ---------------------------------------------------------------------------
-# Action tags are normally hand-maintained in action_tags.jsonl, and
-# load_motion_metadata() / load_action_tags() hard-exit when any clip on disk is
+# Action groups/labels are normally hand-maintained in action_labels.jsonl, and
+# load_motion_metadata() / load_action_labels() hard-exit when any clip on disk is
 # missing an entry. When clips are added incrementally, hand-labeling lags behind,
-# so we backfill missing entries with a best-effort tag inferred from the clip
-# name (the inference itself lives in motion_labels.infer_action_tags_from_clip_name).
-# These guesses are HEURISTIC and must be reviewed by hand — the run reports every
+# so we backfill missing entries with a best-effort (group, label) pair inferred
+# from the clip name (the inference itself lives in
+# motion_labels.infer_action_label_from_clip_name). These guesses are HEURISTIC and
+# must be reviewed by hand — a synthesized label is one bare verb, which is a legal
+# label but carries none of the detail a written one does. The run reports every
 # fallback in yellow.
 
 _COLOR_RESET = "\033[0m"
 _COLOR_YELLOW = "\033[93m"
 
 
-def _ensure_action_tags_fallback(
+def _ensure_action_labels_fallback(
     dataset_dir_path: Path,
     motion_files: list[Path],
     cond_lookup: dict[str, str] | None = None,
-) -> list[tuple[str, list[str]]]:
-    """Backfill missing/unknown clips with clip-name-inferred tags.
+) -> list[tuple[str, str, str]]:
+    """Backfill clips missing from ``action_labels.jsonl`` with a clip-name guess.
 
-    Existing non-unknown labels are preserved.  Existing ``["unknown"]`` labels
-    are replaced only when the filename inference finds a more specific tag.
-    The file is created if missing.
+    Only clips with no entry at all are touched — a hand-written label always
+    wins, because the clip name can never recover the detail that makes a label
+    worth conditioning on. The file is created if missing.
 
     *cond_lookup* is the species registry; it is what tells the tokenizer how many
     leading tokens are the species name, so a clip of ``MU06_DeathMage`` is not
-    tagged "death" by its own species name.
-    """
-    tags_path = dataset_dir_path / ACTION_TAGS_FILE
-    existing_tags: dict[str, list[str]] = {}
-    if tags_path.exists():
-        existing_tags = load_action_tags(dataset_dir_path)
+    labeled "die" by its own species name.
 
-    fallbacks: list[tuple[str, list[str]]] = []
+    Returns ``[(clip, group, label), ...]`` for the review report.
+    """
+    labels_path = dataset_dir_path / ACTION_LABELS_FILE
+    existing: dict[str, dict[str, str]] = {}
+    if labels_path.exists():
+        existing = load_action_labels(dataset_dir_path)
+
+    fallbacks: list[tuple[str, str, str]] = []
     for motion_path in motion_files:
         clip = motion_path.name
-        current = existing_tags.get(clip)
-        if current is not None and current != ["unknown"]:
+        if clip in existing:
             continue
         object_type = (
             _infer_object_type_from_motion_name(clip, cond_lookup)
             if cond_lookup
             else None
         )
-        inferred = infer_action_tags_from_clip_name(
+        group, label = infer_action_label_from_clip_name(
             clip, bare_species_name(object_type) if object_type else None
         )
-        if current is None or inferred != current:
-            fallbacks.append((clip, inferred))
+        fallbacks.append((clip, group, label))
     if not fallbacks:
         return []
 
-    fallback_by_clip = dict(fallbacks)
-    if tags_path.exists():
-        rewritten_lines: list[str] = []
-        rewritten_clips: set[str] = set()
-        with open(tags_path, "r", encoding="utf-8") as handle:
-            for line in handle:
-                if not line.strip():
-                    rewritten_lines.append(line)
-                    continue
-                entry = json.loads(line)
-                clip = str(entry.get("clip", ""))
-                if clip in fallback_by_clip:
-                    entry["action_tags"] = fallback_by_clip[clip]
-                    rewritten_clips.add(clip)
-                rewritten_lines.append(json.dumps(entry, ensure_ascii=False) + "\n")
-        with open(tags_path, "w", encoding="utf-8") as handle:
-            handle.writelines(rewritten_lines)
-            for clip, inferred in sorted(fallbacks):
-                if clip not in rewritten_clips:
-                    handle.write(json.dumps({"clip": clip, "action_tags": inferred}, ensure_ascii=False) + "\n")
-    else:
-        with open(tags_path, "a", encoding="utf-8") as handle:
-            for clip, inferred in sorted(fallbacks):
-                handle.write(json.dumps({"clip": clip, "action_tags": inferred}, ensure_ascii=False) + "\n")
+    with open(labels_path, "a", encoding="utf-8") as handle:
+        for clip, group, label in sorted(fallbacks):
+            handle.write(json.dumps(
+                {"clip": clip, "action_group": group, "action_label": label},
+                ensure_ascii=False,
+            ) + "\n")
     print(
-        f"[OK] backfilled/updated {len(fallbacks)} action_tags entr"
-        f"{'y' if len(fallbacks) == 1 else 'ies'} into {ACTION_TAGS_FILE}"
+        f"[OK] backfilled {len(fallbacks)} action_labels entr"
+        f"{'y' if len(fallbacks) == 1 else 'ies'} into {ACTION_LABELS_FILE}"
     )
     return fallbacks
 
 
-def _print_action_tag_fallback_report(fallbacks: list[tuple[str, list[str]]]) -> None:
-    """Print every fallback-tagged clip in yellow as a manual-review reminder."""
+def _print_action_label_fallback_report(fallbacks: list[tuple[str, str, str]]) -> None:
+    """Print every fallback-labeled clip in yellow as a manual-review reminder."""
     print(
         f"\n{_COLOR_YELLOW}{'=' * 70}\n"
-        f"[REVIEW] {len(fallbacks)} clip(s) had missing/unknown action_tags; tags below "
-        f"were auto-inferred from the clip name and written to {ACTION_TAGS_FILE}.\n"
-        f"Please verify them by hand (especially any 'unknown'):{_COLOR_RESET}"
+        f"[REVIEW] {len(fallbacks)} clip(s) had no {ACTION_LABELS_FILE} entry; the "
+        f"group/label below were auto-inferred from the clip name and appended.\n"
+        f"Please verify the group and write a real label — a one-word guess is legal "
+        f"but carries no detail:{_COLOR_RESET}"
     )
-    for clip, inferred in sorted(fallbacks):
-        print(f"  {_COLOR_YELLOW}{clip:<48s} -> {inferred}{_COLOR_RESET}")
+    for clip, group, label in sorted(fallbacks):
+        print(f"  {_COLOR_YELLOW}{clip:<48s} -> {group:<11s} {label!r}{_COLOR_RESET}")
     print(f"{_COLOR_YELLOW}{'=' * 70}{_COLOR_RESET}")
 
 
@@ -475,10 +460,11 @@ def _regenerate_dataset_artifacts(dataset_dir_path: Path, t5_model: str = "t5-ba
 
     # Fast-fail: motion_metadata.json must exist.  Without it, load_motion_metadata
     # returns {} and the rebuilt metadata will be missing is_loop, source_file,
-    # translation_root_index, and other per-clip fields.  (action_tags are sourced
-    # from action_tags.jsonl at load time and stripped on write; any clip missing
-    # an entry there is backfilled by _ensure_action_tags_fallback below before
-    # load_motion_metadata runs, so the load no longer hard-exits on new clips.)
+    # translation_root_index, and other per-clip fields.  (action_group/action_label
+    # are sourced from action_labels.jsonl at load time and stripped on write; any
+    # clip missing an entry there is backfilled by _ensure_action_labels_fallback
+    # below before load_motion_metadata runs, so the load no longer hard-exits on
+    # new clips.)
     metadata_path = dataset_dir_path / MOTION_METADATA_FILE
     if not metadata_path.exists():
         raise RuntimeError(
@@ -489,10 +475,10 @@ def _regenerate_dataset_artifacts(dataset_dir_path: Path, t5_model: str = "t5-ba
             f"the full dataset, or restore it from a backup."
         )
 
-    # Backfill any clips missing from action_tags.jsonl BEFORE load_motion_metadata,
-    # which otherwise hard-exits when a clip on disk has no action_tags entry.
+    # Backfill any clips missing from action_labels.jsonl BEFORE load_motion_metadata,
+    # which otherwise hard-exits when a clip on disk has no entry.
     existing_cond = load_cond(cond_path)
-    action_tag_fallbacks = _ensure_action_tags_fallback(
+    action_label_fallbacks = _ensure_action_labels_fallback(
         dataset_dir_path, motion_files, species_lookup_map(existing_cond)
     )
 
@@ -596,8 +582,8 @@ def _regenerate_dataset_artifacts(dataset_dir_path: Path, t5_model: str = "t5-ba
     write_motion_metadata(dataset_dir_path, rebuilt_motion_metadata, len(motion_files))
     _rewrite_positions_error_file(dataset_dir_path, rebuilt_motion_metadata)
 
-    if action_tag_fallbacks:
-        _print_action_tag_fallback_report(action_tag_fallbacks)
+    if action_label_fallbacks:
+        _print_action_label_fallback_report(action_label_fallbacks)
 
     return dataset_dir_path
 

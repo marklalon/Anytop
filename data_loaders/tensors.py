@@ -2,32 +2,68 @@ import torch
 import numpy as np
 
 
-_ACTION_TAG_VOCAB = None
-_ACTION_TAG_TO_INDEX = None
+def _build_action_multihot_batch(action_labels_batch, action_groups_batch):
+    """Derive the [B, V] core-word multi-hot, masked by each row's action group.
 
+    The multi-hot is derived from the label text, so it costs the annotator
+    nothing and multiple hits are the normal case ("idle, growls" is idle *and*
+    roar). Each row is then multiplied by its group's frozen
+    ``GROUP_MULTIHOT_MASK``: training and inference must apply the same mask, or
+    a request lights up a column that was held at zero for the whole run.
 
-def _get_action_tag_vocab():
-    global _ACTION_TAG_VOCAB, _ACTION_TAG_TO_INDEX
-    if _ACTION_TAG_VOCAB is None or _ACTION_TAG_TO_INDEX is None:
-        from data_loaders.truebones.truebones_utils.motion_labels import ACTION_TAGS
+    An all-zero row is a defined state (the projection's bias), reached either
+    because the label names no core word or because the ones it names are masked
+    out in this group. It is distinct from the hard-dropped null the model uses
+    for an absent condition.
+    """
+    from data_loaders.truebones.truebones_utils.motion_labels import (
+        ACTION_VOCAB_CORE,
+        action_multihot_vector,
+    )
 
-        _ACTION_TAG_VOCAB = list(ACTION_TAGS)
-        _ACTION_TAG_TO_INDEX = {tag: i for i, tag in enumerate(_ACTION_TAG_VOCAB)}
-    return _ACTION_TAG_VOCAB, _ACTION_TAG_TO_INDEX
-
-
-def _build_action_tag_multihot_batch(action_tags_batch):
-    vocab, tag_to_index = _get_action_tag_vocab()
-    multihot = torch.zeros((len(action_tags_batch), len(vocab)), dtype=torch.float32)
-    for row_index, raw_tags in enumerate(action_tags_batch):
-        if raw_tags is None:
+    batch_size = len(action_labels_batch)
+    multihot = torch.zeros((batch_size, len(ACTION_VOCAB_CORE)), dtype=torch.float32)
+    for row_index, label in enumerate(action_labels_batch):
+        group = action_groups_batch[row_index]
+        if not label or not group:
             continue
-        tags = [raw_tags] if isinstance(raw_tags, str) else raw_tags
-        for tag in tags:
-            idx = tag_to_index.get(str(tag).strip().lower())
-            if idx is not None:
-                multihot[row_index, idx] = 1.0
+        multihot[row_index] = torch.as_tensor(
+            action_multihot_vector(str(label), str(group)), dtype=torch.float32
+        )
     return multihot
+
+
+def _build_action_label_emb_batch(action_label_embs_batch, action_labels_batch):
+    """Stack the per-sample frozen T5 label vectors into [B, D] plus a [B] valid mask.
+
+    Rows with an empty label carry no vector; they are zero-filled here and the
+    mask routes them to the model's learned null embedding, which is what an
+    empty label means. Encoding the empty string through T5 instead would teach
+    the model that "no text" is a condition satisfied by any motion and poison the
+    CFG unconditional branch.
+    """
+    batch_size = len(action_label_embs_batch)
+    valid = torch.zeros((batch_size,), dtype=torch.bool)
+    dims = {
+        int(torch.as_tensor(emb).shape[-1])
+        for emb in action_label_embs_batch
+        if emb is not None
+    }
+    if not dims:
+        return None, valid
+    if len(dims) != 1:
+        raise ValueError(
+            f"action_label_emb dimensions disagree within a batch: {sorted(dims)}. "
+            "The label-embedding sidecars were built with different T5 models."
+        )
+    emb_dim = dims.pop()
+    embs = torch.zeros((batch_size, emb_dim), dtype=torch.float32)
+    for row_index, emb in enumerate(action_label_embs_batch):
+        if emb is None:
+            continue
+        embs[row_index] = torch.as_tensor(emb, dtype=torch.float32).reshape(-1)
+        valid[row_index] = bool(str(action_labels_batch[row_index] or ""))
+    return embs, valid
 
 def n_joints_to_mask(n_joints, max_joints):
     mask = torch.arange(max_joints + 1, device=n_joints.device).expand(len(n_joints), max_joints + 1) < (n_joints.unsqueeze(1) + 1)
@@ -67,7 +103,7 @@ def truebones_collate(batch):
     cond : dict
         Conditioning dictionary with ``'y'`` containing all metadata
         (mask, lengths, T-pose, object type,
-        motion name, action tags, loop info, motion_start_frame, …).
+        motion name, action group/label, loop info, motion_start_frame, …).
     """
     notnone_batches = [b for b in batch if b is not None]
     databatch = [b['inp'] for b in notnone_batches]
@@ -106,12 +142,22 @@ def truebones_collate(batch):
         motionnamebatch = [b['motion_name'] for b in notnone_batches]
         cond['y'].update({'motion_name': motionnamebatch})
 
-    if any('action_tags' in batch_item for batch_item in notnone_batches):
-        action_tags_batch = [batch_item.get('action_tags') for batch_item in notnone_batches]
+    if any('action_label' in batch_item or 'action_group' in batch_item
+           for batch_item in notnone_batches):
+        action_labels_batch = [batch_item.get('action_label') for batch_item in notnone_batches]
+        action_groups_batch = [batch_item.get('action_group') for batch_item in notnone_batches]
+        action_label_embs_batch = [batch_item.get('action_label_emb') for batch_item in notnone_batches]
         cond['y'].update({
-            'action_tags': action_tags_batch,
-            'action_tag_multihot': _build_action_tag_multihot_batch(action_tags_batch),
+            'action_group': action_groups_batch,
+            'action_label': action_labels_batch,
+            'action_multihot': _build_action_multihot_batch(action_labels_batch, action_groups_batch),
         })
+        label_embs, label_valid = _build_action_label_emb_batch(
+            action_label_embs_batch, action_labels_batch
+        )
+        cond['y']['action_label_valid'] = label_valid
+        if label_embs is not None:
+            cond['y']['action_label_emb'] = label_embs
 
     if any('translation_root_index' in batch_item for batch_item in notnone_batches):
         cond['y'].update({
@@ -266,7 +312,7 @@ def truebones_batch_collate(batch):
         [9]  joints_names_embs – np.ndarray, joint name embeddings
         [10] crop_start      – int, starting frame index in source motion
         [11] max_joints      – int
-        [12] motion_metadata – dict or None (action tags, loop info, etc.)
+        [12] motion_metadata – dict or None (action group/label, loop info, etc.)
         [13] name            – str, motion name
         [14+] extras         – dicts (joint_mask_candidate_roots, aug info, …)
     """
@@ -292,7 +338,7 @@ def truebones_batch_collate(batch):
             if isinstance(extra, dict):
                 if 'joint_mask_candidate_roots' in extra or 'rest_pos_ric_hml' in extra:
                     extra_cond = extra
-                elif any(key in extra for key in ('species_label', 'action_tags', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'global_energy_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count')):
+                elif any(key in extra for key in ('species_label', 'action_group', 'action_label', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'global_energy_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count')):
                     motion_metadata = extra
             elif isinstance(extra, str):
                 motion_name = extra
@@ -345,7 +391,7 @@ def truebones_batch_collate(batch):
         if extra_cond is not None:
             item['feature_space'] = extra_cond.get('feature_space', 'canonical_motion_v3')
         if motion_metadata is not None:
-            for key in ('action_tags', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'global_energy_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count'):
+            for key in ('action_group', 'action_label', 'action_label_emb', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'global_energy_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count'):
                 if key in motion_metadata:
                     item[key] = motion_metadata[key]
             if 'species_emb' in motion_metadata:

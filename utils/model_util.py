@@ -112,8 +112,8 @@ def get_gmdm_args(args):
             'species_cond': getattr(args, 'species_cond', False),
             'species_cfg_drop_prob': getattr(args, 'species_cfg_drop_prob', 0.15),
             'species_joint_cond': getattr(args, 'species_joint_cond', False),
-            'action_tag_cond': getattr(args, 'action_tag_cond', False),
-            'action_tag_cfg_drop_prob': getattr(args, 'action_tag_cfg_drop_prob', 0.2),
+            'action_label_cond': getattr(args, 'action_label_cond', False),
+            'action_label_cfg_drop_prob': getattr(args, 'action_label_cfg_drop_prob', 0.2),
             'loop_cond_prob': getattr(args, 'loop_cond_prob', 1.0),
             'root_input_feats': 13}
 

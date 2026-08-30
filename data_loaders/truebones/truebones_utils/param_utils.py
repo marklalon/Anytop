@@ -50,7 +50,10 @@ MOTION_DIR = "motions"
 GLB_DIR = "glb"
 BVHS_DIR = "bvhs"
 MOTION_METADATA_FILE = "motion_metadata.json"
-ACTION_TAGS_FILE = "action_tags.jsonl"
+ACTION_LABELS_FILE = "action_labels.jsonl"
+# Offline sidecar: action_label string -> frozen T5 mean-pool vector. Built by
+# tools/build_action_label_embeddings.py so training never loads a T5 encoder.
+ACTION_LABEL_EMBEDDINGS_FILE = "action_label_embs.npy"
 # Sidecar mapping object_type -> portable skinned-mesh T-pose reference path. Kept
 # out of cond.npy (no inference path reads it); consumed only by the offline dataset
 # GLB tool (data_bridge.restore_glb_from_anytop). Written/refreshed by the dataset
@@ -74,13 +77,20 @@ VERTICAL_CLAMP_MAX_RATIO = 0.5
 ROOT_Y_MIN_HEIGHT = -0.5
 
 
-def parse_action_tags(raw_action_tags):
-        if raw_action_tags is None:
+def parse_action_words(raw_action_words):
+        """Split a comma/semicolon list of controlled-vocabulary words.
+
+        Used by the evaluation reference prior, which filters dataset clips by the
+        words their ``action_label`` hits -- never by ``action_group``, which would
+        widen the prior from "the attack references" to "everything stationary"
+        and make the score meaningless.
+        """
+        if raw_action_words is None:
                 return tuple()
-        if isinstance(raw_action_tags, str):
-                tokens = raw_action_tags.replace(';', ',').split(',')
+        if isinstance(raw_action_words, str):
+                tokens = raw_action_words.replace(';', ',').split(',')
         else:
-                tokens = raw_action_tags
+                tokens = raw_action_words
         return tuple(token.strip().lower() for token in tokens if str(token).strip())
 
 

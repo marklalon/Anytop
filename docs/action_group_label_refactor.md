@@ -1,10 +1,12 @@
 # action_group / action_label 重构方案
 
-> 状态：**词表与数据迁移已完成（§7 步骤 1-2），代码改造未开始**
-> 已产出：两个数据集的 `action_labels.jsonl` + 复核清单；受控词表已落在
-> [`motion_labels.py`](../data_loaders/truebones/truebones_utils/motion_labels.py)。
-> 待办：人工过复核清单 -> 冻结 per-group multihot mask（§2.4.1）-> 代码改造 -> 重训三组。
-> 目标：把现在一个 `action_tags` 字段承担的两份职责拆开 ——
+> 状态：**代码改造已完成（§7 步骤 1-6），待重训三组**
+> 已产出：三个数据集的 `action_labels.jsonl`（zoo 1106 / zoo_upgrade 265 / unitybundles 2657）；
+> 受控词表、`GROUP_MULTIHOT_MASK`、`load_action_labels` 在
+> [`motion_labels.py`](../data_loaders/truebones/truebones_utils/motion_labels.py)；
+> `action_tags.jsonl` 及其全部代码路径已删除（2026-08-30，见 §9）。
+> 待办：**重训三组**（条件维度变了，旧 checkpoint 不兼容且加载时会显式报错）。
+> 目标：把原来一个 `action_tags` 字段承担的两份职责拆开 ——
 > **`action_group`** 负责训练集切分（分 3 个模型训练），**`action_label`** 负责推理时的
 > text-to-motion 条件控制。
 
@@ -221,6 +223,16 @@ locomotion 的 `jump` 13 条覆盖 9 个物种，数量相近但安全得多。l
 > **能治的和不能治的。** 降级削弱的是「词」的记忆通道，不改变「动作」本身样本少这件事 ——
 > locomotion 的 bite 仍然只有 7 条兽脚类样本，用户输入 bite 仍然大概率拿到 Trex 的动作，
 > 变的只是绑定的锐利程度。真正的解是补数据或推理端不暴露该词。
+
+> **已冻结（2026-08-30）。** 上表是迁移当天 zoo 1137 条的口径，保留为历史记录。
+> 实际提交的 `GROUP_MULTIHOT_MASK` 按同一规则（组内 clip >= 10 **且** 物种 >= 5）在
+> **全部 4028 条**（zoo 1106 + zoo_upgrade 265 + unitybundles 2657，
+> locomotion 1029 / stationary 2196 / transition 803）上重算，物种维度用
+> `motion_metadata.json` 的 `object_type` 而非 clip 名前缀（unitybundles 的
+> `FEP_MagmaDemon_...` 前缀是美术包名不是物种，按前缀切会把物种数严重低估）。
+> 结果：locomotion 8 槽 / stationary 14 槽 / transition 12 槽，逐词数字见 §9.1。
+> 副作用（multihot 全零的 clip）现为 **142/4028 = 3.5%**，仍在可接受区间；
+> 若后续扩大，按本节末尾的方案给 multihot 加一位独立的「已降级」指示位。
 
 **实现：保持 19 槽全局布局不变，按 group 置零，不要做三套词表。**
 三套 `ACTION_VOCAB_CORE` = 三套索引布局 = 结构不兼容的 checkpoint，且
@@ -442,13 +454,14 @@ getup 49  turn 45  gethurt 41  jump 36  interact 36  swim 11  fall 4
    配套 `vocab_words_in` / `action_multihot_words` / `coarse_label_from_words`。
 2. ~~写迁移脚本，跑 LLM，产出两个 `action_labels.jsonl` + 复核清单~~ **已完成**
    （见 §8）。
-3. **人工过复核清单** <- 当前卡在这里，zoo 224 条 + upgrade 32 条。
-4. 冻结 `GROUP_MULTIHOT_MASK`（§2.4.1）—— 依赖步骤 3 的复核结果，分组定稿后才能算。
-5. 代码改造 + 单测（schema 校验、group 过滤、空 label 走 null、multihot 派生 + mask 生效、
-   合成串不受 mask 影响、detail-only 回退非空）。
-   旧 checkpoint **不做兼容**：`args.json` 带 `action_tag_cond` 时直接报错退出。
-6. 预计算 label embedding sidecar；
-7. 三组重训。
+3. ~~人工过复核清单~~ **已完成**（复核结果已落回三个数据集的 `action_labels.jsonl`）。
+4. ~~冻结 `GROUP_MULTIHOT_MASK`（§2.4.1）~~ **已完成** —— 见 §9.1。
+5. ~~代码改造 + 单测~~ **已完成**（§9）。单测覆盖 schema 校验、group 过滤、空 label 走 null、
+   multihot 派生 + mask 生效、合成串不受 mask 影响、detail-only 回退非空；
+   旧 checkpoint 不做兼容：`args.json` 带 `action_tag_cond` 时直接报错退出。
+6. ~~预计算 label embedding sidecar~~ **已完成** ——
+   `tools/build_action_label_embeddings.py`，三个数据集各一份 `action_label_embs.npy`。
+7. **三组重训** <- 当前卡在这里。
 
 ---
 
@@ -568,8 +581,90 @@ Buffalo / Camel / Comodoa / Dog / Roach / Skunk / Stego / Tricera / Tyranno 各 
 
 **两个遗留问题：**
 
-- `preprocess_and_validate.py --rm` 删 clip 时只同步 `action_tags.jsonl`，不动
-  `action_labels.jsonl` 和 `motion_captions.jsonl` —— 下次再删还会漂。
+- ~~`preprocess_and_validate.py --rm` 删 clip 时只同步 `action_tags.jsonl`~~
+  **已修（2026-08-30）**：`--rm` 现在同步 `action_labels.jsonl`。
+  `motion_captions.jsonl` 仍不同步 —— 它在 V2P 侧的 `dataset/truebones_processed/`，
+  不在 `--rm` 操作的数据集目录里。
 - V2P 侧 `dataset/truebones_processed/` 的 `glb/`(1182) 与 `glb_pose/`(1180) 仍含这 43 条，
   两个数据集目前对不齐。
 
+
+---
+
+## 9. 代码改造执行记录（2026-08-30）
+
+§7 步骤 3-6 全部完成。`action_tags.jsonl`（及其 15 个封闭 tag、`ACTION_TAGS` 常量、
+`load_action_tags` / `infer_action_tags_from_clip_name`、service 的 tag→group 展开表）
+**从仓库中删除**，不保留兼容路径。三个数据集的 `action_tags.jsonl` 一并删除。
+
+### 9.1 冻结的 `GROUP_MULTIHOT_MASK`
+
+按 §2.4.1 的规则（组内 clip 数 >= 10 **且** 组内物种数 >= 5）在全部 4028 条 clip
+（locomotion 1029 / stationary 2196 / transition 803）上重算。**物种数取
+`motion_metadata.json` 的 `object_type`，不是 clip 名前缀** —— unitybundles 的
+`FEP_MagmaDemon_Attack01_1.npy` 前缀 `FEP` 是美术包名，按前缀切会把物种数压到个位数。
+
+命中 clip 数 / 物种数（`keep` = 保留槽位，`drop` = 组内不足降级，`—` = 组内 0 条）：
+
+| core 词 | locomotion (1029) | stationary (2196) | transition (803) |
+|---|---:|---:|---:|
+| idle | — | 874/251 keep | 53/37 keep |
+| walk | 396/175 keep | — | 3/3 drop |
+| run | 344/193 keep | 7/6 drop | 10/6 keep |
+| fly | 218/78 keep | 321/75 keep | 77/34 keep |
+| swim | 59/11 keep | 4/3 drop | 5/4 drop |
+| jump | 30/27 keep | 12/9 keep | 66/49 keep |
+| turn | 110/34 keep | 147/91 keep | 224/103 keep |
+| attack | 18/13 keep | 884/233 keep | 31/25 keep |
+| bite | 2/1 drop | 91/56 keep | 3/3 drop |
+| roar | 2/2 drop | 54/31 keep | 5/4 drop |
+| eat | — | 39/29 keep | — |
+| die | — | 5/5 drop | 305/211 keep |
+| fall | 15/10 keep | 11/9 keep | 311/212 keep |
+| hurt | 7/6 drop | 215/164 keep | 16/16 keep |
+| getup | — | 4/4 drop | 111/71 keep |
+| rest | 1/1 drop | 55/34 keep | 52/32 keep |
+| look | 1/1 drop | 63/35 keep | 1/1 drop |
+| shake | — | 178/133 keep | 13/9 keep |
+| scratch | — | 20/16 keep | — |
+
+有效槽位：**locomotion 8 / stationary 14 / transition 12**（19 槽全局布局不变）。
+副作用（masked 后 multihot 全零的 clip）：zoo 26 + zoo_upgrade 13 + unitybundles 103
+= **142 / 4028 = 3.5%**。
+
+### 9.2 词表的一处增补
+
+`crouch`（surface forms: crouch/crouches/crouching/squat/squats/squatting/hunker...）
+加入 `ACTION_VOCAB_DETAIL`。原因：全库 201 处 label 文本出现 crouch/squat，其中
+`KI_Human_Crouch01Start_1` 是**唯一一条**命中不了任何受控词的 label（会被
+`load_action_labels` 判为非法）。detail 词不占 multihot 槽位，加它对 checkpoint 布局零影响。
+`ACTION_VOCAB_DETAIL` 30 -> 31。
+
+### 9.3 与方案的两处偏离
+
+1. **flag 名 `--action_label_coarse_prob`，不是 §4 表里的 `--action_label_truncate_prob`。**
+   §2.6 明确要求「不要用截断 label 前缀实现」，一个叫 `truncate` 的 flag 恰好诱导那种读法。
+   实现是 `coarse_label_from_words(vocab_words_in(label))` 反向合成，不切字符串。
+2. **`t5_out_dim` 是 768，不是 §4.1 写的 512。** 512 是方案里的示意值；实际维度取
+   `cond.npy` 里 `joints_names_embs` 的宽度（`t5-base` = 768），label projection 的
+   输入维直接用模型的 `t5_out_dim`，两边永远同源。
+
+### 9.4 落地的接口（与 §4 清单对照）
+
+| 位置 | 结果 |
+|---|---|
+| `motion_labels.py` | `ACTION_TAGS` 删除；新增 `GROUP_MULTIHOT_MASK` / `group_multihot_mask()` / `CORE_WORD_GROUP` / `action_multihot_vector()` / `normalize_action_group` / `normalize_action_label`；`load_action_tags` -> `load_action_labels`（校验 group 合法 + 非空 label 命中受控词 + <=15 词）；`infer_action_tags_from_clip_name` -> `infer_action_label_from_clip_name`（返回 `(group, label)`） |
+| `param_utils.py` | `ACTION_TAGS_FILE` -> `ACTION_LABELS_FILE`；新增 `ACTION_LABEL_EMBEDDINGS_FILE = "action_label_embs.npy"`；`parse_action_tags` -> `parse_action_words` |
+| `dataset.py` | tag 求交 -> `filter_motion_names_by_action_group` 单值相等；`resolve_requested_action_group` 拒绝逗号列表（那是 stale 的 `--action_tags` 写法）；`load_action_label_embeddings` + `_resolve_action_label_condition`（§2.6 粗粒度增强 + emb 查表） |
+| `tensors.py` | collate 产出 `action_group` / `action_label` / `action_multihot`（**逐行按自己那条的 group mask**）/ `action_label_emb` / `action_label_valid` |
+| `anytop.py` | `action_tag_projection`(15->D) -> `action_label_projection`(t5_out_dim->D) **+** `action_multihot_projection`(19->D)，两路相加；共用一个 drop 掩码；空 label 走 `action_label_null_emb` |
+| `parser_util.py` | `--action_tags` -> `--action_group`（单值 choices）；`--action_tag_cond` -> `--action_label_cond`；新增 `--action_label`（推理）/ `--action_words`（打分先验）/ `--action_label_coarse_prob`；`args.json` 带 `action_tag_cond` 时 `assert_action_conditioning_not_deprecated` 直接退出 |
+| `anytop_service.py` / `serve.py` / `anytop_client.py` | 删除 `ANYTOP_ACTION_GROUPS` 展开表与 `resolve_anytop_group`；请求直接带 `action_group`（+ 可选 `action_label`），缺失或非法即报错列出三个合法值 |
+| `reference_bank.py` / `scorer.py` | 打分先验的过滤键改为**受控词**（`action_words`）而非 group；`eval_checkpoint._SCORE_ACTION_TAGS = "locomotion"` -> `_SCORE_ACTION_WORDS = "walk,run"`（`locomotion` 已不是受控词） |
+| `eval_tasks.json` | 那里的 `--action_tags locomotion` 走的是**模型条件**通路（不是打分先验），所以译成 `--action_group locomotion --action_label walk`；与旧行为一致，checkpoint 没开对应 flag 时仍然 fail-fast |
+| V2P 侧（`video2pose_dataset.py` / `train_video2pose.py` / `inference/video2pose.py`） | `--action_tags` -> `--action_group`，共用 `resolve_requested_action_group` |
+| `tools/build_action_label_embeddings.py` | **新增**。把 label 全文 + 其合成粗粒度串一起编码进 `action_label_embs.npy`（label 文本为 key）。zoo 1123 串 / zoo_upgrade 230 / unitybundles 1944，均 768 维 |
+
+`action_label_embs.npy` 是**派生产物**（在 `.gitignore` 的 `dataset` 之下），改了
+`action_labels.jsonl` 就要重跑；`--action_label_cond` 打开而 sidecar 缺失会直接报错，
+不会静默退化成无条件训练。

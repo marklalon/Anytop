@@ -1448,28 +1448,7 @@ def main(args=None, cond_dict=None, runtime=None):
 
     # Create condition with effective frame count (shared across passes).
     obj_batch = [object_type] * args.batch_size
-    _action_tags_raw = str(getattr(args, 'action_tags', '') or '').strip()
-    _action_tags_per_obj = None
-    if _action_tags_raw:
-        _tag_list = [t.strip() for t in _action_tags_raw.replace(';', ',').split(',') if t.strip()]
-        if _tag_list:
-            from data_loaders.truebones.truebones_utils.motion_labels import ACTION_TAGS
-            _valid_tags = {t.lower() for t in ACTION_TAGS}
-            _unknown = [t for t in _tag_list if t.lower() not in _valid_tags]
-            if _unknown:
-                sys.exit(
-                    f"ERROR: unknown action tag(s): {', '.join(sorted(set(_unknown)))}. "
-                    f"Valid tags: {', '.join(sorted(_valid_tags))}"
-                )
-            _action_tags_per_obj = [_tag_list] * args.batch_size
-        # Fast-fail if the model was trained without action-tag conditioning.
-        if _action_tags_per_obj is not None:
-            _uw = unwrap_anytop_model(model)
-            if not getattr(_uw, 'action_tag_cond', False):
-                sys.exit(
-                    'ERROR: --action_tags was passed but this checkpoint was trained '
-                    'without --action_tag_cond. Action tags will have no effect.'
-                )
+    _action_condition = _resolve_action_condition(args, model, runtime, cond_dict[object_type])
 
     # ── --species_tags: restyle the target species' motion descriptor ────────
     _species_emb_override = None
@@ -1534,7 +1513,7 @@ def main(args=None, cond_dict=None, runtime=None):
         max_joints=max_joints,
         feature_len=opt.feature_len,
         loop=getattr(args, 'loop', False),
-        action_tags=_action_tags_per_obj,
+        action_condition=_action_condition,
         species_emb_override=_species_emb_override,
     )
     if global_energy_condition is not None:
@@ -2150,10 +2129,72 @@ def _find_cached_species_emb(tags, cond_dict, t5_name, expected_dim):
     return None
 
 
-def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joints, feature_len, loop=False, action_tags=None, species_emb_override=None):
+def _resolve_action_condition(args, model, runtime, cond_entry):
+    """Resolve ``--action_group`` / ``--action_label`` into one per-batch condition.
+
+    Returns ``None`` when no label was requested (the model then falls back to its
+    learned unconditional embedding), otherwise a dict carrying the group, the
+    label text and its T5 embedding, encoded here through the same conditioner the
+    dataset sidecar was built with.
+
+    The group is required alongside a label and is never inferred from the text: it
+    selects which of the three group models is being asked, and it also selects the
+    multi-hot mask, so guessing it wrong silently lights up columns this checkpoint
+    trained at zero.
+    """
+    label = str(getattr(args, 'action_label', '') or '').strip()
+    group = str(getattr(args, 'action_group', '') or '').strip().lower()
+    if not label:
+        return None
+
+    from data_loaders.truebones.truebones_utils.motion_labels import (
+        ACTION_GROUPS,
+        CONTROLLED_VOCAB,
+        vocab_words_in,
+    )
+
+    unwrapped = unwrap_anytop_model(model)
+    if not getattr(unwrapped, 'action_label_cond', False):
+        sys.exit(
+            'ERROR: --action_label was passed but this checkpoint was trained '
+            'without --action_label_cond. The label would have no effect.'
+        )
+    if group in ('', 'all'):
+        sys.exit(
+            "ERROR: --action_label requires an explicit --action_group "
+            f"(one of {', '.join(ACTION_GROUPS)}); it selects the multi-hot mask "
+            "this checkpoint was trained with and is not inferred from the text."
+        )
+    if group not in ACTION_GROUPS:
+        sys.exit(
+            f"ERROR: unknown action_group '{group}'. "
+            f"Valid groups: {', '.join(ACTION_GROUPS)}"
+        )
+    if not vocab_words_in(label):
+        print(
+            f"[generate] WARNING: --action_label '{label}' hits no controlled "
+            f"vocabulary word, so it activates no multi-hot column and reaches the "
+            f"model through T5 text alone. Recognized words: "
+            f"{', '.join(CONTROLLED_VOCAB)}"
+        )
+
+    # Same T5 that baked this cond's embeddings — and therefore the same one the
+    # offline action_label_embs.npy sidecar used, since both are built from it.
+    t5_name = _resolve_species_t5_name(cond_entry)
+    conditioner = _get_species_t5_conditioner(
+        t5_name, preloaded=getattr(runtime, 't5_conditioner', None)
+    )
+    with torch.no_grad():
+        tokens = conditioner.tokenize_entries([label])
+        emb = conditioner(tokens).detach().cpu().numpy().astype(np.float32, copy=False)[0]
+    return {'action_group': group, 'action_label': label, 'action_label_emb': emb}
+
+
+def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joints, feature_len, loop=False, action_condition=None, species_emb_override=None):
     """Build model_kwargs for a batch of object_types.
 
-    action_tags: per-object list of tag strings (or None).
+    action_condition: {'action_group', 'action_label', 'action_label_emb'} applied
+        to every object in the batch, or None for unconditional generation.
     species_emb_override: [t5_out_dim] vector replacing baked species_emb for all objects.
     """
     batches = list()
@@ -2194,10 +2235,10 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joi
             metadata['species_emb'] = cond_dict[object_type]['species_emb']
         if species_emb_override is not None:
             metadata['species_emb'] = species_emb_override
-        if action_tags is not None and i < len(action_tags):
-            tags = action_tags[i]
-            if tags is not None:
-                metadata['action_tags'] = tags
+        if action_condition is not None:
+            metadata['action_group'] = action_condition['action_group']
+            metadata['action_label'] = action_condition['action_label']
+            metadata['action_label_emb'] = action_condition['action_label_emb']
         batch.append(metadata)
         batch.append(object_type)
         batch.append({

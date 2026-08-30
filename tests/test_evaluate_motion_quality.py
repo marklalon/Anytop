@@ -48,14 +48,14 @@ def test_main_registers_cond_path_for_novel_query_species(tmp_path, monkeypatch)
         def species_lookup(self):
             return {}
 
-        def evaluate(self, motions, object_type, action_tags, top_k_species):
+        def evaluate(self, motions, object_type, action_words, top_k_species):
             captured["object_type"] = object_type
-            captured["action_tags"] = action_tags
+            captured["action_words"] = action_words
             captured["top_k_species"] = top_k_species
             captured["n_motions"] = len(motions)
             return DistributionEvalReport(
                 object_type=object_type,
-                action_tags=action_tags,
+                action_words=action_words,
                 n_input=1,
                 n_reference=1,
                 input_total_frames=int(motions[0].shape[0]),
@@ -76,7 +76,7 @@ def test_main_registers_cond_path_for_novel_query_species(tmp_path, monkeypatch)
     exit_code = eval_mod.main([
         "--motions", str(motion_path),
         "--object-type", "dragon",
-        "--action-tags", "locomotion",
+        "--action-words", "walk,run",
         "--cond-path", str(cond_path),
         "--no_color",
     ])
@@ -92,6 +92,6 @@ def test_main_registers_cond_path_for_novel_query_species(tmp_path, monkeypatch)
         cond_dict["dragon"]["joints_names_embs"],
     )
     assert captured["object_type"] == "dragon"
-    assert captured["action_tags"] == "locomotion"
+    assert captured["action_words"] == "walk,run"
     assert captured["top_k_species"] == 3
     assert captured["n_motions"] == 1

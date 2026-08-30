@@ -21,7 +21,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     MOTION_DIR,
     BVHS_DIR,
     MOTION_METADATA_FILE,
-    ACTION_TAGS_FILE,
+    ACTION_LABELS_FILE,
     get_dataset_dir,
 )
 from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
@@ -29,8 +29,10 @@ from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
     dataset_tags,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
+    ACTION_GROUPS,
     load_motion_metadata,
-    load_action_tags,
+    load_action_labels,
+    vocab_words_in,
 )
 from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
     ROOT_XZ_STRIP_THRESHOLD,
@@ -760,9 +762,11 @@ def validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: 
         actual_motion_names = set(motions.keys())
         require_valid(actual_motion_names == expected_motion_names, f"{MOTION_METADATA_FILE} entries mismatch with motions directory")
 
-        # Action tags now live in the hand-maintained action_tags.jsonl sidecar.
-        require_valid((dataset_dir / ACTION_TAGS_FILE).exists(), f"{ACTION_TAGS_FILE} missing")
-        action_tags = load_action_tags(dataset_dir)
+        # The action group/label live in the hand-maintained action_labels.jsonl
+        # sidecar. load_action_labels already hard-exits on an invalid group or a
+        # label that hits no controlled word; what is checked here is coverage.
+        require_valid((dataset_dir / ACTION_LABELS_FILE).exists(), f"{ACTION_LABELS_FILE} missing")
+        action_labels = load_action_labels(dataset_dir)
 
         for motion_path in motion_files:
             motion_name = motion_path.name
@@ -775,11 +779,17 @@ def validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: 
                 f"object_type mismatch for {motion_name}",
             )
             require_valid(bool(motion_metadata.get("species_label")), f"species_label missing for {motion_name}")
-            normalized_action_tags = action_tags.get(motion_name)
-            require_valid(normalized_action_tags is not None, f"action_tags missing in {ACTION_TAGS_FILE} for {motion_name}")
-            require_valid(bool(normalized_action_tags), f"action_tags empty in {ACTION_TAGS_FILE} for {motion_name}")
-            if not silent and normalized_action_tags == ["unknown"]:
-                print_warn(f"action_tags is ['unknown'] for {motion_name}")
+            action_entry = action_labels.get(motion_name)
+            require_valid(action_entry is not None, f"entry missing in {ACTION_LABELS_FILE} for {motion_name}")
+            action_group = (action_entry or {}).get("action_group", "")
+            action_label = (action_entry or {}).get("action_label", "")
+            require_valid(action_group in ACTION_GROUPS, f"action_group {action_group!r} invalid in {ACTION_LABELS_FILE} for {motion_name}")
+            # An empty label is legal (it means "no condition"), but every empty one
+            # is a clip the text-to-motion path can never retrieve, so say so.
+            if not silent and not action_label:
+                print_warn(f"action_label is empty for {motion_name} (clip trains unconditioned)")
+            elif not silent and not vocab_words_in(action_label, core_only=True):
+                print_warn(f"action_label for {motion_name} hits no core word: {action_label!r}")
 
             require_valid("translation_root_index" in motion_metadata, f"translation_root_index missing for {motion_name}")
             translation_root_index = motion_metadata.get("translation_root_index")

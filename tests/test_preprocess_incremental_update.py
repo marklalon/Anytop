@@ -28,12 +28,15 @@ def _make_cond_entry(object_type: str) -> dict[str, object]:
     }
 
 
-def _write_action_tags(dataset_dir, tags_by_clip):
-    """Write the hand-maintained action_tags.jsonl sidecar for a temp dataset."""
-    path = Path(dataset_dir) / "action_tags.jsonl"
+def _write_action_labels(dataset_dir, labels_by_clip):
+    """Write the hand-maintained action_labels.jsonl sidecar for a temp dataset.
+
+    Values are ``(action_group, action_label)`` pairs.
+    """
+    path = Path(dataset_dir) / "action_labels.jsonl"
     lines = [
-        json.dumps({"clip": clip, "action_tags": list(tags)})
-        for clip, tags in tags_by_clip.items()
+        json.dumps({"clip": clip, "action_group": group, "action_label": label})
+        for clip, (group, label) in labels_by_clip.items()
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -75,9 +78,8 @@ def test_write_motion_metadata_preserves_all_fields(tmp_path):
         {
             "Cat_Run_001.npy": {
                 "object_type": "Cat",
-                "action_label": "run",
-                "action_category": "locomotion",
-                "action_tags": ["locomotion", "attack"],
+                "action_label": "run, gallops forward",
+                "action_group": "locomotion",
                 "species_label": "cat",
                 "motion_name": "Cat_Run_001.npy",
                 "translation_root_index": 1,
@@ -92,13 +94,16 @@ def test_write_motion_metadata_preserves_all_fields(tmp_path):
     assert entry["object_type"] == "Cat"
     assert entry["species_label"] == "cat"
     assert entry["translation_root_index"] == 1
-    assert entry["action_label"] == "run"
-    assert entry["action_category"] == "locomotion"
-    assert entry["action_tags"] == ["locomotion", "attack"]
     assert entry["motion_name"] == "Cat_Run_001.npy"
+    # The action fields are joined in from action_labels.jsonl at load time and
+    # must NOT be persisted here: a stored copy diverges the moment the sidecar
+    # is edited, and every rebuild path round-trips loaded entries through this
+    # writer.
+    assert "action_group" not in entry
+    assert "action_label" not in entry
 
 
-def test_load_motion_metadata_merges_action_tags_from_sidecar(tmp_path):
+def test_load_motion_metadata_merges_action_labels_from_sidecar(tmp_path):
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir(parents=True)
     (dataset_dir / "motion_metadata.json").write_text(
@@ -116,15 +121,18 @@ def test_load_motion_metadata_merges_action_tags_from_sidecar(tmp_path):
         ),
         encoding="utf-8",
     )
-    _write_action_tags(dataset_dir, {"Cat_Run_001.npy": ["Locomotion", "attack", "locomotion"]})
+    _write_action_labels(
+        dataset_dir,
+        {"Cat_Run_001.npy": ("Locomotion", "  run,  gallops   forward ")},
+    )
 
     loaded = load_motion_metadata(dataset_dir)
     entry = loaded["Cat_Run_001.npy"]
-    assert entry["action_tags"] == ["locomotion", "attack"]
-    assert "action_label" not in entry
+    assert entry["action_group"] == "locomotion"
+    assert entry["action_label"] == "run, gallops forward"
 
 
-def test_load_motion_metadata_fast_fails_when_tag_missing(tmp_path):
+def test_load_motion_metadata_fast_fails_when_label_missing(tmp_path):
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir(parents=True)
     (dataset_dir / "motion_metadata.json").write_text(
@@ -140,7 +148,7 @@ def test_load_motion_metadata_fast_fails_when_tag_missing(tmp_path):
         encoding="utf-8",
     )
     # Sidecar exists but is missing the clip → must fail fast.
-    _write_action_tags(dataset_dir, {"Dog_Jump_002.npy": ["jump"]})
+    _write_action_labels(dataset_dir, {"Dog_Jump_002.npy": ("transition", "jump")})
 
     with pytest.raises(SystemExit):
         load_motion_metadata(dataset_dir)
@@ -185,12 +193,12 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
         },
         total_clips=3,
     )
-    _write_action_tags(
+    _write_action_labels(
         dataset_dir,
         {
-            "Cat_Run_001.npy": ["locomotion"],
-            "Dog_Jump_002.npy": ["jump"],
-            "Stale_Idle_003.npy": ["idle"],
+            "Cat_Run_001.npy": ("locomotion", "run"),
+            "Dog_Jump_002.npy": ("transition", "jump"),
+            "Stale_Idle_003.npy": ("stationary", "idle"),
         },
     )
     (inspection_dir / "Cat.json").write_text('{"object_type": "Cat", "stale": true}', encoding="utf-8")
@@ -257,7 +265,8 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
     motion_metadata = load_motion_metadata(dataset_dir)
     assert sorted(motion_metadata) == ["Cat_Run_001.npy", "Dog_Jump_002.npy"]
     assert motion_metadata["Cat_Run_001.npy"]["object_type"] == "Cat"
-    assert motion_metadata["Cat_Run_001.npy"]["action_tags"] == ["locomotion"]
+    assert motion_metadata["Cat_Run_001.npy"]["action_group"] == "locomotion"
+    assert motion_metadata["Cat_Run_001.npy"]["action_label"] == "run"
     assert motion_metadata["Cat_Run_001.npy"]["is_loop"] is True
     assert motion_metadata["Cat_Run_001.npy"]["translation_root_index"] == 1
     assert motion_metadata["Cat_Run_001.npy"]["motion_source"] == "anim_dir"
@@ -319,9 +328,9 @@ def test_regenerate_dataset_artifacts_unifies_translation_root_index_per_object(
         },
         total_clips=2,
     )
-    _write_action_tags(
+    _write_action_labels(
         dataset_dir,
-        {"Cat_Run_001.npy": ["locomotion"], "Cat_Idle_002.npy": ["idle"]},
+        {"Cat_Run_001.npy": ("locomotion", "run"), "Cat_Idle_002.npy": ("stationary", "idle")},
     )
 
     def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True):
@@ -375,7 +384,7 @@ def test_regenerate_dataset_artifacts_rebuilds_translation_root_when_metadata_mi
         },
         total_clips=1,
     )
-    _write_action_tags(dataset_dir, {"Cat_Run_001.npy": ["locomotion"]})
+    _write_action_labels(dataset_dir, {"Cat_Run_001.npy": ("locomotion", "run")})
 
     def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True):
         for object_cond in cond.values():
@@ -423,9 +432,9 @@ def test_regenerate_dataset_artifacts_uses_majority_root_not_minimum(monkeypatch
         {f"Bear_Run_{idx:03d}.npy": {"object_type": "Bear", "translation_root_index": 1} for idx in range(4)},
         total_clips=4,
     )
-    _write_action_tags(
+    _write_action_labels(
         dataset_dir,
-        {f"Bear_Run_{idx:03d}.npy": ["locomotion"] for idx in range(4)},
+        {f"Bear_Run_{idx:03d}.npy": ("locomotion", "run") for idx in range(4)},
     )
 
     def fake_attach(cond, save_dir, t5_name="t5-base", write_collision_report=True):
@@ -472,11 +481,11 @@ def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_infe
         },
         total_clips=2,
     )
-    _write_action_tags(
+    _write_action_labels(
         dataset_dir,
         {
-            "Cat_Run_001.npy": ["locomotion"],
-            "Dog_Jump_002.npy": ["locomotion"],
+            "Cat_Run_001.npy": ("locomotion", "run"),
+            "Dog_Jump_002.npy": ("locomotion", "run"),
         },
     )
 
@@ -556,7 +565,7 @@ def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch,
     assert sorted(seed_cond) == ['Cat']
     assert 'joints_names_embs' not in seed_cond['Cat']
 
-    _write_action_tags(dataset_dir, {"Cat_Run_001.npy": ["locomotion"]})
+    _write_action_labels(dataset_dir, {"Cat_Run_001.npy": ("locomotion", "run")})
     motion_metadata = load_motion_metadata(dataset_dir)
     assert motion_metadata['Cat_Run_001.npy']['translation_root_index'] == 1
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from data_loaders.truebones.truebones_utils.param_utils import (
     MOTION_METADATA_FILE,
-    ACTION_TAGS_FILE,
+    ACTION_LABELS_FILE,
 )
 
 
@@ -15,36 +15,9 @@ MOTION_METADATA_SCHEMA_VERSION = 5
 _TOKEN_PATTERN = re.compile(r"[A-Z]+(?=[A-Z][a-z]|\d|$)|[A-Z]?[a-z]+|\d+")
 
 # ---------------------------------------------------------------------------
-# Canonical action-tag vocabulary
-# ---------------------------------------------------------------------------
-# The full set of valid action tags. Order is significant: it defines the
-# multi-hot index layout the model conditions on, so trained checkpoints depend
-# on it staying stable. Tags themselves are maintained by hand in
-# ``action_tags.jsonl`` (see ``load_action_tags``); this module never generates
-# them automatically.
-
-ACTION_TAGS: tuple[str, ...] = (
-    "idle",
-    "locomotion",
-    "getup",
-    "swim",
-    "fly",
-    "jump",
-    "turn",
-    "attack",
-    "gethurt",
-    "rest",
-    "emote",
-    "interact",
-    "death",
-    "fall",
-    "unknown",
-)
-
-# ---------------------------------------------------------------------------
 # Action groups + controlled label vocabulary  (action_labels.jsonl)
 # ---------------------------------------------------------------------------
-# See docs/action_group_label_refactor.md. Two fields replace ACTION_TAGS:
+# See docs/action_group_label_refactor.md. Two fields carry the action signal:
 #
 #   action_group  -- one of ACTION_GROUPS. Partitions the dataset; each group
 #                    trains its own model.
@@ -102,10 +75,110 @@ ACTION_VOCAB_DETAIL: tuple[str, ...] = (
     "crawl", "climb", "sneak", "retreat", "land", "takeoff", "dive", "roll",
     "rear", "sit", "sleep", "stand", "sniff", "stretch", "yawn", "taunt",
     "dig", "throw", "catch", "peck", "sting", "kick", "spit", "drag", "dance",
-    "breathe", "drink", "graze", "flap", "wag",
+    "breathe", "drink", "graze", "flap", "wag", "crouch",
 )
 
 CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB_CORE + ACTION_VOCAB_DETAIL
+
+# ---------------------------------------------------------------------------
+# Per-group multi-hot mask
+# ---------------------------------------------------------------------------
+# Each group trains its own model, so the ">= ~20 clips" threshold that earned a
+# word its core slot is the wrong yardstick: a word that is healthy library-wide
+# can be down to a handful of clips *inside* one group. A slot fitted on five
+# clips is memorized, not learned -- and on a cross-skeleton model the failure
+# mode is that the word binds to whichever two species happened to supply those
+# clips, which a pure clip count cannot catch. So the threshold has a species
+# axis too:
+#
+#     keep a slot in a group iff  clips >= 10  AND  species >= 5
+#
+# A masked-out word is NOT removed from the vocabulary. It keeps its place in the
+# label text and therefore in the frozen-T5 path, where 'roar' already sits next
+# to 'growl' from pretraining and needs no support from these five clips. Only
+# the from-scratch multi-hot column -- an isolated, unambiguous memorization
+# handle -- is switched off.
+#
+# The layout stays the 19-slot global one in every group: three per-group
+# vocabularies would mean three index layouts and structurally incompatible
+# checkpoints. A permanently-zero column simply never receives gradient.
+#
+# This mask is a FROZEN CONSTANT, deliberately not recomputed from the dataset at
+# import time -- otherwise adding clips would silently redefine what a slot
+# means. Recompute it by the rule above when the corpus grows, and commit the new
+# values explicitly.
+#
+# Measured 2026-08-30 over all 4028 labeled clips (locomotion 1029 / stationary
+# 2196 / transition 803) across the zoo, zoo_upgrade and unitybundles datasets.
+GROUP_MULTIHOT_MASK: dict[str, tuple[int, ...]] = {
+    #                idle walk run  fly swim jump turn attk bite roar  eat  die fall hurt getup rest look shak scra
+    "locomotion": (    0,   1,   1,   1,   1,   1,   1,   1,   0,   0,   0,   0,   1,   0,   0,   0,   0,   0,   0),
+    "stationary": (    1,   0,   0,   1,   0,   1,   1,   1,   1,   1,   1,   0,   1,   1,   0,   1,   1,   1,   1),
+    "transition": (    1,   0,   1,   1,   0,   1,   1,   1,   0,   0,   0,   1,   1,   1,   1,   1,   0,   1,   0),
+}
+
+assert set(GROUP_MULTIHOT_MASK) == set(ACTION_GROUPS), (
+    "GROUP_MULTIHOT_MASK must cover exactly ACTION_GROUPS: "
+    f"{set(GROUP_MULTIHOT_MASK) ^ set(ACTION_GROUPS)}"
+)
+assert all(
+    len(mask) == len(ACTION_VOCAB_CORE) and set(mask) <= {0, 1}
+    for mask in GROUP_MULTIHOT_MASK.values()
+), "each GROUP_MULTIHOT_MASK row must be len(ACTION_VOCAB_CORE) zeros/ones"
+
+
+def group_multihot_mask(group: str) -> tuple[int, ...]:
+    """The frozen 0/1 mask over :data:`ACTION_VOCAB_CORE` for one action group.
+
+    Training and inference must both multiply the derived multi-hot by this, or
+    inference lights up columns that were held at zero throughout training.
+    """
+    normalized = normalize_action_group(group)
+    mask = GROUP_MULTIHOT_MASK.get(normalized)
+    if mask is None:
+        raise ValueError(
+            f"unknown action_group {group!r}; expected one of {list(ACTION_GROUPS)}"
+        )
+    return mask
+
+
+# Default group for each core word. Used ONLY to seed the clip-name fallback
+# (:func:`infer_action_label_from_clip_name`) for clips not yet hand-labeled --
+# never to route a request at inference, which takes the group explicitly.
+#
+# These are action semantics, not the corpus argmax. 'fly' is the one place the
+# two disagree (321 stationary hits vs 218 locomotion, because hovering and
+# wing-flapping in place are labeled stationary): a clip *named* "Fly" is a
+# flight cycle, so the seed says locomotion and a human moves the exceptions.
+CORE_WORD_GROUP: dict[str, str] = {
+    "idle": "stationary",
+    "walk": "locomotion",
+    "run": "locomotion",
+    "fly": "locomotion",
+    "swim": "locomotion",
+    "jump": "transition",
+    "turn": "transition",
+    "attack": "stationary",
+    "bite": "stationary",
+    "roar": "stationary",
+    "eat": "stationary",
+    "die": "transition",
+    "fall": "transition",
+    "hurt": "stationary",
+    "getup": "transition",
+    "rest": "stationary",
+    "look": "stationary",
+    "shake": "stationary",
+    "scratch": "stationary",
+}
+
+assert set(CORE_WORD_GROUP) == set(ACTION_VOCAB_CORE), (
+    "CORE_WORD_GROUP must cover exactly ACTION_VOCAB_CORE: "
+    f"{set(CORE_WORD_GROUP) ^ set(ACTION_VOCAB_CORE)}"
+)
+assert set(CORE_WORD_GROUP.values()) <= set(ACTION_GROUPS), (
+    "CORE_WORD_GROUP values must be ACTION_GROUPS members"
+)
 
 # Surface forms recognized for each vocabulary word. Labels are written using the
 # canonical word, so this mainly serves (a) inflected forms inside labels and
@@ -248,6 +321,8 @@ _VOCAB_SURFACE_FORMS: dict[str, tuple[str, ...]] = {
     "graze": ("graze", "grazes", "grazing"),
     "flap": ("flap", "flaps", "flapping"),
     "wag": ("wag", "wags", "wagging"),
+    "crouch": ("crouch", "crouches", "crouching", "squat", "squats",
+               "squatting", "hunker", "hunkers", "hunkering"),
 }
 
 # A canonical word must always match itself: labels are written using the
@@ -337,13 +412,36 @@ def vocab_words_in(text: str, core_only: bool = False) -> list[str]:
     ]
 
 
-def action_multihot_words(label: str) -> list[str]:
+def action_multihot_words(label: str, group: str | None = None) -> list[str]:
     """Core words a label activates -- the derived multi-hot, as words.
 
     Derived automatically from the label text, so it costs the annotator nothing
     and naturally supports multiple hits.
+
+    Pass *group* to apply that group's frozen :data:`GROUP_MULTIHOT_MASK`, which
+    is what any consumer building an actual multi-hot vector must do. Leave it
+    ``None`` to get the unmasked hits -- that is the right input for the
+    coarse-string synthesis of :func:`coarse_label_from_words`, which feeds T5
+    text and must keep the down-weighted words (see the note there).
     """
-    return vocab_words_in(label, core_only=True)
+    words = vocab_words_in(label, core_only=True)
+    if group is None:
+        return words
+    mask = group_multihot_mask(group)
+    allowed = {word for word, bit in zip(ACTION_VOCAB_CORE, mask) if bit}
+    return [word for word in words if word in allowed]
+
+
+def action_multihot_vector(label: str, group: str | None = None) -> list[float]:
+    """The derived multi-hot over :data:`ACTION_VOCAB_CORE` as a 0/1 list.
+
+    With *group* given, columns masked out for that group are held at zero (see
+    :data:`GROUP_MULTIHOT_MASK`). An all-zero result is a defined state -- it maps
+    to the projection's bias -- and is distinct from the hard-dropped null the
+    model uses for an absent condition.
+    """
+    hits = set(action_multihot_words(label, group))
+    return [1.0 if word in hits else 0.0 for word in ACTION_VOCAB_CORE]
 
 
 def coarse_label_from_words(words) -> str:
@@ -405,35 +503,30 @@ def infer_species_label(object_type: str) -> str:
     return " ".join(tokens) if tokens else object_type.lower()
 
 
-def normalize_action_tags(raw_action_tags) -> list[str]:
-    if raw_action_tags is None:
-        return []
-    if isinstance(raw_action_tags, str):
-        values = [raw_action_tags]
-    elif isinstance(raw_action_tags, (list, tuple, set)):
-        values = raw_action_tags
-    else:
-        values = [raw_action_tags]
+def normalize_action_group(raw_action_group) -> str:
+    """Lower-case / strip an ``action_group`` value. Never validates membership."""
+    if raw_action_group is None:
+        return ""
+    return str(raw_action_group).strip().lower()
 
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        tag = str(value).strip().lower()
-        if not tag or tag in seen:
-            continue
-        seen.add(tag)
-        normalized.append(tag)
-    return normalized
+
+def normalize_action_label(raw_action_label) -> str:
+    """Collapse whitespace in an ``action_label``. Empty stays empty (= no condition)."""
+    if raw_action_label is None:
+        return ""
+    return " ".join(str(raw_action_label).split())
 
 
 # ---------------------------------------------------------------------------
-# Action-tag fallback inference
+# Action-label fallback inference
 # ---------------------------------------------------------------------------
-# Action tags are normally hand-maintained in ``action_tags.jsonl``, and
-# ``load_action_tags`` hard-exits when a clip on disk has no entry. When clips are
-# added incrementally, hand-labeling lags behind, so callers can backfill missing
-# entries with a best-effort tag inferred from the Truebones ``Species_Action_id``
-# clip name. These guesses are HEURISTIC and meant to be reviewed by hand.
+# Action labels are normally hand-maintained in ``action_labels.jsonl``, and
+# ``load_action_labels`` hard-exits when a clip on disk has no entry. When clips
+# are added incrementally, hand-labeling lags behind, so callers can backfill
+# missing entries with a best-effort (group, label) pair inferred from the
+# Truebones ``Species_Action_id`` clip name. These guesses are HEURISTIC and meant
+# to be reviewed by hand -- the clip name knows the verb, never the detail that
+# makes a label worth conditioning on.
 
 # Tokens that, paired with a trailing "Up", denote a get-up recovery ("DeadUp",
 # "DieUp", "SleepUp", "StandUp"), which would otherwise mis-resolve to
@@ -442,19 +535,20 @@ _GETUP_UP_CONTEXT: frozenset[str] = frozenset(
     {"dead", "die", "stand", "sleep", "get", "wake", "knock", "rise", "sit", "lay", "lie", "fall"}
 )
 
-# Ordered fallback rules: the first tag whose keyword set intersects the clip-name
-# tokens wins, so specific/event-like actions precede generic locomotion/idle.
-# Keyword sets were derived empirically from the hand-labeled ``action_tags.jsonl``
-# vocabulary (~84% agreement with the existing labels; the rest surface as
-# ``unknown`` / review items).
-_FALLBACK_ACTION_RULES: tuple[tuple[str, frozenset[str]], ...] = (
+# Ordered fallback rules: the first word whose keyword set intersects the
+# clip-name tokens wins, so specific/event-like actions precede generic
+# locomotion/idle. Keyword sets carry over from the previous action-tag fallback
+# (~84% agreement with the hand labels there); the right-hand side is now a
+# CONTROLLED_VOCAB word, so the synthesized label matches on its own vocabulary.
+_FALLBACK_LABEL_RULES: tuple[tuple[str, frozenset[str]], ...] = (
     ("getup", frozenset({"getup", "get", "rise", "rising", "wake", "waking", "revive", "recover", "standup", "spawn"})),
-    ("death", frozenset({"die", "death", "dead", "dying", "dies", "deceased", "despawn"})),
-    ("gethurt", frozenset({"hit", "hurt", "gethurt", "damage", "knock", "knocked", "knockback", "stunned",
-                           "stun", "shot", "recoil", "flinch", "pain", "wound", "injured", "limp", "sorr"})),
-    ("attack", frozenset({"attack", "atk", "bite", "sting", "strike", "kill", "swat", "swipe", "snap", "whip",
+    ("die", frozenset({"die", "death", "dead", "dying", "dies", "deceased", "despawn"})),
+    ("hurt", frozenset({"hit", "hurt", "gethurt", "damage", "knock", "knocked", "knockback", "stunned",
+                        "stun", "shot", "recoil", "flinch", "pain", "wound", "injured", "limp", "sorr"})),
+    ("bite", frozenset({"bite", "chomp", "fang", "snap"})),
+    ("attack", frozenset({"attack", "atk", "sting", "strike", "kill", "swat", "swipe", "whip",
                           "throw", "rip", "claw", "punch", "slash", "peck", "stab", "spit", "spear", "maul",
-                          "tail", "butt", "gore", "charge", "bash", "headbutt", "chomp", "tackle", "fang",
+                          "tail", "butt", "gore", "charge", "bash", "headbutt", "tackle",
                           "spray", "kick", "pounce", "catch", "smash", "slam", "grab"})),
     ("fall", frozenset({"fall", "falling", "trip", "stumble", "fallen"})),
     ("jump", frozenset({"jump", "leap", "hop"})),
@@ -462,27 +556,51 @@ _FALLBACK_ACTION_RULES: tuple[tuple[str, frozenset[str]], ...] = (
     ("fly", frozenset({"fly", "flying", "glide", "flap", "hover", "soar", "soaring", "takeoff", "take",
                        "land", "lander", "wing", "float", "floater"})),
     ("turn", frozenset({"turn", "spin", "rotate", "strafe", "circle", "pivot", "arc"})),
-    ("interact", frozenset({"eat", "drink", "fish", "egg", "dig", "burrow", "burrough", "graze", "graz", "grazing", "feed", "feast"})),
+    ("eat", frozenset({"eat", "drink", "fish", "graze", "graz", "grazing", "feed", "feast"})),
+    ("dig", frozenset({"dig", "burrow", "burrough", "egg"})),
     ("rest", frozenset({"rest", "sleep", "sit", "lay", "laydown", "lie", "lying", "relax", "down", "sleepy"})),
-    ("emote", frozenset({"emote", "roar", "yawn", "look", "shake", "growl", "yell", "scream", "hiss", "howl",
-                         "bark", "cry", "scratch", "sniff", "lick", "stretch", "scrape", "purr", "taunt",
-                         "celebrate", "dance", "nod", "listen", "alert", "angry", "pissed", "scared",
-                         "curious", "sneeze", "wag", "ear", "restless", "hoof", "rear", "mean", "scary",
-                         "pant", "twitch", "twitching", "buck", "mope", "wild", "special", "call", "threaten",
-                         "threat", "clear", "clearing"})),
-    ("locomotion", frozenset({"walk", "run", "jog", "trot", "gallop", "sprint", "dash", "crawl", "move", "locomotion",
-                              "step", "chase", "retreat", "climb", "sneak", "prowl", "pace", "slide", "march",
-                              "strut", "wander", "roam", "scurry", "slither", "back", "backing", "forward",
-                              "backward", "slow", "fast", "slowwalk", "stalk", "stalking"})),
+    ("roar", frozenset({"roar", "growl", "yell", "scream", "hiss", "howl", "bark", "cry", "call"})),
+    ("shake", frozenset({"shake", "twitch", "twitching", "wag", "tremble", "shudder"})),
+    ("scratch", frozenset({"scratch", "groom", "rub", "itch", "lick", "scrape"})),
+    ("look", frozenset({"look", "observ", "observing", "listen", "watch", "gaze", "scan"})),
+    ("rear", frozenset({"rear", "buck", "hoof", "hind", "hind2"})),
+    ("taunt", frozenset({"emote", "yawn", "sniff", "stretch", "purr", "taunt",
+                         "celebrate", "dance", "nod", "alert", "angry", "pissed", "scared",
+                         "curious", "sneeze", "ear", "restless", "mean", "scary",
+                         "pant", "mope", "wild", "special", "threaten", "threat", "clear", "clearing"})),
+    ("sneak", frozenset({"sneak", "prowl", "stalk", "stalking", "crawl", "slither", "scurry", "creep"})),
+    ("climb", frozenset({"climb"})),
+    ("retreat", frozenset({"retreat", "back", "backing", "backward", "chase"})),
+    ("run", frozenset({"run", "jog", "gallop", "sprint", "dash", "fast"})),
+    ("walk", frozenset({"walk", "trot", "move", "locomotion", "step", "pace", "slide", "march",
+                        "strut", "wander", "roam", "forward", "slow", "slowwalk"})),
     ("idle", frozenset({"idle", "stand", "ready", "breath", "breathe", "wait", "stance", "energetic",
-                        "tired", "steady", "clean", "cud", "hind", "hind2", "observ", "observing", "start"})),
+                        "tired", "steady", "clean", "cud", "start"})),
 )
 
-# Sanity guard: every fallback tag must be a member of the canonical vocabulary so
-# inferred entries pass ``load_action_tags`` validation.
-assert all(tag in ACTION_TAGS for tag, _ in _FALLBACK_ACTION_RULES), (
-    "fallback rules reference a tag outside ACTION_TAGS"
+# Sanity guard: every fallback word must be a member of the controlled vocabulary,
+# so a synthesized label always passes ``load_action_labels`` validation.
+assert all(word in CONTROLLED_VOCAB for word, _ in _FALLBACK_LABEL_RULES), (
+    "fallback rules reference a word outside CONTROLLED_VOCAB: "
+    + str([w for w, _ in _FALLBACK_LABEL_RULES if w not in CONTROLLED_VOCAB])
 )
+
+# Group for the detail words a fallback rule can produce. Core words take their
+# group from CORE_WORD_GROUP; only the detail-tier right-hand sides above need an
+# entry here.
+_FALLBACK_DETAIL_GROUP: dict[str, str] = {
+    "dig": "stationary",
+    "rear": "stationary",
+    "taunt": "stationary",
+    "sneak": "locomotion",
+    "climb": "locomotion",
+    "retreat": "locomotion",
+}
+
+assert all(
+    word in CORE_WORD_GROUP or word in _FALLBACK_DETAIL_GROUP
+    for word, _ in _FALLBACK_LABEL_RULES
+), "every fallback word needs a group (CORE_WORD_GROUP or _FALLBACK_DETAIL_GROUP)"
 
 
 def _strip_species_prefix(parts: list[str], object_type: str | None) -> list[str]:
@@ -531,24 +649,35 @@ def _tokenize_action_name(clip_name: str, object_type: str | None = None) -> set
     return tokens
 
 
-def infer_action_tags_from_clip_name(
+def infer_action_label_from_clip_name(
     clip_name: str,
     object_type: str | None = None,
-) -> list[str]:
-    """Best-effort single action tag inferred from a clip name; ``['unknown']`` if no rule fires.
+) -> tuple[str, str]:
+    """Best-effort ``(action_group, action_label)`` inferred from a clip name.
 
-    Heuristic fallback for clips not yet hand-labeled in ``action_tags.jsonl``; the
-    result is always a list of canonical :data:`ACTION_TAGS` members and is meant
-    to be reviewed by a human before use. Pass *object_type* so that a multi-token
+    Heuristic fallback for clips not yet hand-labeled in ``action_labels.jsonl``;
+    the label is a single :data:`CONTROLLED_VOCAB` word and the group its default
+    from :data:`CORE_WORD_GROUP`, so the entry passes validation and is a review
+    seed rather than a finished label. Pass *object_type* so that a multi-token
     species name is stripped whole and cannot leak into the keyword match.
+
+    Falls back to ``("stationary", "idle")`` when no rule fires: the schema has no
+    "unknown" value, and a wrong-but-legal seed that a human can spot beats an
+    entry the loader refuses.
     """
     tokens = _tokenize_action_name(clip_name, object_type)
+    word = None
     if "up" in tokens and (tokens & _GETUP_UP_CONTEXT):
-        return ["getup"]
-    for tag, keywords in _FALLBACK_ACTION_RULES:
-        if tokens & keywords:
-            return [tag]
-    return ["unknown"]
+        word = "getup"
+    else:
+        for candidate, keywords in _FALLBACK_LABEL_RULES:
+            if tokens & keywords:
+                word = candidate
+                break
+    if word is None:
+        return "stationary", "idle"
+    group = CORE_WORD_GROUP.get(word) or _FALLBACK_DETAIL_GROUP[word]
+    return group, word
 
 
 # ---------------------------------------------------------------------------
@@ -566,8 +695,8 @@ def build_motion_labels(
 ) -> dict[str, object]:
     """Build the (non-action) label fields for a motion clip.
 
-    Action tags are no longer produced here — they are maintained by hand in
-    ``action_tags.jsonl`` and merged in by :func:`load_motion_metadata`.
+    Action group/label are not produced here — they are maintained by hand in
+    ``action_labels.jsonl`` and merged in by :func:`load_motion_metadata`.
     """
     payload: dict[str, object] = {"object_type": object_type}
     payload.update(build_object_labels(object_type))
@@ -576,43 +705,83 @@ def build_motion_labels(
     return payload
 
 
-def _validate_action_tags(tags: list[str], clip: str, line_number: int) -> None:
-    """Validate that all tags are members of the canonical ``ACTION_TAGS`` vocabulary."""
+# Soft cap on label length. A label is a compact prompt, not a caption: past this
+# the T5 mean-pool dilutes the words that carry the action.
+ACTION_LABEL_MAX_WORDS = 15
+
+
+def _fail_action_labels(line_number: int, message: str) -> None:
     import sys
 
-    invalid = [t for t in tags if t not in ACTION_TAGS]
-    if invalid:
-        print(
-            f"\n❌ {ACTION_TAGS_FILE}:{line_number}: clip '{clip}' contains invalid "
-            f"action tag(s): {invalid}. Valid tags are: {list(ACTION_TAGS)}",
-            file=sys.stderr,
-            flush=True,
+    print(
+        f"\n❌ {ACTION_LABELS_FILE}:{line_number}: {message}",
+        file=sys.stderr,
+        flush=True,
+    )
+    sys.exit(1)
+
+
+def _validate_action_label_entry(
+    group: str, label: str, clip: str, line_number: int
+) -> None:
+    """Enforce the two hard constraints on an ``action_labels.jsonl`` row.
+
+    The group must be one of the three closed values (it selects which model the
+    clip trains), and a non-empty label must hit at least one controlled word so
+    the recall anchor actually holds. An *empty* label is legal and means "no
+    condition" — it is routed to the learned null embedding, never encoded as an
+    empty string, which would otherwise teach the model that empty text means any
+    motion at all and poison the CFG unconditional branch.
+    """
+    if group not in ACTION_GROUPS:
+        _fail_action_labels(
+            line_number,
+            f"clip '{clip}' has invalid action_group {group!r}. "
+            f"Valid groups are: {list(ACTION_GROUPS)}",
         )
-        sys.exit(1)
+    if not label:
+        return
+    if not vocab_words_in(label):
+        _fail_action_labels(
+            line_number,
+            f"clip '{clip}' has action_label {label!r}, which hits no controlled "
+            f"vocabulary word. Every non-empty label must name at least one of "
+            f"{list(CONTROLLED_VOCAB)} (or one of their surface forms), or be left "
+            f"empty for an unconditioned clip.",
+        )
+    word_count = len(label.split())
+    if word_count > ACTION_LABEL_MAX_WORDS:
+        _fail_action_labels(
+            line_number,
+            f"clip '{clip}' has a {word_count}-word action_label (max "
+            f"{ACTION_LABEL_MAX_WORDS}): {label!r}",
+        )
 
 
 # ---------------------------------------------------------------------------
 # I/O
 # ---------------------------------------------------------------------------
 
-def load_action_tags(dataset_dir: str | Path) -> dict[str, list[str]]:
-    """Load the hand-maintained ``action_tags.jsonl`` sidecar.
+def load_action_labels(dataset_dir: str | Path) -> dict[str, dict[str, str]]:
+    """Load the hand-maintained ``action_labels.jsonl`` sidecar.
 
-    Each line is a JSON object ``{"clip": "<name>.npy", "action_tags": [...]}``.
-    Returns a mapping ``clip -> [tag, ...]``. Raises ``FileNotFoundError`` if the
-    file is absent so callers fail fast rather than silently training without
-    action conditioning.
+    Each line is a JSON object
+    ``{"clip": "<name>.npy", "action_group": "...", "action_label": "..."}``.
+    Returns a mapping ``clip -> {"action_group": ..., "action_label": ...}``.
+    Raises ``FileNotFoundError`` if the file is absent so callers fail fast rather
+    than silently training without action conditioning.
     """
-    tags_path = Path(dataset_dir) / ACTION_TAGS_FILE
-    if not tags_path.exists():
+    labels_path = Path(dataset_dir) / ACTION_LABELS_FILE
+    if not labels_path.exists():
         raise FileNotFoundError(
-            f"{ACTION_TAGS_FILE} not found at {tags_path}. Action tags are now "
-            f"maintained by hand in this file (one "
-            f'{{"clip": "<name>.npy", "action_tags": [...]}} object per line).'
+            f"{ACTION_LABELS_FILE} not found at {labels_path}. Action groups and "
+            f"labels are maintained by hand in this file (one "
+            f'{{"clip": "<name>.npy", "action_group": "...", "action_label": "..."}} '
+            f"object per line)."
         )
 
-    action_tags: dict[str, list[str]] = {}
-    with open(tags_path, "r", encoding="utf-8") as handle:
+    action_labels: dict[str, dict[str, str]] = {}
+    with open(labels_path, "r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
             line = line.strip()
             if not line:
@@ -621,35 +790,40 @@ def load_action_tags(dataset_dir: str | Path) -> dict[str, list[str]]:
                 entry = json.loads(line)
             except json.JSONDecodeError as exc:
                 raise ValueError(
-                    f"{ACTION_TAGS_FILE}:{line_number} is not valid JSON: {exc}"
+                    f"{ACTION_LABELS_FILE}:{line_number} is not valid JSON: {exc}"
                 ) from exc
             if not isinstance(entry, dict):
                 raise ValueError(
-                    f"{ACTION_TAGS_FILE}:{line_number} must be a JSON object, "
+                    f"{ACTION_LABELS_FILE}:{line_number} must be a JSON object, "
                     f"got {type(entry).__name__}"
                 )
             clip = entry.get("clip")
             if not clip:
                 raise ValueError(
-                    f"{ACTION_TAGS_FILE}:{line_number} is missing the 'clip' field"
+                    f"{ACTION_LABELS_FILE}:{line_number} is missing the 'clip' field"
                 )
-            normalized = normalize_action_tags(entry.get("action_tags"))
-            _validate_action_tags(normalized, clip, line_number)
-            action_tags[str(clip)] = normalized
-    return action_tags
+            group = normalize_action_group(entry.get("action_group"))
+            label = normalize_action_label(entry.get("action_label"))
+            _validate_action_label_entry(group, label, str(clip), line_number)
+            action_labels[str(clip)] = {
+                "action_group": group,
+                "action_label": label,
+            }
+    return action_labels
 
 
 def load_motion_metadata(
     dataset_dir: str | Path,
-    require_action_tags: bool = True,
+    require_action_labels: bool = True,
 ) -> dict[str, dict[str, object]]:
-    """Load ``motion_metadata.json`` joined with per-clip ``action_tags``.
+    """Load ``motion_metadata.json`` joined with per-clip action group/label.
 
-    By default a clip present in the metadata but absent from ``action_tags.jsonl``
-    is a fatal error (action tags are a required training-conditioning signal).
-    Pass ``require_action_tags=False`` for bookkeeping reads that only preserve /
-    carry-forward existing metadata (e.g. incremental preprocessing): missing-tag
-    clips are then kept as-is without an ``action_tags`` field instead of exiting.
+    By default a clip present in the metadata but absent from
+    ``action_labels.jsonl`` is a fatal error (the group decides which model the
+    clip trains, so there is no safe default). Pass ``require_action_labels=False``
+    for bookkeeping reads that only preserve / carry-forward existing metadata
+    (e.g. incremental preprocessing): unlabeled clips are then kept as-is without
+    the action fields instead of exiting.
     """
     metadata_path = Path(dataset_dir) / MOTION_METADATA_FILE
     if not metadata_path.exists():
@@ -662,35 +836,37 @@ def load_motion_metadata(
     if not isinstance(motions, dict):
         return {}
 
-    action_tags = load_action_tags(dataset_dir)
+    action_labels = load_action_labels(dataset_dir)
 
     normalized: dict[str, dict[str, object]] = {}
-    missing_tags: list[str] = []
+    missing_labels: list[str] = []
     for motion_name, metadata in motions.items():
         if not isinstance(metadata, dict):
             continue
-        tags = action_tags.get(motion_name)
-        if tags is None:
-            missing_tags.append(motion_name)
-            if require_action_tags:
+        action = action_labels.get(motion_name)
+        if action is None:
+            missing_labels.append(motion_name)
+            if require_action_labels:
                 continue
-            # Tolerant mode: carry the entry forward untouched (no action_tags).
+            # Tolerant mode: carry the entry forward untouched (no action fields).
             normalized[motion_name] = dict(metadata)
             continue
         entry = dict(metadata)
-        entry["action_tags"] = list(tags)
+        entry["action_group"] = action["action_group"]
+        entry["action_label"] = action["action_label"]
         normalized[motion_name] = entry
 
-    if missing_tags and require_action_tags:
-        preview = ", ".join(sorted(missing_tags)[:10])
-        more = "" if len(missing_tags) <= 10 else f" (+{len(missing_tags) - 10} more)"
+    if missing_labels and require_action_labels:
+        preview = ", ".join(sorted(missing_labels)[:10])
+        more = "" if len(missing_labels) <= 10 else f" (+{len(missing_labels) - 10} more)"
         import sys
 
         msg = (
-            f"\n❌ {ACTION_TAGS_FILE} is missing action_tags for {len(missing_tags)} "
+            f"\n❌ {ACTION_LABELS_FILE} is missing entries for {len(missing_labels)} "
             f"clip(s): {preview}{more}\n\n"
-            f"   Please open {ACTION_TAGS_FILE} and add an entry for each missing clip:\n"
-            f"   {{ \"clip_name.npy\": [\"action_tag1\", \"action_tag2\", ...] }}\n"
+            f"   Please open {ACTION_LABELS_FILE} and add an entry for each missing clip:\n"
+            f'   {{"clip": "clip_name.npy", "action_group": "{ACTION_GROUPS[0]}", '
+            f'"action_label": "run, gallops with head lowered"}}\n'
         )
         print(msg, file=sys.stderr, flush=True)
         sys.exit(1)
@@ -702,9 +878,22 @@ def write_motion_metadata(
     motion_entries: dict[str, dict[str, object]],
     total_clips: int,
 ) -> Path:
+    """Write ``motion_metadata.json``, stripping the joined action fields.
+
+    ``load_motion_metadata`` joins ``action_group`` / ``action_label`` in from the
+    sidecar, and every rebuild path round-trips loaded entries back through here.
+    Persisting them would leave a second copy that silently diverges the moment
+    ``action_labels.jsonl`` is edited -- the sidecar is the single source of truth,
+    so the joined fields are dropped on the way out. (``action_tags`` is the
+    removed predecessor; stripping it clears the stale copies earlier rebuilds
+    baked in.)
+    """
     output_path = Path(save_dir) / MOTION_METADATA_FILE
+    joined_keys = ("action_group", "action_label", "action_tags")
     sanitized_entries = {
-        motion_name: dict(metadata)
+        motion_name: {
+            key: value for key, value in metadata.items() if key not in joined_keys
+        }
         for motion_name, metadata in motion_entries.items()
         if isinstance(metadata, dict)
     }

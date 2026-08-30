@@ -7,9 +7,18 @@ _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
 from data_loaders.truebones.truebones_utils.dataset_tags import configure as configure_dataset_tags, dataset_tags
 from data_loaders.truebones.truebones_utils.param_utils import get_dataset_dir
-from data_loaders.truebones.truebones_utils.motion_labels import load_motion_metadata
+from data_loaders.truebones.truebones_utils.motion_labels import (
+    ACTION_GROUPS,
+    ACTION_VOCAB_CORE,
+    action_multihot_words,
+    group_multihot_mask,
+    load_motion_metadata,
+    vocab_words_in,
+)
 
-parser = argparse.ArgumentParser(description="Extract action category statistics from motion metadata.")
+parser = argparse.ArgumentParser(
+    description="Action group / controlled-word statistics over a processed dataset.",
+)
 parser.add_argument(
     "--objects_subset",
     type=str,
@@ -28,22 +37,23 @@ parser.add_argument(
          "from. Defaults to the standard truebones_processed directory.",
 )
 parser.add_argument(
-    "--action_tags",
+    "--action_words",
     type=str,
     nargs="*",
     default=None,
-    help="For each given action tag, print a per-species (object_type) count, "
+    help="For each given controlled word, print a per-species (object_type) count, "
          "sorted descending. Species with zero count are omitted.",
 )
 args = parser.parse_args()
 
-# Allow comma-separated --action_tags (e.g. --action_tags jump,turn)
-if args.action_tags:
-    args.action_tags = [t for item in args.action_tags for t in item.split(",") if t.strip()]
+# Allow comma-separated --action_words (e.g. --action_words jump,turn)
+if args.action_words:
+    args.action_words = [t for item in args.action_words for t in item.split(",") if t.strip()]
 
-# Load motion metadata; action_tags are merged in from action_tags.jsonl.
-# This reads only per-dataset sidecars (never cond.npy), so object_type here is
-# the BARE species name and the tag snapshot is configured for that one dataset.
+# Load motion metadata; action_group / action_label are merged in from
+# action_labels.jsonl. This reads only per-dataset sidecars (never cond.npy), so
+# object_type here is the BARE species name and the tag snapshot is configured
+# for that one dataset.
 dataset_dir = Path(get_dataset_dir(args.dataset_dir))
 configure_dataset_tags(dataset_dir=dataset_dir)
 motions = load_motion_metadata(dataset_dir)
@@ -57,107 +67,105 @@ if args.objects_subset:
     motions = {k: v for k, v in motions.items() if v.get("object_type") in filter_set}
     print(f"Filtered to {len(motions)} motions matching object_type in {sorted(filter_set)}\n")
 
-# --- Compute per-tag statistics ---
-tag_stats = {}  # tag -> {"motion_count": int, "frame_count": int}
-
-for motion_name, entry in motions.items():
-    raw_tags = entry.get('action_tags')
-    if isinstance(raw_tags, str):
-        raw_tags = [raw_tags]
-
-    # Frame count from source_frame_range
-    sfr = entry.get('source_frame_range')
-    frame_count = sfr[1] - sfr[0] + 1 if sfr else 0
-
-    for tag in raw_tags or []:
-        tag_text = str(tag).strip()
-        if not tag_text:
-            continue
-        if tag_text not in tag_stats:
-            tag_stats[tag_text] = {"motion_count": 0, "frame_count": 0}
-        tag_stats[tag_text]["motion_count"] += 1
-        tag_stats[tag_text]["frame_count"] += frame_count
-
 total_motions = len(motions)
-total_frames = sum(
-    sfr[1] - sfr[0] + 1
-    for entry in motions.values()
-    if (sfr := entry.get("source_frame_range"))
-)
-
 if total_motions == 0:
     print("No motions matched the filter. Nothing to report.")
     sys.exit(0)
 
-if not args.action_tags:
-    print(f"{'Action Tag':<45s} {'Motions':>8s} {'%Motions':>9s} {'Frames':>8s} {'%Frames':>9s}")
-    print("-" * 79)
-    for tag in sorted(tag_stats, key=lambda t: tag_stats[t]["motion_count"], reverse=True):
-        s = tag_stats[tag]
+
+def _frame_count(entry) -> int:
+    sfr = entry.get("source_frame_range")
+    return sfr[1] - sfr[0] + 1 if sfr else 0
+
+
+total_frames = sum(_frame_count(entry) for entry in motions.values())
+
+if not args.action_words:
+    # --- Group distribution: this is what decides the training splits ---
+    print(f"{'Action Group':<20s} {'Motions':>8s} {'%Motions':>9s} {'Frames':>10s} {'%Frames':>9s}")
+    print("-" * 60)
+    group_stats: dict[str, dict[str, int]] = {}
+    for entry in motions.values():
+        group = str(entry.get("action_group") or "?")
+        stats = group_stats.setdefault(group, {"motion_count": 0, "frame_count": 0})
+        stats["motion_count"] += 1
+        stats["frame_count"] += _frame_count(entry)
+    for group in sorted(group_stats, key=lambda g: group_stats[g]["motion_count"], reverse=True):
+        s = group_stats[group]
         mpct = s["motion_count"] / total_motions * 100
-        fpct = s["frame_count"] / total_frames * 100
-        print(
-            f"{tag:<45s} {s['motion_count']:>8d} {mpct:>8.2f}% "
-            f"{s['frame_count']:>8d} {fpct:>8.2f}%"
-        )
+        fpct = s["frame_count"] / total_frames * 100 if total_frames else 0.0
+        print(f"{group:<20s} {s['motion_count']:>8d} {mpct:>8.2f}% {s['frame_count']:>10d} {fpct:>8.2f}%")
+    print("-" * 60)
+    print(f"{'TOTAL':<20s} {total_motions:>8d} {'100.00%':>9s} {total_frames:>10d} {'100.00%':>9s}")
 
-    print("-" * 79)
-    print(f"{'TOTAL':<45s} {total_motions:>8d} {'100.00%':>9s} {total_frames:>8d} {'100.00%':>9s}")
-    print(f"\nTotal unique tags: {len(tag_stats)}")
-    print(f"Total motions: {total_motions}")
-    print(f"Total frames: {total_frames}")
+    # --- Core-word support, per group ---
+    # The per-group columns are the numbers GROUP_MULTIHOT_MASK is frozen from:
+    # a word needs >= 10 clips AND >= 5 species inside a group to keep its slot
+    # there. 'masked' marks a word this group currently holds at zero.
+    print(f"\n\n{'Core word':<12s}" + "".join(f"{g:>26s}" for g in ACTION_GROUPS))
+    print("-" * (12 + 26 * len(ACTION_GROUPS)))
+    per_group_clips: dict[str, dict[str, int]] = {g: {} for g in ACTION_GROUPS}
+    per_group_species: dict[str, dict[str, set]] = {g: {} for g in ACTION_GROUPS}
+    for entry in motions.values():
+        group = str(entry.get("action_group") or "")
+        if group not in ACTION_GROUPS:
+            continue
+        species = str(entry.get("object_type") or "?")
+        for word in action_multihot_words(str(entry.get("action_label") or "")):
+            per_group_clips[group][word] = per_group_clips[group].get(word, 0) + 1
+            per_group_species[group].setdefault(word, set()).add(species)
+    for index, word in enumerate(ACTION_VOCAB_CORE):
+        row = f"{word:<12s}"
+        for group in ACTION_GROUPS:
+            clips = per_group_clips[group].get(word, 0)
+            species = len(per_group_species[group].get(word, ()))
+            masked = "" if group_multihot_mask(group)[index] else "  masked"
+            row += f"{clips:>10d}/{species:<3d}{masked:<9s}"[:26]
+        print(row)
 
-    # --- List motions with 'unknown' tag ---
-    unknown_motions: list[str] = []
-    for motion_name, entry in motions.items():
-        raw_tags = entry.get('action_tags')
-        if isinstance(raw_tags, str):
-            raw_tags = [raw_tags]
-        tags_clean = [str(t).strip() for t in (raw_tags or []) if str(t).strip()]
-        if 'unknown' in tags_clean:
-            unknown_motions.append(motion_name)
+    # --- Labels the text path cannot reach ---
+    empty = [name for name, entry in motions.items() if not entry.get("action_label")]
+    no_core = [
+        name for name, entry in motions.items()
+        if entry.get("action_label") and not action_multihot_words(str(entry["action_label"]))
+    ]
+    print(f"\n\nEmpty labels (train unconditioned): {len(empty)}")
+    for name in empty[:20]:
+        print(f"  \033[93m{name}\033[0m")
+    if len(empty) > 20:
+        print(f"  ... (+{len(empty) - 20} more)")
+    print(f"\nLabels with no core word (detail words only, all-zero multi-hot): {len(no_core)}")
+    for name in no_core[:20]:
+        print(f"  {name}: {motions[name]['action_label']!r}")
+    if len(no_core) > 20:
+        print(f"  ... (+{len(no_core) - 20} more)")
 
-    if unknown_motions:
-        print(f"\n\n\033[93mMotions with 'unknown' action tag ({len(unknown_motions)}):\033[0m")
-        for name in unknown_motions:
-            print(f"  \033[93m{name}\033[0m")
-
-    # --- Multi-tag statistics ---
-    print(f"\n\n{'Tags per motion':<20s} {'Motions':>8s} {'%Motions':>9s}")
-    print("-" * 39)
-    tag_count_dist: dict[int, int] = {}
-    for motion_name, entry in motions.items():
-        raw_tags = entry.get('action_tags')
-        if isinstance(raw_tags, str):
-            raw_tags = [raw_tags]
-        tags_clean = [str(t).strip() for t in (raw_tags or []) if str(t).strip()]
-        n = len(tags_clean)
-        tag_count_dist[n] = tag_count_dist.get(n, 0) + 1
-
-    for n in sorted(tag_count_dist):
-        cnt = tag_count_dist[n]
+    # --- Core words per label ---
+    print(f"\n\n{'Core words per label':<24s} {'Motions':>8s} {'%Motions':>9s}")
+    print("-" * 43)
+    word_count_dist: dict[int, int] = {}
+    for entry in motions.values():
+        n = len(action_multihot_words(str(entry.get("action_label") or "")))
+        word_count_dist[n] = word_count_dist.get(n, 0) + 1
+    for n in sorted(word_count_dist):
+        cnt = word_count_dist[n]
         pct = cnt / total_motions * 100
-        label = f"{n} tag{'s' if n > 1 else ''}"
-        print(f"{label:<20s} {cnt:>8d} {pct:>8.2f}%")
+        label = f"{n} word{'s' if n != 1 else ''}"
+        print(f"{label:<24s} {cnt:>8d} {pct:>8.2f}%")
+    multi = sum(cnt for n, cnt in word_count_dist.items() if n > 1)
+    print("-" * 43)
+    print(f"{'Multiple words':<24s} {multi:>8d} {multi / total_motions * 100:>8.2f}%")
 
-    multi = sum(cnt for n, cnt in tag_count_dist.items() if n > 1)
-    multi_pct = multi / total_motions * 100
-    print("-" * 39)
-    print(f"{'Multiple tags':<20s} {multi:>8d} {multi_pct:>8.2f}%")
+# --- Per-species breakdown for requested --action_words ---
+if args.action_words:
+    word_set = {t.strip().lower() for t in args.action_words}
 
-# --- Per-species breakdown for requested --action_tags ---
-if args.action_tags:
-    tag_set = {t.strip() for t in args.action_tags}
-
-    # species -> count of motions matching ANY of the requested tags
+    # species -> count of motions whose label hits ANY of the requested words
     species_counts: dict[str, int] = {}
-    for motion_name, entry in motions.items():
+    for entry in motions.values():
         species = entry.get("object_type", "Unknown")
-        raw_tags = entry.get('action_tags')
-        if isinstance(raw_tags, str):
-            raw_tags = [raw_tags]
-        tags_clean = {str(t).strip() for t in (raw_tags or []) if str(t).strip()}
-        if tags_clean & tag_set:
+        hits = set(vocab_words_in(str(entry.get("action_label") or "")))
+        if hits & word_set:
             species_counts[species] = species_counts.get(species, 0) + 1
 
     # Sort descending, drop zeros
@@ -165,7 +173,7 @@ if args.action_tags:
     ranked.sort(key=lambda x: x[1], reverse=True)
 
     print(f"\n{'='*60}")
-    print(f"Per-species motions matching tags: {', '.join(sorted(tag_set))}")
+    print(f"Per-species motions matching words: {', '.join(sorted(word_set))}")
     print(f"{'='*60}")
     print(f"  {'Species':<35s} {'Motions':>8s}")
     print(f"  {'-'*45}")

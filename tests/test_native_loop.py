@@ -51,7 +51,8 @@ def _make_batch_item(
     if loop_phase_length is None:
         loop_phase_length = float(n_frames)
     metadata = {
-        'action_tags': ['locomotion'],
+        'action_group': 'locomotion',
+        'action_label': 'run, gallops forward',
         'translation_root_index': 0,
         'is_loop': is_loop,
         'loop_full_cycle': loop_full_cycle,

@@ -20,7 +20,7 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--auto_resume ^
 	--ml_platform_type TensorboardPlatform ^
 	--objects_subset all ^
-	--action_tags getup,death,fall,rest,jump,turn,gethurt ^
+	--action_group transition ^
 	--train_split train ^
 	--balanced ^
 	--latent_dim 256 ^
@@ -28,7 +28,8 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--layers 8 ^
 	--global_energy_cond ^
 	--global_energy_cfg_drop_prob 0.3 ^
-	--action_tag_cond ^
+	--action_label_cond ^
+	--action_label_coarse_prob 0.3 ^
 	--species_cond ^
 	--species_joint_cond ^
 	--loop_cond_prob 0.5 ^

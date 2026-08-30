@@ -126,7 +126,7 @@ def test_reference_species_selection_accepts_external_query_cond() -> None:
 
     selected = reference_bank_mod._select_species_weights(
         query_object_type="dragon",
-        action_tags="locomotion",
+        action_words="walk,run",
         action_paths_by_species={"horse": ["horse.npy"], "snake": ["snake.npy"]},
         cond_lookup=baseline_cond,
         top_k_species=1,
@@ -160,7 +160,7 @@ def test_registered_cond_is_query_only_reference_baseline(
         return WeightedReferenceBank(
             dataset_root="test",
             object_type=str(kwargs["object_type"]),
-            action_tags=str(kwargs["action_tags"]),
+            action_words=str(kwargs["action_words"]),
             top_k_species=int(kwargs["top_k_species"]),
             clips=[
                 ReferenceClip(
@@ -201,7 +201,7 @@ def test_registered_cond_is_query_only_reference_baseline(
     report = scorer.evaluate(
         motions=[np.zeros((8, 2, 13), dtype=np.float32)],
         object_type="dragon",
-        action_tags="locomotion",
+        action_words="walk,run",
         top_k_species=1,
     )
 

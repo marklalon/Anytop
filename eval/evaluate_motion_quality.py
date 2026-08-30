@@ -12,12 +12,12 @@ Usage
 python eval/evaluate_motion_quality.py \
     --motions "outputs/trial_00/*.npy" \
     --object-type Buffalo \
-    --action-tags locomotion,attack
+    --action-words walk,run
 
 python eval/evaluate_motion_quality.py \
     --motions "outputs/new_skeleton/*.npy" \
     --object-type dragon \
-    --action-tags locomotion \
+    --action-words walk \
     --cond-path outputs/new_skeleton/cond.npy
 """
 
@@ -239,11 +239,11 @@ def build_parser() -> argparse.ArgumentParser:
             Low-Shot Weighted-Reference Motion Quality Evaluator
             ─────────────────────────────────────────────────────
             Compares one or more query motions against a weighted reference prior
-            assembled from dataset motions with the same semantic action tags.
+            assembled from dataset motions whose action_label names the same actions.
 
             Reference construction:
               • semantic Top-K species neighbors in cond.npy joint-name embedding space
-              • dataset motions filtered by action_tags (supports comma/semicolon separation)
+              • dataset motions filtered by controlled action words (comma/semicolon separated)
               • species weights distributed across reference clips by frame count
 
             Scores:
@@ -276,10 +276,12 @@ def build_parser() -> argparse.ArgumentParser:
              "reference action distributions still come from the default dataset cond.npy.",
     )
     parser.add_argument(
-        "--action_tags", "--action-tags",
+        "--action_words", "--action-words",
         required=True,
-        metavar="TAGS",
-        help="Semantic action tags (comma/semicolon-separated), e.g. 'locomotion' or 'attack,jump'.",
+        metavar="WORDS",
+        help="Controlled-vocabulary action words (comma/semicolon-separated), e.g. 'walk,run' or "
+             "'attack,jump'. Selects the reference prior by the words a dataset clip's action_label "
+             "hits -- not by action_group, which would widen the prior to a whole third of the corpus.",
     )
     parser.add_argument(
         "--dataset_root", "--dataset-root",
@@ -329,7 +331,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # An explicit --object_type applies to every file. Otherwise the type is
     # inferred per file from its name, so a single end-of-workflow run can score
     # a mixed output tree containing several species. The reference prior is
-    # cached per (object_type, action_tags), so files that share a type only pay
+    # cached per (object_type, action_words), so files that share a type only pay
     # the dataset-loading cost once.
     explicit_object_type = args.object_type
 
@@ -374,7 +376,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             report = scorer.evaluate(
                 motions=[motion],
                 object_type=object_type,
-                action_tags=args.action_tags,
+                action_words=args.action_words,
                 top_k_species=args.top_k_species,
             )
         except (ValueError, KeyError, FileNotFoundError, RuntimeError) as exc:

@@ -28,7 +28,7 @@ Arguments
   --loop-only         Sample only motions marked as loop clips
   --loop-cond-prob    Probability that a loop clip follows the loop-conditioned path (default: 0.0)
   --objects-subset    Subset name or single species name (default: "all")
-  --action-tags       Comma-separated action tags to filter (default: "")
+  --action-group      Single action group to keep: locomotion | stationary | transition (default: "" = all)
   --split             train / test / all (default: "train")
   --seed              RNG seed for reproducibility (default: 0)
   --dataset-dir       Dataset root (auto-detected if omitted)
@@ -163,8 +163,9 @@ def parse_args() -> argparse.Namespace:
                    help="Probability that a loop clip follows the loop-conditioned path. Match --loop_cond_prob.")
     p.add_argument("--objects-subset", default="all",
                    help="Predefined subset name or single species (e.g. 'quadropeds_test', 'Horse').")
-    p.add_argument("--action-tags", default="",
-                   help="Comma-separated action tags to filter (e.g. 'locomotion,jump').")
+    p.add_argument("--action-group", default="",
+                   choices=["", "all", "locomotion", "stationary", "transition"],
+                   help="Single action group to keep (e.g. 'locomotion'); '' or 'all' keeps every clip.")
     p.add_argument("--split", default="train",
                    help="Dataset split: train / test / all.")
     p.add_argument("--seed", type=int, default=1234,
@@ -231,7 +232,7 @@ def main() -> int:
     allowed_motion_names = load_allowed_motion_names_per_source(
         args.split,
         opt.sources,
-        args.action_tags,
+        args.action_group,
         motion_metadata_lookup,
     )
     eligible = sum(len(names) for names in allowed_motion_names.values())
@@ -251,7 +252,7 @@ def main() -> int:
     print(f"[INFO] Dataset size (after min-length filter): {len(dataset)} motions")
 
     if len(dataset) == 0:
-        print("[ERROR] No motions available after filtering. Check subset / split / action-tags.")
+        print("[ERROR] No motions available after filtering. Check subset / split / action-group.")
         return 1
 
     candidate_names = list(dataset.name_list)
@@ -262,7 +263,7 @@ def main() -> int:
         ]
         print(f"[INFO] Loop-only candidates: {len(candidate_names)}")
         if not candidate_names:
-            print("[ERROR] No loop motions available after filtering. Check subset / split / action-tags.")
+            print("[ERROR] No loop motions available after filtering. Check subset / split / action-group.")
             return 1
 
     # -----------------------------------------------------------------------
