@@ -436,6 +436,17 @@ _EMBED_TEXT_QUADRANT_LIMB_CODE_TOKENS = {
     'rm': 'Mid',
 }
 _EMBED_TEXT_QUADRANT_LIMB_CONTEXT_TOKENS = frozenset({'arm', 'leg'})
+# "Digit" is the anatomical word for both a finger and a toe, and this corpus
+# uses it for both: 114 joints hang off a hand ("LeftArmPalm -> LeftArmDigit11",
+# a ghost's fingers, a bat's and a bird's wing digits, a robot's gripper) and 24
+# hang off a foot ("LbLegAnkle -> LbLegDigit11", the Bear's claws, the Bird's and
+# Fledgling's toes). Mapping the word to one corpus family would put a bear's toe
+# among the fingers; mapping it to neither leaves a "Digit" family sitting beside
+# the "Finger" and "Toe" ones for the same body part. The rig always says which
+# it is in the same name, and MU01_Bird carries both spellings at once, so the
+# limb word decides. Every one of the 138 resolves; none names both limbs.
+_EMBED_TEXT_DIGIT_HAND_CONTEXT_TOKENS = frozenset({'arm', 'hand', 'palm'})
+_EMBED_TEXT_DIGIT_FOOT_CONTEXT_TOKENS = frozenset({'leg', 'foot', 'ankle', 'toe', 'paw', 'hoof'})
 # Anatomical synonyms and rig abbreviations folded onto the vocabulary the rest
 # of the corpus already uses, so one body part is one point in T5 space instead
 # of a dozen singleton families. Left as-is when T5 gets there on its own; these
@@ -923,8 +934,11 @@ def _bare_arm_means_upper_arm(joint_names, parents):
 
 
 def _refine_joint_embedding_tokens(clean_token, bare_arm_is_upper_arm=False,
-                                   quadrant_codes_name_a_limb=False):
+                                   quadrant_codes_name_a_limb=False,
+                                   digit_limb=None):
     """Map one canonical token to the embedding token(s) it contributes."""
+    if clean_token == 'digit' and digit_limb is not None:
+        return ['Finger'] if digit_limb == 'hand' else ['Toe']
     limb_code_token = _EMBED_TEXT_LIMB_CODE_TOKENS.get(clean_token)
     if limb_code_token is not None:
         return [limb_code_token]
@@ -989,6 +1003,16 @@ def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_p
     quadrant_codes_name_a_limb = bool(
         set(clean_tokens) & _EMBED_TEXT_QUADRANT_LIMB_CONTEXT_TOKENS
     )
+    # Which limb a "Digit" belongs to, from the same name. Only an unambiguous
+    # single side of the fork is read; a name that says both (or neither) keeps
+    # the bare word.
+    names_a_hand = bool(set(clean_tokens) & _EMBED_TEXT_DIGIT_HAND_CONTEXT_TOKENS)
+    names_a_foot = bool(set(clean_tokens) & _EMBED_TEXT_DIGIT_FOOT_CONTEXT_TOKENS)
+    digit_limb = (
+        'hand' if names_a_hand and not names_a_foot
+        else 'foot' if names_a_foot and not names_a_hand
+        else None
+    )
 
     merged_tokens = []
     index = 0
@@ -1003,6 +1027,7 @@ def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_p
                 clean_tokens[index],
                 bare_arm_is_upper_arm,
                 quadrant_codes_name_a_limb=quadrant_codes_name_a_limb,
+                digit_limb=digit_limb,
             )
         )
         index += 1
@@ -1015,8 +1040,20 @@ def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_p
         token for position, token in enumerate(merged_tokens)
         if position == 0 or token != merged_tokens[position - 1]
     ]
+    if deduped_tokens:
+        return deduped_tokens
 
-    return deduped_tokens or canonical_name.split()
+    # Nothing survived, so hand back the raw canonical tokens -- minus the side
+    # word, which build_joint_embedding_texts is about to re-attach from the
+    # geometry label. spider_tarantula names its leg segments "R4_00".."L2_03",
+    # which reduce to a side word plus two index runs; keeping the side word here
+    # spelled it twice ("Right Right 4 00"). The indices stay: for these 24
+    # joints they are the only thing telling leg 4 from leg 2.
+    fallback_tokens = [
+        token for token in canonical_name.split()
+        if _clean_embedding_token(token) not in _EMBED_TEXT_SIDE_TOKENS
+    ]
+    return fallback_tokens or canonical_name.split()
 
 
 def _chain_index_token(index):

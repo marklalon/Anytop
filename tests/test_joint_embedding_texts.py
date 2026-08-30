@@ -258,3 +258,42 @@ def test_carried_equipment_is_blanked_but_worn_cloth_keeps_its_word():
     # Cloth is qualified by a direction ("CapeBack"), so blanking the noun would
     # leave a bare "Back" claiming to be the creature's back.
     assert texts[7].startswith('Cape'), texts[7]
+
+
+def test_a_name_that_is_only_a_side_and_indices_does_not_say_the_side_twice():
+    # spider_tarantula names its leg segments "R4_00".."L2_03". Everything in
+    # them is dropped -- the side word by the side table, the two index runs as
+    # digits -- so they fall back to the raw canonical tokens, which used to put
+    # the side word back and leave "Right Right 4 00". The indices stay: they are
+    # the only thing telling leg 4 from leg 2.
+    texts = _embedding_texts(
+        ['Body', 'L2_00', 'R2_00', 'L4_03', 'R4_03'],
+        [-1, 0, 0, 0, 0],
+        offsets=[[0, 0, 0], [-1, 0, 1], [1, 0, 1], [-1, 0, -1], [1, 0, -1]],
+    )
+    assert texts[1].split().count('Left') == 1, texts[1]
+    assert texts[2].split().count('Right') == 1, texts[2]
+    assert texts[1].startswith('Left 2'), texts[1]
+    assert texts[3].startswith('Left 4'), texts[3]
+    assert texts[4].startswith('Right 4'), texts[4]
+
+
+def test_digit_becomes_a_finger_or_a_toe_depending_on_the_limb_it_hangs_off():
+    # "Digit" is the anatomical word for both, and this corpus uses it for both.
+    # MU01_Bird is the control: wing digits under a palm, toes under an ankle,
+    # one skeleton, same spelling.
+    texts = _embedding_texts(
+        ['Ribcage', 'LeftArm1', 'LeftArmPalm', 'LeftArmDigit21',
+         'LeftLeg1', 'LeftLegAnkle', 'LeftLegDigit11'],
+        [-1, 0, 1, 2, 0, 4, 5],
+    )
+    assert texts[3].startswith('Left Arm Finger'), texts[3]
+    assert texts[6].startswith('Left Leg Toe'), texts[6]
+
+
+def test_digit_keeps_the_bare_word_when_the_name_names_no_limb():
+    # Only an unambiguous single side of the fork is read -- guessing between a
+    # finger and a toe is worse than an uninformative "Digit".
+    texts = _embedding_texts(['Body', 'Digit01', 'ArmLegDigit01'], [-1, 0, 0])
+    assert texts[1].startswith('Digit'), texts[1]
+    assert 'Digit' in texts[2], texts[2]
