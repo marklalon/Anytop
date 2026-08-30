@@ -30,6 +30,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
 )
 from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
     OBJECT_SUBSET_CHOICES,
+    configure as configure_dataset_tags,
     dataset_tags,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
@@ -1037,6 +1038,17 @@ def _validate_one_dataset(dataset_dir: Path, args) -> None:
     print(f"dataset_dir: {dataset_dir}")
     print(f"objects_subset: {args.objects_subset}")
     print(f"file_validation_scope: {'all files' if args.sample_count == 0 else f'first {args.sample_count} files'}")
+
+    # Point the tag sidecars at the dataset being validated. Without this the
+    # snapshot falls back to DEFAULT_DATASET_DIR, and validating any *other*
+    # dataset silently borrows that one's species_tags.jsonl and
+    # chain_forward_joints.jsonl. The forward-chain indices are the damaging
+    # half: they address one dataset's collapsed joint order, so a bare-name
+    # collision (zoo Crow (8,22) = calf->neck, zoo_upgrade Crow = two opposite
+    # toes) turns the recovered-facing check into a ~60 deg false positive.
+    # Re-run per dataset under --datasets: configure() drops the snapshot, so
+    # each source is read against its own sidecars.
+    configure_dataset_tags(dataset_dir=str(dataset_dir))
 
     prepare_dataset_for_validation(
         dataset_dir,

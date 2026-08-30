@@ -115,8 +115,10 @@ def test_skip_orientation_detection_follows_the_configured_dataset(tmp_path):
 def test_skip_orientation_detection_accepts_an_explicit_dataset_dir(tmp_path):
     """Validation asks about the directory it is validating, not the configured one.
 
-    A standalone ``validate_anytop_dataset`` run never configures the process, so
-    the explicit form must decide on its own.
+    ``validate_anytop_dataset`` does now point the process at each dataset it
+    validates, but the explicit form must still decide on its own: it is what
+    keeps a caller that forgot to configure -- or one looping over several
+    datasets -- from reading the wrong dataset's switch.
     """
     switched = _make_dataset_dir(tmp_path / "switched", "!skip-orientation-detection\n")
     plain = _make_dataset_dir(tmp_path / "plain")
