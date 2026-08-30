@@ -258,7 +258,7 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 |---|---|---|
 | D1 | `_FAMILY_CREATURE_TOKENS` | 与 B3 **手工保持同步**（该模块刻意只依赖 numpy，不能 import Anytop） |
 | D2 | `_FAMILY_LIMB_CODE_TOKENS` / `_FAMILY_QUADRANT_LIMB_CODE_TOKENS` | 与 B5 同步（含门控）：肢位码 → `Front`/`Back`/`Mid`，**映射而不是删除** |
-| D3 | `_FAMILY_POSITION_TOKENS` | 方位词归一（`hind`/`rear`/`back` → `Back`）并提到 key 最前，让码形 rig 与词形 rig 落到同一个 key。**`fore` 故意不在这里**：`ForeArm` 是前臂不是前肢的臂 |
+| D3 | `_FAMILY_POSITION_TOKENS` | 方位词归一（`hind`/`rear`/`back` → `Back`）并提到 key 最前，让码形 rig 与词形 rig 落到同一个 key。**`fore` 和 `mid` 故意不在这里**：`ForeArm` 是前臂不是前肢的臂；`LegMid` 在蜘蛛是「第二对腿」、在 serpent_man 是「腿的中段（小腿）」，同一拼法两个意思，`family_key` 只看得到名字，分不开。代价是「码形/词形落同一 key」这条只对 Front/Back 成立（`LmLeg1`→MidLeg 而 `LegMid1`→Leg），这个方向是安全的一侧——欠分裂看得见（一个过大的通用桶），错误合并看不见 |
 | D4 | `_FAMILY_QUALIFIER_TOKENS` | 装饰限定词（`jiggle`/`twist`/`low`）。方位词归 D3 管，不放这里 |
 | D5 | `_TERMINAL_NAME_RE` | `Nub`/`End` 末端标记正则。新数据集用别的末端后缀就得加。判定末端一律用 `terminal_mask`（名字后缀 **且** 是叶子），不要用裸的 `is_terminal_name` |
 
