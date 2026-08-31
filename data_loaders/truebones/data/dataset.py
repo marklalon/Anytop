@@ -682,6 +682,14 @@ class MotionDataset(data.Dataset):
         self.pointer = 0
         self.max_motion_length = num_frames
         self.cond_dict = cond_dict
+        # The canonical rest-pose token depends only on the per-species cond
+        # entry (not on the clip), so it is constant across all samples of a
+        # species. Precompute once at construction instead of rebuilding it
+        # inside the per-sample hot path (_load_physical_motion).
+        self._canonical_rest_pose_cache = {
+            object_key: build_canonical_rest_feature(entry)
+            for object_key, entry in cond_dict.items()
+        }
         self.balanced = balanced
         # A weighted sampler drives indexing when species are balanced; it yields
         # absolute name_list indices, so __getitem__ must skip the pointer offset
@@ -1083,7 +1091,7 @@ class MotionDataset(data.Dataset):
             motion = np.load(motion_path).astype(np.float32, copy=False)
 
         m_length = motion.shape[0]
-        rest_pose = build_canonical_rest_feature(cond)
+        rest_pose = self._canonical_rest_pose_cache[object_type]
         offsets = cond['offsets']
         return (motion, m_length, object_type, cond['parents'], cond['joints_graph_dist'], cond['joint_relations'], rest_pose, offsets, cond['joints_names_embs'], cond['kinematic_chains'])
         
