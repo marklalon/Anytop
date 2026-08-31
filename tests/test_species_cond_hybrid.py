@@ -75,6 +75,10 @@ def _make_y(species_emb=None, **extra):
         'n_joints': torch.tensor([4, 3], dtype=torch.int64),
         'joints_names_embs': torch.zeros(2, 4, T5_DIM, dtype=torch.float32),
         'lengths': torch.tensor([3, 3], dtype=torch.int64),
+        # The output coordinate frame is an unconditional model input: every
+        # forward reads it, so a hand-built y has to carry it.
+        'canonical_feature_mean': torch.zeros(13, dtype=torch.float32),
+        'canonical_feature_std': torch.ones(13, dtype=torch.float32),
     }
     if species_emb is not None:
         y['species_emb'] = species_emb

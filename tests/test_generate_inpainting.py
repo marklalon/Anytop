@@ -219,6 +219,28 @@ def test_create_condition_can_sample_at_target_joint_count() -> None:
     assert tuple(y["joints_padding_mask"].shape) == (2, 1, 1, 4, 4)
     assert tuple(y["graph_dist"].shape) == (2, 3, 3)
     assert torch.equal(y["n_joints"], torch.tensor([3, 3]))
+    # The output coordinate frame is an unconditional model input: AnyTop.forward
+    # reads it every step, so the generation path has to stack it per sample too.
+    assert tuple(y["canonical_feature_mean"].shape) == (2, 13)
+    assert tuple(y["canonical_feature_std"].shape) == (2, 13)
+
+
+def test_create_condition_rejects_cond_entry_without_canonical_stats() -> None:
+    # A stats-free cond can only produce a y the model cannot read, so generation
+    # must fail loudly at the boundary rather than hand forward an incomplete y.
+    entry = _make_full_cond_entry(3)
+    del entry["canonical_feature_mean"]
+    cond_dict = {"Horse": entry}
+
+    with pytest.raises(KeyError, match="canonical_feature_mean"):
+        create_condition(
+            ["Horse"],
+            cond_dict,
+            n_frames=4,
+            temporal_window=3,
+            max_joints=3,
+            feature_len=13,
+        )
 
 
 def test_resolve_inpaint_joint_indices_rejects_unknown_names() -> None:

@@ -1000,10 +1000,17 @@ def _merge_object_into_cond(save_dir, object_name, object_cond, tpose_reference_
                 if sibling != merged_key and (stats := _entry_stats(sibling_cond)) is not None
             }
             # 2) New species in a dataset that already carries canonical stats:
-            #    inherit ONLY from a sibling of the SAME object_subset. There is no
-            #    cross-subset fallback -- the model is trained per-object_subset, so
-            #    borrowing another subset's stats (or an untagged species having
-            #    none) would be out-of-distribution at inference -> fast-fail.
+            #    inherit from a sibling of the SAME object_subset when one exists.
+            #    A brand-new body plan (the first genuinely aquatic quadruped, say)
+            #    has no such sibling; that used to be a hard fast-fail, on the
+            #    grounds that another subset's stats are out-of-distribution. Since
+            #    the position gain became a single globally shared constant
+            #    (canonical_features.collapse_stat_blocks), that is no longer true
+            #    of the part that matters: the cross-subset delta is a per-channel
+            #    mean (a rigid translation of the whole skeleton, bone lengths
+            #    exact) plus rotation/velocity gains (an amplitude bias). Neither
+            #    can deform a skeleton, so the case is a WARNING with a cross-subset
+            #    donor rather than a refusal to build the cond at all.
             if not siblings_with_stats:
                 raise ValueError(
                     f"No species in cond.npy carries canonical standardization stats "
@@ -1025,12 +1032,16 @@ def _merge_object_into_cond(save_dir, object_name, object_cond, tpose_reference_
                     chosen = stats
                     break
             if chosen is None:
-                raise ValueError(
-                    f"No existing '{target_subset}' species in cond.npy carries canonical "
-                    f"standardization stats for new skeleton '{object_name}' to inherit. "
-                    "The model is trained per-object_subset, so borrowing another subset's "
-                    "stats would be out-of-distribution. Add a same-object_subset species "
-                    "(or regenerate the dataset) before merging."
+                donor, chosen = next(iter(siblings_with_stats.items()))
+                donor_subset = tags.object_subset_for(donor)
+                print(
+                    f"[WARN] no '{target_subset}' species in cond.npy carries canonical "
+                    f"standardization stats for new skeleton '{object_name}'; borrowing "
+                    f"'{donor}' (object_subset={donor_subset!r}). The shared position gain "
+                    "means this cannot deform the skeleton -- the mismatch is a rigid "
+                    "translation plus a rotation/velocity amplitude bias. Add a "
+                    "same-object_subset species (or regenerate the dataset) for an exact "
+                    "calibration."
                 )
         if chosen is not None:
             object_cond['canonical_feature_mean'] = np.asarray(chosen[0], dtype=np.float32)

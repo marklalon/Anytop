@@ -10,6 +10,7 @@ Usage:
 Options:
     --dataset-dir PATH      Path to dataset directory (uses default if not specified)
     --t5-model NAME         T5 model name to use (default: t5-base)
+    --no-rest-reseat        Skip the rest-vs-clip geometry re-seat (normally always on)
 
 Examples:
     # Regenerate sidecar artifacts with default settings
@@ -53,6 +54,7 @@ from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E40
 from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa: E402
     mark_canonical_cond_entry,
     accumulate_lnorm_stats,
+    collapse_stat_blocks,
     finalize_lnorm_stats,
     set_canonical_global_stats,
 )
@@ -63,6 +65,12 @@ from data_loaders.truebones.truebones_utils.cond_schema import (  # noqa: E402
 )
 from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E402
     species_lookup_map,
+)
+from data_loaders.truebones.truebones_utils.rest_geometry import (  # noqa: E402
+    accumulate_rest_vs_clip,
+    apply_reseat,
+    finalize_rest_vs_clip,
+    reseat_candidates,
 )
 from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     MOTION_DIR,
@@ -164,6 +172,56 @@ def _mark_object_feature_spaces(
         print(f"[OK] marked canonical feature space for {len(rebuilt_cond)} species")
 
 
+def _reseat_rest_to_clip_geometry(
+    rebuilt_cond: dict[str, dict],
+    motion_files: list[Path],
+) -> None:
+    """Move each species' rest onto the geometry its own clips actually use.
+
+    The canonical position channel is a residual from rest, so a joint whose rest
+    disagrees with where every clip holds it is a per-joint DC constant the model
+    can only memorize. See data_loaders/.../rest_geometry.py for the guards and
+    docs/canonical_frame_and_label_transfer.md section 4.3 for the diagnosis.
+
+    It runs here, before the canonical statistics, so one pass produces a rest and
+    a normalization table that agree -- and because preprocess_and_validate
+    invokes this script itself, every dataset build gets it without anyone
+    re-applying a patch. Idempotent: a re-seated joint's mismatch is zero on the
+    next pass, so nothing moves twice.
+    """
+    cond_lookup = species_lookup_map(rebuilt_cond)
+    accs: dict[str, dict] = {}
+    for motion_path in motion_files:
+        object_type = _infer_object_type_from_motion_name(motion_path.name, cond_lookup)
+        object_cond = rebuilt_cond.get(object_type)
+        if object_cond is None:
+            continue
+        motion = np.load(motion_path).astype(np.float32, copy=False)
+        accs[object_type] = accumulate_rest_vs_clip(
+            object_cond, motion, acc=accs.get(object_type)
+        )
+
+    moved_joints = 0
+    moved_species = []
+    for object_type, acc in sorted(accs.items()):
+        object_cond = rebuilt_cond[object_type]
+        report = finalize_rest_vs_clip(object_cond, acc)
+        candidates = reseat_candidates(object_cond, report)
+        applied = apply_reseat(object_cond, candidates)
+        if applied:
+            moved_joints += applied
+            moved_species.append(object_type)
+            names = ", ".join(candidate["name"] for candidate in candidates[:6])
+            if len(candidates) > 6:
+                names += f", +{len(candidates) - 6} more"
+            print(f"     [{object_type}] re-seated {applied} joint(s): {names}")
+    if moved_joints:
+        print(f"[OK] rest re-seated onto clip geometry: {moved_joints} joint(s) "
+              f"across {len(moved_species)} species")
+    else:
+        print("[OK] rest geometry already agrees with the clips; nothing re-seated")
+
+
 def _compute_canonical_stats_per_object_subset(
     rebuilt_cond: dict[str, dict],
     motion_files: list[Path],
@@ -174,7 +232,9 @@ def _compute_canonical_stats_per_object_subset(
     Each physical clip is encoded into the L-normalized space (rest-centered
     position + per-skeleton size division) and accumulated into the bucket of the
     species' object_subset (the first motion tag in species_tags.jsonl: quadruped
-    / biped / multiped / serpentine / aquatic / winged / drifting). Pooling within an
+    / biped / multiped / serpentine / aquatic / winged / drifting). The pooled std is
+    then passed through ``collapse_stat_blocks`` (per-block scalars plus a position
+    gain shared by every subset). Pooling within an
     object_subset (across its species, joints, frames, and clips) keeps the
     resulting mean/std a cross-species constant *per object_subset* (no per-species
     motion prior), so they generalize to held-out species of the same
@@ -223,6 +283,11 @@ def _compute_canonical_stats_per_object_subset(
         return
 
     subset_stats = {subset: finalize_lnorm_stats(acc) for subset, acc in usable_accs.items()}
+    # Collapse each block's std to one scalar and share the position gain across
+    # every subset, so a subset mismatch can only translate a skeleton rigidly,
+    # never deform it (docs/canonical_frame_and_label_transfer.md). Shape, keys
+    # and feature_space are unchanged.
+    subset_stats = collapse_stat_blocks(subset_stats)
 
     # No global-pooled fallback (would be OOD at inference -- see docstring). Every
     # species MUST resolve to an object_subset that has usable clips.
@@ -350,16 +415,23 @@ def _normalize_object_translation_roots(
 def regenerate_dataset_artifacts(
     dataset_dir: str | Path | None = None,
     t5_model: str = "t5-base",
+    reseat_rest: bool = True,
 ) -> Path:
     dataset_dir_path = _resolve_dataset_dir_path(dataset_dir)
     # Read this dataset's tag sidecars for the duration of the rebuild. A caller
     # that already configured the same dataset (with, say, an explicit
     # --species-tags-file) keeps its configuration.
     with dataset_tags.using_dataset_dir(dataset_dir_path):
-        return _regenerate_dataset_artifacts(dataset_dir_path, t5_model=t5_model)
+        return _regenerate_dataset_artifacts(
+            dataset_dir_path, t5_model=t5_model, reseat_rest=reseat_rest
+        )
 
 
-def _regenerate_dataset_artifacts(dataset_dir_path: Path, t5_model: str = "t5-base") -> Path:
+def _regenerate_dataset_artifacts(
+    dataset_dir_path: Path,
+    t5_model: str = "t5-base",
+    reseat_rest: bool = True,
+) -> Path:
     motions_dir = dataset_dir_path / MOTION_DIR
     cond_path = dataset_dir_path / "cond.npy"
 
@@ -463,6 +535,11 @@ def _regenerate_dataset_artifacts(dataset_dir_path: Path, t5_model: str = "t5-ba
     print(f"[OK] T5 embeddings attached in {time.time() - t0:.1f}s")
     write_joint_name_collision_report(rebuilt_cond, str(dataset_dir_path))
 
+    if reseat_rest:
+        t0 = time.time()
+        _reseat_rest_to_clip_geometry(rebuilt_cond, motion_files)
+        print(f"[OK] rest-vs-clip geometry checked in {time.time() - t0:.1f}s")
+
     t0 = time.time()
     _compute_canonical_stats_per_object_subset(rebuilt_cond, motion_files)
     print(f"[OK] per-object_subset canonical stats computed in {time.time() - t0:.1f}s")
@@ -534,6 +611,15 @@ def main() -> int:
         type=str,
         help="Path to the chain_forward_joints.jsonl sidecar used for this run.",
     )
+    parser.add_argument(
+        "--no-rest-reseat",
+        action="store_true",
+        help="Skip re-seating each species' rest pose onto the geometry its own clips "
+             "use (nub / locator / ear / horn leaf joints the exporter parked somewhere "
+             "the animation never puts them). The step is idempotent and normally always "
+             "on; this is an escape hatch for reproducing an older build. Report what it "
+             "would do with tools/audit_rest_vs_clip_geometry.py.",
+    )
     args = parser.parse_args()
 
     print("\n" + "=" * 70)
@@ -550,6 +636,7 @@ def main() -> int:
         dataset_dir_path = regenerate_dataset_artifacts(
             args.dataset_dir,
             t5_model=args.t5_model,
+            reseat_rest=not args.no_rest_reseat,
         )
         cond_path = dataset_dir_path / "cond.npy"
         cond = dict(np.load(cond_path, allow_pickle=True).item())

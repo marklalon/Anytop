@@ -30,6 +30,7 @@ from data_loaders.truebones.data.dataset import (
 from data_loaders.truebones.truebones_utils.canonical_features import (
     build_canonical_rest_feature,
     canonical_to_physical_hml,
+    get_canonical_global_stats,
     mark_canonical_cond_entry,
     physical_hml_to_canonical,
 )
@@ -2145,9 +2146,16 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joi
             metadata['action_label_emb'] = action_condition['action_label_emb']
         batch.append(metadata)
         batch.append(object_type)
+        # Never None here: build_canonical_rest_feature above standardizes with
+        # these same stats and raises a named KeyError when they are absent.
+        canonical_mean, canonical_std = get_canonical_global_stats(cond_dict[object_type])
         batch.append({
-            # Generation decodes per sample with the full cond entry, so y does
-            # not carry the global stats here (sampling itself never decodes).
+            # The output coordinate frame is an UNCONDITIONAL model input (see
+            # AnyTop.canonical_frame_projection), so generation must carry it just
+            # like training does -- the collate stacks it per sample. Decoding the
+            # sample back to physical still uses the full cond entry, not y.
+            'canonical_feature_mean': canonical_mean,
+            'canonical_feature_std': canonical_std,
             'rest_pose_physical': cond_dict[object_type]['rest_pose'],
             'rest_pos_ric_hml': cond_dict[object_type]['rest_pos_ric_hml'],
             'feature_space': cond_dict[object_type].get('feature_space', 'canonical_motion_v3'),

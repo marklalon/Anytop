@@ -189,3 +189,90 @@ def test_truebones_collate_drops_motion_stats_and_carries_global_stats():
     # with its own object_subset's stats.
     assert tuple(y["canonical_feature_mean"].shape) == (1, 13)
     assert tuple(y["canonical_feature_std"].shape) == (1, 13)
+
+
+def _raw_subset_stats():
+    """Two subsets with anisotropic blocks and very different position gains.
+
+    Mirrors the measured shape of the real table (aquatic's vertical position std
+    is ~4x its horizontal one; quadruped's is ~1.8x).
+    """
+    quadruped_std = np.array(
+        [0.468, 0.720, 0.824, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 0.5, 0.6, 0.7, 0.413],
+        dtype=np.float32,
+    )
+    aquatic_std = np.array(
+        [0.687, 2.810, 1.294, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 0.8, 0.9, 1.0, 0.0],
+        dtype=np.float32,
+    )
+    return {
+        "quadruped": (np.arange(13, dtype=np.float32) * 0.01, quadruped_std),
+        "aquatic": (np.arange(13, dtype=np.float32) * -0.02, aquatic_std),
+    }
+
+
+def test_collapse_stat_blocks_flattens_blocks_and_shares_position_gain():
+    raw = _raw_subset_stats()
+    collapsed = cf.collapse_stat_blocks(raw)
+
+    assert set(collapsed) == set(raw)
+    for subset, (mean, std) in collapsed.items():
+        # mean is never touched -- a mean mismatch is a rigid translation.
+        np.testing.assert_allclose(mean, raw[subset][0], atol=0)
+        # Every block is isotropic after the collapse.
+        assert len(set(std[0:3].tolist())) == 1
+        assert len(set(std[3:9].tolist())) == 1
+        assert len(set(std[9:12].tolist())) == 1
+        # rot / vel keep their own subset's calibration (block mean of the raw std).
+        np.testing.assert_allclose(std[3], raw[subset][1][3:9].mean(), rtol=1e-6)
+        np.testing.assert_allclose(std[9], raw[subset][1][9:12].mean(), rtol=1e-6)
+
+    # The position gain is ONE constant shared by every subset ...
+    pos_gains = {float(std[0]) for _mean, std in collapsed.values()}
+    assert len(pos_gains) == 1
+    # ... and it is the geometric mean of the per-subset block scalars.
+    expected = float(np.exp(np.mean(np.log([
+        raw["quadruped"][1][0:3].mean(), raw["aquatic"][1][0:3].mean()
+    ]))))
+    np.testing.assert_allclose(pos_gains.pop(), expected, rtol=1e-6)
+
+    # contact (index 12) belongs to no block: per-subset, untouched, including the
+    # identically-zero channel that set_canonical_global_stats floors to 1.0.
+    np.testing.assert_allclose(collapsed["quadruped"][1][12], 0.413, rtol=1e-6)
+    assert collapsed["aquatic"][1][12] == 0.0
+    entry = set_canonical_global_stats({}, *collapsed["aquatic"])
+    assert entry["canonical_feature_std"][12] == 1.0
+
+
+def test_collapse_stat_blocks_makes_subset_mismatch_bone_length_exact():
+    """Decoding through the WRONG subset's stats must not change any bone length.
+
+    This is the whole point of the shared position gain: the residual mismatch is
+    a per-channel mean, which translates the entire skeleton rigidly.
+    """
+    collapsed = cf.collapse_stat_blocks(_raw_subset_stats())
+
+    rest_pose = np.zeros((4, 13), dtype=np.float32)
+    rest_pose[:, 0:3] = np.array(
+        [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.5, 1.5, 0.0], [1.0, 1.5, 0.3]],
+        dtype=np.float32,
+    )
+    parents = [-1, 0, 1, 2]
+
+    def _decode(subset):
+        cond = mark_canonical_cond_entry({"rest_pose": rest_pose})
+        set_canonical_global_stats(cond, *collapsed[subset])
+        canonical = np.random.default_rng(7).normal(size=(6, 4, 13)).astype(np.float32)
+        physical = canonical_to_physical_hml(canonical, cond)
+        pos = physical[..., 0:3]
+        return np.linalg.norm(pos[:, 1:] - pos[:, parents[1:]], axis=-1)
+
+    np.testing.assert_allclose(_decode("quadruped"), _decode("aquatic"), rtol=1e-5)
+
+
+def test_collapse_stat_blocks_tolerates_degenerate_blocks():
+    raw = {"serpentine": (np.zeros(13, dtype=np.float32), np.zeros(13, dtype=np.float32))}
+    collapsed = cf.collapse_stat_blocks(raw)
+    # Nothing usable to average: the std is left alone for the floor to handle.
+    np.testing.assert_allclose(collapsed["serpentine"][1], 0.0)
+    assert cf.collapse_stat_blocks({}) == {}

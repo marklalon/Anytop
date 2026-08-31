@@ -1,6 +1,7 @@
 # 强化 action label 跨物种迁移：canonical 坐标系改造
 
-> 状态：**诊断已实测完成（2026-08-31），待实施。**
+> 状态：**已实施（2026-08-31）。§5 的 1/2/3/5/6 全部完成，cond 已重生成并通过 §6.1 硬判据；
+> 只差步骤 4 的重训。§4.3 的 rest 几何清理做成了预处理的一步（幂等），不是一次性补丁——见 §8 实施记录。**
 > 前身是 `action_cond_film_and_energy_removal.md`（**已删除**，内容拆进本文与
 > [global_energy_removal.md](global_energy_removal.md)）：那份方案假设"species 通道压制 action
 > 通道"，探针 A/B/C 三条预测**全部落空**（Dog 与 Buffalo 的 action 敏感度几乎相等；
@@ -273,6 +274,10 @@ position gain 已是全局常量——要喂的东西比现在少，且不再包
 而它一直关着。D 与它互补：D 消掉系统性剪切，bone loss 兜住残差。
 D 之后重训时应当同时打开（它本身是 target-relative 的，不会与真实的骨长形变对抗）。
 
+> **实际决定（2026-08-31）：v3 首训不开 `--lambda_bone`。** 先让 D + 杠杆 2 单独跑，
+> 免得两个变量一起动、分不清残差是谁的。它仍然是下一个候选杠杆——§6.3 的 bone-length drift
+> 量出来之后再决定要不要 0.1–0.3。
+
 ### 4.2 `GROUP_MULTIHOT_MASK` 的门槛要加 object_subset 轴
 
 现规则 `clips >= 10 AND species >= 5`
@@ -345,16 +350,22 @@ quadruped 内部 2.6×。
 
 ## 5. 实施顺序
 
+> 执行状态见 [§8 实施记录](#8-实施记录20260831)：1/2/3/5/6 已完成（2 通过硬判据），
+> 4（重训）未做。
+
 1. **§2.3 的 `collapse_stat_blocks`** + 两处调用点 + fast-fail 降级（§2.5c）+
    [gaussian_diffusion.py:481](../diffusion/gaussian_diffusion.py#L481) 注释更正。
 2. `regenerate_dataset_artifacts` 重生成 cond.npy。**用 §1.2 的换系脚本自检**：
    新 cond 的 off-diagonal 应当逐行拉平到对角线（中位 ~1.7%）。这一步不需要模型，
    是一个可以在重训前就确认改动生效的硬判据。
 3. **§3 的坐标系条件化**（零初始化、无 CFG drop）。
-4. 重训，同时打开 `--lambda_bone`（§4.1）。若与
+4. 重训。（原计划同时打开 `--lambda_bone`；**首训改为不开**，见 §4.1 的决定。）若与
    [global_energy_removal.md](global_energy_removal.md) 合并做，判据不冲突。
 5. **§4.2 的 mask 规则**与数据补齐——这条独立于重训，可以并行推进。
+   （mask 规则已落地，数据补齐仍未做——它是采数据，不是改代码。）
 6. §4.3 的 rest 几何清理——独立，但它会改变 cond，做了就要跟着重生成一次。
+   （已做成 `regenerate_dataset_artifacts` 的一步，跑在统计量之前，所以"跟着重生成一次"
+   这条不再需要——同一趟里就一致了。见 §8.5。）
 
 ---
 
@@ -399,3 +410,213 @@ D + 杠杆 2 拆掉的是"坐标系错配导致的形变"这一层，Buffalo 的
 
 同样，**loss 不能作为判据**：特征空间变了（position 通道的尺度改了），
 `l_simple` 的绝对值在两个空间之间没有可比性。判据是 §6 的三组。
+
+---
+
+## 8. 实施记录（2026-08-31）
+
+除重训（§5 步骤 4）外，§5 的每一步都已落地。下面记录改了什么、量出了什么，
+以及与本文原始估计不一致的地方。
+
+### 8.1 §5 步骤 1 — `collapse_stat_blocks` 与两处调用点
+
+- [canonical_features.py](../data_loaders/truebones/truebones_utils/canonical_features.py)
+  新增 `collapse_stat_blocks(subset_stats)` 与私有 `_block_std_scalar`：块内取
+  **算术平均**（复刻 v3 前 `get_mean_std` 的 `.mean()`），position 块标量再跨 subset 取
+  **几何平均**。`mean` 一个字节不动；`contact` 不属于任何块，逐 subset 原样保留（aquatic /
+  serpentine 的 0 继续走 `_STD_FLOOR` → 1.0）。退化块（整块常量）返回 `None` 并原样跳过。
+- 两处调用点都在 `finalize_lnorm_stats` 之后、`set_canonical_global_stats` 之前，如 §2.3 所写：
+  `regenerate_dataset_artifacts._compute_canonical_stats_per_object_subset` 与
+  `merge_dataset_cond._recompute_canonical_stats`。
+- §2.5c 的 fast-fail 降级：`dataset_pipeline._merge_object_into_cond` 里"找不到同 subset donor"
+  由 `ValueError` 改为 **warning + 跨 subset 借用**（warning 里点名 donor 与它的 subset）。
+  "cond 里没有任何物种带统计量"仍然是硬错误——那时根本没有空间可落。
+  按 §2.3 的判断，`_inherit_canonical_stats_from_dataset` **没有改**。
+- `gaussian_diffusion.bone_length_consistency_loss` 的注释按 §1.4 更正：uniform 现在关节维、
+  轴维都成立，原句只在关节维成立的历史背景写进注释里。
+- 13 维形状、两个 key、`feature_space=canonical_motion_v3` 全部未变，编解码契约未动。
+- 测试：`tests/test_canonical_features.py` 新增 3 例（块拉平 + 共享 gain 的数值定义、
+  **换系后骨长逐比特相等**、退化块容错）。
+
+### 8.2 §5 步骤 2 — cond 重生成 + §6.1 硬判据
+
+三个 processed 数据集各跑一次 `regenerate_dataset_artifacts`，再跑
+`merge_dataset_cond` → `dataset/merged/cond.npy`（260 物种 / 4028 clip）。
+先只带本节改动跑了一遍，逐 key 比对旧 cond：**只有 `canonical_feature_std` 变了**，
+其余字段与 `motion_metadata.json` / `metadata.txt` 逐字节相同，重生成是幂等的。
+（最终这一版还带上了 §8.5 的 rest re-seat，所以 5 个物种的 `rest_pose` / `offsets` /
+`rest_pos_ric_hml` 也变了；下面表里"改动后"的数字是最终版。`motions/*.npy` 一个字节没动——
+存的是 physical 特征，rest 相减在加载时做。）
+`validate_anytop_dataset --datasets` 三个数据集全 PASS。
+
+自检脚本是新增的 [tools/check_canonical_frame_swap.py](../tools/check_canonical_frame_swap.py)
+（§1.2 的换系流程 + §2.4 的幅度表，纯数据侧，无模型）。同一批 clip、同一套流程，
+改动前后：
+
+```
+改动前（每格 12 clip 取中位数，%）
+                   aquatic       biped    drifting    multiped   quadruped  serpentine      winged
+aquatic               0.0*        7.9         3.5         6.3         5.7         7.1         5.6
+biped                72.0         0.7*       47.1        13.9         9.2        20.2        16.0
+drifting             10.6        11.6         0.6*        9.0         8.8        10.3         9.6
+multiped             82.9        15.6        52.6         0.6*        3.9         8.4        25.7
+quadruped            68.1        18.0        42.7         5.5         1.6*       12.6        23.4
+serpentine          126.7        29.5        86.1        11.1        12.6         1.8*       49.0
+winged               50.9        14.6        28.7        18.6        14.7        25.3         2.7*
+→ off-diagonal 相对自身对角线的超出量：中位 +12.62 / p90 +64.99 / max +124.84 个百分点
+
+改动后
+aquatic               0.0*        0.0         0.0         0.0         0.0         0.0         0.0
+biped                 0.7         0.7*        0.7         0.7         0.7         0.7         0.7
+drifting              0.4         0.4         0.4*        0.4         0.5         0.4         0.4
+multiped              0.6         0.6         0.6         0.6*        0.6         0.6         0.6
+quadruped             1.6         1.6         1.6         1.6         1.6*        1.6         1.6
+serpentine            1.8         1.8         1.8         1.8         1.8         1.8*        1.8
+winged                2.7         2.7         2.7         2.7         2.7         2.7         2.7*
+→ 超出量：中位 +0.00 / p90 +0.01 / max +0.03 个百分点
+```
+
+**逐行完全拉平，判据通过。** 共享 position gain = **0.9221**（七个 subset 同值且各向同性）。
+对角线上剩下的 0.0–2.7% 是 clip 相对自身 rest 的固有非刚性，即 §4.3 那件独立的事，
+本改动不碰它。
+
+§2.4 的代价（12 clip/subset 采样，1.0 = 标定目标）：
+
+| subset | 改动前 pos / rot / vel | 改动后 pos / rot / vel |
+|---|---|---|
+| aquatic | 0.96 / 1.05 / 0.96 | **1.42** / 1.03 / 0.85 |
+| biped | 0.72 / 0.85 / 0.72 | 0.60 / 0.83 / 0.75 |
+| drifting | 1.05 / 1.01 / 1.31 | **1.78** / 1.00 / 1.56 |
+| multiped | 0.98 / 1.08 / 1.07 | 0.78 / 1.08 / 1.03 |
+| quadruped | 0.77 / 1.24 / 1.16 | **0.57** / 1.20 / 1.17 |
+| serpentine | 0.97 / 1.20 / 1.29 | 0.82 / 1.18 / 1.36 |
+| winged | 0.92 / 1.12 / 1.63 | 0.98 / 1.11 / 1.62 |
+
+pos 散布 0.57–1.78（≈3.1×），rot / vel 实质不变——与 §2.4 的预测（0.71–2.00）同量级。
+注意 §2.2 的 D 行写"rot/vel 严格单位方差"，而 §2.3 的函数定义要求**每个块都塌成标量**；
+按 §2.3（规范性的那一条）实施，所以 rot/vel 也做了块内拉平，表里它们因此有 ±0.02 的位移，
+这是块内各向异性被消掉的结果，不是回归。
+
+### 8.3 §5 步骤 3 — 杠杆 2：把坐标系喂给模型
+
+[anytop.py](../model/anytop.py) 新增 `canonical_frame_projection`：把
+`[canonical_feature_mean ‖ canonical_feature_std]`（26 维，已由 collate 逐样本放进 `y`，
+数据侧零改动）过一个 `Linear(26,256) → GELU → Linear(256,256)`，**末层零初始化**，
+与 playspeed / loop / action 走同一条加性通路加到 timestep token 上。
+
+- **无条件接入，没有 CLI 开关。** 最初落地时是 `--canonical_frame_cond`（默认关），
+  后来固化为常开并把 flag 删掉：`canonical_motion_v3` 的每一份 cond.npy 都带这两个 key，
+  loader 缺了它们直接 `RuntimeError`（[dataset.py:1196](../data_loaders/truebones/data/dataset.py#L1196)），
+  所以"关"唯一的含义就是"对输出坐标系瞎写"——正是本文要修的那个缺陷。留着一个只有错误取值的
+  开关，等于把缺陷保留成一个配置项。`args.json` 里因此也不会再出现 `canonical_frame_cond`。
+- **没有 CFG drop、没有 keep mask**，`train()` 与 `eval()` 下逐比特相同——它是输出空间的定义，
+  不是可以引导的语义条件（§1.1 的病根之一就是它被 drop 掉）。
+- 参数 +72,704（16.03M → 16.10M，+0.45%）。
+- 端到端验证（真 merged cond → 真 loader → 真 batch）：把未开启版本的 state_dict 装进开启版本，
+  两者输出 `max|Δ| = 0.0`（起点精确恒等，只多出 4 个新 key）；把末层权重扰动后
+  `max|Δ| = 1.13`（通路真的活着）。
+- **生成路径当时漏了。** 上面这条只走了训练 loader；`sample/generate.py` 的
+  `create_condition` 自己拼 extras dict，原本刻意不带这两个 key（注释写的是"生成侧解码用整份
+  cond entry，y 不需要全局统计量"）——那在 forward 不读它们时成立，现在 forward 每步都读，
+  于是 `generate.py` 的两个调用点和走它的 `server/anytop_service.py` 全都会 `ValueError`。
+  已修：`create_condition` 从 cond entry 取这两个 key 放进 extras（collate 本来就会逐样本堆叠）。
+  注意这**不是常开引入的**：只要用 `--canonical_frame_cond` 训出 v3，旧的 flag 版一样在生成侧炸。
+  测试：[test_generate_inpainting.py](../tests/test_generate_inpainting.py) 补了 y 里两个 key 的
+  形状断言，以及"cond 缺统计量必须响亮失败"的负例。
+- **旧 checkpoint**：`save/` 里没有一个是这条通路之后训的，装载会在
+  `load_model` 报 `Missing keys: canonical_frame_projection.*`。它们本来就跨不过这次的
+  特征空间变更（且除三个史前 run 外全都先被 `assert_global_energy_not_deprecated` 拦下），
+  所以没有为此加豁免——v3 之后训的 checkpoint 一律带这四个 key。
+- 手工构造 `y` 的调用方（测试里的 `_make_y`）必须补上这两个 key，forward 每次都读。
+- 测试：新增 [tests/test_canonical_frame_cond.py](../tests/test_canonical_frame_cond.py)（8 例）。
+
+### 8.4 §5 步骤 5 — `GROUP_MULTIHOT_MASK` 的 object_subset 轴
+
+规则按 §4.2 落成 `clips >= 10 AND species >= 5 AND subs >= 3`，
+`subs` = 携带该词的物种数 ≥3 的 object_subset 个数。重算工具：
+[tools/action_multihot_mask_report.py](../tools/action_multihot_mask_report.py)
+（三个组全量，4028 clip 对得上三个数据集的 npy 总数）。
+
+**§4.2 表里的 locomotion 数字与实测有出入，实测为准。** 差异来自本文那次测量没有走仓库自己的
+`vocab_words_in`：那个函数会丢弃"整个匹配都落在另一个更长匹配里"的词，所以
+`retreat` 里的 `eat` 不该点亮 `eat`——而 §4.2 表里 eat 53 / retreat 52 几乎相等，正是漏掉这条
+去重的签名。实测（locomotion）：walk 395/175/subs 5、run 344/193/5、fly 218/78/4、
+swim 59/11/**2**、turn 88/26/4、jump 30/27/3、crawl 39/20/3、retreat 91/36/5、
+fall 15/10/**1**、eat **0**。swim 的结论不变（subs=2，最密的 aquatic 上 14.8 clip/物种，
+而 walk/run 是 5.1–5.6）。
+
+新规则关掉 13 个槽位：locomotion 的 `swim` `fall`；stationary 的 `jump` `roar` `fall` `rest`；
+transition 的 `run` `fly` `hurt` `rest` `shake` `crouch` `rear`。
+`roar` 因此在三个组里全被关掉，两处拿它举例的测试改用 `bite`（stationary 留、locomotion 关）。
+**数据补齐（把 9 个四足 swim clip retarget 到 15–20 副四足骨架）不在本次范围内**——它是采数据，
+不是改代码；工具已经能在补完后一条命令重算并给出 diff。
+
+### 8.5 §5 步骤 6 — §4.3 rest 几何：做成了预处理的一步
+
+**不是一次性打补丁，而是 pipeline 的一步。** 新增
+[rest_geometry.py](../data_loaders/truebones/truebones_utils/rest_geometry.py)，
+挂进 `regenerate_dataset_artifacts`（在 canonical 统计量之前），而
+`preprocess_and_validate` 本来就会调用它——所以**每次预处理都会自动带上**，数据集更新后
+不需要记得再跑一遍任何东西。`--no-rest-reseat` 是复现旧构建用的逃生口。
+
+这也顺带取消了 §5 步骤 6 那句"做了就要跟着重生成一次"：re-seat 与统计量在同一趟里完成，
+出来的 rest 和归一化表天然一致。
+
+**改的是 rest 骨头的长度，方向不动。** 长度是这处分歧里唯一旋转不变的量——bone vector 每一帧
+都随父关节的朝向转，不存在"clip 里的那个 offset"可以照抄，但"clip 里的那个长度"只有一个。
+被动画塌到父关节上的 nub（ratio 0）在 rest 里也塌下去，这本来就是每一帧的实际情况。
+`offsets` 与 `rest_pose[:,0:3]` 一起改（实测 `rest_pos_ric_hml == FK(offsets)`，误差 1e-6），
+所以两份 rest 表示始终一致。
+
+**四条判据**（`reseat_candidates`）：与 rest 差 >10%、clip 内部刚性 ≤2%、**叶关节**、
+**不是道具 socket**。
+
+- *叶关节* 是承重的那条：只有叶关节能只改自己的 `offsets` 而不需要给整棵子树补偿位移。
+- *道具 socket* 用的是仓库自己已有的
+  [`find_prop_socket_joints`](../data_loaders/truebones/truebones_utils/animation_utils.py#L1046)
+  ——它在 260 个物种上标定过，正好命中 14 个 unitybundles 物种的 Bow / Arrow / Sword / Shield
+  而在 truebones 上一个都不碰。这些 socket **本来就已经被排除在 scale 统计之外**；把它们的 rest
+  挪到手上会改变 rest span，而 rest span 就是 `_length_scale_from_rest` 拿来除每个物种的 `L`
+  （§4.5 明确把 L 列为"背景，不是待办"）。同一个判据、同一个理由，不需要新写一条规则，
+  也不需要人工挑名单。这正是 §4.3 末尾"已知的例外"那一段要的行为。
+
+一处度量修正：rest 里存在长度 1e-6 ~ 1e-22 的塌陷骨（Tukan `N_ALL`、Crow `Pelvis`、
+Dog `EyesBlue`），除以它会把正常 clip 变成 350 万 % 的"误差"。因此按骨架尺度设下限
+（`1e-3 × rest span`），Tukan 由此从 3.5M% 回到 140%，与备忘里的量级一致。同一个下限也用来
+判断 **clip 长度**够不够长到能谈"相对离散度"——否则一根被稳稳塌在 0 上的 nub 会因为
+除以 1e-9 而显示成无穷大的离散度，被判成"非刚性"而正好漏掉。
+
+**实跑结果：13 个关节 / 5 个物种**（全库 4028 clip，不是抽样）：
+
+| 物种 | 关节 | rest → clip |
+|---|---|---|
+| truebones/zoo/Horse | `Bip01_R_Toe0Nub`、`Bip01_Xtra02/03/04Nub`、`Bip01_R_Finger0Nub` | x0.45–0.88 |
+| truebones/zoo_upgrade/Deer_Buck | `SM_Deer_Horns_01..04` | → 0（x0.00） |
+| truebones/zoo_upgrade/Rabbit2 | `EarLeft02` / `EarRight02` | x0.45 |
+| truebones/zoo_upgrade/serpent_man | `head_tongue_03` | x0.51 |
+| unitybundles/MU01_FlowerPotMonster | `RigPetal SE7` | — |
+
+Dog / Dog-2 的 `Bip01_Ponytail3Nub`、`Bip01_Head2_Eyeleds` 在只看 8 个 clip 时是候选，
+**看全部 clip 就不是了**——它们在别的 clip 里确实被动画过，所以那个 rest 是合法的中立位，
+判据把它们放过了。这是"证据多了结论更保守"，不是漏检。
+
+**幂等性实测**：第二遍跑 `regenerate_dataset_artifacts`，三个数据集都报
+"rest geometry already agrees with the clips; nothing re-seated"。
+`tools/audit_rest_vs_clip_geometry.py`（只读，与 pipeline 共用同一套判据）现在报
+**0 re-seatable**，剩下的 40 个 >10% 物种全是判据主动放过的（内部关节 / 真的被动画 / 道具）。
+改完 §6.1 硬判据重跑仍然逐行拉平（超出量 max +0.03 个百分点），三个数据集
+`validate_anytop_dataset` 全 PASS。
+
+测试：新增 [tests/test_rest_geometry.py](../tests/test_rest_geometry.py)（7 例：选择判据、
+被动画的骨不动、内部关节不动、长度对齐 + FK 一致性、幂等、道具 socket 排除、退化输入容错）。
+
+### 8.6 §5 步骤 4 与 §6.2 —— 未做
+
+- **重训未做**（本次范围外）。`train.bat` 已经备好：`RUN_NAME` 抬到
+  `merged_locomotion_v3`（特征空间变了，`--auto_resume` 绝不能把 v2 续进来）。
+  坐标系条件不需要写在命令行里（§8.3 已固化为常开），`--lambda_bone` **本轮不开**（§4.1）。
+- **§6.2 的探针 E 跑不了**：`save/merged_locomotion_v2/args.json` 里带着
+  `global_energy_cond`，`parser_util.assert_global_energy_not_deprecated` 会直接
+  `SystemExit`——那个 checkpoint 已经无法加载，不是本次改动造成的。
+  探针 E 要等 v3 训出来（那时它量的是"改完之后还漏不漏"，与原设计的"改之前漏不漏"不是同一个问题）。
+- §6.3 的重训后几何对照同样要等 v3。

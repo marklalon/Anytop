@@ -477,13 +477,19 @@ class GaussianDiffusion:
         Penalizes each predicted bone length's deviation from the GROUND-TRUTH
         bone length at the same frame, normalized by the rest bone length.
 
-        Why normalized by rest length: ``l_simple`` weights every joint/axis
-        uniformly in standardized space, so a fixed position error is a tiny
-        fraction of a long proximal bone but a huge fraction of a short distal
-        one -- exactly why distal bones stretch on novel skeletons. Dividing the
-        length error by the rest bone length gives short/distal bones
-        proportionally larger gradient, the signal ``l_simple`` structurally
-        omits (and the reason a plain absolute bone L2 was redundant with it).
+        Why normalized by rest length: ``l_simple`` weights every joint uniformly
+        in standardized space, and -- since canonical_features.collapse_stat_blocks
+        collapsed each feature block's std to one scalar -- every axis within a
+        block uniformly too. (Before that collapse the per-channel std made
+        ``1 / std`` an implicit per-axis weight that under-penalized the vertical
+        position axis by up to 4.1x; the uniformity claimed here held over joints
+        only. See docs/canonical_frame_and_label_transfer.md.) What stays
+        non-uniform is bone *scale*: a fixed position error is a tiny fraction of
+        a long proximal bone but a huge fraction of a short distal one -- exactly
+        why distal bones stretch on novel skeletons. Dividing the length error by
+        the rest bone length gives short/distal bones proportionally larger
+        gradient, the signal ``l_simple`` structurally omits (and the reason a
+        plain absolute bone L2 was redundant with it).
 
         Why the target is GT (not rest): anchoring on the ground-truth per-frame
         length preserves genuinely animated bone-length deformation -- the loss
@@ -500,12 +506,27 @@ class GaussianDiffusion:
                 "bone_length_consistency_loss requires y['parents'] (per-sample "
                 "parent arrays from the collate); none were provided."
             )
-        rest_pose = (y or {}).get('rest_pose')
-        if rest_pose is None:
+        # Rest bone lengths MUST come from the PHYSICAL rest pose. The canonical
+        # y['rest_pose'] (build_canonical_rest_feature) carries the rest-centered
+        # position residual, which is exactly zero at rest, so its per-bone
+        # lengths are all zero and the (rest_len > 1e-4) guard below would mask
+        # out every bone -- an identically-zero loss that looks healthy in logs.
+        rest_pos = (y or {}).get('rest_pos_ric_hml')
+        if rest_pos is None:
+            rest_physical = (y or {}).get('rest_pose_physical')
+            if rest_physical is not None:
+                rest_pos = rest_physical[..., 0:3]
+        if rest_pos is None:
             raise ValueError(
-                "bone_length_consistency_loss requires y['rest_pose'] (padded "
-                "rest-pose features) to normalize by rest bone length."
+                "bone_length_consistency_loss requires physical rest positions "
+                "(y['rest_pos_ric_hml'] or y['rest_pose_physical']) to normalize "
+                "by rest bone length; y['rest_pose'] is the canonical rest feature "
+                "(zero position residual at rest) and would make this loss "
+                "identically zero."
             )
+        if not th.is_tensor(rest_pos):
+            rest_pos = th.as_tensor(rest_pos, dtype=pred_physical.dtype)
+        rest_pos = rest_pos.to(device=device, dtype=pred_physical.dtype)  # [bs, J, 3]
 
         # Padded [bs, max_joints] parent-index tensor + per-joint bone validity
         # (False for the root, which has no parent bone). Small python loop over
@@ -520,7 +541,6 @@ class GaussianDiffusion:
 
         pos_pred = pred_physical[:, :, 0:3, :]                 # [bs, J, 3, T]
         pos_tgt = target_physical[:, :, 0:3, :]
-        rest_pos = rest_pose[:, :, 0:3].to(device=device, dtype=pos_pred.dtype)  # [bs, J, 3]
 
         gather_bt = parents_idx.view(bs, max_joints, 1, 1).expand(-1, -1, 3, n_frames)
         len_pred = (pos_pred - th.gather(pos_pred, 1, gather_bt)).norm(dim=2)   # [bs, J, T]

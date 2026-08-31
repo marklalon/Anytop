@@ -39,6 +39,7 @@ sys.path.insert(0, str(ANYTOP_DIR))
 
 from data_loaders.truebones.truebones_utils.canonical_features import (  # noqa: E402
     accumulate_lnorm_stats,
+    collapse_stat_blocks,
     finalize_lnorm_stats,
     set_canonical_global_stats,
 )
@@ -178,6 +179,10 @@ def _recompute_canonical_stats(merged_cond, sources) -> dict[str, tuple]:
 
     usable = {subset: acc for subset, acc in subset_accs.items() if acc and acc["count"] > 0}
     subset_stats = {subset: finalize_lnorm_stats(acc) for subset, acc in usable.items()}
+    # Same block collapse + globally shared position gain as
+    # regenerate_dataset_artifacts; the merged run is where the shared position
+    # gain has to be computed over every source's subsets at once.
+    subset_stats = collapse_stat_blocks(subset_stats)
 
     # No global-pooled fallback: the model only ever sees per-object_subset
     # normalized features, so a species standardized with pooled stats would be

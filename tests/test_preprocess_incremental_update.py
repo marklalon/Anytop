@@ -782,14 +782,36 @@ def test_merge_inherits_canonical_stats_from_same_object_subset(tmp_path):
     np.testing.assert_allclose(merged["Dog"]["canonical_feature_std"], np.full((13,), 2.0, dtype=np.float32))
 
 
-def test_merge_fast_fails_when_no_same_object_subset_donor(tmp_path):
+def test_merge_warns_and_borrows_when_no_same_object_subset_donor(tmp_path, capsys):
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir(parents=True)
     # Only a quadruped carries stats; a new winged species (Dragon) has no
-    # same-object_subset donor, so borrowing would be OOD -> fast-fail.
+    # same-object_subset donor. This used to fast-fail as out-of-distribution.
+    # Since the position gain became one globally shared constant, the whole
+    # cross-subset delta is a mean (a rigid translation) plus rot/vel gains (an
+    # amplitude bias) -- neither can deform the skeleton -- so a brand-new body
+    # plan now builds, with a warning naming the donor.
     np.save(dataset_dir / "cond.npy", {"Cat": _cond_entry_with_stats("Cat", 0.5, 2.0)})
 
-    with pytest.raises(ValueError, match="winged"):
+    dataset_pipeline_mod._merge_object_into_cond(
+        str(dataset_dir), "Dragon", _make_cond_entry("Dragon")
+    )
+
+    warning = capsys.readouterr().out
+    assert "winged" in warning and "Cat" in warning
+    merged = _cond_by_species(dataset_dir)
+    np.testing.assert_allclose(merged["Dragon"]["canonical_feature_mean"], np.full((13,), 0.5, dtype=np.float32))
+    np.testing.assert_allclose(merged["Dragon"]["canonical_feature_std"], np.full((13,), 2.0, dtype=np.float32))
+
+
+def test_merge_still_fast_fails_when_no_species_carries_stats(tmp_path):
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir(parents=True)
+    # Nothing to borrow from at all is still unrecoverable: there is no
+    # standardization space to land in, whatever the body plan.
+    np.save(dataset_dir / "cond.npy", {"Cat": _make_cond_entry("Cat")})
+
+    with pytest.raises(ValueError, match="canonical standardization stats"):
         dataset_pipeline_mod._merge_object_into_cond(
             str(dataset_dir), "Dragon", _make_cond_entry("Dragon")
         )

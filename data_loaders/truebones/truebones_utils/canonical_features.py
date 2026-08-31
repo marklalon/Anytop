@@ -9,11 +9,11 @@ model feature space via three prior-free, exactly-invertible steps:
      channels are divided by the skeleton's own geometric length ``L`` so that
      every species lands in a size-free space (cross-species fair). Rotation
      (6d) and contact are size-independent and are left untouched here.
-  3. Per-object_subset per-channel standardization: subtract a per-channel mean
-     and divide by a per-channel std (13-vectors). These statistics are computed
-     at preprocessing time in the L-normalized space of step (2), pooled across
-     all joints / frames / clips / species *within each object_subset* (quadruped
-     / biped / multiped / serpentine / aquatic / winged / drifting). They are
+  3. Per-object_subset standardization: subtract a per-channel mean and divide
+     by a *block-collapsed* std (13-vectors). These statistics are computed at
+     preprocessing time in the L-normalized space of step (2), pooled across all
+     joints / frames / clips / species *within each object_subset* (quadruped /
+     biped / multiped / serpentine / aquatic / winged / drifting). They are
      therefore a
      cross-species constant *per object_subset* (NOT a per-species motion prior):
      a held-out species inherits the stats of its object_subset, so the
@@ -22,6 +22,15 @@ model feature space via three prior-free, exactly-invertible steps:
      have very different velocity / rotation scales). They are stored in ``cond``
      per species (``canonical_feature_mean`` / ``canonical_feature_std``); species
      sharing an object_subset carry the same 13-vectors.
+
+     The raw per-channel std is passed through :func:`collapse_stat_blocks`
+     before it is stored: each block (position / rotation-6d / velocity) is
+     collapsed to one scalar, and the position scalar is shared by every
+     object_subset. Bone lengths are a function of the position channel alone,
+     so a globally shared position gain makes an object_subset mismatch
+     structurally unable to deform a skeleton -- see
+     ``docs/canonical_frame_and_label_transfer.md``. ``mean`` stays per-channel
+     and per-subset (a mean mismatch is a rigid translation, bone-length exact).
 
 Channel layout per joint (n_feats == 13):
     0:3   position   (rest-centered residual)
@@ -404,6 +413,96 @@ def finalize_lnorm_stats(acc):
     var = np.maximum(acc["sumsq"] / acc["count"] - mean ** 2, 0.0)
     std = np.sqrt(var)
     return mean.astype(np.float32), std.astype(np.float32)
+
+
+def _block_std_scalar(std, block):
+    """Mean of one block's finite, non-degenerate per-channel stds.
+
+    Returns ``None`` when the block holds nothing usable (empty slice, or every
+    channel constant), in which case the caller leaves that block untouched and
+    the ``_STD_FLOOR`` path in set_canonical_global_stats() still applies.
+    """
+    values = np.asarray(std, dtype=np.float64).reshape(-1)[block]
+    values = values[np.isfinite(values) & (values > _STD_FLOOR)]
+    if values.size == 0:
+        return None
+    return float(values.mean())
+
+
+def collapse_stat_blocks(subset_stats):
+    """Collapse each object_subset's std inside feature blocks and share the
+    position gain across every subset.
+
+    ``subset_stats``: ``{object_subset: (mean13, std13)}`` -> a new dict of the
+    same keys and shapes. Only ``std`` is touched; ``mean`` is returned as-is.
+
+    Two changes, both motivated in ``docs/canonical_frame_and_label_transfer.md``:
+
+    1. **Block collapse.** Within each block (position / rotation-6d / velocity)
+       the per-channel stds are averaged into one scalar. ``l_simple`` is
+       computed in this standardized space, so ``1 / std`` is an implicit
+       per-channel loss weight: an anisotropic block systematically under-
+       penalizes whichever axis has the largest std (measured up to 4.1x on the
+       vertical position axis). This restores the invariant the pre-v3
+       ``get_mean_std`` held (it collapsed each block with ``.mean()``), so
+       ``l_simple`` again weights every joint *and* axis uniformly.
+
+    2. **Shared position gain.** The position block scalar is then shared by
+       every subset, as the geometric mean of the per-subset scalars (a gain is
+       multiplicative, so the geometric mean is the average that is not dragged
+       by the largest subset). Bone lengths are decided by the position channel
+       alone (the exporter overrides the FK joint placement with the RIC
+       position channel), and the decode is ``x * std + mean``: a ``mean``
+       mismatch translates the whole skeleton rigidly and leaves every bone
+       length exact, so once the position *gain* is a single global constant,
+       decoding a clip through the wrong subset's statistics cannot deform it at
+       all. Rotation / velocity gains stay per-subset -- they cannot change bone
+       lengths, and each body plan keeps its own unit-variance calibration where
+       it costs nothing.
+
+    ``contact`` (index 12) belongs to no block and stays per-subset untouched:
+    the subsets whose contact channel is identically zero (aquatic / serpentine)
+    keep falling through to the ``_STD_FLOOR`` -> 1.0 path in
+    set_canonical_global_stats(), exactly as before.
+
+    The 13-dim shape, the two cond keys and ``CANONICAL_FEATURE_SPACE`` are all
+    unchanged -- this only changes the *numbers* written into the table, so the
+    encode/decode contract is untouched (a regenerated cond.npy is still
+    ``canonical_motion_v3``).
+    """
+    if not subset_stats:
+        return {}
+
+    blocks = (_POS_SLICE, _ROT_SLICE, _VEL_SLICE)
+    per_subset_scalars = {
+        subset: [_block_std_scalar(std, block) for block in blocks]
+        for subset, (_mean, std) in subset_stats.items()
+    }
+
+    pos_scalars = [
+        scalars[0] for scalars in per_subset_scalars.values() if scalars[0] is not None
+    ]
+    shared_pos_gain = (
+        float(np.exp(np.mean(np.log(np.asarray(pos_scalars, dtype=np.float64)))))
+        if pos_scalars else None
+    )
+
+    collapsed = {}
+    for subset, (mean, std) in subset_stats.items():
+        std_out = np.asarray(std, dtype=np.float64).reshape(-1).copy()
+        n_feats = std_out.shape[0]
+        block_values = list(per_subset_scalars[subset])
+        if shared_pos_gain is not None:
+            block_values[0] = shared_pos_gain
+        for block, value in zip(blocks, block_values):
+            if value is None or block.start >= n_feats:
+                continue
+            std_out[block.start:min(block.stop, n_feats)] = value
+        collapsed[subset] = (
+            np.asarray(mean, dtype=np.float32).reshape(-1),
+            std_out.astype(np.float32),
+        )
+    return collapsed
 
 
 def mark_canonical_cond_entry(cond_entry):

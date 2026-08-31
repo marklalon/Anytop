@@ -94,9 +94,27 @@ CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB_CORE + ACTION_VOCAB_DETAIL
 # clips is memorized, not learned -- and on a cross-skeleton model the failure
 # mode is that the word binds to whichever two species happened to supply those
 # clips, which a pure clip count cannot catch. So the threshold has a species
-# axis too:
+# axis -- and, for the same reason one step up, a BODY-PLAN axis:
 #
-#     keep a slot in a group iff  clips >= 10  AND  species >= 5
+#     keep a slot in a group iff  clips >= 10
+#                            AND  species >= 5
+#                            AND  subs >= 3
+#
+#     subs = object_subsets (quadruped / biped / multiped / serpentine / aquatic
+#            / winged / drifting) in which at least 3 distinct species carry the word.
+#
+# Why the third axis: a species count is blind to the fact that the species can
+# all share one body plan. 'swim' clears 59 clips / 11 species inside locomotion,
+# but only two body plans carry >= 3 species of it, and on the densest one it runs
+# ~15 clips per species -- the memorization fingerprint (walk / run sit at 5.1-5.6).
+# A slot fitted like that binds the word to that body plan, which is precisely
+# what a cross-skeleton model must not learn. Same story for 'fly' in transition
+# and 'rear' in transition. See docs/canonical_frame_and_label_transfer.md 4.2.
+#
+# Closing a slot is not the fix for the underlying gap, it only stops the model
+# from memorizing across it: the fix is targeted data (retarget the 9 quadruped
+# swim clips onto 15-20 quadruped rigs, so 'swim' goes from subs=2 to subs=4-5).
+# Aim data work at the MISSING body plans, not at raw species count.
 #
 # A masked-out word is NOT removed from the vocabulary. It keeps its place in the
 # label text and therefore in the frozen-T5 path, where 'roar' already sits next
@@ -111,13 +129,18 @@ CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB_CORE + ACTION_VOCAB_DETAIL
 # This mask is a FROZEN CONSTANT, deliberately not recomputed from the dataset at
 # import time -- otherwise adding clips would silently redefine what a slot
 # means. Recompute it by the rule above when the corpus grows, and commit the new
-# values explicitly.
+# values explicitly:
+#
+#     python tools/action_multihot_mask_report.py
+#
+# The rows below were fitted on 2026-08-31 over the merged 4028-clip corpus
+# (truebones/zoo + zoo_upgrade + unitybundles).
 #
 GROUP_MULTIHOT_MASK: dict[str, tuple[int, ...]] = {
     #                idle walk run  fly swim jump turn attk bite roar  eat  die fall hurt getup rest look shak crou retr rear thro craw taun
-    "locomotion": (    0,   1,   1,   1,   1,   1,   1,   1,   0,   0,   0,   0,   1,   0,   0,   0,   0,   0,   0,   1,   0,   0,   1,   0),
-    "stationary": (    1,   0,   0,   1,   0,   1,   1,   1,   1,   1,   1,   0,   1,   1,   0,   1,   1,   1,   1,   0,   1,   1,   0,   1),
-    "transition": (    1,   0,   1,   1,   0,   1,   1,   1,   0,   0,   0,   1,   1,   1,   1,   1,   0,   1,   1,   1,   1,   0,   0,   0),
+    "locomotion": (    0,   1,   1,   1,   0,   1,   1,   1,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   1,   0,   0,   1,   0),
+    "stationary": (    1,   0,   0,   1,   0,   0,   1,   1,   1,   0,   1,   0,   0,   1,   0,   0,   1,   1,   1,   0,   1,   1,   0,   1),
+    "transition": (    1,   0,   0,   0,   0,   1,   1,   1,   0,   0,   0,   1,   1,   0,   1,   0,   0,   0,   0,   1,   0,   0,   0,   0),
 }
 
 assert set(GROUP_MULTIHOT_MASK) == set(ACTION_GROUPS), (

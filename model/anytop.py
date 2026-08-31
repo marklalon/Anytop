@@ -170,6 +170,32 @@ class AnyTop(nn.Module):
         else:
             self.species_film = None
 
+        # Output-coordinate-frame condition: the per-object_subset canonical
+        # (mean, std) 13-vectors the features are written in, projected and added
+        # to the timestep token. These statistics define which of the seven affine
+        # canonical spaces this sample lives in, and before this projection NOTHING
+        # in the model read them -- the only trace was the object_subset word buried
+        # inside the mean-pooled species descriptor, which --species_cfg_drop_prob
+        # then dropped 15% of the time. A model that cannot tell which space it is
+        # writing into has to guess the gain, and a wrong guess is a deformation,
+        # not an offset.
+        #
+        # UNCONDITIONAL, on purpose -- there is no flag for it. Every cond.npy in
+        # the canonical_motion_v3 feature space carries these two vectors and the
+        # dataset refuses to load without them, so "off" would only ever mean
+        # "blind to the output space", which is the defect this fixes. It is also
+        # NOT CFG-droppable and not gated behind species conditioning: this is not
+        # a semantic condition to guide toward or away from, it is the definition
+        # of the output space. Zero-initialized final linear, so the condition
+        # starts at exact identity (contributes 0 to the timestep token).
+        self.canonical_frame_projection = nn.Sequential(
+            nn.Linear(2 * self.feature_len, self.latent_dim),
+            nn.GELU(),
+            nn.Linear(self.latent_dim, self.latent_dim),
+        )
+        nn.init.zeros_(self.canonical_frame_projection[-1].weight)
+        nn.init.zeros_(self.canonical_frame_projection[-1].bias)
+
         seqTransDecoderLayer = GraphMotionDecoderLayer(d_model=self.latent_dim,
                                                             nhead=self.num_heads,
                                                             dim_feedforward=self.ff_size,
@@ -578,6 +604,53 @@ class AnyTop(nn.Module):
         beta = torch.where(active, beta, torch.zeros_like(beta))
         return gamma * timesteps_emb + beta
 
+    def _coerce_canonical_frame_stat(self, raw_stat, name, batch_size, device, dtype):
+        """Shape one canonical stat vector to ``[B, feature_len]``.
+
+        The collate stacks these per-sample (``[B, F]``) because a mixed-species
+        batch spans several object_subsets; a single-species caller may pass the
+        bare ``[F]`` vector, which is broadcast.
+        """
+        stat = torch.as_tensor(raw_stat, device=device, dtype=dtype)
+        if stat.dim() == 1:
+            stat = stat.unsqueeze(0)
+        stat = stat.reshape(stat.shape[0], -1)[:, :self.feature_len]
+        if stat.shape[1] != self.feature_len:
+            raise ValueError(
+                f"y['{name}'] must carry at least {self.feature_len} channels, got "
+                f"{stat.shape[1]}"
+            )
+        if stat.shape[0] == 1 and batch_size != 1:
+            stat = stat.expand(batch_size, -1)
+        elif stat.shape[0] != batch_size:
+            raise ValueError(
+                f"{name} batch dimension must match the motion batch size, got "
+                f"{stat.shape[0]} for batch {batch_size}"
+            )
+        return stat
+
+    def _build_canonical_frame_token(self, y, batch_size, device, dtype):
+        """Project the sample's output coordinate frame into the timestep token.
+
+        The frame is ``[canonical_feature_mean || canonical_feature_std]`` --
+        exactly the vectors ``canonical_to_physical_hml`` will de-standardize the
+        output with. Always built and never dropped: see the constructor.
+        """
+        raw_mean = y.get('canonical_feature_mean') if y is not None else None
+        raw_std = y.get('canonical_feature_std') if y is not None else None
+        if raw_mean is None or raw_std is None:
+            raise ValueError(
+                "y['canonical_feature_mean'] / y['canonical_feature_std'] are "
+                "missing. They define the output coordinate frame and are always "
+                "read. Regenerate cond.npy so each species carries its "
+                "object_subset's canonical standardization stats."
+            )
+        mean = self._coerce_canonical_frame_stat(
+            raw_mean, 'canonical_feature_mean', batch_size, device, dtype)
+        std = self._coerce_canonical_frame_stat(
+            raw_std, 'canonical_feature_std', batch_size, device, dtype)
+        return self.canonical_frame_projection(torch.cat([mean, std], dim=-1))
+
     def forward(self, x, timesteps, y=None, train_step=None, **unused_kwargs):
         """
         x: [batch_size, njoints, nfeats, max_frames], denoted x_t in the paper
@@ -611,6 +684,8 @@ class AnyTop(nn.Module):
             dtype=x.dtype,
         )
         timesteps_emb = timesteps_emb + self.playspeed_projection(playspeed_condition)
+        timesteps_emb = timesteps_emb + self._build_canonical_frame_token(
+            y, bs, x.device, x.dtype)
         if self.loop_cond_prob > 0.0 and self.loop_condition_projection is not None:
             loop_condition = self._coerce_loop_condition(
                 y.get('is_loop'),

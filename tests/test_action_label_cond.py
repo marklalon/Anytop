@@ -60,6 +60,10 @@ def _make_y(**extra):
         'n_joints': torch.tensor([4, 3], dtype=torch.int64),
         'joints_names_embs': torch.zeros(2, 4, T5_DIM, dtype=torch.float32),
         'lengths': torch.tensor([3, 3], dtype=torch.int64),
+        # The output coordinate frame is an unconditional model input: every
+        # forward reads it, so a hand-built y has to carry it.
+        'canonical_feature_mean': torch.zeros(13, dtype=torch.float32),
+        'canonical_feature_std': torch.ones(13, dtype=torch.float32),
     }
     y.update(extra)
     return y
@@ -106,11 +110,11 @@ class ActionLabelVocabularyTest(unittest.TestCase):
             group_multihot_mask('emote')
 
     def test_multihot_words_are_masked_per_group(self):
-        # 'roar' is a stationary slot but is masked out in locomotion.
-        self.assertIn('roar', action_multihot_words('idle, growls', 'stationary'))
-        self.assertNotIn('roar', action_multihot_words('runs and growls', 'locomotion'))
+        # 'bite' is a stationary slot but is masked out in locomotion.
+        self.assertIn('bite', action_multihot_words('attack, bites', 'stationary'))
+        self.assertNotIn('bite', action_multihot_words('runs and bites', 'locomotion'))
         # Unmasked (group=None) keeps everything the text hits.
-        self.assertIn('roar', action_multihot_words('runs and growls'))
+        self.assertIn('bite', action_multihot_words('runs and bites'))
 
     def test_coarse_synthesis_ignores_the_group_mask(self):
         # The synthesized string is T5 text, not a multi-hot: a word the group
@@ -171,15 +175,15 @@ class ActionLabelConditioningTest(unittest.TestCase):
         model = _make_model()
         idx = model.action_word_to_index
         stationary = model._build_action_multihot(
-            {'action_label': ['idle, growls'], 'action_group': ['stationary']},
+            {'action_label': ['idle, bites'], 'action_group': ['stationary']},
             1, torch.device('cpu'), torch.float32)
         locomotion = model._build_action_multihot(
-            {'action_label': ['runs and growls'], 'action_group': ['locomotion']},
+            {'action_label': ['runs and bites'], 'action_group': ['locomotion']},
             1, torch.device('cpu'), torch.float32)
-        self.assertEqual(float(stationary[0, idx['roar']]), 1.0)
-        # 'roar' is downgraded in locomotion, so its column stays zero even though
+        self.assertEqual(float(stationary[0, idx['bite']]), 1.0)
+        # 'bite' is downgraded in locomotion, so its column stays zero even though
         # the label names it.
-        self.assertEqual(float(locomotion[0, idx['roar']]), 0.0)
+        self.assertEqual(float(locomotion[0, idx['bite']]), 0.0)
         self.assertEqual(float(locomotion[0, idx['run']]), 1.0)
 
     def test_distinct_labels_produce_distinct_tokens(self):

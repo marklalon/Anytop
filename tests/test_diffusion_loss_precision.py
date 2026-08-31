@@ -84,6 +84,90 @@ class _CaptureDecoder(nn.Module):
         return kwargs["tgt"]
 
 
+class BoneLengthLossTests(unittest.TestCase):
+    """Regression tests for bone_length_consistency_loss's rest-length source.
+
+    The loss normalizes per-frame bone-length errors by the PHYSICAL rest bone
+    length. y['rest_pose'] is the canonical rest feature whose position channel
+    is the rest-centered residual (exactly zero at rest), so using it made every
+    rest bone length read as 0, masked out every bone, and silently zeroed the
+    whole loss regardless of lambda_bone.
+    """
+
+    def _make_diffusion(self) -> GaussianDiffusion:
+        return GaussianDiffusion(
+            betas=np.array([0.001, 0.002, 0.003], dtype=np.float64),
+            model_mean_type=ModelMeanType.START_X,
+            model_var_type=ModelVarType.FIXED_LARGE,
+            loss_type=LossType.MSE,
+            lambda_bone=0.2,
+        )
+
+    def test_bone_loss_nonzero_when_predicted_lengths_differ(self):
+        diffusion = self._make_diffusion()
+        # 3-joint chain, rest bone length 1.0 each.
+        rest_pos = np.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]], dtype=np.float32
+        )
+        parents = np.array([-1, 0, 1], dtype=np.int64)
+        y = {
+            "parents": [parents],
+            "rest_pos_ric_hml": torch.from_numpy(rest_pos).unsqueeze(0),
+        }
+        n_frames = 4
+        target = torch.zeros(1, 3, 13, n_frames)
+        target[:, :, 0:3, :] = torch.from_numpy(rest_pos).view(1, 3, 3, 1).expand(1, 3, 3, n_frames)
+        pred = target.clone()
+        # Stretch bone 0->1 by 10% (joint 1 shifts +x).
+        pred[0, 1, 0, :] += 0.1
+        spat_mask = torch.ones(1, 1, 1, 3)
+
+        loss = diffusion.bone_length_consistency_loss(pred, target, spat_mask, y)
+        self.assertTrue(torch.isfinite(loss))
+        self.assertGreater(loss.item(), 0.0)
+
+        # Exact match -> zero loss.
+        exact = diffusion.bone_length_consistency_loss(target, target, spat_mask, y)
+        self.assertEqual(exact.item(), 0.0)
+
+    def test_bone_loss_rejects_canonical_rest_pose_only(self):
+        diffusion = self._make_diffusion()
+        parents = np.array([-1, 0, 1], dtype=np.int64)
+        # Canonical rest feature: constant (zero) position channel at rest.
+        canonical_rest = np.zeros((3, 13), dtype=np.float32)
+        y = {
+            "parents": [parents],
+            "rest_pose": torch.from_numpy(canonical_rest).unsqueeze(0),
+        }
+        target = torch.zeros(1, 3, 13, 4)
+        with self.assertRaises(ValueError):
+            diffusion.bone_length_consistency_loss(
+                target, target, torch.ones(1, 1, 1, 3), y
+            )
+
+    def test_bone_loss_accepts_rest_pose_physical_fallback(self):
+        diffusion = self._make_diffusion()
+        rest_pos = np.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]], dtype=np.float32
+        )
+        parents = np.array([-1, 0, 1], dtype=np.int64)
+        rest_physical = np.zeros((3, 13), dtype=np.float32)
+        rest_physical[:, 0:3] = rest_pos
+        y = {
+            "parents": [parents],
+            "rest_pose_physical": torch.from_numpy(rest_physical).unsqueeze(0),
+        }
+        n_frames = 4
+        target = torch.zeros(1, 3, 13, n_frames)
+        target[:, :, 0:3, :] = torch.from_numpy(rest_pos).view(1, 3, 3, 1).expand(1, 3, 3, n_frames)
+        pred = target.clone()
+        pred[0, 2, 0, :] += 0.2  # stretch bone 1->2 by 20%
+        loss = diffusion.bone_length_consistency_loss(
+            pred, target, torch.ones(1, 1, 1, 3), y
+        )
+        self.assertGreater(loss.item(), 0.0)
+
+
 class DiffusionLossPrecisionTests(unittest.TestCase):
     def _make_diffusion(
         self,
@@ -441,6 +525,9 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             "rest_pose": torch.randn(1, 4, 13, dtype=torch.float32),
             "n_joints": torch.tensor([3], dtype=torch.int64),
             "joints_names_embs": torch.zeros(1, 4, 512, dtype=torch.float32),
+            # Unconditional model input -- every forward reads the output frame.
+            "canonical_feature_mean": torch.zeros(13, dtype=torch.float32),
+            "canonical_feature_std": torch.ones(13, dtype=torch.float32),
             "parents": torch.tensor([[-1, 0, 1, 2]], dtype=torch.int64),
             "joint_mask_candidate_roots": torch.tensor([[False, True, True, True]], dtype=torch.bool),
         }
@@ -476,6 +563,9 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             "rest_pose": torch.randn(2, 4, 13, dtype=torch.float32),
             "n_joints": torch.tensor([4, 3], dtype=torch.int64),
             "joints_names_embs": torch.zeros(2, 4, 512, dtype=torch.float32),
+            # Unconditional model input -- every forward reads the output frame.
+            "canonical_feature_mean": torch.zeros(13, dtype=torch.float32),
+            "canonical_feature_std": torch.ones(13, dtype=torch.float32),
         }
 
         model(x, torch.tensor([1, 2], dtype=torch.int64), y=y)
@@ -523,6 +613,9 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             "rest_pose": torch.randn(1, 4, 13, dtype=torch.float32),
             "n_joints": torch.tensor([4], dtype=torch.int64),
             "joints_names_embs": torch.zeros(1, 4, 512, dtype=torch.float32),
+            # Unconditional model input -- every forward reads the output frame.
+            "canonical_feature_mean": torch.zeros(13, dtype=torch.float32),
+            "canonical_feature_std": torch.ones(13, dtype=torch.float32),
             "cross_limb_unreliable_mask": raw_unreliable,
         }
 
@@ -565,6 +658,9 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             "rest_pose": torch.randn(1, 4, 13, dtype=torch.float32),
             "n_joints": torch.tensor([4], dtype=torch.int64),
             "joints_names_embs": torch.zeros(1, 4, 512, dtype=torch.float32),
+            # Unconditional model input -- every forward reads the output frame.
+            "canonical_feature_mean": torch.zeros(13, dtype=torch.float32),
+            "canonical_feature_std": torch.ones(13, dtype=torch.float32),
             "cross_limb_unreliable_mask": prepared_unreliable,
         }
 

@@ -286,6 +286,9 @@ class NativeLoopTests(unittest.TestCase):
             'rest_pose': torch.randn(2, 4, 13, dtype=torch.float32),
             'n_joints': torch.tensor([4, 3], dtype=torch.int64),
             'joints_names_embs': torch.zeros(2, 4, 512, dtype=torch.float32),
+            # Unconditional model input -- every forward reads the frame.
+            'canonical_feature_mean': torch.zeros(13, dtype=torch.float32),
+            'canonical_feature_std': torch.ones(13, dtype=torch.float32),
             'is_loop': torch.tensor([True, False]),
             'lengths': torch.tensor([3, 3], dtype=torch.int64),
             'loop_phase_lengths': torch.tensor([2.0, 3.0], dtype=torch.float32),
@@ -318,6 +321,9 @@ class NativeLoopTests(unittest.TestCase):
             'rest_pose': torch.randn(2, 4, 13, dtype=torch.float32),
             'n_joints': torch.tensor([4, 3], dtype=torch.int64),
             'joints_names_embs': torch.zeros(2, 4, 512, dtype=torch.float32),
+            # Unconditional model input -- every forward reads the frame.
+            'canonical_feature_mean': torch.zeros(13, dtype=torch.float32),
+            'canonical_feature_std': torch.ones(13, dtype=torch.float32),
             'is_loop': torch.tensor([True, True]),
             'loop_full_cycle': torch.tensor([True, False]),
             'lengths': torch.tensor([3, 3], dtype=torch.int64),
