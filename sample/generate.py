@@ -2130,17 +2130,19 @@ def _find_cached_species_emb(tags, cond_dict, t5_name, expected_dim):
 
 
 def _resolve_action_condition(args, model, runtime, cond_entry):
-    """Resolve ``--action_group`` / ``--action_label`` into one per-batch condition.
+    """Resolve the checkpoint's action group + ``--action_label`` into one condition.
 
     Returns ``None`` when no label was requested (the model then falls back to its
     learned unconditional embedding), otherwise a dict carrying the group, the
     label text and its T5 embedding, encoded here through the same conditioner the
     dataset sidecar was built with.
 
-    The group is required alongside a label and is never inferred from the text: it
-    selects which of the three group models is being asked, and it also selects the
-    multi-hot mask, so guessing it wrong silently lights up columns this checkpoint
-    trained at zero.
+    ``args.action_group`` is the group this checkpoint was trained on, read out of
+    its args.json by parser_util.apply_checkpoint_action_group. There is no
+    ``--action_group`` flag at generation: the group selects the multi-hot mask the
+    weights learned, so a foreign one would silently light up columns this
+    checkpoint trained at zero. It is empty only for a checkpoint that predates the
+    mandatory training flag.
     """
     label = str(getattr(args, 'action_label', '') or '').strip()
     group = str(getattr(args, 'action_group', '') or '').strip().lower()
@@ -2159,17 +2161,18 @@ def _resolve_action_condition(args, model, runtime, cond_entry):
             'ERROR: --action_label was passed but this checkpoint was trained '
             'without --action_label_cond. The label would have no effect.'
         )
-    if group in ('', 'all'):
+    if not group:
         sys.exit(
-            "ERROR: --action_label requires an explicit --action_group "
-            f"(one of {', '.join(ACTION_GROUPS)}); it selects the multi-hot mask "
-            "this checkpoint was trained with and is not inferred from the text."
+            "ERROR: --action_label needs an action group, and this checkpoint's "
+            "args.json records none (it predates the mandatory --action_group). "
+            "The group selects the multi-hot mask the weights learned and is a "
+            "property of the checkpoint -- there is no --action_group at "
+            "generation to supply it. Sample a checkpoint trained with "
+            f"--action_group (one of {', '.join(ACTION_GROUPS)}) instead."
         )
-    if group not in ACTION_GROUPS:
-        sys.exit(
-            f"ERROR: unknown action_group '{group}'. "
-            f"Valid groups: {', '.join(ACTION_GROUPS)}"
-        )
+    # No group-validity check here: apply_checkpoint_action_group already
+    # normalizes anything but ''/a legal group to '' at load time, so past the
+    # guard above ``group`` is always one of ACTION_GROUPS.
     if not vocab_words_in(label):
         print(
             f"[generate] WARNING: --action_label '{label}' hits no controlled "

@@ -55,7 +55,7 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 | 字段 | 必填 | 默认 | 说明 |
 |---|---|---|---|
 | `namespace` | 是 | — | 唯一，正则 `[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*`；不允许某个 namespace 是另一个的路径前缀（否则后缀解析有歧义） |
-| `path` | 是 | — | **Anytop-root-relative** POSIX 路径（工作目录即 Anytop）或绝对路径，用现有的 [`param_utils._resolve_project_path`](../data_loaders/truebones/truebones_utils/param_utils.py#L11) 解析 |
+| `path` | 是 | — | **Anytop-root-relative** POSIX 路径（工作目录即 Anytop）或绝对路径，用现有的 [`param_utils._resolve_project_path`](../data_loaders/truebones/truebones_utils/param_utils.py) 解析 |
 | `enabled` | 否 | `true` | |
 | `species_include` / `species_exclude` | 否 | — | 裸名列表，方便临时裁剪 |
 
@@ -101,8 +101,8 @@ truebones/zoo_upgrade/Horse
 
 影响点：
 
-- [sample/generate.py:1602](../sample/generate.py#L1602) `npy_name = f'{object_type}_{i}.npy'` 必须改用 token
-- [sample/generate.py:422](../sample/generate.py#L422) / [:498](../sample/generate.py#L498) retarget 中间产物命名同上
+- [sample/generate.py](../sample/generate.py) 的 `npy_name = f'{object_type}_{i}.npy'` 必须改用 token
+- 同文件 retarget 中间产物命名（`_retargeted_*.npy` / `.bvh`）同上
 - `utils/misc.infer_object_type_from_filename` 的 `valid_types` 匹配表要用 **token → 规范键** 构建，才能把 `truebones_zoo_upgrade_Horse_Idle_1.npy` 反解回规范键
 
 > 效果：单数据集下所有裸名唯一，输出文件名与今天完全一致，不破坏现有使用习惯。
@@ -174,7 +174,7 @@ quadruped   zoo:         mean[0]=0.0098  std[0]=0.4691
 合并工具是唯一同时看得到所有源 motions 的地方，因此在这里重算：
 
 - 遍历所有源的 `motions/*.npy`，按物种的 object_subset 分桶
-- 复用 [canonical_features.accumulate_lnorm_stats](../data_loaders/truebones/truebones_utils/canonical_features.py) / `finalize_lnorm_stats` 增量累积（与 [regenerate_dataset_artifacts._compute_canonical_stats_per_object_subset](../tools/regenerate_dataset_artifacts.py#L244) 同一套逻辑）
+- 复用 [canonical_features.accumulate_lnorm_stats](../data_loaders/truebones/truebones_utils/canonical_features.py) / `finalize_lnorm_stats` 增量累积（与 [regenerate_dataset_artifacts._compute_canonical_stats_per_object_subset](../tools/regenerate_dataset_artifacts.py) 同一套逻辑）
 - 结果写回**合并 cond 的所有 entry**；各源自己的 `cond.npy` 不动
 
 `--no-recompute-stats` 保留为逃生口（快速验证管线用）。
@@ -198,7 +198,7 @@ opt.cond_file = cond_path
 opt.sources   = tuple[DatasetSource]   # 由 cond entry 的 dataset_root 去重派生
 ```
 
-删除单值 `opt.data_root` / `opt.motion_dir`（当前 [get_opt.py:31-33](../data_loaders/truebones/truebones_utils/get_opt.py#L31-L33)），改由 `opt.sources` 驱动枚举。
+删除单值 `opt.data_root` / `opt.motion_dir`（当前 [get_opt.py](../data_loaders/truebones/truebones_utils/get_opt.py)），改由 `opt.sources` 驱动枚举。
 `dataset_root` 为 `None` 的 entry 归到「cond.npy 所在目录」这个源。
 
 ### 5.3 `Truebones` / `MotionDataset`
@@ -208,9 +208,9 @@ opt.sources   = tuple[DatasetSource]   # 由 cond entry 的 dataset_root 去重�
 1. **clip id 复合化**。实测两个数据集有 **15 个同名 clip**（`Horse_Idle_1.npy`、`Bear_Trot_1.npy` …），裸文件名不能再当 key。
    `data_dict` / `name_list` 的 key 改为 `f"{namespace}/{filename}"`，例如 `truebones/zoo/Horse_Idle_1.npy`。
    entry 内保留 `motion_path`（绝对路径）、`object_type`（规范键）、`source`。
-2. **去掉文件名前缀匹配**。[:589](../data_loaders/truebones/data/dataset.py#L589) 与 [:936](../data_loaders/truebones/data/dataset.py#L936) 的 `name.startswith(f'{object_type}_')` 在合并后会让 `Horse_Idle_1.npy` 同时归属两个 Horse。改为：枚举时按 `source` + `species_name` 前缀，归属时直接读 `data_dict[name]['object_type']`。
+2. **去掉文件名前缀匹配**。[dataset.py](../data_loaders/truebones/data/dataset.py) 里两处 `name.startswith(f'{object_type}_')`（枚举与归属各一处）在合并后会让 `Horse_Idle_1.npy` 同时归属两个 Horse。改为：枚举时按 `source` + `species_name` 前缀，归属时直接读 `data_dict[name]['object_type']`。
 3. **split 按源各自划分再取并集**。AnyTop 的 split 是「按物种整体留出」，若在并集上全局重算，zoo 现有的 val/test 留出物种会全部改变、历史实验不可比。逐源调用 `ensure_split_manifests(source.root, source.motion_dir)`，结果并集后转成复合 clip id。
-   > 注意：只要传了 `--action_group`（`train.bat` 传了），[dataset.py:425-478](../data_loaders/truebones/data/dataset.py#L425-L478) 会无视 `train.txt` 现算 split 并覆写该文件 —— 这条路径同样按源独立执行。
+   > 注意：只要传了 `--action_group`（`train.bat` 传了），[dataset.py](../data_loaders/truebones/data/dataset.py) 会无视 `train.txt` 现算 split 并覆写该文件 —— 这条路径同样按源独立执行。
 4. `cache/motion_lengths.npy` 保持**每源一份**，key 仍是裸文件名（源内唯一）。
 5. `motion_metadata.json` / `action_labels.jsonl` 按源分别加载，join 时用裸文件名。
    `action_label_embs.npy` 也是每源一份，但它按 **label 文本**索引（不是 clip 名），加载时合并成一张表 —— 同一句 label 在两个源里编码结果相同，合并无歧义。
@@ -256,16 +256,16 @@ shutil.copy2(args.cond_path, os.path.join(save_dir, 'cond.npy'))
 
 新增 `configure_from_cond(cond_dict)`：从每条 entry 的 `species_tags` 字段构建快照。让以下路径在**没有数据集目录**时也能跑：
 
-- [server/anytop_service.py:554-590](../../server/anytop_service.py#L554) `_registered_species_tags` / `_species_tags_registered`
-- [utils/skeleton_similarity.py:235](../utils/skeleton_similarity.py#L235) 跨物种 retarget 的 lineage-tag 折扣
+- [server/anytop_service.py](../../server/anytop_service.py) 的 `_registered_species_tags` / `_species_tags_registered`
+- [utils/skeleton_similarity.py](../utils/skeleton_similarity.py) 跨物种 retarget 的 lineage-tag 折扣
 - `process_new_skeleton` 判定 object_subset
 
 ### 6.3 消除硬编码的「默认数据集」回退
 
 | 位置 | 现状 | 改为 |
 |---|---|---|
-| [generate.py:266-279](../sample/generate.py#L266-L279) `_load_default_cond_cache` | 回读 `DEFAULT_DATASET_DIR/cond.npy` 找 retarget 源物种 | 回读 **checkpoint 同目录的 `cond.npy`** |
-| [dataset_pipeline.py:902-949](../data_loaders/truebones/truebones_utils/dataset_pipeline.py#L902) `_inherit_canonical_stats_from_dataset` | 从 `DEFAULT_DATASET_DIR/cond.npy` 继承 subset 统计量 | 参数改为直接收 cond.npy 路径，默认 checkpoint 同目录 |
+| [generate.py](../sample/generate.py) `_load_default_cond_cache` | 回读 `DEFAULT_DATASET_DIR/cond.npy` 找 retarget 源物种 | 回读 **checkpoint 同目录的 `cond.npy`** |
+| [dataset_pipeline.py](../data_loaders/truebones/truebones_utils/dataset_pipeline.py) `_inherit_canonical_stats_from_dataset` | 从 `DEFAULT_DATASET_DIR/cond.npy` 继承 subset 统计量 | 参数改为直接收 cond.npy 路径，默认 checkpoint 同目录 |
 
 ### 6.4 输出命名
 
@@ -291,7 +291,7 @@ shutil.copy2(args.cond_path, os.path.join(save_dir, 'cond.npy'))
 
 | 位置 | 改动 |
 |---|---|
-| [utils/retarget_cache.py:26-29](../utils/retarget_cache.py#L26-L29) | `_CACHE_DIR` 从 `dataset/truebones/zoo/truebones_processed/cache/retarget/` 移到 `<Anytop>/cache/retarget/`。缓存 key 是 prompt+messages 的 SHA-256（含骨骼名与长度），与物种名无关，迁移无冲突风险；可保留旧目录做一次性只读回退 |
+| [utils/retarget_cache.py](../utils/retarget_cache.py) | `_CACHE_DIR` 从 `dataset/truebones/zoo/truebones_processed/cache/retarget/` 移到 `<Anytop>/cache/retarget/`。缓存 key 是 prompt+messages 的 SHA-256（含骨骼名与长度），与物种名无关，迁移无冲突风险；可保留旧目录做一次性只读回退 |
 | `param_utils.DEFAULT_DATASET_DIR` | 保留，仅作预处理/工具的默认值，不再被训练/推理引用 |
 | `tools/check_bone_length_drift.py`、`tools/restore_glb_from_npy.py`、`tools/simulate_corrupted_motion.py`、`tools/visualize_joint_name_embeddings.py`、`tools/extract_action_categories.py` | 硬编码 cond 路径 → 统一 `--cond-path`（默认 checkpoint 同目录 cond.npy） |
 | [utils/validate_anytop_dataset.py](../utils/validate_anytop_dataset.py) | 新增 `--datasets`，逐源循环校验（单源行为不变） |

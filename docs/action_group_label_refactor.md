@@ -19,8 +19,8 @@
 | 职责 | 入口 | 现状 |
 |---|---|---|
 | 训练集切分 | `--action_tags getup,death,fall,rest,jump,turn,gethurt`（[train.bat](../train.bat)） | 手动列出某一组的全部 tag |
-| 模型条件 | `--action_tag_cond` → 15 维 multihot → MLP → 加到 timestep token（[anytop.py:136-159](../model/anytop.py#L136-L159)） | 粒度只到 14 类 |
-| 推理路由 | `resolve_anytop_group()`（[anytop_service.py:62-125](../../server/anytop_service.py#L62-L125)） | tag → group 展开表 |
+| 模型条件 | `--action_tag_cond` → 15 维 multihot → MLP → 加到 timestep token（[anytop.py](../model/anytop.py)） | 粒度只到 14 类 |
+| 推理路由 | `resolve_anytop_group()`（[anytop_service.py](../../server/anytop_service.py)） | tag → group 展开表 |
 
 三个问题：
 
@@ -213,7 +213,7 @@ locomotion 的 `jump` 13 条覆盖 9 个物种，数量相近但安全得多。l
 
 **降级 = 不进 multihot，只进 T5；不是从词表删除。** 为什么这样能减轻过拟合：
 
-- multihot 槽是 [anytop.py:147-151](../model/anytop.py#L147) 那个 `Linear(V -> D)` 里
+- multihot 槽是 [anytop.py](../model/anytop.py) 那个 `Linear(V -> D)` 里
   **从零训练**的一整列 D 维向量，用 5 条样本去拟合它就是记忆；
 - T5 是**冻结的预训练**编码器，`roar` 的表示预训练时就落在 `growl` / `scream` 附近，
   不需要从这 5 条 clip 里学出来；
@@ -318,6 +318,40 @@ locomotion 70% 命中 walk 或 run）；transition 组只有 230 条的绝对量
 
 label 里的受控词只服务于**条件通路**（派生 multihot + §2.6 的粗粒度串合成），与选哪个模型无关。
 
+#### 2.7.1 group 绑定在 checkpoint 上（2026-08-31）
+
+`--action_group` 是**训练期参数**，而且是**必填的三选一**（`locomotion` / `stationary` /
+`transition`）：没有 `all`，也不接受逗号列表 —— 它既切分数据集，又决定模型见过的
+multihot mask，所以 group 是**权重的属性**，不是每次请求的选项。传错的后果不是报错
+而是静默劣化：点亮一批该 checkpoint 训练时恒为 0 的列。因此四处各加一道闸：
+
+* **训练必填**：[`parser_util.add_data_options(training=True)`](../utils/parser_util.py)
+  只在训练解析器里注册 `--action_group`，`required=True` + `choices` 为三个 group。
+  「训练在全部 clip 上」这个选项本身被取消 —— 每组训自己的模型是这套设计的前提。
+* **训练落盘**：`args.json` 本来就带 `action_group`（`vars(args)` 全量落盘）；
+  新增 [`train_anytop.assert_resume_keeps_action_group`](../train/train_anytop.py)
+  拒绝「续训时换 group」—— `args.json` 每次启动都会重写，否则续训会一边拿另一组的
+  clip 喂旧权重，一边把推理所信任的那条契约悄悄改掉。换组 = 换 `--save_dir`。
+* **推理无此参数**：生成侧的解析器**根本不注册** `--action_group`（外部传了直接
+  argparse 报错），group 由
+  [`parser_util.apply_checkpoint_action_group`](../utils/parser_util.py)
+  从 checkpoint 自己的 `args.json` 读出来写进 `args.action_group`。
+  要换 group 就换 checkpoint，没有第二条路。
+* **服务端配置**：`_assert_checkpoint_declares_group` 在加载时校验每个 group 槽位配到的
+  checkpoint 确实是那一组训练的，`PCVG_ANYTOP_MODEL_PATH_*` 配错在启动期就报错，
+  而不是让 stationary 的请求被 locomotion 的模型静默接管 —— 路由日志还会跟着一起撒谎。
+
+请求仍然必须显式带 `action_group`（§2.7 不变），但它现在**只用于选 checkpoint**：
+`build_anytop_args` 不再把它转成命令行参数下发。
+
+**旧 checkpoint**（`action_group` 为空 / `'all'`，早于本次改动）：无条件生成照常，
+但 `--action_label` 会 fail-fast —— 已经没有任何入口能补上那个 mask 了，只能重训。
+服务端把这类 checkpoint 装进某个 group 槽位时打 warning，不阻止启动。
+
+> V2P 侧的 `--action_group`（`train_video2pose.py` / `video2pose_dataset.py`）不在此列：
+> 那里没有 action 条件通路，group 纯粹是数据集过滤器，`''` = 不过滤仍然合法。
+> `resolve_requested_action_group` 因此保持宽松，收紧发生在 AnyTop 的 CLI 上。
+
 推理端唯一保留的文本处理是可选的**查询归一化**：把 `sprint` / `gallop` 经 surface form 表
 归到 `run`，纯受控词短查询按词表顺序重排，与 §2.6 的合成串对齐。
 
@@ -381,12 +415,12 @@ transition —— 该组样本最少、分布最独特，宁可多喂），然�
 | 文件 | 改动 |
 |---|---|
 | [motion_labels.py](../data_loaders/truebones/truebones_utils/motion_labels.py) | `ACTION_TAGS`(15) -> `ACTION_GROUPS`(3) + `CONTROLLED_VOCAB` + `VOCAB_ALIASES` + `MULTIHOT_VOCAB`（频次门槛子集）；**新增冻结常量 `GROUP_MULTIHOT_MASK` + 访问器 `group_multihot_mask(group)`（§2.4.1）**；`load_action_tags` -> `load_action_labels`（校验 group 合法 + label 命中）；`_FALLBACK_ACTION_RULES` 改为 clip 名 -> 粗动词的回退规则（2026-08-30 已删除，见 §9.5） |
-| [param_utils.py:53](../data_loaders/truebones/truebones_utils/param_utils.py#L53) | `ACTION_TAGS_FILE` -> `ACTION_LABELS_FILE = "action_labels.jsonl"` |
-| [dataset.py:72-95,427-478](../data_loaders/truebones/data/dataset.py#L72-L95) | tag 集合求交 -> group 单值相等过滤；`__getitem__` 带出 `action_group` / `action_label` / label emb |
-| [tensors.py:109-113](../data_loaders/tensors.py#L109-L113) | multihot 拼装改为：[B,512] label emb + [B,V] 派生 multihot + [B] valid mask。**派生后按训练组的 `group_multihot_mask()` 逐元素相乘**（§2.4.1）—— 训练与推理必须用同一个 mask，否则推理时会点亮训练中恒零的槽 |
-| [anytop.py:136-159,368-420](../model/anytop.py#L136-L159) | `action_tag_projection`(15->D) -> `action_label_projection`(512->D) + `action_multihot_projection`(V->D)；加性通路与 `action_tag_null_emb` / CFG 逻辑原样保留；空 label 直接走 null |
-| [parser_util.py:145-165](../utils/parser_util.py#L145-L165) | `--action_tags` -> `--action_group`（训练过滤，单值）；新增 `--action_label`（推理）；`--action_tag_cond` -> `--action_label_cond`；新增 `--action_label_truncate_prob`（§2.6） |
-| [anytop_service.py:62-125](../../server/anytop_service.py#L62-L125) | 删除 tag 展开表与 `resolve_anytop_group()`；请求直接带 `action_group`，缺失或非法则报错列出三个合法值 |
+| [param_utils.py](../data_loaders/truebones/truebones_utils/param_utils.py) | `ACTION_TAGS_FILE` -> `ACTION_LABELS_FILE = "action_labels.jsonl"` |
+| [dataset.py](../data_loaders/truebones/data/dataset.py) | tag 集合求交 -> group 单值相等过滤；`__getitem__` 带出 `action_group` / `action_label` / label emb |
+| [tensors.py](../data_loaders/tensors.py) | multihot 拼装改为：[B,512] label emb + [B,V] 派生 multihot + [B] valid mask。**派生后按训练组的 `group_multihot_mask()` 逐元素相乘**（§2.4.1）—— 训练与推理必须用同一个 mask，否则推理时会点亮训练中恒零的槽 |
+| [anytop.py](../model/anytop.py) | `action_tag_projection`(15->D) -> `action_label_projection`(512->D) + `action_multihot_projection`(V->D)；加性通路与 `action_tag_null_emb` / CFG 逻辑原样保留；空 label 直接走 null |
+| [parser_util.py](../utils/parser_util.py) | `--action_tags` -> `--action_group`（训练过滤，单值）；新增 `--action_label`（推理）；`--action_tag_cond` -> `--action_label_cond`；新增 `--action_label_truncate_prob`（§2.6） |
+| [anytop_service.py](../../server/anytop_service.py) | 删除 tag 展开表与 `resolve_anytop_group()`；请求直接带 `action_group`，缺失或非法则报错列出三个合法值 |
 | [reference_bank.py](../eval/motion_quality/reference_bank.py) / scorer / `eval_tasks.json` | 过滤键更换。**注意用受控词而非 group 过滤参考先验**，否则先验从「attack 的参考」放宽到「整个 stationary 组」，打分会变松 |
 | [train.bat](../train.bat)、[multi_dataset_training.md](./multi_dataset_training.md)、README | 参数与训练契约描述 |
 
@@ -664,7 +698,7 @@ Buffalo / Camel / Comodoa / Dog / Roach / Skunk / Stego / Tricera / Tyranno 各 
 | `parser_util.py` | `--action_tags` -> `--action_group`（单值 choices）；`--action_tag_cond` -> `--action_label_cond`；新增 `--action_label`（推理）/ `--action_words`（打分先验）/ `--action_label_coarse_prob`；`args.json` 带 `action_tag_cond` 时 `assert_action_conditioning_not_deprecated` 直接退出 |
 | `anytop_service.py` / `serve.py` / `anytop_client.py` | 删除 `ANYTOP_ACTION_GROUPS` 展开表与 `resolve_anytop_group`；请求直接带 `action_group`（+ 可选 `action_label`），缺失或非法即报错列出三个合法值 |
 | `reference_bank.py` / `scorer.py` | 打分先验的过滤键改为**受控词**（`action_words`）而非 group；`eval_checkpoint._SCORE_ACTION_TAGS = "locomotion"` -> `_SCORE_ACTION_WORDS = "walk,run"`（`locomotion` 已不是受控词） |
-| `eval_tasks.json` | 那里的 `--action_tags locomotion` 走的是**模型条件**通路（不是打分先验），所以译成 `--action_group locomotion --action_label walk`；与旧行为一致，checkpoint 没开对应 flag 时仍然 fail-fast |
+| `eval_tasks.json` | 那里的 `--action_tags locomotion` 走的是**模型条件**通路（不是打分先验），所以译成 `--action_group locomotion --action_label walk`；与旧行为一致，checkpoint 没开对应 flag 时仍然 fail-fast（2026-08-31 起生成侧已无 `--action_group`，该行只剩 `--action_label walk`，见 §2.7.1） |
 | V2P 侧（`video2pose_dataset.py` / `train_video2pose.py` / `inference/video2pose.py`） | `--action_tags` -> `--action_group`，共用 `resolve_requested_action_group` |
 | `tools/build_action_label_embeddings.py` | **新增**。把 label 全文 + 其合成粗粒度串一起编码进 `action_label_embs.npy`（label 文本为 key）。zoo 1123 串 / zoo_upgrade 230 / unitybundles 1944，均 768 维 |
 

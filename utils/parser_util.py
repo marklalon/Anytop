@@ -5,6 +5,12 @@ import json
 import copy
 import sys
 
+# The three action groups, duplicated from
+# data_loaders.truebones.truebones_utils.motion_labels.ACTION_GROUPS so this
+# module stays import-light (that one reaches numpy through param_utils).
+# tests/test_action_group_checkpoint_binding.py pins the two together.
+ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
+
 def parse_and_load_from_model(parser, argv=None, preserve_cli_args=None):
     # args according to the loaded model
     # do not try to specify them from cmd line since they will be overwritten
@@ -48,6 +54,32 @@ def assert_action_conditioning_not_deprecated(model_args, args_path):
     )
 
 
+def apply_checkpoint_action_group(args, model_args, args_path):
+    """Set this generation's action group from the checkpoint being sampled.
+
+    Each checkpoint is trained on exactly one group, and that same group selects
+    the multi-hot mask the model saw -- so the group is a property of the weights.
+    Generation therefore has no ``--action_group`` flag at all: the value comes
+    out of args.json and nowhere else, which is why a checkpoint can only ever be
+    sampled as the group it was trained on. Asking for another group means
+    sampling that group's checkpoint.
+
+    A run predating the mandatory flag records no group (or the retired 'all').
+    It still generates, but sample/generate.py refuses ``--action_label`` for it:
+    with no flag left, nothing could supply the missing mask.
+    """
+    recorded_group = str(model_args.get('action_group', '') or '').strip().lower()
+    if recorded_group and recorded_group not in ACTION_GROUPS:
+        print(
+            f"[parser_util] WARNING: {args_path} records action_group "
+            f"'{recorded_group}', which is not one of {', '.join(ACTION_GROUPS)}. "
+            f"Treating this checkpoint as group-less: action-label conditioning "
+            f"is unavailable, unconditional generation is unaffected."
+        )
+        recorded_group = ''
+    args.action_group = recorded_group
+
+
 def extract_args(args, args_to_overwrite, model_path):
     args_path = os.path.join(os.path.dirname(model_path), 'args.json')
     assert os.path.exists(args_path), 'Arguments json file was not found!'
@@ -55,6 +87,7 @@ def extract_args(args, args_to_overwrite, model_path):
         model_args = json.load(fr)
 
     assert_action_conditioning_not_deprecated(model_args, args_path)
+    apply_checkpoint_action_group(args, model_args, args_path)
 
     for a in args_to_overwrite:
         if a in model_args.keys():
@@ -184,19 +217,32 @@ def add_model_options(parser):
                             "the short queries users actually type. Synthesized from the matched words, "
                             "never by truncating the label. Default 0.0 (always use the full label).")
 
-def add_data_options(parser):
+def add_data_options(parser, training=False):
+    """Dataset selection. ``training=True`` adds the training-only options.
+
+    ``--action_group`` is one of those: it is mandatory when training (it splits
+    the corpus AND fixes the multi-hot mask the weights learn) and absent when
+    generating, where the group is read back out of the checkpoint instead --
+    see :func:`apply_checkpoint_action_group`.
+    """
     group = parser.add_argument_group('dataset')
     group.add_argument("--train_split", default='train', choices=['train', 'val', 'test', 'all'], type=str,
                        dest='train_split',
                        help="Data split to use for training. 'train'=training set, 'val'=validation set, 'test'=test set, 'all'=use all data.")
     group.add_argument("--objects_subset", default='all', type=str,
                        help="Object subset. Can be a predefined category (e.g. 'all', 'quadruped', 'winged', 'biped', 'multiped', etc.) or a single species name (e.g. 'Horse', 'Dragon').")
-    group.add_argument("--action_group", default='', type=str,
-                       choices=['', 'all', 'locomotion', 'stationary', 'transition'],
-                       help="Action group to train on: 'locomotion' (sustained displacement), "
-                            "'stationary' (in-place / interactive), or 'transition' (pose changes). "
-                            "Single-valued and exclusive -- each clip belongs to exactly one group and "
-                            "each group trains its own model. '' or 'all' trains on every clip.")
+    if training:
+        group.add_argument("--action_group", required=True, type=str,
+                           choices=list(ACTION_GROUPS),
+                           help="REQUIRED. The single action group to train on: 'locomotion' "
+                                "(sustained displacement), 'stationary' (in-place / interactive) "
+                                "or 'transition' (pose changes). Exclusive and single-valued -- "
+                                "each clip belongs to exactly one group and each group trains its "
+                                "own model, so there is no 'all' and no list. The value is recorded "
+                                "in the checkpoint's args.json and is the only source generation "
+                                "reads it from (there is no --action_group at generation): it also "
+                                "fixes the multi-hot mask the weights learn, so a checkpoint can "
+                                "only ever be sampled as the group it was trained on.")
 
 def add_training_options(parser):
     group = parser.add_argument_group('training')
@@ -404,7 +450,7 @@ def add_generate_options(parser):
 def train_args():
     parser = ArgumentParser()
     add_base_options(parser)
-    add_data_options(parser)
+    add_data_options(parser, training=True)
     add_model_options(parser)
     add_training_options(parser)
     return parser.parse_args()
@@ -419,9 +465,12 @@ def generate_args(argv=None):
     add_generate_options(parser)
     # These CLI args are generation-time overrides and must NOT be
     # overwritten by the training args.json (which stores their defaults).
+    # There is deliberately no --action_group here: the group belongs to the
+    # weights, so apply_checkpoint_action_group() sets args.action_group from the
+    # checkpoint's own args.json.
     args = parse_and_load_from_model(
         parser, argv=argv,
-        preserve_cli_args={'action_group', 'action_label', 'action_words', 'species_tags'},
+        preserve_cli_args={'action_label', 'action_words', 'species_tags'},
     )
     return args
 

@@ -12,8 +12,8 @@
 
     { "category": "ConvertLoop", "args": ["--reference_motion", "outputs/test/Buffalo_Run_Noloop.npy", "--skip_timesteps", "90", "--loop"] },
 
-    { "category": "CorruptionFix", "args": ["--reference_motion", "outputs/corrupted_motion/Buffalo_corrupted.npy", "--skip_timesteps", "90", "--action_group", "locomotion", "--action_label", "walk"] },
-    { "category": "CorruptionFix", "args": ["--reference_motion", "outputs/test/Buffalo_debug_phase2_animation.glb", "--skip_timesteps", "50", "--action_group", "locomotion", "--action_label", "walk"] },
+    { "category": "CorruptionFix", "args": ["--reference_motion", "outputs/corrupted_motion/Buffalo_corrupted.npy", "--skip_timesteps", "90", "--action_label", "walk"] },
+    { "category": "CorruptionFix", "args": ["--reference_motion", "outputs/test/Buffalo_debug_phase2_animation.glb", "--skip_timesteps", "50", "--action_label", "walk"] },
 
     { "category": "InpaintFrames", "args": ["--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Buffalo_RunLoop_1.npy", "--inpaint_frames", "20-30"] },
     { "category": "InpaintFrames", "args": ["--reference_motion", "$LAST_OUTPUT", "--skip_timesteps", "99"] },

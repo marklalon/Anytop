@@ -118,6 +118,51 @@ def prepare_save_dir(args):
     print(f'[INFO] save_dir: {save_dir}')
     return save_dir
 
+def _normalized_action_group(raw):
+    """Read a recorded action_group. '' and the retired 'all' both mean "none"."""
+    group = str(raw or '').strip().lower()
+    return '' if group == 'all' else group
+
+
+def assert_resume_keeps_action_group(args, save_dir):
+    """Refuse a resume that would rewrite the checkpoint's recorded action_group.
+
+    args.json is rewritten on every launch, and it is the only place generation
+    reads the group from (utils.parser_util.apply_checkpoint_action_group; there
+    is no --action_group at generation). So a resume launched with another group
+    would not just feed the existing weights the wrong clips -- it would relabel
+    the checkpoint inference trusts, and every later generation would condition on
+    a multi-hot mask these weights never learned. Changing groups means a fresh
+    save_dir.
+    """
+    if not getattr(args, 'resume_checkpoint', ''):
+        return
+    args_path = os.path.join(save_dir, 'args.json')
+    if not os.path.isfile(args_path):
+        return
+    with open(args_path, 'r') as fr:
+        previous_args = json.load(fr)
+    previous_group = _normalized_action_group(previous_args.get('action_group'))
+    current_group = _normalized_action_group(getattr(args, 'action_group', ''))
+    if previous_group == current_group:
+        return
+    if previous_group:
+        recorded = f"'{previous_group}'"
+        remedy = (f"Pass --action_group {previous_group} to continue this run, or "
+                  f"train '{current_group}' in its own --save_dir.")
+    else:
+        recorded = "no group (it predates the mandatory --action_group)"
+        remedy = (f"There is no group to continue it as -- train '{current_group}' "
+                  f"in a fresh --save_dir.")
+    raise SystemExit(
+        f"[ERROR] Resuming {args.resume_checkpoint} would change its action_group: "
+        f"{args_path} records {recorded}, this run asks for '{current_group}'. The "
+        f"group is baked into the checkpoint -- it fixes the multi-hot mask the "
+        f"weights learned and is the only group this checkpoint can ever be sampled "
+        f"as. {remedy}"
+    )
+
+
 def create_training_data_loader(args):
     loop_cond_prob = getattr(args, 'loop_cond_prob', 1.0)
     return get_dataset_loader(
@@ -142,6 +187,10 @@ def create_training_data_loader(args):
 def run_training(args):
     fixseed(args.seed)
     save_dir = prepare_save_dir(args)
+    # The recorded action_group is the checkpoint's inference contract (it is the
+    # only place generation reads the group from), so a resume must not quietly
+    # rewrite it. Checked before anything in save_dir is touched.
+    assert_resume_keeps_action_group(args, save_dir)
     args.checkpoint_step_numbering = 'completed_steps'
     opt = get_opt(args.device, args.cond_path)
     # The checkpoint directory carries its own inference contract: cond.npy is

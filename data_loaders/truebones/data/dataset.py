@@ -70,12 +70,16 @@ def _require_motion_metadata_entry(
 
 
 def resolve_requested_action_group(raw_action_group) -> str:
-    """Normalize the ``--action_group`` training filter to a single group or ``''``.
+    """Normalize an action-group filter to a single group or ``''`` (no filtering).
 
-    ``''`` and ``'all'`` both mean "no filtering". Anything else must be one of the
-    three closed :data:`ACTION_GROUPS` values -- the group is a single, exclusive
-    field now, so a comma list is a stale ``--action_tags`` invocation and is
-    rejected rather than silently taking the first entry.
+    Anything but ``''`` / ``'all'`` must be one of the three closed
+    :data:`ACTION_GROUPS` values -- the group is a single, exclusive field, so a
+    comma list is a stale ``--action_tags`` invocation and is rejected rather than
+    silently taking the first entry.
+
+    The unfiltered ``''`` is for callers that train no per-group model and just
+    want every clip (video2pose). AnyTop's own ``--action_group`` is mandatory and
+    three-valued, so it never reaches this function empty.
     """
     requested = normalize_action_group(raw_action_group)
     if not requested or requested == "all":
