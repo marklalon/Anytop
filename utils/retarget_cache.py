@@ -24,13 +24,9 @@ CACHE_VERSION = "v2"
 # Cache directory — resolved relative to this file's location: <Anytop>/cache/retarget/.
 # The cache key is a SHA-256 of the prompt and messages (which already carry the
 # bone names and lengths), so entries are species- and dataset-independent and the
-# cache does not belong inside any one dataset directory. Entries written under the
-# old per-dataset location are still read, once, as a fallback.
+# cache does not belong inside any one dataset directory.
 _ANYTOP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CACHE_DIR = os.path.join(_ANYTOP_DIR, "cache", "retarget")
-_LEGACY_CACHE_DIR = os.path.join(
-    _ANYTOP_DIR, "dataset", "truebones", "zoo", "truebones_processed", "cache", "retarget",
-)
 
 
 # ---------------------------------------------------------------------------
@@ -74,10 +70,7 @@ def load_from_disk(system_msg: str, user_msg: str) -> Optional[dict[str, Optiona
     """Load a cached LLM joint mapping from disk, or return None if not found."""
     path = _get_cache_path(system_msg, user_msg)
     if not os.path.isfile(path):
-        # Read-only fallback to the pre-move location so existing entries survive.
-        path = os.path.join(_LEGACY_CACHE_DIR, f"{_cache_key(system_msg, user_msg)}.json")
-        if not os.path.isfile(path):
-            return None
+        return None
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)

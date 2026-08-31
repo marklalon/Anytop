@@ -291,7 +291,7 @@ shutil.copy2(args.cond_path, os.path.join(save_dir, 'cond.npy'))
 
 | 位置 | 改动 |
 |---|---|
-| [utils/retarget_cache.py](../utils/retarget_cache.py) | `_CACHE_DIR` 从 `dataset/truebones/zoo/truebones_processed/cache/retarget/` 移到 `<Anytop>/cache/retarget/`。缓存 key 是 prompt+messages 的 SHA-256（含骨骼名与长度），与物种名无关，迁移无冲突风险；可保留旧目录做一次性只读回退 |
+| [utils/retarget_cache.py](../utils/retarget_cache.py) | `_CACHE_DIR` 从 `dataset/truebones/zoo/truebones_processed/cache/retarget/` 移到 `<Anytop>/cache/retarget/`。缓存 key 是 prompt+messages 的 SHA-256（含骨骼名与长度），与物种名无关，迁移无冲突风险；旧目录条目已迁移到新目录，只读回退逻辑已移除 |
 | `param_utils.DEFAULT_DATASET_DIR` | 保留，仅作预处理/工具的默认值，不再被训练/推理引用 |
 | `tools/check_bone_length_drift.py`、`tools/restore_glb_from_npy.py`、`tools/simulate_corrupted_motion.py`、`tools/visualize_joint_name_embeddings.py`、`tools/extract_action_categories.py` | 硬编码 cond 路径 → 统一 `--cond-path`（默认 checkpoint 同目录 cond.npy） |
 | [utils/validate_anytop_dataset.py](../utils/validate_anytop_dataset.py) | 新增 `--datasets`，逐源循环校验（单源行为不变） |

@@ -37,6 +37,7 @@ from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_sources import (
     build_species_file_tokens,
     resolve_species_key,
+    species_file_token,
     species_lookup_map,
 )
 from data_loaders.truebones.truebones_utils.get_opt import DEFAULT_COND_PATH, get_opt
@@ -531,10 +532,16 @@ def _retarget_reference_motion_from_file(
         reference_motion_path,
         valid_types=species_lookup_map(cond_dict),
     )
-    source_label = source_object_type or infer_object_type_from_filename(
-        reference_motion_path,
-        valid_types=None,
-    ) or base
+    # Intermediate artefacts are files, so a registered source is named by its
+    # file token: the canonical key carries a '/'-bearing namespace
+    # (``truebones/zoo/Buffalo``) that would turn the filename into a path
+    # through directories that do not exist.
+    source_label = species_file_token(cond_dict, source_object_type) if source_object_type else (
+        infer_object_type_from_filename(
+            reference_motion_path,
+            valid_types=None,
+        ) or base
+    )
 
     print(
         f"\n### Reference retarget (cond-free source): {reference_motion_path} → {target_type}"
