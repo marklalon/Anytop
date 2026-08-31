@@ -886,11 +886,31 @@ class InputProcess(nn.Module):
         self.joint_embedding = nn.Linear(self.input_feats, self.latent_dim)
         self.tpos_joint_embedding = nn.Linear(self.input_feats, self.latent_dim)
         self.joints_names_dropout = nn.Dropout(p=dropout_prob)
-        # When --species_joint_cond, the species descriptor is projected into the
-        # joint-name T5 space and added to each per-joint embedding, shifting the
-        # joint's semantic identity toward the body-plan context of the species.
+        # When --species_joint_cond, the species descriptor FiLM-modulates each
+        # per-joint name embedding: gamma/beta are produced from the *concatenation*
+        # of that joint's embedding and the species descriptor, so the modulation is
+        # a function of the species x joint interaction.
+        #
+        # The concat (rather than a sum) is load-bearing: this replaced a purely
+        # additive `joints_emb + species_proj(species_emb)` fusion, and since
+        # text_embedding is a bare Linear with no nonlinearity in between, that
+        # additive form collapsed to `E.j_i + const(s)` -- the same per-species
+        # constant for every joint, i.e. exactly zero per-joint differentiation.
+        # With concat, the old behaviour stays trivially representable
+        # (gamma_residual=0, beta=W(s)), so the FiLM optimum is no worse.
+        #
+        # The final linear is zero-initialized so the head starts at identity
+        # (gamma=1, beta=0); the latent_dim bottleneck matches the house style of
+        # the timestep species_film head and keeps the parameter cost down.
         text_in_dim = t5_output_dim
-        self.species_proj = nn.Linear(t5_output_dim, t5_output_dim) if species_joint_cond else None
+        self.species_film_j = nn.Sequential(
+            nn.Linear(2 * t5_output_dim, self.latent_dim),
+            nn.GELU(),
+            nn.Linear(self.latent_dim, 2 * t5_output_dim),
+        ) if species_joint_cond else None
+        if self.species_film_j is not None:
+            nn.init.zeros_(self.species_film_j[-1].weight)
+            nn.init.zeros_(self.species_film_j[-1].bias)
         self.text_embedding = nn.Linear(text_in_dim, self.latent_dim)
     def forward(self, x, rest_pose, joints_embedded_names, species_emb=None):
         # x.shape = [batch_size, joints, 13, frames]
@@ -902,16 +922,24 @@ class InputProcess(nn.Module):
         tpos_embedded = torch.cat([rest_pose_root_data, rest_pose_all_joints_except_root], dim=2)
         x_embedded = torch.cat([root_data, all_joints_except_root], dim=2)
         x = torch.cat([tpos_embedded, x_embedded], dim=0)
-        joints_embedded_names = self.joints_names_dropout(joints_embedded_names.to(x.device))
+        joints_clean = joints_embedded_names.to(x.device)
+        joints_embedded_names = self.joints_names_dropout(joints_clean)
         if self.species_joint_cond:
             if species_emb is None:
                 raise ValueError(
                     "species_joint_cond is enabled but species_emb was not passed to "
                     "InputProcess (expected y['species_emb'])."
                 )
-            # joints_embedded_names: [B, J, t5]; species_emb: [B, t5] -> broadcast to [B, J, t5]
-            species_broadcast = species_emb.to(x.device).unsqueeze(1).expand(-1, joints_embedded_names.shape[1], -1)
-            joints_embedded_names = joints_embedded_names + self.species_proj(species_broadcast)
+            # The FiLM condition reads the *pre-dropout* joint embedding on purpose.
+            # joints_names_dropout zeroes entries and rescales by 1/(1-p) at train
+            # time only; feeding that to the head would make gamma/beta themselves
+            # train/eval-mismatched. Dropout applies to the modulated copy alone.
+            # joints_clean: [B, J, t5]; species_emb: [B, t5] -> broadcast to [B, J, t5]
+            species_broadcast = species_emb.to(device=x.device, dtype=joints_clean.dtype).unsqueeze(1).expand(-1, joints_clean.shape[1], -1)
+            gamma_residual, beta = self.species_film_j(
+                torch.cat([joints_clean, species_broadcast], dim=-1)
+            ).chunk(2, dim=-1)
+            joints_embedded_names = (1.0 + gamma_residual) * joints_embedded_names + beta
         joints_embedded_names = self.text_embedding(joints_embedded_names)
         x = x + joints_embedded_names[None, ...]# [frames, batch_size, n_joints, d]
         positions = torch.arange(x.shape[0], device=x.device).view(1, -1, 1).repeat(x.shape[1], 1, 1)

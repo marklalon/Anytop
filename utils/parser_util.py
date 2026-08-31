@@ -194,11 +194,13 @@ def add_model_options(parser):
                             "training (replaced by identity modulation gamma=1, beta=0), enabling "
                             "classifier-free guidance over the species descriptor. Default 0.15.")
     group.add_argument("--species_joint_cond", action='store_true',
-                       help="Also fuse the species descriptor into the per-joint name embedding: "
-                            "project species_emb through a Linear(D->D) and add it to each joint-name T5 "
-                            "embedding, shifting joint semantics toward the body-plan context of the "
-                            "species. Per-joint structural conditioning, orthogonal to (and combinable "
-                            "with) the --species_cond FiLM. Requires 'species_emb'.")
+                       help="Also fuse the species descriptor into the per-joint name embedding: a FiLM "
+                            "head reads [joint_name_emb || species_emb] and emits (gamma, beta) per joint, "
+                            "shifting and rescaling joint semantics toward the body-plan context of the "
+                            "species. Zero-initialized, so it starts at identity. Never CFG-dropped -- it "
+                            "is the always-on species channel. Per-joint structural conditioning, "
+                            "orthogonal to (and combinable with) the --species_cond FiLM on the timestep "
+                            "token. Requires 'species_emb'.")
     group.add_argument("--action_label_cond", action='store_true',
                        help="Enable action-label conditioning: the frozen T5 embedding of the clip's "
                             "action_label plus a multi-hot over the controlled core vocabulary derived "
