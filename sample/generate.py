@@ -1020,14 +1020,18 @@ def main(args=None, cond_dict=None, runtime=None):
         runtime = prepare_generation_runtime(args, cond_dict=cond_dict)
     else:
         runtime.validate_args(args)
-        # If the task specifies a different --cond_path, reload cond and update
-        # the runtime in-place so the model/diffusion can still be shared.
+        # If the task specifies a different --cond_path, reload that cond and
+        # re-derive opt for it (species entries, dataset_tags/subsets, baked
+        # tags) so the runtime reflects the task's cond rather than the
+        # checkpoint's. The model/diffusion stay shared.
         task_cond = _normalize_optional_path(getattr(args, 'cond_path', '') or '')
         if task_cond != runtime.cond_path:
-            new_cond_dict, new_actual_cond_file = _load_generation_cond(args, runtime.opt)
-            _raise_opt_max_joints_for_cond(runtime.opt, new_cond_dict)
+            new_cond_dict = load_cond(task_cond)
+            new_opt = get_opt(runtime.device, task_cond, cond_dict=new_cond_dict)
+            _raise_opt_max_joints_for_cond(new_opt, new_cond_dict)
+            runtime.opt = new_opt
             runtime.cond_dict = new_cond_dict
-            runtime.actual_cond_file = new_actual_cond_file
+            runtime.actual_cond_file = task_cond
             runtime.cond_path = task_cond
 
     opt = runtime.opt

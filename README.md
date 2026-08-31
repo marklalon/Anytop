@@ -100,33 +100,33 @@ In addition to providing the preprocessing code for the full Truebones dataset, 
 While the preprocessing code was designed to be as generic and adaptable as possible, some skeleton-specific adjustments may still be required, as the pipeline was originally tailored to Truebones. For instance, it uses indicative joint name substrings for foot classification and predefined velocity/height thresholds for foot contact detection-heuristics that have worked well in our experiments with Truebones.
 That said, we've tested the pipeline on BVH files from Mixamo and other sources to ensure its generalizability across different skeleton formats.
 
-The script accepts the following input Arguments:
-*object_name* - A character's indicative name (e.g., "Dog"). If the skeleton you wish to process is outside of Truebones dataset, 
-please make sure the object name you choose does not already exist in Truebones charachters names. 
-All of Truebones characters names can be found in Truebones_skeletons.txt file. 
-*bvh_dir* - Directory containing BVH files of the skeleton. More files improve statistical accuracy for motion denormalization.
-*save_dir* - Output directory.
-*tpos_bvh* - A BVH file of the character's natural rest pose for meaningful rotation learning. 
-If missing, the code will search for a good candidate pose from the provided BVH files. 
+The script (`tools/process_new_skeleton.py`) accepts the following input arguments:
+*tpos_path* - An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base (required).
+*save_dir* - Output directory (required).
+*object_type* - Species/type name (e.g. "Dragon"). Inferred from the tpos-path filename when omitted.
+*species_tags* - Comma-separated species tags (motion descriptor) for the object type, e.g. 'Quadruped,Large,Lumbering'. REQUIRED: it defines the descriptor baked into cond.npy. There is no fallback to the default dataset's species_tags.jsonl.
+*crop_enabled* - Enable skeleton cropping to MAX_JOINTS=100. Off by default (inference has no joint cap); enable for training-compatible preprocessing.
+*reference_cond_path* - cond.npy to inherit the per-object_subset standardization statistics from (normally the trained checkpoint's own cond.npy snapshot).
+*skip_t5_embeddings* - Skip T5 embedding computation (the caller injects them via attach_t5_embeddings_to_cond).
+*yes* - Skip all interactive confirmation prompts (headless / automated calls).
 
 Finally, you can run the command: 
 
 ```shell
-python -m utils.process_new_skeleton --object_name Chicken --bvh_dir assets/Truebones_Chicken --save_dir dataset/truebones/zoo/Chicken --tpos_bvh assets/Truebones_Chicken/Chicken_TPOSE.bvh
+python tools/process_new_skeleton.py --tpos-path assets/Chicken_Tpose.glb --save-dir outputs/new_skeleton/Chicken --object-type Chicken --species-tags "Quadruped,Heavy,Lumbering"
 ```
+
+The generated cond.npy is designed for **inference** -- pass it via `--cond-path` to `generate.py`. It is not suitable for training unless `--crop-enabled` is set.
 
 The code will create the following under save_dir:
 save_dir/
         |_motions
-        |_animations
         |_bvhs
         cond.npy
-1. In motions directory, you will find npy files, which are the processed motion features of each bvh file. 
-This is useful in case you would like to use this data for training.  Note that motions longer than 240 frames wil be splited into separate npy files (this statement holds for the following outputs as well). 
-2. In animation directory, you will find mp4 files corresponding to each of the processed bvhs.  
-This is a good sanity check that everything worked as expected.
-3. In bvhs dir you can find the processed bvhs (with the new orientation, scale etc.)
-4. cond.npy contains the skeletons representation, including joints names ambeddings and graph conditions, which is a required input for motion synthesis. 
+        species_tags.jsonl
+1. cond.npy contains the skeleton representation (joint name embeddings, graph conditions, canonical feature-space metadata), which is the required input for motion synthesis via `--cond-path`.
+2. species_tags.jsonl is the sidecar carrying the object type's motion descriptor; cond.npy bakes its `species_tags` field from it.
+3. motions/ and bvhs/ are created but hold no clips for a rest-pose-only build (there is no source motion to process).
        
        
 ## Motion Synthesis

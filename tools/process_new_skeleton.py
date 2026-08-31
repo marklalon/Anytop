@@ -18,9 +18,10 @@ Input Arguments:
 tpos-path         - An FBX/GLB/GLTF file whose bind/rest pose defines the NPY encoding base (required).
 save-dir          - Output directory (required).
 object_type       - Species/type name (e.g. "Dragon"). Inferred from tpos-path filename when omitted.
-species-tags      - Comma-separated explicit species tags for --object-type,
-                    e.g. 'Quadruped,Large,Lumbering'. When specified, takes
-                    precedence over species_tags.jsonl.
+species-tags      - Comma-separated species tags (motion descriptor) for --object-type,
+                    e.g. 'Quadruped,Large,Lumbering'. REQUIRED: it defines the
+                    descriptor baked into cond.npy. There is no fallback to the
+                    default dataset's species_tags.jsonl.
 crop-enabled      - Enable skeleton cropping to MAX_JOINTS=100.
                     Off by default (inference has no joint cap).
 
@@ -43,6 +44,38 @@ _POSE_STEM_SUFFIXES = frozenset({
     "tpose", "apose", "pose", "rest", "restpose", "bind", "bindpose",
     "rig", "skeleton", "ref", "reference", "all",
 })
+
+def _upsert_species_tags_sidecar(save_dir: str, species: str, tags) -> str:
+    """Write/update the ``species_tags.jsonl`` sidecar for one species.
+
+    The sidecar is the single source of truth the cond bakes its ``species_tags``
+    field from, so a new skeleton must have its entry here. Upserts: replaces an
+    existing line for *species*, appends if absent, and leaves other species'
+    lines untouched. Returns the sidecar path.
+    """
+    import json
+    path = os.path.join(save_dir, "species_tags.jsonl")
+    kept = []
+    if os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    kept.append(line)
+                    continue
+                if str(record.get("species", "")).strip() == species:
+                    continue  # drop the stale line; the fresh one is rewritten below
+                kept.append(line)
+    kept.append(json.dumps(
+        {"species": species, "species_tags": list(tags)}, ensure_ascii=False
+    ))
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(kept) + "\n")
+    return path
 
 def process_new_skeleton(
     *,
@@ -143,21 +176,27 @@ def _process_new_skeleton_from_args(args) -> dict[str, Any]:
     # Use --crop-enabled to enable MAX_JOINTS=100 cropping.
     crop_enabled = args.crop_enabled
 
-    # ── Species tags ─────────────────────────────────────────────────────
-    # A brand-new skeleton is usually not in species_tags.jsonl yet; register
-    # its tags for this process so every derived view (subsets, descriptors)
-    # sees them.
+    # ── Species tags (required) ────────────────────────────────────────────
+    # A new skeleton must carry its own motion descriptor. There is no fallback
+    # to the default dataset's species_tags.jsonl -- that would silently borrow a
+    # same-named species' tags. Register the tags into the process snapshot (so
+    # the species_emb is encoded from them) and write the sidecar (the single
+    # source of truth the cond bakes its species_tags field from).
     from data_loaders.truebones.truebones_utils import dataset_tags
-    if args.species_tags is not None:
-        parsed_tags = tuple(
-            t.strip() for t in args.species_tags.split(',') if t.strip()
+    raw_tags = str(getattr(args, 'species_tags', '') or '').strip()
+    if not raw_tags:
+        raise ValueError(
+            "--species-tags is required for a new skeleton. It defines the motion "
+            "descriptor (body-plan, size, locomotion) baked into cond.npy. There is "
+            "no fallback to the default dataset's tags."
         )
-        if parsed_tags:
-            dataset_tags.register_species_tags(object_type, parsed_tags)
-            print(
-                f"[process_new_skeleton] Using explicit --species-tags for "
-                f"'{object_type}': {parsed_tags}"
-            )
+    parsed_tags = tuple(t.strip() for t in raw_tags.split(',') if t.strip())
+    if not parsed_tags:
+        raise ValueError("--species-tags must contain at least one non-empty tag.")
+    os.makedirs(save_dir, exist_ok=True)
+    dataset_tags.register_species_tags(object_type, parsed_tags)
+    _upsert_species_tags_sidecar(save_dir, object_type, parsed_tags)
+    print(f"[process_new_skeleton] Using --species-tags for '{object_type}': {parsed_tags}")
     # ──────────────────────────────────────────────────────────────────────
 
     process_skeleton(

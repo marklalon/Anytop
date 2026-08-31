@@ -488,12 +488,12 @@ def process_new_skeleton_args():
                        help="Enable automatic skeleton cropping to MAX_JOINTS=100. "
                             "Off by default because inference has no joint cap; "
                             "enable for training-compatible preprocessing.")
-    group.add_argument("--species-tags", default=None, type=str,
-                       help="Comma-separated species tags to explicitly assign to --object-type, "
-                            "e.g. 'Quadruped,Large,Lumbering'. Takes precedence over both "
-                            "species_tags.jsonl and the auto-donor fallback — the given tags "
-                            "are used unconditionally at runtime without modifying "
-                            "species_tags.jsonl.")
+    group.add_argument("--species-tags", required=True, type=str,
+                       help="Comma-separated species tags (motion descriptor) for --object-type, "
+                            "e.g. 'Quadruped,Large,Lumbering'. REQUIRED for a new skeleton: it "
+                            "defines the descriptor baked into cond.npy. There is no fallback to "
+                            "the default dataset's species_tags.jsonl, so it must be supplied "
+                            "explicitly.")
     group.add_argument("--reference-cond-path", default=None, type=str,
                        help="cond.npy to inherit the per-object_subset standardization "
                             "statistics from. Those statistics belong to a trained checkpoint, "

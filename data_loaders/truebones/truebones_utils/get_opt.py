@@ -10,7 +10,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (
     DEFAULT_DATASET_DIR,
 )
 from data_loaders.truebones.truebones_utils import dataset_tags as _dataset_tags
-from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
+from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags, SPECIES_TAGS_FILE
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_sources import (
     COND_FILE,
@@ -53,17 +53,25 @@ def get_opt(device, cond_path=None, cond_dict=None):
     simply the ``len(sources) == 1`` case.
 
     Configuring ``dataset_tags`` happens here because ``opt.subsets_dict`` is
-    read from it immediately: sources whose directories are present are read
-    from their ``species_tags.jsonl`` sidecars, and otherwise the tags come from
-    the cond's own baked copies (the inference contract, where no dataset
-    directory need exist).
+    read from it immediately: a real dataset dir carries its own
+    ``species_tags.jsonl`` and is read from it; a standalone inference cond
+    (``dataset_root=None``, no sidecar) falls back to the cond's own baked tags
+    (the inference contract).  There is no fallback to the default dataset's
+    tags -- a missing sidecar never borrows from another species.
     """
     cond_path = str(resolve_anytop_path(cond_path or DEFAULT_COND_PATH))
     if cond_dict is None:
         cond_dict = load_cond(cond_path)
 
     sources = sources_from_cond(cond_dict, cond_path)
-    if all(Path(source.root).is_dir() for source in sources):
+    # A real dataset dir carries its own species_tags.jsonl; a standalone
+    # inference cond (dataset_root=None) does not. Use the sidecars when present,
+    # otherwise the cond's own baked tags -- never borrow from the default
+    # dataset.
+    sidecars_present = all(
+        (Path(source.root) / SPECIES_TAGS_FILE).is_file() for source in sources
+    )
+    if sidecars_present:
         _dataset_tags.configure(sources=sources)
     else:
         _dataset_tags.configure_from_cond(cond_dict)
