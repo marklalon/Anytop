@@ -197,33 +197,6 @@ def resample_motion_features(motion, target_num_frames, *, loop_terminal=False):
     return resampled.astype(motion.dtype, copy=False)
 
 
-def _compute_global_energy_condition_np(motion: np.ndarray, n_joints: int) -> np.ndarray:
-    # Global energy must describe the clip's physical cadence before we stretch
-    # or squeeze it into the fixed training window. After resampling, the model
-    # only sees the windowed clip plus playspeed_cond.
-    #
-    # n_joints is explicit so the statistic stays aligned with the encoder's
-    # valid_joints mask even if a future caller passes a joint-padded motion.
-    if motion.ndim != 3 or motion.shape[-1] < 13:
-        raise ValueError(f"Expected motion with shape (T, J, >=13), got {motion.shape}.")
-    n_joints = int(n_joints)
-    if n_joints <= 0 or n_joints > motion.shape[1]:
-        raise ValueError(
-            f"n_joints must be in (0, {motion.shape[1]}], got {n_joints}."
-        )
-
-    motion = motion[:, :n_joints, :]
-    velocity_norm = np.linalg.norm(motion[..., 9:12], axis=-1)
-    rotation_delta = np.zeros_like(motion[..., 3:9])
-    if motion.shape[0] > 1:
-        rotation_delta[1:] = motion[1:, :, 3:9] - motion[:-1, :, 3:9]
-    rotation_delta_norm = np.linalg.norm(rotation_delta, axis=-1)
-    energy = np.sqrt(velocity_norm * velocity_norm + rotation_delta_norm * rotation_delta_norm + 1e-6)
-
-    frame_mean = energy.mean(axis=1)
-    return np.asarray([frame_mean.mean()], dtype=np.float32)
-
-
 def _circular_roll_motion(motion, offset):
     length = int(motion.shape[0])
     if length <= 0:
@@ -980,13 +953,6 @@ class MotionDataset(data.Dataset):
 
         source_len_for_playspeed = int(m_length)
         playspeed_cond = float(source_len_for_playspeed) / float(target_num_frames)
-        # Capture clip-level energy before window resampling. The later
-        # resample changes temporal density for batching, not the motion's
-        # physical velocity / rotation-energy semantics. Pass the real joint
-        # count explicitly so the statistic matches the encoder's valid-joint
-        # mask if a future caller pre-pads the joint axis.
-        global_energy_cond = _compute_global_energy_condition_np(motion, n_joints=int(motion.shape[1]))
-
         if m_length != target_num_frames:
             motion = resample_motion_features(
                 motion,
@@ -1006,7 +972,6 @@ class MotionDataset(data.Dataset):
         motion_metadata['is_loop'] = bool(loop_condition_active)
         motion_metadata['loop_full_cycle'] = bool(loop_full_cycle)
         motion_metadata['playspeed_cond'] = float(playspeed_cond)
-        motion_metadata['global_energy_cond'] = global_energy_cond
         motion_metadata['loop_data_aug_applied'] = bool(is_loop)
         motion_metadata['loop_phase_offset'] = int(loop_phase_offset)
         motion_metadata['loop_tile_count'] = int(loop_tile_count)

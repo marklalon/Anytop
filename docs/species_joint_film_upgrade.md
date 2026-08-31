@@ -195,7 +195,7 @@ base 相对 parser 默认值的全部非默认项：
 --cond_path dataset/merged/cond.npy
 --cross_limb_dim 128 --cross_limb_last_n 4
 --ema_rate 0.995 --use_ema --ff_size 2048 --layers 8 --latent_dim 256
---global_energy_cond --global_energy_cfg_drop_prob 0.3
+--global_energy_cond --global_energy_cfg_drop_prob 0.3   # 已删除，见 global_energy_removal.md
 --joint_mask_prob 0.3 --temporal_span_mask_prob 0.3
 --temporal_span_seam_loss_weight 0.2 --temporal_window 41
 --lambda_geo 0.1 --lambda_loop_wrap 0.04 --lambda_vel 0.2

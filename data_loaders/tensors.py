@@ -250,18 +250,6 @@ def truebones_collate(batch):
             )
         })
 
-    if any('global_energy_cond' in batch_item for batch_item in notnone_batches):
-        if not all('global_energy_cond' in batch_item for batch_item in notnone_batches):
-            raise ValueError(
-                "global_energy_cond must be present for all samples in a batch when any sample provides it."
-            )
-        cond['y'].update({
-            'global_energy_cond': torch.stack([
-                torch.as_tensor(batch_item['global_energy_cond'], dtype=torch.float32).reshape(1)
-                for batch_item in notnone_batches
-            ]),
-        })
-
     if any('joint_mask_candidate_roots' in batch_item for batch_item in notnone_batches):
         candidate_root_batch = []
         for batch_item in notnone_batches:
@@ -338,7 +326,7 @@ def truebones_batch_collate(batch):
             if isinstance(extra, dict):
                 if 'joint_mask_candidate_roots' in extra or 'rest_pos_ric_hml' in extra:
                     extra_cond = extra
-                elif any(key in extra for key in ('action_group', 'action_label', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'global_energy_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count')):
+                elif any(key in extra for key in ('action_group', 'action_label', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count')):
                     motion_metadata = extra
             elif isinstance(extra, str):
                 motion_name = extra
@@ -391,7 +379,7 @@ def truebones_batch_collate(batch):
         if extra_cond is not None:
             item['feature_space'] = extra_cond.get('feature_space', 'canonical_motion_v3')
         if motion_metadata is not None:
-            for key in ('action_group', 'action_label', 'action_label_emb', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'global_energy_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count'):
+            for key in ('action_group', 'action_label', 'action_label_emb', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count'):
                 if key in motion_metadata:
                     item[key] = motion_metadata[key]
             if 'species_emb' in motion_metadata:

@@ -54,6 +54,31 @@ def assert_action_conditioning_not_deprecated(model_args, args_path):
     )
 
 
+def assert_global_energy_not_deprecated(model_args, args_path):
+    """Refuse a checkpoint written while the removed global-energy condition existed.
+
+    global_energy was a per-layer multiplicative FiLM derived deterministically
+    from x0 -- a target leak -- and the LayerNorm it ran through (``norm_ref``)
+    was allocated unconditionally, so it sits in EVERY checkpoint of that era,
+    ``global_energy_cond: false`` runs included. Both the FiLM and norm_ref are
+    gone, so no such checkpoint is weight-compatible. Loading one anyway would
+    either trip an opaque unexpected-keys assert or, worse, quietly drop the
+    condition and read as a quality regression rather than an incompatibility --
+    exactly the misdiagnosis the action_tag_cond guard was added to prevent.
+    """
+    stale = [key for key in ('global_energy_cond', 'global_energy_cfg_drop_prob')
+             if key in model_args]
+    if not stale:
+        return
+    raise SystemExit(
+        f"ERROR: {args_path} was written by the removed global-energy conditioning "
+        f"({', '.join(stale)}). That condition and its norm_ref LayerNorm have been "
+        "deleted from the model, so this checkpoint is not weight-compatible -- it "
+        "can only be retrained. Retrain without --global_energy_cond; see "
+        "docs/global_energy_removal.md."
+    )
+
+
 def apply_checkpoint_action_group(args, model_args, args_path):
     """Set this generation's action group from the checkpoint being sampled.
 
@@ -87,6 +112,7 @@ def extract_args(args, args_to_overwrite, model_path):
         model_args = json.load(fr)
 
     assert_action_conditioning_not_deprecated(model_args, args_path)
+    assert_global_energy_not_deprecated(model_args, args_path)
     apply_checkpoint_action_group(args, model_args, args_path)
 
     for a in args_to_overwrite:
@@ -178,12 +204,6 @@ def add_model_options(parser):
                             "cross-limb parameter count.")
     group.add_argument("--dropout_prob", default=0.1, type=float,
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
-    group.add_argument("--global_energy_cond", action='store_true',
-                       help="Enable an always-on clip-level global energy condition derived from the training motion's global energy mean/std.")
-    group.add_argument("--global_energy_cfg_drop_prob", default=0.1, type=float,
-                       help="CFG drop probability for global energy during training. Randomly replaces "
-                           "the energy condition with the running mean, forcing the model to learn "
-                           "to actually respond to it. Default 0.1.")
     group.add_argument("--species_cond", action='store_true',
                        help="Enable per-species FiLM conditioning: the T5-derived species descriptor "
                             "modulates the timestep token multiplicatively (gamma=1+res, beta; zero-init "
@@ -402,10 +422,6 @@ def add_generate_options(parser):
                            "When combined with --inpaint_*, the skip is applied "
                            "only inside the masked region by starting that region from an img2img-noised reference, while "
                           "the unmasked region stays clamped to the original reference throughout denoising.")
-    group.add_argument("--global_energy", default=None, type=float,
-                       help="Override the clip-level global energy in normalized (Z-score) space. "
-                           "0.0 = training average intensity, 1.0 = 1 std above average, -0.5 = half std below average. "
-                           "If omitted, generation defaults to the checkpoint's running mean (equivalent to 0.0).")
     group.add_argument("--inpaint_joints", default="", type=str,
                        help="Motion inpainting (mask painting): comma-separated joint names whose motion is "
                             "REGENERATED while the rest is held to --reference_motion. Names accept any of the "

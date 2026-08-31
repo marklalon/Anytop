@@ -35,7 +35,6 @@ def _make_batch_item(
     loop_full_cycle: bool,
     loop_phase_length: float | None = None,
     playspeed_cond: float = 1.0,
-    global_energy_cond: list[float] | None = None,
 ):
     n_frames = 5
     n_joints = 2
@@ -59,8 +58,6 @@ def _make_batch_item(
         'loop_phase_length': loop_phase_length,
         'playspeed_cond': playspeed_cond,
     }
-    if global_energy_cond is not None:
-        metadata['global_energy_cond'] = global_energy_cond
     extra_cond = {'joint_mask_candidate_roots': np.zeros((n_joints,), dtype=np.bool_)}
     return (
         motion,
@@ -148,13 +145,6 @@ class NativeLoopTests(unittest.TestCase):
         self.assertEqual(cond['y']['loop_full_cycle'].tolist(), [True, False])
         self.assertTrue(torch.equal(cond['y']['loop_phase_lengths'], torch.tensor([3.0, 5.0], dtype=torch.float32)))
         self.assertTrue(torch.equal(cond['y']['playspeed_cond'], torch.tensor([0.5, 2.0], dtype=torch.float32)))
-
-    def test_truebones_collate_rejects_mixed_global_energy_condition(self):
-        with self.assertRaises(ValueError):
-            truebones_batch_collate([
-                _make_batch_item(True, True, global_energy_cond=[0.7]),
-                _make_batch_item(False, False),
-            ])
 
     def test_anytop_coerces_default_playspeed_to_one(self):
         model = AnyTop(

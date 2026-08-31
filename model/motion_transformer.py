@@ -969,8 +969,6 @@ class GraphMotionDecoder(nn.TransformerDecoder):
     def forward(self, tgt: Tensor, timesteps_embs: Tensor, memory: Tensor, spatial_mask:  Optional[Tensor] = None,
                 temporal_mask: Optional[Tensor] = None, tgt_key_padding_mask: Optional[Tensor] = None,
             memory_key_padding_mask: Optional[Tensor] = None, y=None,
-            global_energy_condition: Optional[Tensor] = None,
-            global_energy_active: Optional[Tensor] = None,
             temporal_template: Optional[Tensor] = None,
             cross_limb_unreliable_mask: Optional[Tensor] = None,
             loop_phase_mask: Optional[Tensor] = None,
@@ -1034,8 +1032,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
                 cl_block = None
             output = mod(
                     output, timesteps_embs, topology_rel, edge_rel, self.edge_key_emb, self.edge_query_emb, edge_value_emb, self.topology_key_emb, self.topology_query_emb, topology_value_emb, spatial_mask, temporal_mask,
-                    tgt_key_padding_mask, memory_key_padding_mask, y, global_energy_condition,
-                    global_energy_active=global_energy_active,
+                    tgt_key_padding_mask, memory_key_padding_mask, y,
                     temporal_template=temporal_template, cross_limb_block=cl_block,
                     cross_limb_unreliable_mask=cross_limb_unreliable_mask,
                     loop_phase_mask=loop_phase_mask_batch,
@@ -1048,8 +1045,7 @@ class GraphMotionDecoder(nn.TransformerDecoder):
 
 class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
     def __init__(self, d_model: int, nhead: int, dim_feedforward: int = 2048, dropout: float = 0.1,
-                 activation: Union[str, Callable[[Tensor], Tensor]] = F.relu,
-                 global_energy_cond: bool = False):
+                 activation: Union[str, Callable[[Tensor], Tensor]] = F.relu):
         super().__init__(d_model, nhead, dim_feedforward, dropout, activation)
         # nn.TransformerDecoderLayer.__init__ allocates self_attn and
         # multihead_attn (each ~4*d_model^2 params). This layer overrides both
@@ -1063,17 +1059,6 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         self.spatial_attn = GraphMultiHeadAttention(d_model = d_model, nheads = nhead, dropout=dropout)
         self.temporal_attn = SelectiveMultiheadAttention(self.d_model, nhead, dropout=dropout)
         self.embed_timesteps = nn.Linear(d_model, d_model)
-        if global_energy_cond:
-            # multiplicative-only FiLM: x * (1 + γ).  β is intentionally
-            # omitted — energy is motion magnitude so γ is the natural
-            # sufficient mechanism; β would inject a static per-feature
-            # offset that flows through the output head as a constant
-            # per-joint position bias (bone compression).
-            self.global_energy_film = nn.Linear(self.d_model, self.d_model)
-            nn.init.zeros_(self.global_energy_film.weight)
-            nn.init.zeros_(self.global_energy_film.bias)
-        # norm_ref is applied by the global-energy FiLM path.
-        self.norm_ref = nn.LayerNorm(d_model)
         # The cross-limb pathway is owned by GraphMotionDecoder (one block per
         # active layer) and passed into forward(), not held here.
         self.temporal_phase_scale = nn.Parameter(torch.zeros(1))
@@ -1129,36 +1114,6 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         x = self.linear2(self.dropout(self.activation(self.linear1(x))))
         return self.dropout3(x)
 
-    def _apply_global_energy_cond(
-        self,
-        x: Tensor,
-        global_energy_condition: Tensor,
-    ) -> Tensor:
-        if not hasattr(self, 'global_energy_film'):
-            raise RuntimeError(
-                "global_energy_film module not present. This model was built "
-                "with global_energy_cond=False; do not pass global_energy_condition."
-            )
-        frames, bs, _, feats = x.size()
-        if global_energy_condition.dim() == 1:
-            global_energy_condition = global_energy_condition.unsqueeze(0)
-        if global_energy_condition.dim() != 2 or global_energy_condition.shape[1] != feats:
-            raise ValueError(
-                "global_energy_condition must have shape (B, D) or (D,), got "
-                f"{tuple(global_energy_condition.shape)} for batch={bs}, dim={feats}"
-            )
-        if global_energy_condition.shape[0] == 1 and bs != 1:
-            global_energy_condition = global_energy_condition.expand(bs, -1)
-        elif global_energy_condition.shape[0] != bs:
-            raise ValueError(
-                "global_energy_condition batch dimension must match the motion batch size, got "
-                f"{global_energy_condition.shape[0]} for batch {bs}"
-            )
-        cond = global_energy_condition.to(device=x.device, dtype=x.dtype)
-        gamma = self.global_energy_film(cond)
-        gamma = torch.tanh(gamma).view(1, bs, 1, feats)
-        return x * (1.0 + gamma)
-    
     def forward(self,
         tgt: Tensor,
         timesteps_emb: Tensor,
@@ -1175,8 +1130,6 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         tgt_key_padding_mask: Optional[Tensor] = None,
         memory_key_padding_mask: Optional[Tensor] = None, #for future use
         y = None,
-        global_energy_condition: Optional[Tensor] = None,
-        global_energy_active: Optional[Tensor] = None,
         temporal_template: Optional[Tensor] = None,
         cross_limb_block: Optional[nn.Module] = None,
         cross_limb_unreliable_mask: Optional[Tensor] = None,
@@ -1201,19 +1154,5 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
                 lengths=lengths,
                 time_embedding=cross_limb_time_embedding,
             )
-        if global_energy_condition is not None:
-            # norm_ref normalizes BEFORE FiLM so the LayerNorm doesn't undo
-            # the γ modulation. FiLM operates on unit-variance features.
-            modulated = self._apply_global_energy_cond(self.norm_ref(x), global_energy_condition)
-            if global_energy_active is not None:
-                # Per-sample hard-null CFG: unconditional (dropped) samples
-                # bypass norm_ref + FiLM entirely so their path is byte-identical
-                # to a global_energy_cond=False model. The discarded modulated
-                # rows also carry no gradient into the FiLM, so dropped samples
-                # never train the energy projection.
-                active = global_energy_active.view(1, x.shape[1], 1, 1)
-                x = torch.where(active, modulated, x)
-            else:
-                x = modulated
         x = self.norm3(x + self._ff_block(x))
         return x

@@ -52,7 +52,6 @@ from utils.fixseed import fixseed
 from utils.model_util import (
     create_model_and_diffusion_general_skeleton,
     load_model,
-    model_supports_global_energy_conditioning,
     resolve_t5_out_dim,
     unwrap_anytop_model,
 )
@@ -252,38 +251,6 @@ def _finalize_output_lengths(requested_frames, min_length, internal_num_frames):
         )
     playspeed = float(requested_frames) / float(internal_num_frames)
     return requested_frames, requested_frames, playspeed
-
-
-def resolve_global_energy_condition(model, global_energy, batch_size):
-    if global_energy is None:
-        return None
-    if not model_supports_global_energy_conditioning(model):
-        raise ValueError(
-            "Loaded checkpoint does not support global energy conditioning. Load or retrain a checkpoint with --global_energy_cond enabled."
-        )
-
-    unwrapped_model = unwrap_anytop_model(model)
-    running_mean = unwrapped_model.global_energy_running_mean.detach().to(device='cpu', dtype=torch.float32).clone()
-    running_var = unwrapped_model.global_energy_running_var.detach().to(device='cpu', dtype=torch.float32).clone()
-    running_std = torch.sqrt(running_var.clamp_min(1e-6))
-    # CLI value is a z-score; de-normalize to raw space for _build_global_energy_token.
-    raw = running_mean.clone()
-    raw[0] = float(global_energy) * running_std[0] + running_mean[0]
-    if not torch.isfinite(raw).all():
-        raise ValueError("--global_energy must be finite")
-    return raw.unsqueeze(0).expand(batch_size, -1).clone()
-
-
-def _compute_global_energy_from_reference(ref_motion, n_joints, playspeed_cond=None):
-    """Extract raw global energy [mean, std] from reference motion (B, J, F, T) tensor."""
-    from model.anytop import GlobalEnergyExtractor
-
-    return GlobalEnergyExtractor.compute_global_energy_condition(
-        ref_motion,
-        n_joints,
-        playspeed_cond=playspeed_cond,
-    )
-
 
 
 def _lookup_object_type_case_insensitive(object_types, requested_type):
@@ -612,7 +579,6 @@ def _prepare_img2img_reference_bundle(
     requested_visible_frame_count=None,
     min_length=20,
     preloaded_features=None,
-    physical_energy_features=None,
 ):
     if preloaded_features is not None:
         ref_raw = np.asarray(preloaded_features, dtype=np.float32)
@@ -634,20 +600,6 @@ def _prepare_img2img_reference_bundle(
         source_frames = min(max_source_frames, max(int(min_length), visible_frames))
         ref_raw = ref_raw[:source_frames]
     reference_source_frame_count = int(ref_raw.shape[0])
-    # Snapshot the physical (pre-canonical, pre-resample) reference so
-    # global-energy extraction runs in the same feature space as training
-    # running stats (physical HML, not canonical-standardized).
-    if physical_energy_features is None:
-        raise ValueError(
-            "physical_energy_features is required for global-energy extraction; "
-            "the caller must provide the real (unpadded) physical frames so the "
-            "energy statistic is computed in the same space as training running stats."
-        )
-    reference_physical_motion = np.array(
-        physical_energy_features,
-        dtype=np.float32,
-        copy=True,
-    )
     if ref_raw.shape[0] != output_frame_count:
         ref_raw = resample_motion_features(ref_raw, output_frame_count)
 
@@ -681,7 +633,6 @@ def _prepare_img2img_reference_bundle(
         'loaded_reference_frame_count': loaded_reference_frame_count,
         'reference_source_frame_count': reference_source_frame_count,
         'loaded_reference_joint_count': loaded_reference_joint_count,
-        'reference_physical_motion': reference_physical_motion,
     }
 
 
@@ -866,7 +817,6 @@ def _generate_all_species(
     n_frames,
     playspeed_cond_value,
     target_output_frames,
-    global_energy_condition,
     model,
     diffusion,
     sampling_method,
@@ -916,10 +866,6 @@ def _generate_all_species(
                 feature_len=opt.feature_len,
                 loop=getattr(args, 'loop', False),
             )
-            if global_energy_condition is not None:
-                model_kwargs['y']['global_energy_cond'] = (
-                    global_energy_condition[:actual_bs].clone()
-                )
             model_kwargs['y']['playspeed_cond'] = torch.full(
                 (actual_bs,), playspeed_cond_value, dtype=torch.float32, device=dist_util.dev(),
             )
@@ -1085,15 +1031,6 @@ def main(args=None, cond_dict=None, runtime=None):
         )
     os.makedirs(out_path, exist_ok=True)
 
-    try:
-        global_energy_condition = resolve_global_energy_condition(
-            model,
-            getattr(args, 'global_energy', None),
-            args.batch_size,
-        )
-    except ValueError as exc:
-        sys.exit(f"ERROR: {exc}")
-
     ddim_eta = float(getattr(args, 'ddim_eta', 0.0))
     reference_motion_path = getattr(args, 'reference_motion', None)
     reference_motion_suffix = (
@@ -1142,7 +1079,6 @@ def main(args=None, cond_dict=None, runtime=None):
             n_frames=n_frames,
             playspeed_cond_value=playspeed_cond_value,
             target_output_frames=target_output_frames,
-            global_energy_condition=global_energy_condition,
             model=model,
             diffusion=diffusion,
             sampling_method=sampling_method,
@@ -1322,13 +1258,6 @@ def main(args=None, cond_dict=None, runtime=None):
                 )
         M = int(requested_output_frames)
 
-        # Unpadded physical frames for global-energy extraction (before outpaint padding).
-        physical_energy_features = np.array(
-            ref_features_full[:M] if R >= M else ref_features_full,
-            dtype=np.float32,
-            copy=True,
-        )
-
         # Crop (R > M) or outpaint-pad (R < M) reference to exactly M frames.
         if R > M:
             ref_features_full = ref_features_full[:M]
@@ -1371,14 +1300,12 @@ def main(args=None, cond_dict=None, runtime=None):
             requested_output_frame_count=n_frames,
             requested_visible_frame_count=target_output_frames,
             preloaded_features=ref_features_full,
-            physical_energy_features=physical_energy_features,
             min_length=min_length,
         )
         ref_motion = reference_bundle['reference_motion']
         output_frame_count = reference_bundle['output_frame_count']
         loaded_reference_frame_count = reference_bundle['loaded_reference_frame_count']
         loaded_reference_joint_count = reference_bundle['loaded_reference_joint_count']
-        reference_physical_motion = reference_bundle.get('reference_physical_motion')
 
         print(f'  Reference motion loaded: {effective_reference_path}')
         if reference_is_raw_anim:
@@ -1415,42 +1342,7 @@ def main(args=None, cond_dict=None, runtime=None):
                   'skip_timesteps=0, denoising full schedule from pure noise)')
         else:
             print(f'    skip_timesteps: {skip_timesteps} (higher = more faithful to reference)')
-        # Auto-extract global energy from reference when --global_energy not explicitly provided.
-        if ref_motion is not None and global_energy_condition is not None:
-            print(
-                f'    Using explicit --global_energy={getattr(args, "global_energy", None):.4f} '
-                f'(z-score, reference-guided generation)'
-            )
-        elif ref_motion is not None:
-            if model_supports_global_energy_conditioning(model) and reference_physical_motion is not None:
-                # Extract energy from physical reference (same space as training running stats).
-                _ref_phys = torch.from_numpy(
-                    np.ascontiguousarray(reference_physical_motion, dtype=np.float32)
-                ).permute(1, 2, 0).unsqueeze(0).expand(args.batch_size, -1, -1, -1)
-                _ref_n_joints = torch.full(
-                    (args.batch_size,),
-                    int(reference_physical_motion.shape[1]),
-                    dtype=torch.long,
-                )
-                global_energy_condition = _compute_global_energy_from_reference(
-                    _ref_phys,
-                    _ref_n_joints,
-                    playspeed_cond=None,
-                )
-                if global_energy_condition is not None:
-                    ge_raw = float(global_energy_condition[0, 0])
-                    # Normalize using the model's running stats for display
-                    _uw_model = unwrap_anytop_model(model)
-                    _rm = _uw_model.global_energy_running_mean.to(device='cpu', dtype=torch.float32)
-                    _rs = torch.sqrt(
-                        _uw_model.global_energy_running_var.to(device='cpu', dtype=torch.float32).clamp_min(1e-6)
-                    )
-                    ge_norm = (ge_raw - float(_rm[0])) / float(_rs[0])
-                    print(
-                        f'    Global energy auto-extracted from reference: '
-                        f'{ge_norm:.4f} (normalized z-score)'
-                    )
-            
+
     if (user_inpaint_active or outpaint_active) and ref_motion is None:
         sys.exit(
             "ERROR: --inpaint_* / length extension is set but the reference "
@@ -1527,8 +1419,6 @@ def main(args=None, cond_dict=None, runtime=None):
         action_condition=_action_condition,
         species_emb_override=_species_emb_override,
     )
-    if global_energy_condition is not None:
-        model_kwargs['y']['global_energy_cond'] = global_energy_condition.clone()
     model_kwargs['y']['playspeed_cond'] = torch.full(
         (args.batch_size,),
         playspeed_cond_value,

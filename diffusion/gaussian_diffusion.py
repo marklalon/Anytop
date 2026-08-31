@@ -16,7 +16,6 @@ from copy import deepcopy
 from diffusion import logger
 from diffusion.nn import mean_flat, sum_flat
 from diffusion.losses import normal_kl, discretized_gaussian_log_likelihood, geodesic_distance
-from model.anytop import GlobalEnergyExtractor
 from utils.rotation_conversions import rotation_6d_to_matrix_safe
 from data_loaders.truebones.truebones_utils.canonical_features import canonical_to_physical_hml
 
@@ -1584,62 +1583,6 @@ class GaussianDiffusion:
             unwrapped_model = next_model
         return unwrapped_model
 
-    def _build_global_energy_conditioning(self, model, x_start, model_kwargs):
-        y = model_kwargs.get('y') if model_kwargs is not None else None
-        if y is None:
-            return
-
-        model_for_hooks = self._unwrap_model_for_training_hooks(model)
-        if not getattr(model_for_hooks, 'global_energy_cond', False):
-            y.pop('global_energy_cond', None)
-            y.pop('global_energy_active', None)
-            return
-
-        n_joints = y.get('n_joints')
-        if n_joints is None:
-            raise ValueError("global energy conditioning requires y['n_joints'] metadata")
-
-        batch_size = int(x_start.shape[0])
-
-        # Variable-length dataset samples precompute the exact physical-space
-        # energy label before window resampling. Do not overwrite it with an
-        # x_start-derived value from the stretched training window.
-        if y.get('global_energy_cond') is not None:
-            global_energy_cond = th.as_tensor(
-                y['global_energy_cond'],
-                device=x_start.device,
-                dtype=x_start.dtype,
-            )
-            if global_energy_cond.dim() == 1:
-                global_energy_cond = global_energy_cond.unsqueeze(0)
-            if global_energy_cond.shape[0] == 1 and batch_size != 1:
-                global_energy_cond = global_energy_cond.expand(batch_size, -1).clone()
-            elif global_energy_cond.shape[0] != batch_size:
-                raise ValueError(
-                    f"global_energy_cond has batch dimension {global_energy_cond.shape[0]} but expected {batch_size}."
-                )
-        else:
-            global_energy_cond = GlobalEnergyExtractor.compute_global_energy_condition(
-                x_start.detach(),
-                n_joints=n_joints,
-                playspeed_cond=y.get('playspeed_cond'),
-            )
-
-        # CFG (hard null): randomly mark samples as unconditional this step. A
-        # dropped sample bypasses the energy sublayer entirely in the forward
-        # (no norm_ref, no FiLM, excluded from running-stats) -- byte-identical
-        # to a global_energy_cond=False model -- so the model learns a genuine
-        # unconditional path rather than "average energy". Without a drop path,
-        # zero-initialized FiLM has no incentive to move away from identity.
-        # We pass an explicit per-sample active mask instead of mutating the
-        # energy value, so the raw label is preserved for the conditional rows.
-        global_energy_active = th.ones(batch_size, dtype=th.bool, device=x_start.device)
-        drop_prob = getattr(model_for_hooks, 'global_energy_cfg_drop_prob', 0.1)
-        if drop_prob > 0.0 and model_for_hooks.training:
-            global_energy_active = th.rand(batch_size, device=x_start.device) >= drop_prob
-        y['global_energy_cond'] = global_energy_cond
-        y['global_energy_active'] = global_energy_active
-
     def training_losses(self, model, x_start, t, model_kwargs=None, noise=None):
         """
         Compute training losses for a single timestep.
@@ -1677,7 +1620,6 @@ class GaussianDiffusion:
         x_t, temporal_span_mask = self._apply_joint_mask_training_perturbation(
             model, x_start, x_t, t, model_kwargs
         )
-        self._build_global_energy_conditioning(model, x_start, model_kwargs)
 
         terms = {}
 

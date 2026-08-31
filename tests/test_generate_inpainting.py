@@ -153,7 +153,6 @@ def test_prepare_reference_bundle_uses_preloaded_cropped_features() -> None:
         requested_output_frame_count=60,
         requested_visible_frame_count=40,
         preloaded_features=preloaded,
-        physical_energy_features=preloaded,
     )
 
     assert bundle["loaded_reference_frame_count"] == 40
@@ -162,7 +161,7 @@ def test_prepare_reference_bundle_uses_preloaded_cropped_features() -> None:
     # always runs at that native window (requested_output_frame_count=60) and
     # resamples the shorter reference up to it; the requested output length is
     # honored later by resampling the sampled motion. reference_source_frame_count
-    # records the pre-resample reference length (40) for playspeed/energy.
+    # records the pre-resample reference length (40) for playspeed.
     assert bundle["output_frame_count"] == 60
     assert bundle["reference_source_frame_count"] == 40
     assert tuple(bundle["reference_motion"].shape) == (2, n_joints, feat, 60)

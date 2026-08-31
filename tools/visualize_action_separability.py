@@ -4,7 +4,7 @@ different action types (action_label words) and species groups (objects_subset).
 Motivation
 ----------
 AnyTop has NO explicit action-class conditioning: action type only enters
-through loop / playspeed / global-energy scalars and the joint-name text
+through loop / playspeed scalars and the joint-name text
 embedding. So "do different actions overlap in the same activation region?"
 is tested by probing intermediate decoder-layer activations, labelling each
 clip by its primary action label, and measuring separability.

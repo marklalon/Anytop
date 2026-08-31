@@ -61,14 +61,6 @@ def unwrap_anytop_model(model):
     return unwrapped_model
 
 
-def model_supports_global_energy_conditioning(model) -> bool:
-    unwrapped_model = unwrap_anytop_model(model)
-    return bool(
-        getattr(unwrapped_model, 'global_energy_cond', False)
-        and getattr(unwrapped_model, 'global_energy_projection', None) is not None
-    )
-
-
 def load_model(model, state_dict):
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     assert len(unexpected_keys) == 0, f"Unexpected keys in checkpoint: {unexpected_keys}"
@@ -107,8 +99,6 @@ def get_gmdm_args(args):
             'temporal_span_mask_prob': getattr(args, 'temporal_span_mask_prob', 0.0),
             'temporal_span_mask_min_frames': getattr(args, 'temporal_span_mask_min_frames', 4),
             'temporal_span_mask_max_frames': getattr(args, 'temporal_span_mask_max_frames', 12),
-            'global_energy_cond': getattr(args, 'global_energy_cond', False),
-            'global_energy_cfg_drop_prob': getattr(args, 'global_energy_cfg_drop_prob', 0.1),
             'species_cond': getattr(args, 'species_cond', False),
             'species_cfg_drop_prob': getattr(args, 'species_cfg_drop_prob', 0.15),
             'species_joint_cond': getattr(args, 'species_joint_cond', False),

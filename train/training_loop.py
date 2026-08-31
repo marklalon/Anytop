@@ -711,8 +711,9 @@ class TrainLoop:
 
 
     def _sync_ema_persistent_buffers(self):
-        """Copy persistent buffers (e.g. global_energy_running_mean/var) from
-        the live model into the EMA model.  update_ema only averages
+        """Copy persistent buffers from the live model into the EMA model.
+
+        update_ema only averages
         .parameters(), so these running stats would otherwise stay at their
         init values in the EMA checkpoint.  state_dict() keys select exactly
         parameters + persistent buffers, so subtracting the parameter names
@@ -743,9 +744,8 @@ class TrainLoop:
             update_ema(self.model_avg.parameters(), self.model.parameters(),
                        rate=self.args.ema_rate)
             # EMA ignores registered buffers by default (it only iterates
-            # .parameters()).  Sync persistent buffers (running statistics, e.g.
-            # global_energy_running_mean/var) so they are available in the EMA
-            # checkpoint at inference time.
+            # .parameters()).  Sync persistent buffers (running statistics) so
+            # they are available in the EMA checkpoint at inference time.
             self._sync_ema_persistent_buffers()
         self._anneal_lr()
         self.log_step()
@@ -871,8 +871,6 @@ class TrainLoop:
             'loop_phase_offset', 'motion_start_frame', 'playspeed_cond', 'n_joints',
         )
         flags = {k: field_list(k) for k in flag_keys}
-        gec = y.get('global_energy_cond')
-        flags['global_energy_cond'] = gec.detach().cpu().reshape(-1).tolist() if torch.is_tensor(gec) else None
 
         loss_np = ctx['loss'].float().cpu().numpy()
         lsimple_np = ctx['l_simple'].float().cpu().numpy()

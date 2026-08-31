@@ -54,7 +54,6 @@ class AnyTop(nn.Module):
         self.temporal_span_mask_prob=float(kargs.get('temporal_span_mask_prob', 0.0))
         self.temporal_span_mask_min_frames=int(kargs.get('temporal_span_mask_min_frames', 4))
         self.temporal_span_mask_max_frames=int(kargs.get('temporal_span_mask_max_frames', 12))
-        self.global_energy_cond=bool(kargs.get('global_energy_cond', False))
         self.species_cond=bool(kargs.get('species_cond', False))
         self.species_cfg_drop_prob=float(kargs.get('species_cfg_drop_prob', 0.15))
         if not 0.0 <= self.species_cfg_drop_prob <= 1.0:
@@ -63,12 +62,6 @@ class AnyTop(nn.Module):
             )
         self.species_joint_cond=bool(kargs.get('species_joint_cond', False))
         self.loop_cond_prob=float(kargs.get('loop_cond_prob', 1.0))
-        self.global_energy_stats_momentum = 0.01
-        # CFG drop probability for global energy conditioning during training.
-        # When > 0, randomly replaces the energy condition with the running mean
-        # so the model learns to actually respond to it (otherwise zero-init
-        # FiLM has no incentive to move away from identity).
-        self.global_energy_cfg_drop_prob = float(kargs.get('global_energy_cfg_drop_prob', 0.1))
         # Action-label conditioning. Two pathways carry one condition:
         #   * the frozen T5 embedding of the label text ("run, gallops with head
         #     lowered") — the soft, open-ended path that answers detail queries;
@@ -107,23 +100,6 @@ class AnyTop(nn.Module):
             )
 
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, dropout_prob=self.dropout, species_joint_cond=self.species_joint_cond)
-        if self.global_energy_cond:
-            # NOTE: do NOT prepend nn.LayerNorm(1) here. LayerNorm over a
-            # size-1 feature dim maps every scalar input to a constant (mean=x
-            # => x-mean=0), which silently collapses the energy condition so
-            # --global_energy has no effect. The input is already Z-scored
-            # against the running stats in _build_global_energy_token, so no
-            # normalization layer is needed.
-            self.global_energy_projection = nn.Sequential(
-                nn.Linear(1, self.latent_dim),
-                nn.GELU(),
-                nn.Linear(self.latent_dim, self.latent_dim),
-            )
-            self.register_buffer('global_energy_running_mean', torch.zeros(1, dtype=torch.float32))
-            self.register_buffer('global_energy_running_var', torch.ones(1, dtype=torch.float32))
-            self.register_buffer('global_energy_running_count', torch.zeros((), dtype=torch.long))
-        else:
-            self.global_energy_projection = None
         if self.loop_cond_prob > 0.0:
             self.loop_condition_projection = nn.Sequential(
                 nn.Linear(1, self.latent_dim),
@@ -198,8 +174,7 @@ class AnyTop(nn.Module):
                                                             nhead=self.num_heads,
                                                             dim_feedforward=self.ff_size,
                                                             dropout=self.dropout,
-                                                            activation=self.activation,
-                                                            global_energy_cond=self.global_energy_cond)
+                                                            activation=self.activation)
         self.seqTransDecoder = GraphMotionDecoder(seqTransDecoderLayer,
                                                         num_layers=self.num_layers, value_emb=self.value_emb,
                                                         cross_limb=self.cross_limb,
@@ -218,125 +193,6 @@ class AnyTop(nn.Module):
         attention masks. Only structurally padded joints are masked here.
         """
         return torch.arange(njoints, device=device)[None, :] >= n_joints[:, None]
-
-    def _update_global_energy_running_stats(self, raw_global_energy_cond, energy_active=None):
-        if not self.global_energy_cond or raw_global_energy_cond.numel() == 0:
-            return
-
-        batch_stats = raw_global_energy_cond.detach().to(dtype=torch.float32)
-        # CFG-dropped samples are unconditional this step: they must not leak
-        # into the running stats (the model sees no energy for them). Apply the
-        # mask as 0/1 weights rather than `batch_stats[energy_active]` -- boolean
-        # masked-select lowers to aten.nonzero, a data-dependent dynamic-shape op
-        # that forces a torch.compile graph break every step. The weighted
-        # moments below are identical to mean/var(unbiased=False) over the active
-        # rows, but keep static shapes.
-        if energy_active is None:
-            weight = torch.ones(batch_stats.shape[0], device=batch_stats.device, dtype=torch.float32)
-        else:
-            weight = energy_active.to(device=batch_stats.device, dtype=torch.float32).reshape(-1)
-        w = weight.unsqueeze(1)
-        count = weight.sum()
-        safe_count = count.clamp_min(1.0)
-        batch_mean = (batch_stats * w).sum(dim=0) / safe_count
-        batch_var = (((batch_stats - batch_mean.unsqueeze(0)) ** 2) * w).sum(dim=0) / safe_count
-        batch_var = batch_var.clamp_min(1e-6)
-        with torch.no_grad():
-            # Keep this update entirely in tensor space so torch.compile does
-            # not graph-break/recompile on a changing Python scalar count. When
-            # no sample is active this step (count == 0), update_weight is forced
-            # to 0 so the running stats and count stay untouched.
-            has_obs = count > 0
-            is_first_batch = self.global_energy_running_count.eq(0)
-            momentum = torch.where(
-                is_first_batch,
-                torch.ones_like(batch_mean),
-                torch.full_like(batch_mean, self.global_energy_stats_momentum),
-            )
-            update_weight = torch.where(has_obs, momentum, torch.zeros_like(batch_mean))
-            self.global_energy_running_mean.copy_(
-                torch.lerp(self.global_energy_running_mean, batch_mean, update_weight)
-            )
-            self.global_energy_running_var.copy_(
-                torch.lerp(self.global_energy_running_var, batch_var, update_weight)
-            )
-            self.global_energy_running_count.add_(count.to(self.global_energy_running_count.dtype))
-
-    def _coerce_global_energy_condition(self, raw_global_energy_cond, batch_size, device, dtype):
-        # raw_global_energy_cond is never None here: _build_global_energy_token
-        # short-circuits to the unconditional (no-token) path before calling
-        # this. We intentionally do NOT fall back to the running mean -- a
-        # missing condition means "no energy token at all", not "average energy".
-        if not torch.is_tensor(raw_global_energy_cond):
-            raw_global_energy_cond = torch.as_tensor(raw_global_energy_cond)
-        raw_global_energy_cond = raw_global_energy_cond.to(device=device, dtype=dtype)
-        if raw_global_energy_cond.dim() == 1:
-            raw_global_energy_cond = raw_global_energy_cond.unsqueeze(0)
-        elif raw_global_energy_cond.dim() != 2:
-            raise ValueError(
-                "global_energy_cond must have shape (1,) or (B, 1), got "
-                f"{tuple(raw_global_energy_cond.shape)}"
-            )
-        if raw_global_energy_cond.shape[1] != 1:
-            raise ValueError(
-                "global_energy_cond must provide [energy], got "
-                f"shape {tuple(raw_global_energy_cond.shape)}"
-            )
-        if raw_global_energy_cond.shape[0] == 1 and batch_size != 1:
-            raw_global_energy_cond = raw_global_energy_cond.expand(batch_size, -1)
-        elif raw_global_energy_cond.shape[0] != batch_size:
-            raise ValueError(
-                "global_energy_cond batch dimension must match the motion batch size, got "
-                f"{raw_global_energy_cond.shape[0]} for batch {batch_size}"
-            )
-        # Finiteness is a cheap sanity guard, but `.all()` in a python `if` is a
-        # data-dependent value that forces a torch.compile graph break every
-        # step. Skip it under compilation (eager eval/inference still validates;
-        # a non-finite condition would surface as a NaN loss anyway).
-        if not torch.compiler.is_compiling() and not torch.isfinite(raw_global_energy_cond).all():
-            raise ValueError("global_energy_cond must be finite")
-        return raw_global_energy_cond
-
-    def _build_global_energy_token(self, raw_global_energy_cond, batch_size, device, dtype, energy_active=None):
-        if not self.global_energy_cond or self.global_energy_projection is None:
-            return None
-        if raw_global_energy_cond is None:
-            # True unconditional path: emit no energy token at all, so the FiLM
-            # sublayer is bypassed downstream (byte-identical to a model built
-            # with global_energy_cond=False). Hit at inference when
-            # --global_energy is omitted. Nothing is observed, so running stats
-            # are left untouched.
-            return None
-
-        raw_global_energy_cond = self._coerce_global_energy_condition(
-            raw_global_energy_cond,
-            batch_size,
-            device,
-            dtype,
-        )
-        if self.training:
-            self._update_global_energy_running_stats(raw_global_energy_cond, energy_active)
-        running_mean = self.global_energy_running_mean.to(device=device, dtype=dtype)
-        running_std = torch.sqrt(self.global_energy_running_var.to(device=device, dtype=dtype).clamp_min(1e-6))
-        normalized_global_energy = (raw_global_energy_cond - running_mean.unsqueeze(0)) / running_std.unsqueeze(0)
-        return self.global_energy_projection(normalized_global_energy)
-
-    def _coerce_energy_active(self, raw_energy_active, batch_size, device):
-        # Per-sample CFG mask: True == conditional (apply FiLM), False == this
-        # sample is unconditional this step and must bypass the energy sublayer
-        # entirely. None means "all samples conditional" (e.g. inference with an
-        # explicit --global_energy, where no per-sample drop occurs).
-        if raw_energy_active is None:
-            return None
-        energy_active = torch.as_tensor(raw_energy_active, device=device, dtype=torch.bool).reshape(-1)
-        if energy_active.numel() == 1 and batch_size != 1:
-            energy_active = energy_active.expand(batch_size)
-        elif energy_active.numel() != batch_size:
-            raise ValueError(
-                "global_energy_active batch dimension must match the motion batch size, got "
-                f"{energy_active.numel()} for batch {batch_size}"
-            )
-        return energy_active
 
     def _coerce_loop_condition(self, raw_loop_cond, batch_size, device, dtype):
         if raw_loop_cond is None:
@@ -372,8 +228,9 @@ class AnyTop(nn.Module):
                 "playspeed_cond batch dimension must match the motion batch size, got "
                 f"{raw_playspeed_cond.numel()} for batch {batch_size}"
             )
-        # See _coerce_global_energy_condition: skip the data-dependent finiteness
-        # guard under torch.compile to avoid a per-step graph break.
+        # `.all()` in a python `if` is a data-dependent value that forces a
+        # torch.compile graph break every step, so skip the finiteness guard
+        # under compilation (eager eval/inference still validates).
         if not torch.compiler.is_compiling() and not torch.isfinite(raw_playspeed_cond).all():
             raise ValueError("playspeed_cond must be finite")
         return raw_playspeed_cond.to(dtype=dtype).view(batch_size, 1)
@@ -734,7 +591,6 @@ class AnyTop(nn.Module):
         bs, njoints, nfeats, nframes = x.shape
         n_joints = torch.as_tensor(y['n_joints'], device=x.device).reshape(-1)
         joint_key_padding_mask = self._build_joint_key_padding_mask(njoints, n_joints, x.device)
-        global_energy_condition = None
         # joint-mask subtree perturbation is applied OUTSIDE this
         # forward, in diffusion.training_losses, by re-noising the selected
         # joints' x_t with q_sample(x_0, t_random, fresh_noise). The model
@@ -811,21 +667,6 @@ class AnyTop(nn.Module):
         else:
             temporal_template = None
 
-        global_energy_active = None
-        if self.global_energy_cond:
-            global_energy_active = self._coerce_energy_active(
-                y.get('global_energy_active'),
-                batch_size=bs,
-                device=x.device,
-            )
-            global_energy_condition = self._build_global_energy_token(
-                y.get('global_energy_cond'),
-                batch_size=bs,
-                device=x.device,
-                dtype=x.dtype,
-                energy_active=global_energy_active,
-            )
-
         cross_limb_unreliable_mask = None
         if self.cross_limb:
             raw_cross_limb_unreliable_mask = y.get('cross_limb_unreliable_mask')
@@ -854,8 +695,6 @@ class AnyTop(nn.Module):
             temporal_mask=temporal_mask,
             tgt_key_padding_mask=joint_key_padding_mask,
             y=y,
-            global_energy_condition=global_energy_condition,
-            global_energy_active=global_energy_active,
             temporal_template=temporal_template,
             cross_limb_unreliable_mask=cross_limb_unreliable_mask,
             loop_phase_mask=loop_phase_mask,
@@ -946,221 +785,6 @@ class InputProcess(nn.Module):
         pos_emb = create_sin_embedding(positions, self.latent_dim)[0]
         return x + pos_emb.unsqueeze(1).unsqueeze(1)
 
-
-class GlobalEnergyExtractor:
-    """Phase-invariant clip-level global energy statistics.
-
-    Standalone helper retained after the reference/controlnet conditioning
-    path was removed; the ``global_energy_cond`` feature consumes these
-    statistics to derive a clip-level [energy_mean, energy_std] condition.
-    Assumes the canonical 13-D motion schema: pos[0:3], rot6d[3:9],
-    vel[9:12], contact[12].
-    """
-
-    @staticmethod
-    def _masked_mean_and_std(values, weights, eps=1e-6):
-        weights_sum = weights.sum(dim=2, keepdim=True).clamp_min(eps)
-        mean = (values * weights.unsqueeze(-1)).sum(dim=2) / weights_sum
-        second_moment = ((values * values) * weights.unsqueeze(-1)).sum(dim=2) / weights_sum
-        variance = (second_moment - mean * mean).clamp_min(0.0)
-        std = torch.sqrt(variance + eps)
-        return mean, std
-
-    @staticmethod
-    def _coerce_global_energy_playspeed_cond(raw_playspeed_cond, batch_size, device, dtype):
-        if raw_playspeed_cond is None:
-            return None
-        if not torch.is_tensor(raw_playspeed_cond):
-            raw_playspeed_cond = torch.as_tensor(raw_playspeed_cond, device=device)
-        raw_playspeed_cond = raw_playspeed_cond.to(device=device)
-        if raw_playspeed_cond.dim() == 0:
-            raw_playspeed_cond = raw_playspeed_cond.reshape(1)
-        raw_playspeed_cond = raw_playspeed_cond.reshape(-1)
-        if raw_playspeed_cond.numel() == 1 and batch_size != 1:
-            raw_playspeed_cond = raw_playspeed_cond.expand(batch_size)
-        elif raw_playspeed_cond.numel() != batch_size:
-            raise ValueError(
-                "playspeed_cond batch dimension must match the motion batch size, got "
-                f"{raw_playspeed_cond.numel()} for batch {batch_size}"
-            )
-        if not torch.isfinite(raw_playspeed_cond).all():
-            raise ValueError("playspeed_cond must be finite")
-        if bool((raw_playspeed_cond <= 0).any()):
-            raise ValueError("playspeed_cond must be positive")
-        return raw_playspeed_cond.to(dtype=dtype).view(batch_size, 1, 1, 1)
-
-    @staticmethod
-    def _resample_motion_time_axis(motion, target_frame_count):
-        """Linear resample along the time axis.  Input: (J, F, T)."""
-        source_frame_count = int(motion.shape[-1])
-        target_frame_count = int(target_frame_count)
-        if target_frame_count <= 0:
-            raise ValueError(f"target_frame_count must be positive, got {target_frame_count}")
-        if source_frame_count == target_frame_count:
-            return motion
-
-        # (J, F, T) → (T, J, F)
-        motion_tjf = motion.permute(2, 0, 1)
-        src = torch.linspace(
-            0.0,
-            float(source_frame_count - 1),
-            target_frame_count,
-            device=motion.device,
-            dtype=motion.dtype,
-        )
-        lo = torch.floor(src).to(dtype=torch.long).clamp(0, source_frame_count - 1)
-        hi = torch.minimum(lo + 1, torch.full_like(lo, source_frame_count - 1))
-        w = (src - torch.floor(src)).view(-1, 1, 1).to(dtype=motion_tjf.dtype)
-        resampled = motion_tjf.index_select(0, lo) * (1.0 - w) + motion_tjf.index_select(0, hi) * w
-
-        if motion.shape[1] >= 13:
-            nearest = torch.round(src).to(dtype=torch.long).clamp(0, source_frame_count - 1)
-            resampled[..., 12] = (motion_tjf.index_select(0, nearest)[..., 12] >= 0.5).to(dtype=resampled.dtype)
-
-        return resampled.permute(1, 2, 0).contiguous()
-
-    @staticmethod
-    def _build_joint_motion_frame_features(vel, rot_delta_norm, contact):
-        """Return phase-invariant per-frame energy cues.
-
-        Drops velocity sign by using ``vel_norm`` so the energy statistic is
-        driven by stable motion magnitude rather than instantaneous swing
-        direction.
-        """
-        vel_norm = torch.linalg.norm(vel, dim=-1, keepdim=True)
-        energy = torch.sqrt(vel_norm.square() + rot_delta_norm.square() + 1e-6)
-        joint_motion_frame_features = torch.cat([vel_norm, rot_delta_norm, energy, contact], dim=-1)
-        return joint_motion_frame_features, vel_norm, energy
-
-    @classmethod
-    def _extract_joint_motion_inputs(cls, motion, n_joints):
-        if motion.dim() != 4:
-            raise ValueError(f"motion must have shape (B, J, F, T), got {tuple(motion.shape)}")
-
-        batch_size, max_joints, feature_dim, frame_count = motion.shape
-        if feature_dim < 13:
-            raise ValueError(
-                "global energy extraction expects at least the 13-dim feature schema "
-                f"[pos(3), rot6d(6), vel(3), contact(1)], got feature_dim={feature_dim}"
-            )
-
-        device = motion.device
-        dtype = motion.dtype
-        n_joints = torch.as_tensor(n_joints, device=device, dtype=torch.long).reshape(batch_size)
-        if bool(((n_joints < 0) | (n_joints > max_joints)).any()):
-            raise ValueError(
-                f"n_joints must be in [0, {max_joints}], got {n_joints.tolist()}"
-            )
-
-        valid_joints = torch.arange(max_joints, device=device).unsqueeze(0) < n_joints.unsqueeze(1)
-        motion_btjf = motion.permute(0, 3, 1, 2)
-        vel = motion_btjf[..., 9:12]
-        rot = motion_btjf[..., 3:9]
-        rot_delta = torch.zeros_like(rot)
-        if frame_count > 1:
-            rot_delta[:, 1:] = rot[:, 1:] - rot[:, :-1]
-        rot_delta_norm = torch.linalg.norm(rot_delta, dim=-1, keepdim=True)
-        contact = motion_btjf[..., 12:13]
-        joint_motion_frame_features, vel_norm, energy = cls._build_joint_motion_frame_features(
-            vel,
-            rot_delta_norm,
-            contact,
-        )
-        joint_motion_frame_features = joint_motion_frame_features * valid_joints[:, None, :, None].to(dtype)
-        return {
-            'dtype': dtype,
-            'frame_count': frame_count,
-            'valid_joints': valid_joints,
-            'joint_motion_frame_features': joint_motion_frame_features,
-        }
-
-    @classmethod
-    def compute_global_energy_condition(cls, motion, n_joints, playspeed_cond=None):
-        if playspeed_cond is not None:
-            if motion.dim() != 4:
-                raise ValueError(f"motion must have shape (B, J, F, T), got {tuple(motion.shape)}")
-            batch_size = motion.shape[0]
-            source_length_ratio = cls._coerce_global_energy_playspeed_cond(
-                playspeed_cond,
-                batch_size,
-                motion.device,
-                motion.dtype,
-            ).reshape(batch_size)
-            inferred_source_frames = torch.round(source_length_ratio * float(motion.shape[-1])).to(dtype=torch.long).clamp_min(1)
-            if bool((inferred_source_frames != motion.shape[-1]).any()):
-                # Batched resample + pad-to-max + masked statistics.
-                # Each sample may have a different target frame count, so we
-                # resample independently, pad to the maximum, and use a frame
-                # mask so the weighted mean/std ignores padding.
-                #
-                # Because _extract_joint_motion_inputs computes rot_delta as
-                # rot[:, 1:] - rot[:, :-1], the boundary between the last valid
-                # frame and the first zero-padded frame produces a spurious large
-                # delta. We mask out that boundary frame as well.
-                max_target = int(inferred_source_frames.max().item())
-                original_T = motion.shape[-1]
-
-                # Resample + pad in a single pass: resample to each sample's
-                # target frame count, replicate the last frame into the padding
-                # region (so rot_delta at boundary is zero), and build a frame
-                # mask that zeros padding during statistics.
-                padded_list = []
-                frame_mask_list = []
-                for i in range(batch_size):
-                    t_i = int(inferred_source_frames[i].item())
-                    s = (
-                        cls._resample_motion_time_axis(motion[i], t_i)
-                        if t_i != original_T
-                        else motion[i]
-                    )
-                    pad = max_target - t_i
-                    if pad > 0:
-                        last_frame = s[:, :, -1:].expand(-1, -1, pad)
-                        s = torch.cat([s, last_frame], dim=2)
-                        fm = torch.cat([
-                            torch.ones(t_i, device=s.device, dtype=s.dtype),
-                            torch.zeros(pad, device=s.device, dtype=s.dtype),
-                        ])
-                    else:
-                        fm = torch.ones(max_target, device=s.device, dtype=s.dtype)
-                    padded_list.append(s)
-                    frame_mask_list.append(fm)
-
-                motion_padded = torch.stack(padded_list, dim=0)  # (B, J, F, max_T)
-                frame_mask = torch.stack(frame_mask_list, dim=0)  # (B, max_T)
-
-                # Compute energy statistics on padded motion with frame mask.
-                motion_inputs = cls._extract_joint_motion_inputs(motion_padded, n_joints)
-                dtype = motion_inputs['dtype']
-                valid_joints = motion_inputs['valid_joints']  # (B, J)
-                joint_motion_frame_features = motion_inputs['joint_motion_frame_features']  # (B, max_T, J, 4)
-
-                # Step 1: Apply joint mask via _masked_mean_and_std (dim=2 = joint).
-                # Result: (B, max_T, 4) — per-frame energy features averaged over joints.
-                global_mean, _ = cls._masked_mean_and_std(
-                    joint_motion_frame_features,
-                    valid_joints.unsqueeze(1).expand(-1, max_target, -1).to(dtype),
-                )
-
-                # Step 2: Apply frame mask via weighted mean over time (dim=1 = time).
-                # frame_mask: (B, max_T) — 1 for valid frames, 0 for padding.
-                energy_profile = global_mean[..., 2:3]  # (B, max_T, 1)
-                frame_weights = frame_mask.unsqueeze(-1).to(dtype)  # (B, max_T, 1)
-                frame_weights_sum = frame_weights.sum(dim=1).clamp_min(1e-6)  # (B, 1)
-                result = (energy_profile * frame_weights).sum(dim=1) / frame_weights_sum  # (B, 1)
-                return result
-
-        motion_inputs = cls._extract_joint_motion_inputs(motion, n_joints)
-        dtype = motion_inputs['dtype']
-        frame_count = motion_inputs['frame_count']
-        valid_joints = motion_inputs['valid_joints']
-        joint_motion_frame_features = motion_inputs['joint_motion_frame_features']
-        global_mean, _ = cls._masked_mean_and_std(
-            joint_motion_frame_features,
-            valid_joints[:, None, :].expand(-1, frame_count, -1).to(dtype),
-        )
-        global_energy_profile = global_mean[..., 2:3]
-        return global_energy_profile.mean(dim=1)
 
 class OutputProcess(nn.Module):
     def __init__(self, feature_len, root_feature_len, max_joints, latent_dim):

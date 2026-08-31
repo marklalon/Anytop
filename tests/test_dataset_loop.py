@@ -32,7 +32,6 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     canonical_to_physical_hml,
     physical_hml_to_canonical,
 )
-from model.anytop import GlobalEnergyExtractor
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
 from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
 
@@ -154,38 +153,6 @@ def test_speed_resample_preserves_velocity_and_keeps_contact_binary() -> None:
     assert_close("resampled velocity", resampled[:, :, 9:12], expected_vel)
     assert_close("zero velocity channel", resampled[:, :, 11], np.zeros_like(resampled[:, :, 11]))
     assert set(np.unique(resampled[:, :, 12]).tolist()).issubset({0.0, 1.0})
-
-
-def test_speed_resample_preserves_global_energy_magnitude() -> None:
-    source = np.zeros((4, 2, 13), dtype=np.float32)
-    source[:, :, 9:12] = np.array([1.25, 0.0, 0.0], dtype=np.float32)
-
-    resampled = resample_motion_features(source, 7)
-    source_tensor = torch.from_numpy(source).permute(1, 2, 0).unsqueeze(0)
-    resampled_tensor = torch.from_numpy(resampled).permute(1, 2, 0).unsqueeze(0)
-
-    source_energy = GlobalEnergyExtractor.compute_global_energy_condition(source_tensor, torch.tensor([2]))
-    resampled_energy = GlobalEnergyExtractor.compute_global_energy_condition(resampled_tensor, torch.tensor([2]))
-
-    assert_close("global energy after window stretch", resampled_energy.numpy(), source_energy.numpy())
-
-
-def test_speed_resample_preserves_rotation_only_global_energy_with_playspeed() -> None:
-    source = np.zeros((4, 2, 13), dtype=np.float32)
-    source[:, :, 3] = np.arange(4, dtype=np.float32)[:, None]
-
-    resampled = resample_motion_features(source, 7)
-    source_tensor = torch.from_numpy(source).permute(1, 2, 0).unsqueeze(0)
-    resampled_tensor = torch.from_numpy(resampled).permute(1, 2, 0).unsqueeze(0)
-
-    source_energy = GlobalEnergyExtractor.compute_global_energy_condition(source_tensor, torch.tensor([2]))
-    resampled_energy = GlobalEnergyExtractor.compute_global_energy_condition(
-        resampled_tensor,
-        torch.tensor([2]),
-        playspeed_cond=torch.tensor([4.0 / 7.0], dtype=torch.float32),
-    )
-
-    assert_close("rotation-only energy after window stretch", resampled_energy.numpy(), source_energy.numpy(), atol=1e-5)
 
 
 def test_loop_speed_resample_rebuilds_terminal_velocity_from_wrap_delta() -> None:
