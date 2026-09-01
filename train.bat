@@ -10,8 +10,8 @@ call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build
 
 pushd "%SCRIPT_DIR%"
 
-REM 使用 --objects_subset Horse 指定单个物种的所有动作作为训练集
-REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
+REM --objects_subset selects the training set. Use a species name (Horse,
+REM Dragon, Bird, Camel, ...) to train on that species' actions only.
 %PYTHON_EXE% train/train_anytop.py ^
 	--cond_path dataset/merged/cond.npy ^
 	--save_dir save/%RUN_NAME% ^
