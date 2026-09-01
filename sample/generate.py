@@ -824,6 +824,7 @@ def _generate_all_species(
     inference_autocast_dtype,
     out_path,
     fps,
+    action_condition=None,
 ):
     """Generate exactly one motion per species in mixed-species batches.
 
@@ -831,6 +832,10 @@ def _generate_all_species(
     forward pass.  The model and sampler are batch-agnostic — all conditioning
     is per-sample — so this is both correct and more efficient than looping
     over species one at a time.
+
+    ``action_condition`` (from ``--action_label``) is applied to every species,
+    which is exactly what the flag means here: the same prompt performed by each
+    skeleton.
     """
     all_species = sorted(cond_dict.keys())
     # Canonical keys carry '/', so output filenames use the file token instead.
@@ -843,6 +848,9 @@ def _generate_all_species(
     print(f'\n### Multi-species generation: {total_species} species, '
           f'{len(species_batches)} batch(es) of batch_size={batch_size}')
     print(f'  All species: {", ".join(all_species)}')
+    if action_condition is not None:
+        print(f'  Action label: {action_condition["action_label"]!r} '
+              f'(group={action_condition["action_group"]})')
 
     for batch_idx, batch_species in enumerate(species_batches, 1):
             actual_bs = len(batch_species)
@@ -866,6 +874,7 @@ def _generate_all_species(
                 max_joints=batch_max_joints,
                 feature_len=opt.feature_len,
                 loop=getattr(args, 'loop', False),
+                action_condition=action_condition,
                 playspeed=playspeed_cond_value,
             )
             model_kwargs['y']['playspeed_cond'] = torch.full(
@@ -1089,6 +1098,14 @@ def main(args=None, cond_dict=None, runtime=None):
                 "(a single tag set cannot restyle every species). Pass "
                 "--object_type <Species> to restyle one species."
             )
+        # --action_label must be honoured here too. The all-species path returns
+        # before the single-species resolve below, so without this the prompt was
+        # silently dropped (and a label on a checkpoint that cannot use it went
+        # unreported). cond_entry only supplies the T5 name, which is a
+        # dataset-wide property, so any species entry answers for all of them.
+        _all_action_condition = _resolve_action_condition(
+            args, model, runtime, cond_dict[sorted(cond_dict)[0]],
+        )
         _generate_all_species(
             cond_dict=cond_dict,
             cond_max_joints=cond_max_joints,
@@ -1103,6 +1120,7 @@ def main(args=None, cond_dict=None, runtime=None):
             inference_autocast_dtype=inference_autocast_dtype,
             out_path=out_path,
             fps=fps,
+            action_condition=_all_action_condition,
         )
         return out_path
 
