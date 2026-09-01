@@ -13,7 +13,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 
 from data_loaders.tensors import truebones_batch_collate  # noqa: E402
-from data_loaders.truebones.data.dataset import resample_motion_features, create_temporal_mask_for_window  # noqa: E402
+from data_loaders.truebones.data.dataset import resample_motion_features  # noqa: E402
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType  # noqa: E402
 from model.anytop import AnyTop  # noqa: E402
 from model.motion_transformer import circular_phase_embedding  # noqa: E402
@@ -43,7 +43,6 @@ def _make_batch_item(
     motion = np.zeros((n_frames, n_joints, n_feats), dtype=np.float32)
     tpose = np.zeros((n_joints, n_feats), dtype=np.float32)
     offsets = np.zeros((n_joints, 3), dtype=np.float32)
-    temporal_mask = create_temporal_mask_for_window(3, n_frames)
     graph = np.zeros((n_joints, n_joints), dtype=np.int64)
     relations = np.zeros((n_joints, n_joints), dtype=np.int64)
     names = np.zeros((n_joints, 4), dtype=np.float32)
@@ -65,7 +64,6 @@ def _make_batch_item(
         [-1, 0],
         tpose,
         offsets,
-        temporal_mask,
         graph,
         relations,
         'Horse',
@@ -87,14 +85,6 @@ class NativeLoopTests(unittest.TestCase):
             loss_type=LossType.MSE,
             lambda_loop_wrap=1.0,
         )
-
-    def test_circular_temporal_mask_wraps_motion_frames_only(self):
-        linear = create_temporal_mask_for_window(3, 5, circular=False)
-        circular = create_temporal_mask_for_window(3, 5, circular=True)
-
-        self.assertFalse(bool(linear[1, 5]))
-        self.assertTrue(bool(circular[1, 5]))
-        self.assertTrue(bool(circular[:, 0].all()))
 
     def test_periodic_resample_preserves_loop_endpoints(self):
         motion = np.zeros((4, 1, 1), dtype=np.float32)
@@ -282,7 +272,6 @@ class NativeLoopTests(unittest.TestCase):
         x = torch.randn(2, 4, 13, 3, dtype=torch.float32)
         y = {
             'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-            'mask': torch.ones(2, 1, 1, 4, 4, dtype=torch.float32),
             'rest_pose': torch.randn(2, 4, 13, dtype=torch.float32),
             'n_joints': torch.tensor([4, 3], dtype=torch.int64),
             'joints_names_embs': torch.zeros(2, 4, 512, dtype=torch.float32),
@@ -317,7 +306,6 @@ class NativeLoopTests(unittest.TestCase):
         x = torch.randn(2, 4, 13, 3, dtype=torch.float32)
         y = {
             'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-            'mask': torch.ones(2, 1, 1, 4, 4, dtype=torch.float32),
             'rest_pose': torch.randn(2, 4, 13, dtype=torch.float32),
             'n_joints': torch.tensor([4, 3], dtype=torch.int64),
             'joints_names_embs': torch.zeros(2, 4, 512, dtype=torch.float32),

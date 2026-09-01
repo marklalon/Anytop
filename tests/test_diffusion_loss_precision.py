@@ -521,7 +521,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         x = torch.randn(1, 4, 13, 3, dtype=torch.float32)
         y = {
             "joints_padding_mask": torch.ones(1, 1, 1, 5, 5, dtype=torch.float32),
-            "mask": torch.ones(1, 1, 1, 4, 4, dtype=torch.float32),
             "rest_pose": torch.randn(1, 4, 13, dtype=torch.float32),
             "n_joints": torch.tensor([3], dtype=torch.int64),
             "joints_names_embs": torch.zeros(1, 4, 512, dtype=torch.float32),
@@ -538,7 +537,11 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertIsNotNone(capture_decoder.last_kwargs)
         self.assertTrue(torch.equal(capture_decoder.last_kwargs["tgt_key_padding_mask"], expected))
 
-    def test_anytop_forward_reuses_shared_temporal_template_for_masks(self):
+    def test_anytop_forward_leaves_temporal_attention_unmasked(self):
+        # Temporal self-attention is full: no window, so nothing but the spatial
+        # mask reaches the decoder. The cross-limb block used to receive the same
+        # window as a separate template argument -- it must still run without one.
+        # See docs/temporal_window_full_attention.md.
         model = AnyTop(
             max_joints=4,
             feature_len=13,
@@ -554,12 +557,8 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         model.eval()
 
         x = torch.randn(2, 4, 13, 3, dtype=torch.float32)
-        temp_mask = torch.ones(2, 1, 1, 4, 4, dtype=torch.float32)
-        temp_mask[0, 0, 0, 1, 2] = 0.0
-        temp_mask[1, 0, 0, 2, 1] = 0.0
         y = {
             "joints_padding_mask": torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
-            "mask": temp_mask,
             "rest_pose": torch.randn(2, 4, 13, dtype=torch.float32),
             "n_joints": torch.tensor([4, 3], dtype=torch.int64),
             "joints_names_embs": torch.zeros(2, 4, 512, dtype=torch.float32),
@@ -571,18 +570,46 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         model(x, torch.tensor([1, 2], dtype=torch.int64), y=y)
 
         self.assertIsNotNone(capture_decoder.last_kwargs)
-        spatial_mask = capture_decoder.last_kwargs["spatial_mask"]
-        temporal_mask = capture_decoder.last_kwargs["temporal_mask"]
-        temporal_template = capture_decoder.last_kwargs["temporal_template"]
+        # The windowed temporal mask and its per-head template are gone: the
+        # decoder receives neither, so nothing but the spatial mask constrains
+        # temporal attention.
+        self.assertNotIn("temporal_mask", capture_decoder.last_kwargs)
+        self.assertNotIn("temporal_template", capture_decoder.last_kwargs)
+        self.assertEqual(
+            capture_decoder.last_kwargs["spatial_mask"].shape, (2, model.num_heads, 4, 4))
 
-        expected_template = (1.0 - temp_mask.reshape(2, -1, 4, 4)[:, :1].float()) * -1e4
-        expected_template = expected_template.expand(-1, model.num_heads, -1, -1).reshape(-1, 4, 4)
-        expected_mask = expected_template.reshape(2, model.num_heads, 4, 4).unsqueeze(1)
-        expected_mask = expected_mask.expand(-1, 4, -1, -1, -1).reshape(-1, 4, 4)
+    def test_anytop_runs_the_real_cross_limb_decoder_without_a_temporal_mask(self):
+        # The capture decoder above never enters the attention blocks; this one
+        # runs them, so a cross-limb block that still expected a window template
+        # (or an attention that rejected attn_mask=None) would fail here.
+        model = AnyTop(
+            max_joints=4,
+            feature_len=13,
+            latent_dim=8,
+            ff_size=32,
+            num_layers=2,
+            num_heads=2,
+            dropout=0.0,
+            cross_limb=True,
+        )
+        model.eval()
 
-        self.assertEqual(spatial_mask.shape, (2, model.num_heads, 4, 4))
-        self.assertTrue(torch.equal(temporal_template, expected_template))
-        self.assertTrue(torch.equal(temporal_mask, expected_mask))
+        x = torch.randn(2, 4, 13, 3, dtype=torch.float32)
+        y = {
+            "joints_padding_mask": torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
+            "rest_pose": torch.randn(2, 4, 13, dtype=torch.float32),
+            "n_joints": torch.tensor([4, 3], dtype=torch.int64),
+            "joints_names_embs": torch.zeros(2, 4, 512, dtype=torch.float32),
+            "graph_dist": torch.zeros(2, 4, 4, dtype=torch.int64),
+            "joints_relations": torch.zeros(2, 4, 4, dtype=torch.int64),
+            "canonical_feature_mean": torch.zeros(13, dtype=torch.float32),
+            "canonical_feature_std": torch.ones(13, dtype=torch.float32),
+        }
+
+        out = model(x, torch.tensor([1, 2], dtype=torch.int64), y=y)
+
+        self.assertEqual(out.shape, x.shape)
+        self.assertTrue(torch.isfinite(out).all())
 
     def test_anytop_forward_normalizes_cross_limb_unreliable_mask_without_mutating_input(self):
         model = AnyTop(
@@ -609,7 +636,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         raw_copy = raw_unreliable.clone()
         y = {
             "joints_padding_mask": torch.ones(1, 1, 1, 5, 5, dtype=torch.float32),
-            "mask": torch.ones(1, 1, 1, 4, 4, dtype=torch.float32),
             "rest_pose": torch.randn(1, 4, 13, dtype=torch.float32),
             "n_joints": torch.tensor([4], dtype=torch.int64),
             "joints_names_embs": torch.zeros(1, 4, 512, dtype=torch.float32),
@@ -654,7 +680,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         prepared_copy = prepared_unreliable.clone()
         y = {
             "joints_padding_mask": torch.ones(1, 1, 1, 5, 5, dtype=torch.float32),
-            "mask": torch.ones(1, 1, 1, 4, 4, dtype=torch.float32),
             "rest_pose": torch.randn(1, 4, 13, dtype=torch.float32),
             "n_joints": torch.tensor([4], dtype=torch.int64),
             "joints_names_embs": torch.zeros(1, 4, 512, dtype=torch.float32),

@@ -308,7 +308,6 @@ def main():
     ds = get_dataset(
         num_frames=int(getattr(model_args, "num_frames", 60)),
         split=args.split,
-        temporal_window=int(getattr(model_args, "temporal_window", 31)),
         balanced=False,
         objects_subset=args.objects_subset,
     )

@@ -242,7 +242,6 @@ def main() -> int:
     dataset = MotionDataset(
         opt=opt,
         cond_dict=cond_dict,
-        temporal_window=31,       # standard window — only affects temporal_mask, not augmentation
         balanced=False,
         num_frames=args.num_frames,
         sample_limit=0,
@@ -295,7 +294,6 @@ def main() -> int:
                 parents,
                 rest_pose,
                 offsets,
-                _temporal_mask,
                 _joints_graph_dist,
                 _joints_relations,
                 object_type,

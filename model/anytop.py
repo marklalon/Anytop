@@ -585,7 +585,6 @@ class AnyTop(nn.Module):
         """
 
         joints_padding_mask = y['joints_padding_mask'].to(x.device)
-        temp_mask = y['mask'].to(x.device)
         rest_pose = y['rest_pose'].to(x.device).unsqueeze(0)
 
         bs, njoints, nfeats, nframes = x.shape
@@ -655,19 +654,9 @@ class AnyTop(nn.Module):
         spatial_mask = (1.0 - joints_padding_mask[:, 0, 0, 1:, 1:].float()) * -1e4
         spatial_mask = spatial_mask.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
 
-        temporal_template = (1.0 - temp_mask.reshape(bs, -1, nframes + 1, nframes + 1)[:, :1].float()) * -1e4
-        temporal_template = temporal_template.expand(-1, self.num_heads, -1, -1)
-        temporal_mask = temporal_template.unsqueeze(1).expand(-1, njoints, -1, -1, -1).reshape(-1, nframes + 1, nframes + 1)
-
-        # Cross-limb temporal pathway needs (1) the windowed temporal mask
-        # WITHOUT the per-joint repeat -> (bs*H, T, T), which the block expands
-        # per-latent itself, and (2) a (bs, njoints) bool key-padding mask
-        # (True == padded) derived from the real joint count.
-        if self.cross_limb:
-            assert 'n_joints' in y, "cross_limb requires y['n_joints'] in the batch"
-            temporal_template = temporal_template.reshape(-1, nframes + 1, nframes + 1)
-        else:
-            temporal_template = None
+        # Temporal self-attention is unmasked: every frame token attends over the
+        # whole window, including the T-pose token at index 0 and, symmetrically,
+        # that token over every frame. See docs/temporal_window_full_attention.md.
 
         cross_limb_unreliable_mask = None
         if self.cross_limb:
@@ -694,10 +683,8 @@ class AnyTop(nn.Module):
             timesteps_embs=timesteps_emb,
             memory=None,
             spatial_mask=spatial_mask,
-            temporal_mask=temporal_mask,
             tgt_key_padding_mask=joint_key_padding_mask,
             y=y,
-            temporal_template=temporal_template,
             cross_limb_unreliable_mask=cross_limb_unreliable_mask,
             loop_phase_mask=loop_phase_mask,
             lengths=loop_phase_lengths,

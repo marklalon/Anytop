@@ -55,7 +55,6 @@ def get_dataset_class(name):
 def get_dataset(
     num_frames,
     split='train',
-    temporal_window=31,
     balanced=False,
     objects_subset="all",
     sample_limit=0,
@@ -69,7 +68,6 @@ def get_dataset(
     dataset = Truebones(
         split=split,
         num_frames=num_frames,
-        temporal_window=temporal_window,
         balanced=balanced,
         objects_subset=objects_subset,
         sample_limit=sample_limit,
@@ -86,7 +84,6 @@ def get_dataset_loader(
     batch_size,
     num_frames,
     split='train',
-    temporal_window=31,
     balanced=True,
     objects_subset="all",
     num_workers=None,
@@ -107,7 +104,6 @@ def get_dataset_loader(
     dataset = get_dataset(
         num_frames=num_frames,
         split=split,
-        temporal_window=temporal_window,
         balanced=balanced,
         objects_subset=objects_subset,
         sample_limit=sample_limit,

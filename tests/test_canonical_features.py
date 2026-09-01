@@ -158,7 +158,6 @@ def test_truebones_collate_drops_motion_stats_and_carries_global_stats():
         np.array([-1, 0], dtype=np.int64),
         build_canonical_rest_feature(cond),
         np.zeros((2, 3), dtype=np.float32),
-        torch.ones((5, 5), dtype=torch.float32),
         np.zeros((2, 2), dtype=np.float32),
         np.zeros((2, 2), dtype=np.float32),
         "TestSpecies",

@@ -3,13 +3,26 @@ import argparse
 import os
 import json
 import copy
-import sys
 
 # The three action groups, duplicated from
 # data_loaders.truebones.truebones_utils.motion_labels.ACTION_GROUPS so this
 # module stays import-light (that one reaches numpy through param_utils).
 # tests/test_action_group_checkpoint_binding.py pins the two together.
 ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
+
+# Checkpoint compatibility stamp, written into every save_dir's args.json by
+# train_anytop and required back by extract_args. Bump it for ANY change that
+# alters training or inference semantics, including ones that leave the
+# state_dict layout untouched -- those are exactly the changes that would
+# otherwise load cleanly and generate wrong motion, reading as a quality
+# regression rather than an incompatibility.
+#
+#   1 -- windowed temporal attention (--temporal_window) removed in favour of
+#        full temporal attention; see docs/temporal_window_full_attention.md.
+#        Supersedes the per-key action_tag_cond / global_energy_cond guards,
+#        which it strictly subsumes (every checkpoint they rejected predates
+#        versioning and so is rejected here too).
+CKPT_VERSION = 1
 
 def parse_and_load_from_model(parser, argv=None, preserve_cli_args=None):
     # args according to the loaded model
@@ -32,49 +45,38 @@ def parse_and_load_from_model(parser, argv=None, preserve_cli_args=None):
 
     return args
 
-def assert_action_conditioning_not_deprecated(model_args, args_path):
-    """Refuse a checkpoint trained on the removed 15-way action-tag condition.
+def assert_checkpoint_version(model_args, args_path):
+    """Refuse a checkpoint written by code with different training semantics.
 
-    The condition changed shape entirely (a 15-dim tag multi-hot became a frozen
-    T5 label embedding), so such a checkpoint cannot be loaded, only retrained.
-    Silently ignoring the stale flag would load the weights and generate motion
-    with the action condition quietly disabled, which looks like a quality
-    regression rather than an incompatibility.
+    ``parse_and_load_from_model`` only restores keys the *current* parser still
+    defines, so a removed flag in a stored args.json is silently dropped: the
+    weights load and then run under semantics they were never trained with. That
+    failure looks like a quality regression, not an incompatibility, which is why
+    it has to be caught here rather than left to the state_dict loader -- these
+    changes need not touch the state_dict at all.
+
+    A checkpoint predating versioning records no ``version`` and is rejected too;
+    it was trained with the windowed temporal attention this code no longer has.
     """
-    stale = [key for key in ('action_tag_cond', 'action_tag_cfg_drop_prob', 'action_tags')
-             if key in model_args]
-    if not stale:
+    recorded = model_args.get('version')
+    if recorded == CKPT_VERSION:
         return
+    if recorded is None:
+        detail = (
+            "it records no 'version' field, so it predates checkpoint versioning: "
+            "it was trained with windowed temporal attention (--temporal_window), "
+            "which has been replaced by full temporal attention"
+        )
+    else:
+        detail = (
+            f"it records version {recorded!r} but this code is version {CKPT_VERSION}"
+        )
     raise SystemExit(
-        f"ERROR: {args_path} was written by the removed action-tag conditioning "
-        f"({', '.join(stale)}). That condition has been replaced by --action_label_cond "
-        "(the frozen-T5 embedding of the keyword action_label) and the two are not "
-        "weight-compatible. Retrain this group with --action_label_cond."
-    )
-
-
-def assert_global_energy_not_deprecated(model_args, args_path):
-    """Refuse a checkpoint written while the removed global-energy condition existed.
-
-    global_energy was a per-layer multiplicative FiLM derived deterministically
-    from x0 -- a target leak -- and the LayerNorm it ran through (``norm_ref``)
-    was allocated unconditionally, so it sits in EVERY checkpoint of that era,
-    ``global_energy_cond: false`` runs included. Both the FiLM and norm_ref are
-    gone, so no such checkpoint is weight-compatible. Loading one anyway would
-    either trip an opaque unexpected-keys assert or, worse, quietly drop the
-    condition and read as a quality regression rather than an incompatibility --
-    exactly the misdiagnosis the action_tag_cond guard was added to prevent.
-    """
-    stale = [key for key in ('global_energy_cond', 'global_energy_cfg_drop_prob')
-             if key in model_args]
-    if not stale:
-        return
-    raise SystemExit(
-        f"ERROR: {args_path} was written by the removed global-energy conditioning "
-        f"({', '.join(stale)}). That condition and its norm_ref LayerNorm have been "
-        "deleted from the model, so this checkpoint is not weight-compatible -- it "
-        "can only be retrained. Retrain without --global_energy_cond; see "
-        "docs/global_energy_removal.md."
+        f"ERROR: {args_path} is not compatible with this code -- {detail}. Its "
+        "weights may well still load, which is the problem: they would run under "
+        "training semantics they were never fitted for and quietly generate wrong "
+        "motion. Such a checkpoint can only be read as a historical result, not "
+        "re-run; retrain to use it. See docs/temporal_window_full_attention.md."
     )
 
 
@@ -108,8 +110,7 @@ def extract_args(args, args_to_overwrite, model_path):
     with open(args_path, 'r') as fr:
         model_args = json.load(fr)
 
-    assert_action_conditioning_not_deprecated(model_args, args_path)
-    assert_global_energy_not_deprecated(model_args, args_path)
+    assert_checkpoint_version(model_args, args_path)
     apply_checkpoint_action_group(args, model_args, args_path)
 
     for a in args_to_overwrite:
@@ -185,8 +186,6 @@ def add_model_options(parser):
                             " 0.0 = all loop clips treated as non-loop; 1.0 = always keep loop path."
                             " Controls both the model loop-condition projection and dataset loop processing.")
     group.add_argument("--t5_out_dim", default=0, type=int, help=argparse.SUPPRESS)
-    group.add_argument("--temporal_window", default=31, type=int,
-                       help="temporal window size")
     group.add_argument("--value_emb", action='store_true',
                        help="If passed, graph multihead attention learns GRPE value embeddings")
     group.add_argument("--cross_limb_latents", default=8, type=int,
@@ -485,19 +484,6 @@ def train_args():
     return parser.parse_args()
 
 
-def _cli_flag_explicit(argv, flag):
-    """Whether *flag* (e.g. ``'--temporal_window'``) was given on the command line.
-
-    ``argv`` may be ``None`` (meaning "read ``sys.argv``", as when ``generate_args``
-    is called with no argument). Matches both ``flag value`` and ``flag=value``.
-    """
-    if argv is None:
-        argv = sys.argv[1:]
-    if not argv:
-        return False
-    return any(a == flag or a.startswith(flag + '=') for a in argv)
-
-
 def generate_args(argv=None):
     parser = ArgumentParser()
     # args specified by the user: (all other will be loaded from the model)
@@ -511,11 +497,6 @@ def generate_args(argv=None):
     # weights, so apply_checkpoint_action_group() sets args.action_group from the
     # checkpoint's own args.json.
     preserve_cli_args = {'action_label', 'action_words', 'species_tags'}
-    # --temporal_window is a model-group arg, so by default it is clobbered by the
-    # checkpoint's args.json (its training window). An explicitly-passed CLI value
-    # must win instead; a bare run (no flag) keeps the checkpoint's window.
-    if _cli_flag_explicit(argv, '--temporal_window'):
-        preserve_cli_args.add('temporal_window')
     args = parse_and_load_from_model(
         parser, argv=argv,
         preserve_cli_args=preserve_cli_args,

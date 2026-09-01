@@ -176,7 +176,6 @@ def test_loop_speed_resample_rebuilds_terminal_velocity_from_wrap_delta() -> Non
 def test_loop_padding_updates_effective_length() -> None:
     dataset = _build_truebones(
         split="train",
-        temporal_window=31,
         num_frames=NUM_FRAMES,
         balanced=False,
         objects_subset=LOOP_SUBSET,
@@ -187,7 +186,7 @@ def test_loop_padding_updates_effective_length() -> None:
     with patch.object(motion_dataset, '_sample_loop_tile_count', return_value=1):
         sample = motion_dataset.prepare_sample_by_name(LOOP_MOTION, target_num_frames=NUM_FRAMES, loop_offset=0)
     motion, m_length = sample[0], sample[1]
-    motion_metadata, name = sample[12], sample[13]
+    motion_metadata, name = sample[11], sample[12]
 
     assert name == LOOP_MOTION, f"unexpected sample: {name}"
     assert bool(motion_metadata.get("is_loop", False)), "loop regression sample is no longer marked loop"
@@ -209,7 +208,6 @@ def test_loop_padding_updates_effective_length() -> None:
 def test_loop_padding_can_tile_multiple_cycles_before_resample() -> None:
     dataset = _build_truebones(
         split="train",
-        temporal_window=31,
         num_frames=NUM_FRAMES,
         balanced=False,
         objects_subset=LOOP_SUBSET,
@@ -224,7 +222,7 @@ def test_loop_padding_can_tile_multiple_cycles_before_resample() -> None:
     with patch.object(motion_dataset, '_sample_loop_tile_count', return_value=2):
         sample = motion_dataset.prepare_sample_by_name(LOOP_MOTION, target_num_frames=NUM_FRAMES, loop_offset=0)
     motion, m_length = sample[0], sample[1]
-    motion_metadata, name = sample[12], sample[13]
+    motion_metadata, name = sample[11], sample[12]
 
     expected = _resample_raw_then_normalize(_tile_loop_motion(raw, 2), cond, NUM_FRAMES, loop_terminal=True)
 
@@ -239,7 +237,6 @@ def test_loop_padding_can_tile_multiple_cycles_before_resample() -> None:
 def test_loop_padding_random_offset_wraps_without_truncation() -> None:
     dataset = _build_truebones(
         split="train",
-        temporal_window=31,
         num_frames=NUM_FRAMES,
         balanced=False,
         objects_subset=LOOP_SUBSET,
@@ -276,7 +273,6 @@ def test_loop_padding_random_offset_wraps_without_truncation() -> None:
 def test_explicit_window_start_respects_requested_crop() -> None:
     dataset = _build_truebones(
         split="train",
-        temporal_window=31,
         num_frames=NUM_FRAMES,
         balanced=False,
         objects_subset=LOOP_SUBSET,
@@ -313,7 +309,6 @@ def test_explicit_window_start_respects_requested_crop() -> None:
 def test_prepare_sample_aug_info_reports_actual_loop_fill() -> None:
     dataset = _build_truebones(
         split="train",
-        temporal_window=31,
         num_frames=NUM_FRAMES,
         balanced=False,
         objects_subset=LOOP_SUBSET,
@@ -346,7 +341,6 @@ def test_prepare_sample_aug_info_reports_actual_loop_fill() -> None:
 def test_loop_uncond_keeps_legacy_loop_tile_but_non_loop_metadata() -> None:
     dataset = _build_truebones(
         split="train",
-        temporal_window=31,
         num_frames=NUM_FRAMES,
         balanced=False,
         objects_subset=LOOP_SUBSET,
@@ -386,7 +380,6 @@ def test_loop_uncond_keeps_legacy_loop_tile_but_non_loop_metadata() -> None:
 def test_loop_uncond_long_loop_rolls_then_crops(tmp_path) -> None:
     dataset = _build_truebones(
         split="train",
-        temporal_window=31,
         num_frames=NUM_FRAMES,
         balanced=False,
         objects_subset=LOOP_SUBSET,
@@ -436,7 +429,6 @@ def test_loop_uncond_long_loop_rolls_then_crops(tmp_path) -> None:
 def test_loop_conditioned_long_loop_downgrades_to_non_loop(tmp_path) -> None:
     dataset = _build_truebones(
         split="train",
-        temporal_window=31,
         num_frames=NUM_FRAMES,
         balanced=False,
         objects_subset=LOOP_SUBSET,
@@ -488,7 +480,6 @@ def test_loop_conditioned_long_loop_downgrades_to_non_loop(tmp_path) -> None:
 def test_batch_collate_preserves_translation_root_index() -> None:
     dataset = _build_truebones(
         split="train",
-        temporal_window=31,
         num_frames=NUM_FRAMES,
         balanced=False,
         objects_subset=LOOP_SUBSET,

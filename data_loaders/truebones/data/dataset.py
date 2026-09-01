@@ -121,21 +121,6 @@ def get_motion_parents(motion):
         parents.append(j_parent)
     return parents
 
-""" create temporal mask template for window size"""
-def create_temporal_mask_for_window(window, max_len, circular=False):
-    margin = window // 2
-    mask = torch.zeros(max_len+1, max_len+1)
-    mask[:, 0] = 1
-    for i in range(max_len+1):
-        if circular and i > 0 and max_len > 0:
-            for delta in range(-margin, margin + 2):
-                j = ((i - 1 + delta) % max_len) + 1
-                mask[i, j] = 1
-        else:
-            mask[i, max(0, i - margin):min(max_len + 1, i + margin + 2)] = 1
-    return mask
-
-
 def resample_motion_features(motion, target_num_frames, *, loop_terminal=False):
     source_frames = int(motion.shape[0])
     target_num_frames = int(target_num_frames)
@@ -666,14 +651,13 @@ def ensure_joint_name_embeddings(
 
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, temporal_window, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_label_embeddings: Optional[dict[str, np.ndarray]] = None):
+    def __init__(self, opt, cond_dict, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_label_embeddings: Optional[dict[str, np.ndarray]] = None):
         self.opt = opt
         # None (not {}) means the caller does not want label conditioning, so no
         # embedding is attached and no lookup can fail. An empty dict would be
         # indistinguishable from "the sidecar exists but is empty", and silently
         # training every clip unconditioned is exactly the failure this avoids.
         self.action_label_embeddings = action_label_embeddings
-        self.temporal_window = int(temporal_window)
         self.min_length = int(getattr(opt, 'min_length', 20))
         self.pointer = 0
         self.max_motion_length = num_frames
@@ -796,12 +780,6 @@ class MotionDataset(data.Dataset):
         self.max_available_length = int(self.length_arr.max()) if len(self.length_arr) > 0 else 0
         self.data_dict = data_dict
         self.name_list = name_list
-        self.temporal_mask_template = create_temporal_mask_for_window(self.temporal_window, self.max_motion_length)
-        self.circular_temporal_mask_template = create_temporal_mask_for_window(
-            self.temporal_window,
-            self.max_motion_length,
-            circular=True,
-        )
         self.reset_min_len(self.min_length)
 
     def reset_min_len(self, length):
@@ -813,11 +791,6 @@ class MotionDataset(data.Dataset):
     
     def inv_transform(self, x, y):
         return canonical_to_physical_hml(x, self.cond_dict[y['object_type']])
-
-    def _get_temporal_mask(self, target_num_frames, circular=False):
-        if int(target_num_frames) == int(self.max_motion_length):
-            return self.circular_temporal_mask_template if circular else self.temporal_mask_template
-        return create_temporal_mask_for_window(self.temporal_window, int(target_num_frames), circular=circular)
 
     def _sample_loop_offset(self, length, loop_offset=None):
         length = int(length)
@@ -990,11 +963,9 @@ class MotionDataset(data.Dataset):
             loop_phase_length if loop_condition_active and loop_full_cycle else max(int(m_length), 1)
         )
         self._apply_action_label_condition(motion_metadata)
-        circular_mask = bool(loop_full_cycle)
-        temporal_mask = self._get_temporal_mask(target_num_frames, circular=circular_mask)
 
         if return_aug_info:
-            return motion, m_length, parents, rest_pose, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, self.opt.max_joints, motion_metadata, name, {
+            return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, self.opt.max_joints, motion_metadata, name, {
                 'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
                 'species_emb': self.cond_dict[object_type].get('species_emb'),
                 'rest_pose_physical': self.cond_dict[object_type]['rest_pose'],
@@ -1010,7 +981,7 @@ class MotionDataset(data.Dataset):
                 'playspeed_cond': float(playspeed_cond),
                 'loop_uncond': bool(loop_uncond),
             }
-        return motion, m_length, parents, rest_pose, offsets, temporal_mask, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, self.opt.max_joints, motion_metadata, name, {
+        return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, self.opt.max_joints, motion_metadata, name, {
             'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
             'species_emb': self.cond_dict[object_type].get('species_emb'),
             'rest_pose_physical': self.cond_dict[object_type]['rest_pose'],
@@ -1139,7 +1110,7 @@ class TruebonesSampler(WeightedRandomSampler):
         super().__init__(num_samples=num_samples, weights=weights)
     
 class Truebones(data.Dataset):
-    def __init__(self, split="train", temporal_window=31, **kwargs):
+    def __init__(self, split="train", **kwargs):
         if split not in SUPPORTED_SPLITS and split != ALL_SPLIT_NAME:
             raise ValueError(f"Unsupported split '{split}'. Expected one of {SUPPORTED_SPLITS + (ALL_SPLIT_NAME,)}.")
         device = None  # torch.device('cuda:4') # This param is not in use in this context
@@ -1199,7 +1170,6 @@ class Truebones(data.Dataset):
         self.motion_dataset = MotionDataset(
             self.opt,
             cond_dict,
-            temporal_window,
             self.balanced,
             num_frames=kwargs['num_frames'],
             sample_limit=self.sample_limit,

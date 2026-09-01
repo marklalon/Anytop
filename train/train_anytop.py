@@ -20,7 +20,7 @@ _torch.backends.cuda.enable_cudnn_sdp(True)
 _torch.backends.cuda.enable_flash_sdp(True)
 
 from utils.fixseed import fixseed
-from utils.parser_util import train_args
+from utils.parser_util import CKPT_VERSION, train_args
 from utils import dist_util
 from train.training_loop import TrainLoop
 from data_loaders.get_data import get_dataset_loader
@@ -163,6 +163,51 @@ def assert_resume_keeps_action_group(args, save_dir):
     )
 
 
+def assert_resume_checkpoint_version(args, save_dir):
+    """Refuse a resume whose save_dir was written by incompatible code.
+
+    args.json is rewritten wholesale on every launch, so a resume would restamp
+    the current CKPT_VERSION onto weights fitted under the old semantics. That is
+    the one case the generation-side guard cannot catch: by the time anything
+    samples the run, its stamp already looks current. Checked before save_dir is
+    touched, like the action_group guard next to it.
+    """
+    if not getattr(args, 'resume_checkpoint', ''):
+        return
+    args_path = os.path.join(save_dir, 'args.json')
+    if not os.path.isfile(args_path):
+        return
+    with open(args_path, 'r') as fr:
+        previous_args = json.load(fr)
+    recorded = previous_args.get('version')
+    if recorded == CKPT_VERSION:
+        return
+    recorded_text = (
+        "no version (it predates checkpoint versioning)" if recorded is None
+        else f"version {recorded!r}"
+    )
+    raise SystemExit(
+        f"[ERROR] Resuming {args.resume_checkpoint} is not possible with this code: "
+        f"{args_path} records {recorded_text}, this code is version {CKPT_VERSION}. "
+        f"The training semantics changed, so continuing these weights would train "
+        f"and later sample them under a contract they were never fitted for. Train "
+        f"in a fresh --save_dir."
+    )
+
+
+def write_args_json(args, args_path):
+    """Record this run's args, stamped with the checkpoint version contract.
+
+    The stamp is what makes generation refuse these weights once the training or
+    inference semantics change: without it a stale checkpoint loads cleanly and
+    quietly runs under the wrong contract
+    (utils.parser_util.assert_checkpoint_version).
+    """
+    args.version = CKPT_VERSION
+    with open(args_path, 'w') as fw:
+        json.dump(vars(args), fw, indent=4, sort_keys=True)
+
+
 def create_training_data_loader(args):
     loop_cond_prob = getattr(args, 'loop_cond_prob', 1.0)
     return get_dataset_loader(
@@ -170,7 +215,6 @@ def create_training_data_loader(args):
         batch_size=args.batch_size,
         num_frames=args.num_frames,
         split=getattr(args, 'train_split', 'train'),
-        temporal_window=args.temporal_window,
         balanced=args.balanced,
         objects_subset=args.objects_subset,
         sample_limit=args.sample_limit,
@@ -190,6 +234,7 @@ def run_training(args):
     # only place generation reads the group from), so a resume must not quietly
     # rewrite it. Checked before anything in save_dir is touched.
     assert_resume_keeps_action_group(args, save_dir)
+    assert_resume_checkpoint_version(args, save_dir)
     args.checkpoint_step_numbering = 'completed_steps'
     opt = get_opt(args.device, args.cond_path)
     # The checkpoint directory carries its own inference contract: cond.npy is
@@ -203,9 +248,7 @@ def run_training(args):
     ml_platform = ml_platform_type(save_dir=args.save_dir)
     ml_platform.report_args(args, name='Args')
 
-    args_path = os.path.join(save_dir, 'args.json')
-    with open(args_path, 'w') as fw:
-        json.dump(vars(args), fw, indent=4, sort_keys=True)
+    write_args_json(args, os.path.join(save_dir, 'args.json'))
 
     dist_util.setup_dist(args.device)
 

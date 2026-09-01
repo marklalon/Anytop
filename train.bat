@@ -1,7 +1,7 @@
 @echo off
 set SCRIPT_DIR=%~dp0
 set PYTHON_EXE=%SCRIPT_DIR%..\.venv\Scripts\python.exe
-set RUN_NAME=merged_locomotion_v3
+set RUN_NAME=merged_locomotion_v4_fullattn
 set TORCH_LOGS=recompiles,graph_breaks
 
 REM --compile builds Triton kernel launchers with MSVC cl.exe. Initialize
@@ -43,7 +43,6 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--dropout_prob 0.1 ^
 	--joint_mask_prob 0.3 ^
 	--joint_mask_budget 0.15 ^
-	--temporal_window 41 ^
 	--temporal_span_mask_prob 0.3 ^
 	--temporal_span_seam_loss_weight 0.2 ^
 	--lambda_loop_wrap 0.04 ^

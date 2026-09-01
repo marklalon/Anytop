@@ -2,9 +2,8 @@
 inter-limb frequency/phase coupling in inpainting).
 
 These test the block in isolation -- it is self-contained (x,
-temporal_template, joints_key_padding_mask in; x out) -- which targets the
-highest-risk part of the change: the (T,B,J,d) <-> (J,T*B,d) /
-(K,T,B,d) <-> (T,B*K,d) reshapes and the per-latent mask expansion. A
+joints_key_padding_mask in; x out) -- which targets the highest-risk part of
+the change: the (T,B,J,d) <-> (J,T*B,d) / (K,T,B,d) <-> (T,B*K,d) reshapes. A
 silent batch-dim transpose there would not change shapes but would corrupt
 results, so we assert full-batch == per-sample-sliced equivalence.
 """
@@ -48,23 +47,6 @@ def _block(
     return blk
 
 
-def _template(b_count: int, *, per_batch_pattern: bool = False) -> torch.Tensor:
-    """(b_count*H, T, T) additive float mask: 0.0 == attend, -1e4 == block.
-
-    col 0 (T-pose token) and the diagonal are always attendable so softmax
-    never sees an all -inf row.
-    """
-    tt = torch.zeros(b_count, H, T, T)
-    if per_batch_pattern:
-        g = torch.Generator().manual_seed(123)
-        for b in range(b_count):
-            blocked = torch.rand(T, T, generator=g) < 0.5
-            blocked[:, 0] = False
-            blocked[torch.arange(T), torch.arange(T)] = False
-            tt[b, :, blocked] = -1e4
-    return tt.reshape(b_count * H, T, T)
-
-
 def _kpm(b_count: int, valid_counts: list[int]) -> torch.Tensor:
     """(b_count, J) bool, True == padded joint."""
     idx = torch.arange(J)[None, :]
@@ -84,10 +66,9 @@ def _unreliable_mask(b_count: int, *, per_batch_pattern: bool = False) -> torch.
 def test_block_preserves_shape_is_finite_and_trains():
     blk = _block()
     x = torch.randn(T, B, J, D, requires_grad=True)
-    tt = _template(B)
     kpm = _kpm(B, [J, J, J])
 
-    out = blk(x, tt, kpm)
+    out = blk(x, kpm)
 
     assert out.shape == (T, B, J, D)
     assert torch.isfinite(out).all()
@@ -108,23 +89,20 @@ def test_block_preserves_shape_is_finite_and_trains():
 
 @pytest.mark.parametrize("latent_width", [D, 8])  # full-width (Identity) + bottleneck
 def test_full_batch_equals_per_sample_sliced(latent_width):
-    """Catches any batch-dim transpose in the flatten/unflatten + mask
-    expansion: each sample gets distinct x, mask and padding, so a wrong
-    ordering makes the sliced result diverge from the full-batch result."""
+    """Catches any batch-dim transpose in the flatten/unflatten: each sample
+    gets distinct x, padding and reliability, so a wrong ordering makes the
+    sliced result diverge from the full-batch result."""
     blk = _block(latent_width=latent_width)
     blk.reliability_bias.data.fill_(-2.0)
     x = torch.randn(T, B, J, D)
-    tt = _template(B, per_batch_pattern=True)
     kpm = _kpm(B, [J, J - 1, J - 3])
     unreliable = _unreliable_mask(B, per_batch_pattern=True)
 
-    out_full = blk(x, tt, kpm, unreliable)
+    out_full = blk(x, kpm, unreliable)
 
-    tt_bh = tt.reshape(B, H, T, T)
     for b in range(B):
         out_b = blk(
             x[:, b : b + 1],
-            tt_bh[b : b + 1].reshape(H, T, T),
             kpm[b : b + 1],
             unreliable[:, b : b + 1],
         )
@@ -137,12 +115,11 @@ def test_full_batch_equals_per_sample_sliced(latent_width):
 def test_reliability_path_is_exact_noop_at_init():
     blk = _block()
     x = torch.randn(T, B, J, D)
-    tt = _template(B, per_batch_pattern=True)
     kpm = _kpm(B, [J, J - 1, J - 2])
     unreliable = _unreliable_mask(B, per_batch_pattern=True)
 
-    out_without_mask = blk(x, tt, kpm, None)
-    out_with_mask = blk(x, tt, kpm, unreliable)
+    out_without_mask = blk(x, kpm, None)
+    out_with_mask = blk(x, kpm, unreliable)
 
     assert blk.time_emb_scale.item() == 0.0
     assert blk.reliability_bias.item() == 0.0
@@ -153,12 +130,11 @@ def test_unreliable_mask_none_matches_zero_mask_even_with_nonzero_bias():
     blk = _block()
     blk.reliability_bias.data.fill_(-7.0)
     x = torch.randn(T, 1, J, D)
-    tt = _template(1, per_batch_pattern=True)
     kpm = _kpm(1, [J - 1])
     zero_mask = torch.zeros(T, 1, J)
 
-    out_none = blk(x, tt, kpm, None)
-    out_zero = blk(x, tt, kpm, zero_mask)
+    out_none = blk(x, kpm, None)
+    out_zero = blk(x, kpm, zero_mask)
 
     assert torch.allclose(out_none, out_zero, atol=1e-6)
 
@@ -167,12 +143,11 @@ def test_negative_reliability_bias_downweights_flagged_joint_influence():
     blk = _block()
     blk.reliability_bias.data.fill_(-20.0)
     x = torch.randn(T, 1, J, D)
-    tt = _template(1, per_batch_pattern=True)
     kpm = _kpm(1, [J])
     unreliable = torch.zeros(T, 1, J)
     unreliable[:, 0, 0] = 1.0
 
-    baseline = blk(x, tt, kpm, unreliable)
+    baseline = blk(x, kpm, unreliable)
 
     x_unreliable = x.clone()
     x_unreliable[:, 0, 0, :] += 8.0
@@ -181,10 +156,10 @@ def test_negative_reliability_bias_downweights_flagged_joint_influence():
 
     probe_joint = 2
     unreliable_delta = torch.linalg.norm(
-        blk(x_unreliable, tt, kpm, unreliable)[:, 0, probe_joint] - baseline[:, 0, probe_joint]
+        blk(x_unreliable, kpm, unreliable)[:, 0, probe_joint] - baseline[:, 0, probe_joint]
     )
     reliable_delta = torch.linalg.norm(
-        blk(x_reliable, tt, kpm, unreliable)[:, 0, probe_joint] - baseline[:, 0, probe_joint]
+        blk(x_reliable, kpm, unreliable)[:, 0, probe_joint] - baseline[:, 0, probe_joint]
     )
 
     assert unreliable_delta < reliable_delta
@@ -197,13 +172,12 @@ def test_padded_joints_do_not_leak_into_valid_outputs():
     blk = _block()
     valid = J - 2
     kpm = _kpm(1, [valid])
-    tt = _template(1)
     x = torch.randn(T, 1, J, D)
 
-    out_a = blk(x, tt, kpm)
+    out_a = blk(x, kpm)
     x2 = x.clone()
     x2[:, :, valid:, :] += 5.0  # perturb only padded joints
-    out_b = blk(x2, tt, kpm)
+    out_b = blk(x2, kpm)
 
     assert torch.allclose(out_a[:, :, :valid], out_b[:, :, :valid], atol=1e-5)
 

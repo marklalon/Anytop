@@ -460,18 +460,16 @@ class CrossLimbTemporalBlock(nn.Module):
     def forward(
         self,
         x: Tensor,
-        temporal_template: Tensor,
         joints_key_padding_mask: Tensor,
         unreliable_mask: Optional[Tensor] = None,
         loop_phase_mask: Optional[Tensor] = None,
         lengths: Optional[Tensor] = None,
         time_embedding: Optional[Tensor] = None,
     ) -> Tensor:
-        # x: (T, B, J, d_model); temporal_template: (B*H, T, T) additive float
-        # mask (windowed, NO joint repeat); joints_key_padding_mask: (B, J)
-        # bool, True == padded joint.
+        # x: (T, B, J, d_model); joints_key_padding_mask: (B, J) bool,
+        # True == padded joint.
         T, B, J, _ = x.shape
-        K, H, d = self.num_latents, self.num_heads, self.latent_dim
+        K, d = self.num_latents, self.latent_dim
 
         # Joints embedded into the narrow latent space once; reused as cross-in
         # key/value and as cross-out query.
@@ -502,8 +500,8 @@ class CrossLimbTemporalBlock(nn.Module):
         )
         bz = bz.reshape(K, T, B, d)
 
-        # --- Latent temporal self-attention across T (same windowed mask).
-        # attention batch = B*K with index (b*K + k); mask -> (B*K*H, T, T).
+        # --- Latent temporal self-attention across T, unmasked (every latent
+        # token sees the whole window). attention batch = B*K, index (b*K + k).
         zt_in = bz.permute(1, 2, 0, 3).reshape(T, B * K, d)               # (T, B*K, d_cl)
         if time_embedding is not None:
             time_embedding = time_embedding.to(device=zt_in.device, dtype=zt_in.dtype)
@@ -530,10 +528,8 @@ class CrossLimbTemporalBlock(nn.Module):
             )
             time_emb = time_emb.unsqueeze(2).expand(T, B, K, d).reshape(T, B * K, d)
         zt_in = zt_in + self.time_emb_scale * time_emb
-        tt = temporal_template.reshape(B, H, T, T)
-        tt = tt.unsqueeze(1).expand(B, K, H, T, T).reshape(B * K * H, T, T)
         zt_resid = zt_in
-        zt, _ = self.temporal_attn(zt_in, zt_in, zt_in, attn_mask=tt, need_weights=False)
+        zt, _ = self.temporal_attn(zt_in, zt_in, zt_in, attn_mask=None, need_weights=False)
         zt = zt_resid + zt
         zt = zt.reshape(T, B, K, d)
 
@@ -967,9 +963,8 @@ class GraphMotionDecoder(nn.TransformerDecoder):
 
         
     def forward(self, tgt: Tensor, timesteps_embs: Tensor, memory: Tensor, spatial_mask:  Optional[Tensor] = None,
-                temporal_mask: Optional[Tensor] = None, tgt_key_padding_mask: Optional[Tensor] = None,
+                tgt_key_padding_mask: Optional[Tensor] = None,
             memory_key_padding_mask: Optional[Tensor] = None, y=None,
-            temporal_template: Optional[Tensor] = None,
             cross_limb_unreliable_mask: Optional[Tensor] = None,
             loop_phase_mask: Optional[Tensor] = None,
             lengths: Optional[Tensor] = None) -> Union[Tensor , Tuple[Tensor, dict]]:
@@ -1031,9 +1026,9 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             else:
                 cl_block = None
             output = mod(
-                    output, timesteps_embs, topology_rel, edge_rel, self.edge_key_emb, self.edge_query_emb, edge_value_emb, self.topology_key_emb, self.topology_query_emb, topology_value_emb, spatial_mask, temporal_mask,
+                    output, timesteps_embs, topology_rel, edge_rel, self.edge_key_emb, self.edge_query_emb, edge_value_emb, self.topology_key_emb, self.topology_query_emb, topology_value_emb, spatial_mask,
                     tgt_key_padding_mask, memory_key_padding_mask, y,
-                    temporal_template=temporal_template, cross_limb_block=cl_block,
+                    cross_limb_block=cl_block,
                     cross_limb_unreliable_mask=cross_limb_unreliable_mask,
                     loop_phase_mask=loop_phase_mask_batch,
                     lengths=lengths,
@@ -1079,9 +1074,8 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
     
     
         # temporal attention block
-    def _temporal_mha_block_sin_joint(self, x: Tensor, attn_mask: Optional[Tensor], key_padding_mask: Optional[Tensor], loop_phase_mask: Optional[Tensor] = None, lengths: Optional[Tensor] = None, loop_phase_embedding: Optional[Tensor] = None) -> Tensor:
+    def _temporal_mha_block_sin_joint(self, x: Tensor, key_padding_mask: Optional[Tensor], loop_phase_mask: Optional[Tensor] = None, lengths: Optional[Tensor] = None, loop_phase_embedding: Optional[Tensor] = None) -> Tensor:
         frames, bs, njoints, feats= x.size() 
-        # attn_mask_ = attn_mask[..., 1:, 1:]
         if loop_phase_embedding is not None:
             if loop_phase_embedding.shape != (frames, bs, feats):
                 raise ValueError(
@@ -1097,12 +1091,13 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
                 phase = circular_phase_embedding(frames, feats, bs, x.device, x.dtype, lengths)
                 phase = phase * loop_phase_mask.view(1, bs, 1)
                 x = x + self.temporal_phase_scale * phase.unsqueeze(2)
+        # Temporal self-attention is unmasked: every frame token attends over the
+        # whole window, including the T-pose token at index 0.
         x = x.view(frames, bs * njoints, feats)
         output_attn, _ = self.temporal_attn(
             x,
             x,
             x,
-            attn_mask=attn_mask,
             key_padding_mask=key_padding_mask,
             need_weights=False,
         )
@@ -1126,11 +1121,9 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         topo_query_emb,
         topo_value_emb,
         spatial_mask: Optional[Tensor] = None,
-        temporal_mask: Optional[Tensor] = None,
         tgt_key_padding_mask: Optional[Tensor] = None,
         memory_key_padding_mask: Optional[Tensor] = None, #for future use
         y = None,
-        temporal_template: Optional[Tensor] = None,
         cross_limb_block: Optional[nn.Module] = None,
         cross_limb_unreliable_mask: Optional[Tensor] = None,
         loop_phase_mask: Optional[Tensor] = None,
@@ -1143,11 +1136,10 @@ class GraphMotionDecoderLayer(nn.TransformerDecoderLayer):
         spatial_attn_output = self._spatial_mha_block(x, topology_rel, edge_rel, edge_key_emb, edge_query_emb, edge_value_emb,
         topo_key_emb, topo_query_emb, topo_value_emb, spatial_mask, tgt_key_padding_mask, y)
         x = self.norm1(x + spatial_attn_output)
-        x = self.norm2(x + self._temporal_mha_block_sin_joint(x, temporal_mask, None, loop_phase_mask=loop_phase_mask, lengths=lengths, loop_phase_embedding=loop_phase_embedding))
+        x = self.norm2(x + self._temporal_mha_block_sin_joint(x, None, loop_phase_mask=loop_phase_mask, lengths=lengths, loop_phase_embedding=loop_phase_embedding))
         if cross_limb_block is not None:
             x = cross_limb_block(
                 x,
-                temporal_template,
                 tgt_key_padding_mask,
                 unreliable_mask=cross_limb_unreliable_mask,
                 loop_phase_mask=loop_phase_mask,

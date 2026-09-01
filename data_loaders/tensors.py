@@ -71,8 +71,8 @@ def truebones_collate(batch):
         Concatenated motion input tensor.
     cond : dict
         Conditioning dictionary with ``'y'`` containing all metadata
-        (mask, lengths, T-pose, object type,
-        motion name, action group/label, loop info, motion_start_frame, …).
+        (lengths, T-pose, object type, motion name, action group/label,
+        loop info, motion_start_frame, …).
     """
     notnone_batches = [b for b in batch if b is not None]
     databatch = [b['inp'] for b in notnone_batches]
@@ -82,26 +82,15 @@ def truebones_collate(batch):
     else:
         jointsnumbatch = [22 for b in notnone_batches] #smpl n_joints 
         
-    if 'temporal_mask' in notnone_batches[0]:
-        temporalmasksbatch = [b['temporal_mask'] for b in notnone_batches]
-
-
-    
     databatchTensor = collate_tensors(databatch)
     restposebatchTensor = collate_tensors(restposebatch)
     jointsnumbatchTensor = torch.as_tensor(jointsnumbatch)
     jointsmaskbatchTensor = n_joints_to_mask(jointsnumbatchTensor, databatchTensor.shape[1]).unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
 
-    collated_temporalmasksbatch = collate_tensors(temporalmasksbatch)
-    # All samples are resampled to a fixed frame count, so the per-sample
-    # temporal mask is the windowed-attention template (no length-derived
-    # padding portion).
-    maskbatchTensor = collated_temporalmasksbatch.unsqueeze(1).unsqueeze(1) # unqueeze for broadcasting
-
     motion = databatchTensor
     frame_count = databatchTensor.shape[-1]
     batch_size = len(databatch)
-    cond = {'y': {'mask': maskbatchTensor, 'lengths': torch.full((batch_size,), frame_count, dtype=torch.long), 'rest_pose': restposebatchTensor}}
+    cond = {'y': {'lengths': torch.full((batch_size,), frame_count, dtype=torch.long), 'rest_pose': restposebatchTensor}}
 
     if 'object_type' in notnone_batches[0]:
         objecttypebatch = [b['object_type'] for b in notnone_batches]
@@ -261,18 +250,17 @@ def truebones_batch_collate(batch):
         [2]  parents         – np.ndarray, parent indices
         [3]  rest_pose – np.ndarray, bind/rest-pose features
         [4]  offsets         – np.ndarray, bone offsets
-        [5]  temporal_mask   – np.ndarray, temporal attention mask
-        [6]  joints_graph_dist – np.ndarray, graph distance matrix
-        [7]  joints_relations  – np.ndarray, joint relation matrix
-        [8]  object_type     – str
-        [9]  joints_names_embs – np.ndarray, joint name embeddings
-        [10] crop_start      – int, starting frame index in source motion
-        [11] max_joints      – int
-        [12] motion_metadata – dict or None (action group/label, loop info, etc.)
-        [13] name            – str, motion name
-        [14+] extras         – dicts (joint_mask_candidate_roots, aug info, …)
+        [5]  joints_graph_dist – np.ndarray, graph distance matrix
+        [6]  joints_relations  – np.ndarray, joint relation matrix
+        [7]  object_type     – str
+        [8]  joints_names_embs – np.ndarray, joint name embeddings
+        [9]  crop_start      – int, starting frame index in source motion
+        [10] max_joints      – int
+        [11] motion_metadata – dict or None (action group/label, loop info, etc.)
+        [12] name            – str, motion name
+        [13+] extras         – dicts (joint_mask_candidate_roots, aug info, …)
     """
-    max_joints = batch[0][11]
+    max_joints = batch[0][10]
     adapted_batch = []
     for b in batch:  
         max_len, n_joints, n_feats = b[0].shape
@@ -280,17 +268,16 @@ def truebones_batch_collate(batch):
         rest_pose[:n_joints] = torch.from_numpy(np.asarray(b[3], dtype=np.float32))
         motion = torch.zeros((max_len, max_joints, n_feats)) # (frames, max_joints, feature_len) 
         motion[:, :b[0].shape[1], :] = torch.from_numpy(np.asarray(b[0], dtype=np.float32))
-        joints_names_embs = torch.zeros((max_joints, b[9].shape[1]))
-        joints_names_embs[:n_joints] = torch.from_numpy(np.asarray(b[9], dtype=np.float32))
+        joints_names_embs = torch.zeros((max_joints, b[8].shape[1]))
+        joints_names_embs[:n_joints] = torch.from_numpy(np.asarray(b[8], dtype=np.float32))
         n_joints = b[0].shape[1]
-        temporal_mask = torch.as_tensor(b[5][:max_len + 1, :max_len + 1])
-        padded_joints_relations =  create_padded_relation(b[7], max_joints, n_joints)
-        padded_graph_dist =  create_padded_relation(b[6], max_joints, n_joints)
-        object_type = b[8]
+        padded_joints_relations =  create_padded_relation(b[6], max_joints, n_joints)
+        padded_graph_dist =  create_padded_relation(b[5], max_joints, n_joints)
+        object_type = b[7]
         motion_metadata = None
         motion_name = None
         extra_cond = None
-        for extra in b[12:]:
+        for extra in b[11:]:
             if isinstance(extra, dict):
                 if 'joint_mask_candidate_roots' in extra or 'rest_pos_ric_hml' in extra:
                     extra_cond = extra
@@ -304,13 +291,12 @@ def truebones_batch_collate(batch):
             'n_joints': n_joints,
             'lengths': b[1],
             'parents': b[2],
-            'temporal_mask' : temporal_mask,
             'graph_dist' : padded_graph_dist,
             'joints_relations':  padded_joints_relations,
             'object_type': object_type,
             'joints_names_embs': joints_names_embs,
             'rest_pose': rest_pose,
-            'motion_start_frame': int(b[10]),  # crop_start from _prepare_sample
+            'motion_start_frame': int(b[9]),  # crop_start from _prepare_sample
         }
         if extra_cond is not None and 'joint_mask_candidate_roots' in extra_cond:
             raw_candidates = np.asarray(extra_cond['joint_mask_candidate_roots'], dtype=np.bool_)

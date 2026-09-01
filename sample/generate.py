@@ -23,7 +23,6 @@ from tqdm import tqdm
 
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.data.dataset import (
-    create_temporal_mask_for_window,
     ensure_joint_name_embeddings,
     resample_motion_features,
 )
@@ -872,7 +871,6 @@ def _generate_all_species(
                 list(batch_species),
                 cond_dict,
                 output_frame_count,
-                args.temporal_window,
                 max_joints=batch_max_joints,
                 feature_len=opt.feature_len,
                 loop=getattr(args, 'loop', False),
@@ -1451,7 +1449,6 @@ def main(args=None, cond_dict=None, runtime=None):
         obj_batch,
         cond_dict,
         output_frame_count,
-        args.temporal_window,
         max_joints=max_joints,
         feature_len=opt.feature_len,
         loop=getattr(args, 'loop', False),
@@ -2230,7 +2227,7 @@ def _resolve_loop_phase_length(cond_entry, n_frames, playspeed, action_label):
     return phase_length, cycles
 
 
-def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joints, feature_len, loop=False, action_condition=None, species_emb_override=None, playspeed=1.0):
+def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len, loop=False, action_condition=None, species_emb_override=None, playspeed=1.0):
     """Build model_kwargs for a batch of object_types.
 
     action_condition: {'action_group', 'action_label', 'action_label_emb'} applied
@@ -2241,7 +2238,6 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joi
         training.
     """
     batches = list()
-    circular_mask = bool(loop)
     for i, object_type in enumerate(object_types):
         if object_type not in cond_dict:
             available = ', '.join(sorted(cond_dict.keys()))
@@ -2262,7 +2258,6 @@ def create_condition(object_types, cond_dict, n_frames, temporal_window, max_joi
         batch.append(parents)
         batch.append(rest_pose)
         batch.append(offsets)
-        batch.append(create_temporal_mask_for_window(temporal_window, n_frames, circular=circular_mask))
         batch.append(joints_graph_dist)
         batch.append(joint_relations)
         batch.append(object_type)

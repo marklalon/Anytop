@@ -209,7 +209,6 @@ def test_create_condition_can_sample_at_target_joint_count() -> None:
         ["Horse", "Horse"],
         cond_dict,
         n_frames=4,
-        temporal_window=3,
         max_joints=3,
         feature_len=13,
     )
@@ -237,7 +236,6 @@ def test_create_condition_rejects_cond_entry_without_canonical_stats() -> None:
             ["Horse"],
             cond_dict,
             n_frames=4,
-            temporal_window=3,
             max_joints=3,
             feature_len=13,
         )
