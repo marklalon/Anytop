@@ -915,8 +915,10 @@ def _inherit_canonical_stats_from_dataset(object_name, object_cond, reference_co
     is a same-object_subset species in the training dataset cond.npy. Without them
     the cond cannot be (de)standardized and generation fast-fails downstream.
 
-    Returns True if stats were set (or were already present), False if none could be
-    resolved (the caller warns; generation will then raise the missing-stats error).
+    Returns True if stats were set (or were already present), False if the reference
+    cond holds no same-object_subset species with stats. Raises ValueError when
+    ``reference_cond_path`` is missing and FileNotFoundError when the path does not
+    exist -- the stats belong to a trained checkpoint, so there is no fallback.
     """
     from .canonical_features import get_canonical_global_stats
 
@@ -930,14 +932,22 @@ def _inherit_canonical_stats_from_dataset(object_name, object_cond, reference_co
               "(missing species_tags.jsonl entry); cannot inherit canonical stats.")
         return False
 
-    # The stats belong to a *checkpoint*, so the reference is that checkpoint's
-    # own cond.npy snapshot; the processed dataset directory is only the
-    # fallback for a caller that names neither.
-    ref_cond_path = reference_cond_path or pjoin(DEFAULT_DATASET_DIR, 'cond.npy')
+    # The stats belong to a *checkpoint*, so the reference must be that
+    # checkpoint's own cond.npy snapshot -- a caller-supplied path is required,
+    # with no fallback to the processed dataset directory (that cond is not the
+    # checkpoint the model was trained on, so its stats would be out-of-distribution).
+    if not reference_cond_path:
+        raise ValueError(
+            f"reference_cond_path is required to inherit canonical stats for "
+            f"'{object_name}' (object_subset={target_subset!r}). The stats belong "
+            "to a trained checkpoint, so pass the checkpoint's own cond.npy."
+        )
+    ref_cond_path = reference_cond_path
     if not os.path.exists(ref_cond_path):
-        print(f"[process_skeleton] reference cond not found at '{ref_cond_path}'; "
-              "cannot inherit canonical stats.")
-        return False
+        raise FileNotFoundError(
+            f"[process_skeleton] reference cond not found at '{ref_cond_path}'; "
+            "cannot inherit canonical stats."
+        )
 
     from .cond_schema import load_cond
     ref_cond = load_cond(ref_cond_path)
@@ -1190,9 +1200,9 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path,
     )
     # Rest-pose-only builds have no clips to calibrate the per-object_subset
     # standardization stats from, and no sibling in this standalone cond to
-    # inherit them from. Pull them from the trained dataset's same-object_subset
-    # species so the cond is usable for inference (else generation fast-fails
-    # with the missing-stats KeyError).
+    # inherit them from. Pull them from the trained checkpoint's same-object_subset
+    # species (reference_cond_path, required) so the cond is usable for inference;
+    # a missing reference fails fast here instead of at generation time.
     _inherit_canonical_stats_from_dataset(
         object_name, object_cond, reference_cond_path=reference_cond_path
     )

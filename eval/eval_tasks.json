@@ -3,8 +3,10 @@
   "tasks": [
     { "category": "Basic", "args": ["--object_type", "Buffalo"] },
 
-    { "category": "Basic", "args": ["--object_type", "Buffalo", "--num_frames", "30", "--loop"] },
-    { "category": "Basic", "args": ["--object_type", "Buffalo", "--num_frames", "60", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--num_frames", "30", "--action_label", "run", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--num_frames", "30", "--action_label", "walk", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--num_frames", "60", "--action_label", "run", "--loop"] },
+    { "category": "Basic", "args": ["--object_type", "Buffalo", "--num_frames", "60", "--action_label", "walk", "--loop"] },
     { "category": "Basic", "args": ["--object_type", "Buffalo", "--num_frames", "120", "--action_label", "run", "--loop"] },
     { "category": "Basic", "args": ["--object_type", "Buffalo", "--num_frames", "120", "--action_label", "walk", "--loop"] },
 
@@ -20,8 +22,8 @@
 
     { "category": "Outpaint", "args": ["--reference_motion", "dataset/truebones/zoo/truebones_processed/motions/Buffalo_RunLoop_1.npy", "--num_frames", "120", "--skip_timesteps", "99"] },
 
-    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--object_type", "dragon", "--loop"] },
-    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--reference_motion", "outputs/test/dragon_walk.glb", "--inpaint_joints", "RightThigh", "--species_tags", "Quadruped,Heavy,Lumbering"] },
-    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--reference_motion", "$LAST_OUTPUT", "--skip_timesteps", "90", "--species_tags", "Quadruped,Heavy,Lumbering"] }
+    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--object_type", "dragon", "--loop", "--action_label", "fly"] },
+    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--reference_motion", "outputs/test/dragon_walk.glb", "--inpaint_joints", "RightThigh", "--species_tags", "Quadruped,Heavy,Lumbering", "--action_label", "walk"] },
+    { "category": "NewSkeleton", "args": ["--cond_path", "outputs/new_skeleton/cond.npy", "--reference_motion", "$LAST_OUTPUT", "--skip_timesteps", "90", "--species_tags", "Quadruped,Heavy,Lumbering", "--action_label", "walk"] }
   ]
 }

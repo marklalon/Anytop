@@ -397,9 +397,11 @@ def add_generate_options(parser):
                             "Valid range: [min_length, 2*num_frames] of the checkpoint.")
     group.add_argument("--object_type", default=None, type=str,
                        help="Target object type. Optional if --reference_motion is provided "
-                            "(inferred from filename). Required for pure-random generation. "
-                            "When both flags are provided and the inferred type differs from "
-                            "this value, the reference motion is auto-retargeted to this skeleton.")
+                            "(inferred from filename), or if --cond_path points at a cond file "
+                            "containing a single species (that species is used). Otherwise "
+                            "required for pure-random generation. When both flags are provided "
+                            "and the inferred type differs from this value, the reference motion "
+                            "is auto-retargeted to this skeleton.")
     group.add_argument("--sampling_method", default="ddim", choices=["p", "ddpm", "ddim"],
                        help="Diffusion sampler to use. 'p'/'ddpm' = DDPM (slow, high quality). 'ddim' = DDIM (fast, recommended). Default: ddim.")
     group.add_argument("--sampling_steps", default=100, type=int,
@@ -512,11 +514,12 @@ def process_new_skeleton_args():
                             "defines the descriptor baked into cond.npy. There is no fallback to "
                             "the default dataset's species_tags.jsonl, so it must be supplied "
                             "explicitly.")
-    group.add_argument("--reference-cond-path", default=None, type=str,
-                       help="cond.npy to inherit the per-object_subset standardization "
-                            "statistics from. Those statistics belong to a trained checkpoint, "
-                            "so this should normally be the checkpoint's own cond.npy snapshot. "
-                            "Defaults to the processed dataset directory's cond.npy.")
+    group.add_argument("--reference-cond-path", required=True, type=str,
+                       help="REQUIRED. cond.npy to inherit the per-object_subset "
+                            "standardization statistics from. Those statistics belong to a "
+                            "trained checkpoint, so this must be the checkpoint's own "
+                            "cond.npy snapshot (there is no fallback to the processed "
+                            "dataset directory).")
     group.add_argument("--skip-t5-embeddings", action='store_true', default=False,
                        help="Skip T5 embedding computation (caller will inject via "
                             "attach_t5_embeddings_to_cond with a pre-loaded conditioner).")

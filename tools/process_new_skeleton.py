@@ -24,6 +24,10 @@ species-tags      - Comma-separated species tags (motion descriptor) for --objec
                     default dataset's species_tags.jsonl.
 crop-enabled      - Enable skeleton cropping to MAX_JOINTS=100.
                     Off by default (inference has no joint cap).
+reference-cond-path - REQUIRED. cond.npy to inherit the per-object_subset
+                    standardization statistics from. Those statistics belong to a
+                    trained checkpoint, so pass the checkpoint's own cond.npy
+                    snapshot. There is no fallback to the processed dataset dir.
 
 Output (under save_dir/):
   cond.npy    - Skeleton representation (joint name embeddings, graph conditions,
@@ -81,6 +85,7 @@ def process_new_skeleton(
     *,
     save_dir: str,
     tpos_path: str,
+    reference_cond_path: str,
     object_type: str | None = None,
     crop_enabled: bool = False,
     species_tags: str | None = None,
@@ -91,6 +96,10 @@ def process_new_skeleton(
 
     This is the programmatic equivalent of the CLI entry point and keeps the
     CLI behaviour unchanged while allowing server-side worker reuse.
+
+    ``reference_cond_path`` is required: the per-object_subset standardization
+    statistics are inherited from a trained checkpoint's cond.npy snapshot (there
+    is no fallback to the processed dataset directory).
     """
     args = type("ProcessNewSkeletonArgs", (), {
         "save_dir": save_dir,
@@ -99,6 +108,7 @@ def process_new_skeleton(
         "crop_enabled": crop_enabled,
         "species_tags": species_tags,
         "skip_t5_embeddings": skip_t5_embeddings,
+        "reference_cond_path": reference_cond_path,
         "yes": yes,
     })()
     return _process_new_skeleton_from_args(args)

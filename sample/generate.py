@@ -1049,12 +1049,28 @@ def main(args=None, cond_dict=None, runtime=None):
     # If source != target → retarget.
     explicit_object_type = args.object_type
 
+    # A --cond_path whose file holds exactly one species makes --object_type
+    # redundant: there is only one possible target, so use it (e.g.
+    # `--cond_path outputs/new_skeleton_horse/cond.npy --loop`).
+    if (
+        not reference_motion_path
+        and not explicit_object_type
+        and str(getattr(args, 'cond_path', '') or '').strip()
+        and len(cond_dict) == 1
+    ):
+        explicit_object_type = next(iter(cond_dict))
+        print(
+            f"[generate] --object_type omitted; the cond file {args.cond_path} "
+            f"contains a single species, using it: {explicit_object_type}"
+        )
+
     if not reference_motion_path and not explicit_object_type:
         sys.exit(
             "ERROR: must supply at least one of --reference_motion or --object_type. "
             "Pass --object_type for pure-random generation, --reference_motion for "
             "reference-guided generation (object_type auto-inferred from filename), "
-            "or both to retarget the reference into a different target skeleton."
+            "or both to retarget the reference into a different target skeleton. "
+            "(A single-species --cond_path also auto-selects its species.)"
         )
 
     # (inpaint-requires-reference is enforced early, before the model load)
