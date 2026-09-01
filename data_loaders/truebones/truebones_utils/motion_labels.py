@@ -129,9 +129,7 @@ CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB_CORE + ACTION_VOCAB_DETAIL
 # This mask is a FROZEN CONSTANT, deliberately not recomputed from the dataset at
 # import time -- otherwise adding clips would silently redefine what a slot
 # means. Recompute it by the rule above when the corpus grows, and commit the new
-# values explicitly:
-#
-#     python tools/action_multihot_mask_report.py
+# values explicitly.
 #
 # The rows below were fitted on 2026-08-31 over the merged 4028-clip corpus
 # (truebones/zoo + zoo_upgrade + unitybundles).

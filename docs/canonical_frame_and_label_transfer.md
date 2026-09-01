@@ -449,8 +449,8 @@ D + 杠杆 2 拆掉的是"坐标系错配导致的形变"这一层，Buffalo 的
 存的是 physical 特征，rest 相减在加载时做。）
 `validate_anytop_dataset --datasets` 三个数据集全 PASS。
 
-自检脚本是新增的 [tools/check_canonical_frame_swap.py](../tools/check_canonical_frame_swap.py)
-（§1.2 的换系流程 + §2.4 的幅度表，纯数据侧，无模型）。同一批 clip、同一套流程，
+判据是 §1.2 的换系流程 + §2.4 的幅度表（纯数据侧，无模型：用错误的
+object_subset 统计量解码 clip，检验 bone length 不变形）。同一批 clip、同一套流程，
 改动前后：
 
 ```
@@ -533,9 +533,8 @@ pos 散布 0.57–1.78（≈3.1×），rot / vel 实质不变——与 §2.4 的
 ### 8.4 §5 步骤 5 — `GROUP_MULTIHOT_MASK` 的 object_subset 轴
 
 规则按 §4.2 落成 `clips >= 10 AND species >= 5 AND subs >= 3`，
-`subs` = 携带该词的物种数 ≥3 的 object_subset 个数。重算工具：
-[tools/action_multihot_mask_report.py](../tools/action_multihot_mask_report.py)
-（三个组全量，4028 clip 对得上三个数据集的 npy 总数）。
+`subs` = 携带该词的物种数 ≥3 的 object_subset 个数。按此规则对三个组全量重算
+（4028 clip 对得上三个数据集的 npy 总数），结果逐槽位人工审查后显式提交。
 
 **§4.2 表里的 locomotion 数字与实测有出入，实测为准。** 差异来自本文那次测量没有走仓库自己的
 `vocab_words_in`：那个函数会丢弃"整个匹配都落在另一个更长匹配里"的词，所以
@@ -549,7 +548,7 @@ fall 15/10/**1**、eat **0**。swim 的结论不变（subs=2，最密的 aquatic
 transition 的 `run` `fly` `hurt` `rest` `shake` `crouch` `rear`。
 `roar` 因此在三个组里全被关掉，两处拿它举例的测试改用 `bite`（stationary 留、locomotion 关）。
 **数据补齐（把 9 个四足 swim clip retarget 到 15–20 副四足骨架）不在本次范围内**——它是采数据，
-不是改代码；工具已经能在补完后一条命令重算并给出 diff。
+不是改代码；补完后按同一规则重算并显式提交即可。
 
 ### 8.5 §5 步骤 6 — §4.3 rest 几何：做成了预处理的一步
 
@@ -602,8 +601,8 @@ Dog / Dog-2 的 `Bip01_Ponytail3Nub`、`Bip01_Head2_Eyeleds` 在只看 8 个 cli
 
 **幂等性实测**：第二遍跑 `regenerate_dataset_artifacts`，三个数据集都报
 "rest geometry already agrees with the clips; nothing re-seated"。
-`tools/audit_rest_vs_clip_geometry.py`（只读，与 pipeline 共用同一套判据）现在报
-**0 re-seatable**，剩下的 40 个 >10% 物种全是判据主动放过的（内部关节 / 真的被动画 / 道具）。
+按同一套判据（`reseat_candidates`，只读复核）现在报 **0 re-seatable**，
+剩下的 40 个 >10% 物种全是判据主动放过的（内部关节 / 真的被动画 / 道具）。
 改完 §6.1 硬判据重跑仍然逐行拉平（超出量 max +0.03 个百分点），三个数据集
 `validate_anytop_dataset` 全 PASS。
 

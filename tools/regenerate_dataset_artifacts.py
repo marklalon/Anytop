@@ -617,8 +617,7 @@ def main() -> int:
         help="Skip re-seating each species' rest pose onto the geometry its own clips "
              "use (nub / locator / ear / horn leaf joints the exporter parked somewhere "
              "the animation never puts them). The step is idempotent and normally always "
-             "on; this is an escape hatch for reproducing an older build. Report what it "
-             "would do with tools/audit_rest_vs_clip_geometry.py.",
+             "on; this is an escape hatch for reproducing an older build.",
     )
     args = parser.parse_args()
 
