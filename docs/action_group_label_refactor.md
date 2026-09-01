@@ -727,3 +727,43 @@ Buffalo / Camel / Comodoa / Dog / Roach / Skunk / Stego / Tricera / Tyranno 各 
 `tools/regenerate_dataset_artifacts.py`（删 backfill 与 REVIEW 报告，加 fast-fail）、
 `tests/test_action_label_fallback.py`（删除）、
 `tests/test_multi_token_species_names.py`（删两个依赖回退的测试）。
+
+### 9.6 推理端 CFG：`--action_label_cfg_scale`（2026-09-01）
+
+训练侧的 `--action_label_cfg_drop_prob`（默认 0.2）一直只写了一半的合同 —— 它按样本
+硬丢条件（T5 与 multihot **共用一个 drop 掩码**，见 §2.4/`anytop.py`），把权重训出一个
+真正的 uncond 模态；但采样时从来没人用过它，`--action_label` 给出的永远是**未放大的**
+条件预测。现在补上另一半：
+
+`model/cfg_sampler.py::ClassifierFreeActionModel` 每个扩散步跑两次去噪 ——
+一次带 label，一次把 `y['action_label_active']` 全置 False（`_resolve_action_label_active`
+里显式掩码优先于训练期的 Bernoulli，`_build_action_label_token` 再把该行路由到
+`action_label_null_emb`）—— 然后外推：
+
+    out = out_uncond + s * (out_cond - out_uncond)
+
+AnyTop 预测 x0 而非 eps，所以外推发生在 x0 上，代数完全一样，`s = 1` 退化为原来的条件预测。
+**只有 action 条件被引导**：两次 forward 之间除了那个掩码逐位相同，species FiLM /
+canonical frame / loop / playspeed / 骨架图在差分里自行抵消，不会被一起放大。
+
+两次 forward 是**顺序**跑的，不是拼成一个 2B batch：`y` 里除张量外还带着逐样本的
+python 列表（parents、joint 名、metadata），batch 化要手工复制每一项，而这里两路都要
+走完整模型，拼 batch 并不省注意力计算（与 controlnet 时期「uncond 会整段跳过 reference
+cross-attn」的情形不同）。
+
+| 位置 | 结果 |
+|---|---|
+| `model/cfg_sampler.py` | **新增**。`ClassifierFreeActionModel(model, scale)`；属性透传到内层模型（`generate.py` 读 `model.feature_len`，`unwrap_anytop_model` 沿 `.model` 下钻） |
+| `parser_util.py` | 新增 `--action_label_cfg_scale`（generate 组，默认 1.0 = 关闭；典型 1.5~3） |
+| `sample/generate.py` | `_wrap_action_label_cfg()`：scale=1.0 原样返回模型（保持每步 1 次 forward）；否则要求 (a) 有 `--action_label`，(b) checkpoint 的 `action_label_cfg_drop_prob > 0`（该值是 model 组参数，由 `parse_and_load_from_model` 从 `args.json` 还原，所以读到的是**权重实际的训练值**），(c) scale >= 0，任一不满足直接 exit。单物种与 `--object_type all` 两条采样路径都已接上 |
+| `tests/test_action_label_cfg_sampler.py` | **新增** 12 个用例：外推公式（含 scale=0 = 纯 uncond）、uncond 掩码形状/取值、不改调用方的 `y`、非法 scale、属性透传，以及与真实 AnyTop 两次显式 forward 的逐值对齐 |
+
+服务端同步接上（逐请求可调）：
+
+| 位置 | 结果 |
+|---|---|
+| `server/anytop_service.py` | `build_anytop_args(action_label_cfg_scale=1.0)`：1.0 不上命令行（保持每步 1 次 forward）；否则校验 **有限且 >= 0**、**label 非空**，再在 `generate_args` 之后校验 checkpoint 的 `action_label_cfg_drop_prob > 0`——全部抛 `ValueError` 而不是让 `generate.py` 的 `sys.exit` 冒上来（`SystemExit` 是 `BaseException`，WS handler 的 `except Exception` 接不住）。`collect_gen_kwargs` 同步带上该字段 |
+| `server/serve.py` | 请求体新增 `action_label_cfg_scale`（缺省 1.0；显式判 `None`，**不写 `or 1.0`**，否则 0.0 会被悄悄改成 1.0） |
+| `client/anytop_client.py` | 新增 `--action-label-cfg-scale`（默认 None = 不发该字段） |
+
+代价是**采样时间翻倍**（每步两次 forward），所以默认关闭。

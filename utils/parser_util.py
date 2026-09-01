@@ -453,6 +453,17 @@ def add_generate_options(parser):
                             "the training labels and combined with the multi-hot derived from the "
                             "controlled words it hits. Empty = unconditional (the learned null "
                             "embedding). Requires a checkpoint trained with --action_label_cond.")
+    group.add_argument("--action_label_cfg_scale", default=1.0, type=float,
+                       help="Classifier-free guidance scale over --action_label. 1.0 (default) = "
+                            "off: one forward per diffusion step, the conditional prediction as-is. "
+                            ">1 amplifies the prompt by extrapolating away from the model's own "
+                            "unconditional prediction (x0_uncond + s*(x0_cond - x0_uncond)), at 2x "
+                            "sampling cost since every step then runs a conditional AND an "
+                            "unconditional forward. Typical range 1.5-3; push it too far and the "
+                            "sample overshoots into jitter and stretched bones. Requires "
+                            "--action_label and a checkpoint trained with a non-zero "
+                            "--action_label_cfg_drop_prob (without it there is no unconditional "
+                            "mode to guide away from).")
     group.add_argument("--action_words", default="", type=str,
                        help="Controlled-vocabulary words used to select the reference prior for the "
                             "motion-quality scorer (eval/evaluate_motion_quality.py and the training "
@@ -480,6 +491,19 @@ def train_args():
     return parser.parse_args()
 
 
+def _cli_flag_explicit(argv, flag):
+    """Whether *flag* (e.g. ``'--temporal_window'``) was given on the command line.
+
+    ``argv`` may be ``None`` (meaning "read ``sys.argv``", as when ``generate_args``
+    is called with no argument). Matches both ``flag value`` and ``flag=value``.
+    """
+    if argv is None:
+        argv = sys.argv[1:]
+    if not argv:
+        return False
+    return any(a == flag or a.startswith(flag + '=') for a in argv)
+
+
 def generate_args(argv=None):
     parser = ArgumentParser()
     # args specified by the user: (all other will be loaded from the model)
@@ -492,9 +516,15 @@ def generate_args(argv=None):
     # There is deliberately no --action_group here: the group belongs to the
     # weights, so apply_checkpoint_action_group() sets args.action_group from the
     # checkpoint's own args.json.
+    preserve_cli_args = {'action_label', 'action_words', 'species_tags'}
+    # --temporal_window is a model-group arg, so by default it is clobbered by the
+    # checkpoint's args.json (its training window). An explicitly-passed CLI value
+    # must win instead; a bare run (no flag) keeps the checkpoint's window.
+    if _cli_flag_explicit(argv, '--temporal_window'):
+        preserve_cli_args.add('temporal_window')
     args = parse_and_load_from_model(
         parser, argv=argv,
-        preserve_cli_args={'action_label', 'action_words', 'species_tags'},
+        preserve_cli_args=preserve_cli_args,
     )
     return args
 

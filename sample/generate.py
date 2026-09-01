@@ -46,6 +46,7 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     tpose_features_from_cond,
     recover_bvh_export_animation_from_motion_np,
 )
+from model.cfg_sampler import ClassifierFreeActionModel
 from motion_lib import BVH
 from os.path import join as pjoin
 from utils import dist_util
@@ -851,6 +852,7 @@ def _generate_all_species(
     if action_condition is not None:
         print(f'  Action label: {action_condition["action_label"]!r} '
               f'(group={action_condition["action_group"]})')
+    sampling_model = _wrap_action_label_cfg(model, args, action_condition)
 
     for batch_idx, batch_species in enumerate(species_batches, 1):
             actual_bs = len(batch_species)
@@ -884,7 +886,7 @@ def _generate_all_species(
             print(f'  Sampling {actual_bs} species × 1 motion each ...')
             sample = _sample_batch(
                 diffusion=diffusion,
-                model=model,
+                model=sampling_model,
                 model_kwargs=model_kwargs,
                 sampling_method=sampling_method,
                 sample_shape=(actual_bs, batch_max_joints, model.feature_len, output_frame_count),
@@ -1388,6 +1390,7 @@ def main(args=None, cond_dict=None, runtime=None):
     # Create condition with effective frame count (shared across passes).
     obj_batch = [object_type] * args.batch_size
     _action_condition = _resolve_action_condition(args, model, runtime, cond_dict[object_type])
+    _sampling_model = _wrap_action_label_cfg(model, args, _action_condition)
 
     # ── --species_tags: restyle the target species' motion descriptor ────────
     _species_emb_override = None
@@ -1483,7 +1486,7 @@ def main(args=None, cond_dict=None, runtime=None):
     def _run_sample(reference_motion, skip_ts, inpaint_mask):
         return _sample_batch(
             diffusion=diffusion,
-            model=model,
+            model=_sampling_model,
             model_kwargs=model_kwargs,
             sampling_method=sampling_method,
             sample_shape=(args.batch_size, max_joints, model.feature_len, output_frame_count),
@@ -2129,6 +2132,48 @@ def _resolve_action_condition(args, model, runtime, cond_entry):
         tokens = conditioner.tokenize_entries([label])
         emb = conditioner(tokens).detach().cpu().numpy().astype(np.float32, copy=False)[0]
     return {'action_group': group, 'action_label': label, 'action_label_emb': emb}
+
+
+def _wrap_action_label_cfg(model, args, action_condition):
+    """Wrap the denoiser in action-label CFG, or hand it back untouched.
+
+    ``--action_label_cfg_scale 1.0`` (the default) returns ``model`` itself, so the
+    common path keeps exactly one model forward per diffusion step. Any other scale
+    needs both halves of the CFG contract to exist -- a prompt to guide toward, and
+    a checkpoint that trained the null condition -- so both are checked here rather
+    than silently costing 2x for a guidance term that is identically zero.
+    """
+    raw_scale = getattr(args, 'action_label_cfg_scale', None)
+    # NOT `or 1.0`: 0.0 is a meaningful scale (pure unconditional sample).
+    scale = 1.0 if raw_scale is None else float(raw_scale)
+    if scale == 1.0:
+        return model
+    if scale < 0.0:
+        sys.exit(
+            f"ERROR: --action_label_cfg_scale must be >= 0, got {scale}. A negative "
+            "scale extrapolates AWAY from the prompt."
+        )
+    if action_condition is None:
+        sys.exit(
+            "ERROR: --action_label_cfg_scale needs --action_label. With no prompt both "
+            "CFG passes are the same unconditional forward, so the guidance term is "
+            "exactly zero and sampling would only cost twice as much."
+        )
+    # Restored from the checkpoint's args.json by parse_and_load_from_model (it is
+    # a 'model'-group arg), so this reads how the weights were actually trained.
+    drop_prob = float(getattr(args, 'action_label_cfg_drop_prob', 0.0) or 0.0)
+    if drop_prob <= 0.0:
+        sys.exit(
+            "ERROR: --action_label_cfg_scale needs an unconditional mode to guide away "
+            "from, but this checkpoint was trained with --action_label_cfg_drop_prob 0, "
+            "so it never saw the null condition. Sample with --action_label_cfg_scale 1.0, "
+            "or retrain with a non-zero drop probability."
+        )
+    print(
+        f"[generate] action-label CFG: scale={scale:g} on "
+        f"{action_condition['action_label']!r} (2 model forwards per diffusion step)"
+    )
+    return ClassifierFreeActionModel(model, scale)
 
 
 def _resolve_loop_phase_length(cond_entry, n_frames, playspeed, action_label):
