@@ -27,7 +27,6 @@ REM 支持任何在数据集中的物种名称，如 Dragon, Bird, Camel 等
 	--ff_size 2048 ^
 	--layers 8 ^
 	--action_label_cond ^
-	--action_label_coarse_prob 0.3 ^
 	--species_cond ^
 	--species_joint_cond ^
 	--loop_cond_prob 0.5 ^

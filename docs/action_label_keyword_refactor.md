@@ -14,8 +14,11 @@
 >    = 0.694，L/R = 0.775）。
 > 3. §2.5 `action_label_coarse_prob` 全链路删除。
 > 4. §3.2 + §3.4 去 multi-hot；`action_label_projection` / `action_label_null_emb` 保留。
-> 5. §4 评测工具 [`eval/direction_following.py`](../eval/direction_following.py)
->    （`sweep` / `sheet` / `score` / `phase`）。
+> 5. §4 评测脚本 [`tools/direction_following.py`](../tools/direction_following.py)
+>    （`sweep` / `score` / `sheet` / `phase`；方案执行期的临时验证工具，不在
+>    常驻 eval 套件里）。
+>
+> **§4 的方向指标现在可以自动判定，不必人工盲评**（见下面的 §4.1 补充）。
 >
 > **未实现（按判据，都要等评测结果才决定）**：
 > §3.3 的 FiLM 备选方案 —— 没有 flag，没有代码；
@@ -387,18 +390,24 @@ body plan≥3，四个都过线）。**up / down / sideways 数据太薄**，
 
 ---
 
-## 4. 验证与评测：方向只能人工标注
+## 4. 验证与评测
 
-自动几何判定不可用（§2.4：大量 clip 是原地动作，量不出行进方向），
-所以方向指标走**人工盲评**。
+> ⚠️ **本节开头这条前提在实施时被推翻了，见 §4.1。**
+> "自动几何判定不可用"只对 **root motion** 成立；**步态**里还留着方向，
+> 而且在本节实际要用的那批物种上是 100% 可判的。
+> 下面保留原文以便对照，实际按 §4.1 执行：主指标默认走 `score --auto`，
+> 人工盲评降级为 `--auto` 拒绝的物种的兜底和抽查。
+
+~~自动几何判定不可用（§2.4：大量 clip 是原地动作，量不出行进方向），
+所以方向指标走人工盲评。~~
 
 **轮次**
 
 | 轮次 | 配置 | 回答的问题 |
 |---|---|---|
-| **R0** | 现有 v3 checkpoint | 基线 before 数字（不训练，只标注） |
+| **R0** | 现有 v3 checkpoint | 基线 before 数字（不训练）。注意 v3 权重里有 `action_multihot_projection`，当前代码已删掉这一路，`load_model_wo_clip` 会因 unexpected key 直接报错 —— R0 必须在重构前的 commit `00d5abb` 上跑（开一个 git worktree），`score` 两条路径都不碰模型，在哪边跑都行 |
 | **R1** | 关键词化 label + 去 multi-hot + 加性 token | 主方案够不够 |
-| **R2（备选）** | R1 + `--action_label_film` | 备选方案：只在 §3.3 的启用判据成立时才考虑 |
+| **R2（备选）** | R1 + FiLM 注入 | 备选方案：只在 §3.3 的启用判据成立时才考虑；**代码未实现**，要用得先写 |
 
 **提示集**：方向齐全的物种（KI_Human 等）× {`walk`, `run`} × {`forward`,
 `backward`, `left`, `right`}，每个提示固定 seed 采 N=16~32 条。
@@ -422,6 +431,46 @@ body plan≥3，四个都过线）。**up / down / sideways 数据太薄**，
 
 **其它**：[`eval/evaluate_motion_quality.py`](../eval/evaluate_motion_quality.py)
 的既有指标不得退化。
+
+### 4.1 补充（实施时的修正）：方向可以自动判定 —— 用步态，不用 root motion
+
+本节原来的前提是"自动几何判定不可用"。**这条只对 root motion 成立，对步态不成立。**
+
+`strip_translation_root_xz` 把每个 locomotion clip 的 root XZ 剥成 0
+（实测 `KI_Human_Walk01` 四个方向的 root 轨迹逐字节相同，span 全 0），
+所以从 root 上确实读不出方向。但**剥掉 root 恰恰把 clip 变成了跑步机**：
+支撑脚踩在不动的地面上，身体被钉住之后，那只脚必然以 **−行进速度** 滑动。
+对着地脚的水平速度取平均再取反，就是身体坐标系下的行进方向。
+
+两个实现要点：
+
+* **支撑脚要用高度判定，不能用 contact 通道**。channel 12 是「速度低于阈值
+  且贴近地面」，它恰好把这里要测的滑动筛掉了 —— 用它测出来的水平速度恒等于 0。
+  改成「离该关节自己的 5% 分位地面 ≤ 0.05」。
+* 规范帧里 **+Z = 前，+X = 左**（`process_anim` 把所有骨架转到面向 +Z，
+  特征帧 `r_rot` 是 identity）。
+
+**在全语料上验证过**（每个只带一个方向词的 locomotion clip）：
+
+| 物种类别 | n | forward/backward | left/right |
+|---|---:|---:|---:|
+| 四方向人形 rig（KI_Human / KI_Archer / KI_Soldier / KI_Warrior / KI_CasterMage / LH_Hero / RMW_Skeleton） | 68 | **100%** | **100%** |
+| 龙 / 四足（MB_TigerDrago、MB_Unka、Trex） | 30 | 100% | **0%** |
+
+**后一行不是噪声，是词义不同**：四足和飞龙不会横移，它们的 `left` clip 是
+**转弯**，身体坐标系下的行进方向确实是 forward。所以这个估计器
+**只在 §4 实际要用的那批物种上成立**（本节的提示集本来就写的是
+"方向齐全的物种（KI_Human 等）"），不能无条件推广。
+
+因此 `score --auto` 的设计是**先自校准再打分**：
+拿该物种自己的带标注 clip 跑一遍估计器，达不到阈值（默认 90%）就**拒绝打分**
+并要求人工（`truebones/zoo/Scorpion-2` 就是这样被抓出来的 —— 它的左右是反的）。
+另外三类一律跳过：label 里带 `turn`（转向 ≠ 行进方向）、带 `swim`/`fly`
+（没有支撑脚）、以及行进速度低于地板值的（原地动作，没有方向可读）。
+
+人工盲评（`sheet` + `score`）**保留**，用于 `--auto` 拒绝的物种和抽查。
+唯一测不到的是 "mixed"：逐 clip 的几何测量只能给一个方向，看不出模态混合 ——
+那一项仍然要么看 `phase` 的组内离散度，要么人工。
 
 ---
 

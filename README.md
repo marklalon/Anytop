@@ -131,102 +131,25 @@ save_dir/
        
 ## Motion Synthesis
 
-### Generate motion for skeleton from Truebones dataset
-We categorize Truebones skeletons by body plan into the following `--object_subsets`: `quadruped`, `biped`, `multiped`, `serpentine`, `aquatic`, and `winged`.
-In addition to a unified model trained on the entire dataset, we also trained specialized models per body plan.
-
-The skeleton-to-subset mapping is derived from the first column (body plan) of `dataset/truebones/zoo/truebones_processed/species_tags.jsonl`, which is the single source of truth for both the per-species motion descriptor and the `--object_subsets` groupings.
-
-If you'd like to synthesize motion using our pre-trained models, ensure that all model checkpoint files are located in the ./save directory (this should already be the case if you've completed Step 3: Download Pretrained Models).
-
-For example, to generate motion using models trained on winged objects, you can synthesize motion for one or more skeletons from the `winged` subset using the following command:
-
-```shell
-python -m sample.generate  --model_path save/flying_model_dataset_truebones_bs_16_latentdim_128/model000229999.pt --object_type Parrot2 Bat --num_repetitions 3
-```
-As the code is fully generic, you can generate motion for unseen skeletons (that do not belong to the subset the model was trained on) using the exact same syntax. 
-For example, you can explore synthesizing motions for the Ostrich skeleton using the `winged` subset model:
-```shell
-python -m sample.generate  --model_path save/flying_model_dataset_truebones_bs_16_latentdim_128/model000229999.pt --object_type Tyranno --num_repetitions 3
+```bat
+generate.bat --object_type <skeleton_name>
 ```
 
-### Generate unseen skeleton outside of Truebones dataset
-We support motion synthesis for skeletons outside of Truebones dataset, provided as bvh file/s. 
-To do that, you must first run our pre-processing pipeline on the new skeleton to create cond.py file for the skeleton, as described in 
-Preprocessing new skeleton section above. Once you've accomplish this part, you can synthesize motion of the new skeleton by running the command:
-
-```shell
-python -m sample.generate  --model_path <model_path> --object_type <skeleton_name> --num_repetitions 3 --cond_path <path_to_cond_npy_file>
-```
-
-**You may also define:**
-* `--device` id.
-* `--seed` to sample different seeds.
-* `--num_frames` number of frames in the sampled motion (default 60).
-
-**Running those will get you:**
-
-* `<object_type>_rep_<rep_id>_#<sample_id>.npy` file with xyz positions of the generated animation
-* `<object_type>_rep_<rep_id>_#<sample_id>.mp4` a stick figure animation for each generated motion
-* `<object_type>_rep_<rep_id>_#<sample_id>.bvh` bvh file of the generated motion
-
-Stick figure animation looks something like this:
-
-![example]( assets/smaller_stick_fig.gif )
+The full argument set of the current run lives in `generate.bat`; every flag is
+a plain CLI option of `python sample/generate.py --help`. It resolves the latest
+checkpoint under `save/merged_locomotion_v3/` (the `RUN_NAME` set in the script)
+automatically and passes the target skeleton plus any extra flags through to
+`sample/generate.py` (e.g. `generate.bat --object_type
+Horse --loop --action_label "run, forward"`).
 
 ## Train AnyTop 
 
-To reproduce the unified paper model, run:
-```shell
-python -m train.train_anytop --model_prefix all --objects_subset all --lambda_geo 1.0 --auto_resume --balanced
+```bat
+train.bat
 ```
 
-To reproduce the bipeds paper model, run:
-```shell
-python -m train.train_anytop --model_prefix biped --objects_subset biped --lambda_geo 1.0 --auto_resume --balanced
-```
-
-To reproduce the quadrupeds paper model, run:
-```shell
-python -m train.train_anytop --model_prefix quadruped --objects_subset quadruped --lambda_geo 1.0 --auto_resume --balanced
-```
-To reproduce the multiped paper model, run (snakes are now a separate `serpentine` subset rather than grouped in):
-```shell
-python -m train.train_anytop --model_prefix multiped --objects_subset multiped --lambda_geo 1.0 --auto_resume --balanced
-```
-
-To reproduce the flying animals paper model, run:
-```shell
-python -m train.train_anytop --model_prefix winged --objects_subset winged --lambda_geo 1.0 --auto_resume --balanced
-```
-* **General instructions** Checkout './utils/parser_utils.py' to view all configurable parameters and default settings. '--balanced' flag is used to activate the balancing sampler, ensuring fair sampling of all skeletons. Use '--auto_resume' if you want the script to continue from the latest checkpoint in save_dir. Without it, training starts fresh and overwrites existing checkpoints in save_dir. 
-* `--action_group` is **required** and picks the one group to train on. Each clip belongs to exactly one of `locomotion` (sustained displacement), `stationary` (in-place / interactive) or `transition` (pose changes), and each group trains its own model — so the flag takes a single group, never `all` and never a list. It is training-time only: the value lands in the checkpoint's `args.json`, generation has no such flag and reads it back from there (to sample another group, sample that group's checkpoint), and a resume may not change it. The group and the clip's `action_label` are maintained by hand in `action_labels.jsonl` (one `{"clip": "<name>.npy", "action_group": "...", "action_label": "..."}` object per line) alongside `motion_metadata.json`.
-* An `action_label` is **controlled keywords, not prose**: comma-separated words from the vocabulary in [`motion_labels.py`](data_loaders/truebones/truebones_utils/motion_labels.py), in canonical order — action words in `ACTION_VOCAB` order, then direction words (`forward` / `backward` / `left` / `right`). So `"walk, forward"`, `"run, sprint, forward, left"`, `"attack, bite"`. The loader validates this and fails on anything else, because one word combination must have exactly one spelling or its training mass splits across several T5 vectors. Naming only part of what a clip does is legal (`"run"` with no direction trains the marginal over directions); an empty label means *no condition*. See [docs/action_label_keyword_refactor.md](docs/action_label_keyword_refactor.md) for why prose did not work: mean-pooled T5 diluted the direction word until it was a weaker signal than walk-vs-run, which is why guidance could not recover a heading.
-* Add `--action_label_cond` to condition on the label. It needs the frozen-T5 sidecar next to the labels — build it once with `python tools/build_action_label_embeddings.py <dataset_dir>` (rebuild with `--force` after editing `action_labels.jsonl`). `--action_label_cfg_drop_prob` (default 0.2) trains the unconditional mode that `--action_label_cfg_scale` guides away from at sampling time; sweep that scale before reaching for anything else.
-* **Recommended:** Add `--use_ema` for Exponential Moving Average to improve performance.
-* Use `--diffusion_steps 50` to train the faster model with less diffusion steps.
-* Use `--device` to define GPU id.
-* Add `--train_platform_type {WandBPlatform, TensorboardPlatform}` to track results with either [WandB](https://wandb.ai/site/) or [Tensorboard](https://www.tensorflow.org/tensorboard).
-
-Example of training only on locomotion clips:
-```shell
-python -m train.train_anytop --model_prefix all_locomotion --objects_subset all --action_group locomotion --lambda_geo 1.0 --auto_resume --balanced
-```
-
-## Visualizing Motions in Blender## Visualizing Motions in Blender
-We provide a script to visualize motion data as animated skeletons in Blender, similar to the figures shown in the paper.
-The script accepts either a single .bvh file or a directory containing multiple .bvh files. For each file, it generates a corresponding .blend file with the skeleton animation rendered in an empty scene.
-**Note**: To export an .mp4 render, you'll need to manually set up lighting and position the camera in the Blender UI.  
-Before running the command below, make sure to install the following dependencies in Blender’s Python environment:
-* BVH parsing (bundled in codebase, originally from https://github.com/inbar-2344/Motion)
-* tqdm
-* scipy
-
-To create visualizations for all .bvh files in assets/Truebones_Chicken, run:
-```shell
-blender -b -P visualization/bvh2skeleton.py -- --bvh_path assets/Truebones_Chicken --save_dir save/blend_files --subset bipeds
-```
-* **Customization** You can adjust the visualization using --sphere_radius (joint sphere radius), --cylinder_radius (bone cylinder radius), and --scale (global scale factor).
+The full argument set of the current run lives in `train.bat`; every flag is a
+plain CLI option of `python train/train_anytop.py --help`.
 
 ## Acknowledgments
 We want to thank the following contributors that our code is based on:

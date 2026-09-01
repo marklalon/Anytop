@@ -3,20 +3,50 @@
 Direction instruction-following evaluation.
 
 The question is narrow: when the prompt names a heading, does the generated
-motion go that way? There is no automatic answer to it -- much of this corpus is
-animated in place, so a large share of clips have no root translation to measure
-a heading from (which is also why training labels could not have their directions
-filled in geometrically). So the primary metric is a HUMAN BLIND read, and this
-module is the harness around it:
+motion go that way?
 
     sweep   run the prompt grid through sample/generate.py at several
             --action_label_cfg_scale values, into one output tree + a manifest
-    sheet   turn that manifest into a blinded annotation CSV: shuffled, prompt
+    score   report the metrics, split forward/backward vs left/right and per CFG
+            scale. Two ways to get the answers:
+              --auto     measure each clip's heading geometrically (below). It
+                         calibrates on the real corpus and refuses any species
+                         or prompt it cannot measure.
+              (default)  join a human annotator's blinded answers
+    sheet   build the blinded CSV the human path needs: shuffled, prompt
             withheld, one row per clip
-    score   join the annotator's answers back to the manifest and report the
-            metrics, split forward/backward vs left/right and per CFG scale
-    phase   the automatable SECONDARY metric: how consistent the left/right
-            contact phase offset is (see ContactPhase below)
+    phase   a secondary metric: how consistent the left/right contact phase
+            offset is (see contact_phase_offset)
+
+Measuring a heading when the root does not move
+-----------------------------------------------
+Root XZ is stripped from every locomotion clip (features.py, has_locomotion), so
+all four headings of KI_Human_Walk01 have byte-identical, exactly-zero root
+translation. There is no travel to read off the root -- which is also why the
+training labels could not have their directions filled in geometrically.
+
+But stripping the root is what makes the heading measurable somewhere else: it
+turns every clip into a treadmill. The support foot is planted on ground that
+does not move, so once the body is pinned in place that foot has to slide at
+minus the travel velocity. Average the horizontal velocity of the planted feet,
+negate it, and that is the body-frame heading.
+
+Find the support foot by HEIGHT, not by the contact channel: channel 12 is
+thresholded on low velocity, so it selects away precisely the sliding this
+measures.
+
+Checked against every singly-directioned locomotion clip in the corpus. On the
+species this evaluation actually prompts -- the ones carrying a full four-heading
+gait set, KI_Human and its siblings -- it is exact: 68/68, 100% on both axes. It
+is NOT universally valid, and the failure is not noise but a different meaning of
+the word: for a quadruped or a dragon a "left" clip is a curving TURN rather than
+a side-step, and its body-frame travel genuinely is forward (MB_TigerDrago,
+MB_Unka and Trex all read 100% FB / 0% LR for that reason). So --auto calibrates
+per species on that species' own labeled clips and refuses what it cannot verify.
+
+When --auto covers your species, prefer it: reproducible, free, and no
+annotator in the loop. Keep the human path for species --auto refuses, and as a
+spot-check.
 
 Report FB and LR separately, always. They are known to fail differently: T5
 places "left" and "right" closer together than forward-vs-left, so left/right is
@@ -34,13 +64,22 @@ built) is worth trying.
 Run the R0 baseline (the pre-refactor checkpoint) before anything else. It needs
 no training and without it there is no threshold to judge R1 against.
 
-Usage:
-    python -m eval.direction_following sweep --model_path save/.../model.pt \\
+This is a throwaway verification tool for the action-label keyword refactor
+(docs/action_label_keyword_refactor.md), not part of the permanent eval suite.
+
+Usage (from the Anytop/ directory):
+    python tools/direction_following.py sweep --model_path save/.../model.pt \\
         --species KI_Human --output_dir eval_out/R1
-    python -m eval.direction_following sheet eval_out/R1
+
+    # automatic scoring (preferred)
+    python tools/direction_following.py score eval_out/R1 --auto
+        --cond_path dataset/merged/cond.npy
+        --reference dataset/unitybundles/processed
+
+    # human path, for a species --auto refuses to score
+    python tools/direction_following.py sheet eval_out/R1
     #   ... a human fills in the 'answer' column of eval_out/R1/annotate.csv ...
-    python -m eval.direction_following score eval_out/R1
-    python -m eval.direction_following phase eval_out/R1
+    python tools/direction_following.py score eval_out/R1
 """
 
 from __future__ import annotations
@@ -80,10 +119,101 @@ _AXIS = {"forward": "forward/backward", "backward": "forward/backward",
 MANIFEST_NAME = "manifest.jsonl"
 SHEET_NAME = "annotate.csv"
 
-# Feature channel carrying binary foot contact. Unaffected by root-XZ stripping,
-# so it is measurable on in-place clips too -- which is the whole reason this is
-# the automatable metric and travel direction is not.
+# Feature channel carrying binary foot contact, and the per-joint position block.
 CONTACT_CHANNEL = 12
+POSITION_CHANNELS = slice(0, 3)
+
+# Canonical frame: process_anim rotates every skeleton to face +Z and the feature
+# frame uses r_rot = identity, so these axes hold across species. +X is the
+# character's left. A rig that disagrees is caught by calibration rather than
+# assumed away -- truebones/zoo/Scorpion-2 is one, and reads left/right swapped.
+_FORWARD_AXIS, _LEFT_AXIS = 2, 0
+
+# How close to its own floor a foot must sit to count as support. Deliberately
+# NOT the contact channel: that is thresholded on low velocity and would select
+# away the very sliding this measures.
+DEFAULT_HEIGHT_BAND = 0.05
+
+# Minimum |travel| per frame, as a fraction of body height, for a clip to have a
+# heading at all. Below it the clip is an in-place gait and the measured angle is
+# noise, so the scorer abstains instead of guessing. At this floor the corpus
+# check reads 100% on forward/backward.
+DEFAULT_SPEED_FLOOR = 0.005
+
+# How much of a species' own labeled corpus --auto must get right before it will
+# score generated samples for that species.
+DEFAULT_CALIBRATION_THRESHOLD = 0.9
+
+# Words that make a prompt unmeasurable this way whatever the species: 'turn'
+# names a change of facing, which disagrees with a travel heading by
+# construction, and swimming / flying have no support foot to read.
+UNMEASURABLE_WITH = ("turn", "swim", "fly")
+
+
+# ---------------------------------------------------------------------------
+# the geometric heading estimator (used by `score --auto`)
+# ---------------------------------------------------------------------------
+
+def support_foot_heading(motion, contact_joints, height_band=DEFAULT_HEIGHT_BAND):
+    """``(x, z, speed)`` body-frame heading of one clip, or ``None``.
+
+    ``speed`` is |travel| per frame divided by body height, so it is comparable
+    across rigs; ``DEFAULT_SPEED_FLOOR`` is expressed in the same unit. See the
+    module docstring for why the planted foot carries the heading and why the
+    contact channel must not be used to find it.
+    """
+    positions = motion[:, list(contact_joints), POSITION_CHANNELS]
+    if positions.shape[0] < 3 or positions.shape[1] == 0:
+        return None
+    # Per-joint floor, not a global one: a rig can carry contact joints at
+    # genuinely different heights (a toe and an ankle).
+    floor = np.percentile(positions[:, :, 1], 5.0, axis=0, keepdims=True)
+    planted = np.abs(positions[:, :, 1] - floor) <= height_band
+    # Both endpoints of the step have to be planted, or the lift-off frame
+    # contributes a swing velocity to what is supposed to be stance.
+    support = planted[1:] & planted[:-1]
+    if not support.any():
+        return None
+    velocity = positions[1:] - positions[:-1]
+    weight = support[..., None]
+    travel = -(velocity * weight).sum(axis=(0, 1)) / weight.sum()
+    body_height = float(
+        np.percentile(motion[:, :, 1], 95) - np.percentile(motion[:, :, 1], 5)
+    )
+    if not np.isfinite(body_height) or body_height <= 0:
+        body_height = 1.0
+    x, z = float(travel[_LEFT_AXIS]), float(travel[_FORWARD_AXIS])
+    return x, z, math.hypot(x, z) / body_height
+
+
+def classify_heading(x, z):
+    """Nearest cardinal to the measured heading. +Z is forward, +X is left."""
+    angle = math.degrees(math.atan2(x, z))
+    if -45.0 <= angle < 45.0:
+        return "forward"
+    if 45.0 <= angle < 135.0:
+        return "left"
+    if -135.0 <= angle < -45.0:
+        return "right"
+    return "backward"
+
+
+def measure_clip(motion, contact_joints, speed_floor=DEFAULT_SPEED_FLOOR,
+                 height_band=DEFAULT_HEIGHT_BAND):
+    """``(direction, speed)``, or ``(None, speed)`` when the clip barely travels."""
+    result = support_foot_heading(motion, contact_joints, height_band)
+    if result is None:
+        return None, 0.0
+    x, z, speed = result
+    if speed < speed_floor:
+        return None, speed
+    return classify_heading(x, z), speed
+
+
+def prompt_is_measurable(action_label):
+    """The words in *action_label* that put a prompt out of reach of the estimator."""
+    words = set(action_label.split(", ")) if action_label else set()
+    return sorted(words & set(UNMEASURABLE_WITH))
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +285,7 @@ def run_sweep(args) -> int:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     print(f"\n[OK] {len(rows)} clip(s) -> {manifest}")
-    print(f"     next: python -m eval.direction_following sheet {output_dir}")
+    print(f"     next: python tools/direction_following.py sheet {output_dir}")
     return 0
 
 
@@ -202,7 +332,263 @@ def run_sheet(args) -> int:
 # score
 # ---------------------------------------------------------------------------
 
+def _report(graded, source: str) -> None:
+    """Print the metric table shared by the human and the automatic path.
+
+    *graded* is a list of ``(manifest row, answer)``. Answers outside
+    DIRECTION_VOCAB ("mixed" from a human, "unclear" from either) are counted in
+    their own columns rather than as wrong, because they are a different failure:
+    a wrong heading means the prompt was misread, a mixed one means it was not
+    resolved at all.
+    """
+    buckets: dict = defaultdict(lambda: defaultdict(Counter))
+    confusion: Counter = Counter()
+    for row, answer in graded:
+        axis = _AXIS[row["direction"]]
+        outcome = ("correct" if answer == row["direction"]
+                   else "mixed" if answer == "mixed"
+                   else "unclear" if answer == "unclear"
+                   else "wrong")
+        buckets[row["cfg_scale"]][axis][outcome] += 1
+        confusion[(row["direction"], answer)] += 1
+
+    print(f"\nDirection instruction-following  ({len(graded)} clip(s), {source})")
+    print(f"{'cfg':>5}  {'axis':<16} {'n':>4}  {'top-1':>7}  {'mixed':>7}  {'unclear':>7}")
+    for scale in sorted(buckets):
+        for axis in ("forward/backward", "left/right"):
+            counts = buckets[scale][axis]
+            total = sum(counts.values())
+            if not total:
+                continue
+            print(f"{scale:>5g}  {axis:<16} {total:>4}  "
+                  f"{counts['correct'] / total:>6.1%}  "
+                  f"{counts['mixed'] / total:>6.1%}  "
+                  f"{counts['unclear'] / total:>6.1%}")
+
+    print("\nconfusion (prompted -> answered):")
+    for prompted in DIRECTION_VOCAB:
+        row_total = sum(v for (p, _), v in confusion.items() if p == prompted)
+        if not row_total:
+            continue
+        cells = "  ".join(
+            f"{answer}={confusion[(prompted, answer)]}"
+            for answer in ANSWERS if confusion[(prompted, answer)]
+        )
+        print(f"   {prompted:<9} (n={row_total:>3})  {cells}")
+
+    print("\nRead the top-1 column DOWN the cfg scales, per axis:")
+    print("   rising steadily          -> the additive token is fine, it only needed gain")
+    print("   flat/saturating + artifacts -> expressivity-bound; the only case in which")
+    print("                               changing the injection style (FiLM, R2) is worth it")
+    print("   left/right alone lagging -> T5 cannot separate the pair; the fix there is")
+    print("                               the 2-bit L/R hard input, not the injection style")
+
+
+def _contact_joints_by_species(cond):
+    """A ``clip name -> (canonical species key, contact joints)`` resolver."""
+    from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
+
+    cache: dict = {}
+
+    def lookup(name):
+        if name not in cache:
+            key = resolve_species_key(cond, name)
+            entry = cond.get(key) if key else None
+            cache[name] = (
+                (key, [int(index) for index in (entry.get("contact_joints") or [])])
+                if entry is not None else (None, [])
+            )
+        return cache[name]
+
+    def for_clip(clip_name, namespace=None):
+        # Corpus clips are "<species>_<motion>_<n>.npy" and the species part can
+        # itself hold underscores, so try the longest prefix that resolves.
+        # When *namespace* is given (multi-dataset calibration), index the merged
+        # cond by "<namespace>/<species>" instead of a bare name: the same species
+        # name can exist in two namespaces with different joint counts, and a bare
+        # lookup would resolve the first one -- wrong joints, or an out-of-bounds
+        # index when the counts differ.
+        parts = Path(clip_name).stem.split("_")
+        for cut in range(len(parts) - 1, 0, -1):
+            prefix = "_".join(parts[:cut])
+            if namespace is not None:
+                entry = cond.get(f"{namespace}/{prefix}")
+                if entry is not None and entry.get("contact_joints"):
+                    return f"{namespace}/{prefix}", [
+                        int(index) for index in entry["contact_joints"]
+                    ]
+                continue
+            key, joints = lookup(prefix)
+            if joints:
+                return key, joints
+        return None, []
+
+    return lookup, for_clip
+
+
+def calibrate(dataset_dirs, cond, speed_floor, height_band, species_filter=None):
+    """Per-species accuracy of the estimator on that species' own labeled clips.
+
+    This is what makes --auto safe to trust. The estimator reports body-frame
+    TRAVEL, and for most non-bipeds a "left" clip is a curving turn whose travel
+    is genuinely forward -- so a species is only scoreable if its own corpus
+    clips come back with the labels they carry. Species with too few usable
+    reference clips are reported as unknown, not as passing.
+    """
+    from data_loaders.truebones.truebones_utils.motion_labels import load_action_labels
+    from data_loaders.truebones.truebones_utils.dataset_sources import (
+        infer_namespace_from_root,
+    )
+
+    _, for_clip = _contact_joints_by_species(cond)
+    hits: dict = defaultdict(Counter)
+    for dataset_dir in dataset_dirs:
+        dataset_dir = Path(dataset_dir)
+        motions_dir = dataset_dir / "motions"
+        if not motions_dir.is_dir():
+            continue
+        # Clips here belong to this dataset, so resolve their species within its
+        # namespace -- see for_clip for why a bare name is unsafe across datasets.
+        namespace = infer_namespace_from_root(dataset_dir)
+        try:
+            labels = load_action_labels(dataset_dir)
+        except FileNotFoundError:
+            print(f"[warn] no action_labels.jsonl in {dataset_dir} -- skipping")
+            continue
+        for clip_name, entry in labels.items():
+            label = entry["action_label"]
+            if entry["action_group"] != "locomotion" or not label:
+                continue
+            words = label.split(", ")
+            truth = [word for word in words if word in DIRECTION_VOCAB]
+            if len(truth) != 1 or prompt_is_measurable(label):
+                continue
+            motion_path = motions_dir / clip_name
+            if not motion_path.exists():
+                continue
+            species, contact_joints = for_clip(clip_name, namespace=namespace)
+            if not contact_joints:
+                continue
+            if species_filter is not None and species not in species_filter:
+                continue
+            predicted, _ = measure_clip(
+                np.load(motion_path), contact_joints, speed_floor, height_band)
+            if predicted is None:
+                continue
+            hits[species]["n"] += 1
+            hits[species]["correct"] += int(predicted == truth[0])
+            axis = _AXIS[truth[0]]
+            hits[species][axis] += 1
+            hits[species][axis + "_correct"] += int(predicted == truth[0])
+    return hits
+
+
+def run_score_auto(args) -> int:
+    from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+
+    output_dir = Path(args.output_dir)
+    rows = _load_manifest(output_dir)
+    if not args.cond_path:
+        raise SystemExit("ERROR: --auto needs --cond_path (it reads each species' "
+                         "contact joints out of cond).")
+    cond = load_cond(args.cond_path)
+    lookup, _ = _contact_joints_by_species(cond)
+
+    reference_dirs = [d.strip() for d in args.reference.split(",") if d.strip()]
+    # Only the species this run actually prompts: calibrating the whole corpus
+    # would read thousands of clips to print a table nobody needs.
+    wanted = {lookup(row["species"])[0] for row in rows}
+    wanted.discard(None)
+    # Trust is per axis, not per species: the estimator reports body-frame
+    # travel, and a species is only scoreable on an axis if that axis's own
+    # reference clips reproduce their labels. A species with only forward/
+    # backward clips proves the estimator on that axis and nothing else --
+    # scoring its left/right prompts with an unverified estimator would read a
+    # curving turn as forward.
+    trusted = {"forward/backward": set(), "left/right": set()}
+    calibration = {}
+    if reference_dirs:
+        calibration = calibrate(reference_dirs, cond, args.speed_floor,
+                                args.height_band, species_filter=wanted)
+        print("calibration on the real corpus (the estimator must reproduce the "
+              "labels a species already carries):")
+        print(f"   {'species':<34} {'n':>4} {'top-1':>7}  {'FB':>7} {'LR':>7}   verdict")
+        for species in sorted(wanted, key=str):
+            counts = calibration.get(species, Counter())
+            n = counts["n"]
+            accuracy = counts["correct"] / n if n else 0.0
+            fb = counts["forward/backward"]
+            lr = counts["left/right"]
+            fb_text = f"{counts['forward/backward_correct']/fb:6.1%}" if fb else "     -"
+            lr_text = f"{counts['left/right_correct']/lr:6.1%}" if lr else "     -"
+            if not n:
+                print(f"   {str(species):<34} {0:>4} {'-':>6}  {'-':>6} {'-':>6}   "
+                      f"no usable reference clip")
+                continue
+            trusted_axes = []
+            for axis, short in (("forward/backward", "FB"), ("left/right", "LR")):
+                ax_n = counts[axis]
+                if ax_n >= args.min_calibration_clips and \
+                        counts[axis + "_correct"] / ax_n >= args.calibration_threshold:
+                    trusted[axis].add(species)
+                    trusted_axes.append(short)
+            if not trusted_axes:
+                if fb >= args.min_calibration_clips or lr >= args.min_calibration_clips:
+                    verdict = "REFUSED -- estimator can't reproduce this species' labels"
+                else:
+                    verdict = f"too few clips (<{args.min_calibration_clips} per axis)"
+            elif len(trusted_axes) == 2:
+                verdict = "OK (both axes)"
+            else:
+                other = "LR" if trusted_axes[0] == "FB" else "FB"
+                verdict = f"OK ({trusted_axes[0]} only) -- {other} unverified"
+            print(f"   {str(species):<34} {n:>4} {accuracy:>6.1%}  {fb_text} {lr_text}   {verdict}")
+    else:
+        print("[warn] no --reference given, so nothing was calibrated. The estimator "
+              "is only known to be exact on four-heading humanoid rigs; on a "
+              "quadruped or a dragon 'left' means a curving turn and this will "
+              "score it as forward. Pass --reference unless you have checked.")
+
+    graded, skipped = [], Counter()
+    for row in rows:
+        blockers = prompt_is_measurable(row.get("action_label", ""))
+        if blockers:
+            skipped[f"prompt names {blockers} -- not a travel heading"] += 1
+            continue
+        species, contact_joints = lookup(row["species"])
+        if not contact_joints:
+            skipped[f"{row['species']}: no contact joints in cond"] += 1
+            continue
+        axis = _AXIS[row["direction"]]
+        if reference_dirs and species not in trusted[axis]:
+            skipped[f"{species}: not calibrated for {axis} -- score it by hand"] += 1
+            continue
+        motion_path = output_dir / row["clip"]
+        if not motion_path.exists():
+            skipped["missing clip file"] += 1
+            continue
+        predicted, _ = measure_clip(
+            np.load(motion_path), contact_joints, args.speed_floor, args.height_band)
+        # Below the speed floor the sample barely travels, so it has no heading to
+        # read. That is a real outcome of the generation, not a measurement gap:
+        # it is counted as 'unclear' rather than dropped.
+        graded.append((row, predicted if predicted is not None else "unclear"))
+
+    for reason, count in skipped.items():
+        print(f"[skip] {count} clip(s): {reason}")
+    if not graded:
+        raise SystemExit("ERROR: nothing measurable. Score this run by hand "
+                         "(`sheet`, then `score` without --auto).")
+    _report(graded, source="geometric, --auto")
+    print("\nNote: 'mixed' is always 0% here -- a per-clip measurement cannot see a")
+    print("blend, only a heading. Read the spread instead: `phase` reports how tightly")
+    print("the samples of one prompt agree, and a human pass can still see the rest.")
+    return 0
+
+
 def run_score(args) -> int:
+    if getattr(args, "auto", False):
+        return run_score_auto(args)
     output_dir = Path(args.output_dir)
     rows = {row["sample_id"]: row for row in _load_manifest(output_dir)}
     answers_path = Path(args.answers) if args.answers else output_dir / SHEET_NAME
@@ -235,49 +621,7 @@ def run_score(args) -> int:
         print(f"[warn] unrecognized answers ignored: {dict(bad_answer)}")
     if not graded:
         raise SystemExit("ERROR: nothing annotated yet.")
-
-    # scale -> axis -> Counter of outcomes
-    buckets: dict = defaultdict(lambda: defaultdict(Counter))
-    confusion: Counter = Counter()
-    for row, answer in graded:
-        axis = _AXIS[row["direction"]]
-        outcome = ("correct" if answer == row["direction"]
-                   else "mixed" if answer == "mixed"
-                   else "unclear" if answer == "unclear"
-                   else "wrong")
-        buckets[row["cfg_scale"]][axis][outcome] += 1
-        confusion[(row["direction"], answer)] += 1
-
-    print(f"\nDirection instruction-following  ({len(graded)} annotated clip(s))")
-    print(f"{'cfg':>5}  {'axis':<16} {'n':>4}  {'top-1':>7}  {'mixed':>7}  {'unclear':>7}")
-    for scale in sorted(buckets):
-        for axis in ("forward/backward", "left/right"):
-            counts = buckets[scale][axis]
-            total = sum(counts.values())
-            if not total:
-                continue
-            print(f"{scale:>5g}  {axis:<16} {total:>4}  "
-                  f"{counts['correct'] / total:>6.1%}  "
-                  f"{counts['mixed'] / total:>6.1%}  "
-                  f"{counts['unclear'] / total:>6.1%}")
-
-    print("\nconfusion (prompted -> answered):")
-    for prompted in DIRECTION_VOCAB:
-        row_total = sum(v for (p, _), v in confusion.items() if p == prompted)
-        if not row_total:
-            continue
-        cells = "  ".join(
-            f"{answer}={confusion[(prompted, answer)]}"
-            for answer in ANSWERS if confusion[(prompted, answer)]
-        )
-        print(f"   {prompted:<9} (n={row_total:>3})  {cells}")
-
-    print("\nRead the top-1 column DOWN the cfg scales, per axis:")
-    print("   rising steadily          -> the additive token is fine, it only needed gain")
-    print("   flat/saturating + artifacts -> expressivity-bound; the only case in which")
-    print("                               changing the injection style (FiLM, R2) is worth it")
-    print("   left/right alone lagging -> T5 cannot separate the pair; the fix there is")
-    print("                               the 2-bit L/R hard input, not the injection style")
+    _report(graded, source="human blind read")
     return 0
 
 
@@ -370,6 +714,9 @@ def _reference_offsets(dataset_dirs, cond, sides_for_clip):
     them once and ``run_phase`` prints the two side by side.
     """
     from data_loaders.truebones.truebones_utils.motion_labels import load_action_labels
+    from data_loaders.truebones.truebones_utils.dataset_sources import (
+        infer_namespace_from_root,
+    )
 
     reference: dict = defaultdict(list)
     for dataset_dir in dataset_dirs:
@@ -377,12 +724,21 @@ def _reference_offsets(dataset_dirs, cond, sides_for_clip):
         motions_dir = dataset_dir / "motions"
         if not motions_dir.is_dir():
             continue
-        for clip_name, entry in load_action_labels(dataset_dir).items():
+        # Clips here belong to this dataset, so resolve their species within its
+        # namespace -- see sides_for_clip for why a bare name is unsafe across
+        # datasets.
+        namespace = infer_namespace_from_root(dataset_dir)
+        try:
+            labels = load_action_labels(dataset_dir)
+        except FileNotFoundError:
+            print(f"[warn] no action_labels.jsonl in {dataset_dir} -- skipping")
+            continue
+        for clip_name, entry in labels.items():
             label = entry["action_label"]
             motion_path = motions_dir / clip_name
             if not label or not motion_path.exists():
                 continue
-            species_key, sides = sides_for_clip(clip_name)
+            species_key, sides = sides_for_clip(clip_name, namespace=namespace)
             if sides is None:
                 continue
             offset = contact_phase_offset(np.load(motion_path), sides[0], sides[1])
@@ -435,12 +791,25 @@ def run_phase(args) -> int:
             side_cache[species] = (key, _contact_side_indices(entry) if entry else None)
         return side_cache[species]
 
-    def sides_for_clip(clip_name):
+    def sides_for_clip(clip_name, namespace=None):
         # Corpus clips are named "<species>_<motion>_<n>.npy" and the species part
         # can itself hold underscores, so try the longest prefix that resolves.
+        # When *namespace* is given (multi-dataset reference), index the merged
+        # cond by "<namespace>/<species>" instead of a bare name: the same species
+        # name can exist in two namespaces with different joint counts, and a bare
+        # lookup would resolve the first one -- wrong side pairs, or an
+        # out-of-bounds index when the counts differ.
         parts = Path(clip_name).stem.split("_")
         for cut in range(len(parts) - 1, 0, -1):
-            key, sides = sides_for("_".join(parts[:cut]))
+            prefix = "_".join(parts[:cut])
+            if namespace is not None:
+                entry = cond.get(f"{namespace}/{prefix}")
+                if entry is not None:
+                    sides = _contact_side_indices(entry)
+                    if sides is not None:
+                        return f"{namespace}/{prefix}", sides
+                continue
+            key, sides = sides_for(prefix)
             if sides is not None:
                 return key, sides
         return None, None
@@ -546,10 +915,37 @@ def main() -> int:
     sheet.add_argument("--force", action="store_true")
     sheet.set_defaults(func=run_sheet)
 
-    score = sub.add_parser("score", help="score the filled-in annotation CSV")
+    score = sub.add_parser("score", help="score a sweep, automatically or from a CSV")
     score.add_argument("output_dir")
     score.add_argument("--answers", default="",
-                       help=f"Filled-in CSV (default: <output_dir>/{SHEET_NAME}).")
+                       help=f"Human path: the filled-in CSV "
+                            f"(default: <output_dir>/{SHEET_NAME}).")
+    score.add_argument("--auto", action="store_true",
+                       help="Measure each clip's heading geometrically instead of "
+                            "reading annotator answers. Exact on the four-heading "
+                            "humanoid rigs this evaluation prompts; pass --reference "
+                            "so it can prove that on your species before trusting it.")
+    score.add_argument("--cond_path", default="",
+                       help="--auto: cond.npy, for each species' contact joints.")
+    score.add_argument("--reference", default="",
+                       help="--auto: comma-separated processed dataset dirs to "
+                            "calibrate on. A species whose own labeled clips the "
+                            "estimator cannot reproduce is refused rather than "
+                            "scored wrong.")
+    score.add_argument("--speed_floor", type=float, default=DEFAULT_SPEED_FLOOR,
+                       help="--auto: |travel| per frame over body height, below which "
+                            "a clip counts as having no heading (scored 'unclear'). "
+                            f"Default {DEFAULT_SPEED_FLOOR}.")
+    score.add_argument("--height_band", type=float, default=DEFAULT_HEIGHT_BAND,
+                       help="--auto: how close to its floor a foot must sit to count "
+                            f"as support. Default {DEFAULT_HEIGHT_BAND}.")
+    score.add_argument("--calibration_threshold", type=float,
+                       default=DEFAULT_CALIBRATION_THRESHOLD,
+                       help="--auto: accuracy a species must reach on its own corpus "
+                            f"clips to be scored. Default {DEFAULT_CALIBRATION_THRESHOLD}.")
+    score.add_argument("--min_calibration_clips", type=int, default=4,
+                       help="--auto: reference clips a species needs on an axis "
+                            "before that axis is trusted. Default 4.")
     score.set_defaults(func=run_score)
 
     phase = sub.add_parser("phase", help="left/right contact phase spread (automatable)")
