@@ -402,8 +402,12 @@ def add_generate_options(parser):
                             "required for pure-random generation. When both flags are provided "
                             "and the inferred type differs from this value, the reference motion "
                             "is auto-retargeted to this skeleton.")
-    group.add_argument("--sampling_method", default="ddim", choices=["p", "ddpm", "ddim"],
-                       help="Diffusion sampler to use. 'p'/'ddpm' = DDPM (slow, high quality). 'ddim' = DDIM (fast, recommended). Default: ddim.")
+    group.add_argument("--sampling_method", default="ddpm", choices=["p", "ddpm", "ddim"],
+                       help="Diffusion sampler to use. 'p'/'ddpm' = DDPM (default). 'ddim' = DDIM. "
+                            "Both cost the same at the same --sampling_steps. DDIM is deterministic "
+                            "at ddim_eta=0, and that determinism is what makes it worse at holding a "
+                            "steady stride rate -- an early, locally inconsistent phase estimate "
+                            "can never be re-mixed away. Default: ddpm.")
     group.add_argument("--sampling_steps", default=100, type=int,
                        help="Number of respaced diffusion steps. 0 = use checkpoint's full diffusion_steps. Default: 100.")
     group.add_argument("--ddim_eta", default=0.0, type=float,

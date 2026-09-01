@@ -335,5 +335,69 @@ class NativeLoopTests(unittest.TestCase):
         self.assertTrue(torch.equal(capture_decoder.last_kwargs['loop_phase_mask'], torch.tensor([True, False])))
 
 
+    # ------------------------------------------------------------------
+    # Generation-side loop_phase_length (the value training always supplied
+    # and generation, until this was wired, never did).
+    # ------------------------------------------------------------------
+
+    def test_generation_phase_length_inverts_the_training_identity(self):
+        """k = round(playspeed*T/L) and phase_len = (T-1)/k + 1 -- the exact
+        inverse of what the loader computes from its tile count."""
+        from sample.generate import _resolve_loop_phase_length
+
+        entry = {'loop_period_by_action': {'walk': 25.0, 'run': 20.0}, 'loop_period_median': 25.0}
+        # 60 output frames over a 25-frame walk cycle -> 2 cycles.
+        phase_length, cycles = _resolve_loop_phase_length(entry, 60, 1.0, 'walk, strides forward')
+        self.assertEqual(cycles, 2)
+        self.assertAlmostEqual(phase_length, (60 - 1) / 2 + 1, places=6)
+        # A 20-frame run cycle in the same window is 3, not 2: the period is an
+        # action property, so the label -- not just the species -- selects it.
+        phase_length, cycles = _resolve_loop_phase_length(entry, 60, 1.0, 'run, sprints forward')
+        self.assertEqual(cycles, 3)
+        self.assertAlmostEqual(phase_length, (60 - 1) / 3 + 1, places=6)
+        # playspeed scales the source length, so it scales the cycle count too.
+        _, cycles = _resolve_loop_phase_length(entry, 60, 2.0, 'walk')
+        self.assertEqual(cycles, 5)
+
+    def test_generation_phase_length_falls_back_to_one_cycle(self):
+        """No baked period -> the pre-fix value, so the change can only help."""
+        from sample.generate import _resolve_loop_phase_length
+
+        phase_length, cycles = _resolve_loop_phase_length({}, 60, 1.0, 'walk')
+        self.assertEqual(phase_length, 60.0)
+        self.assertIsNone(cycles)
+        # A label naming no core word falls through to the species median.
+        entry = {'loop_period_by_action': {'walk': 25.0}, 'loop_period_median': 30.0}
+        _, cycles = _resolve_loop_phase_length(entry, 60, 1.0, 'wobbles about')
+        self.assertEqual(cycles, 2)
+
+    def test_generation_phase_length_never_asks_for_a_fractional_cycle(self):
+        """A window the model is told is closed must hold a whole number of
+        cycles; a fractional request makes it warp phase to close the seam."""
+        from sample.generate import _resolve_loop_phase_length
+
+        for period in (13.0, 17.0, 23.0, 41.0, 57.0):
+            entry = {'loop_period_by_action': {}, 'loop_period_median': period}
+            phase_length, cycles = _resolve_loop_phase_length(entry, 60, 1.0, '')
+            self.assertEqual(cycles, int(cycles))
+            self.assertGreaterEqual(cycles, 1)
+            expected = ((60 - 1) / cycles + 1) if cycles > 1 else 60.0
+            self.assertAlmostEqual(phase_length, expected, places=6)
+
+    def test_collate_turns_generation_metadata_into_loop_phase_lengths(self):
+        """The metadata key only reaches the model if the collate emits the
+        plural tensor name the forward reads."""
+        items = [
+            _make_batch_item(True, True, loop_phase_length=30.5),
+            _make_batch_item(True, True, loop_phase_length=20.0),
+        ]
+        _, cond = truebones_batch_collate(items)
+        self.assertIn('loop_phase_lengths', cond['y'])
+        self.assertTrue(torch.equal(
+            cond['y']['loop_phase_lengths'], torch.tensor([30.5, 20.0], dtype=torch.float32)
+        ))
+
+
+
 if __name__ == '__main__':
     unittest.main()

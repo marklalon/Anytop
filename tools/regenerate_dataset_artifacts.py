@@ -45,6 +45,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_GROUPS,
     build_motion_labels,
     load_motion_metadata,
+    vocab_words_in,
     write_motion_metadata,
 )
 from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
@@ -354,6 +355,77 @@ def _recompute_contact_joints(rebuilt_cond: dict[str, dict]) -> None:
             )
 
 
+def _compute_loop_periods(
+    rebuilt_cond: dict[str, dict],
+    motion_files: list[Path],
+    motion_metadata: dict[str, dict],
+    cond_lookup,
+) -> None:
+    """Bake each species' native loop period (in frames) into cond.npy.
+
+    Generation needs it to fill ``loop_phase_length``, the scalar that tells the
+    model how many gait cycles one output window holds. Training derives that
+    scalar from the tile count it chose (``loop_phase_length = (T-1)/k + 1``);
+    inference has no tile count, so it inverts the same identity:
+
+        k = round(playspeed * T / L)          L = the native loop period here
+        loop_phase_length = (T-1)/k + 1
+
+    k must come out an INTEGER -- a window the model is told is closed cannot
+    hold a fractional number of cycles -- which is why this stores the period and
+    lets the caller round, rather than storing a phase length directly.
+
+    Keyed by the label's coarse action word because the period is an action
+    property, not a skeleton one: a 25-frame walk cycle and a 20-frame run cycle
+    on the same rig want different k. ``loop_period_median`` is the fallback for
+    a label that names no core word.
+
+    Only ``is_loop`` clips contribute: a non-loop clip's length is its clip
+    duration, not a cycle period.
+    """
+    periods: dict[str, dict[str, list[int]]] = {}
+    for motion_path in motion_files:
+        entry = motion_metadata.get(motion_path.name)
+        if not entry or not bool(entry.get("is_loop", False)):
+            continue
+        object_type = _infer_object_type_from_motion_name(motion_path.name, cond_lookup)
+        if object_type not in rebuilt_cond:
+            continue
+        frame_count = int(np.load(motion_path, mmap_mode="r").shape[0])
+        if frame_count <= 0:
+            continue
+        words = vocab_words_in(str(entry.get("action_label") or ""), core_only=True)
+        bucket = periods.setdefault(object_type, {})
+        bucket.setdefault("", []).append(frame_count)
+        for word in words:
+            bucket.setdefault(word, []).append(frame_count)
+
+    covered = 0
+    for object_type, object_cond in rebuilt_cond.items():
+        bucket = periods.get(object_type, {})
+        overall = bucket.get("", [])
+        if not overall:
+            object_cond.pop("loop_period_by_action", None)
+            object_cond.pop("loop_period_median", None)
+            continue
+        # One clip is enough: it is an unbiased estimate of THAT action's period
+        # and strictly more relevant than the cross-action median that would
+        # otherwise be used for it (a species' idle clips are far longer than its
+        # run cycle, so the median is the worse estimator, not the safer one).
+        by_action = {
+            word: float(np.median(lengths))
+            for word, lengths in sorted(bucket.items())
+            if word
+        }
+        object_cond["loop_period_by_action"] = by_action
+        object_cond["loop_period_median"] = float(np.median(overall))
+        covered += 1
+    print(
+        f"[OK] native loop periods baked for {covered}/{len(rebuilt_cond)} species "
+        f"(species with no loop clip carry none)"
+    )
+
+
 def _normalize_object_translation_roots(
     rebuilt_cond: dict[str, dict],
     motion_files: list[Path],
@@ -516,6 +588,15 @@ def _regenerate_dataset_artifacts(
         species_lookup_map(rebuilt_cond),
     )
     print(f"[OK] translation roots normalized in {time.time() - t0:.1f}s")
+
+    t0 = time.time()
+    _compute_loop_periods(
+        rebuilt_cond,
+        motion_files,
+        existing_motion_metadata,
+        species_lookup_map(rebuilt_cond),
+    )
+    print(f"[OK] native loop periods computed in {time.time() - t0:.1f}s")
 
     t0 = time.time()
 
