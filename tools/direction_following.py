@@ -48,18 +48,39 @@ When --auto covers your species, prefer it: reproducible, free, and no
 annotator in the loop. Keep the human path for species --auto refuses, and as a
 spot-check.
 
-Report FB and LR separately, always. They are known to fail differently: T5
-places "left" and "right" closer together than forward-vs-left, so left/right is
-the one pair the text encoder genuinely struggles to separate, and a pooled
-number would hide it behind the easy axis. "mixed" is counted on its own too --
-it is the direct read on mode collapse, a different failure from picking the
-wrong heading.
+Read the heading ERROR, not top-1
+---------------------------------
+Top-1 snaps the measured heading to the nearest cardinal, so everything inside
++-45 degrees of the prompt counts as a hit. That is far too coarse to be the
+metric: a run tracking 30 degrees off "forward" is plainly wrong on screen and
+top-1 scores it correct, and a systematic offset -- every "left" sample landing
+on the forward-left diagonal -- is invisible in it, because the answer is never
+the wrong cardinal, only a bad angle.
 
-The SHAPE of accuracy against CFG scale is itself the decision point: rising
-monotonically means the additive token is fine and only needed more gain;
-saturating early while artifacts grow means the bottleneck is expressivity, the
-only condition under which changing the injection style (the FiLM fallback, not
-built) is worth trying.
+So --auto reports the signed angle off the prompted heading, per direction, and
+prints the same measurement over that species' REAL clips as the floor. That
+floor is what makes the number readable, and it is tight: on KI_Human the corpus
+clips sit within ~1 degree of the heading they are labeled with, so a generated
+mean error in the double digits is not natural variation, it is the model
+missing the instruction by an amount top-1 cannot see. Single-digit degrees is
+roughly where a viewer stops noticing.
+
+Top-1 is still printed, as the coarse read and the only thing the human path can
+produce -- but the angle table is the one to judge a round on.
+
+Report every direction separately, always, and never pool left with right: they
+are known to fail differently (T5 places "left" and "right" closer together than
+forward-vs-left) and, in R0, they failed asymmetrically -- "right" landed within
+a few degrees while "left" sat ~30 degrees short of the axis at every CFG scale.
+Pooling hides exactly the failure the evaluation exists to find. "mixed" is
+counted on its own too -- it is the direct read on mode collapse, a different
+failure from picking the wrong heading.
+
+The SHAPE of the error against CFG scale is itself the decision point: falling
+monotonically means the additive token is fine and only needed more gain; an
+error that stops falling (or grows) while artifacts appear is the expressivity
+signature, the only condition under which changing the injection style (the FiLM
+fallback, not built) is worth trying.
 
 Run the R0 baseline (the pre-refactor checkpoint) before anything else. It needs
 no training and without it there is no threshold to judge R1 against.
@@ -115,6 +136,10 @@ ANSWERS: tuple[str, ...] = DIRECTION_VOCAB + ("mixed", "unclear")
 # docstring.
 _AXIS = {"forward": "forward/backward", "backward": "forward/backward",
          "left": "left/right", "right": "left/right"}
+
+# Where each heading points in the canonical frame, in the same degrees
+# classify_heading measures: atan2(+X left, +Z forward).
+_TARGET_ANGLE = {"forward": 0.0, "left": 90.0, "right": -90.0, "backward": 180.0}
 
 MANIFEST_NAME = "manifest.jsonl"
 SHEET_NAME = "annotate.csv"
@@ -198,16 +223,32 @@ def classify_heading(x, z):
     return "backward"
 
 
+def heading_error(angle, prompted):
+    """Signed degrees from *angle* to the *prompted* heading, on (-180, 180].
+
+    Positive is toward the character's left. Signed rather than absolute because
+    the sign is where the interesting failure lives: samples scattered either way
+    around the axis are noise, while a whole prompt leaning one way is a
+    systematic offset -- the model reading the word and then under-rotating.
+    """
+    return (angle - _TARGET_ANGLE[prompted] + 180.0) % 360.0 - 180.0
+
+
 def measure_clip(motion, contact_joints, speed_floor=DEFAULT_SPEED_FLOOR,
                  height_band=DEFAULT_HEIGHT_BAND):
-    """``(direction, speed)``, or ``(None, speed)`` when the clip barely travels."""
+    """``(direction, speed, angle)``, or ``(None, speed, None)`` for no heading.
+
+    ``angle`` is the measured heading in degrees before it is snapped to a
+    cardinal -- the continuous quantity the report is actually built on. See
+    "Read the heading ERROR, not top-1" in the module docstring.
+    """
     result = support_foot_heading(motion, contact_joints, height_band)
     if result is None:
-        return None, 0.0
+        return None, 0.0, None
     x, z, speed = result
     if speed < speed_floor:
-        return None, speed
-    return classify_heading(x, z), speed
+        return None, speed, None
+    return classify_heading(x, z), speed, math.degrees(math.atan2(x, z))
 
 
 def prompt_is_measurable(action_label):
@@ -332,7 +373,7 @@ def run_sheet(args) -> int:
 # score
 # ---------------------------------------------------------------------------
 
-def _report(graded, source: str) -> None:
+def _report(graded, source: str, errors=None, floor=None) -> None:
     """Print the metric table shared by the human and the automatic path.
 
     *graded* is a list of ``(manifest row, answer)``. Answers outside
@@ -340,6 +381,12 @@ def _report(graded, source: str) -> None:
     their own columns rather than as wrong, because they are a different failure:
     a wrong heading means the prompt was misread, a mixed one means it was not
     resolved at all.
+
+    *errors* (--auto only) maps sample_id to the signed heading error in degrees.
+    When given it drives the table that actually decides the round; top-1 above
+    is kept as the coarse read and as the only thing a human annotator can
+    produce. *floor* is the same statistic over the corpus, per direction, which
+    is what makes a generated error readable as good or bad.
     """
     buckets: dict = defaultdict(lambda: defaultdict(Counter))
     confusion: Counter = Counter()
@@ -376,12 +423,72 @@ def _report(graded, source: str) -> None:
         )
         print(f"   {prompted:<9} (n={row_total:>3})  {cells}")
 
-    print("\nRead the top-1 column DOWN the cfg scales, per axis:")
-    print("   rising steadily          -> the additive token is fine, it only needed gain")
-    print("   flat/saturating + artifacts -> expressivity-bound; the only case in which")
-    print("                               changing the injection style (FiLM, R2) is worth it")
-    print("   left/right alone lagging -> T5 cannot separate the pair; the fix there is")
-    print("                               the 2-bit L/R hard input, not the injection style")
+    if errors:
+        _report_heading_error(graded, errors, floor)
+
+    print("\nRead DOWN the cfg scales, per direction:")
+    print("   error falling steadily   -> the additive token is fine, it only needed gain")
+    print("   error stops falling / grows + artifacts -> expressivity-bound; the only")
+    print("                               case in which changing the injection style")
+    print("                               (FiLM, R2) is worth it")
+    print("   one heading stuck short of its axis while the others are clean -> T5 cannot")
+    print("                               place that word; the fix there is the 2-bit L/R")
+    print("                               hard input, not the injection style")
+
+
+def _report_heading_error(graded, errors, floor=None) -> None:
+    """The continuous metric: degrees off the prompted heading, per direction.
+
+    Split by direction and never pooled into an axis: R0 read "right" within a
+    few degrees while "left" sat ~30 degrees short of its axis at every scale,
+    and an axis average would have reported that pair as healthy.
+
+    Both a magnitude and a signed mean are printed because they answer different
+    questions. mean|e| is how wrong the samples are; bias is whether they are
+    wrong in one direction -- when |bias| approaches mean|e| the whole prompt is
+    leaning, which is a systematic offset rather than scatter, and no amount of
+    sampling averages it away.
+    """
+    grouped: dict = defaultdict(list)
+    for row, _ in graded:
+        error = errors.get(row["sample_id"])
+        if error is not None:
+            grouped[(row["cfg_scale"], row["direction"])].append(error)
+    if not grouped:
+        return
+
+    print("\nHeading error, degrees off the prompted heading (+ = toward the "
+          "character's left).")
+    print("This is the metric to judge the round on -- top-1 above snaps to the "
+          "nearest")
+    print("cardinal, so it scores a 30-degree miss and a dead-on sample the same.")
+    print(f"{'cfg':>5}  {'direction':<9} {'n':>4}  {'mean|e|':>8}  {'median':>7}  "
+          f"{'p90':>7}  {'bias':>7}")
+    for scale in sorted({key[0] for key in grouped}):
+        for direction in DIRECTION_VOCAB:
+            values = grouped.get((scale, direction))
+            if not values:
+                continue
+            magnitude = np.abs(values)
+            print(f"{scale:>5g}  {direction:<9} {len(values):>4}  "
+                  f"{magnitude.mean():>6.1f}deg  {np.median(magnitude):>5.1f}deg  "
+                  f"{np.percentile(magnitude, 90):>5.1f}deg  "
+                  f"{np.mean(values):>+5.1f}deg")
+
+    if floor:
+        print("\ncorpus floor -- the same measurement on this species' REAL clips, "
+              "against")
+        print("the heading they are labeled with. Generated error is only "
+              "meaningful against")
+        print("it: a rig whose own clips read a few degrees off cannot be asked "
+              "for better.")
+        for species in sorted(floor, key=str):
+            cells = "  ".join(
+                f"{direction}={value:.1f}deg (n={count})"
+                for direction, (value, count) in sorted(
+                    floor[species].items(), key=lambda kv: DIRECTION_VOCAB.index(kv[0]))
+            )
+            print(f"   {str(species):<34} {cells}")
 
 
 def _contact_joints_by_species(cond):
@@ -471,7 +578,7 @@ def calibrate(dataset_dirs, cond, speed_floor, height_band, species_filter=None)
                 continue
             if species_filter is not None and species not in species_filter:
                 continue
-            predicted, _ = measure_clip(
+            predicted, _, angle = measure_clip(
                 np.load(motion_path), contact_joints, speed_floor, height_band)
             if predicted is None:
                 continue
@@ -480,6 +587,15 @@ def calibrate(dataset_dirs, cond, speed_floor, height_band, species_filter=None)
             axis = _AXIS[truth[0]]
             hits[species][axis] += 1
             hits[species][axis + "_correct"] += int(predicted == truth[0])
+            # The floor for the generated angle error: how far a REAL clip of
+            # this species sits from the heading it is labeled with. Without it
+            # a generated "12 degrees off" cannot be told from how the corpus
+            # itself moves. Per direction, because a rig can be clean on one
+            # heading and not another.
+            hits[species]["abs_error_sum"] += abs(heading_error(angle, truth[0]))
+            hits[species][truth[0] + "_n"] += 1
+            hits[species][truth[0] + "_abs_error_sum"] += abs(
+                heading_error(angle, truth[0]))
     return hits
 
 
@@ -512,7 +628,8 @@ def run_score_auto(args) -> int:
                                 args.height_band, species_filter=wanted)
         print("calibration on the real corpus (the estimator must reproduce the "
               "labels a species already carries):")
-        print(f"   {'species':<34} {'n':>4} {'top-1':>7}  {'FB':>7} {'LR':>7}   verdict")
+        print(f"   {'species':<34} {'n':>4} {'top-1':>7}  {'FB':>7} {'LR':>7}   "
+              f"{'floor':>9}   verdict")
         for species in sorted(wanted, key=str):
             counts = calibration.get(species, Counter())
             n = counts["n"]
@@ -523,7 +640,7 @@ def run_score_auto(args) -> int:
             lr_text = f"{counts['left/right_correct']/lr:6.1%}" if lr else "     -"
             if not n:
                 print(f"   {str(species):<34} {0:>4} {'-':>6}  {'-':>6} {'-':>6}   "
-                      f"no usable reference clip")
+                      f"{'-':>9}   no usable reference clip")
                 continue
             trusted_axes = []
             for axis, short in (("forward/backward", "FB"), ("left/right", "LR")):
@@ -542,14 +659,15 @@ def run_score_auto(args) -> int:
             else:
                 other = "LR" if trusted_axes[0] == "FB" else "FB"
                 verdict = f"OK ({trusted_axes[0]} only) -- {other} unverified"
-            print(f"   {str(species):<34} {n:>4} {accuracy:>6.1%}  {fb_text} {lr_text}   {verdict}")
+            print(f"   {str(species):<34} {n:>4} {accuracy:>6.1%}  {fb_text} {lr_text}   "
+                  f"{counts['abs_error_sum'] / n:5.1f}deg off   {verdict}")
     else:
         print("[warn] no --reference given, so nothing was calibrated. The estimator "
               "is only known to be exact on four-heading humanoid rigs; on a "
               "quadruped or a dragon 'left' means a curving turn and this will "
               "score it as forward. Pass --reference unless you have checked.")
 
-    graded, skipped = [], Counter()
+    graded, errors, skipped = [], {}, Counter()
     for row in rows:
         blockers = prompt_is_measurable(row.get("action_label", ""))
         if blockers:
@@ -567,19 +685,32 @@ def run_score_auto(args) -> int:
         if not motion_path.exists():
             skipped["missing clip file"] += 1
             continue
-        predicted, _ = measure_clip(
+        predicted, _, angle = measure_clip(
             np.load(motion_path), contact_joints, args.speed_floor, args.height_band)
         # Below the speed floor the sample barely travels, so it has no heading to
         # read. That is a real outcome of the generation, not a measurement gap:
         # it is counted as 'unclear' rather than dropped.
         graded.append((row, predicted if predicted is not None else "unclear"))
+        if angle is not None:
+            # Kept even when the cardinal is wrong: a sample that missed by 100
+            # degrees belongs in the error distribution, and dropping it would
+            # flatter exactly the runs that need flattering least.
+            errors[row["sample_id"]] = heading_error(angle, row["direction"])
 
     for reason, count in skipped.items():
         print(f"[skip] {count} clip(s): {reason}")
     if not graded:
         raise SystemExit("ERROR: nothing measurable. Score this run by hand "
                          "(`sheet`, then `score` without --auto).")
-    _report(graded, source="geometric, --auto")
+    floor = {
+        species: {
+            direction: (counts[direction + "_abs_error_sum"] / counts[direction + "_n"],
+                        counts[direction + "_n"])
+            for direction in DIRECTION_VOCAB if counts[direction + "_n"]
+        }
+        for species, counts in calibration.items()
+    }
+    _report(graded, source="geometric, --auto", errors=errors, floor=floor)
     print("\nNote: 'mixed' is always 0% here -- a per-clip measurement cannot see a")
     print("blend, only a heading. Read the spread instead: `phase` reports how tightly")
     print("the samples of one prompt agree, and a human pass can still see the rest.")
