@@ -17,10 +17,8 @@ from data_loaders.truebones.truebones_utils.param_utils import (
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (
     ACTION_GROUPS,
-    coarse_label_from_words,
     load_motion_metadata,
     normalize_action_group,
-    vocab_words_in,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import (
     load_cond,
@@ -568,9 +566,8 @@ def load_action_label_embeddings(sources) -> dict[str, np.ndarray]:
 
     The sidecar maps a label *string* to its frozen T5 mean-pool vector, so the
     training process never has to keep a T5 encoder resident. It is keyed by the
-    text rather than by the clip because labels repeat heavily (2984 distinct
-    strings over 4028 clips) and because the coarse strings synthesized for the
-    coarse-query augmentation have to resolve through the same table.
+    text rather than by the clip because labels repeat heavily -- 610 distinct
+    keyword labels over 4028 clips, an average of 6.6 clips sharing each vector.
 
     Build it with ``tools/build_action_label_embeddings.py``. Called only when
     label conditioning is on, so a source with no sidecar is a hard error: the
@@ -669,9 +666,8 @@ def ensure_joint_name_embeddings(
 
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, temporal_window, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_label_coarse_prob: float = 0.0, action_label_embeddings: Optional[dict[str, np.ndarray]] = None):
+    def __init__(self, opt, cond_dict, temporal_window, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_label_embeddings: Optional[dict[str, np.ndarray]] = None):
         self.opt = opt
-        self.action_label_coarse_prob = float(action_label_coarse_prob)
         # None (not {}) means the caller does not want label conditioning, so no
         # embedding is attached and no lookup can fail. An empty dict would be
         # indistinguishable from "the sidecar exists but is empty", and silently
@@ -1035,36 +1031,14 @@ class MotionDataset(data.Dataset):
         return emb
 
     def _apply_action_label_condition(self, motion_metadata) -> None:
+        """Attach this sample's frozen-T5 label vector, looked up by label text.
+
+        The label is used verbatim -- it is already the short keyword form the
+        model is trained on, so no augmentation is applied.
+        """
         if self.action_label_embeddings is None:
             return
-        self._resolve_action_label_condition(motion_metadata)
-
-    def _resolve_action_label_condition(self, motion_metadata) -> None:
-        """Resolve this sample's label text and attach its frozen T5 embedding.
-
-        With probability ``action_label_coarse_prob`` the full label is swapped
-        for the coarse string synthesized from the controlled words it hits
-        ("stands still and growls occasionally, tail flicking" -> "idle, roar").
-        Two things this deliberately is not:
-
-        * It is not a prefix truncation. Labels are free to name their coarse
-          action anywhere in the sentence and may name several, so there is no
-          well-defined cut point; synthesizing from the matched words is exact and
-          fixes the word order to vocabulary order, so one word combination has
-          exactly one spelling in the training distribution.
-        * It does not read the group-masked word set. The synthesized string is T5
-          text, not a multi-hot, and the masked-out words are precisely the ones
-          that most need to appear in the short-query distribution -- masking here
-          would guarantee they never learn a short-query response.
-
-        The point is that the model sees the query shape users actually type
-        ("idle", "idle, roar") and not only full sentences.
-        """
         label = str(motion_metadata.get('action_label') or '')
-        if label and self.action_label_coarse_prob > 0.0 and random.random() < self.action_label_coarse_prob:
-            coarse = coarse_label_from_words(vocab_words_in(label))
-            if coarse:
-                label = coarse
         motion_metadata['action_label'] = label
         # An empty label is the unconditional state and must NOT be encoded as an
         # empty string: the model routes it to the learned null embedding, so the
@@ -1177,7 +1151,6 @@ class Truebones(data.Dataset):
         self.objects_subset = kwargs['objects_subset']
         self.action_group = kwargs.get('action_group', '')
         self.action_label_cond = bool(kwargs.get('action_label_cond', False))
-        self.action_label_coarse_prob = float(kwargs.get('action_label_coarse_prob', 0.0))
         self.sample_limit = kwargs.get('sample_limit', 0)
         self.motion_cache_size = kwargs.get('motion_cache_size', 0)
         self.opt.motion_cache_size = self.motion_cache_size
@@ -1232,7 +1205,6 @@ class Truebones(data.Dataset):
             sample_limit=self.sample_limit,
             allowed_motion_names=allowed_motion_names,
             motion_metadata_lookup=motion_metadata_lookup,
-            action_label_coarse_prob=self.action_label_coarse_prob,
             action_label_embeddings=(
                 load_action_label_embeddings(opt.sources) if self.action_label_cond else None
             ),

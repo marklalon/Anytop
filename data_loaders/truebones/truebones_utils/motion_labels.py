@@ -15,40 +15,49 @@ MOTION_METADATA_SCHEMA_VERSION = 6
 # ---------------------------------------------------------------------------
 # Action groups + controlled label vocabulary  (action_labels.jsonl)
 # ---------------------------------------------------------------------------
-# See docs/action_group_label_refactor.md. Two fields carry the action signal:
+# Two fields carry the action signal:
 #
 #   action_group  -- one of ACTION_GROUPS. Partitions the dataset; each group
 #                    trains its own model.
-#   action_label  -- a short free-text prompt ("run, gallops with head lowered").
+#   action_label  -- CONTROLLED KEYWORDS from the vocabulary below, in canonical
+#                    order, comma-separated ("run, sprint, forward, left").
 #                    Conditions the model through T5. May be empty (= no
 #                    condition, routed to the learned null embedding).
 #
-# The vocabulary below is a CONTROLLED VOCABULARY / recall anchor, *not* a set of
-# mutually exclusive classes. A label may hit several core words at once
-# ("idle, growls occasionally" -> idle + roar); that is expected, not an error.
+# The vocabulary is a CONTROLLED VOCABULARY, *not* a set of mutually exclusive
+# classes: a label names as many words as apply ("idle, roar"), and naming only
+# part of what a clip does is legal ("run" with no direction = the marginal over
+# directions, a defined state and not a defect).
+#
+# Labels are keywords, not prose: mean-pooled T5 dilutes a modifier in proportion
+# to how much other text surrounds it, and under prose a direction word was the
+# least separable signal in the vector. Keywords keep each word's signal intact,
+# so direction stays as distinct as the action axis.
 
 ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 
-# Core vocabulary: the coarse actions with enough support to earn a dedicated
-# multi-hot slot, one per entry. Order is significant -- it defines the multi-hot
-# index layout (trained checkpoints depend on it) and the word order of
-# synthesized coarse strings.
+# The action vocabulary (flat -- no core/detail split). Every word reaches the
+# model through the same path, the frozen-T5 embedding of the label text, so a
+# rare word is just a point next to its pretrained neighbours and adds no
+# dimension or index-layout change.
 #
-# A label is expected to name a core word but is NOT required to: some clips
-# (rearing, sniffing, burrowing, crawling) have no coarse counterpart, and forcing
-# one on would put a word into the multi-hot that the animal never does. Those
-# labels carry detail words only and derive an all-zero multi-hot -- a defined
-# state, not a defect.
+# ORDER IS THE CANONICAL SPELLING ORDER: a label lists its action words in this
+# order, then its direction words in DIRECTION_VOCAB order, so one combination
+# of words has exactly one spelling in the training distribution ("walk, crouch,
+# retreat, backward", never "retreat, crouch, walk").
+# _validate_action_label_entry enforces it.
 #
-# Membership threshold: a word earns a core slot when it (a) has >= 30 supporting
-# clips AND (b) names a genuinely independent coarse action -- not an aspect of an
-# existing core word (stand->idle, flap->fly, kick->attack). Rarer or single-species
-# actions live in ACTION_VOCAB_DETAIL, where they still reach the model through the
-# T5 text path but get no dedicated multi-hot slot.
-ACTION_VOCAB_CORE: tuple[str, ...] = (
+# The modifier words (shuffle, strafe, sprint) are surface forms of the base
+# word they qualify AND words in their own right, so a Sprint clip resolves to
+# "run, sprint" while a plain Run clip stays "run" -- two gaits the base word
+# alone would collapse together.
+ACTION_VOCAB: tuple[str, ...] = (
     "idle",
     "walk",
+    "shuffle",
+    "strafe",
     "run",
+    "sprint",
     "fly",
     "swim",
     "jump",
@@ -70,110 +79,41 @@ ACTION_VOCAB_CORE: tuple[str, ...] = (
     "throw",
     "crawl",
     "taunt",
-)
-
-# Detail vocabulary: recognized and allowed in labels, but NOT given a multi-hot
-# slot -- too few supporting clips, a single species, or an aspect of a core word
-# to learn a reliable response from. These words still reach the model through the
-# T5 text path.
-ACTION_VOCAB_DETAIL: tuple[str, ...] = (
     "climb", "sneak", "land", "takeoff", "dive", "roll",
     "sit", "sleep", "stand", "sniff", "stretch", "yawn",
     "dig", "catch", "peck", "sting", "kick", "spit", "drag", "dance",
     "breathe", "drink", "graze", "flap", "wag", "scratch",
 )
 
-CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB_CORE + ACTION_VOCAB_DETAIL
+# Travel / facing direction. Spelled BARE ("forward", not "leftward"/"rightward"):
+# the derived adjectives are nearly the same T5 point as each other, while bare
+# left/right stay distinct. Four planar directions only -- up / down / sideways
+# have too little corpus coverage to be controllable.
+#
+# Direction is a separate axis from action, not extra action words: it is emitted
+# after every action word in a label, and T5 carries it as a roughly linear
+# offset that composes with unseen actions.
+DIRECTION_VOCAB: tuple[str, ...] = ("forward", "backward", "left", "right")
 
-# ---------------------------------------------------------------------------
-# Per-group multi-hot mask
-# ---------------------------------------------------------------------------
-# Each group trains its own model, so the ">= 30 clips" threshold that earned a
-# word its core slot is the wrong yardstick: a word that is healthy library-wide
-# can be down to a handful of clips *inside* one group. A slot fitted on five
-# clips is memorized, not learned -- and on a cross-skeleton model the failure
-# mode is that the word binds to whichever two species happened to supply those
-# clips, which a pure clip count cannot catch. So the threshold has a species
-# axis -- and, for the same reason one step up, a BODY-PLAN axis:
-#
-#     keep a slot in a group iff  clips >= 10
-#                            AND  species >= 5
-#                            AND  subs >= 3
-#
-#     subs = object_subsets (quadruped / biped / multiped / serpentine / aquatic
-#            / winged / drifting) in which at least 3 distinct species carry the word.
-#
-# Why the third axis: a species count is blind to the fact that the species can
-# all share one body plan. 'swim' clears 59 clips / 11 species inside locomotion,
-# but only two body plans carry >= 3 species of it, and on the densest one it runs
-# ~15 clips per species -- the memorization fingerprint (walk / run sit at 5.1-5.6).
-# A slot fitted like that binds the word to that body plan, which is precisely
-# what a cross-skeleton model must not learn. Same story for 'fly' in transition
-# and 'rear' in transition. See docs/canonical_frame_and_label_transfer.md 4.2.
-#
-# Closing a slot is not the fix for the underlying gap, it only stops the model
-# from memorizing across it: the fix is targeted data (retarget the 9 quadruped
-# swim clips onto 15-20 quadruped rigs, so 'swim' goes from subs=2 to subs=4-5).
-# Aim data work at the MISSING body plans, not at raw species count.
-#
-# A masked-out word is NOT removed from the vocabulary. It keeps its place in the
-# label text and therefore in the frozen-T5 path, where 'roar' already sits next
-# to 'growl' from pretraining and needs no support from these five clips. Only
-# the from-scratch multi-hot column -- an isolated, unambiguous memorization
-# handle -- is switched off.
-#
-# The layout stays the 24-slot global one in every group: three per-group
-# vocabularies would mean three index layouts and structurally incompatible
-# checkpoints. A permanently-zero column simply never receives gradient.
-#
-# This mask is a FROZEN CONSTANT, deliberately not recomputed from the dataset at
-# import time -- otherwise adding clips would silently redefine what a slot
-# means. Recompute it by the rule above when the corpus grows, and commit the new
-# values explicitly.
-#
-# The rows below were fitted on 2026-08-31 over the merged 4028-clip corpus
-# (truebones/zoo + zoo_upgrade + unitybundles).
-#
-GROUP_MULTIHOT_MASK: dict[str, tuple[int, ...]] = {
-    #                idle walk run  fly swim jump turn attk bite roar  eat  die fall hurt getup rest look shak crou retr rear thro craw taun
-    "locomotion": (    0,   1,   1,   1,   0,   1,   1,   1,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   1,   0,   0,   1,   0),
-    "stationary": (    1,   0,   0,   1,   0,   0,   1,   1,   1,   0,   1,   0,   0,   1,   0,   0,   1,   1,   1,   0,   1,   1,   0,   1),
-    "transition": (    1,   0,   0,   0,   0,   1,   1,   1,   0,   0,   0,   1,   1,   0,   1,   0,   0,   0,   0,   1,   0,   0,   0,   0),
+CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB + DIRECTION_VOCAB
+
+_CONTROLLED_VOCAB_ORDER: dict[str, int] = {
+    word: index for index, word in enumerate(CONTROLLED_VOCAB)
 }
 
-assert set(GROUP_MULTIHOT_MASK) == set(ACTION_GROUPS), (
-    "GROUP_MULTIHOT_MASK must cover exactly ACTION_GROUPS: "
-    f"{set(GROUP_MULTIHOT_MASK) ^ set(ACTION_GROUPS)}"
+assert len(_CONTROLLED_VOCAB_ORDER) == len(CONTROLLED_VOCAB), (
+    "a word may appear only once across ACTION_VOCAB + DIRECTION_VOCAB: "
+    + str(sorted({w for w in CONTROLLED_VOCAB if CONTROLLED_VOCAB.count(w) > 1}))
 )
-assert all(
-    len(mask) == len(ACTION_VOCAB_CORE) and set(mask) <= {0, 1}
-    for mask in GROUP_MULTIHOT_MASK.values()
-), "each GROUP_MULTIHOT_MASK row must be len(ACTION_VOCAB_CORE) zeros/ones"
 
 
-def group_multihot_mask(group: str) -> tuple[int, ...]:
-    """The frozen 0/1 mask over :data:`ACTION_VOCAB_CORE` for one action group.
-
-    Training and inference must both multiply the derived multi-hot by this, or
-    inference lights up columns that were held at zero throughout training.
-    """
-    normalized = normalize_action_group(group)
-    mask = GROUP_MULTIHOT_MASK.get(normalized)
-    if mask is None:
-        raise ValueError(
-            f"unknown action_group {group!r}; expected one of {list(ACTION_GROUPS)}"
-        )
-    return mask
-
-
-# Surface forms recognized for each vocabulary word. Labels are written using the
-# canonical word, so this mainly serves (a) inflected forms inside labels and
-# (b) normalizing free-text user prompts at inference ("sprint" -> "run") so they
-# land on the same wording the model was trained on.
+# Surface forms recognized for each vocabulary word. Kept explicit rather than
+# stemmed: a stemmer would collapse "stalking" into "stalk" but also drag
+# unrelated words in, and the false positives land silently in the conditioning
+# signal.
 #
-# Kept explicit rather than stemmed: a stemmer would collapse "stalking" into
-# "stalk" but also drag unrelated words in, and the false positives land silently
-# in the conditioning signal.
+# Resolves a free-text --action_label at inference, mapping a user's wording to
+# the canonical words the model trained on.
 _VOCAB_SURFACE_FORMS: dict[str, tuple[str, ...]] = {
     # NOTE: "in place" / "stationary" are deliberately NOT idle forms. Most of
     # this dataset is animated in place, so those phrases show up as filler in
@@ -181,9 +121,15 @@ _VOCAB_SURFACE_FORMS: dict[str, tuple[str, ...]] = {
     # stationary", "runs in place") and would silently light up the idle slot.
     "idle": ("idle", "idles", "idling", "motionless", "stands still",
              "standing still", "stand still", "stays still"),
+    # "shuffle" and "strafe" are walk forms AND words of their own (below): the
+    # equal-length rule in vocab_words_in keeps both, so a shuffle resolves to
+    # "walk, shuffle" -- a walk that the base word alone would not have
+    # distinguished from an ordinary stride.
     "walk": ("walk", "walks", "walking", "trot", "trots", "trotting",
              "pace", "paces", "pacing", "march", "marches", "marching",
-             "strut", "struts", "strutting", "amble", "ambles", "ambling"),
+             "strut", "struts", "strutting", "amble", "ambles", "ambling",
+             "shuffle", "shuffles", "shuffling",
+             "strafe", "strafes", "strafing"),
     "run": ("run", "runs", "running", "gallop", "gallops", "galloping",
             "sprint", "sprints", "sprinting", "dash", "dashes", "dashing",
             "jog", "jogs", "jogging", "charge", "charges", "charging"),
@@ -194,9 +140,11 @@ _VOCAB_SURFACE_FORMS: dict[str, tuple[str, ...]] = {
     "jump": ("jump", "jumps", "jumping", "leap", "leaps", "leaping",
              "hop", "hops", "hopping", "pounce", "pounces", "pouncing",
              "bound", "bounds", "bounding"),
+    # "strafe" is deliberately NOT a turn form: strafing is pure translation and
+    # does not change facing. "circle" and "bank" stay -- those do change facing.
     "turn": ("turn", "turns", "turning", "spin", "spins", "spinning",
              "rotate", "rotates", "rotating", "pivot", "pivots", "pivoting",
-             "strafe", "strafes", "strafing", "circle", "circles", "circling",
+             "circle", "circles", "circling",
              "bank", "banks", "banking"),
     "attack": ("attack", "attacks", "attacking", "strike", "strikes",
                "striking", "lunge", "lunges", "lunging", "swipe", "swipes",
@@ -260,9 +208,11 @@ _VOCAB_SURFACE_FORMS: dict[str, tuple[str, ...]] = {
               "trembles", "trembling", "wag", "wags", "wagging"),
     "crouch": ("crouch", "crouches", "crouching", "squat", "squats",
                "squatting", "hunker", "hunkers", "hunkering"),
+    # "backward"/"backwards" are NOT retreat forms: a direction must not conjure
+    # an action. "backward" lives on the direction axis; retreat is only the
+    # travel-withdrawal action.
     "retreat": ("retreat", "retreats", "retreating", "backs away",
-                "backing away", "backs up", "backing up", "backward",
-                "backwards"),
+                "backing away", "backs up", "backing up"),
     "rear": ("rear", "rears", "rearing", "on its hind legs",
              "onto its hind legs"),
     "throw": ("throw", "throws", "throwing", "toss", "tosses", "tossing",
@@ -272,7 +222,7 @@ _VOCAB_SURFACE_FORMS: dict[str, tuple[str, ...]] = {
               "scurries", "scurrying"),
     "taunt": ("taunt", "taunts", "taunting", "threaten", "threatens",
               "threatening", "intimidate", "intimidates", "intimidating"),
-    # -- detail tier --
+    # -- remaining ACTION_VOCAB words --
     "climb": ("climb", "climbs", "climbing"),
     "sneak": ("sneak", "sneaks", "sneaking", "stalk", "stalks", "stalking",
               "prowl", "prowls", "prowling"),
@@ -309,6 +259,18 @@ _VOCAB_SURFACE_FORMS: dict[str, tuple[str, ...]] = {
     "scratch": ("scratch", "scratches", "scratching", "groom", "grooms",
                 "grooming", "rub", "rubs", "rubbing", "itch", "itches",
                 "itching"),
+    # -- gait modifiers (also surface forms of walk / run above) --
+    "shuffle": ("shuffle", "shuffles", "shuffling"),
+    "strafe": ("strafe", "strafes", "strafing"),
+    "sprint": ("sprint", "sprints", "sprinting"),
+    # -- direction --
+    # Bare "back" is deliberately NOT a backward form: in this corpus it names
+    # anatomy or recovery ("collapses onto back", "stands back up"), never travel
+    # direction.
+    "forward": ("forward", "forwards"),
+    "backward": ("backward", "backwards"),
+    "left": ("left", "leftward", "leftwards"),
+    "right": ("right", "rightward", "rightwards"),
 }
 
 # A canonical word must always match itself: labels are written using the
@@ -326,10 +288,6 @@ assert set(_VOCAB_SURFACE_FORMS) == set(CONTROLLED_VOCAB), (
     "surface-form table and CONTROLLED_VOCAB disagree: "
     f"{set(_VOCAB_SURFACE_FORMS) ^ set(CONTROLLED_VOCAB)}"
 )
-assert not (set(ACTION_VOCAB_CORE) & set(ACTION_VOCAB_DETAIL)), (
-    "a word cannot be in both the core and detail vocabulary"
-)
-
 # Longest-first so multi-word forms ("stands still") win over their single-word
 # prefixes ("stand") when both belong to the SAME word. Precedence across
 # different words is resolved by span containment in ``vocab_words_in``.
@@ -352,19 +310,24 @@ _VOCAB_MATCHERS: tuple[tuple[str, re.Pattern], ...] = tuple(
 )
 
 
-def vocab_words_in(text: str, core_only: bool = False) -> list[str]:
+def vocab_words_in(text: str) -> list[str]:
     """Controlled-vocabulary words present in *text*, in canonical vocab order.
 
-    Matching is over the whole string, not just a prefix -- a label may name its
-    coarse action anywhere ("stands still and growls" hits idle *and* roar), and
-    may hit several words at once. That is the point of a controlled vocabulary:
-    it anchors recall without forcing a mutually exclusive choice.
+    Canonical order means ACTION_VOCAB order first, then DIRECTION_VOCAB -- i.e.
+    exactly the spelling a keyword label must use, so ``", ".join(vocab_words_in(t))``
+    is the canonical label for whatever *t* names.
+
+    Matching is over the whole string, not just a prefix -- a text may name its
+    action anywhere ("stands still and growls" hits idle *and* roar), and may hit
+    several words at once. That is the point of a controlled vocabulary: it
+    anchors recall without forcing a mutually exclusive choice.
 
     A word is dropped when every one of its matches sits strictly inside a longer
     match of a *different* word: "stands still" is idle, so the "stands" inside it
     must not also light up ``stand``, and "breathes fire" is spit, not breathe.
-    Equal-length matches both survive, which is what keeps a detail word firing
-    alongside the core word that shares its spelling ("grazes" -> eat + graze).
+    Equal-length matches both survive, which is what keeps a modifier firing
+    alongside the base word that shares its spelling ("shuffles" -> walk +
+    shuffle, "grazes" -> eat + graze).
     """
     if not text:
         return []
@@ -387,71 +350,37 @@ def vocab_words_in(text: str, core_only: bool = False) -> list[str]:
                     return True
         return False
 
-    allowed = set(ACTION_VOCAB_CORE) if core_only else None
     # ``spans`` is filled in _VOCAB_MATCHERS order, which is canonical vocab
     # order, and dicts preserve insertion order -- so the result is already sorted.
     return [
         word
         for word in spans
-        if (allowed is None or word in allowed)
-        and any(not subsumed(word, span) for span in spans[word])
+        if any(not subsumed(word, span) for span in spans[word])
     ]
 
 
-def action_multihot_words(label: str, group: str | None = None) -> list[str]:
-    """Core words a label activates -- the derived multi-hot, as words.
+def action_words_in(text: str) -> list[str]:
+    """The :data:`ACTION_VOCAB` subset of :func:`vocab_words_in`, in vocab order."""
+    action = set(ACTION_VOCAB)
+    return [word for word in vocab_words_in(text) if word in action]
 
-    Derived automatically from the label text, so it costs the annotator nothing
-    and naturally supports multiple hits.
 
-    Pass *group* to apply that group's frozen :data:`GROUP_MULTIHOT_MASK`, which
-    is what any consumer building an actual multi-hot vector must do. Leave it
-    ``None`` to get the unmasked hits -- that is the right input for the
-    coarse-string synthesis of :func:`coarse_label_from_words`, which feeds T5
-    text and must keep the down-weighted words (see the note there).
+def direction_words_in(text: str) -> list[str]:
+    """The :data:`DIRECTION_VOCAB` subset of :func:`vocab_words_in`, in vocab order."""
+    direction = set(DIRECTION_VOCAB)
+    return [word for word in vocab_words_in(text) if word in direction]
+
+
+def canonical_action_label(words) -> str:
+    """Spell a set of controlled words as a label: canonical order, deduplicated.
+
+    One combination of words has exactly ONE spelling in the training
+    distribution, which is what makes a user's query land on the vectors the
+    model actually trained on. Unknown words are dropped rather than appended,
+    since they are out of vocabulary.
     """
-    words = vocab_words_in(label, core_only=True)
-    if group is None:
-        return words
-    mask = group_multihot_mask(group)
-    allowed = {word for word, bit in zip(ACTION_VOCAB_CORE, mask) if bit}
-    return [word for word in words if word in allowed]
-
-
-def action_multihot_vector(label: str, group: str | None = None) -> list[float]:
-    """The derived multi-hot over :data:`ACTION_VOCAB_CORE` as a 0/1 list.
-
-    With *group* given, columns masked out for that group are held at zero (see
-    :data:`GROUP_MULTIHOT_MASK`). An all-zero result is a defined state -- it maps
-    to the projection's bias -- and is distinct from the hard-dropped null the
-    model uses for an absent condition.
-    """
-    hits = set(action_multihot_words(label, group))
-    return [1.0 if word in hits else 0.0 for word in ACTION_VOCAB_CORE]
-
-
-def coarse_label_from_words(words) -> str:
-    """Synthesize the coarse training string from core words ('idle, roar').
-
-    Used by the training-time coarse augmentation: with some probability the
-    model sees this instead of the full label, so it learns to answer the short
-    queries users actually type. Word order follows ACTION_VOCAB_CORE, so
-    'idle, roar' is the only spelling of that combination.
-
-    Detail-only labels fall back to their detail words ('rear', 'sniff'). Users
-    type those bare too, and returning '' for them would hand the augmentation
-    the null condition instead -- the model would then train on "no condition"
-    for exactly the clips whose action is only reachable through a detail word,
-    and could never learn to answer that query. The fallback is a T5 string, not
-    a multi-hot, so it costs no index slot.
-    """
-    order = {word: i for i, word in enumerate(ACTION_VOCAB_CORE)}
-    hits = sorted({w for w in words if w in order}, key=order.__getitem__)
-    if not hits:
-        detail_order = {word: i for i, word in enumerate(ACTION_VOCAB_DETAIL)}
-        hits = sorted({w for w in words if w in detail_order},
-                      key=detail_order.__getitem__)
-    return ", ".join(hits)
+    hits = {word for word in words if word in _CONTROLLED_VOCAB_ORDER}
+    return ", ".join(sorted(hits, key=_CONTROLLED_VOCAB_ORDER.__getitem__))
 
 
 # ---------------------------------------------------------------------------
@@ -492,9 +421,11 @@ def build_motion_labels(
     return payload
 
 
-# Soft cap on label length. A label is a compact prompt, not a caption: past this
-# the T5 mean-pool dilutes the words that carry the action.
-ACTION_LABEL_MAX_WORDS = 15
+# Hard cap on how many controlled words one label may name. A label is a compact
+# prompt, not a caption: past this the T5 mean-pool dilutes the words that carry
+# the action. Labels are keywords, so this counts words; the real corpus tops
+# out at 4.
+ACTION_LABEL_MAX_WORDS = 8
 
 
 def _fail_action_labels(line_number: int, message: str) -> None:
@@ -511,14 +442,24 @@ def _fail_action_labels(line_number: int, message: str) -> None:
 def _validate_action_label_entry(
     group: str, label: str, clip: str, line_number: int
 ) -> None:
-    """Enforce the two hard constraints on an ``action_labels.jsonl`` row.
+    """Enforce the hard constraints on an ``action_labels.jsonl`` row.
 
     The group must be one of the three closed values (it selects which model the
-    clip trains), and a non-empty label must hit at least one controlled word so
-    the recall anchor actually holds. An *empty* label is legal and means "no
-    condition" — it is routed to the learned null embedding, never encoded as an
-    empty string, which would otherwise teach the model that empty text means any
-    motion at all and poison the CFG unconditional branch.
+    clip trains). A non-empty label must be KEYWORDS: every comma-separated token
+    a controlled-vocabulary word, no repeats, in canonical order
+    (:data:`ACTION_VOCAB` words first, then :data:`DIRECTION_VOCAB`).
+
+    Strict because a keyword label is exactly checkable: a misspelling would
+    otherwise become a quietly different T5 vector, and a reordering would split
+    one word combination's training mass across several points in embedding
+    space.
+
+    An *empty* label is legal and means "no condition" -- it is routed to the
+    learned null embedding, never encoded as an empty string, which would
+    otherwise teach the model that empty text means any motion at all and poison
+    the CFG unconditional branch. Naming only SOME of what a clip does is legal
+    too ("run" with no direction): the model learns the marginal over the
+    directions, which is the right answer to a query that did not ask for one.
     """
     if group not in ACTION_GROUPS:
         _fail_action_labels(
@@ -528,19 +469,38 @@ def _validate_action_label_entry(
         )
     if not label:
         return
-    if not vocab_words_in(label):
+
+    tokens = [token.strip() for token in label.split(",")]
+    unknown = [token for token in tokens if token not in _CONTROLLED_VOCAB_ORDER]
+    if unknown:
         _fail_action_labels(
             line_number,
-            f"clip '{clip}' has action_label {label!r}, which hits no controlled "
-            f"vocabulary word. Every non-empty label must name at least one of "
-            f"{list(CONTROLLED_VOCAB)} (or one of their surface forms), or be left "
-            f"empty for an unconditioned clip.",
+            f"clip '{clip}' has action_label {label!r} whose token(s) {unknown} are "
+            f"not controlled-vocabulary words. Labels are keywords now, not prose: "
+            f"write the words themselves, comma-separated, in canonical order. "
+            f"Valid words are {list(CONTROLLED_VOCAB)}, or leave the label empty "
+            f"for an unconditioned clip.",
         )
-    word_count = len(label.split())
-    if word_count > ACTION_LABEL_MAX_WORDS:
+    duplicates = sorted({token for token in tokens if tokens.count(token) > 1})
+    if duplicates:
         _fail_action_labels(
             line_number,
-            f"clip '{clip}' has a {word_count}-word action_label (max "
+            f"clip '{clip}' repeats {duplicates} in action_label {label!r}. Each "
+            f"word may appear at most once.",
+        )
+    canonical = canonical_action_label(tokens)
+    if label != canonical:
+        _fail_action_labels(
+            line_number,
+            f"clip '{clip}' has action_label {label!r}, which is not in canonical "
+            f"order. Write it as {canonical!r}: action words in ACTION_VOCAB order, "
+            f"then direction words. One word combination must have exactly one "
+            f"spelling, or its training mass splits across several T5 vectors.",
+        )
+    if len(tokens) > ACTION_LABEL_MAX_WORDS:
+        _fail_action_labels(
+            line_number,
+            f"clip '{clip}' has a {len(tokens)}-word action_label (max "
             f"{ACTION_LABEL_MAX_WORDS}): {label!r}",
         )
 

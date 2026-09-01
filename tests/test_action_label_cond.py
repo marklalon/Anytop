@@ -13,11 +13,12 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from data_loaders.tensors import truebones_collate  # noqa: E402
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
-    ACTION_VOCAB_CORE,
-    GROUP_MULTIHOT_MASK,
-    action_multihot_words,
-    coarse_label_from_words,
-    group_multihot_mask,
+    ACTION_VOCAB,
+    CONTROLLED_VOCAB,
+    DIRECTION_VOCAB,
+    action_words_in,
+    canonical_action_label,
+    direction_words_in,
     vocab_words_in,
 )
 from model.anytop import AnyTop  # noqa: E402
@@ -92,44 +93,87 @@ def _label_cond(labels, groups, seed=0):
 
 
 class ActionLabelVocabularyTest(unittest.TestCase):
-    def test_group_mask_is_frozen_and_well_formed(self):
-        for group, mask in GROUP_MULTIHOT_MASK.items():
-            self.assertEqual(len(mask), len(ACTION_VOCAB_CORE), group)
-            self.assertTrue(set(mask) <= {0, 1}, group)
-        # Spot-check the two documented cases: 'walk' is a locomotion slot but is
-        # held at zero in stationary; 'die' is a transition slot only.
-        walk = ACTION_VOCAB_CORE.index('walk')
-        die = ACTION_VOCAB_CORE.index('die')
-        self.assertEqual(GROUP_MULTIHOT_MASK['locomotion'][walk], 1)
-        self.assertEqual(GROUP_MULTIHOT_MASK['stationary'][walk], 0)
-        self.assertEqual(GROUP_MULTIHOT_MASK['transition'][die], 1)
-        self.assertEqual(GROUP_MULTIHOT_MASK['locomotion'][die], 0)
+    def test_vocabulary_is_flat_and_direction_comes_last(self):
+        # One flat action vocabulary plus a separate direction axis: no core /
+        # detail split survives the removal of the multi-hot.
+        self.assertEqual(CONTROLLED_VOCAB, ACTION_VOCAB + DIRECTION_VOCAB)
+        self.assertEqual(len(set(CONTROLLED_VOCAB)), len(CONTROLLED_VOCAB))
+        self.assertEqual(DIRECTION_VOCAB, ("forward", "backward", "left", "right"))
+        # Derived adjectives are deliberately absent -- T5 presses "leftward" and
+        # "rightward" to near-synonyms -- and so is the mushy "sideways".
+        for absent in ("leftward", "rightward", "sideways", "up", "down"):
+            self.assertNotIn(absent, CONTROLLED_VOCAB)
 
-    def test_unknown_group_is_rejected(self):
-        with self.assertRaises(ValueError):
-            group_multihot_mask('emote')
+    def test_gait_modifiers_survive_alongside_their_base_word(self):
+        # The equal-length rule keeps both, which is the whole point: a Sprint
+        # clip and a Run clip must not collapse onto the same label.
+        self.assertEqual(vocab_words_in('sprints forward'), ['run', 'sprint', 'forward'])
+        self.assertEqual(vocab_words_in('shuffles left'), ['walk', 'shuffle', 'left'])
+        self.assertEqual(vocab_words_in('strafe right'), ['walk', 'strafe', 'right'])
 
-    def test_multihot_words_are_masked_per_group(self):
-        # 'bite' is a stationary slot but is masked out in locomotion.
-        self.assertIn('bite', action_multihot_words('attack, bites', 'stationary'))
-        self.assertNotIn('bite', action_multihot_words('runs and bites', 'locomotion'))
-        # Unmasked (group=None) keeps everything the text hits.
-        self.assertIn('bite', action_multihot_words('runs and bites'))
+    def test_strafe_no_longer_lights_turn(self):
+        # Strafing is pure translation and does not change facing.
+        self.assertNotIn('turn', vocab_words_in('walk, strafe left with arms swinging'))
+        # Circling and banking do change facing, so they stay.
+        self.assertIn('turn', vocab_words_in('banks left with beak open'))
 
-    def test_coarse_synthesis_ignores_the_group_mask(self):
-        # The synthesized string is T5 text, not a multi-hot: a word the group
-        # masks out must still appear, or it never learns a short-query response.
-        label = 'runs forward and growls'
-        coarse = coarse_label_from_words(vocab_words_in(label))
-        self.assertIn('roar', coarse)
-        self.assertNotIn('roar', action_multihot_words(label, 'locomotion'))
+    def test_backward_no_longer_lights_retreat(self):
+        # A direction must not conjure an action now that direction has its own
+        # axis: being knocked backward is not a retreat.
+        self.assertEqual(vocab_words_in('knocked backward tumbling'), ['fall', 'backward'])
+        # The retreat word itself still works.
+        self.assertIn('retreat', vocab_words_in('backs away slowly'))
 
-    def test_detail_only_label_falls_back_to_detail_words(self):
-        # Returning '' here would hand the augmentation the null condition, so
-        # these actions would train as "unconditional" and never be queryable.
-        coarse = coarse_label_from_words(vocab_words_in('sneaks forward low to the ground'))
-        self.assertTrue(coarse)
-        self.assertIn('sneak', coarse)
+    def test_bare_back_is_not_a_direction(self):
+        # Every corpus use of bare "back" is anatomy or recovery.
+        for text in ('collapses onto back', 'stands back up', 'arches back'):
+            self.assertNotIn('backward', vocab_words_in(text), text)
+
+    def test_action_and_direction_views_partition_the_hits(self):
+        text = 'run, sprint, forward, left'
+        self.assertEqual(action_words_in(text), ['run', 'sprint'])
+        self.assertEqual(direction_words_in(text), ['forward', 'left'])
+        self.assertEqual(
+            action_words_in(text) + direction_words_in(text), vocab_words_in(text)
+        )
+
+    def test_canonical_label_is_order_and_duplicate_free(self):
+        # One word combination must have exactly one spelling, or its training
+        # mass splits across several T5 vectors.
+        self.assertEqual(
+            canonical_action_label(['left', 'forward', 'walk', 'crouch']),
+            'walk, crouch, forward, left',
+        )
+        self.assertEqual(canonical_action_label(['run', 'run']), 'run')
+        self.assertEqual(canonical_action_label(['run', 'nonsense']), 'run')
+        # Round trip: a canonical label re-parses to itself.
+        for label in ('walk, forward', 'run, sprint, forward, left', 'attack, bite'):
+            self.assertEqual(canonical_action_label(vocab_words_in(label)), label)
+
+    def test_validator_rejects_prose_and_wrong_order(self):
+        from data_loaders.truebones.truebones_utils import motion_labels
+
+        def _validate(label):
+            motion_labels._validate_action_label_entry('locomotion', label, 'c.npy', 1)
+
+        # Legal: canonical keywords, and the empty (unconditional) label.
+        _validate('walk, forward')
+        _validate('')
+        # Prose is rejected even though it hits controlled words.
+        with self.assertRaises(SystemExit):
+            _validate('walk, strides forward with arms swinging')
+        # Right words, wrong order.
+        with self.assertRaises(SystemExit):
+            _validate('forward, walk')
+        # Repeats.
+        with self.assertRaises(SystemExit):
+            _validate('walk, walk')
+
+    def test_validator_rejects_an_unknown_group(self):
+        from data_loaders.truebones.truebones_utils import motion_labels
+
+        with self.assertRaises(SystemExit):
+            motion_labels._validate_action_label_entry('emote', 'idle', 'c.npy', 1)
 
 
 class ActionLabelConditioningTest(unittest.TestCase):
@@ -141,56 +185,34 @@ class ActionLabelConditioningTest(unittest.TestCase):
         )
         self.assertFalse(model.action_label_cond)
         self.assertIsNone(model.action_label_projection)
-        self.assertIsNone(model.action_multihot_projection)
+        self.assertIsNone(model.action_label_null_emb)
         # Forward must run and ignore any provided action condition.
         capture = _CaptureDecoder()
         model.seqTransDecoder = capture
         model.eval()
         x = torch.randn(2, 4, 13, 3, dtype=torch.float32)
         model(x, torch.tensor([1, 2], dtype=torch.int64),
-              y=_make_y(**_label_cond(['attack, bites', 'idle'], ['stationary'] * 2)))
+              y=_make_y(**_label_cond(['attack, bite', 'idle'], ['stationary'] * 2)))
         self.assertIsNotNone(capture.last_kwargs)
 
     def test_invalid_drop_prob_rejected(self):
         with self.assertRaises(ValueError):
             _make_model(action_label_cfg_drop_prob=1.5)
 
-    def test_multihot_derived_from_label_and_group(self):
+    def test_one_pathway_and_one_injection(self):
         model = _make_model()
-        multihot = model._build_action_multihot(
-            {'action_label': ['attack, lunges and bites', '', 'idle'],
-             'action_group': ['stationary', 'stationary', 'stationary']},
-            batch_size=3,
-            device=torch.device('cpu'),
-            dtype=torch.float32,
-        )
-        self.assertEqual(multihot.shape, (3, len(ACTION_VOCAB_CORE)))
-        idx = model.action_word_to_index
-        self.assertEqual(float(multihot[0, idx['attack']]), 1.0)
-        self.assertEqual(float(multihot[0, idx['bite']]), 1.0)
-        self.assertEqual(float(multihot[1].sum()), 0.0)  # empty label -> all zero
-        self.assertEqual(float(multihot[2, idx['idle']]), 1.0)
-
-    def test_multihot_respects_the_group_mask(self):
-        model = _make_model()
-        idx = model.action_word_to_index
-        stationary = model._build_action_multihot(
-            {'action_label': ['idle, bites'], 'action_group': ['stationary']},
-            1, torch.device('cpu'), torch.float32)
-        locomotion = model._build_action_multihot(
-            {'action_label': ['runs and bites'], 'action_group': ['locomotion']},
-            1, torch.device('cpu'), torch.float32)
-        self.assertEqual(float(stationary[0, idx['bite']]), 1.0)
-        # 'bite' is downgraded in locomotion, so its column stays zero even though
-        # the label names it.
-        self.assertEqual(float(locomotion[0, idx['bite']]), 0.0)
-        self.assertEqual(float(locomotion[0, idx['run']]), 1.0)
+        self.assertIsNotNone(model.action_label_projection)
+        self.assertIsNotNone(model.action_label_null_emb)
+        # No multi-hot pathway survives: nothing in y named 'action_multihot' is
+        # read, and the model exposes no vocabulary index layout at all.
+        self.assertFalse(hasattr(model, 'action_multihot_projection'))
+        self.assertFalse(hasattr(model, 'action_word_to_index'))
 
     def test_distinct_labels_produce_distinct_tokens(self):
         model = _make_model()
         model.eval()  # no random dropout in eval
         a = model._build_action_label_token(
-            _make_y(**_label_cond(['attack, bites', 'idle'], ['stationary'] * 2)), 2,
+            _make_y(**_label_cond(['attack, bite', 'idle'], ['stationary'] * 2)), 2,
             torch.device('cpu'), torch.float32)
         b = model._build_action_label_token(
             _make_y(**_label_cond(['idle', 'idle'], ['stationary'] * 2)), 2,
@@ -199,12 +221,22 @@ class ActionLabelConditioningTest(unittest.TestCase):
         self.assertFalse(torch.allclose(a[0], b[0]))
         self.assertTrue(torch.allclose(a[1], b[1]))
 
+    def test_direction_alone_changes_the_token(self):
+        # The point of the refactor: two labels differing only in their direction
+        # word must reach the model as different conditions.
+        model = _make_model(action_label_cfg_drop_prob=0.0)
+        model.eval()
+        token = model._build_action_label_token(
+            _make_y(**_label_cond(['walk, forward', 'walk, left'], ['locomotion'] * 2)),
+            2, torch.device('cpu'), torch.float32)
+        self.assertFalse(torch.allclose(token[0], token[1]))
+
     def test_hard_drop_uses_null_embedding(self):
         model = _make_model()
         model.eval()
         token = model._build_action_label_token(
             _make_y(action_label_active=torch.tensor([True, False]),
-                    **_label_cond(['attack, bites', 'idle'], ['stationary'] * 2)),
+                    **_label_cond(['attack, bite', 'idle'], ['stationary'] * 2)),
             2, torch.device('cpu'), torch.float32)
         # Dropped row == null embedding (zero-init by default).
         self.assertTrue(torch.allclose(token[1], model.action_label_null_emb))
@@ -216,14 +248,14 @@ class ActionLabelConditioningTest(unittest.TestCase):
         model = _make_model(action_label_cfg_drop_prob=1.0)
         model.train()
         token = model._build_action_label_token(
-            _make_y(**_label_cond(['attack, bites', 'idle'], ['stationary'] * 2)),
+            _make_y(**_label_cond(['attack, bite', 'idle'], ['stationary'] * 2)),
             2, torch.device('cpu'), torch.float32)
         self.assertTrue(torch.allclose(token[0], model.action_label_null_emb))
         self.assertTrue(torch.allclose(token[1], model.action_label_null_emb))
 
     def test_missing_action_condition_is_unconditional(self):
         # No action fields in y at all -> every row is the learned null embedding,
-        # NOT the untrained all-zero projection bias.
+        # NOT the untrained all-zero projection output.
         model = _make_model()
         model.eval()
         token = model._build_action_label_token(
@@ -239,40 +271,14 @@ class ActionLabelConditioningTest(unittest.TestCase):
         model.eval()
         token = model._build_action_label_token(
             _make_y(action_label_active=torch.tensor([True, True]),
-                    **_label_cond(['attack, bites', ''], ['stationary'] * 2)),
+                    **_label_cond(['attack, bite', ''], ['stationary'] * 2)),
             2, torch.device('cpu'), torch.float32)
         self.assertFalse(torch.allclose(token[0], model.action_label_null_emb))
         self.assertTrue(torch.allclose(token[1], model.action_label_null_emb))
 
-    def test_all_zero_multihot_label_is_still_conditioned(self):
-        # A label whose only core words are masked out in this group keeps its T5
-        # condition: the all-zero multi-hot is the projection's bias, a defined
-        # state, and must NOT collapse to the hard-dropped null.
-        model = _make_model(action_label_cfg_drop_prob=0.0)
-        model.eval()
-        y = _make_y(**_label_cond(['runs and growls', 'runs and growls'],
-                                  ['locomotion', 'locomotion']))
-        multihot = model._build_action_multihot(y, 2, torch.device('cpu'), torch.float32)
-        self.assertEqual(float(multihot[0].sum()), 1.0)  # only 'run' survives the mask
-        token = model._build_action_label_token(y, 2, torch.device('cpu'), torch.float32)
-        self.assertFalse(torch.allclose(token[0], model.action_label_null_emb))
-
-    def test_prebatched_multihot_matches_the_text_derived_path(self):
-        model = _make_model(action_label_cfg_drop_prob=0.0)
-        model.eval()
-        y = _make_y(**_label_cond(['attack, bites', 'idle'], ['stationary'] * 2))
-        token_from_text = model._build_action_label_token(
-            y, 2, torch.device('cpu'), torch.float32)
-        prebatched_y = dict(y)
-        prebatched_y['action_multihot'] = model._build_action_multihot(
-            y, 2, torch.device('cpu'), torch.float32)
-        token_from_prebatched = model._build_action_label_token(
-            prebatched_y, 2, torch.device('cpu'), torch.float32)
-        self.assertTrue(torch.allclose(token_from_text, token_from_prebatched))
-
-    def test_collate_precomputes_masked_multihot_and_label_emb(self):
+    def test_collate_precomputes_the_label_emb_and_valid_mask(self):
         def _item(label, group, emb):
-            item = {
+            return {
                 'inp': torch.zeros(4, 13, 3, dtype=torch.float32),
                 'n_joints': 4,
                 'temporal_mask': torch.ones(4, 4, dtype=torch.float32),
@@ -286,19 +292,13 @@ class ActionLabelConditioningTest(unittest.TestCase):
                 'action_group': group,
                 'action_label_emb': emb,
             }
-            return item
 
         _, cond = truebones_collate([
-            _item('runs and growls', 'locomotion', torch.ones(T5_DIM)),
+            _item('run, forward', 'locomotion', torch.ones(T5_DIM)),
             _item('', 'stationary', None),
         ])
-        multihot = cond['y']['action_multihot']
-        idx = {word: i for i, word in enumerate(ACTION_VOCAB_CORE)}
-        self.assertEqual(multihot.shape, (2, len(ACTION_VOCAB_CORE)))
-        self.assertEqual(float(multihot[0, idx['run']]), 1.0)
-        # 'roar' is masked out in locomotion, so the collate must not light it up.
-        self.assertEqual(float(multihot[0, idx['roar']]), 0.0)
-        self.assertEqual(float(multihot[1].sum()), 0.0)
+        self.assertNotIn('action_multihot', cond['y'])
+        self.assertEqual(cond['y']['action_label'], ['run, forward', ''])
         self.assertEqual(cond['y']['action_label_emb'].shape, (2, T5_DIM))
         self.assertTrue(bool(cond['y']['action_label_valid'][0]))
         self.assertFalse(bool(cond['y']['action_label_valid'][1]))
@@ -311,7 +311,7 @@ class ActionLabelConditioningTest(unittest.TestCase):
         x = torch.randn(2, 4, 13, 3, dtype=torch.float32)
         ts = torch.tensor([1, 2], dtype=torch.int64)
 
-        model(x, ts, y=_make_y(**_label_cond(['attack, bites', 'idle'], ['stationary'] * 2)))
+        model(x, ts, y=_make_y(**_label_cond(['attack, bite', 'idle'], ['stationary'] * 2)))
         with_attack = capture.last_kwargs['timesteps_embs'].clone()
 
         model(x, ts, y=_make_y(**_label_cond(['idle', 'idle'], ['stationary'] * 2)))

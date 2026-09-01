@@ -2,37 +2,6 @@ import torch
 import numpy as np
 
 
-def _build_action_multihot_batch(action_labels_batch, action_groups_batch):
-    """Derive the [B, V] core-word multi-hot, masked by each row's action group.
-
-    The multi-hot is derived from the label text, so it costs the annotator
-    nothing and multiple hits are the normal case ("idle, growls" is idle *and*
-    roar). Each row is then multiplied by its group's frozen
-    ``GROUP_MULTIHOT_MASK``: training and inference must apply the same mask, or
-    a request lights up a column that was held at zero for the whole run.
-
-    An all-zero row is a defined state (the projection's bias), reached either
-    because the label names no core word or because the ones it names are masked
-    out in this group. It is distinct from the hard-dropped null the model uses
-    for an absent condition.
-    """
-    from data_loaders.truebones.truebones_utils.motion_labels import (
-        ACTION_VOCAB_CORE,
-        action_multihot_vector,
-    )
-
-    batch_size = len(action_labels_batch)
-    multihot = torch.zeros((batch_size, len(ACTION_VOCAB_CORE)), dtype=torch.float32)
-    for row_index, label in enumerate(action_labels_batch):
-        group = action_groups_batch[row_index]
-        if not label or not group:
-            continue
-        multihot[row_index] = torch.as_tensor(
-            action_multihot_vector(str(label), str(group)), dtype=torch.float32
-        )
-    return multihot
-
-
 def _build_action_label_emb_batch(action_label_embs_batch, action_labels_batch):
     """Stack the per-sample frozen T5 label vectors into [B, D] plus a [B] valid mask.
 
@@ -150,7 +119,6 @@ def truebones_collate(batch):
         cond['y'].update({
             'action_group': action_groups_batch,
             'action_label': action_labels_batch,
-            'action_multihot': _build_action_multihot_batch(action_labels_batch, action_groups_batch),
         })
         label_embs, label_valid = _build_action_label_emb_batch(
             action_label_embs_batch, action_labels_batch

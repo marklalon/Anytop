@@ -50,7 +50,7 @@ import torch
 from data_loaders.get_data import get_dataset
 from data_loaders.tensors import truebones_batch_collate
 from data_loaders.truebones.truebones_utils.motion_labels import (
-    action_multihot_words,
+    action_words_in,
     vocab_words_in,
 )
 from data_loaders.truebones.truebones_utils.dataset_tags import dataset_tags
@@ -73,16 +73,16 @@ for _subset_name, _type_set in dataset_tags().object_subsets.items():
 def primary_action_word(raw_label):
     """Reduce a clip's action_label to one display word for the scatter legend.
 
-    Prefers a core word (the coarse actions the plot is meant to separate) and
-    falls back to a detail word, so a 'sneak'-only clip still gets a class
-    instead of collapsing into 'unknown' with everything else.
+    Prefers an ACTION word (the actions the plot is meant to separate) over a
+    direction, so "walk, forward" plots as walk and a direction-only label still
+    gets a class instead of collapsing into 'unknown' with everything else.
     """
     text = str(raw_label or "")
-    core = action_multihot_words(text)
-    if core:
-        return core[0]
-    detail = vocab_words_in(text)
-    return detail[0] if detail else "unknown"
+    actions = action_words_in(text)
+    if actions:
+        return actions[0]
+    words = vocab_words_in(text)
+    return words[0] if words else "unknown"
 
 
 # ----------------------------------------------------------------------------

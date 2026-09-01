@@ -1,5 +1,12 @@
 # action_group / action_label 重构方案
 
+> ⚠️ **部分已被 [action_label_keyword_refactor.md](action_label_keyword_refactor.md) 取代
+> （2026-09-01 实施）**。仍然有效的是 `action_group` 的三分切分、每组一个模型、
+> `action_labels.jsonl` 作为唯一真源。**已失效**的是本文关于 `action_label` 的两处描述：
+> label 不再是短语描述而是**受控关键词**（`"walk, forward"`），
+> `ACTION_VOCAB_CORE` / `ACTION_VOCAB_DETAIL` / `GROUP_MULTIHOT_MASK` /
+> multi-hot 通路**已全部删除**，条件只走 frozen-T5。读本文时请按这两条折算。
+>
 > 状态：**代码改造已完成（§7 步骤 1-6），待重训三组**
 > 已产出：三个数据集的 `action_labels.jsonl`（zoo 1106 / zoo_upgrade 265 / unitybundles 2657）；
 > 受控词表、`GROUP_MULTIHOT_MASK`、`load_action_labels` 在

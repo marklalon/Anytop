@@ -131,8 +131,8 @@ def assert_resume_keeps_action_group(args, save_dir):
     reads the group from (utils.parser_util.apply_checkpoint_action_group; there
     is no --action_group at generation). So a resume launched with another group
     would not just feed the existing weights the wrong clips -- it would relabel
-    the checkpoint inference trusts, and every later generation would condition on
-    a multi-hot mask these weights never learned. Changing groups means a fresh
+    the checkpoint inference trusts, so every later generation would believe the
+    weights were fitted on a corpus they never saw. Changing groups means a fresh
     save_dir.
     """
     if not getattr(args, 'resume_checkpoint', ''):
@@ -157,8 +157,8 @@ def assert_resume_keeps_action_group(args, save_dir):
     raise SystemExit(
         f"[ERROR] Resuming {args.resume_checkpoint} would change its action_group: "
         f"{args_path} records {recorded}, this run asks for '{current_group}'. The "
-        f"group is baked into the checkpoint -- it fixes the multi-hot mask the "
-        f"weights learned and is the only group this checkpoint can ever be sampled "
+        f"group is baked into the checkpoint -- it names the corpus the weights "
+        f"were fitted on and is the only group this checkpoint can ever be sampled "
         f"as. {remedy}"
     )
 
@@ -177,7 +177,6 @@ def create_training_data_loader(args):
         drop_last=True,
         action_group=getattr(args, 'action_group', ''),
         action_label_cond=getattr(args, 'action_label_cond', False),
-        action_label_coarse_prob=getattr(args, 'action_label_coarse_prob', 0.0),
         motion_cache_size=getattr(args, 'motion_cache_size', 0),
         min_length=getattr(args, 'min_length', 20),
         main_process_prefetch_batches=getattr(args, 'main_process_prefetch_batches', 0),

@@ -37,7 +37,7 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_GROUPS,
     load_motion_metadata,
     load_action_labels,
-    vocab_words_in,
+    action_words_in,
 )
 from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
     ROOT_XZ_STRIP_THRESHOLD,
@@ -856,14 +856,13 @@ def validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: 
             require_valid(action_group in ACTION_GROUPS, f"action_group {action_group!r} invalid in {ACTION_LABELS_FILE} for {motion_name}")
             # An empty label is legal (it means "no condition"), but every empty one
             # is a clip the text-to-motion path can never retrieve, so say so.
-            # A label with no core word but a detail word is also legal: detail words
-            # still reach the model through the T5 text path, they just get no
-            # multi-hot slot. Only a label hitting neither is worth warning about
-            # (load_action_labels already hard-exits on one).
+            # Naming no ACTION word (a direction-only label) is legal too but is
+            # worth a warning. load_action_labels already hard-exits on a label
+            # that is not canonical keywords at all.
             if not silent and not action_label:
                 print_warn(f"action_label is empty for {motion_name} (clip trains unconditioned)")
-            elif not silent and not vocab_words_in(action_label):
-                print_warn(f"action_label for {motion_name} hits no core or detail word: {action_label!r}")
+            elif not silent and not action_words_in(action_label):
+                print_warn(f"action_label for {motion_name} names no action word: {action_label!r}")
 
             require_valid("translation_root_index" in motion_metadata, f"translation_root_index missing for {motion_name}")
             translation_root_index = motion_metadata.get("translation_root_index")

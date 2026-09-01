@@ -125,13 +125,13 @@ def test_load_motion_metadata_merges_action_labels_from_sidecar(tmp_path):
     )
     _write_action_labels(
         dataset_dir,
-        {"Cat_Run_001.npy": ("Locomotion", "  run,  gallops   forward ")},
+        {"Cat_Run_001.npy": ("Locomotion", "  run,  forward ")},
     )
 
     loaded = load_motion_metadata(dataset_dir)
     entry = loaded["Cat_Run_001.npy"]
     assert entry["action_group"] == "locomotion"
-    assert entry["action_label"] == "run, gallops forward"
+    assert entry["action_label"] == "run, forward"
 
 
 def test_load_motion_metadata_fast_fails_when_label_missing(tmp_path):

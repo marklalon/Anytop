@@ -62,16 +62,11 @@ class AnyTop(nn.Module):
             )
         self.species_joint_cond=bool(kargs.get('species_joint_cond', False))
         self.loop_cond_prob=float(kargs.get('loop_cond_prob', 1.0))
-        # Action-label conditioning. Two pathways carry one condition:
-        #   * the frozen T5 embedding of the label text ("run, gallops with head
-        #     lowered") — the soft, open-ended path that answers detail queries;
-        #   * a multi-hot over ACTION_VOCAB_CORE derived from that same text and
-        #     masked per action group — the hard path with a dedicated learned
-        #     column per coarse action.
-        # Both are projected and summed into the timestep token (same additive
-        # pathway as loop/playspeed). They share ONE drop mask, so the CFG
-        # unconditional branch is consistent: dropping one but not the other would
-        # leave the "unconditional" pass still holding half the condition.
+        # Action-label conditioning: a single pathway -- the frozen T5 embedding
+        # of the label text, which is controlled keywords ("run, sprint, forward,
+        # left"). T5 carries direction as a roughly linear offset over the action
+        # words, so unseen (action x direction) combinations still compose
+        # instead of needing a fixed column per combination.
         self.action_label_cond = bool(kargs.get('action_label_cond', False))
         self.action_label_cfg_drop_prob = float(kargs.get('action_label_cfg_drop_prob', 0.2))
         if not 0.0 <= self.action_label_cfg_drop_prob <= 1.0:
@@ -114,26 +109,14 @@ class AnyTop(nn.Module):
             nn.Linear(self.latent_dim, self.latent_dim),
         )
         if self.action_label_cond:
-            # Import the controlled vocabulary lazily so the model module does not
-            # pull in the data-loader stack unless action conditioning is used.
-            from data_loaders.truebones.truebones_utils.motion_labels import ACTION_VOCAB_CORE
-            self.action_vocab = list(ACTION_VOCAB_CORE)
-            self.action_word_to_index = {word: i for i, word in enumerate(self.action_vocab)}
-            n_action_words = len(self.action_vocab)
-            # Frozen-T5 text path: carries the whole label, including the detail
-            # phrases and the long-tail words that never earned a multi-hot slot.
+            # Project the frozen-T5 label vector and add it to the timestep token,
+            # alongside loop / playspeed / canonical frame. Additive and linear is
+            # enough: direction is linearly readable out of the T5 vector, so the
+            # condition needs no richer function class. If a trained model still
+            # under-follows the prompt, raise --action_label_cfg_scale (no
+            # retrain needed).
             self.action_label_projection = nn.Sequential(
                 nn.Linear(t5_out_dim, self.latent_dim),
-                nn.GELU(),
-                nn.Linear(self.latent_dim, self.latent_dim),
-            )
-            # Linear over the multi-hot == sum of per-word learned embeddings; the
-            # MLP lets active words interact. The all-zero multi-hot ("no core
-            # word, or all of them masked out in this group") maps to the
-            # projection's bias, which is intentionally distinct from the
-            # hard-dropped (null) state below.
-            self.action_multihot_projection = nn.Sequential(
-                nn.Linear(n_action_words, self.latent_dim),
                 nn.GELU(),
                 nn.Linear(self.latent_dim, self.latent_dim),
             )
@@ -142,10 +125,8 @@ class AnyTop(nn.Module):
             # to a model with no action conditioning.
             self.action_label_null_emb = nn.Parameter(torch.zeros(self.latent_dim))
         else:
-            self.action_vocab = []
-            self.action_word_to_index = {}
             self.action_label_projection = None
-            self.action_multihot_projection = None
+            self.action_label_null_emb = None
 
         # Per-species condition: a T5-derived species descriptor that FiLM-modulates
         # the timestep embedding (which every decoder layer re-injects via
@@ -261,60 +242,6 @@ class AnyTop(nn.Module):
             raise ValueError("playspeed_cond must be finite")
         return raw_playspeed_cond.to(dtype=dtype).view(batch_size, 1)
 
-    def _build_action_multihot(self, y, batch_size, device, dtype):
-        """Derive the ``[B, V]`` core-word multi-hot from ``y``'s label + group.
-
-        The data loader normally precomputes ``y['action_multihot']`` so
-        torch.compile sees a stable tensor input rather than a Python list of
-        strings whose content changes every batch. This path is the fallback for
-        callers that only pass the raw text.
-        """
-        multihot = torch.zeros(batch_size, len(self.action_vocab), device=device, dtype=dtype)
-        raw_labels = y.get('action_label')
-        raw_groups = y.get('action_group')
-        if raw_labels is None or raw_groups is None:
-            return multihot
-        from data_loaders.truebones.truebones_utils.motion_labels import action_multihot_words
-
-        if isinstance(raw_labels, str):
-            raw_labels = [raw_labels]
-        if isinstance(raw_groups, str):
-            raw_groups = [raw_groups] * len(raw_labels)
-        for i in range(min(batch_size, len(raw_labels), len(raw_groups))):
-            label, group = raw_labels[i], raw_groups[i]
-            if not label or not group:
-                continue
-            for word in action_multihot_words(str(label), str(group)):
-                multihot[i, self.action_word_to_index[word]] = 1.0
-        return multihot
-
-    def _coerce_action_multihot(self, raw_action_multihot, batch_size, device, dtype):
-        """Normalize a pre-batched action multi-hot tensor to ``[B, V]``."""
-        if raw_action_multihot is None:
-            return None
-        action_multihot = torch.as_tensor(raw_action_multihot, device=device, dtype=dtype)
-        if action_multihot.dim() == 1:
-            action_multihot = action_multihot.unsqueeze(0)
-        elif action_multihot.dim() != 2:
-            raise ValueError(
-                "action_multihot must have shape (V,) or (B, V), got "
-                f"{tuple(action_multihot.shape)}"
-            )
-        expected_vocab_size = len(self.action_vocab)
-        if action_multihot.shape[1] != expected_vocab_size:
-            raise ValueError(
-                "action_multihot vocab dimension must match the core action vocabulary, got "
-                f"{action_multihot.shape[1]} for vocab size {expected_vocab_size}"
-            )
-        if action_multihot.shape[0] == 1 and batch_size != 1:
-            action_multihot = action_multihot.expand(batch_size, -1)
-        elif action_multihot.shape[0] != batch_size:
-            raise ValueError(
-                "action_multihot batch dimension must match the motion batch size, got "
-                f"{action_multihot.shape[0]} for batch {batch_size}"
-            )
-        return action_multihot
-
     def _coerce_action_label_emb(self, raw_action_label_emb, batch_size, device, dtype):
         """Normalize the frozen-T5 label embedding to ``[B, t5_out_dim]``."""
         if raw_action_label_emb is None:
@@ -350,9 +277,6 @@ class AnyTop(nn.Module):
         the unconditional branch). Otherwise, training samples a Bernoulli keep
         per sample so the condition is hard-dropped with probability
         ``action_label_cfg_drop_prob``; eval/inference keeps every sample.
-
-        One mask covers BOTH the T5 and the multi-hot pathway — see the note in
-        ``__init__`` on why they cannot be dropped independently.
         """
         if raw_action_label_active is not None:
             active = torch.as_tensor(raw_action_label_active, device=device, dtype=torch.bool).reshape(-1)
@@ -372,10 +296,7 @@ class AnyTop(nn.Module):
         """Which rows actually carry a label (an empty label = no condition).
 
         Prefers the loader's explicit ``y['action_label_valid']``; falls back to
-        "an embedding was supplied at all". Note this is NOT the same test as "the
-        multi-hot is non-zero": a label may legitimately name only detail words,
-        or name core words that this group masks out, and still be a real
-        condition the T5 path must carry.
+        "an embedding was supplied at all".
         """
         raw_valid = y.get('action_label_valid')
         if raw_valid is not None:
@@ -392,14 +313,17 @@ class AnyTop(nn.Module):
             return torch.zeros(batch_size, device=device, dtype=torch.bool)
         return torch.ones(batch_size, device=device, dtype=torch.bool)
 
-    def _build_action_label_token(self, y, batch_size, device, dtype):
-        if not self.action_label_cond or self.action_label_projection is None:
+    def _action_condition(self, y, batch_size, device, dtype):
+        """``(label_emb [B, D], active [B])`` for the action condition, or ``None``.
+
+        ``active`` folds together the CFG hard-drop mask and "does this row carry
+        a label at all": a row with no label carries no action information, and
+        routing it through the same unconditional path as a dropped row is what
+        makes omitting ``--action_label`` at inference land on the learned
+        unconditional mode automatically.
+        """
+        if not self.action_label_cond:
             return None
-        action_multihot = self._coerce_action_multihot(
-            y.get('action_multihot'), batch_size, device, dtype
-        )
-        if action_multihot is None:
-            action_multihot = self._build_action_multihot(y, batch_size, device, dtype)
         label_emb = self._coerce_action_label_emb(
             y.get('action_label_emb'), batch_size, device, dtype
         )
@@ -408,25 +332,28 @@ class AnyTop(nn.Module):
                 batch_size, self.action_label_projection[0].in_features,
                 device=device, dtype=dtype,
             )
-        action_emb = (
-            self.action_label_projection(label_emb)
-            + self.action_multihot_projection(action_multihot)
-        )
-        action_active = self._resolve_action_label_active(
+        active = self._resolve_action_label_active(
             y.get('action_label_active'), batch_size, device
         )
-        # A row with no label carries no action information. Route it to the
-        # learned null embedding rather than pushing the zero vector through the
-        # projections, whose output there is an untrained region. This unifies
-        # "no label" with the hard-dropped state, so omitting the action condition
-        # at inference yields the learned unconditional mode automatically.
-        action_active = action_active & self._resolve_action_label_valid(
+        active = active & self._resolve_action_label_valid(
             y, batch_size, device, y.get('action_label_emb')
         )
+        return label_emb, active
+
+    def _build_action_label_token(self, y, batch_size, device, dtype):
+        """The action token added to the timestep embedding, or ``None`` when off."""
+        if self.action_label_projection is None:
+            return None
+        resolved = self._action_condition(y, batch_size, device, dtype)
+        if resolved is None:
+            return None
+        label_emb, action_active = resolved
+        # An inactive row goes to the learned null rather than pushing the zero
+        # vector through the projection, whose output there is an untrained region.
         null_emb = self.action_label_null_emb.to(device=device, dtype=dtype)
         return torch.where(
             action_active.view(batch_size, 1),
-            action_emb,
+            self.action_label_projection(label_emb),
             null_emb.unsqueeze(0).expand(batch_size, -1),
         )
 

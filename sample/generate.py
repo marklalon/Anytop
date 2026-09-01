@@ -2080,9 +2080,9 @@ def _resolve_action_condition(args, model, runtime, cond_entry):
 
     ``args.action_group`` is the group this checkpoint was trained on, read out of
     its args.json by parser_util.apply_checkpoint_action_group. There is no
-    ``--action_group`` flag at generation: the group selects the multi-hot mask the
-    weights learned, so a foreign one would silently light up columns this
-    checkpoint trained at zero. It is empty only for a checkpoint that predates the
+    ``--action_group`` flag at generation: each group trains its own model, so the
+    group is a property of the weights and a foreign one would describe a
+    different checkpoint. It is empty only for a checkpoint that predates the
     mandatory training flag.
     """
     label = str(getattr(args, 'action_label', '') or '').strip()
@@ -2093,6 +2093,7 @@ def _resolve_action_condition(args, model, runtime, cond_entry):
     from data_loaders.truebones.truebones_utils.motion_labels import (
         ACTION_GROUPS,
         CONTROLLED_VOCAB,
+        canonical_action_label,
         vocab_words_in,
     )
 
@@ -2106,20 +2107,32 @@ def _resolve_action_condition(args, model, runtime, cond_entry):
         sys.exit(
             "ERROR: --action_label needs an action group, and this checkpoint's "
             "args.json records none (it predates the mandatory --action_group). "
-            "The group selects the multi-hot mask the weights learned and is a "
-            "property of the checkpoint -- there is no --action_group at "
-            "generation to supply it. Sample a checkpoint trained with "
-            f"--action_group (one of {', '.join(ACTION_GROUPS)}) instead."
+            "Each group trains its own model, so the group is a property of the "
+            "checkpoint -- there is no --action_group at generation to supply it. "
+            "Sample a checkpoint trained with --action_group (one of "
+            f"{', '.join(ACTION_GROUPS)}) instead."
         )
     # No group-validity check here: apply_checkpoint_action_group already
     # normalizes anything but ''/a legal group to '' at load time, so past the
     # guard above ``group`` is always one of ACTION_GROUPS.
-    if not vocab_words_in(label):
+    #
+    # Labels are controlled keywords in canonical order, so a prompt spelled that
+    # way is bit-identical to a training string and lands exactly on the vector
+    # the model fitted. Free text still encodes -- the same frozen T5 reads it --
+    # but it lands NEAR those vectors rather than on them, so say so.
+    hits = vocab_words_in(label)
+    if not hits:
         print(
-            f"[generate] WARNING: --action_label '{label}' hits no controlled "
-            f"vocabulary word, so it activates no multi-hot column and reaches the "
-            f"model through T5 text alone. Recognized words: "
-            f"{', '.join(CONTROLLED_VOCAB)}"
+            f"[generate] WARNING: --action_label '{label}' names no controlled "
+            f"vocabulary word, so it lands wherever T5 puts an out-of-distribution "
+            f"sentence. Recognized words: {', '.join(CONTROLLED_VOCAB)}"
+        )
+    elif label != canonical_action_label(hits):
+        print(
+            f"[generate] NOTE: --action_label '{label}' is not the canonical "
+            f"keyword spelling. Training labels for these words read "
+            f"'{canonical_action_label(hits)}' -- pass that to land on the exact "
+            f"vector the model trained on."
         )
 
     # Same T5 that baked this cond's embeddings — and therefore the same one the
@@ -2194,14 +2207,14 @@ def _resolve_loop_phase_length(cond_entry, n_frames, playspeed, action_label):
 
     Falls back to ``n_frames`` (k=1, the value the model got when this was never
     sent at all) when the species carries no period -- no loop clips, or a label
-    that names no core action word and a species with no overall median.
+    that names no action word and a species with no overall median.
     """
-    from data_loaders.truebones.truebones_utils.motion_labels import vocab_words_in
+    from data_loaders.truebones.truebones_utils.motion_labels import action_words_in
 
     period = None
     by_action = cond_entry.get('loop_period_by_action') or {}
     if action_label and isinstance(by_action, dict):
-        for word in vocab_words_in(str(action_label), core_only=True):
+        for word in action_words_in(str(action_label)):
             if word in by_action:
                 period = float(by_action[word])
                 break

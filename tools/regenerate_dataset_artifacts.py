@@ -43,9 +43,9 @@ sys.path.insert(0, str(ANYTOP_DIR))
 # process, each with its own module globals.
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_GROUPS,
+    action_words_in,
     build_motion_labels,
     load_motion_metadata,
-    vocab_words_in,
     write_motion_metadata,
 )
 from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
@@ -375,10 +375,11 @@ def _compute_loop_periods(
     hold a fractional number of cycles -- which is why this stores the period and
     lets the caller round, rather than storing a phase length directly.
 
-    Keyed by the label's coarse action word because the period is an action
-    property, not a skeleton one: a 25-frame walk cycle and a 20-frame run cycle
-    on the same rig want different k. ``loop_period_median`` is the fallback for
-    a label that names no core word.
+    Keyed by the label's action words (never its direction words) because the
+    period is an action property, not a skeleton or heading one: a 25-frame walk
+    cycle and a 20-frame run cycle on the same rig want different k, while
+    walking left and walking forward do not. ``loop_period_median`` is the
+    fallback for a label that names no action word.
 
     Only ``is_loop`` clips contribute: a non-loop clip's length is its clip
     duration, not a cycle period.
@@ -394,7 +395,7 @@ def _compute_loop_periods(
         frame_count = int(np.load(motion_path, mmap_mode="r").shape[0])
         if frame_count <= 0:
             continue
-        words = vocab_words_in(str(entry.get("action_label") or ""), core_only=True)
+        words = action_words_in(str(entry.get("action_label") or ""))
         bucket = periods.setdefault(object_type, {})
         bucket.setdefault("", []).append(frame_count)
         for word in words:

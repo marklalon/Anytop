@@ -1,10 +1,10 @@
 """Classifier-free guidance wrappers used at sampling time.
 
 Training holds the other half of this contract: ``--action_label_cfg_drop_prob``
-hard-drops the action condition on a fraction of the samples (the T5 text and the
-multi-hot together, under one mask -- see ``AnyTop._resolve_action_label_active``),
-substituting the learned ``action_label_null_emb``. That is what gives the model
-a real unconditional mode. Sampling then runs the denoiser twice per diffusion
+hard-drops the action condition on a fraction of the samples (see
+``AnyTop._resolve_action_label_active``), substituting the learned
+``action_label_null_emb``. That is what gives the model a real unconditional
+mode. Sampling then runs the denoiser twice per diffusion
 step -- once with the label, once with the condition forced to that null mode --
 and extrapolates away from the unconditional prediction:
 

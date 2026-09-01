@@ -35,11 +35,11 @@ def parse_and_load_from_model(parser, argv=None, preserve_cli_args=None):
 def assert_action_conditioning_not_deprecated(model_args, args_path):
     """Refuse a checkpoint trained on the removed 15-way action-tag condition.
 
-    The condition changed shape entirely (a 15-dim tag multi-hot became a T5
-    label embedding plus a 19-slot masked multi-hot), so such a checkpoint cannot
-    be loaded, only retrained. Silently ignoring the stale flag would load the
-    weights and generate motion with the action condition quietly disabled, which
-    looks like a quality regression rather than an incompatibility.
+    The condition changed shape entirely (a 15-dim tag multi-hot became a frozen
+    T5 label embedding), so such a checkpoint cannot be loaded, only retrained.
+    Silently ignoring the stale flag would load the weights and generate motion
+    with the action condition quietly disabled, which looks like a quality
+    regression rather than an incompatibility.
     """
     stale = [key for key in ('action_tag_cond', 'action_tag_cfg_drop_prob', 'action_tags')
              if key in model_args]
@@ -48,9 +48,8 @@ def assert_action_conditioning_not_deprecated(model_args, args_path):
     raise SystemExit(
         f"ERROR: {args_path} was written by the removed action-tag conditioning "
         f"({', '.join(stale)}). That condition has been replaced by --action_label_cond "
-        "(T5 label embedding + group-masked core multi-hot) and the two are not "
-        "weight-compatible. Retrain this group with --action_label_cond; see "
-        "docs/action_group_label_refactor.md."
+        "(the frozen-T5 embedding of the keyword action_label) and the two are not "
+        "weight-compatible. Retrain this group with --action_label_cond."
     )
 
 
@@ -82,16 +81,14 @@ def assert_global_energy_not_deprecated(model_args, args_path):
 def apply_checkpoint_action_group(args, model_args, args_path):
     """Set this generation's action group from the checkpoint being sampled.
 
-    Each checkpoint is trained on exactly one group, and that same group selects
-    the multi-hot mask the model saw -- so the group is a property of the weights.
-    Generation therefore has no ``--action_group`` flag at all: the value comes
-    out of args.json and nowhere else, which is why a checkpoint can only ever be
-    sampled as the group it was trained on. Asking for another group means
-    sampling that group's checkpoint.
+    Each checkpoint is trained on exactly one group -- the group partitions the
+    corpus, so the group is a property of the weights. Generation therefore has
+    no ``--action_group`` flag at all: the value comes out of args.json and
+    nowhere else, which is why a checkpoint can only ever be sampled as the group
+    it was trained on. Asking for another group means sampling that group's
+    checkpoint.
 
     A run predating the mandatory flag records no group (or the retired 'all').
-    It still generates, but sample/generate.py refuses ``--action_label`` for it:
-    with no flag left, nothing could supply the missing mask.
     """
     recorded_group = str(model_args.get('action_group', '') or '').strip().lower()
     if recorded_group and recorded_group not in ACTION_GROUPS:
@@ -223,29 +220,22 @@ def add_model_options(parser):
                             "token. Requires 'species_emb'.")
     group.add_argument("--action_label_cond", action='store_true',
                        help="Enable action-label conditioning: the frozen T5 embedding of the clip's "
-                            "action_label plus a multi-hot over the controlled core vocabulary derived "
-                            "from that same text (masked per action group) are projected and added to "
-                            "the timestep token. Requires action_label_embs.npy alongside "
-                            "action_labels.jsonl (tools/build_action_label_embeddings.py).")
+                            "action_label ('run, sprint, forward, left' -- controlled keywords, not "
+                            "prose) is projected and added to the timestep token. Requires "
+                            "action_label_embs.npy alongside action_labels.jsonl "
+                            "(tools/build_action_label_embeddings.py).")
     group.add_argument("--action_label_cfg_drop_prob", default=0.2, type=float,
                        help="Per-sample probability of hard-dropping the action condition during "
                             "training (replaced by a learned null embedding), enabling classifier-free "
-                            "guidance. The T5 and multi-hot pathways share this one drop mask. "
-                            "Default 0.2.")
-    group.add_argument("--action_label_coarse_prob", default=0.0, type=float,
-                       help="Probability of replacing a training clip's full action_label with the "
-                            "coarse string synthesized from the controlled words it hits "
-                            "('stands still and growls' -> 'idle, roar'), so the model also trains on "
-                            "the short queries users actually type. Synthesized from the matched words, "
-                            "never by truncating the label. Default 0.0 (always use the full label).")
+                            "guidance at sampling time via --action_label_cfg_scale. Default 0.2.")
 
 def add_data_options(parser, training=False):
     """Dataset selection. ``training=True`` adds the training-only options.
 
     ``--action_group`` is one of those: it is mandatory when training (it splits
-    the corpus AND fixes the multi-hot mask the weights learn) and absent when
-    generating, where the group is read back out of the checkpoint instead --
-    see :func:`apply_checkpoint_action_group`.
+    the corpus, and each group trains its own model) and absent when generating,
+    where the group is read back out of the checkpoint instead -- see
+    :func:`apply_checkpoint_action_group`.
     """
     group = parser.add_argument_group('dataset')
     group.add_argument("--train_split", default='train', choices=['train', 'val', 'test', 'all'], type=str,
@@ -262,9 +252,8 @@ def add_data_options(parser, training=False):
                                 "each clip belongs to exactly one group and each group trains its "
                                 "own model, so there is no 'all' and no list. The value is recorded "
                                 "in the checkpoint's args.json and is the only source generation "
-                                "reads it from (there is no --action_group at generation): it also "
-                                "fixes the multi-hot mask the weights learn, so a checkpoint can "
-                                "only ever be sampled as the group it was trained on.")
+                                "reads it from (there is no --action_group at generation), so a "
+                                "checkpoint can only ever be sampled as the group it was trained on.")
 
 def add_training_options(parser):
     group = parser.add_argument_group('training')
@@ -448,10 +437,15 @@ def add_generate_options(parser):
                             "--inpaint_joints, the regenerated region is selected-joints x selected-frames; "
                             "everything else is clamped to --reference_motion. Requires --reference_motion.")
     group.add_argument("--action_label", default="", type=str,
-                       help="Text-to-motion prompt for this generation, e.g. 'run' or "
-                            "'idle, opens and closes its jaws'. Encoded through the same frozen T5 as "
-                            "the training labels and combined with the multi-hot derived from the "
-                            "controlled words it hits. Empty = unconditional (the learned null "
+                       help="Text-to-motion prompt for this generation. Write controlled-vocabulary "
+                            "keywords, comma-separated, in the same canonical order the labels use: "
+                            "action words first, then direction ('walk, forward', 'run, sprint, left', "
+                            "'attack, bite'). That is exactly the wording the model trained on, so a "
+                            "prompt spelled this way lands on the training vectors instead of near "
+                            "them. Free text still works -- it goes through the same frozen T5 -- but "
+                            "generation will warn and tell you which controlled words it landed on. "
+                            "Naming no direction is legal and means 'any' (the model answers with the "
+                            "marginal over directions). Empty = unconditional (the learned null "
                             "embedding). Requires a checkpoint trained with --action_label_cond.")
     group.add_argument("--action_label_cfg_scale", default=1.0, type=float,
                        help="Classifier-free guidance scale over --action_label. 1.0 (default) = "

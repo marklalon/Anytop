@@ -7,15 +7,11 @@ those on the fly would mean a resident T5 in every training process for a value
 that never changes, so they are baked once into ``action_label_embs.npy`` next to
 the labels and looked up by text.
 
-The sidecar covers two string sets, both needed at training time:
+One vector per distinct ``action_label`` in the dataset, and nothing else: labels
+are keywords, so each one is already the exact form the model sees.
 
-  * every distinct ``action_label`` in the dataset;
-  * every coarse string those labels synthesize to ("stands still and growls" ->
-    "idle, roar"), because ``--action_label_coarse_prob`` swaps one for the other
-    per sample and both have to resolve through the same table.
-
-Keyed by the label text rather than by clip: labels repeat heavily across clips,
-and the coarse strings collapse further still.
+Keyed by the label text rather than by clip: keyword labels repeat heavily across
+clips -- 610 distinct strings over 4028 clips.
 
 Usage:
     python tools/build_action_label_embeddings.py [DATASET_DIR ...] [--t5-model NAME]
@@ -46,9 +42,7 @@ sys.path.insert(0, str(_PARENT_DIR))
 sys.path.insert(0, str(ANYTOP_DIR))
 
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
-    coarse_label_from_words,
     load_action_labels,
-    vocab_words_in,
 )
 from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     ACTION_LABELS_FILE,
@@ -58,7 +52,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
 
 
 def collect_label_strings(dataset_dir: Path) -> list[str]:
-    """Every string the dataset can hand the model, full labels and coarse alike."""
+    """Every label string the dataset can hand the model."""
     strings: set[str] = set()
     for entry in load_action_labels(dataset_dir).values():
         label = entry["action_label"]
@@ -67,9 +61,6 @@ def collect_label_strings(dataset_dir: Path) -> list[str]:
             # model's learned null embedding and must never be T5-encoded.
             continue
         strings.add(label)
-        coarse = coarse_label_from_words(vocab_words_in(label))
-        if coarse:
-            strings.add(coarse)
     return sorted(strings)
 
 
