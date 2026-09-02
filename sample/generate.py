@@ -2113,24 +2113,32 @@ def _resolve_action_condition(args, model, runtime, cond_entry):
     # normalizes anything but ''/a legal group to '' at load time, so past the
     # guard above ``group`` is always one of ACTION_GROUPS.
     #
-    # Labels are controlled keywords in canonical order, so a prompt spelled that
-    # way is bit-identical to a training string and lands exactly on the vector
-    # the model fitted. Free text still encodes -- the same frozen T5 reads it --
-    # but it lands NEAR those vectors rather than on them, so say so.
+    # Labels are controlled keywords in canonical order; any other spelling
+    # (e.g. "forward, run") encodes to a different T5 point than the training
+    # string "run, forward" -- word order matters (T5 position bias) and no
+    # training sample sat at the reordered point. So a recognizable prompt is
+    # REWRITTEN to its canonical spelling, not merely flagged: it is the
+    # string the model fitted and the key into action_label_embs.npy. The
+    # substitution is printed in full -- it can also drop unrecognized words.
     hits = vocab_words_in(label)
     if not hits:
+        # No controlled word at all: there is nothing to canonicalize toward, so
+        # the text is passed through untouched and the caller is told it is
+        # sampling from wherever T5 puts an out-of-distribution sentence.
         print(
             f"[generate] WARNING: --action_label '{label}' names no controlled "
             f"vocabulary word, so it lands wherever T5 puts an out-of-distribution "
             f"sentence. Recognized words: {', '.join(CONTROLLED_VOCAB)}"
         )
-    elif label != canonical_action_label(hits):
-        print(
-            f"[generate] NOTE: --action_label '{label}' is not the canonical "
-            f"keyword spelling. Training labels for these words read "
-            f"'{canonical_action_label(hits)}' -- pass that to land on the exact "
-            f"vector the model trained on."
-        )
+    else:
+        canonical = canonical_action_label(hits)
+        if canonical != label:
+            print(
+                f"[generate] --action_label '{label}' -> '{canonical}' "
+                f"(canonical keyword spelling; this is the string the model "
+                f"trained on and the one that was encoded)"
+            )
+            label = canonical
 
     # Same T5 that baked this cond's embeddings — and therefore the same one the
     # offline action_label_embs.npy sidecar used, since both are built from it.
