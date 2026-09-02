@@ -1,11 +1,14 @@
 # temporal_window → 全注意力
 
-> 状态：**代码已实施（2026-09-01），待重训验证**（§10 实施记录）
+> 状态：**完成（2026-09-02）** —— 代码已实施（2026-09-01）、
+> 全量重训 200k 步已跑完（`merged_locomotion_v4_fullattn`）、
+> §6 的四条判读全部通过，**新 ckpt 转正**（判读数据见 **§6.1**，实施记录见 §10）
 > 改动范围：**删除 `--temporal_window` 及整条 temporal mask 通路**（36 处引用 / 11 个文件），另加 **checkpoint 版本守卫**（替代并删除两个既有 deprecation 守卫）。
 > **无 cond.npy 变化、无数据重生成、`state_dict` 结构不变。**
 > 目标：去掉 temporal 自注意力的滑动窗口，让每个 token 看到整段。
 > **旧 checkpoint 不再兼容**，必须加 checkpoint 版本守卫（§3.2），否则会静默跑错。
-> 验证方式：**全量重训 200k 步，重训完成后人工跑几条常规用例验证**（口径见 §6）。
+> 验证方式：**全量重训 200k 步，重训完成后人工跑几条常规用例验证**（口径见 §6，
+> 实际判读见 §6.1 —— 四条里三条改用了可复现的自动量测，人工判读作抽查）。
 
 ---
 
@@ -266,6 +269,11 @@ loop 还有另外两路信号：
 
 **不做 base arm 对照** —— 重训完成后，人工跑几条常规用例，看结果：
 
+> **实际执行时四条都做成了可复现的量测**（§6.1），人工判读降级为抽查。
+> 另外"不做 base arm 对照"这个决定的代价在 §6.1 开头具体化了：
+> 本轮重训同时含 [action_label_keyword_refactor.md](action_label_keyword_refactor.md)
+> 的关键词化改动，四条判读都无法单独归因给全注意力。
+
 1. **步态相位一致性** —— 采几条 locomotion 动作（walk / gallop 等），看左右肢反相关系
    与相位是否随时间漂移。这是 §2.2 的直接靶子，也是当初 S11 提出这条的动机。
 2. **loop 首尾缝合** —— 采 loop 用例，看首尾衔接。这是本改动**唯一可能变差**的地方
@@ -286,6 +294,117 @@ loop 还有另外两路信号：
 
 **不能用 l_simple 作判据** —— 同 [global_energy_removal.md](global_energy_removal.md) §4：
 这类通路改动对训练 loss 的影响远小于其对可控性的影响。
+
+### 6.1 判读结果（2026-09-02，`merged_locomotion_v4_fullattn` / `model000200000.pt`）
+
+#### 先做 §6 要求的配置核对
+
+`args.json` 逐键 diff，**四处不同**：
+
+| 键 | v3 | v4 | §6 是否允许 |
+|---|---|---|---|
+| `save_dir` | `save/merged_locomotion_v3` | `save/merged_locomotion_v4_fullattn` | ✅ |
+| `temporal_window` | `41` | 缺失 | ✅ |
+| `version` | 缺失 | `1` | ✅ |
+| `action_label_coarse_prob` | `0.3` | 缺失 | ❌ **计划外** |
+
+第四条来自
+[action_label_keyword_refactor.md](action_label_keyword_refactor.md) §2.5 ——
+那一轮的删除和本轮的重训**合并成了同一次训练**。
+所以 §6"不做 base arm 对照"的代价在这里具体化了：
+**本 ckpt 同时含两项改动，下面四条判读都不能单独归因给全注意力。**
+能做的归因只是"哪一条改动瞄的是哪个靶子"，写在各条里。
+其余超参与 seed 逐项一致。
+
+#### 1. 步态相位一致性 —— **通过**，且是四条里改善最明显的
+
+用 `tools/direction_following.py phase` 量左右脚接触相位的组内 circvar
+（同一提示 16 条样本，0 = 完全一致），对着 v3 的同一张表逐格比
+（原始表在 `outputs/direction_following/R0_phase.txt` / `R1_phase.txt`）。
+cfg∈{2,3} 均值，v3 → v4（括号是该格的语料 circvar）：
+
+| | forward | backward | left | right |
+|---|---|---|---|---|
+| run | 0.467 → **0.110** (0.002) | 0.611 → **0.205** (0.000) | 0.506 → 0.876 (0.591) | 0.283 → **0.138** (0.448) |
+| walk | 0.264 → **0.142** (0.117) | 0.715 → **0.441** (0.730) | 0.173 → **0.044** (0.552) | 0.191 → **0.113** (0.428) |
+
+8 格里 7 格改善。`run, forward` 从 0.467 掉到 **0.110**（语料 0.002）——
+这正是 §2.2 的靶子：一个周期内 lag 30~40 的相位关系不再跨三层复合。
+唯一变差的 `run, left` 该格语料本身就散（0.591，n=3），误差棒宽，不单独下结论。
+
+**归因说明**：相位一致性是本改动瞄的靶，关键词化瞄的是朝向；
+朝向那一栏同轮也大幅改善（见
+[action_label_keyword_refactor.md §4.3](action_label_keyword_refactor.md)），
+两者各自命中自己的靶，没有互相矛盾的迹象 —— 但严格说仍分不开。
+
+#### 2. loop 首尾缝合 —— **通过**（本改动唯一可能变差的地方）
+
+对 `eval_checkpoint` 电池里全部 **9 个带 `--loop`** 的任务，
+按 `tools/compute_loop_unclosure_error.py` 的 `wrap_gap` 定义
+（逐关节 ‖pos_last − pos_first‖ 的 p75，特征通道 0-2）逐任务量，v3 → v4：
+
+| 任务 | v3 | v4 |
+|---|---:|---:|
+| Basic/task2 (run, 30f) | 0.0175 | **0.0139** |
+| Basic/task3 (walk, 30f) | 0.0098 | **0.0040** |
+| Basic/task4 (run, 60f) | 0.0086 | **0.0051** |
+| Basic/task5 (walk, 60f) | 0.0041 | **0.0025** |
+| Basic/task6 (run, 120f) | 0.0092 | **0.0056** |
+| Basic/task7 (walk, 120f) | 0.0046 | **0.0025** |
+| ConvertLoop/task1 | 0.0272 | 0.0277 |
+| InpaintJoints/task1 | 0.0147 | **0.0117** |
+| NewSkeleton/task1 | 0.0066 | **0.0055** |
+
+**全部持平或收紧**，唯一的 + 是 ConvertLoop 的 +0.0005（量级上是噪声）。
+§3.3 丢掉的 mask 拓扑信号没有造成缝合退化 ——
+§4 代价表里"另有两路信号，且 phase embedding 更强"这条判断成立。
+
+#### 3. 高频抖动 —— **语料内通过，域外有一个真实回归**
+
+指标用逐帧位置二阶差分的 RMS 除以每帧步长 RMS（无量纲，rig 尺度被约掉）。
+17 项电池里 **16 项在 ±0.03 内浮动**（基线 0.17~0.39），无系统性上升；
+`jerk_norm` / `snap_norm` 分量在这 16 项上分别 +0.004 / +0.012（见第 4 条）。
+
+**例外是 `NewSkeleton/task1`**（dragon + `--action_label fly --loop`，域外骨架）：
+抖动比 0.42 → **1.07**，`jerk_norm` 0.725 → **0.166**，总分 0.788 → 0.533，
+8 条里 6 条中招（per-file 0.46 / 0.46 / 0.50 / 0.47 / 0.49 / 0.72 / 0.45 / 0.71）。
+
+拆分探针（v4，同一 cond、同一 seed，`outputs/direction_following/dragon_probe/`）
+定位到是**三者叠加**才炸：
+
+| 提示 | `jerk_norm` |
+|---|---:|
+| `fly`，不带 `--loop` | **0.995** |
+| `walk --loop` | 0.720 |
+| `fly --loop` | **0.166** |
+
+即 **loop × 域外骨架 × 域外动作**（`fly` 在 locomotion group 的边缘）三者同时成立才复现；
+语料内的 6 个 loop 任务（上表 Basic/task2~7）全部正常。
+v3 侧无法回跑同样的探针 —— §3.2 的版本守卫按设计直接拒绝了 v3 的 `args.json`
+（**顺带是这条守卫的第一次实战验证，行为符合设计：报错，不是跑错**）。
+
+按 §6 的口径这一条判为**通过但挂一个待办**：它不是"整体高频抖动"，
+不触发 §5 的 ALiBi 备选（那要求语料内也抖）。
+
+#### 4. 整体质量 —— **通过**
+
+`eval_checkpoint.py` 的 17 项电池，v3 / v4 同任务同种子逐项对比
+（报告：`outputs/eval_checkpoint/merged_locomotion_v4_fullattn/model000200000/eval_report.html`）：
+
+- **16/17 项持平或改善**，均值 0.8868 → **0.8971**
+- 四个分量（去掉第 3 条那个域外任务后）全部上升：
+  `jerk_norm` +0.004、`snap_norm` +0.012、`spectral_flatness` +0.014、`bone_length` +0.014
+- 唯一下降的就是第 3 条的 `NewSkeleton/task1`
+- 两份 `cond.npy`（v3 save / v4 save / `dataset/merged`）MD5 逐字节相同，排除 cond 的账
+
+#### 结论
+
+按 §6 的结论口径：**1 / 2 / 3 / 4 均通过 → 完成，新 ckpt 转正**。
+`temporal_window` 的删除保留，不上 §5 的 ALiBi。
+
+一个待办（不阻塞转正）：**域外骨架 + `--loop` + 域外动作** 三者叠加时的高频抖动，
+见第 3 条。它落在"新骨架 loop 生成"这条独立线上，
+不是本改动的判据所覆盖的范围，需要单独立项时再查。
 
 ---
 
@@ -311,8 +430,8 @@ loop 还有另外两路信号：
 3. 补一个测试：`seqTransDecoder` 收到的 `temporal_mask is None`，且 cross-limb 块不炸；
    再补一个：`version` 缺失或不匹配的 `args.json` 触发 `SystemExit`
 4. 跑一遍现有测试套件 —— 重点是 §3.3 #7 的 batch 元组下标（位置索引，删一项会静默错位）
-5. 启动重训（`RUN_NAME=merged_locomotion_v4_fullattn`）
-6. 按 §6 判读（人工常规用例），回填"实施记录"一节
+5. 启动重训（`RUN_NAME=merged_locomotion_v4_fullattn`）—— ✅ 200k 步已跑完
+6. 按 §6 判读（人工常规用例），回填"实施记录"一节 —— ✅ 判读见 §6.1，记录见 §10 末
 
 ---
 
@@ -336,7 +455,8 @@ compile 只会让 launch-bound 更明显，不改变 §1 的结论。
 
 ## 10. 实施记录
 
-**2026-09-01：§8 步骤 1~4 完成，代码已删干净；步骤 5（重训）与步骤 6（§6 判读）待做。**
+**2026-09-01：§8 步骤 1~4 完成，代码已删干净。**
+**2026-09-02：步骤 5（重训 200k 步）与步骤 6（§6 判读）完成，新 ckpt 转正 —— 见本节末与 §6.1。**
 
 ### 与方案的差异
 
@@ -386,7 +506,19 @@ compile 只会让 launch-bound 更明显，不改变 §1 的结论。
 | `tests/test_cross_limb_temporal.py` | 删 `_template` 及全部 `tt` 传参。注意 `test_full_batch_equals_per_sample_sliced` 的强度略降：原来靠 per-batch 的 mask 图案抓 batch 维转置，现在靠 per-batch 的 `x` / `kpm` / `unreliable`，仍然抓得住 |
 | batch 元组下标（§3.3 #7 的风险点） | `temporal_mask` 原在位置 `[5]`，删后其后各项整体前移一位。已同步：`tensors.py` 的布局注释与全部 `b[...]`、`tools/sample_augmented_bvh.py` 的解包、`tests/test_dataset_loop.py` 的 `sample[12], sample[13]` → `sample[11], sample[12]`、`tests/test_canonical_features.py` 的 collate fixture |
 
-### 下一步
+### 重训与判读（2026-09-02）
 
-`train.bat` 直接跑即可（`RUN_NAME=merged_locomotion_v4_fullattn`）。
-跑完按 §6 的四条人工用例判读，结果回填到本节。
+`train.bat` 跑完 200k 步（`RUN_NAME=merged_locomotion_v4_fullattn`），
+按 §6 的四条判读，**全部通过，新 ckpt 转正** —— 数据与归因说明见 **§6.1**。
+
+两件实施期才知道的事：
+
+1. **本轮重训与关键词化那一轮合并了**，所以 `args.json` 的 diff 比 §6 预期多一项
+   `action_label_coarse_prob`，四条判读都带一个归因混淆项（§6.1 开头）。
+2. **§3.2 的版本守卫第一次实战触发**：想拿 v3 的 ckpt 回跑一条对照探针时被直接拒绝
+   （`args.json` 无 `version`），行为符合设计 —— 报错，不是跑错。
+   代价是 v3 侧再也做不了新的对照实验，只能读它已有的产物（§4 代价表里
+   "旧 ckpt 只能当历史结果读"这条，实测就是这个手感）。
+
+遗留一个待办，**不阻塞转正**：域外骨架 + `--loop` + 域外动作三者叠加时的高频抖动
+（§6.1 第 3 条）。语料内不复现，不触发 §5 的 ALiBi 备选。
