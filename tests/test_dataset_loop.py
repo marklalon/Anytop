@@ -48,7 +48,7 @@ def _find_motion(pattern: str) -> str:
     return f"{source.namespace}/{os.path.basename(files[0])}"
 
 
-LOOP_MOTION = _find_motion("Ostrich_Run_*.npy")
+LOOP_MOTION = _find_motion("Ostrich_Run.npy")
 LOOP_SUBSET = "biped"
 NUM_FRAMES = 60
 _ENRICHED_MOTION_METADATA_LOOKUP = None

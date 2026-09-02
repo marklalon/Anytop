@@ -38,62 +38,51 @@ ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 
 # The action vocabulary (flat -- no core/detail split). Every word reaches the
 # model through the same path, the frozen-T5 embedding of the label text, so a
-# rare word is just a point next to its pretrained neighbours and adds no
-# dimension or index-layout change.
+# rare word is just a point next to its pretrained neighbours.
 #
-# ORDER IS THE CANONICAL SPELLING ORDER: a label lists its action words in this
-# order, then its direction words in DIRECTION_VOCAB order, so one combination
-# of words has exactly one spelling in the training distribution ("walk, crouch,
-# retreat, backward", never "retreat, crouch, walk").
-# _validate_action_label_entry enforces it.
+# TUPLE ORDER IS THE CANONICAL SPELLING ORDER: a label lists its action words
+# in this order, then its direction words in DIRECTION_VOCAB order, so one word
+# combination has exactly one spelling ("walk, retreat, crouch, backward", never
+# "crouch, retreat, walk"). _validate_action_label_entry enforces it.
 #
-# The modifier words (shuffle, strafe, sprint) are surface forms of the base
-# word they qualify AND words in their own right, so a Sprint clip resolves to
-# "run, sprint" while a plain Run clip stays "run" -- two gaits the base word
-# alone would collapse together.
+# The modifier words (shuffle, sprint, ...) are surface forms of the base word
+# they qualify AND words in their own right: a Sprint clip resolves to
+# "run, sprint" while a plain Run clip stays "run". "strafe" is the exception:
+# it qualifies any travel mode ("run, strafe", "fly, strafe"), so it names only
+# itself and never drags in a base word.
+#
+# The tuple is ordered in ROLE BLOCKS: A is the basic MODE (the label's first
+# word), B how that mode is executed, C a secondary action layered on top.
+# DIRECTION_VOCAB is NOT one of these blocks -- it is a separate axis appended
+# after every action word. Ordering is NOT a weighting: T5 mean-pools over
+# tokens, so every word of a label carries the same weight wherever it sits.
 ACTION_VOCAB: tuple[str, ...] = (
-    "idle",
-    "walk",
-    "shuffle",
-    "strafe",
-    "run",
-    "sprint",
-    "fly",
-    "swim",
-    "jump",
-    "turn",
-    "attack",
-    "bite",
-    "roar",
-    "eat",
-    "die",
-    "fall",
-    "hurt",
-    "getup",
-    "rest",
-    "look",
-    "shake",
-    "crouch",
-    "retreat",
-    "rear",
-    "throw",
-    "crawl",
-    "taunt",
-    "climb", "sneak", "land", "takeoff", "dive", "roll",
-    "sit", "sleep", "stand", "sniff", "stretch", "yawn",
-    "dig", "catch", "peck", "sting", "kick", "spit", "drag", "dance",
-    "breathe", "drink", "graze", "flap", "wag", "scratch",
+    # -- block A: basic mode (the label's first word) --
+    # Travel modes first; "attack" closes the block as a mode of its own, so
+    # "run, attack" still leads with the gait and "attack, dash" does not invert.
+    "idle", "walk", "run", "fly", "swim", "crawl", "climb", "jump", "turn",
+    "fall", "roll", "attack",
+    # -- block B: how that mode is executed (gait, speed, wing state) --
+    "trot", "sprint", "dash", "gallop", "shuffle", "strafe", "glide", "slow",
+    "sneak", "retreat", "flap", "dive",
+    # -- block C: secondary action layered on the mode (existing order kept) --
+    "bite", "roar", "eat", "die", "hurt", "getup", "rest", "look",
+    "shake", "throw", "taunt", "land", "takeoff", "sit", "sleep", "stand",
+    "sniff", "stretch", "yawn", "dig", "catch", "peck", "sting", "kick", "spit",
+    "drag", "dance", "breathe", "drink", "graze", "wag", "scratch",
+    "rear", "crouch",
 )
 
-# Travel / facing direction. Spelled BARE ("forward", not "leftward"/"rightward"):
-# the derived adjectives are nearly the same T5 point as each other, while bare
-# left/right stay distinct. Four planar directions only -- up / down / sideways
-# have too little corpus coverage to be controllable.
+# The direction axis -- travel / facing direction. Separate vocabulary from the
+# ACTION_VOCAB role blocks above, emitted after every action word in a label.
+# Spelled BARE ("forward", not "leftward"): the derived adjectives collapse to
+# nearly the same T5 point, while bare left/right stay distinct.
 #
-# Direction is a separate axis from action, not extra action words: it is emitted
-# after every action word in a label, and T5 carries it as a roughly linear
-# offset that composes with unseen actions.
-DIRECTION_VOCAB: tuple[str, ...] = ("forward", "backward", "left", "right")
+# up/down are DIRECTIONS (where the net travel goes), not actions -- climb/dive
+# stay actions (what the body is doing). The vertical word is spelled LAST, after
+# the planar ones; at most one vertical word per label. T5 carries a direction
+# as a roughly linear offset that composes with unseen actions.
+DIRECTION_VOCAB: tuple[str, ...] = ("forward", "backward", "left", "right", "up", "down")
 
 CONTROLLED_VOCAB: tuple[str, ...] = ACTION_VOCAB + DIRECTION_VOCAB
 
@@ -108,28 +97,23 @@ assert len(_CONTROLLED_VOCAB_ORDER) == len(CONTROLLED_VOCAB), (
 
 
 # Surface forms recognized for each vocabulary word. Kept explicit rather than
-# stemmed: a stemmer would collapse "stalking" into "stalk" but also drag
-# unrelated words in, and the false positives land silently in the conditioning
-# signal.
-#
-# Resolves a free-text --action_label at inference, mapping a user's wording to
-# the canonical words the model trained on.
+# stemmed: a stemmer would drag in false positives that land silently in the
+# conditioning signal. Resolves a free-text --action_label at inference, mapping
+# a user's wording to the canonical words the model trained on.
 _VOCAB_SURFACE_FORMS: dict[str, tuple[str, ...]] = {
-    # NOTE: "in place" / "stationary" are deliberately NOT idle forms. Most of
-    # this dataset is animated in place, so those phrases show up as filler in
-    # descriptions of running and flying clips too ("opens its jaws while
-    # stationary", "runs in place") and would silently light up the idle slot.
+    # "in place" / "stationary" are NOT idle forms: most clips are animated in
+    # place, so those phrases appear as filler in run/fly descriptions and would
+    # light up the idle slot.
     "idle": ("idle", "idles", "idling", "motionless", "stands still",
              "standing still", "stand still", "stays still"),
-    # "shuffle" and "strafe" are walk forms AND words of their own (below): the
-    # equal-length rule in vocab_words_in keeps both, so a shuffle resolves to
-    # "walk, shuffle" -- a walk that the base word alone would not have
-    # distinguished from an ordinary stride.
+    # shuffle is a walk form AND a word of its own: the equal-length rule in
+    # vocab_words_in keeps both, so "shuffles" -> "walk, shuffle".
+    # "strafe" is NOT a walk form: it qualifies any travel mode, so a bare
+    # strafe names only strafe and "run, strafe" stays "run, strafe".
     "walk": ("walk", "walks", "walking", "trot", "trots", "trotting",
              "pace", "paces", "pacing", "march", "marches", "marching",
              "strut", "struts", "strutting", "amble", "ambles", "ambling",
-             "shuffle", "shuffles", "shuffling",
-             "strafe", "strafes", "strafing"),
+             "shuffle", "shuffles", "shuffling"),
     "run": ("run", "runs", "running", "gallop", "gallops", "galloping",
             "sprint", "sprints", "sprinting", "dash", "dashes", "dashing",
             "jog", "jogs", "jogging", "charge", "charges", "charging"),
@@ -140,8 +124,8 @@ _VOCAB_SURFACE_FORMS: dict[str, tuple[str, ...]] = {
     "jump": ("jump", "jumps", "jumping", "leap", "leaps", "leaping",
              "hop", "hops", "hopping", "pounce", "pounces", "pouncing",
              "bound", "bounds", "bounding"),
-    # "strafe" is deliberately NOT a turn form: strafing is pure translation and
-    # does not change facing. "circle" and "bank" stay -- those do change facing.
+    # "strafe" is NOT a turn form: pure translation, facing unchanged. "circle"
+    # and "bank" stay -- they do change facing.
     "turn": ("turn", "turns", "turning", "spin", "spins", "spinning",
              "rotate", "rotates", "rotating", "pivot", "pivots", "pivoting",
              "circle", "circles", "circling",
@@ -161,60 +145,52 @@ _VOCAB_SURFACE_FORMS: dict[str, tuple[str, ...]] = {
     "eat": ("eat", "eats", "eating", "feed", "feeds", "feeding", "graze",
             "grazes", "grazing", "chew", "chews", "chewing", "devour",
             "devours", "devouring", "drink", "drinks", "drinking"),
-    # "collapse" belongs to fall, not die: in this dataset it describes going
-    # down ("fall, collapses onto its side"), and every clip it matched on its
-    # own turned out to be a fall or a lie-down, not a death.
+    # "collapse" belongs to fall, not die: here it means going down.
     "die": ("die", "dies", "dying", "death", "dead", "perish", "perishes",
             "passes out"),
     "fall": ("fall", "falls", "falling", "fell", "collapse", "collapses",
              "collapsing", "tumble", "tumbles",
              "tumbling", "trip", "trips", "tripping", "stumble", "stumbles",
-             "stumbling", "topple", "topples", "toppling"),
-    # "gethurt" (one token) is the legacy tag spelling. The word-boundary match
-    # means it does NOT fall out of "hurt" on its own -- the 't' in front blocks
-    # it -- so it has to be listed explicitly.
+             "stumbling", "topple", "topples", "toppling",
+             "fall down", "falls down", "falling down"),
+    # "gethurt" (one token) is a legacy tag spelling; the word-boundary match
+    # keeps "hurt" out of it, so it is listed explicitly.
     "hurt": ("hurt", "hurts", "gethurt", "get hurt", "get-hurt", "gets hurt",
              "injured", "wounded", "flinch", "flinches",
              "flinching", "recoil", "recoils", "recoiling", "stagger",
              "staggers", "staggering", "stunned", "limp", "limps", "limping",
              "takes a hit", "knocked back"),
-    # Bare "rise"/"rises"/"rising" are deliberately absent: they denote any
-    # upward motion ("rises upward undulating fins", "rise onto hind legs",
-    # "chest rising and falling") and fired on swimming, rearing and breathing
-    # more often than on a recovery. Only the phrases naming the destination or
-    # the down-state are kept.
+    # Bare "rise"/"rising" are NOT getup forms: they denote any upward motion
+    # (swimming, rearing, breathing). Only destination/down-state phrases count.
     "getup": ("getup", "get up", "gets up", "getting up", "get-up",
               "stands up", "standing up",
               "rises to stand", "rises to standing", "rises to its feet",
-              "rise back up", "rises back up",
+              "rise back up", "rises back up", "stand up",
               "recover", "recovers", "recovering",
               "wakes up", "waking up", "revive", "revives", "reviving"),
-    # Bare "lie"/"lies"/"lying" are deliberately absent: they name a posture,
-    # and in this dataset that posture is nearly always death ("die, lies
-    # motionless on its side") or the state a get-up departs from ("getup, rises
-    # from lying to standing"). The explicit settle-down phrases stay -- those
-    # do mean going to rest.
+    # Bare "lie"/"lying" are NOT rest forms: in this corpus that posture is
+    # nearly always death or the state a get-up departs from.
+    # "sit down" is listed on BOTH rest and sit so the two keep firing together
+    # (equal-length matches both survive) while the "down" inside is subsumed.
     "rest": ("rest", "rests", "resting", "lie down",
              "lies down", "lying down", "sit", "sits", "sitting", "seated",
+             "sit down", "sits down", "sitting down",
              "sleep", "sleeps", "sleeping", "dozing", "napping"),
-    # "alert" is deliberately NOT a look form: here it is a posture adjective
-    # ("stands alert", "low alert posture", "ears alert"), and all 18 clips it
-    # matched on its own were idle stances, not the act of looking.
     "look": ("look", "looks", "looking", "glance", "glances", "glancing",
              "gaze", "gazes", "gazing", "observe", "observes", "observing",
-             "scan", "scans", "scanning", "watch", "watches", "watching"),
+             "scan", "scans", "scanning", "watch", "watches", "watching",
+             "look up", "looks up", "looking up",
+             "look down", "looks down", "looking down"),
     "shake": ("shake", "shakes", "shaking", "shudder", "shudders",
               "shuddering", "twitch", "twitches", "twitching", "tremble",
               "trembles", "trembling", "wag", "wags", "wagging"),
     "crouch": ("crouch", "crouches", "crouching", "squat", "squats",
-               "squatting", "hunker", "hunkers", "hunkering"),
-    # "backward"/"backwards" are NOT retreat forms: a direction must not conjure
-    # an action. "backward" lives on the direction axis; retreat is only the
-    # travel-withdrawal action.
+               "squatting", "hunker", "hunkers", "hunkering",
+               "crouch down", "crouches down", "crouching down"),
     "retreat": ("retreat", "retreats", "retreating", "backs away",
                 "backing away", "backs up", "backing up"),
     "rear": ("rear", "rears", "rearing", "on its hind legs",
-             "onto its hind legs"),
+             "onto its hind legs", "rear up", "rears up", "rearing up"),
     "throw": ("throw", "throws", "throwing", "toss", "tosses", "tossing",
               "fling", "flings", "flinging", "hurl", "hurls", "hurling"),
     "crawl": ("crawl", "crawls", "crawling", "slither", "slithers",
@@ -231,7 +207,8 @@ _VOCAB_SURFACE_FORMS: dict[str, tuple[str, ...]] = {
                 "lifts off"),
     "dive": ("dive", "dives", "diving", "plunge", "plunges", "plunging"),
     "roll": ("roll", "rolls", "rolling"),
-    "sit": ("sit", "sits", "sitting", "seated"),
+    "sit": ("sit", "sits", "sitting", "seated",
+            "sit down", "sits down", "sitting down"),
     "sleep": ("sleep", "sleeps", "sleeping", "dozing", "napping", "asleep"),
     "stand": ("stand", "stands", "standing", "upright"),
     "sniff": ("sniff", "sniffs", "sniffing", "smell", "smells", "smelling"),
@@ -240,7 +217,8 @@ _VOCAB_SURFACE_FORMS: dict[str, tuple[str, ...]] = {
     "dig": ("dig", "digs", "digging", "burrow", "burrows", "burrowing",
             "scrape", "scrapes", "scraping"),
     "catch": ("catch", "catches", "catching", "grab", "grabs", "grabbing",
-              "seize", "seizes", "seizing", "snatch", "snatches", "snatching"),
+              "seize", "seizes", "seizing", "snatch", "snatches", "snatching",
+              "pick up", "picks up", "picking up"),
     "peck": ("peck", "pecks", "pecking"),
     "sting": ("sting", "stings", "stinging"),
     "kick": ("kick", "kicks", "kicking", "stomp", "stomps", "stomping",
@@ -259,18 +237,22 @@ _VOCAB_SURFACE_FORMS: dict[str, tuple[str, ...]] = {
     "scratch": ("scratch", "scratches", "scratching", "groom", "grooms",
                 "grooming", "rub", "rubs", "rubbing", "itch", "itches",
                 "itching"),
-    # -- gait modifiers (also surface forms of walk / run above) --
+    # -- gait modifiers (also surface forms of walk / run / fly above: "trots" -> "walk, trot") --
     "shuffle": ("shuffle", "shuffles", "shuffling"),
     "strafe": ("strafe", "strafes", "strafing"),
     "sprint": ("sprint", "sprints", "sprinting"),
+    "trot": ("trot", "trots", "trotting"),
+    "dash": ("dash", "dashes", "dashing"),
+    "gallop": ("gallop", "gallops", "galloping"),
+    "glide": ("glide", "glides", "gliding"),
+    "slow": ("slow", "slowly"),
     # -- direction --
-    # Bare "back" is deliberately NOT a backward form: in this corpus it names
-    # anatomy or recovery ("collapses onto back", "stands back up"), never travel
-    # direction.
     "forward": ("forward", "forwards"),
     "backward": ("backward", "backwards"),
     "left": ("left", "leftward", "leftwards"),
     "right": ("right", "rightward", "rightwards"),
+    "up": ("up", "upward", "upwards"),
+    "down": ("down", "downward", "downwards"),
 }
 
 # A canonical word must always match itself: labels are written using the

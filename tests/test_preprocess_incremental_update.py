@@ -540,7 +540,7 @@ def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch,
             'motion_errors': [],
         }
 
-    def fake_write_object_outputs(save_dir, object_payload, files_counter, action_start_counts=None):
+    def fake_write_object_outputs(save_dir, object_payload, files_counter, existing_clip_sources=None):
         motions_dir = Path(save_dir) / 'motions'
         motion_name = f"{object_payload['object_type']}_Run_001.npy"
         np.save(motions_dir / motion_name, np.zeros((3, 2, 3), dtype=np.float32))
@@ -695,7 +695,7 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
     (dataset_dir / 'motions').mkdir(parents=True)
     (dataset_dir / 'bvhs').mkdir(parents=True)
 
-    # Existing dataset: Cat (Walk_1 from Cat_Walk.fbx) and an untouched Dog object.
+    # Existing dataset: Cat (Walk from Cat_Walk.fbx) and an untouched Dog object.
     done_source = str(tmp_path / 'raw' / 'Cat' / 'Cat_Walk.fbx')
     np.save(
         dataset_dir / 'cond.npy',
@@ -704,8 +704,8 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
     write_motion_metadata(
         dataset_dir,
         {
-            'Cat_Walk_1.npy': {'object_type': 'Cat', 'source_fbx_path': done_source, 'motion_name': 'Cat_Walk_1.npy'},
-            'Dog_Idle_1.npy': {'object_type': 'Dog', 'source_fbx_path': str(tmp_path / 'raw' / 'Dog' / 'Dog_Idle.fbx'), 'motion_name': 'Dog_Idle_1.npy'},
+            'Cat_Walk.npy': {'object_type': 'Cat', 'source_fbx_path': done_source, 'motion_name': 'Cat_Walk.npy'},
+            'Dog_Idle.npy': {'object_type': 'Dog', 'source_fbx_path': str(tmp_path / 'raw' / 'Dog' / 'Dog_Idle.fbx'), 'motion_name': 'Dog_Idle.npy'},
         },
         2,
     )
@@ -729,11 +729,11 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
             'motion_errors': [],
         }
 
-    def fake_write(save_dir, payload, files_counter, action_start_counts=None):
-        captured['action_start_counts'] = dict(action_start_counts or {})
+    def fake_write(save_dir, payload, files_counter, existing_clip_sources=None):
+        captured['existing_clip_sources'] = dict(existing_clip_sources or {})
         obj = payload['object_type']
-        idx = (action_start_counts or {}).get('Walk', 0) + 1
-        name = f"{obj}_Walk_{idx}.npy"
+        # 1:1 naming: the new source file Cat_Run.fbx yields exactly one new clip.
+        name = f"{obj}_Run.npy"
         np.save(Path(save_dir) / 'motions' / name, np.zeros((3, 2, 3), dtype=np.float32))
         return files_counter + 1, 3, {name: {'object_type': obj, 'motion_name': name}}
 
@@ -747,9 +747,11 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
         incremental=True,
     )
 
-    # Already-processed source handed to the worker as a skip, numbered above existing clip.
+    # Already-processed source handed to the worker as a skip; the retained clip's
+    # (name -> source) pair is handed to the writer so a new clip cannot silently
+    # overwrite it.
     assert captured['skip_source_paths'] == {os.path.realpath(done_source)}
-    assert captured['action_start_counts'] == {'Walk': 1}
+    assert captured['existing_clip_sources'] == {'Cat_Walk.npy': os.path.realpath(done_source)}
 
     # cond.npy keeps the untouched Dog and refreshes Cat.
     merged_cond = _cond_by_species(dataset_dir)
@@ -757,7 +759,27 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
 
     # Existing clips preserved; the new clip is appended without colliding.
     merged_meta = dataset_pipeline_mod._load_motion_metadata_raw(dataset_dir)
-    assert set(merged_meta) == {'Cat_Walk_1.npy', 'Cat_Walk_2.npy', 'Dog_Idle_1.npy'}
+    assert set(merged_meta) == {'Cat_Walk.npy', 'Cat_Run.npy', 'Dog_Idle.npy'}
+
+
+def test_write_object_outputs_rejects_clip_name_collision(tmp_path):
+    """Two source files normalizing to the same action must fail loudly.
+
+    With 1:1 clip naming there is no trailing index left to disambiguate them, so
+    the second one would otherwise overwrite the first one's .npy in place."""
+    payload = {
+        'object_type': 'Cat',
+        'results': [{
+            'motion': np.zeros((3, 2, 3), dtype=np.float32),
+            'action': 'Walk1',
+            'source_fbx_path': str(tmp_path / 'raw' / 'Walk1.fbx'),
+        }],
+    }
+    existing = {'Cat_Walk1.npy': os.path.realpath(str(tmp_path / 'raw' / 'Walk_1.fbx'))}
+    with pytest.raises(ValueError, match='clip name collision'):
+        dataset_pipeline_mod._write_object_outputs(
+            str(tmp_path), payload, 0, existing_clip_sources=existing,
+        )
 
 
 def _cond_entry_with_stats(object_type, mean_fill, std_fill):

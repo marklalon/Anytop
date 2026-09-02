@@ -97,10 +97,10 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         # detail split survives the removal of the multi-hot.
         self.assertEqual(CONTROLLED_VOCAB, ACTION_VOCAB + DIRECTION_VOCAB)
         self.assertEqual(len(set(CONTROLLED_VOCAB)), len(CONTROLLED_VOCAB))
-        self.assertEqual(DIRECTION_VOCAB, ("forward", "backward", "left", "right"))
+        self.assertEqual(DIRECTION_VOCAB, ("forward", "backward", "left", "right", "up", "down"))
         # Derived adjectives are deliberately absent -- T5 presses "leftward" and
         # "rightward" to near-synonyms -- and so is the mushy "sideways".
-        for absent in ("leftward", "rightward", "sideways", "up", "down"):
+        for absent in ("leftward", "rightward", "sideways"):
             self.assertNotIn(absent, CONTROLLED_VOCAB)
 
     def test_gait_modifiers_survive_alongside_their_base_word(self):
@@ -108,7 +108,10 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         # clip and a Run clip must not collapse onto the same label.
         self.assertEqual(vocab_words_in('sprints forward'), ['run', 'sprint', 'forward'])
         self.assertEqual(vocab_words_in('shuffles left'), ['walk', 'shuffle', 'left'])
-        self.assertEqual(vocab_words_in('strafe right'), ['walk', 'strafe', 'right'])
+        # strafe qualifies any travel mode, not just walk: it names only itself.
+        self.assertEqual(vocab_words_in('strafe right'), ['strafe', 'right'])
+        self.assertEqual(vocab_words_in('run, strafe'), ['run', 'strafe'])
+        self.assertEqual(vocab_words_in('fly, strafe'), ['fly', 'strafe'])
 
     def test_strafe_no_longer_lights_turn(self):
         # Strafing is pure translation and does not change facing.
@@ -146,7 +149,8 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         self.assertEqual(canonical_action_label(['run', 'run']), 'run')
         self.assertEqual(canonical_action_label(['run', 'nonsense']), 'run')
         # Round trip: a canonical label re-parses to itself.
-        for label in ('walk, forward', 'run, sprint, forward, left', 'attack, bite'):
+        for label in ('walk, forward', 'run, sprint, forward, left', 'attack, bite',
+                      'run, strafe', 'strafe, left'):
             self.assertEqual(canonical_action_label(vocab_words_in(label)), label)
 
     def test_validator_rejects_prose_and_wrong_order(self):

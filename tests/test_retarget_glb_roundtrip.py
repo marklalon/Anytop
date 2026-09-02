@@ -114,7 +114,7 @@ _DEFAULT_MATCHING_NPY = os.path.join(
     "zoo",
     "truebones_processed",
     "motions",
-    "Buffalo_RunLoop_1.npy",
+    "Buffalo_RunLoop.npy",
 )
 _DEFAULT_SOURCE_TYPE = "Buffalo"
 _DEFAULT_CROSS_TARGET_TYPE = "Deer"

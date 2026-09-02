@@ -198,39 +198,34 @@ def _process_motion_file(file_path, object_type, max_joints,
             context=f"{object_type} '{os.path.basename(str(file_path))}'",
         )
     anim_len = len(raw_anim)
-    begin = 0
     file_max_joints = max_joints
     file_results = []
     file_motion_errors = []
 
-    while begin < anim_len:
-        if anim_len - begin > 240:
-            slice_ind = begin + 200
-        else:
-            slice_ind = anim_len
+    # One source animation produces exactly one clip: the whole take, however long.
+    # Long motions are NOT segmented here -- the training loader already draws a
+    # random window out of anything longer than 2*num_frames (see
+    # MotionDataset._prepare_sample), so segmenting only fragmented the clip names
+    # and forced one hand-written action label per fragment. 1:1 keeps a clip name
+    # a pure function of (species, source file), which is what the annotation
+    # sidecars are keyed on.
+    motion, parents, file_max_joints, new_anim, export_anim, is_loop, translation_root_index, root_translation_xz = get_motion(
+        file_path,
+        FOOT_CONTACT_VEL_THRESH,
+        object_type,
+        file_max_joints,
+        offsets,
+        foot_indices,
+        tpos_rots,
+        local_errors,
+        scale_factor=scale_factor,
+        orientation_quat=orientation_quat,
+        preloaded=(raw_anim, names),
+    )
 
-        motion, parents, file_max_joints, new_anim, export_anim, is_loop, translation_root_index, root_translation_xz = get_motion(
-            file_path,
-            FOOT_CONTACT_VEL_THRESH,
-            object_type,
-            file_max_joints,
-            offsets,
-            foot_indices,
-            tpos_rots,
-            local_errors,
-            scale_factor=scale_factor,
-            orientation_quat=orientation_quat,
-            slice_inds=[begin, slice_ind],
-            preloaded=(raw_anim, names),
-        )
-        current_begin = begin
-        begin = slice_ind
-
-        if motion is None:
-            err_msg = f"[FAIL] Object '{object_type}', file: {file_path}, slice {current_begin}:{slice_ind}"
-            file_motion_errors.append(err_msg)
-            continue
-
+    if motion is None:
+        file_motion_errors.append(f"[FAIL] Object '{object_type}', file: {file_path}")
+    else:
         _, file_name = os.path.split(file_path)
         raw_action = file_name.split('.')[0]
         raw_action = normalize_action_name(object_type, raw_action)
@@ -246,7 +241,9 @@ def _process_motion_file(file_path, object_type, max_joints,
             'translation_root_index': translation_root_index,
             'root_translation_xz': root_translation_xz,
             'source_fbx_path': file_path,
-            'slice_range': (current_begin, slice_ind),
+            # Kept for the dataset validator's source_fbx_path/source_frame_range
+            # pairing; always the full take now.
+            'slice_range': (0, anim_len),
             'motion_labels': build_motion_labels(object_type),
         })
 
@@ -558,32 +555,45 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
 
 """Write a prepared object payload to disk with stable per-(species, action) clip naming.
 
-The trailing clip number is a segment index counted *within* each
-`{object_type}_{action}` group (1, 2, 3, ...), not a global running counter.
-This keeps a clip's name stable when unrelated species are added/removed or when
-only a subset is reprocessed (e.g. --filter), so externally maintained, clip-name
-keyed sidecars (action_labels.jsonl, motion_captions.jsonl) do not go stale.
+A clip is named `{object_type}_{action}` with no trailing index: preprocessing is
+1:1 with the source animation files, so the name is a pure function of (species,
+source file). That keeps names stable when unrelated species are added/removed or
+when only a subset is reprocessed (e.g. --filter), so externally maintained,
+clip-name keyed sidecars (action_labels.jsonl, motion_captions.jsonl) do not go
+stale, and it makes a rebuild idempotent.
 
-`files_counter` is still threaded through purely for the dataset-wide summary
-counts; it no longer participates in clip names. `action_start_counts` lets the
-direct-input refresh path continue numbering above existing clips of the same
-(object, action) group so freshly written clips never collide with retained
-ones.
+Two source files of the same object whose names normalize to the same action
+(`Walk_1.fbx` and `Walk1.fbx` both -> `Walk1`) would claim the same clip name.
+That is a hard error rather than a silent overwrite -- rename one of the source
+files. `existing_clip_sources` ({clip file name: source realpath}) lets the
+incremental path detect the same collision against clips already on disk.
+
+`files_counter` is threaded through purely for the dataset-wide summary counts;
+it does not participate in clip names.
 """
-def _write_object_outputs(save_dir, object_payload, files_counter, action_start_counts=None):
+def _write_object_outputs(save_dir, object_payload, files_counter, existing_clip_sources=None):
     object_type = object_payload['object_type']
     frames_counter = 0
     motion_metadata = {}
-    action_counter = dict(action_start_counts or {})
+    claimed_names = dict(existing_clip_sources or {})
 
     for result in object_payload['results']:
         motion = result['motion']
         files_counter += 1
         frames_counter += motion.shape[0]
         action = result['action']
-        action_counter[action] = action_counter.get(action, 0) + 1
-        name = object_type + "_" + action + "_" + str(action_counter[action])
+        name = object_type + "_" + action
         motion_file_name = name + '.npy'
+        source_path = result.get('source_fbx_path')
+        claimed_by = claimed_names.get(motion_file_name)
+        if claimed_by is not None and claimed_by != os.path.realpath(str(source_path)):
+            raise ValueError(
+                f"clip name collision: '{motion_file_name}' is claimed by both "
+                f"'{claimed_by}' and '{source_path}'. Two source animations of "
+                f"'{object_type}' normalize to the same action name '{action}'; "
+                "rename one of the source files."
+            )
+        claimed_names[motion_file_name] = os.path.realpath(str(source_path))
         np.save(pjoin(save_dir, MOTION_DIR, motion_file_name), motion)
         # Export the visually faithful processed animation rather than the
         # rest-pose-reparameterized training animation. The latter preserves global
@@ -712,7 +722,7 @@ def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, fi
 
 """ creates processed tensors for all the files of a given object. Returens statistics and the object condition,
 which includes rest-pose/tpos-compatible conditioning, relation/distances matrices, offsets, parents, joints names, kinematic chains, mean and std"""    
-def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, action_start_counts=None, crop_enabled=True):
+def process_object(object_type, files_counter, frames_counter, max_joints, squared_positions_error, save_dir = DEFAULT_DATASET_DIR, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, existing_clip_sources=None, crop_enabled=True):
     object_payload = _prepare_object_outputs(
         object_type,
         max_joints,
@@ -732,7 +742,7 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
         save_dir,
         object_payload,
         files_counter,
-        action_start_counts=action_start_counts,
+        existing_clip_sources=existing_clip_sources,
     )
     frames_counter += object_frames_counter
 
@@ -743,9 +753,10 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
 """ create dataset
 
 ``incremental``: keep already-processed clips on disk and only process source anim
-files that have not produced clips yet (per-object, keyed on source_fbx_path). New
-clips number above retained ones within each (object, action) group. The rewritten
-dataset state is seeded from the existing dataset so untouched objects survive.
+files that have not produced clips yet (per-object, keyed on source_fbx_path). A
+clip claiming a retained name that came from a different source is a hard error
+rather than an overwrite. The rewritten dataset state is seeded from the existing
+dataset so untouched objects survive.
 Without ``incremental`` the prior full-build behavior is unchanged (callers wipe
 outputs first). """
 def create_data_samples(objects=None, max_files_per_object=None, dataset_dir=None, raw_data_dir=None, object_workers=8, filter_min_length=10, resample_min_length=20, incremental=False):
@@ -773,12 +784,12 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
             if os.path.isdir(pjoin(resolved_raw_data_dir, obj))
         )
 
-    # Incremental: read the existing dataset so we can skip done source files, continue
-    # clip numbering above retained clips, and seed the merged cond/metadata.
+    # Incremental: read the existing dataset so we can skip done source files, detect
+    # clip-name collisions against retained clips, and seed the merged cond/metadata.
     existing_cond = {}
     existing_meta = {}
     per_object_skip = {}
-    per_object_action_start = {}
+    per_object_clip_sources = {}
     if incremental:
         existing_meta = _load_motion_metadata_raw(target_dataset_dir)
         cond_path = pjoin(target_dataset_dir, 'cond.npy')
@@ -787,7 +798,7 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
             existing_cond = load_cond(cond_path)
         for object_type in objects:
             per_object_skip[object_type] = _object_processed_sources(existing_meta, object_type)
-            per_object_action_start[object_type] = _object_action_start_counts(existing_meta, object_type)
+            per_object_clip_sources[object_type] = _object_clip_sources(existing_meta, object_type)
 
     obj_workers = _resolve_preprocessing_workers(
         objects,
@@ -859,7 +870,7 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
             target_dataset_dir,
             payload,
             files_counter,
-            action_start_counts=per_object_action_start.get(object_type),
+            existing_clip_sources=per_object_clip_sources.get(object_type),
         )
         frames_counter += object_frames
         # The seeded entries are canonically keyed ('<namespace>/<species>') while a
@@ -1094,22 +1105,6 @@ def _load_motion_metadata_raw(dataset_dir):
     return {name: dict(entry) for name, entry in motions.items() if isinstance(entry, dict)}
 
 
-def _parse_action_and_index(object_name, motion_name):
-    """Split a clip file name into its (action, per-action index) pair.
-
-    Clip names are ``{object_name}_{action}_{index}.npy``; the trailing index is a
-    per-(object, action) segment counter. Returns (None, 0) for names that do not
-    belong to this object or lack the trailing numeric index."""
-    stem = os.path.splitext(motion_name)[0]
-    if not stem.startswith(object_name + '_'):
-        return None, 0
-    rest = stem[len(object_name) + 1:]
-    head, _, tail = rest.rpartition('_')
-    if not head or not tail.isdigit():
-        return None, 0
-    return head, int(tail)
-
-
 def _object_processed_sources(existing_meta, object_name):
     """Realpaths of source anim files that already produced clips for this object."""
     sources = set()
@@ -1122,17 +1117,19 @@ def _object_processed_sources(existing_meta, object_name):
     return sources
 
 
-def _object_action_start_counts(existing_meta, object_name):
-    """Highest existing clip index per action, so new clips number above retained ones."""
-    action_start_counts = {}
+def _object_clip_sources(existing_meta, object_name):
+    """{clip file name: source realpath} for clips this object already has on disk.
+
+    Clip names are 1:1 with source files, so a freshly built clip that lands on an
+    existing name coming from a DIFFERENT source is a collision, not an update."""
+    clip_sources = {}
     for motion_name, entry in existing_meta.items():
         if str(entry.get('object_type', '')) != object_name:
             continue
-        action, index = _parse_action_and_index(object_name, motion_name)
-        if action is None:
-            continue
-        action_start_counts[action] = max(action_start_counts.get(action, 0), index)
-    return action_start_counts
+        src = _normalized_source_fbx_path(entry)
+        if src:
+            clip_sources[motion_name] = src
+    return clip_sources
 
 
 def list_object_source_files(object_type, raw_data_dir=None):
