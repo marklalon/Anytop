@@ -27,7 +27,7 @@
 {"clip": "Bear_Hind2.npy", "action_group": "stationary", "action_label": "idle, look, stand"}
 {"clip": "Bear_HitLying.npy", "action_group": "stationary", "action_label": "hurt"}
 {"clip": "Bear_Lying.npy", "action_group": "stationary", "action_label": "rest"}
-{"clip": "Bear_LyingBreathing.npy", "action_group": "stationary", "action_label": "rest, breathe"}
+{"clip": "Bear_LyingBreathing.npy", "action_group": "stationary", "action_label": "rest"}
 {"clip": "Bear_LyingToStand.npy", "action_group": "transition", "action_label": "getup, stand"}
 {"clip": "Bear_Lying2.npy", "action_group": "stationary", "action_label": "rest"}
 {"clip": "Bear_Run.npy", "action_group": "locomotion", "action_label": "run"}
@@ -35,9 +35,9 @@
 {"clip": "Bear_SneakL.npy", "action_group": "locomotion", "action_label": "walk, sneak"}
 {"clip": "Bear_Sprint.npy", "action_group": "locomotion", "action_label": "run, sprint"}
 {"clip": "Bear_Stand.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Bear_StandAngryBreathing.npy", "action_group": "stationary", "action_label": "idle, breathe"}
-{"clip": "Bear_StandAngryBreathing2.npy", "action_group": "stationary", "action_label": "idle, breathe"}
-{"clip": "Bear_StandBreathing.npy", "action_group": "stationary", "action_label": "idle, breathe"}
+{"clip": "Bear_StandAngryBreathing.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Bear_StandAngryBreathing2.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Bear_StandBreathing.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "Bear_StandEating.npy", "action_group": "stationary", "action_label": "idle, eat"}
 {"clip": "Bear_StandToHind.npy", "action_group": "transition", "action_label": "stand, rear"}
 {"clip": "Bear_StandToLying.npy", "action_group": "transition", "action_label": "rest, stand"}

@@ -69,7 +69,7 @@ ACTION_VOCAB: tuple[str, ...] = (
     "bite", "roar", "eat", "die", "hurt", "getup", "rest", "look",
     "shake", "throw", "taunt", "land", "takeoff", "sit", "sleep", "stand",
     "sniff", "stretch", "yawn", "dig", "catch", "peck", "sting", "kick", "spit",
-    "drag", "dance", "breathe", "drink", "graze", "wag", "scratch",
+    "drag", "dance", "drink", "graze", "wag", "scratch",
     "rear", "crouch",
 )
 
@@ -228,8 +228,6 @@ _VOCAB_SURFACE_FORMS: dict[str, tuple[str, ...]] = {
     "drag": ("drag", "drags", "dragging"),
     "dance": ("dance", "dances", "dancing", "celebrate", "celebrates",
               "celebrating"),
-    "breathe": ("breathe", "breathes", "breathing", "pant", "pants",
-                "panting"),
     "drink": ("drink", "drinks", "drinking", "laps at water"),
     "graze": ("graze", "grazes", "grazing"),
     "flap": ("flap", "flaps", "flapping"),
@@ -306,7 +304,7 @@ def vocab_words_in(text: str) -> list[str]:
 
     A word is dropped when every one of its matches sits strictly inside a longer
     match of a *different* word: "stands still" is idle, so the "stands" inside it
-    must not also light up ``stand``, and "breathes fire" is spit, not breathe.
+    must not also light up ``stand``, and "stands up" is getup, not stand.
     Equal-length matches both survive, which is what keeps a modifier firing
     alongside the base word that shares its spelling ("shuffles" -> walk +
     shuffle, "grazes" -> eat + graze).

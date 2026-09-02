@@ -70,7 +70,7 @@
 {"clip": "Bear_GetUp.npy", "action_group": "transition", "action_label": "getup, stand"}
 {"clip": "Bear_GroundPaw.npy", "action_group": "stationary", "action_label": "scratch"}
 {"clip": "Bear_Growl.npy", "action_group": "stationary", "action_label": "roar"}
-{"clip": "Bear_IdlePant.npy", "action_group": "stationary", "action_label": "idle, breathe"}
+{"clip": "Bear_IdlePant.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "Bear_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "Bear_JumpBite.npy", "action_group": "transition", "action_label": "jump, attack, bite"}
 {"clip": "Bear_LayDown.npy", "action_group": "transition", "action_label": "rest"}
@@ -114,7 +114,7 @@
 {"clip": "BrownBear_DeathLoop.npy", "action_group": "stationary", "action_label": "die"}
 {"clip": "BrownBear_EatFish.npy", "action_group": "stationary", "action_label": "eat"}
 {"clip": "BrownBear_Falling.npy", "action_group": "transition", "action_label": "fall, rear"}
-{"clip": "BrownBear_Idle.npy", "action_group": "stationary", "action_label": "idle, breathe"}
+{"clip": "BrownBear_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "BrownBear_Limp.npy", "action_group": "locomotion", "action_label": "walk, hurt, drag"}
 {"clip": "BrownBear_Limping.npy", "action_group": "locomotion", "action_label": "walk, hurt"}
 {"clip": "BrownBear_Ready.npy", "action_group": "stationary", "action_label": "idle"}
@@ -124,7 +124,7 @@
 {"clip": "BrownBear_RunLoop.npy", "action_group": "locomotion", "action_label": "run"}
 {"clip": "BrownBear_ScratchEar.npy", "action_group": "stationary", "action_label": "scratch"}
 {"clip": "BrownBear_SitClean.npy", "action_group": "stationary", "action_label": "rest, sit, scratch"}
-{"clip": "BrownBear_Sleepy.npy", "action_group": "stationary", "action_label": "idle, rest, breathe"}
+{"clip": "BrownBear_Sleepy.npy", "action_group": "stationary", "action_label": "idle, rest"}
 {"clip": "BrownBear_SlowWalk.npy", "action_group": "locomotion", "action_label": "walk"}
 {"clip": "BrownBear_Twitching.npy", "action_group": "transition", "action_label": "die, shake"}
 {"clip": "BrownBear_WalkLoop.npy", "action_group": "locomotion", "action_label": "walk, forward"}
@@ -234,9 +234,9 @@
 {"clip": "Crocodile_Bounce.npy", "action_group": "transition", "action_label": "die, hurt"}
 {"clip": "Crocodile_Die.npy", "action_group": "transition", "action_label": "die, shake"}
 {"clip": "Crocodile_GetUp.npy", "action_group": "transition", "action_label": "getup"}
-{"clip": "Crocodile_HeavyBreathe.npy", "action_group": "stationary", "action_label": "idle, breathe"}
+{"clip": "Crocodile_HeavyBreathe.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "Crocodile_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Crocodile_NormalBreath.npy", "action_group": "stationary", "action_label": "idle, breathe"}
+{"clip": "Crocodile_NormalBreath.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "Crocodile_Running.npy", "action_group": "locomotion", "action_label": "run"}
 {"clip": "Crocodile_SleepLoop.npy", "action_group": "stationary", "action_label": "idle, rest"}
 {"clip": "Crocodile_TailWhip.npy", "action_group": "stationary", "action_label": "attack"}
@@ -276,7 +276,7 @@
 {"clip": "Dog-2_BiteJump.npy", "action_group": "transition", "action_label": "jump, attack, bite"}
 {"clip": "Dog-2_GetUp.npy", "action_group": "transition", "action_label": "roll, getup, stand"}
 {"clip": "Dog-2_Growl.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Dog-2_IdleBreathe.npy", "action_group": "stationary", "action_label": "idle, breathe"}
+{"clip": "Dog-2_IdleBreathe.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "Dog-2_Ready.npy", "action_group": "stationary", "action_label": "idle, stand"}
 {"clip": "Dog-2_RunFast.npy", "action_group": "locomotion", "action_label": "run"}
 {"clip": "Dog-2_RunJump.npy", "action_group": "locomotion", "action_label": "run, jump"}
@@ -309,7 +309,7 @@
 {"clip": "Dog_LimpLoop.npy", "action_group": "locomotion", "action_label": "walk, hurt"}
 {"clip": "Dog_LookLeft.npy", "action_group": "stationary", "action_label": "idle, turn, look, left"}
 {"clip": "Dog_LookRight.npy", "action_group": "stationary", "action_label": "idle, turn, look, right"}
-{"clip": "Dog_PAnting.npy", "action_group": "stationary", "action_label": "idle, breathe"}
+{"clip": "Dog_PAnting.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "Dog_Paddle.npy", "action_group": "locomotion", "action_label": "run, swim"}
 {"clip": "Dog_Retreat.npy", "action_group": "locomotion", "action_label": "walk, retreat, backward"}
 {"clip": "Dog_Rise.npy", "action_group": "transition", "action_label": "getup, stand"}
@@ -674,7 +674,7 @@
 {"clip": "PolarBear_Die.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "PolarBear_Idle2.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "PolarBear_Idle3.npy", "action_group": "stationary", "action_label": "idle, turn, look, stand, forward"}
-{"clip": "PolarBear_Idle.npy", "action_group": "stationary", "action_label": "idle, breathe"}
+{"clip": "PolarBear_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "PolarBear_Run.npy", "action_group": "locomotion", "action_label": "run"}
 {"clip": "PolarBear_Walk.npy", "action_group": "locomotion", "action_label": "walk"}
 {"clip": "Pteranodon_ArcLeft.npy", "action_group": "locomotion", "action_label": "fly, turn, left"}
@@ -702,7 +702,7 @@
 {"clip": "Raindeer_Stance.npy", "action_group": "stationary", "action_label": "idle, stand"}
 {"clip": "Raindeer_Walk.npy", "action_group": "locomotion", "action_label": "walk"}
 {"clip": "Raindeer_Yell.npy", "action_group": "stationary", "action_label": "roar, eat, graze"}
-{"clip": "Raptor2_BreatheIdle.npy", "action_group": "stationary", "action_label": "idle, breathe"}
+{"clip": "Raptor2_BreatheIdle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "Raptor2_Clean.npy", "action_group": "stationary", "action_label": "scratch"}
 {"clip": "Raptor2_DieGetUp.npy", "action_group": "transition", "action_label": "roll, die, getup, stand"}
 {"clip": "Raptor2_Die.npy", "action_group": "transition", "action_label": "die, rear, forward"}
@@ -942,7 +942,7 @@
 {"clip": "Stego_Attack3.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "Stego_Attack.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "Stego_Idle2.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Stego_Idle.npy", "action_group": "stationary", "action_label": "idle, breathe"}
+{"clip": "Stego_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "Stego_Run.npy", "action_group": "locomotion", "action_label": "run"}
 {"clip": "Stego_Shake.npy", "action_group": "stationary", "action_label": "shake"}
 {"clip": "Stego_Slowwalk.npy", "action_group": "locomotion", "action_label": "walk"}
@@ -1006,7 +1006,7 @@
 {"clip": "Tricera_Attack3.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "Tricera_Attack4.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "Tricera_Attack.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "Tricera_Idle.npy", "action_group": "stationary", "action_label": "idle, breathe"}
+{"clip": "Tricera_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "Tricera_NoseDirt.npy", "action_group": "stationary", "action_label": "scratch"}
 {"clip": "Tricera_Run.npy", "action_group": "locomotion", "action_label": "run"}
 {"clip": "Tricera_Walk.npy", "action_group": "locomotion", "action_label": "walk"}
