@@ -212,23 +212,14 @@
 {"clip": "KI_CasterMage_Jump01Land.npy", "action_group": "transition", "action_label": "jump, land, takeoff, stand, crouch"}
 {"clip": "KI_CasterMage_Jump01Start.npy", "action_group": "transition", "action_label": "jump, takeoff, crouch"}
 {"clip": "KI_CasterMage_Jump01.npy", "action_group": "transition", "action_label": "jump, land, takeoff, stand, crouch"}
-{"clip": "KI_CasterMage_RunBackwardLeftLower.npy", "action_label": "run, backward, left, down"}
 {"clip": "KI_CasterMage_RunBackwardLeft.npy", "action_group": "locomotion", "action_label": "run, backward, left", "reviewed": true}
-{"clip": "KI_CasterMage_RunBackwardLower.npy", "action_label": "run, backward, down"}
-{"clip": "KI_CasterMage_RunBackwardRightLower.npy", "action_label": "run, backward, right, down"}
 {"clip": "KI_CasterMage_RunBackwardRight.npy", "action_group": "locomotion", "action_label": "run, backward, right", "reviewed": true}
 {"clip": "KI_CasterMage_RunBackward.npy", "action_group": "locomotion", "action_label": "run, backward", "reviewed": true}
-{"clip": "KI_CasterMage_RunForwardLeftLower.npy", "action_label": "run, forward, left, down"}
 {"clip": "KI_CasterMage_RunForwardLeft.npy", "action_group": "locomotion", "action_label": "run, forward, left", "reviewed": true}
-{"clip": "KI_CasterMage_RunForwardLower.npy", "action_label": "run, forward, down"}
-{"clip": "KI_CasterMage_RunForwardRightLower.npy", "action_label": "run, forward, right, down"}
 {"clip": "KI_CasterMage_RunForwardRight.npy", "action_group": "locomotion", "action_label": "run, forward, right", "reviewed": true}
 {"clip": "KI_CasterMage_RunForward.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "KI_CasterMage_RunLeftLower.npy", "action_label": "run, left, down"}
 {"clip": "KI_CasterMage_RunLeft.npy", "action_group": "locomotion", "action_label": "run, left", "reviewed": true}
-{"clip": "KI_CasterMage_RunRightLower.npy", "action_label": "run, right, down"}
 {"clip": "KI_CasterMage_RunRight.npy", "action_group": "locomotion", "action_label": "run, right", "reviewed": true}
-{"clip": "KI_CasterMage_SprintLower.npy", "action_label": "run, sprint, forward, down"}
 {"clip": "KI_CasterMage_Sprint.npy", "action_group": "locomotion", "action_label": "run, sprint, forward", "reviewed": true}
 {"clip": "KI_Human_Cheer01.npy", "action_group": "stationary", "action_label": "jump, taunt"}
 {"clip": "KI_Human_Cheer02.npy", "action_group": "stationary", "action_label": "idle"}
@@ -412,31 +403,31 @@
 {"clip": "KI_Soldier_Idle01Action01.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_Soldier_Idle01.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_Soldier_Reload01.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "KI_Soldier_Run01BackwardLeftRifle.npy", "action_group": "locomotion", "action_label": "run, backward, left, weapon, rifle", "reviewed": true}
-{"clip": "KI_Soldier_Run01BackwardRifle.npy", "action_group": "locomotion", "action_label": "run, backward, weapon, rifle", "reviewed": true}
-{"clip": "KI_Soldier_Run01BackwardRightRifle.npy", "action_group": "locomotion", "action_label": "run, backward, right, weapon, rifle", "reviewed": true}
-{"clip": "KI_Soldier_Run01ForwardLeftRifle.npy", "action_group": "locomotion", "action_label": "run, forward, left, weapon, rifle", "reviewed": true}
-{"clip": "KI_Soldier_Run01ForwardRifle.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, rifle", "reviewed": true}
-{"clip": "KI_Soldier_Run01ForwardRightRifle.npy", "action_group": "locomotion", "action_label": "run, forward, right, weapon, rifle", "reviewed": true}
-{"clip": "KI_Soldier_Run01LeftRifle.npy", "action_group": "locomotion", "action_label": "run, left, weapon, rifle", "reviewed": true}
-{"clip": "KI_Soldier_Run01RightRifle.npy", "action_group": "locomotion", "action_label": "run, right, weapon, rifle", "reviewed": true}
+{"clip": "KI_Soldier_Run01BackwardLeftRifle.npy", "action_group": "locomotion", "action_label": "run, backward, left, weapon", "reviewed": true}
+{"clip": "KI_Soldier_Run01BackwardRifle.npy", "action_group": "locomotion", "action_label": "run, backward, weapon", "reviewed": true}
+{"clip": "KI_Soldier_Run01BackwardRightRifle.npy", "action_group": "locomotion", "action_label": "run, backward, right, weapon", "reviewed": true}
+{"clip": "KI_Soldier_Run01ForwardLeftRifle.npy", "action_group": "locomotion", "action_label": "run, forward, left, weapon", "reviewed": true}
+{"clip": "KI_Soldier_Run01ForwardRifle.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
+{"clip": "KI_Soldier_Run01ForwardRightRifle.npy", "action_group": "locomotion", "action_label": "run, forward, right, weapon", "reviewed": true}
+{"clip": "KI_Soldier_Run01LeftRifle.npy", "action_group": "locomotion", "action_label": "run, left, weapon", "reviewed": true}
+{"clip": "KI_Soldier_Run01RightRifle.npy", "action_group": "locomotion", "action_label": "run, right, weapon", "reviewed": true}
 {"clip": "KI_Soldier_Salute01.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_Soldier_Shot01.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_Soldier_Shot03.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "KI_Soldier_Sprint01.npy", "action_group": "locomotion", "action_label": "run, sprint, forward, weapon, rifle", "reviewed": true}
+{"clip": "KI_Soldier_Sprint01.npy", "action_group": "locomotion", "action_label": "run, sprint, forward, weapon", "reviewed": true}
 {"clip": "KI_Soldier_TakeDamage01.npy", "action_group": "stationary", "action_label": "hurt"}
 {"clip": "KI_Soldier_TakeDamage02.npy", "action_group": "stationary", "action_label": "fall, hurt"}
 {"clip": "KI_Soldier_TakeDamage03.npy", "action_group": "stationary", "action_label": "fall, hurt"}
 {"clip": "KI_Soldier_TakeDamage04.npy", "action_group": "stationary", "action_label": "hurt"}
 {"clip": "KI_Soldier_ToCrawling01.npy", "action_group": "transition", "action_label": "crawl, stand"}
-{"clip": "KI_Soldier_Walk01BackwardLeftRifle.npy", "action_group": "locomotion", "action_label": "walk, backward, left, weapon, rifle", "reviewed": true}
-{"clip": "KI_Soldier_Walk01BackwardRifle.npy", "action_group": "locomotion", "action_label": "walk, backward, weapon, rifle", "reviewed": true}
-{"clip": "KI_Soldier_Walk01BackwardRightRifle.npy", "action_group": "locomotion", "action_label": "walk, backward, right, weapon, rifle", "reviewed": true}
-{"clip": "KI_Soldier_Walk01ForwardLeftRifle.npy", "action_group": "locomotion", "action_label": "walk, forward, left, weapon, rifle", "reviewed": true}
-{"clip": "KI_Soldier_Walk01ForwardRifle.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, rifle", "reviewed": true}
-{"clip": "KI_Soldier_Walk01ForwardRightRifle.npy", "action_group": "locomotion", "action_label": "walk, forward, right, weapon, rifle", "reviewed": true}
-{"clip": "KI_Soldier_Walk01LeftRifle.npy", "action_group": "locomotion", "action_label": "walk, left, weapon, rifle", "reviewed": true}
-{"clip": "KI_Soldier_Walk01RightRifle.npy", "action_group": "locomotion", "action_label": "walk, right, weapon, rifle", "reviewed": true}
+{"clip": "KI_Soldier_Walk01BackwardLeftRifle.npy", "action_group": "locomotion", "action_label": "walk, backward, left, weapon", "reviewed": true}
+{"clip": "KI_Soldier_Walk01BackwardRifle.npy", "action_group": "locomotion", "action_label": "walk, backward, weapon", "reviewed": true}
+{"clip": "KI_Soldier_Walk01BackwardRightRifle.npy", "action_group": "locomotion", "action_label": "walk, backward, right, weapon", "reviewed": true}
+{"clip": "KI_Soldier_Walk01ForwardLeftRifle.npy", "action_group": "locomotion", "action_label": "walk, forward, left, weapon", "reviewed": true}
+{"clip": "KI_Soldier_Walk01ForwardRifle.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
+{"clip": "KI_Soldier_Walk01ForwardRightRifle.npy", "action_group": "locomotion", "action_label": "walk, forward, right, weapon", "reviewed": true}
+{"clip": "KI_Soldier_Walk01LeftRifle.npy", "action_group": "locomotion", "action_label": "walk, left, weapon", "reviewed": true}
+{"clip": "KI_Soldier_Walk01RightRifle.npy", "action_group": "locomotion", "action_label": "walk, right, weapon", "reviewed": true}
 {"clip": "KI_Villager_AxeChopping01.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "KI_Villager_AxeChopping02.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "KI_Villager_AxeIdle01.npy", "action_group": "stationary", "action_label": "idle"}
@@ -570,9 +561,7 @@
 {"clip": "LH_Hero_FlyCrossbowShootAttack.npy", "action_group": "stationary", "action_label": "run, attack"}
 {"clip": "LH_Hero_FlyDefend.npy", "action_group": "stationary", "action_label": "run"}
 {"clip": "LH_Hero_FlyDie.npy", "action_group": "transition", "action_label": "run, die"}
-{"clip": "LH_Hero_FlyForward.npy", "action_label": "run, forward", "reviewed": true}
 {"clip": "LH_Hero_FlyIdle.npy", "action_group": "stationary", "action_label": "run"}
-{"clip": "LH_Hero_FlyLeftPunchAttack.npy", "action_label": "run, attack, punch, left"}
 {"clip": "LH_Hero_FlyLongbowAim01.npy", "action_group": "stationary", "action_label": "run"}
 {"clip": "LH_Hero_FlyLongbowShootAttack01.npy", "action_group": "stationary", "action_label": "run, attack"}
 {"clip": "LH_Hero_FlyMeleeLeftAttack01.npy", "action_group": "stationary", "action_label": "run, attack, left"}
@@ -877,8 +866,6 @@
 {"clip": "MB_Unka_TurnRight180.npy", "action_group": "transition", "action_label": "turn, right"}
 {"clip": "MB_Unka_TurnRight.npy", "action_group": "stationary", "action_label": "turn, right"}
 {"clip": "MB_Unka_WalBack.npy", "action_group": "locomotion", "action_label": "walk, backward", "reviewed": true}
-{"clip": "MB_Unka_WalkBackL.npy", "action_label": "walk, backward, left", "reviewed": true}
-{"clip": "MB_Unka_WalkBackR.npy", "action_label": "walk, backward, right", "reviewed": true}
 {"clip": "MB_Unka_WalkLeft.npy", "action_group": "locomotion", "action_label": "walk, turn, left", "reviewed": true}
 {"clip": "MB_Unka_WalkRight.npy", "action_group": "locomotion", "action_label": "walk, turn, right", "reviewed": true}
 {"clip": "MB_Unka_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
@@ -1909,16 +1896,16 @@
 {"clip": "RMW_Skeleton_GetHit.npy", "action_group": "stationary", "action_label": "hurt"}
 {"clip": "RMW_Skeleton_IdleBattle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "RMW_Skeleton_IdleNormal.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "RMW_Skeleton_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, sword, shield", "reviewed": true}
+{"clip": "RMW_Skeleton_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
 {"clip": "RMW_Skeleton_SenseSomethingRT.npy", "action_group": "stationary", "action_label": "idle, right"}
 {"clip": "RMW_Skeleton_SenseSomethingST.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "RMW_Skeleton_SentryWalkFront.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, sword, shield", "reviewed": true}
+{"clip": "RMW_Skeleton_SentryWalkFront.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
 {"clip": "RMW_Skeleton_Taunting.npy", "action_group": "stationary", "action_label": "taunt, stand"}
 {"clip": "RMW_Skeleton_Victory.npy", "action_group": "stationary", "action_label": "taunt"}
-{"clip": "RMW_Skeleton_WalkBack.npy", "action_group": "locomotion", "action_label": "walk, backward, weapon, sword, shield", "reviewed": true}
-{"clip": "RMW_Skeleton_WalkFront.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, sword, shield", "reviewed": true}
-{"clip": "RMW_Skeleton_WalkLeft.npy", "action_group": "locomotion", "action_label": "walk, left, weapon, sword, shield", "reviewed": true}
-{"clip": "RMW_Skeleton_WalkRight.npy", "action_group": "locomotion", "action_label": "walk, right, weapon, sword, shield", "reviewed": true}
+{"clip": "RMW_Skeleton_WalkBack.npy", "action_group": "locomotion", "action_label": "walk, backward, weapon", "reviewed": true}
+{"clip": "RMW_Skeleton_WalkFront.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
+{"clip": "RMW_Skeleton_WalkLeft.npy", "action_group": "locomotion", "action_label": "walk, left, weapon", "reviewed": true}
+{"clip": "RMW_Skeleton_WalkRight.npy", "action_group": "locomotion", "action_label": "walk, right, weapon", "reviewed": true}
 {"clip": "RMW_Slime_Attack01.npy", "action_group": "stationary", "action_label": "attack, forward"}
 {"clip": "RMW_Slime_Attack02.npy", "action_group": "stationary", "action_label": "attack, bite, forward"}
 {"clip": "RMW_Slime_Die.npy", "action_group": "transition", "action_label": "die"}
@@ -2078,7 +2065,6 @@
 {"clip": "RU01_GripperRobot_LeftPunchAttack.npy", "action_group": "stationary", "action_label": "attack, left"}
 {"clip": "RU01_GripperRobot_ProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, crouch"}
 {"clip": "RU01_GripperRobot_RapidProjectileAttackLoop.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "RU01_GripperRobot_RightGripLoop.npy", "action_label": "run, right"}
 {"clip": "RU01_GripperRobot_RightGripToIdle.npy", "action_group": "transition", "action_label": "idle, rest"}
 {"clip": "RU01_GripperRobot_RightPunchAttack.npy", "action_group": "stationary", "action_label": "attack, right"}
 {"clip": "RU01_GripperRobot_Spawn.npy", "action_group": "stationary", "action_label": "idle"}
@@ -2437,13 +2423,13 @@
 {"clip": "RU02_TrooperRobot_TurnRight.npy", "action_group": "transition", "action_label": "run, turn, right"}
 {"clip": "TNR_Archer_Attack.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "TNR_Archer_CombatIdle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "TNR_Archer_CombatWalk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, bow", "reviewed": true}
+{"clip": "TNR_Archer_CombatWalk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
 {"clip": "TNR_Archer_DeathA.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TNR_Archer_DeathB.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TNR_Archer_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "TNR_Archer_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, bow", "reviewed": true}
+{"clip": "TNR_Archer_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
 {"clip": "TNR_Archer_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt"}
-{"clip": "TNR_Archer_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, bow", "reviewed": true}
+{"clip": "TNR_Archer_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
 {"clip": "TNR_CavalryArcher_Attack.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "TNR_CavalryArcher_DeathA.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TNR_CavalryArcher_DeathB.npy", "action_group": "transition", "action_label": "die"}
@@ -2469,14 +2455,14 @@
 {"clip": "TNR_CavalrySpear_DeathA.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TNR_CavalrySpear_DeathB.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TNR_CavalrySpear_Idle.npy", "action_group": "stationary", "action_label": "idle, stand"}
-{"clip": "TNR_CavalrySpear_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, spear, shield", "reviewed": true}
+{"clip": "TNR_CavalrySpear_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
 {"clip": "TNR_CavalrySpear_TakeDamage.npy", "action_group": "stationary", "action_label": "idle, hurt, shake"}
-{"clip": "TNR_CavalrySpear_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, spear, shield", "reviewed": true}
+{"clip": "TNR_CavalrySpear_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
 {"clip": "TNR_Cavalry_AttackA.npy", "action_group": "stationary", "action_label": "attack, forward"}
 {"clip": "TNR_Cavalry_AttackB.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "TNR_Cavalry_Charge.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, sword, shield", "reviewed": true}
+{"clip": "TNR_Cavalry_Charge.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
 {"clip": "TNR_Cavalry_CombatIdle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "TNR_Cavalry_CombatWalk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, sword, shield", "reviewed": true}
+{"clip": "TNR_Cavalry_CombatWalk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
 {"clip": "TNR_Cavalry_DeathA.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TNR_Cavalry_DeathB.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TNR_Cavalry_Idle.npy", "action_group": "stationary", "action_label": "idle"}
@@ -2485,39 +2471,39 @@
 {"clip": "TNR_Cavalry_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "TNR_Infantry_AttackA.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "TNR_Infantry_AttackB.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "TNR_Infantry_Charge.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, sword, shield", "reviewed": true}
+{"clip": "TNR_Infantry_Charge.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
 {"clip": "TNR_Infantry_CombatIdle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "TNR_Infantry_CombatWalk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, sword, shield", "reviewed": true}
+{"clip": "TNR_Infantry_CombatWalk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
 {"clip": "TNR_Infantry_DeathA.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TNR_Infantry_DeathB.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TNR_Infantry_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "TNR_Infantry_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, sword, shield", "reviewed": true}
+{"clip": "TNR_Infantry_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
 {"clip": "TNR_Infantry_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt"}
-{"clip": "TNR_Infantry_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, sword, shield", "reviewed": true}
+{"clip": "TNR_Infantry_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
 {"clip": "TNR_Mage_AttackA.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "TNR_Mage_AttackB.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "TNR_Mage_CastA.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "TNR_Mage_CastB.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "TNR_Mage_CastC.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "TNR_Mage_Charge.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, staff", "reviewed": true}
+{"clip": "TNR_Mage_Charge.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
 {"clip": "TNR_Mage_CombatIdle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "TNR_Mage_CombatWalk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon,  staff", "reviewed": true}
+{"clip": "TNR_Mage_CombatWalk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
 {"clip": "TNR_Mage_DeathA.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TNR_Mage_DeathB.npy", "action_group": "transition", "action_label": "die, backward"}
 {"clip": "TNR_Mage_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "TNR_Mage_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, staff", "reviewed": true}
+{"clip": "TNR_Mage_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
 {"clip": "TNR_Mage_TakeDamage.npy", "action_group": "stationary", "action_label": "idle, hurt"}
-{"clip": "TNR_Mage_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, staff", "reviewed": true}
+{"clip": "TNR_Mage_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
 {"clip": "TNR_Spearman_Attack.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "TNR_Spearman_Charge.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, spear, shield", "reviewed": true}
+{"clip": "TNR_Spearman_Charge.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
 {"clip": "TNR_Spearman_CombatIdle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "TNR_Spearman_CombatWalk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, spear, shield", "reviewed": true}
+{"clip": "TNR_Spearman_CombatWalk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
 {"clip": "TNR_Spearman_DeathA.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TNR_Spearman_DeathB.npy", "action_group": "transition", "action_label": "die, backward"}
 {"clip": "TNR_Spearman_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "TNR_Spearman_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, spear, shield", "reviewed": true}
+{"clip": "TNR_Spearman_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
 {"clip": "TNR_Spearman_TakeDamage.npy", "action_group": "stationary", "action_label": "idle, hurt"}
-{"clip": "TNR_Spearman_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, spear, shield", "reviewed": true}
+{"clip": "TNR_Spearman_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
 {"clip": "TNR_Worker_Attack.npy", "action_group": "stationary", "action_label": "attack, forward"}
 {"clip": "TNR_Worker_Bag01Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "TNR_Worker_Bag02Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, bag", "reviewed": true}
@@ -2566,8 +2552,8 @@
 {"clip": "TTR_HeavyCavalry_DeathA.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TTR_HeavyCavalry_DeathB.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TTR_HeavyCavalry_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "TTR_HeavyCavalry_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, sword, shield", "reviewed": true}
-{"clip": "TTR_HeavyCavalry_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, sword, shield", "reviewed": true}
+{"clip": "TTR_HeavyCavalry_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
+{"clip": "TTR_HeavyCavalry_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
 {"clip": "TTR_HeavySwordman_AttackA.npy", "action_group": "stationary", "action_label": "attack, stand"}
 {"clip": "TTR_HeavySwordman_Damage.npy", "action_group": "stationary", "action_label": "idle, hurt"}
 {"clip": "TTR_HeavySwordman_DeathA.npy", "action_group": "transition", "action_label": "die"}
@@ -2589,8 +2575,8 @@
 {"clip": "TTR_LightInfantry_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "TTR_LightInfantry_PunchA.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "TTR_LightInfantry_PunchB.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "TTR_LightInfantry_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, sword", "reviewed": true}
-{"clip": "TTR_LightInfantry_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, sword", "reviewed": true}
+{"clip": "TTR_LightInfantry_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
+{"clip": "TTR_LightInfantry_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
 {"clip": "TTR_Mage_AttackA.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "TTR_Mage_AttackB.npy", "action_group": "stationary", "action_label": "attack, stand"}
 {"clip": "TTR_Mage_CastA.npy", "action_group": "stationary", "action_label": "idle"}
@@ -2599,8 +2585,8 @@
 {"clip": "TTR_Mage_DeathA.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TTR_Mage_DeathB.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TTR_Mage_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "TTR_Mage_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, staff", "reviewed": true}
-{"clip": "TTR_Mage_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, staff", "reviewed": true}
+{"clip": "TTR_Mage_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
+{"clip": "TTR_Mage_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
 {"clip": "TTR_MountedKnight_AttackSpearA.npy", "action_group": "stationary", "action_label": "attack, rear, forward"}
 {"clip": "TTR_MountedKnight_AttackSpearB.npy", "action_group": "stationary", "action_label": "attack, forward"}
 {"clip": "TTR_MountedKnight_DamageSpearA.npy", "action_group": "stationary", "action_label": "hurt, shake, rear"}
@@ -2611,10 +2597,10 @@
 {"clip": "TTR_MountedKnight_DeathBSpearB.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TTR_MountedKnight_IdleSpearA.npy", "action_group": "stationary", "action_label": "idle, stand"}
 {"clip": "TTR_MountedKnight_IdleSpearB.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "TTR_MountedKnight_RunSpearA.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, spear, shield", "reviewed": true}
-{"clip": "TTR_MountedKnight_RunSpearB.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, spear, shield", "reviewed": true}
-{"clip": "TTR_MountedKnight_WalkSpearA.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, spear, shield", "reviewed": true}
-{"clip": "TTR_MountedKnight_WalkSpearB.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, spear, shield", "reviewed": true}
+{"clip": "TTR_MountedKnight_RunSpearA.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
+{"clip": "TTR_MountedKnight_RunSpearB.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
+{"clip": "TTR_MountedKnight_WalkSpearA.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
+{"clip": "TTR_MountedKnight_WalkSpearB.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
 {"clip": "TTR_MountedMage_Attack.npy", "action_group": "stationary", "action_label": "attack, rest, sit"}
 {"clip": "TTR_MountedMage_CastA.npy", "action_group": "stationary", "action_label": "rest, sit"}
 {"clip": "TTR_MountedMage_CastB.npy", "action_group": "stationary", "action_label": "attack, stand"}
@@ -2622,8 +2608,8 @@
 {"clip": "TTR_MountedMage_DeathA.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TTR_MountedMage_DeathB.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TTR_MountedMage_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "TTR_MountedMage_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, staff", "reviewed": true}
-{"clip": "TTR_MountedMage_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, staff", "reviewed": true}
+{"clip": "TTR_MountedMage_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
+{"clip": "TTR_MountedMage_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
 {"clip": "TTR_MountedScout_AttackArcher.npy", "action_group": "stationary", "action_label": "attack, rest, sit"}
 {"clip": "TTR_MountedScout_AttackCrossbow.npy", "action_group": "stationary", "action_label": "attack, rest, sit"}
 {"clip": "TTR_MountedScout_DamageArcher.npy", "action_group": "stationary", "action_label": "fall, hurt"}
@@ -2634,9 +2620,9 @@
 {"clip": "TTR_MountedScout_DeathBCrossbow.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TTR_MountedScout_IdleArcher.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "TTR_MountedScout_IdleCrossbow.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "TTR_MountedScout_RunArcher.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, bow", "reviewed": true}
+{"clip": "TTR_MountedScout_RunArcher.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
 {"clip": "TTR_MountedScout_RunCrossbow.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "TTR_MountedScout_WalkArcher.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, bow", "reviewed": true}
+{"clip": "TTR_MountedScout_WalkArcher.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
 {"clip": "TTR_MountedScout_WalkCrossbow.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "TTR_Spearman_AttackA.npy", "action_group": "stationary", "action_label": "attack, forward"}
 {"clip": "TTR_Spearman_AttackB.npy", "action_group": "stationary", "action_label": "attack, forward"}
@@ -2644,12 +2630,12 @@
 {"clip": "TTR_Spearman_DeathA.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TTR_Spearman_DeathB.npy", "action_group": "transition", "action_label": "die, backward"}
 {"clip": "TTR_Spearman_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "TTR_Spearman_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, spear, shield", "reviewed": true}
-{"clip": "TTR_Spearman_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, spear, shield", "reviewed": true}
+{"clip": "TTR_Spearman_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
+{"clip": "TTR_Spearman_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
 {"clip": "TTR_Swordman_AttackA.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "TTR_Swordman_Damage.npy", "action_group": "stationary", "action_label": "idle, hurt"}
 {"clip": "TTR_Swordman_DeathA.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TTR_Swordman_DeathB.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "TTR_Swordman_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "TTR_Swordman_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon, sword, shield", "reviewed": true}
-{"clip": "TTR_Swordman_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon, sword, shield", "reviewed": true}
+{"clip": "TTR_Swordman_Run.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
+{"clip": "TTR_Swordman_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward, weapon", "reviewed": true}
