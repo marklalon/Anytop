@@ -10,7 +10,7 @@
 {"clip": "Alligator_Dash.npy", "action_group": "stationary", "action_label": "attack, charge", "reviewed": true}
 {"clip": "Alligator_DeadUp.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
 {"clip": "Alligator_DieLoop.npy", "action_group": "stationary", "action_label": "dead", "reviewed": true}
-{"clip": "Alligator_Shake.npy", "action_group": "stationary", "action_label": "attach, shake", "reviewed": true}
+{"clip": "Alligator_Shake.npy", "action_group": "stationary", "action_label": "attack, shake", "reviewed": true}
 {"clip": "Alligator_StandIdle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Alligator_Throw2.npy", "action_group": "stationary", "action_label": "attack, throw", "reviewed": true}
 {"clip": "Alligator_Throw.npy", "action_group": "stationary", "action_label": "attack, throw", "reviewed": true}
@@ -57,7 +57,7 @@
 {"clip": "Bat_Fly.npy", "action_group": "locomotion", "action_label": "fly, flap, forward", "reviewed": true}
 {"clip": "Bat_Kick.npy", "action_group": "stationary", "action_label": "attack, kick", "reviewed": true}
 {"clip": "Bat_KnockedBack.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Bat_Looking.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
+{"clip": "Bat_Looking.npy", "action_group": "stationary", "action_label": "idle, flap, look", "reviewed": true}
 {"clip": "Bat_SlowFly.npy", "action_group": "locomotion", "action_label": "fly, flap, slow, forward", "reviewed": true}
 {"clip": "Bat_Walk.npy", "action_group": "locomotion", "action_label": "fly, flap, forward", "reviewed": true}
 {"clip": "Bear_AngerySwat.npy", "action_group": "stationary", "action_label": "attack, swat", "reviewed": true}
@@ -101,7 +101,7 @@
 {"clip": "Bird_FlyLoop.npy", "action_group": "locomotion", "action_label": "fly, flap, slow, forward", "reviewed": true}
 {"clip": "Bird_FlySlow.npy", "action_group": "locomotion", "action_label": "fly, flap, slow, forward", "reviewed": true}
 {"clip": "Bird_Flying.npy", "action_group": "locomotion", "action_label": "fly, flap, forward", "reviewed": true}
-{"clip": "Bird_GroundFlap.npy", "action_group": "stationary", "action_label": "idle, flap", "reviewed": true}
+{"clip": "Bird_GroundFlap.npy", "action_group": "stationary", "action_label": "idle, yawn", "reviewed": true}
 {"clip": "Bird_IdleLoop.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Bird_Lander.npy", "action_group": "transition", "action_label": "land", "reviewed": true}
 {"clip": "Bird_LookRight.npy", "action_group": "stationary", "action_label": "idle, flap, hover", "reviewed": true}
@@ -110,7 +110,7 @@
 {"clip": "BrownBear_Attack2.npy", "action_group": "stationary", "action_label": "attack, rear", "reviewed": true}
 {"clip": "BrownBear_Attack3.npy", "action_group": "stationary", "action_label": "attack, swat", "reviewed": true}
 {"clip": "BrownBear_Attack.npy", "action_group": "stationary", "action_label": "attack, swat", "reviewed": true}
-{"clip": "BrownBear_Charge.npy", "action_group": "stationary", "action_label": "attack, jump", "reviewed": true}
+{"clip": "BrownBear_Charge.npy", "action_group": "stationary", "action_label": "attack, jump, charge", "reviewed": true}
 {"clip": "BrownBear_DeathLoop.npy", "action_group": "stationary", "action_label": "dead", "reviewed": true}
 {"clip": "BrownBear_EatFish.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
 {"clip": "BrownBear_Falling.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
@@ -139,7 +139,7 @@
 {"clip": "Buffalo_GroundLoop.npy", "action_group": "stationary", "action_label": "rest", "reviewed": true}
 {"clip": "Buffalo_HoofScrape.npy", "action_group": "stationary", "action_label": "idle, hoof", "pending_delete": true}
 {"clip": "Buffalo_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
-{"clip": "Buffalo_Jump.npy", "action_group": "stationary", "action_label": "attack, jump", "reviewed": true}
+{"clip": "Buffalo_Jump.npy", "action_group": "stationary", "action_label": "attack, jump, charge", "reviewed": true}
 {"clip": "Buffalo_LoweredHead.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Buffalo_RunLoop.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Buffalo_Shot.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
@@ -246,16 +246,16 @@
 {"clip": "Crow_Attack.npy", "action_group": "stationary", "action_label": "attack, flap, catch", "reviewed": true}
 {"clip": "Crow_FlyStart.npy", "action_group": "transition", "action_label": "takeoff", "reviewed": true}
 {"clip": "Crow_Glide.npy", "action_group": "locomotion", "action_label": "fly, glide, forward", "reviewed": true}
-{"clip": "Crow_IdleFlap.npy", "action_group": "stationary", "action_label": "idle, flap", "reviewed": true}
+{"clip": "Crow_IdleFlap.npy", "action_group": "stationary", "action_label": "idle, yawn", "reviewed": true}
 {"clip": "Crow_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Crow_Landflap.npy", "action_group": "transition", "action_label": "land", "reviewed": true}
 {"clip": "Crow_PeckEat.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
 {"clip": "Crow_TakeOff.npy", "action_group": "transition", "action_label": "takeoff", "reviewed": true}
-{"clip": "Deer_Backing.npy", "action_group": "stationary", "action_label": "attach", "reviewed": true}
+{"clip": "Deer_Backing.npy", "action_group": "stationary", "action_label": "attack", "reviewed": true}
 {"clip": "Deer_Bleat.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Deer_BuckShy.npy", "action_group": "transition", "action_label": "turn, left", "reviewed": true}
 {"clip": "Deer_Charge.npy", "action_group": "stationary", "action_label": "attack, charge", "reviewed": true}
-{"clip": "Deer_ComeDown.npy", "action_group": "transition", "action_label": "land"}
+{"clip": "Deer_ComeDown.npy", "action_group": "transition", "action_label": "land", "reviewed": true}
 {"clip": "Deer_Gallop.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Deer_GetUpAgain.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
 {"clip": "Deer_GetUp.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
@@ -264,7 +264,7 @@
 {"clip": "Deer_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Deer_RearUp.npy", "action_group": "stationary", "action_label": "idle, rear", "reviewed": true}
 {"clip": "Deer_Rutting.npy", "action_group": "stationary", "action_label": "idle", "pending_delete": true}
-{"clip": "Deer_Squirly.npy", "action_group": "stationary", "action_label": "dodge", "reviewed": true}
+{"clip": "Deer_Squirly.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
 {"clip": "Deer_TakeOff.npy", "action_group": "transition", "action_label": "turn, flip", "reviewed": true}
 {"clip": "Deer_Trot.npy", "action_group": "locomotion", "action_label": "walk, trot, forward", "reviewed": true}
 {"clip": "Deer_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "reviewed": true}
@@ -294,7 +294,7 @@
 {"clip": "Dog-2_Walkbackward.npy", "action_group": "locomotion", "action_label": "walk, backward", "reviewed": true}
 {"clip": "Dog_Attack.npy", "action_group": "stationary", "action_label": "jump", "reviewed": true}
 {"clip": "Dog_BackAway.npy", "action_group": "locomotion", "action_label": "walk, retreat, backward", "reviewed": true}
-{"clip": "Dog_BarkJump.npy", "action_group": "stationary", "action_label": "dodge, jump", "reviewed": true}
+{"clip": "Dog_BarkJump.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
 {"clip": "Dog_Barking.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
 {"clip": "Dog_BiteArm.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
 {"clip": "Dog_FloorRiseLeft.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
@@ -333,328 +333,328 @@
 {"clip": "Dog_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "Dog_Wine.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Dog_Woof.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
-{"clip": "Dragon_WyvernAttack3.npy", "action_group": "stationary", "action_label": "fly, attack"}
-{"clip": "Dragon_WyvernAttack.npy", "action_group": "stationary", "action_label": "fly, attack, flap"}
+{"clip": "Dragon_WyvernAttack3.npy", "action_group": "stationary", "action_label": "attack, flap", "reviewed": true}
+{"clip": "Dragon_WyvernAttack.npy", "action_group": "stationary", "action_label": "attack, flap", "reviewed": true}
 {"clip": "Dragon_WyvernDie.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Dragon_WyvernFly.npy", "action_group": "locomotion", "action_label": "fly, flap, forward", "reviewed": true}
-{"clip": "Dragon_WyvernIdle2.npy", "action_group": "stationary", "action_label": "idle, fly, flap"}
-{"clip": "Dragon_WyvernIdle3.npy", "action_group": "stationary", "action_label": "idle, fly, flap"}
-{"clip": "Dragon_WyvernIdle.npy", "action_group": "stationary", "action_label": "idle, fly, flap"}
+{"clip": "Dragon_WyvernIdle2.npy", "action_group": "stationary", "action_label": "idle, flap, hover", "reviewed": true}
+{"clip": "Dragon_WyvernIdle3.npy", "action_group": "stationary", "action_label": "idle, flap, hover", "reviewed": true}
+{"clip": "Dragon_WyvernIdle.npy", "action_group": "stationary", "action_label": "idle, flap, roar", "reviewed": true}
 {"clip": "Dragon_WyvernSlowFly.npy", "action_group": "locomotion", "action_label": "fly, flap, hover", "reviewed": true}
-{"clip": "Eagle_EggSteal.npy", "action_group": "stationary", "action_label": "fly, attack, catch"}
+{"clip": "Eagle_EggSteal.npy", "action_group": "stationary", "action_label": "attack, flap, kick", "reviewed": true}
 {"clip": "Eagle_FloatDown.npy", "action_group": "locomotion", "action_label": "fly, flap, down", "reviewed": true}
 {"clip": "Eagle_FloattUp.npy", "action_group": "locomotion", "action_label": "fly, flap, up", "reviewed": true}
 {"clip": "Eagle_FlyLoop.npy", "action_group": "locomotion", "action_label": "fly, flap, forward", "reviewed": true}
 {"clip": "Eagle_GlideLoop.npy", "action_group": "locomotion", "action_label": "fly, flap, forward", "reviewed": true}
-{"clip": "Eagle_IdleNest.npy", "action_group": "stationary", "action_label": "idle, fly, flap"}
+{"clip": "Eagle_IdleNest.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Eagle_Landing.npy", "action_group": "transition", "action_label": "land", "reviewed": true}
 {"clip": "Eagle_RideWind.npy", "action_group": "locomotion", "action_label": "fly, flap, slow, forward", "reviewed": true}
 {"clip": "Eagle_Shot.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Eagle_Strike1.npy", "action_group": "stationary", "action_label": "fly, attack, flap, forward"}
-{"clip": "Eagle_Strike2.npy", "action_group": "stationary", "action_label": "fly, attack, flap, forward"}
+{"clip": "Eagle_Strike1.npy", "action_group": "stationary", "action_label": "attack, flap, kick", "reviewed": true}
+{"clip": "Eagle_Strike2.npy", "action_group": "stationary", "action_label": "attack, flap, kick", "reviewed": true}
 {"clip": "Eagle_TakeOff.npy", "action_group": "transition", "action_label": "takeoff", "reviewed": true}
-{"clip": "Elephant_Atk1.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "Elephant_Atk2.npy", "action_group": "stationary", "action_label": "attack"}
+{"clip": "Elephant_Atk1.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
+{"clip": "Elephant_Atk2.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
 {"clip": "Elephant_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Elephant_DownIn.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Elephant_DownLoop.npy", "action_group": "stationary", "action_label": "rest"}
+{"clip": "Elephant_DownLoop.npy", "action_group": "stationary", "action_label": "rest", "reviewed": true}
 {"clip": "Elephant_DownOut.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
-{"clip": "Elephant_Firing.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Elephant_Idle1.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Elephant_Idle2.npy", "action_group": "stationary", "action_label": "idle, run"}
-{"clip": "Elephant_Idle3.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Elephant_Passout.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Elephant_Firing.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
+{"clip": "Elephant_Idle1.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Elephant_Idle2.npy", "action_group": "stationary", "action_label": "idle, cleaning", "reviewed": true}
+{"clip": "Elephant_Idle3.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Elephant_Passout.npy", "action_group": "stationary", "action_label": "idle, sleep", "reviewed": true}
 {"clip": "Elephant_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Elephant_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "FireAnt_AntAngry.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "FireAnt_AntAnnoyed.npy", "action_group": "stationary", "action_label": "idle, shake"}
+{"clip": "FireAnt_AntAngry.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
+{"clip": "FireAnt_AntAnnoyed.npy", "action_group": "stationary", "action_label": "idle, taunt", "reviewed": true}
 {"clip": "FireAnt_AntBackUp.npy", "action_group": "locomotion", "action_label": "walk, retreat, backward", "reviewed": true}
-{"clip": "FireAnt_AntBite.npy", "action_group": "stationary", "action_label": "attack, bite"}
+{"clip": "FireAnt_AntBite.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
 {"clip": "FireAnt_AntCreep.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "FireAnt_AntFeel.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "FireAnt_AntFightOff.npy", "action_group": "stationary", "action_label": "attack, rear"}
+{"clip": "FireAnt_AntFeel.npy", "action_group": "stationary", "action_label": "idle, sniff", "reviewed": true}
+{"clip": "FireAnt_AntFightOff.npy", "action_group": "stationary", "action_label": "idle, taunt", "reviewed": true}
 {"clip": "FireAnt_AntForwardMarch.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "FireAnt_AntGesture.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "FireAnt_AntHit.npy", "action_group": "stationary", "action_label": "hurt, rear"}
-{"clip": "FireAnt_AntHungry.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "FireAnt_AntIdle.npy", "action_group": "stationary", "action_label": "idle, shake"}
-{"clip": "FireAnt_AntJump.npy", "action_group": "stationary", "action_label": "jump, crouch"}
+{"clip": "FireAnt_AntGesture.npy", "action_group": "stationary", "action_label": "idle, taunt", "reviewed": true}
+{"clip": "FireAnt_AntHit.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
+{"clip": "FireAnt_AntHungry.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
+{"clip": "FireAnt_AntIdle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "FireAnt_AntJump.npy", "action_group": "stationary", "action_label": "jump", "reviewed": true}
 {"clip": "FireAnt_AntLeft.npy", "action_group": "locomotion", "action_label": "walk, strafe, left", "reviewed": true}
 {"clip": "FireAnt_AntRight.npy", "action_group": "locomotion", "action_label": "walk, strafe, right", "reviewed": true}
-{"clip": "FireAnt_AntRipFlesh2.npy", "action_group": "stationary", "action_label": "attack, bite"}
-{"clip": "FireAnt_AntRipFlesh.npy", "action_group": "stationary", "action_label": "attack, bite"}
-{"clip": "FireAnt_AntRip.npy", "action_group": "stationary", "action_label": "attack, bite"}
-{"clip": "FireAnt_AntRoar.npy", "action_group": "stationary", "action_label": "roar"}
-{"clip": "FireAnt_AntSnap.npy", "action_group": "stationary", "action_label": "idle, attack"}
+{"clip": "FireAnt_AntRipFlesh2.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
+{"clip": "FireAnt_AntRipFlesh.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
+{"clip": "FireAnt_AntRip.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
+{"clip": "FireAnt_AntRoar.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
+{"clip": "FireAnt_AntSnap.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
 {"clip": "FireAnt_AntTurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "reviewed": true}
 {"clip": "FireAnt_AntTurnRight.npy", "action_group": "transition", "action_label": "turn, right", "reviewed": true}
 {"clip": "FireAnt_AntUpFromDown2.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
 {"clip": "FireAnt_AntUpFromDown.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
-{"clip": "Flamingo_BendIdle.npy", "action_group": "stationary", "action_label": "idle, stand"}
-{"clip": "Flamingo_Sleep.npy", "action_group": "stationary", "action_label": "rest, sleep"}
+{"clip": "Flamingo_BendIdle.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
+{"clip": "Flamingo_Sleep.npy", "action_group": "stationary", "action_label": "idle, sleep", "reviewed": true}
 {"clip": "Flamingo_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Fox_Atk1.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "Fox_Atk2.npy", "action_group": "stationary", "action_label": "attack, rear"}
-{"clip": "Fox_Atk3.npy", "action_group": "stationary", "action_label": "attack, crouch, forward"}
-{"clip": "Fox_Atk4.npy", "action_group": "stationary", "action_label": "attack, forward"}
+{"clip": "Fox_Atk1.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
+{"clip": "Fox_Atk2.npy", "action_group": "stationary", "action_label": "attack, rear", "reviewed": true}
+{"clip": "Fox_Atk3.npy", "action_group": "stationary", "action_label": "attack, jump", "reviewed": true}
+{"clip": "Fox_Atk4.npy", "action_group": "stationary", "action_label": "attack, swat", "reviewed": true}
 {"clip": "Fox_Die2.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Fox_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Fox_Idle1.npy", "action_group": "stationary", "action_label": "idle, roar"}
-{"clip": "Fox_Idle2.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Fox_Idle3.npy", "action_group": "stationary", "action_label": "idle, sniff, yawn"}
-{"clip": "Fox_Idle4.npy", "action_group": "stationary", "action_label": "idle, turn, look, crouch"}
-{"clip": "Fox_Idle5.npy", "action_group": "stationary", "action_label": "rest, look, sit"}
+{"clip": "Fox_Idle1.npy", "action_group": "stationary", "action_label": "idle, crouch", "reviewed": true}
+{"clip": "Fox_Idle2.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Fox_Idle3.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Fox_Idle4.npy", "action_group": "stationary", "action_label": "idle, cleaning", "reviewed": true}
+{"clip": "Fox_Idle5.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
 {"clip": "Fox_Run.npy", "action_group": "locomotion", "action_label": "run, jump, forward", "reviewed": true}
 {"clip": "Fox_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Gazelle_Alert.npy", "action_group": "stationary", "action_label": "idle, turn, look"}
-{"clip": "Gazelle_Attack1.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "Gazelle_Attack.npy", "action_group": "stationary", "action_label": "attack, forward"}
+{"clip": "Gazelle_Alert.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
+{"clip": "Gazelle_Attack1.npy", "action_group": "stationary", "action_label": "attack, jump, charge", "reviewed": true}
+{"clip": "Gazelle_Attack.npy", "action_group": "stationary", "action_label": "attack, rear, kick", "reviewed": true}
 {"clip": "Gazelle_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Gazelle_HeadPoke.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "Gazelle_Idle3.npy", "action_group": "stationary", "action_label": "idle, turn, look"}
-{"clip": "Gazelle_IdleReady.npy", "action_group": "stationary", "action_label": "idle, stand"}
-{"clip": "Gazelle_Idle.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Gazelle_HeadPoke.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
+{"clip": "Gazelle_Idle3.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
+{"clip": "Gazelle_IdleReady.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Gazelle_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Gazelle_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Gazelle_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Giantbee_Attack2.npy", "action_group": "stationary", "action_label": "turn, attack"}
-{"clip": "Giantbee_Attack3.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "Giantbee_Attack4.npy", "action_group": "stationary", "action_label": "fly, turn, attack, flutter"}
-{"clip": "Giantbee_Attack.npy", "action_group": "stationary", "action_label": "fly, turn, attack, flutter"}
+{"clip": "Giantbee_Attack2.npy", "action_group": "stationary", "action_label": "attack, flutter, sting", "reviewed": true}
+{"clip": "Giantbee_Attack3.npy", "action_group": "stationary", "action_label": "attack, flutter, roll", "reviewed": true}
+{"clip": "Giantbee_Attack4.npy", "action_group": "stationary", "action_label": "attack, flutter, roll", "reviewed": true}
+{"clip": "Giantbee_Attack.npy", "action_group": "stationary", "action_label": "attack, flutter, sting", "reviewed": true}
 {"clip": "Giantbee_Die2.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Giantbee_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Giantbee_Fly.npy", "action_group": "locomotion", "action_label": "fly, flutter, forward", "reviewed": true}
-{"clip": "Giantbee_Idle2.npy", "action_group": "stationary", "action_label": "idle, fly, flutter"}
-{"clip": "Giantbee_Idle.npy", "action_group": "stationary", "action_label": "idle, fly, flutter, shake"}
-{"clip": "Goat_Attack.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "Goat_Bleat.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Giantbee_Idle2.npy", "action_group": "stationary", "action_label": "idle, flutter", "reviewed": true}
+{"clip": "Giantbee_Idle.npy", "action_group": "stationary", "action_label": "idle, flutter, hover", "reviewed": true}
+{"clip": "Goat_Attack.npy", "action_group": "stationary", "action_label": "attack, charge", "reviewed": true}
+{"clip": "Goat_Bleat.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
 {"clip": "Goat_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Goat_HeadButt2.npy", "action_group": "stationary", "action_label": "attack, rear"}
-{"clip": "Goat_HeadButt.npy", "action_group": "stationary", "action_label": "attack, rear"}
-{"clip": "Goat_HoofScrape.npy", "action_group": "stationary", "action_label": "idle, dig"}
-{"clip": "Goat_Idle.npy", "action_group": "stationary", "action_label": "idle, turn"}
-{"clip": "Goat_JumpKnock.npy", "action_group": "stationary", "action_label": "jump, attack"}
+{"clip": "Goat_HeadButt2.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
+{"clip": "Goat_HeadButt.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
+{"clip": "Goat_HoofScrape.npy", "action_group": "stationary", "action_label": "idle, scratch", "reviewed": true}
+{"clip": "Goat_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Goat_JumpKnock.npy", "action_group": "stationary", "action_label": "attack, jump, charge", "reviewed": true}
 {"clip": "Goat_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Goat_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Hamster_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Hamster_RollAttack.npy", "action_group": "stationary", "action_label": "turn, roll, attack"}
+{"clip": "Hamster_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Hamster_RollAttack.npy", "action_group": "stationary", "action_label": "attack, roll", "reviewed": true}
 {"clip": "Hamster_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "Hamster_Sniff.npy", "action_group": "stationary", "action_label": "sniff"}
+{"clip": "Hamster_Sniff.npy", "action_group": "stationary", "action_label": "idle, sniff", "reviewed": true}
 {"clip": "Hamster_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "HermitCrab_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "HermitCrab_Eat.npy", "action_group": "stationary", "action_label": "attack, eat"}
+{"clip": "HermitCrab_Eat.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
 {"clip": "HermitCrab_Expire.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "HermitCrab_Fighting.npy", "action_group": "stationary", "action_label": "attack"}
+{"clip": "HermitCrab_Fighting.npy", "action_group": "stationary", "action_label": "attack, swat", "reviewed": true}
 {"clip": "HermitCrab_KnockedBack.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "HermitCrab_KnockedOut.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "HermitCrab_OutofGround.npy", "action_group": "transition", "action_label": "spawn", "reviewed": true}
-{"clip": "HermitCrab_Pinchers.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "HermitCrab_Pinchers.npy", "action_group": "stationary", "action_label": "attack, taunt", "reviewed": true}
 {"clip": "HermitCrab_SandBurrough.npy", "action_group": "transition", "action_label": "burrow", "reviewed": true}
-{"clip": "HermitCrab_Sleep.npy", "action_group": "stationary", "action_label": "rest"}
+{"clip": "HermitCrab_Sleep.npy", "action_group": "stationary", "action_label": "idle, sleep", "reviewed": true}
 {"clip": "HermitCrab_Slowwalk.npy", "action_group": "locomotion", "action_label": "walk, slow, forward", "reviewed": true}
 {"clip": "HermitCrab_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Hippopotamus_Attack2.npy", "action_group": "stationary", "action_label": "attack, rear"}
-{"clip": "Hippopotamus_Attack3.npy", "action_group": "stationary", "action_label": "attack, bite, forward"}
-{"clip": "Hippopotamus_Attack4.npy", "action_group": "stationary", "action_label": "attack, rear, forward"}
-{"clip": "Hippopotamus_Attack.npy", "action_group": "stationary", "action_label": "attack, forward"}
+{"clip": "Hippopotamus_Attack2.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
+{"clip": "Hippopotamus_Attack3.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
+{"clip": "Hippopotamus_Attack4.npy", "action_group": "stationary", "action_label": "attack, rear", "reviewed": true}
+{"clip": "Hippopotamus_Attack.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
 {"clip": "Hippopotamus_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Hippopotamus_Idle2.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Hippopotamus_Idle.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Hippopotamus_Idle2.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Hippopotamus_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Hippopotamus_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Hippopotamus_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Hippopotamus_Yawn.npy", "action_group": "stationary", "action_label": "idle, yawn"}
-{"clip": "Horse_Attack.npy", "action_group": "stationary", "action_label": "attack, kick, rear"}
+{"clip": "Hippopotamus_Yawn.npy", "action_group": "stationary", "action_label": "idle, yawn", "reviewed": true}
+{"clip": "Horse_Attack.npy", "action_group": "stationary", "action_label": "attack, charge", "reviewed": true}
 {"clip": "Horse_BackUp.npy", "action_group": "locomotion", "action_label": "walk, backward", "reviewed": true}
-{"clip": "Horse_Bucking.npy", "action_group": "stationary", "action_label": "attack, rear"}
+{"clip": "Horse_Bucking.npy", "action_group": "stationary", "action_label": "attack, spin, kick", "reviewed": true}
 {"clip": "Horse_Dying.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Horse_FeetUp.npy", "action_group": "stationary", "action_label": "getup, rear"}
+{"clip": "Horse_FeetUp.npy", "action_group": "stationary", "action_label": "idle, rear", "reviewed": true}
 {"clip": "Horse_GetUp.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
-{"clip": "Horse_HoofScrape2.npy", "action_group": "stationary", "action_label": "idle, dig"}
-{"clip": "Horse_HoofScrape.npy", "action_group": "stationary", "action_label": "idle, dig"}
-{"clip": "Horse_Idle3.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Horse_IdleEars.npy", "action_group": "stationary", "action_label": "idle, shake"}
-{"clip": "Horse_Idle.npy", "action_group": "stationary", "action_label": "idle, eat, graze"}
-{"clip": "Horse_InAir.npy", "action_group": "stationary", "action_label": "jump, land"}
+{"clip": "Horse_HoofScrape2.npy", "action_group": "stationary", "action_label": "idle, scratch", "reviewed": true}
+{"clip": "Horse_HoofScrape.npy", "action_group": "stationary", "action_label": "idle, scratch", "reviewed": true}
+{"clip": "Horse_Idle3.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Horse_IdleEars.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Horse_Idle.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
+{"clip": "Horse_InAir.npy", "action_group": "locomotion", "action_label": "fall", "reviewed": true}
 {"clip": "Horse_JumpLand.npy", "action_group": "transition", "action_label": "land", "reviewed": true}
-{"clip": "Horse_Jumping.npy", "action_group": "stationary", "action_label": "jump, rear"}
+{"clip": "Horse_Jumping.npy", "action_group": "stationary", "action_label": "attack, rear", "reviewed": true}
 {"clip": "Horse_KnockedBack.npy", "action_group": "transition", "action_label": "die", "pending_delete": true}
 {"clip": "Horse_LandRun.npy", "action_group": "transition", "action_label": "land, run", "reviewed": true}
-{"clip": "Horse_LoneRanger.npy", "action_group": "stationary", "action_label": "rear"}
-{"clip": "Horse_Lying.npy", "action_group": "stationary", "action_label": "rest"}
-{"clip": "Horse_Rearing2.npy", "action_group": "stationary", "action_label": "rear"}
-{"clip": "Horse_Rearing.npy", "action_group": "stationary", "action_label": "rear"}
-{"clip": "Horse_Restless2.npy", "action_group": "stationary", "action_label": "idle, stand"}
-{"clip": "Horse_Restless3.npy", "action_group": "stationary", "action_label": "idle, stand"}
-{"clip": "Horse_Restless.npy", "action_group": "stationary", "action_label": "idle, eat, graze"}
+{"clip": "Horse_LoneRanger.npy", "action_group": "stationary", "action_label": "idle, rear", "reviewed": true}
+{"clip": "Horse_Lying.npy", "action_group": "stationary", "action_label": "rest", "reviewed": true}
+{"clip": "Horse_Rearing2.npy", "action_group": "stationary", "action_label": "idle, rear", "reviewed": true}
+{"clip": "Horse_Rearing.npy", "action_group": "stationary", "action_label": "idle, rear", "reviewed": true}
+{"clip": "Horse_Restless2.npy", "action_group": "stationary", "action_label": "idle, shake", "pending_delete": true}
+{"clip": "Horse_Restless3.npy", "action_group": "stationary", "action_label": "idle, scratch", "reviewed": true}
+{"clip": "Horse_Restless.npy", "action_group": "stationary", "action_label": "idle, taunt", "reviewed": true}
 {"clip": "Horse_RunJump.npy", "action_group": "transition", "action_label": "run, jump", "reviewed": true}
 {"clip": "Horse_RunLoop.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Horse_RunToStop.npy", "action_group": "transition", "action_label": "run, idle", "reviewed": true}
-{"clip": "Horse_SlowIdle.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Horse_SlowIdle.npy", "action_group": "stationary", "action_label": "idle, sleep", "reviewed": true}
 {"clip": "Horse_SlowWalk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Hound_Attack.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "Hound_Bark1.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Hound_Barking.npy", "action_group": "stationary", "action_label": "idle, roar, stand"}
+{"clip": "Hound_Attack.npy", "action_group": "stationary", "action_label": "attack, swat", "reviewed": true}
+{"clip": "Hound_Bark1.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
+{"clip": "Hound_Barking.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
 {"clip": "Hound_DieLoop.npy", "action_group": "stationary", "action_label": "rest", "reviewed": true}
 {"clip": "Hound_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Hound_GetUp.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
 {"clip": "Hound_Hit.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Hound_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Hound_Ready2.npy", "action_group": "stationary", "action_label": "idle, stand"}
-{"clip": "Hound_Restless.npy", "action_group": "stationary", "action_label": "roar, crouch"}
+{"clip": "Hound_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Hound_Ready2.npy", "action_group": "stationary", "action_label": "idle, taunt", "reviewed": true}
+{"clip": "Hound_Restless.npy", "action_group": "stationary", "action_label": "idle, yawn", "reviewed": true}
 {"clip": "Hound_RunLoop.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "Hound_Sniff.npy", "action_group": "stationary", "action_label": "idle, sniff"}
+{"clip": "Hound_Sniff.npy", "action_group": "stationary", "action_label": "idle, sleep", "reviewed": true}
 {"clip": "Hound_WalkLoop.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Isopetra_Attack2.npy", "action_group": "stationary", "action_label": "attack, shake"}
-{"clip": "Isopetra_Attack3.npy", "action_group": "stationary", "action_label": "attack, rear, forward"}
-{"clip": "Isopetra_Attack.npy", "action_group": "stationary", "action_label": "attack"}
+{"clip": "Isopetra_Attack2.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
+{"clip": "Isopetra_Attack3.npy", "action_group": "stationary", "action_label": "attack, charge", "reviewed": true}
+{"clip": "Isopetra_Attack.npy", "action_group": "stationary", "action_label": "attack, charge", "reviewed": true}
 {"clip": "Isopetra_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Isopetra_Idle2.npy", "action_group": "stationary", "action_label": "idle, shake"}
-{"clip": "Isopetra_Idle3.npy", "action_group": "stationary", "action_label": "idle, shake"}
-{"clip": "Isopetra_Idle.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Isopetra_Idle2.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Isopetra_Idle3.npy", "action_group": "stationary", "action_label": "idle, cleaning", "reviewed": true}
+{"clip": "Isopetra_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Isopetra_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Isopetra_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Jaguar_Attack1.npy", "action_group": "stationary", "action_label": "attack, roar, forward"}
-{"clip": "Jaguar_Attack2.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "Jaguar_Attack.npy", "action_group": "stationary", "action_label": "attack"}
+{"clip": "Jaguar_Attack1.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
+{"clip": "Jaguar_Attack2.npy", "action_group": "stationary", "action_label": "attack, swat", "reviewed": true}
+{"clip": "Jaguar_Attack.npy", "action_group": "stationary", "action_label": "attack, rear, swat", "reviewed": true}
 {"clip": "Jaguar_Die1.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Jaguar_Die2.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Jaguar_GetUp.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
-{"clip": "Jaguar_Idle.npy", "action_group": "stationary", "action_label": "idle, stand"}
-{"clip": "Jaguar_LieIdle.npy", "action_group": "stationary", "action_label": "rest"}
-{"clip": "Jaguar_Low.npy", "action_group": "stationary", "action_label": "rest"}
+{"clip": "Jaguar_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Jaguar_LieIdle.npy", "action_group": "stationary", "action_label": "rest", "reviewed": true}
+{"clip": "Jaguar_Low.npy", "action_group": "stationary", "action_label": "idle, sleep", "reviewed": true}
 {"clip": "Jaguar_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Jaguar_Sit.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
-{"clip": "Jaguar_Stancing.npy", "action_group": "stationary", "action_label": "idle, crouch"}
+{"clip": "Jaguar_Stancing.npy", "action_group": "stationary", "action_label": "idle, crouch", "reviewed": true}
 {"clip": "Jaguar_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Jaws_SharkBiteLeft.npy", "action_group": "stationary", "action_label": "turn, attack, bite, left"}
-{"clip": "Jaws_SharkBiteRight.npy", "action_group": "stationary", "action_label": "turn, attack, bite, right"}
+{"clip": "Jaws_SharkBiteLeft.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
+{"clip": "Jaws_SharkBiteRight.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
 {"clip": "Jaws_SharkDeadLoop.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Jaws_SharkDead.npy", "action_group": "stationary", "action_label": "die"}
+{"clip": "Jaws_SharkDead.npy", "action_group": "stationary", "action_label": "dead", "reviewed": true}
 {"clip": "Jaws_SharkSwim180.npy", "action_group": "locomotion", "action_label": "swim, turn, flip", "reviewed": true}
 {"clip": "Jaws_SharkSwimAt.npy", "action_group": "locomotion", "action_label": "swim, forward", "reviewed": true}
 {"clip": "Jaws_SharkSwimLeft.npy", "action_group": "locomotion", "action_label": "swim, turn, left", "reviewed": true}
 {"clip": "Jaws_SharkSwimRight.npy", "action_group": "locomotion", "action_label": "swim, turn, right", "reviewed": true}
 {"clip": "Jaws_SharkSwim.npy", "action_group": "locomotion", "action_label": "swim, forward", "reviewed": true}
-{"clip": "KingCobra_Attack2.npy", "action_group": "stationary", "action_label": "attack, rear"}
-{"clip": "KingCobra_Attack.npy", "action_group": "stationary", "action_label": "attack, rear"}
-{"clip": "KingCobra_Bite.npy", "action_group": "stationary", "action_label": "attack, bite, forward"}
-{"clip": "KingCobra_CircleBite.npy", "action_group": "stationary", "action_label": "turn, attack"}
+{"clip": "KingCobra_Attack2.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
+{"clip": "KingCobra_Attack.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
+{"clip": "KingCobra_Bite.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
+{"clip": "KingCobra_CircleBite.npy", "action_group": "stationary", "action_label": "attack, bite, spin", "reviewed": true}
 {"clip": "KingCobra_GetUp.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
-{"clip": "KingCobra_IdleLoop.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "KingCobra_Idle.npy", "action_group": "stationary", "action_label": "idle, stand"}
+{"clip": "KingCobra_IdleLoop.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "KingCobra_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "KingCobra_Killed.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "KingCobra_Steady.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Leapord_Attack.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "Leapord_Bite.npy", "action_group": "stationary", "action_label": "attack, bite, forward"}
+{"clip": "KingCobra_Steady.npy", "action_group": "stationary", "action_label": "idle, sleep", "reviewed": true}
+{"clip": "Leapord_Attack.npy", "action_group": "stationary", "action_label": "attack, rear, swat", "reviewed": true}
+{"clip": "Leapord_Bite.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
 {"clip": "Leapord_Death.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Leapord_DieLoop.npy", "action_group": "stationary", "action_label": "die"}
+{"clip": "Leapord_DieLoop.npy", "action_group": "stationary", "action_label": "dead", "reviewed": true}
 {"clip": "Leapord_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Leapord_Graze.npy", "action_group": "stationary", "action_label": "eat, stand, graze"}
-{"clip": "Leapord_Growl.npy", "action_group": "stationary", "action_label": "roar, crouch"}
-{"clip": "Leapord_Idle.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Leapord_Graze.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
+{"clip": "Leapord_Growl.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
+{"clip": "Leapord_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Leapord_JumpUp.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
-{"clip": "Leapord_PounceSwipe.npy", "action_group": "stationary", "action_label": "jump, attack, rear"}
-{"clip": "Leapord_Pounce.npy", "action_group": "stationary", "action_label": "jump, attack, retreat, forward"}
+{"clip": "Leapord_PounceSwipe.npy", "action_group": "stationary", "action_label": "attack, swipe", "reviewed": true}
+{"clip": "Leapord_Pounce.npy", "action_group": "stationary", "action_label": "attack, jump, charge", "reviewed": true}
 {"clip": "Leapord_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "Leapord_Sick.npy", "action_group": "stationary", "action_label": "idle, stand"}
+{"clip": "Leapord_Sick.npy", "action_group": "stationary", "action_label": "idle, sleep", "reviewed": true}
 {"clip": "Leapord_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Lion_Attack1.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "Lion_Attack.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "Lion_DeathIdle.npy", "action_group": "stationary", "action_label": "die, rest"}
+{"clip": "Lion_Attack1.npy", "action_group": "stationary", "action_label": "attack, rear, swat", "reviewed": true}
+{"clip": "Lion_Attack.npy", "action_group": "stationary", "action_label": "attack, rear, swat", "reviewed": true}
+{"clip": "Lion_DeathIdle.npy", "action_group": "stationary", "action_label": "dead", "reviewed": true}
 {"clip": "Lion_Die2.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Lion_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Lion_GetUp.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
-{"clip": "Lion_Growl.npy", "action_group": "stationary", "action_label": "attack, roar, forward"}
-{"clip": "Lion_JumpBite.npy", "action_group": "stationary", "action_label": "jump, attack"}
-{"clip": "Lion_LeapBite.npy", "action_group": "stationary", "action_label": "jump, attack, bite"}
+{"clip": "Lion_Growl.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
+{"clip": "Lion_JumpBite.npy", "action_group": "stationary", "action_label": "attack, jump, charge", "reviewed": true}
+{"clip": "Lion_LeapBite.npy", "action_group": "stationary", "action_label": "attack, jump, charge", "reviewed": true}
 {"clip": "Lion_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "Lion_SlowIdle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Lion_Sniff.npy", "action_group": "stationary", "action_label": "sniff, forward"}
-{"clip": "Lion_Swatting.npy", "action_group": "stationary", "action_label": "attack, forward"}
+{"clip": "Lion_SlowIdle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Lion_Sniff.npy", "action_group": "stationary", "action_label": "idle, sniff", "reviewed": true}
+{"clip": "Lion_Swatting.npy", "action_group": "stationary", "action_label": "attack, rear, swat", "reviewed": true}
 {"clip": "Lion_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Lion_Yawn.npy", "action_group": "stationary", "action_label": "idle, yawn"}
-{"clip": "Lynx_Attack2.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "Lynx_Attack3.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "Lynx_Attack.npy", "action_group": "stationary", "action_label": "attack, forward"}
+{"clip": "Lion_Yawn.npy", "action_group": "stationary", "action_label": "idle, yawn", "reviewed": true}
+{"clip": "Lynx_Attack2.npy", "action_group": "stationary", "action_label": "attack, jump, charge", "reviewed": true}
+{"clip": "Lynx_Attack3.npy", "action_group": "stationary", "action_label": "attack, jump, charge", "reviewed": true}
+{"clip": "Lynx_Attack.npy", "action_group": "stationary", "action_label": "attack, swat", "reviewed": true}
 {"clip": "Lynx_Die2.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Lynx_DieLoop.npy", "action_group": "stationary", "action_label": "die"}
+{"clip": "Lynx_DieLoop.npy", "action_group": "stationary", "action_label": "dead", "reviewed": true}
 {"clip": "Lynx_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Lynx_Idle2.npy", "action_group": "stationary", "action_label": "idle, roar"}
-{"clip": "Lynx_Idle3.npy", "action_group": "stationary", "action_label": "idle, jump"}
-{"clip": "Lynx_Idle.npy", "action_group": "stationary", "action_label": "idle, turn, stand"}
-{"clip": "Lynx_Jump.npy", "action_group": "stationary", "action_label": "jump"}
+{"clip": "Lynx_Idle2.npy", "action_group": "stationary", "action_label": "idle, yawn", "reviewed": true}
+{"clip": "Lynx_Idle3.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Lynx_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Lynx_Jump.npy", "action_group": "stationary", "action_label": "jump", "reviewed": true}
 {"clip": "Lynx_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Lynx_Stand.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
 {"clip": "Lynx_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Mammoth_Bellow.npy", "action_group": "stationary", "action_label": "roar"}
-{"clip": "Mammoth_DeathLoop.npy", "action_group": "stationary", "action_label": "die"}
+{"clip": "Mammoth_Bellow.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Mammoth_DeathLoop.npy", "action_group": "stationary", "action_label": "dead", "reviewed": true}
 {"clip": "Mammoth_Die2.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Mammoth_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Mammoth_Gesture.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Mammoth_Gesture.npy", "action_group": "stationary", "action_label": "idle, taunt", "reviewed": true}
 {"clip": "Mammoth_GetUp.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
-{"clip": "Mammoth_Idle2.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Mammoth_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Mammoth_Rise.npy", "action_group": "stationary", "action_label": "idle, attack"}
+{"clip": "Mammoth_Idle2.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Mammoth_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Mammoth_Rise.npy", "action_group": "stationary", "action_label": "idle, rear", "reviewed": true}
 {"clip": "Mammoth_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "Mammoth_SideSwipe.npy", "action_group": "stationary", "action_label": "attack"}
+{"clip": "Mammoth_SideSwipe.npy", "action_group": "stationary", "action_label": "attack, swipe", "reviewed": true}
 {"clip": "Mammoth_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Monkey_Atk1.npy", "action_group": "stationary", "action_label": "attack, crouch, forward"}
-{"clip": "Monkey_Atk2.npy", "action_group": "stationary", "action_label": "attack, rear"}
-{"clip": "Monkey_Atk3.npy", "action_group": "stationary", "action_label": "jump, turn, attack"}
-{"clip": "Monkey_Atk4.npy", "action_group": "stationary", "action_label": "attack"}
+{"clip": "Monkey_Atk1.npy", "action_group": "stationary", "action_label": "attack, swat", "reviewed": true}
+{"clip": "Monkey_Atk2.npy", "action_group": "stationary", "action_label": "attack, rear, swat", "reviewed": true}
+{"clip": "Monkey_Atk3.npy", "action_group": "stationary", "action_label": "attack, spin, swipe", "reviewed": true}
+{"clip": "Monkey_Atk4.npy", "action_group": "stationary", "action_label": "attack, swat", "reviewed": true}
 {"clip": "Monkey_B01Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Monkey_B01Idle.npy", "action_group": "stationary", "action_label": "idle, turn, rest, look, sit"}
-{"clip": "Monkey_B02Atk.npy", "action_group": "stationary", "action_label": "attack, crouch, forward"}
+{"clip": "Monkey_B01Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Monkey_B02Atk.npy", "action_group": "stationary", "action_label": "attack, swat", "reviewed": true}
 {"clip": "Monkey_B02Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Monkey_B02Idle.npy", "action_group": "stationary", "action_label": "idle, turn"}
+{"clip": "Monkey_B02Idle.npy", "action_group": "stationary", "action_label": "idle, spin", "reviewed": true}
 {"clip": "Monkey_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Monkey_Idle1.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Monkey_Idle2.npy", "action_group": "stationary", "action_label": "idle, crouch"}
-{"clip": "Monkey_Idle3.npy", "action_group": "stationary", "action_label": "idle, sit"}
+{"clip": "Monkey_Idle1.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Monkey_Idle2.npy", "action_group": "stationary", "action_label": "idle, sit", "reviewed": true}
+{"clip": "Monkey_Idle3.npy", "action_group": "stationary", "action_label": "idle, sit", "reviewed": true}
 {"clip": "Monkey_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Monkey_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Ostrich_Attack2.npy", "action_group": "stationary", "action_label": "run, attack, rear, forward"}
-{"clip": "Ostrich_Attack3.npy", "action_group": "stationary", "action_label": "run, attack, forward"}
-{"clip": "Ostrich_Attack4.npy", "action_group": "stationary", "action_label": "run, attack, kick, forward"}
-{"clip": "Ostrich_Attack.npy", "action_group": "stationary", "action_label": "run, attack, forward"}
+{"clip": "Ostrich_Attack2.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
+{"clip": "Ostrich_Attack3.npy", "action_group": "stationary", "action_label": "attack, jump, charge", "reviewed": true}
+{"clip": "Ostrich_Attack4.npy", "action_group": "stationary", "action_label": "attack, jump, kick", "reviewed": true}
+{"clip": "Ostrich_Attack.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
 {"clip": "Ostrich_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Ostrich_Idle2.npy", "action_group": "stationary", "action_label": "idle, stand"}
-{"clip": "Ostrich_Idle3.npy", "action_group": "stationary", "action_label": "idle, run"}
-{"clip": "Ostrich_Idle.npy", "action_group": "stationary", "action_label": "idle, run"}
+{"clip": "Ostrich_Idle2.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Ostrich_Idle3.npy", "action_group": "stationary", "action_label": "idle, cleaning", "reviewed": true}
+{"clip": "Ostrich_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Ostrich_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Ostrich_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Parrot2_IdleClean.npy", "action_group": "stationary", "action_label": "idle, scratch"}
-{"clip": "Parrot2_Idle.npy", "action_group": "stationary", "action_label": "idle, fly"}
+{"clip": "Parrot2_IdleClean.npy", "action_group": "stationary", "action_label": "idle, cleaning", "reviewed": true}
+{"clip": "Parrot2_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Parrot2_Land.npy", "action_group": "transition", "action_label": "fly, flap, land", "pending_delete": true}
-{"clip": "Parrot_Attack.npy", "action_group": "stationary", "action_label": "fly, attack, flap"}
+{"clip": "Parrot_Attack.npy", "action_group": "stationary", "action_label": "attack, flap, roll", "reviewed": true}
 {"clip": "Parrot_CircleFly.npy", "action_group": "locomotion", "action_label": "fly, circle", "pending_delete": true}
 {"clip": "Parrot_Die2.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Parrot_Die3.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Parrot_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Parrot_Fly.npy", "action_group": "locomotion", "action_label": "fly, flap, forward", "reviewed": true}
 {"clip": "Parrot_Hover.npy", "action_group": "locomotion", "action_label": "fly, flap, hover", "reviewed": true}
-{"clip": "Parrot_Idle2.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Parrot_Idle.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Parrot_Idle2.npy", "action_group": "stationary", "action_label": "idle, yawn", "reviewed": true}
+{"clip": "Parrot_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Parrot_Land.npy", "action_group": "transition", "action_label": "land", "reviewed": true}
-{"clip": "Parrot_Preen.npy", "action_group": "stationary", "action_label": "idle, scratch"}
+{"clip": "Parrot_Preen.npy", "action_group": "stationary", "action_label": "idle, cleaning", "reviewed": true}
 {"clip": "Parrot_Rise.npy", "action_group": "transition", "action_label": "takeoff", "reviewed": true}
 {"clip": "Parrot_Walk.npy", "action_group": "locomotion", "action_label": "fly, flap, slow, forward", "reviewed": true}
-{"clip": "Pigeon_Circle.npy", "action_group": "stationary", "action_label": "walk, turn"}
-{"clip": "Pigeon_Cooing.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Pigeon_Circle.npy", "action_group": "stationary", "action_label": "idle, spin", "reviewed": true}
+{"clip": "Pigeon_Cooing.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Pigeon_FlyLoop.npy", "action_group": "locomotion", "action_label": "fly, flap, forward", "reviewed": true}
 {"clip": "Pigeon_IdleLoop.npy", "action_group": "locomotion", "action_label": "walk", "pending_delete": true}
-{"clip": "Pigeon_Idle.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Pigeon_Idle.npy", "action_group": "stationary", "action_label": "idle, cleaning", "reviewed": true}
 {"clip": "Pigeon_Land.npy", "action_group": "transition", "action_label": "land", "reviewed": true}
 {"clip": "Pigeon_Left.npy", "action_group": "locomotion", "action_label": "walk, strafe, left", "reviewed": true}
-{"clip": "Pigeon_Peck.npy", "action_group": "stationary", "action_label": "eat, peck"}
+{"clip": "Pigeon_Peck.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
 {"clip": "Pigeon_Right.npy", "action_group": "locomotion", "action_label": "walk, strafe, right", "reviewed": true}
 {"clip": "Pigeon_TakeOff.npy", "action_group": "transition", "action_label": "takeoff", "reviewed": true}
 {"clip": "Pigeon_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Pirrana_Biting2.npy", "action_group": "stationary", "action_label": "attack, bite"}
-{"clip": "Pirrana_Biting.npy", "action_group": "stationary", "action_label": "bite"}
+{"clip": "Pirrana_Biting2.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
+{"clip": "Pirrana_Biting.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
 {"clip": "Pirrana_DeadFloat2.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Pirrana_DeadFloat.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Pirrana_DiveIn.npy", "action_group": "locomotion", "action_label": "swim, dive, down", "reviewed": true}
-{"clip": "Pirrana_Flopping.npy", "action_group": "stationary", "action_label": "run, shake"}
+{"clip": "Pirrana_Flopping.npy", "action_group": "stationary", "action_label": "hurt, flopping", "reviewed": true}
 {"clip": "Pirrana_Jump2.npy", "action_group": "locomotion", "action_label": "swim, jump, forward", "reviewed": true}
 {"clip": "Pirrana_MidSwim.npy", "action_group": "locomotion", "action_label": "swim, down", "reviewed": true}
 {"clip": "Pirrana_RiseTop.npy", "action_group": "locomotion", "action_label": "swim, up", "reviewed": true}
@@ -662,19 +662,19 @@
 {"clip": "Pirrana_Swim.npy", "action_group": "locomotion", "action_label": "swim, forward", "reviewed": true}
 {"clip": "PolarBearB_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "PolarBearB_GetUp.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
-{"clip": "PolarBearB_Idle2.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "PolarBearB_Idle3.npy", "action_group": "stationary", "action_label": "rest, roll"}
-{"clip": "PolarBearB_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "PolarBearB_Play.npy", "action_group": "stationary", "action_label": "roar"}
+{"clip": "PolarBearB_Idle2.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "PolarBearB_Idle3.npy", "action_group": "stationary", "action_label": "idle, roll", "reviewed": true}
+{"clip": "PolarBearB_Idle.npy", "action_group": "stationary", "action_label": "idle, yawn", "reviewed": true}
+{"clip": "PolarBearB_Play.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
 {"clip": "PolarBearB_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "PolarBearB_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "PolarBear_Attack2.npy", "action_group": "stationary", "action_label": "attack, roar, rear"}
-{"clip": "PolarBear_Attack3.npy", "action_group": "stationary", "action_label": "attack, rear"}
-{"clip": "PolarBear_Attack.npy", "action_group": "stationary", "action_label": "attack, rear"}
+{"clip": "PolarBear_Attack2.npy", "action_group": "stationary", "action_label": "attack, rear, swat", "reviewed": true}
+{"clip": "PolarBear_Attack3.npy", "action_group": "stationary", "action_label": "attack, rear, swipe", "reviewed": true}
+{"clip": "PolarBear_Attack.npy", "action_group": "stationary", "action_label": "attack, rear", "reviewed": true}
 {"clip": "PolarBear_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "PolarBear_Idle2.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "PolarBear_Idle3.npy", "action_group": "stationary", "action_label": "idle, turn, look, stand, forward"}
-{"clip": "PolarBear_Idle.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "PolarBear_Idle2.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "PolarBear_Idle3.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
+{"clip": "PolarBear_Idle.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
 {"clip": "PolarBear_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "PolarBear_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "Pteranodon_ArcLeft.npy", "action_group": "locomotion", "action_label": "fly, glide, turn, left", "reviewed": true}
@@ -682,43 +682,43 @@
 {"clip": "Pteranodon_Death2.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Pteranodon_Death.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Pteranodon_Fancy.npy", "action_group": "locomotion", "action_label": "fly, turn", "pending_delete": true}
-{"clip": "Pteranodon_Flapergasted.npy", "action_group": "stationary", "action_label": "idle, fly, turn, flap"}
+{"clip": "Pteranodon_Flapergasted.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
 {"clip": "Pteranodon_FlyLoop.npy", "action_group": "locomotion", "action_label": "fly, flap, forward", "reviewed": true}
 {"clip": "Pteranodon_GlideScream.npy", "action_group": "locomotion", "action_label": "fly, glide, forward", "reviewed": true}
-{"clip": "Pteranodon_Hit2.npy", "action_group": "stationary", "action_label": "fly, turn"}
-{"clip": "Pteranodon_Hit.npy", "action_group": "stationary", "action_label": "fly, hurt, forward"}
+{"clip": "Pteranodon_Hit2.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
+{"clip": "Pteranodon_Hit.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
 {"clip": "Pteranodon_Lander.npy", "action_group": "transition", "action_label": "fly, flap, land", "pending_delete": true}
 {"clip": "Pteranodon_ScreamFly.npy", "action_group": "locomotion", "action_label": "fly, glide, forward", "reviewed": true}
-{"clip": "Puppy_IdleEnergetic.npy", "action_group": "stationary", "action_label": "idle, stand, rear"}
-{"clip": "Puppy_IdleLayDown.npy", "action_group": "stationary", "action_label": "rest, sit"}
+{"clip": "Puppy_IdleEnergetic.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
+{"clip": "Puppy_IdleLayDown.npy", "action_group": "stationary", "action_label": "rest", "reviewed": true}
 {"clip": "Puppy_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Puppy_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Raindeer_Attack2.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "Raindeer_Attack3.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "Raindeer_Attack.npy", "action_group": "stationary", "action_label": "attack"}
+{"clip": "Raindeer_Attack2.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
+{"clip": "Raindeer_Attack3.npy", "action_group": "stationary", "action_label": "attack, jump, charge", "reviewed": true}
+{"clip": "Raindeer_Attack.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
 {"clip": "Raindeer_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Raindeer_Idle.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Raindeer_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Raindeer_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "Raindeer_Stance.npy", "action_group": "stationary", "action_label": "idle, stand"}
+{"clip": "Raindeer_Stance.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Raindeer_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Raindeer_Yell.npy", "action_group": "stationary", "action_label": "roar, eat, graze"}
-{"clip": "Raptor2_BreatheIdle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Raptor2_Clean.npy", "action_group": "stationary", "action_label": "scratch"}
+{"clip": "Raindeer_Yell.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
+{"clip": "Raptor2_BreatheIdle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Raptor2_Clean.npy", "action_group": "stationary", "action_label": "idle, cleaning", "reviewed": true}
 {"clip": "Raptor2_DieGetUp.npy", "action_group": "transition", "action_label": "roll, die, getup", "pending_delete": true}
 {"clip": "Raptor2_Die.npy", "action_group": "transition", "action_label": "die, rear, forward", "pending_delete": true}
-{"clip": "Raptor2_EatGrass.npy", "action_group": "stationary", "action_label": "eat, graze"}
-{"clip": "Raptor2_Eat.npy", "action_group": "stationary", "action_label": "eat"}
-{"clip": "Raptor2_EggTend.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Raptor2_EatGrass.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
+{"clip": "Raptor2_Eat.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
+{"clip": "Raptor2_EggTend.npy", "action_group": "stationary", "action_label": "idle, crouch", "reviewed": true}
 {"clip": "Raptor2_FallGetUp.npy", "action_group": "transition", "action_label": "fall, roll, getup", "pending_delete": true}
-{"clip": "Raptor2_IdleAlert.npy", "action_group": "stationary", "action_label": "idle, stand"}
-{"clip": "Raptor2_IdleBiteApple.npy", "action_group": "stationary", "action_label": "idle, bite, stand, crouch"}
-{"clip": "Raptor2_IdleCurious.npy", "action_group": "stationary", "action_label": "idle, turn, look, stand"}
-{"clip": "Raptor2_IdleForward.npy", "action_group": "stationary", "action_label": "idle, forward"}
-{"clip": "Raptor2_IdleLeft.npy", "action_group": "stationary", "action_label": "idle, turn, look, stand"}
-{"clip": "Raptor2_IdleLookLeft.npy", "action_group": "stationary", "action_label": "idle, turn, look, left"}
-{"clip": "Raptor2_IdleLookRight.npy", "action_group": "stationary", "action_label": "idle, turn, look, right"}
-{"clip": "Raptor2_IdleRight.npy", "action_group": "stationary", "action_label": "idle, stand"}
-{"clip": "Raptor2_Idle.npy", "action_group": "stationary", "action_label": "idle, turn, stand"}
+{"clip": "Raptor2_IdleAlert.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
+{"clip": "Raptor2_IdleBiteApple.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
+{"clip": "Raptor2_IdleCurious.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
+{"clip": "Raptor2_IdleForward.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Raptor2_IdleLeft.npy", "action_group": "stationary", "action_label": "idle, left", "reviewed": true}
+{"clip": "Raptor2_IdleLookLeft.npy", "action_group": "stationary", "action_label": "idle, look, left", "reviewed": true}
+{"clip": "Raptor2_IdleLookRight.npy", "action_group": "stationary", "action_label": "idle, look, right", "reviewed": true}
+{"clip": "Raptor2_IdleRight.npy", "action_group": "stationary", "action_label": "idle, right", "reviewed": true}
+{"clip": "Raptor2_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Raptor2_ReverseRun.npy", "action_group": "locomotion", "action_label": "run, backward", "reviewed": true}
 {"clip": "Raptor2_RunJump.npy", "action_group": "locomotion", "action_label": "run, backward", "pending_delete": true}
 {"clip": "Raptor2_RunToStopRoar2.npy", "action_group": "transition", "action_label": "run, roar", "pending_delete": true}
@@ -726,269 +726,269 @@
 {"clip": "Raptor2_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Raptor2_Stride.npy", "action_group": "locomotion", "action_label": "run, dash, forward", "reviewed": true}
 {"clip": "Raptor2_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Raptor3_AttackRight.npy", "action_group": "stationary", "action_label": "attack, right"}
-{"clip": "Raptor3_BarkForward.npy", "action_group": "stationary", "action_label": "idle, attack, roar, forward"}
-{"clip": "Raptor3_LeftPuke.npy", "action_group": "stationary", "action_label": "attack, stand"}
-{"clip": "Raptor3_MeanLEft.npy", "action_group": "stationary", "action_label": "attack, roar, stand, left"}
-{"clip": "Raptor3_MeanRight.npy", "action_group": "stationary", "action_label": "attack, roar, stand, right"}
-{"clip": "Raptor3_RoarLeft.npy", "action_group": "stationary", "action_label": "turn, roar, stand, left"}
-{"clip": "Raptor3_RoarRight.npy", "action_group": "stationary", "action_label": "turn, roar, stand, right"}
-{"clip": "Raptor3_Roarforward.npy", "action_group": "stationary", "action_label": "roar, stand, forward"}
+{"clip": "Raptor3_AttackRight.npy", "action_group": "stationary", "action_label": "attack, bite, right", "reviewed": true}
+{"clip": "Raptor3_BarkForward.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
+{"clip": "Raptor3_LeftPuke.npy", "action_group": "stationary", "action_label": "idle, bite, left", "reviewed": true}
+{"clip": "Raptor3_MeanLEft.npy", "action_group": "stationary", "action_label": "idle, roar, left", "reviewed": true}
+{"clip": "Raptor3_MeanRight.npy", "action_group": "stationary", "action_label": "idle, roar, right", "reviewed": true}
+{"clip": "Raptor3_RoarLeft.npy", "action_group": "stationary", "action_label": "idle, roar, right", "reviewed": true}
+{"clip": "Raptor3_RoarRight.npy", "action_group": "stationary", "action_label": "idle, roar, left", "reviewed": true}
+{"clip": "Raptor3_Roarforward.npy", "action_group": "stationary", "action_label": "idle, roar, forward", "reviewed": true}
 {"clip": "Raptor3_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "Raptor3_StepLeft.npy", "action_group": "stationary", "action_label": "walk, left"}
-{"clip": "Raptor3_StepRight.npy", "action_group": "stationary", "action_label": "walk, right"}
-{"clip": "Raptor3_StepRoar.npy", "action_group": "stationary", "action_label": "roar"}
-{"clip": "Raptor3_Yell.npy", "action_group": "stationary", "action_label": "idle, roar"}
-{"clip": "Raptor_Attack.npy", "action_group": "stationary", "action_label": "attack, rear, forward"}
+{"clip": "Raptor3_StepLeft.npy", "action_group": "stationary", "action_label": "idle, crouch, left", "pending_delete": true}
+{"clip": "Raptor3_StepRight.npy", "action_group": "stationary", "action_label": "idle, right", "pending_delete": true}
+{"clip": "Raptor3_StepRoar.npy", "action_group": "stationary", "action_label": "idle, roar, forward", "reviewed": true}
+{"clip": "Raptor3_Yell.npy", "action_group": "stationary", "action_label": "idle, roar", "pending_delete": true}
+{"clip": "Raptor_Attack.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
 {"clip": "Raptor_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Raptor_FastWalk.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "Raptor_HeadSmash.npy", "action_group": "stationary", "action_label": "attack, crouch"}
-{"clip": "Raptor_Idle2.npy", "action_group": "stationary", "action_label": "idle, stand"}
-{"clip": "Raptor_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Raptor_LegScratch.npy", "action_group": "stationary", "action_label": "scratch"}
-{"clip": "Raptor_Roar.npy", "action_group": "stationary", "action_label": "roar, rear"}
+{"clip": "Raptor_HeadSmash.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
+{"clip": "Raptor_Idle2.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Raptor_Idle.npy", "action_group": "stationary", "action_label": "idle, rear", "reviewed": true}
+{"clip": "Raptor_LegScratch.npy", "action_group": "stationary", "action_label": "idle, scratch", "reviewed": true}
+{"clip": "Raptor_Roar.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
 {"clip": "Raptor_SlowWalk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Raptor_Yawn.npy", "action_group": "stationary", "action_label": "idle, yawn"}
+{"clip": "Raptor_Yawn.npy", "action_group": "stationary", "action_label": "idle, yawn", "reviewed": true}
 {"clip": "Rat_AlertRun.npy", "action_group": "transition", "action_label": "turn, flip", "reviewed": true}
-{"clip": "Rat_Clean.npy", "action_group": "stationary", "action_label": "idle, scratch"}
-{"clip": "Rat_Eat.npy", "action_group": "stationary", "action_label": "eat"}
-{"clip": "Rat_Itch.npy", "action_group": "stationary", "action_label": "scratch"}
+{"clip": "Rat_Clean.npy", "action_group": "stationary", "action_label": "idle, cleaning", "reviewed": true}
+{"clip": "Rat_Eat.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
+{"clip": "Rat_Itch.npy", "action_group": "stationary", "action_label": "idle, scratch", "reviewed": true}
 {"clip": "Rat_Scamper.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Rat_Trottle.npy", "action_group": "locomotion", "action_label": "walk, trot, forward", "reviewed": true}
-{"clip": "Rhino_Attack2.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "Rhino_Attack3.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "Rhino_Attack.npy", "action_group": "stationary", "action_label": "attack, forward"}
+{"clip": "Rhino_Attack2.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
+{"clip": "Rhino_Attack3.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
+{"clip": "Rhino_Attack.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
 {"clip": "Rhino_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Rhino_Idle2.npy", "action_group": "stationary", "action_label": "idle, turn"}
-{"clip": "Rhino_Idle3.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Rhino_Idle.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Rhino_Idle2.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Rhino_Idle3.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
+{"clip": "Rhino_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Rhino_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Rhino_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Roach_Bristle.npy", "action_group": "stationary", "action_label": "idle, shake"}
-{"clip": "Roach_Hop.npy", "action_group": "stationary", "action_label": "jump"}
+{"clip": "Roach_Bristle.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
+{"clip": "Roach_Hop.npy", "action_group": "stationary", "action_label": "jump", "reviewed": true}
 {"clip": "Roach_Left.npy", "action_group": "locomotion", "action_label": "walk, strafe, left", "reviewed": true}
 {"clip": "Roach_Move.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "Roach_Scurry.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "Roach_Shake.npy", "action_group": "stationary", "action_label": "shake"}
-{"clip": "Roach_Smelling.npy", "action_group": "stationary", "action_label": "idle, sniff"}
+{"clip": "Roach_Shake.npy", "action_group": "stationary", "action_label": "idle, shake", "reviewed": true}
+{"clip": "Roach_Smelling.npy", "action_group": "stationary", "action_label": "idle, sniff", "reviewed": true}
 {"clip": "Roach_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "reviewed": true}
 {"clip": "Roach_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "reviewed": true}
-{"clip": "Roach_Uppity.npy", "action_group": "stationary", "action_label": "jump, shake, stand"}
+{"clip": "Roach_Uppity.npy", "action_group": "stationary", "action_label": "jump", "reviewed": true}
 {"clip": "SabreToothTiger_180Flip.npy", "action_group": "transition", "action_label": "turn, flip", "pending_delete": true}
 {"clip": "SabreToothTiger_180RIght.npy", "action_group": "transition", "action_label": "turn, flip", "reviewed": true}
 {"clip": "SabreToothTiger_45TurnLeft.npy", "action_group": "transition", "action_label": "turn, right", "reviewed": true}
-{"clip": "SabreToothTiger_Agitated.npy", "action_group": "stationary", "action_label": "idle, crouch"}
-{"clip": "SabreToothTiger_Attack.npy", "action_group": "stationary", "action_label": "attack, forward"}
+{"clip": "SabreToothTiger_Agitated.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
+{"clip": "SabreToothTiger_Attack.npy", "action_group": "stationary", "action_label": "attack, jump", "reviewed": true}
 {"clip": "SabreToothTiger_BackUp.npy", "action_group": "locomotion", "action_label": "walk, retreat, backward", "reviewed": true}
-{"clip": "SabreToothTiger_Begg.npy", "action_group": "stationary", "action_label": "idle, sit, stand"}
-{"clip": "SabreToothTiger_Bite.npy", "action_group": "stationary", "action_label": "attack, bite, forward"}
-{"clip": "SabreToothTiger_CageBat.npy", "action_group": "stationary", "action_label": "attack, forward"}
+{"clip": "SabreToothTiger_Begg.npy", "action_group": "stationary", "action_label": "idle, sit", "reviewed": true}
+{"clip": "SabreToothTiger_Bite.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
+{"clip": "SabreToothTiger_CageBat.npy", "action_group": "stationary", "action_label": "attack, swipe", "pending_delete": true}
 {"clip": "SabreToothTiger_Cowering2.npy", "action_group": "transition", "action_label": "retreat, crouch", "pending_delete": true}
-{"clip": "SabreToothTiger_Cowering.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "SabreToothTiger_Eating.npy", "action_group": "stationary", "action_label": "eat, stand"}
+{"clip": "SabreToothTiger_Cowering.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
+{"clip": "SabreToothTiger_Eating.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
 {"clip": "SabreToothTiger_GetUp2.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
 {"clip": "SabreToothTiger_GetUpMad.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
 {"clip": "SabreToothTiger_GetUp.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
-{"clip": "SabreToothTiger_Growling.npy", "action_group": "stationary", "action_label": "idle, roar"}
+{"clip": "SabreToothTiger_Growling.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
 {"clip": "SabreToothTiger_Layout.npy", "action_group": "transition", "action_label": "rest", "reviewed": true}
-{"clip": "SabreToothTiger_Leaper.npy", "action_group": "stationary", "action_label": "jump, attack, forward"}
+{"clip": "SabreToothTiger_Leaper.npy", "action_group": "stationary", "action_label": "attack, jump", "reviewed": true}
 {"clip": "SabreToothTiger_LeftTurn.npy", "action_group": "transition", "action_label": "turn, left", "reviewed": true}
-{"clip": "SabreToothTiger_Mean.npy", "action_group": "stationary", "action_label": "attack, crouch"}
-{"clip": "SabreToothTiger_PawSwatting.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "SabreToothTiger_PissedOff2.npy", "action_group": "stationary", "action_label": "roar"}
-{"clip": "SabreToothTiger_PissedOff.npy", "action_group": "stationary", "action_label": "roar"}
-{"clip": "SabreToothTiger_Raged.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "SabreToothTiger_Roaring.npy", "action_group": "stationary", "action_label": "roar"}
+{"clip": "SabreToothTiger_Mean.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
+{"clip": "SabreToothTiger_PawSwatting.npy", "action_group": "stationary", "action_label": "attack, swat", "reviewed": true}
+{"clip": "SabreToothTiger_PissedOff2.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
+{"clip": "SabreToothTiger_PissedOff.npy", "action_group": "stationary", "action_label": "hurt, crouch", "reviewed": true}
+{"clip": "SabreToothTiger_Raged.npy", "action_group": "stationary", "action_label": "idle, roar", "pending_delete": true}
+{"clip": "SabreToothTiger_Roaring.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
 {"clip": "SabreToothTiger_Run2.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "SabreToothTiger_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "SabreToothTiger_Sit.npy", "action_group": "transition", "action_label": "rest, sit", "reviewed": true}
-{"clip": "SabreToothTiger_Sitting2.npy", "action_group": "stationary", "action_label": "rest, sit, stand"}
-{"clip": "SabreToothTiger_Sitting.npy", "action_group": "stationary", "action_label": "rest, sit"}
+{"clip": "SabreToothTiger_Sitting2.npy", "action_group": "stationary", "action_label": "idle, sit", "reviewed": true}
+{"clip": "SabreToothTiger_Sitting.npy", "action_group": "stationary", "action_label": "idle, sit", "reviewed": true}
 {"clip": "SabreToothTiger_Slow180.npy", "action_group": "transition", "action_label": "turn, flip", "reviewed": true}
-{"clip": "SabreToothTiger_Snap.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "SabreToothTiger_Spin180.npy", "action_group": "stationary", "action_label": "turn, crouch"}
+{"clip": "SabreToothTiger_Snap.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
+{"clip": "SabreToothTiger_Spin180.npy", "action_group": "transition", "action_label": "turn, flip", "reviewed": true}
 {"clip": "SabreToothTiger_Stablize.npy", "action_group": "transition", "action_label": "turn, crouch", "pending_delete": true}
 {"clip": "SabreToothTiger_Stalker.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "SabreToothTiger_StartLeft.npy", "action_group": "transition", "action_label": "turn, sneak", "pending_delete": true}
 {"clip": "SabreToothTiger_Startwalk.npy", "action_group": "transition", "action_label": "rest, walk", "reviewed": true}
-{"clip": "SabreToothTiger_SwatLft.npy", "action_group": "stationary", "action_label": "attack"}
+{"clip": "SabreToothTiger_SwatLft.npy", "action_group": "stationary", "action_label": "attack, swat, left", "pending_delete": true}
 {"clip": "SabreToothTiger_Swim.npy", "action_group": "locomotion", "action_label": "swim, forward", "reviewed": true}
-{"clip": "SabreToothTiger_TiredYawn.npy", "action_group": "stationary", "action_label": "idle, yawn"}
+{"clip": "SabreToothTiger_TiredYawn.npy", "action_group": "stationary", "action_label": "idle, yawn", "pending_delete": true}
 {"clip": "SabreToothTiger_Trot.npy", "action_group": "locomotion", "action_label": "walk, trot, forward", "reviewed": true}
 {"clip": "SabreToothTiger_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "pending_delete": true}
-{"clip": "SandMouse_Attack2.npy", "action_group": "stationary", "action_label": "attack, rear, forward"}
-{"clip": "SandMouse_Attack.npy", "action_group": "stationary", "action_label": "attack, rear, forward"}
+{"clip": "SandMouse_Attack2.npy", "action_group": "stationary", "action_label": "attack, roll, charge", "reviewed": true}
+{"clip": "SandMouse_Attack.npy", "action_group": "stationary", "action_label": "attack, jump", "reviewed": true}
 {"clip": "SandMouse_Die2.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "SandMouse_Die3.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "SandMouse_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "SandMouse_DigIn.npy", "action_group": "transition", "action_label": "burrow", "reviewed": true}
 {"clip": "SandMouse_DigOut.npy", "action_group": "transition", "action_label": "spawn", "reviewed": true}
-{"clip": "SandMouse_Idle2.npy", "action_group": "stationary", "action_label": "idle, shake"}
-{"clip": "SandMouse_Idle3.npy", "action_group": "stationary", "action_label": "idle, stand"}
-{"clip": "SandMouse_Idle4.npy", "action_group": "stationary", "action_label": "idle, stand, scratch"}
-{"clip": "SandMouse_Idle.npy", "action_group": "stationary", "action_label": "idle, shake"}
+{"clip": "SandMouse_Idle2.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "SandMouse_Idle3.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "SandMouse_Idle4.npy", "action_group": "stationary", "action_label": "idle, rear", "reviewed": true}
+{"clip": "SandMouse_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "SandMouse_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "SandMouse_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Scorpion-2_AttackRetreat.npy", "action_group": "stationary", "action_label": "walk, attack, retreat, backward"}
-{"clip": "Scorpion-2_BackConfused.npy", "action_group": "stationary", "action_label": "idle, walk"}
+{"clip": "Scorpion-2_AttackRetreat.npy", "action_group": "stationary", "action_label": "attack, swipe", "pending_delete": true}
+{"clip": "Scorpion-2_BackConfused.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
 {"clip": "Scorpion-2_BackUp.npy", "action_group": "locomotion", "action_label": "walk, backward", "reviewed": true}
-{"clip": "Scorpion-2_BackingCrazy.npy", "action_group": "stationary", "action_label": "walk, retreat, backward"}
+{"clip": "Scorpion-2_BackingCrazy.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
 {"clip": "Scorpion-2_BellyDeath1.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Scorpion-2_BellyDeath.npy", "action_group": "transition", "action_label": "die", "reviewed": true, "pending_delete": true}
-{"clip": "Scorpion-2_BiteAttack.npy", "action_group": "stationary", "action_label": "attack, bite, forward"}
-{"clip": "Scorpion-2_BiteGrab.npy", "action_group": "stationary", "action_label": "attack, bite"}
+{"clip": "Scorpion-2_BellyDeath.npy", "action_group": "transition", "action_label": "die", "pending_delete": true}
+{"clip": "Scorpion-2_BiteAttack.npy", "action_group": "stationary", "action_label": "attack, jump", "reviewed": true}
+{"clip": "Scorpion-2_BiteGrab.npy", "action_group": "stationary", "action_label": "attack, bite", "pending_delete": true}
 {"clip": "Scorpion-2_BlastedDeath.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Scorpion-2_Death2.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Scorpion-2_Death.npy", "action_group": "transition", "action_label": "die", "reviewed": true, "pending_delete": true}
-{"clip": "Scorpion-2_Flipped.npy", "action_group": "stationary", "action_label": "getup"}
-{"clip": "Scorpion-2_Guns.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Scorpion-2_HasppyFangs.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Scorpion-2_Death.npy", "action_group": "transition", "action_label": "die", "pending_delete": true}
+{"clip": "Scorpion-2_Flipped.npy", "action_group": "transition", "action_label": "getup, roll", "reviewed": true}
+{"clip": "Scorpion-2_Guns.npy", "action_group": "transition", "action_label": "spawn", "reviewed": true}
+{"clip": "Scorpion-2_HasppyFangs.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
 {"clip": "Scorpion-2_HitAndSorr.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Scorpion-2_JumpSting.npy", "action_group": "stationary", "action_label": "attack, retreat, sting"}
+{"clip": "Scorpion-2_JumpSting.npy", "action_group": "stationary", "action_label": "attack, charge", "reviewed": true}
 {"clip": "Scorpion-2_LimpAlive.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
-{"clip": "Scorpion-2_LungeForward.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "Scorpion-2_OnBackDying.npy", "action_group": "stationary", "action_label": "die", "reviewed": true}
-{"clip": "Scorpion-2_PissedFangs.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Scorpion-2_LungeForward.npy", "action_group": "stationary", "action_label": "attack, charge", "reviewed": true}
+{"clip": "Scorpion-2_OnBackDying.npy", "action_group": "stationary", "action_label": "hurt, flopping", "reviewed": true}
+{"clip": "Scorpion-2_PissedFangs.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Scorpion-2_RisingWalk.npy", "action_group": "transition", "action_label": "getup, walk", "reviewed": true}
 {"clip": "Scorpion-2_RunAttack.npy", "action_group": "locomotion", "action_label": "run, jump, forward", "reviewed": true}
 {"clip": "Scorpion-2_RunToAttrack.npy", "action_group": "transition", "action_label": "run, idle", "reviewed": true}
 {"clip": "Scorpion-2_SettleBack.npy", "action_group": "transition", "action_label": "rest", "pending_delete": true}
 {"clip": "Scorpion-2_SlideBack.npy", "action_group": "locomotion", "action_label": "walk, backward", "reviewed": true}
-{"clip": "Scorpion-2_SlowIdle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Scorpion-2_StandAttack.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "Scorpion-2_StandReady.npy", "action_group": "stationary", "action_label": "idle, stand"}
+{"clip": "Scorpion-2_SlowIdle.npy", "action_group": "stationary", "action_label": "idle, sleep", "reviewed": true}
+{"clip": "Scorpion-2_StandAttack.npy", "action_group": "stationary", "action_label": "attack, swat", "reviewed": true}
+{"clip": "Scorpion-2_StandReady.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
 {"clip": "Scorpion-2_StandingRun.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Scorpion-2_SteadyWalk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Scorpion-2_StingKill2.npy", "action_group": "stationary", "action_label": "attack, sting"}
-{"clip": "Scorpion-2_StingKill.npy", "action_group": "stationary", "action_label": "attack, sting"}
-{"clip": "Scorpion-2_StingYaYa.npy", "action_group": "stationary", "action_label": "attack, sting"}
-{"clip": "Scorpion-2_StingYa.npy", "action_group": "stationary", "action_label": "attack, sting"}
+{"clip": "Scorpion-2_StingKill2.npy", "action_group": "stationary", "action_label": "attack, sting", "reviewed": true}
+{"clip": "Scorpion-2_StingKill.npy", "action_group": "stationary", "action_label": "attack, swat", "reviewed": true}
+{"clip": "Scorpion-2_StingYaYa.npy", "action_group": "stationary", "action_label": "attack, sting", "reviewed": true}
+{"clip": "Scorpion-2_StingYa.npy", "action_group": "stationary", "action_label": "idle, sting", "reviewed": true}
 {"clip": "Scorpion-2_StrafeLeft.npy", "action_group": "locomotion", "action_label": "walk, strafe, right", "reviewed": true}
 {"clip": "Scorpion-2_StrafeRight.npy", "action_group": "locomotion", "action_label": "walk, strafe, left", "reviewed": true}
 {"clip": "Scorpion-2_WalkAndRise.npy", "action_group": "transition", "action_label": "rest, walk", "reviewed": true}
 {"clip": "Scorpion-2_WalkForward.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "Scorpion-2_WildDeath.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Scorpion_Agitated.npy", "action_group": "stationary", "action_label": "idle, shake"}
-{"clip": "Scorpion_Attack1.npy", "action_group": "stationary", "action_label": "attack, forward"}
+{"clip": "Scorpion_Agitated.npy", "action_group": "stationary", "action_label": "hurt", "pending_delete": true}
+{"clip": "Scorpion_Attack1.npy", "action_group": "stationary", "action_label": "attack, swat", "reviewed": true}
 {"clip": "Scorpion_BackUp.npy", "action_group": "locomotion", "action_label": "walk, backward", "reviewed": true}
-{"clip": "Scorpion_Defend.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Scorpion_IdleLoop.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Scorpion_Recoil2.npy", "action_group": "stationary", "action_label": "idle, hurt, backward"}
-{"clip": "Scorpion_Recoil.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Scorpion_Defend.npy", "action_group": "stationary", "action_label": "idle, block", "reviewed": true}
+{"clip": "Scorpion_IdleLoop.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Scorpion_Recoil2.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
+{"clip": "Scorpion_Recoil.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
 {"clip": "Scorpion_SlowForward.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Scorpion_Stinger.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "Scorpion_StretchArms.npy", "action_group": "stationary", "action_label": "stretch"}
+{"clip": "Scorpion_Stinger.npy", "action_group": "stationary", "action_label": "attack, sting", "pending_delete": true}
+{"clip": "Scorpion_StretchArms.npy", "action_group": "stationary", "action_label": "idle, yawn", "reviewed": true}
 {"clip": "Scorpion_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "reviewed": true}
 {"clip": "Scorpion_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "reviewed": true}
 {"clip": "Scorpion_WalkForward.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Skunk_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Skunk_Idle2.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Skunk_Idle3.npy", "action_group": "stationary", "action_label": "idle, turn"}
-{"clip": "Skunk_Idle.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Skunk_Idle2.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Skunk_Idle3.npy", "action_group": "stationary", "action_label": "idle, yawn", "reviewed": true}
+{"clip": "Skunk_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Skunk_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "Skunk_Spray.npy", "action_group": "stationary", "action_label": "turn, attack, spit"}
+{"clip": "Skunk_Spray.npy", "action_group": "stationary", "action_label": "attack, spin, spray", "reviewed": true}
 {"clip": "Skunk_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "SpiderG_Attack2.npy", "action_group": "stationary", "action_label": "attack, rear"}
-{"clip": "SpiderG_Attack3.npy", "action_group": "stationary", "action_label": "attack, rear, forward"}
-{"clip": "SpiderG_Attack4.npy", "action_group": "stationary", "action_label": "attack, rear, forward"}
-{"clip": "SpiderG_Attack5.npy", "action_group": "stationary", "action_label": "attack, rear"}
-{"clip": "SpiderG_Attack6.npy", "action_group": "stationary", "action_label": "attack, rear"}
-{"clip": "SpiderG_Attack7.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "SpiderG_Attack.npy", "action_group": "stationary", "action_label": "attack, rear, forward"}
+{"clip": "SpiderG_Attack2.npy", "action_group": "stationary", "action_label": "attack, rear", "reviewed": true}
+{"clip": "SpiderG_Attack3.npy", "action_group": "stationary", "action_label": "attack, charge", "reviewed": true}
+{"clip": "SpiderG_Attack4.npy", "action_group": "stationary", "action_label": "attack, swipe", "reviewed": true}
+{"clip": "SpiderG_Attack5.npy", "action_group": "stationary", "action_label": "attack, rear", "reviewed": true}
+{"clip": "SpiderG_Attack6.npy", "action_group": "stationary", "action_label": "attack, rear", "reviewed": true}
+{"clip": "SpiderG_Attack7.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
+{"clip": "SpiderG_Attack.npy", "action_group": "stationary", "action_label": "attack, rear, swipe", "reviewed": true}
 {"clip": "SpiderG_Burrough.npy", "action_group": "transition", "action_label": "burrow", "reviewed": true}
 {"clip": "SpiderG_ComeOut.npy", "action_group": "transition", "action_label": "spawn", "reviewed": true}
 {"clip": "SpiderG_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "SpiderG_Fangs.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "SpiderG_Idle2.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "SpiderG_Idle3.npy", "action_group": "stationary", "action_label": "idle, shake"}
-{"clip": "SpiderG_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "SpiderG_Retreat.npy", "action_group": "stationary", "action_label": "turn, retreat, backward"}
+{"clip": "SpiderG_Fangs.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "SpiderG_Idle2.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "SpiderG_Idle3.npy", "action_group": "stationary", "action_label": "idle, cleaning", "reviewed": true}
+{"clip": "SpiderG_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "SpiderG_Retreat.npy", "action_group": "stationary", "action_label": "idle", "pending_delete": true}
 {"clip": "SpiderG_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "SpiderG_Shiver.npy", "action_group": "stationary", "action_label": "shake"}
+{"clip": "SpiderG_Shiver.npy", "action_group": "stationary", "action_label": "idle, shake", "reviewed": true}
 {"clip": "SpiderG_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Spider_Attack1.npy", "action_group": "stationary", "action_label": "attack, rear, forward"}
-{"clip": "Spider_Attack2.npy", "action_group": "stationary", "action_label": "attack, rear"}
-{"clip": "Spider_Attack4.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "Spider_Attack5.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "Spider_AttackLeft.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "Spider_Attackright.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "Spider_BackRear.npy", "action_group": "stationary", "action_label": "attack, rear, backward"}
+{"clip": "Spider_Attack1.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
+{"clip": "Spider_Attack2.npy", "action_group": "stationary", "action_label": "attack, spray", "reviewed": true}
+{"clip": "Spider_Attack4.npy", "action_group": "stationary", "action_label": "attack, spray", "reviewed": true}
+{"clip": "Spider_Attack5.npy", "action_group": "stationary", "action_label": "attack, swat", "reviewed": true}
+{"clip": "Spider_AttackLeft.npy", "action_group": "stationary", "action_label": "attack, swat, left", "reviewed": true}
+{"clip": "Spider_Attackright.npy", "action_group": "stationary", "action_label": "attack, right", "reviewed": true}
+{"clip": "Spider_BackRear.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
 {"clip": "Spider_BackitUp.npy", "action_group": "locomotion", "action_label": "walk, backward", "pending_delete": true}
-{"clip": "Spider_Barking.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "Spider_Fangy.npy", "action_group": "stationary", "action_label": "attack"}
+{"clip": "Spider_Barking.npy", "action_group": "locomotion", "action_label": "walk, jump, backward", "reviewed": true}
+{"clip": "Spider_Fangy.npy", "action_group": "stationary", "action_label": "idle, rear", "pending_delete": true}
 {"clip": "Spider_Gliding.npy", "action_group": "locomotion", "action_label": "glide", "pending_delete": true}
-{"clip": "Spider_Hurt.npy", "action_group": "stationary", "action_label": "idle, hurt"}
+{"clip": "Spider_Hurt.npy", "action_group": "stationary", "action_label": "hurt", "pending_delete": true}
 {"clip": "Spider_Injuredwalk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Spider_Jump.npy", "action_group": "stationary", "action_label": "jump, crouch"}
+{"clip": "Spider_Jump.npy", "action_group": "stationary", "action_label": "jump", "reviewed": true}
 {"clip": "Spider_LandinHAir.npy", "action_group": "transition", "action_label": "land, run", "reviewed": true}
 {"clip": "Spider_Landing.npy", "action_group": "transition", "action_label": "land", "reviewed": true}
-{"clip": "Spider_Rearing.npy", "action_group": "stationary", "action_label": "rear"}
+{"clip": "Spider_Rearing.npy", "action_group": "stationary", "action_label": "idle, pull", "reviewed": true}
 {"clip": "Spider_RetreatInjured.npy", "action_group": "locomotion", "action_label": "walk, hurt, backward", "reviewed": true}
 {"clip": "Spider_RetreatSlow.npy", "action_group": "locomotion", "action_label": "walk, retreat, backward", "pending_delete": true}
 {"clip": "Spider_Retreat.npy", "action_group": "locomotion", "action_label": "walk, retreat, backward", "reviewed": true}
 {"clip": "Spider_Riser.npy", "action_group": "transition", "action_label": "jump", "reviewed": true}
 {"clip": "Spider_Rising.npy", "action_group": "transition", "action_label": "spawn", "reviewed": true}
 {"clip": "Spider_Runleft.npy", "action_group": "locomotion", "action_label": "walk, strafe, left", "reviewed": true}
-{"clip": "Spider_Scary.npy", "action_group": "stationary", "action_label": "turn, attack"}
+{"clip": "Spider_Scary.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
 {"clip": "Spider_Scramble.npy", "action_group": "locomotion", "action_label": "run, forward", "pending_delete": true}
-{"clip": "Spider_SlowIdle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Spider_TravelWeb.npy", "action_group": "stationary", "action_label": "walk, attack, forward"}
+{"clip": "Spider_SlowIdle.npy", "action_group": "stationary", "action_label": "idle, sleep", "reviewed": true}
+{"clip": "Spider_TravelWeb.npy", "action_group": "stationary", "action_label": "idle, crawl", "pending_delete": true}
 {"clip": "Spider_Walker.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "Spider_Walkleft.npy", "action_group": "locomotion", "action_label": "walk, strafe, left", "reviewed": true}
 {"clip": "Spider_Walkloop.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "Spider_Weaver.npy", "action_group": "stationary", "action_label": "idle, attack"}
-{"clip": "Spider_Weaving.npy", "action_group": "stationary", "action_label": "idle, turn"}
-{"clip": "Stego_Attack2.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "Stego_Attack3.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "Stego_Attack.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "Stego_Idle2.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Stego_Idle.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Spider_Weaver.npy", "action_group": "stationary", "action_label": "idle, work", "pending_delete": true}
+{"clip": "Spider_Weaving.npy", "action_group": "stationary", "action_label": "idle, work", "pending_delete": true}
+{"clip": "Stego_Attack2.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
+{"clip": "Stego_Attack3.npy", "action_group": "stationary", "action_label": "attack, rear, swat", "reviewed": true}
+{"clip": "Stego_Attack.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
+{"clip": "Stego_Idle2.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Stego_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Stego_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "Stego_Shake.npy", "action_group": "stationary", "action_label": "shake"}
+{"clip": "Stego_Shake.npy", "action_group": "stationary", "action_label": "idle, shake", "reviewed": true}
 {"clip": "Stego_Slowwalk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Stego_TailWhip.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "Trex_BigRoarStep.npy", "action_group": "stationary", "action_label": "roar"}
-{"clip": "Trex_BiteLeft.npy", "action_group": "stationary", "action_label": "turn, attack, bite, left"}
-{"clip": "Trex_BiteRight.npy", "action_group": "stationary", "action_label": "turn, attack, bite, right"}
+{"clip": "Stego_TailWhip.npy", "action_group": "stationary", "action_label": "attack, spin, swipe", "reviewed": true}
+{"clip": "Trex_BigRoarStep.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
+{"clip": "Trex_BiteLeft.npy", "action_group": "stationary", "action_label": "attack, bite, left", "reviewed": true}
+{"clip": "Trex_BiteRight.npy", "action_group": "stationary", "action_label": "attack, bite, right", "reviewed": true}
 {"clip": "Trex_BiteStepBackForward.npy", "action_group": "locomotion", "action_label": "walk, attack, left", "reviewed": true}
 {"clip": "Trex_ChaseBite.npy", "action_group": "locomotion", "action_label": "walk, attack, forward", "reviewed": true}
 {"clip": "Trex_ChaseHeadButtLeft.npy", "action_group": "locomotion", "action_label": "run, attack, left", "reviewed": true}
 {"clip": "Trex_ChaseRoar.npy", "action_group": "locomotion", "action_label": "walk, roar, forward", "reviewed": true}
 {"clip": "Trex_DeathShort.npy", "action_group": "transition", "action_label": "die", "pending_delete": true}
 {"clip": "Trex_Death.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Trex_HeadButtLeft.npy", "action_group": "stationary", "action_label": "attack, left"}
-{"clip": "Trex_HitHead1.npy", "action_group": "stationary", "action_label": "hurt, shake"}
-{"clip": "Trex_HitHead2.npy", "action_group": "stationary", "action_label": "hurt"}
-{"clip": "Trex_HitHead3.npy", "action_group": "stationary", "action_label": "roar, hurt"}
+{"clip": "Trex_HeadButtLeft.npy", "action_group": "stationary", "action_label": "attack, headbutt, left", "reviewed": true}
+{"clip": "Trex_HitHead1.npy", "action_group": "stationary", "action_label": "hurt", "pending_delete": true}
+{"clip": "Trex_HitHead2.npy", "action_group": "stationary", "action_label": "hurt", "pending_delete": true}
+{"clip": "Trex_HitHead3.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
 {"clip": "Trex_HitLeg2.npy", "action_group": "locomotion", "action_label": "walk, hurt, forward", "reviewed": true}
 {"clip": "Trex_HitLeg.npy", "action_group": "locomotion", "action_label": "walk, hurt, forward", "reviewed": true}
-{"clip": "Trex_HitTorsoLeft.npy", "action_group": "stationary", "action_label": "idle, turn, hurt, left"}
-{"clip": "Trex_HitTorsoRight.npy", "action_group": "stationary", "action_label": "idle, turn, hurt, right"}
-{"clip": "Trex_HumanBite.npy", "action_group": "stationary", "action_label": "attack, bite, forward"}
-{"clip": "Trex_HumanKill.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "Trex_HumanShake.npy", "action_group": "stationary", "action_label": "shake"}
-{"clip": "Trex_IdleAttack.npy", "action_group": "stationary", "action_label": "idle, attack, stand"}
-{"clip": "Trex_IdleInvestigaeOut.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Trex_IdleInvestigateLoop.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Trex_IdleInvestigate.npy", "action_group": "stationary", "action_label": "idle, turn, look"}
-{"clip": "Trex_IdleSneeze.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Trex_IdleToRun.npy", "action_group": "transition", "action_label": "idle, run", "pending_delete": true}
-{"clip": "Trex_KillLong.npy", "action_group": "stationary", "action_label": "attack, forward"}
+{"clip": "Trex_HitTorsoLeft.npy", "action_group": "stationary", "action_label": "hurt, left", "reviewed": true}
+{"clip": "Trex_HitTorsoRight.npy", "action_group": "stationary", "action_label": "hurt, right", "reviewed": true}
+{"clip": "Trex_HumanBite.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
+{"clip": "Trex_HumanKill.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
+{"clip": "Trex_HumanShake.npy", "action_group": "stationary", "action_label": "attack, bite", "pending_delete": true}
+{"clip": "Trex_IdleAttack.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Trex_IdleInvestigaeOut.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
+{"clip": "Trex_IdleInvestigateLoop.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
+{"clip": "Trex_IdleInvestigate.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
+{"clip": "Trex_IdleSneeze.npy", "action_group": "stationary", "action_label": "idle, sniff", "reviewed": true}
+{"clip": "Trex_IdleToRun.npy", "action_group": "transition", "action_label": "idle, run", "reviewed": true}
+{"clip": "Trex_KillLong.npy", "action_group": "stationary", "action_label": "attack, bite", "pending_delete": true}
 {"clip": "Trex_LongDeath.npy", "action_group": "transition", "action_label": "die", "pending_delete": true}
-{"clip": "Trex_LookForward2.npy", "action_group": "stationary", "action_label": "idle, look"}
-{"clip": "Trex_LookForward.npy", "action_group": "stationary", "action_label": "idle, forward"}
-{"clip": "Trex_LookLeft.npy", "action_group": "stationary", "action_label": "turn, look, left"}
-{"clip": "Trex_LookRight.npy", "action_group": "stationary", "action_label": "turn, look, right"}
-{"clip": "Trex_MamaCaveBiteLoop.npy", "action_group": "stationary", "action_label": "attack, bite"}
-{"clip": "Trex_MamaCaveBiteOut.npy", "action_group": "stationary", "action_label": "attack, bite, forward"}
-{"clip": "Trex_MamaCaveBite.npy", "action_group": "stationary", "action_label": "attack, bite, forward"}
-{"clip": "Trex_RoarLeft.npy", "action_group": "stationary", "action_label": "roar, left"}
-{"clip": "Trex_RoarRight.npy", "action_group": "stationary", "action_label": "roar, right"}
-{"clip": "Trex_Roar.npy", "action_group": "stationary", "action_label": "idle, roar"}
+{"clip": "Trex_LookForward2.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Trex_LookForward.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Trex_LookLeft.npy", "action_group": "stationary", "action_label": "idle, look, left", "reviewed": true}
+{"clip": "Trex_LookRight.npy", "action_group": "stationary", "action_label": "idle, look, right", "reviewed": true}
+{"clip": "Trex_MamaCaveBiteLoop.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
+{"clip": "Trex_MamaCaveBiteOut.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
+{"clip": "Trex_MamaCaveBite.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
+{"clip": "Trex_RoarLeft.npy", "action_group": "stationary", "action_label": "idle, roar, left", "reviewed": true}
+{"clip": "Trex_RoarRight.npy", "action_group": "stationary", "action_label": "idle, roar, right", "reviewed": true}
+{"clip": "Trex_Roar.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
 {"clip": "Trex_RunHeadButtRight.npy", "action_group": "locomotion", "action_label": "run, attack, right", "reviewed": true}
 {"clip": "Trex_RunHeadLoop.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "Trex_RunHeadLow2.npy", "action_group": "stationary", "action_label": "run, forward"}
-{"clip": "Trex_RunHeadLow.npy", "action_group": "stationary", "action_label": "run, forward"}
+{"clip": "Trex_RunHeadLow2.npy", "action_group": "stationary", "action_label": "attack, charge", "reviewed": true}
+{"clip": "Trex_RunHeadLow.npy", "action_group": "stationary", "action_label": "attack, charge", "reviewed": true}
 {"clip": "Trex_RunToStop.npy", "action_group": "transition", "action_label": "run, idle", "reviewed": true}
 {"clip": "Trex_SprintLoop.npy", "action_group": "locomotion", "action_label": "run, sprint, forward", "reviewed": true}
 {"clip": "Trex_StepBack.npy", "action_group": "locomotion", "action_label": "walk, retreat, backward", "reviewed": true}
@@ -1002,38 +1002,38 @@
 {"clip": "Trex_WalkHeadLow.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "Trex_WalkLoop.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "Trex_WalkSlowLoop.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Tricera_Attack2.npy", "action_group": "stationary", "action_label": "attack, rear, forward"}
-{"clip": "Tricera_Attack3.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "Tricera_Attack4.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "Tricera_Attack.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "Tricera_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Tricera_NoseDirt.npy", "action_group": "stationary", "action_label": "scratch"}
+{"clip": "Tricera_Attack2.npy", "action_group": "stationary", "action_label": "attack, swat", "reviewed": true}
+{"clip": "Tricera_Attack3.npy", "action_group": "stationary", "action_label": "attack, charge", "reviewed": true}
+{"clip": "Tricera_Attack4.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
+{"clip": "Tricera_Attack.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
+{"clip": "Tricera_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Tricera_NoseDirt.npy", "action_group": "stationary", "action_label": "idle, cleaning", "reviewed": true}
 {"clip": "Tricera_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Tricera_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Tukan_FlyForward.npy", "action_group": "stationary", "action_label": "fly, flap, forward"}
+{"clip": "Tukan_FlyForward.npy", "action_group": "stationary", "action_label": "fly, flap, hover", "pending_delete": true}
 {"clip": "Tukan_FlyLoop.npy", "action_group": "locomotion", "action_label": "fly, flap, forward", "reviewed": true}
 {"clip": "Tukan_Fly.npy", "action_group": "locomotion", "action_label": "fly, flap, forward", "reviewed": true}
-{"clip": "Tukan_IdleLook.npy", "action_group": "stationary", "action_label": "idle, fly, look"}
-{"clip": "Tukan_Shake.npy", "action_group": "stationary", "action_label": "fly, shake"}
+{"clip": "Tukan_IdleLook.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
+{"clip": "Tukan_Shake.npy", "action_group": "stationary", "action_label": "idle, shake", "reviewed": true}
 {"clip": "Tukan_SlowDown.npy", "action_group": "locomotion", "action_label": "fly, flap, forward", "reviewed": true}
-{"clip": "Tukan_Sqwak.npy", "action_group": "stationary", "action_label": "idle, fly, flap"}
-{"clip": "Tukan_WingScratch.npy", "action_group": "stationary", "action_label": "fly, flap, scratch"}
-{"clip": "Turtle_Attack2.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "Turtle_Attack3.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "Turtle_Attack.npy", "action_group": "stationary", "action_label": "attack"}
+{"clip": "Tukan_Sqwak.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
+{"clip": "Tukan_WingScratch.npy", "action_group": "stationary", "action_label": "idle, cleaning", "reviewed": true}
+{"clip": "Turtle_Attack2.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
+{"clip": "Turtle_Attack3.npy", "action_group": "stationary", "action_label": "attack, roll, charge", "reviewed": true}
+{"clip": "Turtle_Attack.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
 {"clip": "Turtle_Hide.npy", "action_group": "transition", "action_label": "rest", "reviewed": true}
-{"clip": "Turtle_Idle2.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Turtle_Idle.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "Turtle_Idle2.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Turtle_Idle.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
 {"clip": "Turtle_Onback.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Turtle_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Turtle_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Turtle_Yawn.npy", "action_group": "stationary", "action_label": "idle, yawn"}
-{"clip": "Tyranno_Attack2.npy", "action_group": "stationary", "action_label": "attack, roar, rear"}
-{"clip": "Tyranno_Attack.npy", "action_group": "stationary", "action_label": "attack, bite, roar, rear"}
-{"clip": "Tyranno_HeadButt.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "Tyranno_Idle2.npy", "action_group": "stationary", "action_label": "idle, stand"}
-{"clip": "Tyranno_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Tyranno_Roar.npy", "action_group": "stationary", "action_label": "roar, rear"}
+{"clip": "Turtle_Yawn.npy", "action_group": "stationary", "action_label": "idle, yawn", "reviewed": true}
+{"clip": "Tyranno_Attack2.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
+{"clip": "Tyranno_Attack.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
+{"clip": "Tyranno_HeadButt.npy", "action_group": "stationary", "action_label": "attack, headbutt", "reviewed": true}
+{"clip": "Tyranno_Idle2.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Tyranno_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
+{"clip": "Tyranno_Roar.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
 {"clip": "Tyranno_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "Tyranno_TailWhip.npy", "action_group": "stationary", "action_label": "attack"}
+{"clip": "Tyranno_TailWhip.npy", "action_group": "stationary", "action_label": "attack, spin, swipe", "reviewed": true}
 {"clip": "Tyranno_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
