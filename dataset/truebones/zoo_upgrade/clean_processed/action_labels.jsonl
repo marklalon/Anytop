@@ -68,9 +68,9 @@
 {"clip": "Cobra_Atk2.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "Cobra_Death.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "Cobra_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Cobra_Jog.npy", "action_group": "locomotion", "action_label": "run, crawl, forward"}
+{"clip": "Cobra_Jog.npy", "action_group": "locomotion", "action_label": "run, forward"}
 {"clip": "Cobra_Sprint.npy", "action_group": "locomotion", "action_label": "run, sprint, forward"}
-{"clip": "Cobra_Walk.npy", "action_group": "locomotion", "action_label": "walk, crawl, forward"}
+{"clip": "Cobra_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward"}
 {"clip": "Crocodile_Atk.npy", "action_group": "stationary", "action_label": "attack, forward"}
 {"clip": "Crocodile_AtkLeft.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "Crocodile_AtkRight.npy", "action_group": "stationary", "action_label": "attack"}
@@ -179,18 +179,18 @@
 {"clip": "Locust_monster_Walk.npy", "action_group": "locomotion", "action_label": "walk"}
 {"clip": "Oscafish_Atk.npy", "action_group": "stationary", "action_label": "turn, attack"}
 {"clip": "Oscafish_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Oscafish_Swim.npy", "action_group": "locomotion", "action_label": "swim, flap"}
+{"clip": "Oscafish_Swim.npy", "action_group": "locomotion", "action_label": "swim"}
 {"clip": "Ostrich_AtkCharge.npy", "action_group": "locomotion", "action_label": "run, attack, forward"}
 {"clip": "Ostrich_AtkL.npy", "action_group": "stationary", "action_label": "attack, peck, forward, left"}
 {"clip": "Ostrich_AtkMid.npy", "action_group": "stationary", "action_label": "attack, peck, forward"}
 {"clip": "Ostrich_AtkR.npy", "action_group": "stationary", "action_label": "attack, peck, forward, right"}
 {"clip": "Ostrich_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "Ostrich_Roar.npy", "action_group": "stationary", "action_label": "idle, fly, flap, roar"}
+{"clip": "Ostrich_Roar.npy", "action_group": "stationary", "action_label": "idle, run, roar"}
 {"clip": "Ostrich_Run.npy", "action_group": "locomotion", "action_label": "run"}
 {"clip": "Ostrich_Walk.npy", "action_group": "locomotion", "action_label": "walk"}
 {"clip": "pikefish_Atk.npy", "action_group": "stationary", "action_label": "attack, forward"}
 {"clip": "pikefish_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "pikefish_Swim.npy", "action_group": "locomotion", "action_label": "swim, flap"}
+{"clip": "pikefish_Swim.npy", "action_group": "locomotion", "action_label": "swim"}
 {"clip": "Rabbit_Eat.npy", "action_group": "stationary", "action_label": "eat"}
 {"clip": "Rabbit_Idle.npy", "action_group": "stationary", "action_label": "idle, rest, sit"}
 {"clip": "Rabbit_Idle2.npy", "action_group": "stationary", "action_label": "idle"}
@@ -239,7 +239,7 @@
 {"clip": "spider_tarantula_AtkM3.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "spider_tarantula_Death.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "spider_tarantula_Idle.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "spider_tarantula_Run.npy", "action_group": "locomotion", "action_label": "run, crawl"}
+{"clip": "spider_tarantula_Run.npy", "action_group": "locomotion", "action_label": "run"}
 {"clip": "spider_tarantula_Walk.npy", "action_group": "locomotion", "action_label": "walk"}
 {"clip": "Tiger_Atk.npy", "action_group": "stationary", "action_label": "attack, rear, forward"}
 {"clip": "Tiger_Atk2.npy", "action_group": "stationary", "action_label": "attack, bite"}
