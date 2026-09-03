@@ -1,6 +1,6 @@
 {"clip": "FEP_MagmaDemon_Attack01.npy", "action_group": "stationary", "action_label": "attack, throw"}
 {"clip": "FEP_MagmaDemon_Attack02.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "FEP_MagmaDemon_Die.npy", "action_group": "transition", "action_label": "die"}
+{"clip": "FEP_MagmaDemon_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "FEP_MagmaDemon_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "FEP_MagmaDemon_Move.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "FEP_MagmaDemon_Takedamage.npy", "action_group": "stationary", "action_label": "hurt, shake"}
@@ -14,18 +14,18 @@
 {"clip": "IAC_Caveman_DamageHeavy.npy", "action_group": "stationary", "action_label": "hurt, shake"}
 {"clip": "IAC_Caveman_DamageLightWeapon.npy", "action_group": "stationary", "action_label": "hurt"}
 {"clip": "IAC_Caveman_DamageLight.npy", "action_group": "stationary", "action_label": "hurt"}
-{"clip": "IAC_Caveman_DieWeapon.npy", "action_group": "transition", "action_label": "die"}
-{"clip": "IAC_Caveman_Die.npy", "action_group": "transition", "action_label": "die"}
+{"clip": "IAC_Caveman_DieWeapon.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
+{"clip": "IAC_Caveman_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "IAC_Caveman_FallWeapon.npy", "action_group": "locomotion", "action_label": "fall", "reviewed": true}
 {"clip": "IAC_Caveman_Fall.npy", "action_group": "locomotion", "action_label": "fall", "reviewed": true}
-{"clip": "IAC_Caveman_GetUpWeapon.npy", "action_group": "transition", "action_label": "getup, rest, sit"}
-{"clip": "IAC_Caveman_GetUp.npy", "action_group": "transition", "action_label": "getup, rest, sit"}
+{"clip": "IAC_Caveman_GetUpWeapon.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
+{"clip": "IAC_Caveman_GetUp.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
 {"clip": "IAC_Caveman_IdleWeapon.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "IAC_Caveman_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "IAC_Caveman_JumpUpWeapon.npy", "action_group": "stationary", "action_label": "run, jump"}
 {"clip": "IAC_Caveman_JumpUp.npy", "action_group": "stationary", "action_label": "run, jump"}
-{"clip": "IAC_Caveman_LandWeapon.npy", "action_group": "transition", "action_label": "getup, land, crouch"}
-{"clip": "IAC_Caveman_Land.npy", "action_group": "transition", "action_label": "getup, land, crouch"}
+{"clip": "IAC_Caveman_LandWeapon.npy", "action_group": "transition", "action_label": "land", "reviewed": true}
+{"clip": "IAC_Caveman_Land.npy", "action_group": "transition", "action_label": "land", "reviewed": true}
 {"clip": "IAC_Caveman_LookBackWeapon.npy", "action_group": "stationary", "action_label": "idle, turn, look"}
 {"clip": "IAC_Caveman_LookBack.npy", "action_group": "stationary", "action_label": "idle, turn, look"}
 {"clip": "IAC_Caveman_LookSideWeapon.npy", "action_group": "stationary", "action_label": "idle, turn, look"}
@@ -38,10 +38,10 @@
 {"clip": "IAC_Caveman_RunTurnRight.npy", "action_group": "locomotion", "action_label": "run, turn, right", "reviewed": true}
 {"clip": "IAC_Caveman_RunWeapon.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
 {"clip": "IAC_Caveman_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "IAC_Caveman_TurnLeftWeapon.npy", "action_group": "transition", "action_label": "turn, left"}
-{"clip": "IAC_Caveman_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left"}
-{"clip": "IAC_Caveman_TurnRightWeapon.npy", "action_group": "transition", "action_label": "turn, stand, right"}
-{"clip": "IAC_Caveman_TurnRight.npy", "action_group": "transition", "action_label": "turn, stand, right"}
+{"clip": "IAC_Caveman_TurnLeftWeapon.npy", "action_group": "transition", "action_label": "turn, left", "reviewed": true}
+{"clip": "IAC_Caveman_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "reviewed": true}
+{"clip": "IAC_Caveman_TurnRightWeapon.npy", "action_group": "transition", "action_label": "turn, right", "reviewed": true}
+{"clip": "IAC_Caveman_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "reviewed": true}
 {"clip": "IAC_Caveman_WalkTurnLeftWeapn.npy", "action_group": "locomotion", "action_label": "walk, turn, left, weapon", "reviewed": true}
 {"clip": "IAC_Caveman_WalkTurnLeft.npy", "action_group": "locomotion", "action_label": "walk, turn, left", "reviewed": true}
 {"clip": "IAC_Caveman_WalkTurnRightWeapon.npy", "action_group": "locomotion", "action_label": "walk, turn, right, weapon", "reviewed": true}
@@ -58,18 +58,18 @@
 {"clip": "IAC_Cavewoman_DamageHeavy.npy", "action_group": "stationary", "action_label": "hurt, crouch"}
 {"clip": "IAC_Cavewoman_DamageLightWeapon.npy", "action_group": "stationary", "action_label": "hurt"}
 {"clip": "IAC_Cavewoman_DamageLight.npy", "action_group": "stationary", "action_label": "hurt"}
-{"clip": "IAC_Cavewoman_DieWeapon.npy", "action_group": "transition", "action_label": "die, backward"}
-{"clip": "IAC_Cavewoman_Die.npy", "action_group": "transition", "action_label": "die, backward"}
+{"clip": "IAC_Cavewoman_DieWeapon.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
+{"clip": "IAC_Cavewoman_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "IAC_Cavewoman_FallWeapon.npy", "action_group": "locomotion", "action_label": "fall", "reviewed": true}
 {"clip": "IAC_Cavewoman_Fall.npy", "action_group": "locomotion", "action_label": "fall", "reviewed": true}
-{"clip": "IAC_Cavewoman_GetUpWeapon.npy", "action_group": "transition", "action_label": "getup, rest"}
-{"clip": "IAC_Cavewoman_GetUp.npy", "action_group": "transition", "action_label": "getup, rest"}
+{"clip": "IAC_Cavewoman_GetUpWeapon.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
+{"clip": "IAC_Cavewoman_GetUp.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
 {"clip": "IAC_Cavewoman_IdleWeapon.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "IAC_Cavewoman_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "IAC_Cavewoman_JumpUpWeapon.npy", "action_group": "stationary", "action_label": "run, jump"}
 {"clip": "IAC_Cavewoman_JumpUp.npy", "action_group": "stationary", "action_label": "run, jump"}
-{"clip": "IAC_Cavewoman_LandWeapon.npy", "action_group": "transition", "action_label": "land, stand, crouch"}
-{"clip": "IAC_Cavewoman_Land.npy", "action_group": "transition", "action_label": "land, stand, crouch"}
+{"clip": "IAC_Cavewoman_LandWeapon.npy", "action_group": "transition", "action_label": "land", "reviewed": true}
+{"clip": "IAC_Cavewoman_Land.npy", "action_group": "transition", "action_label": "land", "reviewed": true}
 {"clip": "IAC_Cavewoman_LookBackWeapon.npy", "action_group": "stationary", "action_label": "idle, turn, look"}
 {"clip": "IAC_Cavewoman_LookBack.npy", "action_group": "stationary", "action_label": "idle, turn, look"}
 {"clip": "IAC_Cavewoman_LookSideWeapon.npy", "action_group": "stationary", "action_label": "idle, turn, look"}
@@ -82,10 +82,10 @@
 {"clip": "IAC_Cavewoman_RunTurnRight.npy", "action_group": "locomotion", "action_label": "run, turn, right", "reviewed": true}
 {"clip": "IAC_Cavewoman_RunWeapon.npy", "action_group": "locomotion", "action_label": "run, forward, weapon", "reviewed": true}
 {"clip": "IAC_Cavewoman_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "IAC_Cavewoman_TurnLeftWeapon.npy", "action_group": "transition", "action_label": "turn, left"}
-{"clip": "IAC_Cavewoman_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left"}
-{"clip": "IAC_Cavewoman_TurnRightWeapon.npy", "action_group": "transition", "action_label": "turn, stand, right"}
-{"clip": "IAC_Cavewoman_TurnRight.npy", "action_group": "transition", "action_label": "turn, stand, right"}
+{"clip": "IAC_Cavewoman_TurnLeftWeapon.npy", "action_group": "transition", "action_label": "turn, left", "reviewed": true}
+{"clip": "IAC_Cavewoman_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "reviewed": true}
+{"clip": "IAC_Cavewoman_TurnRightWeapon.npy", "action_group": "transition", "action_label": "turn, right", "reviewed": true}
+{"clip": "IAC_Cavewoman_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "reviewed": true}
 {"clip": "IAC_Cavewoman_WalkTurnLeftWeapon.npy", "action_group": "locomotion", "action_label": "walk, turn, left, weapon", "reviewed": true}
 {"clip": "IAC_Cavewoman_WalkTurnLeft.npy", "action_group": "locomotion", "action_label": "walk, turn, left", "reviewed": true}
 {"clip": "IAC_Cavewoman_WalkTurnRightWeapon.npy", "action_group": "locomotion", "action_label": "walk, turn, right, weapon", "reviewed": true}
@@ -97,20 +97,20 @@
 {"clip": "IAC_Mammoth_Charge.npy", "action_group": "stationary", "action_label": "run, forward"}
 {"clip": "IAC_Mammoth_DamageHeavy.npy", "action_group": "stationary", "action_label": "hurt, shake"}
 {"clip": "IAC_Mammoth_DamageLight.npy", "action_group": "stationary", "action_label": "hurt, shake, stand"}
-{"clip": "IAC_Mammoth_Die.npy", "action_group": "transition", "action_label": "die"}
+{"clip": "IAC_Mammoth_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "IAC_Mammoth_Fall.npy", "action_group": "locomotion", "action_label": "fall", "reviewed": true}
-{"clip": "IAC_Mammoth_GetUp.npy", "action_group": "transition", "action_label": "getup"}
+{"clip": "IAC_Mammoth_GetUp.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
 {"clip": "IAC_Mammoth_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "IAC_Mammoth_JumpUp.npy", "action_group": "stationary", "action_label": "run, jump, forward"}
-{"clip": "IAC_Mammoth_Land.npy", "action_group": "transition", "action_label": "jump, land"}
+{"clip": "IAC_Mammoth_Land.npy", "action_group": "transition", "action_label": "land", "reviewed": true}
 {"clip": "IAC_Mammoth_LookSide.npy", "action_group": "stationary", "action_label": "idle, turn, look"}
 {"clip": "IAC_Mammoth_Roar.npy", "action_group": "stationary", "action_label": "idle, roar"}
 {"clip": "IAC_Mammoth_RunTurnLeft.npy", "action_group": "locomotion", "action_label": "run, turn, left", "reviewed": true}
 {"clip": "IAC_Mammoth_RunTurnRight.npy", "action_group": "locomotion", "action_label": "run, turn, right", "reviewed": true}
 {"clip": "IAC_Mammoth_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "IAC_Mammoth_Shake.npy", "action_group": "stationary", "action_label": "shake"}
-{"clip": "IAC_Mammoth_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left"}
-{"clip": "IAC_Mammoth_TurnRight.npy", "action_group": "transition", "action_label": "turn, right"}
+{"clip": "IAC_Mammoth_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "reviewed": true}
+{"clip": "IAC_Mammoth_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "reviewed": true}
 {"clip": "IAC_Mammoth_WalkTurnLeft.npy", "action_group": "locomotion", "action_label": "walk, turn, left", "reviewed": true}
 {"clip": "IAC_Mammoth_WalkTurnRight.npy", "action_group": "locomotion", "action_label": "walk, turn, right", "reviewed": true}
 {"clip": "IAC_Mammoth_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
@@ -119,20 +119,20 @@
 {"clip": "IAC_Sabertooth_Attack.npy", "action_group": "stationary", "action_label": "attack, bite, shake"}
 {"clip": "IAC_Sabertooth_DamageHeavy.npy", "action_group": "stationary", "action_label": "hurt, shake"}
 {"clip": "IAC_Sabertooth_DamageLight.npy", "action_group": "stationary", "action_label": "hurt, shake"}
-{"clip": "IAC_Sabertooth_Die.npy", "action_group": "transition", "action_label": "die"}
+{"clip": "IAC_Sabertooth_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "IAC_Sabertooth_Fall.npy", "action_group": "locomotion", "action_label": "fall", "reviewed": true}
-{"clip": "IAC_Sabertooth_GetUp.npy", "action_group": "transition", "action_label": "getup, rest"}
+{"clip": "IAC_Sabertooth_GetUp.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
 {"clip": "IAC_Sabertooth_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "IAC_Sabertooth_JumpUp.npy", "action_group": "locomotion", "action_label": "jump, up", "reviewed": true}
-{"clip": "IAC_Sabertooth_Land.npy", "action_group": "transition", "action_label": "jump, land"}
+{"clip": "IAC_Sabertooth_Land.npy", "action_group": "transition", "action_label": "land", "reviewed": true}
 {"clip": "IAC_Sabertooth_LookBack.npy", "action_group": "stationary", "action_label": "idle, turn, look"}
 {"clip": "IAC_Sabertooth_LookSide.npy", "action_group": "stationary", "action_label": "idle, turn, look"}
 {"clip": "IAC_Sabertooth_Roar.npy", "action_group": "stationary", "action_label": "idle, roar"}
 {"clip": "IAC_Sabertooth_RunTurnLeft.npy", "action_group": "locomotion", "action_label": "run, turn, left", "reviewed": true}
 {"clip": "IAC_Sabertooth_RunTurnRight.npy", "action_group": "locomotion", "action_label": "run, turn, right", "reviewed": true}
 {"clip": "IAC_Sabertooth_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "IAC_Sabertooth_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left"}
-{"clip": "IAC_Sabertooth_TurnRight.npy", "action_group": "transition", "action_label": "turn, look, right"}
+{"clip": "IAC_Sabertooth_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "reviewed": true}
+{"clip": "IAC_Sabertooth_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "reviewed": true}
 {"clip": "IAC_Sabertooth_WalkTurnLeft.npy", "action_group": "locomotion", "action_label": "walk, turn, left", "reviewed": true}
 {"clip": "IAC_Sabertooth_WalkTurnRight.npy", "action_group": "locomotion", "action_label": "walk, turn, right", "reviewed": true}
 {"clip": "IAC_Sabertooth_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
@@ -155,9 +155,9 @@
 {"clip": "KI_Archer_CombatIdle01.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_Archer_CombatIdle02.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_Archer_CombatJump01Midair.npy", "action_group": "locomotion", "action_label": "fall", "reviewed": true}
-{"clip": "KI_Archer_CombatJump01.npy", "action_group": "transition", "action_label": "jump, land"}
-{"clip": "KI_Archer_Death01.npy", "action_group": "transition", "action_label": "die"}
-{"clip": "KI_Archer_Death02.npy", "action_group": "transition", "action_label": "die"}
+{"clip": "KI_Archer_CombatJump01.npy", "action_group": "stationary", "action_label": "jump", "reviewed": true}
+{"clip": "KI_Archer_Death01.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
+{"clip": "KI_Archer_Death02.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "KI_Archer_GetArrow01.npy", "action_group": "stationary", "action_label": "idle, catch"}
 {"clip": "KI_Archer_GetArrow02.npy", "action_group": "stationary", "action_label": "idle, catch"}
 {"clip": "KI_Archer_GetArrow03.npy", "action_group": "stationary", "action_label": "idle, catch"}
@@ -201,17 +201,17 @@
 {"clip": "KI_CasterMage_CombatIdle01.npy", "action_group": "stationary", "action_label": "idle, stand"}
 {"clip": "KI_CasterMage_Damage01.npy", "action_group": "stationary", "action_label": "hurt"}
 {"clip": "KI_CasterMage_Damage02.npy", "action_group": "stationary", "action_label": "hurt"}
-{"clip": "KI_CasterMage_Death01A.npy", "action_group": "transition", "action_label": "die"}
-{"clip": "KI_CasterMage_Death02A.npy", "action_group": "transition", "action_label": "die"}
+{"clip": "KI_CasterMage_Death01A.npy", "action_group": "transition", "action_label": "die, forward", "reviewed": true}
+{"clip": "KI_CasterMage_Death02A.npy", "action_group": "transition", "action_label": "die, left", "reviewed": true}
 {"clip": "KI_CasterMage_Dodge01.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "KI_CasterMage_EnterCombat01.npy", "action_group": "transition", "action_label": "attack"}
-{"clip": "KI_CasterMage_ExitCombat01.npy", "action_group": "transition", "action_label": "idle"}
+{"clip": "KI_CasterMage_EnterCombat01.npy", "action_group": "transition", "action_label": "idle, attack", "reviewed": true}
+{"clip": "KI_CasterMage_ExitCombat01.npy", "action_group": "transition", "action_label": "attack, idle", "reviewed": true}
 {"clip": "KI_CasterMage_Idle01.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_CasterMage_Idle02.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_CasterMage_Jump01Fall.npy", "action_group": "locomotion", "action_label": "fall", "reviewed": true}
-{"clip": "KI_CasterMage_Jump01Land.npy", "action_group": "transition", "action_label": "jump, land, takeoff, stand, crouch"}
-{"clip": "KI_CasterMage_Jump01Start.npy", "action_group": "transition", "action_label": "jump, takeoff, crouch"}
-{"clip": "KI_CasterMage_Jump01.npy", "action_group": "transition", "action_label": "jump, land, takeoff, stand, crouch"}
+{"clip": "KI_CasterMage_Jump01Land.npy", "action_group": "transition", "action_label": "land", "reviewed": true}
+{"clip": "KI_CasterMage_Jump01Start.npy", "action_group": "transition", "action_label": "jump", "reviewed": true}
+{"clip": "KI_CasterMage_Jump01.npy", "action_group": "stationary", "action_label": "jump"}
 {"clip": "KI_CasterMage_RunBackwardLeft.npy", "action_group": "locomotion", "action_label": "run, backward, left", "reviewed": true}
 {"clip": "KI_CasterMage_RunBackwardRight.npy", "action_group": "locomotion", "action_label": "run, backward, right", "reviewed": true}
 {"clip": "KI_CasterMage_RunBackward.npy", "action_group": "locomotion", "action_label": "run, backward", "reviewed": true}
@@ -226,8 +226,8 @@
 {"clip": "KI_Human_Clap01.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_Human_Clap02.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_Human_Crouch01AIdle.npy", "action_group": "stationary", "action_label": "idle, crouch"}
-{"clip": "KI_Human_Crouch01End.npy", "action_group": "transition", "action_label": "getup, crouch"}
-{"clip": "KI_Human_Crouch01Start.npy", "action_group": "transition", "action_label": "crouch"}
+{"clip": "KI_Human_Crouch01End.npy", "action_group": "transition", "action_label": "crouch, idle", "reviewed": true}
+{"clip": "KI_Human_Crouch01Start.npy", "action_group": "transition", "action_label": "idle, crouch", "reviewed": true}
 {"clip": "KI_Human_Crouch01Walk01BackwardsLeft.npy", "action_group": "locomotion", "action_label": "walk, crouch, backward, left", "reviewed": true}
 {"clip": "KI_Human_Crouch01Walk01BackwardsRight.npy", "action_group": "locomotion", "action_label": "walk, crouch, backward, right", "reviewed": true}
 {"clip": "KI_Human_Crouch01Walk01Backwards.npy", "action_group": "locomotion", "action_label": "walk, crouch, backward", "reviewed": true}
@@ -240,7 +240,7 @@
 {"clip": "KI_Human_Exclamation02.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_Human_Exclamation03.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_Human_Fall01.npy", "action_group": "locomotion", "action_label": "fall", "reviewed": true}
-{"clip": "KI_Human_FallOnGround01A.npy", "action_group": "transition", "action_label": "fall, land"}
+{"clip": "KI_Human_FallOnGround01A.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "KI_Human_HandWave01.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_Human_HandWave02.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_Human_Horror01A.npy", "action_group": "stationary", "action_label": "idle, shake, stand"}
@@ -248,12 +248,12 @@
 {"clip": "KI_Human_Idle02.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_Human_IdleWounded01B.npy", "action_group": "stationary", "action_label": "idle, hurt, stand"}
 {"clip": "KI_Human_Jump01MidAir.npy", "action_group": "locomotion", "action_label": "jump", "reviewed": true}
-{"clip": "KI_Human_Jump01.npy", "action_group": "transition", "action_label": "jump, land, takeoff"}
-{"clip": "KI_Human_LandRoll01Run.npy", "action_group": "transition", "action_label": "run, fall, roll, getup"}
-{"clip": "KI_Human_LandRoll01.npy", "action_group": "transition", "action_label": "fall, roll, getup"}
-{"clip": "KI_Human_Loot01End.npy", "action_group": "transition", "action_label": "getup, crouch"}
+{"clip": "KI_Human_Jump01.npy", "action_group": "stationary", "action_label": "jump"}
+{"clip": "KI_Human_LandRoll01Run.npy", "action_group": "transition", "action_label": "land, roll", "reviewed": true}
+{"clip": "KI_Human_LandRoll01.npy", "action_group": "transition", "action_label": "land, roll, getup", "reviewed": true}
+{"clip": "KI_Human_Loot01End.npy", "action_group": "transition", "action_label": "crouch, idle", "reviewed": true}
 {"clip": "KI_Human_Loot01Loop.npy", "action_group": "stationary", "action_label": "idle, crouch"}
-{"clip": "KI_Human_Loot01Start.npy", "action_group": "transition", "action_label": "getup, crouch"}
+{"clip": "KI_Human_Loot01Start.npy", "action_group": "transition", "action_label": "idle, crouch", "reviewed": true}
 {"clip": "KI_Human_Opening01End.npy", "action_group": "stationary", "action_label": "idle, look"}
 {"clip": "KI_Human_Opening01Loop.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_Human_Opening01Start.npy", "action_group": "stationary", "action_label": "idle"}
@@ -271,26 +271,26 @@
 {"clip": "KI_Human_RunTurn02Right.npy", "action_group": "locomotion", "action_label": "run, turn, right", "reviewed": true}
 {"clip": "KI_Human_ShuffleLeft.npy", "action_group": "stationary", "action_label": "shuffle, left", "reviewed": true}
 {"clip": "KI_Human_ShuffleRight.npy", "action_group": "stationary", "action_label": "shuffle, right"}
-{"clip": "KI_Human_SitGround01AEnd.npy", "action_group": "transition", "action_label": "getup, rest, sit"}
+{"clip": "KI_Human_SitGround01AEnd.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
 {"clip": "KI_Human_SitGround01ALoop.npy", "action_group": "stationary", "action_label": "rest, sit"}
-{"clip": "KI_Human_SitGround01AStart.npy", "action_group": "transition", "action_label": "rest, sit, stand"}
-{"clip": "KI_Human_SitHigh01AEnd.npy", "action_group": "transition", "action_label": "getup, rest, sit"}
+{"clip": "KI_Human_SitGround01AStart.npy", "action_group": "transition", "action_label": "reset", "reviewed": true}
+{"clip": "KI_Human_SitHigh01AEnd.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
 {"clip": "KI_Human_SitHigh01ALoop.npy", "action_group": "stationary", "action_label": "rest, sit"}
-{"clip": "KI_Human_SitHigh01AStart.npy", "action_group": "transition", "action_label": "rest, sit, stand"}
-{"clip": "KI_Human_SitLow01AEnd.npy", "action_group": "transition", "action_label": "getup, rest, sit"}
+{"clip": "KI_Human_SitHigh01AStart.npy", "action_group": "transition", "action_label": "reset", "reviewed": true}
+{"clip": "KI_Human_SitLow01AEnd.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
 {"clip": "KI_Human_SitLow01ALoop.npy", "action_group": "stationary", "action_label": "rest, sit, crouch"}
-{"clip": "KI_Human_SitLow01AStart.npy", "action_group": "transition", "action_label": "rest, sit, stand"}
-{"clip": "KI_Human_SitMed01AEnd.npy", "action_group": "transition", "action_label": "getup, rest, sit"}
+{"clip": "KI_Human_SitLow01AStart.npy", "action_group": "transition", "action_label": "rest", "reviewed": true}
+{"clip": "KI_Human_SitMed01AEnd.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
 {"clip": "KI_Human_SitMed01ALoop.npy", "action_group": "stationary", "action_label": "rest, sit"}
-{"clip": "KI_Human_SitMed01AStart.npy", "action_group": "transition", "action_label": "rest, sit"}
-{"clip": "KI_Human_SkidStop01TurnAround.npy", "action_group": "transition", "action_label": "run, turn"}
-{"clip": "KI_Human_SkidStop01.npy", "action_group": "transition", "action_label": "idle, run"}
+{"clip": "KI_Human_SitMed01AStart.npy", "action_group": "transition", "action_label": "rest", "reviewed": true}
+{"clip": "KI_Human_SkidStop01TurnAround.npy", "action_group": "transition", "action_label": "turn, flip", "reviewed": true}
+{"clip": "KI_Human_SkidStop01.npy", "action_group": "transition", "action_label": "run, idle", "reviewed": true}
 {"clip": "KI_Human_Sprint01ForwardsLeft.npy", "action_group": "locomotion", "action_label": "run, sprint, forward, left", "reviewed": true}
 {"clip": "KI_Human_Sprint01ForwardsRight.npy", "action_group": "locomotion", "action_label": "run, sprint, forward, right", "reviewed": true}
 {"clip": "KI_Human_Sprint01Forwards.npy", "action_group": "locomotion", "action_label": "run, sprint, forward", "reviewed": true}
 {"clip": "KI_Human_Sprint01Left.npy", "action_group": "locomotion", "action_label": "run, sprint, left", "reviewed": true}
 {"clip": "KI_Human_Sprint01Right.npy", "action_group": "locomotion", "action_label": "run, sprint, right", "reviewed": true}
-{"clip": "KI_Human_StandUp01A.npy", "action_group": "transition", "action_label": "roll, getup, rest, crouch"}
+{"clip": "KI_Human_StandUp01A.npy", "action_group": "transition", "action_label": "getup, special", "reviewed": true}
 {"clip": "KI_Human_Strafe01Left.npy", "action_group": "locomotion", "action_label": "walk, strafe, left", "reviewed": true}
 {"clip": "KI_Human_Strafe01Right.npy", "action_group": "locomotion", "action_label": "walk, strafe, right", "reviewed": true}
 {"clip": "KI_Human_Stunned01A.npy", "action_group": "stationary", "action_label": "hurt, stand"}
@@ -305,7 +305,7 @@
 {"clip": "KI_Human_Swim01Right.npy", "action_group": "locomotion", "action_label": "swim, right", "reviewed": true}
 {"clip": "KI_Human_Swim01Upwards.npy", "action_group": "locomotion", "action_label": "swim, up", "reviewed": true}
 {"clip": "KI_Human_SwimDrown01Loop.npy", "action_group": "stationary", "action_label": "drown"}
-{"clip": "KI_Human_SwimDrown01Start.npy", "action_group": "transition", "action_label": "swim, fall"}
+{"clip": "KI_Human_SwimDrown01Start.npy", "action_group": "transition", "action_label": "swim, die"}
 {"clip": "KI_Human_SwimIdle01.npy", "action_group": "stationary", "action_label": "idle, swim"}
 {"clip": "KI_Human_Talk01.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_Human_Talk02.npy", "action_group": "stationary", "action_label": "idle"}
