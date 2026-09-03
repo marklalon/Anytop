@@ -18,8 +18,8 @@
 {"clip": "IAC_Caveman_Die.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "IAC_Caveman_FallWeapon.npy", "action_group": "locomotion", "action_label": "fall", "reviewed": true}
 {"clip": "IAC_Caveman_Fall.npy", "action_group": "locomotion", "action_label": "fall", "reviewed": true}
-{"clip": "IAC_Caveman_GetUpWeapon.npy", "action_group": "transition", "action_label": "getup, rest, sit, stand"}
-{"clip": "IAC_Caveman_GetUp.npy", "action_group": "transition", "action_label": "getup, rest, sit, stand"}
+{"clip": "IAC_Caveman_GetUpWeapon.npy", "action_group": "transition", "action_label": "getup, rest, sit"}
+{"clip": "IAC_Caveman_GetUp.npy", "action_group": "transition", "action_label": "getup, rest, sit"}
 {"clip": "IAC_Caveman_IdleWeapon.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "IAC_Caveman_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "IAC_Caveman_JumpUpWeapon.npy", "action_group": "stationary", "action_label": "run, jump"}
@@ -62,8 +62,8 @@
 {"clip": "IAC_Cavewoman_Die.npy", "action_group": "transition", "action_label": "die, backward"}
 {"clip": "IAC_Cavewoman_FallWeapon.npy", "action_group": "locomotion", "action_label": "fall", "reviewed": true}
 {"clip": "IAC_Cavewoman_Fall.npy", "action_group": "locomotion", "action_label": "fall", "reviewed": true}
-{"clip": "IAC_Cavewoman_GetUpWeapon.npy", "action_group": "transition", "action_label": "getup, rest, stand"}
-{"clip": "IAC_Cavewoman_GetUp.npy", "action_group": "transition", "action_label": "getup, rest, stand"}
+{"clip": "IAC_Cavewoman_GetUpWeapon.npy", "action_group": "transition", "action_label": "getup, rest"}
+{"clip": "IAC_Cavewoman_GetUp.npy", "action_group": "transition", "action_label": "getup, rest"}
 {"clip": "IAC_Cavewoman_IdleWeapon.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "IAC_Cavewoman_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "IAC_Cavewoman_JumpUpWeapon.npy", "action_group": "stationary", "action_label": "run, jump"}
@@ -99,7 +99,7 @@
 {"clip": "IAC_Mammoth_DamageLight.npy", "action_group": "stationary", "action_label": "hurt, shake, stand"}
 {"clip": "IAC_Mammoth_Die.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "IAC_Mammoth_Fall.npy", "action_group": "locomotion", "action_label": "fall", "reviewed": true}
-{"clip": "IAC_Mammoth_GetUp.npy", "action_group": "transition", "action_label": "getup, stand"}
+{"clip": "IAC_Mammoth_GetUp.npy", "action_group": "transition", "action_label": "getup"}
 {"clip": "IAC_Mammoth_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "IAC_Mammoth_JumpUp.npy", "action_group": "stationary", "action_label": "run, jump, forward"}
 {"clip": "IAC_Mammoth_Land.npy", "action_group": "transition", "action_label": "jump, land"}
@@ -121,7 +121,7 @@
 {"clip": "IAC_Sabertooth_DamageLight.npy", "action_group": "stationary", "action_label": "hurt, shake"}
 {"clip": "IAC_Sabertooth_Die.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "IAC_Sabertooth_Fall.npy", "action_group": "locomotion", "action_label": "fall", "reviewed": true}
-{"clip": "IAC_Sabertooth_GetUp.npy", "action_group": "transition", "action_label": "getup, rest, stand"}
+{"clip": "IAC_Sabertooth_GetUp.npy", "action_group": "transition", "action_label": "getup, rest"}
 {"clip": "IAC_Sabertooth_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "IAC_Sabertooth_JumpUp.npy", "action_group": "locomotion", "action_label": "jump, up", "reviewed": true}
 {"clip": "IAC_Sabertooth_Land.npy", "action_group": "transition", "action_label": "jump, land"}
@@ -205,7 +205,7 @@
 {"clip": "KI_CasterMage_Death02A.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "KI_CasterMage_Dodge01.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_CasterMage_EnterCombat01.npy", "action_group": "transition", "action_label": "attack"}
-{"clip": "KI_CasterMage_ExitCombat01.npy", "action_group": "transition", "action_label": "idle, rest"}
+{"clip": "KI_CasterMage_ExitCombat01.npy", "action_group": "transition", "action_label": "idle"}
 {"clip": "KI_CasterMage_Idle01.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_CasterMage_Idle02.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_CasterMage_Jump01Fall.npy", "action_group": "locomotion", "action_label": "fall", "reviewed": true}
@@ -226,7 +226,7 @@
 {"clip": "KI_Human_Clap01.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_Human_Clap02.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_Human_Crouch01AIdle.npy", "action_group": "stationary", "action_label": "idle, crouch"}
-{"clip": "KI_Human_Crouch01End.npy", "action_group": "transition", "action_label": "getup, stand, crouch"}
+{"clip": "KI_Human_Crouch01End.npy", "action_group": "transition", "action_label": "getup, crouch"}
 {"clip": "KI_Human_Crouch01Start.npy", "action_group": "transition", "action_label": "crouch"}
 {"clip": "KI_Human_Crouch01Walk01BackwardsLeft.npy", "action_group": "locomotion", "action_label": "walk, crouch, backward, left", "reviewed": true}
 {"clip": "KI_Human_Crouch01Walk01BackwardsRight.npy", "action_group": "locomotion", "action_label": "walk, crouch, backward, right", "reviewed": true}
@@ -250,8 +250,8 @@
 {"clip": "KI_Human_Jump01MidAir.npy", "action_group": "locomotion", "action_label": "jump", "reviewed": true}
 {"clip": "KI_Human_Jump01.npy", "action_group": "transition", "action_label": "jump, land, takeoff"}
 {"clip": "KI_Human_LandRoll01Run.npy", "action_group": "transition", "action_label": "run, fall, roll, getup"}
-{"clip": "KI_Human_LandRoll01.npy", "action_group": "transition", "action_label": "fall, roll, getup, stand"}
-{"clip": "KI_Human_Loot01End.npy", "action_group": "transition", "action_label": "getup, stand, crouch"}
+{"clip": "KI_Human_LandRoll01.npy", "action_group": "transition", "action_label": "fall, roll, getup"}
+{"clip": "KI_Human_Loot01End.npy", "action_group": "transition", "action_label": "getup, crouch"}
 {"clip": "KI_Human_Loot01Loop.npy", "action_group": "stationary", "action_label": "idle, crouch"}
 {"clip": "KI_Human_Loot01Start.npy", "action_group": "transition", "action_label": "getup, crouch"}
 {"clip": "KI_Human_Opening01End.npy", "action_group": "stationary", "action_label": "idle, look"}
@@ -271,16 +271,16 @@
 {"clip": "KI_Human_RunTurn02Right.npy", "action_group": "locomotion", "action_label": "run, turn, right", "reviewed": true}
 {"clip": "KI_Human_ShuffleLeft.npy", "action_group": "stationary", "action_label": "shuffle, left", "reviewed": true}
 {"clip": "KI_Human_ShuffleRight.npy", "action_group": "stationary", "action_label": "shuffle, right"}
-{"clip": "KI_Human_SitGround01AEnd.npy", "action_group": "transition", "action_label": "getup, rest, sit, stand"}
+{"clip": "KI_Human_SitGround01AEnd.npy", "action_group": "transition", "action_label": "getup, rest, sit"}
 {"clip": "KI_Human_SitGround01ALoop.npy", "action_group": "stationary", "action_label": "rest, sit"}
 {"clip": "KI_Human_SitGround01AStart.npy", "action_group": "transition", "action_label": "rest, sit, stand"}
-{"clip": "KI_Human_SitHigh01AEnd.npy", "action_group": "transition", "action_label": "getup, rest, sit, stand"}
+{"clip": "KI_Human_SitHigh01AEnd.npy", "action_group": "transition", "action_label": "getup, rest, sit"}
 {"clip": "KI_Human_SitHigh01ALoop.npy", "action_group": "stationary", "action_label": "rest, sit"}
 {"clip": "KI_Human_SitHigh01AStart.npy", "action_group": "transition", "action_label": "rest, sit, stand"}
-{"clip": "KI_Human_SitLow01AEnd.npy", "action_group": "transition", "action_label": "getup, rest, sit, stand"}
+{"clip": "KI_Human_SitLow01AEnd.npy", "action_group": "transition", "action_label": "getup, rest, sit"}
 {"clip": "KI_Human_SitLow01ALoop.npy", "action_group": "stationary", "action_label": "rest, sit, crouch"}
 {"clip": "KI_Human_SitLow01AStart.npy", "action_group": "transition", "action_label": "rest, sit, stand"}
-{"clip": "KI_Human_SitMed01AEnd.npy", "action_group": "transition", "action_label": "getup, rest, sit, stand"}
+{"clip": "KI_Human_SitMed01AEnd.npy", "action_group": "transition", "action_label": "getup, rest, sit"}
 {"clip": "KI_Human_SitMed01ALoop.npy", "action_group": "stationary", "action_label": "rest, sit"}
 {"clip": "KI_Human_SitMed01AStart.npy", "action_group": "transition", "action_label": "rest, sit"}
 {"clip": "KI_Human_SkidStop01TurnAround.npy", "action_group": "transition", "action_label": "run, turn"}
@@ -379,7 +379,7 @@
 {"clip": "KI_Soldier_CombatIdle01.npy", "action_group": "stationary", "action_label": "idle, stand"}
 {"clip": "KI_Soldier_CombatJump01MidairRifle.npy", "action_group": "stationary", "action_label": "jump"}
 {"clip": "KI_Soldier_CombatJump01Rifle.npy", "action_group": "transition", "action_label": "jump, land"}
-{"clip": "KI_Soldier_Cover01ExposeRifle.npy", "action_group": "transition", "action_label": "getup, stand, crouch"}
+{"clip": "KI_Soldier_Cover01ExposeRifle.npy", "action_group": "transition", "action_label": "getup, crouch"}
 {"clip": "KI_Soldier_Cover01IdleRifle.npy", "action_group": "stationary", "action_label": "idle, crouch"}
 {"clip": "KI_Soldier_Crawling01CombatIdle01.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "KI_Soldier_Crawling01Death01.npy", "action_group": "transition", "action_label": "crawl, die"}
@@ -389,7 +389,7 @@
 {"clip": "KI_Soldier_Crawling01Idle01.npy", "action_group": "stationary", "action_label": "idle, crawl, rest"}
 {"clip": "KI_Soldier_Crawling01Shot01.npy", "action_group": "stationary", "action_label": "crawl, attack, shot"}
 {"clip": "KI_Soldier_Crawling01Shot02.npy", "action_group": "stationary", "action_label": "crawl, attack, shot"}
-{"clip": "KI_Soldier_Crawling01StandUp.npy", "action_group": "transition", "action_label": "crawl, getup, stand"}
+{"clip": "KI_Soldier_Crawling01StandUp.npy", "action_group": "transition", "action_label": "crawl, getup"}
 {"clip": "KI_Soldier_Crawling01TakeDamage01.npy", "action_group": "stationary", "action_label": "crawl, hurt"}
 {"clip": "KI_Soldier_Crawling01TurnLeft01.npy", "action_group": "locomotion", "action_label": "crawl, turn, left", "reviewed": true}
 {"clip": "KI_Soldier_Crawling01TurnRight01.npy", "action_group": "locomotion", "action_label": "crawl, turn, right", "reviewed": true}
@@ -435,7 +435,7 @@
 {"clip": "KI_Villager_CarryingDrop01.npy", "action_group": "transition", "action_label": "stand, crouch"}
 {"clip": "KI_Villager_CarryingHeavyDrop01.npy", "action_group": "transition", "action_label": "stand, crouch"}
 {"clip": "KI_Villager_CarryingHeavyIdle01.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "KI_Villager_CarryingHeavyLift01.npy", "action_group": "transition", "action_label": "getup, stand"}
+{"clip": "KI_Villager_CarryingHeavyLift01.npy", "action_group": "transition", "action_label": "getup"}
 {"clip": "KI_Villager_CarryingHeavyRun01.npy", "action_group": "locomotion", "action_label": "run, forward, carrying", "reviewed": true}
 {"clip": "KI_Villager_CarryingHeavyWalk01.npy", "action_group": "locomotion", "action_label": "walk, forward, carrying", "reviewed": true}
 {"clip": "KI_Villager_CarryingIdle01.npy", "action_group": "stationary", "action_label": "idle"}
@@ -531,7 +531,7 @@
 {"clip": "KI_Warrior_TakeDamage02.npy", "action_group": "stationary", "action_label": "hurt"}
 {"clip": "KI_Warrior_TakeDamage03.npy", "action_group": "stationary", "action_label": "idle, hurt"}
 {"clip": "KI_Warrior_TakeDamage04.npy", "action_group": "stationary", "action_label": "hurt, stand"}
-{"clip": "KI_Warrior_TakeDamage05.npy", "action_group": "stationary", "action_label": "hurt, getup, stand, crouch"}
+{"clip": "KI_Warrior_TakeDamage05.npy", "action_group": "stationary", "action_label": "hurt, getup, crouch"}
 {"clip": "KI_Warrior_Walk01Backward2HLong.npy", "action_group": "locomotion", "action_label": "walk, backward, weapon, 2hand", "reviewed": true}
 {"clip": "KI_Warrior_Walk01BackwardLeft2HLong.npy", "action_group": "locomotion", "action_label": "walk, backward, left, weapon, 2hand", "reviewed": true}
 {"clip": "KI_Warrior_Walk01BackwardRight2HLong.npy", "action_group": "locomotion", "action_label": "walk, backward, right, weapon, 2hand", "reviewed": true}
@@ -576,7 +576,7 @@
 {"clip": "LH_Hero_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "LH_Hero_JumpRightAttack01.npy", "action_group": "transition", "action_label": "jump, attack, land, right"}
 {"clip": "LH_Hero_Jump.npy", "action_group": "transition", "action_label": "jump, land, takeoff"}
-{"clip": "LH_Hero_LayGroundToIdle.npy", "action_group": "transition", "action_label": "idle, getup, stand"}
+{"clip": "LH_Hero_LayGroundToIdle.npy", "action_group": "transition", "action_label": "idle, getup"}
 {"clip": "LH_Hero_LeftPunchAttack.npy", "action_group": "stationary", "action_label": "attack, left"}
 {"clip": "LH_Hero_LeftThrow.npy", "action_group": "stationary", "action_label": "throw, left"}
 {"clip": "LH_Hero_LongbowAim01.npy", "action_group": "stationary", "action_label": "idle"}
@@ -587,7 +587,7 @@
 {"clip": "LH_Hero_MeleeRightAttack02.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "LH_Hero_MeleeRightAttack03.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "LH_Hero_NodHead.npy", "action_group": "stationary", "action_label": "idle"}
-{"clip": "LH_Hero_OnTheGroundLoop.npy", "action_group": "stationary", "action_label": "idle, rest"}
+{"clip": "LH_Hero_OnTheGroundLoop.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "LH_Hero_PickUp.npy", "action_group": "stationary", "action_label": "idle, stand"}
 {"clip": "LH_Hero_ProjectileRightAttack01.npy", "action_group": "stationary", "action_label": "attack, throw, right"}
 {"clip": "LH_Hero_Pull.npy", "action_group": "locomotion", "action_label": "walk, backward, pull", "reviewed": true}
@@ -603,7 +603,7 @@
 {"clip": "LH_Hero_SawingWood.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "LH_Hero_ShakeHead.npy", "action_group": "stationary", "action_label": "idle, shake"}
 {"clip": "LH_Hero_Sitting.npy", "action_group": "stationary", "action_label": "rest, sit"}
-{"clip": "LH_Hero_SpawnGround.npy", "action_group": "transition", "action_label": "getup, stand"}
+{"clip": "LH_Hero_SpawnGround.npy", "action_group": "transition", "action_label": "getup"}
 {"clip": "LH_Hero_SpearCastSpell01.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "LH_Hero_SpearDash.npy", "action_group": "locomotion", "action_label": "run, dash, forward, weapon, 2hand", "reviewed": true}
 {"clip": "LH_Hero_SpearDefend.npy", "action_group": "stationary", "action_label": "attack"}
@@ -662,17 +662,17 @@
 {"clip": "MB_TigerDrago_AttackTail.npy", "action_group": "stationary", "action_label": "attack, stand"}
 {"clip": "MB_TigerDrago_Attack.npy", "action_group": "stationary", "action_label": "attack, rear"}
 {"clip": "MB_TigerDrago_Confused.npy", "action_group": "stationary", "action_label": "idle, look"}
-{"clip": "MB_TigerDrago_Death1Recover.npy", "action_group": "transition", "action_label": "getup, rest, stand"}
+{"clip": "MB_TigerDrago_Death1Recover.npy", "action_group": "transition", "action_label": "getup, rest"}
 {"clip": "MB_TigerDrago_Death1.npy", "action_group": "transition", "action_label": "die"}
-{"clip": "MB_TigerDrago_Death2Recover.npy", "action_group": "transition", "action_label": "getup, stand"}
+{"clip": "MB_TigerDrago_Death2Recover.npy", "action_group": "transition", "action_label": "getup"}
 {"clip": "MB_TigerDrago_Death2.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "MB_TigerDrago_Dig.npy", "action_group": "stationary", "action_label": "attack, dig, crouch"}
 {"clip": "MB_TigerDrago_DogdeLeftG.npy", "action_group": "stationary", "action_label": "idle, crouch, left"}
 {"clip": "MB_TigerDrago_DogdeRightG.npy", "action_group": "stationary", "action_label": "idle, crouch, right"}
-{"clip": "MB_TigerDrago_EatDrink.npy", "action_group": "stationary", "action_label": "eat"}
+{"clip": "MB_TigerDrago_EatDrink.npy", "action_group": "stationary", "action_label": "idle, eat"}
 {"clip": "MB_TigerDrago_EggHatching1.npy", "action_group": "transition", "action_label": "getup"}
-{"clip": "MB_TigerDrago_EggHatching2.npy", "action_group": "transition", "action_label": "roll, getup, rest, stand"}
-{"clip": "MB_TigerDrago_EggHatching3.npy", "action_group": "transition", "action_label": "getup, stand"}
+{"clip": "MB_TigerDrago_EggHatching2.npy", "action_group": "transition", "action_label": "roll, getup, rest"}
+{"clip": "MB_TigerDrago_EggHatching3.npy", "action_group": "transition", "action_label": "getup"}
 {"clip": "MB_TigerDrago_EnterWater.npy", "action_group": "transition", "action_label": "swim, dive, stand"}
 {"clip": "MB_TigerDrago_FallDown.npy", "action_group": "stationary", "action_label": "fall, shake, crouch"}
 {"clip": "MB_TigerDrago_FallUP.npy", "action_group": "locomotion", "action_label": "fly, dive", "reviewed": true}
@@ -728,9 +728,9 @@
 {"clip": "MB_TigerDrago_Sad.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "MB_TigerDrago_Scared.npy", "action_group": "stationary", "action_label": "idle, shake, crouch"}
 {"clip": "MB_TigerDrago_SickSneeze.npy", "action_group": "stationary", "action_label": "idle, shake"}
-{"clip": "MB_TigerDrago_SleepEnter.npy", "action_group": "transition", "action_label": "rest, sleep, crouch"}
-{"clip": "MB_TigerDrago_SleepExit.npy", "action_group": "transition", "action_label": "getup, rest, sleep, stand"}
-{"clip": "MB_TigerDrago_Sleep.npy", "action_group": "stationary", "action_label": "rest, sleep"}
+{"clip": "MB_TigerDrago_SleepEnter.npy", "action_group": "transition", "action_label": "rest, crouch"}
+{"clip": "MB_TigerDrago_SleepExit.npy", "action_group": "transition", "action_label": "getup, rest"}
+{"clip": "MB_TigerDrago_Sleep.npy", "action_group": "stationary", "action_label": "rest"}
 {"clip": "MB_TigerDrago_Stun.npy", "action_group": "stationary", "action_label": "idle, hurt, shake"}
 {"clip": "MB_TigerDrago_SwimBackL.npy", "action_group": "locomotion", "action_label": "swim, backward, left", "reviewed": true}
 {"clip": "MB_TigerDrago_SwimBackR.npy", "action_group": "locomotion", "action_label": "swim, backward, right", "reviewed": true}
@@ -813,8 +813,8 @@
 {"clip": "MB_Unka_FlyUpForwadRight.npy", "action_group": "locomotion", "action_label": "fly, flap, right, up", "reviewed": true}
 {"clip": "MB_Unka_FlyUpForwardLeft.npy", "action_group": "locomotion", "action_label": "fly, flap, left, up", "reviewed": true}
 {"clip": "MB_Unka_FlyUpForward.npy", "action_group": "locomotion", "action_label": "fly, flap, forward, up", "reviewed": true}
-{"clip": "MB_Unka_FlyUpTurnLeft.npy", "action_group": "locomotion", "action_label": "fly, spiral, flap, left, up"}
-{"clip": "MB_Unka_FlyUpTurnRight.npy", "action_group": "locomotion", "action_label": "fly, spiral, flap, right, up"}
+{"clip": "MB_Unka_FlyUpTurnLeft.npy", "action_group": "locomotion", "action_label": "fly, spiral, flap, left, up", "reviewed": true}
+{"clip": "MB_Unka_FlyUpTurnRight.npy", "action_group": "locomotion", "action_label": "fly, spiral, flap, right, up", "reviewed": true}
 {"clip": "MB_Unka_GetHitBackLeft.npy", "action_group": "stationary", "action_label": "hurt, shake, left"}
 {"clip": "MB_Unka_GetHitBackRight.npy", "action_group": "stationary", "action_label": "fly, flap, hurt, right"}
 {"clip": "MB_Unka_GetHitFrontLeft1.npy", "action_group": "stationary", "action_label": "hurt, shake, left"}
@@ -839,9 +839,9 @@
 {"clip": "MB_Unka_RunLeft.npy", "action_group": "locomotion", "action_label": "run, turn, left", "reviewed": true}
 {"clip": "MB_Unka_RunRight.npy", "action_group": "locomotion", "action_label": "run, turn, right", "reviewed": true}
 {"clip": "MB_Unka_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "MB_Unka_SleepEnd.npy", "action_group": "transition", "action_label": "getup, rest, sleep, stand, stretch"}
-{"clip": "MB_Unka_SleepIdle.npy", "action_group": "stationary", "action_label": "idle, rest, sleep"}
-{"clip": "MB_Unka_SleepStart.npy", "action_group": "transition", "action_label": "rest, sleep, crouch"}
+{"clip": "MB_Unka_SleepEnd.npy", "action_group": "transition", "action_label": "getup, rest, stretch"}
+{"clip": "MB_Unka_SleepIdle.npy", "action_group": "stationary", "action_label": "idle"}
+{"clip": "MB_Unka_SleepStart.npy", "action_group": "transition", "action_label": "rest, crouch"}
 {"clip": "MB_Unka_Spinning.npy", "action_group": "transition", "action_label": "turn"}
 {"clip": "MB_Unka_Stun.npy", "action_group": "stationary", "action_label": "hurt, stand"}
 {"clip": "MB_Unka_SwimBackLeft.npy", "action_group": "locomotion", "action_label": "swim, backward, left", "reviewed": true}
@@ -1274,7 +1274,7 @@
 {"clip": "MU04_GolemEarth_ProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, throw, forward"}
 {"clip": "MU04_GolemEarth_RightPunchAttack.npy", "action_group": "stationary", "action_label": "attack, right"}
 {"clip": "MU04_GolemEarth_SmashAttack.npy", "action_group": "stationary", "action_label": "attack, kick"}
-{"clip": "MU04_GolemEarth_Spawn.npy", "action_group": "transition", "action_label": "getup, stand"}
+{"clip": "MU04_GolemEarth_Spawn.npy", "action_group": "transition", "action_label": "getup"}
 {"clip": "MU04_GolemEarth_SpinAttackLoop.npy", "action_group": "stationary", "action_label": "turn, attack"}
 {"clip": "MU04_GolemEarth_SpinAttackOnce.npy", "action_group": "stationary", "action_label": "turn, attack"}
 {"clip": "MU04_GolemEarth_SpinAttackToIdle.npy", "action_group": "transition", "action_label": "idle, turn, attack, stand"}
@@ -1294,7 +1294,7 @@
 {"clip": "MU04_GolemFire_RightPunchAttack.npy", "action_group": "stationary", "action_label": "attack, right"}
 {"clip": "MU04_GolemFire_RightShootAttack.npy", "action_group": "stationary", "action_label": "attack, right"}
 {"clip": "MU04_GolemFire_SmashAttack.npy", "action_group": "stationary", "action_label": "attack"}
-{"clip": "MU04_GolemFire_Spawn.npy", "action_group": "transition", "action_label": "getup, stand"}
+{"clip": "MU04_GolemFire_Spawn.npy", "action_group": "transition", "action_label": "getup"}
 {"clip": "MU04_GolemFire_SpinAttackLoop.npy", "action_group": "stationary", "action_label": "turn, attack"}
 {"clip": "MU04_GolemFire_SpinAttackOnce.npy", "action_group": "stationary", "action_label": "turn, attack"}
 {"clip": "MU04_GolemFire_SpinAttackToIdle.npy", "action_group": "transition", "action_label": "idle, turn, attack"}
@@ -1378,7 +1378,7 @@
 {"clip": "MU04_QueenWorm_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt, shake, rear"}
 {"clip": "MU04_QueenWorm_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left"}
 {"clip": "MU04_QueenWorm_TurnRight.npy", "action_group": "transition", "action_label": "turn, right"}
-{"clip": "MU04_QueenWorm_Unburrow.npy", "action_group": "transition", "action_label": "getup, stand"}
+{"clip": "MU04_QueenWorm_Unburrow.npy", "action_group": "transition", "action_label": "getup"}
 {"clip": "MU04_ScorpionKing_Die.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "MU04_ScorpionKing_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "MU04_ScorpionKing_Jump.npy", "action_group": "transition", "action_label": "jump, land"}
@@ -1477,7 +1477,7 @@
 {"clip": "MU06_AngelMage_KickAttack.npy", "action_group": "stationary", "action_label": "attack, kick"}
 {"clip": "MU06_AngelMage_ProjectileAttackLow.npy", "action_group": "stationary", "action_label": "attack, throw, forward"}
 {"clip": "MU06_AngelMage_ProjectileAttack.npy", "action_group": "stationary", "action_label": "fly, attack, throw"}
-{"clip": "MU06_AngelMage_Spawn.npy", "action_group": "transition", "action_label": "getup, stand"}
+{"clip": "MU06_AngelMage_Spawn.npy", "action_group": "transition", "action_label": "getup"}
 {"clip": "MU06_AngelMage_SpinAttack.npy", "action_group": "stationary", "action_label": "turn, attack"}
 {"clip": "MU06_AngelMage_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt, shake"}
 {"clip": "MU06_AngelMage_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left"}
@@ -1738,7 +1738,7 @@
 {"clip": "PC_PolygonalMagma_MoveBackward.npy", "action_group": "locomotion", "action_label": "walk, backward", "reviewed": true}
 {"clip": "PC_PolygonalMagma_MoveForward.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "PC_PolygonalMagma_PunchAttack.npy", "action_group": "stationary", "action_label": "attack, throw"}
-{"clip": "PC_PolygonalMagma_Spawn.npy", "action_group": "transition", "action_label": "getup, stand"}
+{"clip": "PC_PolygonalMagma_Spawn.npy", "action_group": "transition", "action_label": "getup"}
 {"clip": "PC_PolygonalMagma_StrafeLeft.npy", "action_group": "locomotion", "action_label": "walk, strafe, left", "reviewed": true}
 {"clip": "PC_PolygonalMagma_StrafeRight.npy", "action_group": "locomotion", "action_label": "walk, strafe, right", "reviewed": true}
 {"clip": "PC_PolygonalMagma_SwingAttack.npy", "action_group": "stationary", "action_label": "attack"}
@@ -1782,7 +1782,7 @@
 {"clip": "PC_PolygonalWolf_BiteAttack.npy", "action_group": "stationary", "action_label": "attack, bite"}
 {"clip": "PC_PolygonalWolf_BreathAttack.npy", "action_group": "stationary", "action_label": "attack, spit, crouch"}
 {"clip": "PC_PolygonalWolf_Die.npy", "action_group": "transition", "action_label": "die"}
-{"clip": "PC_PolygonalWolf_Eating.npy", "action_group": "stationary", "action_label": "eat, crouch"}
+{"clip": "PC_PolygonalWolf_Eating.npy", "action_group": "stationary", "action_label": "idle, eat, crouch"}
 {"clip": "PC_PolygonalWolf_Howl.npy", "action_group": "stationary", "action_label": "roar"}
 {"clip": "PC_PolygonalWolf_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "PC_PolygonalWolf_Jump.npy", "action_group": "transition", "action_label": "jump, land"}
@@ -2065,7 +2065,7 @@
 {"clip": "RU01_GripperRobot_LeftPunchAttack.npy", "action_group": "stationary", "action_label": "attack, left"}
 {"clip": "RU01_GripperRobot_ProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, crouch"}
 {"clip": "RU01_GripperRobot_RapidProjectileAttackLoop.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "RU01_GripperRobot_RightGripToIdle.npy", "action_group": "transition", "action_label": "idle, rest"}
+{"clip": "RU01_GripperRobot_RightGripToIdle.npy", "action_group": "transition", "action_label": "idle"}
 {"clip": "RU01_GripperRobot_RightPunchAttack.npy", "action_group": "stationary", "action_label": "attack, right"}
 {"clip": "RU01_GripperRobot_Spawn.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "RU01_GripperRobot_SpinAndHitGroundAttack.npy", "action_group": "stationary", "action_label": "turn, attack"}
@@ -2073,7 +2073,7 @@
 {"clip": "RU01_GripperRobot_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left"}
 {"clip": "RU01_GripperRobot_TurnRight.npy", "action_group": "transition", "action_label": "turn, right"}
 {"clip": "RU01_GripperRobot_TwoHandsGripLoop.npy", "action_group": "stationary", "action_label": "idle, run"}
-{"clip": "RU01_GripperRobot_TwoHandsGripToIdle.npy", "action_group": "transition", "action_label": "idle, rest, stand"}
+{"clip": "RU01_GripperRobot_TwoHandsGripToIdle.npy", "action_group": "transition", "action_label": "idle, stand"}
 {"clip": "RU01_GripperRobot_Working.npy", "action_group": "stationary", "action_label": "idle, run"}
 {"clip": "RU01_HermitRobot_BlastAttack.npy", "action_group": "stationary", "action_label": "attack, stand"}
 {"clip": "RU01_HermitRobot_CastSpell.npy", "action_group": "stationary", "action_label": "idle"}
@@ -2086,7 +2086,7 @@
 {"clip": "RU01_HermitRobot_Jump.npy", "action_group": "transition", "action_label": "jump, land"}
 {"clip": "RU01_HermitRobot_MachineGunAttack.npy", "action_group": "stationary", "action_label": "attack, stand"}
 {"clip": "RU01_HermitRobot_RunForward.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "RU01_HermitRobot_Spawn.npy", "action_group": "transition", "action_label": "getup, stand"}
+{"clip": "RU01_HermitRobot_Spawn.npy", "action_group": "transition", "action_label": "getup"}
 {"clip": "RU01_HermitRobot_TakeDamage.npy", "action_group": "stationary", "action_label": "idle, hurt, shake"}
 {"clip": "RU01_HermitRobot_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left"}
 {"clip": "RU01_HermitRobot_TurnRight.npy", "action_group": "transition", "action_label": "turn, right"}
@@ -2179,7 +2179,7 @@
 {"clip": "RU01_TechRobot_KickAttack.npy", "action_group": "stationary", "action_label": "attack, stand, kick"}
 {"clip": "RU01_TechRobot_ProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, throw, crouch"}
 {"clip": "RU01_TechRobot_RunForward.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "RU01_TechRobot_Spawn.npy", "action_group": "transition", "action_label": "getup, stand"}
+{"clip": "RU01_TechRobot_Spawn.npy", "action_group": "transition", "action_label": "getup"}
 {"clip": "RU01_TechRobot_TakeDamage.npy", "action_group": "stationary", "action_label": "idle, hurt, shake"}
 {"clip": "RU01_TechRobot_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left"}
 {"clip": "RU01_TechRobot_TurnRight.npy", "action_group": "transition", "action_label": "turn, stand, right"}
@@ -2253,7 +2253,7 @@
 {"clip": "RU02_GalaxyRobot_RightProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, throw, right"}
 {"clip": "RU02_GalaxyRobot_RightPunchAttack.npy", "action_group": "stationary", "action_label": "attack, right"}
 {"clip": "RU02_GalaxyRobot_SmashAttack.npy", "action_group": "stationary", "action_label": "roll, attack"}
-{"clip": "RU02_GalaxyRobot_Spawn.npy", "action_group": "transition", "action_label": "roll, getup, stand"}
+{"clip": "RU02_GalaxyRobot_Spawn.npy", "action_group": "transition", "action_label": "roll, getup"}
 {"clip": "RU02_GalaxyRobot_SpinAttackLoop.npy", "action_group": "stationary", "action_label": "turn, roll, attack"}
 {"clip": "RU02_GalaxyRobot_SpinAttackOnce.npy", "action_group": "stationary", "action_label": "turn, roll, attack"}
 {"clip": "RU02_GalaxyRobot_SpinAttackToIdle.npy", "action_group": "transition", "action_label": "idle, turn, attack"}
@@ -2268,7 +2268,7 @@
 {"clip": "RU02_NoseRobot_LookAround.npy", "action_group": "stationary", "action_label": "idle, turn, look"}
 {"clip": "RU02_NoseRobot_ProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, crouch, forward"}
 {"clip": "RU02_NoseRobot_RunForward.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "RU02_NoseRobot_Spawn.npy", "action_group": "transition", "action_label": "getup, stand, crouch"}
+{"clip": "RU02_NoseRobot_Spawn.npy", "action_group": "transition", "action_label": "getup, crouch"}
 {"clip": "RU02_NoseRobot_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt, shake"}
 {"clip": "RU02_NoseRobot_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left"}
 {"clip": "RU02_NoseRobot_TurnRight.npy", "action_group": "transition", "action_label": "turn, right"}
@@ -2282,7 +2282,7 @@
 {"clip": "RU02_NozzleRobot_LookAround.npy", "action_group": "stationary", "action_label": "idle, turn, look"}
 {"clip": "RU02_NozzleRobot_ProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, throw, forward"}
 {"clip": "RU02_NozzleRobot_RunForward.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "RU02_NozzleRobot_Spawn.npy", "action_group": "transition", "action_label": "getup, stand, crouch"}
+{"clip": "RU02_NozzleRobot_Spawn.npy", "action_group": "transition", "action_label": "getup, crouch"}
 {"clip": "RU02_NozzleRobot_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt"}
 {"clip": "RU02_NozzleRobot_TurnLeft.npy", "action_group": "transition", "action_label": "turn, stand, left"}
 {"clip": "RU02_NozzleRobot_TurnRight.npy", "action_group": "transition", "action_label": "turn, right"}
@@ -2291,7 +2291,7 @@
 {"clip": "RU02_RazorRobot_CastSpell.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "RU02_RazorRobot_Die.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "RU02_RazorRobot_HeadAttack.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "RU02_RazorRobot_HideToIdle.npy", "action_group": "transition", "action_label": "idle, getup, stand"}
+{"clip": "RU02_RazorRobot_HideToIdle.npy", "action_group": "transition", "action_label": "idle, getup"}
 {"clip": "RU02_RazorRobot_Hide.npy", "action_group": "stationary", "action_label": "idle, crouch"}
 {"clip": "RU02_RazorRobot_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "RU02_RazorRobot_ProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, forward"}
@@ -2305,7 +2305,7 @@
 {"clip": "RU02_ShellRobot_CastSpell.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "RU02_ShellRobot_Die.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "RU02_ShellRobot_HeadAttack.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "RU02_ShellRobot_HideToIdle.npy", "action_group": "transition", "action_label": "idle, getup, stand"}
+{"clip": "RU02_ShellRobot_HideToIdle.npy", "action_group": "transition", "action_label": "idle, getup"}
 {"clip": "RU02_ShellRobot_Hide.npy", "action_group": "stationary", "action_label": "idle, crouch"}
 {"clip": "RU02_ShellRobot_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "RU02_ShellRobot_ProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, throw, crouch"}
@@ -2324,7 +2324,7 @@
 {"clip": "RU02_SnoutRobot_ProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, throw, forward"}
 {"clip": "RU02_SnoutRobot_Roar.npy", "action_group": "stationary", "action_label": "idle, roar"}
 {"clip": "RU02_SnoutRobot_RunForward.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "RU02_SnoutRobot_Spawn.npy", "action_group": "transition", "action_label": "getup, stand, crouch"}
+{"clip": "RU02_SnoutRobot_Spawn.npy", "action_group": "transition", "action_label": "getup, crouch"}
 {"clip": "RU02_SnoutRobot_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt"}
 {"clip": "RU02_SnoutRobot_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left"}
 {"clip": "RU02_SnoutRobot_TurnRight.npy", "action_group": "transition", "action_label": "turn, right"}
@@ -2358,7 +2358,7 @@
 {"clip": "RU02_SpiderQueenRobot_ProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, crouch"}
 {"clip": "RU02_SpiderQueenRobot_RightClawAttack.npy", "action_group": "stationary", "action_label": "attack, forward"}
 {"clip": "RU02_SpiderQueenRobot_RunForward.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "RU02_SpiderQueenRobot_Spawn.npy", "action_group": "transition", "action_label": "getup, stand"}
+{"clip": "RU02_SpiderQueenRobot_Spawn.npy", "action_group": "transition", "action_label": "getup"}
 {"clip": "RU02_SpiderQueenRobot_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt, shake"}
 {"clip": "RU02_SpiderQueenRobot_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left"}
 {"clip": "RU02_SpiderQueenRobot_TurnRight.npy", "action_group": "transition", "action_label": "turn, right"}
@@ -2378,10 +2378,10 @@
 {"clip": "RU02_SpiderlingRobot_CastSpell.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "RU02_SpiderlingRobot_Die.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "RU02_SpiderlingRobot_HeadAttack.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "RU02_SpiderlingRobot_Idle.npy", "action_group": "stationary", "action_label": "idle, rest"}
+{"clip": "RU02_SpiderlingRobot_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "RU02_SpiderlingRobot_ProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, crouch"}
 {"clip": "RU02_SpiderlingRobot_RunForward.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "RU02_SpiderlingRobot_Spawn.npy", "action_group": "stationary", "action_label": "idle, rest"}
+{"clip": "RU02_SpiderlingRobot_Spawn.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "RU02_SpiderlingRobot_StabAttack.npy", "action_group": "stationary", "action_label": "attack"}
 {"clip": "RU02_SpiderlingRobot_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt, shake, stand"}
 {"clip": "RU02_SpiderlingRobot_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left"}
@@ -2390,7 +2390,7 @@
 {"clip": "RU02_SpikeRobot_CastSpell.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "RU02_SpikeRobot_Die.npy", "action_group": "transition", "action_label": "die"}
 {"clip": "RU02_SpikeRobot_HeadAttack.npy", "action_group": "stationary", "action_label": "attack, forward"}
-{"clip": "RU02_SpikeRobot_HideToIdle.npy", "action_group": "transition", "action_label": "idle, getup, stand"}
+{"clip": "RU02_SpikeRobot_HideToIdle.npy", "action_group": "transition", "action_label": "idle, getup"}
 {"clip": "RU02_SpikeRobot_Hide.npy", "action_group": "stationary", "action_label": "idle, crouch"}
 {"clip": "RU02_SpikeRobot_Idle.npy", "action_group": "stationary", "action_label": "idle"}
 {"clip": "RU02_SpikeRobot_ProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, crouch, forward"}
