@@ -36,7 +36,7 @@ import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 THIS_DIR = Path(__file__).resolve().parent      # .../dataset/review
 DATASET_ROOT = THIS_DIR.parent                  # .../dataset
@@ -76,6 +76,22 @@ def discover_datasets(datasets_file):
             "gif_dir": gif_dir,
         })
     return out
+
+
+def _bvhview_href(ds, clip):
+    """Build a ``bvhview://open?--reuse&url=…`` link to a clip's ``.bvh``.
+
+    Each processed dataset keeps its clips' BVH files under ``bvhs/`` named by
+    the clip's stem (``Alligator_BigMouth.npy`` -> ``bvhs/Alligator_BigMouth.bvh``).
+    Returns None when the file is missing so the page can fall back to a plain
+    label. ``Path.as_uri()`` already percent-encodes ``#``, so the file URI is
+    used directly -- no second quote() pass (that would double-encode it).
+    """
+    stem = clip[:-4] if clip.lower().endswith(".npy") else clip
+    bvh = Path(ds["processed"]) / "bvhs" / f"{stem}.bvh"
+    if not bvh.is_file():
+        return None
+    return f"bvhview://open?--reuse&url={bvh.as_uri()}"
 
 
 class LabelStore:
@@ -201,7 +217,10 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- routes ----------------------------------------------------------
     def do_GET(self):
-        path = urlparse(self.path).path
+        # The browser builds GIF paths with encodeURIComponent(dataset_id), so a
+        # namespace id like "truebones/zoo" arrives percent-encoded ("%2F"); decode
+        # the path before routing so prefix/segment matching sees real slashes.
+        path = unquote(urlparse(self.path).path)
         if path in ("/", "/index.html"):
             try:
                 body = INDEX.read_bytes()
@@ -230,12 +249,17 @@ class Handler(BaseHTTPRequestHandler):
             ds, store = self._store_and_dataset(self._query().get("ds"))
             if ds is None:
                 return self._send_json(500, {"error": "no datasets configured"})
+            # Each row gets a bvhview:// href to its .bvh so the grid can open the
+            # motion in the BVH viewer by clicking the clip name (null when absent).
+            rows = store.snapshot()
+            for row in rows:
+                row["bvhview"] = _bvhview_href(ds, row["clip"])
             return self._send_json(200, {
                 "id": ds["id"],
                 "name": ds["name"],
                 "labels_path": str(ds["labels"]),
                 "gif_dir": str(ds["gif_dir"]),
-                "rows": store.snapshot(),
+                "rows": rows,
             })
 
         if path.startswith("/gif/"):
@@ -305,7 +329,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(400, {"error": str(exc)})
         except OSError as exc:
             return self._send_json(500, {"error": f"write failed: {exc}"})
-        return self._send_json(200, {"row": row, "dataset": ds["id"]})
+        # Mirror /api/labels: include the bvhview href so the frontend's save()
+        # re-render keeps the clip name clickable after an edit.
+        out = dict(row)
+        out["bvhview"] = _bvhview_href(ds, out["clip"])
+        return self._send_json(200, {"row": out, "dataset": ds["id"]})
 
 
 def main():
