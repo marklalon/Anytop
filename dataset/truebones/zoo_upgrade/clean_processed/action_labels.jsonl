@@ -36,7 +36,6 @@
 {"clip": "Bear_Sprint.npy", "action_group": "locomotion", "action_label": "run, sprint, forward", "reviewed": true}
 {"clip": "Bear_Stand.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Bear_StandAngryBreathing.npy", "action_group": "stationary", "action_label": "idle, strafe", "reviewed": true}
-{"clip": "Bear_StandAngryBreathing2.npy", "action_group": "stationary", "action_label": "idle", "pending_delete": true}
 {"clip": "Bear_StandBreathing.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Bear_StandEating.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
 {"clip": "Bear_StandToHind.npy", "action_group": "transition", "action_label": "idle, rear", "reviewed": true}
@@ -116,7 +115,6 @@
 {"clip": "Donkey_Trot.npy", "action_group": "locomotion", "action_label": "walk, trot, forward", "reviewed": true}
 {"clip": "Donkey_WakeUp.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
 {"clip": "Donkey_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
-{"clip": "Donkey_Wound.npy", "action_group": "transition", "action_label": "hurt, getup", "pending_delete": true}
 {"clip": "Elephant_AtkL.npy", "action_group": "stationary", "action_label": "attack, left", "reviewed": true}
 {"clip": "Elephant_AtkR.npy", "action_group": "stationary", "action_label": "attack, right", "reviewed": true}
 {"clip": "Elephant_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
@@ -196,7 +194,6 @@
 {"clip": "Rabbit_Idle2.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Rabbit_Idle3.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
 {"clip": "Rabbit_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "Rabbit_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "pending_delete": true}
 {"clip": "Rabbit2_Death.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Rabbit2_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Rabbit2_Jog.npy", "action_group": "locomotion", "action_label": "run, jump, forward", "reviewed": true}
