@@ -294,6 +294,17 @@ const stripNpy = (clip) => clip.replace(/\.npy$/i, '');
 // GIF lives under /gif/<dataset id>/<clip>.gif on the server.
 const gifOf = (clip) => 'gif/' + encodeURIComponent(ds) + '/' + stripNpy(clip) + '.gif';
 
+// Normalize an action_label to "action, word1, word2, ...": lowercase, split
+// on comma-family separators (ASCII / full-width / CJK / semicolons), drop
+// empty parts, rejoin with a single ", " -- mirrors the server's
+// normalize_action_label so the page shows exactly what gets saved.
+const normalizeLabel = (s) =>
+  String(s).toLowerCase()
+    .split(/[,，、;；]+/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .join(', ');
+
 function toast(msg) {
   const el = $('toast');
   el.textContent = msg;
@@ -474,7 +485,7 @@ function card(row) {
   const label = document.createElement('div');
   label.className = 'label';
   label.textContent = row.action_label;
-  label.title = '点击修改';
+  label.title = '点击修改（保存时规范化为小写 "action, word1, word2" 格式）';
   label.onclick = () => edit(el, row, label);
   bar.appendChild(label);
 
@@ -508,7 +519,7 @@ function edit(el, row, label) {
   const finish = (commit) => {
     if (closed) return;
     closed = true;
-    const next = input.value.trim();
+    const next = normalizeLabel(input.value);
     input.replaceWith(label);
     if (commit && next && next !== row.action_label) save(el, row, { action_label: next });
   };

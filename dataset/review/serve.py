@@ -27,11 +27,16 @@ tool built on it -- down with it. Retiring a clip is spelled
 so the marked rows stay loadable until the clip is actually removed from
 ``motions/`` and ``motion_metadata.json``.
 
+``action_label`` edits are normalized before being written: tokens are
+lowercased and re-joined as ``action, word1, word2, ...`` with a single
+", " between them, so stray spaces and doubled commas never reach the file.
+
     python serve.py [--port 8765] [--datasets ../datasets.jsonl] [--no-browser]
 """
 import argparse
 import json
 import os
+import re
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -43,6 +48,18 @@ DATASET_ROOT = THIS_DIR.parent                  # .../dataset
 ANYTOP_ROOT = DATASET_ROOT.parent               # .../Anytop
 INDEX = THIS_DIR / "index.html"
 DEFAULT_DATASETS = DATASET_ROOT / "datasets.jsonl"
+
+
+def normalize_action_label(value):
+    """Normalize an ``action_label`` to ``action, word1, word2, ...``.
+
+    Splits on comma-family separators (ASCII / full-width comma, CJK
+    enumeration comma, semicolons), drops empty parts, lowercases every
+    token, and re-joins with a single ", " so no stray spaces or doubled
+    commas survive an edit.
+    """
+    parts = re.split(r"[,，、;；]+", str(value))
+    return ", ".join(p.strip().lower() for p in parts if p.strip())
 
 
 def discover_datasets(datasets_file):
@@ -114,9 +131,24 @@ class LabelStore:
             line = line.strip()
             if line:
                 rows.append(json.loads(line))
+        # Force-normalize every action_label on each load (in particular at
+        # startup) so the file itself is rewritten in the canonical
+        # "action, word1, word2, ..." form, not just in memory.
+        changed = False
+        for row in rows:
+            label = row.get("action_label")
+            if label is None:
+                continue
+            norm = normalize_action_label(label)
+            if norm and norm != label:   # keep the original if it would empty out
+                row["action_label"] = norm
+                changed = True
         self.rows = rows
         self.index = {row["clip"]: row for row in rows}
-        self.mtime = self.path.stat().st_mtime_ns
+        if changed:
+            self._write()
+        else:
+            self.mtime = self.path.stat().st_mtime_ns
 
     def _reload_if_stale(self):
         if self.path.stat().st_mtime_ns != self.mtime:
@@ -304,7 +336,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(400, {"error": "clip is required"})
         label = payload.get("action_label")
         if label is not None:
-            label = str(label).strip()
+            label = normalize_action_label(label)
             if not label:
                 return self._send_json(400, {"error": "action_label must not be empty"})
         group = payload.get("action_group")
