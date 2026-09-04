@@ -31,14 +31,25 @@ so the marked rows stay loadable until the clip is actually removed from
 lowercased and re-joined as ``action, word1, word2, ...`` with a single
 ", " between them, so stray spaces and doubled commas never reach the file.
 
+The header's "clean" button turns those marks into a real removal: every
+``pending_delete`` row of the active dataset has its source file (looked up in
+``motion_metadata.json``) *moved* -- never unlinked -- under ``--trash``
+(default ``E:\\Dataset\\Temp``), its review GIF deleted, and its row dropped
+from ``action_labels.jsonl``. ``motions/`` and ``motion_metadata.json`` are left
+alone: the clip drops out of them on the next preprocess, which no longer finds
+a source file. Every move is appended to ``<trash>/soft_deleted.jsonl`` so it
+can be traced back and undone by hand.
+
     python serve.py [--port 8765] [--datasets ../datasets.jsonl] [--no-browser]
 """
 import argparse
 import json
 import os
 import re
+import shutil
 import threading
 import webbrowser
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -48,6 +59,21 @@ DATASET_ROOT = THIS_DIR.parent                  # .../dataset
 ANYTOP_ROOT = DATASET_ROOT.parent               # .../Anytop
 INDEX = THIS_DIR / "index.html"
 DEFAULT_DATASETS = DATASET_ROOT / "datasets.jsonl"
+
+# Where "clean" parks the source file of a retired clip (--trash overrides it).
+TRASH_ROOT = Path(r"E:\Dataset\Temp")
+
+# How a source path is mirrored under the trash root. The archive drive
+# ``E:\Dataset`` is the reference layout -- a file already living there keeps its
+# path verbatim -- and the two in-repo mirrors map back onto the names that drive
+# uses, so ``...\truebones\zoo\Truebone_Z-OO\Alligator\x.glb`` lands in
+# ``<trash>\Truebone_Z-OO\Alligator\x.glb``. That reproduces exactly the
+# directories that were soft-deleted by hand before this button existed.
+SOURCE_MIRRORS = [
+    (Path(r"E:\Dataset"), ""),
+    (ANYTOP_ROOT / "dataset" / "truebones" / "zoo", ""),
+    (ANYTOP_ROOT / "dataset" / "truebones" / "zoo_upgrade", "Truebones_Zoo_Upgrade"),
+]
 
 
 def normalize_action_label(value):
@@ -60,6 +86,82 @@ def normalize_action_label(value):
     """
     parts = re.split(r"[,，、;；]+", str(value))
     return ", ".join(p.strip().lower() for p in parts if p.strip())
+
+
+def clip_stem(clip):
+    """``Alligator_Bite1.npy`` -> ``Alligator_Bite1`` (the GIF / BVH basename)."""
+    return clip[:-4] if clip.lower().endswith(".npy") else clip
+
+
+def _archive_target(src):
+    """Map a source file to its slot under the trash root.
+
+    Returns ``(dest, mapped)``; ``mapped`` is False when no SOURCE_MIRRORS entry
+    covers the path, in which case the whole path (drive letter turned into a
+    folder) is kept under ``_unmapped/`` so the file is still recoverable and
+    the caller can say so.
+    """
+    best = None
+    for root, mirror in SOURCE_MIRRORS:
+        try:
+            rel = src.relative_to(root)
+        except ValueError:
+            continue
+        if best is None or len(root.parts) > len(best[0].parts):
+            best = (root, Path(mirror) / rel)
+    if best is None:
+        anchor = src.drive.replace(":", "").replace("\\", "_").strip("_") or "unc"
+        return TRASH_ROOT / "_unmapped" / anchor / Path(*src.parts[1:]), False
+    return TRASH_ROOT / best[1], True
+
+
+def _free_name(dest):
+    """``a.glb`` -> ``a (2).glb`` ... so an archived file never overwrites one."""
+    if not dest.exists():
+        return dest
+    n = 2
+    while True:
+        cand = dest.with_name(f"{dest.stem} ({n}){dest.suffix}")
+        if not cand.exists():
+            return cand
+        n += 1
+
+
+def archive_source(src):
+    """Move one clip's source file under the trash root.
+
+    Returns ``(dest, note)``. ``dest`` is None when there was nothing to move --
+    the file is already gone, or already sits under the trash root -- and
+    ``note`` says which case it was ("" when the move was a plain success).
+    Raises OSError when the move itself fails.
+    """
+    src = Path(src)
+    try:
+        if src.resolve().is_relative_to(TRASH_ROOT.resolve()):
+            return None, "源文件已在回收目录里"
+    except OSError:
+        pass
+    if not src.exists():
+        return None, "源文件已不存在"
+    dest, mapped = _archive_target(src)
+    dest = _free_name(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src), str(dest))
+    return dest, "" if mapped else "路径不在已知数据根下，已放进 _unmapped/"
+
+
+def record_archive(entries):
+    """Append one JSON line per archived file so a move can be traced back."""
+    if not entries:
+        return
+    log = TRASH_ROOT / "soft_deleted.jsonl"
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a", encoding="utf-8", newline="\n") as fh:
+            for entry in entries:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass    # the manifest is a convenience; never fail a clean over it
 
 
 def discover_datasets(datasets_file):
@@ -91,6 +193,7 @@ def discover_datasets(datasets_file):
             "processed": str(processed),
             "labels": labels,
             "gif_dir": gif_dir,
+            "metadata": processed / "motion_metadata.json",
         })
     return out
 
@@ -193,6 +296,19 @@ class LabelStore:
             self._write()
             return dict(row)
 
+    def delete(self, clips):
+        """Drop rows by clip name in a single rewrite; returns how many went."""
+        with self.lock:
+            self._reload_if_stale()
+            drop = set(clips)
+            keep = [row for row in self.rows if row["clip"] not in drop]
+            removed = len(self.rows) - len(keep)
+            if removed:
+                self.rows = keep
+                self.index = {row["clip"]: row for row in keep}
+                self._write()
+            return removed
+
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -275,7 +391,8 @@ class Handler(BaseHTTPRequestHandler):
                     "reviewed": sum(1 for r in rows if r.get("reviewed")),
                     "pending": sum(1 for r in rows if r.get("pending_delete")),
                 })
-            return self._send_json(200, {"datasets": payload})
+            return self._send_json(200, {"datasets": payload,
+                                         "trash_root": str(TRASH_ROOT)})
 
         if path == "/api/labels":
             ds, store = self._store_and_dataset(self._query().get("ds"))
@@ -320,13 +437,16 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json(404, {"error": "not found"})
 
     def do_POST(self):
-        if urlparse(self.path).path != "/api/update":
+        route = urlparse(self.path).path
+        if route not in ("/api/update", "/api/clean"):
             return self._send_json(404, {"error": "not found"})
         try:
             length = int(self.headers.get("Content-Length") or 0)
             payload = json.loads(self.rfile.read(length) or b"{}")
         except (ValueError, TypeError) as exc:
             return self._send_json(400, {"error": f"bad request: {exc}"})
+        if route == "/api/clean":
+            return self._clean(payload)
 
         ds, store = self._store_and_dataset(payload.get("dataset") or payload.get("ds"))
         if ds is None:
@@ -367,15 +487,101 @@ class Handler(BaseHTTPRequestHandler):
         out["bvhview"] = _bvhview_href(ds, out["clip"])
         return self._send_json(200, {"row": out, "dataset": ds["id"]})
 
+    def _clean(self, payload):
+        """Retire every ``pending_delete`` clip of one dataset, for real.
+
+        Per clip: move its source file under the trash root, delete its review
+        GIF, then drop its row from action_labels.jsonl (one rewrite for the
+        whole batch). A clip whose source cannot be located, or whose source is
+        still shared with a clip that is staying, is skipped with a reason and
+        keeps its mark -- dropping the row while leaving the source in place
+        would only resurrect the clip on the next preprocess.
+        """
+        ds, store = self._store_and_dataset(payload.get("dataset") or payload.get("ds"))
+        if ds is None:
+            return self._send_json(400, {"error": "no datasets configured"})
+        pending = [r["clip"] for r in store.snapshot() if r.get("pending_delete")]
+        result = {
+            "dataset": ds["id"],
+            "processed": ds["processed"],
+            "trash_root": str(TRASH_ROOT),
+            "cleaned": [], "moved": 0, "gifs": 0, "removed": 0,
+            "skipped": [], "notes": [],
+        }
+        if not pending:
+            return self._send_json(200, result)
+
+        try:
+            motions = json.loads(ds["metadata"].read_text(encoding="utf-8"))["motions"]
+        except (OSError, ValueError, KeyError) as exc:
+            return self._send_json(500, {"error": f"读取 {ds['metadata']} 失败：{exc}"})
+
+        users = {}      # source_fbx_path -> [clip, ...]
+        for clip, meta in motions.items():
+            src = (meta or {}).get("source_fbx_path")
+            if src:
+                users.setdefault(src, []).append(clip)
+
+        marked = set(pending)
+        stamp = datetime.now().isoformat(timespec="seconds")
+        archived = []
+        for clip in pending:
+            src = (motions.get(clip) or {}).get("source_fbx_path")
+            if not src:
+                result["skipped"].append(
+                    {"clip": clip, "reason": "motion_metadata.json 里查不到 source_fbx_path"})
+                continue
+            shared = [c for c in users.get(src, []) if c not in marked]
+            if shared:
+                result["skipped"].append(
+                    {"clip": clip,
+                     "reason": f"源文件仍被保留的 {clip_stem(shared[0])} 等 {len(shared)} 个 clip 使用"})
+                continue
+            try:
+                dest, note = archive_source(src)
+            except OSError as exc:
+                result["skipped"].append({"clip": clip, "reason": f"移动源文件失败：{exc}"})
+                continue
+            if dest is not None:
+                result["moved"] += 1
+                archived.append({"when": stamp, "dataset": ds["id"], "clip": clip,
+                                 "src": str(src), "dest": str(dest)})
+            if note:
+                result["notes"].append(f"{clip_stem(clip)}：{note}")
+
+            gif = ds["gif_dir"] / (clip_stem(clip) + ".gif")
+            try:
+                gif.unlink()
+                result["gifs"] += 1
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                # The GIF is a rendered artifact; a locked file must not keep the
+                # row -- and its already-archived source -- in the dataset.
+                result["notes"].append(f"{clip_stem(clip)}：GIF 删除失败：{exc}")
+            result["cleaned"].append(clip)
+
+        record_archive(archived)
+        try:
+            result["removed"] = store.delete(result["cleaned"])
+        except OSError as exc:
+            return self._send_json(500, {"error": f"写入 {ds['labels']} 失败：{exc}"})
+        return self._send_json(200, result)
+
 
 def main():
+    global TRASH_ROOT
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--datasets", default=str(DEFAULT_DATASETS),
                         help="datasets.jsonl manifest (default: %(default)s)")
+    parser.add_argument("--trash", default=str(TRASH_ROOT),
+                        help="where \"clean\" parks retired source files (default: %(default)s)")
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
+
+    TRASH_ROOT = Path(args.trash).expanduser()
 
     Handler.datasets = discover_datasets(args.datasets)
     if not Handler.datasets:
@@ -393,6 +599,7 @@ def main():
         gifs = len(list(d["gif_dir"].glob("*.gif"))) if d["gif_dir"].is_dir() else 0
         print(f"  {d['id']:<28} {done}/{len(rows)} reviewed, {pending} pending, {gifs} gifs")
     print(f"labels manifest : {Path(args.datasets).resolve()}")
+    print(f"clean trash dir : {TRASH_ROOT}")
     print(f"serving: {url}   (ctrl-c to stop)")
 
     class Server(ThreadingHTTPServer):

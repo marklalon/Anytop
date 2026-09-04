@@ -51,6 +51,8 @@
   button { cursor: pointer; }
   button:hover:not(:disabled) { border-color: var(--accent); }
   button:disabled { opacity: .4; cursor: default; }
+  button#clean:not(:disabled) { border-color: var(--warn); color: #ffb79c; }
+  button#clean:hover:not(:disabled) { background: #4a2f2a; }
   .counts { color: var(--dim); font-size: 12px; }
   .counts b { color: var(--text); font-weight: 600; }
 
@@ -215,6 +217,27 @@
     box-shadow: 0 3px 12px rgba(0,0,0,.5);
     display: none;
   }
+
+  /* Clean's report stays on screen until dismissed -- the "regenerate the
+     sidecar" reminder must not scroll away with a 3.5s toast. */
+  #notice {
+    position: sticky;
+    top: 51px;
+    z-index: 9;
+    padding: 10px 16px;
+    background: #33413a;
+    border-bottom: 1px solid #1c1c1c;
+    line-height: 1.6;
+  }
+  #notice.bad { background: #45302a; }
+  #notice .n-warn { color: #ffcf8f; }
+  #notice code {
+    background: #00000055; border-radius: 3px; padding: 1px 5px;
+    font-family: Consolas, "Courier New", monospace;
+    user-select: all;
+  }
+  #notice button { margin-top: 6px; }
+  #notice[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -239,6 +262,7 @@
   <span class="spacer"></span>
 
   <button id="refresh" title="重新读取数据（保留当前数据集 / action group / 状态 / 搜索筛选、页码与滚动位置）">刷新</button>
+  <button id="clean" disabled title="清理当前数据集所有标记为待删除的动作">清理待删除</button>
 
   <div class="pager">
     <button id="prev">上一页</button>
@@ -248,6 +272,7 @@
   </div>
 </header>
 
+<div id="notice" hidden></div>
 <main id="grid"></main>
 <div id="toast"></div>
 
@@ -261,6 +286,7 @@ let ds = null;      // currently selected dataset id (== the active action_label
 let rows = [];      // server truth for the active dataset, in jsonl order
 let view = [];      // current filtered subset
 let page = 1;
+let trashRoot = '';  // where "清理待删除" parks source files (server's --trash)
 
 // A page holds 100 animated GIFs; decoding them all at once is what kills the
 // tab. Only cards near the viewport carry a src -- the rest stay empty boxes.
@@ -319,7 +345,44 @@ function counts() {
   $('counts').innerHTML = '已核验 <b>' + done + '</b> / ' + rows.length +
     (pending ? ' &nbsp;·&nbsp; 待删除 <b>' + pending + '</b>' : '') +
     ' &nbsp;·&nbsp; 当前筛选 <b>' + view.length + '</b>';
+  const clean = $('clean');
+  clean.disabled = pending === 0 || clean.dataset.busy === '1';
+  clean.textContent = pending ? '清理待删除 (' + pending + ')' : '清理待删除';
 }
+
+// A sticky report bar. Unlike the toast it stays until dismissed, so the
+// post-clean "regenerate the sidecar" reminder cannot be missed.
+function notice(lines, bad) {
+  const el = $('notice');
+  el.textContent = '';
+  el.className = bad ? 'bad' : '';
+  for (const line of lines) {
+    const div = document.createElement('div');
+    if (typeof line === 'string') {
+      div.textContent = line;
+    } else {
+      div.className = line.cls || '';
+      div.textContent = line.text;
+      if (line.code) {
+        const code = document.createElement('code');
+        code.textContent = line.code;
+        div.append(' ', code);
+      }
+    }
+    el.appendChild(div);
+  }
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.textContent = '知道了';
+  close.onclick = () => { el.hidden = true; };
+  el.appendChild(close);
+  el.hidden = false;
+  // The header wraps on a narrow window, so pin the bar to its measured height
+  // instead of a constant -- otherwise it sticks *under* the header's second row.
+  el.style.top = document.querySelector('header').offsetHeight + 'px';
+}
+
+const dsOptionText = (d) => d.name + '（' + (d.gif_count ? d.gif_count : '无GIF') + '）';
 
 // Load the dataset <select> once, remembering the previous choice.
 async function loadDatasets() {
@@ -327,7 +390,9 @@ async function loadDatasets() {
   try {
     const res = await fetch('api/datasets', { cache: 'no-store' });
     if (!res.ok) throw new Error(res.status);
-    list = (await res.json()).datasets;
+    const payload = await res.json();
+    list = payload.datasets;
+    trashRoot = payload.trash_root || '';
   } catch (err) {
     toast('读取数据集清单失败：' + err.message + '（请通过 serve.py 打开本页）');
     return false;
@@ -344,12 +409,25 @@ async function loadDatasets() {
 
   const sel = $('dataset');
   sel.innerHTML = list.map(d =>
-    '<option value="' + d.id + '">' + d.name + '（' +
-    (d.gif_count ? d.gif_count : '无GIF') + '）</option>'
+    '<option value="' + d.id + '">' + dsOptionText(d) + '</option>'
   ).join('');
   sel.value = ds;
   $('counts').textContent = '';
   return true;
+}
+
+// Re-read the dataset list to refresh the GIF counts printed in the selector
+// (a clean deletes GIFs) without touching the current selection.
+async function refreshDatasetCounts() {
+  try {
+    const res = await fetch('api/datasets', { cache: 'no-store' });
+    if (!res.ok) return;
+    datasets = (await res.json()).datasets;
+    for (const opt of $('dataset').options) {
+      const d = datasets.find((x) => x.id === opt.value);
+      if (d) opt.textContent = dsOptionText(d);
+    }
+  } catch (err) { /* option labels only -- not worth a toast */ }
 }
 
 // keepView=true 时保留当前分页与滚动位置（刷新场景）；false 时回到第一页/顶部。
@@ -658,6 +736,60 @@ async function save(el, row, patch) {
   }
 }
 
+// Turn every pending_delete mark of the active dataset into a real removal:
+// the source file is moved into the trash dir, the review GIF is deleted, and
+// the row leaves action_labels.jsonl. Reloads afterwards so the counts on
+// screen (and the selector's GIF count) match what is left on disk.
+async function clean() {
+  const pending = rows.filter(isPending);
+  if (!pending.length) return;
+  const shown = pending.slice(0, 12).map(r => '  · ' + stripNpy(r.clip));
+  if (pending.length > shown.length) shown.push('  … 其余 ' + (pending.length - shown.length) + ' 个');
+  const ok = confirm(
+    '清理 ' + ds + ' 中 ' + pending.length + ' 个待删除动作：\n\n' +
+    shown.join('\n') + '\n\n' +
+    '1) 源文件移动到 ' + (trashRoot || '回收目录') + '（软删除，不是彻底删除）\n' +
+    '2) 删除 review/gif 下对应的 GIF\n' +
+    '3) 从 action_labels.jsonl 删除对应行\n\n继续？');
+  if (!ok) return;
+
+  const btn = $('clean');
+  btn.dataset.busy = '1';
+  btn.disabled = true;
+  btn.textContent = '清理中…';
+  let data;
+  try {
+    const res = await fetch('api/clean', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dataset: ds })
+    });
+    data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.status);
+  } catch (err) {
+    toast('清理失败：' + err.message);
+    return;
+  } finally {
+    delete btn.dataset.busy;
+    await refreshDatasetCounts();
+    await load(true);          // rows/counts/pager come back from the file itself
+  }
+
+  const lines = [
+    '已清理 ' + data.removed + ' 个动作：源文件归档 ' + data.moved + ' 个 → ' +
+    data.trash_root + '，删除 GIF ' + data.gifs + ' 个，action_labels.jsonl 移除 ' +
+    data.removed + ' 行。'
+  ];
+  for (const s of data.skipped) lines.push('跳过 ' + stripNpy(s.clip) + '：' + s.reason + '（标记保留）');
+  for (const n of data.notes) lines.push(n);
+  lines.push({
+    cls: 'n-warn',
+    text: '⚠ action_labels.jsonl 已变，请重新生成 sidecar（action_label_embs.npy），否则训练读到的还是旧标签：',
+    code: 'python tools/build_action_label_embeddings.py "' + data.processed + '" --force'
+  });
+  notice(lines, data.skipped.length > 0);
+}
+
 // Switching dataset resets the per-dataset filters and scrolls back to the top.
 function onDatasetChange() {
   const next = $('dataset').value;
@@ -670,6 +802,7 @@ function onDatasetChange() {
   $('state').value = 'all';
   $('q').value = '';
   page = 1;
+  $('notice').hidden = true;   // the report belongs to the dataset that produced it
   window.scrollTo({ top: 0 });
   load(false);
 }
@@ -685,6 +818,7 @@ $('prev').onclick = () => { page--; render(); };
 $('next').onclick = () => { page++; render(); };
 $('jump').onchange = () => { page = parseInt($('jump').value, 10) || 1; render(); };
 $('refresh').onclick = () => load(true);
+$('clean').onclick = clean;
 
 load();
 </script>
