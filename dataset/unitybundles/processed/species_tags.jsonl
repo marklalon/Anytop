@@ -31,9 +31,9 @@
 {"species": "MLS_Treeant", "species_tags": ["Biped", "Large", "Chibi Lumbering"]}
 {"species": "MU01_Bat", "species_tags": ["Winged", "Small", "Chibi Flapping"]}
 {"species": "MU01_BatLord", "species_tags": ["Winged", "Medium", "Chibi Flapping"]}
-{"species": "MU01_Bee", "species_tags": ["Winged", "Small", "Chibi Flapping"]}
+{"species": "MU01_Bee", "species_tags": ["Winged", "Small", "Chibi Fluttering"]}
 {"species": "MU01_Bird", "species_tags": ["Winged", "Medium", "Chibi Flapping"]}
-{"species": "MU01_Bumble", "species_tags": ["Winged", "Small", "Chibi Flapping"]}
+{"species": "MU01_Bumble", "species_tags": ["Winged", "Small", "Chibi Fluttering"]}
 {"species": "MU01_Chick", "species_tags": ["Biped", "Small", "Chibi Hopping"]}
 {"species": "MU01_Egglet", "species_tags": ["Biped", "Small", "Chibi Hopping"]}
 {"species": "MU01_Fledgling", "species_tags": ["Biped", "Small", "Chibi Hopping"]}
@@ -50,7 +50,7 @@
 {"species": "MU01_SpiderToxin", "species_tags": ["Multiped", "Medium", "Chibi Scuttling"]}
 {"species": "MU01_Spook", "species_tags": ["Drifting", "Small", "Chibi Hovering"]}
 {"species": "MU01_Sprout", "species_tags": ["Biped", "Small", "Chibi Waddling"]}
-{"species": "MU01_Sting", "species_tags": ["Winged", "Medium", "Chibi Flapping"]}
+{"species": "MU01_Sting", "species_tags": ["Winged", "Medium", "Chibi Fluttering"]}
 {"species": "MU01_Toadstool", "species_tags": ["Biped", "Medium", "Chibi Waddling"]}
 {"species": "MU01_VampireBat", "species_tags": ["Winged", "Medium", "Chibi Flapping"]}
 {"species": "MU04_Earthworm", "species_tags": ["Serpentine", "Medium", "Chibi Slithering"]}
@@ -84,7 +84,7 @@
 {"species": "MU06_Wind", "species_tags": ["Drifting", "Medium", "Chibi Whirling"]}
 {"species": "MU06_WindMage", "species_tags": ["Drifting", "Large", "Chibi Hovering"]}
 {"species": "PC_PolygonalDragon", "species_tags": ["Winged", "Heavy", "Soaring"]}
-{"species": "PC_PolygonalGiantBee", "species_tags": ["Winged", "Small", "Flapping"]}
+{"species": "PC_PolygonalGiantBee", "species_tags": ["Winged", "Small", "Fluttering"]}
 {"species": "PC_PolygonalGolem", "species_tags": ["Biped", "Medium", "Plodding"]}
 {"species": "PC_PolygonalKingCobra", "species_tags": ["Serpentine", "Large", "Slithering"]}
 {"species": "PC_PolygonalMagma", "species_tags": ["Drifting", "Small", "Hovering"]}

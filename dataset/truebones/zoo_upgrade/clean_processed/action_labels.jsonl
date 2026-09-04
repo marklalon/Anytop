@@ -80,7 +80,7 @@
 {"clip": "Crocodile_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "Crow_Clearing.npy", "action_group": "stationary", "action_label": "idle, cleaning", "reviewed": true}
 {"clip": "Crow_Eat.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
-{"clip": "Crow_Fly.npy", "action_group": "locomotion", "action_label": "fly, flap, forward", "reviewed": true}
+{"clip": "Crow_Fly.npy", "action_group": "locomotion", "action_label": "fly, forward", "reviewed": true}
 {"clip": "Crow_Glide.npy", "action_group": "locomotion", "action_label": "fly, glide, forward", "reviewed": true}
 {"clip": "Crow_Look.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
 {"clip": "Crow_RunJump.npy", "action_group": "locomotion", "action_label": "run, jump, forward", "reviewed": true}
@@ -218,7 +218,7 @@
 {"clip": "scorpion_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "Seagull_Clearing.npy", "action_group": "stationary", "action_label": "idle, cleaning", "reviewed": true}
 {"clip": "Seagull_Eat.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
-{"clip": "Seagull_Fly.npy", "action_group": "locomotion", "action_label": "fly, flap, forward", "reviewed": true}
+{"clip": "Seagull_Fly.npy", "action_group": "locomotion", "action_label": "fly, forward", "reviewed": true}
 {"clip": "Seagull_Glide.npy", "action_group": "locomotion", "action_label": "fly, glide, forward", "reviewed": true}
 {"clip": "Seagull_Look.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
 {"clip": "Seagull_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
