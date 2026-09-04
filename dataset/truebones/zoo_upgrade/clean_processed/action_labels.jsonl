@@ -209,7 +209,7 @@
 {"clip": "rhino_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "scorpion_AtkDown.npy", "action_group": "stationary", "action_label": "attack", "reviewed": true}
 {"clip": "scorpion_AtkMid.npy", "action_group": "stationary", "action_label": "attack", "reviewed": true}
-{"clip": "scorpion_AtkSpecial.npy", "action_group": "stationary", "action_label": "attack, special", "reviewed": true}
+{"clip": "scorpion_AtkSpecial.npy", "action_group": "stationary", "action_label": "attack, swipe", "reviewed": true}
 {"clip": "scorpion_AtkUp.npy", "action_group": "stationary", "action_label": "attack, sting", "reviewed": true}
 {"clip": "scorpion_Death.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "scorpion_Despawn.npy", "action_group": "transition", "action_label": "burrow", "reviewed": true}

@@ -1,19 +1,19 @@
-Alligator_Walk2_2
-Alligator_Walk3_1
-Ant_DieLoop_1
-Horse_Lying_1
-Mammoth_DeathLoop_1
-Raptor2_IdleLookRight_1
-Raptor2_IdleRight_1
-Raptor3_LeftPuke_1
-SabreToothTiger_180Flip_1
-SabreToothTiger_180RIght_1
-SabreToothTiger_Slow180_1
-Scorpion-2_BellyDeath_1
-Scorpion-2_Death_2
-Scorpion-2_OnBackDying_1
-Spider_Gliding_1
-SpiderG_Die_2
+Alligator_Walk2
+Alligator_Walk3
+Ant_DieLoop
+Horse_Lying
+Mammoth_DeathLoop
+Raptor2_IdleLookRight
+Raptor2_IdleRight
+Raptor3_LeftPuke
+SabreToothTiger_180Flip
+SabreToothTiger_180RIght
+SabreToothTiger_Slow180
+Scorpion-2_BellyDeath
+Scorpion-2_Death
+Scorpion-2_OnBackDying
+Spider_Gliding
+SpiderG_Die
 # Bat: orientation calculation fell back to the across-vector heuristic
 # Crab: orientation calculation fell back to the across-vector heuristic
 # skeleton exceeds MAX_JOINTS (143 > 100) for Dragon

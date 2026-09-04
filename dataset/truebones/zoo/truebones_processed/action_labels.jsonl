@@ -873,7 +873,6 @@
 {"clip": "Spider_Jump.npy", "action_group": "stationary", "action_label": "jump", "reviewed": true}
 {"clip": "Spider_LandinHAir.npy", "action_group": "transition", "action_label": "land, run", "reviewed": true}
 {"clip": "Spider_Landing.npy", "action_group": "transition", "action_label": "jump, land", "reviewed": true}
-{"clip": "Spider_Rearing.npy", "action_group": "stationary", "action_label": "idle, pull", "reviewed": true}
 {"clip": "Spider_RetreatInjured.npy", "action_group": "locomotion", "action_label": "walk, hurt, backward", "reviewed": true}
 {"clip": "Spider_Retreat.npy", "action_group": "locomotion", "action_label": "walk, retreat, backward", "reviewed": true}
 {"clip": "Spider_Riser.npy", "action_group": "transition", "action_label": "jump", "reviewed": true}
