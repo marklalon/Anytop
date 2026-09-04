@@ -51,7 +51,7 @@
 {"clip": "Ant_Throw.npy", "action_group": "stationary", "action_label": "attack, throw", "reviewed": true}
 {"clip": "Ant_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "Bat_AttackBite.npy", "action_group": "stationary", "action_label": "attack, flap", "reviewed": true}
-{"clip": "Bat_Float.npy", "action_group": "stationary", "action_label": "idle, flap", "reviewed": true}
+{"clip": "Bat_Float.npy", "action_group": "stationary", "action_label": "idle, flap, hover", "reviewed": true}
 {"clip": "Bat_FlyGlide.npy", "action_group": "locomotion", "action_label": "fly, flap, glide, forward", "reviewed": true}
 {"clip": "Bat_FlyLoop.npy", "action_group": "locomotion", "action_label": "fly, flap, forward", "reviewed": true}
 {"clip": "Bat_Fly.npy", "action_group": "locomotion", "action_label": "fly, flap, forward", "reviewed": true}
@@ -149,10 +149,10 @@
 {"clip": "Buzzard_Attack2.npy", "action_group": "stationary", "action_label": "attack, flap, bite", "reviewed": true}
 {"clip": "Buzzard_Attack3.npy", "action_group": "stationary", "action_label": "attack, flap, kick", "reviewed": true}
 {"clip": "Buzzard_Die1.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "Buzzard_Dying.npy", "action_group": "stationary", "action_label": "fly, flap, hurt", "reviewed": true}
-{"clip": "Buzzard_FlyLoop.npy", "action_group": "stationary", "action_label": "fly, flap, hover", "reviewed": true}
+{"clip": "Buzzard_Dying.npy", "action_group": "stationary", "action_label": "idle, flap, hover, slow", "reviewed": true}
+{"clip": "Buzzard_FlyLoop.npy", "action_group": "stationary", "action_label": "idle, flap, hover", "reviewed": true}
 {"clip": "Buzzard_SlowFly.npy", "action_group": "locomotion", "action_label": "fly, flap, slow, forward", "reviewed": true}
-{"clip": "Buzzard_SlowLoop.npy", "action_group": "locomotion", "action_label": "fly, flap, hover", "reviewed": true}
+{"clip": "Buzzard_SlowLoop.npy", "action_group": "stationary", "action_label": "idle, flap, hover", "reviewed": true}
 {"clip": "Buzzard_SlowtoLand.npy", "action_group": "transition", "action_label": "fly, flap, land", "pending_delete": true}
 {"clip": "Buzzard_Soaring.npy", "action_group": "locomotion", "action_label": "fly, flap, forward", "reviewed": true}
 {"clip": "Camel_Bite.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
@@ -340,7 +340,7 @@
 {"clip": "Dragon_WyvernIdle2.npy", "action_group": "stationary", "action_label": "idle, flap, hover", "reviewed": true}
 {"clip": "Dragon_WyvernIdle3.npy", "action_group": "stationary", "action_label": "idle, flap, hover", "reviewed": true}
 {"clip": "Dragon_WyvernIdle.npy", "action_group": "stationary", "action_label": "idle, flap, roar", "reviewed": true}
-{"clip": "Dragon_WyvernSlowFly.npy", "action_group": "locomotion", "action_label": "fly, flap, hover", "reviewed": true}
+{"clip": "Dragon_WyvernSlowFly.npy", "action_group": "locomotion", "action_label": "fly, flap, slow, forward", "reviewed": true}
 {"clip": "Eagle_EggSteal.npy", "action_group": "stationary", "action_label": "attack, flap, kick", "reviewed": true}
 {"clip": "Eagle_FloatDown.npy", "action_group": "locomotion", "action_label": "fly, flap, down", "reviewed": true}
 {"clip": "Eagle_FloattUp.npy", "action_group": "locomotion", "action_label": "fly, flap, up", "reviewed": true}
@@ -423,7 +423,7 @@
 {"clip": "Giantbee_Die2.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Giantbee_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Giantbee_Fly.npy", "action_group": "locomotion", "action_label": "fly, flutter, forward", "reviewed": true}
-{"clip": "Giantbee_Idle2.npy", "action_group": "stationary", "action_label": "idle, flutter", "reviewed": true}
+{"clip": "Giantbee_Idle2.npy", "action_group": "stationary", "action_label": "idle, flutter, hover", "reviewed": true}
 {"clip": "Giantbee_Idle.npy", "action_group": "stationary", "action_label": "idle, flutter, hover", "reviewed": true}
 {"clip": "Goat_Attack.npy", "action_group": "stationary", "action_label": "attack, charge", "reviewed": true}
 {"clip": "Goat_Bleat.npy", "action_group": "stationary", "action_label": "idle, roar", "reviewed": true}
@@ -631,7 +631,7 @@
 {"clip": "Parrot_Die3.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Parrot_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Parrot_Fly.npy", "action_group": "locomotion", "action_label": "fly, flap, forward", "reviewed": true}
-{"clip": "Parrot_Hover.npy", "action_group": "locomotion", "action_label": "fly, flap, hover", "reviewed": true}
+{"clip": "Parrot_Hover.npy", "action_group": "stationary", "action_label": "idle, flap, hover", "reviewed": true}
 {"clip": "Parrot_Idle2.npy", "action_group": "stationary", "action_label": "idle, yawn", "reviewed": true}
 {"clip": "Parrot_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Parrot_Land.npy", "action_group": "transition", "action_label": "fly, land", "reviewed": true}
@@ -886,7 +886,7 @@
 {"clip": "Skunk_Idle3.npy", "action_group": "stationary", "action_label": "idle, yawn", "reviewed": true}
 {"clip": "Skunk_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Skunk_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
-{"clip": "Skunk_Spray.npy", "action_group": "stationary", "action_label": "attack, spin, spray", "reviewed": true}
+{"clip": "Skunk_Spray.npy", "action_group": "stationary", "action_label": "attack, spray", "reviewed": true}
 {"clip": "Skunk_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "SpiderG_Attack2.npy", "action_group": "stationary", "action_label": "attack, rear", "reviewed": true}
 {"clip": "SpiderG_Attack3.npy", "action_group": "stationary", "action_label": "attack, charge", "reviewed": true}
