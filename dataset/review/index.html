@@ -322,14 +322,17 @@ const gifOf = (clip) => 'gif/' + encodeURIComponent(ds) + '/' + stripNpy(clip) +
 
 // Normalize an action_label to "action, word1, word2, ...": lowercase, split
 // on comma-family separators (ASCII / full-width / CJK / semicolons), drop
-// empty parts, rejoin with a single ", " -- mirrors the server's
-// normalize_action_label so the page shows exactly what gets saved.
-const normalizeLabel = (s) =>
-  String(s).toLowerCase()
+// empty parts, drop repeated words (first occurrence kept), rejoin with a
+// single ", " -- mirrors the server's normalize_action_label so the page
+// shows exactly what gets saved.
+const normalizeLabel = (s) => {
+  const seen = new Set();
+  return String(s).toLowerCase()
     .split(/[,，、;；]+/)
     .map((p) => p.trim())
-    .filter(Boolean)
+    .filter((p) => (p && !seen.has(p) && seen.add(p)))
     .join(', ');
+};
 
 function toast(msg) {
   const el = $('toast');

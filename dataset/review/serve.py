@@ -28,8 +28,10 @@ so the marked rows stay loadable until the clip is actually removed from
 ``motions/`` and ``motion_metadata.json``.
 
 ``action_label`` edits are normalized before being written: tokens are
-lowercased and re-joined as ``action, word1, word2, ...`` with a single
-", " between them, so stray spaces and doubled commas never reach the file.
+lowercased, repeated words are dropped (first occurrence kept), and the
+tokens are re-joined as ``action, word1, word2, ...`` with a single ", "
+between them, so stray spaces, doubled commas or repeated words never reach
+the file.
 
 The header's "clean" button turns those marks into a real removal: every
 ``pending_delete`` row of the active dataset has its source file (looked up in
@@ -81,11 +83,20 @@ def normalize_action_label(value):
 
     Splits on comma-family separators (ASCII / full-width comma, CJK
     enumeration comma, semicolons), drops empty parts, lowercases every
-    token, and re-joins with a single ", " so no stray spaces or doubled
-    commas survive an edit.
+    token, drops repeated words (first occurrence kept), and re-joins with a
+    single ", " so no stray spaces, doubled commas or repeated words survive
+    an edit.
     """
     parts = re.split(r"[,，、;；]+", str(value))
-    return ", ".join(p.strip().lower() for p in parts if p.strip())
+    seen = set()
+    out = []
+    for part in parts:
+        token = part.strip().lower()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return ", ".join(out)
 
 
 def clip_stem(clip):
