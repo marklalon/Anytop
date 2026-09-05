@@ -740,9 +740,10 @@ async function save(el, row, patch) {
 }
 
 // Turn every pending_delete mark of the active dataset into a real removal:
-// the source file is moved into the trash dir, the review GIF is deleted, and
-// the row leaves action_labels.jsonl. Reloads afterwards so the counts on
-// screen (and the selector's GIF count) match what is left on disk.
+// the source file is moved into the trash dir, the clip's motion NPY and its
+// BVH are deleted outright, the review GIF is deleted, and the row leaves
+// action_labels.jsonl. Reloads afterwards so the counts on screen (and the
+// selector's GIF count) match what is left on disk.
 async function clean() {
   const pending = rows.filter(isPending);
   if (!pending.length) return;
@@ -752,8 +753,9 @@ async function clean() {
     '清理 ' + ds + ' 中 ' + pending.length + ' 个待删除动作：\n\n' +
     shown.join('\n') + '\n\n' +
     '1) 源文件移动到 ' + (trashRoot || '回收目录') + '（软删除，不是彻底删除）\n' +
-    '2) 删除 review/gif 下对应的 GIF\n' +
-    '3) 从 action_labels.jsonl 删除对应行\n\n继续？');
+    '2) 直接删除 motions/ 下对应的 NPY、bvhs/ 下对应的 BVH\n' +
+    '3) 删除 review/gif 下对应的 GIF\n' +
+    '4) 从 action_labels.jsonl 删除对应行\n\n继续？');
   if (!ok) return;
 
   const btn = $('clean');
@@ -780,8 +782,8 @@ async function clean() {
 
   const lines = [
     '已清理 ' + data.removed + ' 个动作：源文件归档 ' + data.moved + ' 个 → ' +
-    data.trash_root + '，删除 GIF ' + data.gifs + ' 个，action_labels.jsonl 移除 ' +
-    data.removed + ' 行。'
+    data.trash_root + '，删除 NPY ' + data.npy + ' 个、BVH ' + data.bvh + ' 个、GIF ' +
+    data.gifs + ' 个，action_labels.jsonl 移除 ' + data.removed + ' 行。'
   ];
   for (const s of data.skipped) lines.push('跳过 ' + stripNpy(s.clip) + '：' + s.reason + '（标记保留）');
   for (const n of data.notes) lines.push(n);

@@ -36,11 +36,12 @@ the file.
 The header's "clean" button turns those marks into a real removal: every
 ``pending_delete`` row of the active dataset has its source file (looked up in
 ``motion_metadata.json``) *moved* -- never unlinked -- under ``--trash``
-(default ``E:\\Dataset\\Temp``), its review GIF deleted, and its row dropped
-from ``action_labels.jsonl``. ``motions/`` and ``motion_metadata.json`` are left
-alone: the clip drops out of them on the next preprocess, which no longer finds
-a source file. Every move is appended to ``<trash>/soft_deleted.jsonl`` so it
-can be traced back and undone by hand.
+(default ``E:\\Dataset\\Temp``), its processed ``motions/`` NPY and ``bvhs/`` BVH
+deleted outright, its review GIF deleted, and its row dropped from
+``action_labels.jsonl``. ``motion_metadata.json`` is left alone: the clip drops
+out of it on the next preprocess, which no longer finds a source file. Every
+source move is appended to ``<trash>/soft_deleted.jsonl`` so it can be traced
+back and undone by hand.
 
     python serve.py [--port 8765] [--datasets ../datasets.jsonl] [--no-browser]
 """
@@ -501,12 +502,15 @@ class Handler(BaseHTTPRequestHandler):
     def _clean(self, payload):
         """Retire every ``pending_delete`` clip of one dataset, for real.
 
-        Per clip: move its source file under the trash root, delete its review
-        GIF, then drop its row from action_labels.jsonl (one rewrite for the
-        whole batch). A clip whose source cannot be located, or whose source is
-        still shared with a clip that is staying, is skipped with a reason and
-        keeps its mark -- dropping the row while leaving the source in place
-        would only resurrect the clip on the next preprocess.
+        Per clip: move its source file under the trash root -- never unlinked,
+        so a mistaken clean is recoverable -- delete its ``motions/`` NPY and
+        ``bvhs/`` BVH outright (they are named by the clip's stem, so each is
+        unique to that clip and needs no sharing check), delete its review GIF,
+        and drop its row from action_labels.jsonl (one rewrite for the whole
+        batch). A clip whose source cannot be located, or whose source is still
+        shared with a clip that is staying, is skipped with a reason and keeps
+        its mark -- dropping the row while leaving the source in place would
+        only resurrect the clip on the next preprocess.
         """
         ds, store = self._store_and_dataset(payload.get("dataset") or payload.get("ds"))
         if ds is None:
@@ -516,7 +520,7 @@ class Handler(BaseHTTPRequestHandler):
             "dataset": ds["id"],
             "processed": ds["processed"],
             "trash_root": str(TRASH_ROOT),
-            "cleaned": [], "moved": 0, "gifs": 0, "removed": 0,
+            "cleaned": [], "moved": 0, "npy": 0, "bvh": 0, "gifs": 0, "removed": 0,
             "skipped": [], "notes": [],
         }
         if not pending:
@@ -559,6 +563,25 @@ class Handler(BaseHTTPRequestHandler):
                                  "src": str(src), "dest": str(dest)})
             if note:
                 result["notes"].append(f"{clip_stem(clip)}：{note}")
+
+            # Also retire the clip's processed data out of the dataset: its motion
+            # NPY and its BVH.  Both are named by the clip's stem, so each is unique
+            # to this clip (no sharing check).  Unlike the source file they are
+            # hard-deleted -- the archived source can rebuild them if ever needed.
+            npy_name = clip if clip.lower().endswith(".npy") else clip + ".npy"
+            for art, subdir, counter in (
+                (ds["processed"] / "motions" / npy_name, "motions", "npy"),
+                (ds["processed"] / "bvhs" / (clip_stem(clip) + ".bvh"), "bvhs", "bvh"),
+            ):
+                try:
+                    art.unlink()
+                    result[counter] += 1
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    # A locked artifact must not keep the row -- and its
+                    # already-archived source -- in the dataset.
+                    result["notes"].append(f"{clip_stem(clip)}：{subdir} 文件删除失败：{exc}")
 
             gif = ds["gif_dir"] / (clip_stem(clip) + ".gif")
             try:
