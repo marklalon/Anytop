@@ -37,11 +37,11 @@ The header's "clean" button turns those marks into a real removal: every
 ``pending_delete`` row of the active dataset has its source file (looked up in
 ``motion_metadata.json``) *moved* -- never unlinked -- under ``--trash``
 (default ``E:\\Dataset\\Temp``), its processed ``motions/`` NPY and ``bvhs/`` BVH
-deleted outright, its review GIF deleted, and its row dropped from
-``action_labels.jsonl``. ``motion_metadata.json`` is left alone: the clip drops
-out of it on the next preprocess, which no longer finds a source file. Every
-source move is appended to ``<trash>/soft_deleted.jsonl`` so it can be traced
-back and undone by hand.
+deleted outright, its review GIF deleted, its row dropped from
+``action_labels.jsonl``, and its entry dropped from ``motion_metadata.json``
+(``total_clips`` updated) -- so the dataset is loadable immediately, not just
+after the next preprocess. Every source move is appended to
+``<trash>/soft_deleted.jsonl`` so it can be traced back and undone by hand.
 
     python serve.py [--port 8765] [--datasets ../datasets.jsonl] [--no-browser]
 """
@@ -174,6 +174,34 @@ def record_archive(entries):
                 fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except OSError:
         pass    # the manifest is a convenience; never fail a clean over it
+
+
+def _write_metadata(path, payload):
+    """Atomically rewrite ``motion_metadata.json`` in the pipeline's canonical
+    format so only the changed entries differ from what preprocess wrote.
+
+    Mirrors ``data_loaders.truebones.truebones_utils.motion_labels
+    .write_motion_metadata`` (``indent=2``, ``sort_keys=True``, joined action
+    fields stripped, ``total_clips`` recomputed) without importing the
+    data-loader package -- the review server stays free of numpy.  The
+    ``schema_version`` is preserved from the file (default 6).
+    """
+    motions = payload.get("motions") or {}
+    dropped = ("action_group", "action_label", "action_tags", "species_label")
+    sanitized = {
+        name: {k: v for k, v in entry.items() if k not in dropped}
+        for name, entry in motions.items()
+        if isinstance(entry, dict)
+    }
+    out = {
+        "schema_version": payload.get("schema_version", 6),
+        "total_clips": len(sanitized),
+        "motions": dict(sorted(sanitized.items())),
+    }
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("w", encoding="utf-8", newline="\n") as fh:
+        json.dump(out, fh, indent=2, sort_keys=True)
+    os.replace(tmp, path)
 
 
 def discover_datasets(datasets_file):
@@ -506,11 +534,13 @@ class Handler(BaseHTTPRequestHandler):
         so a mistaken clean is recoverable -- delete its ``motions/`` NPY and
         ``bvhs/`` BVH outright (they are named by the clip's stem, so each is
         unique to that clip and needs no sharing check), delete its review GIF,
-        and drop its row from action_labels.jsonl (one rewrite for the whole
-        batch). A clip whose source cannot be located, or whose source is still
-        shared with a clip that is staying, is skipped with a reason and keeps
-        its mark -- dropping the row while leaving the source in place would
-        only resurrect the clip on the next preprocess.
+        drop its row from action_labels.jsonl (one rewrite for the whole batch),
+        and drop its entry from motion_metadata.json (``total_clips`` updated) --
+        so the dataset is loadable immediately, not just after the next
+        preprocess. A clip whose source cannot be located, or whose source is
+        still shared with a clip that is staying, is skipped with a reason and
+        keeps its mark -- dropping the row while leaving the source in place
+        would only resurrect the clip on the next preprocess.
         """
         ds, store = self._store_and_dataset(payload.get("dataset") or payload.get("ds"))
         if ds is None:
@@ -521,14 +551,17 @@ class Handler(BaseHTTPRequestHandler):
             "processed": ds["processed"],
             "trash_root": str(TRASH_ROOT),
             "cleaned": [], "moved": 0, "npy": 0, "bvh": 0, "gifs": 0, "removed": 0,
-            "skipped": [], "notes": [],
+            "metadata_clips": None, "skipped": [], "notes": [],
         }
         if not pending:
             return self._send_json(200, result)
 
         try:
-            motions = json.loads(ds["metadata"].read_text(encoding="utf-8"))["motions"]
-        except (OSError, ValueError, KeyError) as exc:
+            meta_payload = json.loads(ds["metadata"].read_text(encoding="utf-8"))
+            motions = meta_payload.get("motions")
+            if not isinstance(motions, dict):
+                return self._send_json(500, {"error": f"{ds['metadata']} 缺少 motions 字段"})
+        except (OSError, ValueError) as exc:
             return self._send_json(500, {"error": f"读取 {ds['metadata']} 失败：{exc}"})
 
         users = {}      # source_fbx_path -> [clip, ...]
@@ -569,9 +602,10 @@ class Handler(BaseHTTPRequestHandler):
             # to this clip (no sharing check).  Unlike the source file they are
             # hard-deleted -- the archived source can rebuild them if ever needed.
             npy_name = clip if clip.lower().endswith(".npy") else clip + ".npy"
+            processed = Path(ds["processed"])   # stored as str for JSON; join needs a Path
             for art, subdir, counter in (
-                (ds["processed"] / "motions" / npy_name, "motions", "npy"),
-                (ds["processed"] / "bvhs" / (clip_stem(clip) + ".bvh"), "bvhs", "bvh"),
+                (processed / "motions" / npy_name, "motions", "npy"),
+                (processed / "bvhs" / (clip_stem(clip) + ".bvh"), "bvhs", "bvh"),
             ):
                 try:
                     art.unlink()
@@ -596,6 +630,20 @@ class Handler(BaseHTTPRequestHandler):
             result["cleaned"].append(clip)
 
         record_archive(archived)
+
+        # Drop the cleaned clips from motion_metadata.json BEFORE dropping their
+        # label rows, so a partial failure can never leave a clip "in metadata
+        # but not in labels" -- the one direction that makes the dataset
+        # unloadable.  A leftover label row (the reverse) is not fatal.
+        if result["cleaned"]:
+            for clip in result["cleaned"]:
+                motions.pop(clip, None)
+            try:
+                _write_metadata(ds["metadata"], meta_payload)
+            except OSError as exc:
+                return self._send_json(500, {"error": f"写入 {ds['metadata']} 失败：{exc}"})
+            result["metadata_clips"] = len(motions)
+
         try:
             result["removed"] = store.delete(result["cleaned"])
         except OSError as exc:
