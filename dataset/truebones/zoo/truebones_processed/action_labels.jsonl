@@ -608,7 +608,6 @@
 {"clip": "Ostrich_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "Parrot2_IdleClean.npy", "action_group": "stationary", "action_label": "idle, cleaning", "reviewed": true}
 {"clip": "Parrot2_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
-{"clip": "Parrot_Attack.npy", "action_group": "stationary", "action_label": "attack, hover, roll", "reviewed": true}
 {"clip": "Parrot_Die2.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Parrot_Die3.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Parrot_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}

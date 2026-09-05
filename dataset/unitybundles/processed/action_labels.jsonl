@@ -235,7 +235,6 @@
 {"clip": "KI_Human_Jump01MidAir.npy", "action_group": "locomotion", "action_label": "jump, fall", "reviewed": true}
 {"clip": "KI_Human_Jump01.npy", "action_group": "stationary", "action_label": "jump", "reviewed": true}
 {"clip": "KI_Human_LandRoll01Run.npy", "action_group": "transition", "action_label": "land, roll", "reviewed": true}
-{"clip": "KI_Human_LandRoll01.npy", "action_group": "transition", "action_label": "land, roll, getup", "reviewed": true}
 {"clip": "KI_Human_Loot01End.npy", "action_group": "transition", "action_label": "crouch, idle", "reviewed": true}
 {"clip": "KI_Human_Loot01Loop.npy", "action_group": "stationary", "action_label": "idle, crouch", "reviewed": true}
 {"clip": "KI_Human_Loot01Start.npy", "action_group": "transition", "action_label": "idle, crouch", "reviewed": true}
@@ -1230,7 +1229,6 @@
 {"clip": "MU04_GolemEarth_FlyForward.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "MU04_GolemEarth_IdleToSpinAttack.npy", "action_group": "transition", "action_label": "idle, attack", "reviewed": true}
 {"clip": "MU04_GolemEarth_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
-{"clip": "MU04_GolemEarth_JumpDown.npy", "action_group": "transition", "action_label": "jump, land", "reviewed": true, "pending_delete": true}
 {"clip": "MU04_GolemEarth_Jump.npy", "action_group": "stationary", "action_label": "jump", "reviewed": true}
 {"clip": "MU04_GolemEarth_LeftPunchAttack.npy", "action_group": "stationary", "action_label": "attack, punch, left", "reviewed": true}
 {"clip": "MU04_GolemEarth_ProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, projectile", "reviewed": true}
