@@ -306,40 +306,40 @@
 {"clip": "KI_Human_Walk01Forwards.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "KI_Human_Walk01Left.npy", "action_group": "locomotion", "action_label": "walk, left", "reviewed": true}
 {"clip": "KI_Human_Walk01Right.npy", "action_group": "locomotion", "action_label": "walk, right", "reviewed": true}
-{"clip": "KI_Performer_Dance01.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance0201.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance0202.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance0203.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance03.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance04.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance05.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance06.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance07.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance08.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance09.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance10.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance11.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance12.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance13.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance14A.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance15.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance16.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance17A.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance18.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance19.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance20.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance21.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance22.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance23.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance24.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance25.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance2601.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance2602.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance2603.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance27.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance28.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance29.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
-{"clip": "KI_Performer_Dance30.npy", "action_group": "stationary", "action_label": "dance", "reviewed": true}
+{"clip": "KI_Performer_Dance01.npy", "action_group": "stationary", "action_label": "dance, sway", "reviewed": true}
+{"clip": "KI_Performer_Dance0201.npy", "action_group": "stationary", "action_label": "dance, fullbody", "reviewed": true}
+{"clip": "KI_Performer_Dance0202.npy", "action_group": "stationary", "action_label": "dance, fullbody", "reviewed": true}
+{"clip": "KI_Performer_Dance0203.npy", "action_group": "stationary", "action_label": "dance, fullbody", "reviewed": true}
+{"clip": "KI_Performer_Dance03.npy", "action_group": "stationary", "action_label": "dance, sway", "reviewed": true}
+{"clip": "KI_Performer_Dance04.npy", "action_group": "stationary", "action_label": "dance, sway", "reviewed": true}
+{"clip": "KI_Performer_Dance05.npy", "action_group": "stationary", "action_label": "dance, footwork", "reviewed": true}
+{"clip": "KI_Performer_Dance06.npy", "action_group": "stationary", "action_label": "dance, sway", "reviewed": true}
+{"clip": "KI_Performer_Dance07.npy", "action_group": "stationary", "action_label": "dance, footwork", "reviewed": true}
+{"clip": "KI_Performer_Dance08.npy", "action_group": "stationary", "action_label": "dance, footwork", "reviewed": true}
+{"clip": "KI_Performer_Dance09.npy", "action_group": "stationary", "action_label": "dance, footwork", "reviewed": true}
+{"clip": "KI_Performer_Dance10.npy", "action_group": "stationary", "action_label": "dance, footwork", "reviewed": true}
+{"clip": "KI_Performer_Dance11.npy", "action_group": "stationary", "action_label": "dance, footwork", "reviewed": true}
+{"clip": "KI_Performer_Dance12.npy", "action_group": "stationary", "action_label": "dance, sway", "reviewed": true}
+{"clip": "KI_Performer_Dance13.npy", "action_group": "stationary", "action_label": "dance, fullbody", "reviewed": true}
+{"clip": "KI_Performer_Dance14A.npy", "action_group": "stationary", "action_label": "dance, footwork", "reviewed": true}
+{"clip": "KI_Performer_Dance15.npy", "action_group": "stationary", "action_label": "dance, fullbody", "reviewed": true}
+{"clip": "KI_Performer_Dance16.npy", "action_group": "stationary", "action_label": "dance, armwork", "reviewed": true}
+{"clip": "KI_Performer_Dance17A.npy", "action_group": "stationary", "action_label": "dance, sway", "reviewed": true}
+{"clip": "KI_Performer_Dance18.npy", "action_group": "stationary", "action_label": "dance, armwork", "reviewed": true}
+{"clip": "KI_Performer_Dance19.npy", "action_group": "stationary", "action_label": "dance, footwork", "reviewed": true}
+{"clip": "KI_Performer_Dance20.npy", "action_group": "stationary", "action_label": "dance, footwork", "reviewed": true}
+{"clip": "KI_Performer_Dance21.npy", "action_group": "stationary", "action_label": "dance, fullbody", "reviewed": true}
+{"clip": "KI_Performer_Dance22.npy", "action_group": "stationary", "action_label": "dance, fullbody", "reviewed": true}
+{"clip": "KI_Performer_Dance23.npy", "action_group": "stationary", "action_label": "dance, fullbody", "reviewed": true}
+{"clip": "KI_Performer_Dance24.npy", "action_group": "stationary", "action_label": "dance, fullbody", "reviewed": true}
+{"clip": "KI_Performer_Dance25.npy", "action_group": "stationary", "action_label": "dance, armwork", "reviewed": true}
+{"clip": "KI_Performer_Dance2601.npy", "action_group": "stationary", "action_label": "dance, armwork", "reviewed": true}
+{"clip": "KI_Performer_Dance2602.npy", "action_group": "stationary", "action_label": "dance, sway", "reviewed": true}
+{"clip": "KI_Performer_Dance2603.npy", "action_group": "stationary", "action_label": "dance, armwork", "reviewed": true}
+{"clip": "KI_Performer_Dance27.npy", "action_group": "stationary", "action_label": "dance, armwork", "reviewed": true}
+{"clip": "KI_Performer_Dance28.npy", "action_group": "stationary", "action_label": "dance, footwork", "reviewed": true}
+{"clip": "KI_Performer_Dance29.npy", "action_group": "stationary", "action_label": "dance, fullbody", "reviewed": true}
+{"clip": "KI_Performer_Dance30.npy", "action_group": "stationary", "action_label": "dance, footwork", "reviewed": true}
 {"clip": "KI_Slinger_Damage01.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
 {"clip": "KI_Slinger_Damage02.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
 {"clip": "KI_Slinger_Death01A.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
