@@ -51,7 +51,9 @@ from os.path import join as pjoin
 from utils import dist_util
 from utils.fixseed import fixseed
 from utils.model_util import (
+    bind_checkpoint_action_conditioning,
     create_model_and_diffusion_general_skeleton,
+    load_checkpoint_weights,
     load_model,
     resolve_t5_out_dim,
     unwrap_anytop_model,
@@ -205,16 +207,19 @@ def prepare_generation_runtime(args=None, cond_dict=None):
     device = dist_util.dev()
     if device is None or device.type != 'cuda':
         device = torch.device('cpu')
-    state_dict = torch.load(args.model_path, map_location=device)
-    if 'model_avg' in state_dict:
+    payload = torch.load(args.model_path, map_location=device, weights_only=False)
+    state_dict, _state_dict_avg, checkpoint_metadata = load_checkpoint_weights(
+        payload, args.model_path, prefer_ema=True)
+    if payload.get('model_avg') is not None:
         print('EMA checkpoint detected, loading model_avg weights.')
-        state_dict = state_dict['model_avg']
-    elif 'model' in state_dict:
-        state_dict = state_dict['model']
     assert model is not None, 'BUG: create_model_and_diffusion_general_skeleton returned None for model'
     # model.to(device) may return None (CUDA 12.8 + torch 2.7.1); parameter move is in-place.
     model.to(device)
     load_model(model, state_dict)
+    # The frozen word table came out of the checkpoint with the weights; this
+    # certifies it and the contract it was trained under. Inference reads no
+    # sidecar and no dataset directory for the action condition.
+    bind_checkpoint_action_conditioning(model, checkpoint_metadata, args.model_path)
 
     print('Validating precomputed joint-name embeddings from cond.npy...')
     ensure_joint_name_embeddings(
@@ -1101,11 +1106,9 @@ def main(args=None, cond_dict=None, runtime=None):
         # --action_label must be honoured here too. The all-species path returns
         # before the single-species resolve below, so without this the prompt was
         # silently dropped (and a label on a checkpoint that cannot use it went
-        # unreported). cond_entry only supplies the T5 name, which is a
-        # dataset-wide property, so any species entry answers for all of them.
-        _all_action_condition = _resolve_action_condition(
-            args, model, runtime, cond_dict[sorted(cond_dict)[0]],
-        )
+        # unreported). The condition is species-independent: it is word ids into
+        # the checkpoint's own vocabulary.
+        _all_action_condition = _resolve_action_condition(args, model)
         _generate_all_species(
             cond_dict=cond_dict,
             cond_max_joints=cond_max_joints,
@@ -1387,7 +1390,7 @@ def main(args=None, cond_dict=None, runtime=None):
 
     # Create condition with effective frame count (shared across passes).
     obj_batch = [object_type] * args.batch_size
-    _action_condition = _resolve_action_condition(args, model, runtime, cond_dict[object_type])
+    _action_condition = _resolve_action_condition(args, model)
     _sampling_model = _wrap_action_label_cfg(model, args, _action_condition)
 
     # ── --species_tags: restyle the target species' motion descriptor ────────
@@ -2067,13 +2070,15 @@ def _find_cached_species_emb(tags, cond_dict, t5_name, expected_dim):
     return None
 
 
-def _resolve_action_condition(args, model, runtime, cond_entry):
+def _resolve_action_condition(args, model):
     """Resolve the checkpoint's action group + ``--action_label`` into one condition.
 
     Returns ``None`` when no label was requested (the model then falls back to its
     learned unconditional embedding), otherwise a dict carrying the group, the
-    label text and its T5 embedding, encoded here through the same conditioner the
-    dataset sidecar was built with.
+    label text and the word-level ids the model assembles its slot channels from.
+    No T5 runs here and no sidecar is read: the frozen word vectors live in the
+    checkpoint, so a generated clip is conditioned on exactly the table the
+    weights were trained against.
 
     ``args.action_group`` is the group this checkpoint was trained on, read out of
     its args.json by parser_util.apply_checkpoint_action_group. There is no
@@ -2087,11 +2092,14 @@ def _resolve_action_condition(args, model, runtime, cond_entry):
     if not label:
         return None
 
+    from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
+        action_label_slots,
+    )
     from data_loaders.truebones.truebones_utils.motion_labels import (
         ACTION_GROUPS,
-        CONTROLLED_VOCAB,
+        ActionLabelError,
         canonical_action_label,
-        vocab_words_in,
+        parse_action_label,
     )
 
     unwrapped = unwrap_anytop_model(model)
@@ -2113,43 +2121,52 @@ def _resolve_action_condition(args, model, runtime, cond_entry):
     # normalizes anything but ''/a legal group to '' at load time, so past the
     # guard above ``group`` is always one of ACTION_GROUPS.
     #
-    # Labels are controlled keywords in canonical order; any other spelling
-    # (e.g. "forward, run") encodes to a different T5 point than the training
-    # string "run, forward" -- word order matters (T5 position bias) and no
-    # training sample sat at the reordered point. So a recognizable prompt is
-    # REWRITTEN to its canonical spelling, not merely flagged: it is the
-    # string the model fitted and the key into action_label_embs.npy. The
-    # substitution is printed in full -- it can also drop unrecognized words.
-    hits = vocab_words_in(label)
-    if not hits:
-        # No controlled word at all: there is nothing to canonicalize toward, so
-        # the text is passed through untouched and the caller is told it is
-        # sampling from wherever T5 puts an out-of-distribution sentence.
+    # Labels are exact controlled tokens. An unrecognized one is a HARD ERROR,
+    # not a pass-through: there is no synonym translation any more, and letting
+    # free text through would sample from wherever T5 puts an out-of-distribution
+    # sentence while looking like it worked.
+    #
+    # A recognizable prompt is still REWRITTEN to its canonical spelling -- it is
+    # the string the model fitted, and the one recorded next to the sample -- but
+    # the rewrite may only reorder NON-HEAD words: directions bind next to their
+    # head, then the remaining modifiers follow. Head-word order is the clip's
+    # time order and the only record of which way a transition runs, so
+    # re-sorting it would silently turn every "attack, idle" sheathe into an
+    # "idle, attack" draw.
+    try:
+        tokens = parse_action_label(label)
+    except ActionLabelError as exc:
+        sys.exit(f"ERROR: --action_label {exc}")
+    canonical = canonical_action_label(tokens)
+    if canonical != label:
         print(
-            f"[generate] WARNING: --action_label '{label}' names no controlled "
-            f"vocabulary word, so it lands wherever T5 puts an out-of-distribution "
-            f"sentence. Recognized words: {', '.join(CONTROLLED_VOCAB)}"
+            f"[generate] --action_label '{label}' -> '{canonical}' "
+            f"(canonical spelling: head words in the order given, directions "
+            f"next to their head, then other modifiers in vocabulary order; "
+            f"this is the string the model trained on)"
         )
-    else:
-        canonical = canonical_action_label(hits)
-        if canonical != label:
-            print(
-                f"[generate] --action_label '{label}' -> '{canonical}' "
-                f"(canonical keyword spelling; this is the string the model "
-                f"trained on and the one that was encoded)"
-            )
-            label = canonical
+        label = canonical
+        # Re-parse so the word order handed to the model is the canonical one.
+        # Only head order carries meaning and canonicalization preserves it, so
+        # this changes no condition; it keeps generation emitting exactly what
+        # the loader emits for the same label.
+        tokens = parse_action_label(label)
 
-    # Same T5 that baked this cond's embeddings — and therefore the same one the
-    # offline action_label_embs.npy sidecar used, since both are built from it.
-    t5_name = _resolve_species_t5_name(cond_entry)
-    conditioner = _get_species_t5_conditioner(
-        t5_name, preloaded=getattr(runtime, 't5_conditioner', None)
-    )
-    with torch.no_grad():
-        tokens = conditioner.tokenize_entries([label])
-        emb = conditioner(tokens).detach().cpu().numpy().astype(np.float32, copy=False)[0]
-    return {'action_group': group, 'action_label': label, 'action_label_emb': emb}
+    # The role of a word is contextual -- ROLE_HEAD_1 is only ever the second head
+    # word of a two-state transition -- so the assignment goes through the same
+    # contract function the loader calls, with this checkpoint's own group.
+    slots = action_label_slots(group, tokens)
+    return {
+        'action_group': group,
+        'action_label': label,
+        'action_slots': {
+            'word_ids': np.asarray(slots['word_ids'], dtype=np.int64),
+            'role_ids': np.asarray(slots['role_ids'], dtype=np.int64),
+            'slot_ids': np.asarray(slots['slot_ids'], dtype=np.int64),
+            'word_mask': np.asarray(slots['word_mask'], dtype=np.bool_),
+            'order_head_mask': np.asarray(slots['order_head_mask'], dtype=np.bool_),
+        },
+    }
 
 
 def _wrap_action_label_cfg(model, args, action_condition):
@@ -2238,7 +2255,7 @@ def _resolve_loop_phase_length(cond_entry, n_frames, playspeed, action_label):
 def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len, loop=False, action_condition=None, species_emb_override=None, playspeed=1.0):
     """Build model_kwargs for a batch of object_types.
 
-    action_condition: {'action_group', 'action_label', 'action_label_emb'} applied
+    action_condition: {'action_group', 'action_label', 'action_slots'} applied
         to every object in the batch, or None for unconditional generation.
     species_emb_override: [t5_out_dim] vector replacing baked species_emb for all objects.
     playspeed: the playspeed_cond this batch will be sampled with; only used to
@@ -2316,7 +2333,7 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
         if action_condition is not None:
             metadata['action_group'] = action_condition['action_group']
             metadata['action_label'] = action_condition['action_label']
-            metadata['action_label_emb'] = action_condition['action_label_emb']
+            metadata['action_slots'] = action_condition['action_slots']
         batch.append(metadata)
         batch.append(object_type)
         # Never None here: build_canonical_rest_feature above standardizes with

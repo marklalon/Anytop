@@ -61,7 +61,7 @@ from data_loaders.truebones.truebones_utils.param_utils import (
 SPECIES_TAGS_FILE = "species_tags.jsonl"
 
 # Dataset-specific forward-chain overrides, for creatures without usable limb
-# pairs (snakes, fish).  One object per line:
+# pairs (serpentine or aquatic animals).  One object per line:
 #   {"species": "Pirrana", "chain_forward_joints": [10, 3, 4]}
 # A 2-tuple (neck, head) means ``head - neck``; a 3-tuple (base, neck, head)
 # means ``(head - neck) + (neck - base)``.  The indices are tied to a particular
@@ -80,9 +80,7 @@ CANONICAL_OBJECT_SUBSETS = (
     "winged",
     # No leg chains and no propulsive body wave: the root carries the whole body
     # along, whether it hovers (ghost, elemental, hover robot) or slides over the
-    # ground (slime, shell, a robed figure whose hem drags). ``serpentine`` is the
-    # other legless bucket and it is the one whose body deforms to propel itself,
-    # so the split is the propulsion mechanism, not the height off the floor.
+    # ground (slime, shell, a robed figure whose hem drags).
     "drifting",
 )
 

@@ -541,7 +541,6 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         # Temporal self-attention is full: no window, so nothing but the spatial
         # mask reaches the decoder. The cross-limb block used to receive the same
         # window as a separate template argument -- it must still run without one.
-        # See docs/temporal_window_full_attention.md.
         model = AnyTop(
             max_joints=4,
             feature_len=13,

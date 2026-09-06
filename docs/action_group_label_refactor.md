@@ -255,11 +255,10 @@ locomotion 的 `jump` 13 条覆盖 9 个物种，数量相近但安全得多。l
 **mask 必须是冻结常量**，不能在 import 时从数据集现算 —— 否则加 clip 会静默改变布局语义。
 样本量后续会增加，届时按同一规则重算并显式提交新的 mask。
 
-**副作用：降级后有 8 条 clip 的 multihot 变全零**（label 命中的 core 词在本组全被降级）：
+**副作用：清掉陈旧动作后，降级会让 6 条 clip 的 multihot 变全零**（label 命中的 core 词在本组全被降级）：
 stationary 4 条（`Alligator_DieLoop_1` / `Horse_FeetUp_1` / `Horse_InAir_1` /
-`Horse_Jumping_1`，只命中 die / getup / jump），transition 4 条（`Horse_RunToStop_1` /
-`Raptor2_RunToStopRoar_1` / `Raptor2_RunToStopRoar2_1` / `Scorpion-2_RunToAttrack_1`，
-只命中 run / roar）；locomotion 零副作用。这 8 条会和 §2.1 那 26 条「没有 core 词」的 clip
+`Horse_Jumping_1`，只命中 die / getup / jump），transition 2 条（`Horse_RunToStop_1` /
+`Scorpion-2_RunToAttrack_1`，只命中 run）；locomotion 零副作用。这 6 条会和 §2.1 那 26 条「没有 core 词」的 clip
 合流到同一个「无 tag」状态。目前量小可接受；若数据扩充后这个数变大，需要给 multihot 加一位
 独立的「已降级」指示位，而不是让两种语义共用全零。
 
@@ -359,8 +358,8 @@ multihot mask，所以 group 是**权重的属性**，不是每次请求的选�
 > 那里没有 action 条件通路，group 纯粹是数据集过滤器，`''` = 不过滤仍然合法。
 > `resolve_requested_action_group` 因此保持宽松，收紧发生在 AnyTop 的 CLI 上。
 
-推理端唯一保留的文本处理是可选的**查询归一化**：把 `sprint` / `gallop` 经 surface form 表
-归到 `run`，纯受控词短查询按词表顺序重排，与 §2.6 的合成串对齐。
+这一阶段曾保留可选的查询归一化；后续闭集词表契约已删除 surface-form 翻译。
+当前只接受精确 token，来源里的高速动作命名已在标注迁移时统一为 `fast`。
 
 ---
 

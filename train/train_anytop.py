@@ -27,6 +27,7 @@ from data_loaders.get_data import get_dataset_loader
 from utils.model_util import create_model_and_diffusion_general_skeleton, resolve_t5_out_dim
 from utils.ml_platforms import ClearmlPlatform, TensorboardPlatform, NoPlatform, WandBPlatform #required
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
+from data_loaders.truebones.data.dataset import load_action_conditioning
 
 
 def find_latest_checkpoint(save_dir, prefix='model'):
@@ -204,8 +205,33 @@ def write_args_json(args, args_path):
     (utils.parser_util.assert_checkpoint_version).
     """
     args.version = CKPT_VERSION
+    # The loaded word table is a runtime object, not a setting: its identity
+    # travels as the two fingerprints inside every checkpoint, and a numpy array
+    # is not JSON anyway.
+    recorded = {k: v for k, v in vars(args).items() if k != 'action_conditioning'}
     with open(args_path, 'w') as fw:
-        json.dump(vars(args), fw, indent=4, sort_keys=True)
+        json.dump(recorded, fw, indent=4, sort_keys=True)
+
+
+def bootstrap_action_conditioning(args):
+    """Read and validate the frozen word table once, for the whole run.
+
+    One bundle object reaches both the loader (which emits positions into its
+    ordered vocabulary) and the model (which holds the vectors those positions
+    index), so the two halves of a run cannot be built against different tables.
+    Stashed on ``args`` because that is what ``get_gmdm_args`` reads; it is
+    deliberately NOT written to args.json -- the fingerprints travel in the
+    checkpoint, and a numpy table has no place in a settings file.
+    """
+    if not getattr(args, 'action_label_cond', False):
+        args.action_conditioning = None
+        return None
+    bundle = load_action_conditioning(getattr(args, 'action_word_embeddings', None))
+    args.action_conditioning = bundle
+    print(f"[action-label] word table {bundle.source}")
+    print(f"[action-label] embedding_fingerprint             {bundle.embedding_fingerprint}")
+    print(f"[action-label] conditioning_contract_fingerprint {bundle.conditioning_contract_fingerprint}")
+    return bundle
 
 
 def create_training_data_loader(args):
@@ -221,6 +247,7 @@ def create_training_data_loader(args):
         drop_last=True,
         action_group=getattr(args, 'action_group', ''),
         action_label_cond=getattr(args, 'action_label_cond', False),
+        action_conditioning=getattr(args, 'action_conditioning', None),
         motion_cache_size=getattr(args, 'motion_cache_size', 0),
         min_length=getattr(args, 'min_length', 20),
         main_process_prefetch_batches=getattr(args, 'main_process_prefetch_batches', 0),
@@ -252,6 +279,7 @@ def run_training(args):
 
     dist_util.setup_dist(args.device)
 
+    bootstrap_action_conditioning(args)
     data = create_training_data_loader(args)
     
     # Print motion count in train split

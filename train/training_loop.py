@@ -18,8 +18,18 @@ from diffusion.resample import LossAwareSampler
 from tqdm import tqdm
 from diffusion.resample import create_named_schedule_sampler
 import copy
+from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
+    assert_bundle_matches_metadata,
+    validate_action_conditioning_metadata,
+)
 from utils.model_util import load_model
-from utils.model_util import create_model_and_diffusion_general_skeleton
+from utils.model_util import (
+    bind_checkpoint_action_conditioning,
+    build_checkpoint_payload,
+    create_model_and_diffusion_general_skeleton,
+    load_checkpoint_weights,
+    unwrap_anytop_model,
+)
 import random
 from data_loaders.get_data import get_dataset_loader
 from data_loaders.truebones.truebones_utils.canonical_features import canonical_to_physical_hml
@@ -178,6 +188,7 @@ class TrainLoop:
                 drop_last=True,
                 action_group=getattr(self.args, 'action_group', ''),
                 action_label_cond=getattr(self.args, 'action_label_cond', False),
+                action_conditioning=getattr(self.args, 'action_conditioning', None),
                 motion_cache_size=getattr(self.args, 'motion_cache_size', 0),
                 min_length=getattr(self.args, 'min_length', 20),
                 main_process_prefetch_batches=getattr(self.args, 'main_process_prefetch_batches', 0),
@@ -258,22 +269,60 @@ class TrainLoop:
                 self.resume_step = checkpoint_number
             logger.log(f"loading model from checkpoint: {self.resume_checkpoint}...")
 
-            state_dict = dist_util.load_state_dict(
+            payload = dist_util.load_state_dict(
                 self.resume_checkpoint, map_location=dist_util.dev())
+            # Two checks, on either side of the load, because they are about
+            # different material. The metadata one comes FIRST: a resume across
+            # word tables or conditioning contracts is refused before any weight
+            # lands, since those weights load cleanly and then train under
+            # semantics they were never fitted for.
+            state_dict, state_dict_avg, metadata = load_checkpoint_weights(
+                payload, self.resume_checkpoint, prefer_ema=False)
+            self._assert_resume_action_conditioning(metadata)
 
-            if 'model_avg' in state_dict:
-                print('loading both model and model_avg')
-                state_dict, state_dict_avg = state_dict['model'], state_dict[
-                    'model_avg']
-                load_model(self.model, state_dict)
-                if self.model_avg is not None:
+            # The bind comes SECOND, on each set of weights, because the buffers
+            # it certifies -- the word table and the role transform -- are the
+            # CHECKPOINT's, and they only exist in the model once load_model has
+            # overwritten this run's own. Binding first certified the material
+            # the run started with and then let load_model replace it unchecked.
+            load_model(self.model, state_dict)
+            bind_checkpoint_action_conditioning(
+                self.model, metadata, self.resume_checkpoint)
+            if self.model_avg is not None:
+                if state_dict_avg is not None:
+                    print('loading both model and model_avg')
                     load_model(self.model_avg, state_dict_avg)
-            else:
-                load_model(self.model, state_dict)
-                if self.model_avg is not None:
-                    # in case we load from a legacy checkpoint, just copy the model
+                    # The EMA copy carries its own buffers and is what sampling
+                    # and every eval read, so it gets the same certification
+                    # rather than inheriting the online model's.
+                    bind_checkpoint_action_conditioning(
+                        self.model_avg, metadata, self.resume_checkpoint)
+                else:
+                    # The run that wrote this checkpoint kept no EMA copy.
                     print('loading model_avg from model')
                     self.model_avg.load_state_dict(self.model.state_dict())
+
+    def _assert_resume_action_conditioning(self, metadata):
+        """Refuse a resume whose contract or word table is not this run's.
+
+        Pure metadata, and deliberately BEFORE the weights land: a checkpoint
+        under a conditioning contract this code no longer implements, or fitted
+        on a different word table than the loader is emitting ids into, must be
+        refused while the model still holds this run's own material. The
+        buffer-level half is bind_checkpoint_action_conditioning, which can only
+        run once those buffers ARE the checkpoint's.
+        """
+        if not getattr(unwrap_anytop_model(self.model), 'action_label_cond', False):
+            return
+        action_conditioning = (metadata or {}).get('action_conditioning') or {}
+        bundle = getattr(self.args, 'action_conditioning', None)
+        if bundle is None:
+            validate_action_conditioning_metadata(
+                action_conditioning, source=self.resume_checkpoint)
+            return
+        assert_bundle_matches_metadata(
+            bundle, action_conditioning, source=self.resume_checkpoint,
+        )
 
     def _load_optimizer_state(self):
         opt_checkpoint = self.find_resume_opt_checkpoint()
@@ -508,10 +557,10 @@ class TrainLoop:
     def _accumulate_per_family_l_simple(self, losses, weights, cond):
         """Track l_simple broken down by topology family.
 
-        Maps the per-family difficulty landscape (quad/biped/millipede/snake/
-        fish/flying/drifting) and shows how negative transfer hits each family. Same
-        weighting convention as the aggregate l_simple metric, so all of these
-        are directly comparable to it and to a single-family run.
+        Maps the per-family difficulty landscape (quad/biped/millipede/serpentine/
+        aquatic/winged/drifting) and shows how negative transfer hits each family.
+        Uses the same weighting convention as the aggregate l_simple metric, so
+        all of these are directly comparable to it and to a single-family run.
         """
         if "l_simple" not in losses:
             return
@@ -527,7 +576,7 @@ class TrainLoop:
                 'biped': members['biped'],
                 'milliped': members['multiped'],
                 'snake': members['serpentine'],
-                'fish': members['aquatic'],
+                'aquatic': members['aquatic'],
                 'flying': members['winged'],
                 'drifting': members['drifting'],
             }
@@ -989,6 +1038,7 @@ class TrainLoop:
                     self.mp_trainer.master_params)
                 del_clip(state_dict)
 
+                state_dict_avg = None
                 if self.args.use_ema and self.model_avg is not None:
                     # save both the model and the average model.
                     # Ensure the EMA model's running-stat buffers are synced
@@ -998,7 +1048,11 @@ class TrainLoop:
                     self._sync_ema_persistent_buffers()
                     state_dict_avg = self.model_avg.state_dict()
                     del_clip(state_dict_avg)
-                    state_dict = {'model': state_dict, 'model_avg': state_dict_avg}
+                # Every checkpoint carries the conditioning contract it was
+                # trained under, so neither a resume nor generation has to guess
+                # (and neither needs the dataset's word sidecar to find out).
+                state_dict = build_checkpoint_payload(
+                    state_dict, state_dict_avg, self.model)
 
                 logger.log(f"saving model...")
                 filename = self.ckpt_file_name(completed_step)
@@ -1117,7 +1171,5 @@ def get_blob_logdir():
     # a blobstore or some external drive.
     return logger.get_dir()
             
-
-
 
 

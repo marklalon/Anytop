@@ -46,14 +46,32 @@ def get_dataset_dir(dataset_dir=None):
         return str(_resolve_project_path(DEFAULT_DATASET_DIR))
 
 
+def get_action_word_embeddings_path(path=None):
+        """Where the frozen action-word table lives.
+
+        One file for the whole repo: its contents are a function of
+        CONTROLLED_VOCAB and the T5 encoder, not of any dataset, so a per-source
+        copy would only be a chance for two sources to disagree.
+        """
+        if path:
+                return str(_resolve_project_path(path))
+        return str(_resolve_project_path(DEFAULT_ACTION_WORD_EMBEDDINGS))
+
+
 MOTION_DIR = "motions"
 GLB_DIR = "glb"
 BVHS_DIR = "bvhs"
 MOTION_METADATA_FILE = "motion_metadata.json"
 ACTION_LABELS_FILE = "action_labels.jsonl"
-# Offline sidecar: action_label string -> frozen T5 mean-pool vector. Built by
-# tools/build_action_label_embeddings.py so training never loads a T5 encoder.
-ACTION_LABEL_EMBEDDINGS_FILE = "action_label_embs.npy"
+# Offline sidecar: the frozen T5 vector of every CONTROLLED_VOCAB token, in
+# vocabulary order. Built by tools/build_action_label_embeddings.py so training
+# never loads a T5 encoder. Keyed by WORD, not by label string, so it depends on
+# the vocabulary alone: editing action_labels.jsonl no longer stales it, and one
+# global file serves every dataset source (they all share the vocabulary).
+ACTION_WORD_EMBEDDINGS_FILE = "action_word_embeddings.npy"
+DEFAULT_ACTION_WORD_EMBEDDINGS = str(
+        (_ANYTOP_ROOT / "dataset" / ACTION_WORD_EMBEDDINGS_FILE).resolve()
+)
 # Sidecar mapping object_type -> portable skinned-mesh T-pose reference path. Kept
 # out of cond.npy (no inference path reads it); consumed only by the offline dataset
 # GLB tool (data_bridge.restore_glb_from_anytop). Written/refreshed by the dataset

@@ -149,8 +149,7 @@ class VersionIsBoundToTheCheckpoint(unittest.TestCase):
     parse_and_load_from_model restores only keys the *current* parser still
     defines, so a removed flag in a stored args.json is dropped in silence and
     the weights run under semantics they were never fitted for. The version stamp
-    is what turns that into a hard failure; see
-    docs/temporal_window_full_attention.md.
+    is what turns that into a hard failure.
     """
 
     def test_current_version_is_accepted(self):

@@ -148,8 +148,9 @@ def bake_foot_floor_offset(anim, foot_indices, up_axis: int = 1):
     offset (that median) is subtracted from the hierarchy root's local translation. The root has no
     parent, so this is an exact world-space vertical shift of every joint; the
     encoded ``root_height`` feature carries it identically regardless of which
-    ancestor it is baked into. Skeletons with no detected foot contact (snakes,
-    fish, …) pass an empty ``foot_indices`` and are left untouched.
+    ancestor it is baked into. Skeletons with no detected foot contact
+    (serpentine or aquatic animals, for example) pass an empty ``foot_indices``
+    and are left untouched.
 
     Args:
         anim: target ``Animation`` (modified in place and returned).

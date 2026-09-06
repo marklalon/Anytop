@@ -85,8 +85,8 @@ fallback, not built) is worth trying.
 Run the R0 baseline (the pre-refactor checkpoint) before anything else. It needs
 no training and without it there is no threshold to judge R1 against.
 
-This is a throwaway verification tool for the action-label keyword refactor
-(docs/action_label_keyword_refactor.md), not part of the permanent eval suite.
+This is a throwaway verification tool for the action-label keyword refactor, not
+part of the permanent eval suite.
 
 Usage (from the Anytop/ directory):
     python tools/direction_following.py sweep --model_path save/.../model.pt \\
@@ -1022,7 +1022,7 @@ def main() -> int:
                             "cannot be asked to follow it. Default: KI_Human.")
     sweep.add_argument("--actions", default="walk;run",
                        help="Semicolon-separated action-word groups (each may itself be "
-                            "comma-separated, e.g. 'run, sprint'). Default: 'walk;run'.")
+                            "comma-separated, e.g. 'run, fast'). Default: 'walk;run'.")
     sweep.add_argument("--directions", default=",".join(DIRECTION_VOCAB))
     sweep.add_argument("--cfg_scales", default="1,2,3,4,6",
                        help="--action_label_cfg_scale values to sweep. The SHAPE of the "

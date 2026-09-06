@@ -483,7 +483,7 @@ class GaussianDiffusion:
         block uniformly too. (Before that collapse the per-channel std made
         ``1 / std`` an implicit per-axis weight that under-penalized the vertical
         position axis by up to 4.1x; the uniformity claimed here held over joints
-        only. See docs/canonical_frame_and_label_transfer.md.) What stays
+        only.) What stays
         non-uniform is bone *scale*: a fixed position error is a tiny fraction of
         a long proximal bone but a huge fraction of a short distal one -- exactly
         why distal bones stretch on novel skeletons. Dividing the length error by

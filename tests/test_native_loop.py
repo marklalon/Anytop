@@ -340,7 +340,7 @@ class NativeLoopTests(unittest.TestCase):
         self.assertAlmostEqual(phase_length, (60 - 1) / 2 + 1, places=6)
         # A 20-frame run cycle in the same window is 3, not 2: the period is an
         # action property, so the label -- not just the species -- selects it.
-        phase_length, cycles = _resolve_loop_phase_length(entry, 60, 1.0, 'run, sprints forward')
+        phase_length, cycles = _resolve_loop_phase_length(entry, 60, 1.0, 'run, forward, fast')
         self.assertEqual(cycles, 3)
         self.assertAlmostEqual(phase_length, (60 - 1) / 3 + 1, places=6)
         # playspeed scales the source length, so it scales the cycle count too.

@@ -182,7 +182,7 @@ def _reseat_rest_to_clip_geometry(
     The canonical position channel is a residual from rest, so a joint whose rest
     disagrees with where every clip holds it is a per-joint DC constant the model
     can only memorize. See data_loaders/.../rest_geometry.py for the guards and
-    docs/canonical_frame_and_label_transfer.md section 4.3 for the diagnosis.
+    the reasoning behind this step.
 
     It runs here, before the canonical statistics, so one pass produces a rest and
     a normalization table that agree -- and because preprocess_and_validate
@@ -286,7 +286,7 @@ def _compute_canonical_stats_per_object_subset(
     subset_stats = {subset: finalize_lnorm_stats(acc) for subset, acc in usable_accs.items()}
     # Collapse each block's std to one scalar and share the position gain across
     # every subset, so a subset mismatch can only translate a skeleton rigidly,
-    # never deform it (docs/canonical_frame_and_label_transfer.md). Shape, keys
+    # never deform it. Shape, keys
     # and feature_space are unchanged.
     subset_stats = collapse_stat_blocks(subset_stats)
 

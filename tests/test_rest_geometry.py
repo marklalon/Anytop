@@ -3,7 +3,6 @@
 The step runs inside regenerate_dataset_artifacts, so what matters most here is
 that it converges (idempotent), that it never touches a joint whose rest is a
 legitimate neutral, and that it keeps ``rest_pos_ric_hml == FK(offsets)``.
-See docs/canonical_frame_and_label_transfer.md section 4.3.
 """
 
 from __future__ import annotations

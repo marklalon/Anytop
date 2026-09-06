@@ -466,9 +466,9 @@ def _merge_preserved_side_artifacts(dataset_dir_path: Path, preserved: Preserved
 
     motions_dir = dataset_dir_path / MOTION_DIR
     # Carry-forward read only; freshly preprocessed clips may not be hand-labeled yet.
-    # Artifact regeneration no longer backfills labels (2026-08-30, see
-    # action_group_label_refactor.md §9.5): a missing action_labels.jsonl entry
-    # fast-fails there, so label new clips before regenerating.
+    # Artifact regeneration no longer backfills labels (2026-08-30): a missing
+    # action_labels.jsonl entry fast-fails there, so label new clips before
+    # regenerating.
     current_metadata = load_motion_metadata(dataset_dir_path, require_action_labels=False)
     for motion_name, entry in preserved.motion_metadata.items():
         if motion_name in current_metadata:

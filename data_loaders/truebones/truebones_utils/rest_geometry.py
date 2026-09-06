@@ -6,7 +6,7 @@ constant with no signal in it -- and those joints are tokens the model has to
 predict like any other. The offenders are helper geometry: nub / locator /
 expression-control bones an exporter gave a rest offset while the animation
 collapses them onto their parent, ears and horns and tongues seated somewhere the
-animator never uses. See docs/canonical_frame_and_label_transfer.md section 4.3.
+animator never uses.
 
 This runs as a step of ``regenerate_dataset_artifacts`` -- which
 ``preprocess_and_validate`` invokes itself -- so it is applied to every dataset

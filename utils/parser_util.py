@@ -18,11 +18,14 @@ ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 # regression rather than an incompatibility.
 #
 #   1 -- windowed temporal attention (--temporal_window) removed in favour of
-#        full temporal attention; see docs/temporal_window_full_attention.md.
-#        Supersedes the per-key action_tag_cond / global_energy_cond guards,
-#        which it strictly subsumes (every checkpoint they rejected predates
-#        versioning and so is rejected here too).
-CKPT_VERSION = 1
+#        full temporal attention. Supersedes the per-key action_tag_cond /
+#        global_energy_cond guards, which it strictly subsumes (every checkpoint
+#        they rejected predates versioning and so is rejected here too).
+# 2: the action condition became per-role-slot channels over the label's WORDS.
+# A v1 checkpoint's
+# action_label_projection reads one whole-label vector, so its weights mean
+# something else even where the shapes would line up.
+CKPT_VERSION = 2
 
 def parse_and_load_from_model(parser, argv=None, preserve_cli_args=None):
     # args according to the loaded model
@@ -76,7 +79,7 @@ def assert_checkpoint_version(model_args, args_path):
         "weights may well still load, which is the problem: they would run under "
         "training semantics they were never fitted for and quietly generate wrong "
         "motion. Such a checkpoint can only be read as a historical result, not "
-        "re-run; retrain to use it. See docs/temporal_window_full_attention.md."
+        "re-run; retrain to use it."
     )
 
 
@@ -218,11 +221,16 @@ def add_model_options(parser):
                             "orthogonal to (and combinable with) the --species_cond FiLM on the timestep "
                             "token. Requires 'species_emb'.")
     group.add_argument("--action_label_cond", action='store_true',
-                       help="Enable action-label conditioning: the frozen T5 embedding of the clip's "
-                            "action_label ('run, sprint, forward, left' -- controlled keywords, not "
-                            "prose) is projected and added to the timestep token. Requires "
-                            "action_label_embs.npy alongside action_labels.jsonl "
+                       help="Enable action-label conditioning: the clip's action_label ('run, forward, "
+                            "left, fast' -- controlled keywords, not prose) is split into words, pooled "
+                            "into one frozen-T5 channel per role slot (head / direction / modifier), "
+                            "projected and added to the timestep token. Requires the word table "
+                            "dataset/action_word_embeddings.npy "
                             "(tools/build_action_label_embeddings.py).")
+    group.add_argument("--action_word_embeddings", default="", type=str,
+                       help="Override the frozen action-word table path (default: "
+                            "dataset/action_word_embeddings.npy). Its embedding_fingerprint is written "
+                            "into the checkpoint, so a resume against a different table is refused.")
     group.add_argument("--action_label_cfg_drop_prob", default=0.2, type=float,
                        help="Per-sample probability of hard-dropping the action condition during "
                             "training (replaced by a learned null embedding), enabling classifier-free "
@@ -436,16 +444,19 @@ def add_generate_options(parser):
                             "--inpaint_joints, the regenerated region is selected-joints x selected-frames; "
                             "everything else is clamped to --reference_motion. Requires --reference_motion.")
     group.add_argument("--action_label", default="", type=str,
-                       help="Text-to-motion prompt for this generation. Write controlled-vocabulary "
-                            "keywords, comma-separated, in the same canonical order the labels use: "
-                            "action words first, then direction ('walk, forward', 'run, sprint, left', "
-                            "'attack, bite'). That is exactly the wording the model trained on, so a "
-                            "prompt spelled this way lands on the training vectors instead of near "
-                            "them. Free text still works -- it goes through the same frozen T5 -- but "
-                            "generation will warn and tell you which controlled words it landed on. "
-                            "Naming no direction is legal and means 'any' (the model answers with the "
-                            "marginal over directions). Empty = unconditional (the learned null "
-                            "embedding). Requires a checkpoint trained with --action_label_cond.")
+                       help="Text-to-motion prompt for this generation. Controlled-vocabulary "
+                            "tokens ONLY, comma-separated, in the canonical order the labels use: "
+                            "action word(s) first, then the direction bound to the last one, then "
+                            "any other modifiers in vocabulary order ('walk, forward', "
+                            "'run, left, fast', 'attack, bite'). Free text is NOT accepted -- an "
+                            "unknown token is a hard error listing the valid ones, because the "
+                            "vectors live in the checkpoint and no T5 runs at generation. A "
+                            "recognizable prompt written out of canonical order is rewritten to it "
+                            "(with a printed note); head-word order is never touched, since it is "
+                            "the time order of a transition. Naming no direction is legal and means "
+                            "'any' (the model answers with the marginal over directions). Empty = "
+                            "unconditional (the learned null embedding). Requires a checkpoint "
+                            "trained with --action_label_cond.")
     group.add_argument("--action_label_cfg_scale", default=1.0, type=float,
                        help="Classifier-free guidance scale over --action_label. 1.0 (default) = "
                             "off: one forward per diffusion step, the conditional prediction as-is. "
@@ -537,6 +548,4 @@ def process_new_skeleton_args():
                             "overwrite prompt). Useful for headless / automated calls.")
     args = parser.parse_args()
     return args
-
-
 

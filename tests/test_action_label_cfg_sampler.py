@@ -21,9 +21,16 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from model.anytop import AnyTop  # noqa: E402
 from model.cfg_sampler import ClassifierFreeActionModel  # noqa: E402
+from tests.action_label_test_utils import (  # noqa: E402
+    TEST_LATENT_DIM,
+    TEST_T5_DIM,
+    action_cond_fields,
+    make_test_bundle,
+    sample_action_slots,
+)
 
 
-T5_DIM = 512
+T5_DIM = TEST_T5_DIM
 
 
 class _StubDenoiser(torch.nn.Module):
@@ -54,7 +61,7 @@ def _make_model():
     return AnyTop(
         max_joints=4,
         feature_len=13,
-        latent_dim=8,
+        latent_dim=TEST_LATENT_DIM,
         ff_size=32,
         num_layers=1,
         num_heads=2,
@@ -63,6 +70,7 @@ def _make_model():
         t5_out_dim=T5_DIM,
         action_label_cond=True,
         action_label_cfg_drop_prob=0.2,
+        action_conditioning=make_test_bundle(),
     )
 
 
@@ -75,10 +83,7 @@ def _make_y():
         'lengths': torch.tensor([3, 3], dtype=torch.int64),
         'canonical_feature_mean': torch.zeros(13, dtype=torch.float32),
         'canonical_feature_std': torch.ones(13, dtype=torch.float32),
-        'action_label': ['run, gallops forward', 'run, gallops forward'],
-        'action_group': ['locomotion', 'locomotion'],
-        'action_label_emb': torch.rand(2, T5_DIM, generator=torch.Generator().manual_seed(0)),
-        'action_label_valid': torch.tensor([True, True]),
+        **action_cond_fields(['run, forward'] * 2, ['locomotion'] * 2),
     }
 
 
@@ -174,7 +179,7 @@ class ActionLabelCfgFlagTest(unittest.TestCase):
     @staticmethod
     def _condition():
         return {'action_group': 'locomotion', 'action_label': 'run',
-                'action_label_emb': torch.zeros(T5_DIM).numpy()}
+                'action_slots': sample_action_slots('run', 'locomotion')}
 
     def setUp(self):
         from sample.generate import _wrap_action_label_cfg

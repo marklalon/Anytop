@@ -1,11 +1,21 @@
 # action_label 关键词化 + 去 multi-hot 方案
 
+> **已作废（2026-09-06）** —— 本文是实现记录，保留作设计史：
+> 它描述的**整句 T5 向量**条件、**每数据源**的 label-keyed `action_label_embs.npy`、
+> surface-form 正则匹配与旧词表（含 `shuffle`）均已被 per-word 槽方案取代。
+> 现行实现与标签契约以
+> [action_label_per_word_pooling.md](action_label_per_word_pooling.md) 为准
+> （词表 103 token 闭集、精确 token 解析、全局 word-keyed sidecar、checkpoint v2）。
+> §0/§1（动机）与 §3（T5 而非 multi-hot 的决策）仍是现行方案的地基；
+> §4 的 R0/R1 评测针对 v1 checkpoint，新代码（`CKPT_VERSION=2`）已拒绝加载该产物，
+> 数字仅作历史参考。
+>
 > 状态：**方案完成（2026-09-02）** —— §8 步骤 1~7 全部走完，
 > R1 已训（`merged_locomotion_v4_fullattn`）并评测，**主方案达标、两个备选方案都不启用**，
 > 结论见 **§4.3**。
 >
 > 已完成：
-> 1. §5 词表小修 —— `strafe` 移出 `turn`，`sprint`/`shuffle`/`strafe` 进
+> 1. §5 词表小修 —— `strafe` 移出 `turn`，`fast`/`shuffle`/`strafe` 进
 >    `ACTION_VOCAB`。**外加一条同类修正**：`backward`/`backwards` 也从 `retreat`
 >    的表面形式里移出（它当初在那里只是因为没有方向轴，正在 54 个不是撤退的
 >    clip 上点亮 `retreat`：`knocked backward tumbling`、`collapses backward`）。
@@ -145,9 +155,9 @@ label = 受控词表里的词，按固定顺序、逗号分隔，**不写短语�
 
 ```
 walk, forward
-run, sprint, forward, left
+run, forward, left, fast
 walk, crouch, retreat, backward
-walk, strafe, left
+walk, left, strafe
 idle
 attack, bite
 ```
@@ -162,25 +172,25 @@ attack, bite
 
 ### 2.2 需要补三个 modifier 词，否则关键词化会制造新的塌缩
 
-关键词化会把"同一个动作词下靠短语区分的不同风格"合并。KI_Human locomotion
-实测塌缩：
+若不补 modifier，关键词化会把“同一个动作词下靠短语区分的不同风格”合并。
+KI_Human locomotion 最终用下面的规范标签保住差别：
 
-| 关键词 label | 合并的 clip |
+| 关键词 label | 对应 clip |
 |---|---|
-| `run, forward` | `Run01Forwards`, `Sprint01Forwards` |
-| `run, forward, left` | `Run01ForwardsLeft`, `Sprint01ForwardsLeft` |
-| `run, left` | `Run01Left`, `Sprint01Left` |
-| `run, right` | `Run01Right`, `Sprint01Right` |
-| `walk, left` | `ShuffleLeft`, `Walk01Left` |
-| `walk, right` | `ShuffleRight`, `Walk01Right` |
+| `run, forward` | `Run01Forwards` |
+| `run, forward, fast` | 高速向前 clip |
+| `run, forward, left, fast` | 高速向左前 clip |
+| `run, left, fast` | 高速向左 clip |
+| `run, right, fast` | 高速向右 clip |
+| `walk, left` | `Walk01Left` |
+| `walk, left, shuffle` | `ShuffleLeft` |
+| `walk, right` | `Walk01Right` |
+| `walk, right, shuffle` | `ShuffleRight` |
 
-而且 §5 修完 `strafe → turn` 之后，`Strafe01Left` 会从 `walk, turn, left` 掉进
-`walk, left`，变成三路塌缩。
+`Strafe01Left` 则写成 `walk, left, strafe`，避免与 walk / shuffle 再次合并。
 
-**补救不需要新机制**，沿用 `flap` 的既有做法（它同时是 `fly` 的表面形式、
-又是独立词；`vocab_words_in` 的等长匹配规则让同一 span 的两个词都保留）：
-把 `sprint` / `shuffle` / `strafe` 加进词表，它们本来就已经是 `run` / `walk`
-的表面形式，加完自动得到 `run, sprint` / `walk, shuffle` / `walk, strafe`。
+**补救不需要新机制**：把 `fast` / `shuffle` / `strafe` 加进扁平词表；标注迁移把来源名称里的
+高速动作统一写成 `fast`，得到 `run, fast` / `walk, shuffle` / `walk, strafe`。
 去掉 multi-hot 之后词表是扁平的（§3.2），新增词**不改任何维度、不需要额外槽位**。
 
 ### 2.3 关键词化顺手消灭三个解析 bug
@@ -277,7 +287,7 @@ locomotion 1007 条里 **364 条（36%）** label 里没有方向词。实测**�
 共 **139 种，其中 105 种不足 5 条 clip**。硬编码的槽位对没见过的组合零泛化，
 T5 的组合性正好补上这个洞。
 
-扩展性同理：以后新增任何修饰轴（`sprint` / `crouch` / `uphill` / `wounded`）
+扩展性同理：以后新增任何修饰轴（`fast` / `crouch` / `uphill` / `wounded`）
 **不改维度、不改任何 index layout**，只要训练集里出现过该词，推理时直接可用。
 
 > "线性读出头就够"这条结论，同时也是 §3.3 的关键输入：
@@ -723,10 +733,10 @@ cfg∈{2,3} 的均值，R0 → R1（括号是同一格的语料 circvar）：
 
 **必须在迁移脚本之前做** —— 否则 27 个横移 clip 会被写成 `…, turn, …`。
 
-### 5.2 `sprint` / `shuffle` 加进 `ACTION_VOCAB`
+### 5.2 `fast` / `shuffle` 加进 `ACTION_VOCAB`
 
-保留它们在 `run` / `walk` 表面形式里的位置不动 —— 等长匹配会让两个词都保留，
-得到 `run, sprint` / `walk, shuffle`。解决 §2.2 的塌缩。
+迁移时把来源里的高速动作命名统一为规范 token `fast`，并保留 `shuffle`，
+得到 `run, fast` / `walk, shuffle`。解决 §2.2 的塌缩，同时避免近义 token 分裂训练质量。
 
 ### 5.3 `glide` / `crawl` 的跨模态误命中
 

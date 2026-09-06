@@ -34,7 +34,7 @@ python utils/validate_anytop_dataset.py --datasets dataset/datasets.jsonl
 
 | 契约 | 组成 | 消费者 |
 |---|---|---|
-| **训练契约** | `cond.npy` + 它所引用的各数据集目录下的 `motions/`、`motion_metadata.json`、`action_labels.jsonl`（+ `--action_label_cond` 时的 `action_label_embs.npy`）、`species_tags.jsonl`、`train/val/test.txt` | `train_anytop.py`、`Truebones` dataset |
+| **训练契约** | `cond.npy` + 它所引用的各数据集目录下的 `motions/`、`motion_metadata.json`、`action_labels.jsonl`、`species_tags.jsonl`、`train/val/test.txt`（+ `--action_label_cond` 时全局一份 `dataset/action_word_embeddings.npy`） | `train_anytop.py`、`Truebones` dataset |
 | **推理契约** | `cond.npy` **单文件**（自足，不依赖任何数据集目录） | `generate.py`、`server/`、`process_new_skeleton`、跨骨架 retarget |
 
 `cond.npy` 是唯一入口：训练时它告诉加载器「有哪些物种、动作数据在哪」；推理时它自带全部条件（含烘焙的 species tags）。
@@ -213,7 +213,9 @@ opt.sources   = tuple[DatasetSource]   # 由 cond entry 的 dataset_root 去重�
    > 注意：只要传了 `--action_group`（`train.bat` 传了），[dataset.py](../data_loaders/truebones/data/dataset.py) 会无视 `train.txt` 现算 split 并覆写该文件 —— 这条路径同样按源独立执行。
 4. `cache/motion_lengths.npy` 保持**每源一份**，key 仍是裸文件名（源内唯一）。
 5. `motion_metadata.json` / `action_labels.jsonl` 按源分别加载，join 时用裸文件名。
-   `action_label_embs.npy` 也是每源一份，但它按 **label 文本**索引（不是 clip 名），加载时合并成一张表 —— 同一句 label 在两个源里编码结果相同，合并无歧义。
+   动作词表 `dataset/action_word_embeddings.npy` **只有一份**：它按受控词表的**词**索引，
+   与语料无关，所以没有合并问题，改标签也不会让它过期
+   （[action_label_per_word_pooling.md](action_label_per_word_pooling.md) §7）。
 
 ### 5.4 采样权重
 

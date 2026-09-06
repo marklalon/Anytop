@@ -12,13 +12,18 @@ from typing import Optional
 import warnings
 from torch.utils.data._utils.collate import default_collate
 from data_loaders.truebones.truebones_utils.get_opt import get_opt
+from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
+    load_action_conditioning_bundle,
+)
 from data_loaders.truebones.truebones_utils.param_utils import (
-    ACTION_LABEL_EMBEDDINGS_FILE,
+    get_action_word_embeddings_path,
 )
 from data_loaders.truebones.truebones_utils.motion_labels import (
     ACTION_GROUPS,
+    ActionLabelError,
     load_motion_metadata,
     normalize_action_group,
+    parse_action_label,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import (
     load_cond,
@@ -546,31 +551,21 @@ def load_allowed_motion_names_per_source(
     }
 
 
-def load_action_label_embeddings(sources) -> dict[str, np.ndarray]:
-    """Load the per-source ``action_label_embs.npy`` sidecars into one lookup.
+def load_action_conditioning(action_word_embeddings_path=None):
+    """Load and validate the frozen action-word table into one runtime bundle.
 
-    The sidecar maps a label *string* to its frozen T5 mean-pool vector, so the
-    training process never has to keep a T5 encoder resident. It is keyed by the
-    text rather than by the clip because labels repeat heavily -- 610 distinct
-    keyword labels over 4028 clips, an average of 6.6 clips sharing each vector.
+    A dataset that trains with ``--action_label_cond`` and a training entry point
+    that builds the model must use the SAME bundle object, so this is normally
+    called once at the entry point and passed in; loading it here is the fallback
+    for a loader constructed on its own (evaluation hooks, tools).
 
-    Build it with ``tools/build_action_label_embeddings.py``. Called only when
-    label conditioning is on, so a source with no sidecar is a hard error: the
-    alternative is training that whole dataset unconditioned without saying so.
+    The table is vocabulary-global rather than per-source, so there is nothing to
+    merge and no way for two dataset directories to disagree about what word id
+    17 means. Build it with ``tools/build_action_label_embeddings.py``.
     """
-    embeddings: dict[str, np.ndarray] = {}
-    for source in sources:
-        sidecar = Path(source.root) / ACTION_LABEL_EMBEDDINGS_FILE
-        if not sidecar.exists():
-            raise FileNotFoundError(
-                f"{ACTION_LABEL_EMBEDDINGS_FILE} not found at {sidecar}, but action-label "
-                "conditioning is enabled. Build it with: "
-                f"python tools/build_action_label_embeddings.py {source.root}"
-            )
-        payload = np.load(sidecar, allow_pickle=True).item()
-        for label, vector in (payload.get('embeddings') or {}).items():
-            embeddings[str(label)] = np.asarray(vector, dtype=np.float32)
-    return embeddings
+    return load_action_conditioning_bundle(
+        get_action_word_embeddings_path(action_word_embeddings_path)
+    )
 
 
 def _motion_length_cache_path(data_root: str) -> Path:
@@ -651,13 +646,13 @@ def ensure_joint_name_embeddings(
 
 '''For use of training text motion matching model, and evaluations'''
 class MotionDataset(data.Dataset):
-    def __init__(self, opt, cond_dict, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_label_embeddings: Optional[dict[str, np.ndarray]] = None):
+    def __init__(self, opt, cond_dict, balanced, num_frames, sample_limit=0, allowed_motion_names: Optional[set[str]] = None, motion_metadata_lookup: Optional[dict[str, dict[str, object]]] = None, action_conditioning=None):
         self.opt = opt
-        # None (not {}) means the caller does not want label conditioning, so no
-        # embedding is attached and no lookup can fail. An empty dict would be
-        # indistinguishable from "the sidecar exists but is empty", and silently
-        # training every clip unconditioned is exactly the failure this avoids.
-        self.action_label_embeddings = action_label_embeddings
+        # None means the caller does not want label conditioning, so no word ids
+        # are attached at all. The bundle is the model's bundle: the loader emits
+        # positions into ITS ordered vocabulary, so the two cannot be different
+        # objects without the ids meaning different words on each side.
+        self.action_conditioning = action_conditioning
         self.min_length = int(getattr(opt, 'min_length', 20))
         self.pointer = 0
         self.max_motion_length = num_frames
@@ -991,32 +986,44 @@ class MotionDataset(data.Dataset):
             'feature_space': self.cond_dict[object_type].get('feature_space', 'canonical_motion_v3'),
         }
     
-    def _lookup_action_label_emb(self, label: str) -> np.ndarray:
-        emb = self.action_label_embeddings.get(label)
-        if emb is None:
-            raise KeyError(
-                f"action_label {label!r} has no entry in {ACTION_LABEL_EMBEDDINGS_FILE}. "
-                "Rebuild the sidecar after editing action_labels.jsonl: "
-                "python tools/build_action_label_embeddings.py <dataset_dir>"
-            )
-        return emb
-
     def _apply_action_label_condition(self, motion_metadata) -> None:
-        """Attach this sample's frozen-T5 label vector, looked up by label text.
+        """Attach this sample's word ids, roles and slot assignment.
 
-        The label is used verbatim -- it is already the short keyword form the
-        model is trained on, so no augmentation is applied.
+        The loader emits IDs, never assembled vectors: the slot channels are
+        built on the model side from the frozen table inside the checkpoint, so
+        changing the representation later touches the model and nothing in the
+        data path.
+
+        The role gate is contextual -- the second head word of a two-state
+        transition is the only word that ever carries ``ROLE_HEAD_1`` -- so the
+        clip's own ``action_group`` decides it, not the group this run filters on.
         """
-        if self.action_label_embeddings is None:
+        if self.action_conditioning is None:
             return
         label = str(motion_metadata.get('action_label') or '')
         motion_metadata['action_label'] = label
         # An empty label is the unconditional state and must NOT be encoded as an
-        # empty string: the model routes it to the learned null embedding, so the
-        # zero vector here is a placeholder the null path overwrites.
-        motion_metadata['action_label_emb'] = (
-            self._lookup_action_label_emb(label) if label else None
-        )
+        # empty word list that pools to something: the model routes a row with no
+        # words to its learned null embedding.
+        if not label:
+            motion_metadata['action_slots'] = None
+            return
+        group = normalize_action_group(motion_metadata.get('action_group'))
+        try:
+            slots = self.action_conditioning.slots_for(group, parse_action_label(label))
+        except (ActionLabelError, ValueError) as exc:
+            raise ValueError(
+                f"clip {motion_metadata.get('motion_name', '?')!r} carries "
+                f"action_label {label!r} in group {group!r}, which this code cannot "
+                f"encode: {exc}"
+            ) from exc
+        motion_metadata['action_slots'] = {
+            'word_ids': np.asarray(slots['word_ids'], dtype=np.int64),
+            'role_ids': np.asarray(slots['role_ids'], dtype=np.int64),
+            'slot_ids': np.asarray(slots['slot_ids'], dtype=np.int64),
+            'word_mask': np.asarray(slots['word_mask'], dtype=np.bool_),
+            'order_head_mask': np.asarray(slots['order_head_mask'], dtype=np.bool_),
+        }
 
     def _load_physical_motion(self, data):
         object_type = data['object_type']
@@ -1122,6 +1129,16 @@ class Truebones(data.Dataset):
         self.objects_subset = kwargs['objects_subset']
         self.action_group = kwargs.get('action_group', '')
         self.action_label_cond = bool(kwargs.get('action_label_cond', False))
+        # One bundle per run: the training entry point builds it and hands the
+        # same object to the model, so loader-side word ids and model-side word
+        # vectors are indices into one ordered vocabulary by construction.
+        self.action_conditioning = kwargs.get('action_conditioning')
+        if self.action_label_cond and self.action_conditioning is None:
+            self.action_conditioning = load_action_conditioning(
+                kwargs.get('action_word_embeddings_path')
+            )
+        if not self.action_label_cond:
+            self.action_conditioning = None
         self.sample_limit = kwargs.get('sample_limit', 0)
         self.motion_cache_size = kwargs.get('motion_cache_size', 0)
         self.opt.motion_cache_size = self.motion_cache_size
@@ -1175,9 +1192,7 @@ class Truebones(data.Dataset):
             sample_limit=self.sample_limit,
             allowed_motion_names=allowed_motion_names,
             motion_metadata_lookup=motion_metadata_lookup,
-            action_label_embeddings=(
-                load_action_label_embeddings(opt.sources) if self.action_label_cond else None
-            ),
+            action_conditioning=self.action_conditioning,
         )
         assert len(self.motion_dataset) > 0, 'You loaded an empty dataset, ' \
                                           'it is probably because your data dir has only texts and no motions.\n' \

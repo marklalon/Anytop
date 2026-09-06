@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 from data_loaders.truebones.truebones_utils.param_utils import (
@@ -20,7 +19,7 @@ MOTION_METADATA_SCHEMA_VERSION = 6
 #   action_group  -- one of ACTION_GROUPS. Partitions the dataset; each group
 #                    trains its own model.
 #   action_label  -- CONTROLLED KEYWORDS from the vocabulary below, in canonical
-#                    order, comma-separated ("run, sprint, forward, left").
+#                    order, comma-separated ("run, forward, left, fast").
 #                    Conditions the model through T5. May be empty (= no
 #                    condition, routed to the learned null embedding).
 #
@@ -40,46 +39,59 @@ ACTION_GROUPS: tuple[str, ...] = ("locomotion", "stationary", "transition")
 # model through the same path, the frozen-T5 embedding of the label text, so a
 # rare word is just a point next to its pretrained neighbours.
 #
-# TUPLE ORDER IS THE CANONICAL SPELLING ORDER: a label lists its action words
-# in this order, then its direction words in DIRECTION_VOCAB order, so one word
-# combination has exactly one spelling ("walk, retreat, crouch, backward", never
-# "crouch, retreat, walk"). _validate_action_label_entry enforces it.
+# ADMISSION RULE: a word stays in only if the corpus shows variation
+# attributable to it after species, group and base action are held fixed; words
+# that fail that test are dropped rather than carried as noise. The table is a
+# maintained controlled set, not a fixed list -- it changes as the corpus grows.
 #
-# The modifier words (shuffle, sprint, ...) are surface forms of the base word
-# they qualify AND words in their own right: a Sprint clip resolves to
-# "run, sprint" while a plain Run clip stays "run". "strafe" is the exception:
-# it qualifies any travel mode ("run, strafe", "fly, strafe"), so it names only
-# itself and never drags in a base word.
+# TUPLE ORDER IS THE CANONICAL SPELLING ORDER FOR MODIFIERS ONLY. Head words
+# keep the written (time) order; direction words bind after a ``turn`` head (or
+# the last head); the rest follow this tuple's order -- one combination, exactly
+# one spelling. See canonical_action_label.
 #
-# The tuple is ordered in ROLE BLOCKS: A is the basic MODE (the label's first
-# word), B how that mode is executed, C a secondary action layered on top.
-# DIRECTION_VOCAB is NOT one of these blocks -- it is a separate axis appended
-# after every action word. Ordering is NOT a weighting: T5 mean-pools over
-# tokens, so every word of a label carries the same weight wherever it sits.
+# The tuple is ordered in ROLE BLOCKS (A basic mode, B how it is executed,
+# C..I secondary actions, states, manners, affect, activities, dance qualifiers
+# and equipment). DIRECTION_VOCAB is a separate axis, not a block. The blocks
+# order the vocabulary only; nothing weights a word by its block.
 ACTION_VOCAB: tuple[str, ...] = (
-    # -- block A: basic mode (the label's first word) --
+    # -- block A: basic mode --
     # Travel modes first; "attack" closes the block as a mode of its own, so
-    # "run, attack" still leads with the gait and "attack, dash" does not invert.
-    "idle", "walk", "run", "fly", "swim", "crawl", "climb", "jump", "turn",
+    # "run, attack" still leads with the gait and "attack, fast" does not invert.
+    "idle", "walk", "run", "fly", "swim", "crawl", "jump", "turn",
     "fall", "roll", "attack",
     # -- block B: how that mode is executed (gait, speed, wing state) --
-    "trot", "sprint", "dash", "gallop", "shuffle", "strafe", "glide", "slow",
-    "sneak", "retreat", "flap", "dive",
+    "trot", "fast", "strafe", "glide", "slow", "retreat", "dive",
     # -- block C: secondary action layered on the mode (existing order kept) --
     "bite", "roar", "eat", "die", "hurt", "getup", "rest", "look",
-    "shake", "throw", "taunt", "land", "takeoff", "sit", "sleep", "stand",
-    "sniff", "stretch", "yawn", "dig", "catch", "peck", "sting", "kick", "spit",
-    "drag", "dance", "drink", "graze", "wag", "scratch",
-    "rear", "crouch",
+    "shake", "throw", "taunt", "land", "takeoff", "sit", "sleep",
+    "sniff", "yawn", "catch", "sting", "kick", "spit",
+    "dance", "wag", "scratch", "rear", "crouch",
+    # -- block D: body states and one-shot posture changes --
+    "hover", "burrow", "laydown", "sitdown", "dead", "spawn", "work",
+    "lift", "pickup", "putdown",
+    # -- block E: how a strike is delivered (manner before strike type) --
+    "spin", "flip", "twist", "charge",
+    "headbutt", "punch", "swat", "slash", "stab", "smash", "swipe", "whip",
+    "block", "cast", "projectile",
+    # -- block F: affect / social gesture --
+    "happy", "talk", "clap", "wave", "cry", "salute",
+    # -- block G: activity and object handling --
+    "clean", "aim", "carry", "fishing", "cook", "reload",
+    "saw", "shovel", "water", "pull", "push",
+    # -- block H: which body part leads a dance --
+    "footwork", "fullbody", "armwork", "sway",
+    # -- block I: equipment the pose is constrained by (never the asset itself) --
+    "weapon", "1hand", "2hand", "bow", "gun", "hammer", "shield",
 )
 
 # The direction axis -- travel / facing direction. Separate vocabulary from the
-# ACTION_VOCAB role blocks above, emitted after every action word in a label.
+# ACTION_VOCAB role blocks above. Directions bind after a ``turn`` head (or the
+# last head), before the remaining modifiers.
 # Spelled BARE ("forward", not "leftward"): the derived adjectives collapse to
 # nearly the same T5 point, while bare left/right stay distinct.
 #
-# up/down are DIRECTIONS (where the net travel goes), not actions -- climb/dive
-# stay actions (what the body is doing). The vertical word is spelled LAST, after
+# up/down are DIRECTIONS (where the net travel goes), not actions -- dive stays
+# an action (what the body is doing). The vertical word is spelled LAST, after
 # the planar ones; at most one vertical word per label. T5 carries a direction
 # as a roughly linear offset that composes with unseen actions.
 DIRECTION_VOCAB: tuple[str, ...] = ("forward", "backward", "left", "right", "up", "down")
@@ -94,249 +106,148 @@ assert len(_CONTROLLED_VOCAB_ORDER) == len(CONTROLLED_VOCAB), (
     "a word may appear only once across ACTION_VOCAB + DIRECTION_VOCAB: "
     + str(sorted({w for w in CONTROLLED_VOCAB if CONTROLLED_VOCAB.count(w) > 1}))
 )
+assert not any(char.isspace() for word in CONTROLLED_VOCAB for char in word), (
+    "a vocabulary token must not contain whitespace -- multi-word text belongs "
+    "on the T5 side only (_VOCAB_T5_TEXT): "
+    + str([w for w in CONTROLLED_VOCAB if any(c.isspace() for c in w)])
+)
 
 
-# Surface forms recognized for each vocabulary word. Kept explicit rather than
-# stemmed: a stemmer would drag in false positives that land silently in the
-# conditioning signal. Resolves a free-text --action_label at inference, mapping
-# a user's wording to the canonical words the model trained on.
-_VOCAB_SURFACE_FORMS: dict[str, tuple[str, ...]] = {
-    # "in place" / "stationary" are NOT idle forms: most clips are animated in
-    # place, so those phrases appear as filler in run/fly descriptions and would
-    # light up the idle slot.
-    "idle": ("idle", "idles", "idling", "motionless", "stands still",
-             "standing still", "stand still", "stays still"),
-    # shuffle is a walk form AND a word of its own: the equal-length rule in
-    # vocab_words_in keeps both, so "shuffles" -> "walk, shuffle".
-    # "strafe" is NOT a walk form: it qualifies any travel mode, so a bare
-    # strafe names only strafe and "run, strafe" stays "run, strafe".
-    "walk": ("walk", "walks", "walking", "trot", "trots", "trotting",
-             "pace", "paces", "pacing", "march", "marches", "marching",
-             "strut", "struts", "strutting", "amble", "ambles", "ambling",
-             "shuffle", "shuffles", "shuffling"),
-    "run": ("run", "runs", "running", "gallop", "gallops", "galloping",
-            "sprint", "sprints", "sprinting", "dash", "dashes", "dashing",
-            "jog", "jogs", "jogging", "charge", "charges", "charging"),
-    "fly": ("fly", "flies", "flying", "flap", "flaps", "flapping",
-            "glide", "glides", "gliding", "soar", "soars", "soaring",
-            "hover", "hovers", "hovering"),
-    "swim": ("swim", "swims", "swimming", "paddle", "paddles", "paddling"),
-    "jump": ("jump", "jumps", "jumping", "leap", "leaps", "leaping",
-             "hop", "hops", "hopping", "pounce", "pounces", "pouncing",
-             "bound", "bounds", "bounding"),
-    # "strafe" is NOT a turn form: pure translation, facing unchanged. "circle"
-    # and "bank" stay -- they do change facing.
-    "turn": ("turn", "turns", "turning", "spin", "spins", "spinning",
-             "rotate", "rotates", "rotating", "pivot", "pivots", "pivoting",
-             "circle", "circles", "circling",
-             "bank", "banks", "banking"),
-    "attack": ("attack", "attacks", "attacking", "strike", "strikes",
-               "striking", "lunge", "lunges", "lunging", "swipe", "swipes",
-               "swiping", "slash", "slashes", "slashing", "claw", "claws",
-               "clawing", "maul", "mauls", "mauling", "slam", "slams",
-               "slamming", "swat", "swats", "swatting"),
-    "bite": ("bite", "bites", "biting", "bit", "chomp", "chomps", "chomping",
-             "snaps its jaws", "snapping its jaws"),
-    "roar": ("roar", "roars", "roaring", "growl", "growls", "growling",
-             "howl", "howls", "howling", "bark", "barks", "barking",
-             "hiss", "hisses", "hissing", "screech", "screeches", "screeching",
-             "scream", "screams", "screaming", "bellow", "bellows",
-             "bellowing"),
-    "eat": ("eat", "eats", "eating", "feed", "feeds", "feeding", "graze",
-            "grazes", "grazing", "chew", "chews", "chewing", "devour",
-            "devours", "devouring", "drink", "drinks", "drinking"),
-    # "collapse" belongs to fall, not die: here it means going down.
-    "die": ("die", "dies", "dying", "death", "dead", "perish", "perishes",
-            "passes out"),
-    "fall": ("fall", "falls", "falling", "fell", "collapse", "collapses",
-             "collapsing", "tumble", "tumbles",
-             "tumbling", "trip", "trips", "tripping", "stumble", "stumbles",
-             "stumbling", "topple", "topples", "toppling",
-             "fall down", "falls down", "falling down"),
-    # "gethurt" (one token) is a legacy tag spelling; the word-boundary match
-    # keeps "hurt" out of it, so it is listed explicitly.
-    "hurt": ("hurt", "hurts", "gethurt", "get hurt", "get-hurt", "gets hurt",
-             "injured", "wounded", "flinch", "flinches",
-             "flinching", "recoil", "recoils", "recoiling", "stagger",
-             "staggers", "staggering", "stunned", "limp", "limps", "limping",
-             "takes a hit", "knocked back"),
-    # Bare "rise"/"rising" are NOT getup forms: they denote any upward motion
-    # (swimming, rearing, breathing). Only destination/down-state phrases count.
-    "getup": ("getup", "get up", "gets up", "getting up", "get-up",
-              "stands up", "standing up",
-              "rises to stand", "rises to standing", "rises to its feet",
-              "rise back up", "rises back up", "stand up",
-              "recover", "recovers", "recovering",
-              "wakes up", "waking up", "revive", "revives", "reviving"),
-    # Bare "lie"/"lying" are NOT rest forms: in this corpus that posture is
-    # nearly always death or the state a get-up departs from.
-    # "sit down" is listed on BOTH rest and sit so the two keep firing together
-    # (equal-length matches both survive) while the "down" inside is subsumed.
-    "rest": ("rest", "rests", "resting", "lie down",
-             "lies down", "lying down", "sit", "sits", "sitting", "seated",
-             "sit down", "sits down", "sitting down",
-             "sleep", "sleeps", "sleeping", "dozing", "napping"),
-    "look": ("look", "looks", "looking", "glance", "glances", "glancing",
-             "gaze", "gazes", "gazing", "observe", "observes", "observing",
-             "scan", "scans", "scanning", "watch", "watches", "watching",
-             "look up", "looks up", "looking up",
-             "look down", "looks down", "looking down"),
-    "shake": ("shake", "shakes", "shaking", "shudder", "shudders",
-              "shuddering", "twitch", "twitches", "twitching", "tremble",
-              "trembles", "trembling", "wag", "wags", "wagging"),
-    "crouch": ("crouch", "crouches", "crouching", "squat", "squats",
-               "squatting", "hunker", "hunkers", "hunkering",
-               "crouch down", "crouches down", "crouching down"),
-    "retreat": ("retreat", "retreats", "retreating", "backs away",
-                "backing away", "backs up", "backing up"),
-    "rear": ("rear", "rears", "rearing", "on its hind legs",
-             "onto its hind legs", "rear up", "rears up", "rearing up"),
-    "throw": ("throw", "throws", "throwing", "toss", "tosses", "tossing",
-              "fling", "flings", "flinging", "hurl", "hurls", "hurling"),
-    "crawl": ("crawl", "crawls", "crawling", "slither", "slithers",
-              "slithering", "creep", "creeps", "creeping", "scurry",
-              "scurries", "scurrying"),
-    "taunt": ("taunt", "taunts", "taunting", "threaten", "threatens",
-              "threatening", "intimidate", "intimidates", "intimidating"),
-    # -- remaining ACTION_VOCAB words --
-    "climb": ("climb", "climbs", "climbing"),
-    "sneak": ("sneak", "sneaks", "sneaking", "stalk", "stalks", "stalking",
-              "prowl", "prowls", "prowling"),
-    "land": ("land", "lands", "landing", "touches down", "touching down"),
-    "takeoff": ("take off", "takes off", "taking off", "takeoff", "lift off",
-                "lifts off"),
-    "dive": ("dive", "dives", "diving", "plunge", "plunges", "plunging"),
-    "roll": ("roll", "rolls", "rolling"),
-    "sit": ("sit", "sits", "sitting", "seated",
-            "sit down", "sits down", "sitting down"),
-    "sleep": ("sleep", "sleeps", "sleeping", "dozing", "napping", "asleep"),
-    "stand": ("stand", "stands", "standing", "upright"),
-    "sniff": ("sniff", "sniffs", "sniffing", "smell", "smells", "smelling"),
-    "stretch": ("stretch", "stretches", "stretching"),
-    "yawn": ("yawn", "yawns", "yawning"),
-    "dig": ("dig", "digs", "digging", "burrow", "burrows", "burrowing",
-            "scrape", "scrapes", "scraping"),
-    "catch": ("catch", "catches", "catching", "grab", "grabs", "grabbing",
-              "seize", "seizes", "seizing", "snatch", "snatches", "snatching",
-              "pick up", "picks up", "picking up"),
-    "peck": ("peck", "pecks", "pecking"),
-    "sting": ("sting", "stings", "stinging"),
-    "kick": ("kick", "kicks", "kicking", "stomp", "stomps", "stomping",
-             "trample", "tramples", "trampling", "buck", "bucks", "bucking"),
-    "spit": ("spit", "spits", "spitting", "spray", "sprays", "spraying",
-             "breathes fire"),
-    "drag": ("drag", "drags", "dragging"),
-    "dance": ("dance", "dances", "dancing", "celebrate", "celebrates",
-              "celebrating"),
-    "drink": ("drink", "drinks", "drinking", "laps at water"),
-    "graze": ("graze", "grazes", "grazing"),
-    "flap": ("flap", "flaps", "flapping"),
-    "wag": ("wag", "wags", "wagging"),
-    "scratch": ("scratch", "scratches", "scratching", "groom", "grooms",
-                "grooming", "rub", "rubs", "rubbing", "itch", "itches",
-                "itching"),
-    # -- gait modifiers (also surface forms of walk / run / fly above: "trots" -> "walk, trot") --
-    "shuffle": ("shuffle", "shuffles", "shuffling"),
-    "strafe": ("strafe", "strafes", "strafing"),
-    "sprint": ("sprint", "sprints", "sprinting"),
-    "trot": ("trot", "trots", "trotting"),
-    "dash": ("dash", "dashes", "dashing"),
-    "gallop": ("gallop", "gallops", "galloping"),
-    "glide": ("glide", "glides", "gliding"),
-    "slow": ("slow", "slowly"),
-    # -- direction --
-    "forward": ("forward", "forwards"),
-    "backward": ("backward", "backwards"),
-    "left": ("left", "leftward", "leftwards"),
-    "right": ("right", "rightward", "rightwards"),
-    "up": ("up", "upward", "upwards"),
-    "down": ("down", "downward", "downwards"),
+# ---------------------------------------------------------------------------
+# Head words
+# ---------------------------------------------------------------------------
+# STATE_VOCAB is the closed set of HEAD words: the ones a label spells in WRITE
+# order instead of vocabulary order. The test is "can the body BE IN this" --
+# hover / roll / rear qualify, weapon / 1hand / forward / cast / spin do not.
+# Event verbs (die, getup, spawn, land, takeoff, laydown, sitdown, lift, pickup,
+# putdown) are in as well: each is the load-bearing word of a label that names
+# nothing else.
+#
+# Head order is the clip's TIME order, the only place a transition's direction is
+# recorded ("idle, attack" is a draw, "attack, idle" a sheathe). Nothing may
+# reorder head words -- see canonical_action_label.
+#
+# "sit"/"sleep" are in (postures a body is in; a future "sleep, idle" get-up
+# should carry its direction). "block" is deliberately OUT: "idle, hover, block"
+# would hold three heads and break the at-most-two rule.
+STATE_VOCAB: tuple[str, ...] = (
+    "attack", "burrow", "crawl", "crouch", "dance", "dead", "die", "fall", "fly",
+    "getup", "hover", "hurt", "idle", "jump", "land", "laydown", "lift", "pickup",
+    "putdown", "rear", "rest", "roll", "run", "sit", "sitdown", "sleep", "spawn",
+    "swim", "takeoff", "turn", "walk", "work",
+)
+
+_STATE_VOCAB_SET: frozenset[str] = frozenset(STATE_VOCAB)
+
+assert _STATE_VOCAB_SET <= set(CONTROLLED_VOCAB), (
+    "STATE_VOCAB must be a subset of CONTROLLED_VOCAB: "
+    + str(sorted(_STATE_VOCAB_SET - set(CONTROLLED_VOCAB)))
+)
+assert len(_STATE_VOCAB_SET) == len(STATE_VOCAB), "STATE_VOCAB has a repeat"
+
+# At most this many heads per label: a label names a state, or a transition
+# between two states. Three would have no defined reading.
+ACTION_LABEL_MAX_HEADS = 2
+
+
+# ---------------------------------------------------------------------------
+# token -> T5 text
+# ---------------------------------------------------------------------------
+# A token is the canonical ID: what the annotation writes, what keys the
+# embedding sidecar, what indexes the per-word weight. The T5 TEXT is what is
+# actually encoded; a missing key means "encode the token itself". The entries
+# below are the tokens whose bare spelling lands in the WRONG T5 neighbourhood.
+#
+# Chosen by measurement (mean-centred t5-base cosines against single-word
+# probes of the intended and the dominant-wrong sense): only tokens where the
+# wrong sense WON, as a different referent rather than a near synonym, are
+# overridden. Glued compounds are FINE -- cos("1hand", "one handed") = 0.59,
+# ("laydown", "lay down") = 0.70, ("takeoff", "take off") = 0.88, vs a p95 of
+# 0.12 over unrelated pairs; 1hand/2hand need the override for the numeral, not
+# the fragmentation.
+#
+# SECOND RULE (word-keyed conditioning): an override carries only what the token
+# itself contributes, NOT what a co-occurring token already spells. 1hand/2hand
+# never appear without a weapon word (47/47 labels), so "weapon in one/both
+# hands" (cos 0.784, the table's closest pair) made `weapon, 1hand` vs
+# `weapon, 2hand` the corpus's worst near-collision; dropping the shared anchor
+# takes the pair to 0.526 and leaves them carrying the COUNT only.
+#
+# Constraints, all asserted below: one-to-one on the EXPANDED table, no
+# whitespace in a token, every key a real vocabulary word. No reverse lookup --
+# this is not a synonym table; text never resolves back to a token.
+_VOCAB_T5_TEXT: dict[str, str] = {
+    "1hand": "one hand",                 # bare form reads as the numeral one
+    "2hand": "both hands",               # bare form reads as the numeral two
+    "aim": "aiming a weapon",            # bare "aim" is a goal or an ambition
+    "block": "raising a guard",          # bare "block" is a brick or a city block
+    "bow": "archery bow",                # bare "bow" is bending forward -- a POSE
+    "burrow": "digging underground",     # bare "burrow" is the hole, not the act
+    "cast": "spellcasting",              # bare "cast" is plaster, or a film cast
+    "charge": "rushing forward",         # bare "charge" is voltage or a fee
+    "clean": "grooming",                 # bare "clean" is the adjective, not the act
+    "cry": "weeping",                    # bare "cry" reads as shouting out
+    "flip": "somersault",                # bare "flip" is a coin or a switch
+    "land": "touching down",             # bare "land" is terrain -- overwhelmingly
+    "punch": "punching",                 # bare "punch" is the drink
+    "rear": "rearing up",                # bare "rear" is the back side
+    "rest": "resting",                   # bare "rest" is the remainder
+    "saw": "sawing wood",                # bare "saw" is the past tense of see
+    "shake": "shaking",                  # bare "shake" is a milkshake
+    "shield": "shield bash",             # bare "shield" is the verb "to protect"
+    "water": "watering",                 # bare "water" is the substance
+    "wave": "waving a hand",             # bare "wave" is an ocean wave
+    "weapon": "wielding a weapon",       # the pose constraint, not the object
 }
 
-# A canonical word must always match itself: labels are written using the
-# canonical spelling, so a word missing from its own surface-form list silently
-# fails to match every label that uses it ("getup, lifts head" hitting nothing).
-assert all(
-    word in {form.lower() for form in _VOCAB_SURFACE_FORMS.get(word, ())}
-    for word in CONTROLLED_VOCAB
-), (
-    "every vocabulary word must appear in its own surface forms: "
-    + str([w for w in CONTROLLED_VOCAB
-           if w not in {f.lower() for f in _VOCAB_SURFACE_FORMS.get(w, ())}])
+assert set(_VOCAB_T5_TEXT) <= set(CONTROLLED_VOCAB), (
+    "_VOCAB_T5_TEXT has keys that are not vocabulary tokens: "
+    + str(sorted(set(_VOCAB_T5_TEXT) - set(CONTROLLED_VOCAB)))
 )
-assert set(_VOCAB_SURFACE_FORMS) == set(CONTROLLED_VOCAB), (
-    "surface-form table and CONTROLLED_VOCAB disagree: "
-    f"{set(_VOCAB_SURFACE_FORMS) ^ set(CONTROLLED_VOCAB)}"
+
+
+def vocab_t5_text(word: str) -> str:
+    """The text *word* is T5-encoded from. Identity unless overridden above."""
+    return _VOCAB_T5_TEXT.get(word, word)
+
+
+# One-to-one on the EXPANDED table, not on the override dict: checking the
+# overrides against each other would miss a collision with an identity token
+# (an override reading "run" would silently share a vector with the run token).
+_EFFECTIVE_T5_TEXT: dict[str, str] = {w: vocab_t5_text(w) for w in CONTROLLED_VOCAB}
+assert len(set(_EFFECTIVE_T5_TEXT.values())) == len(CONTROLLED_VOCAB), (
+    "two tokens resolve to the same T5 text: "
+    + str(sorted(
+        text for text in set(_EFFECTIVE_T5_TEXT.values())
+        if list(_EFFECTIVE_T5_TEXT.values()).count(text) > 1
+    ))
 )
-# Longest-first so multi-word forms ("stands still") win over their single-word
-# prefixes ("stand") when both belong to the SAME word. Precedence across
-# different words is resolved by span containment in ``vocab_words_in``.
-_VOCAB_MATCHERS: tuple[tuple[str, re.Pattern], ...] = tuple(
-    (
-        word,
-        re.compile(
-            r"(?<![A-Za-z])(?:"
-            + "|".join(
-                re.escape(form).replace(r"\ ", r"\s+")
-                for form in sorted(forms, key=len, reverse=True)
-            )
-            + r")(?![A-Za-z])",
-            re.IGNORECASE,
-        ),
-    )
-    for word, forms in (
-        (w, _VOCAB_SURFACE_FORMS[w]) for w in CONTROLLED_VOCAB
-    )
-)
+
+
+class ActionLabelError(ValueError):
+    """A label that breaks the canonical spelling contract."""
 
 
 def vocab_words_in(text: str) -> list[str]:
-    """Controlled-vocabulary words present in *text*, in canonical vocab order.
+    """Controlled-vocabulary tokens present in *text*, in canonical vocab order.
 
-    Canonical order means ACTION_VOCAB order first, then DIRECTION_VOCAB -- i.e.
-    exactly the spelling a keyword label must use, so ``", ".join(vocab_words_in(t))``
-    is the canonical label for whatever *t* names.
+    Exact token matching: *text* is split on commas and whitespace, each piece
+    must be a vocabulary token verbatim, anything else is ignored -- no synonym
+    translation; inference offers an autocomplete over the vocabulary.
 
-    Matching is over the whole string, not just a prefix -- a text may name its
-    action anywhere ("stands still and growls" hits idle *and* roar), and may hit
-    several words at once. That is the point of a controlled vocabulary: it
-    anchors recall without forcing a mutually exclusive choice.
-
-    A word is dropped when every one of its matches sits strictly inside a longer
-    match of a *different* word: "stands still" is idle, so the "stands" inside it
-    must not also light up ``stand``, and "stands up" is getup, not stand.
-    Equal-length matches both survive, which is what keeps a modifier firing
-    alongside the base word that shares its spelling ("shuffles" -> walk +
-    shuffle, "grazes" -> eat + graze).
+    Returns a SET in vocab order, not a spelling: do not feed it to
+    :func:`canonical_action_label`, which needs the written head order -- use
+    :func:`parse_action_label` for that.
     """
     if not text:
         return []
-
-    spans: dict[str, list[tuple[int, int]]] = {}
-    for word, pattern in _VOCAB_MATCHERS:
-        found = [match.span() for match in pattern.finditer(text)]
-        if found:
-            spans[word] = found
-
-    def subsumed(word: str, span: tuple[int, int]) -> bool:
-        """True when *span* sits strictly inside a longer match of another word."""
-        start, end = span
-        for other_word, other_spans in spans.items():
-            if other_word == word:
-                continue
-            for other_start, other_end in other_spans:
-                if (other_start <= start and end <= other_end
-                        and other_end - other_start > end - start):
-                    return True
-        return False
-
-    # ``spans`` is filled in _VOCAB_MATCHERS order, which is canonical vocab
-    # order, and dicts preserve insertion order -- so the result is already sorted.
-    return [
-        word
-        for word in spans
-        if any(not subsumed(word, span) for span in spans[word])
-    ]
+    present = {
+        piece
+        for chunk in str(text).split(",")
+        for piece in chunk.split()
+        if piece in _CONTROLLED_VOCAB_ORDER
+    }
+    return sorted(present, key=_CONTROLLED_VOCAB_ORDER.__getitem__)
 
 
 def action_words_in(text: str) -> list[str]:
@@ -351,16 +262,104 @@ def direction_words_in(text: str) -> list[str]:
     return [word for word in vocab_words_in(text) if word in direction]
 
 
-def canonical_action_label(words) -> str:
-    """Spell a set of controlled words as a label: canonical order, deduplicated.
+def head_words_in(words) -> list[str]:
+    """The :data:`STATE_VOCAB` members of *words*, in the order given -- the
+    clip's time order for transitions, the only record of which way they run."""
+    return [word for word in words if word in _STATE_VOCAB_SET]
 
-    One combination of words has exactly ONE spelling in the training
-    distribution, which is what makes a user's query land on the vectors the
-    model actually trained on. Unknown words are dropped rather than appended,
-    since they are out of vocabulary.
+
+def parse_action_label(label: str) -> list[str]:
+    """Split a label into its tokens IN WRITTEN ORDER, enforcing the contract.
+
+    Every comma-separated piece must be a vocabulary token verbatim: no empty
+    segment, no repeat, at most :data:`ACTION_LABEL_MAX_WORDS` tokens, between 1
+    and :data:`ACTION_LABEL_MAX_HEADS` head words. An empty label is legal and
+    parses to ``[]`` (= no condition).
+
+    Raises :class:`ActionLabelError` rather than dropping anything: a silently
+    dropped token is a silently changed condition.
     """
-    hits = {word for word in words if word in _CONTROLLED_VOCAB_ORDER}
-    return ", ".join(sorted(hits, key=_CONTROLLED_VOCAB_ORDER.__getitem__))
+    text = "" if label is None else str(label).strip()
+    if not text:
+        return []
+    tokens = [piece.strip() for piece in text.split(",")]
+    if any(not token for token in tokens):
+        raise ActionLabelError(f"action_label {label!r} has an empty comma segment")
+    unknown = [token for token in tokens if token not in _CONTROLLED_VOCAB_ORDER]
+    if unknown:
+        raise ActionLabelError(
+            f"action_label {label!r} names token(s) {unknown} that are not in the "
+            f"controlled vocabulary. Labels are exact tokens now -- there is no "
+            f"synonym translation. Valid tokens: {list(CONTROLLED_VOCAB)}"
+        )
+    seen = [token for token in tokens if tokens.count(token) > 1]
+    if seen:
+        raise ActionLabelError(
+            f"action_label {label!r} repeats token(s) {sorted(set(seen))}"
+        )
+    if len(tokens) > ACTION_LABEL_MAX_WORDS:
+        raise ActionLabelError(
+            f"action_label {label!r} has {len(tokens)} tokens (max "
+            f"{ACTION_LABEL_MAX_WORDS}). The model truncates past this silently."
+        )
+    heads = head_words_in(tokens)
+    if not heads:
+        raise ActionLabelError(
+            f"action_label {label!r} names no head word. Every label needs at "
+            f"least one STATE_VOCAB word: {list(STATE_VOCAB)}"
+        )
+    if len(heads) > ACTION_LABEL_MAX_HEADS:
+        raise ActionLabelError(
+            f"action_label {label!r} names {len(heads)} head words {heads} (max "
+            f"{ACTION_LABEL_MAX_HEADS}). A label names a state, or a transition "
+            f"between two of them, and nothing longer has a defined reading."
+        )
+    return tokens
+
+
+def canonical_action_label(words) -> str:
+    """Spell *words* with stable head order and canonical modifier placement.
+
+    HEAD ORDER IS NEVER TOUCHED -- it is the clip's time order, the only record
+    of which way a transition runs. Directions bind after a ``turn`` head (or the
+    last head) and precede other modifiers, so they qualify the motion rather
+    than a trailing word (``walk, right, weapon``). Other modifiers are sorted by
+    :data:`CONTROLLED_VOCAB` index: one combination, exactly one spelling.
+
+    Repeats are dropped (first occurrence wins); an out-of-vocabulary word
+    raises -- dropping it would quietly delete part of the condition.
+    """
+    ordered: list[str] = []
+    for word in words:
+        if word not in ordered:
+            ordered.append(word)
+    unknown = [word for word in ordered if word not in _CONTROLLED_VOCAB_ORDER]
+    if unknown:
+        raise ActionLabelError(
+            f"{unknown} are not controlled-vocabulary tokens. "
+            f"Valid tokens: {list(CONTROLLED_VOCAB)}"
+        )
+    heads = [word for word in ordered if word in _STATE_VOCAB_SET]
+    directions = sorted(
+        (word for word in ordered if word in DIRECTION_VOCAB),
+        key=_CONTROLLED_VOCAB_ORDER.__getitem__,
+    )
+    modifiers = sorted(
+        (
+            word for word in ordered
+            if word not in _STATE_VOCAB_SET and word not in directions
+        ),
+        key=_CONTROLLED_VOCAB_ORDER.__getitem__,
+    )
+    if not heads:
+        return ", ".join(directions + modifiers)
+    direction_anchor = "turn" if "turn" in heads else heads[-1]
+    canonical: list[str] = []
+    for head in heads:
+        canonical.append(head)
+        if head == direction_anchor:
+            canonical.extend(directions)
+    return ", ".join(canonical + modifiers)
 
 
 # ---------------------------------------------------------------------------
@@ -375,10 +374,22 @@ def normalize_action_group(raw_action_group) -> str:
 
 
 def normalize_action_label(raw_action_label) -> str:
-    """Collapse whitespace in an ``action_label``. Empty stays empty (= no condition)."""
+    """Canonicalize an ``action_label``: ``word, word, ...``, no repeats.
+
+    Splits on commas, collapses whitespace, dedupes case-insensitively (first
+    occurrence wins). Empty stays empty (= no condition).
+    """
     if raw_action_label is None:
         return ""
-    return " ".join(str(raw_action_label).split())
+    seen = set()
+    tokens = []
+    for token in str(raw_action_label).split(","):
+        token = " ".join(token.split())
+        if not token or token.lower() in seen:
+            continue
+        seen.add(token.lower())
+        tokens.append(token)
+    return ", ".join(tokens)
 
 
 # ---------------------------------------------------------------------------
@@ -401,10 +412,9 @@ def build_motion_labels(
     return payload
 
 
-# Hard cap on how many controlled words one label may name. A label is a compact
-# prompt, not a caption: past this the T5 mean-pool dilutes the words that carry
-# the action. Labels are keywords, so this counts words; the real corpus tops
-# out at 4.
+# Hard cap on tokens per label: a label is a compact prompt, not a caption --
+# past this the T5 mean-pool dilutes the words that carry the action. Total
+# across head, direction and modifier slots, not a per-slot allowance.
 ACTION_LABEL_MAX_WORDS = 8
 
 
@@ -419,20 +429,29 @@ def _fail_action_labels(line_number: int, message: str) -> None:
     sys.exit(1)
 
 
+def reset_action_label_warning_state() -> None:
+    """No-op kept so callers do not have to care which regime they are on.
+
+    Old validation silenced a word after printing it once per process, so tools
+    auditing a second file had to clear that state. Label validation hard-fails
+    on the first bad row now, so there is nothing left to reset.
+    """
+
+
 def _validate_action_label_entry(
     group: str, label: str, clip: str, line_number: int
 ) -> None:
-    """Enforce the hard constraints on an ``action_labels.jsonl`` row.
+    """Hard-fail on an ``action_labels.jsonl`` row that breaks the label contract.
 
     The group must be one of the three closed values (it selects which model the
-    clip trains). A non-empty label must be KEYWORDS: every comma-separated token
-    a controlled-vocabulary word, no repeats, in canonical order
-    (:data:`ACTION_VOCAB` words first, then :data:`DIRECTION_VOCAB`).
+    clip trains). A non-empty label must parse under :func:`parse_action_label`
+    and must already be spelled the way :func:`canonical_action_label` would
+    spell it.
 
-    Strict because a keyword label is exactly checkable: a misspelling would
-    otherwise become a quietly different T5 vector, and a reordering would split
-    one word combination's training mass across several points in embedding
-    space.
+    THESE ARE GATES, NOT HINTS: the vocabulary is closed and the corpus is
+    spelled to match, so a warning could only buy a silent regression -- and
+    reordering head words flips a transition's direction without changing
+    anything a loss can see.
 
     An *empty* label is legal and means "no condition" -- it is routed to the
     learned null embedding, never encoded as an empty string, which would
@@ -450,40 +469,56 @@ def _validate_action_label_entry(
     if not label:
         return
 
-    tokens = [token.strip() for token in label.split(",")]
-    unknown = [token for token in tokens if token not in _CONTROLLED_VOCAB_ORDER]
-    if unknown:
-        _fail_action_labels(
-            line_number,
-            f"clip '{clip}' has action_label {label!r} whose token(s) {unknown} are "
-            f"not controlled-vocabulary words. Labels are keywords now, not prose: "
-            f"write the words themselves, comma-separated, in canonical order. "
-            f"Valid words are {list(CONTROLLED_VOCAB)}, or leave the label empty "
-            f"for an unconditioned clip.",
-        )
-    duplicates = sorted({token for token in tokens if tokens.count(token) > 1})
-    if duplicates:
-        _fail_action_labels(
-            line_number,
-            f"clip '{clip}' repeats {duplicates} in action_label {label!r}. Each "
-            f"word may appear at most once.",
-        )
+    try:
+        tokens = parse_action_label(label)
+    except ActionLabelError as exc:
+        _fail_action_labels(line_number, f"clip '{clip}': {exc}")
+        return
+
     canonical = canonical_action_label(tokens)
     if label != canonical:
         _fail_action_labels(
             line_number,
-            f"clip '{clip}' has action_label {label!r}, which is not in canonical "
-            f"order. Write it as {canonical!r}: action words in ACTION_VOCAB order, "
-            f"then direction words. One word combination must have exactly one "
-            f"spelling, or its training mass splits across several T5 vectors.",
-        )
-    if len(tokens) > ACTION_LABEL_MAX_WORDS:
-        _fail_action_labels(
-            line_number,
-            f"clip '{clip}' has a {len(tokens)}-word action_label (max "
-            f"{ACTION_LABEL_MAX_WORDS}): {label!r}",
+            f"clip '{clip}' has action_label {label!r}, which is not the canonical "
+            f"spelling. Write it as {canonical!r}: head words "
+            f"({', '.join(head_words_in(tokens))}) in the order they happen, "
+            f"directions next to their head, then the remaining modifiers "
+            f"in CONTROLLED_VOCAB order. One word combination must "
+            f"have exactly one spelling, or its training mass splits across "
+            f"several T5 vectors.",
         )
 
+
+def _validate_head_order_consistency(rows) -> None:
+    """Outside ``transition``, one word set has one head order.
+
+    Head order is the clip's time order and carries meaning only in transitions;
+    in the other groups two spellings of the same word set are an inconsistent
+    annotation, and an inconsistent one would train the role transform on noise.
+
+    *rows* is an iterable of ``(line_number, group, clip, tokens)``.
+    """
+    seen: dict = {}
+    for line_number, group, clip, tokens in rows:
+        if group == "transition" or not tokens:
+            continue
+        key = (group, frozenset(tokens))
+        heads = tuple(head_words_in(tokens))
+        first = seen.get(key)
+        if first is None:
+            seen[key] = (heads, line_number, clip)
+            continue
+        first_heads, first_line, first_clip = first
+        if heads != first_heads:
+            _fail_action_labels(
+                line_number,
+                f"clip '{clip}' spells the head words of {sorted(key[1])} as "
+                f"{list(heads)}, but {ACTION_LABELS_FILE}:{first_line} "
+                f"('{first_clip}') spells the same word set as "
+                f"{list(first_heads)}. Head order may only differ in the "
+                f"transition group, where it is the clip's time order; in "
+                f"{group} a divergence is an inconsistent annotation.",
+            )
 
 # ---------------------------------------------------------------------------
 # I/O
@@ -508,6 +543,7 @@ def load_action_labels(dataset_dir: str | Path) -> dict[str, dict[str, str]]:
         )
 
     action_labels: dict[str, dict[str, str]] = {}
+    rows: list[tuple[int, str, str, list[str]]] = []
     with open(labels_path, "r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
             line = line.strip()
@@ -530,12 +566,27 @@ def load_action_labels(dataset_dir: str | Path) -> dict[str, dict[str, str]]:
                     f"{ACTION_LABELS_FILE}:{line_number} is missing the 'clip' field"
                 )
             group = normalize_action_group(entry.get("action_group"))
-            label = normalize_action_label(entry.get("action_label"))
+            raw_label = entry.get("action_label")
+            label = normalize_action_label(raw_label)
+            # normalize_action_label silently drops repeats and blanks, so this
+            # check runs on the RAW text -- past it 'walk, walk' == 'walk'.
+            raw_tokens = [
+                piece.strip() for piece in str(raw_label or "").split(",")
+            ] if raw_label else []
+            if raw_tokens and len(raw_tokens) != len(label.split(", ")):
+                _fail_action_labels(
+                    line_number,
+                    f"clip '{clip}' has action_label {raw_label!r} with a repeated "
+                    f"token or an empty comma segment",
+                )
             _validate_action_label_entry(group, label, str(clip), line_number)
             action_labels[str(clip)] = {
                 "action_group": group,
                 "action_label": label,
             }
+            rows.append((line_number, group, str(clip), label.split(", ") if label else []))
+    # Cross-row rule, so it can only run once the whole file is in.
+    _validate_head_order_consistency(rows)
     return action_labels
 
 

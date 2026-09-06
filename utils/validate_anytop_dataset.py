@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -25,7 +24,8 @@ from data_loaders.truebones.truebones_utils.param_utils import (  # noqa: E402
     BVHS_DIR,
     MOTION_METADATA_FILE,
     ACTION_LABELS_FILE,
-    ACTION_LABEL_EMBEDDINGS_FILE,
+    ACTION_WORD_EMBEDDINGS_FILE,
+    get_action_word_embeddings_path,
     get_dataset_dir,
 )
 from data_loaders.truebones.truebones_utils.dataset_tags import (  # noqa: E402
@@ -758,7 +758,7 @@ def validate_metadata(metadata_path: Path, motion_files: list[Path], cond: dict,
 def _expected_action_label_t5_name(cond: dict) -> str:
     """T5 model the dataset's cond.npy was encoded with.
 
-    The label sidecar must live in the same embedding space as
+    The word table must live in the same embedding space as
     ``joints_names_embs``, so the rebuild is pinned to this model.
     """
     for object_type in sorted(cond):
@@ -769,52 +769,48 @@ def _expected_action_label_t5_name(cond: dict) -> str:
     return "t5-base"
 
 
-def _action_label_embeddings_staleness(dataset_dir: Path, cond: dict) -> str | None:
-    """Why ``action_label_embs.npy`` is out of date, or None when it is current.
+def _action_word_embeddings_staleness(cond: dict) -> str | None:
+    """Why the frozen action-word table is unusable, or None when it is current.
 
-    Freshness is keyed on the md5 of ``action_labels.jsonl`` stored in the
-    sidecar: editing the labels (new clip, reworded label) stales the sidecar
-    even when every old string is still covered. Sidecars built before the
-    hash existed fall back to the legacy string-coverage check.
+    The table is keyed by WORD, so unlike the old label-keyed sidecar it does not
+    go stale when a clip is relabelled -- only when the vocabulary, the token ->
+    T5 text map or the encoder moves. Validation is delegated to the bundle
+    loader so "current" means exactly what training means by it.
     """
-    labels_path = dataset_dir / ACTION_LABELS_FILE
-    if not labels_path.exists():
-        return None  # a missing labels file is reported by the coverage check
-    sidecar_path = dataset_dir / ACTION_LABEL_EMBEDDINGS_FILE
-    if not sidecar_path.exists():
+    from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
+        ActionConditioningError,
+        load_action_conditioning_bundle,
+    )
+
+    path = Path(get_action_word_embeddings_path())
+    if not path.exists():
         return "missing"
-    payload = np.load(sidecar_path, allow_pickle=True).item()
+    try:
+        bundle = load_action_conditioning_bundle(path)
+    except (ActionConditioningError, ValueError, OSError) as exc:
+        return str(exc)
     expected_t5 = _expected_action_label_t5_name(cond)
-    if payload.get("t5_name") != expected_t5:
-        return f"built with T5 '{payload.get('t5_name')}' but cond.npy expects '{expected_t5}'"
-    stored_md5 = payload.get("action_labels_md5")
-    if stored_md5 is not None:
-        if stored_md5 != hashlib.md5(labels_path.read_bytes()).hexdigest():
-            return f"{ACTION_LABELS_FILE} changed since the sidecar was built"
-        return None
-    sys.path.insert(0, str(REPO_ROOT / "tools"))
-    from build_action_label_embeddings import collect_label_strings  # noqa: E402
-    strings = set(collect_label_strings(dataset_dir))
-    if not set(payload.get("embeddings") or {}) >= strings:
-        return "does not cover the current label set"
+    actual_t5 = bundle.embedding_contract.get("t5_name")
+    if actual_t5 != expected_t5:
+        return f"built with T5 '{actual_t5}' but cond.npy expects '{expected_t5}'"
     return None
 
 
-def _rebuild_action_label_embeddings(dataset_dir: Path, cond: dict) -> None:
-    """Re-run tools/build_action_label_embeddings.py for one dataset."""
+def _rebuild_action_word_embeddings(cond: dict) -> None:
+    """Re-run tools/build_action_label_embeddings.py for the whole repo."""
     t5_name = _expected_action_label_t5_name(cond)
     cmd = [
         sys.executable,
         str(REPO_ROOT / "tools" / "build_action_label_embeddings.py"),
-        str(dataset_dir),
         "--t5-model", t5_name,
+        "--force",
     ]
     env = os.environ.copy()
     existing_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = str(REPO_ROOT.parent) + os.pathsep + existing_pythonpath
     result = subprocess.run(cmd, cwd=str(REPO_ROOT), env=env)
     if result.returncode != 0:
-        raise ValidationError(f"failed to rebuild {ACTION_LABEL_EMBEDDINGS_FILE} for {dataset_dir}")
+        raise ValidationError(f"failed to rebuild {ACTION_WORD_EMBEDDINGS_FILE}")
 
 
 def validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: dict, silent: bool = False) -> bool:
@@ -887,21 +883,21 @@ def validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: 
             if (source_fbx_path is None) != (source_frame_range is None):
                 print_warn(f"validation error: {motion_name} source FBX metadata is incomplete")
 
-        # The frozen-T5 label sidecar is derived from action_labels.jsonl; an
-        # edited or freshly preprocessed dataset would otherwise make the next
-        # train run hard-fail, so refresh it here while validation still has cond.
+        # The frozen-T5 word table is what action-label conditioning trains on;
+        # a missing or foreign-encoder table would otherwise make the next train
+        # run hard-fail, so refresh it here while validation still has cond.
         if not silent:
-            stale_reason = _action_label_embeddings_staleness(dataset_dir, cond)
+            stale_reason = _action_word_embeddings_staleness(cond)
             if stale_reason is not None:
-                print_info(f"{ACTION_LABEL_EMBEDDINGS_FILE} is out of date ({stale_reason}); rebuilding")
-                _rebuild_action_label_embeddings(dataset_dir, cond)
-                stale_reason = _action_label_embeddings_staleness(dataset_dir, cond)
+                print_info(f"{ACTION_WORD_EMBEDDINGS_FILE} is unusable ({stale_reason}); rebuilding")
+                _rebuild_action_word_embeddings(cond)
+                stale_reason = _action_word_embeddings_staleness(cond)
                 if stale_reason is not None:
-                    require_valid(False, f"{ACTION_LABEL_EMBEDDINGS_FILE} still out of date after rebuild: {stale_reason}")
+                    require_valid(False, f"{ACTION_WORD_EMBEDDINGS_FILE} still unusable after rebuild: {stale_reason}")
                 else:
-                    print_ok(f"{ACTION_LABEL_EMBEDDINGS_FILE} rebuilt and up to date")
+                    print_ok(f"{ACTION_WORD_EMBEDDINGS_FILE} rebuilt and up to date")
             else:
-                print_info(f"{ACTION_LABEL_EMBEDDINGS_FILE} up to date")
+                print_info(f"{ACTION_WORD_EMBEDDINGS_FILE} up to date")
 
         total_clips = payload.get("total_clips")
         if total_clips is not None:

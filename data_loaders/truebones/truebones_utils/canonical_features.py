@@ -28,8 +28,7 @@ model feature space via three prior-free, exactly-invertible steps:
      collapsed to one scalar, and the position scalar is shared by every
      object_subset. Bone lengths are a function of the position channel alone,
      so a globally shared position gain makes an object_subset mismatch
-     structurally unable to deform a skeleton -- see
-     ``docs/canonical_frame_and_label_transfer.md``. ``mean`` stays per-channel
+     structurally unable to deform a skeleton. ``mean`` stays per-channel
      and per-subset (a mean mismatch is a rigid translation, bone-length exact).
 
 Channel layout per joint (n_feats == 13):
@@ -436,7 +435,7 @@ def collapse_stat_blocks(subset_stats):
     ``subset_stats``: ``{object_subset: (mean13, std13)}`` -> a new dict of the
     same keys and shapes. Only ``std`` is touched; ``mean`` is returned as-is.
 
-    Two changes, both motivated in ``docs/canonical_frame_and_label_transfer.md``:
+    Two changes:
 
     1. **Block collapse.** Within each block (position / rotation-6d / velocity)
        the per-channel stds are averaged into one scalar. ``l_simple`` is

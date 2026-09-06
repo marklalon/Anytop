@@ -1,38 +1,60 @@
 import torch
 import numpy as np
 
+from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
+    SLOT_PAD_ID,
+)
+from data_loaders.truebones.truebones_utils.motion_labels import ACTION_LABEL_MAX_WORDS
 
-def _build_action_label_emb_batch(action_label_embs_batch, action_labels_batch):
-    """Stack the per-sample frozen T5 label vectors into [B, D] plus a [B] valid mask.
 
-    Rows with an empty label carry no vector; they are zero-filled here and the
-    mask routes them to the model's learned null embedding, which is what an
-    empty label means. Encoding the empty string through T5 instead would teach
-    the model that "no text" is a condition satisfied by any motion and poison the
-    CFG unconditional branch.
+def _build_action_slot_batch(action_slots_batch, action_labels_batch):
+    """Pad the per-sample word ids / roles / slots to ``[B, ACTION_LABEL_MAX_WORDS]``.
+
+    Padded to the contract's word cap rather than to the batch maximum, so the
+    conditioning tensors have one fixed shape for every batch: a shape that moved
+    with the longest label in the batch would re-trigger compilation and rule out
+    graph capture, for eight columns of saving.
+
+    Rows with an empty label carry no words at all; their mask is all-False and
+    the model routes them to its learned null embedding, which is what an empty
+    label means. Padding columns get ``SLOT_PAD_ID`` so they match no slot even
+    if a reader forgets the mask.
     """
-    batch_size = len(action_label_embs_batch)
+    batch_size = len(action_slots_batch)
+    width = ACTION_LABEL_MAX_WORDS
+    word_ids = torch.zeros((batch_size, width), dtype=torch.int64)
+    role_ids = torch.zeros((batch_size, width), dtype=torch.int64)
+    slot_ids = torch.full((batch_size, width), SLOT_PAD_ID, dtype=torch.int64)
+    word_mask = torch.zeros((batch_size, width), dtype=torch.bool)
+    order_head_mask = torch.zeros((batch_size, width), dtype=torch.bool)
     valid = torch.zeros((batch_size,), dtype=torch.bool)
-    dims = {
-        int(torch.as_tensor(emb).shape[-1])
-        for emb in action_label_embs_batch
-        if emb is not None
-    }
-    if not dims:
-        return None, valid
-    if len(dims) != 1:
-        raise ValueError(
-            f"action_label_emb dimensions disagree within a batch: {sorted(dims)}. "
-            "The label-embedding sidecars were built with different T5 models."
-        )
-    emb_dim = dims.pop()
-    embs = torch.zeros((batch_size, emb_dim), dtype=torch.float32)
-    for row_index, emb in enumerate(action_label_embs_batch):
-        if emb is None:
+    any_slots = False
+    for row_index, slots in enumerate(action_slots_batch):
+        if slots is None:
             continue
-        embs[row_index] = torch.as_tensor(emb, dtype=torch.float32).reshape(-1)
+        any_slots = True
+        count = int(len(slots['word_ids']))
+        if count > width:
+            raise ValueError(
+                f"action label has {count} words, over the contract cap {width}"
+            )
+        word_ids[row_index, :count] = torch.as_tensor(slots['word_ids'], dtype=torch.int64)
+        role_ids[row_index, :count] = torch.as_tensor(slots['role_ids'], dtype=torch.int64)
+        slot_ids[row_index, :count] = torch.as_tensor(slots['slot_ids'], dtype=torch.int64)
+        word_mask[row_index, :count] = torch.as_tensor(slots['word_mask'], dtype=torch.bool)
+        order_head_mask[row_index, :count] = torch.as_tensor(
+            slots['order_head_mask'], dtype=torch.bool
+        )
         valid[row_index] = bool(str(action_labels_batch[row_index] or ""))
-    return embs, valid
+    if not any_slots:
+        return None, valid
+    return {
+        'action_word_ids': word_ids,
+        'action_role_ids': role_ids,
+        'action_slot_ids': slot_ids,
+        'action_word_mask': word_mask,
+        'action_order_head_mask': order_head_mask,
+    }, valid
 
 def n_joints_to_mask(n_joints, max_joints):
     mask = torch.arange(max_joints + 1, device=n_joints.device).expand(len(n_joints), max_joints + 1) < (n_joints.unsqueeze(1) + 1)
@@ -104,17 +126,17 @@ def truebones_collate(batch):
            for batch_item in notnone_batches):
         action_labels_batch = [batch_item.get('action_label') for batch_item in notnone_batches]
         action_groups_batch = [batch_item.get('action_group') for batch_item in notnone_batches]
-        action_label_embs_batch = [batch_item.get('action_label_emb') for batch_item in notnone_batches]
+        action_slots_batch = [batch_item.get('action_slots') for batch_item in notnone_batches]
         cond['y'].update({
             'action_group': action_groups_batch,
             'action_label': action_labels_batch,
         })
-        label_embs, label_valid = _build_action_label_emb_batch(
-            action_label_embs_batch, action_labels_batch
+        slot_tensors, label_valid = _build_action_slot_batch(
+            action_slots_batch, action_labels_batch
         )
         cond['y']['action_label_valid'] = label_valid
-        if label_embs is not None:
-            cond['y']['action_label_emb'] = label_embs
+        if slot_tensors is not None:
+            cond['y'].update(slot_tensors)
 
     if any('translation_root_index' in batch_item for batch_item in notnone_batches):
         cond['y'].update({
@@ -281,7 +303,7 @@ def truebones_batch_collate(batch):
             if isinstance(extra, dict):
                 if 'joint_mask_candidate_roots' in extra or 'rest_pos_ric_hml' in extra:
                     extra_cond = extra
-                elif any(key in extra for key in ('action_group', 'action_label', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count')):
+                elif any(key in extra for key in ('action_group', 'action_label', 'action_slots', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count')):
                     motion_metadata = extra
             elif isinstance(extra, str):
                 motion_name = extra
@@ -333,7 +355,7 @@ def truebones_batch_collate(batch):
         if extra_cond is not None:
             item['feature_space'] = extra_cond.get('feature_space', 'canonical_motion_v3')
         if motion_metadata is not None:
-            for key in ('action_group', 'action_label', 'action_label_emb', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count'):
+            for key in ('action_group', 'action_label', 'action_slots', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count'):
                 if key in motion_metadata:
                     item[key] = motion_metadata[key]
             if 'species_emb' in motion_metadata:

@@ -3,6 +3,20 @@ import torch.nn as nn
 import numpy as np
 from model.motion_transformer import GraphMotionDecoderLayer, GraphMotionDecoder
 from model.joint_mask_utils import sample_subtree_joint_mask_batch
+from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
+    ACTION_LABEL_SLOTS,
+    ROLE_B_ARTIFACT_SCHEMA_VERSION,
+    ROLE_HEAD_1,
+    ActionConditioningError,
+    slot_source_rank_report,
+    validate_action_conditioning_metadata,
+    validate_role_b_payload,
+    word_table_sha256,
+)
+from data_loaders.truebones.truebones_utils.motion_labels import (
+    ACTION_LABEL_MAX_WORDS,
+    CONTROLLED_VOCAB,
+)
 
 
 def create_sin_embedding(positions: torch.Tensor, dim: int, max_period: float = 10000,
@@ -62,11 +76,12 @@ class AnyTop(nn.Module):
             )
         self.species_joint_cond=bool(kargs.get('species_joint_cond', False))
         self.loop_cond_prob=float(kargs.get('loop_cond_prob', 1.0))
-        # Action-label conditioning: a single pathway -- the frozen T5 embedding
-        # of the label text, which is controlled keywords ("run, sprint, forward,
-        # left"). T5 carries direction as a roughly linear offset over the action
-        # words, so unseen (action x direction) combinations still compose
-        # instead of needing a fixed column per combination.
+        # Action-label conditioning: a single pathway -- the frozen T5 vectors of
+        # the label's WORDS, pooled into one channel per role slot (head /
+        # direction / modifier) and concatenated. A channel reads its own slot
+        # only, so a label's head and direction axes are literally unchanged by
+        # however many modifiers it also spells, and unseen (action x direction)
+        # combinations compose out of word vectors the model has already seen.
         self.action_label_cond = bool(kargs.get('action_label_cond', False))
         self.action_label_cfg_drop_prob = float(kargs.get('action_label_cfg_drop_prob', 0.2))
         if not 0.0 <= self.action_label_cfg_drop_prob <= 1.0:
@@ -109,14 +124,17 @@ class AnyTop(nn.Module):
             nn.Linear(self.latent_dim, self.latent_dim),
         )
         if self.action_label_cond:
-            # Project the frozen-T5 label vector and add it to the timestep token,
-            # alongside loop / playspeed / canonical frame. Additive and linear is
-            # enough: direction is linearly readable out of the T5 vector, so the
-            # condition needs no richer function class. If a trained model still
-            # under-follows the prompt, raise --action_label_cfg_scale (no
-            # retrain needed).
+            # Project the concatenated slot channels and add the result to the
+            # timestep token, alongside loop / playspeed / canonical frame. One
+            # Linear over the concatenation IS one Linear per channel block,
+            # summed, so each channel's relative scale is learned rather than
+            # being some offline budget we picked. Additive and linear is enough:
+            # direction is linearly readable out of the T5 vectors. If a trained
+            # model still under-follows the prompt, raise --action_label_cfg_scale
+            # (no retrain needed).
+            self._init_action_conditioning(kargs.get('action_conditioning'), t5_out_dim)
             self.action_label_projection = nn.Sequential(
-                nn.Linear(t5_out_dim, self.latent_dim),
+                nn.Linear(len(ACTION_LABEL_SLOTS) * t5_out_dim, self.latent_dim),
                 nn.GELU(),
                 nn.Linear(self.latent_dim, self.latent_dim),
             )
@@ -127,6 +145,7 @@ class AnyTop(nn.Module):
         else:
             self.action_label_projection = None
             self.action_label_null_emb = None
+            self.action_conditioning_metadata = None
 
         # Per-species condition: a T5-derived species descriptor that FiLM-modulates
         # the timestep embedding (which every decoder layer re-injects via
@@ -242,33 +261,238 @@ class AnyTop(nn.Module):
             raise ValueError("playspeed_cond must be finite")
         return raw_playspeed_cond.to(dtype=dtype).view(batch_size, 1)
 
-    def _coerce_action_label_emb(self, raw_action_label_emb, batch_size, device, dtype):
-        """Normalize the frozen-T5 label embedding to ``[B, t5_out_dim]``."""
-        if raw_action_label_emb is None:
+    def _init_action_conditioning(self, bundle, t5_out_dim):
+        """Freeze the word table and the role transform into model buffers.
+
+        Persistent buffers, so a checkpoint carries the exact vectors its weights
+        were fitted on and inference never has to pick a sidecar out of a data
+        directory. With no bundle (the inference path) they are placeholders that
+        ``load_state_dict`` overwrites; ``validate_loaded_action_conditioning``
+        is what certifies what landed in them.
+        """
+        vocab_size = len(CONTROLLED_VOCAB)
+        if bundle is None:
+            table = torch.zeros(vocab_size, int(t5_out_dim))
+            perm = torch.arange(int(t5_out_dim), dtype=torch.long)
+            sign = torch.ones(int(t5_out_dim))
+            self.action_conditioning_metadata = None
+        else:
+            if bundle.embedding_dim != int(t5_out_dim):
+                raise ValueError(
+                    f"the action word table is {bundle.embedding_dim}-dimensional but "
+                    f"t5_out_dim is {t5_out_dim}. It was encoded with a different T5 "
+                    "than cond.npy's joints_names_embs; rebuild it with --t5-model "
+                    "matching cond.npy."
+                )
+            # The gate the geometry preflight cannot enforce on its own: the
+            # first Linear has to be wide enough to stay injective on the direct
+            # sum of the three slot source spaces, or labels that differ only in
+            # slot membership can collide before any weight is trained.
+            report = bundle.slot_source_rank_report(self.latent_dim)
+            if not report['full_rank']:
+                raise ValueError(
+                    f"{bundle.source}: the frozen word table does not have full "
+                    f"slot-source rank ({report['slots']}), so distinct labels are not "
+                    "guaranteed to reach distinct conditions. Rebuild it and re-run "
+                    "tools/evaluate_action_label_geometry.py."
+                )
+            if not report['fits_projection']:
+                raise ValueError(
+                    f"latent_dim {self.latent_dim} is smaller than the total slot source "
+                    f"rank {report['total_rank']}, so action_label_projection cannot be "
+                    "injective on the reachable condition space -- some pairs of labels "
+                    f"would be indistinguishable by construction. Train with --latent_dim "
+                    f"{report['total_rank']} or more."
+                )
+            table = torch.from_numpy(
+                np.array(bundle.word_embeddings, dtype=np.float32, copy=True)
+            )
+            perm = torch.as_tensor(bundle.role_b_perm, dtype=torch.long)
+            sign = torch.as_tensor(bundle.role_b_sign, dtype=torch.float32)
+            self.action_conditioning_metadata = bundle.checkpoint_metadata()
+        self.register_buffer('action_word_embeddings', table, persistent=True)
+        self.register_buffer('action_role_b_perm', perm, persistent=True)
+        self.register_buffer('action_role_b_sign', sign, persistent=True)
+
+    def validate_loaded_action_conditioning(self, metadata, source: str):
+        """Bind loaded weights to the contract they were trained under.
+
+        Called right after ``load_state_dict``. The checkpoint's ``perm``/``sign``
+        buffers are the authoritative material for THOSE weights, so they are
+        re-validated as an external payload rather than assumed to equal what
+        this code derives today -- and the recorded material hash is what says
+        whether they are the same transform.
+        """
+        if not self.action_label_cond:
             return None
-        label_emb = torch.as_tensor(raw_action_label_emb, device=device, dtype=dtype)
-        if label_emb.dim() == 1:
-            label_emb = label_emb.unsqueeze(0)
-        elif label_emb.dim() != 2:
-            raise ValueError(
-                "action_label_emb must have shape (D,) or (B, D), got "
-                f"{tuple(label_emb.shape)}"
+        validated = validate_action_conditioning_metadata(metadata, source=source)
+        # The table first: "the weights loaded but the buffers did not" is the
+        # failure a reader has to see, and it would otherwise surface as a role
+        # hash mismatch on the untouched placeholder material.
+        table = self.action_word_embeddings.detach().cpu().numpy()
+        if table.shape[0] != len(CONTROLLED_VOCAB):
+            raise ActionConditioningError(
+                f"{source}: its word table has {table.shape[0]} rows, this code's "
+                f"vocabulary has {len(CONTROLLED_VOCAB)}"
             )
-        expected_dim = self.action_label_projection[0].in_features
-        if label_emb.shape[1] != expected_dim:
-            raise ValueError(
-                "action_label_emb dimension must match t5_out_dim, got "
-                f"{label_emb.shape[1]} for t5_out_dim {expected_dim}. The label "
-                "embedding sidecar was built with a different T5 model than cond.npy."
+        if not np.isfinite(table).all() or not np.any(table):
+            raise ActionConditioningError(
+                f"{source}: its word table did not load (all zero or non-finite)"
             )
-        if label_emb.shape[0] == 1 and batch_size != 1:
-            label_emb = label_emb.expand(batch_size, -1)
-        elif label_emb.shape[0] != batch_size:
-            raise ValueError(
-                "action_label_emb batch dimension must match the motion batch size, got "
-                f"{label_emb.shape[0]} for batch {batch_size}"
+        # The vectors that arrived in the buffers, against the hash the
+        # checkpoint's own contract commits to. Shape and finiteness say the
+        # table loaded; only this says it is the table these weights were fitted
+        # on -- and it is the check that makes the loading ORDER matter, so it
+        # has to run on buffers that already hold the checkpoint's values.
+        declared_table_hash = validated['embedding_contract'].get('word_table_sha256')
+        actual_table_hash = word_table_sha256(table)
+        if declared_table_hash != actual_table_hash:
+            raise ActionConditioningError(
+                f"{source}: its word table hashes to {actual_table_hash}, but the "
+                f"embedding_contract it was saved with commits to "
+                f"{declared_table_hash!r}. These weights were fitted on different "
+                "word vectors than the ones now in the buffers."
             )
-        return label_emb
+        contract = validated['conditioning_contract']
+        try:
+            validate_role_b_payload(
+                {
+                    'schema_version': ROLE_B_ARTIFACT_SCHEMA_VERSION,
+                    'embedding_dim': int(self.action_role_b_perm.numel()),
+                    'perm': self.action_role_b_perm.detach().cpu().tolist(),
+                    'sign': self.action_role_b_sign.detach().cpu().to(torch.int64).tolist(),
+                    'material_sha256': contract.get('role_b_material_sha256'),
+                },
+                expected_dim=int(self.action_word_embeddings.shape[1]),
+                source=f"{source} role transform buffers",
+            )
+        except ValueError as exc:
+            # One error type out of the whole bind: this is a refused checkpoint
+            # like every other failure here, and callers that catch
+            # ActionConditioningError should not miss it because the shared
+            # payload validator speaks plain ValueError.
+            raise ActionConditioningError(str(exc)) from exc
+        report = slot_source_rank_report(
+            table,
+            self.action_role_b_perm.detach().cpu().tolist(),
+            self.action_role_b_sign.detach().cpu().tolist(),
+            self.latent_dim,
+        )
+        if not report['full_rank'] or not report['fits_projection']:
+            raise ActionConditioningError(
+                f"{source}: its word table and latent_dim {self.latent_dim} do not "
+                f"certify separable slot channels (total slot source rank "
+                f"{report['total_rank']}, full_rank={report['full_rank']})"
+            )
+        self.action_conditioning_metadata = validated
+        return validated
+
+    def _coerce_action_slot_field(self, value, name, batch_size, device, dtype):
+        """Normalize one loader field to ``[B, W]``, broadcasting a single row."""
+        tensor = torch.as_tensor(value, device=device, dtype=dtype)
+        if tensor.dim() == 1:
+            tensor = tensor.unsqueeze(0)
+        elif tensor.dim() != 2:
+            raise ValueError(
+                f"{name} must have shape (W,) or (B, W), got {tuple(tensor.shape)}"
+            )
+        if tensor.shape[1] > ACTION_LABEL_MAX_WORDS:
+            raise ValueError(
+                f"{name} has {tensor.shape[1]} word columns, over the contract cap "
+                f"{ACTION_LABEL_MAX_WORDS}"
+            )
+        if tensor.shape[0] == 1 and batch_size != 1:
+            tensor = tensor.expand(batch_size, -1)
+        elif tensor.shape[0] != batch_size:
+            raise ValueError(
+                f"{name} batch dimension must match the motion batch size, got "
+                f"{tensor.shape[0]} for batch {batch_size}"
+            )
+        return tensor
+
+    def _action_slot_inputs(self, y, batch_size, device):
+        """The loader's word-level condition, or ``None`` when y carries none.
+
+        The loader emits ids and masks, never assembled vectors, so the frozen
+        table lives in exactly one place -- this model. All four fields travel
+        together: a label's meaning is the (word, role, slot) set, and accepting
+        a partial one would silently condition on a different label.
+        """
+        raw_word_ids = y.get('action_word_ids')
+        if raw_word_ids is None:
+            return None
+        word_ids = self._coerce_action_slot_field(
+            raw_word_ids, 'action_word_ids', batch_size, device, torch.long
+        )
+        fields = {}
+        for name, dtype in (
+            ('action_role_ids', torch.long),
+            ('action_slot_ids', torch.long),
+            ('action_word_mask', torch.bool),
+        ):
+            raw = y.get(name)
+            if raw is None:
+                raise ValueError(
+                    f"y carries action_word_ids but no {name}. The word ids alone do "
+                    "not say which slot a word feeds or which role it plays, so the "
+                    "condition cannot be assembled from them."
+                )
+            fields[name] = self._coerce_action_slot_field(
+                raw, name, batch_size, device, dtype
+            )
+        mismatched = {
+            name: tuple(tensor.shape)
+            for name, tensor in fields.items()
+            if tensor.shape != word_ids.shape
+        }
+        if mismatched:
+            raise ValueError(
+                "action_word_ids, action_role_ids, action_slot_ids and "
+                "action_word_mask must all have the same shape; "
+                f"action_word_ids is {tuple(word_ids.shape)} but {mismatched}"
+            )
+        if not torch.compiler.is_compiling():
+            vocab_size = int(self.action_word_embeddings.shape[0])
+            live = fields['action_word_mask']
+            if bool(((word_ids < 0) | (word_ids >= vocab_size))[live].any()):
+                raise ValueError(
+                    f"action_word_ids holds an id outside 0..{vocab_size - 1}; the "
+                    "loader's ordered vocabulary is not this model's."
+                )
+        return (
+            word_ids,
+            fields['action_role_ids'],
+            fields['action_slot_ids'],
+            fields['action_word_mask'],
+        )
+
+    def _assemble_action_slot_channels(self, word_ids, role_ids, slot_ids, word_mask, dtype):
+        """Tensor mirror of ``assemble_slot_channels``: ``[B, S * D]``.
+
+        Same rule, same slot ids, one channel per slot: the mean of that slot's
+        member word vectors, L2-normalised, with ``R_B`` applied to the
+        ``ROLE_HEAD_1`` word first, and a zero row for an absent slot. Because a
+        channel is a function of its own slot's members only, appending modifiers
+        moves the head and direction channels by exactly zero.
+        """
+        vectors = self.action_word_embeddings.to(dtype)[word_ids]
+        role_vectors = (
+            vectors[..., self.action_role_b_perm] * self.action_role_b_sign.to(dtype)
+        )
+        vectors = torch.where(
+            (role_ids == ROLE_HEAD_1).unsqueeze(-1), role_vectors, vectors
+        )
+        channels = []
+        for slot in range(len(ACTION_LABEL_SLOTS)):
+            member = (word_mask & (slot_ids == slot)).unsqueeze(-1).to(dtype)
+            count = member.sum(dim=1)
+            mean = (vectors * member).sum(dim=1) / count.clamp(min=1.0)
+            norm = torch.linalg.vector_norm(mean, dim=-1, keepdim=True)
+            # An absent slot is a zero row, never a renormalisation of the others:
+            # "this label spells no direction" has to stay distinguishable from
+            # "this label spells one".
+            channels.append(torch.where(count > 0, mean / norm.clamp(min=1e-9), mean * 0.0))
+        return torch.cat(channels, dim=-1)
 
     def _resolve_action_label_active(self, raw_action_label_active, batch_size, device):
         """Per-sample CFG mask for the action condition (True == conditional).
@@ -292,11 +516,12 @@ class AnyTop(nn.Module):
             return torch.rand(batch_size, device=device) >= self.action_label_cfg_drop_prob
         return torch.ones(batch_size, device=device, dtype=torch.bool)
 
-    def _resolve_action_label_valid(self, y, batch_size, device, label_emb):
+    def _resolve_action_label_valid(self, y, batch_size, device, word_mask):
         """Which rows actually carry a label (an empty label = no condition).
 
         Prefers the loader's explicit ``y['action_label_valid']``; falls back to
-        "an embedding was supplied at all".
+        "did this row carry any word at all", which is the same statement made by
+        the mask.
         """
         raw_valid = y.get('action_label_valid')
         if raw_valid is not None:
@@ -309,12 +534,12 @@ class AnyTop(nn.Module):
                     f"{valid.numel()} for batch {batch_size}"
                 )
             return valid
-        if label_emb is None:
+        if word_mask is None:
             return torch.zeros(batch_size, device=device, dtype=torch.bool)
-        return torch.ones(batch_size, device=device, dtype=torch.bool)
+        return word_mask.any(dim=-1)
 
     def _action_condition(self, y, batch_size, device, dtype):
-        """``(label_emb [B, D], active [B])`` for the action condition, or ``None``.
+        """``(channels [B, S*D], active [B])`` for the action condition, or ``None``.
 
         ``active`` folds together the CFG hard-drop mask and "does this row carry
         a label at all": a row with no label carries no action information, and
@@ -324,21 +549,25 @@ class AnyTop(nn.Module):
         """
         if not self.action_label_cond:
             return None
-        label_emb = self._coerce_action_label_emb(
-            y.get('action_label_emb'), batch_size, device, dtype
-        )
-        if label_emb is None:
-            label_emb = torch.zeros(
+        resolved = self._action_slot_inputs(y, batch_size, device)
+        if resolved is None:
+            channels = torch.zeros(
                 batch_size, self.action_label_projection[0].in_features,
                 device=device, dtype=dtype,
+            )
+            word_mask = None
+        else:
+            word_ids, role_ids, slot_ids, word_mask = resolved
+            channels = self._assemble_action_slot_channels(
+                word_ids, role_ids, slot_ids, word_mask, dtype
             )
         active = self._resolve_action_label_active(
             y.get('action_label_active'), batch_size, device
         )
         active = active & self._resolve_action_label_valid(
-            y, batch_size, device, y.get('action_label_emb')
+            y, batch_size, device, word_mask
         )
-        return label_emb, active
+        return channels, active
 
     def _build_action_label_token(self, y, batch_size, device, dtype):
         """The action token added to the timestep embedding, or ``None`` when off."""
@@ -347,13 +576,13 @@ class AnyTop(nn.Module):
         resolved = self._action_condition(y, batch_size, device, dtype)
         if resolved is None:
             return None
-        label_emb, action_active = resolved
+        channels, action_active = resolved
         # An inactive row goes to the learned null rather than pushing the zero
         # vector through the projection, whose output there is an untrained region.
         null_emb = self.action_label_null_emb.to(device=device, dtype=dtype)
         return torch.where(
             action_active.view(batch_size, 1),
-            self.action_label_projection(label_emb),
+            self.action_label_projection(channels),
             null_emb.unsqueeze(0).expand(batch_size, -1),
         )
 
@@ -656,7 +885,7 @@ class AnyTop(nn.Module):
 
         # Temporal self-attention is unmasked: every frame token attends over the
         # whole window, including the T-pose token at index 0 and, symmetrically,
-        # that token over every frame. See docs/temporal_window_full_attention.md.
+        # that token over every frame.
 
         cross_limb_unreliable_mask = None
         if self.cross_limb:
@@ -792,5 +1021,3 @@ class OutputProcess(nn.Module):
         output = torch.cat([root_data.unsqueeze(2), all_joints], dim=-2)
         output = output.permute(1, 2, 3, 0)[..., 1:]  # [bs, njoints, nfeats, nframes]
         return output
-
-

@@ -1,6 +1,6 @@
 """Dataset namespaces, canonical species keys, and the multi-dataset source list.
 
-Two contracts run through this module (see ``docs/multi_dataset_training.md``):
+Two contracts run through this module:
 
 * **Training contract** -- a ``cond.npy`` plus the dataset directories its
   entries point at (``motions/``, ``motion_metadata.json``, the tag sidecars,

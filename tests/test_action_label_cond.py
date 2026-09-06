@@ -12,19 +12,37 @@ sys.path.insert(0, str(REPO_ROOT))
 
 
 from data_loaders.tensors import truebones_collate  # noqa: E402
+from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (  # noqa: E402
+    SLOT_PAD_ID,
+)
 from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
+    ACTION_LABEL_MAX_HEADS,
+    ACTION_LABEL_MAX_WORDS,
     ACTION_VOCAB,
     CONTROLLED_VOCAB,
     DIRECTION_VOCAB,
+    STATE_VOCAB,
+    ActionLabelError,
     action_words_in,
     canonical_action_label,
     direction_words_in,
+    head_words_in,
+    parse_action_label,
+    vocab_t5_text,
     vocab_words_in,
 )
 from model.anytop import AnyTop  # noqa: E402
+from tests.action_label_test_utils import (  # noqa: E402
+    TEST_LATENT_DIM,
+    TEST_T5_DIM,
+    action_cond_fields,
+    make_test_bundle,
+    reference_channels,
+    sample_action_slots,
+)
 
 
-T5_DIM = 512
+T5_DIM = TEST_T5_DIM
 
 
 class _CaptureDecoder(torch.nn.Module):
@@ -37,11 +55,11 @@ class _CaptureDecoder(torch.nn.Module):
         return kwargs['tgt']
 
 
-def _make_model(action_label_cond=True, action_label_cfg_drop_prob=0.3):
+def _make_model(action_label_cond=True, action_label_cfg_drop_prob=0.3, bundle=None):
     return AnyTop(
         max_joints=4,
         feature_len=13,
-        latent_dim=8,
+        latent_dim=TEST_LATENT_DIM,
         ff_size=32,
         num_layers=1,
         num_heads=2,
@@ -50,6 +68,9 @@ def _make_model(action_label_cond=True, action_label_cfg_drop_prob=0.3):
         t5_out_dim=T5_DIM,
         action_label_cond=action_label_cond,
         action_label_cfg_drop_prob=action_label_cfg_drop_prob,
+        action_conditioning=(
+            (bundle or make_test_bundle()) if action_label_cond else None
+        ),
     )
 
 
@@ -69,26 +90,9 @@ def _make_y(**extra):
     return y
 
 
-def _label_cond(labels, groups, seed=0):
-    """A conditioned y: label text, group, a deterministic stand-in T5 emb, valid mask."""
-    generator = torch.Generator().manual_seed(seed)
-    embs = torch.zeros(len(labels), T5_DIM)
-    valid = torch.zeros(len(labels), dtype=torch.bool)
-    for i, label in enumerate(labels):
-        if not label:
-            continue
-        # Deterministic per label text, so identical labels get identical vectors.
-        embs[i] = torch.rand(
-            T5_DIM, generator=torch.Generator().manual_seed(abs(hash(label)) % (2 ** 31))
-        )
-        valid[i] = True
-    del generator
-    return {
-        'action_label': list(labels),
-        'action_group': list(groups),
-        'action_label_emb': embs,
-        'action_label_valid': valid,
-    }
+def _label_cond(labels, groups):
+    """A conditioned y: label text, group, the collate's word ids and valid mask."""
+    return action_cond_fields(labels, groups)
 
 
 class ActionLabelVocabularyTest(unittest.TestCase):
@@ -102,81 +106,182 @@ class ActionLabelVocabularyTest(unittest.TestCase):
         # "rightward" to near-synonyms -- and so is the mushy "sideways".
         for absent in ("leftward", "rightward", "sideways"):
             self.assertNotIn(absent, CONTROLLED_VOCAB)
+        # A token is an ID, so it never carries whitespace: multi-word text lives
+        # on the T5 side only.
+        for word in CONTROLLED_VOCAB:
+            self.assertEqual(word, word.strip())
+            self.assertNotIn(' ', word)
 
-    def test_gait_modifiers_survive_alongside_their_base_word(self):
-        # The equal-length rule keeps both, which is the whole point: a Sprint
-        # clip and a Run clip must not collapse onto the same label.
-        self.assertEqual(vocab_words_in('sprints forward'), ['run', 'sprint', 'forward'])
-        self.assertEqual(vocab_words_in('shuffles left'), ['walk', 'shuffle', 'left'])
-        # strafe qualifies any travel mode, not just walk: it names only itself.
-        self.assertEqual(vocab_words_in('strafe right'), ['strafe', 'right'])
-        self.assertEqual(vocab_words_in('run, strafe'), ['run', 'strafe'])
-        self.assertEqual(vocab_words_in('fly, strafe'), ['fly', 'strafe'])
+    def test_zero_use_words_are_gone_from_the_closed_table(self):
+        # The vocabulary is closed now: a word nobody annotates is a token the
+        # autocomplete would offer, the model never trained, and whose weight
+        # scalar would sit at its prior forever.
+        for absent in ('climb', 'gallop', 'shuffle', 'sneak', 'flap', 'stand',
+                       'stretch', 'dig', 'peck', 'drag', 'drink', 'graze',
+                       'haste'):
+            self.assertNotIn(absent, CONTROLLED_VOCAB, absent)
+        # ...and the words the corpus actually uses are all in.
+        for present in ('weapon', 'cast', 'projectile', 'swat', 'spawn', '2hand',
+                        'spin', 'headbutt', 'hover', 'work', 'dead', 'clean',
+                        'fast', 'fishing'):
+            self.assertIn(present, CONTROLLED_VOCAB, present)
 
-    def test_strafe_no_longer_lights_turn(self):
-        # Strafing is pure translation and does not change facing.
-        self.assertNotIn('turn', vocab_words_in('walk, strafe left with arms swinging'))
-        # Circling and banking do change facing, so they stay.
-        self.assertIn('turn', vocab_words_in('banks left with beak open'))
+    def test_state_vocab_is_a_closed_subset(self):
+        self.assertLessEqual(set(STATE_VOCAB), set(CONTROLLED_VOCAB))
+        self.assertEqual(len(set(STATE_VOCAB)), len(STATE_VOCAB))
+        # Equipment, direction and manner words can never be head words: the
+        # head slot is "a state the body is in", not "the important word".
+        for absent in ('weapon', '1hand', 'forward', 'cast', 'spin', 'block'):
+            self.assertNotIn(absent, STATE_VOCAB, absent)
+        for present in ('idle', 'attack', 'crouch', 'rear', 'hover', 'sleep', 'sit'):
+            self.assertIn(present, STATE_VOCAB, present)
 
-    def test_backward_no_longer_lights_retreat(self):
-        # A direction must not conjure an action now that direction has its own
-        # axis: being knocked backward is not a retreat.
-        self.assertEqual(vocab_words_in('knocked backward tumbling'), ['fall', 'backward'])
-        # The retreat word itself still works.
-        self.assertIn('retreat', vocab_words_in('backs away slowly'))
+    def test_t5_text_map_is_one_to_one_on_the_expanded_table(self):
+        # The constraint is on the EXPANDED table, not on the override dict:
+        # an override colliding with an identity token would share its vector.
+        effective = [vocab_t5_text(word) for word in CONTROLLED_VOCAB]
+        self.assertEqual(len(set(effective)), len(CONTROLLED_VOCAB))
+        # A token with no override encodes as itself.
+        self.assertEqual(vocab_t5_text('walk'), 'walk')
+        # The measured overrides: the bare token lands on a different referent.
+        self.assertEqual(vocab_t5_text('land'), 'touching down')
+        self.assertEqual(vocab_t5_text('bow'), 'archery bow')
+        self.assertEqual(vocab_t5_text('fishing'), 'fishing')
+        self.assertNotEqual(vocab_t5_text('1hand'), vocab_t5_text('2hand'))
 
-    def test_bare_back_is_not_a_direction(self):
-        # Every corpus use of bare "back" is anatomy or recovery.
-        for text in ('collapses onto back', 'stands back up', 'arches back'):
-            self.assertNotIn('backward', vocab_words_in(text), text)
+    def test_vocab_words_in_is_exact_token_matching(self):
+        # Synonym translation is gone: a label is exact tokens, and free text
+        # matches only where it happens to BE a token.
+        self.assertEqual(vocab_words_in('run, forward, fast'), ['run', 'fast', 'forward'])
+        self.assertEqual(vocab_words_in('run, haste, forward'), ['run', 'forward'])
+        self.assertEqual(vocab_words_in('hurries forward'), ['forward'])
+        self.assertEqual(vocab_words_in('jogging'), [])
+        self.assertEqual(vocab_words_in('stands still'), [])
+        # Order is VOCABULARY order, which is why this is the word SET and must
+        # not be fed to canonical_action_label.
+        self.assertEqual(vocab_words_in('forward, walk'), ['walk', 'forward'])
 
     def test_action_and_direction_views_partition_the_hits(self):
-        text = 'run, sprint, forward, left'
-        self.assertEqual(action_words_in(text), ['run', 'sprint'])
+        text = 'run, forward, left, fast'
+        self.assertEqual(action_words_in(text), ['run', 'fast'])
         self.assertEqual(direction_words_in(text), ['forward', 'left'])
         self.assertEqual(
             action_words_in(text) + direction_words_in(text), vocab_words_in(text)
         )
 
-    def test_canonical_label_is_order_and_duplicate_free(self):
-        # One word combination must have exactly one spelling, or its training
-        # mass splits across several T5 vectors.
-        self.assertEqual(
-            canonical_action_label(['left', 'forward', 'walk', 'crouch']),
-            'walk, crouch, forward, left',
-        )
-        self.assertEqual(canonical_action_label(['run', 'run']), 'run')
-        self.assertEqual(canonical_action_label(['run', 'nonsense']), 'run')
-        # Round trip: a canonical label re-parses to itself.
-        for label in ('walk, forward', 'run, sprint, forward, left', 'attack, bite',
-                      'run, strafe', 'strafe, left'):
-            self.assertEqual(canonical_action_label(vocab_words_in(label)), label)
+    def test_head_words_keep_the_written_order(self):
+        self.assertEqual(head_words_in(['idle', 'attack']), ['idle', 'attack'])
+        self.assertEqual(head_words_in(['attack', 'idle']), ['attack', 'idle'])
+        self.assertEqual(head_words_in(['walk', 'weapon', 'forward']), ['walk'])
 
-    def test_validator_rejects_prose_and_wrong_order(self):
+    def test_canonical_label_sorts_modifiers_but_never_heads(self):
+        # Modifiers are sorted, so one combination has exactly one spelling.
+        self.assertEqual(
+            canonical_action_label(['walk', 'forward', 'weapon', '1hand']),
+            'walk, forward, weapon, 1hand',
+        )
+        self.assertEqual(
+            canonical_action_label(['walk', '1hand', 'forward', 'weapon']),
+            'walk, forward, weapon, 1hand',
+        )
+        self.assertEqual(
+            canonical_action_label(['walk', 'weapon', 'right']),
+            'walk, right, weapon',
+        )
+        # Directions qualify the head sequence, so unrelated qualifiers and
+        # equipment must not split them from it.
+        self.assertEqual(
+            canonical_action_label(['run', 'turn', 'weapon', '1hand', 'right']),
+            'run, turn, right, weapon, 1hand',
+        )
+        self.assertEqual(
+            canonical_action_label(['run', 'right', '1hand', 'turn', 'weapon']),
+            'run, turn, right, weapon, 1hand',
+        )
+        # Filtering the result back to head words still preserves their order.
+        self.assertEqual(
+            canonical_action_label(['turn', 'hover', 'left']),
+            'turn, left, hover',
+        )
+        # Head order is NOT sorted: it is the clip's time order and the only
+        # record of which way a transition runs. This is the load-bearing case.
+        self.assertEqual(canonical_action_label(['idle', 'attack']), 'idle, attack')
+        self.assertEqual(canonical_action_label(['attack', 'idle']), 'attack, idle')
+        self.assertEqual(canonical_action_label(['run', 'run']), 'run')
+        with self.assertRaises(ActionLabelError):
+            canonical_action_label(['run', 'nonsense'])
+
+    def test_canonical_label_round_trips_through_the_parser(self):
+        for label in ('walk, forward', 'run, forward, left, fast', 'attack, bite',
+                      'run, strafe', 'idle, attack', 'attack, idle',
+                      'walk, forward, weapon, 1hand', 'idle, rear, roar',
+                      'run, turn, right, weapon, 1hand', 'turn, left, hover'):
+            self.assertEqual(canonical_action_label(parse_action_label(label)), label)
+
+    def test_parser_enforces_the_spelling_contract(self):
+        self.assertEqual(parse_action_label(''), [])
+        self.assertEqual(parse_action_label('attack, idle'), ['attack', 'idle'])
+        for bad, why in (
+            ('walk, jogging', 'out-of-vocabulary token'),
+            ('walk, , forward', 'empty comma segment'),
+            ('walk, walk', 'repeated token'),
+            ('weapon, 1hand', 'no head word'),
+            ('idle, hover, crouch', 'three head words'),
+            (', '.join(['idle'] + list(DIRECTION_VOCAB) + ['weapon', 'bow', 'gun']),
+             'over the token cap'),
+        ):
+            with self.assertRaises(ActionLabelError, msg=why):
+                parse_action_label(bad)
+
+    def test_max_words_and_max_heads_are_the_single_source_of_truth(self):
+        self.assertEqual(ACTION_LABEL_MAX_WORDS, 8)
+        self.assertEqual(ACTION_LABEL_MAX_HEADS, 2)
+
+    def test_eight_total_words_are_accepted_and_nine_are_rejected(self):
+        eight = 'idle, fast, bite, roar, eat, look, shake, throw'
+        self.assertEqual(len(parse_action_label(eight)), 8)
+        with self.assertRaises(ActionLabelError):
+            parse_action_label(eight + ', taunt')
+
+    def test_validator_hard_fails_on_a_non_canonical_or_unknown_label(self):
         from data_loaders.truebones.truebones_utils import motion_labels
 
-        def _validate(label):
-            motion_labels._validate_action_label_entry('locomotion', label, 'c.npy', 1)
+        def _validate(label, group='locomotion'):
+            motion_labels._validate_action_label_entry(group, label, 'c.npy', 1)
 
         # Legal: canonical keywords, and the empty (unconditional) label.
         _validate('walk, forward')
         _validate('')
-        # Prose is rejected even though it hits controlled words.
-        with self.assertRaises(SystemExit):
-            _validate('walk, strides forward with arms swinging')
-        # Right words, wrong order.
-        with self.assertRaises(SystemExit):
-            _validate('forward, walk')
-        # Repeats.
-        with self.assertRaises(SystemExit):
-            _validate('walk, walk')
+        _validate('attack, idle', group='transition')
+        # The vocabulary is closed and the corpus is spelled to match, so what
+        # used to be advisory is now a gate -- a warning here could only buy a
+        # silent regression, and reordering heads is a silent direction flip.
+        for bad in ('walk, strides forward with arms swinging',
+                    'walk, weapon, forward',   # modifier before direction
+                    'walk, walk'):
+            with self.assertRaises(SystemExit):
+                _validate(bad)
 
-    def test_validator_rejects_an_unknown_group(self):
+    def test_validator_hard_fails_on_an_unknown_group(self):
         from data_loaders.truebones.truebones_utils import motion_labels
 
         with self.assertRaises(SystemExit):
             motion_labels._validate_action_label_entry('emote', 'idle', 'c.npy', 1)
+
+    def test_head_order_may_only_diverge_in_transition(self):
+        from data_loaders.truebones.truebones_utils import motion_labels
+
+        # Two spellings of one word set: the clip's time order in a transition...
+        motion_labels._validate_head_order_consistency([
+            (1, 'transition', 'a.npy', ['idle', 'attack']),
+            (2, 'transition', 'b.npy', ['attack', 'idle']),
+        ])
+        # ...and an inconsistent annotation anywhere else.
+        with self.assertRaises(SystemExit):
+            motion_labels._validate_head_order_consistency([
+                (1, 'stationary', 'a.npy', ['idle', 'rear']),
+                (2, 'stationary', 'b.npy', ['rear', 'idle']),
+            ])
 
 
 class ActionLabelConditioningTest(unittest.TestCase):
@@ -279,8 +384,8 @@ class ActionLabelConditioningTest(unittest.TestCase):
         self.assertFalse(torch.allclose(token[0], model.action_label_null_emb))
         self.assertTrue(torch.allclose(token[1], model.action_label_null_emb))
 
-    def test_collate_precomputes_the_label_emb_and_valid_mask(self):
-        def _item(label, group, emb):
+    def test_collate_emits_padded_word_ids_and_a_valid_mask(self):
+        def _item(label, group):
             return {
                 'inp': torch.zeros(4, 13, 3, dtype=torch.float32),
                 'n_joints': 4,
@@ -293,16 +398,31 @@ class ActionLabelConditioningTest(unittest.TestCase):
                 'std': torch.ones(4, 13, dtype=torch.float32),
                 'action_label': label,
                 'action_group': group,
-                'action_label_emb': emb,
+                'action_slots': sample_action_slots(label, group),
             }
 
         _, cond = truebones_collate([
-            _item('run, forward', 'locomotion', torch.ones(T5_DIM)),
-            _item('', 'stationary', None),
+            _item('run, forward', 'locomotion'),
+            _item('', 'stationary'),
         ])
         self.assertNotIn('action_multihot', cond['y'])
+        # No assembled vector reaches the model from the data path; the loader
+        # emits ids and the frozen table lives in the checkpoint.
+        self.assertNotIn('action_label_emb', cond['y'])
         self.assertEqual(cond['y']['action_label'], ['run, forward', ''])
-        self.assertEqual(cond['y']['action_label_emb'].shape, (2, T5_DIM))
+        # One fixed width for every batch, not the batch's longest label.
+        self.assertEqual(cond['y']['action_word_ids'].shape, (2, ACTION_LABEL_MAX_WORDS))
+        self.assertEqual(
+            cond['y']['action_word_mask'][0].tolist(),
+            [True, True] + [False] * (ACTION_LABEL_MAX_WORDS - 2),
+        )
+        # An empty label carries no words at all.
+        self.assertFalse(bool(cond['y']['action_word_mask'][1].any()))
+        # Padding matches no slot even without the mask.
+        self.assertEqual(
+            cond['y']['action_slot_ids'][0, 2:].tolist(),
+            [SLOT_PAD_ID] * (ACTION_LABEL_MAX_WORDS - 2),
+        )
         self.assertTrue(bool(cond['y']['action_label_valid'][0]))
         self.assertFalse(bool(cond['y']['action_label_valid'][1]))
 

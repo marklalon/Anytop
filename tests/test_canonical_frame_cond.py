@@ -5,7 +5,7 @@ by define WHICH affine space the model writes into. They reach the model in
 ``y`` already; this projection is what lets it read them. There is deliberately
 no flag: every canonical_motion_v3 cond carries the two vectors and the loader
 refuses to start without them, so "off" could only mean "blind to the output
-space". See docs/canonical_frame_and_label_transfer.md (lever 2).
+space".
 """
 
 from __future__ import annotations

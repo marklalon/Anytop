@@ -26,7 +26,7 @@ This fork includes significant improvements over the original repository while p
 ### Evaluation
 - **Distribution-Based Motion Quality Scorer** — Low-shot weighted-reference evaluation without autoencoders or discriminators. Scores macro distribution fidelity and local joint naturalness.
 - **Action Group Split** — Train one model per action group: `--action_group locomotion|stationary|transition` is required at training and takes exactly one of the three (no `all`, no list). The group is recorded in the checkpoint's `args.json`, and generation has no `--action_group` flag at all — it reads the group from there, so a checkpoint can only ever be sampled as the group it was trained on.
-- **Text-to-Motion Conditioning** — `--action_label_cond` conditions on the frozen-T5 embedding of the clip's `action_label`, which is controlled keywords in canonical order (`"run, sprint, forward, left"`); `--action_label "run, forward"` at generation time, with `--action_label_cfg_scale` to amplify it.
+- **Text-to-Motion Conditioning** — `--action_label_cond` conditions on the frozen-T5 embedding of the clip's `action_label`, which is controlled keywords in canonical order (`"run, forward, left, fast"`); `--action_label "run, forward"` at generation time, with `--action_label_cfg_scale` to amplify it.
 - **Semantic Joint Groups** — Automatic root/axial/limbs grouping from skeleton metadata for per-group evaluation.
 
 ### Data Loading
