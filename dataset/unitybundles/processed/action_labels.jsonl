@@ -826,7 +826,7 @@
 {"clip": "MB_Unka_TurnLeft180.npy", "action_group": "transition", "action_label": "turn, flip", "reviewed": true}
 {"clip": "MB_Unka_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "reviewed": true}
 {"clip": "MB_Unka_TurnRight180.npy", "action_group": "transition", "action_label": "turn, flip", "reviewed": true}
-{"clip": "MB_Unka_TurnRight.npy", "action_group": "stationary", "action_label": "turn, right", "reviewed": true}
+{"clip": "MB_Unka_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "reviewed": true}
 {"clip": "MB_Unka_WalBack.npy", "action_group": "locomotion", "action_label": "walk, backward", "reviewed": true}
 {"clip": "MB_Unka_WalkLeft.npy", "action_group": "locomotion", "action_label": "walk, turn, left", "reviewed": true}
 {"clip": "MB_Unka_WalkRight.npy", "action_group": "locomotion", "action_label": "walk, turn, right", "reviewed": true}

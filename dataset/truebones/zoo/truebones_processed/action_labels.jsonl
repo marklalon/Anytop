@@ -25,7 +25,7 @@
 {"clip": "Anaconda_Rise.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
 {"clip": "Anaconda_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Anaconda_Sneaky.npy", "action_group": "locomotion", "action_label": "walk, forward, slow", "reviewed": true}
-{"clip": "Anaconda_Spin.npy", "action_group": "stationary", "action_label": "turn, spin", "reviewed": true}
+{"clip": "Anaconda_Spin.npy", "action_group": "stationary", "action_label": "attack, bite, spin", "reviewed": true}
 {"clip": "Anaconda_Strike2.npy", "action_group": "stationary", "action_label": "attack", "reviewed": true}
 {"clip": "Anaconda_Strike.npy", "action_group": "stationary", "action_label": "attack", "reviewed": true}
 {"clip": "Anaconda_StruckDie.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
