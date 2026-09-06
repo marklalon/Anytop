@@ -68,6 +68,7 @@ class AnyTop(nn.Module):
         self.temporal_span_mask_prob=float(kargs.get('temporal_span_mask_prob', 0.0))
         self.temporal_span_mask_min_frames=int(kargs.get('temporal_span_mask_min_frames', 4))
         self.temporal_span_mask_max_frames=int(kargs.get('temporal_span_mask_max_frames', 12))
+        self.unreliable_mask_drop_prob=float(kargs.get('unreliable_mask_drop_prob', 0.0))
         self.species_cond=bool(kargs.get('species_cond', False))
         self.species_cfg_drop_prob=float(kargs.get('species_cfg_drop_prob', 0.15))
         if not 0.0 <= self.species_cfg_drop_prob <= 1.0:
@@ -95,6 +96,10 @@ class AnyTop(nn.Module):
         if not 0.0 <= self.temporal_span_mask_prob <= 1.0:
             raise ValueError(
                 f"temporal_span_mask_prob must be in [0, 1], got {self.temporal_span_mask_prob}"
+            )
+        if not 0.0 <= self.unreliable_mask_drop_prob <= 1.0:
+            raise ValueError(
+                f"unreliable_mask_drop_prob must be in [0, 1], got {self.unreliable_mask_drop_prob}"
             )
         if self.temporal_span_mask_min_frames < 1:
             raise ValueError(
@@ -603,9 +608,9 @@ class AnyTop(nn.Module):
         step is unchanged.
 
         Called from ``GaussianDiffusion.training_losses`` AFTER ``q_sample``
-        to decide which joints' x_t slice should be re-noised with an
-        independent random timestep and fresh noise, so that those joints'
-        noise level disagrees with the rest of the batch sample. This trains
+        to decide which joints' x_t slice should be re-noised at an independent
+        timestep drawn from ``[t, T)`` with fresh noise, so that those joints
+        carry strictly less information about x_0 than the rest of the sample. This trains
         the cross-joint pathway to denoise robustly against per-joint
         timestep mismatch -- the regime inpaint clamping produces at
         inference. The model's forward itself stays vanilla.
@@ -718,6 +723,34 @@ class AnyTop(nn.Module):
             & frame_mask[:, None, :]
         )                                                                         # [B, J, T]
         return mask
+
+    def sample_unreliable_mask_cond_drop_train(self, batch_size, device):
+        """Decide, per sample, whether to HIDE the training-time unreliable mask.
+
+        Returns a bool tensor of shape ``[B]`` (True = do not tell the model
+        which joints/frames were re-noised), or ``None`` when the feature is off
+        or we are not training.
+
+        The corruption itself is unaffected: the selected joints / frames still
+        get their independent-timestep re-noise, only the
+        ``y['cross_limb_unreliable_mask']`` handed to the forward is zeroed for
+        the dropped rows. Without this, the model only ever sees mixed
+        reliability together with a map of exactly where it is, and at inference
+        without a mask (plain generation, or repairing a motion whose damaged
+        joints are not known) it has never had to localize the damage itself.
+        Dropping the map on a fraction of steps trains that pathway too, in the
+        same way CFG dropout trains the unconditional branch.
+
+        Compile-safety: the returned row gate only zeroes an existing tensor, so
+        ``y``'s key set and every tensor shape are identical on every step;
+        the draw is one on-device ``rand`` with no host sync.
+        """
+        if (not self.training) or self.unreliable_mask_drop_prob <= 0.0:
+            return None
+        batch_size = int(batch_size)
+        if batch_size <= 0:
+            return None
+        return torch.rand(batch_size, device=device) < self.unreliable_mask_drop_prob
 
     def _coerce_species_emb(self, y, batch_size, device, dtype):
         """Pull y['species_emb'] and broadcast it to [B, t5_out_dim]. Shared by the

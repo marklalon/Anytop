@@ -1532,13 +1532,21 @@ class GaussianDiffusion:
         Training-time structured corruption is meant to mimic the mixed
         reliability at the model input, not to hide tokens from attention.
         The selected joints / frames keep participating in attention; only
-        their x_t features are replaced by q_sample(x_0, t_random).
+        their x_t features are replaced by q_sample(x_0, t_random), with
+        ``t_random`` drawn from ``[t, T)`` so the flagged region is never
+        cleaner than the rest -- see ``_sample_renoise_timesteps``.
 
         Whether ``y`` carries ``'cross_limb_unreliable_mask'`` follows the
         samplers: they return ``None`` only when the feature is off (or in eval
         mode) and an all-False mask when a draw happens to select nothing, so
         the key is present on every training step of a given run instead of
         disappearing on the rare empty batch and forcing a recompile.
+
+        ``sample_unreliable_mask_cond_drop_train`` may additionally zero whole
+        rows of the mask that is published to the model while leaving the
+        re-noise itself untouched, which trains the model to repair motion when
+        no reliability map is supplied at inference. It zeroes rows rather than
+        removing the key, for the same recompile reason.
         """
         y = model_kwargs.get('y') if model_kwargs is not None else None
         model_for_hooks = self._unwrap_model_for_training_hooks(model)
@@ -1588,16 +1596,56 @@ class GaussianDiffusion:
             return x_t, temporal_span_mask
 
         if y is not None:
-            y['cross_limb_unreliable_mask'] = corruption_mask.transpose(1, 2).to(
+            # The mask published to the model may be a strict subset of the
+            # corruption: rows drawn by the cond-dropout are re-noised exactly
+            # the same, but told nothing, so the model has to localize the
+            # damage itself -- the regime at inference when no mask is given.
+            cond_mask = corruption_mask
+            drop_cond = None
+            if hasattr(model_for_hooks, 'sample_unreliable_mask_cond_drop_train'):
+                drop_cond = model_for_hooks.sample_unreliable_mask_cond_drop_train(
+                    x_t.shape[0], x_t.device
+                )
+            if drop_cond is not None:
+                drop_cond = drop_cond.to(device=x_t.device, dtype=th.bool).reshape(-1)
+                if drop_cond.shape != (x_t.shape[0],):
+                    raise ValueError(
+                        "sample_unreliable_mask_cond_drop_train must return shape "
+                        f"{(x_t.shape[0],)}, got {tuple(drop_cond.shape)}"
+                    )
+                cond_mask = corruption_mask & ~drop_cond[:, None, None]
+            y['cross_limb_unreliable_mask'] = cond_mask.transpose(1, 2).to(
                 dtype=x_t.dtype
             ).contiguous()
 
-        t_random = th.randint(
-            0, self.num_timesteps, t.shape, device=x_t.device, dtype=t.dtype
-        )
+        t_random = self._sample_renoise_timesteps(t, x_t.device)
         fresh_noise = th.randn_like(x_start)
         x_t_random = self.q_sample(x_start, t_random, noise=fresh_noise)
         return th.where(corruption_mask[:, :, None, :], x_t_random, x_t), temporal_span_mask
+
+    def _sample_renoise_timesteps(self, t, device):
+        """Draw the independent timestep the flagged cells are re-noised at.
+
+        Uniform on ``[t, T)``: a flagged region only ever carries LESS
+        information about x_0 than its surroundings. That one-sidedness is not
+        cosmetic -- it is the only direction either consumer of the flag ever
+        sees at inference. Inpainting clamps the known region to the reference
+        at the correct level (``_inpaint_project``) and leaves the free region
+        holding the model's own half-formed guess; img2img repair likewise has
+        the damaged region carrying less usable signal than the rest. Drawing
+        from ``[0, T)`` instead would, half the time, mark a region that is
+        *cleaner* than its surroundings as unreliable -- a combination that
+        occurs nowhere at inference, that pulls the learned
+        ``reliability_bias`` toward zero by making the flag ambiguous, and that
+        directly opposes what mask-dropped steps are meant to teach.
+
+        The draw is one on-device ``rand`` (no host sync) and degenerates to
+        ``t`` as ``t`` approaches ``T``, which is correct: at near-pure noise
+        there is nothing left to degrade.
+        """
+        span = (self.num_timesteps - t).clamp(min=1).to(th.float32)
+        offset = (th.rand(t.shape, device=device, dtype=th.float32) * span).to(t.dtype)
+        return (t + offset).clamp(max=self.num_timesteps - 1)
 
     @staticmethod
     def _unwrap_model_for_training_hooks(model):

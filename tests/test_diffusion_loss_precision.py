@@ -49,11 +49,13 @@ class _RecordingModel(nn.Module):
         self,
         subtree_mask: torch.Tensor | None = None,
         temporal_span_mask: torch.Tensor | None = None,
+        cond_drop_mask: torch.Tensor | None = None,
         output_mode: str = "identity",
     ):
         super().__init__()
         self.subtree_mask = subtree_mask
         self.temporal_span_mask = temporal_span_mask
+        self.cond_drop_mask = cond_drop_mask
         self.output_mode = output_mode
         self.last_x = None
 
@@ -66,6 +68,11 @@ class _RecordingModel(nn.Module):
         if self.temporal_span_mask is None:
             return None
         return self.temporal_span_mask.to(device=device)
+
+    def sample_unreliable_mask_cond_drop_train(self, batch_size, device):
+        if self.cond_drop_mask is None:
+            return None
+        return self.cond_drop_mask.to(device=device)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor, **model_kwargs) -> torch.Tensor:
         self.last_x = x.detach().clone()
@@ -293,7 +300,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         expected_x_t = diffusion.q_sample(x_start, t, noise=base_noise)
         expected_masked = diffusion.q_sample(x_start, t_random, noise=fresh_noise)
 
-        with patch("diffusion.gaussian_diffusion.th.randint", return_value=t_random), \
+        with patch.object(diffusion, "_sample_renoise_timesteps", return_value=t_random), \
              patch("diffusion.gaussian_diffusion.th.randn_like", return_value=fresh_noise):
             diffusion.training_losses(model, x_start, t, model_kwargs=model_kwargs, noise=base_noise)
 
@@ -327,7 +334,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         expected_x_t = diffusion.q_sample(x_start, t, noise=base_noise)
         expected_masked = diffusion.q_sample(x_start, t_random, noise=fresh_noise)
 
-        with patch("diffusion.gaussian_diffusion.th.randint", return_value=t_random), \
+        with patch.object(diffusion, "_sample_renoise_timesteps", return_value=t_random), \
              patch("diffusion.gaussian_diffusion.th.randn_like", return_value=fresh_noise):
             diffusion.training_losses(model, x_start, t, model_kwargs=model_kwargs, noise=base_noise)
 
@@ -504,6 +511,111 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertEqual(unreliable.shape, (batch_size, n_frames, n_joints))
         self.assertFalse(bool(unreliable.any()))
 
+    def test_sample_renoise_timesteps_never_draws_below_t(self):
+        """A flagged region must never end up cleaner than its surroundings."""
+        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
+        t = torch.randint(0, diffusion.num_timesteps, (512,), dtype=torch.int64)
+
+        torch.manual_seed(0)
+        t_random = diffusion._sample_renoise_timesteps(t, torch.device("cpu"))
+
+        self.assertEqual(t_random.shape, t.shape)
+        self.assertEqual(t_random.dtype, t.dtype)
+        self.assertTrue(bool((t_random >= t).all()))
+        self.assertTrue(bool((t_random < diffusion.num_timesteps).all()))
+        # It must still actually degrade something, not collapse onto t.
+        self.assertTrue(bool((t_random > t).any()))
+
+    def test_sample_renoise_timesteps_degenerates_at_the_last_step(self):
+        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
+        last = diffusion.num_timesteps - 1
+        t = torch.full((64,), last, dtype=torch.int64)
+
+        torch.manual_seed(0)
+        t_random = diffusion._sample_renoise_timesteps(t, torch.device("cpu"))
+
+        self.assertTrue(bool((t_random == last).all()))
+
+    def test_training_losses_cond_drop_hides_the_mask_but_keeps_the_renoise(self):
+        """A dropped row is re-noised exactly the same, it is just not announced.
+
+        That is the whole point of the drop: the model still has to denoise
+        mixed-reliability input, without being handed the map of where the
+        damage is.
+        """
+        batch_size, n_joints, n_feats, n_frames = 2, 3, 12, 4
+        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
+        subtree_mask = torch.tensor(
+            [[False, True, False], [False, True, True]], dtype=torch.bool
+        )
+        x_start = torch.arange(
+            batch_size * n_joints * n_feats * n_frames, dtype=torch.float32
+        ).reshape(batch_size, n_joints, n_feats, n_frames)
+        t = torch.tensor([1, 1], dtype=torch.int64)
+        t_random = torch.tensor([2, 2], dtype=torch.int64)
+        base_noise = torch.full_like(x_start, 0.5)
+        fresh_noise = torch.full_like(x_start, -0.25)
+
+        def _run(cond_drop_mask):
+            model = _RecordingModel(subtree_mask=subtree_mask, cond_drop_mask=cond_drop_mask)
+            model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
+            with patch.object(diffusion, "_sample_renoise_timesteps", return_value=t_random),                  patch("diffusion.gaussian_diffusion.th.randn_like", return_value=fresh_noise):
+                diffusion.training_losses(
+                    model, x_start, t, model_kwargs=model_kwargs, noise=base_noise
+                )
+            return model.last_x, model_kwargs["y"]["cross_limb_unreliable_mask"]
+
+        kept_x, kept_mask = _run(None)
+        dropped_x, dropped_mask = _run(torch.tensor([True, False], dtype=torch.bool))
+
+        # Same corrupted input either way.
+        self.assertTrue(torch.equal(kept_x, dropped_x))
+
+        # Only the dropped row of the published mask is zeroed.
+        self.assertEqual(dropped_mask.shape, kept_mask.shape)
+        self.assertEqual(dropped_mask.dtype, kept_mask.dtype)
+        self.assertFalse(bool(dropped_mask[0].any()))
+        self.assertTrue(bool(kept_mask[0].any()))
+        self.assertTrue(torch.equal(dropped_mask[1], kept_mask[1]))
+
+    def test_training_losses_cond_drop_of_every_row_keeps_the_key(self):
+        """An all-dropped batch publishes an all-False mask, never a missing key.
+
+        Dropping the key instead would change y's key set from step to step and
+        force torch.compile to recompile the forward.
+        """
+        batch_size, n_joints, n_feats, n_frames = 2, 3, 12, 4
+        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
+        subtree_mask = torch.ones((batch_size, n_joints), dtype=torch.bool)
+        model = _RecordingModel(
+            subtree_mask=subtree_mask,
+            cond_drop_mask=torch.ones(batch_size, dtype=torch.bool),
+        )
+        x_start = torch.randn(batch_size, n_joints, n_feats, n_frames, dtype=torch.float32)
+        t = torch.tensor([1, 1], dtype=torch.int64)
+        model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
+
+        diffusion.training_losses(model, x_start, t, model_kwargs=model_kwargs)
+
+        self.assertIn("cross_limb_unreliable_mask", model_kwargs["y"])
+        unreliable = model_kwargs["y"]["cross_limb_unreliable_mask"]
+        self.assertEqual(unreliable.shape, (batch_size, n_frames, n_joints))
+        self.assertFalse(bool(unreliable.any()))
+
+    def test_training_losses_rejects_wrong_shaped_cond_drop_mask(self):
+        batch_size, n_joints, n_feats, n_frames = 2, 3, 12, 4
+        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
+        model = _RecordingModel(
+            subtree_mask=torch.ones((batch_size, n_joints), dtype=torch.bool),
+            cond_drop_mask=torch.ones(batch_size + 1, dtype=torch.bool),
+        )
+        x_start = torch.randn(batch_size, n_joints, n_feats, n_frames, dtype=torch.float32)
+        t = torch.tensor([1, 1], dtype=torch.int64)
+        model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
+
+        with self.assertRaises(ValueError):
+            diffusion.training_losses(model, x_start, t, model_kwargs=model_kwargs)
+
     def test_spaced_diffusion_training_losses_unwraps_model_for_joint_mask_perturbation(self):
         batch_size, n_joints, n_feats, n_frames = 1, 3, 12, 4
         diffusion = self._make_spaced_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
@@ -521,7 +633,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         expected_x_t = diffusion.q_sample(x_start, t, noise=base_noise)
         expected_masked = diffusion.q_sample(x_start, t_random, noise=fresh_noise)
 
-        with patch("diffusion.gaussian_diffusion.th.randint", return_value=t_random), \
+        with patch.object(diffusion, "_sample_renoise_timesteps", return_value=t_random), \
              patch("diffusion.gaussian_diffusion.th.randn_like", return_value=fresh_noise):
             diffusion.training_losses(model, x_start, t, model_kwargs=model_kwargs, noise=base_noise)
 
@@ -867,6 +979,28 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
         self.assertEqual(temporal_mask.shape, (2, 4, 5))
         self.assertEqual(temporal_mask.dtype, torch.bool)
         self.assertFalse(bool(temporal_mask.any()))
+
+    def test_anytop_sample_unreliable_mask_cond_drop_train(self):
+        device = torch.device("cpu")
+
+        off = self._empty_draw_model(unreliable_mask_drop_prob=0.0)
+        self.assertIsNone(off.sample_unreliable_mask_cond_drop_train(4, device))
+
+        always = self._empty_draw_model(unreliable_mask_drop_prob=1.0)
+        drop = always.sample_unreliable_mask_cond_drop_train(4, device)
+        self.assertEqual(drop.shape, (4,))
+        self.assertEqual(drop.dtype, torch.bool)
+        self.assertTrue(bool(drop.all()))
+
+        never = self._empty_draw_model(unreliable_mask_drop_prob=1e-12)
+        torch.manual_seed(0)
+        self.assertFalse(bool(never.sample_unreliable_mask_cond_drop_train(4, device).any()))
+
+        always.eval()
+        self.assertIsNone(always.sample_unreliable_mask_cond_drop_train(4, device))
+
+        with self.assertRaises(ValueError):
+            self._empty_draw_model(unreliable_mask_drop_prob=1.5)
 
     def test_anytop_mask_samplers_return_none_when_disabled_or_eval(self):
         y = {

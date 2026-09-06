@@ -338,6 +338,11 @@ def add_training_options(parser):
                            "features are re-noised at an independent timestep to mimic mixed reliability during inpainting.")
     group.add_argument("--joint_mask_budget", default=0.15, type=float,
                        help="Maximum fraction of non-root joints to include in each sampled subtree perturbation.")
+    group.add_argument("--unreliable_mask_drop_prob", default=0.0, type=float,
+                       help="Per-sample probability of hiding the training-time unreliable mask from the model. "
+                            "The selected joints / frames are still re-noised, the model just is not told which ones, "
+                            "so it learns to localize and repair the damage on its own -- the regime at inference when "
+                            "no mask is supplied. 0 disables it (the model always sees the mask).")
     group.add_argument("--temporal_span_mask_prob", default=0.0, type=float,
                        help="Probability of sampling a contiguous training-time temporal span perturbation. "
                             "Selected frames are re-noised for all real joints to teach native frame inpainting.")
