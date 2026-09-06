@@ -1199,7 +1199,7 @@
 {"clip": "MU01_VampireBat_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "reviewed": true}
 {"clip": "MU04_Earthworm_BiteAttack.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
 {"clip": "MU04_Earthworm_CastSpell.npy", "action_group": "stationary", "action_label": "attack, cast", "reviewed": true}
-{"clip": "MU04_Earthworm_Descend.npy", "action_group": "stationary", "action_label": "idle, burrow", "reviewed": true}
+{"clip": "MU04_Earthworm_Descend.npy", "action_group": "transition", "action_label": "burrow", "reviewed": true}
 {"clip": "MU04_Earthworm_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "MU04_Earthworm_Idle02.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "MU04_Earthworm_Idle03.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
@@ -1321,7 +1321,7 @@
 {"clip": "MU04_Pollen_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "reviewed": true}
 {"clip": "MU04_QueenWorm_BiteAttack.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
 {"clip": "MU04_QueenWorm_BiteCloseAttack.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
-{"clip": "MU04_QueenWorm_Burrow.npy", "action_group": "stationary", "action_label": "burrow", "reviewed": true}
+{"clip": "MU04_QueenWorm_Burrow.npy", "action_group": "transition", "action_label": "burrow", "reviewed": true}
 {"clip": "MU04_QueenWorm_CastSpell.npy", "action_group": "stationary", "action_label": "attack, cast", "reviewed": true}
 {"clip": "MU04_QueenWorm_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "MU04_QueenWorm_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
@@ -1390,7 +1390,7 @@
 {"clip": "MU04_Spore_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "reviewed": true}
 {"clip": "MU04_Spore_WalkForward.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "MU04_Worm_BiteAttack.npy", "action_group": "stationary", "action_label": "attack, bite", "reviewed": true}
-{"clip": "MU04_Worm_Burrow.npy", "action_group": "stationary", "action_label": "burrow", "reviewed": true}
+{"clip": "MU04_Worm_Burrow.npy", "action_group": "transition", "action_label": "burrow", "reviewed": true}
 {"clip": "MU04_Worm_CastSpell.npy", "action_group": "stationary", "action_label": "attack, cast", "reviewed": true}
 {"clip": "MU04_Worm_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "MU04_Worm_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}

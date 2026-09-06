@@ -216,7 +216,7 @@
 {"clip": "Cricket_Attack2.npy", "action_group": "stationary", "action_label": "attack, charge", "reviewed": true}
 {"clip": "Cricket_Attack3.npy", "action_group": "stationary", "action_label": "attack, swat", "reviewed": true}
 {"clip": "Cricket_Attack4.npy", "action_group": "stationary", "action_label": "attack", "reviewed": true}
-{"clip": "Cricket_Burrough.npy", "action_group": "stationary", "action_label": "burrow", "reviewed": true}
+{"clip": "Cricket_Burrough.npy", "action_group": "transition", "action_label": "burrow", "reviewed": true}
 {"clip": "Cricket_Die.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Cricket_IdlePissed.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Cricket_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
