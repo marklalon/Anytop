@@ -36,6 +36,7 @@ from .animation_utils import (
     needs_bvh_position_channels,
     reorder_animation_to_dfs,
     crop_animation_to_max_joints,
+    drop_prop_socket_joints,
     coerce_single_orientation_quat,
 )
 
@@ -167,7 +168,7 @@ def object_policy(obj):
 
 def _process_motion_file(file_path, object_type, max_joints,
                          offsets, foot_indices, tpos_rots, scale_factor,
-                         orientation_quat, crop_enabled=True):
+                         orientation_quat, crop_enabled=True, prop_socket_names=()):
     local_errors = dict()
     _crop_max = MAX_JOINTS if crop_enabled else 2 ** 16
     # Load the animation file (FBX/GLB/GLTF) once; pass it as `preloaded` to every get_motion call so that
@@ -180,6 +181,18 @@ def _process_motion_file(file_path, object_type, max_joints,
         _warn(
             f"FPS mismatch: '{os.path.basename(str(file_path))}' runs at "
             f"{fps:.2f} FPS (frame_time={frame_time:.6f}s), expected 30 FPS"
+        )
+
+    # Drop the prop-socket subtrees the rest pose decided on, by name, before the
+    # crop -- exactly the order get_common_features_from_rest_pose used, so this
+    # clip lands on the same joint set the rest-pose offsets were built over. A
+    # name this rig does not carry raises rather than silently skipping.
+    if prop_socket_names:
+        raw_anim, names, _ = drop_prop_socket_joints(
+            raw_anim,
+            names,
+            drop_names=prop_socket_names,
+            context=f"{object_type} '{os.path.basename(str(file_path))}'",
         )
 
     # Crop oversized skeletons to the crop cap so the loaded animation and its
@@ -486,6 +499,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             character_scale_factor,
             orientation_quat=tp.orientation_quat,
             crop_enabled=crop_enabled,
+            prop_socket_names=tp.prop_socket_names,
         )
 
     file_outputs = [process_file(file_path) for file_path in anim_files]

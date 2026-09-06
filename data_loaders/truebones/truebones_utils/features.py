@@ -16,6 +16,7 @@ import os
 from os.path import join as pjoin
 import torch
 from data_loaders.truebones.truebones_utils.param_utils import (
+    DROP_PROP_SOCKET_JOINTS,
     FOOT_CONTACT_HEIGHT_THRESH,
     MAX_JOINTS,
     FOOT_CONTACT_VEL_THRESH,
@@ -48,6 +49,7 @@ from .animation_utils import (
     needs_bvh_position_channels,
     reorder_animation_to_dfs,
     crop_animation_to_max_joints,
+    drop_prop_socket_joints,
     get_average_axial_bone_length,
     get_scale_reference_extent,
     rest_pose_animation,
@@ -357,6 +359,19 @@ def infer_translation_root_index_from_features(data, parents, offsets, anim_pos_
 
 ################## Rest Pose & Motion Extraction #####################
 
+def _remap_joint_indices(joint_indices, kept_joint_indices):
+    """Move caller-supplied joint indices onto a filtered skeleton.
+
+    Indices that fell inside a removed subtree are dropped. ``None`` for either
+    argument means there is nothing to remap (no explicit indices were given, or
+    the filter kept every joint).
+    """
+    if kept_joint_indices is None or joint_indices is None:
+        return joint_indices
+    index_remap = {old: new for new, old in enumerate(kept_joint_indices)}
+    return [index_remap[j] for j in joint_indices if j in index_remap]
+
+
 def _rest_pose_animation_from_loaded_anim(anim):
     """Return a one-frame bind/rest-pose Animation from a loaded FBX animation."""
     return rest_pose_animation(anim)
@@ -369,10 +384,33 @@ def get_common_features_from_rest_pose(
     face_joints=None,
     *,
     max_joints=None,
+    drop_prop_sockets=None,
 ):
+    if drop_prop_sockets is None:
+        drop_prop_sockets = DROP_PROP_SOCKET_JOINTS
     loaded_anim, rest_pose_names, _rest_pose_frame_time = FBX.load(rest_pose_path)
     max_joints = int(max_joints) if max_joints is not None else max(len(rest_pose_names), 1)
     reference_anim = _rest_pose_animation_from_loaded_anim(loaded_anim)
+    rest_pose_context = f"{object_type} rest pose '{os.path.basename(str(rest_pose_path))}'"
+    # Parked weapon/prop sockets go first, so nothing below -- face joints,
+    # contact joints, offsets, scale -- is inferred on rig furniture, and the
+    # MAX_JOINTS budget in the crop is spent on real bones. The names are carried
+    # out on TPoseFeatures so every motion clip of this character drops the same
+    # joints instead of re-detecting them on its own file.
+    prop_socket_names = ()
+    if drop_prop_sockets:
+        pre_drop_names = rest_pose_names
+        reference_anim, rest_pose_names, _kept_after_drop = drop_prop_socket_joints(
+            reference_anim,
+            rest_pose_names,
+            context=rest_pose_context,
+        )
+        if _kept_after_drop is not None:
+            _kept = set(_kept_after_drop)
+            prop_socket_names = tuple(
+                name for index, name in enumerate(pre_drop_names) if index not in _kept
+            )
+            face_joints = _remap_joint_indices(face_joints, _kept_after_drop)
     # Crop oversized skeletons down to max_joints BEFORE any face/contact/offset
     # inference, so every downstream rest-pose artifact is built on the cropped
     # skeleton. Leaves are removed deepest-first, same-depth ties prefer shorter
@@ -384,13 +422,9 @@ def get_common_features_from_rest_pose(
         reference_anim,
         rest_pose_names,
         max_joints=max_joints,
-        context=f"{object_type} rest pose '{os.path.basename(str(rest_pose_path))}'",
+        context=rest_pose_context,
     )
-    if _kept_joint_indices is not None and face_joints is not None:
-        # Remap caller-supplied explicit face-joint indices onto the cropped skeleton,
-        # dropping any that fell inside a cropped subtree.
-        _index_remap = {old: new for new, old in enumerate(_kept_joint_indices)}
-        face_joints = [_index_remap[j] for j in face_joints if j in _index_remap]
+    face_joints = _remap_joint_indices(face_joints, _kept_joint_indices)
     reference_positions = positions_global(reference_anim)
     face_joints = resolve_face_joints(
         object_type,
@@ -462,6 +496,7 @@ def get_common_features_from_rest_pose(
         forward_base_joint_index=forward_base_joint_index,
         contact_joint_source=contact_joint_source,
         axial_avg_len=axial_avg_len,
+        prop_socket_names=prop_socket_names,
     )
 
 
@@ -556,6 +591,11 @@ class TPoseFeatures:
     forward_base_joint_index: int
     contact_joint_source: str
     axial_avg_len: float
+    # Rest-pose names of the prop-socket joints removed from this skeleton, so
+    # every motion clip of the character drops exactly the same joints. Empty for
+    # a cond-reconstructed rest pose: cond was already built on the filtered
+    # skeleton, so there is nothing left to drop.
+    prop_socket_names: tuple = ()
 
 
 def extract_motion_features_from_aligned_anims(

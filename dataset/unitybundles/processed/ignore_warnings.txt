@@ -1,2 +1,3 @@
 !skip-orientation-detection
 #skeleton exceeds MAX_JOINTS (103 > 100) for MB_Unka
+#prop-socket joint(s)

@@ -901,6 +901,56 @@ def needs_bvh_position_channels(anim, tol=1e-4):
     return bool(np.any(np.abs(nonroot_positions - rest_offsets) > tol))
 
 
+def reindex_animation_to_kept_joints(anim, names, keep_indices):
+    """Rebuild ``anim``/``names`` over ``keep_indices``, remapping the parents.
+
+    ``keep_indices`` must be ascending and closed under parenthood -- a kept
+    joint's parent is kept too -- which is what makes the remapped hierarchy a
+    valid tree. Both callers guarantee it: cropping only ever peels current
+    leaves, and the prop-socket filter drops whole subtrees.
+    """
+    parents = np.asarray(anim.parents, dtype=np.int64)
+    n = int(parents.shape[0])
+    keep_set = set(int(index) for index in keep_indices)
+    for old_index in keep_indices:
+        parent_index = int(parents[old_index])
+        # A dropped parent would remap to -1 and silently promote its child to a
+        # second root, so reject the caller's keep-set instead of the tree.
+        if parent_index >= 0 and parent_index not in keep_set:
+            raise ValueError(
+                f"joint {old_index} is kept but its parent {parent_index} was dropped"
+            )
+
+    old_to_new = -np.ones((n,), dtype=np.int64)
+    for new_index, old_index in enumerate(keep_indices):
+        old_to_new[old_index] = new_index
+    parent_dtype = getattr(anim.parents, 'dtype', np.int32)
+    new_parents = np.array(
+        [
+            int(old_to_new[parents[old_index]]) if parents[old_index] >= 0 else -1
+            for old_index in keep_indices
+        ],
+        dtype=parent_dtype,
+    )
+
+    keep_arr = np.asarray(keep_indices, dtype=np.int64)
+    orient_count = len(anim.orients)
+    if orient_count not in (0, n):
+        raise ValueError(
+            f"Expected 0 or {n} joint orients to reindex skeleton, got {orient_count}"
+        )
+    new_orients = anim.orients.copy() if orient_count == 0 else anim.orients[keep_arr].copy()
+
+    reindexed = Animation(
+        anim.rotations[:, keep_arr].copy(),
+        anim.positions[:, keep_arr].copy(),
+        new_orients,
+        anim.offsets[keep_arr].copy(),
+        new_parents,
+    )
+    return reindexed, [names[old_index] for old_index in keep_indices]
+
+
 def crop_animation_to_max_joints(anim, names, max_joints=MAX_JOINTS, *, context=None):
     """Crop ``anim``/``names`` to at most ``max_joints`` joints.
 
@@ -930,39 +980,81 @@ def crop_animation_to_max_joints(anim, names, max_joints=MAX_JOINTS, *, context=
         return anim, names, None
     keep_indices, removed_order = selection
 
-    old_to_new = -np.ones((n,), dtype=np.int64)
-    for new_index, old_index in enumerate(keep_indices):
-        old_to_new[old_index] = new_index
-    parent_dtype = getattr(anim.parents, 'dtype', np.int32)
-    new_parents = np.array(
-        [
-            int(old_to_new[parents[old_index]]) if parents[old_index] >= 0 else -1
-            for old_index in keep_indices
-        ],
-        dtype=parent_dtype,
-    )
-
-    keep_arr = np.asarray(keep_indices, dtype=np.int64)
-    orient_count = len(anim.orients)
-    if orient_count not in (0, n):
-        raise ValueError(
-            f"Expected 0 or {n} joint orients to crop skeleton, got {orient_count}"
-        )
-    new_orients = anim.orients.copy() if orient_count == 0 else anim.orients[keep_arr].copy()
-
-    cropped = Animation(
-        anim.rotations[:, keep_arr].copy(),
-        anim.positions[:, keep_arr].copy(),
-        new_orients,
-        anim.offsets[keep_arr].copy(),
-        new_parents,
-    )
-    new_names = [names[old_index] for old_index in keep_indices]
+    cropped, new_names = reindex_animation_to_kept_joints(anim, names, keep_indices)
 
     removed_names = [names[old_index] for old_index in removed_order]
     label = f' for {context}' if context else ''
     _warn(f'skeleton exceeds MAX_JOINTS ({n} > {max_joints}){label}')
     return cropped, new_names, keep_indices
+
+
+def drop_prop_socket_joints(anim, names, *, drop_names=None, context=None):
+    """Drop parked prop/weapon socket subtrees from a loaded skeleton.
+
+    A held weapon parked away from the body (MLH_Archer's ``Bow``/``Arrow``,
+    RMW_Orc's ``Weapon01``) is rig furniture, not anatomy: it carries no body
+    motion to learn and spends a joint slot in every window that samples it.
+    ``find_prop_socket_joints`` picks the sockets; this removes them and their
+    subtrees, then remaps the hierarchy.
+
+    Run this BEFORE ``crop_animation_to_max_joints`` so the MAX_JOINTS budget is
+    spent on anatomy, and so every downstream rest-pose artifact (face joints,
+    contact joints, offsets) is inferred on the filtered skeleton.
+
+    ``drop_names`` makes the removal follow an explicit name list instead of
+    re-detecting. The rest pose and each motion clip are *different files*, so
+    detecting independently on both risks the two disagreeing; the rest pose
+    decides once and every clip of that character follows the same names. A name
+    the clip's rig does not carry is an error, not a silent skip. Detection logs
+    a [WARN] naming the dropped joints (once per character); following an
+    explicit list stays quiet, since it only mirrors a decision already logged.
+
+    Returns ``(anim, names, keep_indices)``, with ``keep_indices=None`` and the
+    inputs unchanged when nothing is dropped.
+    """
+    parents = np.asarray(anim.parents, dtype=np.int64)
+    joint_count = int(parents.shape[0])
+    names = list(names)
+    if len(names) != joint_count:
+        raise ValueError(
+            f"Expected {joint_count} joint names to drop prop sockets, got {len(names)}"
+        )
+    label = f' for {context}' if context else ''
+
+    if drop_names is None:
+        prop_joints = find_prop_socket_joints(anim.offsets, parents, names)
+    else:
+        wanted = set(drop_names)
+        missing = wanted.difference(names)
+        if missing:
+            raise ValueError(
+                f"prop-socket joints {sorted(missing)} named by the rest pose are "
+                f"missing from this skeleton{label}"
+            )
+        prop_joints = {
+            joint_index
+            for joint_index in range(joint_count)
+            if names[joint_index] in wanted
+        }
+    if 0 in prop_joints:
+        raise ValueError(f"prop-socket filter would drop the root joint{label}")
+    # Sweep the sockets' descendants in, so the removed set is always whole
+    # subtrees. Parents always precede their children, so one ascending pass
+    # carries a socket down its whole chain.
+    for joint_index in range(1, joint_count):
+        if int(parents[joint_index]) in prop_joints:
+            prop_joints.add(joint_index)
+    if not prop_joints:
+        return anim, names, None
+
+    keep_indices = [
+        joint_index for joint_index in range(joint_count) if joint_index not in prop_joints
+    ]
+    filtered, new_names = reindex_animation_to_kept_joints(anim, names, keep_indices)
+    if drop_names is None:
+        dropped = [names[joint_index] for joint_index in sorted(prop_joints)]
+        _warn(f'dropping {len(dropped)} prop-socket joint(s){label}: {dropped}')
+    return filtered, new_names, keep_indices
 
 
 def reorder_animation_to_dfs(anim, names):

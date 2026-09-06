@@ -189,3 +189,9 @@ PROP_SOCKET_BONE_LENGTH_RATIO = 3.25
 # the whole subtree is excluded with it. Above 4 this starts to reach real
 # anatomy.
 PROP_SOCKET_MAX_SUBTREE_JOINTS = 4
+
+# Prop-socket subtrees are removed from the skeleton during preprocessing, so a
+# parked weapon spends neither a joint slot nor any training signal. Turning
+# this off restores the older behaviour: the sockets stay in cond and in every
+# clip, and are only kept out of the scale statistics.
+DROP_PROP_SOCKET_JOINTS = True
