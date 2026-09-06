@@ -2287,7 +2287,6 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
         batch.append(joint_relations)
         batch.append(object_type)
         batch.append(joints_names_embs)
-        batch.append(0)
         batch.append(max_joints)
         metadata = {
             'is_loop': bool(loop),

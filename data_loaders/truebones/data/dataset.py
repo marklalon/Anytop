@@ -815,18 +815,17 @@ class MotionDataset(data.Dataset):
             return 1
         return int(random.randint(1, max_tile_count))
 
-    def prepare_sample_by_name(self, name, target_num_frames=None, crop_start=None, loop_offset=None):
+    def prepare_sample_by_name(self, name, target_num_frames=None, loop_offset=None):
         if name not in self.data_dict:
             raise KeyError(f"Unknown motion sample '{name}'.")
         return self._prepare_sample(
             name,
             self.data_dict[name],
             target_num_frames=target_num_frames,
-            crop_start=crop_start,
             loop_offset=loop_offset,
         )
 
-    def _prepare_sample(self, name, data, target_num_frames=None, crop_start=None, loop_offset=None, return_aug_info=False):
+    def _prepare_sample(self, name, data, target_num_frames=None, loop_offset=None, return_aug_info=False):
         if target_num_frames is None:
             target_num_frames = self.max_motion_length
         target_num_frames = int(target_num_frames)
@@ -861,7 +860,6 @@ class MotionDataset(data.Dataset):
         )
 
         motion, m_length, object_type, parents, joints_graph_dist, joints_relations, rest_pose, offsets, joints_names_embs, kinematic_chains = self._load_physical_motion(data)
-        ind = 0
         loop_applied = False
         loop_full_cycle = False
         loop_phase_offset = 0
@@ -885,43 +883,19 @@ class MotionDataset(data.Dataset):
             motion = _tile_loop_motion(motion, loop_tile_count)
             m_length = int(motion.shape[0])
 
-        if loop_condition_active and m_length > max_source_length:
-            loop_condition_active = False
-            loop_uncond = True
-
-        if crop_start is not None and m_length > target_num_frames:
-            crop_length = target_num_frames
-            max_start = m_length - crop_length
-            ind = int(crop_start)
-            if ind < 0 or ind > max_start:
-                raise ValueError(
-                    f"crop_start={ind} is invalid for motion '{name}' with length={m_length} and crop_length={crop_length}."
-                )
-            motion = motion[ind: ind + crop_length]
-            m_length = int(motion.shape[0])
+        if m_length > max_source_length:
+            # A clip longer than the 2n budget is cropped, which breaks the
+            # cycle, so a loop is downgraded to non-loop here and told so.
+            # The crop LENGTH is fixed at the full 2n budget -- every over-long
+            # clip contributes 2n source frames, resampled to the target length
+            # below at playspeed 2 -- while the window POSITION stays random so
+            # repeated epochs still see the whole clip.
             if loop_condition_active:
                 loop_uncond = True
             loop_condition_active = False
-        elif m_length > max_source_length:
-            # Long loops have been downgraded to non-loop above, so this path
-            # is always a linear crop (no circular indexing needed).
-            # Sample crop_length from a normal distribution centered at
-            # target_num_frames (peak probability) with std=target_num_frames/2
-            # so ±2σ roughly spans [0, 2n]; clip to the valid range.
-            crop_length = int(round(random.gauss(target_num_frames, target_num_frames / 2.0)))
-            crop_length = max(self.min_length, min(max_source_length, crop_length))
-            max_start = m_length - crop_length
-            if crop_start is None:
-                ind = random.randint(0, max_start)
-            else:
-                ind = int(crop_start)
-                if ind < 0 or ind > max_start:
-                    raise ValueError(
-                        f"crop_start={ind} is invalid for motion '{name}' with length={m_length} and crop_length={crop_length}."
-                    )
-            motion = motion[ind: ind + crop_length]
+            ind = random.randint(0, m_length - max_source_length)
+            motion = motion[ind: ind + max_source_length]
             m_length = int(motion.shape[0])
-            loop_condition_active = False
 
         source_len_for_playspeed = int(m_length)
         playspeed_cond = float(source_len_for_playspeed) / float(target_num_frames)
@@ -960,7 +934,7 @@ class MotionDataset(data.Dataset):
         self._apply_action_label_condition(motion_metadata)
 
         if return_aug_info:
-            return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, self.opt.max_joints, motion_metadata, name, {
+            return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
                 'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
                 'species_emb': self.cond_dict[object_type].get('species_emb'),
                 'rest_pose_physical': self.cond_dict[object_type]['rest_pose'],
@@ -969,14 +943,13 @@ class MotionDataset(data.Dataset):
                 'canonical_feature_std': self.cond_dict[object_type].get('canonical_feature_std'),
                 'feature_space': self.cond_dict[object_type].get('feature_space', 'canonical_motion_v3'),
             }, {
-                'crop_start': int(ind),
                 'loop_applied': bool(loop_applied),
                 'loop_phase_offset': int(loop_phase_offset),
                 'loop_tile_count': int(loop_tile_count),
                 'playspeed_cond': float(playspeed_cond),
                 'loop_uncond': bool(loop_uncond),
             }
-        return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, ind, self.opt.max_joints, motion_metadata, name, {
+        return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
             'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
             'species_emb': self.cond_dict[object_type].get('species_emb'),
             'rest_pose_physical': self.cond_dict[object_type]['rest_pose'],

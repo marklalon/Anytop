@@ -68,7 +68,6 @@ def _make_batch_item(
         relations,
         'Horse',
         names,
-        0,
         max_joints,
         metadata,
         'Horse_walk.npy',

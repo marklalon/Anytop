@@ -84,8 +84,7 @@ def truebones_collate(batch):
     """Collate a list of motion items into a single (inp, cond) batch.
 
     Each item in *batch* is a dict produced by ``truebones_batch_collate``
-    containing keys like ``'inp'``, ``'rest_pose'``,
-    ``'motion_start_frame'``, etc.
+    containing keys like ``'inp'``, ``'rest_pose'``, ``'lengths'``, etc.
 
     Returns
     -------
@@ -94,7 +93,7 @@ def truebones_collate(batch):
     cond : dict
         Conditioning dictionary with ``'y'`` containing all metadata
         (lengths, T-pose, object type, motion name, action group/label,
-        loop info, motion_start_frame, …).
+        loop info, …).
     """
     notnone_batches = [b for b in batch if b is not None]
     databatch = [b['inp'] for b in notnone_batches]
@@ -221,14 +220,6 @@ def truebones_collate(batch):
             )
         })
 
-    if any('motion_start_frame' in batch_item for batch_item in notnone_batches):
-        cond['y'].update({
-            'motion_start_frame': torch.as_tensor(
-                [int(batch_item.get('motion_start_frame', 0)) for batch_item in notnone_batches],
-                dtype=torch.long,
-            )
-        })
-
     if any('joint_mask_candidate_roots' in batch_item for batch_item in notnone_batches):
         candidate_root_batch = []
         for batch_item in notnone_batches:
@@ -276,13 +267,12 @@ def truebones_batch_collate(batch):
         [6]  joints_relations  – np.ndarray, joint relation matrix
         [7]  object_type     – str
         [8]  joints_names_embs – np.ndarray, joint name embeddings
-        [9]  crop_start      – int, starting frame index in source motion
-        [10] max_joints      – int
-        [11] motion_metadata – dict or None (action group/label, loop info, etc.)
-        [12] name            – str, motion name
-        [13+] extras         – dicts (joint_mask_candidate_roots, aug info, …)
+        [9]  max_joints      – int
+        [10] motion_metadata – dict or None (action group/label, loop info, etc.)
+        [11] name            – str, motion name
+        [12+] extras         – dicts (joint_mask_candidate_roots, aug info, …)
     """
-    max_joints = batch[0][10]
+    max_joints = batch[0][9]
     adapted_batch = []
     for b in batch:  
         max_len, n_joints, n_feats = b[0].shape
@@ -299,7 +289,7 @@ def truebones_batch_collate(batch):
         motion_metadata = None
         motion_name = None
         extra_cond = None
-        for extra in b[11:]:
+        for extra in b[10:]:
             if isinstance(extra, dict):
                 if 'joint_mask_candidate_roots' in extra or 'rest_pos_ric_hml' in extra:
                     extra_cond = extra
@@ -318,7 +308,6 @@ def truebones_batch_collate(batch):
             'object_type': object_type,
             'joints_names_embs': joints_names_embs,
             'rest_pose': rest_pose,
-            'motion_start_frame': int(b[9]),  # crop_start from _prepare_sample
         }
         if extra_cond is not None and 'joint_mask_candidate_roots' in extra_cond:
             raw_candidates = np.asarray(extra_cond['joint_mask_candidate_roots'], dtype=np.bool_)

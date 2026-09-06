@@ -162,7 +162,6 @@ def test_truebones_collate_drops_motion_stats_and_carries_global_stats():
         np.zeros((2, 2), dtype=np.float32),
         "TestSpecies",
         np.zeros((2, 4), dtype=np.float32),
-        0,
         2,
         {"translation_root_index": 0},
         "TestSpecies_Motion_1.npy",

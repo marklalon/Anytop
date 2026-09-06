@@ -298,12 +298,11 @@ def main() -> int:
                 _joints_relations,
                 object_type,
                 _joints_names_embs,
-                _crop_start,
                 _max_joints,
                 motion_metadata,
                 _name,
                 _candidate_roots_info,
-                aug_info,     # dict: crop_start, loop_applied, playspeed_cond, loop_uncond
+                aug_info,     # dict: loop_applied, playspeed_cond, loop_uncond
             ) = dataset._prepare_sample(name, dataset.data_dict[name], return_aug_info=True)
 
             # ----------------------------------------------------------------
@@ -350,9 +349,6 @@ def main() -> int:
                 tags.append(f"phase{_format_float_tag(loop_phase_length)}")
             elif is_source_loop:
                 tags.append("loopuncond")
-            actual_crop = aug_info.get("crop_start", 0)
-            if actual_crop > 0:
-                tags.append(f"crop{actual_crop}")
 
             fname = f"{stem}__{'+'.join(tags)}.bvh"
             save_path = output_dir / fname

@@ -11,6 +11,7 @@ from __future__ import annotations
 import glob
 import os
 import sys
+import tempfile
 from unittest.mock import patch
 
 import numpy as np
@@ -186,7 +187,7 @@ def test_loop_padding_updates_effective_length() -> None:
     with patch.object(motion_dataset, '_sample_loop_tile_count', return_value=1):
         sample = motion_dataset.prepare_sample_by_name(LOOP_MOTION, target_num_frames=NUM_FRAMES, loop_offset=0)
     motion, m_length = sample[0], sample[1]
-    motion_metadata, name = sample[11], sample[12]
+    motion_metadata, name = sample[10], sample[11]
 
     assert name == LOOP_MOTION, f"unexpected sample: {name}"
     assert bool(motion_metadata.get("is_loop", False)), "loop regression sample is no longer marked loop"
@@ -222,7 +223,7 @@ def test_loop_padding_can_tile_multiple_cycles_before_resample() -> None:
     with patch.object(motion_dataset, '_sample_loop_tile_count', return_value=2):
         sample = motion_dataset.prepare_sample_by_name(LOOP_MOTION, target_num_frames=NUM_FRAMES, loop_offset=0)
     motion, m_length = sample[0], sample[1]
-    motion_metadata, name = sample[11], sample[12]
+    motion_metadata, name = sample[10], sample[11]
 
     expected = _resample_raw_then_normalize(_tile_loop_motion(raw, 2), cond, NUM_FRAMES, loop_terminal=True)
 
@@ -270,40 +271,56 @@ def test_loop_padding_random_offset_wraps_without_truncation() -> None:
     assert_close("rolled loop terminal velocity", raw_motion[-1, :, 9:12], expected_raw[-1, :, 9:12], atol=3e-5)
 
 
-def test_explicit_window_start_respects_requested_crop() -> None:
+def test_long_motion_crops_fixed_length_random_window() -> None:
     dataset = _build_truebones(
         split="train",
         num_frames=NUM_FRAMES,
         balanced=False,
         objects_subset=LOOP_SUBSET,
-        motion_cache_size=2,
+        motion_cache_size=0,
     )
 
     motion_dataset = dataset.motion_dataset
-    window_start = 7
-    # Pick a NON-loop motion: loop motions get circular-roll + tile augmentation
-    # before the crop, so their window would not match a direct raw crop.
-    long_motion_name = next(
-        name
-        for name, length in zip(motion_dataset.name_list, motion_dataset.length_arr)
-        if NUM_FRAMES + window_start <= int(length) <= NUM_FRAMES * 2
-        and not bool(motion_dataset.data_dict[name].get('motion_metadata', {}).get('is_loop'))
+
+    # Build a NON-loop clip longer than the 2n budget: loop motions get
+    # circular-roll + tile augmentation before the crop, so their window would
+    # not match a direct raw crop.
+    source_data = motion_dataset.data_dict[LOOP_MOTION]
+    source_raw = np.load(source_data["motion_path"]).astype(np.float32, copy=False)
+    long_len = NUM_FRAMES * 2 + 37
+    repeat_count = (long_len + source_raw.shape[0] - 1) // source_raw.shape[0]
+    long_raw = np.tile(source_raw, (repeat_count, 1, 1))[:long_len]
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        motion_path = os.path.join(tmp_dir, "long_non_loop.npy")
+        np.save(motion_path, long_raw.astype(np.float32, copy=False))
+
+        long_data = dict(source_data)
+        long_data["motion_path"] = motion_path
+        long_data["length"] = long_raw.shape[0]
+        long_data["motion_metadata"] = dict(source_data["motion_metadata"])
+        long_data["motion_metadata"]["is_loop"] = False
+
+        # A non-loop clip draws exactly one randint: the crop window start.
+        window_start = 13
+        with patch.object(dataset_module.random, 'randint', return_value=window_start):
+            sample = motion_dataset._prepare_sample(
+                "synthetic_long_non_loop.npy",
+                long_data,
+                target_num_frames=NUM_FRAMES,
+                return_aug_info=True,
+            )
+    motion, m_length, *_rest, _motion_metadata, _name, _joint_mask_dict, aug_info = sample
+
+    cond = motion_dataset.cond_dict[long_data["object_type"]]
+    # The crop length is always the full 2n budget; only the start is random.
+    expected = _resample_raw_then_normalize(
+        long_raw[window_start:window_start + NUM_FRAMES * 2], cond, NUM_FRAMES
     )
 
-    motion, m_length, *_rest, _motion_metadata, name, _joint_mask_dict = motion_dataset.prepare_sample_by_name(
-        long_motion_name,
-        target_num_frames=NUM_FRAMES,
-        crop_start=window_start,
-    )
-
-    data = motion_dataset.data_dict[long_motion_name]
-    cond = motion_dataset.cond_dict[data["object_type"]]
-    raw = np.load(data["motion_path"]).astype(np.float32, copy=False)
-    expected = _normalize_motion(raw[window_start:window_start + NUM_FRAMES], cond)
-
-    assert name == long_motion_name, f"unexpected cropped sample: {name}"
     assert m_length == NUM_FRAMES, f"cropped sample should have effective length {NUM_FRAMES}, got {m_length}"
-    assert_close("explicit crop window", motion, expected)
+    assert np.isclose(float(aug_info["playspeed_cond"]), 2.0), f"expected playspeed 2.0, got {aug_info}"
+    assert_close("fixed-length random crop window", motion, expected)
 
 
 def test_prepare_sample_aug_info_reports_actual_loop_fill() -> None:
@@ -335,7 +352,6 @@ def test_prepare_sample_aug_info_reports_actual_loop_fill() -> None:
     assert aug_info["loop_phase_offset"] == 0, f"expected loop_phase_offset=0, got {aug_info}"
     assert aug_info["loop_tile_count"] == 1, f"expected loop_tile_count=1, got {aug_info}"
     assert np.isclose(float(aug_info["playspeed_cond"]), float(motion_dataset.data_dict[LOOP_MOTION]["length"]) / float(NUM_FRAMES))
-    assert aug_info["crop_start"] == 0, f"expected crop_start=0, got {aug_info}"
 
 
 def test_loop_uncond_keeps_legacy_loop_tile_but_non_loop_metadata() -> None:
@@ -402,20 +418,22 @@ def test_loop_uncond_long_loop_rolls_then_crops(tmp_path) -> None:
     long_data["motion_metadata"] = dict(source_data["motion_metadata"])
     long_data["motion_metadata"]["is_loop"] = True
 
-    crop_start = 5
-    with patch.object(dataset_module.random, 'randint', return_value=NUM_FRAMES):
+    # Two randint draws in order: the loop phase offset, then the crop start.
+    window_start = 5
+    with patch.object(dataset_module.random, 'randint', side_effect=[NUM_FRAMES, window_start]):
         sample = motion_dataset._prepare_sample(
             "synthetic_long_loop.npy",
             long_data,
             target_num_frames=NUM_FRAMES,
-            crop_start=crop_start,
             return_aug_info=True,
         )
     motion, m_length, *_rest, motion_metadata, _name, _joint_mask_dict, aug_info = sample
 
     cond = motion_dataset.cond_dict[long_data["object_type"]]
     expected_augmented = _circular_roll_motion(long_raw, NUM_FRAMES)
-    expected = _normalize_motion(expected_augmented[crop_start:crop_start + NUM_FRAMES], cond)
+    expected = _resample_raw_then_normalize(
+        expected_augmented[window_start:window_start + NUM_FRAMES * 2], cond, NUM_FRAMES
+    )
 
     assert motion.shape[0] == NUM_FRAMES
     assert m_length == NUM_FRAMES
@@ -451,20 +469,22 @@ def test_loop_conditioned_long_loop_downgrades_to_non_loop(tmp_path) -> None:
     long_data["motion_metadata"] = dict(source_data["motion_metadata"])
     long_data["motion_metadata"]["is_loop"] = True
 
-    crop_start = 5
-    with patch.object(dataset_module.random, 'randint', return_value=NUM_FRAMES):
+    # Two randint draws in order: the loop phase offset, then the crop start.
+    window_start = 5
+    with patch.object(dataset_module.random, 'randint', side_effect=[NUM_FRAMES, window_start]):
         sample = motion_dataset._prepare_sample(
             "synthetic_conditioned_long_loop.npy",
             long_data,
             target_num_frames=NUM_FRAMES,
-            crop_start=crop_start,
             return_aug_info=True,
         )
     motion, m_length, *_rest, motion_metadata, _name, _joint_mask_dict, aug_info = sample
 
     cond = motion_dataset.cond_dict[long_data["object_type"]]
     expected_augmented = _circular_roll_motion(long_raw, NUM_FRAMES)
-    expected = _normalize_motion(expected_augmented[crop_start:crop_start + NUM_FRAMES], cond)
+    expected = _resample_raw_then_normalize(
+        expected_augmented[window_start:window_start + NUM_FRAMES * 2], cond, NUM_FRAMES
+    )
 
     assert motion.shape[0] == NUM_FRAMES
     assert m_length == NUM_FRAMES
@@ -473,7 +493,7 @@ def test_loop_conditioned_long_loop_downgrades_to_non_loop(tmp_path) -> None:
     assert motion_metadata["loop_phase_length"] == float(NUM_FRAMES)
     assert aug_info["loop_applied"] is False
     assert aug_info["loop_uncond"] is True
-    assert np.isclose(float(aug_info["playspeed_cond"]), 1.0)
+    assert np.isclose(float(aug_info["playspeed_cond"]), 2.0)
     assert_close("conditioned long loop downgraded crop", motion, expected)
 
 
@@ -509,8 +529,8 @@ def main() -> None:
     test_loop_padding_random_offset_wraps_without_truncation()
     print("loop random offset regression: ok")
 
-    test_explicit_window_start_respects_requested_crop()
-    print("explicit crop regression: ok")
+    test_long_motion_crops_fixed_length_random_window()
+    print("fixed-length crop window regression: ok")
 
     test_prepare_sample_aug_info_reports_actual_loop_fill()
     print("loop aug-info regression: ok")
