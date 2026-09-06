@@ -1533,6 +1533,12 @@ class GaussianDiffusion:
         reliability at the model input, not to hide tokens from attention.
         The selected joints / frames keep participating in attention; only
         their x_t features are replaced by q_sample(x_0, t_random).
+
+        Whether ``y`` carries ``'cross_limb_unreliable_mask'`` follows the
+        samplers: they return ``None`` only when the feature is off (or in eval
+        mode) and an all-False mask when a draw happens to select nothing, so
+        the key is present on every training step of a given run instead of
+        disappearing on the rare empty batch and forcing a recompile.
         """
         y = model_kwargs.get('y') if model_kwargs is not None else None
         model_for_hooks = self._unwrap_model_for_training_hooks(model)

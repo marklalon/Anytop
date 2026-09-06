@@ -475,6 +475,35 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
 
         self.assertNotIn("cross_limb_unreliable_mask", model_kwargs["y"])
 
+    def test_training_losses_keeps_empty_cross_limb_unreliable_mask_key(self):
+        """An all-False mask still publishes the key, and re-noises nothing.
+
+        The samplers return an empty mask (not None) when the feature is on but
+        the draw selects nothing, so y's key set -- and the compiled graph --
+        stays the same on every training step.
+        """
+        batch_size, n_joints, n_feats, n_frames = 1, 3, 12, 4
+        diffusion = self._make_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
+        empty_mask = torch.zeros((batch_size, n_joints), dtype=torch.bool)
+        model = _RecordingModel(subtree_mask=empty_mask)
+        x_start = torch.arange(
+            batch_size * n_joints * n_feats * n_frames, dtype=torch.float32
+        ).reshape(batch_size, n_joints, n_feats, n_frames)
+        t = torch.tensor([1], dtype=torch.int64)
+        base_noise = torch.full_like(x_start, 0.5)
+        model_kwargs = self._make_model_kwargs(batch_size, n_joints, n_feats, n_frames)
+
+        expected_x_t = diffusion.q_sample(x_start, t, noise=base_noise)
+
+        diffusion.training_losses(model, x_start, t, model_kwargs=model_kwargs, noise=base_noise)
+
+        self.assertIsNotNone(model.last_x)
+        self.assertTrue(torch.allclose(model.last_x, expected_x_t))
+        self.assertIn("cross_limb_unreliable_mask", model_kwargs["y"])
+        unreliable = model_kwargs["y"]["cross_limb_unreliable_mask"]
+        self.assertEqual(unreliable.shape, (batch_size, n_frames, n_joints))
+        self.assertFalse(bool(unreliable.any()))
+
     def test_spaced_diffusion_training_losses_unwraps_model_for_joint_mask_perturbation(self):
         batch_size, n_joints, n_feats, n_frames = 1, 3, 12, 4
         diffusion = self._make_spaced_diffusion(model_var_type=ModelVarType.FIXED_LARGE)
@@ -786,6 +815,82 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             frame_indices = torch.nonzero(sample_mask[0], as_tuple=False).flatten()
             self.assertEqual(len(frame_indices), 2)
             self.assertEqual(int(frame_indices[-1] - frame_indices[0]), 1)
+
+    def _empty_draw_model(self, **mask_kwargs):
+        model = AnyTop(
+            max_joints=4,
+            feature_len=13,
+            latent_dim=8,
+            ff_size=32,
+            num_layers=1,
+            num_heads=2,
+            dropout=0.0,
+            cross_limb=False,
+            **mask_kwargs,
+        )
+        model.train()
+        return model
+
+    def test_anytop_mask_samplers_return_empty_mask_instead_of_none_when_enabled(self):
+        """An enabled sampler that draws nothing must still return a mask.
+
+        Returning None would drop y['cross_limb_unreliable_mask'] for that step,
+        and a key set that varies between steps makes torch.compile recompile
+        the forward the first time an empty batch comes up.
+        """
+        y = {
+            "n_joints": torch.tensor([4, 2], dtype=torch.int64),
+            "parents": torch.tensor(
+                [[-1, 0, 1, 2], [-1, 0, 0, 0]], dtype=torch.int64
+            ),
+        }
+        device = torch.device("cpu")
+
+        # A positive but vanishing probability: the feature is on, yet no draw
+        # selects anything.
+        joint_model = self._empty_draw_model(joint_mask_prob=1e-12, joint_mask_budget=0.5)
+        np.random.seed(0)
+        subtree_mask = joint_model.sample_subtree_joint_mask_train(y, njoints=4, device=device)
+
+        self.assertIsNotNone(subtree_mask)
+        self.assertEqual(subtree_mask.shape, (2, 4))
+        self.assertEqual(subtree_mask.dtype, torch.bool)
+        self.assertFalse(bool(subtree_mask.any()))
+
+        span_model = self._empty_draw_model(temporal_span_mask_prob=1e-12)
+        torch.manual_seed(0)
+        temporal_mask = span_model.sample_temporal_span_mask_train(
+            y, njoints=4, nframes=5, device=device
+        )
+
+        self.assertIsNotNone(temporal_mask)
+        self.assertEqual(temporal_mask.shape, (2, 4, 5))
+        self.assertEqual(temporal_mask.dtype, torch.bool)
+        self.assertFalse(bool(temporal_mask.any()))
+
+    def test_anytop_mask_samplers_return_none_when_disabled_or_eval(self):
+        y = {
+            "n_joints": torch.tensor([4, 2], dtype=torch.int64),
+            "parents": torch.tensor(
+                [[-1, 0, 1, 2], [-1, 0, 0, 0]], dtype=torch.int64
+            ),
+        }
+        device = torch.device("cpu")
+
+        disabled = self._empty_draw_model(joint_mask_prob=0.0, temporal_span_mask_prob=0.0)
+        self.assertIsNone(disabled.sample_subtree_joint_mask_train(y, njoints=4, device=device))
+        self.assertIsNone(
+            disabled.sample_temporal_span_mask_train(y, njoints=4, nframes=5, device=device)
+        )
+
+        enabled = self._empty_draw_model(
+            joint_mask_prob=1.0, joint_mask_budget=0.5, temporal_span_mask_prob=1.0
+        )
+        enabled.eval()
+        self.assertIsNone(enabled.sample_subtree_joint_mask_train(y, njoints=4, device=device))
+        self.assertIsNone(
+            enabled.sample_temporal_span_mask_train(y, njoints=4, nframes=5, device=device)
+        )
 
 
 if __name__ == "__main__":

@@ -589,10 +589,18 @@ class AnyTop(nn.Module):
     def sample_subtree_joint_mask_train(self, y, njoints, device):
         """Select subtrees of joints to perturb during training.
 
-        Returns a bool tensor of shape ``[B, njoints]`` (True = joint selected)
-        or ``None`` if no joint was selected, or if not in training mode, or
-        if ``joint_mask_prob == 0`` or ``joint_mask_budget == 0`` -- so
-        eval-mode loss reports a clean diffusion objective.
+        Returns a bool tensor of shape ``[B, njoints]`` (True = joint selected),
+        or ``None`` if not in training mode or if ``joint_mask_prob == 0`` or
+        ``joint_mask_budget == 0`` -- so eval-mode loss reports a clean
+        diffusion objective.
+
+        When the feature is on but the draw selects nothing, the return is an
+        all-False mask, NOT ``None``: ``None`` makes
+        ``training_losses`` drop ``y['cross_limb_unreliable_mask']``, and a key
+        set that varies between steps forces torch.compile to recompile the
+        forward the first time an empty batch comes up. An all-False mask is a
+        no-op for both the re-noise and the cross-limb reliability bias, so the
+        step is unchanged.
 
         Called from ``GaussianDiffusion.training_losses`` AFTER ``q_sample``
         to decide which joints' x_t slice should be re-noised with an
@@ -605,7 +613,12 @@ class AnyTop(nn.Module):
         if (not self.training) or self.joint_mask_prob <= 0.0 or self.joint_mask_budget <= 0.0:
             return None
         n_joints_cpu = torch.as_tensor(y['n_joints'], device='cpu', dtype=torch.int64).reshape(-1)
-        return self._sample_subtree_joint_mask(y, n_joints_cpu, njoints, device)
+        subtree_joint_mask = self._sample_subtree_joint_mask(y, n_joints_cpu, njoints, device)
+        if subtree_joint_mask is None:
+            subtree_joint_mask = torch.zeros(
+                (int(n_joints_cpu.shape[0]), int(njoints)), dtype=torch.bool, device=device
+            )
+        return subtree_joint_mask
 
     def _sample_subtree_joint_mask(self, y, n_joints, njoints, device):
         parents_batch = y.get('parents')
@@ -646,8 +659,13 @@ class AnyTop(nn.Module):
         """Select contiguous temporal spans to perturb during training.
 
         Returns a bool tensor of shape ``[B, njoints, nframes]`` (True =
-        re-noise that joint/frame cell) or ``None`` if no span was selected,
-        if not in training mode, or if ``temporal_span_mask_prob == 0``.
+        re-noise that joint/frame cell), or ``None`` if not in training mode or
+        if ``temporal_span_mask_prob == 0``.
+
+        As with ``sample_subtree_joint_mask_train``, a draw that selects no span
+        returns an all-False mask rather than ``None``, so ``y``'s key set --
+        and therefore the compiled graph -- stays identical across steps. It
+        also keeps the sampler sync-free: no ``.any()`` readback per step.
 
         Full-clip spans are not supported: the sampled span always leaves at
         least one frame at the start or end unmasked so seam detection never
@@ -699,8 +717,6 @@ class AnyTop(nn.Module):
             & joint_mask[:, :, None]
             & frame_mask[:, None, :]
         )                                                                         # [B, J, T]
-        if not bool(mask.any()):
-            return None
         return mask
 
     def _coerce_species_emb(self, y, batch_size, device, dtype):
