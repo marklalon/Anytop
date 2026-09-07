@@ -37,6 +37,7 @@ from .animation_utils import (
     reorder_animation_to_dfs,
     crop_animation_to_max_joints,
     drop_prop_socket_joints,
+    drop_end_site_joints,
     coerce_single_orientation_quat,
 )
 
@@ -168,7 +169,8 @@ def object_policy(obj):
 
 def _process_motion_file(file_path, object_type, max_joints,
                          offsets, foot_indices, tpos_rots, scale_factor,
-                         orientation_quat, crop_enabled=True, prop_socket_names=()):
+                         orientation_quat, crop_enabled=True, prop_socket_names=(),
+                         end_site_names=()):
     local_errors = dict()
     _crop_max = MAX_JOINTS if crop_enabled else 2 ** 16
     # Load the animation file (FBX/GLB/GLTF) once; pass it as `preloaded` to every get_motion call so that
@@ -192,6 +194,16 @@ def _process_motion_file(file_path, object_type, max_joints,
             raw_anim,
             names,
             drop_names=prop_socket_names,
+            context=f"{object_type} '{os.path.basename(str(file_path))}'",
+        )
+
+    # Then the BVH end-site terminators, in the same rest-pose-decides order, so
+    # this clip lands on the joint set the rest-pose offsets were built over.
+    if end_site_names:
+        raw_anim, names, _ = drop_end_site_joints(
+            raw_anim,
+            names,
+            drop_names=end_site_names,
             context=f"{object_type} '{os.path.basename(str(file_path))}'",
         )
 
@@ -500,6 +512,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             orientation_quat=tp.orientation_quat,
             crop_enabled=crop_enabled,
             prop_socket_names=tp.prop_socket_names,
+            end_site_names=tp.end_site_names,
         )
 
     file_outputs = [process_file(file_path) for file_path in anim_files]

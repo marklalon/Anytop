@@ -17,6 +17,7 @@ from os.path import join as pjoin
 import torch
 from data_loaders.truebones.truebones_utils.param_utils import (
     DROP_PROP_SOCKET_JOINTS,
+    DROP_END_SITE_JOINTS,
     FOOT_CONTACT_HEIGHT_THRESH,
     MAX_JOINTS,
     FOOT_CONTACT_VEL_THRESH,
@@ -50,6 +51,7 @@ from .animation_utils import (
     reorder_animation_to_dfs,
     crop_animation_to_max_joints,
     drop_prop_socket_joints,
+    drop_end_site_joints,
     get_average_axial_bone_length,
     get_scale_reference_extent,
     rest_pose_animation,
@@ -385,9 +387,12 @@ def get_common_features_from_rest_pose(
     *,
     max_joints=None,
     drop_prop_sockets=None,
+    drop_end_sites=None,
 ):
     if drop_prop_sockets is None:
         drop_prop_sockets = DROP_PROP_SOCKET_JOINTS
+    if drop_end_sites is None:
+        drop_end_sites = DROP_END_SITE_JOINTS
     loaded_anim, rest_pose_names, _rest_pose_frame_time = FBX.load(rest_pose_path)
     max_joints = int(max_joints) if max_joints is not None else max(len(rest_pose_names), 1)
     reference_anim = _rest_pose_animation_from_loaded_anim(loaded_anim)
@@ -411,6 +416,27 @@ def get_common_features_from_rest_pose(
                 name for index, name in enumerate(pre_drop_names) if index not in _kept
             )
             face_joints = _remap_joint_indices(face_joints, _kept_after_drop)
+    # BVH End-Site terminators go next, before the crop and independently of it.
+    # A tpose that round-tripped through BVH carries one extra leaf per chain end;
+    # left in, each steals the EndEffector/ChainEnd marker from the real joint it
+    # hangs off and shifts every 'Segment N Of M' count up that chain, so the same
+    # character conditions differently depending on which file it was built from.
+    # Like the prop sockets, the names travel out on TPoseFeatures so every clip
+    # of this character drops exactly the same joints.
+    end_site_names = ()
+    if drop_end_sites:
+        pre_end_site_names = rest_pose_names
+        reference_anim, rest_pose_names, _kept_after_end_sites = drop_end_site_joints(
+            reference_anim,
+            rest_pose_names,
+            context=rest_pose_context,
+        )
+        if _kept_after_end_sites is not None:
+            _kept_es = set(_kept_after_end_sites)
+            end_site_names = tuple(
+                name for index, name in enumerate(pre_end_site_names) if index not in _kept_es
+            )
+            face_joints = _remap_joint_indices(face_joints, _kept_after_end_sites)
     # Crop oversized skeletons down to max_joints BEFORE any face/contact/offset
     # inference, so every downstream rest-pose artifact is built on the cropped
     # skeleton. Leaves are removed deepest-first, same-depth ties prefer shorter
@@ -497,6 +523,7 @@ def get_common_features_from_rest_pose(
         contact_joint_source=contact_joint_source,
         axial_avg_len=axial_avg_len,
         prop_socket_names=prop_socket_names,
+        end_site_names=end_site_names,
     )
 
 
@@ -596,6 +623,11 @@ class TPoseFeatures:
     # a cond-reconstructed rest pose: cond was already built on the filtered
     # skeleton, so there is nothing left to drop.
     prop_socket_names: tuple = ()
+    # Rest-pose names of the BVH end-site terminators removed from this skeleton,
+    # carried for the same reason as prop_socket_names: every motion clip of the
+    # character must drop exactly the same joints. Empty for a cond-reconstructed
+    # rest pose, which was already built on the filtered skeleton.
+    end_site_names: tuple = ()
 
 
 def extract_motion_features_from_aligned_anims(

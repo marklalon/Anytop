@@ -195,3 +195,13 @@ PROP_SOCKET_MAX_SUBTREE_JOINTS = 4
 # this off restores the older behaviour: the sockets stay in cond and in every
 # clip, and are only kept out of the scale statistics.
 DROP_PROP_SOCKET_JOINTS = True
+
+# BVH "End Site" terminators re-imported as real bones ("Tail10_end",
+# "L Toe01_end_site"). They are hierarchy punctuation, not anatomy: no rig
+# authors them, they carry no motion, and every one of them steals the
+# EndEffector/ChainEnd marker from the joint it hangs off -- which rewrites that
+# joint's canonical name, and therefore its T5 conditioning vector. A tpose file
+# that round-tripped through BVH grows a whole set of them, so the same
+# character preprocessed from FBX and from BVH would condition differently.
+# Stripping them makes the two agree.
+DROP_END_SITE_JOINTS = True

@@ -1057,6 +1057,108 @@ def drop_prop_socket_joints(anim, names, *, drop_names=None, context=None):
     return filtered, new_names, keep_indices
 
 
+# A BVH "End Site" re-imported as a real bone: a leaf whose name is its parent's
+# plus an ``end``/``end site`` terminator ("Tail10_end", "L Toe01_end_site",
+# "Hand End"). The separator is required so real anatomy never matches -- "Bend"
+# and "Legend" are names, not terminators.
+_END_SITE_NAME_RE = re.compile(r'[_\s.-](end|end[_\s.-]?site)$', re.IGNORECASE)
+
+
+def find_end_site_joints(parents, names):
+    """Indices of the End-Site terminator leaves in a skeleton.
+
+    A joint qualifies only when it is a leaf AND its name carries an End-Site
+    suffix, so a real bone that happens to sit at the end of a chain is never
+    touched. Terminators that stack ("Foo_end" carrying a "Foo_end_site") are
+    peeled repeatedly, since removing the outer one turns the inner one into a
+    leaf.
+    """
+    parents = np.asarray(parents, dtype=np.int64)
+    joint_count = int(parents.shape[0])
+    dropped = set()
+    while True:
+        has_child = {
+            int(parents[joint_index])
+            for joint_index in range(joint_count)
+            if joint_index not in dropped and int(parents[joint_index]) >= 0
+        }
+        newly = {
+            joint_index
+            for joint_index in range(1, joint_count)
+            if joint_index not in dropped
+            and joint_index not in has_child
+            and _END_SITE_NAME_RE.search(str(names[joint_index]))
+        }
+        if not newly:
+            return dropped
+        dropped |= newly
+
+
+def drop_end_site_joints(anim, names, *, drop_names=None, context=None):
+    """Drop BVH End-Site terminator leaves from a loaded skeleton.
+
+    A tpose that round-tripped through BVH comes back with every End Site
+    materialised as a real bone. They carry no motion, and each one steals the
+    ``EndEffector``/``ChainEnd`` marker from the joint it hangs off -- which
+    changes that joint's canonical name and so its T5 conditioning vector, and
+    lengthens every ``Segment N Of M`` count up its chain. The same character
+    loaded from FBX and from BVH would then condition differently, so the
+    terminators are removed rather than cropped: this is not a joint-budget
+    decision and it runs whether or not ``crop_animation_to_max_joints`` does.
+
+    Run it AFTER ``drop_prop_socket_joints`` (a parked weapon's terminator goes
+    out with the weapon) and BEFORE ``crop_animation_to_max_joints``, so the crop
+    spends its budget on anatomy instead of punctuation.
+
+    ``drop_names`` mirrors the prop-socket contract: the rest pose detects once
+    and every motion clip of that character follows the same explicit list, so
+    the two can never disagree about the joint set. A name the clip's rig does
+    not carry is an error, not a silent skip.
+
+    Returns ``(anim, names, keep_indices)``, with ``keep_indices=None`` and the
+    inputs unchanged when nothing is dropped.
+    """
+    parents = np.asarray(anim.parents, dtype=np.int64)
+    joint_count = int(parents.shape[0])
+    names = list(names)
+    if len(names) != joint_count:
+        raise ValueError(
+            f"Expected {joint_count} joint names to drop end sites, got {len(names)}"
+        )
+    label = f' for {context}' if context else ''
+
+    if drop_names is None:
+        end_site_joints = find_end_site_joints(parents, names)
+    else:
+        wanted = set(drop_names)
+        missing = wanted.difference(names)
+        if missing:
+            raise ValueError(
+                f"end-site joints {sorted(missing)} named by the rest pose are "
+                f"missing from this skeleton{label}"
+            )
+        end_site_joints = {
+            joint_index
+            for joint_index in range(joint_count)
+            if names[joint_index] in wanted
+        }
+    if 0 in end_site_joints:
+        raise ValueError(f"end-site filter would drop the root joint{label}")
+    if not end_site_joints:
+        return anim, names, None
+
+    keep_indices = [
+        joint_index for joint_index in range(joint_count) if joint_index not in end_site_joints
+    ]
+    # reindex_animation_to_kept_joints rejects a keep-set that orphans a child,
+    # which is the guard that an explicit drop_names list really did name leaves.
+    filtered, new_names = reindex_animation_to_kept_joints(anim, names, keep_indices)
+    if drop_names is None:
+        dropped = [names[joint_index] for joint_index in sorted(end_site_joints)]
+        _warn(f'dropping {len(dropped)} BVH end-site joint(s){label}: {dropped}')
+    return filtered, new_names, keep_indices
+
+
 def reorder_animation_to_dfs(anim, names):
     """Reindex an Animation into true DFS order for BVH export.
 
