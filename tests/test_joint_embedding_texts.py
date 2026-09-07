@@ -297,3 +297,69 @@ def test_digit_keeps_the_bare_word_when_the_name_names_no_limb():
     texts = _embedding_texts(['Body', 'Digit01', 'ArmLegDigit01'], [-1, 0, 0])
     assert texts[1].startswith('Digit'), texts[1]
     assert 'Digit' in texts[2], texts[2]
+
+
+def test_mixamo_bare_leg_below_an_upleg_is_the_calf():
+    # The Mixamo spelling: "UpLeg" is the thigh and "Leg" is the shank. The
+    # pair merge already reads the first correctly, which is exactly what stops
+    # the chain-signature grouping from giving the second an ordinal -- so
+    # without the leg-context flag the shank comes out as a naked "Left Leg",
+    # a token carried by a handful of species (against many for "Left Calf")
+    # whose nearest T5 neighbour is "Left Arm".
+    texts = _embedding_texts(
+        ['Hips', 'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'LeftToeBase',
+         'RightUpLeg', 'RightLeg', 'RightFoot', 'RightToeBase'],
+        [-1, 0, 1, 2, 3, 0, 5, 6, 7],
+    )
+    assert texts[1] == 'Left Thigh', texts[1]
+    assert texts[2] == 'Left Calf', texts[2]
+    assert texts[5] == 'Right Thigh', texts[5]
+    assert texts[6] == 'Right Calf', texts[6]
+
+
+def test_renaming_the_leg_chain_leaves_the_embedding_text_identical():
+    # The whole point: two spellings of one skeleton must condition the model
+    # identically. "Thigh/Shin" and "UpLeg/Leg" are the same four joints.
+    shin = _embedding_texts(
+        ['Hips', 'LeftThigh', 'LeftShin', 'LeftFoot', 'LeftToeBase'],
+        [-1, 0, 1, 2, 3],
+    )
+    leg = _embedding_texts(
+        ['Hips', 'LeftUpLeg', 'LeftLeg', 'LeftFoot', 'LeftToeBase'],
+        [-1, 0, 1, 2, 3],
+    )
+    assert shin == leg, (shin, leg)
+
+
+def test_a_bare_leg_without_a_thigh_above_keeps_its_own_word():
+    # Bear spells the whole limb "LLeg1/LLeg2" off the pelvis, and the chain
+    # ordinal is what disambiguates those -- rewriting them to a Calf would
+    # invent an anatomy the rig never named.
+    texts = _embedding_texts(
+        ['Pelvis', 'LLeg1', 'LLeg2', 'LLegAnkle', 'LLegBall1'],
+        [-1, 0, 1, 2, 3],
+    )
+    assert texts[1].startswith('Left Leg'), texts[1]
+    assert texts[2].startswith('Left Leg'), texts[2]
+    assert 'Calf' not in ' '.join(texts), texts
+
+
+def test_a_bare_leg_that_is_the_ground_contact_stays_a_leg():
+    # Alligator: "Thigh -> Knee -> ashi", where the bare "Leg" is the foot the
+    # animal stands on, not a shank hidden under one.
+    texts = _embedding_texts(
+        ['Hips', 'LeftThigh', 'LeftKnee', 'LeftLeg'],
+        [-1, 0, 1, 2],
+    )
+    assert 'Calf' not in ' '.join(texts), texts
+    assert texts[3].startswith('Left Leg'), texts[3]
+
+
+def test_an_arthropod_leg_chain_is_never_read_as_a_calf():
+    # Crab numbers 5-15 segments per side with no thigh anywhere; spider rigs do
+    # the same. Nothing in the chain may pick up a mammalian shank.
+    texts = _embedding_texts(
+        ['Pelvis', 'LegLeft01', 'LegLeft02', 'LegLeft03', 'LegLeft04', 'LegLeft05'],
+        [-1, 0, 1, 2, 3, 4],
+    )
+    assert 'Calf' not in ' '.join(texts), texts

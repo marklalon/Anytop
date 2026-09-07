@@ -1200,6 +1200,25 @@ def find_new_source_files(objects, dataset_dir=None, raw_data_dir=None):
     return result
 
 
+def _scan_joint_name_support(save_dir, cond, reference_cond_path):
+    """Report how well a new skeleton's joint tokens are covered by the reference.
+
+    Fails soft on purpose: this is a diagnostic bolted onto the end of a run that
+    has already produced a usable cond, so a reference that cannot be read costs
+    the report and nothing else.
+    """
+    from .joint_name_support import _warn, write_joint_name_support_report
+    try:
+        reference_cond = np.load(reference_cond_path, allow_pickle=True).item()
+    except Exception as exc:
+        _warn(f'joint-name support scan skipped: cannot read {reference_cond_path} ({exc})')
+        return
+    try:
+        write_joint_name_support_report(cond, save_dir, reference_cond)
+    except Exception as exc:
+        _warn(f'joint-name support scan failed: {exc}')
+
+
 def process_skeleton(object_name, face_joints, save_dir, tpose_path,
                      crop_enabled=True, skip_t5=False, reference_cond_path=None):
     ## prepare
@@ -1243,3 +1262,9 @@ def process_skeleton(object_name, face_joints, save_dir, tpose_path,
         skip_t5=skip_t5,
         tpose_refs={object_name: tpose_reference_path},
     )
+    # The joint-name embeddings only exist after the artifacts are written, and
+    # only the reference cond knows what the checkpoint was actually trained on.
+    # A new skeleton is exactly the case where a legal, collision-free name can
+    # still land outside that distribution, so scan it here.
+    if not skip_t5 and reference_cond_path:
+        _scan_joint_name_support(save_dir, cond, reference_cond_path)

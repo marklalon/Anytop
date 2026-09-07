@@ -607,7 +607,7 @@ def _split_glued_compound_token(token):
     return parts if parts is not None and len(parts) >= 2 else None
 
 
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 12
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 13
 
 _CHAIN_INDEX_ORDINAL_TOKENS = {
     1: 'First',
@@ -933,9 +933,97 @@ def _bare_arm_means_upper_arm(joint_names, parents):
     return has_forearm_below
 
 
+# The segment a rig means by a bare "Leg" depends entirely on what it calls the
+# segment above: with a Thigh/UpLeg above and a foot below, the bare word is the
+# shank. Kept as sets rather than one regex so the glued spellings the pair-merge
+# table already knows ("UpLeg") and the mirrored ones ("reg") stay in one place.
+_EMBED_TEXT_THIGH_NAME_TOKENS = frozenset({'thigh', 'upleg', 'upperleg'})
+_EMBED_TEXT_DISTAL_LEG_TOKENS = frozenset({
+    'foot', 'ankle', 'toe', 'toes', 'paw', 'hoof', 'heel', 'ball', 'tarsus', 'hock',
+})
+_EMBED_TEXT_BARE_LEG_TOKENS = frozenset({'leg', 'reg'})
+# How far up/down the same limb the thigh and the foot are allowed to sit. Four
+# links spans every leg in this corpus (Thigh -> Calf -> HorseLink -> Foot -> Toe)
+# while keeping an arthropod's 5-15 segment "Leg" chain, which has no thigh of
+# its own, from reaching one on another limb through the pelvis.
+_BARE_LEG_CONTEXT_MAX_LINKS = 4
+
+
+def _bare_leg_means_calf(joint_names, parents, end_effector_joints=(), additional_prefixes=()):
+    """Per-joint flag: is this bare "Leg" the segment *below* a named thigh?
+
+    The leg-side counterpart of ``_bare_arm_means_upper_arm``. In Mixamo-style
+    rigs the thigh is "UpLeg" and the shank is "Leg"; the pair merge reads the
+    first correctly but leaves the shank as a naked "Leg" (nearest T5 neighbour
+    is "Arm", which hinges the knee the wrong way).
+
+    Gated hard because a bare "Leg" means something else in most other rigs
+    (Crab/tarantula leg chains with no thigh, Bear "LLeg1/LLeg2", Alligator
+    "L_ashi" as ground contact). In the current corpus the gates fire on only
+    the Rat's and the Hen's shanks.
+    """
+    joint_count = len(joint_names)
+    if parents is None or len(parents) != joint_count:
+        return [False] * joint_count
+
+    parents = np.asarray(parents, dtype=np.int64)
+    tokens_per_joint = [
+        _body_clean_tokens(str(name), additional_prefixes=additional_prefixes)[1]
+        for name in joint_names
+    ]
+
+    def names_a_thigh(tokens):
+        if _EMBED_TEXT_THIGH_NAME_TOKENS & set(tokens):
+            return True
+        # "UpLeg" arrives here as the two tokens the pair-merge table folds into
+        # a Thigh, so ask that table rather than restating its keys.
+        return any(
+            _EMBED_TEXT_TOKEN_PAIR_MERGES.get((first, second)) == 'Thigh'
+            for first, second in zip(tokens, tokens[1:])
+        )
+
+    children = _child_map(parents)
+    end_effectors = {int(joint_index) for joint_index in (end_effector_joints or ())}
+    flags = [False] * joint_count
+    for joint_index in range(joint_count):
+        own_tokens = tokens_per_joint[joint_index]
+        if len(own_tokens) != 1 or own_tokens[0] not in _EMBED_TEXT_BARE_LEG_TOKENS:
+            continue
+        # A bare "Leg" with nothing below it is the foot, not the shank.
+        if joint_index in end_effectors or not children[joint_index]:
+            continue
+
+        ancestor = int(parents[joint_index])
+        has_thigh_above = False
+        for _ in range(_BARE_LEG_CONTEXT_MAX_LINKS):
+            if ancestor < 0:
+                break
+            if names_a_thigh(tokens_per_joint[ancestor]):
+                has_thigh_above = True
+                break
+            ancestor = int(parents[ancestor])
+        if not has_thigh_above:
+            continue
+
+        has_foot_below = False
+        frontier = list(children[joint_index])
+        for _ in range(_BARE_LEG_CONTEXT_MAX_LINKS):
+            if not frontier or has_foot_below:
+                break
+            next_frontier = []
+            for descendant in frontier:
+                if _EMBED_TEXT_DISTAL_LEG_TOKENS & set(tokens_per_joint[descendant]):
+                    has_foot_below = True
+                    break
+                next_frontier.extend(children[descendant])
+            frontier = next_frontier
+        flags[joint_index] = has_foot_below
+    return flags
+
+
 def _refine_joint_embedding_tokens(clean_token, bare_arm_is_upper_arm=False,
                                    quadrant_codes_name_a_limb=False,
-                                   digit_limb=None):
+                                   digit_limb=None, bare_leg_is_calf=False):
     """Map one canonical token to the embedding token(s) it contributes."""
     if clean_token == 'digit' and digit_limb is not None:
         return ['Finger'] if digit_limb == 'hand' else ['Toe']
@@ -946,6 +1034,10 @@ def _refine_joint_embedding_tokens(clean_token, bare_arm_is_upper_arm=False,
         quadrant_token = _EMBED_TEXT_QUADRANT_LIMB_CODE_TOKENS.get(clean_token)
         if quadrant_token is not None:
             return [quadrant_token]
+    # Ahead of the synonym lookup: 'reg' is a synonym-mapped spelling of 'leg',
+    # and a bare 'reg' below a thigh is a Calf just like a bare 'leg'.
+    if bare_leg_is_calf and clean_token in _EMBED_TEXT_BARE_LEG_TOKENS:
+        return ['Calf']
     synonym_token = _EMBED_TEXT_SYNONYM_TOKENS.get(clean_token)
     if synonym_token is not None:
         return [synonym_token]
@@ -1002,7 +1094,14 @@ def joint_name_is_non_anatomical(name, additional_prefixes=()):
     return not tokens or bool(tokens & _EMBED_TEXT_NON_ANATOMICAL_TOKENS)
 
 
-def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_prefixes=()):
+def _body_clean_tokens(name, additional_prefixes=()):
+    """The canonical body tokens of one joint name, before any refinement.
+
+    Shared by ``_refine_joint_embedding_name`` and the per-skeleton context
+    flags it takes (``_bare_leg_means_calf``), so a flag is decided on exactly
+    the token list the refinement will see rather than on a substring of the raw
+    name.
+    """
     canonical_name = _canonicalize_joint_name(name, additional_prefixes=additional_prefixes)
     clean_tokens = []
     for token in canonical_name.split():
@@ -1016,6 +1115,12 @@ def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_p
         if clean_token in _EMBED_TEXT_CREATURE_TOKENS:
             continue
         clean_tokens.append(clean_token)
+    return canonical_name, clean_tokens
+
+
+def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_prefixes=(),
+                                 bare_leg_is_calf=False):
+    canonical_name, clean_tokens = _body_clean_tokens(name, additional_prefixes=additional_prefixes)
 
     # Gate for the ambiguous fore/hind codes: only a name that also spells a limb
     # gets them decoded, so a mouth corner keeps its "Bl" and a leg does not.
@@ -1047,6 +1152,7 @@ def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_p
                 bare_arm_is_upper_arm,
                 quadrant_codes_name_a_limb=quadrant_codes_name_a_limb,
                 digit_limb=digit_limb,
+                bare_leg_is_calf=bare_leg_is_calf,
             )
         )
         index += 1
@@ -1208,11 +1314,21 @@ def build_joint_embedding_texts(object_cond):
         raw_joint_names,
         object_cond.get('parents'),
     )
+    # Read off the canonical names, not the raw ones: the thigh above a Mixamo
+    # shank is spelled "UpLeg", which only becomes a Thigh after canonicalization
+    # splits it and the pair-merge table folds it.
+    bare_leg_flags = _bare_leg_means_calf(
+        base_joint_names,
+        object_cond.get('parents'),
+        end_effector_joints=object_cond.get('end_effector_joints') or (),
+        additional_prefixes=species_prefixes,
+    )
     refined_tokens_per_joint = [
         _refine_joint_embedding_name(
             joint_name,
             bare_arm_flags[joint_index],
             additional_prefixes=species_prefixes,
+            bare_leg_is_calf=bare_leg_flags[joint_index],
         )
         for joint_index, joint_name in enumerate(base_joint_names)
     ]
