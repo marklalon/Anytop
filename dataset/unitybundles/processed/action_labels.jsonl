@@ -788,8 +788,8 @@
 {"clip": "MB_Unka_GlideLeft.npy", "action_group": "locomotion", "action_label": "fly, left, glide", "reviewed": true}
 {"clip": "MB_Unka_GlideRight.npy", "action_group": "locomotion", "action_label": "fly, right, glide", "reviewed": true}
 {"clip": "MB_Unka_Glide.npy", "action_group": "locomotion", "action_label": "fly, forward, glide", "reviewed": true}
-{"clip": "MB_Unka_GroundDodgeLeft.npy", "action_group": "locomotion", "action_label": "walk, jump, left, strafe", "reviewed": true}
-{"clip": "MB_Unka_GroundDodgeRight.npy", "action_group": "locomotion", "action_label": "walk, jump, right, strafe", "reviewed": true}
+{"clip": "MB_Unka_GroundDodgeLeft.npy", "action_group": "locomotion", "action_label": "jump, left, strafe", "reviewed": true}
+{"clip": "MB_Unka_GroundDodgeRight.npy", "action_group": "locomotion", "action_label": "jump, right, strafe", "reviewed": true}
 {"clip": "MB_Unka_Idle02.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "MB_Unka_Idle03.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
 {"clip": "MB_Unka_IdleAM02.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
@@ -816,8 +816,8 @@
 {"clip": "MB_Unka_SwimForwardRight.npy", "action_group": "locomotion", "action_label": "swim, right", "reviewed": true}
 {"clip": "MB_Unka_SwimForward.npy", "action_group": "locomotion", "action_label": "swim, forward", "reviewed": true}
 {"clip": "MB_Unka_SwimIdle.npy", "action_group": "stationary", "action_label": "swim, idle", "reviewed": true}
-{"clip": "MB_Unka_SwimTurnLeft.npy", "action_group": "locomotion", "action_label": "swim, turn, left", "reviewed": true}
-{"clip": "MB_Unka_SwimTurnRight.npy", "action_group": "locomotion", "action_label": "swim, turn, right", "reviewed": true}
+{"clip": "MB_Unka_SwimTurnLeft.npy", "action_group": "transition", "action_label": "swim, turn, left", "reviewed": true}
+{"clip": "MB_Unka_SwimTurnRight.npy", "action_group": "transition", "action_label": "swim, turn, right", "reviewed": true}
 {"clip": "MB_Unka_SwimVertical.npy", "action_group": "locomotion", "action_label": "swim, jump, forward", "reviewed": true}
 {"clip": "MB_Unka_SwimWaterEnter.npy", "action_group": "transition", "action_label": "land, swim", "reviewed": true}
 {"clip": "MB_Unka_TrotLeft.npy", "action_group": "locomotion", "action_label": "walk, turn, left, trot", "reviewed": true}
