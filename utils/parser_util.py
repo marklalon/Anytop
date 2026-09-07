@@ -203,6 +203,16 @@ def add_model_options(parser):
                             "cross-limb parameter count.")
     group.add_argument("--dropout_prob", default=0.1, type=float,
                        help="Dropout probability for AnyTop model layers. Set to 0 to disable dropout.")
+    group.add_argument("--joint_name_drop_prob", default=0.0, type=float,
+                       help="Per-joint probability of replacing a joint's ENTIRE name embedding with a "
+                            "learned 'unknown joint' vector during training. --dropout_prob thins that "
+                            "vector elementwise but never hides the joint's identity, so the model is "
+                            "never trained to fall back on rest_pose/graph_dist/joints_relations and a "
+                            "single rare name token can flip a limb's motion prior. Default 0.0 (off).")
+    group.add_argument("--joint_name_drop_all_prob", default=0.0, type=float,
+                       help="Per-sample probability of dropping EVERY joint name in the skeleton at once "
+                            "(on top of --joint_name_drop_prob), training the fully name-blind regime "
+                            "where only the rest pose and the topology place a joint. Default 0.0 (off).")
     group.add_argument("--species_cond", action='store_true',
                        help="Enable per-species FiLM conditioning: the T5-derived species descriptor "
                             "modulates the timestep token multiplicatively (gamma=1+res, beta; zero-init "

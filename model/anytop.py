@@ -76,6 +76,18 @@ class AnyTop(nn.Module):
                 f"species_cfg_drop_prob must be in [0, 1], got {self.species_cfg_drop_prob}"
             )
         self.species_joint_cond=bool(kargs.get('species_joint_cond', False))
+        # Whole-joint name dropout (see InputProcess). Both default to 0.0 so an
+        # existing checkpoint rebuilds bit-identically and gains no state_dict key.
+        self.joint_name_drop_prob=float(kargs.get('joint_name_drop_prob', 0.0))
+        self.joint_name_drop_all_prob=float(kargs.get('joint_name_drop_all_prob', 0.0))
+        if not 0.0 <= self.joint_name_drop_prob <= 1.0:
+            raise ValueError(
+                f"joint_name_drop_prob must be in [0, 1], got {self.joint_name_drop_prob}"
+            )
+        if not 0.0 <= self.joint_name_drop_all_prob <= 1.0:
+            raise ValueError(
+                f"joint_name_drop_all_prob must be in [0, 1], got {self.joint_name_drop_all_prob}"
+            )
         self.loop_cond_prob=float(kargs.get('loop_cond_prob', 1.0))
         # Action-label conditioning: a single pathway -- the frozen T5 vectors of
         # the label's WORDS, pooled into one channel per role slot (head /
@@ -114,7 +126,8 @@ class AnyTop(nn.Module):
                 f"(got min={self.temporal_span_mask_min_frames}, max={self.temporal_span_mask_max_frames})"
             )
 
-        self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, dropout_prob=self.dropout, species_joint_cond=self.species_joint_cond)
+        self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, dropout_prob=self.dropout, species_joint_cond=self.species_joint_cond,
+                                          joint_name_drop_prob=self.joint_name_drop_prob, joint_name_drop_all_prob=self.joint_name_drop_all_prob)
         if self.loop_cond_prob > 0.0:
             self.loop_condition_projection = nn.Sequential(
                 nn.Linear(1, self.latent_dim),
@@ -928,7 +941,16 @@ class AnyTop(nn.Module):
         species_emb_for_joints = (
             self._coerce_species_emb(y, bs, x.device, x.dtype) if self.species_joint_cond else None
         )
-        x = self.input_process(x, rest_pose, y['joints_names_embs'], species_emb_for_joints) # applies linear layer on each frame to convert it to latent dim
+        # Per-joint validity for the whole-joint name dropout: joints_padding_mask is
+        # the outer product valid[i]*valid[j] over max_joints+1 slots whose slot 0 is
+        # the always-present leading token, so joint j lives at slot j+1 and the
+        # diagonal of the [1:, 1:] block is the per-joint flag. Read from the mask
+        # rather than from all-zero name rows -- 256 live joints across the corpus
+        # (locators, prop sockets, Bip01) carry a deliberately blank name.
+        joint_valid = torch.diagonal(
+            joints_padding_mask[:, 0, 0, 1:, 1:], dim1=-2, dim2=-1
+        ) > 0.5
+        x = self.input_process(x, rest_pose, y['joints_names_embs'], species_emb_for_joints, joint_valid) # applies linear layer on each frame to convert it to latent dim
         spatial_mask = (1.0 - joints_padding_mask[:, 0, 0, 1:, 1:].float()) * -1e4
         spatial_mask = spatial_mask.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
 
@@ -978,10 +1000,19 @@ class AnyTop(nn.Module):
     def train(self, *args, **kwargs):
         super().train(*args, **kwargs)
 
-# in the case of GMDM, the input process is as follows: 
-# embed each joint of each frame of each motion in batch by the same MLP, separately ! 
+# Per-element std of the t5-base joint-name embeddings in cond.npy (row L2 ~ 3.92
+# over 2828 rows). The `unknown_joint_name` substitute is initialized at this scale
+# so it arrives as a plausible name vector rather than an outlier the first Linear
+# has to learn around -- a zero init would both start it inside the padding signal
+# and risk the dead-channel failure seen on the skeleton_renamer known-name channel.
+_T5_JOINT_NAME_ELEMENT_STD = 0.143
+
+
+# in the case of GMDM, the input process is as follows:
+# embed each joint of each frame of each motion in batch by the same MLP, separately !
 class InputProcess(nn.Module):
-    def __init__(self, input_feats, root_input_feats, latent_dim, t5_output_dim, dropout_prob=0, species_joint_cond=False):
+    def __init__(self, input_feats, root_input_feats, latent_dim, t5_output_dim, dropout_prob=0, species_joint_cond=False,
+                 joint_name_drop_prob=0.0, joint_name_drop_all_prob=0.0):
         super().__init__()
         self.input_feats = input_feats
         self.latent_dim = latent_dim
@@ -992,6 +1023,31 @@ class InputProcess(nn.Module):
         self.joint_embedding = nn.Linear(self.input_feats, self.latent_dim)
         self.tpos_joint_embedding = nn.Linear(self.input_feats, self.latent_dim)
         self.joints_names_dropout = nn.Dropout(p=dropout_prob)
+        # Whole-joint name dropout. `joints_names_dropout` above is ELEMENTWISE: it
+        # thins the 768-dim vector but every joint keeps its identity, so the model
+        # is never trained on "I do not know what this joint is" and never learns to
+        # fall back on rest_pose / graph_dist / joints_relations. The name embedding
+        # is the only per-joint identity signal in the token (it is added straight
+        # onto x below), which is why a single rare token -- Mixamo's "LeftLeg"
+        # landing next to "Left Arm" in T5 space -- can flip a whole limb's motion
+        # prior. Dropping the entire row for a random subset of joints (and, with
+        # joint_name_drop_all_prob, for a whole skeleton at once) demotes the name
+        # from sole signal to one signal among several.
+        self.joint_name_drop_prob = float(joint_name_drop_prob)
+        self.joint_name_drop_all_prob = float(joint_name_drop_all_prob)
+        if self.joint_name_drop_prob > 0.0 or self.joint_name_drop_all_prob > 0.0:
+            # A learned substitute rather than zeros: truebones_batch_collate leaves
+            # the rows past n_joints at zero, so an all-zero name row ALREADY means
+            # "padding". Dropping to zero would make a live joint indistinguishable
+            # from padding in this channel and teach the model to read the two the
+            # same way. Created only when the feature is on, so a checkpoint trained
+            # without it has no extra state_dict key (load_model is strict about
+            # missing keys beyond the QK-norm allowlist).
+            self.unknown_joint_name = nn.Parameter(
+                torch.randn(t5_output_dim) * _T5_JOINT_NAME_ELEMENT_STD
+            )
+        else:
+            self.register_parameter('unknown_joint_name', None)
         # When --species_joint_cond, the species descriptor FiLM-modulates each
         # per-joint name embedding: gamma/beta are produced from the *concatenation*
         # of that joint's embedding and the species descriptor, so the modulation is
@@ -1018,7 +1074,37 @@ class InputProcess(nn.Module):
             nn.init.zeros_(self.species_film_j[-1].weight)
             nn.init.zeros_(self.species_film_j[-1].bias)
         self.text_embedding = nn.Linear(text_in_dim, self.latent_dim)
-    def forward(self, x, rest_pose, joints_embedded_names, species_emb=None):
+
+    def _drop_joint_names(self, joints_clean, joint_valid):
+        """Replace whole joint-name rows with the learned `unknown` vector.
+
+        Two independent draws per step: a per-(sample, joint) Bernoulli at
+        ``joint_name_drop_prob``, and a per-sample one at
+        ``joint_name_drop_all_prob`` that blanks every name in that skeleton --
+        the harder regime, where the only way to place a joint is the rest pose
+        and the topology.
+
+        No 1/(1-p) rescale: this substitutes one token for another rather than
+        zeroing a fraction of a vector, so the expected input is not shrunk and
+        there is nothing to compensate for. Eval keeps every name, as usual.
+
+        Kept branch-free on tensor values (``torch.rand`` + ``torch.where``, no
+        ``.any()`` in a python ``if``) so it does not break torch.compile or the
+        cudagraph capture the joint/temporal mask samplers were rewritten for.
+        """
+        if (not self.training) or self.unknown_joint_name is None:
+            return joints_clean
+        batch_size, joint_count = joints_clean.shape[0], joints_clean.shape[1]
+        rand_kwargs = {'device': joints_clean.device, 'dtype': joints_clean.dtype}
+        drop_all = torch.rand(batch_size, 1, **rand_kwargs) < self.joint_name_drop_all_prob
+        drop_one = torch.rand(batch_size, joint_count, **rand_kwargs) < self.joint_name_drop_prob
+        # Padding rows stay exactly zero: substituting there would put content in
+        # slots that carry none, and the zero row is what marks them.
+        drop = (drop_all | drop_one) & joint_valid
+        substitute = self.unknown_joint_name.to(joints_clean.dtype).expand(batch_size, joint_count, -1)
+        return torch.where(drop.unsqueeze(-1), substitute, joints_clean)
+
+    def forward(self, x, rest_pose, joints_embedded_names, species_emb=None, joint_valid=None):
         # x.shape = [batch_size, joints, 13, frames]
         x = x.permute(3, 0, 1, 2) # [frames, batch_size, n_joints, features_len]
         rest_pose_all_joints_except_root = self.tpos_joint_embedding(rest_pose[:, :, 1:])
@@ -1029,6 +1115,18 @@ class InputProcess(nn.Module):
         x_embedded = torch.cat([root_data, all_joints_except_root], dim=2)
         x = torch.cat([tpos_embedded, x_embedded], dim=0)
         joints_clean = joints_embedded_names.to(x.device)
+        if joint_valid is None:
+            # AnyTop.forward always supplies the real mask; this keeps a bare
+            # InputProcess call (tests, ablations) from substituting into padding.
+            joint_valid = torch.ones(
+                joints_clean.shape[:2], device=joints_clean.device, dtype=torch.bool
+            )
+        else:
+            joint_valid = joint_valid.to(device=joints_clean.device, dtype=torch.bool)
+        # Whole-joint dropout runs FIRST, so everything downstream -- the elementwise
+        # dropout, the FiLM condition, the projection -- sees the substituted row and
+        # the hidden name cannot leak back in through the species pathway.
+        joints_clean = self._drop_joint_names(joints_clean, joint_valid)
         joints_embedded_names = self.joints_names_dropout(joints_clean)
         if self.species_joint_cond:
             if species_emb is None:
@@ -1036,10 +1134,13 @@ class InputProcess(nn.Module):
                     "species_joint_cond is enabled but species_emb was not passed to "
                     "InputProcess (expected y['species_emb'])."
                 )
-            # The FiLM condition reads the *pre-dropout* joint embedding on purpose.
-            # joints_names_dropout zeroes entries and rescales by 1/(1-p) at train
-            # time only; feeding that to the head would make gamma/beta themselves
-            # train/eval-mismatched. Dropout applies to the modulated copy alone.
+            # The FiLM condition reads the joint embedding *before the elementwise
+            # dropout* on purpose. joints_names_dropout zeroes entries and rescales
+            # by 1/(1-p) at train time only; feeding that to the head would make
+            # gamma/beta themselves train/eval-mismatched. It does read the
+            # whole-joint-dropped copy, which carries no such rescale -- that one
+            # must be visible here, or FiLM would hand the model the very name the
+            # drop was meant to withhold.
             # joints_clean: [B, J, t5]; species_emb: [B, t5] -> broadcast to [B, J, t5]
             species_broadcast = species_emb.to(device=x.device, dtype=joints_clean.dtype).unsqueeze(1).expand(-1, joints_clean.shape[1], -1)
             gamma_residual, beta = self.species_film_j(

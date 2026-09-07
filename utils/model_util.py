@@ -180,6 +180,8 @@ def get_gmdm_args(args):
             'species_cond': getattr(args, 'species_cond', False),
             'species_cfg_drop_prob': getattr(args, 'species_cfg_drop_prob', 0.15),
             'species_joint_cond': getattr(args, 'species_joint_cond', False),
+            'joint_name_drop_prob': getattr(args, 'joint_name_drop_prob', 0.0),
+            'joint_name_drop_all_prob': getattr(args, 'joint_name_drop_all_prob', 0.0),
             'action_label_cond': getattr(args, 'action_label_cond', False),
             'action_label_cfg_drop_prob': getattr(args, 'action_label_cfg_drop_prob', 0.2),
             # The training entry point builds one bundle and hands the same
