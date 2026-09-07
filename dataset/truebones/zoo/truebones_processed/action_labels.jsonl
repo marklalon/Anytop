@@ -41,7 +41,7 @@
 {"clip": "Ant_Idle2.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Ant_Idle3.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Ant_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
-{"clip": "Ant_JumpForward.npy", "action_group": "stationary", "action_label": "jump, forward", "reviewed": true}
+{"clip": "Ant_JumpForward.npy", "action_group": "locomotion", "action_label": "jump, forward", "reviewed": true}
 {"clip": "Ant_KnockedBack.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Ant_March.npy", "action_group": "locomotion", "action_label": "walk, forward, trot", "reviewed": true}
 {"clip": "Ant_Shake.npy", "action_group": "stationary", "action_label": "idle, shake", "reviewed": true}
@@ -460,7 +460,7 @@
 {"clip": "Horse_Idle3.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Horse_IdleEars.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "Horse_Idle.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
-{"clip": "Horse_InAir.npy", "action_group": "locomotion", "action_label": "jump, fall", "reviewed": true}
+{"clip": "Horse_InAir.npy", "action_group": "stationary", "action_label": "jump, fall", "reviewed": true}
 {"clip": "Horse_JumpLand.npy", "action_group": "transition", "action_label": "jump, land", "reviewed": true}
 {"clip": "Horse_Jumping.npy", "action_group": "stationary", "action_label": "attack, rear", "reviewed": true}
 {"clip": "Horse_LandRun.npy", "action_group": "transition", "action_label": "land, run", "reviewed": true}
