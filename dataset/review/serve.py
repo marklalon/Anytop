@@ -27,11 +27,14 @@ tool built on it -- down with it. Retiring a clip is spelled
 so the marked rows stay loadable until the clip is actually removed from
 ``motions/`` and ``motion_metadata.json``.
 
-``action_label`` edits are normalized before being written: tokens are
-lowercased, repeated words are dropped (first occurrence kept), and the
-tokens are re-joined as ``action, word1, word2, ...`` with a single ", "
-between them, so stray spaces, doubled commas or repeated words never reach
-the file.
+``action_label`` edits are normalized and validated before being written.
+Tokens are lowercased, repeated words are dropped (first occurrence kept),
+checked against the training pipeline's controlled vocabulary, and put in its
+canonical order.  Head words retain their written order because that is the
+time direction of a transition; directions and other modifiers are sorted by
+the shared conditioning contract.  Existing valid labels receive the same
+canonicalization when a dataset is loaded.  Existing invalid labels are kept
+verbatim and exposed to the page with an error so they can be repaired there.
 
 The header's "clean" button turns those marks into a real removal: every
 ``pending_delete`` row of the active dataset has its source file (looked up in
@@ -46,10 +49,12 @@ after the next preprocess. Every source move is appended to
     python serve.py [--port 8765] [--datasets ../datasets.jsonl] [--no-browser]
 """
 import argparse
+import difflib
 import json
 import os
 import re
 import shutil
+import sys
 import threading
 import webbrowser
 from datetime import datetime
@@ -62,6 +67,24 @@ DATASET_ROOT = THIS_DIR.parent                  # .../dataset
 ANYTOP_ROOT = DATASET_ROOT.parent               # .../Anytop
 INDEX = THIS_DIR / "index.html"
 DEFAULT_DATASETS = DATASET_ROOT / "datasets.jsonl"
+
+# serve.py is commonly started by path from outside the Anytop directory.  Add
+# that directory explicitly so this review UI consumes the SAME vocabulary and
+# canonical ordering as training, validation and generation instead of carrying
+# a copy that can drift.
+if str(ANYTOP_ROOT) not in sys.path:
+    sys.path.insert(0, str(ANYTOP_ROOT))
+
+from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
+    ACTION_LABEL_MAX_HEADS,
+    ACTION_LABEL_MAX_WORDS,
+    CONTROLLED_VOCAB,
+    DIRECTION_VOCAB,
+    STATE_VOCAB,
+    ActionLabelError,
+    canonical_action_label,
+    parse_action_label,
+)
 
 # Where "clean" parks the source file of a retired clip (--trash overrides it).
 TRASH_ROOT = Path(r"E:\Dataset\Temp")
@@ -80,24 +103,44 @@ SOURCE_MIRRORS = [
 
 
 def normalize_action_label(value):
-    """Normalize an ``action_label`` to ``action, word1, word2, ...``.
+    """Validate and canonicalize an ``action_label``.
 
     Splits on comma-family separators (ASCII / full-width comma, CJK
     enumeration comma, semicolons), drops empty parts, lowercases every
-    token, drops repeated words (first occurrence kept), and re-joins with a
-    single ", " so no stray spaces, doubled commas or repeated words survive
-    an edit.
+    token, and drops repeated words (first occurrence kept).  Unknown words
+    raise with spelling suggestions.  The shared motion-label contract then
+    checks the head/length constraints and supplies canonical order.
+
+    Head order is intentionally preserved: for a two-head transition it is
+    semantic (``idle, attack`` is not the same as ``attack, idle``).
     """
     parts = re.split(r"[,，、;；]+", str(value))
     seen = set()
-    out = []
+    tokens = []
     for part in parts:
         token = part.strip().lower()
         if not token or token in seen:
             continue
         seen.add(token)
-        out.append(token)
-    return ", ".join(out)
+        tokens.append(token)
+
+    unknown = [token for token in tokens if token not in CONTROLLED_VOCAB]
+    if unknown:
+        details = []
+        for token in unknown:
+            close = difflib.get_close_matches(token, CONTROLLED_VOCAB, n=3, cutoff=0.55)
+            details.append(
+                repr(token) + (f" (did you mean: {', '.join(close)})" if close else "")
+            )
+        raise ActionLabelError(
+            "unknown action-label token(s): " + "; ".join(details)
+        )
+
+    normalized = ", ".join(tokens)
+    # parse_action_label enforces the rest of the shared contract: non-empty
+    # labels need 1..2 head words and may contain at most 8 controlled tokens.
+    parsed = parse_action_label(normalized)
+    return canonical_action_label(parsed)
 
 
 def clip_stem(clip):
@@ -262,6 +305,7 @@ class LabelStore:
         self.lock = threading.Lock()
         self.rows = []
         self.index = {}
+        self.label_errors = {}
         self.mtime = None
         self.newline = "\n"
         self._load()
@@ -270,24 +314,33 @@ class LabelStore:
         raw = self.path.read_bytes()
         self.newline = "\r\n" if b"\r\n" in raw else "\n"
         rows = []
-        for line in raw.decode("utf-8").splitlines():
+        line_numbers = []
+        for line_number, line in enumerate(raw.decode("utf-8").splitlines(), start=1):
             line = line.strip()
             if line:
                 rows.append(json.loads(line))
+                line_numbers.append(line_number)
         # Force-normalize every action_label on each load (in particular at
-        # startup) so the file itself is rewritten in the canonical
-        # "action, word1, word2, ..." form, not just in memory.
+        # startup) so every VALID label is rewritten in canonical order.  An
+        # invalid existing value must remain accessible in this repair UI, so
+        # keep it untouched and publish its error through snapshot().
         changed = False
-        for row in rows:
+        label_errors = {}
+        for line_number, row in zip(line_numbers, rows):
             label = row.get("action_label")
             if label is None:
                 continue
-            norm = normalize_action_label(label)
+            try:
+                norm = normalize_action_label(label)
+            except ActionLabelError as exc:
+                label_errors[row.get("clip")] = f"line {line_number}: {exc}"
+                continue
             if norm and norm != label:   # keep the original if it would empty out
                 row["action_label"] = norm
                 changed = True
         self.rows = rows
         self.index = {row["clip"]: row for row in rows}
+        self.label_errors = label_errors
         if changed:
             self._write()
         else:
@@ -308,7 +361,14 @@ class LabelStore:
     def snapshot(self):
         with self.lock:
             self._reload_if_stale()
-            return [dict(row) for row in self.rows]
+            result = []
+            for row in self.rows:
+                item = dict(row)
+                error = self.label_errors.get(row.get("clip"))
+                if error:
+                    item["label_error"] = error
+                result.append(item)
+            return result
 
     def update(self, clip, action_label=None, action_group=None, reviewed=None,
                pending_delete=None):
@@ -318,7 +378,11 @@ class LabelStore:
             if row is None:
                 raise KeyError(clip)
             if action_label is not None:
+                action_label = normalize_action_label(action_label)
+                if not action_label:
+                    raise ActionLabelError("action_label must not be empty")
                 row["action_label"] = action_label
+                self.label_errors.pop(clip, None)
             if action_group is not None:
                 if not action_group:
                     raise ValueError("action_group must not be empty")
@@ -334,7 +398,11 @@ class LabelStore:
                 else:
                     row.pop("pending_delete", None)
             self._write()
-            return dict(row)
+            result = dict(row)
+            error = self.label_errors.get(clip)
+            if error:
+                result["label_error"] = error
+            return result
 
     def delete(self, clips):
         """Drop rows by clip name in a single rewrite; returns how many went."""
@@ -346,6 +414,10 @@ class LabelStore:
             if removed:
                 self.rows = keep
                 self.index = {row["clip"]: row for row in keep}
+                self.label_errors = {
+                    clip: error for clip, error in self.label_errors.items()
+                    if clip not in drop
+                }
                 self._write()
             return removed
 
@@ -430,6 +502,7 @@ class Handler(BaseHTTPRequestHandler):
                     "total": len(rows),
                     "reviewed": sum(1 for r in rows if r.get("reviewed")),
                     "pending": sum(1 for r in rows if r.get("pending_delete")),
+                    "invalid_labels": sum(1 for r in rows if r.get("label_error")),
                 })
             return self._send_json(200, {"datasets": payload,
                                          "trash_root": str(TRASH_ROOT)})
@@ -448,6 +521,13 @@ class Handler(BaseHTTPRequestHandler):
                 "name": ds["name"],
                 "labels_path": str(ds["labels"]),
                 "gif_dir": str(ds["gif_dir"]),
+                "label_contract": {
+                    "controlled_vocab": list(CONTROLLED_VOCAB),
+                    "state_vocab": list(STATE_VOCAB),
+                    "direction_vocab": list(DIRECTION_VOCAB),
+                    "max_words": ACTION_LABEL_MAX_WORDS,
+                    "max_heads": ACTION_LABEL_MAX_HEADS,
+                },
                 "rows": rows,
             })
 
@@ -496,7 +576,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(400, {"error": "clip is required"})
         label = payload.get("action_label")
         if label is not None:
-            label = normalize_action_label(label)
+            try:
+                label = normalize_action_label(label)
+            except ActionLabelError as exc:
+                return self._send_json(400, {"error": str(exc)})
             if not label:
                 return self._send_json(400, {"error": "action_label must not be empty"})
         group = payload.get("action_group")
@@ -678,8 +761,12 @@ def main():
         rows = store.snapshot()
         done = sum(1 for r in rows if r.get("reviewed"))
         pending = sum(1 for r in rows if r.get("pending_delete"))
+        invalid = sum(1 for r in rows if r.get("label_error"))
         gifs = len(list(d["gif_dir"].glob("*.gif"))) if d["gif_dir"].is_dir() else 0
-        print(f"  {d['id']:<28} {done}/{len(rows)} reviewed, {pending} pending, {gifs} gifs")
+        print(
+            f"  {d['id']:<28} {done}/{len(rows)} reviewed, {pending} pending, "
+            f"{invalid} invalid labels, {gifs} gifs"
+        )
     print(f"labels manifest : {Path(args.datasets).resolve()}")
     print(f"clean trash dir : {TRASH_ROOT}")
     print(f"serving: {url}   (ctrl-c to stop)")

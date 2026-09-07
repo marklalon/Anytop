@@ -183,6 +183,12 @@
     word-break: break-word;
   }
   .label:hover { border-color: var(--card-edge); background: #444; }
+  .label.invalid {
+    border-color: #d85b5b;
+    color: #ffaaaa;
+    background: #4a2929;
+  }
+  .label.invalid::before { content: '⚠ '; }
   .label-input {
     flex: 1;
     min-width: 0;
@@ -193,6 +199,7 @@
     color: var(--text);
     font: inherit;
   }
+  .label-input.invalid { border-color: #ef5350; box-shadow: 0 0 0 1px #ef5350; }
   .ok {
     flex: none;
     padding: 3px 9px;
@@ -287,6 +294,7 @@ let rows = [];      // server truth for the active dataset, in jsonl order
 let view = [];      // current filtered subset
 let page = 1;
 let trashRoot = '';  // where "清理待删除" parks source files (server's --trash)
+let labelContract = null; // vocabulary/order supplied by the shared Python contract
 
 // A page holds 100 animated GIFs; decoding them all at once is what kills the
 // tab. Only cards near the viewport carry a src -- the rest stay empty boxes.
@@ -320,18 +328,73 @@ const stripNpy = (clip) => clip.replace(/\.npy$/i, '');
 // GIF lives under /gif/<dataset id>/<clip>.gif on the server.
 const gifOf = (clip) => 'gif/' + encodeURIComponent(ds) + '/' + stripNpy(clip) + '.gif';
 
-// Normalize an action_label to "action, word1, word2, ...": lowercase, split
-// on comma-family separators (ASCII / full-width / CJK / semicolons), drop
-// empty parts, drop repeated words (first occurrence kept), rejoin with a
-// single ", " -- mirrors the server's normalize_action_label so the page
-// shows exactly what gets saved.
+// Give an invalid word a useful correction hint without ever applying a typo
+// correction automatically (that could silently change the annotation).
+function editDistance(a, b) {
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i];
+    for (let j = 1; j <= b.length; j++) {
+      next[j] = Math.min(next[j - 1] + 1, prev[j] + 1,
+                         prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = next;
+  }
+  return prev[b.length];
+}
+
+const closestWords = (word) => labelContract.controlled_vocab
+  .map((candidate) => [candidate, editDistance(word, candidate)])
+  .filter((pair) => pair[1] <= Math.max(2, Math.floor(word.length / 3)))
+  .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+  .slice(0, 3)
+  .map((pair) => pair[0]);
+
+// Mirrors the server: normalize separators/case/repeats, reject anything that
+// violates the shared vocabulary/shape contract, preserve semantic head order,
+// place directions after the final head (or turn), and order other modifiers by
+// CONTROLLED_VOCAB.
 const normalizeLabel = (s) => {
   const seen = new Set();
-  return String(s).toLowerCase()
+  const tokens = String(s).toLowerCase()
     .split(/[,，、;；]+/)
     .map((p) => p.trim())
-    .filter((p) => (p && !seen.has(p) && seen.add(p)))
-    .join(', ');
+    .filter((p) => (p && !seen.has(p) && seen.add(p)));
+  if (!tokens.length) throw new Error('action_label 不能为空');
+  if (!labelContract) throw new Error('label 词表尚未加载');
+
+  const vocab = new Set(labelContract.controlled_vocab);
+  const unknown = tokens.filter((word) => !vocab.has(word));
+  if (unknown.length) {
+    const details = unknown.map((word) => {
+      const close = closestWords(word);
+      return '“' + word + '”' + (close.length ? '（可能是 ' + close.join(' / ') + '）' : '');
+    });
+    throw new Error('非法词：' + details.join('，'));
+  }
+  if (tokens.length > labelContract.max_words) {
+    throw new Error('词数为 ' + tokens.length + '，最多允许 ' + labelContract.max_words + ' 个');
+  }
+
+  const states = new Set(labelContract.state_vocab);
+  const directionSet = new Set(labelContract.direction_vocab);
+  const heads = tokens.filter((word) => states.has(word));
+  if (!heads.length) throw new Error('至少需要一个 head/action 词');
+  if (heads.length > labelContract.max_heads) {
+    throw new Error('head/action 词为 ' + heads.length + ' 个，最多允许 ' + labelContract.max_heads + ' 个');
+  }
+
+  const rank = new Map(labelContract.controlled_vocab.map((word, i) => [word, i]));
+  const byRank = (a, b) => rank.get(a) - rank.get(b);
+  const directions = tokens.filter((word) => directionSet.has(word)).sort(byRank);
+  const modifiers = tokens.filter((word) => !states.has(word) && !directionSet.has(word)).sort(byRank);
+  const anchor = heads.includes('turn') ? 'turn' : heads[heads.length - 1];
+  const canonical = [];
+  for (const head of heads) {
+    canonical.push(head);
+    if (head === anchor) canonical.push(...directions);
+  }
+  return canonical.concat(modifiers).join(', ');
 };
 
 function toast(msg) {
@@ -345,8 +408,10 @@ function toast(msg) {
 function counts() {
   const done = rows.filter(isReviewed).length;
   const pending = rows.filter(isPending).length;
+  const invalid = rows.filter(r => !!r.label_error).length;
   $('counts').innerHTML = '已核验 <b>' + done + '</b> / ' + rows.length +
     (pending ? ' &nbsp;·&nbsp; 待删除 <b>' + pending + '</b>' : '') +
+    (invalid ? ' &nbsp;·&nbsp; <span style="color:#ff8a80">非法 label <b>' + invalid + '</b></span>' : '') +
     ' &nbsp;·&nbsp; 当前筛选 <b>' + view.length + '</b>';
   const clean = $('clean');
   clean.disabled = pending === 0 || clean.dataset.busy === '1';
@@ -385,7 +450,8 @@ function notice(lines, bad) {
   el.style.top = document.querySelector('header').offsetHeight + 'px';
 }
 
-const dsOptionText = (d) => d.name + '（' + (d.gif_count ? d.gif_count : '无GIF') + '）';
+const dsOptionText = (d) => d.name + '（' + (d.gif_count ? d.gif_count : '无GIF') +
+  (d.invalid_labels ? '，非法label ' + d.invalid_labels : '') + '）';
 
 // Load the dataset <select> once, remembering the previous choice.
 async function loadDatasets() {
@@ -445,6 +511,7 @@ async function load(keepView) {
     toast('读取 ' + ds + ' 的 action_labels.jsonl 失败：' + err.message + '（请通过 serve.py 打开本页）');
     return;
   }
+  labelContract = data.label_contract;
   rows = data.rows;
   refreshGroups();
   applyFilters(keepView, keepView);
@@ -564,9 +631,11 @@ function card(row) {
   const bar = document.createElement('div');
   bar.className = 'row';
   const label = document.createElement('div');
-  label.className = 'label';
+  label.className = 'label' + (row.label_error ? ' invalid' : '');
   label.textContent = row.action_label;
-  label.title = '点击修改（保存时规范化为小写 "action, word1, word2" 格式）';
+  label.title = row.label_error
+    ? '非法 action label：' + row.label_error + '。点击修改'
+    : '点击修改（保存时检查词表并自动按 canonical order 排序）';
   label.onclick = () => edit(el, row, label);
   bar.appendChild(label);
 
@@ -599,10 +668,29 @@ function edit(el, row, label) {
 
   const finish = (commit) => {
     if (closed) return;
+    if (!commit) {
+      closed = true;
+      input.replaceWith(label);
+      return;
+    }
+    let next;
+    try {
+      next = normalizeLabel(input.value);
+    } catch (err) {
+      input.classList.add('invalid');
+      input.setCustomValidity(err.message);
+      input.title = err.message;
+      toast('标签未保存：' + err.message);
+      return;
+    }
     closed = true;
-    const next = normalizeLabel(input.value);
     input.replaceWith(label);
-    if (commit && next && next !== row.action_label) save(el, row, { action_label: next });
+    if (next !== row.action_label) save(el, row, { action_label: next });
+  };
+  input.oninput = () => {
+    input.classList.remove('invalid');
+    input.setCustomValidity('');
+    input.removeAttribute('title');
   };
   input.onkeydown = (ev) => {
     if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
