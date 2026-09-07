@@ -1,33 +1,33 @@
 {"species": "FEP_MagmaDemon", "species_tags": ["Drifting", "Medium", "Chibi Hovering"]}
 {"species": "IAC_Caveman", "species_tags": ["Biped", "Medium", "Striding"]}
 {"species": "IAC_Cavewoman", "species_tags": ["Biped", "Medium", "Striding"]}
-{"species": "IAC_Mammoth", "species_tags": ["Quadruped", "Heavy", "Tusked Lumbering"]}
+{"species": "IAC_Mammoth", "species_tags": ["Quadruped", "Heavy", "Lumbering"]}
 {"species": "IAC_Sabertooth", "species_tags": ["Quadruped", "Large", "Stalking"]}
-{"species": "KI_Archer", "species_tags": ["Biped", "Medium", "Archer Striding"]}
-{"species": "KI_CasterMage", "species_tags": ["Biped", "Medium", "Mage Striding"]}
+{"species": "KI_Archer", "species_tags": ["Biped", "Medium", "Striding"]}
+{"species": "KI_CasterMage", "species_tags": ["Biped", "Medium", "Striding"]}
 {"species": "KI_Human", "species_tags": ["Biped", "Medium", "Striding"]}
-{"species": "KI_Performer", "species_tags": ["Biped", "Medium", "Dancer Striding"]}
+{"species": "KI_Performer", "species_tags": ["Biped", "Medium", "Striding"]}
 {"species": "KI_Slinger", "species_tags": ["Biped", "Medium", "Striding"]}
-{"species": "KI_Soldier", "species_tags": ["Biped", "Medium", "Soldier Striding"]}
-{"species": "KI_Villager", "species_tags": ["Biped", "Medium", "Villager Striding"]}
-{"species": "KI_Warrior", "species_tags": ["Biped", "Medium", "Warrior Striding"]}
+{"species": "KI_Soldier", "species_tags": ["Biped", "Medium", "Striding"]}
+{"species": "KI_Villager", "species_tags": ["Biped", "Medium", "Striding"]}
+{"species": "KI_Warrior", "species_tags": ["Biped", "Medium", "Striding"]}
 {"species": "LH_Hero", "species_tags": ["Biped", "Medium", "Blocky Striding"]}
 {"species": "MB_TigerDrago", "species_tags": ["Winged", "Medium", "Soaring"]}
 {"species": "MB_Unka", "species_tags": ["Winged", "Heavy", "Soaring"]}
-{"species": "MLH_Archer", "species_tags": ["Biped", "Medium", "Chibi Archer Striding"]}
-{"species": "MLH_Footman", "species_tags": ["Biped", "Medium", "Chibi Footman Striding"]}
+{"species": "MLH_Archer", "species_tags": ["Biped", "Medium", "Chibi Striding"]}
+{"species": "MLH_Footman", "species_tags": ["Biped", "Medium", "Chibi Striding"]}
 {"species": "MLH_Griffin", "species_tags": ["Winged", "Large", "Chibi Soaring"]}
-{"species": "MLH_Horseman", "species_tags": ["Quadruped", "Large", "Chibi Lancer Galloping"]}
-{"species": "MLH_Knight", "species_tags": ["Biped", "Medium", "Chibi Knight Striding"]}
-{"species": "MLH_Mage", "species_tags": ["Biped", "Medium", "Chibi Mage Striding"]}
-{"species": "MLH_Worker", "species_tags": ["Biped", "Medium", "Chibi Worker Striding"]}
+{"species": "MLH_Horseman", "species_tags": ["Quadruped", "Large", "Chibi Galloping"]}
+{"species": "MLH_Knight", "species_tags": ["Biped", "Medium", "Chibi Striding"]}
+{"species": "MLH_Mage", "species_tags": ["Biped", "Medium", "Chibi Striding"]}
+{"species": "MLH_Worker", "species_tags": ["Biped", "Medium", "Chibi Striding"]}
 {"species": "MLS_BattleOwl", "species_tags": ["Winged", "Large", "Chibi Soaring"]}
-{"species": "MLS_DemonHunter", "species_tags": ["Biped", "Large", "Chibi Clawed Striding"]}
-{"species": "MLS_Druid", "species_tags": ["Biped", "Medium", "Chibi Druid Striding"]}
-{"species": "MLS_Dryad", "species_tags": ["Quadruped", "Large", "Chibi Dryad Striding"]}
-{"species": "MLS_ElfRanger", "species_tags": ["Biped", "Medium", "Chibi Ranger Striding"]}
-{"species": "MLS_Knome", "species_tags": ["Biped", "Medium", "Chibi Miner Striding"]}
-{"species": "MLS_RockGolem", "species_tags": ["Biped", "Heavy", "Chibi Golem Lumbering"]}
+{"species": "MLS_DemonHunter", "species_tags": ["Biped", "Large", "Chibi Striding"]}
+{"species": "MLS_Druid", "species_tags": ["Biped", "Medium", "Chibi Striding"]}
+{"species": "MLS_Dryad", "species_tags": ["Quadruped", "Large", "Chibi Striding"]}
+{"species": "MLS_ElfRanger", "species_tags": ["Biped", "Medium", "Chibi Striding"]}
+{"species": "MLS_Knome", "species_tags": ["Biped", "Medium", "Chibi Striding"]}
+{"species": "MLS_RockGolem", "species_tags": ["Biped", "Heavy", "Chibi Lumbering"]}
 {"species": "MLS_Treeant", "species_tags": ["Biped", "Large", "Chibi Lumbering"]}
 {"species": "MU01_Bat", "species_tags": ["Winged", "Small", "Chibi Flapping"]}
 {"species": "MU01_BatLord", "species_tags": ["Winged", "Medium", "Chibi Flapping"]}
@@ -55,9 +55,9 @@
 {"species": "MU01_VampireBat", "species_tags": ["Winged", "Medium", "Chibi Flapping"]}
 {"species": "MU04_Earthworm", "species_tags": ["Serpentine", "Medium", "Chibi Slithering"]}
 {"species": "MU04_Gloom", "species_tags": ["Drifting", "Medium", "Chibi Hovering"]}
-{"species": "MU04_GolemEarth", "species_tags": ["Drifting", "Large", "Chibi Golem Hovering"]}
-{"species": "MU04_GolemFire", "species_tags": ["Drifting", "Large", "Chibi Golem Hovering"]}
-{"species": "MU04_GolemIce", "species_tags": ["Drifting", "Large", "Chibi Golem Hovering"]}
+{"species": "MU04_GolemEarth", "species_tags": ["Drifting", "Large", "Chibi Hovering"]}
+{"species": "MU04_GolemFire", "species_tags": ["Drifting", "Large", "Chibi Hovering"]}
+{"species": "MU04_GolemIce", "species_tags": ["Drifting", "Large", "Chibi Hovering"]}
 {"species": "MU04_GrimReaper", "species_tags": ["Drifting", "Medium", "Chibi Hovering"]}
 {"species": "MU04_PlantChewer", "species_tags": ["Biped", "Medium", "Chibi Waddling"]}
 {"species": "MU04_Pollen", "species_tags": ["Drifting", "Small", "Chibi Hovering"]}
@@ -94,11 +94,11 @@
 {"species": "PC_PolygonalWolf", "species_tags": ["Quadruped", "Medium", "Trotting"]}
 {"species": "RMW_Bat", "species_tags": ["Winged", "Medium", "Chibi Flapping"]}
 {"species": "RMW_Dragon", "species_tags": ["Winged", "Large", "Chibi Soaring"]}
-{"species": "RMW_EvilMage", "species_tags": ["Drifting", "Medium", "Chibi Mage Trotting"]}
+{"species": "RMW_EvilMage", "species_tags": ["Drifting", "Medium", "Chibi Trotting"]}
 {"species": "RMW_Golem", "species_tags": ["Biped", "Large", "Chibi Lumbering"]}
-{"species": "RMW_MonsterPlant", "species_tags": ["Multiped", "Large", "Chibi Rooted Waddling"]}
-{"species": "RMW_Orc", "species_tags": ["Biped", "Medium", "Chibi Orc Striding"]}
-{"species": "RMW_Skeleton", "species_tags": ["Biped", "Medium", "Chibi Skeleton Striding"]}
+{"species": "RMW_MonsterPlant", "species_tags": ["Multiped", "Large", "Chibi Waddling"]}
+{"species": "RMW_Orc", "species_tags": ["Biped", "Medium", "Chibi Striding"]}
+{"species": "RMW_Skeleton", "species_tags": ["Biped", "Medium", "Chibi Striding"]}
 {"species": "RMW_Slime", "species_tags": ["Drifting", "Small", "Chibi Jumping"]}
 {"species": "RMW_Spider", "species_tags": ["Multiped", "Medium", "Chibi Scuttling"]}
 {"species": "RMW_TurtleShell", "species_tags": ["Drifting", "Medium", "Chibi Crawling"]}
@@ -113,10 +113,10 @@
 {"species": "RU01_JellyfishRobot", "species_tags": ["Drifting", "Medium", "Robotic Undulating"]}
 {"species": "RU01_MetalRobot", "species_tags": ["Biped", "Large", "Robotic Striding"]}
 {"species": "RU01_NexusRobot", "species_tags": ["Drifting", "Large", "Robotic Hovering"]}
-{"species": "RU01_StingerRobot", "species_tags": ["Drifting", "Small", "Robotic Tentacled Undulating"]}
+{"species": "RU01_StingerRobot", "species_tags": ["Drifting", "Small", "Robotic Undulating"]}
 {"species": "RU01_TankerRobot", "species_tags": ["Biped", "Large", "Robotic Striding"]}
 {"species": "RU01_TechRobot", "species_tags": ["Biped", "Medium", "Robotic Striding"]}
-{"species": "RU01_TentaclesRobot", "species_tags": ["Drifting", "Large", "Robotic Tentacled Undulating"]}
+{"species": "RU01_TentaclesRobot", "species_tags": ["Drifting", "Large", "Robotic Undulating"]}
 {"species": "RU02_DragonBot", "species_tags": ["Winged", "Medium", "Robotic Soaring"]}
 {"species": "RU02_DragonPredatorRobot", "species_tags": ["Winged", "Heavy", "Robotic Soaring"]}
 {"species": "RU02_DragonRobot", "species_tags": ["Winged", "Large", "Robotic Soaring"]}
@@ -132,25 +132,25 @@
 {"species": "RU02_SpiderlingRobot", "species_tags": ["Multiped", "Small", "Robotic Scuttling"]}
 {"species": "RU02_SpikeRobot", "species_tags": ["Multiped", "Small", "Robotic Scuttling"]}
 {"species": "RU02_TrooperRobot", "species_tags": ["Drifting", "Medium", "Robotic Hovering"]}
-{"species": "TNR_Archer", "species_tags": ["Biped", "Medium", "Archer Striding"]}
-{"species": "TNR_Cavalry", "species_tags": ["Quadruped", "Large", "Cavalry Galloping"]}
-{"species": "TNR_CavalryArcher", "species_tags": ["Quadruped", "Large", "Cavalry Galloping"]}
-{"species": "TNR_CavalryMage", "species_tags": ["Quadruped", "Large", "Cavalry Galloping"]}
-{"species": "TNR_CavalrySpear", "species_tags": ["Quadruped", "Large", "Cavalry Galloping"]}
-{"species": "TNR_Infantry", "species_tags": ["Biped", "Medium", "Infantry Striding"]}
-{"species": "TNR_Mage", "species_tags": ["Biped", "Medium", "Mage Striding"]}
-{"species": "TNR_Spearman", "species_tags": ["Biped", "Medium", "Spearman Striding"]}
-{"species": "TNR_Worker", "species_tags": ["Biped", "Medium", "Worker Striding"]}
-{"species": "TTR_Archer", "species_tags": ["Biped", "Medium", "Chibi Archer Striding"]}
-{"species": "TTR_Crossbowman", "species_tags": ["Biped", "Medium", "Chibi Crossbowman Striding"]}
-{"species": "TTR_Halberdier", "species_tags": ["Biped", "Medium", "Chibi Halberdier Striding"]}
-{"species": "TTR_HeavyCavalry", "species_tags": ["Quadruped", "Large", "Chibi Cavalry Galloping"]}
-{"species": "TTR_HeavySwordman", "species_tags": ["Biped", "Medium", "Chibi Knight Striding"]}
-{"species": "TTR_LightCavalry", "species_tags": ["Quadruped", "Large", "Chibi Cavalry Galloping"]}
-{"species": "TTR_LightInfantry", "species_tags": ["Biped", "Medium", "Chibi Infantry Striding"]}
-{"species": "TTR_Mage", "species_tags": ["Biped", "Medium", "Chibi Mage Striding"]}
-{"species": "TTR_MountedKnight", "species_tags": ["Quadruped", "Large", "Chibi Lancer Galloping"]}
-{"species": "TTR_MountedMage", "species_tags": ["Quadruped", "Large", "Chibi Mage Galloping"]}
-{"species": "TTR_MountedScout", "species_tags": ["Quadruped", "Large", "Chibi Scout Galloping"]}
-{"species": "TTR_Spearman", "species_tags": ["Biped", "Medium", "Chibi Spearman Striding"]}
-{"species": "TTR_Swordman", "species_tags": ["Biped", "Medium", "Chibi Swordman Striding"]}
+{"species": "TNR_Archer", "species_tags": ["Biped", "Medium", "Striding"]}
+{"species": "TNR_Cavalry", "species_tags": ["Quadruped", "Large", "Galloping"]}
+{"species": "TNR_CavalryArcher", "species_tags": ["Quadruped", "Large", "Galloping"]}
+{"species": "TNR_CavalryMage", "species_tags": ["Quadruped", "Large", "Galloping"]}
+{"species": "TNR_CavalrySpear", "species_tags": ["Quadruped", "Large", "Galloping"]}
+{"species": "TNR_Infantry", "species_tags": ["Biped", "Medium", "Striding"]}
+{"species": "TNR_Mage", "species_tags": ["Biped", "Medium", "Striding"]}
+{"species": "TNR_Spearman", "species_tags": ["Biped", "Medium", "Striding"]}
+{"species": "TNR_Worker", "species_tags": ["Biped", "Medium", "Striding"]}
+{"species": "TTR_Archer", "species_tags": ["Biped", "Medium", "Chibi Striding"]}
+{"species": "TTR_Crossbowman", "species_tags": ["Biped", "Medium", "Chibi Striding"]}
+{"species": "TTR_Halberdier", "species_tags": ["Biped", "Medium", "Chibi Striding"]}
+{"species": "TTR_HeavyCavalry", "species_tags": ["Quadruped", "Large", "Chibi Galloping"]}
+{"species": "TTR_HeavySwordman", "species_tags": ["Biped", "Medium", "Chibi Striding"]}
+{"species": "TTR_LightCavalry", "species_tags": ["Quadruped", "Large", "Chibi Galloping"]}
+{"species": "TTR_LightInfantry", "species_tags": ["Biped", "Medium", "Chibi Striding"]}
+{"species": "TTR_Mage", "species_tags": ["Biped", "Medium", "Chibi Striding"]}
+{"species": "TTR_MountedKnight", "species_tags": ["Quadruped", "Large", "Chibi Galloping"]}
+{"species": "TTR_MountedMage", "species_tags": ["Quadruped", "Large", "Chibi Galloping"]}
+{"species": "TTR_MountedScout", "species_tags": ["Quadruped", "Large", "Chibi Galloping"]}
+{"species": "TTR_Spearman", "species_tags": ["Biped", "Medium", "Chibi Striding"]}
+{"species": "TTR_Swordman", "species_tags": ["Biped", "Medium", "Chibi Striding"]}
