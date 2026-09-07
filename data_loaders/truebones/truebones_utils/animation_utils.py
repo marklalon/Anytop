@@ -42,6 +42,7 @@ from .physics_joint_annotation import (
     build_joint_embedding_texts,
     build_species_embedding_text,
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
+    JOINT_NAME_EMBEDDING_SLIM,
 )
 
 
@@ -382,6 +383,7 @@ def attach_t5_embeddings_to_cond(cond, save_dir, t5_name='t5-base', write_collis
             object_cond['joints_names_embs_meta'] = {
                 't5_name': t5_name,
                 'schema_version': JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
+                'slim': bool(JOINT_NAME_EMBEDDING_SLIM),
                 'embedding_dim': int(embs.shape[1]) if embs.ndim == 2 else 0,
                 'embedding_texts': list(embedding_texts),
             }

@@ -22,17 +22,24 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     ACTION_GROUPS as LABEL_ACTION_GROUPS,
 )
 from utils import parser_util  # noqa: E402
-from utils.parser_util import CKPT_VERSION, add_data_options, generate_args  # noqa: E402
+from utils.parser_util import (  # noqa: E402
+    CKPT_VERSION,
+    add_data_options,
+    generate_args,
+    joint_condition_schema_versions,
+)
 
 
 def _checkpoint_dir(tmp_dir, **args_json):
     """A minimal save_dir: args.json next to a (never opened) model####.pt.
 
-    Stamped with the current CKPT_VERSION unless the caller overrides it -- an
-    unstamped args.json is refused outright, which VersionIsBoundToTheCheckpoint
-    covers separately.
+    Stamped with the current CKPT_VERSION and joint-condition schema versions
+    unless the caller overrides them -- an unstamped args.json is refused
+    outright, which VersionIsBoundToTheCheckpoint covers separately.
     """
     args_json.setdefault('version', CKPT_VERSION)
+    for key, value in joint_condition_schema_versions().items():
+        args_json.setdefault(key, value)
     save_dir = Path(tmp_dir)
     (save_dir / 'args.json').write_text(json.dumps(args_json), encoding='utf-8')
     return str(save_dir / 'model000100.pt')
@@ -188,6 +195,35 @@ class VersionIsBoundToTheCheckpoint(unittest.TestCase):
             written = json.loads(args_path.read_text(encoding='utf-8'))
             self.assertEqual(written['version'], CKPT_VERSION)
             parser_util.assert_checkpoint_version(written, str(args_path))
+            # ... and the data-side contracts alongside it, which generation
+            # checks separately and which nothing on the command line sets.
+            self.assertEqual(
+                {key: written[key] for key in joint_condition_schema_versions()},
+                joint_condition_schema_versions(),
+            )
+            parser_util.assert_joint_condition_schema(written, str(args_path))
+
+    def test_mismatched_joint_condition_schema_is_refused(self):
+        """The quiet failure the version stamp alone cannot catch: cond.npy
+        regenerated under another joint-name schema, or a structural descriptor
+        whose channels were reordered, hands the same shapes to the same weights
+        with a different meaning behind them."""
+        for key in joint_condition_schema_versions():
+            for recorded in (_MISSING, 0):
+                with self.subTest(key=key, recorded=recorded):
+                    overrides = dict(joint_condition_schema_versions())
+                    if recorded is _MISSING:
+                        del overrides[key]
+                    else:
+                        overrides[key] = recorded
+                    with tempfile.TemporaryDirectory() as tmp:
+                        save_dir = Path(tmp)
+                        (save_dir / 'args.json').write_text(
+                            json.dumps({'action_group': 'locomotion',
+                                        'version': CKPT_VERSION, **overrides}),
+                            encoding='utf-8')
+                        with self.assertRaises(SystemExit):
+                            _generate_args(str(save_dir / 'model000100.pt'))
 
 
 class ResumeCannotCrossAVersion(unittest.TestCase):
@@ -196,7 +232,7 @@ class ResumeCannotCrossAVersion(unittest.TestCase):
         from argparse import Namespace
         from train.train_anytop import assert_resume_checkpoint_version
         with tempfile.TemporaryDirectory() as tmp:
-            payload = {'action_group': 'locomotion'}
+            payload = {'action_group': 'locomotion', **joint_condition_schema_versions()}
             if recorded is not _MISSING:
                 payload['version'] = recorded
             (Path(tmp) / 'args.json').write_text(

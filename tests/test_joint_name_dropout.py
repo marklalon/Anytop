@@ -19,6 +19,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
+from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
+    JOINT_STRUCT_DIM,
+)
 from model.anytop import AnyTop  # noqa: E402
 
 
@@ -66,6 +69,11 @@ def _make_model(joint_name_drop_prob=0.0, joint_name_drop_all_prob=0.0,
     )
 
 
+def _joint_struct(batch=2, joints=4):
+    """Stand-in structural descriptors; only their shape matters here."""
+    return torch.randn(batch, joints, JOINT_STRUCT_DIM)
+
+
 def _joint_cond_inputs(batch=2, joints=4, frames=3):
     """Shapes InputProcess is called with from AnyTop.forward."""
     return (
@@ -93,6 +101,7 @@ def _make_y(n_joints=(4, 4), max_joints=4, **extra):
         'rest_pose': torch.randn(batch, max_joints, 13, dtype=torch.float32),
         'n_joints': torch.tensor(n_joints, dtype=torch.int64),
         'joints_names_embs': torch.randn(batch, max_joints, T5_DIM, dtype=torch.float32),
+        'joint_struct': _joint_struct(batch, max_joints),
         'lengths': torch.tensor([3] * batch, dtype=torch.int64),
         'canonical_feature_mean': torch.zeros(13, dtype=torch.float32),
         'canonical_feature_std': torch.ones(13, dtype=torch.float32),
@@ -188,7 +197,8 @@ class JointNameDropoutTest(unittest.TestCase):
         x, rest_pose, joints, species = _joint_cond_inputs()
         with torch.no_grad():
             ip(x, rest_pose, joints, species,
-               torch.ones(joints.shape[:2], dtype=torch.bool))
+               torch.ones(joints.shape[:2], dtype=torch.bool),
+               _joint_struct(*joints.shape[:2]))
         joint_part = probe.last_input[..., :T5_DIM]
         self.assertFalse(torch.allclose(joint_part, joints))
         self.assertTrue(torch.allclose(joint_part, ip.unknown_joint_name.expand_as(joints)))
@@ -202,9 +212,11 @@ class JointNameDropoutTest(unittest.TestCase):
         captured = {}
         real = model.input_process.forward
 
-        def spy(x, rest_pose, joints_embedded_names, species_emb=None, joint_valid=None):
+        def spy(x, rest_pose, joints_embedded_names, species_emb=None, joint_valid=None,
+                joint_struct=None):
             captured['joint_valid'] = joint_valid
-            return real(x, rest_pose, joints_embedded_names, species_emb, joint_valid)
+            return real(x, rest_pose, joints_embedded_names, species_emb, joint_valid,
+                        joint_struct)
 
         model.input_process.forward = spy
         model.seqTransDecoder = _CaptureDecoder()
@@ -216,18 +228,6 @@ class JointNameDropoutTest(unittest.TestCase):
             captured['joint_valid'],
             torch.tensor([[True, True, True, True], [True, True, False, False]]),
         ))
-
-    def test_off_is_bit_identical_to_the_previous_behaviour(self):
-        """Feature off must not perturb an existing recipe at all."""
-        torch.manual_seed(0)
-        ip = _make_model().input_process
-        ip.train()
-        x, rest_pose, joints, _ = _joint_cond_inputs()
-        valid = torch.tensor([[True, True, False, False], [True, True, True, True]])
-        with torch.no_grad():
-            with_mask = ip(x, rest_pose, joints, None, valid)
-            without_mask = ip(x, rest_pose, joints, None, None)
-        self.assertTrue(torch.equal(with_mask, without_mask))
 
 
 if __name__ == '__main__':

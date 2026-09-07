@@ -1,7 +1,8 @@
 # 关节条件重构：结构化骨架通道与名称增广
 
-> 状态：设计方案，尚未完成训练验证。
+> 状态：S + T 已实现并通过离线验证；A 未实现；尚未重训。
 > 核心思路：让结构负责“关节在骨架中的位置”，让文本负责“关节是什么身体部位”。
+> 实施状态见第 6 节。
 
 ## 1. 问题背景
 
@@ -224,11 +225,40 @@ A 的目标是降低模型对 canonical 名称点的过拟合。它不能保证�
 
 1. **名称扰动鲁棒性**：固定相同扩散噪声，只替换一个关键关节的名称 embedding；输出的关节角色和弯曲方向应保持稳定。
 2. **名字盲测**：把全部 joint name 替换成 `unknown_joint_name`，模型仍能生成结构合理的动作。
-3. **结构通道确实被使用**：记录结构 MLP 的输出 norm 和梯度 norm；关闭结构通道后，名称扰动和名字盲测应明显变差。
-4. **多物种覆盖**：覆盖人形、四足、多足、翼类、蛇形以及没有 contact 标注的物种。
-5. **多随机种子**：使用相同测试集和多个 seed，报告均值与方差，避免单次生成偶然通过。
-6. **动作质量不退化**：对真实 clip 评估骨长误差、root height、位移、步频、关节活动幅度和 foot sliding；阈值应在训练前确定。
-7. **关节方向测试**：不能只检查角度正负比例，还要设置有效屈曲幅度下限，避免接近 0° 的伪通过。
-8. **A 的独立消融**：比较 S+T+C1 与 S+T+C1+A，确认名称鲁棒性提升且语料内质量没有下降。
+3. **多物种覆盖**：覆盖人形、四足、多足、翼类、蛇形以及没有 contact 标注的物种。
+4. **多随机种子**：使用相同测试集和多个 seed，报告均值与方差，避免单次生成偶然通过。
+5. **动作质量不退化**：对真实 clip 评估骨长误差、root height、位移、步频、关节活动幅度和 foot sliding；阈值应在训练前确定。
+6. **关节方向测试**：不能只检查角度正负比例，还要设置有效屈曲幅度下限，避免接近 0° 的伪通过。
+7. **A 的独立消融**：比较 S+T+C1 与 S+T+C1+A，确认名称鲁棒性提升且语料内质量没有下降。
 
 只有离线、主方案训练和名称鲁棒性测试全部通过后，才能认为这次关节条件重构有效。
+
+## 6. 实施状态
+
+### 已落地
+
+| 步骤 | 位置 |
+|---:|---|
+| 1 | `data_loaders/truebones/truebones_utils/joint_struct_features.py`：`build_joint_struct_features`，13 维、schema 1；单测 `tests/test_joint_struct_features.py` |
+| 2 | dataset 在 `MotionDataset.__init__` 按物种缓存；`sample/generate.py:create_condition` 调用同一函数（审计脚本核对二者是同一个函数对象） |
+| 3 | collate 传 `joint_struct`（`data_loaders/tensors.py`）；`InputProcess.struct_embedding` 为独立 MLP，投影后按 `joint_valid` 再次清零 |
+| 4 | `build_joint_embedding_texts(..., slim=True)` 为默认；`JOINT_NAME_EMBEDDING_SCHEMA_VERSION` 13 → 14，meta 记录 `slim` |
+| 5 | `CKPT_VERSION` 3 → 4；`joint_struct_schema_version` / `joint_name_embedding_schema_version` 写入 args.json，训练、resume、生成三处硬失败；cond schema 不匹配由 `ensure_joint_name_embeddings` 硬失败（原先只是 warning） |
+
+结构通道恒开启、无 CLI 开关：`InputProcess.struct_embedding` 始终构建，`joint_struct` 缺失即硬失败，代码路径已固化。
+
+### 离线验证结果
+
+`tools/audit_joint_conditioning.py --cond dataset/merged/cond.npy`，260 个物种 / 9699 个关节：
+
+- 确定性、改名后逐位相同、全部 finite、`max |feature| = 1.0`；
+- slim 文本平均 1.898 token（上限 2），最长 4 token（`Left Lower Front Lip`），无结构派生词；
+- 1724 组同文本碰撞中，结构描述子**未解决 0 对**（阈值 5）；
+- padding latent 投影后严格为零，mixed batch 与单样本一致（1.2e-7）；
+- 唯一未通过项：磁盘上的 cond 仍是 schema 12，需重新生成。
+
+### 未做
+
+- **cond 未重新生成。** 四个 cond.npy（merged / zoo / zoo_upgrade / unitybundles）仍是旧 schema，训练与生成都会硬失败，直到跑 `tools/regenerate_dataset_artifacts.py` 重编码 joint name embedding。
+- **未重训。** 第 5.2 节的全部训练后验证都还没有数据。
+- **A（同义增广）未实现。** 按第 4 节的顺序，它排在主方案训练之后，且依赖一份人工审核过的 alias 表。

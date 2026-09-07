@@ -607,7 +607,20 @@ def _split_glued_compound_token(token):
     return parts if parts is not None and len(parts) >= 2 else None
 
 
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 13
+# 14: the text was slimmed. Chain ordinals ("Segment Second Of 3"), chain roles
+# (ChainStart/ChainEnd/...), sibling instance ordinals and the Contact /
+# EndEffector flags no longer go into it -- all of them are DERIVED from parents,
+# the rest pose and the contact annotation, which the structural channel now
+# carries per joint (see joint_struct_features). They were competing for the same
+# mean-pooled T5 vector as the body-part word, and the longer the sentence the
+# more diluted "Calf", "Finger" or "Wing" became.
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 14
+
+# The text the pipeline encodes. Structure-derived tokens are the structural
+# channel's job; a name says which body part a joint is and which side it is on,
+# and nothing else. ``slim=False`` rebuilds the pre-v14 text and exists for the
+# offline comparison scripts, never for a training corpus.
+JOINT_NAME_EMBEDDING_SLIM = True
 
 _CHAIN_INDEX_ORDINAL_TOKENS = {
     1: 'First',
@@ -1297,7 +1310,15 @@ def _sibling_instance_tokens(body_tokens_per_joint, flag_tokens_per_joint, symme
     return instance_tokens
 
 
-def build_joint_embedding_texts(object_cond):
+def build_joint_embedding_texts(object_cond, slim=JOINT_NAME_EMBEDDING_SLIM):
+    """Per-joint T5 sentences: side + body part, and (only when ``slim=False``)
+    the structure-derived tokens the pre-v14 schema also spelled.
+
+    Slimming is done here, at token construction, rather than by deleting words
+    from a finished string: the chain grouping and the instance numbering read
+    each other, so a post-hoc blacklist would leave whichever of them happened to
+    survive keyed on a signature that no longer exists.
+    """
     base_joint_names = object_cond.get('canonical_joint_names') or object_cond.get('joints_names') or []
     if not base_joint_names:
         return []
@@ -1332,15 +1353,18 @@ def build_joint_embedding_texts(object_cond):
         )
         for joint_index, joint_name in enumerate(base_joint_names)
     ]
-    # Chain grouping stays side-aware even though the side word is emitted only
-    # once, at the end: without it a midline trunk (Buzzard "Tail 01") shares a
-    # signature with its left and right forks and swallows both into one chain.
-    chain_signature_tokens = [
-        [*tokens, joint_side_labels[joint_index] if joint_index < len(joint_side_labels) else 'center']
-        if tokens else []
-        for joint_index, tokens in enumerate(refined_tokens_per_joint)
-    ]
-    chain_relative_tokens = _build_chain_relative_joint_tokens(chain_signature_tokens, object_cond.get('parents'))
+    if slim:
+        chain_relative_tokens = [[] for _ in refined_tokens_per_joint]
+    else:
+        # Chain grouping stays side-aware even though the side word is emitted only
+        # once, at the end: without it a midline trunk (Buzzard "Tail 01") shares a
+        # signature with its left and right forks and swallows both into one chain.
+        chain_signature_tokens = [
+            [*tokens, joint_side_labels[joint_index] if joint_index < len(joint_side_labels) else 'center']
+            if tokens else []
+            for joint_index, tokens in enumerate(refined_tokens_per_joint)
+        ]
+        chain_relative_tokens = _build_chain_relative_joint_tokens(chain_signature_tokens, object_cond.get('parents'))
 
     body_tokens_per_joint = []
     flag_tokens_per_joint = []
@@ -1366,17 +1390,26 @@ def build_joint_embedding_texts(object_cond):
         body_tokens_per_joint.append(body_tokens)
 
         flag_tokens = []
-        if joint_index in contact_joints:
-            flag_tokens.append('Contact')
-        if joint_index in end_effector_joints:
-            flag_tokens.append('EndEffector')
+        if not slim:
+            if joint_index in contact_joints:
+                flag_tokens.append('Contact')
+            if joint_index in end_effector_joints:
+                flag_tokens.append('EndEffector')
         flag_tokens_per_joint.append(flag_tokens)
 
-    # Instance ordinals sit with the other positional tokens, ahead of the
-    # derived Contact/EndEffector flags.
-    instance_tokens_per_joint = _sibling_instance_tokens(
-        body_tokens_per_joint, flag_tokens_per_joint, object_cond.get('symmetry_partner_indices')
-    )
+    if slim:
+        # Repeated siblings (a centipede's leg pairs, a bat's wing fingers) are
+        # left sharing one text on purpose: numbering them is a within-skeleton
+        # id, which is exactly what sib_rank / fore_aft_n / lateral_signed encode
+        # in the structural channel -- and there they are comparable across
+        # species, which "Instance First Of 22" never was.
+        instance_tokens_per_joint = [[] for _ in body_tokens_per_joint]
+    else:
+        # Instance ordinals sit with the other positional tokens, ahead of the
+        # derived Contact/EndEffector flags.
+        instance_tokens_per_joint = _sibling_instance_tokens(
+            body_tokens_per_joint, flag_tokens_per_joint, object_cond.get('symmetry_partner_indices')
+        )
     return [
         ' '.join([*body_tokens, *instance_tokens, *flag_tokens]) if body_tokens else ''
         for body_tokens, instance_tokens, flag_tokens

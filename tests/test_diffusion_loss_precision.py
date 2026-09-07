@@ -16,6 +16,9 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType, extract_into_tensor  # noqa: E402
 from diffusion.respace import SpacedDiffusion, space_timesteps  # noqa: E402
+from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
+    JOINT_STRUCT_DIM,
+)
 from model.anytop import AnyTop  # noqa: E402
 from model.joint_mask_utils import sample_subtree_joint_mask  # noqa: E402
 from utils.model_util import create_gaussian_diffusion  # noqa: E402
@@ -665,6 +668,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             "rest_pose": torch.randn(1, 4, 13, dtype=torch.float32),
             "n_joints": torch.tensor([3], dtype=torch.int64),
             "joints_names_embs": torch.zeros(1, 4, 512, dtype=torch.float32),
+            "joint_struct": torch.zeros(1, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
             # Unconditional model input -- every forward reads the output frame.
             "canonical_feature_mean": torch.zeros(13, dtype=torch.float32),
             "canonical_feature_std": torch.ones(13, dtype=torch.float32),
@@ -702,6 +706,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             "rest_pose": torch.randn(2, 4, 13, dtype=torch.float32),
             "n_joints": torch.tensor([4, 3], dtype=torch.int64),
             "joints_names_embs": torch.zeros(2, 4, 512, dtype=torch.float32),
+            "joint_struct": torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
             # Unconditional model input -- every forward reads the output frame.
             "canonical_feature_mean": torch.zeros(13, dtype=torch.float32),
             "canonical_feature_std": torch.ones(13, dtype=torch.float32),
@@ -740,6 +745,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             "rest_pose": torch.randn(2, 4, 13, dtype=torch.float32),
             "n_joints": torch.tensor([4, 3], dtype=torch.int64),
             "joints_names_embs": torch.zeros(2, 4, 512, dtype=torch.float32),
+            "joint_struct": torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
             "graph_dist": torch.zeros(2, 4, 4, dtype=torch.int64),
             "joints_relations": torch.zeros(2, 4, 4, dtype=torch.int64),
             "canonical_feature_mean": torch.zeros(13, dtype=torch.float32),
@@ -779,6 +785,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             "rest_pose": torch.randn(1, 4, 13, dtype=torch.float32),
             "n_joints": torch.tensor([4], dtype=torch.int64),
             "joints_names_embs": torch.zeros(1, 4, 512, dtype=torch.float32),
+            "joint_struct": torch.zeros(1, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
             # Unconditional model input -- every forward reads the output frame.
             "canonical_feature_mean": torch.zeros(13, dtype=torch.float32),
             "canonical_feature_std": torch.ones(13, dtype=torch.float32),
@@ -823,6 +830,7 @@ class DiffusionLossPrecisionTests(unittest.TestCase):
             "rest_pose": torch.randn(1, 4, 13, dtype=torch.float32),
             "n_joints": torch.tensor([4], dtype=torch.int64),
             "joints_names_embs": torch.zeros(1, 4, 512, dtype=torch.float32),
+            "joint_struct": torch.zeros(1, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
             # Unconditional model input -- every forward reads the output frame.
             "canonical_feature_mean": torch.zeros(13, dtype=torch.float32),
             "canonical_feature_std": torch.ones(13, dtype=torch.float32),

@@ -4,6 +4,7 @@ import numpy as np
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
     SLOT_PAD_ID,
 )
+from data_loaders.truebones.truebones_utils.joint_struct_features import JOINT_STRUCT_DIM
 from data_loaders.truebones.truebones_utils.motion_labels import ACTION_LABEL_MAX_WORDS
 
 
@@ -149,6 +150,16 @@ def truebones_collate(batch):
             ])
         })
 
+    # Structural joint descriptors. Emitted whenever the loader supplied them, so
+    # the key set stays constant across every batch of a run (a key that appears
+    # and disappears retriggers a torch.compile recompilation).
+    if any('joint_struct' in batch_item for batch_item in notnone_batches):
+        cond['y'].update({
+            'joint_struct': collate_tensors([
+                batch_item['joint_struct'] for batch_item in notnone_batches
+            ])
+        })
+
     if any('rest_pose_physical' in batch_item for batch_item in notnone_batches):
         cond['y'].update({
             'rest_pose_physical': collate_tensors([
@@ -291,7 +302,7 @@ def truebones_batch_collate(batch):
         extra_cond = None
         for extra in b[10:]:
             if isinstance(extra, dict):
-                if 'joint_mask_candidate_roots' in extra or 'rest_pos_ric_hml' in extra:
+                if any(key in extra for key in ('joint_mask_candidate_roots', 'rest_pos_ric_hml', 'joint_struct')):
                     extra_cond = extra
                 elif any(key in extra for key in ('action_group', 'action_label', 'action_slots', 'translation_root_index', 'is_loop', 'loop_full_cycle', 'loop_phase_length', 'playspeed_cond', 'loop_data_aug_applied', 'loop_phase_offset', 'loop_tile_count')):
                     motion_metadata = extra
@@ -325,6 +336,24 @@ def truebones_batch_collate(batch):
                 raw_rest_pos[:min(max_joints, n_joints, raw_rest_pos.shape[0])]
             )
             item['rest_pos_ric_hml'] = rest_pos
+        if extra_cond is not None and 'joint_struct' in extra_cond:
+            raw_joint_struct = np.asarray(extra_cond['joint_struct'], dtype=np.float32)
+            if raw_joint_struct.ndim != 2 or raw_joint_struct.shape[1] != JOINT_STRUCT_DIM:
+                raise ValueError(
+                    f"joint_struct must have shape [n_joints, {JOINT_STRUCT_DIM}], got "
+                    f"{raw_joint_struct.shape}."
+                )
+            if raw_joint_struct.shape[0] != n_joints:
+                raise ValueError(
+                    f"joint_struct describes {raw_joint_struct.shape[0]} joints but the "
+                    f"sample has {n_joints}."
+                )
+            # Rows past n_joints stay zero, like every other padded channel; the
+            # model re-zeroes them AFTER its projection, since a zero row does not
+            # survive an MLP with biases.
+            joint_struct = torch.zeros((max_joints, JOINT_STRUCT_DIM), dtype=torch.float32)
+            joint_struct[:n_joints] = torch.from_numpy(raw_joint_struct)
+            item['joint_struct'] = joint_struct
         if extra_cond is not None and 'rest_pose_physical' in extra_cond:
             rest_physical = torch.zeros((max_joints, n_feats), dtype=torch.float32)
             raw_rest_physical = np.asarray(extra_cond['rest_pose_physical'], dtype=np.float32)

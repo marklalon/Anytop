@@ -11,6 +11,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
+from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
+    JOINT_STRUCT_DIM,
+)
 from model.anytop import AnyTop  # noqa: E402
 
 
@@ -67,12 +70,18 @@ def _joint_cond_inputs(batch=1, joints=4, frames=3):
     )
 
 
+def _joint_struct(batch=1, joints=4):
+    """Stand-in structural descriptors; only their shape matters here."""
+    return torch.randn(batch, joints, JOINT_STRUCT_DIM)
+
+
 def _make_y(species_emb=None, **extra):
     y = {
         'joints_padding_mask': torch.ones(2, 1, 1, 5, 5, dtype=torch.float32),
         'rest_pose': torch.randn(2, 4, 13, dtype=torch.float32),
         'n_joints': torch.tensor([4, 3], dtype=torch.int64),
         'joints_names_embs': torch.zeros(2, 4, T5_DIM, dtype=torch.float32),
+        'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
         'lengths': torch.tensor([3, 3], dtype=torch.int64),
         # The output coordinate frame is an unconditional model input: every
         # forward reads it, so a hand-built y has to carry it.
@@ -151,10 +160,11 @@ class SpeciesHybridTest(unittest.TestCase):
         model.eval()
         ip = model.input_process
         x, rest_pose, joints, species = _joint_cond_inputs()
+        joint_struct = _joint_struct(*joints.shape[:2])
         with torch.no_grad():
-            fused = ip(x, rest_pose, joints, species)
+            fused = ip(x, rest_pose, joints, species, None, joint_struct)
             ip.species_joint_cond = False  # bypass the FiLM fusion entirely
-            plain = ip(x, rest_pose, joints, None)
+            plain = ip(x, rest_pose, joints, None, None, joint_struct)
         self.assertTrue(torch.allclose(fused, plain))
 
     def test_joint_cond_film_differentiates_across_joints(self):
@@ -185,7 +195,7 @@ class SpeciesHybridTest(unittest.TestCase):
         model.train()
         x, rest_pose, joints, species = _joint_cond_inputs()
         with torch.no_grad():
-            ip(x, rest_pose, joints, species)
+            ip(x, rest_pose, joints, species, None, _joint_struct(*joints.shape[:2]))
         # Head input: [B, J, 2*T5] = [joint_emb, species_emb]. The joint part
         # must be the un-dropped input, not the zeroed dropout copy.
         joint_part = probe.last_input[..., :T5_DIM]

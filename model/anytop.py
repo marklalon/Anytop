@@ -3,6 +3,9 @@ import torch.nn as nn
 import numpy as np
 from model.motion_transformer import GraphMotionDecoderLayer, GraphMotionDecoder
 from model.joint_mask_utils import sample_subtree_joint_mask_batch
+from data_loaders.truebones.truebones_utils.joint_struct_features import (
+    JOINT_STRUCT_DIM,
+)
 from data_loaders.truebones.truebones_utils.action_label_conditioning_contract import (
     ACTION_LABEL_SLOTS,
     ROLE_B_ARTIFACT_SCHEMA_VERSION,
@@ -950,7 +953,13 @@ class AnyTop(nn.Module):
         joint_valid = torch.diagonal(
             joints_padding_mask[:, 0, 0, 1:, 1:], dim1=-2, dim2=-1
         ) > 0.5
-        x = self.input_process(x, rest_pose, y['joints_names_embs'], species_emb_for_joints, joint_valid) # applies linear layer on each frame to convert it to latent dim
+        if y.get('joint_struct') is None:
+            raise ValueError(
+                "y['joint_struct'] is missing. The loader and sample/generate.py both "
+                "build it from the cond entry via build_joint_struct_features; a batch "
+                "without it comes from a caller that assembles model_kwargs by hand."
+            )
+        x = self.input_process(x, rest_pose, y['joints_names_embs'], species_emb_for_joints, joint_valid, y['joint_struct']) # applies linear layer on each frame to convert it to latent dim
         spatial_mask = (1.0 - joints_padding_mask[:, 0, 0, 1:, 1:].float()) * -1e4
         spatial_mask = spatial_mask.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
 
@@ -1074,6 +1083,17 @@ class InputProcess(nn.Module):
             nn.init.zeros_(self.species_film_j[-1].weight)
             nn.init.zeros_(self.species_film_j[-1].bias)
         self.text_embedding = nn.Linear(text_in_dim, self.latent_dim)
+        # Structural channel: the joint's own place in the skeleton (its position
+        # along a branch-free run, whether that run ends on the ground, its height
+        # and signed lateral offset, its sibling rank) projected into the token
+        # alongside the name. Ordinary init, NOT zero: this is meant to carry
+        # signal from step one, and it is the only per-joint identity left when
+        # joint_name_drop_all_prob blanks every name in a skeleton.
+        self.struct_embedding = nn.Sequential(
+            nn.Linear(JOINT_STRUCT_DIM, self.latent_dim),
+            nn.GELU(),
+            nn.Linear(self.latent_dim, self.latent_dim),
+        )
 
     def _drop_joint_names(self, joints_clean, joint_valid):
         """Replace whole joint-name rows with the learned `unknown` vector.
@@ -1104,7 +1124,8 @@ class InputProcess(nn.Module):
         substitute = self.unknown_joint_name.to(joints_clean.dtype).expand(batch_size, joint_count, -1)
         return torch.where(drop.unsqueeze(-1), substitute, joints_clean)
 
-    def forward(self, x, rest_pose, joints_embedded_names, species_emb=None, joint_valid=None):
+    def forward(self, x, rest_pose, joints_embedded_names, species_emb=None, joint_valid=None,
+                joint_struct=None):
         # x.shape = [batch_size, joints, 13, frames]
         x = x.permute(3, 0, 1, 2) # [frames, batch_size, n_joints, features_len]
         rest_pose_all_joints_except_root = self.tpos_joint_embedding(rest_pose[:, :, 1:])
@@ -1149,6 +1170,22 @@ class InputProcess(nn.Module):
             joints_embedded_names = (1.0 + gamma_residual) * joints_embedded_names + beta
         joints_embedded_names = self.text_embedding(joints_embedded_names)
         x = x + joints_embedded_names[None, ...]# [frames, batch_size, n_joints, d]
+        if joint_struct is None:
+            raise ValueError(
+                "no joint_struct was passed; see build_joint_struct_features."
+            )
+        # The name-dropout probabilities deliberately do NOT reach here: the
+        # point of the structural channel is to be the signal that survives a
+        # missing name.
+        struct_latent = self.struct_embedding(
+            joint_struct.to(device=x.device, dtype=x.dtype)
+        )
+        # Re-zero AFTER the projection. The padded rows arrive as zeros, but
+        # the MLP has biases, so a zero row does not stay zero through it --
+        # and unlike the name channel there is no all-zero row among the live
+        # joints to confuse this with.
+        struct_latent = struct_latent * joint_valid.unsqueeze(-1).to(struct_latent.dtype)
+        x = x + struct_latent[None, ...]
         positions = torch.arange(x.shape[0], device=x.device).view(1, -1, 1).repeat(x.shape[1], 1, 1)
         pos_emb = create_sin_embedding(positions, self.latent_dim)[0]
         return x + pos_emb.unsqueeze(1).unsqueeze(1)

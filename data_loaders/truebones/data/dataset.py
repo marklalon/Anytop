@@ -44,6 +44,10 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
 )
 from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
     JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
+    JOINT_NAME_EMBEDDING_SLIM,
+)
+from data_loaders.truebones.truebones_utils.joint_struct_features import (
+    build_joint_struct_features,
 )
 from data_loaders.truebones.truebones_utils.dataset_tags import assert_species_tags_cover
 
@@ -631,15 +635,33 @@ def ensure_joint_name_embeddings(
                 f"but {joint_count} joints in parents."
             )
 
+        # A hard failure, not a warning. The vectors of an older schema load
+        # perfectly -- same shape, same dtype -- and simply mean something else:
+        # a pre-v14 row spells "Left Hand Thumb Segment Third Of 3 ChainEnd
+        # EndEffector" where this code's model expects "Left Hand Thumb" plus a
+        # structural channel. That mismatch is invisible at every later step and
+        # surfaces only as worse motion.
         meta = cond.get('joints_names_embs_meta')
-        if isinstance(meta, dict):
-            schema_version = meta.get('schema_version')
-            if schema_version is not None and int(schema_version) != JOINT_NAME_EMBEDDING_SCHEMA_VERSION:
-                warnings.warn(
-                    f"{cond_source} for '{object_type}' uses joint-name embedding schema {schema_version}; "
-                    f"current code expects {JOINT_NAME_EMBEDDING_SCHEMA_VERSION}.",
-                    stacklevel=2,
-                )
+        if not isinstance(meta, dict):
+            raise RuntimeError(
+                f"{cond_source} for '{object_type}' has no joints_names_embs_meta, so its "
+                f"joint-name embedding schema cannot be checked against the expected "
+                f"{JOINT_NAME_EMBEDDING_SCHEMA_VERSION}. Re-run preprocessing."
+            )
+        schema_version = meta.get('schema_version')
+        if schema_version is None or int(schema_version) != JOINT_NAME_EMBEDDING_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"{cond_source} for '{object_type}' carries joint-name embedding schema "
+                f"{schema_version!r}, this code expects {JOINT_NAME_EMBEDDING_SCHEMA_VERSION}. "
+                f"The vectors would load and quietly mean something else; regenerate the "
+                f"embeddings (tools/regenerate_dataset_artifacts.py)."
+            )
+        if bool(meta.get('slim', False)) != bool(JOINT_NAME_EMBEDDING_SLIM):
+            raise RuntimeError(
+                f"{cond_source} for '{object_type}' was encoded with slim="
+                f"{bool(meta.get('slim', False))} but this code writes slim="
+                f"{bool(JOINT_NAME_EMBEDDING_SLIM)}. Regenerate the embeddings."
+            )
 
         cond['joints_names_embs'] = joints_names_embs
     return cond_dict
@@ -663,6 +685,14 @@ class MotionDataset(data.Dataset):
         # inside the per-sample hot path (_load_physical_motion).
         self._canonical_rest_pose_cache = {
             object_key: build_canonical_rest_feature(entry)
+            for object_key, entry in cond_dict.items()
+        }
+        # Structural joint descriptors: same story -- a pure function of the cond
+        # entry, so it is built once per species here and never written to
+        # cond.npy. generate.py calls the SAME builder on the same entry, which is
+        # what keeps the training and sampling conditions identical.
+        self._joint_struct_cache = {
+            object_key: build_joint_struct_features(entry, source=str(object_key))
             for object_key, entry in cond_dict.items()
         }
         self.balanced = balanced
@@ -936,6 +966,7 @@ class MotionDataset(data.Dataset):
         if return_aug_info:
             return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
                 'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
+                'joint_struct': self._joint_struct_cache[object_type],
                 'species_emb': self.cond_dict[object_type].get('species_emb'),
                 'rest_pose_physical': self.cond_dict[object_type]['rest_pose'],
                 'rest_pos_ric_hml': self.cond_dict[object_type]['rest_pos_ric_hml'],
@@ -951,6 +982,7 @@ class MotionDataset(data.Dataset):
             }
         return motion, m_length, parents, rest_pose, offsets, joints_graph_dist, joints_relations, object_type, joints_names_embs, self.opt.max_joints, motion_metadata, name, {
             'joint_mask_candidate_roots': self.cond_dict[object_type]['joint_mask_candidate_roots'],
+            'joint_struct': self._joint_struct_cache[object_type],
             'species_emb': self.cond_dict[object_type].get('species_emb'),
             'rest_pose_physical': self.cond_dict[object_type]['rest_pose'],
             'rest_pos_ric_hml': self.cond_dict[object_type]['rest_pos_ric_hml'],
