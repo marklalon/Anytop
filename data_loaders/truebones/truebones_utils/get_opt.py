@@ -5,7 +5,6 @@ from pathlib import Path
 from data_loaders.truebones.truebones_utils.param_utils import (
     MAX_JOINTS,
     FEATS_LEN,
-    MAX_PATH_LEN,
     FPS,
     DEFAULT_DATASET_DIR,
 )
@@ -83,7 +82,10 @@ def get_opt(device, cond_path=None, cond_dict=None):
     opt.feature_len = FEATS_LEN
     opt.is_continue = False
     opt.device = device
-    opt.max_path_len = MAX_PATH_LEN
+    # No opt.max_path_len: nothing ever read it. The model sized its hop table
+    # from its own hardcoded default, so raising MAX_PATH_LEN here would have
+    # emitted out-of-range indices and died in a device-side gather. Both sides
+    # now derive from topology_relations instead.
     opt.fps = FPS
     opt.subsets_dict = dataset_tags().object_subsets
     return opt

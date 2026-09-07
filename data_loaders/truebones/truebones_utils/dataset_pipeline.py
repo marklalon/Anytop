@@ -46,6 +46,7 @@ from .features import (
     get_motion,
     extract_motion_features_from_aligned_anims,
 )
+from .topology_relations import create_topology_edge_relations
 from .canonical_features import (
     mark_canonical_cond_entry,
     set_canonical_global_stats,
@@ -59,46 +60,9 @@ class DatasetPreprocessingError(RuntimeError):
 
 
 ################## Topology #####################
-
-""" compures Relations and Distance marices"""
-def create_topology_edge_relations(parents, max_path_len = 5): # joint j+1 contains len(j, j+1)
-    edge_types = {'self':0, 'parent':1, 'child':2, 'sibling':3, 'no_relation':4, 'end_effector':5, 'ts_token_conn': 6}
-    n = len(parents)
-    topo_rel = np.zeros((n, n))
-    edge_rel = np.ones((n, n)) * edge_types['no_relation'] 
-    for i in range(n):
-        parent = parents[i]
-        ee = True
-        for j in range(n):
-            parent_j = parents[j]
-            """Update edge type"""
-            edge_type = edge_types['no_relation']
-            if i == j: #self
-                edge_type = edge_types['self'] 
-            elif parent_j == i: #child
-                ee=False
-                edge_type = edge_types['child']
-            elif j == parent: #parent
-                edge_type = edge_types['parent'] 
-            elif parent_j == parent: #sibling
-                edge_type = edge_types['sibling']
-            edge_rel[i, j] = edge_type
-
-            """Update path length type"""
-            
-            if i == j:
-                topo_rel[i, j] = 0      
-            elif j < i:
-                topo_rel[i, j] = topo_rel[j, i]
-            elif parent_j == i: # parent-child relation
-                topo_rel[i, j] = 1
-            else: #any other 
-                topo_rel[i, j] = topo_rel[i, parent_j] + 1
-        if ee:
-            edge_rel[i, i] = edge_types['end_effector']
-            
-    topo_rel[topo_rel > max_path_len] = max_path_len
-    return edge_rel, topo_rel
+# The pairwise codes themselves live in ``topology_relations`` so the dataset,
+# ``sample/generate.py`` and the model all read one definition; this module is
+# too heavy to import from those paths (it pulls in motion_lib).
 
 
 ################## Parents to kinematic chains ###################

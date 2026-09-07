@@ -25,7 +25,11 @@ ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 # A v1 checkpoint's
 # action_label_projection reads one whole-label vector, so its weights mean
 # something else even where the shapes would line up.
-CKPT_VERSION = 2
+# 3: the graph attention bias code tables changed. graph_dist no longer
+# saturates into one "far" bucket and joint_relations no longer collapses
+# 88% of pairs into 'no_relation'; both embedding tables grew, so a v2
+# checkpoint cannot load, and codes 6+ meant nothing to it anyway.
+CKPT_VERSION = 3
 
 def parse_and_load_from_model(parser, argv=None, preserve_cli_args=None):
     # args according to the loaded model

@@ -83,7 +83,11 @@ TPOSE_REFERENCE_SIDECAR = "tpose_reference_paths.jsonl"
 # rather than caching a copy here.
 FOOT_CONTACT_HEIGHT_THRESH = 0.2
 FOOT_CONTACT_VEL_THRESH = 0.002
-MAX_PATH_LEN = 5.
+# Exact hop counts 0..MAX_PATH_LEN-1 are coded individually; everything at or
+# beyond it is subdivided by direction and normalized LCA depth instead of
+# saturating into one bucket (see ``topology_relations``). An int, not a float:
+# it sizes an nn.Embedding.
+MAX_PATH_LEN = 5
 # Vertical clamp thresholds expressed as a ratio of the character's reference
 # body length (measured from the processed skeleton's rest-pose joint span).
 # Motion within VERTICAL_CLAMP_MIN_RATIO is left unchanged; only the excess is
