@@ -8,11 +8,26 @@
 
 ## 1. 可复现输入
 
-- 当前三套语料：3802 行、398 个不同 label 串；按 checkpoint/group 展开为 408 个条件点；
+- 预检当日的三套语料：3802 行、398 个不同 label 串；按 checkpoint/group 展开为
+  408 个条件点；
 - `action_labels.jsonl` SHA-256：zoo
   `B823237D939333FB42BE4C9DA1D919F5D813AA0418AB0EBFBC86730A9B4DD2B1`，zoo_upgrade
   `9A4185A0A4F6D7A4E6D69709A1E618AD6EB873A6ED926D53CA5925D6EC16FC40`，unitybundles
   `982DE2BED668132422704B515083C9F4EB4B622220BC2CD2EC16D70003940B8E`；
+
+> **语料在预检之后、开训之前动过（2026-09-06 20:35）。** 提交 5203808
+> （burrow 由 stationary 改判 transition）与 3b576dc（Anaconda_Spin、
+> MB_Unka_TurnRight 改标）改写了 zoo 与 unitybundles 两份 jsonl，
+> 因此 `merged_locomotion_v5_pwp` 训练用的是下面这份，不是上面那份：
+> zoo `C2EA57A887F7554E64D019C137733243AE0747EAA310818CF0CBF081BB36FA57`，
+> unitybundles `A498D525171998E52EAB27F909407244452BC1ED950C200BF7D015B3A1D74C2F`
+> （zoo_upgrade 未变）。规模变成 **3802 行 / 396 个 label / 404 个条件点**，
+> transition 由 755 条增至 760 条。
+> 2026-09-07 在这份语料上重跑 `--device cuda --skip-exhaustive`：**硬门逐项 GO，
+> 数值与 §5 记录一字不差**（worstNN 0.9559、rev50 0.015、drift 0.0e+00、
+> 词表秩 102、槽源秩 135、键唯一 True，反向 transition 仍是 5 对），
+> 两个指纹也仍是 `0f0a698c…` / `47314397…` —— 指纹只描述词表与运行时语义，
+> 本来就不随语料变。原始输出：`outputs/direction_following/PWP_geometry_recheck{,_cuda}.log`。
 - 当前真实双向 transition：5 对；
 - 编码器：本地 `t5-base`，768 维，`transformers==5.5.4`；
 - T5 本地材料 SHA-256：
@@ -38,6 +53,14 @@
 
 数值组合诊断（`--skip-exhaustive` 可跳过）与工具其余部分共用 `--device`，float64 全程，
 CPU/GPU 结果一致到 ~1e-12。全合法输入域的注入性由槽源秩硬门证明，不依赖组合穷举。
+
+> **两条命令不再等价（schema 3 起）。** 上面第二条是 `--device cpu`，它只保证
+> *诊断数值*与 GPU 一致；**指纹不一致**。`word_table_sha256` 哈希的是词向量本身的
+> 字节，而 T5 前向在 CPU 与 CUDA 上末位不同，所以 `--device cpu` 复算出的是
+> `embedding_fingerprint 246d45f4…` / `conditioning_contract_fingerprint e7ad99ee…`，
+> 与出厂 sidecar 和 checkpoint 里的 `0f0a698c…` / `47314397…` 不同（2026-09-07 实测）。
+> **出厂词表是 CUDA 那份**：要核对指纹必须用第一条命令（默认 `--device cuda`）；
+> 拿 CPU 复算结果去比对会得到一个假的"契约不符"。硬门判定本身不受影响，两边全部 GO。
 
 脚本只读语料与本地 T5，不加载扩散模型、不读取 checkpoint，也不把未训练的几何冒充生成质量。
 统计按 `action_group` 分开计算，因为三个 group 使用不同 checkpoint。

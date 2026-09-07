@@ -468,8 +468,7 @@ def add_generate_options(parser):
                             ">1 amplifies the prompt by extrapolating away from the model's own "
                             "unconditional prediction (x0_uncond + s*(x0_cond - x0_uncond)), at 2x "
                             "sampling cost since every step then runs a conditional AND an "
-                            "unconditional forward. Typical range 1.5-3; push it too far and the "
-                            "sample overshoots into jitter and stretched bones. Requires "
+                            "unconditional forward. Requires "
                             "--action_label and a checkpoint trained with a non-zero "
                             "--action_label_cfg_drop_prob (without it there is no unconditional "
                             "mode to guide away from).")

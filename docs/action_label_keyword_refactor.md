@@ -26,13 +26,10 @@
 >    = 0.694，L/R = 0.775）。
 > 3. §2.5 `action_label_coarse_prob` 全链路删除。
 > 4. §3.2 + §3.4 去 multi-hot；`action_label_projection` / `action_label_null_emb` 保留。
-> 5. §4 评测脚本 [`tools/direction_following.py`](../tools/direction_following.py)
->    （`sweep` / `score` / `sheet` / `phase`；方案执行期的临时验证工具，不在
->    常驻 eval 套件里）。
-> 6. **R0 基线已跑**（KI_Human，640 clip），数据与结论见 **§4.2**。
+> 5. **R0 基线已跑**（KI_Human，640 clip），数据与结论见 **§4.2**。
 >    同一轮把**主指标从 top-1 换成了连续角度误差** —— top-1 吸附到最近象限，
 >    系统性欠转在它上面是隐形的（§4.2 的第一段就是这个更正）。
-> 7. **R1 已训并评测**（同一提示集 640 clip，逐格对比 §4.2），结果见 **§4.3**：
+> 6. **R1 已训并评测**（同一提示集 640 clip，逐格对比 §4.2），结果见 **§4.3**：
 >    cfg 2 上四个方向的角度误差全部进入个位数（四向均值 15.0° → **5.2°**），
 >    `left` 的系统性欠转消失，`run` 的相位离散度同向收敛，
 >    既有质量电池 16/17 项持平或改善。
@@ -44,8 +41,15 @@
 > §3.5 的 L/R 硬输入 —— R0 指向它的那笔账（`left` 欠转 24~34°）在 R1 上自己好了，
 > 剩下的 `right` 在可用区间内只有 8.2°，不值一次重训，**留作观察项**。
 >
-> 待办：§2.6 第 3/4 步的**人工过目与方向补标**（见迁移脚本的 review TSV）；
-> 推理端默认 `--action_label_cfg_scale` 定在 **2**（§4.3 第 3 条）。
+> 待办：§2.6 第 3/4 步的**人工过目与方向补标**（见迁移脚本的 review TSV）。
+>
+> **`--action_label_cfg_scale` 已在 2026-09-07 于 `merged_locomotion_v5_pwp` 上重标定**，
+> 本文 §4.3 第 3 条的"定在 2"只对 v1 表示的 v4 checkpoint 成立。现行建议见
+> [action_label_per_word_pooling.md §12.4](action_label_per_word_pooling.md)：
+> 语料内标签仍是 2，但**未见过的词组合要退回 1**，且这一轮 cfg 的边际作用小得多。
+> §4.3 第 2 条的 `right` 观察项也有了新读数：按标签拆开之后它整个落在
+> `run, right` 上（`walk, right` 在 cfg 2 已是 1.6°），§3.5 的启用判据因此成立，
+> 见该文 §12.3。
 >
 > ---
 >

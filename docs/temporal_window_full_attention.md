@@ -318,7 +318,7 @@ loop 还有另外两路信号：
 
 #### 1. 步态相位一致性 —— **通过**，且是四条里改善最明显的
 
-用 `tools/direction_following.py phase` 量左右脚接触相位的组内 circvar
+用左右脚接触相位的组内 circvar 量相位一致性
 （同一提示 16 条样本，0 = 完全一致），对着 v3 的同一张表逐格比
 （原始表在 `outputs/direction_following/R0_phase.txt` / `R1_phase.txt`）。
 cfg∈{2,3} 均值，v3 → v4（括号是该格的语料 circvar）：
