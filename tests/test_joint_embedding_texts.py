@@ -296,8 +296,108 @@ def test_digit_becomes_a_finger_or_a_toe_depending_on_the_limb_it_hangs_off():
          'LeftLeg1', 'LeftLegAnkle', 'LeftLegDigit11'],
         [-1, 0, 1, 2, 0, 4, 5],
     )
-    assert texts[3].startswith('Left Arm Finger'), texts[3]
-    assert texts[6].startswith('Left Leg Toe'), texts[6]
+    # The limb word decided the fork and is then dropped: "Finger" already says
+    # hand and "Toe" says foot, so keeping it would only record the namespace the
+    # rig author worked in. The palm and the ankle it read the fork off lose it
+    # the same way.
+    assert texts[2] == 'Left Hand', texts[2]
+    assert texts[3] == 'Left Finger', texts[3]
+    assert texts[5] == 'Left Ankle', texts[5]
+    assert texts[6] == 'Left Toe', texts[6]
+
+
+def test_a_fingers_carrier_limb_is_dropped_so_one_finger_is_one_token():
+    # The same five fingers, spelled by the three rig conventions in the corpus:
+    # Mixamo hangs them off "Hand", the PC/RU packs off "Arm", the KI/RMW packs
+    # off nothing. All three have to land on one token or a Mixamo hand matches
+    # no training species at all.
+    mixamo = _embedding_texts(
+        ['Hips', 'LeftHand', 'LeftHandThumb1', 'LeftHandIndex1', 'LeftHandMiddle1',
+         'LeftHandRing1', 'LeftHandPinky1'],
+        [-1, 0, 1, 1, 1, 1, 1],
+    )
+    packed = _embedding_texts(
+        ['Hips', 'RigLArmPalm', 'RigLArmThumb1', 'RigLArmIndex1', 'RigLArmMiddle1',
+         'RigLArmRing1', 'RigLArmPinky1'],
+        [-1, 0, 1, 1, 1, 1, 1],
+    )
+    bare = _embedding_texts(
+        ['Hips', 'Hand_L', 'Thumb01_L', 'Index01_L', 'Middle01_L', 'Ring01_L', 'Pinky01_L'],
+        [-1, 0, 1, 1, 1, 1, 1],
+    )
+    expected = ['Left Thumb', 'Left Index', 'Left Middle', 'Left Ring', 'Left Pinky']
+    assert mixamo[2:] == expected, mixamo
+    assert packed[2:] == expected, packed
+    assert bare[2:] == expected, bare
+
+
+def test_a_limbs_distal_joints_drop_the_carrier_the_rig_namespaces_them_with():
+    # The PC/RU packs prefix every bone with the limb it belongs to, so the hand,
+    # ankle, foot and toes each sat in their own corner of T5 space next to the
+    # 108-to-117 species that spell them plainly.
+    texts = _embedding_texts(
+        ['RigSpine', 'RigLArmPalm', 'RigLLegAnkle', 'RigLLegFoot1', 'RigLLegToes1'],
+        [-1, 0, 0, 2, 3],
+    )
+    assert texts[1:] == ['Left Hand', 'Left Ankle', 'Left Foot', 'Left Toe'], texts
+
+
+def test_a_limb_qualifier_ahead_of_the_carrier_survives_it():
+    # "LFLegAnkle" is the *fore* ankle. Dropping the carrier must not drop the
+    # one word keeping it off the hind one.
+    texts = _embedding_texts(
+        ['Spine', 'LFLegAnkle', 'LBLegAnkle', 'LEFT_FrontLeg_AnkleSHJnt'],
+        [-1, 0, 0, 0],
+    )
+    assert texts[1] == 'Left Front Ankle', texts[1]
+    assert texts[2] == 'Left Back Ankle', texts[2]
+    assert texts[3] == 'Left Front Ankle', texts[3]
+
+
+def test_an_arthropods_leg_word_is_anatomy_not_a_namespace():
+    # PC_PolygonalSpiderlingVenom runs four leg pairs it spells
+    # "RigLLegFront1..4" / "RigLLegMid..." / "RigLLegCtr..." / "RigLLegBack...".
+    # Behind the leg word those qualifiers index one limb out of many, and the
+    # leg word itself is the only anatomy in the name -- so nothing is dropped.
+    texts = _embedding_texts(
+        ['RigRibcage', 'RigLLegFront1', 'RigLLegFrontAnkle', 'RigLLegCtrAnkle'],
+        [-1, 0, 1, 0],
+    )
+    assert texts[1] == 'Left Leg Front', texts[1]
+    assert texts[2] == 'Left Leg Front Ankle', texts[2]
+    assert texts[3] == 'Left Leg Ctr Ankle', texts[3]
+
+
+def test_the_carrier_drop_needs_the_bare_two_token_pair():
+    # The carrier has to sit immediately in front of the part with nothing after
+    # it. Raptor2's middle claw is [Hand, Claw, Middle] -- the hand's claw, which
+    # the same rig has a foot "Claw Middle" for to collide with; RU01_BotRobot's
+    # gripper is [Arm, Finger, In] and has to keep its In/Top/Out. A wing digit
+    # is a different limb, not a different spelling of the same one, so "Wing" is
+    # not a carrier either.
+    texts = _embedding_texts(
+        ['Body', 'jt_HandClawMiddle_L', 'jt_ClawMiddle_L', 'RigLArmFingerIn1',
+         'RigLWingIndex1', 'horse_hand_L', 'man_hand_L'],
+        [-1, 0, 0, 0, 0, 0, 0],
+    )
+    assert texts[1] == 'Left Hand Claw Middle', texts[1]
+    assert texts[2] == 'Left Claw Middle', texts[2]
+    assert texts[3] == 'Left Arm Finger In', texts[3]
+    assert texts[4] == 'Left Wing Index', texts[4]
+    # A centaur tells its two halves apart the same way; neither word is a limb
+    # the corpus namespaces with.
+    assert texts[5] == 'Left Horse Hand', texts[5]
+    assert texts[6] == 'Left Man Hand', texts[6]
+
+
+def test_phalanx_position_words_are_dropped_like_the_numeric_spelling():
+    # "LeftHandIndex1..3" already reduce to one token, so an "Index_Proximal_L"
+    # sitting apart from "Index" splits one finger across two points in T5 space.
+    texts = _embedding_texts(
+        ['Hips', 'Hand_L', 'Index_Proximal_L'],
+        [-1, 0, 1],
+    )
+    assert texts[2] == 'Left Index', texts[2]
 
 
 def test_digit_keeps_the_bare_word_when_the_name_names_no_limb():
