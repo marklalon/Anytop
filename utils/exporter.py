@@ -294,6 +294,25 @@ def _remove_mesh_objects_for_skeleton_only_export(bpy) -> int:
     return removed
 
 
+def _has_edge_only_mesh_objects(bpy) -> bool:
+    """Return whether the export scene contains a pure loose-edge mesh.
+
+    Blender's glTF exporter drops glTF ``LINES`` primitives unless the
+    scene-wide ``use_mesh_edges`` option is enabled.  Enabling it unconditionally
+    would attach loose-edge geometry to every export, so gate it on the scene
+    actually containing a mesh made of edges and no polygons (a line-rig
+    preview).  When the flag is on, Blender exports only edges that belong to no
+    face, so ordinary surface meshes are not turned into full wireframes.
+    """
+    for obj in bpy.data.objects:
+        if obj.type != "MESH":
+            continue
+        mesh = obj.data
+        if len(mesh.edges) > 0 and len(mesh.polygons) == 0:
+            return True
+    return False
+
+
 def _clear_imported_animation_data(bpy) -> int:
     """Discard animation imported from a source asset before writing NPY motion."""
     datablocks = []
@@ -1100,6 +1119,7 @@ class AnimationExporter:
                     fc.update()
 
         # ── Export GLB ────────────────────────────────────────────────
+        export_loose_edges = _has_edge_only_mesh_objects(bpy)
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             bpy.ops.export_scene.gltf(
                 filepath=output_path,
@@ -1108,6 +1128,12 @@ class AnimationExporter:
                 export_animation_mode='ACTIVE_ACTIONS',
                 export_force_sampling=True,
                 export_frame_range=True,
+                # Preserve skinned skeleton-preview meshes represented as glTF
+                # LINES.  Blender imports those as loose mesh edges and its
+                # exporter silently omits them unless this opt-in is enabled,
+                # leaving an apparently successful GLB containing only EMPTY
+                # nodes and animation channels.
+                use_mesh_edges=export_loose_edges,
                 export_apply=False,
                 export_yup=yup,
             )
