@@ -235,6 +235,8 @@ _JAPANESE_GATED_REPLACEMENTS = {
 # from "Index" splits one body part across two T5 points for nothing. Every rig
 # here that spells it (the MLH/MLS packs' "Index_Proximal_L") carries exactly one
 # finger bone per hand, so there is no second phalanx left needing the word.
+# ``VariantN`` is a canonical/BVH uniqueness suffix, not anatomy; structural
+# channels distinguish those joints, so it must never enter the T5 text.
 _EMBED_TEXT_SKIP_TOKENS = {
     'base',
     'tip',
@@ -244,6 +246,7 @@ _EMBED_TEXT_SKIP_TOKENS = {
     'proximal',
     'intermediate',
     'distal',
+    'variant',
 }
 # Rig scaffolding, props and tack: bones that carry no anatomy at all. A joint
 # whose name reduces to nothing but these is blanked by build_joint_embedding_texts
@@ -397,10 +400,9 @@ _EMBED_TEXT_HEAD_FEATURE_TOKENS = {
 # exact opposite of what a cross-species model needs. Dropping the word leaves
 # four plain "Neck" joints that _sibling_instance_tokens then numbers apart.
 #
-# Stripped only in the embedding text, never in canonical_joint_names: the
-# canonical layer needs them to keep names unique (and would have
-# _disambiguate_duplicate_canonical_names re-append them anyway), so stripping
-# there would cost BVH-name churn and a renamer bank rebuild for no gain.
+# Stripped from both canonical names and embedding text. If two joints become
+# identical after stripping, canonical-name assignment gives later occurrences
+# a neutral Variant suffix instead of putting the species word back.
 #
 # Deliberately excluded: 'ant' (spider_tarantula's "RightAnt00" is an antenna
 # under Head01, not the insect), 'horse' ("HorseLink" is a 3ds Max Biped leg
@@ -418,6 +420,14 @@ _EMBED_TEXT_CREATURE_TOKENS = {
     'stego', 'tarantula', 'tiger', 'trex', 'tricera', 'tukan', 'turtle', 'tyranno',
     'wyvern',
 }
+
+
+def joint_name_token_is_species(token):
+    """Whether one normalized joint-name token is a known species label."""
+    clean_token = re.sub(r'[^a-z0-9]+', '', str(token or '').casefold())
+    return clean_token in _EMBED_TEXT_CREATURE_TOKENS
+
+
 # Quadruped limb codes: Lf/Rf/Lb/Rb = left/right fore/hind. The side half is
 # already recovered by detect_joint_side and re-attached from the geometry label,
 # so only the fore/hind half is emitted here. Dropping the code outright would
@@ -832,6 +842,10 @@ def _collapse_repeated_name_parts(canonical_parts):
     return collapsed
 
 
+def _drop_species_name_parts(canonical_parts):
+    return [part for part in canonical_parts if not joint_name_token_is_species(part)]
+
+
 def _canonicalize_joint_name(name, replacements=None, additional_prefixes=()):
     replacements = _JAPANESE_NAME_REPLACEMENTS if replacements is None else replacements
     split_name = normalize_joint_name(strip_joint_name_prefix(name, additional_prefixes))
@@ -859,6 +873,7 @@ def _canonicalize_joint_name(name, replacements=None, additional_prefixes=()):
                 canonical_parts.extend(part.capitalize() for part in compound_parts)
 
     canonical_parts = _collapse_repeated_name_parts(canonical_parts)
+    canonical_parts = _drop_species_name_parts(canonical_parts)
     return ' '.join(canonical_parts) if canonical_parts else name.strip()
 
 

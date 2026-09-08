@@ -19,6 +19,9 @@ from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
     build_joint_embedding_texts,
     build_semantic_metadata,
 )
+from data_loaders.truebones.truebones_utils.animation_utils import (
+    refresh_joint_metadata_in_object_cond,
+)
 
 
 def _embedding_texts(joint_names, parents, offsets=None, species_name=None, slim=True):
@@ -84,6 +87,21 @@ def test_species_word_is_dropped_so_variant_heads_share_one_anatomy():
         slim=False,
     )[2:]
     assert len(set(legacy_necks)) == len(legacy_necks), legacy_necks
+
+
+def test_canonical_variant_suffix_never_enters_embedding_text():
+    object_cond = {
+        'object_type': 'Kappa_gorilla',
+        'joints_names': ['Root', 'GorillaJaw', 'KappaJaw'],
+        'parents': np.array([-1, 0, 0], dtype=np.int64),
+        'offsets': np.zeros((3, 3), dtype=np.float64),
+    }
+    refresh_joint_metadata_in_object_cond(object_cond)
+
+    assert object_cond['canonical_joint_names'] == ['Root', 'Jaw', 'Jaw Variant2']
+    texts = build_joint_embedding_texts(object_cond)
+    assert texts == ['Root', 'Jaw', 'Jaw']
+    assert all('Variant' not in text for text in texts)
 
 
 def test_species_word_is_kept_when_it_is_the_only_word_left():

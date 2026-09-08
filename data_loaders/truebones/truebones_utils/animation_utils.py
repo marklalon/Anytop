@@ -37,6 +37,7 @@ from .physics_joint_annotation import (
     build_semantic_metadata,
     joint_name_is_non_anatomical,
     infer_species_joint_name_prefixes,
+    joint_name_token_is_species,
     normalize_joint_name,
     strip_joint_name_prefix,
     build_joint_embedding_texts,
@@ -128,6 +129,7 @@ def _joint_disambiguation_tokens(raw_name, canonical_name, additional_prefixes=(
     raw_tokens = normalize_joint_name(stripped_raw).split()
     canonical_tokens = normalize_joint_name(canonical_name).split()
     residual_tokens = _remove_token_counts(raw_tokens, Counter(canonical_tokens))
+    residual_tokens = [token for token in residual_tokens if not joint_name_token_is_species(token)]
     if raw_value.lower().startswith('jt'):
         residual_tokens.append('joint')
     return residual_tokens
