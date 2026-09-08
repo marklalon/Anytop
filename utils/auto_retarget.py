@@ -1,8 +1,11 @@
 """Shared retarget helpers for the cross-species reference retarget flow.
 
+High-level retarget orchestration on top of the ``utils/retarget`` core
+(one-way: this module imports the core, never the other way around).
+
 Used by:
   sample/generate.py             -- cross-species reference motion retarget
-  utils/retarget.py              -- CLI wrapper for retargeting files
+  tools/retarget_npy.py          -- CLI wrapper for retargeting files
 """
 import os
 from typing import Optional
@@ -866,6 +869,7 @@ def retarget_glb_to_glb(
     coordinate_search: Optional[bool] = None,
     align_facing: bool = False,
     ground: bool = False,
+    promote_effective_root: Optional[bool] = None,
     export_mesh: bool = True,
     slice_inds=None,
     verbose: bool = True,
@@ -915,6 +919,12 @@ def retarget_glb_to_glb(
         ground: drop the retargeted result so the target's contact joints rest
             at y=0. Off by default because it is a real translation and would
             break self-retarget idempotency; see :func:`_native_ground_shift`.
+        promote_effective_root: whether to re-anchor the target root onto the
+            source's locomotion joint. ``None`` (default) decides per pair: on
+            only when that joint has no counterpart among the target's canonical
+            names, which is the case the promotion exists for. Forcing it on
+            when both rigs share a wrapper shape re-anchors the hierarchy and
+            corrupts the pose -- see the note at the decision site.
         export_mesh: ``False`` writes a skeleton-only GLB.
         slice_inds: optional ``[start, end]`` frame slice on the source.
         verbose: print progress; also drives the retarget core's own summary.
@@ -990,20 +1000,54 @@ def retarget_glb_to_glb(
         for bone in skeleton.bones
     ])
 
-    # -- 2. Target rig, only when a pre-pass actually needs it --------------
+    # -- 2. Target rig ------------------------------------------------------
     # FBX.load resets the bpy scene, so this must sit between the source read
     # and export_glb (which resets once more and re-imports the target itself).
-    target_names = target_parents = None
-    target_rest_offsets = target_rest_rotations = target_rest_positions = None
-    if align_facing or ground:
-        target_anim, target_names, _target_frametime = FBX.load(
-            target_path, collapse_root=False,
-        )
-        target_parents = np.asarray(target_anim.parents, dtype=np.int32)
-        target_rest_offsets = np.asarray(target_anim.offsets, dtype=np.float64)
-        target_rest_rotations = np.asarray(target_anim.orients.qs, dtype=np.float64)
-        target_rest_positions = _native_rest_positions(
-            target_parents, target_rest_offsets, target_rest_rotations,
+    target_anim, target_names, _target_frametime = FBX.load(
+        target_path, collapse_root=False,
+    )
+    target_parents = np.asarray(target_anim.parents, dtype=np.int32)
+    target_rest_offsets = np.asarray(target_anim.offsets, dtype=np.float64)
+    target_rest_rotations = np.asarray(target_anim.orients.qs, dtype=np.float64)
+    target_rest_positions = _native_rest_positions(
+        target_parents, target_rest_offsets, target_rest_rotations,
+    )
+
+    source_match_names = canonical_match_names_from_raw_skeleton(
+        source_names, source_parents, source_rest_offsets,
+    )
+    target_match_names = canonical_match_names_from_raw_skeleton(
+        target_names, target_parents, target_rest_offsets,
+    )
+
+    # -- 2b. Should the locomotion joint be promoted to the target root? ----
+    # ``src_effective_root_index`` tells the retarget to re-anchor the target
+    # root onto the source's locomotion joint. That rescues a rig whose
+    # locomotion sits below a static wrapper AND whose target has no equivalent
+    # joint -- but it is actively wrong when the target shares the same wrapper
+    # shape, because the joint is then already mapped to its own counterpart.
+    # Promoting anyway re-anchors the hierarchy: KI_Soldier's crawl put the
+    # target's root where the source's Hips was, and the target's own Hips then
+    # hung ~100 units above it, turning a crawl into a standing pose.
+    #
+    # World-space transfer is why the default is not to promote: every mapped
+    # joint is placed at its source counterpart's world position, so locomotion
+    # already arrives through the ordinary mapping. Promotion is only needed
+    # when the locomotion joint has no counterpart at all, which is exactly what
+    # the canonical name test below detects.
+    resolved_promote = promote_effective_root
+    if resolved_promote is None:
+        locomotion_name = source_match_names[source_effective_root_index]
+        resolved_promote = locomotion_name not in set(target_match_names)
+    effective_root_argument = (
+        source_effective_root_index if resolved_promote else None
+    )
+    if verbose and source_effective_root_index != 0:
+        print(
+            f"[retarget_glb] locomotion joint promotion: "
+            f"{'on' if resolved_promote else 'off'} "
+            f"({source_match_names[source_effective_root_index]!r} "
+            f"{'has no' if resolved_promote else 'has a'} target counterpart)"
         )
 
     # -- 3. Optional facing alignment, applied through the root wrapper -----
@@ -1047,13 +1091,9 @@ def retarget_glb_to_glb(
             src_joint_rotations=joint_rotations.detach().cpu().numpy().astype(np.float64),
             src_root_translation=root_translation_np,
             src_root_rotation=root_rotation_np,
-            src_match_names=canonical_match_names_from_raw_skeleton(
-                source_names, source_parents, source_rest_offsets,
-            ),
-            tgt_match_names=canonical_match_names_from_raw_skeleton(
-                target_names, target_parents, target_rest_offsets,
-            ),
-            src_effective_root_index=source_effective_root_index,
+            src_match_names=source_match_names,
+            tgt_match_names=target_match_names,
+            src_effective_root_index=effective_root_argument,
             src_bone_translations=(
                 bone_translations.detach().cpu().numpy().astype(np.float64)
                 if bone_translations is not None else None
@@ -1092,7 +1132,7 @@ def retarget_glb_to_glb(
         bone_translations=bone_translations,
         export_mesh=export_mesh,
         coordinate_search=coordinate_search,
-        src_effective_root_index=source_effective_root_index,
+        src_effective_root_index=effective_root_argument,
     )
     if verbose:
         print(f"[retarget_glb] wrote {output_path}")
