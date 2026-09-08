@@ -691,7 +691,14 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
                 # with the resampled motion.
                 result['new_anim'] = _resample_animation(result['new_anim'], resample_min_length)
                 result['export_anim'] = _resample_animation(result['export_anim'], resample_min_length)
-                motion, _, _, _, is_loop, restripped = extract_motion_features_from_aligned_anims(
+                # ``force_strip``: these anims were already stripped by the first
+                # pass, so their XZ extent is ~0 and the re-gate would answer
+                # False -- which also skips the exact-zero write on the root
+                # velocity channel, leaving the strip/resample roundoff residue
+                # (~1e-8) inside a clip still flagged ``root_xz_stripped``.
+                # Carrying the verdict in re-applies both. OR still lets a clip
+                # the first pass left alone be stripped here on its own merits.
+                motion, _, motion_anim, motion_export_anim, is_loop, restripped = extract_motion_features_from_aligned_anims(
                     result['new_anim'],
                     result['export_anim'],
                     FOOT_CONTACT_VEL_THRESH,
@@ -700,11 +707,14 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
                     tp.foot_indices,
                     tp.orientation_quat,
                     result['translation_root_index'],
+                    force_strip=bool(result.get('root_xz_stripped')),
                 )
                 result['motion'] = motion
+                # Keep the stored anims the ones the features were built from, as
+                # the first pass does -- the BVH export must not drift from them.
+                result['new_anim'] = motion_anim
+                result['export_anim'] = motion_export_anim
                 result['is_loop'] = is_loop
-                # The anims here were already stripped by the first pass, so this
-                # re-gate never fires; OR keeps the original verdict.
                 result['root_xz_stripped'] = bool(result.get('root_xz_stripped')) or bool(restripped)
             result['canonical_names'] = list(object_cond['canonical_bvh_joint_names'])
             prepared_results.append(result)

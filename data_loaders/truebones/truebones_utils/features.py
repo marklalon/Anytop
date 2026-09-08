@@ -652,6 +652,8 @@ def extract_motion_features_from_aligned_anims(
     foot_indices,
     orientation_quat,
     translation_root_index,
+    *,
+    force_strip=False,
 ):
     feature_translation_root_index = int(translation_root_index)
     has_locomotion = False
@@ -661,7 +663,14 @@ def extract_motion_features_from_aligned_anims(
     # One gate: strip the root XZ only when the clip actually travels (> ~43% of
     # a body span). Smaller drifts are the motion itself; the old [0.08, 0.6]
     # "closed excursion" band was mostly striking/idle actions, not locomotion.
-    has_locomotion = xz_extent > ROOT_XZ_STRIP_THRESHOLD
+    #
+    # ``force_strip`` carries an earlier pass's verdict into a RE-extraction of
+    # anims that pass already stripped (the resample path). Their XZ extent is
+    # ~0, so re-gating on it answers False -- which would also skip the exact-zero
+    # write below and leave the strip/resample roundoff residue (~1e-8) in the
+    # root velocity channel of a clip still flagged ``root_xz_stripped``. The
+    # gate decides; this only says the decision was already made.
+    has_locomotion = bool(force_strip) or xz_extent > ROOT_XZ_STRIP_THRESHOLD
 
     if has_locomotion:
         motion_anim = strip_translation_root_xz(new_anim, feature_translation_root_index)

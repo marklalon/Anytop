@@ -342,3 +342,97 @@ def test_validator_checks_root_alignment_even_when_clip_was_not_stripped(capsys)
         1,
     )
     assert 'not the joint the features were built around' in capsys.readouterr().out
+
+
+# ── re-extraction after resampling keeps the exact zeros ───────────────────
+
+def _intermediate_root_anim(n_frames: int, path_xz: np.ndarray) -> Animation:
+    """A rig whose locomotion lives on joint 1, under a wrapper root that moves.
+
+    The KI_* characters are shaped like this. It matters because the strip has
+    to solve joint 1's translation in its PARENT's frame, so "global XZ == 0" is
+    a non-linear property of the channels that get interpolated -- unlike a
+    root-0 rig, where the channel IS the global position and stays zero
+    verbatim through a resample.
+    """
+    parents = np.array([-1, 0, 1], dtype=np.int64)
+    offsets = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    t = np.linspace(0.0, 1.0, num=n_frames)
+    rotations = Quaternions(
+        np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (n_frames, len(parents), 1))
+    )
+    rotations.qs[:, 0] = Quaternions.from_euler(
+        np.stack([0.4 * t, 1.1 * t, -0.3 * t], axis=-1)
+    ).qs
+    positions = np.zeros((n_frames, len(parents), 3))
+    positions[:, 0, 0] = 0.2 * t                 # the wrapper root drifts too
+    positions[:, 0, 1] = 0.5
+    positions[:, 0, 2] = -0.15 * t
+    positions[:, 1, 0] = path_xz[:, 0]
+    positions[:, 1, 2] = path_xz[:, 1]
+    positions[:, 1, 1] = 1.0 + 0.05 * np.sin(2.0 * np.pi * t)
+    positions[:, 2] = offsets[2]
+    return Animation(rotations, positions, Quaternions.id(len(parents)), offsets, parents)
+
+
+def _extract_at_root_1(anim, *, force_strip=False):
+    features, _max_joints, motion_anim, _export, _is_loop, stripped = extract_motion_features_from_aligned_anims(
+        anim,
+        anim,
+        foot_contact_vel_thresh=0.01,
+        object_type='TestSkeleton',
+        max_joints=8,
+        foot_indices=[2],
+        orientation_quat=Quaternions.id(1).qs[0],
+        translation_root_index=1,
+        force_strip=force_strip,
+    )
+    return features, motion_anim, stripped
+
+
+def test_resampled_reextraction_keeps_the_root_velocity_exactly_zero():
+    """The resample path re-extracts features from anims pass 1 already stripped.
+
+    Their XZ extent is ~0, so the gate re-computed from them answers False --
+    which used to skip the exact-zero write as well, leaving the strip/resample
+    roundoff residue in channels 9/11 of a clip still flagged as stripped.
+    ``force_strip`` carries pass 1's verdict in so both halves re-apply.
+    """
+    from data_loaders.truebones.truebones_utils.dataset_pipeline import _resample_animation
+
+    _features, stripped_anim, stripped = _extract_at_root_1(
+        _intermediate_root_anim(18, _travelling_path(18))
+    )
+    assert stripped is True
+
+    resampled = _resample_animation(stripped_anim, 20)
+
+    # Without the verdict the re-gate sees an already-stripped anim and declines,
+    # so the residue survives -- exactly what the dataset validator caught.
+    naive, _anim, naive_stripped = _extract_at_root_1(resampled)
+    assert naive_stripped is False
+    assert np.abs(naive[:, 1, [9, 11]]).max() > 0.0
+
+    forced, _anim, forced_stripped = _extract_at_root_1(resampled, force_strip=True)
+    assert forced_stripped is True
+    np.testing.assert_array_equal(forced[:, 1, [9, 11]], 0.0)   # terminal row included
+    np.testing.assert_array_equal(forced[:, 1, [0, 2]], 0.0)
+
+
+def test_force_strip_does_not_override_the_gate_for_an_in_place_clip():
+    """It only replays a decision already made; it is not a second gate."""
+    features, _anim, stripped = _extract_at_root_1(
+        _intermediate_root_anim(30, _closed_excursion(30, 0.3))
+    )
+
+    assert stripped is False
+    assert np.abs(features[:, 1, [9, 11]]).max() > 1e-4
+
+
+def test_resample_branch_carries_the_strip_verdict_into_reextraction():
+    import inspect
+
+    from data_loaders.truebones.truebones_utils import dataset_pipeline
+
+    source = inspect.getsource(dataset_pipeline._prepare_object_outputs)
+    assert "force_strip=bool(result.get('root_xz_stripped'))" in source

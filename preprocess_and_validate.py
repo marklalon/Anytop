@@ -1207,14 +1207,17 @@ def main() -> int:
     if args.motion_orientation_threshold < 0:
         print("ERROR: --motion-orientation-threshold must be >= 0")
         return 1
+    filter_matched_nothing = False
     if args.object_filter and not args.validate_only and not args.re_encode_joint_names_only:
         matched = _resolve_target_object_types(args.object_filter, args.raw_data_dir)
         if not matched:
+            # Non-fatal: like the incremental "no new source files" case, an unmatched
+            # filter simply means there is nothing to preprocess for this dataset.
+            filter_matched_nothing = True
             print(
-                f"ERROR: --filter '{args.object_filter}' matched no objects.\n"
+                f"[INFO] --filter '{args.object_filter}' matched no objects; nothing to preprocess.\n"
                 f"Available objects: {', '.join(_discover_all_objects(args.raw_data_dir))}"
             )
-            return 1
 
     # Handle re-encode joint names only mode
     if args.re_encode_joint_names_only:
@@ -1248,7 +1251,9 @@ def main() -> int:
     # Preprocess if not validate-only and there is something new to process.
     if not args.validate_only:
         if not objects_to_process:
-            if args.overwrite:
+            if filter_matched_nothing:
+                print(f"\nNo objects to process: --filter '{args.object_filter}' matched no objects.")
+            elif args.overwrite:
                 print("\nNo objects to process (filter matched no objects).")
             else:
                 print("\nNo objects to process: every targeted object is up to date "
