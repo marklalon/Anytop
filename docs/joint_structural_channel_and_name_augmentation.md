@@ -114,7 +114,7 @@ x = x + struct_latent[None, ...]
 必须遵守：
 
 - 使用正常参数初始化；
-- `joint_name_drop_prob` 和 `joint_name_drop_all_prob` 只丢名称，不丢结构；
+- `joint_name_drop_prob` 只丢名称，不丢结构；
 - padding 必须在 MLP 投影后通过 `joint_valid` 再次清零；
 - 不能用全零 name row 判断 padding，因为真实关节也可能没有有效名称。
 
@@ -255,10 +255,79 @@ A 的目标是降低模型对 canonical 名称点的过拟合。它不能保证�
 - slim 文本平均 1.898 token（上限 2），最长 4 token（`Left Lower Front Lip`），无结构派生词；
 - 1724 组同文本碰撞中，结构描述子**未解决 0 对**（阈值 5）；
 - padding latent 投影后严格为零，mixed batch 与单样本一致（1.2e-7）；
-- 唯一未通过项：磁盘上的 cond 仍是 schema 12，需重新生成。
+- 唯一未通过项：磁盘上的 cond 仍是 schema 12，需重新生成 —— 2026-09-07 已重新生成，现在 14/14 全通过。
+
+### 训练后验证结果
+
+cond 于 2026-09-07 20:07 重新生成（schema 14 / slim），`merged_locomotion_v6_jsc` 在其上训练满 200k 步（`joint_name_drop_prob=0.15`、struct schema 1、CKPT v4）。
+
+`tools/verify_joint_conditioning_posttrain.py --model_path save/merged_locomotion_v6_jsc/model000200000.pt --seeds 10,11,12`，8 个物种 × 3 seed × 5 个名称变体，每个变体与 intact 共用同一份扩散噪声：
+
+- **对照（`rerun`，同条件重采样）逐位为零**，所以任何偏差都确实来自名称通道。
+- **单关节改名**（把一条腿的 `Right Calf` 换成 `Left Forearm`）：位移偏差 0.002–0.015 倍骨架尺寸，弯曲方向一致率 1.00。
+- **全名盲测**（全部关节 → `unknown_joint_name`）：偏差 0.018–0.049，方向一致率 0.95–1.00，动作仍然成立。
+- **左右名互换**：偏差 0.011–0.060，方向一致率 0.94–1.00；关节角色保持率与"根本没有名字"时基本相同（Dog 0.67 vs 0.67，KI_Human 0.92 vs 1.00），说明左右角色不再由名字决定。Ostrich（0.72 vs 0.86）和 Centipede（0.80 vs 0.90）仍有残余名称依赖。
+- 覆盖人形、鸟形双足、四足、蛛形、多足、翼类、两种无 contact 标注的蛇形；蛇没有肢体铰链，方向/角色项按契约报 N/A 而不是伪造。
+
+### 通道归因消融（回答"是结构通道起作用，还是名称 dropout 起作用"）
+
+`--variants intact,rerun,blind,ood_name,struct_shuffle,blind_struct_shuffle`，同样 8 物种 × 3 seed。`struct_shuffle` 把结构描述子在有效关节之间**置换**（保持训练分布，只破坏"关节↔描述子"的对应），比置零更干净。
+
+| 干预 | 位移偏差 dev | 承重骨误差（Dog / Eagle / Centipede） |
+|---|---|---|
+| `rerun` 对照 | 0.000 | — |
+| `blind` 全部关节名消失 | 0.018–0.049 | 4.0 / 8.9 / 15.8 % |
+| `ood_name` 全部关节名换成未登记同义词 | 0.016–0.043 | 4.1 / 9.2 / 18.5 % |
+| `struct_shuffle` 结构置换、名字完好 | **0.074–0.269** | **31.9 / 41.9 / 49.0 %** |
+| `blind_struct_shuffle` 两者都毁 | 0.079–0.261 | 29.1 / 47.1 / 51.7 % |
+
+（intact 基线：3.8 / 9.0 / 16.6 %）
+
+结论：
+
+1. **结构通道是主要的逐关节身份信号。** 置换结构比删掉全部名字破坏大 4–10 倍；KI_Human 的弯曲方向一致率从 1.00 掉到 0.68。
+2. **结构一旦被打乱，名字在不在几乎没区别**（`struct_shuffle` ≈ `blind_struct_shuffle`），所以观察到的名称鲁棒性不能只归给名称 dropout —— dropout 会把模型推向 rest_pose/拓扑，不会让它去用这个新通道。
+3. **名字现在只是次要修饰。** 每物种改写 37–70 个关节名成未登记同义词，输出只移动 0.016–0.043，承重骨误差基本不变。
+4. 代价是依赖翻转了：结构通道现在是单点依赖。新骨架若 `contact_joints` 检测出错或 run 划分异常，不再有名字兜底。
+
+`struct_shuffle` 是上界估计——一个自相矛盾的信号可能比缺失信号更糟。
+
+### 翻转后的风险：结构通道的单点依赖与语义可控性
+
+`tools/verify_struct_dependency_risk.py`，6 物种 × 3 seed。所有结构故障都经过**真实的** `build_joint_struct_features` 重建，只替换 `joint_struct` 一路输入。
+
+**A. 结构检测出错时的降级**（dev = 位移偏差 / 骨架尺寸；对照：删掉全部名字 = 0.018–0.049，结构置换上界 = 0.074–0.269）
+
+| 故障 | dev 范围 | 承重骨误差（intact → 故障，最差物种） | 真实足端离地 |
+|---|---|---|---|
+| `contact_none` contact 全没检出 | 0.041–0.094 | 11.6 → 17.1 % | 基本不变 |
+| `contact_wrong` contact 落在错误叶子 | 0.046–0.117 | 9.0 → 17.1 % | 基本不变 |
+| `contact_one_side` 只检出一侧 | 0.029–0.088 | 11.6 → 13.7 % | 基本不变 |
+| `rest_lean` rest pose 前倾 20° | 0.013–0.064 | 8.1 → 9.6 % | 基本不变 |
+| `rest_mirror` rest pose 左右镜像 | **0.045–0.459** | **8.1 → 48.5 %** | 基本不变 |
+
+- **contact 检测出错是温和降级**，量级与"删掉全部关节名"相当，远低于结构置换的上界；而且**足端仍然落地**——contact 标注全丢或全错，真实足端的最低高度几乎不变（KI_Human 0.023→0.026/0.035，Dog 0.017→0.009/0.011）。落地行为由几何和 rest pose 兜底，不是只靠 contact 标志。
+- **唯一的悬崖是 `rest_mirror`**：KI_Human dev 0.459、承重骨误差 8.1%→48.5%，比结构置换还糟。需要注意这是**上界**：脚本只镜像了结构通道的输入，模型同时还从 `tpos_joint_embedding` 收到未镜像的 rest pose，两者互相矛盾。真实的朝向误检会让两者一起镜像，破坏应当小得多。结论是：**该防的不是"检测错了"，而是"结构通道与 rest pose 不一致"**。
+
+**B. 名字还能不能指定语义（"这是翅膀不是手臂"）**
+
+语料自带对照：Eagle 的翅膀链拼作 `Wing`，Ostrich 解剖学上同源的翅膀链拼作 `Forearm`。把各自改名成对方的写法：
+
+| 改名 | 肢体竖直摆幅 intact → 改名 | 变化 | 全身 dev |
+|---|---|---|---|
+| Eagle 12 个 `Wing` → `Forearm` | 0.4067 → 0.4065 | −0.1 % | 0.005 |
+| Ostrich 16 个 `Forearm` → `Wing` | 0.0464 → 0.0471 | +1.4 % | 0.008 |
+
+**名字已经基本不具备语义控制力**，两个方向都动不了肢体行为，全身偏差还低于"删掉全部名字"。
+
+但同一条肢体对**结构**有强响应：Ostrich 的翅膀摆幅在 `contact_none` 下 0.0464 → 0.0875（+89%），`contact_wrong` 下 → 0.0731（+58%）。也就是说"这条肢体是腿还是翅膀"现在由 `run_ends_contact` 回答，不由那个词回答。**新骨架上要让一条肢体表现得像翅膀，正确的杠杆是把它排除出 `contact_joints`，而不是给它改名。**
+
+第 5 项（绝对动作质量）和第 7 项（A 消融）**不作为结论**：前者没有可比基线（上一版 checkpoint 的 cond 是旧 schema，当前代码拒绝加载；文档要求的"训练前确定阈值"也没有确定），后者依赖未实现的 A。第 5 项的统计量仍与同物种真实 clip 的同一统计量并排写进 JSON，等有基线时可直接用。
 
 ### 未做
 
-- **cond 未重新生成。** 四个 cond.npy（merged / zoo / zoo_upgrade / unitybundles）仍是旧 schema，训练与生成都会硬失败，直到跑 `tools/regenerate_dataset_artifacts.py` 重编码 joint name embedding。
-- **未重训。** 第 5.2 节的全部训练后验证都还没有数据。
-- **A（同义增广）未实现。** 按第 4 节的顺序，它排在主方案训练之后，且依赖一份人工审核过的 alias 表。
+- **A（同义增广）未实现，且按当前证据不建议做。** 它的目标是"降低模型对 canonical 名称点的过拟合"，而 `ood_name` 显示这种过拟合已经基本不存在：整副骨架改名成未登记同义词的代价与删掉全部名字同量级。A 的成本（人工审核的 alias 表 + 侧别安全性 + 新 sidecar 契约）与剩余收益不匹配。若仍要做，最小可行范围是只针对残余的左右名称依赖（Ostrich 0.72、Centipede 0.80），而不是全词表。
+- **第 5.2 节第 5、7 项没有结论。** 需要一个用同一 cond schema 训练的对照 checkpoint，以及事先约定的质量阈值。
+- **结构通道与 rest pose 的一致性没有守卫。** 上面的 `rest_mirror` 说明两者矛盾时输出崩坏（承重骨误差 48.5%）；`build_joint_struct_features` 与 `tpos_joint_embedding` 读的是同一个 cond 字段，所以正常管线难以产生这种矛盾，但 `process_new_skeleton` 之后值得加一条断言。
+- **`_contact_flags` 用 `cond.get('contact_joints') or []` 取值**，传 ndarray 会抛 "truth value of an array is ambiguous"。现在只因为 cond 里存的是 list 才没暴露。
+- **名字的语义控制力已接近零**，文档第 2 节"让文本负责关节是什么身体部位"这一半目标没有达成——身体部位实际上也由结构决定了。若确实需要按语义指定肢体角色，杠杆是 `contact_joints`。

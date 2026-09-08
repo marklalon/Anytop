@@ -79,17 +79,12 @@ class AnyTop(nn.Module):
                 f"species_cfg_drop_prob must be in [0, 1], got {self.species_cfg_drop_prob}"
             )
         self.species_joint_cond=bool(kargs.get('species_joint_cond', False))
-        # Whole-joint name dropout (see InputProcess). Both default to 0.0 so an
+        # Whole-joint name dropout (see InputProcess). It defaults to 0.0 so an
         # existing checkpoint rebuilds bit-identically and gains no state_dict key.
         self.joint_name_drop_prob=float(kargs.get('joint_name_drop_prob', 0.0))
-        self.joint_name_drop_all_prob=float(kargs.get('joint_name_drop_all_prob', 0.0))
         if not 0.0 <= self.joint_name_drop_prob <= 1.0:
             raise ValueError(
                 f"joint_name_drop_prob must be in [0, 1], got {self.joint_name_drop_prob}"
-            )
-        if not 0.0 <= self.joint_name_drop_all_prob <= 1.0:
-            raise ValueError(
-                f"joint_name_drop_all_prob must be in [0, 1], got {self.joint_name_drop_all_prob}"
             )
         self.loop_cond_prob=float(kargs.get('loop_cond_prob', 1.0))
         # Action-label conditioning: a single pathway -- the frozen T5 vectors of
@@ -130,7 +125,7 @@ class AnyTop(nn.Module):
             )
 
         self.input_process = InputProcess(self.input_feats, self.root_input_feats, self.latent_dim, t5_out_dim, dropout_prob=self.dropout, species_joint_cond=self.species_joint_cond,
-                                          joint_name_drop_prob=self.joint_name_drop_prob, joint_name_drop_all_prob=self.joint_name_drop_all_prob)
+                                          joint_name_drop_prob=self.joint_name_drop_prob)
         if self.loop_cond_prob > 0.0:
             self.loop_condition_projection = nn.Sequential(
                 nn.Linear(1, self.latent_dim),
@@ -1021,7 +1016,7 @@ _T5_JOINT_NAME_ELEMENT_STD = 0.143
 # embed each joint of each frame of each motion in batch by the same MLP, separately !
 class InputProcess(nn.Module):
     def __init__(self, input_feats, root_input_feats, latent_dim, t5_output_dim, dropout_prob=0, species_joint_cond=False,
-                 joint_name_drop_prob=0.0, joint_name_drop_all_prob=0.0):
+                 joint_name_drop_prob=0.0):
         super().__init__()
         self.input_feats = input_feats
         self.latent_dim = latent_dim
@@ -1039,12 +1034,10 @@ class InputProcess(nn.Module):
         # is the only per-joint identity signal in the token (it is added straight
         # onto x below), which is why a single rare token -- Mixamo's "LeftLeg"
         # landing next to "Left Arm" in T5 space -- can flip a whole limb's motion
-        # prior. Dropping the entire row for a random subset of joints (and, with
-        # joint_name_drop_all_prob, for a whole skeleton at once) demotes the name
-        # from sole signal to one signal among several.
+        # prior. Dropping the entire row for a random subset of joints demotes the
+        # name from sole signal to one signal among several.
         self.joint_name_drop_prob = float(joint_name_drop_prob)
-        self.joint_name_drop_all_prob = float(joint_name_drop_all_prob)
-        if self.joint_name_drop_prob > 0.0 or self.joint_name_drop_all_prob > 0.0:
+        if self.joint_name_drop_prob > 0.0:
             # A learned substitute rather than zeros: truebones_batch_collate leaves
             # the rows past n_joints at zero, so an all-zero name row ALREADY means
             # "padding". Dropping to zero would make a live joint indistinguishable
@@ -1088,7 +1081,7 @@ class InputProcess(nn.Module):
         # and signed lateral offset, its sibling rank) projected into the token
         # alongside the name. Ordinary init, NOT zero: this is meant to carry
         # signal from step one, and it is the only per-joint identity left when
-        # joint_name_drop_all_prob blanks every name in a skeleton.
+        # joint_name_drop_prob blanks a joint's name.
         self.struct_embedding = nn.Sequential(
             nn.Linear(JOINT_STRUCT_DIM, self.latent_dim),
             nn.GELU(),
@@ -1098,11 +1091,9 @@ class InputProcess(nn.Module):
     def _drop_joint_names(self, joints_clean, joint_valid):
         """Replace whole joint-name rows with the learned `unknown` vector.
 
-        Two independent draws per step: a per-(sample, joint) Bernoulli at
-        ``joint_name_drop_prob``, and a per-sample one at
-        ``joint_name_drop_all_prob`` that blanks every name in that skeleton --
-        the harder regime, where the only way to place a joint is the rest pose
-        and the topology.
+        A per-(sample, joint) Bernoulli at ``joint_name_drop_prob`` blanks the
+        name of a random subset of joints, leaving rest pose and the topology as
+        the other per-joint identity signals.
 
         No 1/(1-p) rescale: this substitutes one token for another rather than
         zeroing a fraction of a vector, so the expected input is not shrunk and
@@ -1116,11 +1107,10 @@ class InputProcess(nn.Module):
             return joints_clean
         batch_size, joint_count = joints_clean.shape[0], joints_clean.shape[1]
         rand_kwargs = {'device': joints_clean.device, 'dtype': joints_clean.dtype}
-        drop_all = torch.rand(batch_size, 1, **rand_kwargs) < self.joint_name_drop_all_prob
-        drop_one = torch.rand(batch_size, joint_count, **rand_kwargs) < self.joint_name_drop_prob
+        drop = torch.rand(batch_size, joint_count, **rand_kwargs) < self.joint_name_drop_prob
         # Padding rows stay exactly zero: substituting there would put content in
         # slots that carry none, and the zero row is what marks them.
-        drop = (drop_all | drop_one) & joint_valid
+        drop = drop & joint_valid
         substitute = self.unknown_joint_name.to(joints_clean.dtype).expand(batch_size, joint_count, -1)
         return torch.where(drop.unsqueeze(-1), substitute, joints_clean)
 

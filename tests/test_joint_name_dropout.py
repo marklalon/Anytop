@@ -51,7 +51,7 @@ class _ProbeHead(torch.nn.Module):
         return self.real(inp)
 
 
-def _make_model(joint_name_drop_prob=0.0, joint_name_drop_all_prob=0.0,
+def _make_model(joint_name_drop_prob=0.0,
                 species_joint_cond=False, max_joints=4):
     return AnyTop(
         max_joints=max_joints,
@@ -65,7 +65,6 @@ def _make_model(joint_name_drop_prob=0.0, joint_name_drop_all_prob=0.0,
         t5_out_dim=T5_DIM,
         species_joint_cond=species_joint_cond,
         joint_name_drop_prob=joint_name_drop_prob,
-        joint_name_drop_all_prob=joint_name_drop_all_prob,
     )
 
 
@@ -115,14 +114,11 @@ class JointNameDropoutTest(unittest.TestCase):
         model = AnyTop(max_joints=4, feature_len=13, latent_dim=8, ff_size=32,
                        num_layers=1, num_heads=2, dropout=0.0, cross_limb=True)
         self.assertEqual(model.joint_name_drop_prob, 0.0)
-        self.assertEqual(model.joint_name_drop_all_prob, 0.0)
         self.assertIsNone(model.input_process.unknown_joint_name)
 
     def test_invalid_probs_rejected(self):
         with self.assertRaises(ValueError):
             _make_model(joint_name_drop_prob=1.5)
-        with self.assertRaises(ValueError):
-            _make_model(joint_name_drop_all_prob=-0.1)
 
     def test_state_dict_key_only_when_enabled(self):
         """An existing checkpoint must rebuild with no extra key: load_model is
@@ -140,20 +136,11 @@ class JointNameDropoutTest(unittest.TestCase):
         self.assertGreater(float(ip.unknown_joint_name.detach().norm()), 1.0)
 
     def test_eval_keeps_every_name(self):
-        ip = _make_model(joint_name_drop_prob=1.0, joint_name_drop_all_prob=1.0).input_process
+        ip = _make_model(joint_name_drop_prob=1.0).input_process
         ip.eval()
         _, _, joints, _ = _joint_cond_inputs()
         valid = torch.ones(joints.shape[:2], dtype=torch.bool)
         self.assertTrue(torch.equal(ip._drop_joint_names(joints, valid), joints))
-
-    def test_drop_all_replaces_every_valid_name(self):
-        ip = _make_model(joint_name_drop_all_prob=1.0).input_process
-        ip.train()
-        _, _, joints, _ = _joint_cond_inputs()
-        valid = torch.ones(joints.shape[:2], dtype=torch.bool)
-        dropped = ip._drop_joint_names(joints, valid)
-        expected = ip.unknown_joint_name.expand_as(joints)
-        self.assertTrue(torch.allclose(dropped, expected))
 
     def test_substitute_is_not_rescaled(self):
         """A token substitution, not a variance-preserving dropout: the dropped
@@ -166,7 +153,7 @@ class JointNameDropoutTest(unittest.TestCase):
         self.assertTrue(torch.allclose(dropped[0, 0], ip.unknown_joint_name))
 
     def test_padding_rows_are_untouched(self):
-        ip = _make_model(joint_name_drop_prob=1.0, joint_name_drop_all_prob=1.0).input_process
+        ip = _make_model(joint_name_drop_prob=1.0).input_process
         ip.train()
         _, _, joints, _ = _joint_cond_inputs()
         valid = torch.tensor([[True, True, False, False],
@@ -189,7 +176,7 @@ class JointNameDropoutTest(unittest.TestCase):
         """The leak this ordering exists to prevent: if the species FiLM head read
         the pre-drop copy it would hand the model the very name just withheld,
         and the whole mechanism would be a no-op under --species_joint_cond."""
-        model = _make_model(joint_name_drop_all_prob=1.0, species_joint_cond=True)
+        model = _make_model(joint_name_drop_prob=1.0, species_joint_cond=True)
         ip = model.input_process
         probe = _ProbeHead(ip.species_film_j)
         ip.species_film_j = probe
@@ -207,7 +194,7 @@ class JointNameDropoutTest(unittest.TestCase):
         """End to end: AnyTop.forward must read per-joint validity off the
         padding mask's [1:, 1:] diagonal, so the padded joint of the second
         sample keeps its (zero) name row."""
-        model = _make_model(joint_name_drop_all_prob=1.0, max_joints=4)
+        model = _make_model(joint_name_drop_prob=1.0, max_joints=4)
         model.train()
         captured = {}
         real = model.input_process.forward
