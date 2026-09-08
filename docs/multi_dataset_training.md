@@ -297,7 +297,7 @@ shutil.copy2(args.cond_path, os.path.join(save_dir, 'cond.npy'))
 | `param_utils.DEFAULT_DATASET_DIR` | 保留，仅作预处理/工具的默认值，不再被训练/推理引用 |
 | `tools/check_bone_length_drift.py`、`tools/restore_glb_from_npy.py`、`tools/simulate_corrupted_motion.py`、`tools/visualize_joint_name_embeddings.py`、`tools/extract_action_categories.py` | 硬编码 cond 路径 → 统一 `--cond-path`（默认 checkpoint 同目录 cond.npy） |
 | [utils/validate_anytop_dataset.py](../utils/validate_anytop_dataset.py) | 新增 `--datasets`，逐源循环校验（单源行为不变） |
-| `utils/auto_retarget.py` | `auto_retarget_pipeline` / `rank_donors` 已移除，donor 读 `motions/` 的依赖随之消失 —— 无需改动 |
+| `utils/retarget_pipeline.py`（原 `auto_retarget.py`） | `auto_retarget_pipeline` / `rank_donors` 已移除，donor 读 `motions/` 的依赖随之消失 —— 无需改动 |
 | `data_bridge/restore_glb_from_anytop.py` | 离线工具，读 `tpose_reference_paths.jsonl` + 原始 mesh，仍按单数据集目录运行，不改 |
 | `train.bat` | 增加 `--cond_path` |
 

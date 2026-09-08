@@ -1,6 +1,6 @@
 """Shared retarget helpers for the cross-species reference retarget flow.
 
-High-level retarget orchestration on top of the ``utils/retarget`` core
+High-level retarget orchestration on top of the ``utils/retarget_core``
 (one-way: this module imports the core, never the other way around).
 
 Used by:
@@ -222,7 +222,7 @@ def retarget_features_npy_to_target(
     Returns:
         (F, J_tgt, 13) retargeted feature array, or None if the retarget failed.
     """
-    from utils.retarget import retarget_world_space_np
+    from utils.retarget_core import retarget_world_space_np
     from utils.exporter import animation_to_exporter_inputs
     from utils.roundtrip_common import build_skeleton
     from data_loaders.truebones.truebones_utils.features import (
@@ -748,7 +748,7 @@ _NATIVE_TGT_FACE_HINT = '__retarget_glb_target__'
 
 def _native_rest_positions(parents, offsets, rest_rotations) -> np.ndarray:
     """Return the (J, 3) bind-pose world positions of a native-space skeleton."""
-    from utils.retarget import batch_forward_kinematics_np
+    from utils.retarget_core import batch_forward_kinematics_np
 
     joint_count = len(parents)
     identity_rotations = np.zeros((1, joint_count, 4), dtype=np.float64)
@@ -825,7 +825,7 @@ def _native_ground_shift(
     from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
         infer_contact_joints,
     )
-    from utils.retarget import generate_coordinate_candidates_np
+    from utils.retarget_core import generate_coordinate_candidates_np
 
     target_parents = np.asarray(target_parents, dtype=np.int32)
     foot_indices, _contact_source = infer_contact_joints(
@@ -936,7 +936,7 @@ def retarget_glb_to_glb(
 
     from motion_lib import FBX
     from utils.exporter import AnimationExporter, animation_to_exporter_inputs
-    from utils.retarget import retarget_world_space_np
+    from utils.retarget_core import retarget_world_space_np
     from utils.roundtrip_common import build_skeleton
     from utils.rotation_numpy import (
         quat_conjugate_wxyz_np,

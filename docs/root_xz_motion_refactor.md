@@ -586,7 +586,7 @@ content 判据把这两类混为一谈，等于给诚实样本贴上"不可信"�
 
 - `motion_labels['root_xz_stripped'] = has_locomotion`，直接取
   `extract_motion_features_from_aligned_anims` 的门 A 判定并沿
-  `get_motion` 返回（元组 8 → 9，顺带修了 `utils/auto_retarget.py` 两处
+  `get_motion` 返回（元组 8 → 9，顺带修了 `utils/retarget_pipeline.py`（原 `auto_retarget.py`）两处
   `*_unused, x, y` 尾部解包 —— 追加字段会被它们静默吃掉）。
 - **`ROOT_XZ_ZERO_EPS` / `motion_root_xz_is_zero` 全部删除**。provenance 是管线自己
   知道的确定布尔量，不需要阈值；§2.4 那整套 epsilon 讨论随之作废。

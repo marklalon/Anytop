@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 # Ensure both the Anytop dir (for bare ``utils.*`` / ``data_loaders.*`` imports)
 # and its parent (for ``utils.*`` imports made by submodules like
-# ``utils/retarget.py``) are on sys.path when running as a script. Insert
+# ``utils/retarget_core.py``) are on sys.path when running as a script. Insert
 # repo-root first then Anytop second so Anytop's ``utils/`` wins over the
 # unrelated ``<repo_root>/utils/`` directory for bare imports.
 _ANYTOP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -405,11 +405,11 @@ def _retarget_reference_motion(
 ):
     """Retarget a reference motion .npy from ``source_type`` to ``target_type``.
 
-    Thin wrapper around ``utils.auto_retarget.retarget_features_npy_to_target``.
+    Thin wrapper around ``utils.retarget_pipeline.retarget_features_npy_to_target``.
     Loads source features, builds target TPoseFeatures, delegates the math, then
     writes the retargeted .npy and an inspection .bvh under ``output_dir``.
     """
-    from utils.auto_retarget import (
+    from utils.retarget_pipeline import (
         retarget_features_npy_to_target,
     )
 
@@ -493,7 +493,7 @@ def _retarget_reference_motion_from_file(
 ):
     """Retarget raw .fbx/.glb/.gltf onto target_type (cond-free source).
     Only the target's cond/T-pose is required."""
-    from utils.auto_retarget import (
+    from utils.retarget_pipeline import (
         retarget_animation_file_to_target,
     )
 

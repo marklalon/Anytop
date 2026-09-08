@@ -162,7 +162,7 @@ def main() -> None:
     if suffix == '.npy':
         # Feature-space .npy source: infer source object_type from filename,
         # then delegate to retarget_features_npy_to_target.
-        from utils.auto_retarget import retarget_features_npy_to_target
+        from utils.retarget_pipeline import retarget_features_npy_to_target
 
         src_type = infer_object_type_from_filename(
             source_path,
@@ -198,7 +198,7 @@ def main() -> None:
             )
     else:
         # Raw animation file (.glb/.fbx/.gltf): cond-free on the source side.
-        from utils.auto_retarget import retarget_animation_file_to_target
+        from utils.retarget_pipeline import retarget_animation_file_to_target
 
         print(f'[retarget CLI] Retargeting {source_path} → {target_type}')
         raw_src_type = infer_object_type_from_filename(

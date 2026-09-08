@@ -40,10 +40,10 @@ from data_loaders.truebones.truebones_utils.features import (
     recover_animation_from_motion_np,
 )
 from data_loaders.truebones.truebones_utils.animation_utils import find_translation_root
-import utils.retarget as retarget_mod
-from utils.auto_retarget import build_tpose_aligned_target_animation
-from utils.auto_retarget import canonical_match_names_from_raw_skeleton
-from utils.auto_retarget import retarget_features_npy_to_target
+import utils.retarget_core as retarget_mod
+from utils.retarget_pipeline import build_tpose_aligned_target_animation
+from utils.retarget_pipeline import canonical_match_names_from_raw_skeleton
+from utils.retarget_pipeline import retarget_features_npy_to_target
 from utils.rotation_numpy import (
     quat_conjugate_wxyz_np,
     quat_multiply_wxyz_np,
@@ -746,14 +746,14 @@ def test_retarget_features_npy_to_target_encodes_feature_space_animation_directl
     target T-pose rest rotations a second time.
     """
     import importlib
-    import utils.auto_retarget as auto_retarget_mod
+    import utils.retarget_pipeline as auto_retarget_mod
     import utils.exporter as exporter_mod
-    import utils.retarget as retarget_mod
+    import utils.retarget_core as retarget_mod
     import utils.roundtrip_common as roundtrip_common_mod
     import data_loaders.truebones.truebones_utils.features as features_mod
 
     sys.modules['utils.exporter'] = exporter_mod
-    sys.modules['utils.retarget'] = retarget_mod
+    sys.modules['utils.retarget_core'] = retarget_mod
     sys.modules['utils.roundtrip_common'] = roundtrip_common_mod
     importlib.invalidate_caches()
 
@@ -835,7 +835,7 @@ def test_retarget_features_npy_to_target_uses_effective_root_override(
     import data_loaders.truebones.truebones_utils.features as features_mod
     import utils.exporter as exporter_mod
     import utils.roundtrip_common as roundtrip_common_mod
-    import utils.auto_retarget as auto_retarget_mod
+    import utils.retarget_pipeline as auto_retarget_mod
 
     sentinel_anim = Animation(
         Quaternions(np.tile(_identity_quat(2)[None, :, :], (1, 1, 1))),
@@ -1520,7 +1520,7 @@ def _floating_anim(foot_height: float):
 
 def test_bake_foot_floor_offset_single_foot_still_aligns_to_zero() -> None:
     from motion_lib.Animation import positions_global
-    from utils.auto_retarget import bake_foot_floor_offset
+    from utils.retarget_pipeline import bake_foot_floor_offset
 
     anim = _floating_anim(foot_height=0.75)
     # Sanity: foot floats at 0.75 before flooring.
@@ -1535,7 +1535,7 @@ def test_bake_foot_floor_offset_single_foot_still_aligns_to_zero() -> None:
 
 def test_bake_foot_floor_offset_noop_without_contacts() -> None:
     from motion_lib.Animation import positions_global
-    from utils.auto_retarget import bake_foot_floor_offset
+    from utils.retarget_pipeline import bake_foot_floor_offset
 
     for foot_indices in (None, [], np.array([], dtype=np.int64)):
         anim = _floating_anim(foot_height=0.75)
@@ -1547,7 +1547,7 @@ def test_bake_foot_floor_offset_noop_without_contacts() -> None:
 def test_bake_foot_floor_offset_lifts_sunken_skeleton() -> None:
     # A foot below the floor (negative height) is lifted up to 0.
     from motion_lib.Animation import positions_global
-    from utils.auto_retarget import bake_foot_floor_offset
+    from utils.retarget_pipeline import bake_foot_floor_offset
 
     anim = _floating_anim(foot_height=-0.4)
     bake_foot_floor_offset(anim, foot_indices=[2])
@@ -1557,7 +1557,7 @@ def test_bake_foot_floor_offset_lifts_sunken_skeleton() -> None:
 def test_bake_foot_floor_offset_uses_median_of_per_joint_mins() -> None:
     # Two feet at different heights: the median of per-joint minimums aligns.
     from motion_lib.Animation import Animation, positions_global
-    from utils.auto_retarget import bake_foot_floor_offset
+    from utils.retarget_pipeline import bake_foot_floor_offset
 
     # 5-joint skeleton: Root(0) -> LeftMid(1) -> LeftFoot(2), Root -> RightMid(3) -> RightFoot(4)
     parents = np.array([-1, 0, 1, 0, 3], dtype=np.int32)

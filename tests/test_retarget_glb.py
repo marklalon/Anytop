@@ -59,7 +59,7 @@ def _root_world_xz_extent(glb_path: str) -> np.ndarray:
 
 
 def _run_self_retarget(source_glb: str, output_dir: str) -> str:
-    from utils.auto_retarget import retarget_glb_to_glb
+    from utils.retarget_pipeline import retarget_glb_to_glb
 
     output_glb = os.path.join(output_dir, "self_retarget.glb")
     return retarget_glb_to_glb(

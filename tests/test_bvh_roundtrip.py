@@ -159,7 +159,7 @@ def main() -> None:
     import numpy as np
 
     from utils.exporter import AnimationExporter
-    from utils.retarget import batch_forward_kinematics_np
+    from utils.retarget_core import batch_forward_kinematics_np
     from utils.rotation_numpy import quat_rotate_wxyz_np
 
     device = torch.device("cpu")

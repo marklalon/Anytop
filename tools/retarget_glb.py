@@ -159,7 +159,7 @@ def main() -> None:
 
     coordinate_search = {"auto": None, "on": True, "off": False}[args.coordinate_search]
 
-    from utils.auto_retarget import retarget_glb_to_glb
+    from utils.retarget_pipeline import retarget_glb_to_glb
 
     retarget_glb_to_glb(
         source_path,

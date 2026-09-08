@@ -8,8 +8,8 @@ cross-species reference-motion path in ``sample/generate.py`` — can run the
 same retargeting without depending on ``bpy``.
 
 Dependency direction (one-way): the high-level orchestration in
-``utils/auto_retarget.py`` imports this core, and the file-level CLI lives
-in ``tools/retarget_npy.py``. This module never imports ``auto_retarget``.
+``utils/retarget_pipeline.py`` imports this core, and the file-level CLI lives
+in ``tools/retarget_npy.py``. This module never imports the pipeline.
 """
 from __future__ import annotations
 
