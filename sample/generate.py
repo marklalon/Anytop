@@ -922,8 +922,7 @@ def _generate_all_species(
                     model_kwargs, sample_idx,
                     fallback=sp_entry.get('translation_root_index', 0),
                 )
-                if getattr(args, 'loop', False):
-                    _close_loop_root_xz_via_velocity(motion_np, translation_root_index)
+                _zero_root_ric_xz(motion_np, translation_root_index)
 
                 joint_names = sp_entry.get(
                     'canonical_bvh_joint_names', sp_entry['joints_names'],
@@ -1623,8 +1622,7 @@ def main(args=None, cond_dict=None, runtime=None):
                     f'    Inpaint reseat: shifted regenerated subtree world-Y by '
                     f'{reseat_delta:+.4f} to re-ground onto the reference'
                 )
-        if getattr(args, 'loop', False):
-            _close_loop_root_xz_via_velocity(motion_np, translation_root_index)
+        _zero_root_ric_xz(motion_np, translation_root_index)
 
         offsets = cond_dict[object_type]['offsets']
 
@@ -1837,33 +1835,25 @@ def _reground_inpaint_joint_y(motion_np, ref_motion_np, free_joint_indices, pare
     return delta
 
 
-def _close_loop_root_xz_via_velocity(motion_np, translation_root_index):
-    """Close loop root XZ drift by distributing velocity residual across frames.
-    Zeroes the root RIC X/Z (ch 0, 2) and subtracts mean vel-XZ residual (ch 9, 11)
-    so the integrated endpoint matches the start."""
+def _zero_root_ric_xz(motion_np, translation_root_index):
+    """Clear the translation root's RIC X/Z channels before export.
 
+    ch0/ch2 of the root are structurally zero (get_rifke subtracts its own XZ
+    from every joint); the world XZ path lives in ch9/ch11, which the exporter
+    integrates into r_pos. Model noise in ch0/ch2 would offset the whole
+    skeleton away from that path, so it is cleared. Unconditional: the old
+    --loop-only drift-cancelling step is gone, and root XZ is now integrated
+    the same way for looping and non-looping samples alike.
+    """
     if motion_np.ndim != 3:
         return
-    frame_count, joint_count, feature_count = motion_np.shape
+    _frame_count, joint_count, feature_count = motion_np.shape
     root_index = int(translation_root_index)
-    if frame_count < 2 or feature_count < 12 or root_index < 0 or root_index >= joint_count:
+    if feature_count < 12 or root_index < 0 or root_index >= joint_count:
         return
 
     motion_np[:, root_index, 0] = 0.0
     motion_np[:, root_index, 2] = 0.0
-
-    transition_count = frame_count - 1
-    drift_x = np.sum(motion_np[:-1, root_index, 9], dtype=np.float64)
-    drift_z = np.sum(motion_np[:-1, root_index, 11], dtype=np.float64)
-    if abs(drift_x) <= 1e-8 and abs(drift_z) <= 1e-8:
-        motion_np[-1, root_index, 9] = 0.0
-        motion_np[-1, root_index, 11] = 0.0
-        return
-
-    motion_np[:-1, root_index, 9] -= np.asarray(drift_x / transition_count, dtype=motion_np.dtype)
-    motion_np[:-1, root_index, 11] -= np.asarray(drift_z / transition_count, dtype=motion_np.dtype)
-    motion_np[-1, root_index, 9] = 0.0
-    motion_np[-1, root_index, 11] = 0.0
 
 
 def _get_batch_translation_root_index(model_kwargs, sample_idx, fallback=0):
@@ -2307,6 +2297,10 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
         metadata = {
             'is_loop': bool(loop),
             'loop_full_cycle': bool(loop),
+            # Always False and deliberately not a flag: generation always wants
+            # the honest trajectory, and how far the root travels is already
+            # implied by the action label and --loop.
+            'root_xz_stripped': False,
             'translation_root_index': cond_dict[object_type].get('translation_root_index', 0),
         }
         if loop:

@@ -28,7 +28,7 @@ REM Dragon, Bird, Camel, ...) to train on that species' actions only.
 	--action_label_cond ^
 	--species_cond ^
 	--species_joint_cond ^
-	--loop_cond_prob 0.5 ^
+	--loop_cond_prob 0.8 ^
 	--cross_limb_dim 128 ^
 	--cross_limb_last_n 4 ^
 	--diffusion_steps 100 ^

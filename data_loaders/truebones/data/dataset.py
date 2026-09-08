@@ -946,6 +946,9 @@ class MotionDataset(data.Dataset):
             loop_applied = True
 
         motion_metadata['is_loop'] = bool(loop_condition_active)
+        # Normalized to a bool on every item so the collate's key set stays
+        # constant (a fluctuating key retriggers torch.compile recompilation).
+        motion_metadata['root_xz_stripped'] = bool(motion_metadata.get('root_xz_stripped', False))
         motion_metadata['loop_full_cycle'] = bool(loop_full_cycle)
         motion_metadata['playspeed_cond'] = float(playspeed_cond)
         motion_metadata['loop_data_aug_applied'] = bool(is_loop)

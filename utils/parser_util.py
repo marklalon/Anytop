@@ -34,7 +34,14 @@ ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 # per-joint STRUCTURAL channel with its own MLP (joint_struct_features). A v3
 # checkpoint's text_embedding was fitted on the long sentences and it has no
 # struct_embedding at all.
-CKPT_VERSION = 4
+# 5: root XZ motion is kept instead of stripped. The [0.08, 0.6] "ambiguous
+# band" strip fired on 22% of every clip -- 90% of them stationary -- so a v4
+# checkpoint was fitted on data where in-place actions had their root welded to
+# the origin, and it has no root_xz_strip_projection to be told which clips had
+# their trajectory deleted. Generation also changed: root XZ is now integrated
+# from the velocity channels for looping samples too, instead of being forced
+# to net zero.
+CKPT_VERSION = 5
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise

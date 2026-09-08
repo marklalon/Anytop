@@ -620,7 +620,7 @@ def retarget_animation_file_to_target(
 
     if target_source_basis_available:
         squared_positions_error = {}
-        source_features, *_unused, source_effective_root_index, _source_root_xz = get_motion(
+        source_features, *_unused, source_effective_root_index, _source_root_xz, _source_stripped = get_motion(
             source_motion_path,
             FOOT_CONTACT_VEL_THRESH,
             target_object_type,
@@ -699,7 +699,7 @@ def retarget_animation_file_to_target(
     }
 
     squared_positions_error = {}
-    source_features, *_unused, source_effective_root_index, _source_root_xz = get_motion(
+    source_features, *_unused, source_effective_root_index, _source_root_xz, _source_stripped = get_motion(
         source_motion_path,
         FOOT_CONTACT_VEL_THRESH,
         _SRC_FACE_HINT,

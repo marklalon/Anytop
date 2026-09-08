@@ -809,7 +809,7 @@ def test_retarget_features_npy_to_target_encodes_feature_space_animation_directl
     def _fake_get_motion(anim, *args, **kwargs):
         captured['anim'] = anim
         captured['kwargs'] = kwargs
-        return np.zeros((1, 2, 13), dtype=np.float32), None, None, None, None, None, None, None
+        return np.zeros((1, 2, 13), dtype=np.float32), None, None, None, None, None, None, None, False
 
     monkeypatch.setattr(features_mod, 'get_motion', _fake_get_motion)
 

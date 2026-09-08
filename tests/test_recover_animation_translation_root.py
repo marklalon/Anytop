@@ -364,7 +364,7 @@ def test_feature_roundtrip_preserves_dataset_motion_features(object_type: str, m
     # Rest-pose features come straight from cond (no T-pose mesh access).
     tp = tpose_features_from_cond(cond, object_type)
     squared_positions_error: dict[str, float] = {}
-    rebuilt, _parents, _max_joints, _feature_anim, _export_anim, _is_loop, _translation_root_index, _root_translation_xz = get_motion(
+    rebuilt, _parents, _max_joints, _feature_anim, _export_anim, _is_loop, _translation_root_index, _root_translation_xz, _root_xz_stripped = get_motion(
         anim,
         FOOT_CONTACT_VEL_THRESH,
         object_type,

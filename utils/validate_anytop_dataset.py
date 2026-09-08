@@ -506,6 +506,41 @@ def _validate_root_motion_extent(
         )
 
 
+def _validate_root_xz_stripped_flag(
+    motion: np.ndarray,
+    motion_name: str,
+    motion_metadata: dict,
+    translation_root_index: int,
+) -> None:
+    """Check the ``root_xz_stripped`` flag against the tensor it labels.
+
+    One direction, and exact: stripping writes literal 0.0, so a flagged clip
+    must carry no root XZ velocity. The converse is not an error -- a clip
+    authored in place is honest data that sits at zero.
+
+    The metadata root is the per-species canonical value; clips whose features
+    were built around a different joint are reported separately, not as a flag
+    error.
+    """
+    if not motion_metadata.get("root_xz_stripped"):
+        return
+    ric_root_xz = float(np.max(np.abs(motion[:, translation_root_index][:, [0, 2]])))
+    if ric_root_xz > 1e-6:
+        print_warn(
+            f"{motion_name}: metadata translation_root_index {translation_root_index} is not the "
+            f"joint the features were built around (its RIC XZ reaches {ric_root_xz:.3g}, "
+            f"expected 0) — root_xz_stripped not checked"
+        )
+        return
+    observed = float(np.max(np.abs(motion[:, translation_root_index][:, [9, 11]])))
+    if observed != 0.0:
+        print_warn(
+            f"{motion_name}: root_xz_stripped=True but the root still carries XZ velocity "
+            f"(max {observed:.3g}, stripping writes exact zeros) — the flag disagrees "
+            f"with the features it labels"
+        )
+
+
 def validate_motion_files(
     motions_dir: Path,
     bvhs_dir: Path,
@@ -585,6 +620,13 @@ def validate_motion_files(
                 root_motion_threshold,
                 translation_root_index,
                 ignored_stems=ignored_stems,
+            )
+
+            _validate_root_xz_stripped_flag(
+                motion,
+                motion_path.name,
+                motion_metadata,
+                translation_root_index,
             )
 
             if check_motion_orientation:

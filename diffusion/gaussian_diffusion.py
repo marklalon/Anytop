@@ -441,7 +441,7 @@ class GaussianDiffusion:
         # model_output: [bs, njoints, nfeats, nframes] (denormalized)
         # vel[t] carries physical-frame units. Scale it into the current
         # resampled window step before comparing with position deltas.
-        batch_size, _max_joints, _n_feats, n_frames = model_output.shape
+        batch_size, max_joints, _n_feats, n_frames = model_output.shape
         pos = model_output[:, :, 0:3, :]    # [bs, njoints, 3, nframes]
         vel = model_output[:, :, 9:12, :]   # [bs, njoints, 3, nframes]
         finite_diff = pos[:, :, :, 1:] - pos[:, :, :, :-1]  # [bs, njoints, 3, nframes-1]
@@ -455,8 +455,26 @@ class GaussianDiffusion:
         pred_vel = vel[:, :, :, :-1] * step_scale              # [bs, njoints, 3, nframes-1]
         loss = (finite_diff - pred_vel) ** 2
         valid_joints = spat_mask.float().transpose(1, 3)        # [bs, njoints, 1, 1]
-        valid = valid_joints.expand(-1, -1, -1, loss.shape[-1])
-        loss_val = (loss * valid).sum() / (valid.sum() * 3).clamp(min=1)
+        # The root's RIC X/Z are structurally zero, so finite_diff vanishes on
+        # those channels and this term degenerates into (vel*step_scale)**2 --
+        # a shrinkage prior on the channels that carry the root's world XZ
+        # path (up to ~7% compression left unmasked). Mask them out.
+        channel_weight = loss.new_ones((batch_size, max_joints, 3, 1))
+        root_indices = self._coerce_index_batch(
+            (y or {}).get('translation_root_index'), batch_size, model_output.device
+        )
+        n_joints_long = th.as_tensor(
+            n_joints, device=model_output.device, dtype=th.long
+        ).reshape(-1).clamp(min=0, max=max_joints)
+        root_valid = (
+            (root_indices >= 0) & (root_indices < n_joints_long)
+        ).to(dtype=loss.dtype)
+        root_indices_clamped = root_indices.clamp(min=0, max=max(max_joints - 1, 0))
+        batch_indices = th.arange(batch_size, device=model_output.device)
+        channel_weight[batch_indices, root_indices_clamped, 0, 0] -= root_valid
+        channel_weight[batch_indices, root_indices_clamped, 2, 0] -= root_valid
+        valid = (valid_joints * channel_weight).expand(-1, -1, -1, loss.shape[-1])
+        loss_val = (loss * valid).sum() / valid.sum().clamp(min=1)
         return loss_val
 
     def _masked_smooth_l1(self, x, mask, beta=0.1):
@@ -654,8 +672,15 @@ class GaussianDiffusion:
                 - last_frame[:, :, 0:3, 0]
                 - last_frame[:, :, 9:12, 0] * step_scale
             )
-            terminal_per_sample = ((terminal_residual ** 2) * joint_weight[:, :, None]).sum(dim=(1, 2))
-            terminal_per_sample = terminal_per_sample / (joint_weight.sum(dim=1) * 3.0).clamp(min=1.0)
+            # Same mask as pose_weight: the root's RIC X/Z are structurally zero,
+            # so the residual collapses to last_vel*step_scale there -- a pull of
+            # the terminal root XZ velocity toward zero, against the gait's
+            # genuine last step. Mask out.
+            terminal_weight = joint_weight[:, :, None].expand(-1, -1, 3).clone()
+            terminal_weight[batch_indices, root_indices_clamped, 0] *= 1.0 - root_valid
+            terminal_weight[batch_indices, root_indices_clamped, 2] *= 1.0 - root_valid
+            terminal_per_sample = ((terminal_residual ** 2) * terminal_weight).sum(dim=(1, 2))
+            terminal_per_sample = terminal_per_sample / terminal_weight.sum(dim=(1, 2)).clamp(min=1.0)
             terminal_per_sample = th.where(active_valid, terminal_per_sample, th.zeros_like(terminal_per_sample))
             terminal_vel_loss = (terminal_per_sample * active_weight).sum() / active_denom
 

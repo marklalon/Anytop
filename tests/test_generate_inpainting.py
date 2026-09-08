@@ -15,7 +15,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType  # noqa: E402
 from sample.generate import (  # noqa: E402
-    _close_loop_root_xz_via_velocity,
+    _zero_root_ric_xz,
     _contiguous_frame_runs,
     _finalize_output_lengths,
     _map_frame_ranges_to_internal,
@@ -622,29 +622,36 @@ def test_reanchor_root_y_multiple_spans_independent():
     np.testing.assert_allclose(fixed[7:9], 1.0, atol=1e-6)
 
 
-def test_close_loop_root_xz_distributes_velocity_residual():
+def test_zero_root_ric_xz_clears_only_the_root_position_channels():
+    """The root's RIC X/Z are structurally zero, so model noise there is
+    cleared; everything else (notably the velocity ch9/ch11) must survive."""
     motion = np.zeros((5, 2, 13), dtype=np.float32)
     motion[:, 1, 0] = np.linspace(-0.1, 0.1, num=5, dtype=np.float32)
     motion[:, 1, 2] = np.linspace(0.2, -0.2, num=5, dtype=np.float32)
+    motion[:, 1, 1] = np.linspace(1.0, 1.5, num=5, dtype=np.float32)
     motion[:-1, 1, 9] = np.array([1.0, 2.0, -1.0, 0.0], dtype=np.float32)
     motion[:-1, 1, 11] = np.array([0.5, -0.25, 0.25, 1.5], dtype=np.float32)
     motion[-1, 1, [9, 11]] = 100.0
     original_nonroot = motion[:, 0].copy()
+    original_root_vel = motion[:, 1, [9, 11]].copy()
+    original_root_height = motion[:, 1, 1].copy()
 
-    _close_loop_root_xz_via_velocity(motion, translation_root_index=1)
+    _zero_root_ric_xz(motion, translation_root_index=1)
 
-    np.testing.assert_allclose(motion[:-1, 1, [9, 11]].sum(axis=0), 0.0, atol=1e-6)
     np.testing.assert_allclose(motion[:, 1, [0, 2]], 0.0, atol=1e-6)
-    np.testing.assert_allclose(motion[-1, 1, [9, 11]], 0.0, atol=1e-6)
+    # Net XZ displacement is NOT cancelled any more: a loop may travel.
+    np.testing.assert_array_equal(motion[:, 1, [9, 11]], original_root_vel)
+    np.testing.assert_array_equal(motion[:, 1, 1], original_root_height)
     np.testing.assert_array_equal(motion[:, 0], original_nonroot)
 
 
-def test_close_loop_root_xz_noop_for_invalid_root():
+def test_zero_root_ric_xz_noop_for_invalid_root():
     motion = np.zeros((4, 1, 13), dtype=np.float32)
+    motion[:, 0, 0] = 1.0
     motion[:-1, 0, 9] = 1.0
     original = motion.copy()
 
-    _close_loop_root_xz_via_velocity(motion, translation_root_index=5)
+    _zero_root_ric_xz(motion, translation_root_index=5)
 
     np.testing.assert_array_equal(motion, original)
 

@@ -198,7 +198,7 @@ def _process_motion_file(file_path, object_type, max_joints,
     # and forced one hand-written action label per fragment. 1:1 keeps a clip name
     # a pure function of (species, source file), which is what the annotation
     # sidecars are keyed on.
-    motion, parents, file_max_joints, new_anim, export_anim, is_loop, translation_root_index, root_translation_xz = get_motion(
+    motion, parents, file_max_joints, new_anim, export_anim, is_loop, translation_root_index, root_translation_xz, root_xz_stripped = get_motion(
         file_path,
         FOOT_CONTACT_VEL_THRESH,
         object_type,
@@ -227,6 +227,7 @@ def _process_motion_file(file_path, object_type, max_joints,
             'names': names,
             'frame_time': frame_time,
             'is_loop': is_loop,
+            'root_xz_stripped': root_xz_stripped,
             'translation_root_index': translation_root_index,
             'root_translation_xz': root_translation_xz,
             'source_fbx_path': file_path,
@@ -265,6 +266,10 @@ def _build_motion_metadata_entry(result, motion_file_name):
     if translation_root_index is not None:
         motion_labels['translation_root_index'] = int(translation_root_index)
 
+    # Provenance, not content: True only if THIS pipeline zeroed the clip's root
+    # XZ (gate A). A clip authored in place is honest data and stays False.
+    motion_labels['root_xz_stripped'] = bool(result.get('root_xz_stripped', False))
+
     source_fbx_path = result.get('source_fbx_path')
     if source_fbx_path:
         motion_labels['source_fbx_path'] = os.path.abspath(source_fbx_path)
@@ -291,7 +296,7 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
         max_joints=_crop_max,
     )
     character_scale_factor = float(tp.scale_factor)
-    rest_pose_motion, parents, max_joints, new_anim, _export_anim, _rest_is_loop, _rest_translation_root_index, _rest_root_translation_xz = get_motion(
+    rest_pose_motion, parents, max_joints, new_anim, _export_anim, _rest_is_loop, _rest_translation_root_index, _rest_root_translation_xz, _rest_root_xz_stripped = get_motion(
         tp.tpos_anim,
         FOOT_CONTACT_VEL_THRESH,
         object_type,
@@ -504,7 +509,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
                 # with the resampled motion.
                 result['new_anim'] = _resample_animation(result['new_anim'], resample_min_length)
                 result['export_anim'] = _resample_animation(result['export_anim'], resample_min_length)
-                motion, _, _, _, is_loop = extract_motion_features_from_aligned_anims(
+                motion, _, _, _, is_loop, restripped = extract_motion_features_from_aligned_anims(
                     result['new_anim'],
                     result['export_anim'],
                     FOOT_CONTACT_VEL_THRESH,
@@ -516,6 +521,9 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
                 )
                 result['motion'] = motion
                 result['is_loop'] = is_loop
+                # The anims here were already stripped by the first pass, so this
+                # re-gate never fires; OR keeps the original verdict.
+                result['root_xz_stripped'] = bool(result.get('root_xz_stripped')) or bool(restripped)
             result['canonical_names'] = list(object_cond['canonical_bvh_joint_names'])
             prepared_results.append(result)
 

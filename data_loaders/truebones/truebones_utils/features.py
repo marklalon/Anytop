@@ -37,8 +37,6 @@ from .ignore_warnings import skip_orientation_detection
 
 from .animation_utils import (
     ROOT_XZ_STRIP_THRESHOLD,
-    LOOP_DETECTION_ROOT_XZ_TOLERANCE,
-    LOOP_DETECTION_STEP_MIN,
     detect_motion_loop,
     find_translation_root,
     bake_descendant_y_into_translation_root,
@@ -645,24 +643,10 @@ def extract_motion_features_from_aligned_anims(
     motion_anim = new_anim
     motion_export_anim = export_anim
     xz_extent = xz_locomotion_extent(export_anim, feature_translation_root_index)
+    # One gate: strip the root XZ only when the clip actually travels (> ~43% of
+    # a body span). Smaller drifts are the motion itself; the old [0.08, 0.6]
+    # "closed excursion" band was mostly striking/idle actions, not locomotion.
     has_locomotion = xz_extent > ROOT_XZ_STRIP_THRESHOLD
-
-    # Additional check: if xz_extent falls in the ambiguous band between loop
-    # tolerance and strip threshold, treat clips with a small endpoint gap as
-    # loop locomotion and also strip the root XZ.  The endpoint gap is evaluated
-    # in root-relative global positions (translation-root XZ subtracted) so that
-    # the wrap gap reflects per-joint closure rather than overall scene translation.
-    if (
-        not has_locomotion
-        and LOOP_DETECTION_ROOT_XZ_TOLERANCE <= xz_extent <= ROOT_XZ_STRIP_THRESHOLD
-    ):
-        root_rel_pos = positions_global(export_anim).copy()
-        root_rel_pos[..., 0] -= root_rel_pos[:, feature_translation_root_index:feature_translation_root_index + 1, 0]
-        root_rel_pos[..., 2] -= root_rel_pos[:, feature_translation_root_index:feature_translation_root_index + 1, 2]
-        endpoint_delta = np.linalg.norm(root_rel_pos[-1] - root_rel_pos[0], axis=-1)
-        wrap_gap_p75 = float(np.percentile(endpoint_delta, 75))
-        if wrap_gap_p75 < LOOP_DETECTION_STEP_MIN:
-            has_locomotion = True
 
     if has_locomotion:
         motion_anim = strip_translation_root_xz(new_anim, feature_translation_root_index)
@@ -702,7 +686,7 @@ def extract_motion_features_from_aligned_anims(
         terminal_contact,
         max_joints,
     )
-    return features, max_joints, motion_anim, motion_export_anim, is_loop
+    return features, max_joints, motion_anim, motion_export_anim, is_loop, has_locomotion
 
 
 """ processes animation, and returns a new animation that aligns with humanML3D in terms of orientation and scale"""
@@ -792,7 +776,7 @@ def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joint
             find_translation_root(export_anim),
             object_type,
         )
-        features, max_joints, motion_anim, motion_export_anim, is_loop = extract_motion_features_from_aligned_anims(
+        features, max_joints, motion_anim, motion_export_anim, is_loop, root_xz_stripped = extract_motion_features_from_aligned_anims(
             new_anim,
             export_anim,
             foot_contact_vel_thresh,
@@ -802,10 +786,10 @@ def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joint
             orientation_quat,
             translation_root_index=translation_root_index,
         )
-        return features, motion_anim.parents, max_joints, motion_anim, motion_export_anim, is_loop, translation_root_index, root_translation_xz
+        return features, motion_anim.parents, max_joints, motion_anim, motion_export_anim, is_loop, translation_root_index, root_translation_xz, root_xz_stripped
     except Exception as err:
         print(err)
-        return None, None, max_joints, None, None, False, None, None
+        return None, None, max_joints, None, None, False, None, None, False
 
 
 ################## Motion Recovery #####################
