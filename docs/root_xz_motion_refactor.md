@@ -507,18 +507,14 @@ loop clip tile 2 次后 root XZ 路径无跳变（验证 §1.4 的连续性结�
 标志位显式归一化（`bool(...get(..., False))`），保证 key 在每个 item 上都存在 ——
 key 时有时无会触发 `torch.compile` 重编译（见 `cond_key_set_must_be_stable_for_compile`）。
 
-### 7.2 §1.1 "root ch0/ch2 恒等于 0" 只对**提取时**的 R 成立
+### 7.2 species-level translation root 契约（2026-09-08 已修复）
 
 实测三个数据集的 `motions/*.npy`：按 `motion_metadata.json` 记的
 `translation_root_index` 取 RIC ch0/ch2，最大值是 **1.516**（unitybundles）
 / 0.437（truebones），不是 0。
 
-原因不是 bug，是
-[tools/regenerate_dataset_artifacts.py:436](../tools/regenerate_dataset_artifacts.py#L436)
-`_normalize_object_translation_roots` 有意为之：cond 每个物种只能有一个 root，
-所以它把 per-clip 的 `translation_root_index` **按众数塌陷成物种唯一值**，并回写进
-每条 clip 的 metadata。特征却是按 per-clip 的 R 提取的。少数派 clip 因此
-metadata R ≠ 提取 R：
+旧流程在特征生成后才按物种众数统一 metadata，没有重编码 tensor，导致少数派 clip
+的 metadata R ≠ 提取 R：
 
 | | 不一致 clip 数 |
 |---|---|
@@ -526,16 +522,18 @@ metadata R ≠ 提取 R：
 | truebones zoo_upgrade | 31 / 247（Bear 13 条最多） |
 | unitybundles | 172 / 2585（KI 126、MB 40、RMW 6） |
 
-对本次改动的影响：
+现已改为三阶段契约：
 
-- **C4 不受影响**：生成期的 R 一直取自 cond（即那个众数值），和多数 clip 的
-  训练约定一致；这是既有状况，改成无条件执行没有让它变差。
-- **C2 的标志位是对的**：它在预处理期算，用的就是提取 R，塌陷发生在之后。
-- **验收判据 2（§5）需要放宽**：验证器拿到的是塌陷后的 R。新增的
-  `_validate_root_xz_zero_flag` 因此先检查"metadata R 的 RIC ch0/ch2 是否确为 0"，
-  不为 0 就单独报"记录的 root 与特征不符"，而不是误判成标志位错。
+- **阶段 1**扫描物种的全部源动作，按检测票数确定一个固定 root（平票取较小 index）。
+- **阶段 2**把固定 root 显式传给每条动作和 rest pose 的特征提取；cond 与每条
+  motion metadata 在写出时已经一致。
+- `regenerate_dataset_artifacts.py` 只验证契约，不再修改 root provenance；发现旧式
+  不一致数据会要求 `--overwrite` 全量重建。
+- **阶段 3**对每条 clip（不再仅限 `root_xz_stripped=True`）验证声明 root 的 RIC XZ
+  为零，同时验证 motion metadata root 与 cond root 相等。
 
-这 250 条的 metadata/特征不一致是**先前就存在**的问题，本次未修。
+truebones zoo 全量重建后的 970 条 clip 均满足 metadata root = cond root，且声明 root
+的 `max|RIC XZ|` 为 0；原 Dog / Dog-2 五条警告已消失。
 
 ### 7.3 实测复核
 

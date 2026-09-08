@@ -117,6 +117,45 @@ def test_find_translation_root_detects_single_chain_descendant():
     assert find_translation_root(anim) == 2
 
 
+def test_get_motion_honors_fixed_species_translation_root():
+    parents = np.array([-1, 0], dtype=np.int64)
+    offsets = np.zeros((2, 3), dtype=np.float64)
+    rotations = Quaternions(
+        np.tile(
+            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+            (6, len(parents), 1),
+        )
+    )
+    positions = np.zeros((6, 2, 3), dtype=np.float64)
+    positions[:, 1, 0] = np.linspace(0.0, 0.5, num=6, dtype=np.float64)
+    anim = Animation(rotations, positions, Quaternions.id(len(parents)), offsets, parents)
+    assert find_translation_root(anim) == 1
+
+    tpos_rots = Quaternions(
+        np.tile(
+            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64),
+            (1, len(parents), 1),
+        )
+    )
+    features, _parents, _max_joints, _motion_anim, _export_anim, _is_loop, root, _root_xz, _stripped = get_motion(
+        anim,
+        FOOT_CONTACT_VEL_THRESH,
+        'Synthetic',
+        len(parents),
+        offsets,
+        [],
+        tpos_rots,
+        {},
+        scale_factor=1.0,
+        orientation_quat=Quaternions.id(1)[0],
+        translation_root_index=0,
+    )
+
+    assert root == 0
+    np.testing.assert_array_equal(features[:, 0, [0, 2]], 0.0)
+    assert float(np.max(np.abs(features[:, 1, 0]))) > 0.0
+
+
 def test_find_translation_root_ignores_descendants_after_branch():
     parents = np.array([-1, 0, 1, 1, 3], dtype=np.int64)
     offsets = np.zeros((5, 3), dtype=np.float64)

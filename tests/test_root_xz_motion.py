@@ -322,11 +322,23 @@ def test_validator_says_nothing_about_an_unstripped_clip(capsys):
 
 
 def test_validator_reports_a_root_index_the_features_disagree_with(capsys):
-    """A clip's features can be built around a different joint than the
-    per-species canonical root in metadata; say so instead of blaming the
-    flag."""
+    """Legacy/corrupt tensors report the root contract violation directly."""
     motion = np.zeros((10, 3, 13), dtype=np.float32)
     motion[:, 1, 0] = 0.5           # joint 1's RIC XZ is NOT structurally zero
     motion[:, 1, [9, 11]] = 0.02
     out = _run_flag_validator(motion, {'root_xz_stripped': True}, 1, capsys)
     assert 'not the joint the features were built around' in out
+
+
+def test_validator_checks_root_alignment_even_when_clip_was_not_stripped(capsys):
+    from utils.validate_anytop_dataset import _validate_translation_root_feature_alignment
+
+    motion = np.zeros((10, 3, 13), dtype=np.float32)
+    motion[:, 1, 0] = 0.25
+
+    assert not _validate_translation_root_feature_alignment(
+        motion,
+        'Clip_Test.npy',
+        1,
+    )
+    assert 'not the joint the features were built around' in capsys.readouterr().out

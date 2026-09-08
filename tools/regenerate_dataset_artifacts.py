@@ -427,20 +427,23 @@ def _compute_loop_periods(
     )
 
 
-def _normalize_object_translation_roots(
+def _validate_object_translation_roots(
     rebuilt_cond: dict[str, dict],
     motion_files: list[Path],
     motion_metadata: dict[str, dict],
     cond_lookup: dict[str, str],
 ) -> dict[str, int]:
-    """Collapse per-motion translation_root_index to one canonical root per object.
+    """Validate the species root contract without mutating per-clip provenance.
 
-    Each motion's metadata already contains a `translation_root_index` from
-    preprocessing.  We just aggregate the existing values per object and pick
-    the most common one.  Ties fall back to the smaller index for determinism.
+    Feature tensors have already been encoded when this side-artifact pass runs,
+    so changing either cond or motion metadata here would make metadata disagree
+    with tensor content.  A missing cond root may be restored only when every
+    clip unanimously records the same value; any disagreement requires a full
+    preprocessing rebuild.
     """
     motion_names = {p.name for p in motion_files}
     object_root_counts: dict[str, Counter[int]] = {}
+    object_root_motions: dict[str, list[tuple[str, int]]] = {}
 
     for motion_name, entry in motion_metadata.items():
         if motion_name not in motion_names:
@@ -457,30 +460,53 @@ def _normalize_object_translation_roots(
             )
         root_index = int(entry["translation_root_index"])
         object_root_counts.setdefault(object_type, Counter())[root_index] += 1
+        object_root_motions.setdefault(object_type, []).append((motion_name, root_index))
 
     canonical_roots: dict[str, int] = {}
-    for object_type, root_counts in sorted(object_root_counts.items()):
-        canonical_root_index = min(
-            root_index
-            for root_index, count in root_counts.items()
-            if count == max(root_counts.values())
-        )
-        unique_roots = sorted(int(root_index) for root_index in root_counts)
-        rebuilt_cond[object_type]["translation_root_index"] = canonical_root_index
-        canonical_roots[object_type] = canonical_root_index
-        if len(unique_roots) > 1:
-            print(
-                f"[OK] normalized {object_type} translation_root_index "
-                f"from {dict(sorted(root_counts.items()))} to {canonical_root_index}"
+    for object_type in sorted(rebuilt_cond.keys()):
+        root_counts = object_root_counts.get(object_type)
+        if not root_counts:
+            raise RuntimeError(
+                f"No motion metadata root values found for object '{object_type}'. "
+                "Re-run preprocess_and_validate.py --overwrite."
             )
 
-    # Ensure every object in rebuilt_cond has a canonical root, even if no
-    # motion metadata existed (e.g., freshly created dataset or test fixtures).
-    for object_type in sorted(rebuilt_cond.keys()):
-        if object_type not in canonical_roots:
-            canonical_roots[object_type] = int(
-                rebuilt_cond[object_type].get("translation_root_index", 0)
+        stored_root = rebuilt_cond[object_type].get("translation_root_index")
+        unique_roots = sorted(int(root_index) for root_index in root_counts)
+        if stored_root is None:
+            if len(unique_roots) != 1:
+                raise RuntimeError(
+                    f"Object '{object_type}' has no cond translation_root_index and its "
+                    f"motion metadata disagrees: {dict(sorted(root_counts.items()))}. "
+                    "Re-run preprocess_and_validate.py --overwrite."
+                )
+            stored_root = unique_roots[0]
+            rebuilt_cond[object_type]["translation_root_index"] = stored_root
+
+        canonical_root_index = int(stored_root)
+        joint_count = len(rebuilt_cond[object_type].get("parents", ()))
+        if not 0 <= canonical_root_index < joint_count:
+            raise RuntimeError(
+                f"Object '{object_type}' translation_root_index={canonical_root_index} "
+                f"is invalid for {joint_count} joints. Re-run "
+                "preprocess_and_validate.py --overwrite."
             )
+        mismatches = [
+            f"{motion_name}={root_index}"
+            for motion_name, root_index in object_root_motions[object_type]
+            if root_index != canonical_root_index
+        ]
+        if mismatches:
+            preview = ", ".join(mismatches[:5])
+            if len(mismatches) > 5:
+                preview += f", ... ({len(mismatches)} total)"
+            raise RuntimeError(
+                f"Object '{object_type}' cond translation_root_index={canonical_root_index} "
+                f"disagrees with encoded motion metadata: {preview}. Side-artifact "
+                "regeneration will not rewrite feature provenance; re-run "
+                "preprocess_and_validate.py --overwrite."
+            )
+        canonical_roots[object_type] = canonical_root_index
 
     return canonical_roots
 
@@ -582,13 +608,13 @@ def _regenerate_dataset_artifacts(
     print(f"[OK] contact joints recomputed in {time.time() - t0:.1f}s")
 
     t0 = time.time()
-    canonical_translation_roots = _normalize_object_translation_roots(
+    _validate_object_translation_roots(
         rebuilt_cond,
         motion_files,
         existing_motion_metadata,
         species_lookup_map(rebuilt_cond),
     )
-    print(f"[OK] translation roots normalized in {time.time() - t0:.1f}s")
+    print(f"[OK] translation root contracts validated in {time.time() - t0:.1f}s")
 
     t0 = time.time()
     _compute_loop_periods(
@@ -646,7 +672,9 @@ def _regenerate_dataset_artifacts(
         # BARE species name, which is what joins it back to cond.species_name.
         species_name = str(rebuilt_cond[object_key]["species_name"]) if object_key in rebuilt_cond else object_key
         motion_entry.update(build_motion_labels(species_name, motion_name=motion_path.name))
-        motion_entry["translation_root_index"] = int(canonical_translation_roots[object_key])
+        # Preserve the root that preprocessing used to build this tensor.  The
+        # contract check above guarantees that it equals the species root.
+        motion_entry["translation_root_index"] = int(motion_entry["translation_root_index"])
         rebuilt_motion_metadata[motion_path.name] = motion_entry
         object_counts[object_key] += 1
 

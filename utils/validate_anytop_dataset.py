@@ -228,6 +228,7 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
         "feature_space",
         "physical_feature_space",
         "rest_pos_ric_hml",
+        "translation_root_index",
     }
 
     for object_type in objects_to_validate:
@@ -258,6 +259,26 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
             if rest_pose.shape != (n_joints, FEATS_LEN):
                 msg = f"{object_type} rest_pose shape mismatch: {rest_pose.shape}"
                 print_warn(f"validation error: {msg}")
+            translation_root_index = object_cond.get("translation_root_index")
+            if not (
+                isinstance(translation_root_index, int)
+                and 0 <= translation_root_index < n_joints
+            ):
+                msg = (
+                    f"{object_type} translation_root_index invalid for "
+                    f"{n_joints} joints: {translation_root_index}"
+                )
+                print_warn(f"validation error: {msg}")
+            elif rest_pose.shape == (n_joints, FEATS_LEN):
+                rest_root_xz = float(
+                    np.max(np.abs(rest_pose[translation_root_index, [0, 2]]))
+                )
+                if rest_root_xz > 1e-6:
+                    print_warn(
+                        f"validation error: {object_type} rest_pose was not encoded "
+                        f"around translation_root_index {translation_root_index} "
+                        f"(RIC XZ reaches {rest_root_xz:.3g})"
+                    )
             if rest_pos_ric_hml.shape != (n_joints, 3):
                 msg = f"{object_type} rest_pos_ric_hml shape mismatch: {rest_pos_ric_hml.shape}"
                 print_warn(f"validation error: {msg}")
@@ -506,11 +527,30 @@ def _validate_root_motion_extent(
         )
 
 
+def _validate_translation_root_feature_alignment(
+    motion: np.ndarray,
+    motion_name: str,
+    translation_root_index: int,
+) -> bool:
+    """Verify that RIC positions were built around the declared root."""
+    ric_root_xz = float(np.max(np.abs(motion[:, translation_root_index][:, [0, 2]])))
+    if ric_root_xz > 1e-6:
+        print_warn(
+            f"{motion_name}: metadata translation_root_index {translation_root_index} is not the "
+            f"joint the features were built around (its RIC XZ reaches {ric_root_xz:.3g}, "
+            "expected 0)"
+        )
+        return False
+    return True
+
+
 def _validate_root_xz_stripped_flag(
     motion: np.ndarray,
     motion_name: str,
     motion_metadata: dict,
     translation_root_index: int,
+    *,
+    root_matches_features: bool | None = None,
 ) -> None:
     """Check the ``root_xz_stripped`` flag against the tensor it labels.
 
@@ -518,19 +558,18 @@ def _validate_root_xz_stripped_flag(
     must carry no root XZ velocity. The converse is not an error -- a clip
     authored in place is honest data that sits at zero.
 
-    The metadata root is the per-species canonical value; clips whose features
-    were built around a different joint are reported separately, not as a flag
-    error.
+    Root/feature alignment is checked for every clip by the caller.  Direct
+    callers may omit that result and this helper will perform the same check.
     """
+    if root_matches_features is None:
+        root_matches_features = _validate_translation_root_feature_alignment(
+            motion,
+            motion_name,
+            translation_root_index,
+        )
     if not motion_metadata.get("root_xz_stripped"):
         return
-    ric_root_xz = float(np.max(np.abs(motion[:, translation_root_index][:, [0, 2]])))
-    if ric_root_xz > 1e-6:
-        print_warn(
-            f"{motion_name}: metadata translation_root_index {translation_root_index} is not the "
-            f"joint the features were built around (its RIC XZ reaches {ric_root_xz:.3g}, "
-            f"expected 0) — root_xz_stripped not checked"
-        )
+    if not root_matches_features:
         return
     observed = float(np.max(np.abs(motion[:, translation_root_index][:, [9, 11]])))
     if observed != 0.0:
@@ -613,13 +652,10 @@ def validate_motion_files(
             require_valid(np.isfinite(motion).all(), f"{motion_path.name} contains NaN/Inf")
             require_valid(motion.shape[1] == expected_joints, f"{motion_path.name} joints mismatch: {motion.shape[1]} vs {expected_joints}")
 
-            _validate_root_motion_extent(
+            root_matches_features = _validate_translation_root_feature_alignment(
                 motion,
-                object_type,
                 motion_path.name,
-                root_motion_threshold,
                 translation_root_index,
-                ignored_stems=ignored_stems,
             )
 
             _validate_root_xz_stripped_flag(
@@ -627,6 +663,22 @@ def validate_motion_files(
                 motion_path.name,
                 motion_metadata,
                 translation_root_index,
+                root_matches_features=root_matches_features,
+            )
+
+            if not root_matches_features:
+                # Recovery and orientation checks would both read trajectory
+                # channels from the wrong joint and only add misleading follow-on
+                # warnings.  The root/feature error above is the actionable cause.
+                continue
+
+            _validate_root_motion_extent(
+                motion,
+                object_type,
+                motion_path.name,
+                root_motion_threshold,
+                translation_root_index,
+                ignored_stems=ignored_stems,
             )
 
             if check_motion_orientation:
@@ -927,6 +979,12 @@ def validate_motion_metadata(dataset_dir: Path, motion_files: list[Path], cond: 
             require_valid(
                 isinstance(translation_root_index, int) and 0 <= translation_root_index < joint_count,
                 f"translation_root_index {translation_root_index} invalid for {motion_name} ({joint_count} joints)",
+            )
+            cond_translation_root_index = cond[object_type].get("translation_root_index")
+            require_valid(
+                translation_root_index == cond_translation_root_index,
+                f"translation_root_index mismatch for {motion_name}: motion metadata has "
+                f"{translation_root_index}, species cond has {cond_translation_root_index}",
             )
 
             source_fbx_path = motion_metadata.get("source_fbx_path")

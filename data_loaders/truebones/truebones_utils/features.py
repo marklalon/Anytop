@@ -211,10 +211,25 @@ def get_bvh_cont6d_params(anim, object_type, orientation_quat, translation_root_
 
 
 """" process anim object """
-def process_anim(anim, object_type, orientation_quat, root_xz_center=None, *, scale_factor):
+def process_anim(
+    anim,
+    object_type,
+    orientation_quat,
+    root_xz_center=None,
+    *,
+    scale_factor,
+    translation_root_index=None,
+):
     rotated = rotate_to_hml_orientation(anim, orientation_quat)
-    baked = bake_descendant_y_into_translation_root(rotated)
-    centered, root_xz_center_ = move_xz_to_origin(baked, root_xz_center)
+    baked = bake_descendant_y_into_translation_root(
+        rotated,
+        translation_root_index=translation_root_index,
+    )
+    centered, root_xz_center_ = move_xz_to_origin(
+        baked,
+        root_xz_center,
+        translation_root_index=translation_root_index,
+    )
     scaled = scale_anim(centered, scale_factor)
     # Keep rest-pose conditioning and motion clips on the same normalized
     # geometry.  Both paths pass through process_anim, while only raw motion
@@ -690,7 +705,7 @@ def extract_motion_features_from_aligned_anims(
 
 
 """ processes animation, and returns a new animation that aligns with humanML3D in terms of orientation and scale"""
-def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squared_positions_error, *, scale_factor, foot_indices=None, orientation_quat, slice_inds=None, preloaded=None, animation_input_is_tpose_aligned=True):
+def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squared_positions_error, *, scale_factor, foot_indices=None, orientation_quat, slice_inds=None, preloaded=None, animation_input_is_tpose_aligned=True, translation_root_index=None):
     if not isinstance(fbx_path_or_anim, Animation):
         if preloaded is not None:
             raw_anim, names = preloaded
@@ -707,6 +722,7 @@ def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squa
             object_type,
             orientation_quat,
             scale_factor=scale_factor,
+            translation_root_index=translation_root_index,
         )
     else:
         names = list()
@@ -756,7 +772,7 @@ def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squa
 
 
 """ get motion feature representation"""
-def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joints, offsets, foot_indices, tpos_rots, squared_positions_error, *, scale_factor, orientation_quat, slice_inds=None, preloaded=None, animation_input_is_tpose_aligned=True):
+def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joints, offsets, foot_indices, tpos_rots, squared_positions_error, *, scale_factor, orientation_quat, slice_inds=None, preloaded=None, animation_input_is_tpose_aligned=True, translation_root_index=None):
     try:
         new_anim, export_anim, names, root_translation_xz = get_hml_aligned_anim(
             fbx_path_or_anim,
@@ -770,12 +786,20 @@ def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joint
             slice_inds=slice_inds,
             preloaded=preloaded,
             animation_input_is_tpose_aligned=animation_input_is_tpose_aligned,
+            translation_root_index=translation_root_index,
         )
-        translation_root_index = resolve_detected_translation_root_index(
-            find_translation_root(new_anim),
-            find_translation_root(export_anim),
-            object_type,
-        )
+        if translation_root_index is None:
+            translation_root_index = resolve_detected_translation_root_index(
+                find_translation_root(new_anim),
+                find_translation_root(export_anim),
+                object_type,
+            )
+        else:
+            translation_root_index = _coerce_translation_root_index(
+                translation_root_index,
+                joint_count=new_anim.positions.shape[1],
+                context=f"{object_type} motion",
+            )
         features, max_joints, motion_anim, motion_export_anim, is_loop, root_xz_stripped = extract_motion_features_from_aligned_anims(
             new_anim,
             export_anim,

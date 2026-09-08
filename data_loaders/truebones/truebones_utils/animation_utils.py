@@ -586,14 +586,27 @@ def _find_descendant_transport_chain(parents, trans_root, max_depth=2):
     return chain
 
 
-def bake_descendant_y_into_translation_root(anim, max_depth=2):
+def bake_descendant_y_into_translation_root(
+    anim,
+    max_depth=2,
+    translation_root_index=None,
+):
     """Bake near-root locator-style Y transport back onto the translation root.
 
     The heuristic is intentionally narrow: follow a single chain at most two levels
     below the effective translation root, allow one dummy node in the middle, and
     bake only joints in that chain that carry animated local Y.
     """
-    trans_root = find_translation_root(anim)
+    trans_root = (
+        find_translation_root(anim)
+        if translation_root_index is None
+        else int(translation_root_index)
+    )
+    if not 0 <= trans_root < anim.positions.shape[1]:
+        raise ValueError(
+            f"translation_root_index {trans_root} is out of bounds for "
+            f"{anim.positions.shape[1]} joints"
+        )
     chain = _find_descendant_transport_chain(anim.parents, trans_root, max_depth=max_depth)
     bake_joints = [joint_index for joint_index in chain if np.ptp(anim.positions[:, joint_index, 1]) > 1e-4]
     if not bake_joints:
@@ -819,9 +832,12 @@ on an intermediate bone (e.g. Bip01 for Horse).  We detect the effective
 root via its global position and apply the shift to joint 0 (whose local
 position equals its global position), so the entire skeleton moves via FK.
 """
-def move_xz_to_origin(anim, root_xz_center=None):
+def move_xz_to_origin(anim, root_xz_center=None, translation_root_index=None):
     if root_xz_center is None:
-        root_xz_center = _get_translation_root_initial_xz(anim)
+        root_xz_center = _get_translation_root_initial_xz(
+            anim,
+            translation_root_index=translation_root_index,
+        )
     else:
         root_xz_center = _coerce_root_xz_center(root_xz_center)
     new_positions = anim.positions.copy()

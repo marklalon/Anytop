@@ -14,6 +14,7 @@ import os
 import sys
 from os.path import join as pjoin
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from collections import Counter
 import random
 import bisect
 from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, MOTION_METADATA_FILE, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, TPOSE_REFERENCE_SIDECAR, get_raw_data_dir
@@ -39,18 +40,22 @@ from .animation_utils import (
     drop_prop_socket_joints,
     drop_end_site_joints,
     coerce_single_orientation_quat,
+    find_translation_root,
+    resolve_detected_translation_root_index,
 )
 
 from .features import (
     get_common_features_from_rest_pose,
     get_motion,
     extract_motion_features_from_aligned_anims,
+    get_hml_aligned_anim,
 )
 from .topology_relations import create_topology_edge_relations
 from .canonical_features import (
     mark_canonical_cond_entry,
     set_canonical_global_stats,
 )
+from .dataset_sources import resolve_species_key
 
 
 class DatasetPreprocessingError(RuntimeError):
@@ -131,16 +136,12 @@ def object_policy(obj):
 
 ################## Dataset Pipeline ####################
 
-def _process_motion_file(file_path, object_type, max_joints,
-                         offsets, foot_indices, tpos_rots, scale_factor,
-                         orientation_quat, crop_enabled=True, prop_socket_names=(),
-                         end_site_names=()):
-    local_errors = dict()
+def _load_motion_source(file_path, object_type, *, crop_enabled=True,
+                        prop_socket_names=(), end_site_names=()):
+    """Load and structurally normalize one source file before root resolution."""
     _crop_max = MAX_JOINTS if crop_enabled else 2 ** 16
-    # Load the animation file (FBX/GLB/GLTF) once; pass it as `preloaded` to every get_motion call so that
     raw_anim, names, frame_time = FBX.load(file_path)
 
-    # Warn if the motion file's FPS deviates from the expected 30 FPS.
     fps = 1.0 / frame_time if frame_time > 0 else 0.0
     if fps and abs(fps - 30.0) > 0.1:
         from .animation_utils import _warn
@@ -149,10 +150,6 @@ def _process_motion_file(file_path, object_type, max_joints,
             f"{fps:.2f} FPS (frame_time={frame_time:.6f}s), expected 30 FPS"
         )
 
-    # Drop the prop-socket subtrees the rest pose decided on, by name, before the
-    # crop -- exactly the order get_common_features_from_rest_pose used, so this
-    # clip lands on the same joint set the rest-pose offsets were built over. A
-    # name this rig does not carry raises rather than silently skipping.
     if prop_socket_names:
         raw_anim, names, _ = drop_prop_socket_joints(
             raw_anim,
@@ -161,8 +158,6 @@ def _process_motion_file(file_path, object_type, max_joints,
             context=f"{object_type} '{os.path.basename(str(file_path))}'",
         )
 
-    # Then the BVH end-site terminators, in the same rest-pose-decides order, so
-    # this clip lands on the joint set the rest-pose offsets were built over.
     if end_site_names:
         raw_anim, names, _ = drop_end_site_joints(
             raw_anim,
@@ -171,14 +166,6 @@ def _process_motion_file(file_path, object_type, max_joints,
             context=f"{object_type} '{os.path.basename(str(file_path))}'",
         )
 
-    # Crop oversized skeletons to the crop cap so the loaded animation and its
-    # exported names match the cropped rest-pose offsets. Leaves are peeled from
-    # deepest to shallowest; ties at the same depth prefer shorter bones first,
-    # while longer-than-average bones are preserved whenever possible. The cap
-    # is ``_crop_max`` (defaults to MAX_JOINTS for training); the running
-    # ``max_joints`` is a dataset-wide maximum used only for padding/metadata.
-    # The crop stays deterministic for a given skeleton (same topology and
-    # offsets), so it removes the same joints the rest pose did.
     if crop_enabled:
         raw_anim, names, _ = crop_animation_to_max_joints(
             raw_anim,
@@ -186,33 +173,132 @@ def _process_motion_file(file_path, object_type, max_joints,
             max_joints=_crop_max,
             context=f"{object_type} '{os.path.basename(str(file_path))}'",
         )
-    anim_len = len(raw_anim)
-    file_max_joints = max_joints
+
+    return raw_anim, names, frame_time
+
+
+def _prepare_motion_file_for_root_detection(
+    file_path,
+    object_type,
+    offsets,
+    foot_indices,
+    tpos_rots,
+    scale_factor,
+    orientation_quat,
+    *,
+    crop_enabled=True,
+    prop_socket_names=(),
+    end_site_names=(),
+):
+    """Load/align one new source once and retain it for phase-2 encoding."""
+    local_errors = {}
+    try:
+        raw_anim, names, frame_time = _load_motion_source(
+            file_path,
+            object_type,
+            crop_enabled=crop_enabled,
+            prop_socket_names=prop_socket_names,
+            end_site_names=end_site_names,
+        )
+        new_anim, export_anim, _names, _root_translation_xz = get_hml_aligned_anim(
+            file_path,
+            object_type,
+            tpos_rots,
+            offsets,
+            local_errors,
+            scale_factor=scale_factor,
+            foot_indices=foot_indices,
+            orientation_quat=orientation_quat,
+            preloaded=(raw_anim, names),
+        )
+        detected_root = resolve_detected_translation_root_index(
+            find_translation_root(new_anim),
+            find_translation_root(export_anim),
+            object_type,
+        )
+        return {
+            'file_path': file_path,
+            'raw_anim': raw_anim,
+            'names': names,
+            'frame_time': frame_time,
+            'new_anim': new_anim,
+            'export_anim': export_anim,
+            'root_translation_xz': _root_translation_xz,
+            'translation_root_index': detected_root,
+            'errors': local_errors,
+        }
+    except Exception as err:
+        print(err)
+        return None
+
+
+def _select_species_translation_root(object_type, detected_roots):
+    """Choose one deterministic species root from per-source detection votes."""
+    root_counts = Counter(int(root) for root in detected_roots)
+    if not root_counts:
+        raise DatasetPreprocessingError(
+            [f"[FAIL] Object '{object_type}': could not detect a translation root from any source motion"]
+        )
+    max_count = max(root_counts.values())
+    translation_root_index = min(
+        root_index for root_index, count in root_counts.items() if count == max_count
+    )
+    return translation_root_index, dict(sorted(root_counts.items()))
+
+
+def _encode_prepared_motion_file(
+    prepared,
+    object_type,
+    max_joints,
+    offsets,
+    foot_indices,
+    tpos_rots,
+    scale_factor,
+    orientation_quat,
+    translation_root_index,
+):
+    """Phase 2: encode a phase-1 payload with the frozen species root."""
+    file_path = prepared['file_path']
+    raw_anim = prepared['raw_anim']
+    names = prepared['names']
+    frame_time = prepared['frame_time']
+    local_errors = dict(prepared['errors'])
     file_results = []
     file_motion_errors = []
 
-    # One source animation produces exactly one clip: the whole take, however long.
-    # Long motions are NOT segmented here -- the training loader already draws a
-    # random window out of anything longer than 2*num_frames (see
-    # MotionDataset._prepare_sample), so segmenting only fragmented the clip names
-    # and forced one hand-written action label per fragment. 1:1 keeps a clip name
-    # a pure function of (species, source file), which is what the annotation
-    # sidecars are keyed on.
-    motion, parents, file_max_joints, new_anim, export_anim, is_loop, translation_root_index, root_translation_xz, root_xz_stripped = get_motion(
-        file_path,
-        FOOT_CONTACT_VEL_THRESH,
-        object_type,
-        file_max_joints,
-        offsets,
-        foot_indices,
-        tpos_rots,
-        local_errors,
-        scale_factor=scale_factor,
-        orientation_quat=orientation_quat,
-        preloaded=(raw_anim, names),
-    )
-
-    if motion is None:
+    try:
+        detected_root = int(prepared['translation_root_index'])
+        if detected_root == int(translation_root_index):
+            new_anim = prepared['new_anim']
+            export_anim = prepared['export_anim']
+            root_translation_xz = prepared['root_translation_xz']
+        else:
+            # Full builds choose the species root after seeing all votes. Only
+            # minority-vote clips need realignment; the source is already loaded.
+            new_anim, export_anim, _names, root_translation_xz = get_hml_aligned_anim(
+                file_path,
+                object_type,
+                tpos_rots,
+                offsets,
+                local_errors,
+                scale_factor=scale_factor,
+                foot_indices=foot_indices,
+                orientation_quat=orientation_quat,
+                preloaded=(raw_anim, names),
+                translation_root_index=translation_root_index,
+            )
+        motion, max_joints, motion_anim, motion_export_anim, is_loop, root_xz_stripped = extract_motion_features_from_aligned_anims(
+            new_anim,
+            export_anim,
+            FOOT_CONTACT_VEL_THRESH,
+            object_type,
+            max_joints,
+            foot_indices,
+            orientation_quat,
+            translation_root_index,
+        )
+    except Exception as err:
+        print(err)
         file_motion_errors.append(f"[FAIL] Object '{object_type}', file: {file_path}")
     else:
         _, file_name = os.path.split(file_path)
@@ -221,25 +307,25 @@ def _process_motion_file(file_path, object_type, max_joints,
         file_results.append({
             'action': raw_action,
             'motion': motion,
-            'parents': parents,
-            'new_anim': new_anim,
-            'export_anim': export_anim,
+            'parents': motion_anim.parents,
+            'new_anim': motion_anim,
+            'export_anim': motion_export_anim,
             'names': names,
             'frame_time': frame_time,
             'is_loop': is_loop,
             'root_xz_stripped': root_xz_stripped,
-            'translation_root_index': translation_root_index,
+            'translation_root_index': int(translation_root_index),
             'root_translation_xz': root_translation_xz,
             'source_fbx_path': file_path,
             # Kept for the dataset validator's source_fbx_path/source_frame_range
             # pairing; always the full take now.
-            'slice_range': (0, anim_len),
+            'slice_range': (0, len(raw_anim)),
             'motion_labels': build_motion_labels(object_type),
         })
 
     return {
         'errors': local_errors,
-        'max_joints': file_max_joints,
+        'max_joints': max_joints,
         'results': file_results,
         'motion_errors': file_motion_errors,
     }
@@ -318,9 +404,8 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
         species_name=object_type,
     )
     object_cond = dict()
-    # Provisional translation root from the T-pose animation. Will be refreshed
-    # by regenerate_dataset_artifacts._normalize_object_translation_roots, which
-    # aggregates per-motion translation_root_index values and picks the consensus.
+    # Provisional only: a static T-pose cannot establish a motion root. Dataset
+    # preprocessing replaces this after scanning all actions for the species.
     object_cond['translation_root_index'] = int(_rest_translation_root_index)
     object_cond['rest_pose'] = rest_pose_motion[0]
     mark_canonical_cond_entry(object_cond)
@@ -420,7 +505,7 @@ already produced clips on disk. Matching files are dropped from this run so only
 added source files are (re)processed. The rest-pose reference carrier is still selected
 from the full file list, so the per-object cond stays stable regardless of which clips
 are new. Returns None when no source files remain to process (object fully up to date)."""
-def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, crop_enabled=True):
+def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, crop_enabled=True, frozen_translation_root_index=None):
     object_cond = dict()
     if fbxs_dir is None:
         fbxs_dir = pjoin(get_raw_data_dir(raw_data_dir), object_type)
@@ -460,31 +545,128 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             print(f'skipping {object_type}: all source files already processed')
             return None
 
+    # Root confirmation sees anim_files as-is: full builds scan every selected
+    # source; incremental builds arrive with a frozen cond root and the skip
+    # above has already reduced anim_files to the new sources.
+
     squared_positions_error = dict()
     object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints, tpose_reference_path = _build_rest_pose_cond(
         object_type, t_pos_path, face_joints, max_joints=max_joints, crop_enabled=crop_enabled,
     )
+
+    print(
+        f"PHASE 1/3: confirming translation root for {object_type} "
+        f"from {len(anim_files)} source motion(s)",
+        flush=True,
+    )
+    prepared_motion_files = [
+        _prepare_motion_file_for_root_detection(
+            file_path,
+            object_type,
+            tp.offsets,
+            tp.foot_indices,
+            tp.tpos_rots,
+            character_scale_factor,
+            tp.orientation_quat,
+            crop_enabled=crop_enabled,
+            prop_socket_names=tp.prop_socket_names,
+            end_site_names=tp.end_site_names,
+        )
+        for file_path in anim_files
+    ]
+    failed_root_scans = [
+        f"[FAIL] Object '{object_type}', translation-root scan: {file_path}"
+        for file_path, prepared_motion in zip(anim_files, prepared_motion_files)
+        if prepared_motion is None
+    ]
+    if failed_root_scans:
+        raise DatasetPreprocessingError(failed_root_scans)
+    detected_roots = [
+        int(prepared_motion['translation_root_index'])
+        for prepared_motion in prepared_motion_files
+    ]
+    if frozen_translation_root_index is None:
+        translation_root_index, root_counts = _select_species_translation_root(
+            object_type,
+            detected_roots,
+        )
+    else:
+        translation_root_index = int(frozen_translation_root_index)
+        root_counts = dict(sorted(Counter(detected_roots).items()))
+        mismatched_new_sources = [
+            f"{os.path.basename(str(file_path))}={detected_root}"
+            for file_path, detected_root in zip(anim_files, detected_roots)
+            if detected_root != translation_root_index
+        ]
+        if mismatched_new_sources:
+            raise DatasetPreprocessingError(
+                [
+                    f"[FAIL] Object '{object_type}': new source translation root "
+                    f"disagrees with frozen cond translation_root_index={translation_root_index}: "
+                    + ", ".join(mismatched_new_sources)
+                    + ". Re-run with --overwrite to reconfirm the species root."
+                ]
+            )
+    root_names = list(object_cond.get('canonical_bvh_joint_names', tp.names))
+    root_name = (
+        root_names[translation_root_index]
+        if 0 <= translation_root_index < len(root_names)
+        else f'joint_{translation_root_index}'
+    )
+    print(
+        f"[OK] {object_type} translation root fixed at {translation_root_index} "
+        f"({root_name}); source votes={root_counts}",
+        flush=True,
+    )
+
+    # Re-encode the rest-pose conditioning with the same root contract used by
+    # every action.  The provisional T-pose detection above cannot establish a
+    # motion root because a rest pose has no animated translation.
+    fixed_rest = get_motion(
+        tp.tpos_anim,
+        FOOT_CONTACT_VEL_THRESH,
+        object_type,
+        max_joints,
+        tp.offsets,
+        tp.foot_indices,
+        tp.tpos_rots,
+        squared_positions_error,
+        scale_factor=character_scale_factor,
+        orientation_quat=tp.orientation_quat,
+        animation_input_is_tpose_aligned=False,
+        translation_root_index=translation_root_index,
+    )
+    if fixed_rest[0] is None:
+        raise DatasetPreprocessingError(
+            [f"[FAIL] Object '{object_type}': failed to encode rest pose with translation root {translation_root_index}"]
+        )
+    object_cond['translation_root_index'] = int(translation_root_index)
+    object_cond['rest_pose'] = fixed_rest[0][0]
+
     # Animation loading via bpy is single-threaded inside a process because clear_scene
     # mutates global Blender state, so file-level parallelism is intentionally removed.
-    print(f'processing {len(anim_files)} animation files for {object_type} (serial — bpy is single-threaded)', flush=True)
+    print(
+        f'PHASE 2/3: processing {len(anim_files)} animation files for {object_type} '
+        f'(serial — bpy is single-threaded)',
+        flush=True,
+    )
 
-    def process_file(file_path):
-        print("processing file: " + file_path, flush=True)
-        return _process_motion_file(
-            file_path,
+    file_outputs = []
+    for prepared_index, prepared_motion in enumerate(prepared_motion_files):
+        print(f"processing file: {prepared_motion['file_path']}", flush=True)
+        file_outputs.append(_encode_prepared_motion_file(
+            prepared_motion,
             object_type,
             max_joints,
             tp.offsets,
             tp.foot_indices,
             tp.tpos_rots,
             character_scale_factor,
-            orientation_quat=tp.orientation_quat,
-            crop_enabled=crop_enabled,
-            prop_socket_names=tp.prop_socket_names,
-            end_site_names=tp.end_site_names,
-        )
-
-    file_outputs = [process_file(file_path) for file_path in anim_files]
+            tp.orientation_quat,
+            translation_root_index,
+        ))
+        # Drop raw/aligned phase-1 data as soon as its encoded result exists.
+        prepared_motion_files[prepared_index] = None
 
     files_counter = 0
     frames_counter = 0
@@ -687,7 +869,7 @@ def _resolve_preprocessing_workers(objects, object_workers=8):
     return min(object_count, max(1, int(object_workers)))
 
 
-def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None):
+def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None):
     # ── Install a local warning collector inside the worker process ──────
     # The parent's _WarnCollector monkey-patches do NOT propagate into
     # ProcessPoolExecutor children.  Capture _warn() / degenerate-facing
@@ -710,6 +892,7 @@ def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, fi
             filter_min_length=filter_min_length,
             resample_min_length=resample_min_length,
             skip_source_paths=skip_source_paths,
+            frozen_translation_root_index=frozen_translation_root_index,
         )
         if payload is not None:
             payload['_warn_messages'] = _warn_messages
@@ -789,6 +972,7 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
     existing_meta = {}
     per_object_skip = {}
     per_object_clip_sources = {}
+    per_object_frozen_roots = {}
     if incremental:
         existing_meta = _load_motion_metadata_raw(target_dataset_dir)
         cond_path = pjoin(target_dataset_dir, 'cond.npy')
@@ -798,6 +982,18 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
         for object_type in objects:
             per_object_skip[object_type] = _object_processed_sources(existing_meta, object_type)
             per_object_clip_sources[object_type] = _object_clip_sources(existing_meta, object_type)
+            existing_key = resolve_species_key(existing_cond, object_type)
+            if existing_key is not None:
+                frozen_root = existing_cond[existing_key].get('translation_root_index')
+                if frozen_root is None:
+                    raise DatasetPreprocessingError(
+                        [
+                            f"[FAIL] Object '{object_type}': existing cond is missing "
+                            "translation_root_index. Re-run with --overwrite to establish "
+                            "the species root contract."
+                        ]
+                    )
+                per_object_frozen_roots[object_type] = int(frozen_root)
 
     obj_workers = _resolve_preprocessing_workers(
         objects,
@@ -817,6 +1013,7 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
                 filter_min_length=filter_min_length,
                 resample_min_length=resample_min_length,
                 skip_source_paths=per_object_skip.get(object_type),
+                frozen_translation_root_index=per_object_frozen_roots.get(object_type),
             )
     else:
         with ProcessPoolExecutor(
@@ -833,6 +1030,7 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
                     filter_min_length,
                     resample_min_length,
                     per_object_skip.get(object_type),
+                    per_object_frozen_roots.get(object_type),
                 ): idx
                 for idx, object_type in enumerate(objects)
             }
@@ -864,6 +1062,10 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
         max_joints = max(max_joints, payload['max_joints'])
         all_motion_errors.extend(payload.get('motion_errors', []))
         all_warn_messages.extend(payload.pop('_warn_messages', []))
+        # The frozen-root contract is enforced up front in _prepare_object_outputs
+        # (new sources are checked against the cond root before encoding), so the
+        # payload root is guaranteed to match the existing cond entry here.
+        existing_key = resolve_species_key(cond, object_type)
         cur_counter = files_counter
         files_counter, object_frames, object_motion_metadata = _write_object_outputs(
             target_dataset_dir,
@@ -876,8 +1078,6 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
         # freshly built one arrives under its bare species name. Write through the
         # existing key so the rebuilt species replaces itself in place instead of
         # producing a second entry that the schema stamp would reject as a duplicate.
-        from .dataset_sources import resolve_species_key
-        existing_key = resolve_species_key(cond, object_type)
         cond[existing_key if existing_key is not None else object_type] = payload['object_cond']
         tpose_refs[object_type] = payload['tpose_reference_path']
         objects_counter[object_type] = files_counter - cur_counter
@@ -984,7 +1184,6 @@ def _inherit_canonical_stats_from_dataset(object_name, object_cond, reference_co
 Other objects already present in cond.npy are left untouched."""
 def _merge_object_into_cond(save_dir, object_name, object_cond, tpose_reference_path=None):
     from .cond_schema import load_cond
-    from .dataset_sources import resolve_species_key
     cond_path = pjoin(save_dir, 'cond.npy')
     cond = {}
     if os.path.exists(cond_path):

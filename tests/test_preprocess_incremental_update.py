@@ -2,6 +2,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -296,7 +297,7 @@ def test_regenerate_dataset_artifacts_full_refresh_rewrites_incremental_dataset(
     assert "Dog: 1" in metadata_summary
 
 
-def test_regenerate_dataset_artifacts_unifies_translation_root_index_per_object(monkeypatch, tmp_path):
+def test_regenerate_dataset_artifacts_rejects_inconsistent_translation_roots(monkeypatch, tmp_path):
     dataset_dir = tmp_path / "dataset"
     motions_dir = dataset_dir / "motions"
     motions_dir.mkdir(parents=True)
@@ -348,14 +349,182 @@ def test_regenerate_dataset_artifacts_unifies_translation_root_index_per_object(
     monkeypatch.setattr(regenerate_dataset_artifacts_module, "write_joint_name_collision_report", fake_write_collision_report)
 
     _write_species_tags(dataset_dir)
-    regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(dataset_dir, t5_model="fake-t5")
+    with pytest.raises(RuntimeError, match="motion metadata disagrees"):
+        regenerate_dataset_artifacts_module.regenerate_dataset_artifacts(
+            dataset_dir,
+            t5_model="fake-t5",
+        )
 
-    regenerated_cond = _cond_by_species(dataset_dir)
-    assert regenerated_cond["Cat"]["translation_root_index"] == 1
-
+    # Side-artifact regeneration is read-only with respect to feature provenance.
     motion_metadata = load_motion_metadata(dataset_dir)
-    assert motion_metadata["Cat_Run_001.npy"]["translation_root_index"] == 1
+    assert motion_metadata["Cat_Run_001.npy"]["translation_root_index"] == 2
     assert motion_metadata["Cat_Idle_002.npy"]["translation_root_index"] == 1
+
+
+def test_species_translation_root_selection_uses_mode_then_smallest_index():
+    selected, counts = dataset_pipeline_mod._select_species_translation_root(
+        'Dog',
+        [1, 0, 1, 0, 1],
+    )
+    assert selected == 1
+    assert counts == {0: 2, 1: 3}
+
+    tied, tied_counts = dataset_pipeline_mod._select_species_translation_root(
+        'Dog',
+        [1, 0],
+    )
+    assert tied == 0
+    assert tied_counts == {0: 1, 1: 1}
+
+
+def test_incremental_prepare_scans_only_new_source_and_reuses_alignment(monkeypatch, tmp_path):
+    raw_dir = tmp_path / 'Cat'
+    raw_dir.mkdir()
+    old_source = raw_dir / 'Cat-Old.glb'
+    new_source = raw_dir / 'Cat-New.glb'
+    tpose_source = raw_dir / 'Cat-TPOSE.glb'
+    for source in (old_source, new_source, tpose_source):
+        source.touch()
+
+    parents = np.array([-1, 0], dtype=np.int64)
+    tp = SimpleNamespace(
+        offsets=np.zeros((2, 3), dtype=np.float32),
+        foot_indices=[],
+        tpos_rots=object(),
+        orientation_quat=object(),
+        prop_socket_names=(),
+        end_site_names=(),
+        names=['Root', 'Tail'],
+        tpos_anim=object(),
+    )
+    object_cond = {
+        **_make_cond_entry('Cat'),
+        'canonical_bvh_joint_names': ['Root', 'Tail'],
+    }
+    monkeypatch.setattr(dataset_pipeline_mod, 'should_skip_anim', lambda *_args: False)
+    monkeypatch.setattr(
+        dataset_pipeline_mod,
+        '_build_rest_pose_cond',
+        lambda *_args, **_kwargs: (
+            object_cond,
+            tp,
+            np.zeros((1, 2, 13), dtype=np.float32),
+            parents,
+            {},
+            1.0,
+            {},
+            2,
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        dataset_pipeline_mod,
+        'get_motion',
+        lambda *_args, **_kwargs: (
+            np.zeros((1, 2, 13), dtype=np.float32),
+            parents,
+            2,
+            None,
+            None,
+            False,
+            0,
+            None,
+            False,
+        ),
+    )
+
+    scanned = []
+    prepared_payload = {
+        'file_path': str(new_source),
+        'translation_root_index': 0,
+    }
+
+    def fake_prepare(file_path, *_args, **_kwargs):
+        scanned.append(file_path)
+        return prepared_payload
+
+    encoded = []
+
+    def fake_encode(prepared, *_args, **_kwargs):
+        encoded.append(prepared)
+        return {'errors': {}, 'max_joints': 2, 'results': [], 'motion_errors': []}
+
+    monkeypatch.setattr(
+        dataset_pipeline_mod,
+        '_prepare_motion_file_for_root_detection',
+        fake_prepare,
+    )
+    monkeypatch.setattr(dataset_pipeline_mod, '_encode_prepared_motion_file', fake_encode)
+
+    result = dataset_pipeline_mod._prepare_object_outputs(
+        'Cat',
+        2,
+        fbxs_dir=str(raw_dir),
+        t_pos_path=str(tpose_source),
+        skip_source_paths={str(old_source)},
+        resample_min_length=0,
+        frozen_translation_root_index=0,
+    )
+
+    assert result is None  # fake encoder intentionally emitted no motion result
+    assert scanned == [str(new_source)]
+    assert encoded == [prepared_payload]
+
+
+def test_incremental_prepare_rejects_new_source_root_mismatch(monkeypatch, tmp_path):
+    raw_dir = tmp_path / 'Cat'
+    raw_dir.mkdir()
+    new_source = raw_dir / 'Cat-New.glb'
+    tpose_source = raw_dir / 'Cat-TPOSE.glb'
+    new_source.touch()
+    tpose_source.touch()
+
+    parents = np.array([-1, 0], dtype=np.int64)
+    tp = SimpleNamespace(
+        offsets=np.zeros((2, 3), dtype=np.float32),
+        foot_indices=[],
+        tpos_rots=object(),
+        orientation_quat=object(),
+        prop_socket_names=(),
+        end_site_names=(),
+        names=['Root', 'Tail'],
+        tpos_anim=object(),
+    )
+    monkeypatch.setattr(dataset_pipeline_mod, 'should_skip_anim', lambda *_args: False)
+    monkeypatch.setattr(
+        dataset_pipeline_mod,
+        '_build_rest_pose_cond',
+        lambda *_args, **_kwargs: (
+            {**_make_cond_entry('Cat'), 'canonical_bvh_joint_names': ['Root', 'Tail']},
+            tp,
+            np.zeros((1, 2, 13), dtype=np.float32),
+            parents,
+            {},
+            1.0,
+            {},
+            2,
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        dataset_pipeline_mod,
+        '_prepare_motion_file_for_root_detection',
+        lambda file_path, *_args, **_kwargs: {
+            'file_path': file_path,
+            'translation_root_index': 1,
+        },
+    )
+
+    with pytest.raises(dataset_pipeline_mod.DatasetPreprocessingError) as exc_info:
+        dataset_pipeline_mod._prepare_object_outputs(
+            'Cat',
+            2,
+            fbxs_dir=str(raw_dir),
+            t_pos_path=str(tpose_source),
+            resample_min_length=0,
+            frozen_translation_root_index=0,
+        )
+    assert 'frozen cond' in exc_info.value.motion_errors[0]
 
 
 def test_regenerate_dataset_artifacts_rebuilds_translation_root_when_metadata_missing(monkeypatch, tmp_path):
@@ -410,7 +579,7 @@ def test_regenerate_dataset_artifacts_rebuilds_translation_root_when_metadata_mi
     assert motion_metadata["Cat_Run_001.npy"]["translation_root_index"] == 2
 
 
-def test_regenerate_dataset_artifacts_uses_majority_root_not_minimum(monkeypatch, tmp_path):
+def test_regenerate_dataset_artifacts_backfills_missing_cond_root_from_unanimous_clips(monkeypatch, tmp_path):
     dataset_dir = tmp_path / "dataset"
     motions_dir = dataset_dir / "motions"
     motions_dir.mkdir(parents=True)
@@ -526,7 +695,7 @@ def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_infe
 def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch, tmp_path):
     dataset_dir = tmp_path / "dataset"
 
-    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None):
+    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None):
         return {
             'object_type': object_type,
             'object_cond': _make_cond_entry(object_type),
@@ -581,7 +750,7 @@ def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch,
 def test_create_data_samples_raises_preprocess_error_instead_of_exit(monkeypatch, tmp_path):
     dataset_dir = tmp_path / 'dataset'
 
-    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None):
+    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None):
         return {
             'object_type': object_type,
             'object_cond': _make_cond_entry(object_type),
@@ -697,10 +866,11 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
 
     # Existing dataset: Cat (Walk from Cat_Walk.fbx) and an untouched Dog object.
     done_source = str(tmp_path / 'raw' / 'Cat' / 'Cat_Walk.fbx')
-    np.save(
-        dataset_dir / 'cond.npy',
-        {'Cat': _make_cond_entry('Cat'), 'Dog': _make_cond_entry('Dog')},
-    )
+    cat_cond = _make_cond_entry('Cat')
+    dog_cond = _make_cond_entry('Dog')
+    cat_cond['translation_root_index'] = 0
+    dog_cond['translation_root_index'] = 0
+    np.save(dataset_dir / 'cond.npy', {'Cat': cat_cond, 'Dog': dog_cond})
     write_motion_metadata(
         dataset_dir,
         {
@@ -714,11 +884,12 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
 
     def fake_prepare(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None,
                      max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20,
-                     skip_source_paths=None):
+                     skip_source_paths=None, frozen_translation_root_index=None):
         captured['skip_source_paths'] = set(skip_source_paths or set())
+        captured['frozen_translation_root_index'] = frozen_translation_root_index
         return {
             'object_type': object_type,
-            'object_cond': _make_cond_entry(object_type),
+            'object_cond': {**_make_cond_entry(object_type), 'translation_root_index': 0},
             'tpose_reference_path': None,
             'errors': {},
             'max_joints': 2,
@@ -751,6 +922,7 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
     # (name -> source) pair is handed to the writer so a new clip cannot silently
     # overwrite it.
     assert captured['skip_source_paths'] == {os.path.realpath(done_source)}
+    assert captured['frozen_translation_root_index'] == 0
     assert captured['existing_clip_sources'] == {'Cat_Walk.npy': os.path.realpath(done_source)}
 
     # cond.npy keeps the untouched Dog and refreshes Cat.

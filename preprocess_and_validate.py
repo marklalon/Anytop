@@ -2,11 +2,13 @@
 """
 Unified Preprocessing + Validation Workflow
 ============================================
-Automatically chains AnyTop dataset creation with validation:
-    1. Preprocessing: Incremental by default - keyed on source anim files, so only newly
-       added animations are processed while clips already on disk are kept. --overwrite
-       forces a full (re)build of the target set.
-    2. Validation: Validates the preprocessed dataset
+Automatically chains the three AnyTop dataset phases:
+    1. Translation-root confirmation: Scan every source action of each species and
+       freeze one species-level translation root.
+    2. Motion preprocessing: Incremental by default - keyed on source anim files, so
+       only newly added animations are processed while clips already on disk are kept.
+       --overwrite forces a full (re)build of the target set.
+    3. Validation: Validate the frozen root contract and preprocessed dataset.
 
 Usage:
     python preprocess_and_validate.py [OPTIONS]
@@ -16,6 +18,7 @@ Options:
     --re-encode-joint-names-only         Skip preprocessing and validation, only re-encode joint names into cond.npy
     --skip-validate                      Skip validation step (faster for CI)
     --overwrite                          Reprocess every targeted object, deleting existing outputs first (a full wipe when no --filter is set). Without it, already-processed objects are skipped.
+    --yes, --assume-yes, -y              Auto-confirm the overwrite deletion prompt (no interactive input; for scripts/CI).
     --filter PATTERN                     Comma/semicolon-separated case-insensitive glob(s) restricting which object names are considered for processing
     --object-workers N                   Concurrent characters to preprocess (default: 16)
     --sample-count N                     Limit file validation to first N motions (0=all, default: 0)
@@ -35,6 +38,9 @@ Examples:
 
     # Force a full rebuild of every object
     python preprocess_and_validate.py --overwrite
+
+    # Full rebuild with no interactive confirmation (scripts/CI)
+    python preprocess_and_validate.py --overwrite --yes
 
     # Validate only (assumes preprocessing already done)
     python preprocess_and_validate.py --validate-only
@@ -510,6 +516,7 @@ def check_and_clean_old_data(
     object_filter: str = "",
     raw_data_dir: str = "",
     overwrite: bool = False,
+    assume_yes: bool = False,
 ) -> tuple[bool, PreservedSideArtifacts, tuple[str, ...]]:
     """
     Resolve which object types to (re)process and clean up stale outputs.
@@ -585,11 +592,14 @@ def check_and_clean_old_data(
     print("=" * 70)
     for line in summary:
         print(line)
-    print("\nDo you want to delete the matching files and proceed with preprocessing?")
 
-    if not _confirm_yes_no("Enter 'yes' to delete and continue, or 'no' to abort: "):
-        print("\nPreprocessing aborted.")
-        return False, preserved, objects_to_process
+    if assume_yes:
+        print("\n--yes: confirmation skipped, deleting and continuing.")
+    else:
+        print("\nDo you want to delete the matching files and proceed with preprocessing?")
+        if not _confirm_yes_no("Enter 'yes' to delete and continue, or 'no' to abort: "):
+            print("\nPreprocessing aborted.")
+            return False, preserved, objects_to_process
 
     print("\nDeleting...")
     if not _delete_paths(paths_to_delete):
@@ -610,7 +620,7 @@ def run_preprocessing(
 ) -> int:
     """Run the AnyTop dataset preprocessing in-process over the given object list."""
     print("\n" + "=" * 70)
-    print("STEP 1: PREPROCESSING - Creating AnyTop dataset")
+    print("STEPS 1-2: ROOT CONFIRMATION -> MOTION PREPROCESSING")
     print("=" * 70 + "\n")
 
     objects = list(objects)
@@ -958,7 +968,7 @@ def run_validation(
 ) -> int:
     """Run dataset validation."""
     print("\n" + "=" * 70)
-    print("STEP 2: VALIDATION - Checking preprocessed dataset")
+    print("STEP 3: VALIDATION - Checking preprocessed dataset")
     print("=" * 70 + "\n")
 
     # The workflow always operates over every object, so validate the whole dataset.
@@ -1069,6 +1079,17 @@ def parse_args() -> argparse.Namespace:
             "Reprocess every targeted object, deleting existing outputs first (a full "
             "wipe when no --filter is set). Without it, preprocessing is incremental: only "
             "newly added source animations are processed; clips already on disk are kept."
+        ),
+    )
+    parser.add_argument(
+        "--yes",
+        "--assume-yes",
+        "-y",
+        dest="assume_yes",
+        action="store_true",
+        help=(
+            "Auto-confirm the overwrite deletion prompt (no interactive input). "
+            "Use with --overwrite in scripts/CI."
         ),
     )
     parser.add_argument(
@@ -1215,7 +1236,8 @@ def main() -> int:
     # Check and clean old data before preprocessing
     if not args.validate_only:
         should_proceed, preserved_side_artifacts, objects_to_process = check_and_clean_old_data(
-            args.dataset_dir, args.object_filter, args.raw_data_dir, overwrite=args.overwrite
+            args.dataset_dir, args.object_filter, args.raw_data_dir,
+            overwrite=args.overwrite, assume_yes=args.assume_yes,
         )
         if not should_proceed:
             print("\n" + "=" * 70)
