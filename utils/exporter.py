@@ -730,6 +730,9 @@ class AnimationExporter:
         export_mesh: bool = True,
         rename_bones_to_canonical: bool = False,
         prune_unmapped_bones: bool = False,
+        coordinate_search: Optional[bool] = None,
+        src_effective_root_index: Optional[int] = None,
+        tgt_effective_root_index: Optional[int] = None,
     ) -> None:
         """Export GLB directly through bpy in the current Python process.
 
@@ -783,6 +786,22 @@ class AnimationExporter:
                 matches the NPY / processed BVH. Bones are pruned at rest (no
                 per-frame baking); any skin weight is merged into the nearest
                 kept ancestor.
+            coordinate_search: Override the retarget's 1-of-12 rigid rest-pose
+                alignment sweep. ``None`` (default) keeps the historical
+                auto-rule below: off for a plain GLB/GLTF target, on otherwise.
+                Native GLB→GLB retargeting between two rigs authored in
+                different bases needs it forced ``True``; a self-retarget is
+                unaffected either way (identity is the first candidate and wins
+                ties at zero error).
+            src_effective_root_index: Optional source joint that carries the
+                locomotion translation in its local position channel (the
+                ``Bip01`` pattern: a static wrapper root above the joint that
+                actually moves). Without it a source rig shaped that way
+                transfers no global translation at all. Derive it with
+                ``animation_utils.find_translation_root``.
+            tgt_effective_root_index: Optional target counterpart — keeps the
+                locomotion on that joint's local translation and leaves wrapper
+                ancestors static.
         """
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
@@ -900,10 +919,19 @@ class AnimationExporter:
             # that case disabling coordinate search pins the alignment to
             # identity and cancels the intended 90-degree facing change, so we
             # re-enable the search only for the reverse-aligned path.
+            #
+            # ``coordinate_search`` overrides that auto-rule when the caller
+            # knows better — the native GLB→GLB retarget path forces it on to
+            # resolve rigs authored in different bases.
             is_gltf_mesh = bool(
                 mesh_path_lower and mesh_path_lower.endswith((".glb", ".gltf"))
             )
-            coordinate_search = (not is_gltf_mesh) or (global_similarity is not None)
+            if coordinate_search is None:
+                resolved_coordinate_search = (
+                    (not is_gltf_mesh) or (global_similarity is not None)
+                )
+            else:
+                resolved_coordinate_search = bool(coordinate_search)
             src_match_names = _build_canonical_match_names(
                 bone_names,
                 parents_input,
@@ -930,8 +958,10 @@ class AnimationExporter:
                     src_root_rotation=np.array(rr, dtype=np.float64),
                     src_match_names=src_match_names,
                     tgt_match_names=tgt_names,
+                    src_effective_root_index=src_effective_root_index,
+                    tgt_effective_root_index=tgt_effective_root_index,
                     src_bone_translations=np.array(bt, dtype=np.float64) if bt is not None else None,
-                    coordinate_search=coordinate_search,
+                    coordinate_search=resolved_coordinate_search,
                     verbose=verbose,
                 )
                 return result, tgt_bvh_names

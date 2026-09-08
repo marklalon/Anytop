@@ -724,3 +724,376 @@ def retarget_animation_file_to_target(
         source_tp,
         source_effective_root_index,
     )
+
+
+# ---------------------------------------------------------------------------
+# Native-space GLB -> GLB retarget
+# ---------------------------------------------------------------------------
+
+# Both skeletons reach this module through ``FBX.load`` /
+# ``extract_armature_skeleton_data``, which apply ``_armature_yup_correction``
+# and therefore hand back a Y-up basis regardless of how the source file parked
+# its up-axis conversion (on the armature object or baked into the root bone).
+_NATIVE_UP_AXIS = 1
+
+# Neutral object-type hints: the face/forward resolvers fall back to their name
+# heuristics instead of a registered species' hard-coded joint indices, which is
+# what a cond-free native retarget needs on both sides.
+_NATIVE_SRC_FACE_HINT = '__retarget_glb_source__'
+_NATIVE_TGT_FACE_HINT = '__retarget_glb_target__'
+
+
+def _native_rest_positions(parents, offsets, rest_rotations) -> np.ndarray:
+    """Return the (J, 3) bind-pose world positions of a native-space skeleton."""
+    from utils.retarget import batch_forward_kinematics_np
+
+    joint_count = len(parents)
+    identity_rotations = np.zeros((1, joint_count, 4), dtype=np.float64)
+    identity_rotations[..., 0] = 1.0
+    world_positions, _ = batch_forward_kinematics_np(
+        identity_rotations,
+        np.asarray(offsets, dtype=np.float64)[None],
+        np.asarray(parents, dtype=np.int32),
+        rest_rotations=np.asarray(rest_rotations, dtype=np.float64),
+    )
+    return world_positions[0]
+
+
+def _native_facing_quat(names, parents, rest_positions, object_type_hint) -> np.ndarray:
+    """Return the (4,) WXYZ quat that rotates this bind pose to the +Z reference.
+
+    Same face/forward-joint detection the cond-free feature path uses in
+    :func:`retarget_animation_file_to_target`, so a rig canonicalizes to the
+    same facing whichever path reads it.
+    """
+    from data_loaders.truebones.truebones_utils.features import calculate_root_quat
+    from data_loaders.truebones.truebones_utils.face_orientation import (
+        resolve_face_joints,
+        resolve_forward_reference_joints,
+    )
+
+    batched_rest_positions = np.asarray(rest_positions, dtype=np.float64)[None]
+    face_joints = resolve_face_joints(
+        object_type_hint, list(names), parents, None,
+        rest_positions=batched_rest_positions,
+    )
+    forward_joint, forward_base_joint = resolve_forward_reference_joints(
+        list(names), parents, object_type=object_type_hint,
+        rest_positions=batched_rest_positions,
+    )
+    return np.asarray(
+        calculate_root_quat(
+            batched_rest_positions,
+            object_type_hint,
+            face_joint_indx=face_joints,
+            forward_joint_index=forward_joint,
+            forward_base_joint_index=forward_base_joint,
+        )[0].qs,
+        dtype=np.float64,
+    ).reshape(-1)
+
+
+def _native_ground_shift(
+    retarget_result: dict,
+    target_names,
+    target_parents,
+    target_rest_positions: np.ndarray,
+) -> Optional[np.ndarray]:
+    """Return the source-space translation that drops the target's feet to y=0.
+
+    ``retarget_world_space_np`` pins its rest-pose translation alignment to zero
+    because the feature-space path feeds it two ``process_anim``-normalized
+    skeletons whose feet already sit at y≈0. Native rigs carry no such
+    guarantee, so a cross-rig transfer between differently-proportioned
+    skeletons can leave the target floating or sunk. This measures the realized
+    target world pose the same way :func:`bake_foot_floor_offset` measures the
+    rebuilt animation — median of the per-contact-joint minimum height over the
+    whole clip — and converts that world-space correction back into the source
+    translation that produces it.
+
+    The retarget maps source to target world space as
+    ``p_out = R @ (scale * p_src)``, so a source shift ``d`` moves the output by
+    ``R @ (scale * d)``; inverting for a desired output shift gives
+    ``d = R.T @ p_out_delta / scale``.
+
+    Returns ``None`` when the target has no detectable contact joints
+    (serpentine / aquatic / flying rigs) or is already grounded.
+    """
+    from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
+        infer_contact_joints,
+    )
+    from utils.retarget import generate_coordinate_candidates_np
+
+    target_parents = np.asarray(target_parents, dtype=np.int32)
+    foot_indices, _contact_source = infer_contact_joints(
+        list(target_names), target_parents, target_rest_positions,
+    )
+    if not foot_indices:
+        return None
+
+    target_world_positions = np.asarray(
+        retarget_result['target_world_positions'], dtype=np.float64,
+    )
+    foot_idx = np.asarray(foot_indices, dtype=np.int64).reshape(-1)
+    foot_idx = foot_idx[(foot_idx >= 0) & (foot_idx < target_world_positions.shape[1])]
+    if foot_idx.size == 0:
+        return None
+
+    per_joint_min = np.min(target_world_positions[:, foot_idx, _NATIVE_UP_AXIS], axis=0)
+    floor_height = float(np.median(per_joint_min))
+    if abs(floor_height) <= 1e-9:
+        return None
+
+    rotation_by_label = dict(generate_coordinate_candidates_np())
+    alignment_rotation = rotation_by_label.get(str(retarget_result['alignment_label']))
+    if alignment_rotation is None:
+        return None
+    alignment_scale = float(retarget_result['alignment_scale'])
+    if abs(alignment_scale) < 1e-12:
+        return None
+
+    output_delta = np.zeros(3, dtype=np.float64)
+    output_delta[_NATIVE_UP_AXIS] = -floor_height
+    return (alignment_rotation.T @ output_delta) / alignment_scale
+
+
+def retarget_glb_to_glb(
+    source_path: str,
+    target_path: str,
+    output_path: str,
+    *,
+    fps: Optional[float] = None,
+    coordinate_search: Optional[bool] = None,
+    align_facing: bool = False,
+    ground: bool = False,
+    export_mesh: bool = True,
+    slice_inds=None,
+    verbose: bool = True,
+) -> str:
+    """Retarget an animation onto another rig entirely in native space.
+
+    The native counterpart of :func:`retarget_animation_file_to_target`. That
+    function answers "what are this motion's AnyTop features on the target
+    skeleton"; this one answers "what does this motion look like played back on
+    that rig", and the difference matters because the feature round trip is
+    lossy in ways a GLB-to-GLB transfer must not be:
+
+    * ``process_anim`` recenters the root at the XZ origin, rescales by
+      ``scale_factor`` and rotates the rig to the dataset's +Z facing;
+    * ``get_motion`` strips the entire root XZ trajectory once a clip travels
+      past ``ROOT_XZ_STRIP_THRESHOLD``, and that trajectory comes back on a
+      separate channel the feature retarget never receives;
+    * the result is a ``(F, J, 13)`` feature array, not a playable rig.
+
+    None of that happens here. Both skeletons are read through ``FBX.load`` /
+    ``extract_armature_skeleton_data`` -- the same function, hence the same
+    Y-up-corrected basis -- the shared :func:`retarget_world_space_np` core runs
+    on their raw transforms, and ``AnimationExporter.export_glb`` writes the
+    inverse-FK result onto the target rig's own bones. Root translation stays
+    world-space throughout, so locomotion survives intact, and a self-retarget
+    (``source_path == target_path``) round-trips to float noise.
+
+    Args:
+        source_path: motion source (``.glb`` / ``.gltf`` / ``.fbx``). Only its
+            skeleton and animation are read; its mesh is ignored.
+        target_path: rig that receives the motion. Supplies the skeleton and,
+            unless *export_mesh* is ``False``, the skin and materials written to
+            the output. Any animation it carries is discarded.
+        output_path: destination ``.glb``.
+        fps: output frame rate. Defaults to the source file's own rate. Note
+            that the exporter writes ``scene.render.fps`` as an int, so a
+            fractional rate (29.97) truncates.
+        coordinate_search: forwarded to ``export_glb``. ``None`` keeps the
+            exporter's auto-rule (off for a GLB target); pass ``True`` when the
+            two rigs are authored in different bases.
+        align_facing: rotate the source into the target's facing before
+            retargeting, using the same head/face detection the cond-free
+            feature path uses. Unlike ``coordinate_search``'s 1-of-12 rigid
+            sweep this is a continuous rotation, so it also fixes off-axis
+            facings. Applied through the root wrapper channels, which is an
+            exact rigid rotation of the whole source world pose.
+        ground: drop the retargeted result so the target's contact joints rest
+            at y=0. Off by default because it is a real translation and would
+            break self-retarget idempotency; see :func:`_native_ground_shift`.
+        export_mesh: ``False`` writes a skeleton-only GLB.
+        slice_inds: optional ``[start, end]`` frame slice on the source.
+        verbose: print progress; also drives the retarget core's own summary.
+
+    Returns:
+        The absolute path of the written GLB.
+    """
+    import torch
+
+    from motion_lib import FBX
+    from utils.exporter import AnimationExporter, animation_to_exporter_inputs
+    from utils.retarget import retarget_world_space_np
+    from utils.roundtrip_common import build_skeleton
+    from utils.rotation_numpy import (
+        quat_conjugate_wxyz_np,
+        quat_multiply_wxyz_np,
+        quat_rotate_wxyz_np,
+    )
+
+    # -- 1. Source rig + animation, in its own native space ----------------
+    # collapse_root=False: the root-collapse pass exists to normalize skeletons
+    # for the dataset, and here it would silently change the joint set on one
+    # side of a self-retarget.
+    start_frame, end_frame = (slice_inds[0], slice_inds[1]) if slice_inds else (None, None)
+    source_anim, source_names, source_frametime = FBX.load(
+        source_path, start=start_frame, end=end_frame, collapse_root=False,
+    )
+    if fps is not None:
+        output_fps = float(fps)
+    else:
+        output_fps = 1.0 / source_frametime if source_frametime > 0 else 30.0
+
+    skeleton = build_skeleton(
+        source_names,
+        np.asarray(source_anim.offsets, dtype=np.float64),
+        np.asarray(source_anim.parents, dtype=np.int32),
+        rest_rotations=np.asarray(source_anim.orients.qs, dtype=np.float64),
+    )
+    joint_rotations, root_translation, root_rotation, bone_translations = (
+        animation_to_exporter_inputs(source_anim, skeleton)
+    )
+
+    # The locomotion may live on a joint below a static wrapper root (the Bip01
+    # pattern). export_glb does not look for it, so resolve it here and pass it
+    # down, or such a rig transfers no global translation at all.
+    source_effective_root_index = int(find_translation_root(source_anim))
+
+    frame_count = int(joint_rotations.shape[0])
+    if verbose:
+        print(
+            f"[retarget_glb] source {os.path.basename(source_path)}: "
+            f"{frame_count} frames, {len(source_names)} joints, {output_fps:g} fps"
+        )
+        if source_effective_root_index != 0:
+            print(
+                f"[retarget_glb] source locomotion joint: "
+                f"{source_names[source_effective_root_index]!r} "
+                f"(index {source_effective_root_index})"
+            )
+
+    # Mirror export_glb's own float64 view of the skeleton so the pre-passes
+    # below see byte-identical inputs to the retarget the exporter will run.
+    source_parents = np.array(
+        [bone.parent_id if bone.parent_id is not None else -1 for bone in skeleton.bones],
+        dtype=np.int32,
+    )
+    source_rest_offsets = np.array([
+        bone.rest_offset.detach().cpu().numpy().astype(np.float64)
+        for bone in skeleton.bones
+    ])
+    source_rest_rotations = np.array([
+        bone.rest_rotation.detach().cpu().numpy().astype(np.float64)
+        for bone in skeleton.bones
+    ])
+
+    # -- 2. Target rig, only when a pre-pass actually needs it --------------
+    # FBX.load resets the bpy scene, so this must sit between the source read
+    # and export_glb (which resets once more and re-imports the target itself).
+    target_names = target_parents = None
+    target_rest_offsets = target_rest_rotations = target_rest_positions = None
+    if align_facing or ground:
+        target_anim, target_names, _target_frametime = FBX.load(
+            target_path, collapse_root=False,
+        )
+        target_parents = np.asarray(target_anim.parents, dtype=np.int32)
+        target_rest_offsets = np.asarray(target_anim.offsets, dtype=np.float64)
+        target_rest_rotations = np.asarray(target_anim.orients.qs, dtype=np.float64)
+        target_rest_positions = _native_rest_positions(
+            target_parents, target_rest_offsets, target_rest_rotations,
+        )
+
+    # -- 3. Optional facing alignment, applied through the root wrapper -----
+    # _batch_internal_pose_fk_np composes the wrapper above the hierarchy root,
+    # so rr <- R * rr and rt <- R . rt rotates the entire source world pose
+    # about the origin -- exactly rigid, and invisible to the retarget core.
+    root_translation_np = root_translation.detach().cpu().numpy().astype(np.float64)
+    root_rotation_np = root_rotation.detach().cpu().numpy().astype(np.float64)
+    if align_facing:
+        source_rest_positions = _native_rest_positions(
+            source_parents, source_rest_offsets, source_rest_rotations,
+        )
+        source_facing = _native_facing_quat(
+            source_names, source_parents, source_rest_positions, _NATIVE_SRC_FACE_HINT,
+        )
+        target_facing = _native_facing_quat(
+            target_names, target_parents, target_rest_positions, _NATIVE_TGT_FACE_HINT,
+        )
+        # source -> +Z reference -> target basis
+        align_quat = quat_multiply_wxyz_np(
+            quat_conjugate_wxyz_np(target_facing[None]), source_facing[None],
+        )
+        batched_align_quat = np.repeat(align_quat, frame_count, axis=0)
+        root_translation_np = quat_rotate_wxyz_np(batched_align_quat, root_translation_np)
+        root_rotation_np = quat_multiply_wxyz_np(batched_align_quat, root_rotation_np)
+        if verbose:
+            angle_deg = np.degrees(
+                2.0 * np.arccos(np.clip(abs(float(align_quat[0, 0])), -1.0, 1.0))
+            )
+            print(f"[retarget_glb] facing alignment: {angle_deg:.2f} deg applied to source")
+
+    # -- 4. Optional grounding, measured on a pre-pass retarget -------------
+    if ground:
+        prepass_result = retarget_world_space_np(
+            src_parents=source_parents,
+            src_rest_offsets=source_rest_offsets,
+            src_rest_rotations=source_rest_rotations,
+            tgt_parents=target_parents,
+            tgt_rest_offsets=target_rest_offsets,
+            tgt_rest_rotations=target_rest_rotations,
+            src_joint_rotations=joint_rotations.detach().cpu().numpy().astype(np.float64),
+            src_root_translation=root_translation_np,
+            src_root_rotation=root_rotation_np,
+            src_match_names=canonical_match_names_from_raw_skeleton(
+                source_names, source_parents, source_rest_offsets,
+            ),
+            tgt_match_names=canonical_match_names_from_raw_skeleton(
+                target_names, target_parents, target_rest_offsets,
+            ),
+            src_effective_root_index=source_effective_root_index,
+            src_bone_translations=(
+                bone_translations.detach().cpu().numpy().astype(np.float64)
+                if bone_translations is not None else None
+            ),
+            coordinate_search=(
+                bool(coordinate_search) if coordinate_search is not None else False
+            ),
+            verbose=False,
+        )
+        ground_shift = _native_ground_shift(
+            prepass_result, target_names, target_parents, target_rest_positions,
+        )
+        if ground_shift is None:
+            if verbose:
+                print("[retarget_glb] grounding: no contact joints detected, skipped")
+        else:
+            root_translation_np = root_translation_np + ground_shift[None, :]
+            if verbose:
+                print(
+                    f"[retarget_glb] grounding: source shifted by "
+                    f"{ground_shift.round(6).tolist()}"
+                )
+
+    root_translation = torch.from_numpy(root_translation_np.astype(np.float32))
+    root_rotation = torch.from_numpy(root_rotation_np.astype(np.float32))
+
+    # -- 5. Retarget onto the target rig and write the GLB ------------------
+    if verbose:
+        print(f"[retarget_glb] retargeting onto {os.path.basename(target_path)}")
+    AnimationExporter(skeleton, fps=output_fps).export_glb(
+        joint_rotations,
+        root_translation,
+        root_rotation,
+        output_path,
+        mesh_path=target_path,
+        bone_translations=bone_translations,
+        export_mesh=export_mesh,
+        coordinate_search=coordinate_search,
+        src_effective_root_index=source_effective_root_index,
+    )
+    if verbose:
+        print(f"[retarget_glb] wrote {output_path}")
+    return os.path.abspath(output_path)
