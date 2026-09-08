@@ -229,12 +229,24 @@ _JAPANESE_GATED_REPLACEMENTS = {
 # they are the only thing separating a fore limb from a hind limb once the side
 # label is factored out, so dropping them collapsed e.g. Crocodile's
 # "Right Front Leg 1" and "Right Back Leg 1" onto one identical embedding text.
+# The phalanx-position words below are the same filler spelled anatomically.
+# The numeric spelling of a finger's position is already gone -- "LeftHandIndex1"
+# through "...3" all reduce to one token -- so keeping "Index Proximal" apart
+# from "Index" splits one body part across two T5 points for nothing. Every rig
+# here that spells it (the MLH/MLS packs' "Index_Proximal_L") carries exactly one
+# finger bone per hand, so there is no second phalanx left needing the word.
+# ``VariantN`` is a canonical/BVH uniqueness suffix, not anatomy; structural
+# channels distinguish those joints, so it must never enter the T5 text.
 _EMBED_TEXT_SKIP_TOKENS = {
     'base',
     'tip',
     'nub',
     'end',
     'site',
+    'proximal',
+    'intermediate',
+    'distal',
+    'variant',
 }
 # Rig scaffolding, props and tack: bones that carry no anatomy at all. A joint
 # whose name reduces to nothing but these is blanked by build_joint_embedding_texts
@@ -388,10 +400,9 @@ _EMBED_TEXT_HEAD_FEATURE_TOKENS = {
 # exact opposite of what a cross-species model needs. Dropping the word leaves
 # four plain "Neck" joints that _sibling_instance_tokens then numbers apart.
 #
-# Stripped only in the embedding text, never in canonical_joint_names: the
-# canonical layer needs them to keep names unique (and would have
-# _disambiguate_duplicate_canonical_names re-append them anyway), so stripping
-# there would cost BVH-name churn and a renamer bank rebuild for no gain.
+# Stripped from both canonical names and embedding text. If two joints become
+# identical after stripping, canonical-name assignment gives later occurrences
+# a neutral Variant suffix instead of putting the species word back.
 #
 # Deliberately excluded: 'ant' (spider_tarantula's "RightAnt00" is an antenna
 # under Head01, not the insect), 'horse' ("HorseLink" is a 3ds Max Biped leg
@@ -409,6 +420,14 @@ _EMBED_TEXT_CREATURE_TOKENS = {
     'stego', 'tarantula', 'tiger', 'trex', 'tricera', 'tukan', 'turtle', 'tyranno',
     'wyvern',
 }
+
+
+def joint_name_token_is_species(token):
+    """Whether one normalized joint-name token is a known species label."""
+    clean_token = re.sub(r'[^a-z0-9]+', '', str(token or '').casefold())
+    return clean_token in _EMBED_TEXT_CREATURE_TOKENS
+
+
 # Quadruped limb codes: Lf/Rf/Lb/Rb = left/right fore/hind. The side half is
 # already recovered by detect_joint_side and re-attached from the geometry label,
 # so only the fore/hind half is emitted here. Dropping the code outright would
@@ -447,6 +466,36 @@ _EMBED_TEXT_QUADRANT_LIMB_CONTEXT_TOKENS = frozenset({'arm', 'leg'})
 # limb word decides. Every one of the 138 resolves; none names both limbs.
 _EMBED_TEXT_DIGIT_HAND_CONTEXT_TOKENS = frozenset({'arm', 'hand', 'palm'})
 _EMBED_TEXT_DIGIT_FOOT_CONTEXT_TOKENS = frozenset({'leg', 'foot', 'ankle', 'toe', 'paw', 'hoof'})
+# The limb a distal joint hangs off, as spelled inside that joint's own name. A
+# thumb is on a hand and an ankle is on a leg, so the carrier word records
+# nothing but which namespace the rig author worked in -- and this corpus uses
+# several for the same parts: the five fingers arrive as "LeftHandThumb1"
+# (Mixamo), "RigLArmThumb1" (the PC/RU packs) and a bare "NPC_LThumb01" (the
+# KI/RMW packs), the hand itself as "RigLArmPalm" against 108 species' plain
+# "Hand", and the leg's distal joints as "RigLLegAnkle"/"RigLLegFoot1"/
+# "RigLLegToes1" against the corpus "Ankle"/"Foot"/"Toe". Every one of those
+# split a body part across two or three points in T5 space; an incoming Mixamo
+# hand matched none of the finger spellings at all, and fell back on
+# "Right Arm Middle" at cos 0.69 -- the same finger under another name.
+#
+# "Wing" is deliberately not a carrier: a dragon's wing digit is a different
+# limb, not a different spelling of the same one, and the corpus keeps wing
+# anatomy apart everywhere else. Nor are the creature words a centaur rig uses
+# to tell its two halves apart ("horse_hand_L" beside "man_hand_L").
+_EMBED_TEXT_LIMB_CARRIER_TOKENS = frozenset({'Arm', 'Hand', 'Leg'})
+# Distal parts that already name the limb they sit on, so a carrier in front of
+# one is pure repetition.
+_EMBED_TEXT_CARRIED_PART_TOKENS = frozenset({
+    'Ankle', 'Finger', 'Foot', 'Hand', 'Heel', 'Hoof', 'Index', 'Little',
+    'Middle', 'Paw', 'Pinky', 'Ring', 'Thumb', 'Toe', 'Wrist',
+})
+# Words that qualify *which* limb, kept in front of the part when the carrier is
+# dropped: "LFLegAnkle" is the fore ankle and has to stay off the hind one.
+# Read only ahead of the carrier. Behind it the same words index one limb out of
+# many instead -- PC_PolygonalSpiderlingVenom runs four pairs it spells
+# "RigLLegFront1..4", "RigLLegMid...", "RigLLegCtr...", "RigLLegBack..." -- and
+# there the leg word is the anatomy, not a namespace.
+_EMBED_TEXT_LIMB_QUALIFIER_TOKENS = frozenset({'Back', 'Front', 'Mid', 'Rear'})
 # Anatomical synonyms and rig abbreviations folded onto the vocabulary the rest
 # of the corpus already uses, so one body part is one point in T5 space instead
 # of a dozen singleton families. Left as-is when T5 gets there on its own; these
@@ -607,7 +656,25 @@ def _split_glued_compound_token(token):
     return parts if parts is not None and len(parts) >= 2 else None
 
 
-JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 13
+# 15: distal joint names were normalized. The carrier limb a rig repeats inside
+# the joint's own name ("LeftHandThumb1", "RigLArmThumb1", "RigLArmPalm",
+# "RigLLegAnkle", "RigLLegToes1") is dropped, and so are the phalanx-position
+# words ("Index_Proximal_L"), so each hand, finger, ankle, foot and toe lands on
+# one token per side instead of one per rig convention.
+# 14: the text was slimmed. Chain ordinals ("Segment Second Of 3"), chain roles
+# (ChainStart/ChainEnd/...), sibling instance ordinals and the Contact /
+# EndEffector flags no longer go into it -- all of them are DERIVED from parents,
+# the rest pose and the contact annotation, which the structural channel now
+# carries per joint (see joint_struct_features). They were competing for the same
+# mean-pooled T5 vector as the body-part word, and the longer the sentence the
+# more diluted "Calf", "Finger" or "Wing" became.
+JOINT_NAME_EMBEDDING_SCHEMA_VERSION = 15
+
+# The text the pipeline encodes. Structure-derived tokens are the structural
+# channel's job; a name says which body part a joint is and which side it is on,
+# and nothing else. ``slim=False`` rebuilds the pre-v14 text and exists for the
+# offline comparison scripts, never for a training corpus.
+JOINT_NAME_EMBEDDING_SLIM = True
 
 _CHAIN_INDEX_ORDINAL_TOKENS = {
     1: 'First',
@@ -775,6 +842,10 @@ def _collapse_repeated_name_parts(canonical_parts):
     return collapsed
 
 
+def _drop_species_name_parts(canonical_parts):
+    return [part for part in canonical_parts if not joint_name_token_is_species(part)]
+
+
 def _canonicalize_joint_name(name, replacements=None, additional_prefixes=()):
     replacements = _JAPANESE_NAME_REPLACEMENTS if replacements is None else replacements
     split_name = normalize_joint_name(strip_joint_name_prefix(name, additional_prefixes))
@@ -802,6 +873,7 @@ def _canonicalize_joint_name(name, replacements=None, additional_prefixes=()):
                 canonical_parts.extend(part.capitalize() for part in compound_parts)
 
     canonical_parts = _collapse_repeated_name_parts(canonical_parts)
+    canonical_parts = _drop_species_name_parts(canonical_parts)
     return ' '.join(canonical_parts) if canonical_parts else name.strip()
 
 
@@ -1118,6 +1190,30 @@ def _body_clean_tokens(name, additional_prefixes=()):
     return canonical_name, clean_tokens
 
 
+def _drop_redundant_limb_carrier(refined_tokens):
+    """Strip the carrier limb from a "[qualifier] <carrier> <part>" name.
+
+    The carrier has to sit *immediately* in front of the part, with nothing after
+    it, because that shape is what makes it a namespace prefix rather than
+    anatomy. Anything else in the name means the words are doing work: Raptor2's
+    "jt_HandClawMiddle_L" is [Hand, Claw, Middle], the middle claw of the *hand*,
+    and the same rig carries a "Claw Middle" on the foot for it to collide with;
+    RU01_BotRobot's "RigLArmFingerIn1" is [Arm, Finger, In]; and a spiderling's
+    "RigLLegFront1" is [Leg, Front], where the leg word is the only anatomy
+    there is.
+    """
+    if len(refined_tokens) < 2:
+        return refined_tokens
+    qualifier_tokens, (carrier_token, part_token) = refined_tokens[:-2], refined_tokens[-2:]
+    if carrier_token not in _EMBED_TEXT_LIMB_CARRIER_TOKENS:
+        return refined_tokens
+    if part_token not in _EMBED_TEXT_CARRIED_PART_TOKENS:
+        return refined_tokens
+    if any(token not in _EMBED_TEXT_LIMB_QUALIFIER_TOKENS for token in qualifier_tokens):
+        return refined_tokens
+    return [*qualifier_tokens, part_token]
+
+
 def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_prefixes=(),
                                  bare_leg_is_calf=False):
     canonical_name, clean_tokens = _body_clean_tokens(name, additional_prefixes=additional_prefixes)
@@ -1166,7 +1262,7 @@ def _refine_joint_embedding_name(name, bare_arm_is_upper_arm=False, additional_p
         if position == 0 or token != merged_tokens[position - 1]
     ]
     if deduped_tokens:
-        return deduped_tokens
+        return _drop_redundant_limb_carrier(deduped_tokens)
 
     # Nothing survived, so hand back the raw canonical tokens -- minus the side
     # word, which build_joint_embedding_texts is about to re-attach from the
@@ -1297,7 +1393,15 @@ def _sibling_instance_tokens(body_tokens_per_joint, flag_tokens_per_joint, symme
     return instance_tokens
 
 
-def build_joint_embedding_texts(object_cond):
+def build_joint_embedding_texts(object_cond, slim=JOINT_NAME_EMBEDDING_SLIM):
+    """Per-joint T5 sentences: side + body part, and (only when ``slim=False``)
+    the structure-derived tokens the pre-v14 schema also spelled.
+
+    Slimming is done here, at token construction, rather than by deleting words
+    from a finished string: the chain grouping and the instance numbering read
+    each other, so a post-hoc blacklist would leave whichever of them happened to
+    survive keyed on a signature that no longer exists.
+    """
     base_joint_names = object_cond.get('canonical_joint_names') or object_cond.get('joints_names') or []
     if not base_joint_names:
         return []
@@ -1332,15 +1436,18 @@ def build_joint_embedding_texts(object_cond):
         )
         for joint_index, joint_name in enumerate(base_joint_names)
     ]
-    # Chain grouping stays side-aware even though the side word is emitted only
-    # once, at the end: without it a midline trunk (Buzzard "Tail 01") shares a
-    # signature with its left and right forks and swallows both into one chain.
-    chain_signature_tokens = [
-        [*tokens, joint_side_labels[joint_index] if joint_index < len(joint_side_labels) else 'center']
-        if tokens else []
-        for joint_index, tokens in enumerate(refined_tokens_per_joint)
-    ]
-    chain_relative_tokens = _build_chain_relative_joint_tokens(chain_signature_tokens, object_cond.get('parents'))
+    if slim:
+        chain_relative_tokens = [[] for _ in refined_tokens_per_joint]
+    else:
+        # Chain grouping stays side-aware even though the side word is emitted only
+        # once, at the end: without it a midline trunk (Buzzard "Tail 01") shares a
+        # signature with its left and right forks and swallows both into one chain.
+        chain_signature_tokens = [
+            [*tokens, joint_side_labels[joint_index] if joint_index < len(joint_side_labels) else 'center']
+            if tokens else []
+            for joint_index, tokens in enumerate(refined_tokens_per_joint)
+        ]
+        chain_relative_tokens = _build_chain_relative_joint_tokens(chain_signature_tokens, object_cond.get('parents'))
 
     body_tokens_per_joint = []
     flag_tokens_per_joint = []
@@ -1366,17 +1473,26 @@ def build_joint_embedding_texts(object_cond):
         body_tokens_per_joint.append(body_tokens)
 
         flag_tokens = []
-        if joint_index in contact_joints:
-            flag_tokens.append('Contact')
-        if joint_index in end_effector_joints:
-            flag_tokens.append('EndEffector')
+        if not slim:
+            if joint_index in contact_joints:
+                flag_tokens.append('Contact')
+            if joint_index in end_effector_joints:
+                flag_tokens.append('EndEffector')
         flag_tokens_per_joint.append(flag_tokens)
 
-    # Instance ordinals sit with the other positional tokens, ahead of the
-    # derived Contact/EndEffector flags.
-    instance_tokens_per_joint = _sibling_instance_tokens(
-        body_tokens_per_joint, flag_tokens_per_joint, object_cond.get('symmetry_partner_indices')
-    )
+    if slim:
+        # Repeated siblings (a centipede's leg pairs, a bat's wing fingers) are
+        # left sharing one text on purpose: numbering them is a within-skeleton
+        # id, which is exactly what sib_rank / fore_aft_n / lateral_signed encode
+        # in the structural channel -- and there they are comparable across
+        # species, which "Instance First Of 22" never was.
+        instance_tokens_per_joint = [[] for _ in body_tokens_per_joint]
+    else:
+        # Instance ordinals sit with the other positional tokens, ahead of the
+        # derived Contact/EndEffector flags.
+        instance_tokens_per_joint = _sibling_instance_tokens(
+            body_tokens_per_joint, flag_tokens_per_joint, object_cond.get('symmetry_partner_indices')
+        )
     return [
         ' '.join([*body_tokens, *instance_tokens, *flag_tokens]) if body_tokens else ''
         for body_tokens, instance_tokens, flag_tokens

@@ -25,7 +25,59 @@ ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 # A v1 checkpoint's
 # action_label_projection reads one whole-label vector, so its weights mean
 # something else even where the shapes would line up.
-CKPT_VERSION = 2
+# 3: the graph attention bias code tables changed. graph_dist no longer
+# saturates into one "far" bucket and joint_relations no longer collapses
+# 88% of pairs into 'no_relation'; both embedding tables grew, so a v2
+# checkpoint cannot load, and codes 6+ meant nothing to it anyway.
+# 4: the joint condition was restructured. The joint-name text was slimmed to
+# side + body part (schema 14) and the structure it used to spell moved into a
+# per-joint STRUCTURAL channel with its own MLP (joint_struct_features). A v3
+# checkpoint's text_embedding was fitted on the long sentences and it has no
+# struct_embedding at all.
+CKPT_VERSION = 4
+
+# Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
+# these version the *content* of an input the args.json cannot otherwise
+# describe: a cond regenerated under a different joint-name schema, or a
+# structural descriptor whose channels were reordered, hands the same shapes to
+# the same weights with a different meaning behind them.
+def joint_condition_schema_versions():
+    # Imported lazily: this module is deliberately import-light (the training and
+    # generation entry points both parse args long before numpy is wanted).
+    from data_loaders.truebones.truebones_utils.joint_struct_features import (
+        JOINT_STRUCT_FEATURE_SCHEMA_VERSION,
+    )
+    from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
+        JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
+    )
+    return {
+        'joint_struct_schema_version': int(JOINT_STRUCT_FEATURE_SCHEMA_VERSION),
+        'joint_name_embedding_schema_version': int(JOINT_NAME_EMBEDDING_SCHEMA_VERSION),
+    }
+
+
+def assert_joint_condition_schema(model_args, args_path, action='sample'):
+    """Refuse a checkpoint whose joint-condition contracts differ from this code.
+
+    Separate from the ``version`` stamp because these two can move without any
+    training-semantics change of their own -- and because the failure they guard
+    is the quiet kind: the tensors line up, only their meaning has shifted.
+    """
+    expected = joint_condition_schema_versions()
+    for key, wanted in expected.items():
+        recorded = model_args.get(key)
+        if recorded is None:
+            raise SystemExit(
+                f"ERROR: {args_path} records no {key}, so it predates the joint-condition "
+                f"restructure and cannot be used to {action}. Retrain."
+            )
+        if int(recorded) != wanted:
+            raise SystemExit(
+                f"ERROR: {args_path} records {key}={recorded}, this code is at {wanted}. "
+                f"The joint conditions would load with the shapes intact and a different "
+                f"meaning behind them; retrain (and regenerate cond.npy if the joint-name "
+                f"schema is what moved)."
+            )
 
 def parse_and_load_from_model(parser, argv=None, preserve_cli_args=None):
     # args according to the loaded model
@@ -114,6 +166,7 @@ def extract_args(args, args_to_overwrite, model_path):
         model_args = json.load(fr)
 
     assert_checkpoint_version(model_args, args_path)
+    assert_joint_condition_schema(model_args, args_path)
     apply_checkpoint_action_group(args, model_args, args_path)
 
     for a in args_to_overwrite:
@@ -209,10 +262,6 @@ def add_model_options(parser):
                             "vector elementwise but never hides the joint's identity, so the model is "
                             "never trained to fall back on rest_pose/graph_dist/joints_relations and a "
                             "single rare name token can flip a limb's motion prior. Default 0.0 (off).")
-    group.add_argument("--joint_name_drop_all_prob", default=0.0, type=float,
-                       help="Per-sample probability of dropping EVERY joint name in the skeleton at once "
-                            "(on top of --joint_name_drop_prob), training the fully name-blind regime "
-                            "where only the rest pose and the topology place a joint. Default 0.0 (off).")
     group.add_argument("--species_cond", action='store_true',
                        help="Enable per-species FiLM conditioning: the T5-derived species descriptor "
                             "modulates the timestep token multiplicatively (gamma=1+res, beta; zero-init "

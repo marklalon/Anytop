@@ -15,6 +15,9 @@ sys.path.insert(0, str(REPO_ROOT))
 from data_loaders.tensors import truebones_batch_collate  # noqa: E402
 from data_loaders.truebones.data.dataset import resample_motion_features  # noqa: E402
 from diffusion.gaussian_diffusion import GaussianDiffusion, LossType, ModelMeanType, ModelVarType  # noqa: E402
+from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
+    JOINT_STRUCT_DIM,
+)
 from model.anytop import AnyTop  # noqa: E402
 from model.motion_transformer import circular_phase_embedding  # noqa: E402
 from utils.model_util import create_gaussian_diffusion  # noqa: E402
@@ -274,6 +277,7 @@ class NativeLoopTests(unittest.TestCase):
             'rest_pose': torch.randn(2, 4, 13, dtype=torch.float32),
             'n_joints': torch.tensor([4, 3], dtype=torch.int64),
             'joints_names_embs': torch.zeros(2, 4, 512, dtype=torch.float32),
+            'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
             # Unconditional model input -- every forward reads the frame.
             'canonical_feature_mean': torch.zeros(13, dtype=torch.float32),
             'canonical_feature_std': torch.ones(13, dtype=torch.float32),
@@ -308,6 +312,7 @@ class NativeLoopTests(unittest.TestCase):
             'rest_pose': torch.randn(2, 4, 13, dtype=torch.float32),
             'n_joints': torch.tensor([4, 3], dtype=torch.int64),
             'joints_names_embs': torch.zeros(2, 4, 512, dtype=torch.float32),
+            'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
             # Unconditional model input -- every forward reads the frame.
             'canonical_feature_mean': torch.zeros(13, dtype=torch.float32),
             'canonical_feature_std': torch.ones(13, dtype=torch.float32),

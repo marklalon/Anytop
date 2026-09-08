@@ -20,7 +20,12 @@ _torch.backends.cuda.enable_cudnn_sdp(True)
 _torch.backends.cuda.enable_flash_sdp(True)
 
 from utils.fixseed import fixseed
-from utils.parser_util import CKPT_VERSION, train_args
+from utils.parser_util import (
+    CKPT_VERSION,
+    joint_condition_schema_versions,
+    assert_joint_condition_schema,
+    train_args,
+)
 from utils import dist_util
 from train.training_loop import TrainLoop
 from data_loaders.get_data import get_dataset_loader
@@ -182,6 +187,9 @@ def assert_resume_checkpoint_version(args, save_dir):
         previous_args = json.load(fr)
     recorded = previous_args.get('version')
     if recorded == CKPT_VERSION:
+        # Same guard, one level finer: a resume also restamps these, so a cond
+        # regenerated under a new joint-name schema mid-run would go unnoticed.
+        assert_joint_condition_schema(previous_args, args_path, action='resume')
         return
     recorded_text = (
         "no version (it predates checkpoint versioning)" if recorded is None
@@ -205,6 +213,11 @@ def write_args_json(args, args_path):
     (utils.parser_util.assert_checkpoint_version).
     """
     args.version = CKPT_VERSION
+    # The data-side contracts this run was fitted under. Stamped here rather than
+    # declared as flags: they are properties of the code and of cond.npy, and a
+    # user has no business overriding them from the command line.
+    for key, value in joint_condition_schema_versions().items():
+        setattr(args, key, value)
     # The loaded word table is a runtime object, not a setting: its identity
     # travels as the two fingerprints inside every checkpoint, and a numpy array
     # is not JSON anyway.

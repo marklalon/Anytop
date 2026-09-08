@@ -41,6 +41,9 @@ from data_loaders.truebones.truebones_utils.dataset_sources import (
     species_lookup_map,
 )
 from data_loaders.truebones.truebones_utils.get_opt import DEFAULT_COND_PATH, get_opt
+from data_loaders.truebones.truebones_utils.joint_struct_features import (
+    build_joint_struct_features,
+)
 from data_loaders.truebones.truebones_utils.motion_process import (
     tpose_features_from_cond,
     recover_bvh_export_animation_from_motion_np,
@@ -989,6 +992,14 @@ def main(args=None, cond_dict=None, runtime=None):
         task_cond = _normalize_optional_path(getattr(args, 'cond_path', '') or '')
         if task_cond != runtime.cond_path:
             new_cond_dict = load_cond(task_cond)
+            # Same gate the first cond went through: a task that swaps in another
+            # cond.npy must not slip an older joint-name embedding schema past
+            # the check prepare_generation_runtime already ran.
+            ensure_joint_name_embeddings(
+                new_cond_dict,
+                expected_embedding_dim=args.t5_out_dim,
+                cond_source=task_cond,
+            )
             new_opt = get_opt(runtime.device, task_cond, cond_dict=new_cond_dict)
             _raise_opt_max_joints_for_cond(new_opt, new_cond_dict)
             runtime.opt = new_opt
@@ -2263,6 +2274,11 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
         training.
     """
     batches = list()
+    # One entry per species, not per sample: the structural descriptors are a pure
+    # function of the cond entry, and this is the same builder the dataset caches
+    # at construction -- a second implementation here would silently condition
+    # generation on something training never saw.
+    joint_struct_by_object = {}
     for i, object_type in enumerate(object_types):
         if object_type not in cond_dict:
             available = ', '.join(sorted(cond_dict.keys()))
@@ -2347,6 +2363,10 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
             'canonical_feature_std': canonical_std,
             'rest_pose_physical': cond_dict[object_type]['rest_pose'],
             'rest_pos_ric_hml': cond_dict[object_type]['rest_pos_ric_hml'],
+            'joint_struct': joint_struct_by_object.setdefault(
+                object_type,
+                build_joint_struct_features(cond_dict[object_type], source=str(object_type)),
+            ),
             'feature_space': cond_dict[object_type].get('feature_space', 'canonical_motion_v3'),
         })
         batches.append(batch)

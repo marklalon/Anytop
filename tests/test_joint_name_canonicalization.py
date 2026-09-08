@@ -147,6 +147,44 @@ def test_toe_root_indices_are_preserved_for_parallel_digits():
     ][1:] == ["LeftToe2", "LeftToe1", "LeftToe0"]
 
 
+def test_species_words_are_removed_from_canonical_names_and_disambiguation():
+    object_cond = {
+        "object_type": "Kappa_gorilla",
+        "joints_names": [
+            "GorillaJaw",
+            "KappaJaw",
+            "R_gorilla_finger1_J01",
+            "R_gorilla_finger1_J02",
+            "L_gorilla_finger5_J02",
+            "gorilla_mouth",
+            "kappa_neck",
+        ],
+        "parents": np.array([-1, 0, 0, 0, 0, 0, 0], dtype=np.int64),
+        "offsets": np.zeros((7, 3), dtype=np.float64),
+    }
+
+    refresh_joint_metadata_in_object_cond(object_cond)
+
+    assert object_cond["canonical_joint_names"] == [
+        "Jaw",
+        "Jaw Variant2",
+        "Right Finger 1 01",
+        "Right Finger 1 02",
+        "Left Finger 5 02",
+        "Mouth",
+        "Neck",
+    ]
+    assert object_cond["canonical_bvh_joint_names"] == [
+        "Jaw",
+        "JawVariant2",
+        "RightFinger101",
+        "RightFinger102",
+        "LeftFinger502",
+        "Mouth",
+        "Neck",
+    ]
+
+
 def test_refresh_joint_metadata_rewrites_stale_canonical_names():
     object_cond = {
         "object_type": "Dragon",

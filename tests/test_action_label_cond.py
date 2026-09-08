@@ -31,6 +31,9 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     vocab_t5_text,
     vocab_words_in,
 )
+from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
+    JOINT_STRUCT_DIM,
+)
 from model.anytop import AnyTop  # noqa: E402
 from tests.action_label_test_utils import (  # noqa: E402
     TEST_LATENT_DIM,
@@ -80,6 +83,7 @@ def _make_y(**extra):
         'rest_pose': torch.randn(2, 4, 13, dtype=torch.float32),
         'n_joints': torch.tensor([4, 3], dtype=torch.int64),
         'joints_names_embs': torch.zeros(2, 4, T5_DIM, dtype=torch.float32),
+        'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
         'lengths': torch.tensor([3, 3], dtype=torch.int64),
         # The output coordinate frame is an unconditional model input: every
         # forward reads it, so a hand-built y has to carry it.
@@ -393,6 +397,7 @@ class ActionLabelConditioningTest(unittest.TestCase):
                 'graph_dist': torch.zeros(4, 4, dtype=torch.float32),
                 'joints_relations': torch.zeros(4, 4, dtype=torch.float32),
                 'joints_names_embs': torch.zeros(4, T5_DIM, dtype=torch.float32),
+                'joint_struct': torch.zeros(4, JOINT_STRUCT_DIM, dtype=torch.float32),
                 'rest_pose': torch.zeros(4, 13, dtype=torch.float32),
                 'mean': torch.zeros(4, 13, dtype=torch.float32),
                 'std': torch.ones(4, 13, dtype=torch.float32),

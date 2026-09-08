@@ -3,6 +3,11 @@ import torch
 import torch.nn as nn
 from typing import Optional, Union, Callable, Tuple
 from torch import Tensor
+
+from data_loaders.truebones.truebones_utils.topology_relations import (
+    NUM_EDGE_CODES,
+    NUM_TOPOLOGY_CODES,
+)
 import torch.nn.functional as F
 CUDA_LAUNCH_BLOCKING=1
 
@@ -914,7 +919,9 @@ class GraphMultiHeadAttention(nn.Module):
         return x
 
 class GraphMotionDecoder(nn.TransformerDecoder):
-    def __init__(self, decoder_layer, num_layers, norm=None, max_path_len=5, value_emb=False,
+    def __init__(self, decoder_layer, num_layers, norm=None,
+                 num_topology_codes=NUM_TOPOLOGY_CODES, num_edge_codes=NUM_EDGE_CODES,
+                 value_emb=False,
                  cross_limb=True, cross_limb_latents=8, cross_limb_dim=64,
                  cross_limb_last_n=0):
                 # multi head attention
@@ -941,14 +948,17 @@ class GraphMotionDecoder(nn.TransformerDecoder):
             ])
         else:
             self.cross_limb_blocks = None
-        self.topology_key_emb = nn.Embedding(max_path_len + 1, self.d_model) # 'far': max_path_len + 1
-        self.edge_key_emb = nn.Embedding(6, self.d_model) # 'self':0, 'parent':1, 'child':2, 'sibling':3, 'no_relation':4, 'end_effector':5
-        self.topology_query_emb = nn.Embedding(max_path_len + 1, self.d_model) # 'far': max_path_len + 1
-        self.edge_query_emb = nn.Embedding(6, self.d_model) # 'self':0, 'parent':1, 'child':2, 'sibling':3, 'no_relation':4, 'end_effector':5
+        # Table sizes come from ``topology_relations`` rather than being written
+        # here: the dataset emits those indices, and a mismatch surfaces only as an
+        # out-of-bounds gather deep inside the attention bias.
+        self.topology_key_emb = nn.Embedding(num_topology_codes, self.d_model)
+        self.edge_key_emb = nn.Embedding(num_edge_codes, self.d_model)
+        self.topology_query_emb = nn.Embedding(num_topology_codes, self.d_model)
+        self.edge_query_emb = nn.Embedding(num_edge_codes, self.d_model)
         self.value_emb_flag = value_emb
         if value_emb:
-            self.topology_value_emb = nn.Embedding(max_path_len + 1, self.d_model) # 'far': max_path_len + 1
-            self.edge_value_emb = nn.Embedding(6, self.d_model) # 'self':0, 'parent':1, 'child':2, 'sibling':3, 'no_relation':4, 'end_effector':5
+            self.topology_value_emb = nn.Embedding(num_topology_codes, self.d_model)
+            self.edge_value_emb = nn.Embedding(num_edge_codes, self.d_model)
 
     def _expand_relation_heads(self, relation: Tensor) -> Tensor:
         if relation.dim() == 3:

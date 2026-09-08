@@ -19,6 +19,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 
+from data_loaders.truebones.truebones_utils.joint_struct_features import (  # noqa: E402
+    JOINT_STRUCT_DIM,
+)
 from model.anytop import AnyTop  # noqa: E402
 from model.cfg_sampler import ClassifierFreeActionModel  # noqa: E402
 from tests.action_label_test_utils import (  # noqa: E402
@@ -80,6 +83,7 @@ def _make_y():
         'rest_pose': torch.randn(2, 4, 13, dtype=torch.float32),
         'n_joints': torch.tensor([4, 3], dtype=torch.int64),
         'joints_names_embs': torch.zeros(2, 4, T5_DIM, dtype=torch.float32),
+        'joint_struct': torch.zeros(2, 4, JOINT_STRUCT_DIM, dtype=torch.float32),
         'lengths': torch.tensor([3, 3], dtype=torch.int64),
         'canonical_feature_mean': torch.zeros(13, dtype=torch.float32),
         'canonical_feature_std': torch.ones(13, dtype=torch.float32),

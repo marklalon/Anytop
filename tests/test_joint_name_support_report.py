@@ -18,6 +18,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data_loaders.truebones.truebones_utils.joint_name_support import (
+    _shares_part_word,
     collect_joint_name_support_rows,
     write_joint_name_support_report,
 )
@@ -113,3 +114,79 @@ def test_an_empty_reference_costs_the_report_not_the_run(tmp_path):
     )
     assert rows == []
     assert not (tmp_path / 'joint_name_support_report.json').exists()
+
+
+def _unka_rig(index):
+    """A rig whose distinctive tokens no other species in the corpus carries."""
+    texts = ['Hips', 'Left Calf', 'Left Horn', 'Left Wing Finger'] + [
+        f'Spine {position}' for position in range(index, index + 6)
+    ]
+    # Seeded by position, not by ``hash``: string hashing is salted per process.
+    return _entry(texts, [_direction(100 + offset) for offset in range(len(texts))])
+
+
+def test_a_rig_the_corpus_already_carries_is_not_warned_about():
+    """The re-import case: kinship, not species count, is the right question.
+
+    A creature already in the training set comes back through preprocessing with
+    tokens only it carries. Counting *other* species that carry them measures a
+    cross-species transfer nobody is asking for -- the prior for those joints was
+    fitted on this very geometry.
+    """
+    reference = _reference_cond()
+    reference['unitybundles/MB_Unka'] = _unka_rig(0)
+    reference['unitybundles/MB_Unka']['loop_period_by_action'] = {f'a{i}': 1.0 for i in range(9)}
+
+    rows = collect_joint_name_support_rows({'new/Dragon': _unka_rig(0)}, reference)
+
+    horn = next(row for row in rows if row['embedding_text'] == 'Left Horn')
+    assert horn['support_species_count'] == 1, horn
+    assert horn['risk'] == 'low', horn
+    assert horn['reason'] == 'sibling_rig', horn
+    assert horn['sibling_support_species'] == ['unitybundles/MB_Unka'], horn
+
+
+def test_kinship_is_decided_per_token_not_per_rig():
+    """A near-twin rig only vouches for the tokens it actually carries."""
+    reference = _reference_cond()
+    reference['unitybundles/MB_Unka'] = _unka_rig(0)
+    reference['unitybundles/MB_Unka']['loop_period_by_action'] = {f'a{i}': 1.0 for i in range(9)}
+
+    query = _unka_rig(0)
+    query['joints_names_embs_meta']['embedding_texts'][2] = 'Left Leg'
+    query['joints_names_embs'][2] = _LEG
+    query['joints_names'] = list(query['joints_names_embs_meta']['embedding_texts'])
+
+    rows = collect_joint_name_support_rows({'new/Dragon': query}, reference)
+
+    leg = next(row for row in rows if row['embedding_text'] == 'Left Leg')
+    assert leg['sibling_support_species'] == [], leg
+    assert leg['risk'] == 'high', leg
+    assert leg['reason'] == 'narrow', leg
+
+
+def test_a_rig_the_corpus_barely_animates_vouches_for_nothing():
+    """Matching a species with no clips behind it is not evidence of training."""
+    reference = _reference_cond()
+    reference['unitybundles/MB_Unka'] = _unka_rig(0)
+    reference['unitybundles/MB_Unka']['loop_period_by_action'] = {'idle': 1.0}
+
+    rows = collect_joint_name_support_rows({'new/Dragon': _unka_rig(0)}, reference)
+
+    horn = next(row for row in rows if row['embedding_text'] == 'Left Horn')
+    assert horn['sibling_support_species'] == [], horn
+    assert horn['risk'] == 'high', horn
+
+
+def test_an_unseen_token_is_judged_by_the_body_part_it_lands_on():
+    """The docstring's own distinction, made real.
+
+    An unseen finger landing on another finger is fine; a leg landing on an arm
+    is the failure this module exists to catch. Side words and the canonicaliser's
+    modifier vocabulary carry no part identity, so they cannot make two tokens kin.
+    """
+    assert _shares_part_word('Left Wing Finger', 'Left Arm Finger')
+    assert _shares_part_word('Chest Extra', 'Chest')
+    assert not _shares_part_word('Left Leg', 'Left Arm')
+    assert not _shares_part_word('Left Arm Twist', 'Left Leg Twist')
+    assert not _shares_part_word('Left Leg Back', 'Left Arm Back')

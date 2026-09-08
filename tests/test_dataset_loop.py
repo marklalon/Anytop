@@ -34,6 +34,10 @@ from data_loaders.truebones.truebones_utils.canonical_features import (
     physical_hml_to_canonical,
 )
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond
+from data_loaders.truebones.truebones_utils.physics_joint_annotation import (
+    JOINT_NAME_EMBEDDING_SCHEMA_VERSION,
+    JOINT_NAME_EMBEDDING_SLIM,
+)
 from data_loaders.truebones.truebones_utils.dataset_sources import resolve_species_key
 
 
@@ -131,9 +135,28 @@ def _get_enriched_motion_metadata_lookup() -> dict[str, dict[str, object]]:
     return {name: dict(metadata) for name, metadata in enriched_lookup.items()}
 
 
+def _load_cond_stamped_with_the_current_schema(*args, **kwargs):
+    """``load_cond`` with the joint-name embedding schema restamped to current.
+
+    The checked-in dataset is encoded under whatever schema it was last
+    preprocessed with, and ``ensure_joint_name_embeddings`` refuses an older one
+    outright -- correctly, since those vectors mean something else. These are
+    loop-padding tests, though: they must exercise the temporal path, not the
+    embedding contract (tests/test_joint_struct_features.py covers that), so they
+    accept the cond that is on disk.
+    """
+    cond_dict = load_cond(*args, **kwargs)
+    for entry in cond_dict.values():
+        meta = dict(entry.get('joints_names_embs_meta') or {})
+        meta['schema_version'] = JOINT_NAME_EMBEDDING_SCHEMA_VERSION
+        meta['slim'] = JOINT_NAME_EMBEDDING_SLIM
+        entry['joints_names_embs_meta'] = meta
+    return cond_dict
+
+
 def _build_truebones(**kwargs) -> Truebones:
     enriched_lookup = _get_enriched_motion_metadata_lookup()
-    with patch.object(dataset_module, 'load_motion_metadata', return_value=enriched_lookup):
+    with patch.object(dataset_module, 'load_motion_metadata', return_value=enriched_lookup),             patch.object(dataset_module, 'load_cond', _load_cond_stamped_with_the_current_schema):
         return Truebones(**kwargs)
 
 

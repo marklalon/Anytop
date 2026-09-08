@@ -44,6 +44,10 @@ from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E40
 )
 from utils.misc import infer_object_type_from_filename  # noqa: E402
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond  # noqa: E402
+from data_loaders.truebones.truebones_utils.topology_relations import (  # noqa: E402
+    NUM_EDGE_CODES,
+    NUM_TOPOLOGY_CODES,
+)
 from data_loaders.truebones.truebones_utils import ignore_warnings  # noqa: E402
 from data_loaders.truebones.truebones_utils.dataset_sources import (  # noqa: E402
     bare_species_name,
@@ -278,6 +282,21 @@ def validate_cond_file(cond_path: Path, objects_subset: str) -> dict:
                 print_warn(f"validation error: {msg}")
             if joints_graph_dist.shape != (n_joints, n_joints):
                 msg = f"{object_type} joints_graph_dist shape mismatch: {joints_graph_dist.shape}"
+                print_warn(f"validation error: {msg}")
+            # The codes index the model's hop/edge embedding tables directly: an
+            # out-of-range value is not caught until a device-side gather, whose
+            # error names neither the species nor the matrix.
+            if joint_relations.size and not (
+                (0 <= joint_relations).all() and (joint_relations < NUM_EDGE_CODES).all()
+            ):
+                msg = (f"{object_type} joint_relations has codes outside "
+                       f"[0, {NUM_EDGE_CODES}): {np.unique(joint_relations)}")
+                print_warn(f"validation error: {msg}")
+            if joints_graph_dist.size and not (
+                (0 <= joints_graph_dist).all() and (joints_graph_dist < NUM_TOPOLOGY_CODES).all()
+            ):
+                msg = (f"{object_type} joints_graph_dist has codes outside "
+                       f"[0, {NUM_TOPOLOGY_CODES}): {np.unique(joints_graph_dist)}")
                 print_warn(f"validation error: {msg}")
             if len(joints_names) != n_joints:
                 msg = f"{object_type} joints_names length mismatch: {len(joints_names)} vs {n_joints}"

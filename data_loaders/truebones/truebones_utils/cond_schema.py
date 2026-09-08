@@ -34,6 +34,9 @@ from typing import Mapping
 
 import numpy as np
 
+from data_loaders.truebones.truebones_utils.topology_relations import (
+    refresh_topology_relations_in_cond_dict,
+)
 from data_loaders.truebones.truebones_utils.dataset_sources import (
     COND_FILE,
     COND_SCHEMA_VERSION,
@@ -159,7 +162,14 @@ def load_cond(cond_path, namespace=None) -> dict[str, dict]:
     if not path.is_file():
         raise FileNotFoundError(f"Condition file was not found: {path}")
     raw = np.load(str(path), allow_pickle=True).item()
-    return normalize_cond_dict(raw, cond_path=path, namespace=namespace)
+    cond_dict = normalize_cond_dict(raw, cond_path=path, namespace=namespace)
+    # ``joint_relations``/``joints_graph_dist`` are pure functions of ``parents``
+    # and are recomputed here rather than trusted from disk, so a change to the
+    # code table reaches existing datasets without a regen. This is the single
+    # point through which the dataset, generate.py and the validator all read
+    # cond.npy -- refreshing per call site instead would let one stale reader mix
+    # old and new codes into a training run with no visible error.
+    return refresh_topology_relations_in_cond_dict(cond_dict)
 
 
 def species_lookup_map_for_dataset_dir(dataset_dir) -> dict[str, str]:
