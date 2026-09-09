@@ -83,7 +83,7 @@
 {"clip": "Crow_Fly.npy", "action_group": "locomotion", "action_label": "fly, forward", "reviewed": true}
 {"clip": "Crow_Glide.npy", "action_group": "locomotion", "action_label": "fly, forward, glide", "reviewed": true}
 {"clip": "Crow_Look.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
-{"clip": "Crow_RunJump.npy", "action_group": "locomotion", "action_label": "run, jump, forward", "reviewed": true}
+{"clip": "Crow_RunJump.npy", "action_group": "locomotion", "action_label": "jump, forward", "reviewed": true}
 {"clip": "Crow_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "Deer_Buck_Grazing.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
 {"clip": "Deer_Buck_Idle.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
@@ -196,7 +196,7 @@
 {"clip": "Rabbit_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
 {"clip": "Rabbit2_Death.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "Rabbit2_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
-{"clip": "Rabbit2_Jog.npy", "action_group": "locomotion", "action_label": "run, jump, forward", "reviewed": true}
+{"clip": "Rabbit2_Jog.npy", "action_group": "locomotion", "action_label": "jump, forward", "reviewed": true}
 {"clip": "Rabbit2_Walk.npy", "action_group": "locomotion", "action_label": "walk, forward", "reviewed": true}
 {"clip": "rhino_AtkCharge.npy", "action_group": "stationary", "action_label": "attack, charge", "reviewed": true}
 {"clip": "rhino_AtkL.npy", "action_group": "stationary", "action_label": "attack, left, headbutt", "reviewed": true}

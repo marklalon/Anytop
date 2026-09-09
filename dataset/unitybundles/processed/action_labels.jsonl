@@ -603,7 +603,7 @@
 {"clip": "LH_Hero_THSwordDefend.npy", "action_group": "stationary", "action_label": "idle, block", "reviewed": true}
 {"clip": "LH_Hero_THSwordDie.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "LH_Hero_THSwordIdle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
-{"clip": "LH_Hero_THSwordJump.npy", "action_group": "transition", "action_label": "jump, weapon, 2hand", "reviewed": true}
+{"clip": "LH_Hero_THSwordJump.npy", "action_group": "stationary", "action_label": "jump, weapon, 2hand", "reviewed": true}
 {"clip": "LH_Hero_THSwordMeleeAttack01.npy", "action_group": "stationary", "action_label": "attack, slash", "reviewed": true}
 {"clip": "LH_Hero_THSwordMeleeAttack02.npy", "action_group": "stationary", "action_label": "attack, slash", "reviewed": true}
 {"clip": "LH_Hero_THSwordRelax.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
@@ -640,8 +640,8 @@
 {"clip": "MB_TigerDrago_Death2Recover.npy", "action_group": "transition", "action_label": "getup", "reviewed": true}
 {"clip": "MB_TigerDrago_Death2.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
 {"clip": "MB_TigerDrago_Dig.npy", "action_group": "stationary", "action_label": "idle, scratch", "reviewed": true}
-{"clip": "MB_TigerDrago_DogdeLeftG.npy", "action_group": "locomotion", "action_label": "walk, left, strafe", "reviewed": true}
-{"clip": "MB_TigerDrago_DogdeRightG.npy", "action_group": "locomotion", "action_label": "walk, right, strafe", "reviewed": true}
+{"clip": "MB_TigerDrago_DogdeLeftG.npy", "action_group": "locomotion", "action_label": "jump, left", "reviewed": true}
+{"clip": "MB_TigerDrago_DogdeRightG.npy", "action_group": "locomotion", "action_label": "jump, right", "reviewed": true}
 {"clip": "MB_TigerDrago_EatDrink.npy", "action_group": "stationary", "action_label": "idle, eat", "reviewed": true}
 {"clip": "MB_TigerDrago_EggHatching1.npy", "action_group": "transition", "action_label": "spawn", "reviewed": true}
 {"clip": "MB_TigerDrago_EggHatching2.npy", "action_group": "transition", "action_label": "spawn", "reviewed": true}
@@ -694,7 +694,7 @@
 {"clip": "MB_TigerDrago_LevelUp.npy", "action_group": "stationary", "action_label": "idle, hover, up, spin", "reviewed": true}
 {"clip": "MB_TigerDrago_No.npy", "action_group": "stationary", "action_label": "idle, talk", "reviewed": true}
 {"clip": "MB_TigerDrago_PetVR.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
-{"clip": "MB_TigerDrago_RunJump.npy", "action_group": "locomotion", "action_label": "run, jump, forward", "reviewed": true}
+{"clip": "MB_TigerDrago_RunJump.npy", "action_group": "locomotion", "action_label": "jump, forward", "reviewed": true}
 {"clip": "MB_TigerDrago_RunLeft.npy", "action_group": "locomotion", "action_label": "run, turn, left", "reviewed": true}
 {"clip": "MB_TigerDrago_RunRight.npy", "action_group": "locomotion", "action_label": "run, turn, right", "reviewed": true}
 {"clip": "MB_TigerDrago_Run.npy", "action_group": "locomotion", "action_label": "run, forward", "reviewed": true}
@@ -718,7 +718,7 @@
 {"clip": "MB_TigerDrago_SwimTurnR.npy", "action_group": "transition", "action_label": "turn, right", "reviewed": true}
 {"clip": "MB_TigerDrago_SwimUnderWaterHorizontal.npy", "action_group": "locomotion", "action_label": "swim, forward", "reviewed": true}
 {"clip": "MB_TigerDrago_SwimUnderWaterIdle.npy", "action_group": "stationary", "action_label": "swim, idle", "reviewed": true}
-{"clip": "MB_TigerDrago_SwimUnderWaterVertical.npy", "action_group": "locomotion", "action_label": "swim, jump, forward", "reviewed": true}
+{"clip": "MB_TigerDrago_SwimUnderWaterVertical.npy", "action_group": "locomotion", "action_label": "swim, forward", "reviewed": true}
 {"clip": "MB_TigerDrago_Swim.npy", "action_group": "locomotion", "action_label": "swim, forward", "reviewed": true}
 {"clip": "MB_TigerDrago_TDFire.npy", "action_group": "stationary", "action_label": "idle, taunt", "reviewed": true}
 {"clip": "MB_TigerDrago_Talk.npy", "action_group": "stationary", "action_label": "idle, talk", "reviewed": true}
@@ -788,15 +788,15 @@
 {"clip": "MB_Unka_GlideLeft.npy", "action_group": "locomotion", "action_label": "fly, left, glide", "reviewed": true}
 {"clip": "MB_Unka_GlideRight.npy", "action_group": "locomotion", "action_label": "fly, right, glide", "reviewed": true}
 {"clip": "MB_Unka_Glide.npy", "action_group": "locomotion", "action_label": "fly, forward, glide", "reviewed": true}
-{"clip": "MB_Unka_GroundDodgeLeft.npy", "action_group": "locomotion", "action_label": "jump, left, strafe", "reviewed": true}
-{"clip": "MB_Unka_GroundDodgeRight.npy", "action_group": "locomotion", "action_label": "jump, right, strafe", "reviewed": true}
+{"clip": "MB_Unka_GroundDodgeLeft.npy", "action_group": "locomotion", "action_label": "jump, left", "reviewed": true}
+{"clip": "MB_Unka_GroundDodgeRight.npy", "action_group": "locomotion", "action_label": "jump, right", "reviewed": true}
 {"clip": "MB_Unka_Idle02.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
 {"clip": "MB_Unka_Idle03.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
 {"clip": "MB_Unka_IdleAM02.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
 {"clip": "MB_Unka_IdleAM03.npy", "action_group": "stationary", "action_label": "idle, look", "reviewed": true}
 {"clip": "MB_Unka_Idle.npy", "action_group": "stationary", "action_label": "idle", "reviewed": true}
-{"clip": "MB_Unka_JumpForward.npy", "action_group": "locomotion", "action_label": "run, jump, forward", "reviewed": true}
-{"clip": "MB_Unka_JumpRun.npy", "action_group": "locomotion", "action_label": "run, jump, forward", "reviewed": true}
+{"clip": "MB_Unka_JumpForward.npy", "action_group": "locomotion", "action_label": "jump, forward", "reviewed": true}
+{"clip": "MB_Unka_JumpRun.npy", "action_group": "locomotion", "action_label": "jump, forward", "reviewed": true}
 {"clip": "MB_Unka_JumpUp.npy", "action_group": "stationary", "action_label": "jump", "reviewed": true}
 {"clip": "MB_Unka_RunLeft.npy", "action_group": "locomotion", "action_label": "run, turn, left", "reviewed": true}
 {"clip": "MB_Unka_RunRight.npy", "action_group": "locomotion", "action_label": "run, turn, right", "reviewed": true}
@@ -818,7 +818,7 @@
 {"clip": "MB_Unka_SwimIdle.npy", "action_group": "stationary", "action_label": "swim, idle", "reviewed": true}
 {"clip": "MB_Unka_SwimTurnLeft.npy", "action_group": "transition", "action_label": "swim, turn, left", "reviewed": true}
 {"clip": "MB_Unka_SwimTurnRight.npy", "action_group": "transition", "action_label": "swim, turn, right", "reviewed": true}
-{"clip": "MB_Unka_SwimVertical.npy", "action_group": "locomotion", "action_label": "swim, jump, forward", "reviewed": true}
+{"clip": "MB_Unka_SwimVertical.npy", "action_group": "locomotion", "action_label": "swim, forward", "reviewed": true}
 {"clip": "MB_Unka_SwimWaterEnter.npy", "action_group": "transition", "action_label": "land, swim", "reviewed": true}
 {"clip": "MB_Unka_TrotLeft.npy", "action_group": "locomotion", "action_label": "walk, turn, left, trot", "reviewed": true}
 {"clip": "MB_Unka_TrotRight.npy", "action_group": "locomotion", "action_label": "walk, turn, right, trot", "reviewed": true}

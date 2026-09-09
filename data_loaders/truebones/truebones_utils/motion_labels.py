@@ -60,7 +60,7 @@ ACTION_VOCAB: tuple[str, ...] = (
     "idle", "walk", "run", "fly", "swim", "crawl", "jump", "turn",
     "fall", "roll", "attack",
     # -- block B: how that mode is executed (gait, speed, wing state) --
-    "trot", "fast", "strafe", "glide", "slow", "retreat", "dive",
+    "trot", "fast", "strafe", "glide", "slow", "retreat", "dive", "flopping",
     # -- block C: secondary action layered on the mode (existing order kept) --
     "bite", "roar", "eat", "die", "hurt", "getup", "rest", "look",
     "shake", "throw", "taunt", "land", "takeoff", "sit", "sleep",
@@ -592,16 +592,15 @@ def load_action_labels(dataset_dir: str | Path) -> dict[str, dict[str, str]]:
 
 def load_motion_metadata(
     dataset_dir: str | Path,
-    require_action_labels: bool = True,
 ) -> dict[str, dict[str, object]]:
     """Load ``motion_metadata.json`` joined with per-clip action group/label.
 
-    By default a clip present in the metadata but absent from
-    ``action_labels.jsonl`` is a fatal error (the group decides which model the
-    clip trains, so there is no safe default). Pass ``require_action_labels=False``
-    for bookkeeping reads that only preserve / carry-forward existing metadata
-    (e.g. incremental preprocessing): unlabeled clips are then kept as-is without
-    the action fields instead of exiting.
+    A clip present in the metadata but absent from ``action_labels.jsonl`` is a
+    fatal error (the group decides which model the clip trains, so there is no
+    safe default): clips are hand-labeled before they enter the dataset, so a
+    missing entry is always an incomplete sidecar, never a clip that is
+    "labeled later". Bookkeeping-only reads that need no action fields use
+    ``_load_motion_metadata_raw`` (dataset_pipeline) instead.
     """
     metadata_path = Path(dataset_dir) / MOTION_METADATA_FILE
     if not metadata_path.exists():
@@ -624,17 +623,13 @@ def load_motion_metadata(
         action = action_labels.get(motion_name)
         if action is None:
             missing_labels.append(motion_name)
-            if require_action_labels:
-                continue
-            # Tolerant mode: carry the entry forward untouched (no action fields).
-            normalized[motion_name] = dict(metadata)
             continue
         entry = dict(metadata)
         entry["action_group"] = action["action_group"]
         entry["action_label"] = action["action_label"]
         normalized[motion_name] = entry
 
-    if missing_labels and require_action_labels:
+    if missing_labels:
         preview = ", ".join(sorted(missing_labels)[:10])
         more = "" if len(missing_labels) <= 10 else f" (+{len(missing_labels) - 10} more)"
         import sys
