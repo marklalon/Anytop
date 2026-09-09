@@ -2297,10 +2297,6 @@ def create_condition(object_types, cond_dict, n_frames, max_joints, feature_len,
         metadata = {
             'is_loop': bool(loop),
             'loop_full_cycle': bool(loop),
-            # Always False and deliberately not a flag: generation always wants
-            # the honest trajectory, and how far the root travels is already
-            # implied by the action label and --loop.
-            'root_xz_stripped': False,
             'translation_root_index': cond_dict[object_type].get('translation_root_index', 0),
         }
         if loop:

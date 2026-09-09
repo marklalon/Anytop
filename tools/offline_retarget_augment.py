@@ -24,7 +24,7 @@ The donor is the dataset's own source animation -- ``source_fbx_path`` from
 motion_metadata.json, sliced to the same ``source_frame_range`` -- not the
 preprocessed ``.npy``.  Staying in native space the whole way is what lets a
 travelling donor keep its locomotion: the feature round trip strips the root XZ
-of any clip that travels past ``get_motion``'s locomotion gate, so the restored
+of any clip whose sustained travel ``get_motion`` removes, so the restored
 GLB came out in place and contradicted its own "forward" label.  Here nothing is
 encoded, so root translation survives verbatim and every action group is usable.
 
@@ -201,7 +201,6 @@ class ClipInfo:
     action_group: str
     action_label: str
     words: tuple
-    travels: bool = False         # preprocessing's root_xz_stripped flag, inverted
 
 
 # Threshold for "this clip actually goes somewhere", as a fraction of body span
@@ -347,7 +346,6 @@ def build_index(cond_path: str):
                     action_group=str(row.get("action_group") or ""),
                     action_label=label,
                     words=words,
-                    travels=not bool(meta.get("root_xz_stripped")),
                 )
                 if key in species:
                     species[key].words.update(words)
@@ -361,19 +359,19 @@ def build_index(cond_path: str):
 def _donor_travels(clip_info, cond, cache: dict) -> bool:
     """Measure whether a donor clip's own features still carry XZ locomotion.
 
-    ``root_xz_stripped`` False only says preprocessing did not strip the clip; a
-    treadmill animation authored in place (Dog_Paddle) is unstripped and still
-    goes nowhere.  The travel is read back the way the decoder does it -- cumulative
-    XZ velocity of the translation-root joint -- and compared against the clip's
-    own body span so the test is scale-free.
+    Preprocessing's own verdict says only whether it removed sustained travel;
+    a treadmill animation authored in place (Dog_Paddle) was never touched and
+    still goes nowhere.  The travel is read back the way the decoder does it --
+    cumulative XZ velocity of the translation-root joint -- and compared against
+    the clip's own body span so the test is scale-free.
     """
     if clip_info.clip in cache:
         return cache[clip_info.clip]
-    # Measured unconditionally: ``root_xz_stripped`` is not a reliable stand-in.
-    # The strip zeroes the joint named by cond's ``translation_root_index``, and
-    # where that index disagrees with the joint the features actually carry the
-    # locomotion on, a clip is flagged stripped while its travel is still there
-    # (KI_Soldier_Crawling01Forward: flagged stripped, 0.94 of XZ path on joint 0).
+    # Measured unconditionally: preprocessing's verdict is not a reliable
+    # stand-in. It flattens the joint named by cond's ``translation_root_index``,
+    # and where that index disagrees with the joint the features actually carry
+    # the locomotion on, a clip is flagged flattened while its travel is still
+    # there (KI_Soldier_Crawling01Forward: flagged, 0.94 of XZ path on joint 0).
     features = np.load(clip_info.npy_path)
     # Every joint is measured rather than the cond's translation_root_index:
     # the index recorded in cond does not always match the joint the features

@@ -16,32 +16,7 @@ ACTION_GROUPS = ('locomotion', 'stationary', 'transition')
 # state_dict layout untouched -- those are exactly the changes that would
 # otherwise load cleanly and generate wrong motion, reading as a quality
 # regression rather than an incompatibility.
-#
-#   1 -- windowed temporal attention (--temporal_window) removed in favour of
-#        full temporal attention. Supersedes the per-key action_tag_cond /
-#        global_energy_cond guards, which it strictly subsumes (every checkpoint
-#        they rejected predates versioning and so is rejected here too).
-# 2: the action condition became per-role-slot channels over the label's WORDS.
-# A v1 checkpoint's
-# action_label_projection reads one whole-label vector, so its weights mean
-# something else even where the shapes would line up.
-# 3: the graph attention bias code tables changed. graph_dist no longer
-# saturates into one "far" bucket and joint_relations no longer collapses
-# 88% of pairs into 'no_relation'; both embedding tables grew, so a v2
-# checkpoint cannot load, and codes 6+ meant nothing to it anyway.
-# 4: the joint condition was restructured. The joint-name text was slimmed to
-# side + body part (schema 14) and the structure it used to spell moved into a
-# per-joint STRUCTURAL channel with its own MLP (joint_struct_features). A v3
-# checkpoint's text_embedding was fitted on the long sentences and it has no
-# struct_embedding at all.
-# 5: root XZ motion is kept instead of stripped. The [0.08, 0.6] "ambiguous
-# band" strip fired on 22% of every clip -- 90% of them stationary -- so a v4
-# checkpoint was fitted on data where in-place actions had their root welded to
-# the origin, and it has no root_xz_strip_projection to be told which clips had
-# their trajectory deleted. Generation also changed: root XZ is now integrated
-# from the velocity channels for looping samples too, instead of being forced
-# to net zero.
-CKPT_VERSION = 5
+CKPT_VERSION = 6
 
 # Data-side contracts stamped alongside the checkpoint version. Unlike a flag,
 # these version the *content* of an input the args.json cannot otherwise

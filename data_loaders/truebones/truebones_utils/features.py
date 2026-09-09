@@ -36,14 +36,18 @@ from .face_orientation import (
 from .ignore_warnings import skip_orientation_detection
 
 from .animation_utils import (
-    ROOT_XZ_STRIP_THRESHOLD,
+    ROOT_XZ_DRIFT_THRESHOLD,
     detect_motion_loop,
     find_translation_root,
-    bake_descendant_y_into_translation_root,
     clamp_vertical_trajectory,
+    collapse_translation_root_chain,
+    promote_translation_root_to_hierarchy_root,
     move_xz_to_origin,
-    xz_locomotion_extent,
-    strip_translation_root_xz,
+    root_xz_trajectory,
+    root_xz_relative_pose,
+    flatten_root_xz_drift,
+    soft_clamp_root_xz,
+    set_translation_root_xz,
     resolve_detected_translation_root_index,
     needs_bvh_position_channels,
     reorder_animation_to_dfs,
@@ -221,12 +225,8 @@ def process_anim(
     translation_root_index=None,
 ):
     rotated = rotate_to_hml_orientation(anim, orientation_quat)
-    baked = bake_descendant_y_into_translation_root(
-        rotated,
-        translation_root_index=translation_root_index,
-    )
     centered, root_xz_center_ = move_xz_to_origin(
-        baked,
+        rotated,
         root_xz_center,
         translation_root_index=translation_root_index,
     )
@@ -234,7 +234,11 @@ def process_anim(
     # Keep rest-pose conditioning and motion clips on the same normalized
     # geometry.  Both paths pass through process_anim, while only raw motion
     # files continue through the loading branch in get_hml_aligned_anim.
-    processed = clamp_vertical_trajectory(scaled, object_type)
+    processed = clamp_vertical_trajectory(
+        scaled,
+        object_type,
+        translation_root_index=translation_root_index,
+    )
     return processed, root_xz_center_, scale_factor
 
 
@@ -401,12 +405,27 @@ def get_common_features_from_rest_pose(
     max_joints=None,
     drop_prop_sockets=None,
     drop_end_sites=None,
+    promote_root_depth=0,
+    raw_load_cache=None,
 ):
     if drop_prop_sockets is None:
         drop_prop_sockets = DROP_PROP_SOCKET_JOINTS
     if drop_end_sites is None:
         drop_end_sites = DROP_END_SITE_JOINTS
-    loaded_anim, rest_pose_names, _rest_pose_frame_time = FBX.load(rest_pose_path)
+    # Phase 1 re-derives the rest pose once per fold depth from the same file, so
+    # it shares the caller's realpath-keyed import cache with the motion sources.
+    # Every step below rebuilds rather than writes -- rest_pose_animation copies,
+    # and so do the drops, the fold and the crop -- so passes can share the load.
+    _rest_pose_key = os.path.realpath(str(rest_pose_path))
+    if raw_load_cache is not None and _rest_pose_key in raw_load_cache:
+        loaded_anim, _cached_names, _rest_pose_frame_time = raw_load_cache[_rest_pose_key]
+        rest_pose_names = list(_cached_names)
+    else:
+        loaded_anim, rest_pose_names, _rest_pose_frame_time = FBX.load(rest_pose_path)
+        if raw_load_cache is not None:
+            raw_load_cache[_rest_pose_key] = (
+                loaded_anim, list(rest_pose_names), _rest_pose_frame_time,
+            )
     max_joints = int(max_joints) if max_joints is not None else max(len(rest_pose_names), 1)
     reference_anim = _rest_pose_animation_from_loaded_anim(loaded_anim)
     rest_pose_context = f"{object_type} rest pose '{os.path.basename(str(rest_pose_path))}'"
@@ -450,6 +469,37 @@ def get_common_features_from_rest_pose(
                 name for index, name in enumerate(pre_end_site_names) if index not in _kept_es
             )
             face_joints = _remap_joint_indices(face_joints, _kept_after_end_sites)
+    # The wrapper joints above the real root go next, after the two drops and
+    # BEFORE the crop. Two constraints pin it to exactly this slot:
+    #
+    # * After the drops, because the fold refuses a root with more than one
+    #   child, and a raw rig routinely has one -- Tukan's ``Hips`` carries the
+    #   body chain AND a ``MESH`` branch, Crow's root carries ``ecr1``. Folding
+    #   first would hard-fail those species on rig furniture that is about to be
+    #   dropped anyway.
+    # * Before the crop, so the MAX_JOINTS budget is never spent on control
+    #   nodes that are about to be folded away. Cropping first costs one real
+    #   bone per wrapper joint on any skeleton at the cap (Horse loses 2, Camel
+    #   2, Bear 1 when the cap bites).
+    #
+    # The depth itself is measured by phase 1 on the fully normalized skeleton,
+    # so it is applied here one crop earlier than it was measured. That is safe
+    # by construction, not by luck: select_cropped_joint_indices only ever
+    # removes current leaves and never the root, while every joint on the root
+    # chain has exactly one child, so no crop can shorten the chain the depth
+    # counts along. Everything below here (face joints, contact joints, offsets,
+    # scale) is then inferred on the skeleton the model will see, whose joint 0
+    # IS the translation root.
+    if promote_root_depth:
+        reference_anim, rest_pose_names, _kept_after_promote = (
+            promote_translation_root_to_hierarchy_root(
+                reference_anim,
+                rest_pose_names,
+                promote_root_depth,
+                context=rest_pose_context,
+            )
+        )
+        face_joints = _remap_joint_indices(face_joints, _kept_after_promote)
     # Crop oversized skeletons down to max_joints BEFORE any face/contact/offset
     # inference, so every downstream rest-pose artifact is built on the cropped
     # skeleton. Leaves are removed deepest-first, same-depth ties prefer shorter
@@ -537,6 +587,7 @@ def get_common_features_from_rest_pose(
         axial_avg_len=axial_avg_len,
         prop_socket_names=prop_socket_names,
         end_site_names=end_site_names,
+        promote_root_depth=int(promote_root_depth),
     )
 
 
@@ -641,6 +692,9 @@ class TPoseFeatures:
     # character must drop exactly the same joints. Empty for a cond-reconstructed
     # rest pose, which was already built on the filtered skeleton.
     end_site_names: tuple = ()
+    # How many wrapper joints above the real root this skeleton already had
+    # folded away, so every motion clip of the character drops the same ones.
+    promote_root_depth: int = 0
 
 
 def extract_motion_features_from_aligned_anims(
@@ -653,28 +707,93 @@ def extract_motion_features_from_aligned_anims(
     orientation_quat,
     translation_root_index,
     *,
-    force_strip=False,
+    flatten_root_travel=False,
+    clamp_root_xz_extent=False,
 ):
     feature_translation_root_index = int(translation_root_index)
-    has_locomotion = False
+
+    # Seat the inert control nodes above the effective root onto it, before
+    # anything reads a position off either anim. Nothing below the root moves --
+    # this only stops the wrapper's RIC channel from carrying an arbitrary
+    # per-clip constant and the negated root trajectory.
+    new_anim = collapse_translation_root_chain(new_anim, feature_translation_root_index)
+    export_anim = collapse_translation_root_chain(export_anim, feature_translation_root_index)
+
+    # Foot contact is read off the motion AS AUTHORED, before any root XZ edit.
+    # Re-seating a travelling clip in place subtracts the gait speed from every
+    # joint, so a foot that was planted now moves at that speed: the median clip
+    # this pipeline used to zero travelled 1.44 over 25 frames, i.e. 0.058/frame
+    # against the 0.0447/frame the contact threshold allows, and its whole stance
+    # phase silently lost its label. Measured on the shipped datasets, within a
+    # species, the clips that were zeroed carried 0.70 mean per-joint contact
+    # against 0.86 for the ones left alone (truebones: 0.44 vs 0.78; KI_Soldier
+    # 0.17 vs 0.78, Dog 0.08 vs 0.55). HumanML3D reads contacts off the global
+    # positions ahead of its own de-rooting for exactly this reason.
+    source_global_positions = positions_global(new_anim)
+
+    # The root XZ trajectory is decided here in two steps and applied once, so
+    # the skeleton is put through FK a single time: remove a gait's travel, then
+    # bound whatever excursion is left. Both steps are opt-in and either can be
+    # a no-op; the anims are only rebuilt if the target ended up different.
+    source_root_xz = np.asarray(
+        source_global_positions[:, feature_translation_root_index][:, [0, 2]],
+        dtype=np.float64,
+    )
+    target_root_xz = source_root_xz
+
+    # Step one takes two conditions, and both are needed.
+    #
+    # ``flatten_root_travel`` is the caller's verdict that this clip is a gait --
+    # in practice its action group. No measurement can stand in for it: a gait
+    # take and a lunging attack are both one closed cycle that ends displaced,
+    # and on the shipped datasets a pure drift test would have flattened 393
+    # death and knockdown clips (Monkey_Die drifts 0.91, TNR_Archer_DeathA 0.82)
+    # whose displacement IS the action.
+    #
+    # The measurement then says whether this particular gait take actually
+    # travels, so a clip already authored in place is left untouched rather than
+    # passed through an operator that would only add float noise.
+    root_xz_flattened = False
+    if flatten_root_travel:
+        flattened_root_xz, root_xz_drift, _cycle = flatten_root_xz_drift(
+            source_root_xz,
+            pose=root_xz_relative_pose(
+                source_global_positions,
+                feature_translation_root_index,
+                parents=new_anim.parents,
+            ),
+        )
+        root_xz_flattened = bool(root_xz_drift > ROOT_XZ_DRIFT_THRESHOLD)
+        if root_xz_flattened:
+            # Nothing is zeroed: the within-cycle surge and sway survive, only
+            # the travel underneath them is removed.
+            target_root_xz = flattened_root_xz
+
+    if clamp_root_xz_extent:
+        # Second and last, on whatever the first step left. A gait is flattened
+        # first precisely so it does not arrive here with a whole clip of travel
+        # to compress; what reaches the clamp is genuine excursion -- a lunge, a
+        # dodge, a death slide -- and it is bounded rather than removed.
+        #
+        # This is an OPT-IN because it is not idempotent: re-extracting features
+        # from an already-clamped clip (recovery, retarget, the resample branch's
+        # second pass) would compress the excursion a second time. Only a fresh
+        # pass over source animation asks for it.
+        target_root_xz = soft_clamp_root_xz(target_root_xz)
+
     motion_anim = new_anim
     motion_export_anim = export_anim
-    xz_extent = xz_locomotion_extent(export_anim, feature_translation_root_index)
-    # One gate: strip the root XZ only when the clip actually travels (> ~43% of
-    # a body span). Smaller drifts are the motion itself; the old [0.08, 0.6]
-    # "closed excursion" band was mostly striking/idle actions, not locomotion.
-    #
-    # ``force_strip`` carries an earlier pass's verdict into a RE-extraction of
-    # anims that pass already stripped (the resample path). Their XZ extent is
-    # ~0, so re-gating on it answers False -- which would also skip the exact-zero
-    # write below and leave the strip/resample roundoff residue (~1e-8) in the
-    # root velocity channel of a clip still flagged ``root_xz_stripped``. The
-    # gate decides; this only says the decision was already made.
-    has_locomotion = bool(force_strip) or xz_extent > ROOT_XZ_STRIP_THRESHOLD
-
-    if has_locomotion:
-        motion_anim = strip_translation_root_xz(new_anim, feature_translation_root_index)
-        motion_export_anim = strip_translation_root_xz(export_anim, feature_translation_root_index)
+    if not np.array_equal(target_root_xz, source_root_xz):
+        # Both anims take the SAME correction so the exported BVH cannot drift
+        # away from the features.
+        correction = source_root_xz - target_root_xz
+        motion_anim = set_translation_root_xz(
+            new_anim, feature_translation_root_index, target_root_xz,
+        )
+        export_root_xz = root_xz_trajectory(export_anim, feature_translation_root_index)
+        motion_export_anim = set_translation_root_xz(
+            export_anim, feature_translation_root_index, export_root_xz - correction,
+        )
 
     cont_6d_params, r_velocity, velocity, r_rot, global_positions = get_bvh_cont6d_params(
         motion_anim,
@@ -682,7 +801,7 @@ def extract_motion_features_from_aligned_anims(
         orientation_quat,
         translation_root_index=feature_translation_root_index,
     )
-    foot_contact = get_contact_state(global_positions, foot_indices, foot_contact_vel_thresh)
+    foot_contact = get_contact_state(source_global_positions, foot_indices, foot_contact_vel_thresh)
     positions = get_rifke(global_positions, r_rot, translation_root_index=feature_translation_root_index)
     local_vel = np.repeat(r_rot[1:, None], global_positions.shape[1], axis=1) * (global_positions[1:] - global_positions[:-1])
     is_loop = detect_motion_loop(
@@ -692,9 +811,11 @@ def extract_motion_features_from_aligned_anims(
     )
     prev_velocity = local_vel[-1] if local_vel.shape[0] > 0 else None
     terminal_local_vel = _compute_terminal_local_velocity(global_positions, r_rot, is_loop, prev_frame_velocity=prev_velocity)
-    if has_locomotion:
-        local_vel[:, feature_translation_root_index, [0, 2]] = 0.0
-        terminal_local_vel[feature_translation_root_index, [0, 2]] = 0.0
+    # The terminal row describes the wrap transition, which only exists in the
+    # flattened representation the features carry -- a travelling gait's wrap
+    # would otherwise read as one whole stride of displacement and never be a
+    # contact. It sits next to the terminal VELOCITY row, computed from the same
+    # positions, and for a clip that was left alone the two sources are identical.
     terminal_contact = get_terminal_contact_state(
         global_positions,
         foot_indices,
@@ -710,7 +831,7 @@ def extract_motion_features_from_aligned_anims(
         terminal_contact,
         max_joints,
     )
-    return features, max_joints, motion_anim, motion_export_anim, is_loop, has_locomotion
+    return features, max_joints, motion_anim, motion_export_anim, is_loop, root_xz_flattened
 
 
 """ processes animation, and returns a new animation that aligns with humanML3D in terms of orientation and scale"""
@@ -781,7 +902,7 @@ def get_hml_aligned_anim(fbx_path_or_anim, object_type, tpos_rots, offsets, squa
 
 
 """ get motion feature representation"""
-def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joints, offsets, foot_indices, tpos_rots, squared_positions_error, *, scale_factor, orientation_quat, slice_inds=None, preloaded=None, animation_input_is_tpose_aligned=True, translation_root_index=None):
+def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joints, offsets, foot_indices, tpos_rots, squared_positions_error, *, scale_factor, orientation_quat, slice_inds=None, preloaded=None, animation_input_is_tpose_aligned=True, translation_root_index=None, flatten_root_travel=False, clamp_root_xz_extent=False):
     try:
         new_anim, export_anim, names, root_translation_xz = get_hml_aligned_anim(
             fbx_path_or_anim,
@@ -809,7 +930,7 @@ def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joint
                 joint_count=new_anim.positions.shape[1],
                 context=f"{object_type} motion",
             )
-        features, max_joints, motion_anim, motion_export_anim, is_loop, root_xz_stripped = extract_motion_features_from_aligned_anims(
+        features, max_joints, motion_anim, motion_export_anim, is_loop, root_xz_flattened = extract_motion_features_from_aligned_anims(
             new_anim,
             export_anim,
             foot_contact_vel_thresh,
@@ -818,8 +939,10 @@ def get_motion(fbx_path_or_anim, foot_contact_vel_thresh, object_type, max_joint
             foot_indices,
             orientation_quat,
             translation_root_index=translation_root_index,
+            flatten_root_travel=flatten_root_travel,
+            clamp_root_xz_extent=clamp_root_xz_extent,
         )
-        return features, motion_anim.parents, max_joints, motion_anim, motion_export_anim, is_loop, translation_root_index, root_translation_xz, root_xz_stripped
+        return features, motion_anim.parents, max_joints, motion_anim, motion_export_anim, is_loop, translation_root_index, root_translation_xz, root_xz_flattened
     except Exception as err:
         print(err)
         return None, None, max_joints, None, None, False, None, None, False

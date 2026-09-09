@@ -32,6 +32,14 @@ name in its parent directory):
                                          estimating each character's facing, and silence the
                                          estimator's fallback warnings
 
+Prerequisites (fast-fail):
+    The dataset's two hand-maintained sidecars must exist and be valid before
+    any work starts; neither is inferred, back-filled, or auto-created:
+        action_labels.jsonl  one entry per clip    ("clip", "action_group", "action_label")
+        species_tags.jsonl   one entry per species ("species", "species_tags")
+    Preprocessing fails up front when either is missing or invalid, so label
+    the new clips and register the species before running.
+
 Examples:
     # Default workflow: process only newly added source animations -> validate
     python preprocess_and_validate.py
@@ -440,10 +448,10 @@ def _capture_preserved_side_artifacts(
         }
 
     motions_dir = dataset_dir_path / MOTION_DIR
-    # Tolerate clips that still lack a hand-written action label: this is a
-    # preserve-only read, and the strict check belongs to artifact regeneration /
-    # training, not here.
-    for motion_name, entry in load_motion_metadata(dataset_dir_path, require_action_labels=False).items():
+    # The sidecar is a run prerequisite (verified up front before preprocessing
+    # starts), so every clip carries an entry and the strict join is the right
+    # read: an incomplete action_labels.jsonl aborts before anything is deleted.
+    for motion_name, entry in load_motion_metadata(dataset_dir_path).items():
         if not (motions_dir / motion_name).exists():
             continue
         object_type = str(
@@ -471,11 +479,10 @@ def _merge_preserved_side_artifacts(dataset_dir_path: Path, preserved: Preserved
         save_cond(cond_path, stamp_dataset_cond(current_cond, dataset_dir_path))
 
     motions_dir = dataset_dir_path / MOTION_DIR
-    # Carry-forward read only; freshly preprocessed clips may not be hand-labeled yet.
-    # Artifact regeneration no longer backfills labels (2026-08-30): a missing
-    # action_labels.jsonl entry fast-fails there, so label new clips before
-    # regenerating.
-    current_metadata = load_motion_metadata(dataset_dir_path, require_action_labels=False)
+    # Nothing backfills labels any more: clips are hand-labeled before
+    # preprocessing, so a missing action_labels.jsonl entry fast-fails here
+    # (and in artifact regeneration) instead of being carried forward empty.
+    current_metadata = load_motion_metadata(dataset_dir_path)
     for motion_name, entry in preserved.motion_metadata.items():
         if motion_name in current_metadata:
             continue
@@ -831,7 +838,9 @@ def run_remove_motions(
             print(f"  [OK] Deleted {insp_deleted} inspection file(s)")
 
     # --- Update motion_metadata.json ---
-    metadata = load_motion_metadata(dataset_dir_path, require_action_labels=False)
+    # The strict join: the sidecar is a run prerequisite, so an incomplete
+    # action_labels.jsonl aborts before any motion is deleted.
+    metadata = load_motion_metadata(dataset_dir_path)
     if metadata:
         removed_meta = 0
         for mname in to_delete:
@@ -986,7 +995,7 @@ def run_validation(
         print_warn,
         ValidationError,
     )
-    from data_loaders.truebones.truebones_utils.motion_process import ROOT_XZ_STRIP_THRESHOLD
+    from data_loaders.truebones.truebones_utils.motion_process import ROOT_XZ_DRIFT_THRESHOLD
 
     # Resolve dataset directory
     dataset_dir = resolve_dataset_dir(dataset_dir or None)
@@ -1022,7 +1031,7 @@ def run_validation(
             bvhs_dir,
             cond,
             sample_count,
-            ROOT_XZ_STRIP_THRESHOLD,
+            ROOT_XZ_DRIFT_THRESHOLD,
             motion_orientation_threshold=motion_orientation_threshold,
         )
 

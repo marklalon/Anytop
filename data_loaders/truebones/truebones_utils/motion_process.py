@@ -12,7 +12,9 @@ from data_loaders.truebones.truebones_utils.param_utils import (
 
 # ── animation_utils (animation processing & joint metadata) ─────────────
 from .animation_utils import (
-    ROOT_XZ_STRIP_THRESHOLD,
+    ROOT_XZ_DRIFT_THRESHOLD,
+    ROOT_XZ_SOFT_CLAMP_KNEE,
+    ROOT_XZ_SOFT_CLAMP_LIMIT,
     # Joint name canonicalization
     canonical_name_for_bvh,
     collect_joint_name_collision_groups,
@@ -22,7 +24,16 @@ from .animation_utils import (
     attach_t5_embeddings_to_cond,
     # Animation transforms
     find_translation_root,
+    chain_xz_travel,
+    collapse_translation_root_chain,
+    select_transport_carrier,
     xz_locomotion_extent,
+    root_xz_trajectory,
+    root_xz_relative_pose,
+    translation_root_subtree_mask,
+    flatten_root_xz_drift,
+    soft_clamp_extent,
+    soft_clamp_root_xz,
     move_xz_to_origin,
     # BVH export
     needs_bvh_position_channels,

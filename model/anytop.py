@@ -139,18 +139,6 @@ class AnyTop(nn.Module):
             nn.GELU(),
             nn.Linear(self.latent_dim, self.latent_dim),
         )
-        # Provenance flag: True for clips whose root XZ this pipeline zeroed
-        # (gate A), so the model can discount their fabricated root velocity
-        # instead of averaging it into the honest samples.
-        #
-        # Ungated (like playspeed) so the parameter shape is a constant of the
-        # architecture. Always 0 at inference -- generation always asks for
-        # honest root motion -- so there is no user-facing switch.
-        self.root_xz_strip_projection = nn.Sequential(
-            nn.Linear(1, self.latent_dim),
-            nn.GELU(),
-            nn.Linear(self.latent_dim, self.latent_dim),
-        )
         if self.action_label_cond:
             # Project the concatenated slot channels and add the result to the
             # timestep token, alongside loop / playspeed / canonical frame. One
@@ -911,14 +899,6 @@ class AnyTop(nn.Module):
             dtype=x.dtype,
         )
         timesteps_emb = timesteps_emb + self.playspeed_projection(playspeed_condition)
-        root_xz_strip_condition = self._coerce_loop_condition(
-            y.get('root_xz_stripped'),
-            batch_size=bs,
-            device=x.device,
-            dtype=x.dtype,
-            field_name='root_xz_stripped',
-        )
-        timesteps_emb = timesteps_emb + self.root_xz_strip_projection(root_xz_strip_condition)
         timesteps_emb = timesteps_emb + self._build_canonical_frame_token(
             y, bs, x.device, x.dtype)
         if self.loop_cond_prob > 0.0 and self.loop_condition_projection is not None:

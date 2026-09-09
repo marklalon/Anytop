@@ -35,6 +35,7 @@ def _write_action_labels(dataset_dir, labels_by_clip):
     Values are ``(action_group, action_label)`` pairs.
     """
     path = Path(dataset_dir) / "action_labels.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         json.dumps({"clip": clip, "action_group": group, "action_label": label})
         for clip, (group, label) in labels_by_clip.items()
@@ -361,20 +362,89 @@ def test_regenerate_dataset_artifacts_rejects_inconsistent_translation_roots(mon
     assert motion_metadata["Cat_Idle_002.npy"]["translation_root_index"] == 1
 
 
-def test_species_translation_root_selection_uses_mode_then_smallest_index():
-    selected, counts = dataset_pipeline_mod._select_species_translation_root(
-        'Dog',
-        [1, 0, 1, 0, 1],
-    )
-    assert selected == 1
-    assert counts == {0: 2, 1: 3}
+def _travel(*per_joint):
+    return {joint: float(value) for joint, value in enumerate(per_joint)}
 
-    tied, tied_counts = dataset_pipeline_mod._select_species_translation_root(
-        'Dog',
-        [1, 0],
+
+def test_species_translation_root_takes_the_deepest_carrier_not_the_majority():
+    """``MB_TigerDrago``: 71 clips move the CG wrapper, 40 move the pelvis below it.
+
+    The pelvis clips are the ones that travel -- Run, RunJump, DogdeLeftG -- and
+    a root above their carrier sees none of it. A joint's global position already
+    contains every ancestor's translation, so the deepest carrier is the only
+    choice that covers the whole species.
+    """
+    selected, counts = dataset_pipeline_mod._select_species_translation_root(
+        'MB_TigerDrago',
+        [0] * 71 + [1] * 40,
+        [_travel(3.66, 0.0, 0.0)] * 71 + [_travel(0.0, 4.52, 0.0)] * 40,
     )
-    assert tied == 0
-    assert tied_counts == {0: 1, 1: 1}
+
+    assert selected == 1
+    assert counts == {0: 71, 1: 40}
+
+
+def test_motionless_clips_do_not_drag_the_root_back_to_the_hierarchy_head():
+    """``Tukan``: five clips never move, two fly.
+
+    A clip that goes nowhere still has to answer with an index, and it answers
+    with the chain head because something must be returned. The old rule counted
+    those five answers as votes and they outnumbered the two that fly, leaving
+    ``Tukan_Fly`` with 5.08 of travel on a root that never moved.
+    """
+    selected, counts = dataset_pipeline_mod._select_species_translation_root(
+        'Tukan',
+        [0] * 5 + [1] * 2,
+        [_travel(0.0, 0.0, 0.0)] * 5 + [_travel(0.0, 5.10, 0.0)] * 2,
+    )
+
+    assert selected == 1
+    assert counts == {0: 5, 1: 2}
+
+
+def test_a_body_joint_that_only_sways_does_not_become_the_species_root():
+    """``Crow``: the pelvis flies 0.809, the spine below it drifts 0.026.
+
+    Counting any motion as a carrier would read the whole species' trajectory
+    off a spine. Counting clips cannot separate this from MB_TigerDrago either --
+    Crow's spine clips are 40% of the species and must lose, TigerDrago's pelvis
+    clips are 36% and must win. Only the magnitudes tell them apart.
+    """
+    selected, _counts = dataset_pipeline_mod._select_species_translation_root(
+        'Crow',
+        [1] * 5 + [2] * 4,
+        [_travel(0.0, 0.809, 0.0)] * 5 + [_travel(0.0, 0.0, 0.026)] * 4,
+    )
+
+    assert selected == 1
+
+
+def test_one_clip_authored_on_the_wrong_joint_still_moves_the_species_root():
+    """``Bear``: every clip travels on Root except ``AtkStand``, which uses Pelvis.
+
+    Its whole skeleton -- all four ankles included -- shifts 0.62 while Root
+    stays at 0.002, so that travel is real and a root above the pelvis cannot
+    see it. Rooting at the pelvis costs nothing: the pelvis never moves relative
+    to Root anywhere else in the species.
+    """
+    selected, _counts = dataset_pipeline_mod._select_species_translation_root(
+        'Bear',
+        [0] * 28 + [1],
+        [_travel(5.70, 0.0)] * 28 + [_travel(0.002, 0.708)],
+    )
+
+    assert selected == 1
+
+
+def test_a_species_that_never_moves_still_gets_a_deterministic_root():
+    selected, counts = dataset_pipeline_mod._select_species_translation_root(
+        'Statue',
+        [0, 0],
+        [_travel(0.0, 0.0), _travel(0.001, 0.0)],
+    )
+
+    assert selected == 0
+    assert counts == {0: 2}
 
 
 def test_incremental_prepare_scans_only_new_source_and_reuses_alignment(monkeypatch, tmp_path):
@@ -437,6 +507,7 @@ def test_incremental_prepare_scans_only_new_source_and_reuses_alignment(monkeypa
     prepared_payload = {
         'file_path': str(new_source),
         'translation_root_index': 0,
+        'chain_xz_travel': {0: 1.5, 1: 0.0},
     }
 
     def fake_prepare(file_path, *_args, **_kwargs):
@@ -512,6 +583,7 @@ def test_incremental_prepare_rejects_new_source_root_mismatch(monkeypatch, tmp_p
         lambda file_path, *_args, **_kwargs: {
             'file_path': file_path,
             'translation_root_index': 1,
+            'chain_xz_travel': {0: 0.0, 1: 1.5},
         },
     )
 
@@ -525,6 +597,81 @@ def test_incremental_prepare_rejects_new_source_root_mismatch(monkeypatch, tmp_p
             frozen_translation_root_index=0,
         )
     assert 'frozen cond' in exc_info.value.motion_errors[0]
+
+
+def test_incremental_prepare_accepts_a_new_source_rooted_above_the_frozen_joint(monkeypatch, tmp_path):
+    """A carrier ABOVE the frozen root is not a mismatch.
+
+    FK folds an ancestor's translation into the frozen root's global position,
+    so the features still see it -- which is the whole reason the species vote
+    picks the deepest carrier. Only a carrier below the frozen root is lost.
+    ``MB_TigerDrago`` needs both: 40 clips carry on the pelvis and 71 on the CG
+    wrapper above it, and the species is rooted at the pelvis.
+    """
+    raw_dir = tmp_path / 'Cat'
+    raw_dir.mkdir()
+    new_source = raw_dir / 'Cat-New.glb'
+    tpose_source = raw_dir / 'Cat-TPOSE.glb'
+    new_source.touch()
+    tpose_source.touch()
+
+    parents = np.array([-1, 0, 1], dtype=np.int64)
+    tp = SimpleNamespace(
+        offsets=np.zeros((3, 3), dtype=np.float32),
+        foot_indices=[],
+        tpos_rots=object(),
+        orientation_quat=object(),
+        prop_socket_names=(),
+        end_site_names=(),
+        names=['Cg', 'Pelvis', 'Spine'],
+        tpos_anim=object(),
+    )
+    object_cond = {
+        **_make_cond_entry('Cat'),
+        'canonical_bvh_joint_names': ['Cg', 'Pelvis', 'Spine'],
+    }
+    monkeypatch.setattr(dataset_pipeline_mod, 'should_skip_anim', lambda *_args: False)
+    monkeypatch.setattr(
+        dataset_pipeline_mod,
+        '_build_rest_pose_cond',
+        lambda *_args, **_kwargs: (
+            object_cond, tp, np.zeros((1, 3, 13), dtype=np.float32), parents,
+            {}, 1.0, {}, 3, None,
+        ),
+    )
+    monkeypatch.setattr(
+        dataset_pipeline_mod,
+        'get_motion',
+        lambda *_args, **_kwargs: (
+            np.zeros((1, 3, 13), dtype=np.float32), parents, 3, None, None,
+            False, 1, None, False,
+        ),
+    )
+    monkeypatch.setattr(
+        dataset_pipeline_mod,
+        '_prepare_motion_file_for_root_detection',
+        lambda file_path, *_args, **_kwargs: {
+            'file_path': file_path,
+            'translation_root_index': 0,
+            'chain_xz_travel': {0: 1.5, 1: 0.0, 2: 0.0},
+        },
+    )
+    monkeypatch.setattr(
+        dataset_pipeline_mod,
+        '_encode_prepared_motion_file',
+        lambda prepared, *_args, **_kwargs: {
+            'errors': {}, 'max_joints': 3, 'results': [], 'motion_errors': [],
+        },
+    )
+
+    assert dataset_pipeline_mod._prepare_object_outputs(
+        'Cat',
+        3,
+        fbxs_dir=str(raw_dir),
+        t_pos_path=str(tpose_source),
+        resample_min_length=0,
+        frozen_translation_root_index=1,
+    ) is None  # the fake encoder intentionally emits no motion result
 
 
 def test_regenerate_dataset_artifacts_rebuilds_translation_root_when_metadata_missing(monkeypatch, tmp_path):
@@ -695,7 +842,7 @@ def test_regenerate_dataset_artifacts_resolves_active_objects_without_label_infe
 def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch, tmp_path):
     dataset_dir = tmp_path / "dataset"
 
-    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None):
+    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset()):
         return {
             'object_type': object_type,
             'object_cond': _make_cond_entry(object_type),
@@ -725,6 +872,11 @@ def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch,
     monkeypatch.setattr(dataset_pipeline_mod, '_prepare_object_outputs', fake_prepare_object_outputs)
     monkeypatch.setattr(dataset_pipeline_mod, '_write_object_outputs', fake_write_object_outputs)
 
+    # Preprocessing prerequisites: the hand-maintained sidecars must exist and
+    # be valid before any clip is encoded.
+    _write_action_labels(dataset_dir, {"Cat_Run_001.npy": ("locomotion", "run")})
+    _write_species_tags(dataset_dir, species=("Cat",))
+
     dataset_pipeline_mod.create_data_samples(
         objects=['Cat'],
         dataset_dir=str(dataset_dir),
@@ -750,7 +902,7 @@ def test_create_data_samples_writes_seed_artifacts_for_regeneration(monkeypatch,
 def test_create_data_samples_raises_preprocess_error_instead_of_exit(monkeypatch, tmp_path):
     dataset_dir = tmp_path / 'dataset'
 
-    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None):
+    def fake_prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset()):
         return {
             'object_type': object_type,
             'object_cond': _make_cond_entry(object_type),
@@ -766,6 +918,11 @@ def test_create_data_samples_raises_preprocess_error_instead_of_exit(monkeypatch
 
     monkeypatch.setattr(dataset_pipeline_mod, '_prepare_object_outputs', fake_prepare_object_outputs)
 
+    # Preprocessing prerequisites: the hand-maintained sidecars must exist and
+    # be valid before any clip is encoded.
+    _write_action_labels(dataset_dir, {"Cat_Run_001.npy": ("locomotion", "run")})
+    _write_species_tags(dataset_dir, species=("Cat",))
+
     with pytest.raises(dataset_pipeline_mod.DatasetPreprocessingError) as exc_info:
         dataset_pipeline_mod.create_data_samples(
             objects=['Cat'],
@@ -774,6 +931,45 @@ def test_create_data_samples_raises_preprocess_error_instead_of_exit(monkeypatch
         )
 
     assert exc_info.value.motion_errors == ('boom',)
+
+
+def test_create_data_samples_fast_fails_without_prerequisite_sidecars(monkeypatch, tmp_path):
+    """No sidecars at all: the gate aborts before any object is prepared.
+
+    species_tags.jsonl is checked first (it is loaded through the dataset_tags
+    snapshot), so a bare dataset fails on that one."""
+    dataset_dir = tmp_path / "dataset"
+
+    def fake_prepare_object_outputs(*args, **kwargs):
+        raise AssertionError("no preprocessing work may start before the sidecar gate passes")
+
+    monkeypatch.setattr(dataset_pipeline_mod, '_prepare_object_outputs', fake_prepare_object_outputs)
+
+    with pytest.raises(FileNotFoundError, match="species_tags.jsonl"):
+        dataset_pipeline_mod.create_data_samples(
+            objects=['Cat'],
+            dataset_dir=str(dataset_dir),
+            object_workers=1,
+        )
+
+
+def test_create_data_samples_fast_fails_when_action_labels_missing(monkeypatch, tmp_path):
+    """Species tags present but action_labels.jsonl absent: the gate still
+    aborts up front, and nothing is inferred or back-filled."""
+    dataset_dir = tmp_path / "dataset"
+    _write_species_tags(dataset_dir, species=("Cat",))
+
+    def fake_prepare_object_outputs(*args, **kwargs):
+        raise AssertionError("no preprocessing work may start before the sidecar gate passes")
+
+    monkeypatch.setattr(dataset_pipeline_mod, '_prepare_object_outputs', fake_prepare_object_outputs)
+
+    with pytest.raises(FileNotFoundError, match="action_labels.jsonl"):
+        dataset_pipeline_mod.create_data_samples(
+            objects=['Cat'],
+            dataset_dir=str(dataset_dir),
+            object_workers=1,
+        )
 
 
 def test_run_preprocessing_calls_create_data_samples_directly(monkeypatch):
@@ -879,14 +1075,27 @@ def test_create_data_samples_incremental_skips_done_sources_and_merges(monkeypat
         },
         2,
     )
+    # Preprocessing prerequisites: the hand-maintained sidecars must exist and
+    # be valid before any clip is encoded.
+    _write_action_labels(
+        dataset_dir,
+        {
+            'Cat_Walk.npy': ('locomotion', 'walk'),
+            'Cat_Run.npy': ('locomotion', 'run'),
+            'Dog_Idle.npy': ('stationary', 'idle'),
+        },
+    )
+    _write_species_tags(dataset_dir, species=("Cat", "Dog"))
 
     captured: dict[str, object] = {}
 
     def fake_prepare(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None,
                      max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20,
-                     skip_source_paths=None, frozen_translation_root_index=None):
+                     skip_source_paths=None, frozen_translation_root_index=None,
+                     frozen_promote_root_depth=None, locomotion_clips=frozenset()):
         captured['skip_source_paths'] = set(skip_source_paths or set())
         captured['frozen_translation_root_index'] = frozen_translation_root_index
+        captured['frozen_promote_root_depth'] = frozen_promote_root_depth
         return {
             'object_type': object_type,
             'object_cond': {**_make_cond_entry(object_type), 'translation_root_index': 0},

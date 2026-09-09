@@ -24,6 +24,67 @@ COMMON_ROOT_NAMES = frozenset(
 )
 
 
+def promote_root_once(
+    joint_names: list[str],
+    parents: np.ndarray,
+    offsets: np.ndarray,
+    local_rotations: np.ndarray,
+    local_positions: np.ndarray,
+    orients: Any | None = None,
+) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray, np.ndarray, Any | None]:
+    """Drop the hierarchy root and fold its whole transform into its single child.
+
+    The child's world transform is unchanged: it inherits the dropped joint's
+    rotation composed on the outside (``root ⊗ child``), its offset rotated into
+    the parent frame and added, and its animated translation likewise. The rest
+    ``orients`` take the same composition, or the bind pose ends up rotated
+    relative to the animation -- the 90° roll once seen on Alligator, Scorpion
+    and Deer.
+
+    Structure only: the caller decides WHICH root deserves this. The loader
+    decides conservatively by name and offset; preprocessing decides by measuring
+    where the transport actually is (:func:`select_transport_carrier`), which is
+    the only one of the two that can tell a wrapper called ``Hips`` from a pelvis
+    called ``Hips``.
+    """
+    names = list(joint_names)
+    parents = np.asarray(parents, dtype=np.int32).copy()
+    offsets = np.asarray(offsets).copy()
+    local_rotations = np.asarray(local_rotations).copy()
+    local_positions = np.asarray(local_positions).copy()
+
+    if len(names) < 2:
+        raise ValueError("promote_root_once needs at least two joints")
+    if int(np.count_nonzero(parents == 0)) != 1:
+        raise ValueError(
+            "promote_root_once needs the hierarchy root to have exactly one child, "
+            f"found {int(np.count_nonzero(parents == 0))}"
+        )
+
+    parent_rots = local_rotations[:, 0]
+    offsets[1] = offsets[0] + quat_rotate_wxyz_np(parent_rots[0:1], offsets[1:2])[0]
+    offsets = offsets[1:]
+    local_rotations[:, 1] = quat_multiply_wxyz_np(
+        local_rotations[:, 0], local_rotations[:, 1]
+    )
+    local_rotations = local_rotations[:, 1:]
+    local_positions[:, 1] = local_positions[:, 0] + quat_rotate_wxyz_np(
+        parent_rots, local_positions[:, 1]
+    )
+    local_positions = local_positions[:, 1:]
+    if orients is not None:
+        # Copy first: the loader used to fold in place and clobber its caller's
+        # array, which was invisible only because the caller threw it away.
+        orients = orients.copy()
+        _oq = orients.qs if hasattr(orients, "qs") else orients
+        _oq[1] = quat_multiply_wxyz_np(_oq[0:1], _oq[1:2])[0]
+        orients = orients[1:]
+    parents = parents[1:] - 1
+    names = names[1:]
+
+    return names, parents, offsets, local_rotations, local_positions, orients
+
+
 def collapse_root_skeleton(
     joint_names: list[str],
     parents: np.ndarray,
@@ -83,33 +144,21 @@ def collapse_root_skeleton(
                 f"to child '{collapsed_names[1]}'\033[0m"
             )
 
-        parent_rots = collapsed_local_rotations[:, 0]
-        collapsed_offsets[1] = collapsed_offsets[0] + quat_rotate_wxyz_np(
-            parent_rots[0:1],
-            collapsed_offsets[1:2],
-        )[0]
-        collapsed_offsets = collapsed_offsets[1:]
-        collapsed_local_rotations[:, 1] = quat_multiply_wxyz_np(
-            collapsed_local_rotations[:, 0],
-            collapsed_local_rotations[:, 1],
+        (
+            collapsed_names,
+            collapsed_parents,
+            collapsed_offsets,
+            collapsed_local_rotations,
+            collapsed_local_positions,
+            collapsed_orients,
+        ) = promote_root_once(
+            collapsed_names,
+            collapsed_parents,
+            collapsed_offsets,
+            collapsed_local_rotations,
+            collapsed_local_positions,
+            collapsed_orients,
         )
-        collapsed_local_rotations = collapsed_local_rotations[:, 1:]
-        collapsed_local_positions[:, 1] = collapsed_local_positions[:, 0] + quat_rotate_wxyz_np(
-            parent_rots,
-            collapsed_local_positions[:, 1],
-        )
-        collapsed_local_positions = collapsed_local_positions[:, 1:]
-        if collapsed_orients is not None:
-            # Mirror the per-frame rotation fold above (root ⊗ child): the dropped
-            # root's rest orientation must be composed into the child's, otherwise
-            # the bind/rest pose loses the root rotation (the animation keeps it via
-            # local_rotations), leaving the rest-derived cond t-pose rolled relative
-            # to the motion — observed as a 90° roll for Alligator/Scorpion/Deer.
-            _oq = collapsed_orients.qs if hasattr(collapsed_orients, "qs") else collapsed_orients
-            _oq[1] = quat_multiply_wxyz_np(_oq[0:1], _oq[1:2])[0]
-            collapsed_orients = collapsed_orients[1:]
-        collapsed_parents = collapsed_parents[1:] - 1
-        collapsed_names = collapsed_names[1:]
 
     if len(collapsed_names) > 1 and np.isclose(collapsed_offsets[1], 0).all():
         if len(collapsed_parents[collapsed_parents == 1]) == 0:

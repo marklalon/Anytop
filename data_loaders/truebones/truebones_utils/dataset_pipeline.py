@@ -17,10 +17,10 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import Counter
 import random
 import bisect
-from data_loaders.truebones.truebones_utils.param_utils import DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, MOTION_METADATA_FILE, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, TPOSE_REFERENCE_SIDECAR, get_raw_data_dir
+from data_loaders.truebones.truebones_utils.param_utils import ACTION_LABELS_FILE, DEFAULT_DATASET_DIR, MAX_JOINTS, MAX_PATH_LEN, MOTION_DIR, MOTION_METADATA_FILE, FOOT_CONTACT_VEL_THRESH, BVHS_DIR, TPOSE_REFERENCE_SIDECAR, get_raw_data_dir
 from pathlib import Path
 from . import dataset_tags as _dataset_tags
-from .motion_labels import build_motion_labels, write_motion_metadata, load_motion_metadata
+from .motion_labels import build_motion_labels, write_motion_metadata, load_motion_metadata, load_action_labels
 from .physics_joint_annotation import (
     build_semantic_metadata,
     rest_positions_from_offsets,
@@ -40,8 +40,12 @@ from .animation_utils import (
     drop_prop_socket_joints,
     drop_end_site_joints,
     coerce_single_orientation_quat,
+    chain_xz_travel,
+    promote_translation_root_to_hierarchy_root,
     find_translation_root,
     resolve_detected_translation_root_index,
+    select_transport_carrier,
+    translation_root_ancestor_chain,
 )
 
 from .features import (
@@ -137,18 +141,39 @@ def object_policy(obj):
 ################## Dataset Pipeline ####################
 
 def _load_motion_source(file_path, object_type, *, crop_enabled=True,
-                        prop_socket_names=(), end_site_names=()):
-    """Load and structurally normalize one source file before root resolution."""
-    _crop_max = MAX_JOINTS if crop_enabled else 2 ** 16
-    raw_anim, names, frame_time = FBX.load(file_path)
+                        prop_socket_names=(), end_site_names=(),
+                        promote_root_depth=0, raw_load_cache=None):
+    """Load and structurally normalize one source file before root resolution.
 
-    fps = 1.0 / frame_time if frame_time > 0 else 0.0
-    if fps and abs(fps - 30.0) > 0.1:
-        from .animation_utils import _warn
-        _warn(
-            f"FPS mismatch: '{os.path.basename(str(file_path))}' runs at "
-            f"{fps:.2f} FPS (frame_time={frame_time:.6f}s), expected 30 FPS"
-        )
+    ``raw_load_cache`` holds the PRE-normalization bpy import keyed by real path.
+    Folding a wrapper changes the skeleton every clip is aligned against, so a
+    wrapper species runs phase 1 twice and re-normalizes the same files at a new
+    depth; without the cache that is a second bpy import for every one of them
+    (925 of the dataset's 3796 clips sit on a wrapper species). Sharing the load
+    across passes is safe because nothing downstream writes into it: the drop,
+    crop and promote helpers all build new arrays, and process_anim copies in
+    rotate_to_hml_orientation before it touches a frame.
+    """
+    _crop_max = MAX_JOINTS if crop_enabled else 2 ** 16
+    _cache_key = os.path.realpath(str(file_path))
+    if raw_load_cache is not None and _cache_key in raw_load_cache:
+        raw_anim, _cached_names, frame_time = raw_load_cache[_cache_key]
+        names = list(_cached_names)
+    else:
+        raw_anim, names, frame_time = FBX.load(file_path)
+        if raw_load_cache is not None:
+            raw_load_cache[_cache_key] = (raw_anim, list(names), frame_time)
+
+        # Inside the load branch: a cache hit is the same file the warning
+        # already fired on, and re-warning would double-count it in the run
+        # summary.
+        fps = 1.0 / frame_time if frame_time > 0 else 0.0
+        if fps and abs(fps - 30.0) > 0.1:
+            from .animation_utils import _warn
+            _warn(
+                f"FPS mismatch: '{os.path.basename(str(file_path))}' runs at "
+                f"{fps:.2f} FPS (frame_time={frame_time:.6f}s), expected 30 FPS"
+            )
 
     if prop_socket_names:
         raw_anim, names, _ = drop_prop_socket_joints(
@@ -163,6 +188,20 @@ def _load_motion_source(file_path, object_type, *, crop_enabled=True,
             raw_anim,
             names,
             drop_names=end_site_names,
+            context=f"{object_type} '{os.path.basename(str(file_path))}'",
+        )
+
+    # After the drops and before the crop, matching
+    # get_common_features_from_rest_pose exactly -- the two orders must agree or
+    # the clip and its rest pose disagree on the joint set, which the offset-count
+    # guard in get_hml_aligned_anim turns into a hard failure. The rest pose
+    # decided the depth once from the measured species root, and every clip
+    # follows it.
+    if promote_root_depth:
+        raw_anim, names, _ = promote_translation_root_to_hierarchy_root(
+            raw_anim,
+            names,
+            promote_root_depth,
             context=f"{object_type} '{os.path.basename(str(file_path))}'",
         )
 
@@ -189,6 +228,8 @@ def _prepare_motion_file_for_root_detection(
     crop_enabled=True,
     prop_socket_names=(),
     end_site_names=(),
+    promote_root_depth=0,
+    raw_load_cache=None,
 ):
     """Load/align one new source once and retain it for phase-2 encoding."""
     local_errors = {}
@@ -199,6 +240,8 @@ def _prepare_motion_file_for_root_detection(
             crop_enabled=crop_enabled,
             prop_socket_names=prop_socket_names,
             end_site_names=end_site_names,
+            promote_root_depth=promote_root_depth,
+            raw_load_cache=raw_load_cache,
         )
         new_anim, export_anim, _names, _root_translation_xz = get_hml_aligned_anim(
             file_path,
@@ -225,6 +268,9 @@ def _prepare_motion_file_for_root_detection(
             'export_anim': export_anim,
             'root_translation_xz': _root_translation_xz,
             'translation_root_index': detected_root,
+            # Where this clip's horizontal travel actually sits on the candidate
+            # chain, for the species root decision below.
+            'chain_xz_travel': chain_xz_travel(new_anim),
             'errors': local_errors,
         }
     except Exception as err:
@@ -232,17 +278,51 @@ def _prepare_motion_file_for_root_detection(
         return None
 
 
-def _select_species_translation_root(object_type, detected_roots):
-    """Choose one deterministic species root from per-source detection votes."""
+def _select_species_translation_root(object_type, detected_roots, chain_travels):
+    """Choose one deterministic species root from the per-source scans.
+
+    ``chain_travels`` is one ``{joint: horizontal travel}`` map per source clip;
+    ``detected_roots`` is only kept for the log line.
+
+    The species root is the DEEPEST joint any clip was seen to CARRY transport
+    on -- :func:`select_transport_carrier` decides what carrying means, and the
+    deepest is forced rather than chosen: a joint's global position already holds
+    every ancestor's translation, so a root at or below every carrier sees all of
+    them while a root above any carrier sees none of that clip's travel.
+
+    The old rule took the most popular detection and broke the tie towards the
+    shallower joint. Rigs with a ``Cg`` / ``CG`` / ``Root`` control group above
+    the pelvis are where that shows:
+
+    * ``MB_TigerDrago`` votes 71x joint 0 against 40x joint 1, so the majority
+      won and 40 clips -- ``Run``, ``RunJump``, ``DogdeLeftG`` -- kept a root
+      that never moves while their pelvis travelled up to 4.5. Nothing measured
+      any of it, so nothing bounded it either.
+    * ``Tukan``'s five motionless clips answered "joint 0" because something had
+      to be returned, and outvoted the two clips that actually fly.
+
+    Popularity cannot be repaired by counting differently: ``MB_TigerDrago``'s
+    pelvis clips are 36% of the species and must win, while ``Crow``'s spine
+    clips are 40% and must lose. Only the magnitudes separate them -- TigerDrago's
+    pelvis carries 4.52 against its wrapper's 3.66, Crow's spine carries 0.026
+    against its pelvis's 0.809.
+    """
     root_counts = Counter(int(root) for root in detected_roots)
     if not root_counts:
         raise DatasetPreprocessingError(
             [f"[FAIL] Object '{object_type}': could not detect a translation root from any source motion"]
         )
-    max_count = max(root_counts.values())
-    translation_root_index = min(
-        root_index for root_index, count in root_counts.items() if count == max_count
-    )
+    carriers = [
+        carrier
+        for carrier in (select_transport_carrier(travel) for travel in chain_travels)
+        if carrier is not None
+    ]
+    if carriers:
+        translation_root_index = max(carriers)
+    else:
+        # Nothing in this species ever goes anywhere. Any choice is equivalent,
+        # so take the hierarchy root and stay deterministic.
+        translation_root_index = min(root_counts)
     return translation_root_index, dict(sorted(root_counts.items()))
 
 
@@ -256,6 +336,7 @@ def _encode_prepared_motion_file(
     scale_factor,
     orientation_quat,
     translation_root_index,
+    locomotion_clips=frozenset(),
 ):
     """Phase 2: encode a phase-1 payload with the frozen species root."""
     file_path = prepared['file_path']
@@ -265,6 +346,12 @@ def _encode_prepared_motion_file(
     local_errors = dict(prepared['errors'])
     file_results = []
     file_motion_errors = []
+
+    # Resolved here rather than after extraction: only a gait's root travel may
+    # be removed, and the clip name is what the action_labels sidecar is keyed on.
+    _, _file_name = os.path.split(file_path)
+    clip_action = normalize_action_name(object_type, _file_name.split('.')[0])
+    flatten_root_travel = f'{object_type}_{clip_action}.npy' in locomotion_clips
 
     try:
         detected_root = int(prepared['translation_root_index'])
@@ -287,7 +374,7 @@ def _encode_prepared_motion_file(
                 preloaded=(raw_anim, names),
                 translation_root_index=translation_root_index,
             )
-        motion, max_joints, motion_anim, motion_export_anim, is_loop, root_xz_stripped = extract_motion_features_from_aligned_anims(
+        motion, max_joints, motion_anim, motion_export_anim, is_loop, root_xz_flattened = extract_motion_features_from_aligned_anims(
             new_anim,
             export_anim,
             FOOT_CONTACT_VEL_THRESH,
@@ -296,16 +383,15 @@ def _encode_prepared_motion_file(
             foot_indices,
             orientation_quat,
             translation_root_index,
+            flatten_root_travel=flatten_root_travel,
+            clamp_root_xz_extent=True,
         )
     except Exception as err:
         print(err)
         file_motion_errors.append(f"[FAIL] Object '{object_type}', file: {file_path}")
     else:
-        _, file_name = os.path.split(file_path)
-        raw_action = file_name.split('.')[0]
-        raw_action = normalize_action_name(object_type, raw_action)
         file_results.append({
-            'action': raw_action,
+            'action': clip_action,
             'motion': motion,
             'parents': motion_anim.parents,
             'new_anim': motion_anim,
@@ -313,7 +399,15 @@ def _encode_prepared_motion_file(
             'names': names,
             'frame_time': frame_time,
             'is_loop': is_loop,
-            'root_xz_stripped': root_xz_stripped,
+            'root_xz_flattened': root_xz_flattened,
+            'flatten_root_travel': flatten_root_travel,
+            # The anims BEFORE the root XZ was flattened. Re-extraction after a
+            # resample runs from these, so the flattening is decided once on the
+            # authored trajectory and applied once -- never measured again on
+            # its own output. They are the same objects when nothing was
+            # flattened, so an untouched clip costs no extra memory.
+            'source_new_anim': new_anim,
+            'source_export_anim': export_anim,
             'translation_root_index': int(translation_root_index),
             'root_translation_xz': root_translation_xz,
             'source_fbx_path': file_path,
@@ -343,6 +437,23 @@ def _attach_orientation_reference_metadata(
     object_cond['forward_base_joint_index'] = int(forward_base_joint_index) if forward_base_joint_index is not None else None
 
 
+def load_locomotion_clip_names(dataset_dir):
+    """Return the clip names the action_labels sidecar marks as locomotion.
+
+    Preprocessing has to know which clips are gaits before it writes their
+    features, and that answer is only in the hand-maintained sidecar. The
+    sidecar is a preprocessing prerequisite (verified up front in
+    _create_data_samples): it must exist and be valid before any clip is
+    encoded, so a missing file fails fast here instead of silently flattening
+    nothing.
+    """
+    labels = load_action_labels(dataset_dir)
+    return frozenset(
+        clip for clip, row in labels.items()
+        if str(row.get('action_group') or '') == 'locomotion'
+    )
+
+
 def _build_motion_metadata_entry(result, motion_file_name):
     motion_labels = dict(result['motion_labels'])
     motion_labels['is_loop'] = result.get('is_loop', False)
@@ -352,9 +463,11 @@ def _build_motion_metadata_entry(result, motion_file_name):
     if translation_root_index is not None:
         motion_labels['translation_root_index'] = int(translation_root_index)
 
-    # Provenance, not content: True only if THIS pipeline zeroed the clip's root
-    # XZ (gate A). A clip authored in place is honest data and stays False.
-    motion_labels['root_xz_stripped'] = bool(result.get('root_xz_stripped', False))
+    # Bookkeeping for humans and for dataset triage: True if this pipeline
+    # removed the clip's sustained root XZ travel. It is NOT fed to the model --
+    # nothing is fabricated any more, so there is no fabricated value to warn
+    # about, and the flag would only restate what the action already implies.
+    motion_labels['root_xz_flattened'] = bool(result.get('root_xz_flattened', False))
 
     source_fbx_path = result.get('source_fbx_path')
     if source_fbx_path:
@@ -372,7 +485,7 @@ def _build_motion_metadata_entry(result, motion_file_name):
 
 """Load a reference FBX/GLB, build rest-pose-based cond, and return all caller values."""
 def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=MAX_JOINTS,
-                          crop_enabled=True):
+                          crop_enabled=True, promote_root_depth=0, raw_load_cache=None):
     squared_positions_error = dict()
     _crop_max = MAX_JOINTS if crop_enabled else 2 ** 16
     tp = get_common_features_from_rest_pose(
@@ -380,9 +493,11 @@ def _build_rest_pose_cond(object_type, rest_pose_path, face_joints, max_joints=M
         object_type,
         face_joints=face_joints,
         max_joints=_crop_max,
+        promote_root_depth=promote_root_depth,
+        raw_load_cache=raw_load_cache,
     )
     character_scale_factor = float(tp.scale_factor)
-    rest_pose_motion, parents, max_joints, new_anim, _export_anim, _rest_is_loop, _rest_translation_root_index, _rest_root_translation_xz, _rest_root_xz_stripped = get_motion(
+    rest_pose_motion, parents, max_joints, new_anim, _export_anim, _rest_is_loop, _rest_translation_root_index, _rest_root_translation_xz, _rest_root_xz_flattened = get_motion(
         tp.tpos_anim,
         FOOT_CONTACT_VEL_THRESH,
         object_type,
@@ -505,7 +620,7 @@ already produced clips on disk. Matching files are dropped from this run so only
 added source files are (re)processed. The rest-pose reference carrier is still selected
 from the full file list, so the per-object cond stays stable regardless of which clips
 are new. Returns None when no source files remain to process (object fully up to date)."""
-def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, crop_enabled=True, frozen_translation_root_index=None):
+def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=None, t_pos_path=None, max_files=None, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, crop_enabled=True, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset()):
     object_cond = dict()
     if fbxs_dir is None:
         fbxs_dir = pjoin(get_raw_data_dir(raw_data_dir), object_type)
@@ -548,65 +663,134 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     # Root confirmation sees anim_files as-is: full builds scan every selected
     # source; incremental builds arrive with a frozen cond root and the skip
     # above has already reduced anim_files to the new sources.
-
     squared_positions_error = dict()
-    object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints, tpose_reference_path = _build_rest_pose_cond(
-        object_type, t_pos_path, face_joints, max_joints=max_joints, crop_enabled=crop_enabled,
-    )
+    requested_max_joints = max_joints
+    promote_root_depth = int(frozen_promote_root_depth or 0)
 
-    print(
-        f"PHASE 1/3: confirming translation root for {object_type} "
-        f"from {len(anim_files)} source motion(s)",
-        flush=True,
-    )
-    prepared_motion_files = [
-        _prepare_motion_file_for_root_detection(
-            file_path,
+    # Resolving the species root and folding the wrapper above it are the same
+    # decision, and it takes two passes because each needs the other's answer:
+    # the depth is only knowable once every clip has been aligned and measured,
+    # and the measurement is only final once the wrapper is gone. A pass that
+    # lands on joint 0 is the fixed point -- there is nothing above the root left
+    # to fold -- and an incremental run arrives with the depth already frozen in
+    # cond, so it settles on the first pass.
+    #
+    # The bpy import of every source is cached across the passes: a second pass
+    # re-normalizes the same files at the new depth, and re-importing them is
+    # the whole cost of the extra pass. Dropped as soon as the loop settles --
+    # phase 2 reuses the aligned payloads, not the raw loads. An incremental run
+    # arrives with the root already frozen and provably breaks on the first pass,
+    # so it holds nothing it could not use.
+    raw_load_cache = {} if frozen_translation_root_index is None else None
+    for _pass in range(3):
+        object_cond, tp, rest_pose_motion, parents, semantic_metadata, character_scale_factor, _, max_joints, tpose_reference_path = _build_rest_pose_cond(
             object_type,
-            tp.offsets,
-            tp.foot_indices,
-            tp.tpos_rots,
-            character_scale_factor,
-            tp.orientation_quat,
+            t_pos_path,
+            face_joints,
+            max_joints=requested_max_joints,
             crop_enabled=crop_enabled,
-            prop_socket_names=tp.prop_socket_names,
-            end_site_names=tp.end_site_names,
+            promote_root_depth=promote_root_depth,
+            raw_load_cache=raw_load_cache,
         )
-        for file_path in anim_files
-    ]
-    failed_root_scans = [
-        f"[FAIL] Object '{object_type}', translation-root scan: {file_path}"
-        for file_path, prepared_motion in zip(anim_files, prepared_motion_files)
-        if prepared_motion is None
-    ]
-    if failed_root_scans:
-        raise DatasetPreprocessingError(failed_root_scans)
-    detected_roots = [
-        int(prepared_motion['translation_root_index'])
-        for prepared_motion in prepared_motion_files
-    ]
-    if frozen_translation_root_index is None:
-        translation_root_index, root_counts = _select_species_translation_root(
-            object_type,
-            detected_roots,
+
+        print(
+            f"PHASE 1/3: confirming translation root for {object_type} "
+            f"from {len(anim_files)} source motion(s)",
+            flush=True,
+        )
+        prepared_motion_files = [
+            _prepare_motion_file_for_root_detection(
+                file_path,
+                object_type,
+                tp.offsets,
+                tp.foot_indices,
+                tp.tpos_rots,
+                character_scale_factor,
+                tp.orientation_quat,
+                crop_enabled=crop_enabled,
+                prop_socket_names=tp.prop_socket_names,
+                end_site_names=tp.end_site_names,
+                promote_root_depth=promote_root_depth,
+                raw_load_cache=raw_load_cache,
+            )
+            for file_path in anim_files
+        ]
+        failed_root_scans = [
+            f"[FAIL] Object '{object_type}', translation-root scan: {file_path}"
+            for file_path, prepared_motion in zip(anim_files, prepared_motion_files)
+            if prepared_motion is None
+        ]
+        if failed_root_scans:
+            raise DatasetPreprocessingError(failed_root_scans)
+        detected_roots = [
+            int(prepared_motion['translation_root_index'])
+            for prepared_motion in prepared_motion_files
+        ]
+        chain_travels = [
+            dict(prepared_motion.get('chain_xz_travel') or {})
+            for prepared_motion in prepared_motion_files
+        ]
+        clip_carriers = [select_transport_carrier(travel) for travel in chain_travels]
+        carrier_counts = dict(sorted(
+            Counter(carrier for carrier in clip_carriers if carrier is not None).items()
+        ))
+        if frozen_translation_root_index is None:
+            translation_root_index, root_counts = _select_species_translation_root(
+                object_type,
+                detected_roots,
+                chain_travels,
+            )
+        else:
+            translation_root_index = int(frozen_translation_root_index)
+            root_counts = dict(sorted(Counter(detected_roots).items()))
+            # A new source carrying transport ABOVE the frozen root is fine: FK folds
+            # that translation into the frozen root's global position, so the
+            # features still see it. Only a carrier BELOW the frozen root is lost --
+            # the features de-root there and its travel lands in a descendant's RIC
+            # channel, invisible to the flattener, the clamp and both validators.
+            covered = set(translation_root_ancestor_chain(parents, translation_root_index))
+            mismatched_new_sources = [
+                f"{os.path.basename(str(file_path))}={carrier}"
+                for file_path, carrier in zip(anim_files, clip_carriers)
+                if carrier is not None and carrier not in covered
+            ]
+            if mismatched_new_sources:
+                raise DatasetPreprocessingError(
+                    [
+                        f"[FAIL] Object '{object_type}': new source carries transport below "
+                        f"the frozen cond translation_root_index={translation_root_index}, "
+                        f"where the features cannot see it: "
+                        + ", ".join(mismatched_new_sources)
+                        + ". Re-run with --overwrite to reconfirm the species root."
+                    ]
+                )
+
+        if translation_root_index == 0 or frozen_translation_root_index is not None:
+            break
+
+        # Everything above the joint this species travels on is an inert control
+        # node. Fold it into the real root and measure again on that skeleton.
+        folded = list(tp.names[:translation_root_index])
+        real_root_name = tp.names[translation_root_index]
+        promote_root_depth += translation_root_index
+        print(
+            f"[OK] {object_type}: folding {translation_root_index} wrapper joint(s) "
+            f"{folded} into the real root '{real_root_name}'",
+            flush=True,
         )
     else:
-        translation_root_index = int(frozen_translation_root_index)
-        root_counts = dict(sorted(Counter(detected_roots).items()))
-        mismatched_new_sources = [
-            f"{os.path.basename(str(file_path))}={detected_root}"
-            for file_path, detected_root in zip(anim_files, detected_roots)
-            if detected_root != translation_root_index
-        ]
-        if mismatched_new_sources:
-            raise DatasetPreprocessingError(
-                [
-                    f"[FAIL] Object '{object_type}': new source translation root "
-                    f"disagrees with frozen cond translation_root_index={translation_root_index}: "
-                    + ", ".join(mismatched_new_sources)
-                    + ". Re-run with --overwrite to reconfirm the species root."
-                ]
-            )
+        raise DatasetPreprocessingError(
+            [
+                f"[FAIL] Object '{object_type}': translation root did not settle on "
+                f"joint 0 after folding {promote_root_depth} wrapper joint(s)"
+            ]
+        )
+
+    # Settled: no further pass will re-normalize these files, and every clip's
+    # normalized copy already lives on its prepared payload.
+    if raw_load_cache is not None:
+        raw_load_cache.clear()
+
     root_names = list(object_cond.get('canonical_bvh_joint_names', tp.names))
     root_name = (
         root_names[translation_root_index]
@@ -615,7 +799,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
     )
     print(
         f"[OK] {object_type} translation root fixed at {translation_root_index} "
-        f"({root_name}); source votes={root_counts}",
+        f"({root_name}); source votes={root_counts}, carriers={carrier_counts}",
         flush=True,
     )
 
@@ -641,6 +825,9 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             [f"[FAIL] Object '{object_type}': failed to encode rest pose with translation root {translation_root_index}"]
         )
     object_cond['translation_root_index'] = int(translation_root_index)
+    # Recorded so an incremental run folds exactly the same joints away instead
+    # of re-deriving a depth from a subset of the species' clips.
+    object_cond['root_promote_depth'] = int(promote_root_depth)
     object_cond['rest_pose'] = fixed_rest[0][0]
 
     # Animation loading via bpy is single-threaded inside a process because clear_scene
@@ -664,6 +851,7 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
             character_scale_factor,
             tp.orientation_quat,
             translation_root_index,
+            locomotion_clips,
         ))
         # Drop raw/aligned phase-1 data as soon as its encoded result exists.
         prepared_motion_files[prepared_index] = None
@@ -689,25 +877,25 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
                 # linear interpolation. Re-extraction keeps vel = diff(pos), valid
                 # rotations, and re-thresholded contacts — all physically consistent
                 # with the resampled motion.
-                result['new_anim'] = _resample_animation(result['new_anim'], resample_min_length)
-                result['export_anim'] = _resample_animation(result['export_anim'], resample_min_length)
-                # ``force_strip``: these anims were already stripped by the first
-                # pass, so their XZ extent is ~0 and the re-gate would answer
-                # False -- which also skips the exact-zero write on the root
-                # velocity channel, leaving the strip/resample roundoff residue
-                # (~1e-8) inside a clip still flagged ``root_xz_stripped``.
-                # Carrying the verdict in re-applies both. OR still lets a clip
-                # the first pass left alone be stripped here on its own merits.
-                motion, _, motion_anim, motion_export_anim, is_loop, restripped = extract_motion_features_from_aligned_anims(
-                    result['new_anim'],
-                    result['export_anim'],
+                # Re-extract from the anims as AUTHORED, not from pass 1's
+                # output. Feeding a flattened anim back in would measure drift on
+                # a trajectory whose drift was just removed and would read foot
+                # contact off a clip whose feet are already sliding; running the
+                # source through instead decides once, applies once, and leaves
+                # features, anims and verdict consistent by construction.
+                result['source_new_anim'] = _resample_animation(result['source_new_anim'], resample_min_length)
+                result['source_export_anim'] = _resample_animation(result['source_export_anim'], resample_min_length)
+                motion, _, motion_anim, motion_export_anim, is_loop, root_xz_flattened = extract_motion_features_from_aligned_anims(
+                    result['source_new_anim'],
+                    result['source_export_anim'],
                     FOOT_CONTACT_VEL_THRESH,
                     object_type,
                     max_joints,
                     tp.foot_indices,
                     tp.orientation_quat,
                     result['translation_root_index'],
-                    force_strip=bool(result.get('root_xz_stripped')),
+                    flatten_root_travel=bool(result.get('flatten_root_travel')),
+                    clamp_root_xz_extent=True,
                 )
                 result['motion'] = motion
                 # Keep the stored anims the ones the features were built from, as
@@ -715,8 +903,13 @@ def _prepare_object_outputs(object_type, max_joints, face_joints=None, fbxs_dir=
                 result['new_anim'] = motion_anim
                 result['export_anim'] = motion_export_anim
                 result['is_loop'] = is_loop
-                result['root_xz_stripped'] = bool(result.get('root_xz_stripped')) or bool(restripped)
+                result['root_xz_flattened'] = bool(root_xz_flattened)
             result['canonical_names'] = list(object_cond['canonical_bvh_joint_names'])
+            # The pre-flatten anims exist only for the resample re-extraction just
+            # above. Dropping them here keeps them out of the payload that gets
+            # pickled back from an object worker.
+            result.pop('source_new_anim', None)
+            result.pop('source_export_anim', None)
             prepared_results.append(result)
 
     if len(prepared_results) == 0:
@@ -879,7 +1072,7 @@ def _resolve_preprocessing_workers(objects, object_workers=8):
     return min(object_count, max(1, int(object_workers)))
 
 
-def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None):
+def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, filter_min_length=10, resample_min_length=20, skip_source_paths=None, frozen_translation_root_index=None, frozen_promote_root_depth=None, locomotion_clips=frozenset()):
     # ── Install a local warning collector inside the worker process ──────
     # The parent's _WarnCollector monkey-patches do NOT propagate into
     # ProcessPoolExecutor children.  Capture _warn() / degenerate-facing
@@ -903,6 +1096,8 @@ def _prepare_object_outputs_worker(object_type, max_files, raw_data_dir=None, fi
             resample_min_length=resample_min_length,
             skip_source_paths=skip_source_paths,
             frozen_translation_root_index=frozen_translation_root_index,
+            frozen_promote_root_depth=frozen_promote_root_depth,
+            locomotion_clips=locomotion_clips,
         )
         if payload is not None:
             payload['_warn_messages'] = _warn_messages
@@ -924,6 +1119,7 @@ def process_object(object_type, files_counter, frames_counter, max_joints, squar
         max_files=max_files,
         raw_data_dir=raw_data_dir,
         crop_enabled=crop_enabled,
+        locomotion_clips=load_locomotion_clip_names(save_dir),
     )
     if object_payload is None:
         return files_counter, frames_counter, max_joints, None, {}, None
@@ -968,6 +1164,18 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
     os.makedirs(pjoin(target_dataset_dir, MOTION_DIR), exist_ok=True)
     os.makedirs(pjoin(target_dataset_dir, BVHS_DIR), exist_ok=True)
 
+    # Prerequisite sidecars: preprocessing never infers, back-fills, or creates
+    # either one. Clips are hand-annotated in action_labels.jsonl (it decides
+    # the locomotion gate and which model each clip trains) and species are
+    # registered in species_tags.jsonl (the species condition and object
+    # subsets have no in-code fallback). Both must exist and be valid before
+    # any worker spends time on geometry, so force-load them here and let the
+    # first missing/invalid line abort the run up front.
+    _dataset_tags.dataset_tags()  # force-load species_tags.jsonl (fail fast)
+    load_action_labels(target_dataset_dir)  # force-load + validate action_labels.jsonl
+    print(f"[OK] prerequisite sidecars verified under {target_dataset_dir}: "
+          f"{ACTION_LABELS_FILE}, {_dataset_tags.SPECIES_TAGS_FILE}")
+
     ## process
     if objects is None:
         resolved_raw_data_dir = get_raw_data_dir(raw_data_dir)
@@ -983,6 +1191,7 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
     per_object_skip = {}
     per_object_clip_sources = {}
     per_object_frozen_roots = {}
+    per_object_promote_depth = {}
     if incremental:
         existing_meta = _load_motion_metadata_raw(target_dataset_dir)
         cond_path = pjoin(target_dataset_dir, 'cond.npy')
@@ -1004,6 +1213,16 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
                         ]
                     )
                 per_object_frozen_roots[object_type] = int(frozen_root)
+                # Absent on a cond built before the wrapper fold existed, which
+                # is the same as "this species kept its wrapper": depth 0.
+                per_object_promote_depth[object_type] = int(
+                    existing_cond[existing_key].get('root_promote_depth') or 0
+                )
+
+    # Only a gait's root travel may be removed, and which clips are gaits is
+    # the hand-maintained action_labels sidecar's answer, not something the
+    # geometry can tell us (see extract_motion_features_from_aligned_anims).
+    locomotion_clips = load_locomotion_clip_names(target_dataset_dir)
 
     obj_workers = _resolve_preprocessing_workers(
         objects,
@@ -1024,6 +1243,8 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
                 resample_min_length=resample_min_length,
                 skip_source_paths=per_object_skip.get(object_type),
                 frozen_translation_root_index=per_object_frozen_roots.get(object_type),
+                frozen_promote_root_depth=per_object_promote_depth.get(object_type),
+                locomotion_clips=locomotion_clips,
             )
     else:
         with ProcessPoolExecutor(
@@ -1041,6 +1262,8 @@ def _create_data_samples(objects=None, max_files_per_object=None, dataset_dir=No
                     resample_min_length,
                     per_object_skip.get(object_type),
                     per_object_frozen_roots.get(object_type),
+                    per_object_promote_depth.get(object_type),
+                    locomotion_clips,
                 ): idx
                 for idx, object_type in enumerate(objects)
             }
@@ -1299,9 +1522,10 @@ def _normalized_source_fbx_path(entry):
 def _load_motion_metadata_raw(dataset_dir):
     """Read stored per-clip entries directly, without joining the action sidecar.
 
-    Unlike load_motion_metadata this never requires the action_labels.jsonl sidecar, so the
-    incremental path can read source/numbering bookkeeping on datasets that have not been
-    hand-labeled yet. Returns {} when the file is absent or malformed."""
+    A bookkeeping-only read: the incremental path needs source/numbering fields
+    (source_fbx_path, translation_root_index) and never the action fields, which
+    load_motion_metadata joins in from the sidecar. Returns {} when the file is
+    absent or malformed."""
     metadata_path = pjoin(str(dataset_dir), MOTION_METADATA_FILE)
     if not os.path.exists(metadata_path):
         return {}

@@ -31,8 +31,9 @@ for _path in [_REPO_ROOT, _ANYTOP_ROOT]:
         sys.path.insert(0, _path)
 
 
-# A clip with real locomotion: its root travels ~7.6 units in Z, far past
-# ROOT_XZ_STRIP_THRESHOLD, so the feature path would strip it entirely.
+# A clip with real locomotion: its root travels ~7.6 units in Z, so dataset
+# preprocessing would flatten it (gait + sustained drift) and the feature path
+# would hand back an in-place clip.
 _DEFAULT_GLB = os.path.join(
     _ANYTOP_ROOT, "dataset", "truebones", "zoo", "Truebone_Z-OO",
     "Buffalo", "Buffalo-WalkLoop.glb",

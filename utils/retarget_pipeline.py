@@ -624,7 +624,7 @@ def retarget_animation_file_to_target(
 
     if target_source_basis_available:
         squared_positions_error = {}
-        source_features, *_unused, source_effective_root_index, _source_root_xz, _source_stripped = get_motion(
+        source_features, *_unused, source_effective_root_index, _source_root_xz, _source_flattened = get_motion(
             source_motion_path,
             FOOT_CONTACT_VEL_THRESH,
             target_object_type,
@@ -703,7 +703,7 @@ def retarget_animation_file_to_target(
     }
 
     squared_positions_error = {}
-    source_features, *_unused, source_effective_root_index, _source_root_xz, _source_stripped = get_motion(
+    source_features, *_unused, source_effective_root_index, _source_root_xz, _source_flattened = get_motion(
         source_motion_path,
         FOOT_CONTACT_VEL_THRESH,
         _SRC_FACE_HINT,
@@ -949,9 +949,12 @@ def retarget_glb_to_glb(
 
     * ``process_anim`` recenters the root at the XZ origin, rescales by
       ``scale_factor`` and rotates the rig to the dataset's +Z facing;
-    * ``get_motion`` strips the entire root XZ trajectory once a clip travels
-      past ``ROOT_XZ_STRIP_THRESHOLD``, and that trajectory comes back on a
-      separate channel the feature retarget never receives;
+    * ``get_motion`` can remove a clip's sustained root XZ travel -- dataset
+      preprocessing asks it to for gait clips whose cycle-window baseline drifts
+      past ``ROOT_XZ_DRIFT_THRESHOLD``, and that travel comes back on no channel
+      the feature retarget receives. The retarget itself never asks, so a
+      donor's trajectory survives the call, but the features it produces are
+      then NOT what training data looks like for a travelling gait;
     * the result is a ``(F, J, 13)`` feature array, not a playable rig.
 
     None of that happens here. Both skeletons are read through ``FBX.load`` /

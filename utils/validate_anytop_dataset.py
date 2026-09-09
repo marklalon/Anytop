@@ -40,7 +40,8 @@ from data_loaders.truebones.truebones_utils.motion_labels import (  # noqa: E402
     action_words_in,
 )
 from data_loaders.truebones.truebones_utils.motion_process import (  # noqa: E402
-    ROOT_XZ_STRIP_THRESHOLD,
+    ROOT_XZ_DRIFT_THRESHOLD,
+    ROOT_XZ_SOFT_CLAMP_LIMIT,
 )
 from utils.misc import infer_object_type_from_filename  # noqa: E402
 from data_loaders.truebones.truebones_utils.cond_schema import load_cond  # noqa: E402
@@ -493,17 +494,79 @@ def _load_ignore_warnings(dataset_dir: Path) -> set[str]:
     return set(ignore_warnings.load(dataset_dir).stems)
 
 
-def _validate_root_motion_extent(
+def _validate_root_motion_drift(
     motion: np.ndarray,
     object_type: str,
     motion_name: str,
     threshold: float,
     translation_root_index: int,
     ignored_stems: set[str] | None = None,
+    parents=None,
 ) -> None:
-    """Warn if the motion's translation-root XZ distance from origin exceeds the threshold.
+    """Warn when a locomotion clip's root XZ still carries sustained travel.
 
-    Uses the stored per-motion ``translation_root_index`` from motion metadata.
+    The invariant preprocessing establishes, checked with the same arithmetic
+    that establishes it, and gated on the same thing: only a gait's travel is
+    removed. Raw extent is deliberately NOT the measure -- a lunge is allowed to
+    reach as far as it likes, and a gait that creeps forward half a body span is
+    not. Non-locomotion clips are not checked at all: a death animation that
+    ends face down two thirds of a body span from where it started is correct,
+    and 393 clips across the shipped datasets look like that.
+    """
+    if ignored_stems and Path(motion_name).stem in ignored_stems:
+        return
+    try:
+        from data_loaders.truebones.truebones_utils.motion_process import (
+            flatten_root_xz_drift,
+            recover_root_quat_and_pos_np,
+            translation_root_subtree_mask,
+        )
+        _, r_pos = recover_root_quat_and_pos_np(
+            motion, translation_root_index=translation_root_index
+        )
+        # RIC positions are the de-rooted pose by construction, which is the
+        # signal the pipeline reads its cycle length from -- restricted to the
+        # root's subtree on both sides, the only part of it the re-seat leaves
+        # alone (see root_xz_relative_pose).
+        pose = motion[:, :, 0:3]
+        if parents is not None:
+            pose = np.asarray(pose, dtype=np.float64).copy()
+            pose[:, ~translation_root_subtree_mask(parents, translation_root_index)] = 0.0
+        _flattened, drift, _window = flatten_root_xz_drift(
+            r_pos[:, [0, 2]], pose=pose
+        )
+    except Exception as exc:
+        print_warn(f"{motion_name}: failed to inspect root motion drift from NPy: {exc}")
+        return
+
+    if drift > threshold:
+        print_warn(
+            f"{motion_name}: locomotion clip's root XZ baseline drifts {drift:.3f} across the "
+            f"clip, past the flatten threshold ({threshold:.2f}) -- translation root index "
+            f"{translation_root_index}"
+        )
+
+
+# The soft clamp approaches its ceiling asymptotically, so a clip that went
+# through preprocessing is strictly under it. This only has to survive the
+# float32 round trip through the stored root velocities.
+ROOT_XZ_CEILING_TOLERANCE = 1e-3
+
+
+def _validate_root_xz_ceiling(
+    motion: np.ndarray,
+    motion_name: str,
+    translation_root_index: int,
+    limit: float = ROOT_XZ_SOFT_CLAMP_LIMIT,
+    ignored_stems: set[str] | None = None,
+) -> None:
+    """Warn when a clip's root XZ reaches past the soft clamp ceiling.
+
+    Unlike the drift check this applies to EVERY clip, gait or not: the clamp is
+    the one root-motion invariant that holds dataset-wide. Reaching past the
+    ceiling means the clip never went through the clamp -- a stale tensor from an
+    older preprocessing pass, or a hand-built one -- because the operator itself
+    cannot produce a radius at or above the limit.
     """
     if ignored_stems and Path(motion_name).stem in ignored_stems:
         return
@@ -514,16 +577,74 @@ def _validate_root_motion_extent(
         _, r_pos = recover_root_quat_and_pos_np(
             motion, translation_root_index=translation_root_index
         )
-        root_xz = r_pos[:, [0, 2]]
-        extent = float(np.linalg.norm(root_xz, axis=1).max())
+        extent = float(np.linalg.norm(r_pos[:, [0, 2]], axis=1).max())
     except Exception as exc:
-        print_warn(f"{motion_name}: failed to inspect root motion extent from NPy: {exc}")
+        print_warn(f"{motion_name}: failed to inspect root XZ extent from NPy: {exc}")
         return
 
-    if extent > threshold:
+    if extent > limit + ROOT_XZ_CEILING_TOLERANCE:
         print_warn(
-            f"{motion_name}: root XZ distance from centred origin ({extent:.3f}) exceeds "
-            f"strip threshold ({threshold:.1f}) — translation root index {translation_root_index}"
+            f"{motion_name}: root XZ reaches {extent:.3f} from the origin, past the soft "
+            f"clamp ceiling ({limit:.2f}) -- the clip predates the clamp or bypassed it; "
+            f"translation root index {translation_root_index}"
+        )
+
+
+def _validate_root_transport_carrier(
+    motion: np.ndarray,
+    motion_name: str,
+    translation_root_index: int,
+    limit: float = ROOT_XZ_SOFT_CLAMP_LIMIT,
+    ignored_stems: set[str] | None = None,
+) -> None:
+    """Warn when the body travels much further than the translation root does.
+
+    Every joint's RIC position is measured from the translation root, so a rigid
+    translation of the whole skeleton appears in all of them at once. The
+    per-frame MINIMUM over joints is therefore a lower bound on the rigid part:
+    a rotation leaves the joints nearest the root almost still and scores near
+    zero, while transport moves every one of them together.
+
+    The bar is the soft clamp's CEILING, not its knee: a clip whose whole skeleton
+    rigidly translates further than the clamp would ever let a root travel, while
+    its root stays put, cannot be anything but mis-rooted. Below the ceiling the
+    reading stops being decisive -- a stationary attack that leans the body over
+    planted feet scores on this measure too.
+
+    ``MB_TigerDrago`` shipped 16 such clips -- ``RunJump`` carried 4.52 of travel
+    behind a root path of 0.000 -- because the species root vote took the popular
+    ``CG`` wrapper over the pelvis that 40 of its clips actually move. ``Tukan``
+    and ``Bear`` each shipped one more.
+    """
+    if ignored_stems and Path(motion_name).stem in ignored_stems:
+        return
+    joints = motion.shape[1]
+    others = [j for j in range(joints) if j != translation_root_index]
+    if not others:
+        return
+    try:
+        from data_loaders.truebones.truebones_utils.motion_process import (
+            recover_root_quat_and_pos_np,
+        )
+        _, r_pos = recover_root_quat_and_pos_np(
+            motion, translation_root_index=translation_root_index
+        )
+        root_travel = float(np.linalg.norm(r_pos[:, [0, 2]], axis=1).max())
+        ric = np.asarray(motion[:, :, [0, 2]], dtype=np.float64)
+        moved = np.linalg.norm(ric - ric[0:1], axis=2)
+        transport = float(moved[:, others].min(axis=1).max())
+    except Exception as exc:
+        print_warn(f"{motion_name}: failed to inspect root transport from NPy: {exc}")
+        return
+
+    # The second condition keeps a legitimately clamped clip quiet: there the
+    # body and the root travel together, so the two measurements agree.
+    if transport > limit and transport > 2.0 * root_travel:
+        print_warn(
+            f"{motion_name}: the whole skeleton translates {transport:.3f} while the "
+            f"translation root's own path reaches only {root_travel:.3f} -- the species "
+            f"root (joint {translation_root_index}) sits above the joint this clip "
+            f"travels on, so its trajectory is invisible to the flattener and the clamp"
         )
 
 
@@ -544,42 +665,6 @@ def _validate_translation_root_feature_alignment(
     return True
 
 
-def _validate_root_xz_stripped_flag(
-    motion: np.ndarray,
-    motion_name: str,
-    motion_metadata: dict,
-    translation_root_index: int,
-    *,
-    root_matches_features: bool | None = None,
-) -> None:
-    """Check the ``root_xz_stripped`` flag against the tensor it labels.
-
-    One direction, and exact: stripping writes literal 0.0, so a flagged clip
-    must carry no root XZ velocity. The converse is not an error -- a clip
-    authored in place is honest data that sits at zero.
-
-    Root/feature alignment is checked for every clip by the caller.  Direct
-    callers may omit that result and this helper will perform the same check.
-    """
-    if root_matches_features is None:
-        root_matches_features = _validate_translation_root_feature_alignment(
-            motion,
-            motion_name,
-            translation_root_index,
-        )
-    if not motion_metadata.get("root_xz_stripped"):
-        return
-    if not root_matches_features:
-        return
-    observed = float(np.max(np.abs(motion[:, translation_root_index][:, [9, 11]])))
-    if observed != 0.0:
-        print_warn(
-            f"{motion_name}: root_xz_stripped=True but the root still carries XZ velocity "
-            f"(max {observed:.3g}, stripping writes exact zeros) — the flag disagrees "
-            f"with the features it labels"
-        )
-
-
 def validate_motion_files(
     motions_dir: Path,
     bvhs_dir: Path,
@@ -588,8 +673,14 @@ def validate_motion_files(
     root_motion_threshold: float,
     motion_orientation_threshold: float = 45.0,
     ignored_stems: set[str] | None = None,
+    locomotion_clips: set[str] | None = None,
 ) -> None:
     motion_files = sorted(motions_dir.glob("*.npy"))
+    if locomotion_clips is None:
+        from data_loaders.truebones.truebones_utils.dataset_pipeline import (
+            load_locomotion_clip_names,
+        )
+        locomotion_clips = load_locomotion_clip_names(motions_dir.parent)
     bvh_files = sorted(bvhs_dir.glob("*.bvh")) if bvhs_dir.exists() else []
 
     try:
@@ -658,28 +749,36 @@ def validate_motion_files(
                 translation_root_index,
             )
 
-            _validate_root_xz_stripped_flag(
-                motion,
-                motion_path.name,
-                motion_metadata,
-                translation_root_index,
-                root_matches_features=root_matches_features,
-            )
-
             if not root_matches_features:
                 # Recovery and orientation checks would both read trajectory
                 # channels from the wrong joint and only add misleading follow-on
                 # warnings.  The root/feature error above is the actionable cause.
                 continue
 
-            _validate_root_motion_extent(
+            _validate_root_xz_ceiling(
                 motion,
-                object_type,
                 motion_path.name,
-                root_motion_threshold,
                 translation_root_index,
                 ignored_stems=ignored_stems,
             )
+
+            _validate_root_transport_carrier(
+                motion,
+                motion_path.name,
+                translation_root_index,
+                ignored_stems=ignored_stems,
+            )
+
+            if motion_path.name in locomotion_clips:
+                _validate_root_motion_drift(
+                    motion,
+                    object_type,
+                    motion_path.name,
+                    root_motion_threshold,
+                    translation_root_index,
+                    ignored_stems=ignored_stems,
+                    parents=cond[object_type].get("parents"),
+                )
 
             if check_motion_orientation:
                 _validate_motion_orientation(
@@ -1116,7 +1215,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--objects-subset", default="all", choices=sorted(OBJECT_SUBSET_CHOICES), help="Subset that must be present in the dataset; incremental runs may still contain additional objects.")
     parser.add_argument("--sample-count", type=int, default=0, help="How many motion files to validate in detail. Use 0 to validate all files.")
     parser.add_argument("--orientation-threshold-deg", type=float, default=5.0, help="Maximum allowed T-pose face-orientation delta from the nearest cardinal XZ axis (+x/-x/+z/-z) before warning.")
-    parser.add_argument("--root-motion-threshold", type=float, default=ROOT_XZ_STRIP_THRESHOLD, help=f"Maximum allowed root XZ distance from the centred origin (default={ROOT_XZ_STRIP_THRESHOLD}).")
+    parser.add_argument("--root-motion-threshold", type=float, default=ROOT_XZ_DRIFT_THRESHOLD, help=f"Maximum sustained root XZ travel (cycle-window baseline drift) a clip may keep (default={ROOT_XZ_DRIFT_THRESHOLD}).")
     parser.add_argument(
         "--motion-orientation-threshold",
         type=float,
