@@ -8,8 +8,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from data_loaders.truebones.truebones_utils.fbx_filename_rules import (  # noqa: E402
+    is_retargeted_anim_path,
     normalize_action_name,
     should_skip_anim,
+    strip_retarget_marker,
 )
 
 # Test cases: (file, object_type, expected_skip, expected_normalized_action)
@@ -111,6 +113,45 @@ def test_filter_and_normalize_cases():
         assert action_result == expected_action, (
             f'{file_path} ({obj_type}): action={action_result}, expected={expected_action}'
         )
+
+
+# The offline-retarget tool writes ``<Action>_<SrcSpecies>Retarget`` -- the source
+# species concatenated directly onto the marker, so the marker is a SUFFIX of the
+# final segment, not a segment of its own.  ``is_retargeted_anim_path`` must match
+# that (regression: it used to require the final segment to be exactly ``Retarget``
+# and so never matched a real export), while a bare ``Retarget`` or an action that
+# merely contains the word must not.
+RETARGET_MARKER_CASES = [
+    # (file_path, expected_is_retargeted, expected_stripped_stem, expected_skip, object_type)
+    ('Swim01Backwards_KIHumanRetarget.glb', True, 'Swim01Backwards_KIHuman', False, 'Horse'),
+    ('Dance01_KIPerformerRetarget.glb', True, 'Dance01_KIPerformer', False, 'Horse'),
+    # A single-word arm action is the case that used to be wrongly skipped.
+    ('Salute_KISoldierRetarget.glb', True, 'Salute_KISoldier', False, 'Horse'),
+    # Ordinary clips and a bare marker are not retargeted.
+    ('Horse_Swim01.glb', False, None, False, 'Horse'),
+    ('Retarget.glb', False, None, False, 'Horse'),
+    ('MyRetargetMove.glb', False, None, False, 'Horse'),
+]
+
+
+def test_retarget_marker_detection():
+    for file_path, expected, expected_stripped, _skip, _obj in RETARGET_MARKER_CASES:
+        got = is_retargeted_anim_path(file_path)
+        assert got == expected, (
+            f'{file_path}: is_retargeted={got}, expected={expected}'
+        )
+        if expected:
+            stem = os.path.splitext(file_path)[0]
+            stripped = strip_retarget_marker(stem)
+            assert stripped == expected_stripped, (
+                f'{file_path}: strip={stripped!r}, expected={expected_stripped!r}'
+            )
+            # The whole point of the fix: a marked clip is judged on its stem
+            # WITHOUT the marker and is exempt from the variant-codename skip.
+            obj_type = _obj
+            assert should_skip_anim(file_path, obj_type) == _skip, (
+                f'{file_path} ({obj_type}): should_skip_anim should be {_skip}'
+            )
 
 
 if __name__ == '__main__':
