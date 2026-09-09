@@ -653,8 +653,8 @@
 {"clip": "MB_TigerDrago_FlyAttackFireBall.npy", "action_group": "stationary", "action_label": "idle, hover, taunt", "reviewed": true}
 {"clip": "MB_TigerDrago_FlyBackward.npy", "action_group": "locomotion", "action_label": "fly, backward", "reviewed": true}
 {"clip": "MB_TigerDrago_FlyDeath.npy", "action_group": "transition", "action_label": "die", "reviewed": true}
-{"clip": "MB_TigerDrago_FlyDodgeL.npy", "action_group": "locomotion", "action_label": "fly, roll, left", "reviewed": true}
-{"clip": "MB_TigerDrago_FlyDodgeR.npy", "action_group": "locomotion", "action_label": "fly, roll, right", "reviewed": true}
+{"clip": "MB_TigerDrago_FlyDodgeL.npy", "action_group": "stationary", "action_label": "fly, roll, left", "reviewed": true}
+{"clip": "MB_TigerDrago_FlyDodgeR.npy", "action_group": "stationary", "action_label": "fly, roll, right", "reviewed": true}
 {"clip": "MB_TigerDrago_FlyDownFoward.npy", "action_group": "locomotion", "action_label": "fly, down, dive", "reviewed": true}
 {"clip": "MB_TigerDrago_FlyDownL.npy", "action_group": "locomotion", "action_label": "fly, left, down", "reviewed": true}
 {"clip": "MB_TigerDrago_FlyDownR.npy", "action_group": "locomotion", "action_label": "fly, right, down", "reviewed": true}
@@ -763,9 +763,9 @@
 {"clip": "MB_Unka_FlyClosedWings50.npy", "action_group": "locomotion", "action_label": "fly, forward, glide", "reviewed": true}
 {"clip": "MB_Unka_FlyClosedWings75.npy", "action_group": "locomotion", "action_label": "fly, forward, glide", "reviewed": true}
 {"clip": "MB_Unka_FlyDeathFloor.npy", "action_group": "transition", "action_label": "fly, dead", "reviewed": true}
-{"clip": "MB_Unka_FlyDeathRecover.npy", "action_group": "transition", "action_label": "fly, roll", "reviewed": true}
-{"clip": "MB_Unka_FlyDodgeLeft.npy", "action_group": "locomotion", "action_label": "fly, roll, left", "reviewed": true}
-{"clip": "MB_Unka_FlyDodgeRight.npy", "action_group": "locomotion", "action_label": "fly, roll, right", "reviewed": true}
+{"clip": "MB_Unka_FlyDeathRecover.npy", "action_group": "stationary", "action_label": "fly, roll", "reviewed": true}
+{"clip": "MB_Unka_FlyDodgeLeft.npy", "action_group": "stationary", "action_label": "fly, roll, left", "reviewed": true}
+{"clip": "MB_Unka_FlyDodgeRight.npy", "action_group": "stationary", "action_label": "fly, roll, right", "reviewed": true}
 {"clip": "MB_Unka_FlyDownForwardLeft.npy", "action_group": "locomotion", "action_label": "fly, left, down, dive", "reviewed": true}
 {"clip": "MB_Unka_FlyDownForwardRight.npy", "action_group": "locomotion", "action_label": "fly, right, down, dive", "reviewed": true}
 {"clip": "MB_Unka_FlyDownTurnLeft.npy", "action_group": "locomotion", "action_label": "fly, left, down, dive", "reviewed": true}
@@ -1481,7 +1481,7 @@
 {"clip": "MU06_Death_ProjectileAttack.npy", "action_group": "stationary", "action_label": "attack, projectile", "reviewed": true}
 {"clip": "MU06_Death_Spawn.npy", "action_group": "transition", "action_label": "spawn", "reviewed": true}
 {"clip": "MU06_Death_TakeDamage.npy", "action_group": "stationary", "action_label": "hurt", "reviewed": true}
-{"clip": "MU06_Death_Teleport.npy", "action_group": "locomotion", "action_label": "run, roll, forward", "reviewed": true}
+{"clip": "MU06_Death_Teleport.npy", "action_group": "stationary", "action_label": "die", "reviewed": true}
 {"clip": "MU06_Death_TumbleAttack.npy", "action_group": "stationary", "action_label": "attack, roll", "reviewed": true}
 {"clip": "MU06_Death_TurnLeft.npy", "action_group": "transition", "action_label": "turn, left", "reviewed": true}
 {"clip": "MU06_Death_TurnRight.npy", "action_group": "transition", "action_label": "turn, right", "reviewed": true}
