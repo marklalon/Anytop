@@ -61,23 +61,13 @@ def _warn(msg: str):
 # Sustained one-directional translation-root XZ displacement (in HML-normalised
 # units, where a body span is 1.389) above which a clip is re-seated in place.
 #
-# Measured on the CYCLE-WINDOW BASELINE of the root path, never on its raw
-# extent. An out-and-back excursion has no baseline drift however far it reaches,
-# so a lunge, a dodge or a swing keeps its root motion verbatim; a gait that
-# travels has nothing but baseline drift and gets flattened however small each
+# Measured on the TRANSPORT the clip carries in its own heading frame, never on
+# its raw extent. An out-and-back excursion has no net transport however far it
+# reaches, so a lunge, a dodge or a swing keeps its root motion verbatim; a gait
+# that travels is nothing but transport and gets flattened however small each
 # step is. Clips are centred on the effective translation root's initial XZ
 # position before this is evaluated.
 ROOT_XZ_DRIFT_THRESHOLD = 0.08
-
-# Shortest repetition the cycle estimator will believe. Below this a "period" is
-# just neighbouring frames looking alike, and a window that short would high-pass
-# the gait itself away instead of the travel underneath it.
-MIN_POSE_CYCLE_FRAMES = 8
-
-# The pose autocorrelation peak must reach this to be read as a gait cycle. A
-# clip with no repetition falls back to a full-length window, i.e. a plain linear
-# detrend -- right for straight travel, and the benign failure for a curve.
-POSE_CYCLE_CORRELATION_FLOOR = 0.5
 
 # Root XZ soft clamp, in HML-normalised units (a body span is 1.389).
 #
@@ -885,164 +875,105 @@ def root_xz_trajectory(anim, translation_root_index):
     return np.asarray(global_pos[:, translation_root_index][:, [0, 2]], dtype=np.float64)
 
 
-def root_xz_relative_pose(global_pos, translation_root_index, parents=None):
-    """Return ``global_pos`` with the translation root's XZ removed.
+def root_xz_heading(anim, translation_root_index):
+    """Return the translation root's per-frame world heading, unwrapped, in radians.
 
-    Exactly the de-rooting ``get_rifke`` performs, so this signal is invariant to
-    any edit of the root XZ trajectory -- which is what makes it safe to read a
-    gait period off it before deciding what to do with that trajectory.
+    The angle of the root's own forward axis in the XZ plane. ``anim`` is
+    canonicalised to face +Z by ``rotate_to_hml_orientation`` before it ever gets
+    here, so the forward axis is +Z and no per-species orientation enters.
 
-    That invariance holds only for the root's OWN SUBTREE. Re-seating an
-    intermediate root (Bip01, the KI_* rigs -- ~15% of the shipped clips) moves
-    that joint and its descendants and leaves the wrapper above it where it was,
-    so the wrapper's de-rooted position carries the negated trajectory before the
-    edit and almost nothing after it. Pass ``parents`` and everything outside the
-    subtree is zeroed, which is what lets the pipeline and the dataset validator
-    read the same period off the same clip from opposite sides of the edit.
+    Unwrapped, so a clip that turns past +/-pi reads as one continuous ramp
+    rather than a jump -- the ramp is the whole point, it is what a straight-line
+    fit can follow and a raw angle cannot.
+
+    ``anim`` is expected to have been through ``collapse_translation_root_chain``
+    already, which seats the inert wrapper nodes onto the root; the root's world
+    rotation then carries the wrapper's rotation too, which is where some rigs
+    keep the turn.
     """
-    pose = np.array(global_pos, dtype=np.float64, copy=True)
-    pose[..., 0] -= global_pos[:, translation_root_index:translation_root_index + 1, 0]
-    pose[..., 2] -= global_pos[:, translation_root_index:translation_root_index + 1, 2]
-    if parents is not None:
-        pose[:, ~translation_root_subtree_mask(parents, translation_root_index)] = 0.0
-    return pose
+    rotations = rotations_global(anim)[:, int(translation_root_index)]
+    forward = rotations * np.array([0.0, 0.0, 1.0])
+    return np.unwrap(np.arctan2(forward[:, 0], forward[:, 2]))
 
 
-def translation_root_subtree_mask(parents, translation_root_index):
-    """Return a per-joint mask of the translation root and its descendants."""
-    parents = np.asarray(parents, dtype=np.int64).reshape(-1)
-    mask = np.zeros(parents.shape[0], dtype=bool)
-    root = int(translation_root_index)
-    if not 0 <= root < mask.size:
-        return np.ones_like(mask)
-    mask[root] = True
-    # Joints are stored parent-before-child, so one forward sweep closes the set.
-    for joint in range(mask.size):
-        parent = int(parents[joint])
-        if 0 <= parent < mask.size and mask[parent]:
-            mask[joint] = True
-    return mask
+def _xz_rotation(angle):
+    """Return ``(T, 2, 2)`` rotations by ``angle`` about +Y, acting on ``(x, z)``."""
+    angle = np.asarray(angle, dtype=np.float64)
+    cos, sin = np.cos(angle), np.sin(angle)
+    return np.stack([np.stack([cos, sin], -1), np.stack([-sin, cos], -1)], -2)
 
 
-def estimate_pose_cycle_length(pose, min_cycle=MIN_POSE_CYCLE_FRAMES,
-                               correlation_floor=POSE_CYCLE_CORRELATION_FLOOR):
-    """Return the dominant repetition period of a pose sequence, in frames.
+def _linear_fit(values):
+    """Return the least-squares straight line through ``values`` over frame index.
 
-    Self-similarity of the de-rooted pose against a lagged copy of itself. The
-    period is the FIRST interior local maximum of that curve: an aperiodic clip
-    decays monotonically with lag and has none, so it answers with its own length
-    and the caller degenerates to a global linear fit.
-
-    The answer is clamped to ``[T // 4, T]``. A window is only ever used to
-    average one cycle's oscillation out of a trend estimate, so any window
-    spanning a whole number of cycles serves; the clamp keeps a mis-estimate from
-    high-passing the motion itself away.
+    Used on the heading, which ramps: a turn at a steady rate is a straight line
+    in yaw, and fitting it is what separates the travel heading the character is
+    actually following from the per-stride pelvis wobble riding on top of it.
+    Feeding the raw per-frame yaw to the detrend instead costs a straight walk
+    0.063 of spurious residual, against 0.016 for the fitted one.
     """
-    pose = np.asarray(pose, dtype=np.float64)
-    frames = pose.shape[0]
-    floor = max(int(min_cycle), 2)
-    if frames < 2 * floor:
-        return frames
-
-    signal = pose.reshape(frames, -1)
-    signal = signal - signal.mean(axis=0, keepdims=True)
-    if not np.any(signal):
-        return frames
-
-    lags = np.arange(floor, frames // 2 + 1)
-    scores = np.full(lags.shape, -np.inf, dtype=np.float64)
-    for i, lag in enumerate(lags):
-        head = signal[:-lag]
-        tail = signal[lag:]
-        denom = float(np.linalg.norm(head) * np.linalg.norm(tail))
-        if denom > 0.0:
-            scores[i] = float(np.sum(head * tail) / denom)
-
-    cycle = frames
-    for i in range(1, scores.size - 1):
-        if scores[i] >= scores[i - 1] and scores[i] > scores[i + 1] and scores[i] >= correlation_floor:
-            # Demand a dip before the peak, so a curve that only ever falls does
-            # not hand back its shortest lag as a "cycle".
-            if scores[i] - float(np.min(scores[:i])) > 0.05:
-                cycle = int(lags[i])
-                break
-
-    return int(min(max(cycle, frames // 4, floor), frames))
-
-
-def _local_linear_baseline(traj, window):
-    """Return the moving local-linear fit of a ``(T, 2)`` path.
-
-    Each frame is fitted over the ``window`` frames centred on it (clamped to the
-    clip), which is a moving average that extrapolates instead of flattening at
-    the edges. Over a window spanning one gait cycle the oscillation averages out
-    and what is left is the travel underneath it -- straight, curved or
-    accelerating, unlike a single global line fitted end to end.
-    """
-    traj = np.asarray(traj, dtype=np.float64)
-    frames = traj.shape[0]
-    if frames == 0:
-        return traj.copy()
-    window = int(min(max(int(window), 2), frames))
-    half = window // 2
-
-    baseline = np.empty_like(traj)
+    values = np.asarray(values, dtype=np.float64)
+    frames = values.shape[0]
+    if frames < 2:
+        return values.copy()
     times = np.arange(frames, dtype=np.float64)
-    for t in range(frames):
-        lo = max(0, t - half)
-        hi = min(frames, lo + window)
-        lo = max(0, hi - window)
-        x = times[lo:hi]
-        y = traj[lo:hi]
-        x_mean = float(x.mean())
-        y_mean = y.mean(axis=0)
-        x_dev = x - x_mean
-        denom = float(np.dot(x_dev, x_dev))
-        if denom <= 0.0:
-            baseline[t] = y_mean
-            continue
-        slope = (x_dev[:, None] * (y - y_mean)).sum(axis=0) / denom
-        baseline[t] = y_mean + slope * (times[t] - x_mean)
-    return baseline
+    time_dev = times - times.mean()
+    denom = float(np.dot(time_dev, time_dev))
+    mean = values.mean(axis=0)
+    if denom <= 0.0:
+        return np.repeat(mean[None], frames, axis=0)
+    slope = (time_dev[:, None] * (values - mean)).sum(axis=0) / denom
+    return mean + slope[None] * time_dev[:, None]
 
 
-def root_xz_drift_correction(traj, window):
+def root_xz_drift_correction(traj, heading):
     """Return ``(correction, drift)`` for a ``(T, 2)`` root XZ path.
 
-    ``correction`` is the baseline's own displacement from frame 0, so
-    ``traj - correction`` keeps frame 0 where the pipeline centred it and keeps
-    everything the baseline could not explain -- the within-cycle surge and sway
-    that make a gait read as a gait rather than as a rig welded to the floor.
+    The travel is removed IN THE ROOT'S OWN HEADING FRAME, and that frame is the
+    whole of it. In world space a turning gait's velocity direction rotates with
+    the character, so there is no straight trend to subtract and no low-order
+    curve that fits one either: an end-to-end line fit leaves the arc's sagitta
+    behind, which on the shipped data reached 0.371 for MB_Unka_GlideLeft and
+    0.732 for IAC_Cavewoman_RunTurnRight -- 27% and 53% of a body span of
+    residual travel, turning as it went.
 
-    ``drift`` is where that baseline ENDS UP, not how far it ever reached. Only
+    Rotated into the heading frame the same motion is a near-constant forward
+    speed with the within-cycle surge and sway riding on it, and removing a
+    constant is exactly what the old world-space line fit was already doing --
+    just in the wrong frame. So the arithmetic is: rotate the frame-to-frame
+    displacement by the negated (fitted) heading, subtract its mean, rotate back,
+    re-integrate from frame 0.
+
+    ``correction`` is the accumulated transport, so ``traj - correction`` keeps
+    frame 0 where the pipeline centred it and keeps everything the transport
+    could not explain -- the surge and sway that make a gait read as a gait
+    rather than as a rig welded to the floor.
+
+    ``drift`` is where that transport ENDS UP, not how far it ever reached. Only
     the endpoint separates "went and stayed" from "went and came back", and both
     of those spend most of the clip away from the origin, so no statistic over
-    time can tell them apart. A closed path -- an out-and-back lunge, a full
-    circle -- is periodic motion about the origin and is kept whatever its
-    amplitude; that is the whole point of dropping the extent gate.
+    time can tell them apart. An out-and-back lunge reverses in the heading frame
+    too and nets out to nothing, so it is kept whatever its amplitude.
     """
     traj = np.asarray(traj, dtype=np.float64)
-    if traj.shape[0] == 0:
-        return traj.copy(), 0.0
-    baseline = _local_linear_baseline(traj, window)
-    correction = baseline - baseline[0]
-    drift = float(np.linalg.norm(correction[-1]))
-    return correction, drift
+    if traj.shape[0] < 2:
+        return np.zeros_like(traj), 0.0
+    heading = _linear_fit(np.asarray(heading, dtype=np.float64).reshape(-1, 1)[:-1])[:, 0]
+    local_step = np.einsum('tij,tj->ti', _xz_rotation(-heading), np.diff(traj, axis=0))
+    transport = np.einsum('tij,j->ti', _xz_rotation(heading), local_step.mean(axis=0))
+    correction = np.concatenate([np.zeros((1, 2)), np.cumsum(transport, axis=0)], axis=0)
+    return correction, float(np.linalg.norm(correction[-1]))
 
 
-def flatten_root_xz_drift(traj, pose=None, window=None):
-    """Return ``(flattened_traj, drift, window)`` for a root XZ path.
+def flatten_root_xz_drift(traj, heading):
+    """Return ``(flattened_traj, drift)`` for a root XZ path.
 
     The single entry point the pipeline and the dataset validator share, so both
-    answer "does this clip travel" with the same arithmetic. ``pose`` supplies
-    the de-rooted signal the cycle length is read from; without it the window is
-    the full clip, i.e. a global linear detrend.
+    answer "does this clip travel" with the same arithmetic. ``heading`` is the
+    translation root's per-frame world yaw, from ``root_xz_heading``.
     """
-    traj = np.asarray(traj, dtype=np.float64)
-    if window is None:
-        window = estimate_pose_cycle_length(pose) if pose is not None else traj.shape[0]
-    correction, drift = root_xz_drift_correction(traj, window)
-    return traj - correction, drift, int(window)
+    correction, drift = root_xz_drift_correction(traj, heading)
+    return np.asarray(traj, dtype=np.float64) - correction, drift
 
 
 def soft_clamp_extent(radius, knee=ROOT_XZ_SOFT_CLAMP_KNEE,

@@ -950,7 +950,7 @@ def retarget_glb_to_glb(
     * ``process_anim`` recenters the root at the XZ origin, rescales by
       ``scale_factor`` and rotates the rig to the dataset's +Z facing;
     * ``get_motion`` can remove a clip's sustained root XZ travel -- dataset
-      preprocessing asks it to for gait clips whose cycle-window baseline drifts
+      preprocessing asks it to for gait clips whose heading-frame transport drifts
       past ``ROOT_XZ_DRIFT_THRESHOLD``, and that travel comes back on no channel
       the feature retarget receives. The retarget itself never asks, so a
       donor's trajectory survives the call, but the features it produces are

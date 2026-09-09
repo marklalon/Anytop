@@ -44,7 +44,7 @@ from .animation_utils import (
     promote_translation_root_to_hierarchy_root,
     move_xz_to_origin,
     root_xz_trajectory,
-    root_xz_relative_pose,
+    root_xz_heading,
     flatten_root_xz_drift,
     soft_clamp_root_xz,
     set_translation_root_xz,
@@ -755,13 +755,9 @@ def extract_motion_features_from_aligned_anims(
     # passed through an operator that would only add float noise.
     root_xz_flattened = False
     if flatten_root_travel:
-        flattened_root_xz, root_xz_drift, _cycle = flatten_root_xz_drift(
+        flattened_root_xz, root_xz_drift = flatten_root_xz_drift(
             source_root_xz,
-            pose=root_xz_relative_pose(
-                source_global_positions,
-                feature_translation_root_index,
-                parents=new_anim.parents,
-            ),
+            root_xz_heading(new_anim, feature_translation_root_index),
         )
         root_xz_flattened = bool(root_xz_drift > ROOT_XZ_DRIFT_THRESHOLD)
         if root_xz_flattened:

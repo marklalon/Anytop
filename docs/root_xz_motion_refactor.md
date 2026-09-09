@@ -24,9 +24,9 @@ tile 接缝天然连续。
 
 ## 2. 预处理规则
 
-### 2.1 漂移扁平化（周期窗高通）
+### 2.1 漂移扁平化（朝向帧运输量）
 
-**判据：`locomotion 标签` AND `基线净漂移 > 0.08`，缺一不可。**
+**判据：`locomotion 标签` AND `朝向帧净运输量 > 0.08`，缺一不可。**
 
 - **标签**（`load_locomotion_clip_names` 读 `action_labels.jsonl` 的 `action_group == 'locomotion'`）
   只给"许可"：姿态闭合 + 结束时位移，单周期步态 take 和扑击在几何上无法区分，
@@ -38,17 +38,27 @@ tile 接缝天然连续。
 
 **算子**（`flatten_root_xz_drift`，[animation_utils.py](../data_loaders/truebones/truebones_utils/animation_utils.py)）：
 
-1. `estimate_pose_cycle_length` 用**去根姿态**的自相关取第一个内部极大值作为窗长
-   （`MIN_POSE_CYCLE_FRAMES = 8`、相关下限 0.5），找不到周期退化成全长窗，窗长 clamp 到 `[T//4, T]`。
-2. `_local_linear_baseline` 对每帧在窗内做局部线性拟合（= 边缘外推的滑动平均）。
-3. `correction = baseline - baseline[0]`，`flattened = traj - correction` ——
+在世界系里转向步态的速度方向随角色一起转，没有可减的直线趋势——端到端线拟合会留下
+整段弧矢（`MB_Unka_GlideLeft` 0.371、`IAC_Cavewoman_RunTurnRight` 0.732，分别是 27%、
+53% 个 body span）。转到 **root 自身朝向帧**后，同一运动是近似恒定的前进速度，减掉
+一个常数正是旧线拟合本来在做的事，只是选对了坐标系：
+
+1. `root_xz_heading` 取 root 每帧世界朝向（+Z 前轴在 XZ 平面的角，`np.unwrap` 展开成连续
+   斜坡）；动画须先 `collapse_translation_root_chain` 把惰性 wrapper 折到 root 上，
+   root 的世界旋转才带上 wrapper 的 yaw。
+2. `_linear_fit` 对该朝向做最小二乘直线拟合（匀速转向在 yaw 上就是一条直线）——
+   拟合出的线是角色真正跟随的行进朝向，把每步骨盆抖动滤掉。
+3. 帧间位移按**负朝向**旋进朝向帧 → 减其均值（= 持续运输量）→ 按朝向旋转回世界系 →
+   从 frame 0 累加。`correction` 即累积运输量，`flattened = traj - correction`，
    **frame 0 留在原点**，周期内的涌动与侧摆全部保留。
 
 `drift = ||correction[-1]||`，取**终点**而不是最大偏离：只有终点能区分"走了不回来"
 和"出去再回来"。闭合路径（含整圈绕行）按定义是"原点附近的周期性运动"，一律保留。
 
-**去根姿态信号只在 root 的子树上取**（`translation_root_subtree_mask`）：中间根被重新安放时，
-它上面的 wrapper 不动，子树外关节的去根位置在变换两侧读不到同一个周期。
+**校验器从特征张量读回同一朝向**（`recover_from_bvh_rot_np` + `root_xz_heading`）：
+旋转直接取自 6D 通道，offsets 只摆关节位置、不动朝向。恢复动画带 identity orient，
+朝向可能整体差一个常量；但旋进帧、减均值、再旋转回，对帧的**常量旋转等变**，
+这个常量精确抵消，所以管线与校验器对同一条 clip 读出同一个 drift。
 
 **foot contact 在 root XZ 编辑之前读取**（`get_contact_state` 读变换前的
 `positions_global(new_anim)`）。扁平化等于给每个关节加上步速，踩实的脚随之动起来 ——
@@ -168,7 +178,7 @@ raw 导入结果走 realpath 索引的缓存，几遍之间共用。
 测漂移、在"已经滑脚的 clip"上重读接触。决策一次、施加一次。
 
 **保留待清理**（等全量重新预处理跑通、确认所有物种都落在 0 之后再删）：
-`_transport_carrier_index`、`translation_root_subtree_mask`、`translation_root_ancestor_chain`、
+`_transport_carrier_index`、`translation_root_ancestor_chain`、
 `collapse_translation_root_chain`、`set_translation_root_xz` 的祖先分支、phase 2 的少数派重新对齐、
 冻结根的祖先校验，以及 cond / metadata / 验证器里的 `translation_root_index`。
 
@@ -190,7 +200,7 @@ raw 导入结果走 realpath 索引的缓存，几遍之间共用。
 
 | 检查 | 范围 | 判据 |
 |---|---|---|
-| `_validate_root_motion_drift` | 仅 locomotion clip | 用与管线**完全相同**的算术（解码器重建轨迹 + 同一子树姿态信号），扁平化后净漂移 ≤ `ROOT_XZ_DRIFT_THRESHOLD` |
+| `_validate_root_motion_drift` | 仅 locomotion clip | 用与管线**完全相同**的算术（解码器重建轨迹 + 同一朝向信号），扁平化后净运输量 ≤ `ROOT_XZ_DRIFT_THRESHOLD` |
 | `_validate_root_xz_ceiling` | **每一条** clip | root XZ extent ≤ `ROOT_XZ_SOFT_CLAMP_LIMIT` + `1e-3`。超了说明 tensor 来自 clamp 之前 |
 | `_validate_root_transport_carrier` | 每一条 clip | 逐帧取非 root 关节 RIC 位移的最小值 = 刚性整体平移的下界；超过天花板 0.8 且 root 自己轨迹不到它的一半 ⇒ 报警（位移被写在了物种根看不见的关节上） |
 
@@ -213,7 +223,6 @@ raw 导入结果走 realpath 索引的缓存，几遍之间共用。
 | `ROOT_XZ_SOFT_CLAMP_LIMIT` | 0.8 | 软 clamp 渐近天花板 |
 | `ROOT_TRANSPORT_CARRIER_SHARE` | 0.5 | carrier 须达本 clip 链上峰值的 50% |
 | `ROOT_TRANSPORT_MIN_TRAVEL` | 0.08 | carrier 绝对下限（低于它下游不会对这点位移做任何事） |
-| `MIN_POSE_CYCLE_FRAMES` | 8 | 周期窗最短长度 |
 | `ROOT_XZ_CEILING_TOLERANCE` | 1e-3 | 天花板检查容差 |
 | `CKPT_VERSION` | 6 | v5 及更早 checkpoint 被拒绝 |
 

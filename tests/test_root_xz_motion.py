@@ -32,9 +32,8 @@ from data_loaders.truebones.truebones_utils.animation_utils import (
     _transport_carrier_index,
     collapse_translation_root_chain,
     promote_translation_root_to_hierarchy_root,
-    translation_root_subtree_mask,
-    estimate_pose_cycle_length,
     root_xz_drift_correction,
+    root_xz_heading,
     root_xz_trajectory,
     set_translation_root_xz,
 )
@@ -44,7 +43,6 @@ from data_loaders.truebones.truebones_utils.features import (
 )
 from data_loaders.truebones.truebones_utils.motion_process import (
     move_xz_to_origin,
-    root_xz_relative_pose,
 )
 from data_loaders.truebones.data.dataset import _tile_loop_motion
 
@@ -61,6 +59,50 @@ def _straight_line_anim(n_frames: int, path_xz: np.ndarray) -> Animation:
     positions[:, 0, 2] = path_xz[:, 1]
     positions[:, 1] = offsets[1]
     return Animation(rotations, positions, Quaternions.id(len(parents)), offsets, parents)
+
+
+def _turning_anim(n_frames: int, path_xz: np.ndarray, turn_deg: float) -> Animation:
+    """``_straight_line_anim`` with the root yawing steadily across the clip.
+
+    The shape every RunLeft/GlideLeft in the shipped data has: travel whose
+    direction rotates with the character. A frame fitted end to end cannot
+    follow it; the root's own heading can.
+    """
+    anim = _straight_line_anim(n_frames, path_xz)
+    yaw = np.radians(turn_deg) * np.arange(n_frames) / max(n_frames - 1, 1)
+    anim.rotations[:, 0] = Quaternions.from_angle_axis(yaw, np.array([0.0, 1.0, 0.0]))
+    return anim
+
+
+def _feature_heading(features, parents, root_index):
+    """The heading the dataset validator reads back off a feature tensor.
+
+    Rotations are recovered straight from the 6D channels, so the offsets only
+    place joints in space and cannot move this; zeros are enough.
+    """
+    from data_loaders.truebones.truebones_utils.motion_process import (
+        recover_from_bvh_rot_np,
+    )
+
+    parents = np.asarray(parents, dtype=np.int64)
+    _positions, recovered = recover_from_bvh_rot_np(
+        features,
+        parents,
+        np.zeros((parents.shape[0], 3), dtype=np.float64),
+        translation_root_index=root_index,
+    )
+    return root_xz_heading(recovered, root_index)
+
+
+def _flat_heading(n_frames: int) -> np.ndarray:
+    """The heading of a rig that never turns -- what the straight fixtures have."""
+    return np.zeros(n_frames, dtype=np.float64)
+
+
+def _turning_path(n_frames: int, radius: float, turn_deg: float) -> np.ndarray:
+    """A constant-speed arc: travel that curves through ``turn_deg``."""
+    ang = np.radians(turn_deg) * np.arange(n_frames) / max(n_frames - 1, 1)
+    return np.stack([radius * (1.0 - np.cos(ang)), radius * np.sin(ang)], axis=-1)
 
 
 def _extract(anim, foot_indices=(1,), vel_thresh=0.01, locomotion=True, clamp=False):
@@ -118,14 +160,6 @@ def _gait_path(n_frames: int, cycle: int, stride: float, surge: float) -> np.nda
     )
 
 
-def _cyclic_pose(n_frames: int, cycle: int) -> np.ndarray:
-    t = np.arange(n_frames, dtype=np.float64)
-    return np.stack(
-        [np.sin(2.0 * np.pi * t / cycle), np.cos(2.0 * np.pi * t / cycle), np.zeros(n_frames)],
-        axis=-1,
-    )[:, None, :]
-
-
 # ── the gate: a path that closes is kept, at any amplitude ─────────────────
 
 @pytest.mark.parametrize('amplitude', [0.3, 0.6, 2.0])
@@ -151,7 +185,7 @@ def test_sustained_travel_is_flattened():
     )
 
     assert flattened is True
-    _flat, drift, _window = flatten_root_xz_drift(_root_path(features))
+    _flat, drift = flatten_root_xz_drift(_root_path(features), _flat_heading(40))
     assert drift <= ROOT_XZ_DRIFT_THRESHOLD
 
 
@@ -180,7 +214,7 @@ def test_nothing_is_ever_written_as_an_exact_zero():
 
 def test_frame_zero_stays_at_the_origin():
     """The pipeline centred the clip there and every downstream consumer assumes it."""
-    correction, _drift = root_xz_drift_correction(_travelling_path(40), 40)
+    correction, _drift = root_xz_drift_correction(_travelling_path(40), _flat_heading(40))
     np.testing.assert_allclose(correction[0], 0.0, atol=1e-12)
 
 
@@ -205,11 +239,11 @@ def test_root_ric_xz_is_structurally_zero():
 def test_flattening_is_idempotent():
     """Re-measuring a flattened path must not find travel to remove again."""
     path = _gait_path(60, 20, stride=0.5, surge=0.05)
-    pose = _cyclic_pose(60, 20)
-    flat, drift, _window = flatten_root_xz_drift(path, pose=pose)
+    heading = _flat_heading(60)
+    flat, drift = flatten_root_xz_drift(path, heading)
     assert drift > ROOT_XZ_DRIFT_THRESHOLD
 
-    _again, second_drift, _w = flatten_root_xz_drift(flat, pose=pose)
+    _again, second_drift = flatten_root_xz_drift(flat, heading)
     assert second_drift <= ROOT_XZ_DRIFT_THRESHOLD
 
 
@@ -272,39 +306,97 @@ def test_the_validator_only_checks_locomotion_clips():
     assert 'if motion_path.name in locomotion_clips:' in source
 
 
-# ── the window: a curve is travel too ──────────────────────────────────────
+# ── a curve is travel too, and the heading follows it ─────────────────────
 
-def test_a_curved_path_is_flattened_far_better_than_a_line_fit_manages():
-    """A WalkTurn arc has no straight trend to subtract.
+@pytest.mark.parametrize('turn_deg', [30.0, 60.0, 90.0, 180.0])
+def test_a_turning_gait_is_flattened_as_completely_as_a_straight_one(turn_deg):
+    """The reported bug: RunLeft/GlideLeft kept a bow of residual travel.
 
-    The cycle-window baseline follows the curve; a single end-to-end line fit
-    leaves the whole arc behind, which is why the window exists at all.
+    An end-to-end line fit cannot represent an arc, so it left the sagitta
+    behind -- 0.371 for ``MB_Unka_GlideLeft`` and 0.732 for
+    ``IAC_Cavewoman_RunTurnRight``, 27% and 53% of a body span. In the root's
+    own heading frame the same motion is a constant forward speed, and a
+    constant is what the detrend removes.
     """
-    n_frames = 60
-    ang = np.linspace(0.0, np.pi, num=n_frames)
-    arc = np.stack([1.2 * np.sin(ang / 2), 1.2 * (1.0 - np.cos(ang / 2))], axis=-1)
+    n_frames = 40
+    path = _turning_path(n_frames, radius=1.6, turn_deg=turn_deg)
+    features, _loop, flattened, _anim = _extract(
+        _turning_anim(n_frames, path, turn_deg)
+    )
 
-    flat, drift, window = flatten_root_xz_drift(arc, pose=_cyclic_pose(n_frames, 15))
-    assert drift > ROOT_XZ_DRIFT_THRESHOLD
-    assert window < n_frames
-
-    line_fit_residual = np.linalg.norm(
-        arc - np.outer(np.arange(n_frames) / (n_frames - 1), arc[-1]), axis=1
-    ).max()
-    windowed_residual = np.linalg.norm(flat - flat[0], axis=1).max()
-    assert windowed_residual < 0.2 * line_fit_residual
+    assert flattened is True
+    travelled = np.linalg.norm(path - path[0], axis=1).max()
+    residual = np.linalg.norm(_root_path(features), axis=1).max()
+    assert residual < 0.05 * travelled
 
 
-def test_the_cycle_estimator_finds_a_period_and_declines_when_there_is_none():
-    assert estimate_pose_cycle_length(_cyclic_pose(60, 20)) == 20
+def test_the_end_to_end_line_fit_is_what_the_heading_frame_replaces():
+    """Pin the failure the fix exists for: same arc, heading withheld.
 
-    aperiodic = np.linspace(0.0, 1.0, num=60)[:, None, None] * np.ones((1, 3, 3))
-    assert estimate_pose_cycle_length(aperiodic) == 60
+    97.7% of the flattened clips in the shipped datasets are a single stride
+    long, so the old cycle estimator found no period and the baseline collapsed
+    to one straight line across the whole clip. This is that line.
+    """
+    n_frames = 40
+
+    def reach(path):
+        return float(np.linalg.norm(path - path[0], axis=1).max())
+
+    line_fit = []
+    for turn_deg in (30.0, 60.0, 90.0, 180.0):
+        arc = _turning_path(n_frames, radius=1.6, turn_deg=turn_deg)
+        straight_frame, _drift = flatten_root_xz_drift(arc, _flat_heading(n_frames))
+        heading_frame, _drift = flatten_root_xz_drift(
+            arc, root_xz_heading(_turning_anim(n_frames, arc, turn_deg), 0)
+        )
+
+        # What the line fit cannot reach is the arc's sagitta, and it grows with
+        # the turn: 6.6% of the path at 30 degrees, 50% at 180.
+        assert reach(straight_frame) > 0.05 * reach(arc)
+        line_fit.append(reach(straight_frame) / reach(arc))
+
+        # In the heading frame a constant-rate turn is a constant forward speed,
+        # so there is nothing left over at all.
+        assert reach(heading_frame) < 1e-9
+
+    assert line_fit == sorted(line_fit)
 
 
-def test_a_window_is_never_shorter_than_a_quarter_of_the_clip():
-    """A mis-estimate must not high-pass the motion itself away."""
-    assert estimate_pose_cycle_length(_cyclic_pose(80, 8)) >= 20
+def test_a_constant_heading_offset_cannot_change_the_result():
+    """What lets the dataset validator re-measure drift off the features.
+
+    Its recovered animation carries identity orients where the pipeline's rest
+    pose carried real ones, so its heading can sit a constant away from the one
+    preprocessing used. Rotating into a frame, removing a mean and rotating back
+    is equivariant under a constant rotation of that frame, so it cancels.
+    """
+    n_frames = 40
+    arc = _turning_path(n_frames, radius=1.6, turn_deg=75.0)
+    heading = root_xz_heading(_turning_anim(n_frames, arc, 75.0), 0)
+
+    base, base_drift = flatten_root_xz_drift(arc, heading)
+    offset, offset_drift = flatten_root_xz_drift(arc, heading + 1.234)
+
+    np.testing.assert_allclose(base, offset, atol=1e-12)
+    assert base_drift == pytest.approx(offset_drift, abs=1e-12)
+
+
+def test_the_heading_is_read_through_the_seated_wrapper():
+    """Rigs that keep the turn on an inert ``CG``/``All`` node above the root.
+
+    ``collapse_translation_root_chain`` seats those onto the root before the
+    flatten runs, so the root's world rotation carries their yaw too -- which is
+    the only reason the heading is read off the collapsed animation.
+    """
+    n_frames = 30
+    anim = _static_wrapper_anim(n_frames, _travelling_path(n_frames))
+    yaw = np.radians(60.0) * np.arange(n_frames) / (n_frames - 1)
+    anim.rotations[:, 0] = Quaternions.from_angle_axis(yaw, np.array([0.0, 1.0, 0.0]))
+
+    seated = collapse_translation_root_chain(anim, 1)
+    heading = root_xz_heading(seated, 1)
+
+    assert np.degrees(heading[-1] - heading[0]) == pytest.approx(60.0, abs=1e-6)
 
 
 # ── foot contact is read before the root is touched ────────────────────────
@@ -373,40 +465,6 @@ def test_contacts_are_the_source_motions_own_labels():
 
     # And emphatically not the re-seated motion's labels, which are all zero.
     assert get_contact_state(positions_global(motion_anim), [1], 0.002)[:, 1].sum() == 0
-
-
-def test_the_cycle_window_survives_an_intermediate_root():
-    """The wrapper above an intermediate root does not move when the root is
-    re-seated, so its de-rooted position carries the whole negated trajectory
-    beforehand and nothing afterwards. Restricting the signal to the root's own
-    subtree is what lets both sides of the edit read the same period.
-    """
-    from data_loaders.truebones.truebones_utils.animation_utils import (
-        root_xz_relative_pose,
-        translation_root_subtree_mask,
-    )
-
-    # The static-wrapper shape: there the re-seat really does move the root out
-    # from under a joint that stays put, so the two sides of the edit disagree
-    # about that joint unless it is masked out.
-    anim = _static_wrapper_anim(40, _travelling_path(40))
-    before = positions_global(anim)
-    reseated = set_translation_root_xz(anim, 1, _closed_excursion(40, 0.2))
-    after = positions_global(reseated)
-
-    mask = translation_root_subtree_mask(anim.parents, 1)
-    np.testing.assert_array_equal(mask, [False, True, True])
-
-    np.testing.assert_allclose(
-        root_xz_relative_pose(before, 1, parents=anim.parents),
-        root_xz_relative_pose(after, 1, parents=anim.parents),
-        atol=1e-9,
-    )
-    # Without the mask the wrapper joint alone moves the signal by the trajectory.
-    unmasked_delta = np.abs(
-        root_xz_relative_pose(before, 1) - root_xz_relative_pose(after, 1)
-    ).max()
-    assert unmasked_delta > 1.0
 
 
 # ── the re-seat itself ─────────────────────────────────────────────────────
@@ -560,9 +618,12 @@ def test_resampling_the_source_and_reextracting_agrees_with_the_first_pass():
     assert second_flattened is True
     assert first.shape[0] == 18 and second.shape[0] == 20
     # Measured the way the dataset validator measures it: the decoder's own
-    # reconstruction and the same pose signal, hence the same window.
-    _flat, drift, _w = flatten_root_xz_drift(
-        _root_path(second, root_index=1), pose=second[:, :, 0:3]
+    # reconstruction, in the heading read back off the same features. This rig
+    # keeps its turn on the wrapper above the root, so a flat heading would not
+    # do -- which is the point.
+    _flat, drift = flatten_root_xz_drift(
+        _root_path(second, root_index=1),
+        _feature_heading(second, np.array([-1, 0, 1]), 1),
     )
     assert drift <= ROOT_XZ_DRIFT_THRESHOLD
 
@@ -676,8 +737,8 @@ def test_the_root_subtree_is_untouched_when_the_wrapper_is_seated():
     seated = collapse_translation_root_chain(anim, 1)
 
     before, after = positions_global(anim), positions_global(seated)
-    subtree = translation_root_subtree_mask(anim.parents, 1)
-    np.testing.assert_allclose(after[:, subtree], before[:, subtree], atol=1e-9)
+    # The fixture is wrapper -> root -> child, so the root's subtree is [1, 2].
+    np.testing.assert_allclose(after[:, 1:], before[:, 1:], atol=1e-9)
 
 
 def test_the_wrapper_stops_carrying_the_negated_root_trajectory():
@@ -686,10 +747,11 @@ def test_the_wrapper_stops_carrying_the_negated_root_trajectory():
     backwards by exactly the trajectory."""
     anim = _static_wrapper_anim(40, _closed_excursion(40, 2.0))
 
-    before = root_xz_relative_pose(positions_global(anim), 1)[:, 0][:, [0, 2]]
-    after = root_xz_relative_pose(
-        positions_global(collapse_translation_root_chain(anim, 1)), 1
-    )[:, 0][:, [0, 2]]
+    def derooted_wrapper_xz(global_pos):
+        return global_pos[:, 0][:, [0, 2]] - global_pos[:, 1][:, [0, 2]]
+
+    before = derooted_wrapper_xz(positions_global(anim))
+    after = derooted_wrapper_xz(positions_global(collapse_translation_root_chain(anim, 1)))
 
     assert np.linalg.norm(before - before[0], axis=1).max() > 1.0
     assert np.abs(after - after[0]).max() < 1e-9
@@ -975,12 +1037,19 @@ def test_the_clamp_is_opt_in_so_re_extraction_cannot_compress_twice():
 def _run_drift_validator(motion, root_index, capsys, threshold=ROOT_XZ_DRIFT_THRESHOLD):
     from utils.validate_anytop_dataset import _validate_root_motion_drift
 
-    _validate_root_motion_drift(motion, 'TestSkeleton', 'Clip_Test.npy', threshold, root_index)
+    parents = np.arange(-1, motion.shape[1] - 1, dtype=np.int64)
+    _validate_root_motion_drift(
+        motion, 'TestSkeleton', 'Clip_Test.npy', threshold, root_index,
+        parents=parents, offsets=np.zeros((motion.shape[1], 3), dtype=np.float64),
+    )
     return capsys.readouterr().out
 
 
 def _motion_with_root_path(path_xz, root_index=1, joints=3):
     motion = np.zeros((path_xz.shape[0], joints, 13), dtype=np.float32)
+    # Identity rotations: the validator reads the heading out of these channels,
+    # and an all-zero block is not a rotation matrix.
+    motion[:, :, 3:9] = np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], dtype=np.float32)
     motion[:-1, root_index, 9] = np.diff(path_xz[:, 0])
     motion[:-1, root_index, 11] = np.diff(path_xz[:, 1])
     return motion
@@ -994,12 +1063,12 @@ def test_validator_accepts_a_closed_excursion(capsys):
 def test_validator_flags_a_clip_that_still_travels(capsys):
     motion = _motion_with_root_path(_travelling_path(40, distance=1.5))
     out = _run_drift_validator(motion, 1, capsys)
-    assert 'baseline drifts' in out
+    assert 'still carries' in out
 
 
 def test_validator_accepts_a_clip_the_pipeline_flattened(capsys):
     path = _gait_path(60, 20, stride=0.5, surge=0.05)
-    flat, _drift, _window = flatten_root_xz_drift(path, pose=_cyclic_pose(60, 20))
+    flat, _drift = flatten_root_xz_drift(path, _flat_heading(60))
     assert _run_drift_validator(_motion_with_root_path(flat), 1, capsys) == ''
 
 

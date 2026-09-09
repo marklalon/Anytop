@@ -502,6 +502,7 @@ def _validate_root_motion_drift(
     translation_root_index: int,
     ignored_stems: set[str] | None = None,
     parents=None,
+    offsets=None,
 ) -> None:
     """Warn when a locomotion clip's root XZ still carries sustained travel.
 
@@ -518,22 +519,34 @@ def _validate_root_motion_drift(
     try:
         from data_loaders.truebones.truebones_utils.motion_process import (
             flatten_root_xz_drift,
+            recover_from_bvh_rot_np,
             recover_root_quat_and_pos_np,
-            translation_root_subtree_mask,
+            root_xz_heading,
         )
         _, r_pos = recover_root_quat_and_pos_np(
             motion, translation_root_index=translation_root_index
         )
-        # RIC positions are the de-rooted pose by construction, which is the
-        # signal the pipeline reads its cycle length from -- restricted to the
-        # root's subtree on both sides, the only part of it the re-seat leaves
-        # alone (see root_xz_relative_pose).
-        pose = motion[:, :, 0:3]
-        if parents is not None:
-            pose = np.asarray(pose, dtype=np.float64).copy()
-            pose[:, ~translation_root_subtree_mask(parents, translation_root_index)] = 0.0
-        _flattened, drift, _window = flatten_root_xz_drift(
-            r_pos[:, [0, 2]], pose=pose
+        # The heading the pipeline detrended in, read back off the same features.
+        # The recovered anim carries identity orients where the pipeline's rest
+        # pose carried real ones, so this heading can sit a constant offset away
+        # from the one preprocessing used -- which cancels exactly, because
+        # rotating into a frame, removing a mean and rotating back is equivariant
+        # under a constant rotation of that frame.
+        joint_parents = np.asarray(parents, dtype=np.int64)
+        # Rotations come straight off the 6D channels, so the offsets only place
+        # joints in space and cannot move the heading; zeros stand in for a cond
+        # entry that does not carry them.
+        joint_offsets = (
+            np.zeros((joint_parents.shape[0], 3), dtype=np.float64)
+            if offsets is None
+            else np.asarray(offsets, dtype=np.float64)
+        )
+        _positions, recovered = recover_from_bvh_rot_np(
+            motion, joint_parents, joint_offsets,
+            translation_root_index=translation_root_index,
+        )
+        _flattened, drift = flatten_root_xz_drift(
+            r_pos[:, [0, 2]], root_xz_heading(recovered, translation_root_index)
         )
     except Exception as exc:
         print_warn(f"{motion_name}: failed to inspect root motion drift from NPy: {exc}")
@@ -541,9 +554,9 @@ def _validate_root_motion_drift(
 
     if drift > threshold:
         print_warn(
-            f"{motion_name}: locomotion clip's root XZ baseline drifts {drift:.3f} across the "
-            f"clip, past the flatten threshold ({threshold:.2f}) -- translation root index "
-            f"{translation_root_index}"
+            f"{motion_name}: locomotion clip's root XZ still carries {drift:.3f} of transport "
+            f"across the clip, past the flatten threshold ({threshold:.2f}) -- translation root "
+            f"index {translation_root_index}"
         )
 
 
@@ -778,6 +791,7 @@ def validate_motion_files(
                     translation_root_index,
                     ignored_stems=ignored_stems,
                     parents=cond[object_type].get("parents"),
+                    offsets=cond[object_type].get("offsets"),
                 )
 
             if check_motion_orientation:
@@ -1215,7 +1229,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--objects-subset", default="all", choices=sorted(OBJECT_SUBSET_CHOICES), help="Subset that must be present in the dataset; incremental runs may still contain additional objects.")
     parser.add_argument("--sample-count", type=int, default=0, help="How many motion files to validate in detail. Use 0 to validate all files.")
     parser.add_argument("--orientation-threshold-deg", type=float, default=5.0, help="Maximum allowed T-pose face-orientation delta from the nearest cardinal XZ axis (+x/-x/+z/-z) before warning.")
-    parser.add_argument("--root-motion-threshold", type=float, default=ROOT_XZ_DRIFT_THRESHOLD, help=f"Maximum sustained root XZ travel (cycle-window baseline drift) a clip may keep (default={ROOT_XZ_DRIFT_THRESHOLD}).")
+    parser.add_argument("--root-motion-threshold", type=float, default=ROOT_XZ_DRIFT_THRESHOLD, help=f"Maximum sustained root XZ travel (heading-frame transport) a clip may keep (default={ROOT_XZ_DRIFT_THRESHOLD}).")
     parser.add_argument(
         "--motion-orientation-threshold",
         type=float,

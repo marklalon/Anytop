@@ -20,7 +20,6 @@ from data_loaders.truebones.truebones_utils.motion_process import (
     chain_xz_travel,
     find_translation_root,
     select_transport_carrier,
-    translation_root_subtree_mask,
     xz_locomotion_extent,
     root_xz_trajectory,
     flatten_root_xz_drift,
@@ -280,8 +279,9 @@ def test_xz_locomotion_extent_still_detects_true_locomotion_after_initial_root_c
     np.testing.assert_allclose(root_translation_xz, np.array([0.0, 0.0, 0.0], dtype=np.float64), atol=1e-8)
     assert xz_locomotion_extent(centered_anim, 1) == pytest.approx(4.0)
     # And the pipeline reads that as travel: a straight ramp is all baseline.
-    _flat, drift, _window = flatten_root_xz_drift(
-        root_xz_trajectory(centered_anim, 1)
+    _flat, drift = flatten_root_xz_drift(
+        root_xz_trajectory(centered_anim, 1),
+        np.zeros(len(centered_anim), dtype=np.float64),
     )
     assert drift > ROOT_XZ_DRIFT_THRESHOLD
 
