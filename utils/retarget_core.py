@@ -32,6 +32,11 @@ from .retarget_cache import (
     load_from_disk,
     save_to_disk,
 )
+# Shared with the IK rebuild on purpose: this pass decides which source bones
+# carry a direction, and the IK rebuild afterwards decides which target edges it
+# may solve a rotation from.  If the two layers disagreed about what counts as a
+# degenerate bone, one would transfer a direction the other then treats as noise.
+from .fullbody_ik import degenerate_edge_epsilon
 
 
 # ---------------------------------------------------------------------------
@@ -126,12 +131,17 @@ def _llm_joint_mapping(
     tgt_parents: np.ndarray,
     src_rest_offsets: np.ndarray | None = None,
     tgt_rest_offsets: np.ndarray | None = None,
+    verbose: bool = True,
 ) -> dict[str, str | None]:
     """Call LLM to map every src joint name to a tgt joint name (or None).
 
     Results are cached (in-memory + on-disk) by a SHA-256 hash of the
     prompt content so repeated calls for the same skeleton pair skip
     the API entirely.
+
+    *verbose* gates only the per-joint mapping dump; the one-line cache/call
+    summaries are always printed, so a batch run still shows which skeleton
+    pairs cost an API round trip.
     """
     # --- Build messages (needed for cache lookup and LLM call) ---
     src_text = _build_skeleton_text(src_names, src_parents, src_rest_offsets)
@@ -307,9 +317,10 @@ def _llm_joint_mapping(
 
         matched_count = sum(1 for v in result.values() if v is not None)
         print(f"[retarget] LLM mapping result: {matched_count}/{len(src_names)} src joints matched")
-        for src_name, tgt_name in result.items():
-            status = f"→ {tgt_name}" if tgt_name else "→ (no match)"
-            print(f"[retarget]   {src_name}  {status}")
+        if verbose:
+            for src_name, tgt_name in result.items():
+                status = f"→ {tgt_name}" if tgt_name else "→ (no match)"
+                print(f"[retarget]   {src_name}  {status}")
 
         set_in_memory(system_msg, user_msg, result)
         save_to_disk(system_msg, user_msg, result)
@@ -1003,6 +1014,7 @@ def retarget_world_space_np(
             src_match_names, tgt_match_names,
             src_parents, tgt_parents,
             src_rest_offsets, tgt_rest_offsets,
+            verbose=verbose,
         )
         for i, src_name in enumerate(src_match_names):
             tgt_name = llm_result.get(src_name)
@@ -1235,22 +1247,34 @@ def retarget_world_space_np(
     target_wpos = np.zeros((F_q, J_tgt, 3), dtype=np.float64)
 
     _EPS = 1e-8
+    # ``_EPS`` alone only rejects a bone that is degenerate to float precision.
+    # Rigs also ship marker bones an order of magnitude above it and still far
+    # below any real geometry -- a jaw, an eye, a chain terminator whose rest
+    # offset is ~1e-4 on a rig whose median bone is ~7.  Those sit *consistently*
+    # above ``_EPS``, so the flicker rule below never fires and their direction --
+    # pure float dust that wanders tens of degrees per frame -- used to be
+    # transferred as if it were geometry.  ``_DUST`` is the scale-relative
+    # threshold that tells the two apart; ``_DUST_ALIGNED`` is the same length in
+    # the aligned source space the per-frame bone vectors live in.
+    _DUST = degenerate_edge_epsilon(src_rest_offsets, src_parents)
+    _DUST_ALIGNED = _DUST * scale
 
     def _stable_valid(bn):
         """Per-frame direction validity, made temporally stable against flicker.
 
         ``bn`` is the per-frame aligned source-bone length; a frame is normally
-        valid (direction transfer) when ``bn > _EPS`` and otherwise falls back to
-        the rest offset. A structurally near-zero source bone (e.g. a zero-length
-        helper like Bip01_Pelvis driving the dragon Spine) has a length that sits
-        in the numerical noise floor and STRADDLES ``_EPS`` — some frames above,
-        some below — so the per-frame choice flips every frame, snapping the mapped
-        target joint between two placements (visible as ~1-3 Hz jitter). When the
-        mask is mixed like that, the bone provides no reliable direction in any
-        frame, so we use the rest fallback consistently for the whole clip. A real
-        (even very short) bone stays consistently above ``_EPS`` and is untouched.
+        valid (direction transfer) when ``bn > _DUST_ALIGNED`` and otherwise falls
+        back to the rest offset. A structurally near-zero source bone (e.g. a
+        zero-length helper like Bip01_Pelvis driving the dragon Spine) has a length
+        that sits in the numerical noise floor and STRADDLES the threshold — some
+        frames above, some below — so the per-frame choice flips every frame,
+        snapping the mapped target joint between two placements (visible as ~1-3 Hz
+        jitter). When the mask is mixed like that, the bone provides no reliable
+        direction in any frame, so we use the rest fallback consistently for the
+        whole clip. A real bone stays consistently above the threshold and is
+        untouched.
         """
-        valid = bn > _EPS
+        valid = bn > _DUST_ALIGNED
         if valid.any() and not valid.all():
             valid[:] = False
         return valid
@@ -1295,7 +1319,7 @@ def retarget_world_space_np(
             d = src_bv_aligned[:, bridge_src_idx] / np.where(valid, bn, 1.0)[:, None]
 
             src_rest_len = float(np.linalg.norm(src_rest_offsets[bridge_src_idx]))
-            if src_rest_len > _EPS:
+            if src_rest_len > _DUST:
                 stretch = src_anim_len[:, bridge_src_idx] / src_rest_len
             else:
                 stretch = np.ones(F_q, dtype=np.float64)
@@ -1328,7 +1352,7 @@ def retarget_world_space_np(
                 bn = np.linalg.norm(src_bv_aligned[:, ii], axis=-1)  # (F,)
                 src_rest_len = float(np.linalg.norm(src_rest_offsets[ii]))
 
-                if src_rest_len > _EPS:
+                if src_rest_len > _DUST:
                     # Structurally real source bone: always transfer the source's
                     # animated direction × stretch, with no rest fallback. The
                     # transferred length L = tgt_rest_len · (src_anim_len /
@@ -1349,7 +1373,7 @@ def retarget_world_space_np(
                     # Structurally degenerate source bone (≈0 rest length, e.g. a
                     # zero-length locator / control bone). Two sub-cases:
                     #   (a) the bone is also ≈0 animated, or its length flickers
-                    #       across the _EPS noise floor frame-to-frame — the
+                    #       across the _DUST noise floor frame-to-frame — the
                     #       direction is meaningless, so fall back to the target's
                     #       rest offset consistently for the whole clip (the
                     #       _stable_valid jitter fix; e.g. a zero-len Bip01_Pelvis

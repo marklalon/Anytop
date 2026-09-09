@@ -24,6 +24,11 @@ from .rotation_numpy import (
     quat_multiply_wxyz_np,
     quat_rotate_wxyz_np,
 )
+from .fullbody_ik import (
+    DEFAULT_IK_STRETCH_FACTOR,
+    FULLBODY_IK_ITERATIONS,
+    rebuild_retarget_pose_channels_with_ik,
+)
 from .retarget_core import (
     _batch_internal_pose_fk_np,
     retarget_world_space_np,
@@ -733,6 +738,9 @@ class AnimationExporter:
         coordinate_search: Optional[bool] = None,
         src_effective_root_index: Optional[int] = None,
         tgt_effective_root_index: Optional[int] = None,
+        fullbody_ik: bool = False,
+        fullbody_ik_stretch_factor: float = DEFAULT_IK_STRETCH_FACTOR,
+        fullbody_ik_iterations: int = FULLBODY_IK_ITERATIONS,
     ) -> None:
         """Export GLB directly through bpy in the current Python process.
 
@@ -802,6 +810,15 @@ class AnimationExporter:
             tgt_effective_root_index: Optional target counterpart — keeps the
                 locomotion on that joint's local translation and leaves wrapper
                 ancestors static.
+            fullbody_ik: Re-solve the retargeted pose on the *rigid* target
+                skeleton, moving what the retarget left in the pose-translation
+                channel back into rotations. Only meaningful with *mesh_path*
+                (there is no retarget without one). Off by default: it is a real
+                change to the written pose and would break the self-retarget
+                round trip.
+            fullbody_ik_stretch_factor: bone-length elasticity the IK rebuild may
+                use (0.1 = ±10 %). Only read when *fullbody_ik* is set.
+            fullbody_ik_iterations: IK passes. Only read when *fullbody_ik* is set.
         """
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
@@ -995,9 +1012,44 @@ class AnimationExporter:
             fbx_pose_rot = retarget_result["joint_rotations"]
             fbx_pose_loc = retarget_result["bone_translations"]
             input_to_fbx = retarget_result["src_to_tgt"]
+            fbx_root_rot = retarget_result["root_rotation"]
+            fbx_root_trans = retarget_result["root_translation"]
 
             root_mask = fbx_parents < 0
             root_indices = np.flatnonzero(root_mask)
+
+            # ── Optional rigid-skeleton rebuild ───────────────────────────
+            # The retarget puts every target joint on its source counterpart's
+            # world position; the part a rotation cannot reach from the rest
+            # offset stays in the pose-translation channel, which on a
+            # cross-species transfer is the target rig stretched to the donor's
+            # proportions. IK converts that back into rotations.
+            if fullbody_ik and fbx_pose_loc is not None:
+                if root_indices.size != 1:
+                    print(
+                        f"Skipping full-body IK: target armature has "
+                        f"{root_indices.size} root bones, the rebuild needs exactly one."
+                    )
+                else:
+                    fbx_pose_rot, fbx_pose_loc, ik_mean_error, ik_max_error = (
+                        rebuild_retarget_pose_channels_with_ik(
+                            fbx_pose_rot,
+                            fbx_pose_loc,
+                            parents=fbx_parents,
+                            rest_offsets=fbx_offsets,
+                            rest_rotations=fbx_rest_rots,
+                            iterations=fullbody_ik_iterations,
+                            stretch_factor=fullbody_ik_stretch_factor,
+                        )
+                    )
+                    root_index = int(root_indices[0])
+                    fbx_root_rot = fbx_pose_rot[:, root_index, :]
+                    fbx_root_trans = fbx_pose_loc[:, root_index, :]
+                    print(
+                        f"Full-body IK residual joint error: "
+                        f"mean={ik_mean_error:.6f}, max={ik_max_error:.6f} "
+                        f"(stretch_factor={fullbody_ik_stretch_factor:.2f})"
+                    )
 
             if rotation_channel_mask_np is not None:
                 fbx_rotation_channel_mask = np.zeros((J_fbx,), dtype=bool)
@@ -1009,8 +1061,8 @@ class AnimationExporter:
                 rotation_channel_mask_np = fbx_rotation_channel_mask
 
             jr = fbx_pose_rot.tolist()
-            rr = retarget_result["root_rotation"].tolist()
-            rt = retarget_result["root_translation"].tolist()
+            rr = fbx_root_rot.tolist()
+            rt = fbx_root_trans.tolist()
             bone_names = fbx_names
             bt = fbx_pose_loc.tolist() if fbx_pose_loc is not None else None
 

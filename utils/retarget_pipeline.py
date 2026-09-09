@@ -8,6 +8,7 @@ Used by:
   tools/retarget_npy.py          -- CLI wrapper for retargeting files
 """
 import os
+from collections import OrderedDict
 from typing import Optional
 
 import numpy as np
@@ -746,6 +747,68 @@ _NATIVE_SRC_FACE_HINT = '__retarget_glb_source__'
 _NATIVE_TGT_FACE_HINT = '__retarget_glb_target__'
 
 
+# A batch of retargets onto the same target rig re-imports it through bpy for
+# nothing but its rest skeleton.  Keyed by the file's own size and mtime, so an
+# edited rig is re-read.
+_NATIVE_RIG_CACHE: "OrderedDict[tuple, tuple]" = OrderedDict()
+_NATIVE_RIG_CACHE_LIMIT = 64
+
+
+def _load_native_rig_skeleton(path: str):
+    """Read a rig's raw (uncollapsed) skeleton, memoised per file revision.
+
+    Returns ``(names, parents, rest_offsets, rest_rotations)``.  Only the rest
+    skeleton is kept -- the animation a target file may carry is discarded by
+    every caller -- and the arrays are copied out so a caller cannot poison the
+    entry for the next one.
+    """
+    from motion_lib import FBX
+
+    try:
+        stat = os.stat(path)
+        key = (os.path.abspath(path), stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        key = None
+
+    if key is not None and key in _NATIVE_RIG_CACHE:
+        _NATIVE_RIG_CACHE.move_to_end(key)
+        names, parents, offsets, rest_rotations = _NATIVE_RIG_CACHE[key]
+    else:
+        animation, names, _frame_time = FBX.load(path, collapse_root=False)
+        parents = np.asarray(animation.parents, dtype=np.int32)
+        offsets = np.asarray(animation.offsets, dtype=np.float64)
+        rest_rotations = np.asarray(animation.orients.qs, dtype=np.float64)
+        if key is not None:
+            _NATIVE_RIG_CACHE[key] = (list(names), parents, offsets, rest_rotations)
+            while len(_NATIVE_RIG_CACHE) > _NATIVE_RIG_CACHE_LIMIT:
+                _NATIVE_RIG_CACHE.popitem(last=False)
+
+    return list(names), parents.copy(), offsets.copy(), rest_rotations.copy()
+
+
+def _exporter_view_of_skeleton(skeleton):
+    """Return ``(parents, rest_offsets, rest_rotations)`` as ``export_glb`` sees them.
+
+    The exporter reads the rest pose off the ``Skeleton``'s torch buffers, so a
+    caller that wants byte-identical retarget inputs -- the pre-passes here, or a
+    prefetch that wants to land on the same LLM cache entry -- has to go through
+    the same float64 cast rather than reading the source ``Animation`` directly.
+    """
+    parents = np.array(
+        [bone.parent_id if bone.parent_id is not None else -1 for bone in skeleton.bones],
+        dtype=np.int32,
+    )
+    rest_offsets = np.array([
+        bone.rest_offset.detach().cpu().numpy().astype(np.float64)
+        for bone in skeleton.bones
+    ])
+    rest_rotations = np.array([
+        bone.rest_rotation.detach().cpu().numpy().astype(np.float64)
+        for bone in skeleton.bones
+    ])
+    return parents, rest_offsets, rest_rotations
+
+
 def _native_rest_positions(parents, offsets, rest_rotations) -> np.ndarray:
     """Return the (J, 3) bind-pose world positions of a native-space skeleton."""
     from utils.retarget_core import batch_forward_kinematics_np
@@ -871,6 +934,8 @@ def retarget_glb_to_glb(
     ground: bool = False,
     promote_effective_root: Optional[bool] = None,
     export_mesh: bool = True,
+    fullbody_ik: bool = False,
+    fullbody_ik_stretch_factor: Optional[float] = None,
     slice_inds=None,
     verbose: bool = True,
 ) -> str:
@@ -926,6 +991,14 @@ def retarget_glb_to_glb(
             when both rigs share a wrapper shape re-anchors the hierarchy and
             corrupts the pose -- see the note at the decision site.
         export_mesh: ``False`` writes a skeleton-only GLB.
+        fullbody_ik: re-solve the retargeted pose on the rigid target skeleton so
+            the bone lengths the retarget stretched to reach the donor's
+            proportions come back, with rotations carrying the motion instead.
+            Off by default because it is a real change to the written pose and
+            would break the self-retarget round trip.
+        fullbody_ik_stretch_factor: bone-length elasticity the rebuild may keep
+            (0.1 = ±10 %). ``None`` uses :data:`utils.fullbody_ik.
+            DEFAULT_IK_STRETCH_FACTOR`. Only read when *fullbody_ik* is set.
         slice_inds: optional ``[start, end]`` frame slice on the source.
         verbose: print progress; also drives the retarget core's own summary.
 
@@ -936,6 +1009,7 @@ def retarget_glb_to_glb(
 
     from motion_lib import FBX
     from utils.exporter import AnimationExporter, animation_to_exporter_inputs
+    from utils.fullbody_ik import DEFAULT_IK_STRETCH_FACTOR
     from utils.retarget_core import retarget_world_space_np
     from utils.roundtrip_common import build_skeleton
     from utils.rotation_numpy import (
@@ -987,28 +1061,18 @@ def retarget_glb_to_glb(
 
     # Mirror export_glb's own float64 view of the skeleton so the pre-passes
     # below see byte-identical inputs to the retarget the exporter will run.
-    source_parents = np.array(
-        [bone.parent_id if bone.parent_id is not None else -1 for bone in skeleton.bones],
-        dtype=np.int32,
+    source_parents, source_rest_offsets, source_rest_rotations = (
+        _exporter_view_of_skeleton(skeleton)
     )
-    source_rest_offsets = np.array([
-        bone.rest_offset.detach().cpu().numpy().astype(np.float64)
-        for bone in skeleton.bones
-    ])
-    source_rest_rotations = np.array([
-        bone.rest_rotation.detach().cpu().numpy().astype(np.float64)
-        for bone in skeleton.bones
-    ])
 
     # -- 2. Target rig ------------------------------------------------------
-    # FBX.load resets the bpy scene, so this must sit between the source read
-    # and export_glb (which resets once more and re-imports the target itself).
-    target_anim, target_names, _target_frametime = FBX.load(
-        target_path, collapse_root=False,
+    # Only the rest skeleton is needed here, and a batch run reads the same rig
+    # for every clip, so this goes through the per-file cache.  A cache hit does
+    # not touch the bpy scene -- which is safe because export_glb resets it and
+    # re-imports the target itself before it needs one.
+    target_names, target_parents, target_rest_offsets, target_rest_rotations = (
+        _load_native_rig_skeleton(target_path)
     )
-    target_parents = np.asarray(target_anim.parents, dtype=np.int32)
-    target_rest_offsets = np.asarray(target_anim.offsets, dtype=np.float64)
-    target_rest_rotations = np.asarray(target_anim.orients.qs, dtype=np.float64)
     target_rest_positions = _native_rest_positions(
         target_parents, target_rest_offsets, target_rest_rotations,
     )
@@ -1133,6 +1197,11 @@ def retarget_glb_to_glb(
         export_mesh=export_mesh,
         coordinate_search=coordinate_search,
         src_effective_root_index=effective_root_argument,
+        fullbody_ik=fullbody_ik,
+        fullbody_ik_stretch_factor=(
+            DEFAULT_IK_STRETCH_FACTOR if fullbody_ik_stretch_factor is None
+            else float(fullbody_ik_stretch_factor)
+        ),
     )
     if verbose:
         print(f"[retarget_glb] wrote {output_path}")
